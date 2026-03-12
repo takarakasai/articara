@@ -10,6 +10,13 @@ description = "A high-performance robot model editor built in Rust. articara foc
 default = ["gui", "scripting"]
 gui = ["dep:eframe", "dep:egui_plot", "dep:glow", "dep:env_logger"]
 mujoco = ["dep:mujoco"]
+# Load an exported RL policy (ONNX) and run it as a controller (sim2sim). Uses
+# the pure-Rust `tract` runtime (no C deps). Pair with `mujoco` for the
+# go2_policy_sim example / GUI policy mode.
+onnx = ["dep:tract-onnx"]
+# Offscreen recording of the MuJoCo sim to PNG frames (→ mp4 via ffmpeg). Enables
+# mujoco-rs's renderer (EGL headless, winit fallback under a virtual display).
+record = ["mujoco", "mujoco/renderer-winit-fallback"]
 serde = ["dep:serde", "nalgebra/serde-serialize"]
 scripting = ["dep:rhai"]
 # Live gait viewer (see `viz_feed`): subscribe to a `go2-gait-runner --viz`
@@ -32,6 +39,8 @@ serde_json = { version = "1", optional = true }
 # automatic download on this platform. Set MUJOCO_DYNAMIC_LINK_DIR or
 # MUJOCO_STATIC_LINK_DIR to the MuJoCo lib directory before building.
 mujoco = { package = "mujoco-rs", version = "4.0.1+mj-3.8.0", optional = true }
+# Pure-Rust ONNX runtime for the `onnx` feature (RL policy sim2sim).
+tract-onnx = { version = "0.21", optional = true }
 nalgebra = "0.34.2"
 parry3d = "0.25"
 rhai = { version = "1", optional = true }

@@ -1289,6 +1289,18 @@ impl MujocoSim {
         self.model.ffi().opt.timestep as f64
     }
 
+    /// Shared handle to the compiled MuJoCo model (for the offscreen [`crate::record::Recorder`]).
+    #[cfg(feature = "record")]
+    pub fn model_arc(&self) -> Arc<MjModel> {
+        self.model.clone()
+    }
+
+    /// Mutable access to MuJoCo's `MjData` (for the offscreen recorder's scene sync).
+    #[cfg(feature = "record")]
+    pub fn data_mut(&mut self) -> &mut MjData<Arc<MjModel>> {
+        &mut self.data
+    }
+
     /// MuJoCo's `qfrc_bias` = `C(q, q̇)·q̇ + g(q)`. With `q̇ = 0`
     /// this collapses to the pure gravity-comp generalised force at
     /// the current `q`. Used by the misarta vs MuJoCo dynamics

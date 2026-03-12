@@ -13,6 +13,10 @@ pub mod mesh_paths;
 pub mod mjcf;
 #[cfg(feature = "mujoco")]
 pub mod mujoco_sim;
+#[cfg(feature = "onnx")]
+pub mod policy;
+#[cfg(feature = "record")]
+pub mod record;
 #[cfg(feature = "mujoco")]
 pub mod mujoco_version;
 pub mod primitives;
