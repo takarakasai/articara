@@ -2,9 +2,12 @@
 //!
 //! Given a kinematic chain of revolute joints, computes joint angle deltas
 //! that move the end-effector toward a desired world-space position.
+//!
+//! Supports cross-branch IK chains through the tree (via LCA) with
+//! inverted joints for re-rooted kinematics.
 
 use nalgebra as na;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::robot::RobotModel;
 
@@ -13,15 +16,18 @@ use crate::robot::RobotModel;
 pub struct ChainJoint {
     pub joint_idx: usize,
     pub joint_name: String,
+    /// If true, this joint is on the "upward" path from the IK root toward the
+    /// LCA. Rotating it effectively moves the body in the opposite direction
+    /// (the IK root is fixed, so the rest of the tree moves).
+    pub inverted: bool,
 }
 
-/// Build the kinematic chain (list of movable joints) from root to the given link.
-/// Returns joints in order from root → end-effector.
+/// Build the kinematic chain (list of movable joints) from URDF root to the given link.
+/// Returns joints in order from root → end-effector. All joints have `inverted = false`.
 pub fn build_chain(model: &RobotModel, end_link: &str) -> Vec<ChainJoint> {
     let mut chain = Vec::new();
     let mut current = end_link.to_string();
 
-    // Walk up from end-effector to root, collecting joints
     while let Some(ji) = model.parent_joint_of_link(&current) {
         let joint = &model.joints[ji];
         let jt = joint.joint_type.as_str();
@@ -29,22 +35,132 @@ pub fn build_chain(model: &RobotModel, end_link: &str) -> Vec<ChainJoint> {
             chain.push(ChainJoint {
                 joint_idx: ji,
                 joint_name: joint.name.clone(),
+                inverted: false,
             });
         }
         current = joint.parent_link.clone();
     }
 
-    chain.reverse(); // root → end-effector order
+    chain.reverse();
     chain
+}
+
+/// Build a kinematic chain between two arbitrary links in the tree.
+///
+/// The chain goes from `root_link` (treated as the fixed base) through the
+/// Lowest Common Ancestor (LCA) to `end_link` (the end-effector).
+///
+/// Joints on the path from `root_link` up to the LCA are marked `inverted = true`,
+/// meaning their Jacobian contribution is negated (rotating the joint moves the
+/// body opposite to the URDF convention because the IK root is fixed).
+///
+/// Joints on the path from the LCA down to `end_link` are `inverted = false`.
+///
+/// If `root_link` is `None`, behaves like `build_chain` (full chain to URDF root).
+pub fn build_chain_between(
+    model: &RobotModel,
+    end_link: &str,
+    root_link: Option<&str>,
+) -> Vec<ChainJoint> {
+    let root_link = match root_link {
+        Some(r) => r,
+        None => return build_chain(model, end_link),
+    };
+
+    if root_link == end_link {
+        return Vec::new();
+    }
+
+    // Find ancestors of both links
+    let ancestors_root = ancestors_list(model, root_link);
+    let ancestors_end = ancestors_list(model, end_link);
+
+    // Find lowest common ancestor (LCA)
+    let ancestor_set: HashSet<&str> = ancestors_root.iter().map(|s| s.as_str()).collect();
+    let lca = ancestors_end
+        .iter()
+        .find(|a| ancestor_set.contains(a.as_str()))
+        .cloned()
+        .unwrap_or_else(|| model.root_link.clone());
+
+    // Path from root_link up to LCA (inverted joints)
+    let up_joints = collect_path_up(model, root_link, &lca, true);
+
+    // Path from LCA down to end_link (normal joints)
+    let down_joints = collect_path_up(model, end_link, &lca, false);
+
+    // Combine: up_joints are already in root→LCA order, down_joints need reversing
+    let mut chain = up_joints;
+    let mut down_reversed: Vec<ChainJoint> = down_joints;
+    down_reversed.reverse();
+    chain.extend(down_reversed);
+
+    chain
+}
+
+/// Walk from `from_link` up to `to_ancestor`, collecting movable joints.
+/// Returns joints in from→ancestor order.
+/// If `inverted` is true, joints are marked as inverted.
+fn collect_path_up(
+    model: &RobotModel,
+    from_link: &str,
+    to_ancestor: &str,
+    inverted: bool,
+) -> Vec<ChainJoint> {
+    let mut joints = Vec::new();
+    let mut current = from_link.to_string();
+
+    while current != to_ancestor {
+        if let Some(ji) = model.parent_joint_of_link(&current) {
+            let joint = &model.joints[ji];
+            let jt = joint.joint_type.as_str();
+            if jt == "revolute" || jt == "continuous" || jt == "prismatic" {
+                joints.push(ChainJoint {
+                    joint_idx: ji,
+                    joint_name: joint.name.clone(),
+                    inverted,
+                });
+            }
+            current = joint.parent_link.clone();
+        } else {
+            break; // reached URDF root
+        }
+    }
+
+    joints
+}
+
+/// Get the list of ancestor links (including the link itself) from a link up to the URDF root.
+fn ancestors_list(model: &RobotModel, link: &str) -> Vec<String> {
+    let mut ancestors = vec![link.to_string()];
+    let mut current = link.to_string();
+    while let Some(ji) = model.parent_joint_of_link(&current) {
+        current = model.joints[ji].parent_link.clone();
+        ancestors.push(current.clone());
+    }
+    ancestors
+}
+
+// Keep backward-compatible wrapper (used by old tests).
+/// Build chain with a specified root that must be an ancestor of end_link.
+/// Deprecated in favor of `build_chain_between`.
+pub fn build_chain_with_root(
+    model: &RobotModel,
+    end_link: &str,
+    root_link: Option<&str>,
+) -> Vec<ChainJoint> {
+    build_chain_between(model, end_link, root_link)
 }
 
 /// Compute the Jacobian matrix for positional IK.
 ///
 /// For each revolute joint in the chain, the Jacobian column is:
-///   J_i = axis_i × (p_ee - p_joint_i)
+///   J_i = sign_i * axis_i × (p_ee - p_joint_i)
 ///
 /// For prismatic joints:
-///   J_i = axis_i
+///   J_i = sign_i * axis_i
+///
+/// where `sign_i` is -1 for inverted joints, +1 for normal joints.
 ///
 /// Returns a 3×N matrix where N is the number of joints in the chain.
 pub fn compute_jacobian(
@@ -66,18 +182,20 @@ pub fn compute_jacobian(
         let world_axis = joint_tf.rotation * joint.axis;
         let joint_pos = na::Point3::from(joint_tf.translation.vector);
 
+        let sign: f32 = if cj.inverted { -1.0 } else { 1.0 };
+
         match joint.joint_type.as_str() {
             "revolute" | "continuous" => {
                 let r = ee_pos - joint_pos;
-                let j_col = world_axis.cross(&r);
+                let j_col = world_axis.cross(&r) * sign;
                 jac[(0, col)] = j_col.x;
                 jac[(1, col)] = j_col.y;
                 jac[(2, col)] = j_col.z;
             }
             "prismatic" => {
-                jac[(0, col)] = world_axis.x;
-                jac[(1, col)] = world_axis.y;
-                jac[(2, col)] = world_axis.z;
+                jac[(0, col)] = world_axis.x * sign;
+                jac[(1, col)] = world_axis.y * sign;
+                jac[(2, col)] = world_axis.z * sign;
             }
             _ => {}
         }

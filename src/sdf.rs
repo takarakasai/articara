@@ -155,6 +155,7 @@ pub fn import_sdf(path: &Path) -> Result<RobotModel, String> {
         materials: HashMap::new(),
         joint_positions,
         source_path: Some(path.to_path_buf()),
+        base_transform: na::Isometry3::identity(),
     })
 }
 

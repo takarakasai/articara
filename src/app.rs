@@ -77,6 +77,8 @@ struct DragState {
     // --- IK mode fields ---
     /// The kinematic chain from root to end-effector.
     chain: Vec<ik::ChainJoint>,
+    /// The IK root link name (for base correction). None = URDF root.
+    ik_root_link: Option<String>,
 }
 
 /// Drag state for gizmo offset adjustment.
@@ -134,6 +136,8 @@ pub struct RoboViewApp {
     selected_collision: Option<usize>,
     /// IK damping factor (λ for DLS).
     ik_damping: f32,
+    /// IK root link name. None = use URDF root (full chain).
+    ik_root_link: Option<String>,
     /// Show center-of-mass markers and mass labels.
     show_com: bool,
     /// Scale factor for CoM sphere size (sphere radius = mass × com_scale).
@@ -207,6 +211,7 @@ impl RoboViewApp {
             selected_visual: None,
             selected_collision: None,
             ik_damping: 0.05,
+            ik_root_link: None,
             show_com: false,
             com_scale: 0.01,
             wireframe: false,
@@ -249,6 +254,7 @@ impl RoboViewApp {
                 self.selected_link = None;
                 self.selected_joint = None;
                 self.needs_upload = true;
+                self.ik_root_link = None; // reset IK root on new model
                 // Default export dir to the URDF's parent directory
                 if self.export_dir.is_empty() {
                     if let Some(parent) = path.parent() {
@@ -792,6 +798,50 @@ impl RoboViewApp {
                                 .text("λ"),
                         );
                     });
+                    // IK root link selector
+                    let link_names: Vec<String> = model
+                        .links
+                        .iter()
+                        .map(|l| l.name.clone())
+                        .collect();
+                    let prev_ik_root = self.ik_root_link.clone();
+                    ui.horizontal(|ui| {
+                        ui.label("IK Root:");
+                        let current_label = match &self.ik_root_link {
+                            None => "Auto (URDF Root)".to_string(),
+                            Some(name) => name.clone(),
+                        };
+                        egui::ComboBox::from_id_salt("ik_root_link")
+                            .selected_text(&current_label)
+                            .show_ui(ui, |ui| {
+                                // "Auto" option — use full chain to URDF root
+                                if ui
+                                    .selectable_label(
+                                        self.ik_root_link.is_none(),
+                                        "Auto (URDF Root)",
+                                    )
+                                    .clicked()
+                                {
+                                    self.ik_root_link = None;
+                                }
+                                // List all links as possible roots
+                                for name in &link_names {
+                                    let selected = self.ik_root_link.as_deref()
+                                        == Some(name.as_str());
+                                    if ui
+                                        .selectable_label(selected, name)
+                                        .clicked()
+                                    {
+                                        self.ik_root_link =
+                                            Some(name.clone());
+                                    }
+                                }
+                            });
+                    });
+                    // Reset base_transform when IK root changes
+                    if self.ik_root_link != prev_ik_root {
+                        model.base_transform = na::Isometry3::identity();
+                    }
                 }
             }
             ui.separator();
@@ -1649,6 +1699,7 @@ impl RoboViewApp {
                                                 world_axis,
                                                 pivot_world,
                                                 chain: Vec::new(),
+                                                ik_root_link: None,
                                             });
                                             self.selected_link = Some(li);
                                             self.selected_joint = Some(ji);
@@ -1656,7 +1707,11 @@ impl RoboViewApp {
                                     }
                                 }
                                 DragMode::InverseKinematics => {
-                                    let chain = ik::build_chain(model, link_name);
+                                    let chain = ik::build_chain_between(
+                                        model,
+                                        link_name,
+                                        self.ik_root_link.as_deref(),
+                                    );
                                     if !chain.is_empty() {
                                         let ji =
                                             chain.last().map(|c| c.joint_idx).unwrap_or(0);
@@ -1667,6 +1722,7 @@ impl RoboViewApp {
                                             world_axis: na::Vector3::zeros(),
                                             pivot_world: na::Point3::origin(),
                                             chain,
+                                            ik_root_link: self.ik_root_link.clone(),
                                         });
                                         self.selected_link = Some(li);
                                     }
@@ -1806,6 +1862,11 @@ impl RoboViewApp {
                                     &cur_transforms,
                                 );
 
+                                // Record IK root transform before IK step
+                                let ik_root_tf_before = drag.ik_root_link.as_ref().and_then(|name| {
+                                    cur_transforms.get(name).copied()
+                                });
+
                                 // Camera view direction for the intersection plane
                                 let (ray_o, ray_d) = self.camera.screen_ray(ndc, aspect);
                                 let cam_forward = (self.camera.target
@@ -1832,6 +1893,25 @@ impl RoboViewApp {
                                             0.1, // max_step
                                         );
                                         ik::apply_ik_deltas(model, &drag.chain, &deltas);
+
+                                        // If an IK root is set, correct base_transform
+                                        // so the IK root link stays fixed in world space.
+                                        if let Some(desired_tf) = ik_root_tf_before {
+                                            // Recompute with identity base to get
+                                            // the root-relative transform of the IK root link.
+                                            let saved_base = model.base_transform;
+                                            model.base_transform = na::Isometry3::identity();
+                                            let identity_transforms = model.compute_transforms();
+                                            if let Some(&ik_root_tf_rel) = drag.ik_root_link.as_ref()
+                                                .and_then(|name| identity_transforms.get(name))
+                                            {
+                                                // new_base * ik_root_tf_rel = desired_tf
+                                                // new_base = desired_tf * inv(ik_root_tf_rel)
+                                                model.base_transform = desired_tf * ik_root_tf_rel.inverse();
+                                            } else {
+                                                model.base_transform = saved_base;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2277,6 +2357,91 @@ impl RoboViewApp {
                             egui::FontId::proportional(11.0),
                             egui::Color32::from_rgb(255, 128, 255),
                         );
+                    }
+                }
+            }
+        }
+
+        // ===== IK Root anchor icon =====
+        // When in JointDrive + IK Chain mode with a custom root link, draw an
+        // anchor icon at the IK root link's world position projected to screen.
+        if self.interaction_mode == InteractionMode::JointDrive
+            && self.drag_mode == DragMode::InverseKinematics
+        {
+            if let Some(ref root_name) = self.ik_root_link {
+                if let Some(ref model) = self.model {
+                    let transforms = model.compute_transforms();
+                    if let Some(root_tf) = transforms.get(root_name) {
+                        let world_pos = na::Point3::from(root_tf.translation.vector);
+                        if let Some(ndc) = self.camera.project(&world_pos, aspect) {
+                            let screen_pos = egui::pos2(
+                                rect.left() + ndc.x * rect.width(),
+                                rect.top() + ndc.y * rect.height(),
+                            );
+                            if rect.contains(screen_pos) {
+                                let painter = ui.painter();
+                                let c = screen_pos;
+                                let anchor_color = egui::Color32::from_rgb(255, 180, 50);
+                                let anchor_bg = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140);
+
+                                // Background circle for readability
+                                painter.circle_filled(c, 13.0, anchor_bg);
+
+                                // Anchor icon: ring at top + vertical shank + curved arms
+                                // Ring (top)
+                                let ring_cy = c.y - 5.5;
+                                painter.circle_stroke(
+                                    egui::pos2(c.x, ring_cy),
+                                    3.0,
+                                    egui::Stroke::new(1.6, anchor_color),
+                                );
+
+                                // Vertical shank (from ring bottom to base)
+                                let shank_top = ring_cy + 3.0;
+                                let shank_bot = c.y + 7.0;
+                                painter.line_segment(
+                                    [egui::pos2(c.x, shank_top), egui::pos2(c.x, shank_bot)],
+                                    egui::Stroke::new(1.8, anchor_color),
+                                );
+
+                                // Horizontal crossbar
+                                let bar_y = c.y + 1.0;
+                                painter.line_segment(
+                                    [egui::pos2(c.x - 5.0, bar_y), egui::pos2(c.x + 5.0, bar_y)],
+                                    egui::Stroke::new(1.6, anchor_color),
+                                );
+
+                                // Curved arms (left and right)
+                                let n_seg = 6;
+                                for &sign in &[-1.0_f32, 1.0] {
+                                    let pts: Vec<egui::Pos2> = (0..=n_seg)
+                                        .map(|k| {
+                                            let t = k as f32 / n_seg as f32;
+                                            let angle = t * std::f32::consts::FRAC_PI_2;
+                                            egui::pos2(
+                                                c.x + sign * 5.0 * angle.sin(),
+                                                bar_y + 6.0 * angle.cos(),
+                                            )
+                                        })
+                                        .collect();
+                                    for w in pts.windows(2) {
+                                        painter.line_segment(
+                                            [w[0], w[1]],
+                                            egui::Stroke::new(1.6, anchor_color),
+                                        );
+                                    }
+                                }
+
+                                // Label below
+                                painter.text(
+                                    egui::pos2(c.x, c.y + 15.0),
+                                    egui::Align2::CENTER_TOP,
+                                    root_name,
+                                    egui::FontId::proportional(10.0),
+                                    anchor_color,
+                                );
+                            }
+                        }
                     }
                 }
             }

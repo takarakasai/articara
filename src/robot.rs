@@ -17,6 +17,9 @@ pub struct RobotModel {
     pub joint_positions: Vec<f32>,
     /// Path of the originally loaded URDF file.
     pub source_path: Option<PathBuf>,
+    /// World-space transform of the URDF root link (identity by default).
+    /// Used to re-root the display when fixing a non-root link as IK base.
+    pub base_transform: na::Isometry3<f32>,
 }
 
 pub struct LinkData {
@@ -227,6 +230,7 @@ impl RobotModel {
             materials,
             joint_positions,
             source_path: Some(path.to_path_buf()),
+            base_transform: na::Isometry3::identity(),
         })
     }
 
@@ -246,7 +250,7 @@ impl RobotModel {
     /// Compute world transforms for all links based on current joint positions.
     pub fn compute_transforms(&self) -> HashMap<String, na::Isometry3<f32>> {
         let mut transforms: HashMap<String, na::Isometry3<f32>> = HashMap::new();
-        transforms.insert(self.root_link.clone(), na::Isometry3::identity());
+        transforms.insert(self.root_link.clone(), self.base_transform);
 
         let mut stack = vec![self.root_link.clone()];
         while let Some(link_name) = stack.pop() {
@@ -727,6 +731,7 @@ impl RobotModel {
             materials: HashMap::new(),
             joint_positions: Vec::new(),
             source_path: None,
+            base_transform: na::Isometry3::identity(),
         }
     }
 
