@@ -19,6 +19,38 @@ pub enum InteractionMode {
     OffsetAdjust,
 }
 
+/// Which element's origin to adjust in Offset Adjust mode.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OffsetTarget {
+    Joint,
+    Visual,
+    Collision,
+}
+
+impl OffsetTarget {
+    pub const ALL: [OffsetTarget; 3] = [
+        OffsetTarget::Joint,
+        OffsetTarget::Visual,
+        OffsetTarget::Collision,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            OffsetTarget::Joint => "Joint",
+            OffsetTarget::Visual => "Visual",
+            OffsetTarget::Collision => "Collision",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            OffsetTarget::Joint => "\u{1f517}",   // 🔗
+            OffsetTarget::Visual => "\u{1f441}",  // 👁
+            OffsetTarget::Collision => "\u{1f6e1}", // 🛡
+        }
+    }
+}
+
 /// Drag manipulation mode (within JointDrive).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DragMode {
@@ -52,16 +84,22 @@ struct DragState {
 struct OffsetDragState {
     /// Which axis is being dragged (0=X, 1=Y, 2=Z).
     axis: u8,
-    /// Index of the joint whose origin is being adjusted.
-    joint_idx: usize,
+    /// What we are adjusting.
+    target: OffsetTarget,
+    /// Index of the link (for Visual/Collision targets) or joint (for Joint target).
+    entity_idx: usize,
+    /// Sub-index within link's visuals/collisions array.
+    sub_idx: usize,
     /// World-space direction of the dragged axis (unit vector).
     axis_dir_world: na::Vector3<f32>,
     /// World-space gizmo origin at drag start.
     gizmo_origin: na::Point3<f32>,
     /// The ray-axis parameter "t" at drag start.
     initial_t: f32,
-    /// The joint origin translation at drag start.
+    /// The origin translation at drag start.
     initial_translation: na::Translation3<f32>,
+    /// Inverse rotation for converting world displacement to local displacement.
+    inv_parent_rotation: na::UnitQuaternion<f32>,
 }
 
 pub struct RoboViewApp {
@@ -88,6 +126,12 @@ pub struct RoboViewApp {
     offset_drag_state: Option<OffsetDragState>,
     /// Currently hovered gizmo axis (0=X, 1=Y, 2=Z).
     hovered_gizmo_axis: Option<u8>,
+    /// Which element type to adjust in Offset Adjust mode.
+    offset_target: OffsetTarget,
+    /// Selected visual index within the currently selected link.
+    selected_visual: Option<usize>,
+    /// Selected collision index within the currently selected link.
+    selected_collision: Option<usize>,
     /// IK damping factor (λ for DLS).
     ik_damping: f32,
     /// Show center-of-mass markers and mass labels.
@@ -159,6 +203,9 @@ impl RoboViewApp {
             interaction_mode: InteractionMode::JointDrive,
             offset_drag_state: None,
             hovered_gizmo_axis: None,
+            offset_target: OffsetTarget::Joint,
+            selected_visual: None,
+            selected_collision: None,
             ik_damping: 0.05,
             show_com: false,
             com_scale: 0.01,
@@ -228,6 +275,36 @@ impl RoboViewApp {
                 self.status_message = "Created new empty model".into();
             }
             ui.separator();
+
+            // ===== Edit menu =====
+            ui.menu_button("Edit", |ui| {
+                ui.menu_button("Mode", |ui| {
+                    let jd = self.interaction_mode == InteractionMode::JointDrive;
+                    let oa = self.interaction_mode == InteractionMode::OffsetAdjust;
+                    if ui.selectable_label(jd, "🔧 Joint Drive").clicked() {
+                        self.interaction_mode = InteractionMode::JointDrive;
+                        ui.close();
+                    }
+                    if ui.selectable_label(oa, "✥ Offset Adjust").clicked() {
+                        self.interaction_mode = InteractionMode::OffsetAdjust;
+                        ui.close();
+                    }
+                });
+                if self.interaction_mode == InteractionMode::OffsetAdjust {
+                    ui.menu_button("Offset Target", |ui| {
+                        for t in OffsetTarget::ALL {
+                            let sel = self.offset_target == t;
+                            let label = format!("{} {}", t.icon(), t.label());
+                            if ui.selectable_label(sel, label).clicked() {
+                                self.offset_target = t;
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+            });
+            ui.separator();
+
             ui.label("File:");
             let response = ui.text_edit_singleline(&mut self.urdf_path_input);
             if (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
@@ -623,22 +700,75 @@ impl RoboViewApp {
             ui.heading("Joint Positions");
             ui.separator();
 
-            // --- Interaction Mode selector ---
+            // --- Interaction Mode (display current) ---
             ui.horizontal(|ui| {
-                ui.label("Mode:");
+                let mode_label = match self.interaction_mode {
+                    InteractionMode::JointDrive => "🔧 Joint Drive",
+                    InteractionMode::OffsetAdjust => "✥ Offset Adjust",
+                };
+                ui.label(format!("Mode: {mode_label}"));
             });
-            ui.horizontal(|ui| {
-                ui.radio_value(
-                    &mut self.interaction_mode,
-                    InteractionMode::JointDrive,
-                    "Joint Drive",
-                );
-                ui.radio_value(
-                    &mut self.interaction_mode,
-                    InteractionMode::OffsetAdjust,
-                    "Offset Adjust",
-                );
-            });
+
+            if self.interaction_mode == InteractionMode::OffsetAdjust {
+                // --- Offset Target selector ---
+                ui.horizontal(|ui| {
+                    ui.label("Target:");
+                    for t in OffsetTarget::ALL {
+                        ui.radio_value(&mut self.offset_target, t, t.label());
+                    }
+                });
+                // Show which element is selected
+                match self.offset_target {
+                    OffsetTarget::Joint => {
+                        if let Some(ji) = self.selected_joint {
+                            ui.label(format!("  → {}", model.joints[ji].name));
+                        } else {
+                            ui.label("  (click a link to select its joint)");
+                        }
+                    }
+                    OffsetTarget::Visual => {
+                        if let Some(li) = self.selected_link {
+                            let n_vis = model.links[li].visuals.len();
+                            if n_vis == 0 {
+                                ui.label(format!("  {} has no visuals", model.links[li].name));
+                            } else {
+                                ui.horizontal(|ui| {
+                                    ui.label("  →");
+                                    for vi in 0..n_vis {
+                                        let sel = self.selected_visual == Some(vi);
+                                        if ui.selectable_label(sel, format!("V{vi}")).clicked() {
+                                            self.selected_visual = Some(vi);
+                                        }
+                                    }
+                                });
+                            }
+                        } else {
+                            ui.label("  (click a link to select)");
+                        }
+                    }
+                    OffsetTarget::Collision => {
+                        if let Some(li) = self.selected_link {
+                            let n_col = model.links[li].collisions.len();
+                            if n_col == 0 {
+                                ui.label(format!("  {} has no collisions", model.links[li].name));
+                            } else {
+                                ui.horizontal(|ui| {
+                                    ui.label("  →");
+                                    for ci in 0..n_col {
+                                        let sel = self.selected_collision == Some(ci);
+                                        if ui.selectable_label(sel, format!("C{ci}")).clicked() {
+                                            self.selected_collision = Some(ci);
+                                        }
+                                    }
+                                });
+                            }
+                        } else {
+                            ui.label("  (click a link to select)");
+                        }
+                    }
+                }
+                ui.separator();
+            }
 
             if self.interaction_mode == InteractionMode::JointDrive {
                 // --- Joint Drive sub-mode selector ---
@@ -1303,20 +1433,64 @@ impl RoboViewApp {
         }
 
         // --- Gizmo hover detection (OffsetAdjust mode) ---
-        // Compute gizmo transform for the selected joint (if any)
+        // Compute gizmo transform based on target type
         let gizmo_tf: Option<na::Isometry3<f32>> =
             if self.interaction_mode == InteractionMode::OffsetAdjust {
-                self.selected_joint.and_then(|ji| {
-                    self.model.as_ref().map(|m| {
-                        let joint = &m.joints[ji];
-                        let parent_tf = transforms
-                            .get(&joint.parent_link)
-                            .copied()
-                            .unwrap_or(na::Isometry3::identity());
-                        let joint_world = parent_tf * joint.origin;
-                        // Gizmo at joint world position, axes aligned with parent frame
-                        na::Isometry3::from_parts(joint_world.translation, parent_tf.rotation)
-                    })
+                self.model.as_ref().and_then(|m| {
+                    match self.offset_target {
+                        OffsetTarget::Joint => {
+                            self.selected_joint.map(|ji| {
+                                let joint = &m.joints[ji];
+                                let parent_tf = transforms
+                                    .get(&joint.parent_link)
+                                    .copied()
+                                    .unwrap_or(na::Isometry3::identity());
+                                let joint_world = parent_tf * joint.origin;
+                                na::Isometry3::from_parts(
+                                    joint_world.translation,
+                                    parent_tf.rotation,
+                                )
+                            })
+                        }
+                        OffsetTarget::Visual => {
+                            self.selected_link.and_then(|li| {
+                                self.selected_visual.and_then(|vi| {
+                                    m.links.get(li).and_then(|link| {
+                                        link.visuals.get(vi).map(|vis| {
+                                            let link_tf = transforms
+                                                .get(&link.name)
+                                                .copied()
+                                                .unwrap_or(na::Isometry3::identity());
+                                            let vis_world = link_tf * vis.origin;
+                                            na::Isometry3::from_parts(
+                                                vis_world.translation,
+                                                link_tf.rotation,
+                                            )
+                                        })
+                                    })
+                                })
+                            })
+                        }
+                        OffsetTarget::Collision => {
+                            self.selected_link.and_then(|li| {
+                                self.selected_collision.and_then(|ci| {
+                                    m.links.get(li).and_then(|link| {
+                                        link.collisions.get(ci).map(|col| {
+                                            let link_tf = transforms
+                                                .get(&link.name)
+                                                .copied()
+                                                .unwrap_or(na::Isometry3::identity());
+                                            let col_world = link_tf * col.origin;
+                                            na::Isometry3::from_parts(
+                                                col_world.translation,
+                                                link_tf.rotation,
+                                            )
+                                        })
+                                    })
+                                })
+                            })
+                        }
+                    }
                 })
             } else {
                 None
@@ -1358,8 +1532,8 @@ impl RoboViewApp {
             match self.interaction_mode {
                 InteractionMode::OffsetAdjust => {
                     // Try to pick a gizmo arrow first
-                    if let (Some(axis_idx), Some(gt), Some(ji)) =
-                        (self.hovered_gizmo_axis, gizmo_tf, self.selected_joint)
+                    if let (Some(axis_idx), Some(gt)) =
+                        (self.hovered_gizmo_axis, gizmo_tf)
                     {
                         if let Some(ndc) = mouse_ndc {
                             let (ro, rd) = self.camera.screen_ray(ndc, aspect);
@@ -1371,16 +1545,55 @@ impl RoboViewApp {
                             ];
                             let axis_dir = axes[axis_idx as usize];
                             let (t_line, _) = robot::ray_axis_closest(&ro, &rd, &origin, &axis_dir);
+                            let inv_rot = gt.rotation.inverse();
 
                             if let Some(model) = &self.model {
-                                self.offset_drag_state = Some(OffsetDragState {
-                                    axis: axis_idx,
-                                    joint_idx: ji,
-                                    axis_dir_world: axis_dir,
-                                    gizmo_origin: origin,
-                                    initial_t: t_line,
-                                    initial_translation: model.joints[ji].origin.translation,
-                                });
+                                let drag = match self.offset_target {
+                                    OffsetTarget::Joint => {
+                                        self.selected_joint.map(|ji| OffsetDragState {
+                                            axis: axis_idx,
+                                            target: OffsetTarget::Joint,
+                                            entity_idx: ji,
+                                            sub_idx: 0,
+                                            axis_dir_world: axis_dir,
+                                            gizmo_origin: origin,
+                                            initial_t: t_line,
+                                            initial_translation: model.joints[ji].origin.translation,
+                                            inv_parent_rotation: inv_rot,
+                                        })
+                                    }
+                                    OffsetTarget::Visual => {
+                                        self.selected_link.and_then(|li| {
+                                            self.selected_visual.map(|vi| OffsetDragState {
+                                                axis: axis_idx,
+                                                target: OffsetTarget::Visual,
+                                                entity_idx: li,
+                                                sub_idx: vi,
+                                                axis_dir_world: axis_dir,
+                                                gizmo_origin: origin,
+                                                initial_t: t_line,
+                                                initial_translation: model.links[li].visuals[vi].origin.translation,
+                                                inv_parent_rotation: inv_rot,
+                                            })
+                                        })
+                                    }
+                                    OffsetTarget::Collision => {
+                                        self.selected_link.and_then(|li| {
+                                            self.selected_collision.map(|ci| OffsetDragState {
+                                                axis: axis_idx,
+                                                target: OffsetTarget::Collision,
+                                                entity_idx: li,
+                                                sub_idx: ci,
+                                                axis_dir_world: axis_dir,
+                                                gizmo_origin: origin,
+                                                initial_t: t_line,
+                                                initial_translation: model.links[li].collisions[ci].origin.translation,
+                                                inv_parent_rotation: inv_rot,
+                                            })
+                                        })
+                                    }
+                                };
+                                self.offset_drag_state = drag;
                             }
                         }
                     } else if let (Some(ndc), Some(model)) = (mouse_ndc, &self.model) {
@@ -1388,8 +1601,23 @@ impl RoboViewApp {
                         let (ro, rd) = self.camera.screen_ray(ndc, aspect);
                         if let Some((li, _)) = model.pick_link(&ro, &rd, &transforms) {
                             let link_name = &model.links[li].name;
+                            let changed_link = self.selected_link != Some(li);
                             self.selected_link = Some(li);
                             self.selected_joint = model.parent_joint_of_link(link_name);
+                            // Auto-select first visual/collision when changing link
+                            if changed_link {
+                                self.selected_visual = if model.links[li].visuals.is_empty() {
+                                    None
+                                } else {
+                                    Some(0)
+                                };
+                                self.selected_collision =
+                                    if model.links[li].collisions.is_empty() {
+                                        None
+                                    } else {
+                                        Some(0)
+                                    };
+                            }
                         }
                     }
                 }
@@ -1461,20 +1689,27 @@ impl RoboViewApp {
                     let delta_t = t_line - odrag.initial_t;
 
                     if let Some(ref mut model) = self.model {
-                        // Convert world-space displacement to parent-local displacement
-                        let ji = odrag.joint_idx;
-                        let parent_tf = transforms
-                            .get(&model.joints[ji].parent_link)
-                            .copied()
-                            .unwrap_or(na::Isometry3::identity());
                         let world_disp = odrag.axis_dir_world * delta_t;
-                        let local_disp = parent_tf.rotation.inverse() * world_disp;
-
-                        model.joints[ji].origin.translation = na::Translation3::new(
+                        let local_disp = odrag.inv_parent_rotation * world_disp;
+                        let new_trans = na::Translation3::new(
                             odrag.initial_translation.vector.x + local_disp.x,
                             odrag.initial_translation.vector.y + local_disp.y,
                             odrag.initial_translation.vector.z + local_disp.z,
                         );
+
+                        match odrag.target {
+                            OffsetTarget::Joint => {
+                                model.joints[odrag.entity_idx].origin.translation = new_trans;
+                            }
+                            OffsetTarget::Visual => {
+                                model.links[odrag.entity_idx].visuals[odrag.sub_idx]
+                                    .origin.translation = new_trans;
+                            }
+                            OffsetTarget::Collision => {
+                                model.links[odrag.entity_idx].collisions[odrag.sub_idx]
+                                    .origin.translation = new_trans;
+                            }
+                        }
                         self.needs_upload = true;
                     }
                 }
@@ -1701,6 +1936,147 @@ impl RoboViewApp {
         };
 
         ui.painter().add(callback);
+
+        // ===== Viewport overlay: mode toolbar =====
+        {
+            let painter = ui.painter();
+            let icon_size = egui::vec2(32.0, 32.0);
+            let margin = 8.0;
+            let toolbar_x = rect.left() + margin;
+            let toolbar_y = rect.top() + margin;
+
+            // --- Row 1: Interaction Mode buttons ---
+            let modes: [(InteractionMode, &str, &str); 2] = [
+                (InteractionMode::JointDrive, "🔧", "Joint Drive"),
+                (InteractionMode::OffsetAdjust, "✥", "Offset Adjust"),
+            ];
+
+            for (i, (mode, icon, tooltip)) in modes.iter().enumerate() {
+                let btn_pos = egui::pos2(
+                    toolbar_x + i as f32 * (icon_size.x + 4.0),
+                    toolbar_y,
+                );
+                let btn_rect = egui::Rect::from_min_size(btn_pos, icon_size);
+                let is_active = self.interaction_mode == *mode;
+
+                let btn_response = ui.interact(
+                    btn_rect,
+                    ui.id().with("mode_btn").with(i),
+                    egui::Sense::click(),
+                );
+
+                let bg_color = if is_active {
+                    egui::Color32::from_rgba_unmultiplied(60, 130, 220, 200)
+                } else if btn_response.hovered() {
+                    egui::Color32::from_rgba_unmultiplied(80, 80, 80, 180)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(40, 40, 50, 160)
+                };
+                painter.rect_filled(btn_rect, egui::CornerRadius::same(4), bg_color);
+
+                if is_active {
+                    painter.rect_stroke(
+                        btn_rect,
+                        egui::CornerRadius::same(4),
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 180, 255)),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+
+                let text_color = if is_active {
+                    egui::Color32::WHITE
+                } else {
+                    egui::Color32::from_gray(200)
+                };
+                painter.text(
+                    btn_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    icon,
+                    egui::FontId::proportional(18.0),
+                    text_color,
+                );
+
+                if btn_response.clicked() {
+                    self.interaction_mode = *mode;
+                }
+                if btn_response.hovered() {
+                    let tip_pos = egui::pos2(btn_rect.left(), btn_rect.bottom() + 4.0);
+                    painter.text(
+                        tip_pos,
+                        egui::Align2::LEFT_TOP,
+                        *tooltip,
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::from_gray(220),
+                    );
+                }
+            }
+
+            // --- Row 2: Target buttons (only in OffsetAdjust mode) ---
+            if self.interaction_mode == InteractionMode::OffsetAdjust {
+                let row2_y = toolbar_y + icon_size.y + 4.0;
+                let small_size = egui::vec2(28.0, 28.0);
+
+                for (i, target) in OffsetTarget::ALL.iter().enumerate() {
+                    let btn_pos = egui::pos2(
+                        toolbar_x + i as f32 * (small_size.x + 3.0),
+                        row2_y,
+                    );
+                    let btn_rect = egui::Rect::from_min_size(btn_pos, small_size);
+                    let is_active = self.offset_target == *target;
+
+                    let btn_response = ui.interact(
+                        btn_rect,
+                        ui.id().with("target_btn").with(i),
+                        egui::Sense::click(),
+                    );
+
+                    let bg_color = if is_active {
+                        egui::Color32::from_rgba_unmultiplied(60, 180, 100, 200)
+                    } else if btn_response.hovered() {
+                        egui::Color32::from_rgba_unmultiplied(80, 80, 80, 180)
+                    } else {
+                        egui::Color32::from_rgba_unmultiplied(40, 40, 50, 160)
+                    };
+                    painter.rect_filled(btn_rect, egui::CornerRadius::same(3), bg_color);
+
+                    if is_active {
+                        painter.rect_stroke(
+                            btn_rect,
+                            egui::CornerRadius::same(3),
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 220, 130)),
+                            egui::StrokeKind::Outside,
+                        );
+                    }
+
+                    let text_color = if is_active {
+                        egui::Color32::WHITE
+                    } else {
+                        egui::Color32::from_gray(200)
+                    };
+                    painter.text(
+                        btn_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        target.icon(),
+                        egui::FontId::proportional(15.0),
+                        text_color,
+                    );
+
+                    if btn_response.clicked() {
+                        self.offset_target = *target;
+                    }
+                    if btn_response.hovered() {
+                        let tip_pos = egui::pos2(btn_rect.left(), btn_rect.bottom() + 4.0);
+                        painter.text(
+                            tip_pos,
+                            egui::Align2::LEFT_TOP,
+                            target.label(),
+                            egui::FontId::proportional(12.0),
+                            egui::Color32::from_gray(220),
+                        );
+                    }
+                }
+            }
+        }
 
         // Draw CoM mass labels as egui text on top of the 3D viewport
         if self.show_com {
