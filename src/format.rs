@@ -50,7 +50,19 @@ impl RobotFormat {
         }
     }
 
-    /// Detect format from file extension.
+    /// Detect format from file extension only (no file I/O).
+    /// For `.xml` files, defaults to MJCF. Use `detect()` for content-aware detection.
+    pub fn detect_from_extension(path: &Path) -> Option<RobotFormat> {
+        let ext = path.extension()?.to_str()?.to_lowercase();
+        match ext.as_str() {
+            "urdf" | "xacro" => Some(RobotFormat::Urdf),
+            "sdf" | "world" => Some(RobotFormat::Sdf),
+            "xml" | "mjcf" => Some(RobotFormat::Mjcf),
+            _ => None,
+        }
+    }
+
+    /// Detect format from file extension and optionally file contents.
     pub fn detect(path: &Path) -> Option<RobotFormat> {
         let ext = path.extension()?.to_str()?.to_lowercase();
         match ext.as_str() {

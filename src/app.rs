@@ -589,11 +589,10 @@ impl RoboViewApp {
             RobotFormat::Sdf => {
                 let filename = format!("{base_name}.sdf");
                 let output_path = dir.join(&filename);
-                let xml = crate::sdf::export_sdf(model);
-                match std::fs::write(&output_path, &xml) {
+                match crate::sdf::export_sdf_to_file(model, &output_path) {
                     Ok(()) => {
                         self.export_message =
-                            format!("✔ Exported SDF to {}", output_path.display());
+                            format!("✔ Exported SDF to {} (with meshes)", output_path.display());
                     }
                     Err(e) => {
                         self.export_message = format!("⚠ SDF export failed: {e}");

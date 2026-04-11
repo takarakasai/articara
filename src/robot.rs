@@ -411,7 +411,7 @@ impl RobotModel {
 // ========== Ray Intersection Tests ==========
 
 /// Precise geometry intersection: transforms ray into geometry-local space and tests.
-fn precise_geometry_intersect(
+pub fn precise_geometry_intersect(
     ray_origin: &na::Point3<f32>,
     ray_dir: &na::Vector3<f32>,
     geom_tf: &na::Isometry3<f32>,
@@ -435,7 +435,7 @@ fn precise_geometry_intersect(
 }
 
 /// Ray-sphere intersection. Returns the nearest positive distance or None.
-fn ray_sphere_intersect(
+pub fn ray_sphere_intersect(
     origin: &na::Point3<f32>,
     dir: &na::Vector3<f32>,
     center: &na::Point3<f32>,
@@ -462,7 +462,7 @@ fn ray_sphere_intersect(
 }
 
 /// Ray-AABB (box) intersection using slab method.
-fn ray_box_intersect(
+pub fn ray_box_intersect(
     origin: &na::Point3<f32>,
     dir: &na::Vector3<f32>,
     hx: f32,
@@ -502,7 +502,7 @@ fn ray_box_intersect(
 }
 
 /// Ray-cylinder intersection (Z-axis aligned, centered at origin).
-fn ray_cylinder_intersect(
+pub fn ray_cylinder_intersect(
     origin: &na::Point3<f32>,
     dir: &na::Vector3<f32>,
     radius: f32,
@@ -552,7 +552,7 @@ fn ray_cylinder_intersect(
 /// Ray-mesh (triangle soup) intersection using Möller–Trumbore algorithm.
 /// Vertices are in flat format: [x, y, z, nx, ny, nz, x, y, z, nx, ny, nz, ...].
 /// Every 3 vertices (18 floats) form one triangle.
-fn ray_mesh_intersect(
+pub fn ray_mesh_intersect(
     origin: &na::Point3<f32>,
     dir: &na::Vector3<f32>,
     vertices: &[f32],
@@ -578,7 +578,7 @@ fn ray_mesh_intersect(
 }
 
 /// Möller–Trumbore ray-triangle intersection.
-fn ray_triangle_intersect(
+pub fn ray_triangle_intersect(
     origin: &na::Point3<f32>,
     dir: &na::Vector3<f32>,
     v0: &na::Point3<f32>,
@@ -614,7 +614,7 @@ fn ray_triangle_intersect(
 // ========== Helper Functions ==========
 
 /// Convert an Isometry3 back to a urdf_rs Pose (xyz + rpy).
-fn isometry_to_pose(iso: &na::Isometry3<f32>) -> urdf_rs::Pose {
+pub fn isometry_to_pose(iso: &na::Isometry3<f32>) -> urdf_rs::Pose {
     let t = iso.translation;
     let (roll, pitch, yaw) = iso.rotation.euler_angles();
     urdf_rs::Pose {
@@ -760,7 +760,7 @@ impl RobotModel {
     }
 }
 
-fn pose_to_isometry(pose: &urdf_rs::Pose) -> na::Isometry3<f32> {
+pub fn pose_to_isometry(pose: &urdf_rs::Pose) -> na::Isometry3<f32> {
     let xyz = &pose.xyz.0;
     let rpy = &pose.rpy.0;
     let translation = na::Translation3::new(xyz[0] as f32, xyz[1] as f32, xyz[2] as f32);

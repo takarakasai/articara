@@ -242,6 +242,62 @@ pub fn export_sdf(model: &RobotModel) -> String {
     s
 }
 
+/// Export SDF to a file and copy referenced mesh files.
+pub fn export_sdf_to_file(model: &RobotModel, output_path: &Path) -> Result<(), String> {
+    let xml = export_sdf(model);
+    std::fs::write(output_path, &xml).map_err(|e| format!("Write SDF: {e}"))?;
+
+    // Copy mesh files from source location
+    let source = match model.source_path.as_ref() {
+        Some(p) => p,
+        None => {
+            log::warn!("No source path — skipping mesh copy for SDF export");
+            return Ok(());
+        }
+    };
+    let source_dir = source.parent().unwrap_or(Path::new("."));
+    let source_package_dir = source_dir.parent().unwrap_or(source_dir);
+    let output_dir = output_path.parent().unwrap_or(Path::new("."));
+    let output_package_dir = output_dir.parent().unwrap_or(output_dir);
+
+    let mut copied: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut copy_count = 0u32;
+
+    // Collect all mesh filenames from visuals and collisions
+    for link in &model.links {
+        let geom_iter = link.visuals.iter().map(|v| &v.geometry)
+            .chain(link.collisions.iter().map(|c| &c.geometry));
+        for geom in geom_iter {
+            if let GeomData::Mesh { filename: Some(uri), .. } = geom {
+                let src_abs = crate::robot::resolve_package_path(uri, source_package_dir);
+                if copied.contains(&src_abs) || !src_abs.exists() {
+                    if !src_abs.exists() {
+                        log::warn!("Mesh file not found, skipping: {:?}", src_abs);
+                    }
+                    continue;
+                }
+                copied.insert(src_abs.clone());
+
+                let dst_abs = crate::robot::resolve_package_path(uri, output_package_dir);
+                if let Some(dst_parent) = dst_abs.parent() {
+                    std::fs::create_dir_all(dst_parent)
+                        .map_err(|e| format!("Create mesh dir {:?}: {e}", dst_parent))?;
+                }
+                if src_abs != dst_abs {
+                    std::fs::copy(&src_abs, &dst_abs).map_err(|e| {
+                        format!("Copy mesh {:?} -> {:?}: {e}",
+                            src_abs.file_name().unwrap_or_default(), dst_abs)
+                    })?;
+                    copy_count += 1;
+                }
+            }
+        }
+    }
+
+    log::info!("Exported SDF to {:?}, copied {} mesh file(s)", output_path, copy_count);
+    Ok(())
+}
+
 // ========== Helpers ==========
 
 fn parse_sdf_pose(node: roxmltree::Node) -> na::Isometry3<f32> {
@@ -363,10 +419,21 @@ fn parse_sdf_geometry(node: roxmltree::Node, sdf_dir: &Path) -> GeomData {
                         let filename = uri.text().unwrap_or("").to_string();
                         let mesh_path = resolve_sdf_uri(&filename, sdf_dir);
                         let vertices = crate::robot::load_stl_mesh_public(&mesh_path);
+                        // Read optional <scale>
+                        let scale = child
+                            .children()
+                            .find(|n| n.tag_name().name() == "scale")
+                            .and_then(|n| n.text())
+                            .and_then(|t| {
+                                let v: Vec<f32> = t.split_whitespace()
+                                    .filter_map(|s| s.parse().ok())
+                                    .collect();
+                                if v.len() >= 3 { Some([v[0], v[1], v[2]]) } else { None }
+                            });
                         return GeomData::Mesh {
                             vertices,
                             filename: Some(filename),
-                            scale: None,
+                            scale,
                         };
                     }
                 }
@@ -454,10 +521,19 @@ fn get_child_f64(node: roxmltree::Node, tag: &str) -> f64 {
 }
 
 fn resolve_sdf_uri(uri: &str, sdf_dir: &Path) -> PathBuf {
-    if let Some(rest) = uri.strip_prefix("model://") {
+    if let Some(rest) = uri.strip_prefix("package://") {
+        // Same logic as URDF: package_dir is the parent of sdf_dir
+        let package_dir = sdf_dir.parent().unwrap_or(sdf_dir);
+        if let Some(slash_pos) = rest.find('/') {
+            let rel_path = &rest[slash_pos + 1..];
+            package_dir.join(rel_path)
+        } else {
+            package_dir.join(rest)
+        }
+    } else if let Some(rest) = uri.strip_prefix("model://") {
         sdf_dir.join(rest)
-    } else if uri.starts_with("file://") {
-        PathBuf::from(uri.strip_prefix("file://").unwrap())
+    } else if let Some(rest) = uri.strip_prefix("file://") {
+        PathBuf::from(rest)
     } else {
         sdf_dir.join(uri)
     }
