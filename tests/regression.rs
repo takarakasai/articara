@@ -1606,6 +1606,7 @@ mod test_model_editing {
 mod test_gizmo {
     use nalgebra as na;
     use roboview::robot::{self, GeomData, RobotModel};
+    use super::fixture_urdf;
 
     #[test]
     fn ray_axis_closest_perpendicular_hit() {
@@ -1737,5 +1738,100 @@ mod test_gizmo {
         // Gizmo position should match joint world position
         let gizmo_pos = joint_world.translation.vector;
         assert!((gizmo_pos.z - 0.2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn ancestor_links_root() {
+        let model = roboview::robot::RobotModel::from_file(&fixture_urdf()).unwrap();
+        // Root link has no ancestors
+        let ancestors = model.ancestor_links(&model.root_link);
+        assert!(ancestors.is_empty());
+    }
+
+    #[test]
+    fn ancestor_links_child() {
+        let model = roboview::robot::RobotModel::from_file(&fixture_urdf()).unwrap();
+        let root = &model.root_link;
+        // Find a child of the root
+        if let Some(joints) = model.children_joints.get(root.as_str()) {
+            if let Some(&ji) = joints.first() {
+                let child_name = &model.joints[ji].child_link;
+                let ancestors = model.ancestor_links(child_name);
+                assert_eq!(ancestors.len(), 1);
+                assert_eq!(&ancestors[0], root);
+            }
+        }
+    }
+
+    #[test]
+    fn ancestor_links_deep() {
+        // Build a chain: base_link -> A -> B
+        let mut model = roboview::robot::RobotModel::new_empty("test");
+        model
+            .add_child(
+                "base_link",
+                "child_A",
+                "j1",
+                "revolute",
+                na::Isometry3::identity(),
+                na::Vector3::z(),
+                roboview::robot::GeomData::Sphere { radius: 0.01 },
+                [1.0, 1.0, 1.0, 1.0],
+                -1.0,
+                1.0,
+            )
+            .unwrap();
+        model
+            .add_child(
+                "child_A",
+                "child_B",
+                "j2",
+                "revolute",
+                na::Isometry3::identity(),
+                na::Vector3::z(),
+                roboview::robot::GeomData::Sphere { radius: 0.01 },
+                [1.0, 1.0, 1.0, 1.0],
+                -1.0,
+                1.0,
+            )
+            .unwrap();
+        let ancestors = model.ancestor_links("child_B");
+        assert_eq!(ancestors, vec!["base_link".to_string(), "child_A".to_string()]);
+    }
+
+    #[test]
+    fn generate_ring_non_empty() {
+        let data = roboview::primitives::generate_ring(0.05, 0.003, 48, 8);
+        // Each vertex has 6 floats (pos + normal)
+        assert!(!data.is_empty());
+        assert_eq!(data.len() % 6, 0);
+    }
+
+    #[test]
+    fn generate_ring_vertex_count() {
+        let ring_segs = 24;
+        let tube_segs = 6;
+        let data = roboview::primitives::generate_ring(0.05, 0.003, ring_segs, tube_segs);
+        // Each quad = 2 triangles = 6 vertices, total quads = ring_segs * tube_segs
+        let expected_verts = (ring_segs * tube_segs * 6) as usize;
+        assert_eq!(data.len() / 6, expected_verts);
+    }
+
+    #[test]
+    fn generate_ring_bounded_radius() {
+        let ring_r = 0.05_f32;
+        let tube_r = 0.003_f32;
+        let data = roboview::primitives::generate_ring(ring_r, tube_r, 48, 8);
+        let outer = ring_r + tube_r + 1e-5;
+        for chunk in data.chunks(6) {
+            let x = chunk[0];
+            let y = chunk[1];
+            let z = chunk[2];
+            let dist = (x * x + y * y + z * z).sqrt();
+            assert!(
+                dist <= outer,
+                "vertex ({x},{y},{z}) dist {dist} > outer bound {outer}"
+            );
+        }
     }
 }

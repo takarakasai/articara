@@ -259,3 +259,57 @@ fn push_vert(buf: &mut Vec<f32>, pos: [f32; 3], normal: [f32; 3]) {
     buf.extend_from_slice(&pos);
     buf.extend_from_slice(&normal);
 }
+
+/// Generate a torus (ring) around the Z axis.
+///
+/// `ring_radius` — distance from the Z axis to the center of the tube.
+/// `tube_radius` — radius of the tube cross-section.
+/// `ring_segments` — number of segments around the ring.
+/// `tube_segments` — number of segments around the tube.
+///
+/// Returns vertex data in the same [pos, normal] format as other primitives.
+pub fn generate_ring(
+    ring_radius: f32,
+    tube_radius: f32,
+    ring_segments: u32,
+    tube_segments: u32,
+) -> Vec<f32> {
+    let mut v = Vec::new();
+    let pi2 = std::f32::consts::TAU;
+
+    for i in 0..ring_segments {
+        let theta0 = pi2 * i as f32 / ring_segments as f32;
+        let theta1 = pi2 * (i + 1) as f32 / ring_segments as f32;
+
+        for j in 0..tube_segments {
+            let phi0 = pi2 * j as f32 / tube_segments as f32;
+            let phi1 = pi2 * (j + 1) as f32 / tube_segments as f32;
+
+            // Positions on the torus
+            let p = |theta: f32, phi: f32| -> ([f32; 3], [f32; 3]) {
+                let cx = (ring_radius + tube_radius * phi.cos()) * theta.cos();
+                let cy = (ring_radius + tube_radius * phi.cos()) * theta.sin();
+                let cz = tube_radius * phi.sin();
+                let nx = phi.cos() * theta.cos();
+                let ny = phi.cos() * theta.sin();
+                let nz = phi.sin();
+                ([cx, cy, cz], [nx, ny, nz])
+            };
+
+            let (p00, n00) = p(theta0, phi0);
+            let (p10, n10) = p(theta1, phi0);
+            let (p11, n11) = p(theta1, phi1);
+            let (p01, n01) = p(theta0, phi1);
+
+            // Two triangles per quad
+            push_vert(&mut v, p00, n00);
+            push_vert(&mut v, p10, n10);
+            push_vert(&mut v, p11, n11);
+
+            push_vert(&mut v, p00, n00);
+            push_vert(&mut v, p11, n11);
+            push_vert(&mut v, p01, n01);
+        }
+    }
+    v
+}

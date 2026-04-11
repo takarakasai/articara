@@ -19,6 +19,13 @@ pub enum InteractionMode {
     OffsetAdjust,
 }
 
+/// Gizmo operation type in Offset Adjust mode.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum GizmoOp {
+    Translate,
+    Rotate,
+}
+
 /// Which element's origin to adjust in Offset Adjust mode.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OffsetTarget {
@@ -96,12 +103,18 @@ struct OffsetDragState {
     axis_dir_world: na::Vector3<f32>,
     /// World-space gizmo origin at drag start.
     gizmo_origin: na::Point3<f32>,
-    /// The ray-axis parameter "t" at drag start.
+    /// The ray-axis parameter "t" at drag start (translate mode).
     initial_t: f32,
     /// The origin translation at drag start.
     initial_translation: na::Translation3<f32>,
     /// Inverse rotation for converting world displacement to local displacement.
     inv_parent_rotation: na::UnitQuaternion<f32>,
+    /// Current gizmo operation.
+    op: GizmoOp,
+    /// The origin rotation at drag start (for rotation mode).
+    initial_rotation: na::UnitQuaternion<f32>,
+    /// Angle at drag start (for rotation mode).
+    initial_angle: f32,
 }
 
 pub struct RoboViewApp {
@@ -130,6 +143,8 @@ pub struct RoboViewApp {
     hovered_gizmo_axis: Option<u8>,
     /// Which element type to adjust in Offset Adjust mode.
     offset_target: OffsetTarget,
+    /// Gizmo operation: Translate or Rotate.
+    gizmo_op: GizmoOp,
     /// Selected visual index within the currently selected link.
     selected_visual: Option<usize>,
     /// Selected collision index within the currently selected link.
@@ -179,6 +194,8 @@ pub struct RoboViewApp {
     new_link_color: [f32; 3],
     /// Joint limits [lower, upper].
     new_joint_limits: [f32; 2],
+    /// When set, these ancestor link names should be auto-expanded in the tree.
+    tree_reveal_ancestors: Vec<String>,
 }
 
 impl RoboViewApp {
@@ -208,6 +225,7 @@ impl RoboViewApp {
             offset_drag_state: None,
             hovered_gizmo_axis: None,
             offset_target: OffsetTarget::Joint,
+            gizmo_op: GizmoOp::Translate,
             selected_visual: None,
             selected_collision: None,
             ik_damping: 0.05,
@@ -233,6 +251,7 @@ impl RoboViewApp {
             new_joint_axis: [0.0, 0.0, 1.0],
             new_link_color: [0.5, 0.7, 1.0],
             new_joint_limits: [-1.57, 1.57],
+            tree_reveal_ancestors: Vec::new(),
         }
     }
 
@@ -349,6 +368,8 @@ impl RoboViewApp {
         ui.collapsing("🔗 Links", |ui| {
             self.draw_link_tree(ui, &root_link);
         });
+        // Clear auto-expand after drawing
+        self.tree_reveal_ancestors.clear();
 
         ui.separator();
 
@@ -432,7 +453,14 @@ impl RoboViewApp {
         } else {
             // Branch node
             let id = ui.make_persistent_id(link_name);
-            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(), id, true,
+            );
+            // Auto-expand if this link is an ancestor of the viewport-selected link
+            if self.tree_reveal_ancestors.iter().any(|a| a == link_name) {
+                state.set_open(true);
+            }
+            state
                 .show_header(ui, |ui| {
                     if ui.selectable_label(selected, link_name).clicked() {
                         self.selected_link = link_idx;
@@ -722,6 +750,12 @@ impl RoboViewApp {
                     for t in OffsetTarget::ALL {
                         ui.radio_value(&mut self.offset_target, t, t.label());
                     }
+                });
+                // --- Gizmo operation selector ---
+                ui.horizontal(|ui| {
+                    ui.label("Gizmo:");
+                    ui.radio_value(&mut self.gizmo_op, GizmoOp::Translate, "⬌ Translate");
+                    ui.radio_value(&mut self.gizmo_op, GizmoOp::Rotate, "↻ Rotate");
                 });
                 // Show which element is selected
                 match self.offset_target {
@@ -1548,6 +1582,8 @@ impl RoboViewApp {
 
         const GIZMO_ARROW_LENGTH: f32 = 0.08; // shaft + head total
         const GIZMO_PICK_RADIUS: f32 = 0.012;
+        const GIZMO_RING_RADIUS: f32 = 0.05;  // must match ring_radius in renderer
+        const GIZMO_RING_PICK_TOL: f32 = 0.015;
 
         // Hover: check which gizmo axis the mouse is over
         self.hovered_gizmo_axis = None;
@@ -1562,16 +1598,31 @@ impl RoboViewApp {
                     gt.rotation * na::Vector3::y(),
                     gt.rotation * na::Vector3::z(),
                 ];
-                let mut best_dist = f32::MAX;
-                for (i, axis) in axes.iter().enumerate() {
-                    let (t_line, dist) = robot::ray_axis_closest(&ro, &rd, &origin, axis);
-                    if t_line >= 0.0
-                        && t_line <= GIZMO_ARROW_LENGTH
-                        && dist < GIZMO_PICK_RADIUS
-                        && dist < best_dist
-                    {
-                        best_dist = dist;
-                        self.hovered_gizmo_axis = Some(i as u8);
+
+                if self.gizmo_op == GizmoOp::Translate {
+                    let mut best_dist = f32::MAX;
+                    for (i, axis) in axes.iter().enumerate() {
+                        let (t_line, dist) = robot::ray_axis_closest(&ro, &rd, &origin, axis);
+                        if t_line >= 0.0
+                            && t_line <= GIZMO_ARROW_LENGTH
+                            && dist < GIZMO_PICK_RADIUS
+                            && dist < best_dist
+                        {
+                            best_dist = dist;
+                            self.hovered_gizmo_axis = Some(i as u8);
+                        }
+                    }
+                } else {
+                    // Rotate mode: pick ring circles
+                    let mut best_dist = f32::MAX;
+                    for (i, axis) in axes.iter().enumerate() {
+                        let dist = ray_ring_distance(
+                            &ro, &rd, &origin, axis, GIZMO_RING_RADIUS,
+                        );
+                        if dist < GIZMO_RING_PICK_TOL && dist < best_dist {
+                            best_dist = dist;
+                            self.hovered_gizmo_axis = Some(i as u8);
+                        }
                     }
                 }
             }
@@ -1597,6 +1648,14 @@ impl RoboViewApp {
                             let (t_line, _) = robot::ray_axis_closest(&ro, &rd, &origin, &axis_dir);
                             let inv_rot = gt.rotation.inverse();
 
+                            // Compute initial angle for rotation mode
+                            let initial_angle = if self.gizmo_op == GizmoOp::Rotate {
+                                compute_ring_angle(&ro, &rd, &origin, &axis_dir)
+                            } else {
+                                0.0
+                            };
+                            let cur_op = self.gizmo_op;
+
                             if let Some(model) = &self.model {
                                 let drag = match self.offset_target {
                                     OffsetTarget::Joint => {
@@ -1610,6 +1669,9 @@ impl RoboViewApp {
                                             initial_t: t_line,
                                             initial_translation: model.joints[ji].origin.translation,
                                             inv_parent_rotation: inv_rot,
+                                            op: cur_op,
+                                            initial_rotation: model.joints[ji].origin.rotation,
+                                            initial_angle,
                                         })
                                     }
                                     OffsetTarget::Visual => {
@@ -1624,6 +1686,9 @@ impl RoboViewApp {
                                                 initial_t: t_line,
                                                 initial_translation: model.links[li].visuals[vi].origin.translation,
                                                 inv_parent_rotation: inv_rot,
+                                                op: cur_op,
+                                                initial_rotation: model.links[li].visuals[vi].origin.rotation,
+                                                initial_angle,
                                             })
                                         })
                                     }
@@ -1639,6 +1704,9 @@ impl RoboViewApp {
                                                 initial_t: t_line,
                                                 initial_translation: model.links[li].collisions[ci].origin.translation,
                                                 inv_parent_rotation: inv_rot,
+                                                op: cur_op,
+                                                initial_rotation: model.links[li].collisions[ci].origin.rotation,
+                                                initial_angle,
                                             })
                                         })
                                     }
@@ -1654,6 +1722,8 @@ impl RoboViewApp {
                             let changed_link = self.selected_link != Some(li);
                             self.selected_link = Some(li);
                             self.selected_joint = model.parent_joint_of_link(link_name);
+                            // Auto-expand tree ancestors to reveal the selected link
+                            self.tree_reveal_ancestors = model.ancestor_links(link_name);
                             // Auto-select first visual/collision when changing link
                             if changed_link {
                                 self.selected_visual = if model.links[li].visuals.is_empty() {
@@ -1703,6 +1773,7 @@ impl RoboViewApp {
                                             });
                                             self.selected_link = Some(li);
                                             self.selected_joint = Some(ji);
+                                            self.tree_reveal_ancestors = model.ancestor_links(link_name);
                                         }
                                     }
                                 }
@@ -1725,6 +1796,7 @@ impl RoboViewApp {
                                             ik_root_link: self.ik_root_link.clone(),
                                         });
                                         self.selected_link = Some(li);
+                                        self.tree_reveal_ancestors = model.ancestor_links(link_name);
                                     }
                                 }
                             }
@@ -1740,33 +1812,73 @@ impl RoboViewApp {
                 // --- Offset adjustment drag ---
                 if let Some(ndc) = mouse_ndc {
                     let (ro, rd) = self.camera.screen_ray(ndc, aspect);
-                    let (t_line, _) =
-                        robot::ray_axis_closest(&ro, &rd, &odrag.gizmo_origin, &odrag.axis_dir_world);
-                    let delta_t = t_line - odrag.initial_t;
 
-                    if let Some(ref mut model) = self.model {
-                        let world_disp = odrag.axis_dir_world * delta_t;
-                        let local_disp = odrag.inv_parent_rotation * world_disp;
-                        let new_trans = na::Translation3::new(
-                            odrag.initial_translation.vector.x + local_disp.x,
-                            odrag.initial_translation.vector.y + local_disp.y,
-                            odrag.initial_translation.vector.z + local_disp.z,
-                        );
+                    match odrag.op {
+                        GizmoOp::Translate => {
+                            let (t_line, _) =
+                                robot::ray_axis_closest(&ro, &rd, &odrag.gizmo_origin, &odrag.axis_dir_world);
+                            let delta_t = t_line - odrag.initial_t;
 
-                        match odrag.target {
-                            OffsetTarget::Joint => {
-                                model.joints[odrag.entity_idx].origin.translation = new_trans;
-                            }
-                            OffsetTarget::Visual => {
-                                model.links[odrag.entity_idx].visuals[odrag.sub_idx]
-                                    .origin.translation = new_trans;
-                            }
-                            OffsetTarget::Collision => {
-                                model.links[odrag.entity_idx].collisions[odrag.sub_idx]
-                                    .origin.translation = new_trans;
+                            if let Some(ref mut model) = self.model {
+                                let world_disp = odrag.axis_dir_world * delta_t;
+                                let local_disp = odrag.inv_parent_rotation * world_disp;
+                                let new_trans = na::Translation3::new(
+                                    odrag.initial_translation.vector.x + local_disp.x,
+                                    odrag.initial_translation.vector.y + local_disp.y,
+                                    odrag.initial_translation.vector.z + local_disp.z,
+                                );
+
+                                match odrag.target {
+                                    OffsetTarget::Joint => {
+                                        model.joints[odrag.entity_idx].origin.translation = new_trans;
+                                    }
+                                    OffsetTarget::Visual => {
+                                        model.links[odrag.entity_idx].visuals[odrag.sub_idx]
+                                            .origin.translation = new_trans;
+                                    }
+                                    OffsetTarget::Collision => {
+                                        model.links[odrag.entity_idx].collisions[odrag.sub_idx]
+                                            .origin.translation = new_trans;
+                                    }
+                                }
+                                self.needs_upload = true;
                             }
                         }
-                        self.needs_upload = true;
+                        GizmoOp::Rotate => {
+                            let cur_angle = compute_ring_angle(
+                                &ro, &rd, &odrag.gizmo_origin, &odrag.axis_dir_world,
+                            );
+                            let delta_angle = cur_angle - odrag.initial_angle;
+
+                            if let Some(ref mut model) = self.model {
+                                // Build rotation around the LOCAL axis corresponding to odrag.axis
+                                let local_axis = match odrag.axis {
+                                    0 => na::Vector3::x_axis(),
+                                    1 => na::Vector3::y_axis(),
+                                    _ => na::Vector3::z_axis(),
+                                };
+                                let delta_rot = na::UnitQuaternion::from_axis_angle(
+                                    &local_axis,
+                                    delta_angle,
+                                );
+                                let new_rot = odrag.initial_rotation * delta_rot;
+
+                                match odrag.target {
+                                    OffsetTarget::Joint => {
+                                        model.joints[odrag.entity_idx].origin.rotation = new_rot;
+                                    }
+                                    OffsetTarget::Visual => {
+                                        model.links[odrag.entity_idx].visuals[odrag.sub_idx]
+                                            .origin.rotation = new_rot;
+                                    }
+                                    OffsetTarget::Collision => {
+                                        model.links[odrag.entity_idx].collisions[odrag.sub_idx]
+                                            .origin.rotation = new_rot;
+                                    }
+                                }
+                                self.needs_upload = true;
+                            }
+                        }
                     }
                 }
             } else if let Some(ref drag) = self.drag_state.clone() {
@@ -1968,6 +2080,7 @@ impl RoboViewApp {
             r.gizmo_transform = gizmo_tf;
             r.gizmo_hovered_axis = self.hovered_gizmo_axis;
             r.gizmo_dragged_axis = self.offset_drag_state.as_ref().map(|d| d.axis);
+            r.gizmo_op = if self.gizmo_op == GizmoOp::Rotate { 1 } else { 0 };
         }
 
         // Change cursor when hovering a draggable link or gizmo arrow
@@ -2356,6 +2469,72 @@ impl RoboViewApp {
                         );
                     }
                 }
+
+                // --- Row 3: Gizmo op buttons (Translate / Rotate) ---
+                let row3_y = row2_y + small_size.y + 4.0;
+                let gizmo_ops: [(GizmoOp, &str, &str); 2] = [
+                    (GizmoOp::Translate, "⬌", "Translate"),
+                    (GizmoOp::Rotate, "↻", "Rotate"),
+                ];
+                for (i, (op, icon, label)) in gizmo_ops.iter().enumerate() {
+                    let btn_pos = egui::pos2(
+                        toolbar_x + i as f32 * (small_size.x + 3.0),
+                        row3_y,
+                    );
+                    let btn_rect = egui::Rect::from_min_size(btn_pos, small_size);
+                    let is_active = self.gizmo_op == *op;
+
+                    let btn_response = ui.interact(
+                        btn_rect,
+                        ui.id().with("gizmo_op_btn").with(i),
+                        egui::Sense::click(),
+                    );
+
+                    let bg_color = if is_active {
+                        egui::Color32::from_rgba_unmultiplied(60, 120, 200, 200)
+                    } else if btn_response.hovered() {
+                        egui::Color32::from_rgba_unmultiplied(80, 80, 80, 180)
+                    } else {
+                        egui::Color32::from_rgba_unmultiplied(40, 40, 50, 160)
+                    };
+                    painter.rect_filled(btn_rect, egui::CornerRadius::same(3), bg_color);
+
+                    if is_active {
+                        painter.rect_stroke(
+                            btn_rect,
+                            egui::CornerRadius::same(3),
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 160, 255)),
+                            egui::StrokeKind::Outside,
+                        );
+                    }
+
+                    let text_color = if is_active {
+                        egui::Color32::WHITE
+                    } else {
+                        egui::Color32::from_gray(200)
+                    };
+                    painter.text(
+                        btn_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        *icon,
+                        egui::FontId::proportional(15.0),
+                        text_color,
+                    );
+
+                    if btn_response.clicked() {
+                        self.gizmo_op = *op;
+                    }
+                    if btn_response.hovered() {
+                        let tip_pos = egui::pos2(btn_rect.left(), btn_rect.bottom() + 4.0);
+                        painter.text(
+                            tip_pos,
+                            egui::Align2::LEFT_TOP,
+                            label,
+                            egui::FontId::proportional(12.0),
+                            egui::Color32::from_gray(220),
+                        );
+                    }
+                }
             }
         }
 
@@ -2583,6 +2762,77 @@ impl RoboViewApp {
             }
         }
     }
+}
+
+/// Compute the closest distance from a ray to a circle (ring) in 3D.
+///
+/// The ring has center `center`, normal `normal` (unit vector), and radius `radius`.
+/// Returns the minimum distance from the ray to the ring circumference.
+fn ray_ring_distance(
+    ray_o: &na::Point3<f32>,
+    ray_d: &na::Vector3<f32>,
+    center: &na::Point3<f32>,
+    normal: &na::Vector3<f32>,
+    radius: f32,
+) -> f32 {
+    // Intersect ray with the plane of the ring
+    let denom = ray_d.dot(normal);
+    if denom.abs() < 1e-8 {
+        // Ray is parallel to the ring plane — use distance to closest point on ring
+        // Project ray origin onto ring plane
+        let to_origin = ray_o - center;
+        let plane_dist = to_origin.dot(normal);
+        let proj = ray_o - normal * plane_dist;
+        let from_center = proj - center;
+        let r_proj = from_center.norm();
+        if r_proj < 1e-8 {
+            return (plane_dist * plane_dist + radius * radius).sqrt();
+        }
+        let closest_on_ring = center + from_center * (radius / r_proj);
+        // Find closest point on ray to this ring point
+        let to_ring = closest_on_ring - ray_o;
+        let t = to_ring.dot(ray_d) / ray_d.dot(ray_d);
+        let closest_on_ray = ray_o + ray_d * t.max(0.0);
+        na::distance(&closest_on_ray, &closest_on_ring)
+    } else {
+        let t = (center - ray_o).dot(normal) / denom;
+        let hit = ray_o + ray_d * t;
+        let from_center = hit - center;
+        let r_hit = from_center.norm();
+        if r_hit < 1e-8 {
+            // Ray hits exactly the center of the ring
+            return radius;
+        }
+        // Distance from the intersection point to the ring circumference
+        (r_hit - radius).abs()
+    }
+}
+
+/// Compute the angle of a ray's intersection with a ring's plane,
+/// measured from an arbitrary but consistent reference direction.
+fn compute_ring_angle(
+    ray_o: &na::Point3<f32>,
+    ray_d: &na::Vector3<f32>,
+    center: &na::Point3<f32>,
+    normal: &na::Vector3<f32>,
+) -> f32 {
+    let denom = ray_d.dot(normal);
+    if denom.abs() < 1e-8 {
+        return 0.0;
+    }
+    let t = (center - ray_o).dot(normal) / denom;
+    let hit = ray_o + ray_d * t;
+    let from_center = hit - center;
+
+    // Build a consistent reference frame on the plane
+    let ref_x = if normal.x.abs() < 0.9 {
+        na::Vector3::x().cross(normal).normalize()
+    } else {
+        na::Vector3::y().cross(normal).normalize()
+    };
+    let ref_y = normal.cross(&ref_x);
+
+    from_center.dot(&ref_x).atan2(from_center.dot(&ref_y))
 }
 
 // ========== eframe::App ==========

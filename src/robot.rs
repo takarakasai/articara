@@ -295,6 +295,24 @@ impl RobotModel {
             .position(|j| j.child_link == link_name)
     }
 
+    /// Return the list of ancestor link names from root down to (but not including)
+    /// the given link.  Returns an empty vec for the root link.
+    pub fn ancestor_links(&self, link_name: &str) -> Vec<String> {
+        let mut ancestors = Vec::new();
+        let mut current = link_name.to_string();
+        loop {
+            if let Some(ji) = self.parent_joint_of_link(&current) {
+                let parent = self.joints[ji].parent_link.clone();
+                ancestors.push(parent.clone());
+                current = parent;
+            } else {
+                break;
+            }
+        }
+        ancestors.reverse();
+        ancestors
+    }
+
     /// Compute a bounding sphere (center, radius) for a link's visual geometry
     /// in the link's local frame. Properly transforms all vertices by visual origin.
     pub fn link_bounding_sphere(&self, link_idx: usize) -> (na::Point3<f32>, f32) {

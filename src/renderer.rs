@@ -125,6 +125,12 @@ pub struct GlRenderer {
     pub gizmo_hovered_axis: Option<u8>,
     /// Which axis arrow is being dragged (0=X, 1=Y, 2=Z). `None` = no drag.
     pub gizmo_dragged_axis: Option<u8>,
+    // --- Gizmo ring (rotation) ---
+    gizmo_ring_vao: glow::VertexArray,
+    gizmo_ring_vbo: glow::Buffer,
+    gizmo_ring_num_vertices: i32,
+    /// Current gizmo operation (translate arrows vs rotate rings).
+    pub gizmo_op: u8, // 0=translate, 1=rotate
 }
 
 impl GlRenderer {
@@ -159,6 +165,12 @@ impl GlRenderer {
             let gizmo_arrow_num = (gizmo_arrow_data.len() / 6) as i32;
             let (gizmo_arrow_vao, gizmo_arrow_vbo) = upload_mesh_data(gl, &gizmo_arrow_data);
 
+            // Gizmo ring (around Z axis; rotated at draw time for each axis)
+            let gizmo_ring_data =
+                primitives::generate_ring(0.05, 0.003, 48, 8);
+            let gizmo_ring_num = (gizmo_ring_data.len() / 6) as i32;
+            let (gizmo_ring_vao, gizmo_ring_vbo) = upload_mesh_data(gl, &gizmo_ring_data);
+
             Self {
                 program,
                 u_mvp,
@@ -191,6 +203,10 @@ impl GlRenderer {
                 gizmo_transform: None,
                 gizmo_hovered_axis: None,
                 gizmo_dragged_axis: None,
+                gizmo_ring_vao,
+                gizmo_ring_vbo,
+                gizmo_ring_num_vertices: gizmo_ring_num,
+                gizmo_op: 0,
             }
         }
     }
@@ -454,12 +470,16 @@ impl GlRenderer {
                 }
             }
 
-            // Draw gizmo arrows (offset adjustment mode)
+            // Draw gizmo (offset adjustment mode): arrows or rings
             if let Some(gizmo_tf) = self.gizmo_transform {
                 // Draw on top of everything
                 gl.clear(glow::DEPTH_BUFFER_BIT);
                 gl.uniform_1_i32(Some(&self.u_flat), 0);
-                gl.bind_vertex_array(Some(self.gizmo_arrow_vao));
+
+                let is_rotate = self.gizmo_op == 1;
+                let gizmo_vao = if is_rotate { self.gizmo_ring_vao } else { self.gizmo_arrow_vao };
+                let gizmo_num = if is_rotate { self.gizmo_ring_num_vertices } else { self.gizmo_arrow_num_vertices };
+                gl.bind_vertex_array(Some(gizmo_vao));
 
                 // Axis colors: X=red, Y=green, Z=blue
                 let axis_colors: [[f32; 4]; 3] = [
@@ -524,7 +544,7 @@ impl GlRenderer {
                         );
                     }
 
-                    gl.draw_arrays(glow::TRIANGLES, 0, self.gizmo_arrow_num_vertices);
+                    gl.draw_arrays(glow::TRIANGLES, 0, gizmo_num);
                 }
             }
 
@@ -570,6 +590,8 @@ impl GlRenderer {
             gl.delete_buffer(self.com_sphere_vbo);
             gl.delete_vertex_array(self.gizmo_arrow_vao);
             gl.delete_buffer(self.gizmo_arrow_vbo);
+            gl.delete_vertex_array(self.gizmo_ring_vao);
+            gl.delete_buffer(self.gizmo_ring_vbo);
             gl.delete_program(self.program);
         }
     }
