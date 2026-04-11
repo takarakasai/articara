@@ -1,10 +1,24 @@
 use eframe::egui;
+use nalgebra as na;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::camera::OrbitCamera;
 use crate::renderer::GlRenderer;
 use crate::robot::RobotModel;
+
+/// Drag state for manipulating joints by dragging links.
+#[derive(Clone)]
+struct DragState {
+    /// Index of the link being dragged.
+    link_idx: usize,
+    /// Index of the parent joint to rotate.
+    joint_idx: usize,
+    /// The joint axis in world space at drag start.
+    world_axis: na::Vector3<f32>,
+    /// The joint pivot point in world space at drag start.
+    pivot_world: na::Point3<f32>,
+}
 
 pub struct RoboViewApp {
     model: Option<RobotModel>,
@@ -16,6 +30,12 @@ pub struct RoboViewApp {
     needs_upload: bool,
     urdf_path_input: String,
     status_message: String,
+    /// Current drag interaction (link manipulation).
+    drag_state: Option<DragState>,
+    /// Link currently hovered by mouse (for highlighting).
+    hovered_link: Option<usize>,
+    /// Cached viewport rect from last frame.
+    viewport_rect: egui::Rect,
 }
 
 impl RoboViewApp {
@@ -37,6 +57,9 @@ impl RoboViewApp {
             needs_upload: false,
             urdf_path_input: String::new(),
             status_message: "No model loaded".into(),
+            drag_state: None,
+            hovered_link: None,
+            viewport_rect: egui::Rect::NOTHING,
         }
     }
 
@@ -372,8 +395,155 @@ impl RoboViewApp {
         let (rect, response) =
             ui.allocate_exact_size(available, egui::Sense::click_and_drag());
 
-        // Handle camera interaction
-        self.camera.handle_response(&response);
+        self.viewport_rect = rect;
+        let aspect = rect.width() / rect.height().max(1.0);
+
+        // ===== Picking & Drag Logic =====
+        let transforms = self
+            .model
+            .as_ref()
+            .map(|m| m.compute_transforms())
+            .unwrap_or_default();
+
+        // Convert mouse position to normalized viewport coords [0..1]
+        let mouse_ndc = response.hover_pos().map(|pos| {
+            na::Point2::new(
+                (pos.x - rect.left()) / rect.width(),
+                (pos.y - rect.top()) / rect.height(),
+            )
+        });
+
+        // Hover highlight: cast ray on hover
+        if let (Some(ndc), Some(model)) = (mouse_ndc, &self.model) {
+            if self.drag_state.is_none() {
+                let (ro, rd) = self.camera.screen_ray(ndc, aspect);
+                self.hovered_link = model.pick_link(&ro, &rd, &transforms).map(|(li, _)| li);
+            }
+        } else {
+            self.hovered_link = None;
+        }
+
+        // Left mouse button pressed: start drag if a link is hit
+        if response.drag_started_by(egui::PointerButton::Primary) {
+            if let (Some(ndc), Some(model)) = (mouse_ndc, &self.model) {
+                let (ro, rd) = self.camera.screen_ray(ndc, aspect);
+                if let Some((li, _dist)) = model.pick_link(&ro, &rd, &transforms) {
+                    let link_name = &model.links[li].name;
+                    if let Some(ji) = model.parent_joint_of_link(link_name) {
+                        let joint = &model.joints[ji];
+                        if joint.joint_type == "revolute" || joint.joint_type == "continuous" {
+                            // Compute world axis and pivot
+                            let parent_tf = transforms
+                                .get(&joint.parent_link)
+                                .copied()
+                                .unwrap_or(na::Isometry3::identity());
+                            let joint_tf = parent_tf * joint.origin;
+                            let world_axis = joint_tf * joint.axis;
+                            let pivot_world = na::Point3::from(joint_tf.translation.vector);
+
+                            self.drag_state = Some(DragState {
+                                link_idx: li,
+                                joint_idx: ji,
+                                world_axis,
+                                pivot_world,
+                            });
+                            self.selected_link = Some(li);
+                            self.selected_joint = Some(ji);
+                        }
+                    }
+                }
+            }
+        }
+
+        // While dragging: map mouse delta to joint angle change
+        if response.dragged_by(egui::PointerButton::Primary) {
+            if let Some(ref drag) = self.drag_state.clone() {
+                let delta = response.drag_delta();
+                if delta.length_sq() > 0.0 {
+                    // Project joint axis to screen space to determine rotation direction
+                    let pivot_screen = self
+                        .camera
+                        .project(&drag.pivot_world, aspect)
+                        .unwrap_or(na::Point2::new(0.5, 0.5));
+                    let axis_tip = drag.pivot_world + drag.world_axis * 0.05;
+                    let tip_screen = self
+                        .camera
+                        .project(&axis_tip, aspect)
+                        .unwrap_or(pivot_screen);
+
+                    // Screen-space axis direction
+                    let screen_axis = na::Vector2::new(
+                        tip_screen.x - pivot_screen.x,
+                        tip_screen.y - pivot_screen.y,
+                    );
+                    let screen_axis_len = screen_axis.norm();
+
+                    if screen_axis_len > 1e-6 {
+                        let screen_axis_norm = screen_axis / screen_axis_len;
+                        // Perpendicular to axis in screen space
+                        let perp = na::Vector2::new(-screen_axis_norm.y, screen_axis_norm.x);
+
+                        // Normalize mouse delta to viewport size
+                        let delta_ndc = na::Vector2::new(
+                            delta.x / rect.width(),
+                            delta.y / rect.height(),
+                        );
+
+                        // Angle change = projection of mouse delta onto perpendicular direction
+                        let angle_delta = delta_ndc.dot(&perp) * 5.0;
+
+                        if let Some(ref mut model) = self.model {
+                            let ji = drag.joint_idx;
+                            let lower = model.joints[ji].lower as f32;
+                            let upper = model.joints[ji].upper as f32;
+                            model.joint_positions[ji] = (model.joint_positions[ji] + angle_delta)
+                                .clamp(lower, upper);
+                        }
+                    }
+                }
+            } else {
+                // No drag state: orbit camera as fallback
+                self.camera.handle_orbit_pan_zoom(&response);
+            }
+        } else {
+            // Not primary drag: camera controls (middle / right / scroll)
+            self.camera.handle_orbit_pan_zoom(&response);
+        }
+
+        // Drag released
+        if response.drag_stopped_by(egui::PointerButton::Primary) {
+            self.drag_state = None;
+        }
+
+        // Update highlight in renderer
+        {
+            let highlight = if self.drag_state.is_some() {
+                self.drag_state
+                    .as_ref()
+                    .and_then(|d| self.model.as_ref().map(|m| m.links[d.link_idx].name.clone()))
+            } else {
+                self.hovered_link
+                    .and_then(|li| self.model.as_ref().map(|m| m.links[li].name.clone()))
+            };
+            self.gl_renderer.lock().unwrap().highlight_link = highlight;
+        }
+
+        // Change cursor when hovering a draggable link
+        if self.drag_state.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        } else if self.hovered_link.is_some() {
+            // Check if the hovered link has a movable parent joint
+            let has_movable_joint = self.hovered_link.and_then(|li| {
+                self.model.as_ref().and_then(|m| {
+                    m.parent_joint_of_link(&m.links[li].name)
+                        .map(|ji| &m.joints[ji].joint_type)
+                        .filter(|jt| *jt == "revolute" || *jt == "continuous")
+                })
+            });
+            if has_movable_joint.is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+        }
 
         // Clone data for the paint callback closure
         let renderer = self.gl_renderer.clone();
@@ -388,7 +558,6 @@ impl RoboViewApp {
 
                     let vp = info.viewport_in_pixels();
                     let screen_h = info.screen_size_px[1] as i32;
-                    // Convert from egui coords (top-left origin) to GL coords (bottom-left)
                     let gl_viewport = [
                         vp.left_px,
                         screen_h - vp.top_px - vp.height_px,

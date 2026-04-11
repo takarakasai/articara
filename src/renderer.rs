@@ -67,6 +67,7 @@ pub struct GlRenderer {
     axes_vbo: glow::Buffer,
     axes_num_vertices: i32,
     transforms: HashMap<String, na::Isometry3<f32>>,
+    pub highlight_link: Option<String>,
 }
 
 impl GlRenderer {
@@ -105,6 +106,7 @@ impl GlRenderer {
                 axes_vbo,
                 axes_num_vertices: axes_num,
                 transforms: HashMap::new(),
+                highlight_link: None,
             }
         }
     }
@@ -236,13 +238,30 @@ impl GlRenderer {
                     normal_mat.as_slice(),
                 );
 
-                gl.uniform_4_f32(
-                    Some(&self.u_color),
-                    entry.color[0],
-                    entry.color[1],
-                    entry.color[2],
-                    entry.color[3],
-                );
+                // Highlight hovered/dragged link with a bright tint
+                let is_highlighted = self
+                    .highlight_link
+                    .as_ref()
+                    .map(|h| h == &entry.link_name)
+                    .unwrap_or(false);
+                if is_highlighted {
+                    let tint = 0.4;
+                    gl.uniform_4_f32(
+                        Some(&self.u_color),
+                        (entry.color[0] + tint).min(1.0),
+                        (entry.color[1] + tint).min(1.0),
+                        (entry.color[2] + tint).min(1.0),
+                        entry.color[3],
+                    );
+                } else {
+                    gl.uniform_4_f32(
+                        Some(&self.u_color),
+                        entry.color[0],
+                        entry.color[1],
+                        entry.color[2],
+                        entry.color[3],
+                    );
+                }
 
                 gl.bind_vertex_array(Some(entry.vao));
                 gl.draw_arrays(glow::TRIANGLES, 0, entry.num_vertices);
