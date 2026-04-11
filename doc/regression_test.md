@@ -1,8 +1,8 @@
-# RoboView 回帰テスト仕様書
+# Articara 回帰テスト仕様書
 
 ## 概要
 
-RoboView の回帰テストは `tests/regression.rs` に実装されています。  
+Articara の回帰テストは `tests/regression.rs` に実装されています。  
 Rust 標準の `#[test]` フレームワークを使用し、`cargo test` で全テストを実行できます。
 
 - **テスト総数**: 118

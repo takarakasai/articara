@@ -117,7 +117,7 @@ struct OffsetDragState {
     initial_angle: f32,
 }
 
-pub struct RoboViewApp {
+pub struct ArticaraApp {
     model: Option<RobotModel>,
     camera: OrbitCamera,
     gl: Arc<glow::Context>,
@@ -198,7 +198,7 @@ pub struct RoboViewApp {
     tree_reveal_ancestors: Vec<String>,
 }
 
-impl RoboViewApp {
+impl ArticaraApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let gl = cc
             .gl
@@ -2877,7 +2877,7 @@ fn compute_ring_angle(
 
 // ========== eframe::App ==========
 
-impl eframe::App for RoboViewApp {
+impl eframe::App for ArticaraApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 

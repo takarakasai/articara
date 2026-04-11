@@ -19,7 +19,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
-            .with_title("RoboView - URDF Dynamics Editor"),
+            .with_title("Articara - Robot Dynamics Editor"),
         renderer: eframe::Renderer::Glow,
         depth_buffer: 24,
         multisampling: 4,
@@ -27,10 +27,10 @@ fn main() -> eframe::Result {
     };
 
     eframe::run_native(
-        "RoboView",
+        "Articara",
         options,
         Box::new(move |cc| {
-            let mut app = app::RoboViewApp::new(cc);
+            let mut app = app::ArticaraApp::new(cc);
             if let Some(path) = initial_path {
                 app.load_model(path);
             }

@@ -1,4 +1,4 @@
-//! Regression tests for roboview.
+//! Regression tests for articara.
 //!
 //! Tests are organized by module with a shared helper for locating test fixtures.
 //! Run with: cargo test
@@ -41,7 +41,7 @@ fn namiashi_urdf() -> PathBuf {
 mod test_robot {
     use super::*;
     use nalgebra as na;
-    use roboview::robot::*;
+    use articara::robot::*;
 
     #[test]
     fn load_fixture_urdf() {
@@ -460,7 +460,7 @@ mod test_robot {
 // format.rs — format detection
 // ============================================================
 mod test_format {
-    use roboview::format::RobotFormat;
+    use articara::format::RobotFormat;
     use std::path::Path;
 
     #[test]
@@ -566,8 +566,8 @@ mod test_format {
 // ============================================================
 mod test_sdf {
     use super::*;
-    use roboview::robot::*;
-    use roboview::sdf;
+    use articara::robot::*;
+    use articara::sdf;
 
     #[test]
     fn import_sdf_basic() {
@@ -676,7 +676,7 @@ mod test_sdf {
         let xml = sdf::export_sdf(&model);
 
         // Write to temp, re-import
-        let tmp = std::env::temp_dir().join("roboview_test_sdf_roundtrip.sdf");
+        let tmp = std::env::temp_dir().join("articara_test_sdf_roundtrip.sdf");
         std::fs::write(&tmp, &xml).unwrap();
         let model2 = sdf::import_sdf(&tmp).expect("Re-import SDF failed");
         std::fs::remove_file(&tmp).ok();
@@ -699,8 +699,8 @@ mod test_sdf {
 // ============================================================
 mod test_mjcf {
     use super::*;
-    use roboview::mjcf;
-    use roboview::robot::*;
+    use articara::mjcf;
+    use articara::robot::*;
 
     #[test]
     fn import_mjcf_basic() {
@@ -759,7 +759,7 @@ mod test_mjcf {
         let model = mjcf::import_mjcf(&fixture_mjcf()).unwrap();
         let xml = mjcf::export_mjcf(&model);
 
-        let tmp = std::env::temp_dir().join("roboview_test_mjcf_roundtrip.xml");
+        let tmp = std::env::temp_dir().join("articara_test_mjcf_roundtrip.xml");
         std::fs::write(&tmp, &xml).unwrap();
         let model2 = mjcf::import_mjcf(&tmp).expect("Re-import MJCF failed");
         std::fs::remove_file(&tmp).ok();
@@ -775,8 +775,8 @@ mod test_mjcf {
 // ============================================================
 mod test_isaac {
     use super::*;
-    use roboview::isaac;
-    use roboview::robot::RobotModel;
+    use articara::isaac;
+    use articara::robot::RobotModel;
 
     #[test]
     fn export_isaac_python_script() {
@@ -813,7 +813,7 @@ mod test_isaac {
     #[test]
     fn export_isaac_to_dir_creates_files() {
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let tmp = std::env::temp_dir().join("roboview_isaac_test");
+        let tmp = std::env::temp_dir().join("articara_isaac_test");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
@@ -839,7 +839,7 @@ mod test_isaac {
 // ============================================================
 mod test_camera {
     use nalgebra as na;
-    use roboview::camera::OrbitCamera;
+    use articara::camera::OrbitCamera;
 
     #[test]
     fn default_camera() {
@@ -918,8 +918,8 @@ mod test_camera {
 mod test_ik {
     use super::*;
     use nalgebra as na;
-    use roboview::ik;
-    use roboview::robot::RobotModel;
+    use articara::ik;
+    use articara::robot::RobotModel;
 
     #[test]
     fn build_chain_two_joints() {
@@ -1144,7 +1144,7 @@ mod test_ik {
 // primitives.rs — geometry generation
 // ============================================================
 mod test_primitives {
-    use roboview::primitives;
+    use articara::primitives;
 
     #[test]
     fn generate_box_vertex_count() {
@@ -1254,17 +1254,17 @@ mod test_primitives {
 // ============================================================
 mod test_cross_format {
     use super::*;
-    use roboview::robot::RobotModel;
+    use articara::robot::RobotModel;
 
     /// Load URDF, export to SDF, re-import → verify data preservation.
     #[test]
     fn urdf_to_sdf_roundtrip() {
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let sdf_xml = roboview::sdf::export_sdf(&model);
+        let sdf_xml = articara::sdf::export_sdf(&model);
 
-        let tmp = std::env::temp_dir().join("roboview_urdf2sdf.sdf");
+        let tmp = std::env::temp_dir().join("articara_urdf2sdf.sdf");
         std::fs::write(&tmp, &sdf_xml).unwrap();
-        let model2 = roboview::sdf::import_sdf(&tmp).expect("SDF re-import failed");
+        let model2 = articara::sdf::import_sdf(&tmp).expect("SDF re-import failed");
         std::fs::remove_file(&tmp).ok();
 
         assert_eq!(model.links.len(), model2.links.len());
@@ -1281,11 +1281,11 @@ mod test_cross_format {
     #[test]
     fn urdf_to_mjcf_roundtrip() {
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let mjcf_xml = roboview::mjcf::export_mjcf(&model);
+        let mjcf_xml = articara::mjcf::export_mjcf(&model);
 
-        let tmp = std::env::temp_dir().join("roboview_urdf2mjcf.xml");
+        let tmp = std::env::temp_dir().join("articara_urdf2mjcf.xml");
         std::fs::write(&tmp, &mjcf_xml).unwrap();
-        let model2 = roboview::mjcf::import_mjcf(&tmp).expect("MJCF re-import failed");
+        let model2 = articara::mjcf::import_mjcf(&tmp).expect("MJCF re-import failed");
         std::fs::remove_file(&tmp).ok();
 
         // MJCF might reorder or rename things, so check counts and find by name
@@ -1321,7 +1321,7 @@ mod test_cross_format {
 // ============================================================
 mod test_model_editing {
     use nalgebra as na;
-    use roboview::robot::*;
+    use articara::robot::*;
 
     #[test]
     fn new_empty_has_root_link() {
@@ -1543,7 +1543,7 @@ mod test_model_editing {
 
     #[test]
     fn added_model_exports_valid_sdf() {
-        use roboview::sdf::export_sdf;
+        use articara::sdf::export_sdf;
         let mut model = RobotModel::new_empty("sdf_test");
         model.add_child(
             "base_link", "link1", "j1", "fixed",
@@ -1558,7 +1558,7 @@ mod test_model_editing {
 
     #[test]
     fn added_model_exports_valid_mjcf() {
-        use roboview::mjcf::export_mjcf;
+        use articara::mjcf::export_mjcf;
         let mut model = RobotModel::new_empty("mjcf_test");
         model.add_child(
             "base_link", "link1", "j1", "revolute",
@@ -1605,7 +1605,7 @@ mod test_model_editing {
 // ============================================================
 mod test_gizmo {
     use nalgebra as na;
-    use roboview::robot::{self, GeomData, RobotModel};
+    use articara::robot::{self, GeomData, RobotModel};
     use super::fixture_urdf;
 
     #[test]
@@ -1742,7 +1742,7 @@ mod test_gizmo {
 
     #[test]
     fn ancestor_links_root() {
-        let model = roboview::robot::RobotModel::from_file(&fixture_urdf()).unwrap();
+        let model = articara::robot::RobotModel::from_file(&fixture_urdf()).unwrap();
         // Root link has no ancestors
         let ancestors = model.ancestor_links(&model.root_link);
         assert!(ancestors.is_empty());
@@ -1750,7 +1750,7 @@ mod test_gizmo {
 
     #[test]
     fn ancestor_links_child() {
-        let model = roboview::robot::RobotModel::from_file(&fixture_urdf()).unwrap();
+        let model = articara::robot::RobotModel::from_file(&fixture_urdf()).unwrap();
         let root = &model.root_link;
         // Find a child of the root
         if let Some(joints) = model.children_joints.get(root.as_str()) {
@@ -1766,7 +1766,7 @@ mod test_gizmo {
     #[test]
     fn ancestor_links_deep() {
         // Build a chain: base_link -> A -> B
-        let mut model = roboview::robot::RobotModel::new_empty("test");
+        let mut model = articara::robot::RobotModel::new_empty("test");
         model
             .add_child(
                 "base_link",
@@ -1775,7 +1775,7 @@ mod test_gizmo {
                 "revolute",
                 na::Isometry3::identity(),
                 na::Vector3::z(),
-                roboview::robot::GeomData::Sphere { radius: 0.01 },
+                articara::robot::GeomData::Sphere { radius: 0.01 },
                 [1.0, 1.0, 1.0, 1.0],
                 -1.0,
                 1.0,
@@ -1789,7 +1789,7 @@ mod test_gizmo {
                 "revolute",
                 na::Isometry3::identity(),
                 na::Vector3::z(),
-                roboview::robot::GeomData::Sphere { radius: 0.01 },
+                articara::robot::GeomData::Sphere { radius: 0.01 },
                 [1.0, 1.0, 1.0, 1.0],
                 -1.0,
                 1.0,
@@ -1801,7 +1801,7 @@ mod test_gizmo {
 
     #[test]
     fn generate_ring_non_empty() {
-        let data = roboview::primitives::generate_ring(0.05, 0.003, 48, 8);
+        let data = articara::primitives::generate_ring(0.05, 0.003, 48, 8);
         // Each vertex has 6 floats (pos + normal)
         assert!(!data.is_empty());
         assert_eq!(data.len() % 6, 0);
@@ -1811,7 +1811,7 @@ mod test_gizmo {
     fn generate_ring_vertex_count() {
         let ring_segs: u32 = 24;
         let tube_segs: u32 = 6;
-        let data = roboview::primitives::generate_ring(0.05, 0.003, ring_segs, tube_segs);
+        let data = articara::primitives::generate_ring(0.05, 0.003, ring_segs, tube_segs);
         // Torus: ring_segs * tube_segs quads, 6 verts each
         // Arrowheads: 2 arrows × 12 cone_segs × 2 tris × 3 verts = 144
         let torus_verts = (ring_segs * tube_segs * 6) as usize;
@@ -1824,7 +1824,7 @@ mod test_gizmo {
     fn generate_ring_bounded_radius() {
         let ring_r = 0.05_f32;
         let tube_r = 0.003_f32;
-        let data = roboview::primitives::generate_ring(ring_r, tube_r, 48, 8);
+        let data = articara::primitives::generate_ring(ring_r, tube_r, 48, 8);
         // Arrowhead tip extends along tangent by ring_r*0.28 and cone radius is tube_r*2.8
         // The maximum distance from origin includes both the ring radius and arrow geometry
         let arrow_len = ring_r * 0.28;
