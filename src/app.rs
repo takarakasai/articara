@@ -56,6 +56,8 @@ pub struct RoboViewApp {
     drag_mode: DragMode,
     /// IK damping factor (λ for DLS).
     ik_damping: f32,
+    /// Show center-of-mass markers and mass labels.
+    show_com: bool,
 }
 
 impl RoboViewApp {
@@ -82,6 +84,7 @@ impl RoboViewApp {
             viewport_rect: egui::Rect::NOTHING,
             drag_mode: DragMode::SingleJoint,
             ik_damping: 0.05,
+            show_com: false,
         }
     }
 
@@ -238,6 +241,11 @@ impl RoboViewApp {
                     );
                 });
             }
+            ui.separator();
+
+            // --- Display options ---
+            ui.heading("Display");
+            ui.checkbox(&mut self.show_com, "Show CoM & Mass");
             ui.separator();
 
             for i in 0..model.joints.len() {
@@ -734,6 +742,31 @@ impl RoboViewApp {
         };
 
         ui.painter().add(callback);
+
+        // Draw CoM mass labels as egui text on top of the 3D viewport
+        if self.show_com {
+            let com_positions = self.gl_renderer.lock().unwrap().com_world_positions();
+            let painter = ui.painter();
+            for (world_pos, mass) in &com_positions {
+                if let Some(ndc) = self.camera.project(world_pos, aspect) {
+                    let screen_pos = egui::pos2(
+                        rect.left() + ndc.x * rect.width(),
+                        rect.top() + ndc.y * rect.height(),
+                    );
+                    // Only draw if within the viewport
+                    if rect.contains(screen_pos) {
+                        let label = format!("{:.3} kg", mass);
+                        painter.text(
+                            screen_pos + egui::vec2(6.0, -6.0),
+                            egui::Align2::LEFT_BOTTOM,
+                            &label,
+                            egui::FontId::proportional(11.0),
+                            egui::Color32::from_rgb(255, 128, 255),
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -757,10 +790,9 @@ impl eframe::App for RoboViewApp {
         // Update transforms every frame (joint positions may have changed)
         if let Some(ref model) = self.model {
             let transforms = model.compute_transforms();
-            self.gl_renderer
-                .lock()
-                .unwrap()
-                .update_transforms(transforms);
+            let mut r = self.gl_renderer.lock().unwrap();
+            r.update_transforms(transforms);
+            r.show_com = self.show_com;
         }
 
         // Top panel: menu / file selector

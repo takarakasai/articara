@@ -68,6 +68,14 @@ pub struct GlRenderer {
     axes_num_vertices: i32,
     transforms: HashMap<String, na::Isometry3<f32>>,
     pub highlight_link: Option<String>,
+    /// Small sphere mesh for CoM markers.
+    com_sphere_vao: glow::VertexArray,
+    com_sphere_vbo: glow::Buffer,
+    com_sphere_num_vertices: i32,
+    /// CoM entries: (link_name, local_com_position, mass).
+    com_entries: Vec<(String, na::Isometry3<f32>, f64)>,
+    /// Whether to draw CoM markers.
+    pub show_com: bool,
 }
 
 impl GlRenderer {
@@ -91,6 +99,11 @@ impl GlRenderer {
             let axes_num = (axes_data.len() / 6) as i32;
             let (axes_vao, axes_vbo) = upload_mesh_data(gl, &axes_data);
 
+            // CoM sphere (small sphere at origin, radius 0.007)
+            let com_sphere_data = primitives::generate_sphere(0.007, 8, 4);
+            let com_sphere_num = (com_sphere_data.len() / 6) as i32;
+            let (com_sphere_vao, com_sphere_vbo) = upload_mesh_data(gl, &com_sphere_data);
+
             Self {
                 program,
                 u_mvp,
@@ -107,6 +120,11 @@ impl GlRenderer {
                 axes_num_vertices: axes_num,
                 transforms: HashMap::new(),
                 highlight_link: None,
+                com_sphere_vao,
+                com_sphere_vbo,
+                com_sphere_num_vertices: com_sphere_num,
+                com_entries: Vec::new(),
+                show_com: false,
             }
         }
     }
@@ -118,6 +136,18 @@ impl GlRenderer {
             for entry in self.mesh_entries.drain(..) {
                 gl.delete_vertex_array(entry.vao);
                 gl.delete_buffer(entry.vbo);
+            }
+        }
+
+        // Build CoM entries from link inertial data
+        self.com_entries.clear();
+        for link in &model.links {
+            if link.inertial.mass > 1e-12 {
+                self.com_entries.push((
+                    link.name.clone(),
+                    link.inertial.origin,
+                    link.inertial.mass,
+                ));
             }
         }
 
@@ -267,12 +297,56 @@ impl GlRenderer {
                 gl.draw_arrays(glow::TRIANGLES, 0, entry.num_vertices);
             }
 
+            // Draw CoM markers
+            if self.show_com {
+                gl.uniform_1_i32(Some(&self.u_flat), 0);
+                gl.bind_vertex_array(Some(self.com_sphere_vao));
+                for (link_name, com_origin, _mass) in &self.com_entries {
+                    let world_tf = self
+                        .transforms
+                        .get(link_name)
+                        .copied()
+                        .unwrap_or(na::Isometry3::identity());
+                    let com_world = (world_tf * *com_origin).to_homogeneous();
+                    let mvp = vp * com_world;
+
+                    gl.uniform_matrix_4_f32_slice(Some(&self.u_mvp), false, mvp.as_slice());
+                    gl.uniform_matrix_3_f32_slice(
+                        Some(&self.u_normal_mat),
+                        false,
+                        na::Matrix3::<f32>::identity().as_slice(),
+                    );
+                    // Bright magenta color for CoM spheres
+                    gl.uniform_4_f32(Some(&self.u_color), 1.0, 0.0, 0.8, 1.0);
+                    gl.draw_arrays(glow::TRIANGLES, 0, self.com_sphere_num_vertices);
+                }
+            }
+
             // Restore state
             gl.disable(glow::SCISSOR_TEST);
             gl.disable(glow::DEPTH_TEST);
             gl.bind_vertex_array(None);
             gl.use_program(None);
         }
+    }
+
+    /// Get world-space CoM positions and their masses (for drawing labels).
+    pub fn com_world_positions(&self) -> Vec<(na::Point3<f32>, f64)> {
+        if !self.show_com {
+            return Vec::new();
+        }
+        self.com_entries
+            .iter()
+            .map(|(link_name, com_origin, mass)| {
+                let world_tf = self
+                    .transforms
+                    .get(link_name)
+                    .copied()
+                    .unwrap_or(na::Isometry3::identity());
+                let com_world = world_tf * com_origin * na::Point3::origin();
+                (com_world, *mass)
+            })
+            .collect()
     }
 
     /// Clean up GL resources.
@@ -286,6 +360,8 @@ impl GlRenderer {
             gl.delete_buffer(self.grid_vbo);
             gl.delete_vertex_array(self.axes_vao);
             gl.delete_buffer(self.axes_vbo);
+            gl.delete_vertex_array(self.com_sphere_vao);
+            gl.delete_buffer(self.com_sphere_vbo);
             gl.delete_program(self.program);
         }
     }
