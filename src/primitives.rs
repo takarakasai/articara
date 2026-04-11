@@ -260,7 +260,9 @@ fn push_vert(buf: &mut Vec<f32>, pos: [f32; 3], normal: [f32; 3]) {
     buf.extend_from_slice(&normal);
 }
 
-/// Generate a torus (ring) around the Z axis.
+/// Generate a torus (ring) around the Z axis with arrowheads indicating
+/// the positive rotation direction (right-hand rule: counterclockwise
+/// when viewed from +Z).
 ///
 /// `ring_radius` — distance from the Z axis to the center of the tube.
 /// `tube_radius` — radius of the tube cross-section.
@@ -311,5 +313,79 @@ pub fn generate_ring(
             push_vert(&mut v, p01, n01);
         }
     }
+
+    // --- Arrowheads ---
+    // Place two arrowheads at 0° and 180° on the ring, pointing in the
+    // positive tangent direction (counterclockwise around +Z).
+    let arrow_len = ring_radius * 0.28;
+    let arrow_r = tube_radius * 2.8;
+    let cone_segs: u32 = 12;
+
+    for &theta_a in &[0.0_f32, std::f32::consts::PI] {
+        let ct = theta_a.cos();
+        let st = theta_a.sin();
+        // Center of the ring tube at this angle
+        let base = [ring_radius * ct, ring_radius * st, 0.0];
+        // Tangent direction (positive rotation = counterclockwise)
+        let tang = [-st, ct, 0.0];
+        // Tip of the cone
+        let tip = [
+            base[0] + tang[0] * arrow_len,
+            base[1] + tang[1] * arrow_len,
+            base[2],
+        ];
+        // Normal of the tip points along the tangent
+        let tip_n = tang;
+
+        // Two vectors perpendicular to the tangent for the cone base circle.
+        // radial = outward from Z axis, z_up = (0,0,1)
+        let radial = [ct, st, 0.0];
+        let z_up = [0.0, 0.0, 1.0];
+
+        for k in 0..cone_segs {
+            let a0 = pi2 * k as f32 / cone_segs as f32;
+            let a1 = pi2 * (k + 1) as f32 / cone_segs as f32;
+
+            let base_pt = |a: f32| -> [f32; 3] {
+                let r_comp = arrow_r * a.cos();
+                let z_comp = arrow_r * a.sin();
+                [
+                    base[0] + radial[0] * r_comp + z_up[0] * z_comp,
+                    base[1] + radial[1] * r_comp + z_up[1] * z_comp,
+                    base[2] + radial[2] * r_comp + z_up[2] * z_comp,
+                ]
+            };
+
+            let bp0 = base_pt(a0);
+            let bp1 = base_pt(a1);
+
+            // Side normal: cross(tip - bp0, bp1 - bp0) (outward facing)
+            let e1 = [tip[0] - bp0[0], tip[1] - bp0[1], tip[2] - bp0[2]];
+            let e2 = [bp1[0] - bp0[0], bp1[1] - bp0[1], bp1[2] - bp0[2]];
+            let sn = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            let sn_len = (sn[0] * sn[0] + sn[1] * sn[1] + sn[2] * sn[2]).sqrt();
+            let sn_norm = if sn_len > 1e-12 {
+                [sn[0] / sn_len, sn[1] / sn_len, sn[2] / sn_len]
+            } else {
+                tip_n
+            };
+
+            // Cone side triangle: bp0, bp1, tip
+            push_vert(&mut v, bp0, sn_norm);
+            push_vert(&mut v, bp1, sn_norm);
+            push_vert(&mut v, tip, tip_n);
+
+            // Base cap triangle: center, bp1, bp0 (reversed winding for inward-facing normal)
+            let neg_tang = [-tang[0], -tang[1], -tang[2]];
+            push_vert(&mut v, base, neg_tang);
+            push_vert(&mut v, bp1, neg_tang);
+            push_vert(&mut v, bp0, neg_tang);
+        }
+    }
+
     v
 }

@@ -1809,12 +1809,15 @@ mod test_gizmo {
 
     #[test]
     fn generate_ring_vertex_count() {
-        let ring_segs = 24;
-        let tube_segs = 6;
+        let ring_segs: u32 = 24;
+        let tube_segs: u32 = 6;
         let data = roboview::primitives::generate_ring(0.05, 0.003, ring_segs, tube_segs);
-        // Each quad = 2 triangles = 6 vertices, total quads = ring_segs * tube_segs
-        let expected_verts = (ring_segs * tube_segs * 6) as usize;
-        assert_eq!(data.len() / 6, expected_verts);
+        // Torus: ring_segs * tube_segs quads, 6 verts each
+        // Arrowheads: 2 arrows × 12 cone_segs × 2 tris × 3 verts = 144
+        let torus_verts = (ring_segs * tube_segs * 6) as usize;
+        let arrow_verts = 2 * 12 * 2 * 3; // 2 arrows, 12 cone_segs, side+cap tri, 3 verts
+        let total_verts = torus_verts + arrow_verts;
+        assert_eq!(data.len() / 6, total_verts);
     }
 
     #[test]
@@ -1822,7 +1825,11 @@ mod test_gizmo {
         let ring_r = 0.05_f32;
         let tube_r = 0.003_f32;
         let data = roboview::primitives::generate_ring(ring_r, tube_r, 48, 8);
-        let outer = ring_r + tube_r + 1e-5;
+        // Arrowhead tip extends along tangent by ring_r*0.28 and cone radius is tube_r*2.8
+        // The maximum distance from origin includes both the ring radius and arrow geometry
+        let arrow_len = ring_r * 0.28;
+        let arrow_r = tube_r * 2.8;
+        let outer = ((ring_r + arrow_r).powi(2) + arrow_len.powi(2)).sqrt() + 1e-4;
         for chunk in data.chunks(6) {
             let x = chunk[0];
             let y = chunk[1];

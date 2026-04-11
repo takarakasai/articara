@@ -1137,6 +1137,25 @@ impl RoboViewApp {
                                 ui.add(egui::DragValue::new(&mut t.y).speed(0.005).prefix("y:"));
                                 ui.add(egui::DragValue::new(&mut t.z).speed(0.005).prefix("z:"));
                             });
+                            // --- Rotation editing (RPY) ---
+                            ui.horizontal(|ui| {
+                                ui.label("Rot RPY:");
+                                let (cur_r, cur_p, cur_y) = vis.origin.rotation.euler_angles();
+                                let mut r_deg = cur_r.to_degrees();
+                                let mut p_deg = cur_p.to_degrees();
+                                let mut y_deg = cur_y.to_degrees();
+                                let r_changed = ui.add(egui::DragValue::new(&mut r_deg).speed(0.5).prefix("R:").suffix("°")).changed();
+                                let p_changed = ui.add(egui::DragValue::new(&mut p_deg).speed(0.5).prefix("P:").suffix("°")).changed();
+                                let y_changed = ui.add(egui::DragValue::new(&mut y_deg).speed(0.5).prefix("Y:").suffix("°")).changed();
+                                if r_changed || p_changed || y_changed {
+                                    vis.origin.rotation = na::UnitQuaternion::from_euler_angles(
+                                        r_deg.to_radians(),
+                                        p_deg.to_radians(),
+                                        y_deg.to_radians(),
+                                    );
+                                    geom_changed = true;
+                                }
+                            });
 
                             ui.separator();
                         });
@@ -1238,6 +1257,25 @@ impl RoboViewApp {
                                 ui.add(egui::DragValue::new(&mut t.x).speed(0.005).prefix("x:"));
                                 ui.add(egui::DragValue::new(&mut t.y).speed(0.005).prefix("y:"));
                                 ui.add(egui::DragValue::new(&mut t.z).speed(0.005).prefix("z:"));
+                            });
+                            // Rotation (RPY)
+                            ui.horizontal(|ui| {
+                                ui.label("Rot RPY:");
+                                let (cur_r, cur_p, cur_y) = col.origin.rotation.euler_angles();
+                                let mut r_deg = cur_r.to_degrees();
+                                let mut p_deg = cur_p.to_degrees();
+                                let mut y_deg = cur_y.to_degrees();
+                                let r_changed = ui.add(egui::DragValue::new(&mut r_deg).speed(0.5).prefix("R:").suffix("°")).changed();
+                                let p_changed = ui.add(egui::DragValue::new(&mut p_deg).speed(0.5).prefix("P:").suffix("°")).changed();
+                                let y_changed = ui.add(egui::DragValue::new(&mut y_deg).speed(0.5).prefix("Y:").suffix("°")).changed();
+                                if r_changed || p_changed || y_changed {
+                                    col.origin.rotation = na::UnitQuaternion::from_euler_angles(
+                                        r_deg.to_radians(),
+                                        p_deg.to_radians(),
+                                        y_deg.to_radians(),
+                                    );
+                                    col_changed = true;
+                                }
                             });
                             ui.separator();
                         });
@@ -2824,7 +2862,9 @@ fn compute_ring_angle(
     let hit = ray_o + ray_d * t;
     let from_center = hit - center;
 
-    // Build a consistent reference frame on the plane
+    // Build a consistent right-handed reference frame on the plane.
+    // ref_x × ref_y should point along `normal` so that the
+    // angle increases in the positive (right-hand rule) direction.
     let ref_x = if normal.x.abs() < 0.9 {
         na::Vector3::x().cross(normal).normalize()
     } else {
@@ -2832,7 +2872,7 @@ fn compute_ring_angle(
     };
     let ref_y = normal.cross(&ref_x);
 
-    from_center.dot(&ref_x).atan2(from_center.dot(&ref_y))
+    from_center.dot(&ref_y).atan2(from_center.dot(&ref_x))
 }
 
 // ========== eframe::App ==========
