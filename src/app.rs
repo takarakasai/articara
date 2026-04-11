@@ -532,41 +532,78 @@ impl RoboViewApp {
                 if delta.length_sq() > 0.0 {
                     match drag.mode {
                         DragMode::SingleJoint => {
-                            // Project joint axis to screen space to determine rotation direction
-                            let pivot_screen = self
-                                .camera
-                                .project(&drag.pivot_world, aspect)
-                                .unwrap_or(na::Point2::new(0.5, 0.5));
-                            let axis_tip = drag.pivot_world + drag.world_axis * 0.05;
-                            let tip_screen = self
-                                .camera
-                                .project(&axis_tip, aspect)
-                                .unwrap_or(pivot_screen);
+                            // Intersect previous and current mouse rays with the
+                            // plane perpendicular to the joint axis at the pivot.
+                            // Then compute the signed angle between the two radial
+                            // vectors around the axis.
+                            if let Some(pos) = response.hover_pos() {
+                                let axis = drag.world_axis.normalize();
+                                let pivot = drag.pivot_world;
 
-                            // Screen-space axis direction
-                            let screen_axis = na::Vector2::new(
-                                tip_screen.x - pivot_screen.x,
-                                tip_screen.y - pivot_screen.y,
-                            );
-                            let screen_axis_len = screen_axis.norm();
-
-                            if screen_axis_len > 1e-6 {
-                                let screen_axis_norm = screen_axis / screen_axis_len;
-                                let perp =
-                                    na::Vector2::new(-screen_axis_norm.y, screen_axis_norm.x);
-                                let delta_ndc = na::Vector2::new(
-                                    delta.x / rect.width(),
-                                    delta.y / rect.height(),
+                                let prev_ndc = na::Point2::new(
+                                    (pos.x - delta.x - rect.left()) / rect.width(),
+                                    (pos.y - delta.y - rect.top()) / rect.height(),
                                 );
-                                let angle_delta = delta_ndc.dot(&perp) * 5.0;
+                                let curr_ndc = na::Point2::new(
+                                    (pos.x - rect.left()) / rect.width(),
+                                    (pos.y - rect.top()) / rect.height(),
+                                );
 
-                                if let Some(ref mut model) = self.model {
-                                    let ji = drag.joint_idx;
-                                    let lower = model.joints[ji].lower as f32;
-                                    let upper = model.joints[ji].upper as f32;
-                                    model.joint_positions[ji] =
-                                        (model.joint_positions[ji] + angle_delta)
-                                            .clamp(lower, upper);
+                                let (ro0, rd0) = self.camera.screen_ray(prev_ndc, aspect);
+                                let (ro1, rd1) = self.camera.screen_ray(curr_ndc, aspect);
+
+                                // Intersect ray with plane: pivot·axis = (ro + t*rd)·axis
+                                let ray_plane_hit =
+                                    |ro: &na::Point3<f32>,
+                                     rd: &na::Vector3<f32>|
+                                     -> Option<na::Point3<f32>> {
+                                        let denom = rd.dot(&axis);
+                                        if denom.abs() < 1e-7 {
+                                            return None; // ray parallel to plane
+                                        }
+                                        let t = (pivot - ro).dot(&axis) / denom;
+                                        Some(ro + rd * t)
+                                    };
+
+                                let angle_delta = match (
+                                    ray_plane_hit(&ro0, &rd0),
+                                    ray_plane_hit(&ro1, &rd1),
+                                ) {
+                                    (Some(p0), Some(p1)) => {
+                                        let v0 = p0 - pivot;
+                                        let v1 = p1 - pivot;
+                                        if v0.norm() < 1e-8 || v1.norm() < 1e-8 {
+                                            0.0
+                                        } else {
+                                            let v0n = v0.normalize();
+                                            let v1n = v1.normalize();
+                                            let cross = v0n.cross(&v1n);
+                                            let dot = v0n.dot(&v1n).clamp(-1.0, 1.0);
+                                            // signed angle: positive when rotating
+                                            // in the direction of the axis (right-hand rule)
+                                            cross.dot(&axis).atan2(dot)
+                                        }
+                                    }
+                                    _ => {
+                                        // Fallback: ray nearly parallel to the axis plane.
+                                        // Use simple screen-space delta.
+                                        let delta_ndc = na::Vector2::new(
+                                            delta.x / rect.width(),
+                                            delta.y / rect.height(),
+                                        );
+                                        delta_ndc.norm() * 3.0 * delta.x.signum()
+                                    }
+                                };
+
+                                if angle_delta.abs() > 1e-8 {
+                                    if let Some(ref mut model) = self.model {
+                                        let ji = drag.joint_idx;
+                                        let lower = model.joints[ji].lower as f32;
+                                        let upper = model.joints[ji].upper as f32;
+                                        model.joint_positions[ji] =
+                                            (model.joint_positions[ji] + angle_delta)
+                                                .clamp(lower, upper);
+                                    }
                                 }
                             }
                         }
