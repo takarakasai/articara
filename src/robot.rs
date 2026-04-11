@@ -623,11 +623,324 @@ pub fn isometry_to_pose(iso: &na::Isometry3<f32>) -> urdf_rs::Pose {
     }
 }
 
+/// Extract Euler angles (roll, pitch, yaw) from an isometry.
+fn euler_from_isometry(iso: &na::Isometry3<f32>) -> (f32, f32, f32) {
+    iso.rotation.euler_angles()
+}
+
+/// Convert a GeomData to URDF XML geometry element.
+fn geom_to_urdf_xml(geom: &GeomData) -> String {
+    match geom {
+        GeomData::Box { hx, hy, hz } => {
+            let sx = hx * 2.0;
+            let sy = hy * 2.0;
+            let sz = hz * 2.0;
+            format!("      <geometry>\n        <box size=\"{sx} {sy} {sz}\"/>\n      </geometry>\n")
+        }
+        GeomData::Cylinder {
+            radius,
+            half_length,
+        } => {
+            let length = half_length * 2.0;
+            format!("      <geometry>\n        <cylinder radius=\"{radius}\" length=\"{length}\"/>\n      </geometry>\n")
+        }
+        GeomData::Sphere { radius } => {
+            format!("      <geometry>\n        <sphere radius=\"{radius}\"/>\n      </geometry>\n")
+        }
+        GeomData::Mesh { filename, scale, .. } => {
+            let fname = filename.as_deref().unwrap_or("mesh.stl");
+            if let Some(s) = scale {
+                format!("      <geometry>\n        <mesh filename=\"{fname}\" scale=\"{} {} {}\"/>\n      </geometry>\n", s[0], s[1], s[2])
+            } else {
+                format!("      <geometry>\n        <mesh filename=\"{fname}\"/>\n      </geometry>\n")
+            }
+        }
+    }
+}
+
 impl RobotModel {
+    // ========== Model editing: Add / Remove links and joints ==========
+
+    /// Create a new empty model with a single root link.
+    pub fn new_empty(name: &str) -> Self {
+        let root_name = "base_link".to_string();
+        let mut link_map = HashMap::new();
+        link_map.insert(root_name.clone(), 0);
+        Self {
+            name: name.to_string(),
+            links: vec![LinkData {
+                name: root_name.clone(),
+                visuals: vec![VisualData {
+                    origin: na::Isometry3::identity(),
+                    geometry: GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.025 },
+                    color: [0.7, 0.7, 0.7, 1.0],
+                }],
+                collisions: Vec::new(),
+                inertial: InertialData {
+                    origin: na::Isometry3::identity(),
+                    mass: 1.0,
+                    ixx: 0.001, ixy: 0.0, ixz: 0.0,
+                    iyy: 0.001, iyz: 0.0, izz: 0.001,
+                },
+            }],
+            joints: Vec::new(),
+            link_map,
+            joint_map: HashMap::new(),
+            root_link: root_name,
+            children_joints: HashMap::new(),
+            materials: HashMap::new(),
+            joint_positions: Vec::new(),
+            source_path: None,
+        }
+    }
+
+    /// Generate a unique link name that doesn't collide with existing ones.
+    pub fn generate_link_name(&self, base: &str) -> String {
+        if !self.link_map.contains_key(base) {
+            return base.to_string();
+        }
+        for i in 1.. {
+            let name = format!("{base}_{i}");
+            if !self.link_map.contains_key(&name) {
+                return name;
+            }
+        }
+        unreachable!()
+    }
+
+    /// Generate a unique joint name that doesn't collide with existing ones.
+    pub fn generate_joint_name(&self, base: &str) -> String {
+        if !self.joint_map.contains_key(base) {
+            return base.to_string();
+        }
+        for i in 1.. {
+            let name = format!("{base}_{i}");
+            if !self.joint_map.contains_key(&name) {
+                return name;
+            }
+        }
+        unreachable!()
+    }
+
+    /// Add a new link with default values. Returns the index of the new link.
+    pub fn add_link(&mut self, name: &str, geometry: GeomData, color: [f32; 4]) -> usize {
+        let idx = self.links.len();
+        self.link_map.insert(name.to_string(), idx);
+        self.links.push(LinkData {
+            name: name.to_string(),
+            visuals: vec![VisualData {
+                origin: na::Isometry3::identity(),
+                geometry,
+                color,
+            }],
+            collisions: Vec::new(),
+            inertial: InertialData {
+                origin: na::Isometry3::identity(),
+                mass: 0.1,
+                ixx: 0.0001, ixy: 0.0, ixz: 0.0,
+                iyy: 0.0001, iyz: 0.0, izz: 0.0001,
+            },
+        });
+        idx
+    }
+
+    /// Add a new joint connecting parent_link to child_link.
+    /// Returns the index of the new joint, or Err if parent/child not found.
+    pub fn add_joint(
+        &mut self,
+        name: &str,
+        joint_type: &str,
+        parent_link: &str,
+        child_link: &str,
+        origin: na::Isometry3<f32>,
+        axis: na::Vector3<f32>,
+        lower: f64,
+        upper: f64,
+    ) -> Result<usize, String> {
+        if !self.link_map.contains_key(parent_link) {
+            return Err(format!("Parent link '{}' not found", parent_link));
+        }
+        if !self.link_map.contains_key(child_link) {
+            return Err(format!("Child link '{}' not found", child_link));
+        }
+        let idx = self.joints.len();
+        self.joint_map.insert(name.to_string(), idx);
+        self.children_joints
+            .entry(parent_link.to_string())
+            .or_default()
+            .push(idx);
+        self.joints.push(JointData {
+            name: name.to_string(),
+            joint_type: joint_type.to_string(),
+            parent_link: parent_link.to_string(),
+            child_link: child_link.to_string(),
+            origin,
+            axis,
+            lower,
+            upper,
+            effort: 10.0,
+            velocity: 5.0,
+        });
+        self.joint_positions.push(0.0);
+        Ok(idx)
+    }
+
+    /// Add a child link + joint pair in one step.
+    /// Creates a new link, then a joint connecting parent → new link.
+    /// Returns (link_index, joint_index).
+    pub fn add_child(
+        &mut self,
+        parent_link: &str,
+        link_name: &str,
+        joint_name: &str,
+        joint_type: &str,
+        origin: na::Isometry3<f32>,
+        axis: na::Vector3<f32>,
+        geometry: GeomData,
+        color: [f32; 4],
+        lower: f64,
+        upper: f64,
+    ) -> Result<(usize, usize), String> {
+        let li = self.add_link(link_name, geometry, color);
+        let ji = self.add_joint(joint_name, joint_type, parent_link, link_name, origin, axis, lower, upper)?;
+        Ok((li, ji))
+    }
+
+    /// Remove a link and all joints that reference it (parent or child).
+    /// Also removes child links recursively. Returns the names of removed links.
+    pub fn remove_link(&mut self, link_name: &str) -> Result<Vec<String>, String> {
+        if link_name == self.root_link {
+            return Err("Cannot remove the root link".to_string());
+        }
+        if !self.link_map.contains_key(link_name) {
+            return Err(format!("Link '{}' not found", link_name));
+        }
+
+        // Collect all links to remove (this link + all descendants)
+        let mut to_remove = Vec::new();
+        self.collect_descendants(link_name, &mut to_remove);
+
+        // Remove joints that reference any of the removed links
+        let remove_set: HashSet<String> = to_remove.iter().cloned().collect();
+        self.joints.retain(|j| {
+            !remove_set.contains(&j.parent_link) || !remove_set.contains(&j.child_link)
+        });
+        // Also remove the joint whose child is link_name
+        self.joints.retain(|j| !remove_set.contains(&j.child_link));
+
+        // Remove the links themselves
+        self.links.retain(|l| !remove_set.contains(&l.name));
+
+        // Rebuild indices
+        self.rebuild_indices();
+        Ok(to_remove)
+    }
+
+    /// Collect a link and all its descendants.
+    fn collect_descendants(&self, link_name: &str, result: &mut Vec<String>) {
+        result.push(link_name.to_string());
+        if let Some(child_joints) = self.children_joints.get(link_name) {
+            for &ji in child_joints {
+                let child = &self.joints[ji].child_link;
+                self.collect_descendants(child, result);
+            }
+        }
+    }
+
+    /// Rebuild all index maps after structural changes (add/remove).
+    pub fn rebuild_indices(&mut self) {
+        self.link_map.clear();
+        for (i, link) in self.links.iter().enumerate() {
+            self.link_map.insert(link.name.clone(), i);
+        }
+        self.joint_map.clear();
+        self.children_joints.clear();
+        for (i, joint) in self.joints.iter().enumerate() {
+            self.joint_map.insert(joint.name.clone(), i);
+            self.children_joints
+                .entry(joint.parent_link.clone())
+                .or_default()
+                .push(i);
+        }
+        // Fix joint_positions length
+        self.joint_positions.resize(self.joints.len(), 0.0);
+    }
+
+    /// Return a list of all link names (for UI combo boxes).
+    pub fn link_names(&self) -> Vec<String> {
+        self.links.iter().map(|l| l.name.clone()).collect()
+    }
+
     /// Export the current model as a URDF XML string.
+    /// Generate URDF XML from scratch (for models built programmatically).
+    pub fn generate_urdf_xml(&self) -> String {
+        let mut xml = format!("<?xml version=\"1.0\"?>\n<robot name=\"{}\">\n", self.name);
+
+        for link in &self.links {
+            xml.push_str(&format!("  <link name=\"{}\">\n", link.name));
+
+            // Inertial
+            let inp = &link.inertial;
+            let (ix, iy, iz) = (
+                inp.origin.translation.x,
+                inp.origin.translation.y,
+                inp.origin.translation.z,
+            );
+            let (ir, ip, iya) = euler_from_isometry(&inp.origin);
+            xml.push_str(&format!(
+                "    <inertial>\n      <origin xyz=\"{ix} {iy} {iz}\" rpy=\"{ir} {ip} {iya}\"/>\n      <mass value=\"{}\"/>\n      <inertia ixx=\"{}\" ixy=\"{}\" ixz=\"{}\" iyy=\"{}\" iyz=\"{}\" izz=\"{}\"/>\n    </inertial>\n",
+                inp.mass, inp.ixx, inp.ixy, inp.ixz, inp.iyy, inp.iyz, inp.izz
+            ));
+
+            // Visuals
+            for vis in &link.visuals {
+                let (vx, vy, vz) = (
+                    vis.origin.translation.x,
+                    vis.origin.translation.y,
+                    vis.origin.translation.z,
+                );
+                let (vr, vp, vya) = euler_from_isometry(&vis.origin);
+                xml.push_str(&format!(
+                    "    <visual>\n      <origin xyz=\"{vx} {vy} {vz}\" rpy=\"{vr} {vp} {vya}\"/>\n"
+                ));
+                xml.push_str(&geom_to_urdf_xml(&vis.geometry));
+                xml.push_str(&format!(
+                    "      <material name=\"\">\n        <color rgba=\"{} {} {} {}\"/>\n      </material>\n",
+                    vis.color[0], vis.color[1], vis.color[2], vis.color[3]
+                ));
+                xml.push_str("    </visual>\n");
+            }
+
+            xml.push_str("  </link>\n");
+        }
+
+        for joint in &self.joints {
+            let (jx, jy, jz) = (
+                joint.origin.translation.x,
+                joint.origin.translation.y,
+                joint.origin.translation.z,
+            );
+            let (jr, jp, jya) = euler_from_isometry(&joint.origin);
+            xml.push_str(&format!(
+                "  <joint name=\"{}\" type=\"{}\">\n    <origin xyz=\"{jx} {jy} {jz}\" rpy=\"{jr} {jp} {jya}\"/>\n    <parent link=\"{}\"/>\n    <child link=\"{}\"/>\n    <axis xyz=\"{} {} {}\"/>\n    <limit lower=\"{}\" upper=\"{}\" effort=\"{}\" velocity=\"{}\"/>\n  </joint>\n",
+                joint.name, joint.joint_type,
+                joint.parent_link, joint.child_link,
+                joint.axis.x, joint.axis.y, joint.axis.z,
+                joint.lower, joint.upper, joint.effort, joint.velocity
+            ));
+        }
+
+        xml.push_str("</robot>\n");
+        xml
+    }
+
     /// Re-reads the original URDF, patches editable fields (mass, inertia,
     /// joint limits, joint origin, joint axis), and serializes.
+    /// For models created from scratch (no source_path), generates URDF XML directly.
     pub fn export_urdf(&self) -> Result<String, String> {
+        if self.source_path.is_none() {
+            return Ok(self.generate_urdf_xml());
+        }
         let source = self
             .source_path
             .as_ref()
@@ -687,11 +1000,11 @@ impl RobotModel {
         let xml = self.export_urdf()?;
         std::fs::write(output_path, &xml).map_err(|e| format!("Write error: {e}"))?;
 
-        // Copy mesh files
-        let source = self
-            .source_path
-            .as_ref()
-            .ok_or("No source URDF path stored")?;
+        // Copy mesh files (only if loaded from an existing file)
+        let source = match self.source_path.as_ref() {
+            Some(s) => s,
+            None => return Ok(()), // No source path — no meshes to copy
+        };
         let urdf_dir = source.parent().unwrap_or(Path::new("."));
         let package_dir = urdf_dir.parent().unwrap_or(urdf_dir);
         let output_dir = output_path.parent().unwrap_or(Path::new("."));

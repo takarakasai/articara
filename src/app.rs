@@ -7,7 +7,7 @@ use crate::camera::OrbitCamera;
 use crate::format::RobotFormat;
 use crate::ik;
 use crate::renderer::GlRenderer;
-use crate::robot::RobotModel;
+use crate::robot::{GeomData, RobotModel};
 
 /// Drag manipulation mode.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -69,6 +69,29 @@ pub struct RoboViewApp {
     export_format: RobotFormat,
     /// Status message from last export attempt.
     export_message: String,
+    // --- Add link/joint dialog state ---
+    /// Whether the "Add Child" section is open.
+    show_add_child: bool,
+    /// New link name input.
+    new_link_name: String,
+    /// New joint name input.
+    new_joint_name: String,
+    /// Selected parent link name for the new child.
+    new_parent_link: String,
+    /// New joint type (revolute, prismatic, fixed, continuous).
+    new_joint_type_idx: usize,
+    /// New geometry type (box, cylinder, sphere).
+    new_geom_type_idx: usize,
+    /// Geometry size parameters [x, y, z] (reused for different shapes).
+    new_geom_size: [f32; 3],
+    /// New joint origin XYZ.
+    new_joint_origin: [f32; 3],
+    /// New joint axis.
+    new_joint_axis: [f32; 3],
+    /// New link color (RGBA).
+    new_link_color: [f32; 3],
+    /// Joint limits [lower, upper].
+    new_joint_limits: [f32; 2],
 }
 
 impl RoboViewApp {
@@ -101,6 +124,18 @@ impl RoboViewApp {
             export_dir: String::new(),
             export_format: RobotFormat::Urdf,
             export_message: String::new(),
+            // Add child dialog defaults
+            show_add_child: false,
+            new_link_name: String::new(),
+            new_joint_name: String::new(),
+            new_parent_link: String::new(),
+            new_joint_type_idx: 0,
+            new_geom_type_idx: 0,
+            new_geom_size: [0.05, 0.05, 0.05],
+            new_joint_origin: [0.0, 0.0, 0.1],
+            new_joint_axis: [0.0, 0.0, 1.0],
+            new_link_color: [0.5, 0.7, 1.0],
+            new_joint_limits: [-1.57, 1.57],
         }
     }
 
@@ -140,6 +175,14 @@ impl RoboViewApp {
 
     fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            if ui.button("📄 New").clicked() {
+                self.model = Some(RobotModel::new_empty("new_robot"));
+                self.selected_link = None;
+                self.selected_joint = None;
+                self.needs_upload = true;
+                self.status_message = "Created new empty model".into();
+            }
+            ui.separator();
             ui.label("File:");
             let response = ui.text_edit_singleline(&mut self.urdf_path_input);
             if (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
@@ -156,7 +199,15 @@ impl RoboViewApp {
     fn draw_tree_panel(&mut self, ui: &mut egui::Ui) {
         if self.model.is_none() {
             ui.label("No model loaded.");
-            ui.label("Enter a URDF path above and click Load.");
+            ui.label("Enter a URDF path above and click Load,");
+            ui.label("or click 📄 New to create a new model.");
+            if ui.button("📄 New Model").clicked() {
+                self.model = Some(RobotModel::new_empty("new_robot"));
+                self.selected_link = None;
+                self.selected_joint = None;
+                self.needs_upload = true;
+                self.status_message = "Created new empty model".into();
+            }
             return;
         }
 
@@ -193,6 +244,35 @@ impl RoboViewApp {
                 }
             }
         });
+
+        ui.separator();
+
+        // --- Add Child (Link + Joint) section ---
+        self.draw_add_child_panel(ui);
+
+        // --- Remove selected link ---
+        if let Some(li) = self.selected_link {
+            let link_name = self.model.as_ref().unwrap().links[li].name.clone();
+            let is_root = link_name == self.model.as_ref().unwrap().root_link;
+            ui.add_enabled_ui(!is_root, |ui| {
+                if ui.button("🗑 Remove Selected Link").clicked() {
+                    if let Some(model) = &mut self.model {
+                        match model.remove_link(&link_name) {
+                            Ok(removed) => {
+                                self.status_message =
+                                    format!("Removed {} link(s): {}", removed.len(), removed.join(", "));
+                                self.selected_link = None;
+                                self.selected_joint = None;
+                                self.needs_upload = true;
+                            }
+                            Err(e) => {
+                                self.status_message = format!("Remove error: {e}");
+                            }
+                        }
+                    }
+                }
+            });
+        }
     }
 
     fn draw_link_tree(&mut self, ui: &mut egui::Ui, link_name: &str) {
@@ -236,6 +316,259 @@ impl RoboViewApp {
                         self.draw_link_tree(ui, child_link);
                     }
                 });
+        }
+    }
+
+    fn draw_add_child_panel(&mut self, ui: &mut egui::Ui) {
+        const JOINT_TYPES: &[&str] = &["revolute", "prismatic", "fixed", "continuous"];
+        const GEOM_TYPES: &[&str] = &["Box", "Cylinder", "Sphere"];
+
+        // Toggle button
+        let toggle_label = if self.show_add_child {
+            "▼ Add Child Link+Joint"
+        } else {
+            "➕ Add Child Link+Joint"
+        };
+        if ui.button(toggle_label).clicked() {
+            self.show_add_child = !self.show_add_child;
+            // Auto-fill parent from selected link
+            if self.show_add_child {
+                if let (Some(li), Some(model)) = (self.selected_link, self.model.as_ref()) {
+                    self.new_parent_link = model.links[li].name.clone();
+                } else if let Some(model) = self.model.as_ref() {
+                    self.new_parent_link = model.root_link.clone();
+                }
+                // Auto-generate names
+                if let Some(model) = self.model.as_ref() {
+                    self.new_link_name = model.generate_link_name("new_link");
+                    self.new_joint_name = model.generate_joint_name("new_joint");
+                }
+            }
+        }
+
+        if !self.show_add_child {
+            return;
+        }
+
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+
+            // Parent link combo
+            let link_names: Vec<String> = self
+                .model
+                .as_ref()
+                .map(|m| m.link_names())
+                .unwrap_or_default();
+            ui.horizontal(|ui| {
+                ui.label("Parent:");
+                egui::ComboBox::from_id_salt("add_parent_combo")
+                    .selected_text(&self.new_parent_link)
+                    .show_ui(ui, |ui| {
+                        for name in &link_names {
+                            ui.selectable_value(&mut self.new_parent_link, name.clone(), name);
+                        }
+                    });
+            });
+
+            // Link name
+            ui.horizontal(|ui| {
+                ui.label("Link name:");
+                ui.text_edit_singleline(&mut self.new_link_name);
+            });
+
+            // Joint name
+            ui.horizontal(|ui| {
+                ui.label("Joint name:");
+                ui.text_edit_singleline(&mut self.new_joint_name);
+            });
+
+            // Joint type
+            ui.horizontal(|ui| {
+                ui.label("Joint type:");
+                egui::ComboBox::from_id_salt("add_joint_type")
+                    .selected_text(JOINT_TYPES[self.new_joint_type_idx])
+                    .show_ui(ui, |ui| {
+                        for (i, &jt) in JOINT_TYPES.iter().enumerate() {
+                            ui.selectable_value(&mut self.new_joint_type_idx, i, jt);
+                        }
+                    });
+            });
+
+            // Geometry type
+            ui.horizontal(|ui| {
+                ui.label("Geometry:");
+                egui::ComboBox::from_id_salt("add_geom_type")
+                    .selected_text(GEOM_TYPES[self.new_geom_type_idx])
+                    .show_ui(ui, |ui| {
+                        for (i, &gt) in GEOM_TYPES.iter().enumerate() {
+                            ui.selectable_value(&mut self.new_geom_type_idx, i, gt);
+                        }
+                    });
+            });
+
+            // Geometry size
+            match self.new_geom_type_idx {
+                0 => {
+                    // Box: hx, hy, hz
+                    ui.horizontal(|ui| {
+                        ui.label("Size XYZ:");
+                        ui.add(egui::DragValue::new(&mut self.new_geom_size[0]).speed(0.005).prefix("x:"));
+                        ui.add(egui::DragValue::new(&mut self.new_geom_size[1]).speed(0.005).prefix("y:"));
+                        ui.add(egui::DragValue::new(&mut self.new_geom_size[2]).speed(0.005).prefix("z:"));
+                    });
+                }
+                1 => {
+                    // Cylinder: radius, length
+                    ui.horizontal(|ui| {
+                        ui.label("Cyl:");
+                        ui.add(egui::DragValue::new(&mut self.new_geom_size[0]).speed(0.005).prefix("r:"));
+                        ui.add(egui::DragValue::new(&mut self.new_geom_size[1]).speed(0.005).prefix("l:"));
+                    });
+                }
+                2 => {
+                    // Sphere: radius
+                    ui.horizontal(|ui| {
+                        ui.label("Radius:");
+                        ui.add(egui::DragValue::new(&mut self.new_geom_size[0]).speed(0.005));
+                    });
+                }
+                _ => {}
+            }
+
+            // Joint origin
+            ui.horizontal(|ui| {
+                ui.label("Origin XYZ:");
+                ui.add(egui::DragValue::new(&mut self.new_joint_origin[0]).speed(0.005).prefix("x:"));
+                ui.add(egui::DragValue::new(&mut self.new_joint_origin[1]).speed(0.005).prefix("y:"));
+                ui.add(egui::DragValue::new(&mut self.new_joint_origin[2]).speed(0.005).prefix("z:"));
+            });
+
+            // Joint axis
+            ui.horizontal(|ui| {
+                ui.label("Axis:");
+                ui.add(egui::DragValue::new(&mut self.new_joint_axis[0]).speed(0.01).prefix("x:"));
+                ui.add(egui::DragValue::new(&mut self.new_joint_axis[1]).speed(0.01).prefix("y:"));
+                ui.add(egui::DragValue::new(&mut self.new_joint_axis[2]).speed(0.01).prefix("z:"));
+            });
+
+            // Joint limits (only for revolute / prismatic)
+            if self.new_joint_type_idx < 2 {
+                ui.horizontal(|ui| {
+                    ui.label("Limits:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.new_joint_limits[0])
+                            .speed(0.01)
+                            .prefix("lo:"),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.new_joint_limits[1])
+                            .speed(0.01)
+                            .prefix("hi:"),
+                    );
+                });
+            }
+
+            // Color
+            ui.horizontal(|ui| {
+                ui.label("Color:");
+                ui.color_edit_button_rgb(&mut self.new_link_color);
+            });
+
+            // "Add" button
+            let can_add = !self.new_link_name.is_empty()
+                && !self.new_joint_name.is_empty()
+                && !self.new_parent_link.is_empty();
+            ui.add_enabled_ui(can_add, |ui| {
+                if ui.button("✔ Add").clicked() {
+                    self.execute_add_child();
+                }
+            });
+        });
+    }
+
+    /// Actually execute adding a child link + joint.
+    fn execute_add_child(&mut self) {
+        const JOINT_TYPES: &[&str] = &["revolute", "prismatic", "fixed", "continuous"];
+
+        let geom = match self.new_geom_type_idx {
+            0 => GeomData::Box {
+                hx: self.new_geom_size[0],
+                hy: self.new_geom_size[1],
+                hz: self.new_geom_size[2],
+            },
+            1 => GeomData::Cylinder {
+                radius: self.new_geom_size[0],
+                half_length: self.new_geom_size[1] * 0.5,
+            },
+            2 => GeomData::Sphere {
+                radius: self.new_geom_size[0],
+            },
+            _ => GeomData::Box {
+                hx: 0.05,
+                hy: 0.05,
+                hz: 0.05,
+            },
+        };
+
+        let color = [
+            self.new_link_color[0],
+            self.new_link_color[1],
+            self.new_link_color[2],
+            1.0,
+        ];
+
+        let origin = na::Isometry3::new(
+            na::Vector3::new(
+                self.new_joint_origin[0],
+                self.new_joint_origin[1],
+                self.new_joint_origin[2],
+            ),
+            na::Vector3::zeros(),
+        );
+
+        let axis = na::Vector3::new(
+            self.new_joint_axis[0],
+            self.new_joint_axis[1],
+            self.new_joint_axis[2],
+        );
+
+        let jtype = JOINT_TYPES[self.new_joint_type_idx];
+        let (lower, upper) = if self.new_joint_type_idx < 2 {
+            (self.new_joint_limits[0] as f64, self.new_joint_limits[1] as f64)
+        } else {
+            (0.0, 0.0)
+        };
+
+        if let Some(model) = &mut self.model {
+            match model.add_child(
+                &self.new_parent_link,
+                &self.new_link_name,
+                &self.new_joint_name,
+                jtype,
+                origin,
+                axis,
+                geom,
+                color,
+                lower,
+                upper,
+            ) {
+                Ok((li, _ji)) => {
+                    self.status_message = format!(
+                        "Added link '{}' + joint '{}'",
+                        self.new_link_name, self.new_joint_name
+                    );
+                    self.selected_link = Some(li);
+                    self.selected_joint = None;
+                    self.needs_upload = true;
+                    self.show_add_child = false;
+                    // Prepare next auto-names
+                    self.new_link_name = model.generate_link_name("new_link");
+                    self.new_joint_name = model.generate_joint_name("new_joint");
+                }
+                Err(e) => {
+                    self.status_message = format!("Add error: {e}");
+                }
+            }
         }
     }
 
@@ -375,60 +708,124 @@ impl RoboViewApp {
                     });
 
                 ui.add_space(8.0);
+                let vis_count = link.visuals.len();
                 egui::CollapsingHeader::new(format!(
-                    "🎨 Visuals ({})",
-                    link.visuals.len()
+                    "🎨 Visuals ({vis_count})"
                 ))
+                .default_open(true)
                 .show(ui, |ui| {
-                    for (vi, visual) in link.visuals.iter().enumerate() {
-                        let geom_str = match &visual.geometry {
-                            crate::robot::GeomData::Box { hx, hy, hz } => {
-                                format!("Box [{:.3}×{:.3}×{:.3}]", hx * 2.0, hy * 2.0, hz * 2.0)
+                    let mut geom_changed = false;
+                    for vi in 0..link.visuals.len() {
+                        let vis = &mut link.visuals[vi];
+                        ui.push_id(vi, |ui| {
+                            ui.label(egui::RichText::new(format!("Visual #{vi}")).strong());
+
+                            // --- Geometry editing ---
+                            match &mut vis.geometry {
+                                GeomData::Box { hx, hy, hz } => {
+                                    ui.label("Box (half-extents):");
+                                    ui.horizontal(|ui| {
+                                        geom_changed |= ui.add(egui::DragValue::new(hx).speed(0.005).prefix("hx:").range(0.001..=10.0)).changed();
+                                        geom_changed |= ui.add(egui::DragValue::new(hy).speed(0.005).prefix("hy:").range(0.001..=10.0)).changed();
+                                        geom_changed |= ui.add(egui::DragValue::new(hz).speed(0.005).prefix("hz:").range(0.001..=10.0)).changed();
+                                    });
+                                }
+                                GeomData::Cylinder { radius, half_length } => {
+                                    ui.label("Cylinder:");
+                                    ui.horizontal(|ui| {
+                                        geom_changed |= ui.add(egui::DragValue::new(radius).speed(0.005).prefix("r:").range(0.001..=10.0)).changed();
+                                        geom_changed |= ui.add(egui::DragValue::new(half_length).speed(0.005).prefix("hl:").range(0.001..=10.0)).changed();
+                                    });
+                                }
+                                GeomData::Sphere { radius } => {
+                                    ui.label("Sphere:");
+                                    ui.horizontal(|ui| {
+                                        geom_changed |= ui.add(egui::DragValue::new(radius).speed(0.005).prefix("r:").range(0.001..=10.0)).changed();
+                                    });
+                                }
+                                GeomData::Mesh { vertices, filename, .. } => {
+                                    let tri_count = vertices.len() / 18;
+                                    let fname = filename.as_deref().unwrap_or("(inline)");
+                                    ui.label(format!("Mesh: {tri_count} tris — {fname}"));
+                                }
                             }
-                            crate::robot::GeomData::Cylinder {
-                                radius,
-                                half_length,
-                            } => {
-                                format!("Cylinder r={radius:.3} l={:.3}", half_length * 2.0)
-                            }
-                            crate::robot::GeomData::Sphere { radius } => {
-                                format!("Sphere r={radius:.3}")
-                            }
-                            crate::robot::GeomData::Mesh { vertices, .. } => {
-                                format!("Mesh ({} tris)", vertices.len() / 18)
-                            }
-                        };
-                        ui.label(format!(
-                            "#{vi}: {geom_str} color=[{:.2},{:.2},{:.2}]",
-                            visual.color[0], visual.color[1], visual.color[2]
-                        ));
+
+                            // --- Color editing ---
+                            ui.horizontal(|ui| {
+                                ui.label("Color:");
+                                let mut col3 = [vis.color[0], vis.color[1], vis.color[2]];
+                                if ui.color_edit_button_rgb(&mut col3).changed() {
+                                    vis.color[0] = col3[0];
+                                    vis.color[1] = col3[1];
+                                    vis.color[2] = col3[2];
+                                    geom_changed = true;
+                                }
+                                ui.add(egui::DragValue::new(&mut vis.color[3]).speed(0.01).prefix("a:").range(0.0..=1.0));
+                            });
+
+                            // --- Origin editing ---
+                            ui.horizontal(|ui| {
+                                ui.label("Origin:");
+                                let t = &mut vis.origin.translation.vector;
+                                ui.add(egui::DragValue::new(&mut t.x).speed(0.005).prefix("x:"));
+                                ui.add(egui::DragValue::new(&mut t.y).speed(0.005).prefix("y:"));
+                                ui.add(egui::DragValue::new(&mut t.z).speed(0.005).prefix("z:"));
+                            });
+
+                            ui.separator();
+                        });
+                    }
+                    if geom_changed {
+                        self.needs_upload = true;
                     }
                 });
 
+                let col_count = link.collisions.len();
                 egui::CollapsingHeader::new(format!(
-                    "💥 Collisions ({})",
-                    link.collisions.len()
+                    "💥 Collisions ({col_count})"
                 ))
                 .show(ui, |ui| {
-                    for (ci, col) in link.collisions.iter().enumerate() {
-                        let geom_str = match &col.geometry {
-                            crate::robot::GeomData::Box { hx, hy, hz } => {
-                                format!("Box [{:.3}×{:.3}×{:.3}]", hx * 2.0, hy * 2.0, hz * 2.0)
+                    let mut col_changed = false;
+                    for ci in 0..link.collisions.len() {
+                        let col = &mut link.collisions[ci];
+                        ui.push_id(format!("col_{ci}"), |ui| {
+                            ui.label(egui::RichText::new(format!("Collision #{ci}")).strong());
+                            match &mut col.geometry {
+                                GeomData::Box { hx, hy, hz } => {
+                                    ui.horizontal(|ui| {
+                                        col_changed |= ui.add(egui::DragValue::new(hx).speed(0.005).prefix("hx:").range(0.001..=10.0)).changed();
+                                        col_changed |= ui.add(egui::DragValue::new(hy).speed(0.005).prefix("hy:").range(0.001..=10.0)).changed();
+                                        col_changed |= ui.add(egui::DragValue::new(hz).speed(0.005).prefix("hz:").range(0.001..=10.0)).changed();
+                                    });
+                                }
+                                GeomData::Cylinder { radius, half_length } => {
+                                    ui.horizontal(|ui| {
+                                        col_changed |= ui.add(egui::DragValue::new(radius).speed(0.005).prefix("r:").range(0.001..=10.0)).changed();
+                                        col_changed |= ui.add(egui::DragValue::new(half_length).speed(0.005).prefix("hl:").range(0.001..=10.0)).changed();
+                                    });
+                                }
+                                GeomData::Sphere { radius } => {
+                                    ui.horizontal(|ui| {
+                                        col_changed |= ui.add(egui::DragValue::new(radius).speed(0.005).prefix("r:").range(0.001..=10.0)).changed();
+                                    });
+                                }
+                                GeomData::Mesh { vertices, .. } => {
+                                    ui.label(format!("Mesh ({} tris)", vertices.len() / 18));
+                                }
                             }
-                            crate::robot::GeomData::Cylinder {
-                                radius,
-                                half_length,
-                            } => {
-                                format!("Cylinder r={radius:.3} l={:.3}", half_length * 2.0)
-                            }
-                            crate::robot::GeomData::Sphere { radius } => {
-                                format!("Sphere r={radius:.3}")
-                            }
-                            crate::robot::GeomData::Mesh { vertices, .. } => {
-                                format!("Mesh ({} tris)", vertices.len() / 18)
-                            }
-                        };
-                        ui.label(format!("#{ci}: {geom_str}"));
+                            // Origin
+                            ui.horizontal(|ui| {
+                                ui.label("Origin:");
+                                let t = &mut col.origin.translation.vector;
+                                ui.add(egui::DragValue::new(&mut t.x).speed(0.005).prefix("x:"));
+                                ui.add(egui::DragValue::new(&mut t.y).speed(0.005).prefix("y:"));
+                                ui.add(egui::DragValue::new(&mut t.z).speed(0.005).prefix("z:"));
+                            });
+                            ui.separator();
+                        });
+                    }
+                    if col_changed {
+                        self.needs_upload = true;
                     }
                 });
             }
@@ -540,6 +937,10 @@ impl RoboViewApp {
             self.export_message = "⚠ No model loaded.".into();
             return;
         };
+        if model.source_path.is_none() {
+            self.export_message = "⚠ New model has no source file. Use Export instead.".into();
+            return;
+        }
         match model.save_urdf() {
             Ok(path) => {
                 self.export_message = format!("✔ Saved to {}", path.display());

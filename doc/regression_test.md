@@ -5,7 +5,7 @@
 RoboView の回帰テストは `tests/regression.rs` に実装されています。  
 Rust 標準の `#[test]` フレームワークを使用し、`cargo test` で全テストを実行できます。
 
-- **テスト総数**: 100
+- **テスト総数**: 118
 - **テストファイル**: `tests/regression.rs`
 - **フィクスチャ**: `tests/fixtures/`
 
@@ -263,10 +263,37 @@ OrbitCamera の数学的振る舞いの回帰テスト。
 
 ---
 
+### 10. test_model_editing（18テスト）— モデル編集（リンク/ジョイント追加・削除）
+
+プログラムによるモデル構築・編集機能のテスト。
+
+| テスト名 | 検証内容 |
+|---|---|
+| `new_empty_has_root_link` | `new_empty()` で base_link 1つのみ、ジョイントなし |
+| `add_link_updates_maps` | `add_link()` で links/link_map が正しく更新される |
+| `add_joint_updates_maps_and_children` | `add_joint()` で joints/joint_map/children_joints/joint_positions が更新される |
+| `add_joint_invalid_parent_fails` | 存在しない親リンクでエラーが返る |
+| `add_child_creates_link_and_joint` | `add_child()` でリンク＋ジョイントがワンステップで追加される |
+| `add_child_transforms_valid` | 追加したリンクの `compute_transforms()` がオリジンに一致 |
+| `generate_link_name_unique` | 既存名と衝突しないユニーク名が生成される |
+| `generate_joint_name_unique` | 既存名と衝突しないユニーク名が生成される |
+| `remove_link_basic` | リンク削除でリンク・ジョイント・マップが正しく更新される |
+| `remove_link_recursive` | 親リンク削除で子孫も再帰的に削除される |
+| `remove_root_link_fails` | ルートリンク削除でエラーが返る |
+| `remove_nonexistent_link_fails` | 存在しないリンク削除でエラーが返る |
+| `rebuild_indices_consistency` | `rebuild_indices()` 後の全マップがベクタと一致 |
+| `link_names_returns_all` | 全リンク名が返される |
+| `added_model_exports_valid_urdf` | 新規構築モデルの `export_urdf()` が有効なXML |
+| `added_model_exports_valid_sdf` | 新規構築モデルの `export_sdf()` が有効なXML |
+| `added_model_exports_valid_mjcf` | 新規構築モデルの `export_mjcf()` が有効なXML |
+| `multiple_children_from_same_parent` | 同じ親から複数子リンクを追加し、トランスフォームが正しい |
+
+---
+
 ## テスト結果サマリ（最終実行）
 
 ```
-test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured
+test result: ok. 118 passed; 0 failed; 0 ignored; 0 measured
 ```
 
 | モジュール | テスト数 | カバー対象 |
@@ -280,7 +307,8 @@ test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured
 | test_ik | 7 | IKチェーン構築, ヤコビアン, DLS求解, リミット遵守 |
 | test_primitives | 8 | Box/Cylinder/Sphere/Grid/Axes 頂点生成 |
 | test_cross_format | 3 | URDF↔SDF/MJCF ラウンドトリップ, 全フォーマット整合性 |
-| **合計** | **100** | |
+| test_model_editing | 18 | 新規モデル作成, リンク/ジョイント追加, 削除, URDF/SDF/MJCF生成, インデックス整合性 |
+| **合計** | **118** | |
 
 ## テスト対象外
 

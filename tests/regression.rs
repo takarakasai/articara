@@ -1140,3 +1140,287 @@ mod test_cross_format {
         }
     }
 }
+
+// ============================================================
+// Model editing — add_link, add_joint, add_child, remove_link
+// ============================================================
+mod test_model_editing {
+    use nalgebra as na;
+    use roboview::robot::*;
+
+    #[test]
+    fn new_empty_has_root_link() {
+        let model = RobotModel::new_empty("test");
+        assert_eq!(model.name, "test");
+        assert_eq!(model.links.len(), 1);
+        assert_eq!(model.root_link, "base_link");
+        assert!(model.link_map.contains_key("base_link"));
+        assert_eq!(model.joints.len(), 0);
+    }
+
+    #[test]
+    fn add_link_updates_maps() {
+        let mut model = RobotModel::new_empty("test");
+        let idx = model.add_link("arm", GeomData::Sphere { radius: 0.05 }, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(idx, 1);
+        assert_eq!(model.links.len(), 2);
+        assert_eq!(model.link_map["arm"], 1);
+        assert_eq!(model.links[1].name, "arm");
+    }
+
+    #[test]
+    fn add_joint_updates_maps_and_children() {
+        let mut model = RobotModel::new_empty("test");
+        model.add_link("child1", GeomData::Box { hx: 0.1, hy: 0.1, hz: 0.1 }, [1.0; 4]);
+        let ji = model.add_joint(
+            "j1", "revolute", "base_link", "child1",
+            na::Isometry3::identity(),
+            na::Vector3::z(),
+            -1.0, 1.0,
+        ).unwrap();
+        assert_eq!(ji, 0);
+        assert_eq!(model.joints.len(), 1);
+        assert_eq!(model.joint_map["j1"], 0);
+        assert_eq!(model.children_joints["base_link"], vec![0]);
+        assert_eq!(model.joint_positions.len(), 1);
+        assert_eq!(model.joint_positions[0], 0.0);
+    }
+
+    #[test]
+    fn add_joint_invalid_parent_fails() {
+        let mut model = RobotModel::new_empty("test");
+        model.add_link("child1", GeomData::Sphere { radius: 0.1 }, [1.0; 4]);
+        let result = model.add_joint(
+            "j1", "revolute", "no_such_link", "child1",
+            na::Isometry3::identity(),
+            na::Vector3::z(),
+            -1.0, 1.0,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn add_child_creates_link_and_joint() {
+        let mut model = RobotModel::new_empty("test");
+        let (li, ji) = model.add_child(
+            "base_link", "leg", "base_to_leg", "revolute",
+            na::Isometry3::new(na::Vector3::new(0.0, 0.0, 0.1), na::Vector3::zeros()),
+            na::Vector3::y(),
+            GeomData::Cylinder { radius: 0.02, half_length: 0.1 },
+            [0.0, 1.0, 0.0, 1.0],
+            -1.57, 1.57,
+        ).unwrap();
+        assert_eq!(li, 1);
+        assert_eq!(ji, 0);
+        assert_eq!(model.links.len(), 2);
+        assert_eq!(model.joints.len(), 1);
+        assert_eq!(model.joints[0].parent_link, "base_link");
+        assert_eq!(model.joints[0].child_link, "leg");
+    }
+
+    #[test]
+    fn add_child_transforms_valid() {
+        let mut model = RobotModel::new_empty("robot");
+        model.add_child(
+            "base_link", "link1", "joint1", "revolute",
+            na::Isometry3::new(na::Vector3::new(0.0, 0.0, 0.5), na::Vector3::zeros()),
+            na::Vector3::z(),
+            GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.25 },
+            [1.0; 4],
+            -3.14, 3.14,
+        ).unwrap();
+        let tf = model.compute_transforms();
+        assert!(tf.contains_key("base_link"));
+        assert!(tf.contains_key("link1"));
+        let link1_pos = tf["link1"].translation.vector;
+        assert!((link1_pos.z - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn generate_link_name_unique() {
+        let mut model = RobotModel::new_empty("test");
+        assert_eq!(model.generate_link_name("arm"), "arm");
+        model.add_link("arm", GeomData::Sphere { radius: 0.05 }, [1.0; 4]);
+        assert_eq!(model.generate_link_name("arm"), "arm_1");
+    }
+
+    #[test]
+    fn generate_joint_name_unique() {
+        let mut model = RobotModel::new_empty("test");
+        model.add_link("child", GeomData::Sphere { radius: 0.05 }, [1.0; 4]);
+        assert_eq!(model.generate_joint_name("j"), "j");
+        model.add_joint("j", "fixed", "base_link", "child",
+            na::Isometry3::identity(), na::Vector3::z(), 0.0, 0.0).unwrap();
+        assert_eq!(model.generate_joint_name("j"), "j_1");
+    }
+
+    #[test]
+    fn remove_link_basic() {
+        let mut model = RobotModel::new_empty("test");
+        model.add_child(
+            "base_link", "arm", "base_to_arm", "revolute",
+            na::Isometry3::identity(), na::Vector3::z(),
+            GeomData::Sphere { radius: 0.05 }, [1.0; 4],
+            -1.0, 1.0,
+        ).unwrap();
+        assert_eq!(model.links.len(), 2);
+        let removed = model.remove_link("arm").unwrap();
+        assert_eq!(removed, vec!["arm"]);
+        assert_eq!(model.links.len(), 1);
+        assert_eq!(model.joints.len(), 0);
+        assert!(!model.link_map.contains_key("arm"));
+    }
+
+    #[test]
+    fn remove_link_recursive() {
+        let mut model = RobotModel::new_empty("test");
+        model.add_child(
+            "base_link", "arm", "j1", "revolute",
+            na::Isometry3::identity(), na::Vector3::z(),
+            GeomData::Sphere { radius: 0.05 }, [1.0; 4],
+            -1.0, 1.0,
+        ).unwrap();
+        model.add_child(
+            "arm", "hand", "j2", "revolute",
+            na::Isometry3::identity(), na::Vector3::z(),
+            GeomData::Sphere { radius: 0.03 }, [1.0; 4],
+            -1.0, 1.0,
+        ).unwrap();
+        assert_eq!(model.links.len(), 3);
+        let removed = model.remove_link("arm").unwrap();
+        assert!(removed.contains(&"arm".to_string()));
+        assert!(removed.contains(&"hand".to_string()));
+        assert_eq!(model.links.len(), 1);
+        assert_eq!(model.joints.len(), 0);
+    }
+
+    #[test]
+    fn remove_root_link_fails() {
+        let mut model = RobotModel::new_empty("test");
+        let result = model.remove_link("base_link");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn remove_nonexistent_link_fails() {
+        let mut model = RobotModel::new_empty("test");
+        let result = model.remove_link("no_such");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rebuild_indices_consistency() {
+        let mut model = RobotModel::new_empty("test");
+        model.add_child(
+            "base_link", "a", "j1", "revolute",
+            na::Isometry3::identity(), na::Vector3::z(),
+            GeomData::Sphere { radius: 0.02 }, [1.0; 4], -1.0, 1.0,
+        ).unwrap();
+        model.add_child(
+            "a", "b", "j2", "fixed",
+            na::Isometry3::identity(), na::Vector3::z(),
+            GeomData::Sphere { radius: 0.02 }, [1.0; 4], 0.0, 0.0,
+        ).unwrap();
+        model.rebuild_indices();
+        assert_eq!(model.link_map.len(), 3);
+        assert_eq!(model.joint_map.len(), 2);
+        assert_eq!(model.joint_positions.len(), 2);
+        // Verify map values match vector positions
+        for (name, &idx) in &model.link_map {
+            assert_eq!(model.links[idx].name, *name);
+        }
+        for (name, &idx) in &model.joint_map {
+            assert_eq!(model.joints[idx].name, *name);
+        }
+    }
+
+    #[test]
+    fn link_names_returns_all() {
+        let mut model = RobotModel::new_empty("test");
+        model.add_link("a", GeomData::Sphere { radius: 0.05 }, [1.0; 4]);
+        model.add_link("b", GeomData::Sphere { radius: 0.05 }, [1.0; 4]);
+        let names = model.link_names();
+        assert_eq!(names.len(), 3);
+        assert!(names.contains(&"base_link".to_string()));
+        assert!(names.contains(&"a".to_string()));
+        assert!(names.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn added_model_exports_valid_urdf() {
+        let mut model = RobotModel::new_empty("built_robot");
+        model.add_child(
+            "base_link", "arm", "base_to_arm", "revolute",
+            na::Isometry3::new(na::Vector3::new(0.0, 0.0, 0.2), na::Vector3::zeros()),
+            na::Vector3::z(),
+            GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.1 },
+            [0.8, 0.2, 0.2, 1.0],
+            -1.57, 1.57,
+        ).unwrap();
+        let xml = model.export_urdf().expect("export_urdf failed");
+        assert!(xml.contains("<robot"));
+        assert!(xml.contains("built_robot"));
+        assert!(xml.contains("base_link"));
+        assert!(xml.contains("arm"));
+        assert!(xml.contains("base_to_arm"));
+        assert!(xml.contains("revolute"));
+    }
+
+    #[test]
+    fn added_model_exports_valid_sdf() {
+        use roboview::sdf::export_sdf;
+        let mut model = RobotModel::new_empty("sdf_test");
+        model.add_child(
+            "base_link", "link1", "j1", "fixed",
+            na::Isometry3::identity(), na::Vector3::z(),
+            GeomData::Sphere { radius: 0.1 }, [1.0; 4], 0.0, 0.0,
+        ).unwrap();
+        let sdf = export_sdf(&model);
+        assert!(sdf.contains("<sdf"));
+        assert!(sdf.contains("sdf_test"));
+        assert!(sdf.contains("link1"));
+    }
+
+    #[test]
+    fn added_model_exports_valid_mjcf() {
+        use roboview::mjcf::export_mjcf;
+        let mut model = RobotModel::new_empty("mjcf_test");
+        model.add_child(
+            "base_link", "link1", "j1", "revolute",
+            na::Isometry3::identity(), na::Vector3::z(),
+            GeomData::Cylinder { radius: 0.03, half_length: 0.15 },
+            [0.5, 0.5, 1.0, 1.0],
+            -3.14, 3.14,
+        ).unwrap();
+        let mjcf = export_mjcf(&model);
+        assert!(mjcf.contains("<mujoco"));
+        assert!(mjcf.contains("mjcf_test"));
+    }
+
+    #[test]
+    fn multiple_children_from_same_parent() {
+        let mut model = RobotModel::new_empty("multi");
+        model.add_child(
+            "base_link", "left", "j_left", "revolute",
+            na::Isometry3::new(na::Vector3::new(0.0, 0.1, 0.0), na::Vector3::zeros()),
+            na::Vector3::z(),
+            GeomData::Sphere { radius: 0.05 }, [1.0, 0.0, 0.0, 1.0],
+            -1.0, 1.0,
+        ).unwrap();
+        model.add_child(
+            "base_link", "right", "j_right", "revolute",
+            na::Isometry3::new(na::Vector3::new(0.0, -0.1, 0.0), na::Vector3::zeros()),
+            na::Vector3::z(),
+            GeomData::Sphere { radius: 0.05 }, [0.0, 0.0, 1.0, 1.0],
+            -1.0, 1.0,
+        ).unwrap();
+        assert_eq!(model.links.len(), 3);
+        assert_eq!(model.joints.len(), 2);
+        assert_eq!(model.children_joints["base_link"].len(), 2);
+        let tf = model.compute_transforms();
+        let left_y = tf["left"].translation.vector.y;
+        let right_y = tf["right"].translation.vector.y;
+        assert!((left_y - 0.1).abs() < 0.001);
+        assert!((right_y + 0.1).abs() < 0.001);
+    }
+}
