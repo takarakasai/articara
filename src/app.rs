@@ -675,9 +675,9 @@ impl RoboViewApp {
                 }
             }
 
-            if changed {
-                self.needs_upload = false; // Don't need to re-upload geometry, just update transforms
-            }
+            // Joint slider changes only affect transforms, not geometry.
+            // Do NOT touch needs_upload here — it may be true from add/remove operations.
+            let _ = changed;
 
             if ui.button("Reset All Joints").clicked() {
                 for pos in model.joint_positions.iter_mut() {
@@ -1445,17 +1445,6 @@ impl eframe::App for RoboViewApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
-        // Upload robot to GPU if model just loaded
-        if self.needs_upload {
-            if let Some(ref model) = self.model {
-                self.gl_renderer
-                    .lock()
-                    .unwrap()
-                    .upload_robot(&self.gl, model);
-                self.needs_upload = false;
-            }
-        }
-
         // Update transforms every frame (joint positions may have changed)
         if let Some(ref model) = self.model {
             let transforms = model.compute_transforms();
@@ -1498,6 +1487,19 @@ impl eframe::App for RoboViewApp {
 
         // Central viewport (use remaining space)
         self.draw_viewport(ui);
+
+        // Upload robot geometry to GPU when needed.
+        // Placed AFTER all UI panels so that add/remove operations in this frame
+        // set needs_upload=true and are captured here in the same frame.
+        if self.needs_upload {
+            if let Some(ref model) = self.model {
+                self.gl_renderer
+                    .lock()
+                    .unwrap()
+                    .upload_robot(&self.gl, model);
+                self.needs_upload = false;
+            }
+        }
 
         // Request continuous repaint for smooth camera interaction
         ctx.request_repaint();
