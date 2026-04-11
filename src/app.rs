@@ -1,12 +1,13 @@
 use eframe::egui;
 use nalgebra as na;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::camera::OrbitCamera;
 use crate::format::RobotFormat;
 use crate::ik;
-use crate::renderer::GlRenderer;
+use crate::renderer::{DisplayMode, GlRenderer, MeshKind};
 use crate::robot::{GeomData, RobotModel};
 
 /// Drag manipulation mode.
@@ -61,8 +62,14 @@ pub struct RoboViewApp {
     show_com: bool,
     /// Scale factor for CoM sphere size (sphere radius = mass × com_scale).
     com_scale: f32,
-    /// Show robot links in wireframe mode.
+    /// Show robot links in wireframe mode (legacy, kept for compat).
     wireframe: bool,
+    /// Global visual display mode.
+    visual_mode: DisplayMode,
+    /// Global collision display mode.
+    collision_mode: DisplayMode,
+    /// Per-link display mode overrides. Key=(link_name, MeshKind).
+    link_display_modes: HashMap<(String, MeshKind), DisplayMode>,
     /// Export output directory path.
     export_dir: String,
     /// Selected format for export.
@@ -121,6 +128,9 @@ impl RoboViewApp {
             show_com: false,
             com_scale: 0.01,
             wireframe: false,
+            visual_mode: DisplayMode::Solid,
+            collision_mode: DisplayMode::Off,
+            link_display_modes: HashMap::new(),
             export_dir: String::new(),
             export_format: RobotFormat::Urdf,
             export_message: String::new(),
@@ -604,7 +614,28 @@ impl RoboViewApp {
 
             // --- Display options ---
             ui.heading("Display");
-            ui.checkbox(&mut self.wireframe, "Wireframe");
+            // Global visual mode
+            ui.horizontal(|ui| {
+                ui.label("Visual:");
+                egui::ComboBox::from_id_salt("global_visual_mode")
+                    .selected_text(self.visual_mode.label())
+                    .show_ui(ui, |ui| {
+                        for m in DisplayMode::ALL {
+                            ui.selectable_value(&mut self.visual_mode, m, m.label());
+                        }
+                    });
+            });
+            // Global collision mode
+            ui.horizontal(|ui| {
+                ui.label("Collision:");
+                egui::ComboBox::from_id_salt("global_collision_mode")
+                    .selected_text(self.collision_mode.label())
+                    .show_ui(ui, |ui| {
+                        for m in DisplayMode::ALL {
+                            ui.selectable_value(&mut self.collision_mode, m, m.label());
+                        }
+                    });
+            });
             ui.checkbox(&mut self.show_com, "Show CoM & Mass");
             if self.show_com {
                 ui.horizontal(|ui| {
@@ -663,7 +694,61 @@ impl RoboViewApp {
         if let Some(model) = &mut self.model {
             if let Some(li) = self.selected_link {
                 let link = &mut model.links[li];
-                ui.label(egui::RichText::new(&link.name).strong().size(16.0));
+                let link_name = link.name.clone();
+                ui.label(egui::RichText::new(&link_name).strong().size(16.0));
+                ui.separator();
+
+                // --- Per-link display mode controls ---
+                ui.horizontal(|ui| {
+                    ui.label("Visual:");
+                    let key_v = (link_name.clone(), MeshKind::Visual);
+                    let mut cur_v = self
+                        .link_display_modes
+                        .get(&key_v)
+                        .copied()
+                        .unwrap_or(self.visual_mode);
+                    let prev_v = cur_v;
+                    egui::ComboBox::from_id_salt(format!("link_vis_{li}"))
+                        .width(80.0)
+                        .selected_text(cur_v.label())
+                        .show_ui(ui, |ui| {
+                            for m in DisplayMode::ALL {
+                                ui.selectable_value(&mut cur_v, m, m.label());
+                            }
+                        });
+                    if cur_v != prev_v {
+                        if cur_v == self.visual_mode {
+                            self.link_display_modes.remove(&key_v);
+                        } else {
+                            self.link_display_modes.insert(key_v, cur_v);
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Collision:");
+                    let key_c = (link_name.clone(), MeshKind::Collision);
+                    let mut cur_c = self
+                        .link_display_modes
+                        .get(&key_c)
+                        .copied()
+                        .unwrap_or(self.collision_mode);
+                    let prev_c = cur_c;
+                    egui::ComboBox::from_id_salt(format!("link_col_{li}"))
+                        .width(80.0)
+                        .selected_text(cur_c.label())
+                        .show_ui(ui, |ui| {
+                            for m in DisplayMode::ALL {
+                                ui.selectable_value(&mut cur_c, m, m.label());
+                            }
+                        });
+                    if cur_c != prev_c {
+                        if cur_c == self.collision_mode {
+                            self.link_display_modes.remove(&key_c);
+                        } else {
+                            self.link_display_modes.insert(key_c, cur_c);
+                        }
+                    }
+                });
                 ui.separator();
 
                 egui::CollapsingHeader::new("📐 Inertial")
@@ -1379,6 +1464,9 @@ impl eframe::App for RoboViewApp {
             r.show_com = self.show_com;
             r.com_scale = self.com_scale;
             r.wireframe = self.wireframe;
+            r.visual_mode = self.visual_mode;
+            r.collision_mode = self.collision_mode;
+            r.link_display_modes = self.link_display_modes.clone();
         }
 
         // Top panel: menu / file selector

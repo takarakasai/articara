@@ -41,6 +41,33 @@ void main() {
 
 // ========== GL Mesh Entry ==========
 
+/// Whether a mesh entry is from <visual> or <collision>.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MeshKind {
+    Visual,
+    Collision,
+}
+
+/// Display mode for a geometry category.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DisplayMode {
+    Off,
+    Solid,
+    Wireframe,
+}
+
+impl DisplayMode {
+    pub const ALL: [DisplayMode; 3] = [DisplayMode::Off, DisplayMode::Solid, DisplayMode::Wireframe];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DisplayMode::Off => "Off",
+            DisplayMode::Solid => "Solid",
+            DisplayMode::Wireframe => "Wireframe",
+        }
+    }
+}
+
 struct GlMeshEntry {
     vao: glow::VertexArray,
     vbo: glow::Buffer,
@@ -48,6 +75,7 @@ struct GlMeshEntry {
     color: [f32; 4],
     link_name: String,
     visual_origin: na::Isometry3<f32>,
+    kind: MeshKind,
 }
 
 // ========== Renderer ==========
@@ -80,6 +108,13 @@ pub struct GlRenderer {
     pub com_scale: f32,
     /// Wireframe mode for robot meshes.
     pub wireframe: bool,
+    /// Global display mode for visual geometry.
+    pub visual_mode: DisplayMode,
+    /// Global display mode for collision geometry.
+    pub collision_mode: DisplayMode,
+    /// Per-link display mode overrides. Key=(link_name, MeshKind), value=DisplayMode.
+    /// If absent for a (link, kind), use the corresponding global mode.
+    pub link_display_modes: HashMap<(String, MeshKind), DisplayMode>,
 }
 
 impl GlRenderer {
@@ -131,6 +166,9 @@ impl GlRenderer {
                 show_com: false,
                 com_scale: 0.01,
                 wireframe: false,
+                visual_mode: DisplayMode::Solid,
+                collision_mode: DisplayMode::Off,
+                link_display_modes: HashMap::new(),
             }
         }
     }
@@ -183,6 +221,33 @@ impl GlRenderer {
                     color: visual.color,
                     link_name: link.name.clone(),
                     visual_origin: visual.origin,
+                    kind: MeshKind::Visual,
+                });
+            }
+
+            // Upload collision meshes
+            for col in &link.collisions {
+                let vertex_data = match &col.geometry {
+                    GeomData::Box { hx, hy, hz } => primitives::generate_box(*hx, *hy, *hz),
+                    GeomData::Cylinder { radius, half_length } => {
+                        primitives::generate_cylinder(*radius, *half_length, 16)
+                    }
+                    GeomData::Sphere { radius } => primitives::generate_sphere(*radius, 16, 8),
+                    GeomData::Mesh { vertices, .. } => vertices.clone(),
+                };
+                if vertex_data.is_empty() {
+                    continue;
+                }
+                let num_vertices = (vertex_data.len() / 6) as i32;
+                let (vao, vbo) = unsafe { upload_mesh_data(gl, &vertex_data) };
+                self.mesh_entries.push(GlMeshEntry {
+                    vao,
+                    vbo,
+                    num_vertices,
+                    color: [0.0, 1.0, 0.5, 0.4], // green-ish for collision
+                    link_name: link.name.clone(),
+                    visual_origin: col.origin,
+                    kind: MeshKind::Collision,
                 });
             }
         }
@@ -197,6 +262,66 @@ impl GlRenderer {
     }
 
     /// Render the scene.
+    /// Draw a single mesh entry with transform, lighting, and highlight.
+    unsafe fn draw_mesh_entry(
+        &self,
+        gl: &glow::Context,
+        entry: &GlMeshEntry,
+        vp: &na::Matrix4<f32>,
+        _light_dir: &na::Vector3<f32>,
+    ) {
+        unsafe {
+            let world_tf = self
+                .transforms
+                .get(&entry.link_name)
+                .copied()
+                .unwrap_or(na::Isometry3::identity());
+            let model_mat = (world_tf * entry.visual_origin).to_homogeneous();
+            let mvp = vp * model_mat;
+
+            gl.uniform_matrix_4_f32_slice(Some(&self.u_mvp), false, mvp.as_slice());
+
+            let model3 = model_mat.fixed_view::<3, 3>(0, 0).into_owned();
+            let normal_mat = model3
+                .try_inverse()
+                .map(|inv| inv.transpose())
+                .unwrap_or(na::Matrix3::identity());
+            gl.uniform_matrix_3_f32_slice(
+                Some(&self.u_normal_mat),
+                false,
+                normal_mat.as_slice(),
+            );
+
+            // Highlight hovered/dragged link with a bright tint
+            let is_highlighted = self
+                .highlight_link
+                .as_ref()
+                .map(|h| h == &entry.link_name)
+                .unwrap_or(false);
+            if is_highlighted {
+                let tint = 0.4;
+                gl.uniform_4_f32(
+                    Some(&self.u_color),
+                    (entry.color[0] + tint).min(1.0),
+                    (entry.color[1] + tint).min(1.0),
+                    (entry.color[2] + tint).min(1.0),
+                    entry.color[3],
+                );
+            } else {
+                gl.uniform_4_f32(
+                    Some(&self.u_color),
+                    entry.color[0],
+                    entry.color[1],
+                    entry.color[2],
+                    entry.color[3],
+                );
+            }
+
+            gl.bind_vertex_array(Some(entry.vao));
+            gl.draw_arrays(glow::TRIANGLES, 0, entry.num_vertices);
+        }
+    }
+
     pub fn render(&self, gl: &glow::Context, camera: &OrbitCamera, viewport: [i32; 4]) {
         let w = viewport[2].max(1);
         let h = viewport[3].max(1);
@@ -250,64 +375,34 @@ impl GlRenderer {
             gl.draw_arrays(glow::LINES, 4, 2);
             gl.line_width(1.0);
 
-            // Draw robot meshes
-            if self.wireframe {
-                gl.polygon_mode(glow::FRONT_AND_BACK, glow::LINE);
-            }
+            // Draw robot meshes — iterate all entries, resolve per-link display mode
             gl.uniform_1_i32(Some(&self.u_flat), 0);
             for entry in &self.mesh_entries {
-                let world_tf = self
-                    .transforms
-                    .get(&entry.link_name)
+                // Resolve effective display mode: per-link override > global
+                let global_mode = match entry.kind {
+                    MeshKind::Visual => self.visual_mode,
+                    MeshKind::Collision => self.collision_mode,
+                };
+                let mode = self
+                    .link_display_modes
+                    .get(&(entry.link_name.clone(), entry.kind))
                     .copied()
-                    .unwrap_or(na::Isometry3::identity());
-                let model_mat = (world_tf * entry.visual_origin).to_homogeneous();
-                let mvp = vp * model_mat;
+                    .unwrap_or(global_mode);
 
-                gl.uniform_matrix_4_f32_slice(Some(&self.u_mvp), false, mvp.as_slice());
-
-                let model3 = model_mat.fixed_view::<3, 3>(0, 0).into_owned();
-                let normal_mat = model3
-                    .try_inverse()
-                    .map(|inv| inv.transpose())
-                    .unwrap_or(na::Matrix3::identity());
-                gl.uniform_matrix_3_f32_slice(
-                    Some(&self.u_normal_mat),
-                    false,
-                    normal_mat.as_slice(),
-                );
-
-                // Highlight hovered/dragged link with a bright tint
-                let is_highlighted = self
-                    .highlight_link
-                    .as_ref()
-                    .map(|h| h == &entry.link_name)
-                    .unwrap_or(false);
-                if is_highlighted {
-                    let tint = 0.4;
-                    gl.uniform_4_f32(
-                        Some(&self.u_color),
-                        (entry.color[0] + tint).min(1.0),
-                        (entry.color[1] + tint).min(1.0),
-                        (entry.color[2] + tint).min(1.0),
-                        entry.color[3],
-                    );
-                } else {
-                    gl.uniform_4_f32(
-                        Some(&self.u_color),
-                        entry.color[0],
-                        entry.color[1],
-                        entry.color[2],
-                        entry.color[3],
-                    );
+                match mode {
+                    DisplayMode::Off => continue,
+                    DisplayMode::Solid => {
+                        gl.polygon_mode(glow::FRONT_AND_BACK, glow::FILL);
+                    }
+                    DisplayMode::Wireframe => {
+                        gl.polygon_mode(glow::FRONT_AND_BACK, glow::LINE);
+                    }
                 }
+                self.draw_mesh_entry(gl, entry, &vp, &light_dir);
+            }
+            // Ensure fill mode is restored
+            gl.polygon_mode(glow::FRONT_AND_BACK, glow::FILL);
 
-                gl.bind_vertex_array(Some(entry.vao));
-                gl.draw_arrays(glow::TRIANGLES, 0, entry.num_vertices);
-            }
-            if self.wireframe {
-                gl.polygon_mode(glow::FRONT_AND_BACK, glow::FILL);
-            }
 
             // Draw CoM markers
             if self.show_com {
