@@ -15,6 +15,8 @@ pub struct RobotModel {
     pub children_joints: HashMap<String, Vec<usize>>,
     pub materials: HashMap<String, [f32; 4]>,
     pub joint_positions: Vec<f32>,
+    /// Path of the originally loaded URDF file.
+    pub source_path: Option<PathBuf>,
 }
 
 pub struct LinkData {
@@ -218,6 +220,7 @@ impl RobotModel {
             children_joints,
             materials,
             joint_positions,
+            source_path: Some(path.to_path_buf()),
         })
     }
 
@@ -592,6 +595,141 @@ fn ray_triangle_intersect(
 }
 
 // ========== Helper Functions ==========
+
+/// Convert an Isometry3 back to a urdf_rs Pose (xyz + rpy).
+fn isometry_to_pose(iso: &na::Isometry3<f32>) -> urdf_rs::Pose {
+    let t = iso.translation;
+    let (roll, pitch, yaw) = iso.rotation.euler_angles();
+    urdf_rs::Pose {
+        xyz: urdf_rs::Vec3([t.x as f64, t.y as f64, t.z as f64]),
+        rpy: urdf_rs::Vec3([roll as f64, pitch as f64, yaw as f64]),
+    }
+}
+
+impl RobotModel {
+    /// Export the current model as a URDF XML string.
+    /// Re-reads the original URDF, patches editable fields (mass, inertia,
+    /// joint limits, joint origin, joint axis), and serializes.
+    pub fn export_urdf(&self) -> Result<String, String> {
+        let source = self
+            .source_path
+            .as_ref()
+            .ok_or("No source URDF path stored")?;
+        let mut robot =
+            urdf_rs::read_file(source).map_err(|e| format!("Re-read URDF error: {e}"))?;
+
+        // Patch link inertial data
+        for our_link in &self.links {
+            if let Some(urdf_link) = robot.links.iter_mut().find(|l| l.name == our_link.name) {
+                urdf_link.inertial.mass.value = our_link.inertial.mass;
+                urdf_link.inertial.inertia.ixx = our_link.inertial.ixx;
+                urdf_link.inertial.inertia.ixy = our_link.inertial.ixy;
+                urdf_link.inertial.inertia.ixz = our_link.inertial.ixz;
+                urdf_link.inertial.inertia.iyy = our_link.inertial.iyy;
+                urdf_link.inertial.inertia.iyz = our_link.inertial.iyz;
+                urdf_link.inertial.inertia.izz = our_link.inertial.izz;
+                urdf_link.inertial.origin = isometry_to_pose(&our_link.inertial.origin);
+            }
+        }
+
+        // Patch joint data
+        for our_joint in &self.joints {
+            if let Some(urdf_joint) = robot.joints.iter_mut().find(|j| j.name == our_joint.name) {
+                urdf_joint.origin = isometry_to_pose(&our_joint.origin);
+                urdf_joint.axis.xyz = urdf_rs::Vec3([
+                    our_joint.axis.x as f64,
+                    our_joint.axis.y as f64,
+                    our_joint.axis.z as f64,
+                ]);
+                urdf_joint.limit.lower = our_joint.lower;
+                urdf_joint.limit.upper = our_joint.upper;
+                urdf_joint.limit.effort = our_joint.effort;
+                urdf_joint.limit.velocity = our_joint.velocity;
+            }
+        }
+
+        urdf_rs::write_to_string(&robot).map_err(|e| format!("URDF serialize error: {e}"))
+    }
+
+    /// Export the current model to a URDF file at the given path.
+    /// Also copies all referenced mesh files to the output directory,
+    /// preserving the relative directory structure from the package root.
+    pub fn export_urdf_to_file(&self, output_path: &Path) -> Result<(), String> {
+        let xml = self.export_urdf()?;
+        std::fs::write(output_path, &xml).map_err(|e| format!("Write error: {e}"))?;
+
+        // Copy mesh files
+        let source = self
+            .source_path
+            .as_ref()
+            .ok_or("No source URDF path stored")?;
+        let urdf_dir = source.parent().unwrap_or(Path::new("."));
+        let package_dir = urdf_dir.parent().unwrap_or(urdf_dir);
+        let output_dir = output_path.parent().unwrap_or(Path::new("."));
+        // The output "package dir" is the parent of the output URDF dir,
+        // mirroring the original structure: <package_dir>/<urdf_subdir>/file.urdf
+        let output_package_dir = output_dir.parent().unwrap_or(output_dir);
+
+        // Re-read original URDF to get mesh filenames
+        let robot =
+            urdf_rs::read_file(source).map_err(|e| format!("Re-read URDF for meshes: {e}"))?;
+
+        let mut copied: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        let mut copy_count = 0u32;
+
+        for link in &robot.links {
+            // Collect mesh geometries from both visual and collision
+            let geom_iter = link
+                .visual
+                .iter()
+                .map(|v| &v.geometry)
+                .chain(link.collision.iter().map(|c| &c.geometry));
+
+            for geom in geom_iter {
+                if let urdf_rs::Geometry::Mesh { filename, .. } = geom {
+                    let src_abs = resolve_package_path(filename, package_dir);
+                    if copied.contains(&src_abs) {
+                        continue;
+                    }
+                    copied.insert(src_abs.clone());
+
+                    if !src_abs.exists() {
+                        log::warn!("Mesh file not found, skipping: {:?}", src_abs);
+                        continue;
+                    }
+
+                    // Determine matched destination path
+                    let dst_abs = resolve_package_path(filename, output_package_dir);
+
+                    // Create parent directory for destination
+                    if let Some(dst_parent) = dst_abs.parent() {
+                        std::fs::create_dir_all(dst_parent)
+                            .map_err(|e| format!("Create mesh dir {:?}: {e}", dst_parent))?;
+                    }
+
+                    // Copy (skip if src == dst)
+                    if src_abs != dst_abs {
+                        std::fs::copy(&src_abs, &dst_abs).map_err(|e| {
+                            format!(
+                                "Copy mesh {:?} -> {:?}: {e}",
+                                src_abs.file_name().unwrap_or_default(),
+                                dst_abs
+                            )
+                        })?;
+                        copy_count += 1;
+                    }
+                }
+            }
+        }
+
+        log::info!(
+            "Exported URDF to {:?}, copied {} mesh file(s)",
+            output_path,
+            copy_count
+        );
+        Ok(())
+    }
+}
 
 fn pose_to_isometry(pose: &urdf_rs::Pose) -> na::Isometry3<f32> {
     let xyz = &pose.xyz.0;

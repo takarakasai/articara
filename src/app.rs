@@ -62,6 +62,10 @@ pub struct RoboViewApp {
     com_scale: f32,
     /// Show robot links in wireframe mode.
     wireframe: bool,
+    /// Export output directory path.
+    export_dir: String,
+    /// Status message from last export attempt.
+    export_message: String,
 }
 
 impl RoboViewApp {
@@ -91,6 +95,8 @@ impl RoboViewApp {
             show_com: false,
             com_scale: 0.01,
             wireframe: false,
+            export_dir: String::new(),
+            export_message: String::new(),
         }
     }
 
@@ -108,6 +114,12 @@ impl RoboViewApp {
                 self.selected_link = None;
                 self.selected_joint = None;
                 self.needs_upload = true;
+                // Default export dir to the URDF's parent directory
+                if self.export_dir.is_empty() {
+                    if let Some(parent) = path.parent() {
+                        self.export_dir = parent.display().to_string();
+                    }
+                }
             }
             Err(e) => {
                 self.status_message = format!("Error: {e}");
@@ -303,13 +315,13 @@ impl RoboViewApp {
         }
     }
 
-    fn draw_properties_panel(&self, ui: &mut egui::Ui) {
+    fn draw_properties_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Properties");
         ui.separator();
 
-        if let Some(model) = &self.model {
+        if let Some(model) = &mut self.model {
             if let Some(li) = self.selected_link {
-                let link = &model.links[li];
+                let link = &mut model.links[li];
                 ui.label(egui::RichText::new(&link.name).strong().size(16.0));
                 ui.separator();
 
@@ -318,35 +330,38 @@ impl RoboViewApp {
                     .show(ui, |ui| {
                         egui::Grid::new("inertial_grid")
                             .striped(true)
+                            .num_columns(2)
                             .show(ui, |ui| {
-                                ui.label("Mass:");
-                                ui.label(format!("{:.6} kg", link.inertial.mass));
+                                ui.label("Mass (kg):");
+                                ui.add(egui::DragValue::new(&mut link.inertial.mass).speed(0.001).range(0.0..=f64::MAX));
                                 ui.end_row();
-                                ui.label("Origin:");
-                                ui.label(format!(
-                                    "[{:.4}, {:.4}, {:.4}]",
-                                    link.inertial.origin.translation.x,
-                                    link.inertial.origin.translation.y,
-                                    link.inertial.origin.translation.z
-                                ));
+
+                                ui.label("Origin xyz:");
+                                ui.horizontal(|ui| {
+                                    let t = &mut link.inertial.origin.translation;
+                                    ui.add(egui::DragValue::new(&mut t.x).speed(0.0001).prefix("x:"));
+                                    ui.add(egui::DragValue::new(&mut t.y).speed(0.0001).prefix("y:"));
+                                    ui.add(egui::DragValue::new(&mut t.z).speed(0.0001).prefix("z:"));
+                                });
                                 ui.end_row();
+
                                 ui.label("Ixx:");
-                                ui.label(format!("{:.6}", link.inertial.ixx));
+                                ui.add(egui::DragValue::new(&mut link.inertial.ixx).speed(0.000001));
                                 ui.end_row();
                                 ui.label("Ixy:");
-                                ui.label(format!("{:.6}", link.inertial.ixy));
+                                ui.add(egui::DragValue::new(&mut link.inertial.ixy).speed(0.000001));
                                 ui.end_row();
                                 ui.label("Ixz:");
-                                ui.label(format!("{:.6}", link.inertial.ixz));
+                                ui.add(egui::DragValue::new(&mut link.inertial.ixz).speed(0.000001));
                                 ui.end_row();
                                 ui.label("Iyy:");
-                                ui.label(format!("{:.6}", link.inertial.iyy));
+                                ui.add(egui::DragValue::new(&mut link.inertial.iyy).speed(0.000001));
                                 ui.end_row();
                                 ui.label("Iyz:");
-                                ui.label(format!("{:.6}", link.inertial.iyz));
+                                ui.add(egui::DragValue::new(&mut link.inertial.iyz).speed(0.000001));
                                 ui.end_row();
                                 ui.label("Izz:");
-                                ui.label(format!("{:.6}", link.inertial.izz));
+                                ui.add(egui::DragValue::new(&mut link.inertial.izz).speed(0.000001));
                                 ui.end_row();
                             });
                     });
@@ -411,11 +426,12 @@ impl RoboViewApp {
             }
 
             if let Some(ji) = self.selected_joint {
-                let joint = &model.joints[ji];
+                let joint = &mut model.joints[ji];
                 ui.label(egui::RichText::new(&joint.name).strong().size(16.0));
                 ui.separator();
                 egui::Grid::new("joint_props")
                     .striped(true)
+                    .num_columns(2)
                     .show(ui, |ui| {
                         ui.label("Type:");
                         ui.label(&joint.joint_type);
@@ -426,37 +442,87 @@ impl RoboViewApp {
                         ui.label("Child:");
                         ui.label(&joint.child_link);
                         ui.end_row();
+
                         ui.label("Axis:");
-                        ui.label(format!(
-                            "[{:.3}, {:.3}, {:.3}]",
-                            joint.axis.x, joint.axis.y, joint.axis.z
-                        ));
+                        ui.horizontal(|ui| {
+                            ui.add(egui::DragValue::new(&mut joint.axis.x).speed(0.01).prefix("x:"));
+                            ui.add(egui::DragValue::new(&mut joint.axis.y).speed(0.01).prefix("y:"));
+                            ui.add(egui::DragValue::new(&mut joint.axis.z).speed(0.01).prefix("z:"));
+                        });
                         ui.end_row();
-                        ui.label("Lower:");
-                        ui.label(format!("{:.4} rad", joint.lower));
+
+                        ui.label("Lower (rad):");
+                        ui.add(egui::DragValue::new(&mut joint.lower).speed(0.01));
                         ui.end_row();
-                        ui.label("Upper:");
-                        ui.label(format!("{:.4} rad", joint.upper));
+                        ui.label("Upper (rad):");
+                        ui.add(egui::DragValue::new(&mut joint.upper).speed(0.01));
                         ui.end_row();
-                        ui.label("Effort:");
-                        ui.label(format!("{:.4} Nm", joint.effort));
+                        ui.label("Effort (Nm):");
+                        ui.add(egui::DragValue::new(&mut joint.effort).speed(0.1).range(0.0..=f64::MAX));
                         ui.end_row();
-                        ui.label("Velocity:");
-                        ui.label(format!("{:.4} rad/s", joint.velocity));
+                        ui.label("Velocity (rad/s):");
+                        ui.add(egui::DragValue::new(&mut joint.velocity).speed(0.1).range(0.0..=f64::MAX));
                         ui.end_row();
-                        ui.label("Origin:");
-                        ui.label(format!(
-                            "[{:.4}, {:.4}, {:.4}]",
-                            joint.origin.translation.x,
-                            joint.origin.translation.y,
-                            joint.origin.translation.z
-                        ));
+
+                        ui.label("Origin xyz:");
+                        ui.horizontal(|ui| {
+                            let t = &mut joint.origin.translation;
+                            ui.add(egui::DragValue::new(&mut t.x).speed(0.0001).prefix("x:"));
+                            ui.add(egui::DragValue::new(&mut t.y).speed(0.0001).prefix("y:"));
+                            ui.add(egui::DragValue::new(&mut t.z).speed(0.0001).prefix("z:"));
+                        });
                         ui.end_row();
                     });
             }
 
             if self.selected_link.is_none() && self.selected_joint.is_none() {
                 ui.label("Select a link or joint to view properties.");
+            }
+        }
+
+        // --- Export section ---
+        ui.separator();
+        ui.heading("Export");
+        ui.horizontal(|ui| {
+            ui.label("Dir:");
+            ui.text_edit_singleline(&mut self.export_dir);
+        });
+        if ui.button("Export URDF").clicked() {
+            self.do_export();
+        }
+        if !self.export_message.is_empty() {
+            ui.label(&self.export_message);
+        }
+    }
+
+    fn do_export(&mut self) {
+        if self.export_dir.is_empty() {
+            self.export_message = "⚠ Please specify an output directory.".into();
+            return;
+        }
+        let Some(ref model) = self.model else {
+            self.export_message = "⚠ No model loaded.".into();
+            return;
+        };
+        let dir = PathBuf::from(&self.export_dir);
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            self.export_message = format!("⚠ Cannot create dir: {e}");
+            return;
+        }
+        // Determine output filename: same as source, or "robot.urdf"
+        let filename = model
+            .source_path
+            .as_ref()
+            .and_then(|p| p.file_name().map(|f| f.to_owned()))
+            .unwrap_or_else(|| std::ffi::OsString::from("robot.urdf"));
+        let output_path = dir.join(filename);
+        match model.export_urdf_to_file(&output_path) {
+            Ok(()) => {
+                self.export_message =
+                    format!("✔ Exported to {} (with meshes)", output_path.display());
+            }
+            Err(e) => {
+                self.export_message = format!("⚠ Export failed: {e}");
             }
         }
     }
