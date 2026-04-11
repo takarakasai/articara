@@ -480,18 +480,53 @@ impl RoboViewApp {
             }
         }
 
-        // --- Export section ---
+        // --- Save / Export section ---
         ui.separator();
-        ui.heading("Export");
+        ui.heading("Save / Export");
+
+        // Save: overwrite original
+        ui.horizontal(|ui| {
+            if ui.button("💾 Save").clicked() {
+                self.do_save();
+            }
+            if let Some(ref model) = self.model {
+                if let Some(ref p) = model.source_path {
+                    ui.label(
+                        egui::RichText::new(p.display().to_string())
+                            .small()
+                            .weak(),
+                    );
+                }
+            }
+        });
+
+        ui.add_space(4.0);
+
+        // Export: write to a different directory
         ui.horizontal(|ui| {
             ui.label("Dir:");
             ui.text_edit_singleline(&mut self.export_dir);
         });
-        if ui.button("Export URDF").clicked() {
+        if ui.button("📦 Export").clicked() {
             self.do_export();
         }
         if !self.export_message.is_empty() {
             ui.label(&self.export_message);
+        }
+    }
+
+    fn do_save(&mut self) {
+        let Some(ref model) = self.model else {
+            self.export_message = "⚠ No model loaded.".into();
+            return;
+        };
+        match model.save_urdf() {
+            Ok(path) => {
+                self.export_message = format!("✔ Saved to {}", path.display());
+            }
+            Err(e) => {
+                self.export_message = format!("⚠ Save failed: {e}");
+            }
         }
     }
 

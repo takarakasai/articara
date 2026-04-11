@@ -651,6 +651,18 @@ impl RobotModel {
         urdf_rs::write_to_string(&robot).map_err(|e| format!("URDF serialize error: {e}"))
     }
 
+    /// Save (overwrite) the original URDF file with current edits.
+    /// Mesh files are not touched since they haven't changed.
+    pub fn save_urdf(&self) -> Result<PathBuf, String> {
+        let source = self
+            .source_path
+            .as_ref()
+            .ok_or("No source URDF path stored")?;
+        let xml = self.export_urdf()?;
+        std::fs::write(source, &xml).map_err(|e| format!("Save error: {e}"))?;
+        Ok(source.clone())
+    }
+
     /// Export the current model to a URDF file at the given path.
     /// Also copies all referenced mesh files to the output directory,
     /// preserving the relative directory structure from the package root.
