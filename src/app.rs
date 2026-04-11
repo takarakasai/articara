@@ -4,20 +4,36 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::camera::OrbitCamera;
+use crate::ik;
 use crate::renderer::GlRenderer;
 use crate::robot::RobotModel;
+
+/// Drag manipulation mode.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DragMode {
+    /// Move only the immediate parent joint of the clicked link.
+    SingleJoint,
+    /// Solve IK on the entire chain from root to the clicked link.
+    InverseKinematics,
+}
 
 /// Drag state for manipulating joints by dragging links.
 #[derive(Clone)]
 struct DragState {
     /// Index of the link being dragged.
     link_idx: usize,
-    /// Index of the parent joint to rotate.
+    /// Mode at drag start.
+    mode: DragMode,
+    // --- Single-joint mode fields ---
+    /// Index of the parent joint to rotate (single-joint mode only).
     joint_idx: usize,
     /// The joint axis in world space at drag start.
     world_axis: na::Vector3<f32>,
     /// The joint pivot point in world space at drag start.
     pivot_world: na::Point3<f32>,
+    // --- IK mode fields ---
+    /// The kinematic chain from root to end-effector.
+    chain: Vec<ik::ChainJoint>,
 }
 
 pub struct RoboViewApp {
@@ -36,6 +52,10 @@ pub struct RoboViewApp {
     hovered_link: Option<usize>,
     /// Cached viewport rect from last frame.
     viewport_rect: egui::Rect,
+    /// Current drag mode.
+    drag_mode: DragMode,
+    /// IK damping factor (λ for DLS).
+    ik_damping: f32,
 }
 
 impl RoboViewApp {
@@ -60,6 +80,8 @@ impl RoboViewApp {
             drag_state: None,
             hovered_link: None,
             viewport_rect: egui::Rect::NOTHING,
+            drag_mode: DragMode::SingleJoint,
+            ik_damping: 0.05,
         }
     }
 
@@ -192,6 +214,30 @@ impl RoboViewApp {
         if let Some(model) = &mut self.model {
             let mut changed = false;
             ui.heading("Joint Positions");
+            ui.separator();
+
+            // --- Drag Mode selector ---
+            ui.horizontal(|ui| {
+                ui.label("Drag mode:");
+            });
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut self.drag_mode, DragMode::SingleJoint, "Single Joint");
+                ui.radio_value(
+                    &mut self.drag_mode,
+                    DragMode::InverseKinematics,
+                    "IK Chain",
+                );
+            });
+            if self.drag_mode == DragMode::InverseKinematics {
+                ui.horizontal(|ui| {
+                    ui.label("IK Damping (λ):");
+                    ui.add(
+                        egui::Slider::new(&mut self.ik_damping, 0.001..=0.5)
+                            .logarithmic(true)
+                            .text("λ"),
+                    );
+                });
+            }
             ui.separator();
 
             for i in 0..model.joints.len() {
@@ -429,26 +475,50 @@ impl RoboViewApp {
                 let (ro, rd) = self.camera.screen_ray(ndc, aspect);
                 if let Some((li, _dist)) = model.pick_link(&ro, &rd, &transforms) {
                     let link_name = &model.links[li].name;
-                    if let Some(ji) = model.parent_joint_of_link(link_name) {
-                        let joint = &model.joints[ji];
-                        if joint.joint_type == "revolute" || joint.joint_type == "continuous" {
-                            // Compute world axis and pivot
-                            let parent_tf = transforms
-                                .get(&joint.parent_link)
-                                .copied()
-                                .unwrap_or(na::Isometry3::identity());
-                            let joint_tf = parent_tf * joint.origin;
-                            let world_axis = joint_tf * joint.axis;
-                            let pivot_world = na::Point3::from(joint_tf.translation.vector);
+                    match self.drag_mode {
+                        DragMode::SingleJoint => {
+                            if let Some(ji) = model.parent_joint_of_link(link_name) {
+                                let joint = &model.joints[ji];
+                                if joint.joint_type == "revolute"
+                                    || joint.joint_type == "continuous"
+                                {
+                                    let parent_tf = transforms
+                                        .get(&joint.parent_link)
+                                        .copied()
+                                        .unwrap_or(na::Isometry3::identity());
+                                    let joint_tf = parent_tf * joint.origin;
+                                    let world_axis = joint_tf * joint.axis;
+                                    let pivot_world =
+                                        na::Point3::from(joint_tf.translation.vector);
 
-                            self.drag_state = Some(DragState {
-                                link_idx: li,
-                                joint_idx: ji,
-                                world_axis,
-                                pivot_world,
-                            });
-                            self.selected_link = Some(li);
-                            self.selected_joint = Some(ji);
+                                    self.drag_state = Some(DragState {
+                                        link_idx: li,
+                                        mode: DragMode::SingleJoint,
+                                        joint_idx: ji,
+                                        world_axis,
+                                        pivot_world,
+                                        chain: Vec::new(),
+                                    });
+                                    self.selected_link = Some(li);
+                                    self.selected_joint = Some(ji);
+                                }
+                            }
+                        }
+                        DragMode::InverseKinematics => {
+                            let chain = ik::build_chain(model, link_name);
+                            if !chain.is_empty() {
+                                // Use first joint for display selection
+                                let ji = chain.last().map(|c| c.joint_idx).unwrap_or(0);
+                                self.drag_state = Some(DragState {
+                                    link_idx: li,
+                                    mode: DragMode::InverseKinematics,
+                                    joint_idx: ji,
+                                    world_axis: na::Vector3::zeros(),
+                                    pivot_world: na::Point3::origin(),
+                                    chain,
+                                });
+                                self.selected_link = Some(li);
+                            }
                         }
                     }
                 }
@@ -460,44 +530,88 @@ impl RoboViewApp {
             if let Some(ref drag) = self.drag_state.clone() {
                 let delta = response.drag_delta();
                 if delta.length_sq() > 0.0 {
-                    // Project joint axis to screen space to determine rotation direction
-                    let pivot_screen = self
-                        .camera
-                        .project(&drag.pivot_world, aspect)
-                        .unwrap_or(na::Point2::new(0.5, 0.5));
-                    let axis_tip = drag.pivot_world + drag.world_axis * 0.05;
-                    let tip_screen = self
-                        .camera
-                        .project(&axis_tip, aspect)
-                        .unwrap_or(pivot_screen);
+                    match drag.mode {
+                        DragMode::SingleJoint => {
+                            // Project joint axis to screen space to determine rotation direction
+                            let pivot_screen = self
+                                .camera
+                                .project(&drag.pivot_world, aspect)
+                                .unwrap_or(na::Point2::new(0.5, 0.5));
+                            let axis_tip = drag.pivot_world + drag.world_axis * 0.05;
+                            let tip_screen = self
+                                .camera
+                                .project(&axis_tip, aspect)
+                                .unwrap_or(pivot_screen);
 
-                    // Screen-space axis direction
-                    let screen_axis = na::Vector2::new(
-                        tip_screen.x - pivot_screen.x,
-                        tip_screen.y - pivot_screen.y,
-                    );
-                    let screen_axis_len = screen_axis.norm();
+                            // Screen-space axis direction
+                            let screen_axis = na::Vector2::new(
+                                tip_screen.x - pivot_screen.x,
+                                tip_screen.y - pivot_screen.y,
+                            );
+                            let screen_axis_len = screen_axis.norm();
 
-                    if screen_axis_len > 1e-6 {
-                        let screen_axis_norm = screen_axis / screen_axis_len;
-                        // Perpendicular to axis in screen space
-                        let perp = na::Vector2::new(-screen_axis_norm.y, screen_axis_norm.x);
+                            if screen_axis_len > 1e-6 {
+                                let screen_axis_norm = screen_axis / screen_axis_len;
+                                let perp =
+                                    na::Vector2::new(-screen_axis_norm.y, screen_axis_norm.x);
+                                let delta_ndc = na::Vector2::new(
+                                    delta.x / rect.width(),
+                                    delta.y / rect.height(),
+                                );
+                                let angle_delta = delta_ndc.dot(&perp) * 5.0;
 
-                        // Normalize mouse delta to viewport size
-                        let delta_ndc = na::Vector2::new(
-                            delta.x / rect.width(),
-                            delta.y / rect.height(),
-                        );
+                                if let Some(ref mut model) = self.model {
+                                    let ji = drag.joint_idx;
+                                    let lower = model.joints[ji].lower as f32;
+                                    let upper = model.joints[ji].upper as f32;
+                                    model.joint_positions[ji] =
+                                        (model.joint_positions[ji] + angle_delta)
+                                            .clamp(lower, upper);
+                                }
+                            }
+                        }
+                        DragMode::InverseKinematics => {
+                            // IK mode: cast ray from current mouse position and intersect
+                            // with a plane at the end-effector to get a 3D target.
+                            if let (Some(ndc), Some(ref mut model)) =
+                                (mouse_ndc, self.model.as_mut())
+                            {
+                                let cur_transforms = model.compute_transforms();
+                                let ee_pos = ik::get_ee_world_pos(
+                                    model,
+                                    drag.link_idx,
+                                    &cur_transforms,
+                                );
 
-                        // Angle change = projection of mouse delta onto perpendicular direction
-                        let angle_delta = delta_ndc.dot(&perp) * 5.0;
+                                // Camera view direction for the intersection plane
+                                let (ray_o, ray_d) = self.camera.screen_ray(ndc, aspect);
+                                let cam_forward = (self.camera.target
+                                    - na::Point3::from(
+                                        self.camera.eye().coords,
+                                    ))
+                                .normalize();
 
-                        if let Some(ref mut model) = self.model {
-                            let ji = drag.joint_idx;
-                            let lower = model.joints[ji].lower as f32;
-                            let upper = model.joints[ji].upper as f32;
-                            model.joint_positions[ji] = (model.joint_positions[ji] + angle_delta)
-                                .clamp(lower, upper);
+                                // Intersect ray with plane through ee_pos, normal = cam_forward
+                                let denom = ray_d.dot(&cam_forward);
+                                if denom.abs() > 1e-6 {
+                                    let t = (ee_pos - ray_o).dot(&cam_forward) / denom;
+                                    if t > 0.0 {
+                                        let target = ray_o + ray_d * t;
+
+                                        let damping = self.ik_damping;
+                                        let deltas = ik::solve_ik_step(
+                                            model,
+                                            &drag.chain,
+                                            &cur_transforms,
+                                            &ee_pos,
+                                            &target,
+                                            damping,
+                                            0.1, // max_step
+                                        );
+                                        ik::apply_ik_deltas(model, &drag.chain, &deltas);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -532,15 +646,27 @@ impl RoboViewApp {
         if self.drag_state.is_some() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         } else if self.hovered_link.is_some() {
-            // Check if the hovered link has a movable parent joint
-            let has_movable_joint = self.hovered_link.and_then(|li| {
+            // Check if the hovered link has a movable parent joint (or IK chain)
+            let is_draggable = self.hovered_link.and_then(|li| {
                 self.model.as_ref().and_then(|m| {
-                    m.parent_joint_of_link(&m.links[li].name)
-                        .map(|ji| &m.joints[ji].joint_type)
-                        .filter(|jt| *jt == "revolute" || *jt == "continuous")
+                    let link_name = &m.links[li].name;
+                    match self.drag_mode {
+                        DragMode::SingleJoint => m
+                            .parent_joint_of_link(link_name)
+                            .map(|ji| &m.joints[ji].joint_type)
+                            .filter(|jt| *jt == "revolute" || *jt == "continuous"),
+                        DragMode::InverseKinematics => {
+                            let chain = ik::build_chain(m, link_name);
+                            if chain.is_empty() {
+                                None
+                            } else {
+                                Some(&m.joints[chain[0].joint_idx].joint_type)
+                            }
+                        }
+                    }
                 })
             });
-            if has_movable_joint.is_some() {
+            if is_draggable.is_some() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
             }
         }

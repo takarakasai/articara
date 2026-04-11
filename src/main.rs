@@ -1,5 +1,6 @@
 mod app;
 mod camera;
+mod ik;
 mod primitives;
 mod renderer;
 mod robot;
