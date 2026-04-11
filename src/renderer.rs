@@ -469,15 +469,15 @@ impl GlRenderer {
                 ];
                 // Rotations to orient +Z arrow to each axis
                 let axis_rotations: [na::UnitQuaternion<f32>; 3] = [
-                    // +Z → +X : rotate −90° around Y
+                    // +Z → +X : rotate +90° around Y
                     na::UnitQuaternion::from_axis_angle(
                         &na::Vector3::y_axis(),
-                        -std::f32::consts::FRAC_PI_2,
+                        std::f32::consts::FRAC_PI_2,
                     ),
-                    // +Z → +Y : rotate +90° around X
+                    // +Z → +Y : rotate −90° around X
                     na::UnitQuaternion::from_axis_angle(
                         &na::Vector3::x_axis(),
-                        std::f32::consts::FRAC_PI_2,
+                        -std::f32::consts::FRAC_PI_2,
                     ),
                     // +Z stays +Z
                     na::UnitQuaternion::identity(),
