@@ -1964,12 +1964,12 @@ impl RoboViewApp {
             let toolbar_y = rect.top() + margin;
 
             // --- Row 1: Interaction Mode buttons ---
-            let modes: [(InteractionMode, &str, &str); 2] = [
-                (InteractionMode::JointDrive, "🔧", "Joint Drive"),
-                (InteractionMode::OffsetAdjust, "✥", "Offset Adjust"),
+            let modes: [(InteractionMode, &str); 2] = [
+                (InteractionMode::JointDrive, "Joint Drive"),
+                (InteractionMode::OffsetAdjust, "Offset Adjust"),
             ];
 
-            for (i, (mode, icon, tooltip)) in modes.iter().enumerate() {
+            for (i, (mode, tooltip)) in modes.iter().enumerate() {
                 let btn_pos = egui::pos2(
                     toolbar_x + i as f32 * (icon_size.x + 4.0),
                     toolbar_y,
@@ -2001,18 +2001,179 @@ impl RoboViewApp {
                     );
                 }
 
-                let text_color = if is_active {
+                let icon_color = if is_active {
                     egui::Color32::WHITE
                 } else {
                     egui::Color32::from_gray(200)
                 };
-                painter.text(
-                    btn_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    icon,
-                    egui::FontId::proportional(18.0),
-                    text_color,
-                );
+
+                // Draw custom icon
+                let c = btn_rect.center();
+                match mode {
+                    InteractionMode::JointDrive => {
+                        // Joint drive icon: parent link, joint pivot, child link
+                        // showing before (ghost) and after (solid) positions
+                        let ghost_color = if is_active {
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 70)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(200, 200, 200, 50)
+                        };
+
+                        // Joint pivot position
+                        let pivot = egui::pos2(c.x - 2.0, c.y + 1.0);
+
+                        // Parent link (fixed, from top-left to pivot)
+                        let arm1_start = egui::pos2(c.x - 11.0, c.y - 8.0);
+                        painter.line_segment(
+                            [arm1_start, pivot],
+                            egui::Stroke::new(3.0, icon_color),
+                        );
+
+                        // Child link BEFORE rotation (ghost — going right/down)
+                        let ghost_end = egui::pos2(pivot.x + 10.0, pivot.y + 3.0);
+                        painter.line_segment(
+                            [pivot, ghost_end],
+                            egui::Stroke::new(2.5, ghost_color),
+                        );
+
+                        // Child link AFTER rotation (solid — rotated upward)
+                        let arm2_end = egui::pos2(pivot.x + 8.0, pivot.y - 7.0);
+                        painter.line_segment(
+                            [pivot, arm2_end],
+                            egui::Stroke::new(3.0, icon_color),
+                        );
+
+                        // Joint pivot (filled circle)
+                        painter.circle_filled(pivot, 3.0, icon_color);
+                        painter.circle_stroke(
+                            pivot,
+                            3.0,
+                            egui::Stroke::new(1.2, bg_color),
+                        );
+
+                        // Rotation arc arrow from ghost to solid position
+                        let arc_r = 7.0;
+                        // Arc from ~10° (ghost direction) to ~-40° (solid direction)
+                        let a_start = -0.29_f32; // atan2(3, 10) ≈ 0.29 rad
+                        let a_end = 0.72_f32;    // atan2(7, 8) ≈ 0.72 rad
+                        let n_seg = 8;
+                        let arc_pts: Vec<egui::Pos2> = (0..=n_seg)
+                            .map(|k| {
+                                let t = k as f32 / n_seg as f32;
+                                let a = a_start + (a_end - a_start) * t;
+                                egui::pos2(
+                                    pivot.x + arc_r * a.cos(),
+                                    pivot.y - arc_r * a.sin(),
+                                )
+                            })
+                            .collect();
+                        for w in arc_pts.windows(2) {
+                            painter.line_segment(
+                                [w[0], w[1]],
+                                egui::Stroke::new(1.2, icon_color),
+                            );
+                        }
+                        // Arrowhead at end of arc
+                        if let Some(&tip) = arc_pts.last() {
+                            let prev = arc_pts[arc_pts.len() - 2];
+                            let dir = egui::vec2(tip.x - prev.x, tip.y - prev.y);
+                            let len = (dir.x * dir.x + dir.y * dir.y).sqrt().max(0.01);
+                            let nd = egui::vec2(dir.x / len, dir.y / len);
+                            let perp = egui::vec2(-nd.y, nd.x);
+                            let sz = 3.5;
+                            painter.line_segment(
+                                [tip, tip - nd * sz + perp * sz * 0.6],
+                                egui::Stroke::new(1.2, icon_color),
+                            );
+                            painter.line_segment(
+                                [tip, tip - nd * sz - perp * sz * 0.6],
+                                egui::Stroke::new(1.2, icon_color),
+                            );
+                        }
+                    }
+                    InteractionMode::OffsetAdjust => {
+                        // Offset adjust icon: XYZ coordinate axes with a move arrow
+                        let origin = egui::pos2(c.x - 4.0, c.y + 4.0);
+                        let ax_len = 12.0;
+                        let arrow_sz = 3.0;
+
+                        // X axis (right) — red tinted
+                        let x_color = if is_active {
+                            egui::Color32::from_rgb(255, 140, 140)
+                        } else {
+                            egui::Color32::from_rgb(200, 120, 120)
+                        };
+                        let x_tip = egui::pos2(origin.x + ax_len, origin.y);
+                        painter.line_segment(
+                            [origin, x_tip],
+                            egui::Stroke::new(2.0, x_color),
+                        );
+                        painter.line_segment(
+                            [x_tip, egui::pos2(x_tip.x - arrow_sz, x_tip.y - arrow_sz * 0.6)],
+                            egui::Stroke::new(1.5, x_color),
+                        );
+                        painter.line_segment(
+                            [x_tip, egui::pos2(x_tip.x - arrow_sz, x_tip.y + arrow_sz * 0.6)],
+                            egui::Stroke::new(1.5, x_color),
+                        );
+
+                        // Y axis (up) — green tinted
+                        let y_color = if is_active {
+                            egui::Color32::from_rgb(140, 255, 140)
+                        } else {
+                            egui::Color32::from_rgb(120, 200, 120)
+                        };
+                        let y_tip = egui::pos2(origin.x, origin.y - ax_len);
+                        painter.line_segment(
+                            [origin, y_tip],
+                            egui::Stroke::new(2.0, y_color),
+                        );
+                        painter.line_segment(
+                            [y_tip, egui::pos2(y_tip.x - arrow_sz * 0.6, y_tip.y + arrow_sz)],
+                            egui::Stroke::new(1.5, y_color),
+                        );
+                        painter.line_segment(
+                            [y_tip, egui::pos2(y_tip.x + arrow_sz * 0.6, y_tip.y + arrow_sz)],
+                            egui::Stroke::new(1.5, y_color),
+                        );
+
+                        // Z axis (diagonal, towards viewer) — blue tinted
+                        let z_color = if is_active {
+                            egui::Color32::from_rgb(140, 170, 255)
+                        } else {
+                            egui::Color32::from_rgb(120, 140, 200)
+                        };
+                        let z_tip = egui::pos2(origin.x - ax_len * 0.5, origin.y + ax_len * 0.5);
+                        painter.line_segment(
+                            [origin, z_tip],
+                            egui::Stroke::new(1.5, z_color),
+                        );
+
+                        // Dashed move indicator (diagonal arrow showing translation)
+                        let mv_start = egui::pos2(c.x + 2.0, c.y - 4.0);
+                        let mv_end = egui::pos2(c.x + 10.0, c.y - 12.0);
+                        painter.line_segment(
+                            [mv_start, mv_end],
+                            egui::Stroke::new(1.5, icon_color),
+                        );
+                        // Move arrowhead
+                        let md = egui::vec2(
+                            mv_end.x - mv_start.x,
+                            mv_end.y - mv_start.y,
+                        );
+                        let ml = (md.x * md.x + md.y * md.y).sqrt().max(0.01);
+                        let mnd = egui::vec2(md.x / ml, md.y / ml);
+                        let mperp = egui::vec2(-mnd.y, mnd.x);
+                        painter.line_segment(
+                            [mv_end, mv_end - mnd * 3.5 + mperp * 2.0],
+                            egui::Stroke::new(1.5, icon_color),
+                        );
+                        painter.line_segment(
+                            [mv_end, mv_end - mnd * 3.5 - mperp * 2.0],
+                            egui::Stroke::new(1.5, icon_color),
+                        );
+                    }
+                }
 
                 if btn_response.clicked() {
                     self.interaction_mode = *mode;
