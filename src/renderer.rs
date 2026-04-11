@@ -76,6 +76,10 @@ pub struct GlRenderer {
     com_entries: Vec<(String, na::Isometry3<f32>, f64)>,
     /// Whether to draw CoM markers.
     pub show_com: bool,
+    /// Scale factor for CoM sphere size (radius = mass * com_scale).
+    pub com_scale: f32,
+    /// Wireframe mode for robot meshes.
+    pub wireframe: bool,
 }
 
 impl GlRenderer {
@@ -99,8 +103,8 @@ impl GlRenderer {
             let axes_num = (axes_data.len() / 6) as i32;
             let (axes_vao, axes_vbo) = upload_mesh_data(gl, &axes_data);
 
-            // CoM sphere (small sphere at origin, radius 0.007)
-            let com_sphere_data = primitives::generate_sphere(0.007, 8, 4);
+            // CoM sphere (unit sphere at origin, radius 1.0; scaled at draw time)
+            let com_sphere_data = primitives::generate_sphere(1.0, 12, 6);
             let com_sphere_num = (com_sphere_data.len() / 6) as i32;
             let (com_sphere_vao, com_sphere_vbo) = upload_mesh_data(gl, &com_sphere_data);
 
@@ -125,6 +129,8 @@ impl GlRenderer {
                 com_sphere_num_vertices: com_sphere_num,
                 com_entries: Vec::new(),
                 show_com: false,
+                com_scale: 0.01,
+                wireframe: false,
             }
         }
     }
@@ -245,6 +251,9 @@ impl GlRenderer {
             gl.line_width(1.0);
 
             // Draw robot meshes
+            if self.wireframe {
+                gl.polygon_mode(glow::FRONT_AND_BACK, glow::LINE);
+            }
             gl.uniform_1_i32(Some(&self.u_flat), 0);
             for entry in &self.mesh_entries {
                 let world_tf = self
@@ -296,19 +305,25 @@ impl GlRenderer {
                 gl.bind_vertex_array(Some(entry.vao));
                 gl.draw_arrays(glow::TRIANGLES, 0, entry.num_vertices);
             }
+            if self.wireframe {
+                gl.polygon_mode(glow::FRONT_AND_BACK, glow::FILL);
+            }
 
             // Draw CoM markers
             if self.show_com {
                 gl.uniform_1_i32(Some(&self.u_flat), 0);
                 gl.bind_vertex_array(Some(self.com_sphere_vao));
-                for (link_name, com_origin, _mass) in &self.com_entries {
+                for (link_name, com_origin, mass) in &self.com_entries {
                     let world_tf = self
                         .transforms
                         .get(link_name)
                         .copied()
                         .unwrap_or(na::Isometry3::identity());
                     let com_world = (world_tf * *com_origin).to_homogeneous();
-                    let mvp = vp * com_world;
+                    // Scale sphere by mass: radius = mass * com_scale
+                    let r = (*mass as f32 * self.com_scale).max(0.002);
+                    let scale = na::Matrix4::new_nonuniform_scaling(&na::Vector3::new(r, r, r));
+                    let mvp = vp * com_world * scale;
 
                     gl.uniform_matrix_4_f32_slice(Some(&self.u_mvp), false, mvp.as_slice());
                     gl.uniform_matrix_3_f32_slice(

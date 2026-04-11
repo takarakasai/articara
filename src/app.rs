@@ -58,6 +58,10 @@ pub struct RoboViewApp {
     ik_damping: f32,
     /// Show center-of-mass markers and mass labels.
     show_com: bool,
+    /// Scale factor for CoM sphere size (sphere radius = mass × com_scale).
+    com_scale: f32,
+    /// Show robot links in wireframe mode.
+    wireframe: bool,
 }
 
 impl RoboViewApp {
@@ -85,6 +89,8 @@ impl RoboViewApp {
             drag_mode: DragMode::SingleJoint,
             ik_damping: 0.05,
             show_com: false,
+            com_scale: 0.01,
+            wireframe: false,
         }
     }
 
@@ -245,7 +251,18 @@ impl RoboViewApp {
 
             // --- Display options ---
             ui.heading("Display");
+            ui.checkbox(&mut self.wireframe, "Wireframe");
             ui.checkbox(&mut self.show_com, "Show CoM & Mass");
+            if self.show_com {
+                ui.horizontal(|ui| {
+                    ui.label("CoM scale:");
+                    ui.add(
+                        egui::Slider::new(&mut self.com_scale, 0.001..=0.1)
+                            .logarithmic(true)
+                            .text("m/kg"),
+                    );
+                });
+            }
             ui.separator();
 
             for i in 0..model.joints.len() {
@@ -793,6 +810,8 @@ impl eframe::App for RoboViewApp {
             let mut r = self.gl_renderer.lock().unwrap();
             r.update_transforms(transforms);
             r.show_com = self.show_com;
+            r.com_scale = self.com_scale;
+            r.wireframe = self.wireframe;
         }
 
         // Top panel: menu / file selector
