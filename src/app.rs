@@ -1555,7 +1555,11 @@ impl ArticaraApp {
         }
 
         // --- Gizmo hover detection (OffsetAdjust mode) ---
-        // Compute gizmo transform based on target type
+        // Compute gizmo transform based on target type.
+        // In Translate mode the gizmo axes align with the parent/link frame.
+        // In Rotate mode they align with the element's own world orientation
+        // so the rings follow the current rotation during drag.
+        let use_element_rot = self.gizmo_op == GizmoOp::Rotate;
         let gizmo_tf: Option<na::Isometry3<f32>> =
             if self.interaction_mode == InteractionMode::OffsetAdjust {
                 self.model.as_ref().and_then(|m| {
@@ -1568,9 +1572,14 @@ impl ArticaraApp {
                                     .copied()
                                     .unwrap_or(na::Isometry3::identity());
                                 let joint_world = parent_tf * joint.origin;
+                                let rot = if use_element_rot {
+                                    joint_world.rotation
+                                } else {
+                                    parent_tf.rotation
+                                };
                                 na::Isometry3::from_parts(
                                     joint_world.translation,
-                                    parent_tf.rotation,
+                                    rot,
                                 )
                             })
                         }
@@ -1584,9 +1593,14 @@ impl ArticaraApp {
                                                 .copied()
                                                 .unwrap_or(na::Isometry3::identity());
                                             let vis_world = link_tf * vis.origin;
+                                            let rot = if use_element_rot {
+                                                vis_world.rotation
+                                            } else {
+                                                link_tf.rotation
+                                            };
                                             na::Isometry3::from_parts(
                                                 vis_world.translation,
-                                                link_tf.rotation,
+                                                rot,
                                             )
                                         })
                                     })
@@ -1603,9 +1617,14 @@ impl ArticaraApp {
                                                 .copied()
                                                 .unwrap_or(na::Isometry3::identity());
                                             let col_world = link_tf * col.origin;
+                                            let rot = if use_element_rot {
+                                                col_world.rotation
+                                            } else {
+                                                link_tf.rotation
+                                            };
                                             na::Isometry3::from_parts(
                                                 col_world.translation,
-                                                link_tf.rotation,
+                                                rot,
                                             )
                                         })
                                     })
