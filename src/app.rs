@@ -2172,85 +2172,107 @@ impl RoboViewApp {
                         }
                     }
                     InteractionMode::OffsetAdjust => {
-                        // Offset adjust icon: XYZ coordinate axes with a move arrow
-                        let origin = egui::pos2(c.x - 4.0, c.y + 4.0);
-                        let ax_len = 12.0;
-                        let arrow_sz = 3.0;
-
-                        // X axis (right) — red tinted
-                        let x_color = if is_active {
-                            egui::Color32::from_rgb(255, 140, 140)
+                        // Offset adjust icon: a 3D box moving from old to new position
+                        let ghost_color = if is_active {
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 60)
                         } else {
-                            egui::Color32::from_rgb(200, 120, 120)
+                            egui::Color32::from_rgba_unmultiplied(200, 200, 200, 45)
                         };
-                        let x_tip = egui::pos2(origin.x + ax_len, origin.y);
-                        painter.line_segment(
-                            [origin, x_tip],
-                            egui::Stroke::new(2.0, x_color),
-                        );
-                        painter.line_segment(
-                            [x_tip, egui::pos2(x_tip.x - arrow_sz, x_tip.y - arrow_sz * 0.6)],
-                            egui::Stroke::new(1.5, x_color),
-                        );
-                        painter.line_segment(
-                            [x_tip, egui::pos2(x_tip.x - arrow_sz, x_tip.y + arrow_sz * 0.6)],
-                            egui::Stroke::new(1.5, x_color),
-                        );
-
-                        // Y axis (up) — green tinted
-                        let y_color = if is_active {
-                            egui::Color32::from_rgb(140, 255, 140)
+                        let solid_color = icon_color;
+                        let arrow_color = if is_active {
+                            egui::Color32::from_rgb(100, 200, 255)
                         } else {
-                            egui::Color32::from_rgb(120, 200, 120)
+                            egui::Color32::from_rgb(130, 170, 200)
                         };
-                        let y_tip = egui::pos2(origin.x, origin.y - ax_len);
-                        painter.line_segment(
-                            [origin, y_tip],
-                            egui::Stroke::new(2.0, y_color),
-                        );
-                        painter.line_segment(
-                            [y_tip, egui::pos2(y_tip.x - arrow_sz * 0.6, y_tip.y + arrow_sz)],
-                            egui::Stroke::new(1.5, y_color),
-                        );
-                        painter.line_segment(
-                            [y_tip, egui::pos2(y_tip.x + arrow_sz * 0.6, y_tip.y + arrow_sz)],
-                            egui::Stroke::new(1.5, y_color),
+
+                        // 3D box helper: draw an isometric-ish box outline
+                        // at a given center with half-sizes, using perspective offsets
+                        let draw_box = |cx: f32, cy: f32, hw: f32, hh: f32, depth: f32,
+                                        stroke: egui::Stroke| {
+                            // Front face corners
+                            let fl = egui::pos2(cx - hw, cy - hh);
+                            let fr = egui::pos2(cx + hw, cy - hh);
+                            let br = egui::pos2(cx + hw, cy + hh);
+                            let bl = egui::pos2(cx - hw, cy + hh);
+
+                            // Back face offset (isometric depth)
+                            let dx = depth * 0.6;
+                            let dy = -depth * 0.5;
+                            let fl2 = egui::pos2(fl.x + dx, fl.y + dy);
+                            let fr2 = egui::pos2(fr.x + dx, fr.y + dy);
+                            let br2 = egui::pos2(br.x + dx, br.y + dy);
+                            let bl2 = egui::pos2(bl.x + dx, bl.y + dy);
+
+                            // Front face
+                            painter.line_segment([fl, fr], stroke);
+                            painter.line_segment([fr, br], stroke);
+                            painter.line_segment([br, bl], stroke);
+                            painter.line_segment([bl, fl], stroke);
+
+                            // Back face (top + right visible edges)
+                            painter.line_segment([fl2, fr2], stroke);
+                            painter.line_segment([fr2, br2], stroke);
+
+                            // Depth edges (visible 3 corners)
+                            painter.line_segment([fl, fl2], stroke);
+                            painter.line_segment([fr, fr2], stroke);
+                            painter.line_segment([br, br2], stroke);
+                        };
+
+                        // Ghost box (original position, lower-left)
+                        let g_cx = c.x - 5.0;
+                        let g_cy = c.y + 3.0;
+                        draw_box(
+                            g_cx, g_cy, 4.5, 3.5, 4.0,
+                            egui::Stroke::new(1.2, ghost_color),
                         );
 
-                        // Z axis (diagonal, towards viewer) — blue tinted
-                        let z_color = if is_active {
-                            egui::Color32::from_rgb(140, 170, 255)
-                        } else {
-                            egui::Color32::from_rgb(120, 140, 200)
-                        };
-                        let z_tip = egui::pos2(origin.x - ax_len * 0.5, origin.y + ax_len * 0.5);
-                        painter.line_segment(
-                            [origin, z_tip],
-                            egui::Stroke::new(1.5, z_color),
+                        // Solid box (moved position, upper-right)
+                        let s_cx = c.x + 4.5;
+                        let s_cy = c.y - 3.5;
+                        draw_box(
+                            s_cx, s_cy, 4.5, 3.5, 4.0,
+                            egui::Stroke::new(1.6, solid_color),
                         );
 
-                        // Dashed move indicator (diagonal arrow showing translation)
-                        let mv_start = egui::pos2(c.x + 2.0, c.y - 4.0);
-                        let mv_end = egui::pos2(c.x + 10.0, c.y - 12.0);
-                        painter.line_segment(
-                            [mv_start, mv_end],
-                            egui::Stroke::new(1.5, icon_color),
+                        // Dashed move arrow from ghost center to solid center
+                        let arrow_start = egui::pos2(g_cx + 2.0, g_cy - 1.5);
+                        let arrow_end = egui::pos2(s_cx - 2.0, s_cy + 1.5);
+                        // Draw dashed line (3 segments)
+                        let n_dash = 3;
+                        for k in 0..n_dash {
+                            let t0 = (k as f32 * 2.0) / (n_dash as f32 * 2.0 - 1.0);
+                            let t1 = (k as f32 * 2.0 + 1.0) / (n_dash as f32 * 2.0 - 1.0);
+                            let t1 = t1.min(1.0);
+                            let p0 = egui::pos2(
+                                arrow_start.x + (arrow_end.x - arrow_start.x) * t0,
+                                arrow_start.y + (arrow_end.y - arrow_start.y) * t0,
+                            );
+                            let p1 = egui::pos2(
+                                arrow_start.x + (arrow_end.x - arrow_start.x) * t1,
+                                arrow_start.y + (arrow_end.y - arrow_start.y) * t1,
+                            );
+                            painter.line_segment(
+                                [p0, p1],
+                                egui::Stroke::new(1.4, arrow_color),
+                            );
+                        }
+                        // Arrowhead
+                        let ad = egui::vec2(
+                            arrow_end.x - arrow_start.x,
+                            arrow_end.y - arrow_start.y,
                         );
-                        // Move arrowhead
-                        let md = egui::vec2(
-                            mv_end.x - mv_start.x,
-                            mv_end.y - mv_start.y,
-                        );
-                        let ml = (md.x * md.x + md.y * md.y).sqrt().max(0.01);
-                        let mnd = egui::vec2(md.x / ml, md.y / ml);
-                        let mperp = egui::vec2(-mnd.y, mnd.x);
+                        let al = (ad.x * ad.x + ad.y * ad.y).sqrt().max(0.01);
+                        let and = egui::vec2(ad.x / al, ad.y / al);
+                        let aperp = egui::vec2(-and.y, and.x);
+                        let ah = 3.5_f32;
                         painter.line_segment(
-                            [mv_end, mv_end - mnd * 3.5 + mperp * 2.0],
-                            egui::Stroke::new(1.5, icon_color),
+                            [arrow_end, arrow_end - and * ah + aperp * ah * 0.5],
+                            egui::Stroke::new(1.4, arrow_color),
                         );
                         painter.line_segment(
-                            [mv_end, mv_end - mnd * 3.5 - mperp * 2.0],
-                            egui::Stroke::new(1.5, icon_color),
+                            [arrow_end, arrow_end - and * ah - aperp * ah * 0.5],
+                            egui::Stroke::new(1.4, arrow_color),
                         );
                     }
                 }
