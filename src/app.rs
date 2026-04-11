@@ -1839,12 +1839,30 @@ impl RoboViewApp {
                     }
                 }
             } else {
-                // No drag state: orbit camera as fallback
+                // No drag state: left-drag orbits camera
                 self.camera.handle_orbit_pan_zoom(&response);
             }
-        } else {
-            // Not primary drag: camera controls (middle / right / scroll)
-            self.camera.handle_orbit_pan_zoom(&response);
+        }
+
+        // Right-drag = pan, middle-drag = pan, scroll = zoom (always active)
+        if response.dragged_by(egui::PointerButton::Secondary)
+            || response.dragged_by(egui::PointerButton::Middle)
+        {
+            // Pan with right/middle mouse
+            let delta = response.drag_delta();
+            let right = na::Vector3::new(-self.camera.yaw.sin(), self.camera.yaw.cos(), 0.0);
+            let up = na::Vector3::z();
+            let pan_speed = self.camera.distance * 0.002;
+            self.camera.target -= right * delta.x * pan_speed;
+            self.camera.target += up * delta.y * pan_speed;
+        }
+        // Scroll zoom always
+        if response.hovered() {
+            let scroll = ui.ctx().input(|i| i.smooth_scroll_delta.y);
+            if scroll != 0.0 {
+                self.camera.distance *= 1.0 - scroll * 0.002;
+                self.camera.distance = self.camera.distance.clamp(0.01, 50.0);
+            }
         }
 
         // Drag released
@@ -2100,6 +2118,120 @@ impl RoboViewApp {
                         );
                     }
                 }
+            }
+        }
+
+        // ===== Camera orientation axes (bottom-right) =====
+        {
+            let painter = ui.painter();
+            let axes_size = 50.0_f32;
+            let margin = 10.0;
+            let center = egui::pos2(
+                rect.right() - margin - axes_size,
+                rect.bottom() - margin - axes_size,
+            );
+
+            // Background circle
+            painter.circle_filled(
+                center,
+                axes_size,
+                egui::Color32::from_rgba_unmultiplied(20, 20, 30, 150),
+            );
+
+            // Get camera rotation matrix (view matrix upper-left 3x3 = rotation)
+            let view = self.camera.view_matrix();
+            let view3 = view.fixed_view::<3, 3>(0, 0);
+
+            // World axes projected into screen space via view rotation
+            let axis_len = axes_size * 0.7;
+            let world_axes: [(na::Vector3<f32>, egui::Color32, &str); 3] = [
+                (na::Vector3::x(), egui::Color32::from_rgb(230, 60, 60), "X"),
+                (na::Vector3::y(), egui::Color32::from_rgb(60, 200, 60), "Y"),
+                (na::Vector3::z(), egui::Color32::from_rgb(60, 100, 230), "Z"),
+            ];
+
+            // Sort by depth (draw farthest first)
+            let mut draw_order: Vec<(usize, f32)> = world_axes
+                .iter()
+                .enumerate()
+                .map(|(i, (ax, _, _))| {
+                    let cam = view3 * ax;
+                    (i, cam.z) // negative z = towards camera = closer
+                })
+                .collect();
+            draw_order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            for (i, _depth) in draw_order {
+                let (ax, color, label) = &world_axes[i];
+                let cam = view3 * ax;
+                // Screen X = cam.x (right), Screen Y = -cam.y (egui Y is down)
+                let tip = egui::pos2(
+                    center.x + cam.x * axis_len,
+                    center.y - cam.y * axis_len,
+                );
+                // Arrow line
+                painter.line_segment(
+                    [center, tip],
+                    egui::Stroke::new(2.5, *color),
+                );
+                // Arrowhead (small circle)
+                painter.circle_filled(tip, 4.0, *color);
+                // Label
+                painter.text(
+                    tip + egui::vec2(6.0, -6.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    *label,
+                    egui::FontId::proportional(11.0),
+                    *color,
+                );
+            }
+        }
+
+        // ===== Camera reset button (bottom-right, above axes) =====
+        {
+            let painter = ui.painter();
+            let btn_size = egui::vec2(28.0, 28.0);
+            let margin = 10.0;
+            let btn_pos = egui::pos2(
+                rect.right() - margin - 100.0 - btn_size.x,
+                rect.bottom() - margin - btn_size.y,
+            );
+            let btn_rect = egui::Rect::from_min_size(btn_pos, btn_size);
+
+            let btn_response = ui.interact(
+                btn_rect,
+                ui.id().with("camera_reset_btn"),
+                egui::Sense::click(),
+            );
+
+            let bg_color = if btn_response.hovered() {
+                egui::Color32::from_rgba_unmultiplied(100, 100, 100, 200)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(40, 40, 50, 160)
+            };
+            painter.rect_filled(btn_rect, egui::CornerRadius::same(4), bg_color);
+
+            painter.text(
+                btn_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "⟲",
+                egui::FontId::proportional(18.0),
+                egui::Color32::from_gray(220),
+            );
+
+            if btn_response.clicked() {
+                self.camera.reset();
+            }
+
+            if btn_response.hovered() {
+                let tip_pos = egui::pos2(btn_rect.left(), btn_rect.top() - 4.0);
+                painter.text(
+                    tip_pos,
+                    egui::Align2::LEFT_BOTTOM,
+                    "Reset Camera",
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::from_gray(220),
+                );
             }
         }
     }

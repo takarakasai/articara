@@ -84,8 +84,15 @@ impl OrbitCamera {
 
     /// Orbit/pan/zoom handler. Returns true if camera consumed the drag (no picking should happen).
     pub fn handle_orbit_pan_zoom(&mut self, response: &eframe::egui::Response) {
-        // Pan with middle mouse drag
-        if response.dragged_by(eframe::egui::PointerButton::Middle) {
+        // Orbit with left mouse drag (on empty space)
+        if response.dragged_by(eframe::egui::PointerButton::Primary) {
+            let delta = response.drag_delta();
+            self.yaw -= delta.x * 0.005;
+            self.pitch += delta.y * 0.005;
+            self.pitch = self.pitch.clamp(-1.5, 1.5);
+        }
+        // Pan with right mouse drag
+        if response.dragged_by(eframe::egui::PointerButton::Secondary) {
             let delta = response.drag_delta();
             let right = na::Vector3::new(-self.yaw.sin(), self.yaw.cos(), 0.0);
             let up = na::Vector3::z();
@@ -93,12 +100,14 @@ impl OrbitCamera {
             self.target -= right * delta.x * pan_speed;
             self.target += up * delta.y * pan_speed;
         }
-        // Orbit with right mouse drag
-        if response.dragged_by(eframe::egui::PointerButton::Secondary) {
+        // Pan with middle mouse drag (alternative)
+        if response.dragged_by(eframe::egui::PointerButton::Middle) {
             let delta = response.drag_delta();
-            self.yaw -= delta.x * 0.005;
-            self.pitch += delta.y * 0.005;
-            self.pitch = self.pitch.clamp(-1.5, 1.5);
+            let right = na::Vector3::new(-self.yaw.sin(), self.yaw.cos(), 0.0);
+            let up = na::Vector3::z();
+            let pan_speed = self.distance * 0.002;
+            self.target -= right * delta.x * pan_speed;
+            self.target += up * delta.y * pan_speed;
         }
         // Zoom with scroll
         if response.hovered() {
@@ -108,5 +117,10 @@ impl OrbitCamera {
                 self.distance = self.distance.clamp(0.01, 50.0);
             }
         }
+    }
+
+    /// Reset camera to default pose.
+    pub fn reset(&mut self) {
+        *self = Self::new();
     }
 }
