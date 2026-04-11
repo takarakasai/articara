@@ -26,12 +26,14 @@ pub struct LinkData {
     pub inertial: InertialData,
 }
 
+#[derive(Clone)]
 pub struct VisualData {
     pub origin: na::Isometry3<f32>,
     pub geometry: GeomData,
     pub color: [f32; 4],
 }
 
+#[derive(Clone)]
 pub struct CollisionData {
     pub origin: na::Isometry3<f32>,
     pub geometry: GeomData,
@@ -608,6 +610,40 @@ pub fn ray_triangle_intersect(
         Some(t)
     } else {
         None
+    }
+}
+
+/// Find closest approach of a ray to an axis line (infinite line through origin in given direction).
+/// Returns `(t_line, distance)` where `t_line` is the parameter along the axis
+/// (point on axis = `axis_origin + axis_dir * t_line`) and `distance` is the
+/// closest distance between the ray and the axis line.
+pub fn ray_axis_closest(
+    ro: &na::Point3<f32>,
+    rd: &na::Vector3<f32>,
+    axis_origin: &na::Point3<f32>,
+    axis_dir: &na::Vector3<f32>,
+) -> (f32, f32) {
+    let w = ro - axis_origin;
+    let a = rd.dot(rd);
+    let b = rd.dot(axis_dir);
+    let c = axis_dir.dot(axis_dir);
+    let d = rd.dot(&w);
+    let e = axis_dir.dot(&w);
+    let denom = a * c - b * b;
+
+    if denom.abs() < 1e-10 {
+        // Ray parallel to axis
+        let t_line = e / c;
+        let closest_on_line = axis_origin + axis_dir * t_line;
+        let dist = (ro - closest_on_line).norm();
+        (t_line, dist)
+    } else {
+        let t_ray = (b * e - c * d) / denom;
+        let t_line = (a * e - b * d) / denom;
+        let p_ray = ro + rd * t_ray;
+        let p_line = axis_origin + axis_dir * t_line;
+        let dist = (p_ray - p_line).norm();
+        (t_line, dist)
     }
 }
 

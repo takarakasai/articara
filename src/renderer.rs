@@ -115,6 +115,16 @@ pub struct GlRenderer {
     /// Per-link display mode overrides. Key=(link_name, MeshKind), value=DisplayMode.
     /// If absent for a (link, kind), use the corresponding global mode.
     pub link_display_modes: HashMap<(String, MeshKind), DisplayMode>,
+    // --- Gizmo (offset adjustment) ---
+    gizmo_arrow_vao: glow::VertexArray,
+    gizmo_arrow_vbo: glow::Buffer,
+    gizmo_arrow_num_vertices: i32,
+    /// Transform at which to draw the gizmo. `None` = hidden.
+    pub gizmo_transform: Option<na::Isometry3<f32>>,
+    /// Which axis arrow is hovered (0=X, 1=Y, 2=Z). `None` = no hover.
+    pub gizmo_hovered_axis: Option<u8>,
+    /// Which axis arrow is being dragged (0=X, 1=Y, 2=Z). `None` = no drag.
+    pub gizmo_dragged_axis: Option<u8>,
 }
 
 impl GlRenderer {
@@ -143,6 +153,12 @@ impl GlRenderer {
             let com_sphere_num = (com_sphere_data.len() / 6) as i32;
             let (com_sphere_vao, com_sphere_vbo) = upload_mesh_data(gl, &com_sphere_data);
 
+            // Gizmo arrow (along +Z; rotated at draw time for each axis)
+            let gizmo_arrow_data =
+                primitives::generate_arrow(0.003, 0.06, 0.009, 0.02, 12);
+            let gizmo_arrow_num = (gizmo_arrow_data.len() / 6) as i32;
+            let (gizmo_arrow_vao, gizmo_arrow_vbo) = upload_mesh_data(gl, &gizmo_arrow_data);
+
             Self {
                 program,
                 u_mvp,
@@ -169,6 +185,12 @@ impl GlRenderer {
                 visual_mode: DisplayMode::Solid,
                 collision_mode: DisplayMode::Off,
                 link_display_modes: HashMap::new(),
+                gizmo_arrow_vao,
+                gizmo_arrow_vbo,
+                gizmo_arrow_num_vertices: gizmo_arrow_num,
+                gizmo_transform: None,
+                gizmo_hovered_axis: None,
+                gizmo_dragged_axis: None,
             }
         }
     }
@@ -432,6 +454,80 @@ impl GlRenderer {
                 }
             }
 
+            // Draw gizmo arrows (offset adjustment mode)
+            if let Some(gizmo_tf) = self.gizmo_transform {
+                // Draw on top of everything
+                gl.clear(glow::DEPTH_BUFFER_BIT);
+                gl.uniform_1_i32(Some(&self.u_flat), 0);
+                gl.bind_vertex_array(Some(self.gizmo_arrow_vao));
+
+                // Axis colors: X=red, Y=green, Z=blue
+                let axis_colors: [[f32; 4]; 3] = [
+                    [1.0, 0.2, 0.2, 1.0],
+                    [0.2, 1.0, 0.2, 1.0],
+                    [0.2, 0.4, 1.0, 1.0],
+                ];
+                // Rotations to orient +Z arrow to each axis
+                let axis_rotations: [na::UnitQuaternion<f32>; 3] = [
+                    // +Z → +X : rotate −90° around Y
+                    na::UnitQuaternion::from_axis_angle(
+                        &na::Vector3::y_axis(),
+                        -std::f32::consts::FRAC_PI_2,
+                    ),
+                    // +Z → +Y : rotate +90° around X
+                    na::UnitQuaternion::from_axis_angle(
+                        &na::Vector3::x_axis(),
+                        std::f32::consts::FRAC_PI_2,
+                    ),
+                    // +Z stays +Z
+                    na::UnitQuaternion::identity(),
+                ];
+
+                for (i, (color, rot)) in
+                    axis_colors.iter().zip(axis_rotations.iter()).enumerate()
+                {
+                    let axis_tf = gizmo_tf
+                        * na::Isometry3::from_parts(na::Translation3::identity(), *rot);
+                    let model_mat = axis_tf.to_homogeneous();
+                    let mvp = vp * model_mat;
+                    gl.uniform_matrix_4_f32_slice(
+                        Some(&self.u_mvp),
+                        false,
+                        mvp.as_slice(),
+                    );
+
+                    let model3 = model_mat.fixed_view::<3, 3>(0, 0).into_owned();
+                    let normal_mat = model3
+                        .try_inverse()
+                        .map(|inv| inv.transpose())
+                        .unwrap_or(na::Matrix3::identity());
+                    gl.uniform_matrix_3_f32_slice(
+                        Some(&self.u_normal_mat),
+                        false,
+                        normal_mat.as_slice(),
+                    );
+
+                    let iu8 = i as u8;
+                    let is_active = self.gizmo_dragged_axis == Some(iu8)
+                        || (self.gizmo_dragged_axis.is_none()
+                            && self.gizmo_hovered_axis == Some(iu8));
+                    if is_active {
+                        // Bright yellow highlight
+                        gl.uniform_4_f32(Some(&self.u_color), 1.0, 1.0, 0.2, 1.0);
+                    } else {
+                        gl.uniform_4_f32(
+                            Some(&self.u_color),
+                            color[0],
+                            color[1],
+                            color[2],
+                            color[3],
+                        );
+                    }
+
+                    gl.draw_arrays(glow::TRIANGLES, 0, self.gizmo_arrow_num_vertices);
+                }
+            }
+
             // Restore state
             gl.disable(glow::SCISSOR_TEST);
             gl.disable(glow::DEPTH_TEST);
@@ -472,6 +568,8 @@ impl GlRenderer {
             gl.delete_buffer(self.axes_vbo);
             gl.delete_vertex_array(self.com_sphere_vao);
             gl.delete_buffer(self.com_sphere_vbo);
+            gl.delete_vertex_array(self.gizmo_arrow_vao);
+            gl.delete_buffer(self.gizmo_arrow_vbo);
             gl.delete_program(self.program);
         }
     }

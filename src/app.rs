@@ -8,9 +8,18 @@ use crate::camera::OrbitCamera;
 use crate::format::RobotFormat;
 use crate::ik;
 use crate::renderer::{DisplayMode, GlRenderer, MeshKind};
-use crate::robot::{GeomData, RobotModel};
+use crate::robot::{self, GeomData, RobotModel};
 
-/// Drag manipulation mode.
+/// Top-level interaction mode.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InteractionMode {
+    /// Drive joints by dragging links (single-joint or IK).
+    JointDrive,
+    /// Adjust link/joint origin offsets via gizmo arrows.
+    OffsetAdjust,
+}
+
+/// Drag manipulation mode (within JointDrive).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DragMode {
     /// Move only the immediate parent joint of the clicked link.
@@ -38,6 +47,23 @@ struct DragState {
     chain: Vec<ik::ChainJoint>,
 }
 
+/// Drag state for gizmo offset adjustment.
+#[derive(Clone)]
+struct OffsetDragState {
+    /// Which axis is being dragged (0=X, 1=Y, 2=Z).
+    axis: u8,
+    /// Index of the joint whose origin is being adjusted.
+    joint_idx: usize,
+    /// World-space direction of the dragged axis (unit vector).
+    axis_dir_world: na::Vector3<f32>,
+    /// World-space gizmo origin at drag start.
+    gizmo_origin: na::Point3<f32>,
+    /// The ray-axis parameter "t" at drag start.
+    initial_t: f32,
+    /// The joint origin translation at drag start.
+    initial_translation: na::Translation3<f32>,
+}
+
 pub struct RoboViewApp {
     model: Option<RobotModel>,
     camera: OrbitCamera,
@@ -56,6 +82,12 @@ pub struct RoboViewApp {
     viewport_rect: egui::Rect,
     /// Current drag mode.
     drag_mode: DragMode,
+    /// Current interaction mode (JointDrive vs OffsetAdjust).
+    interaction_mode: InteractionMode,
+    /// Gizmo drag state for offset adjustment mode.
+    offset_drag_state: Option<OffsetDragState>,
+    /// Currently hovered gizmo axis (0=X, 1=Y, 2=Z).
+    hovered_gizmo_axis: Option<u8>,
     /// IK damping factor (λ for DLS).
     ik_damping: f32,
     /// Show center-of-mass markers and mass labels.
@@ -124,6 +156,9 @@ impl RoboViewApp {
             hovered_link: None,
             viewport_rect: egui::Rect::NOTHING,
             drag_mode: DragMode::SingleJoint,
+            interaction_mode: InteractionMode::JointDrive,
+            offset_drag_state: None,
+            hovered_gizmo_axis: None,
             ik_damping: 0.05,
             show_com: false,
             com_scale: 0.01,
@@ -588,27 +623,46 @@ impl RoboViewApp {
             ui.heading("Joint Positions");
             ui.separator();
 
-            // --- Drag Mode selector ---
+            // --- Interaction Mode selector ---
             ui.horizontal(|ui| {
-                ui.label("Drag mode:");
+                ui.label("Mode:");
             });
             ui.horizontal(|ui| {
-                ui.radio_value(&mut self.drag_mode, DragMode::SingleJoint, "Single Joint");
                 ui.radio_value(
-                    &mut self.drag_mode,
-                    DragMode::InverseKinematics,
-                    "IK Chain",
+                    &mut self.interaction_mode,
+                    InteractionMode::JointDrive,
+                    "Joint Drive",
+                );
+                ui.radio_value(
+                    &mut self.interaction_mode,
+                    InteractionMode::OffsetAdjust,
+                    "Offset Adjust",
                 );
             });
-            if self.drag_mode == DragMode::InverseKinematics {
+
+            if self.interaction_mode == InteractionMode::JointDrive {
+                // --- Joint Drive sub-mode selector ---
                 ui.horizontal(|ui| {
-                    ui.label("IK Damping (λ):");
-                    ui.add(
-                        egui::Slider::new(&mut self.ik_damping, 0.001..=0.5)
-                            .logarithmic(true)
-                            .text("λ"),
+                    ui.label("Drag mode:");
+                });
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.drag_mode, DragMode::SingleJoint, "Single Joint");
+                    ui.radio_value(
+                        &mut self.drag_mode,
+                        DragMode::InverseKinematics,
+                        "IK Chain",
                     );
                 });
+                if self.drag_mode == DragMode::InverseKinematics {
+                    ui.horizontal(|ui| {
+                        ui.label("IK Damping (λ):");
+                        ui.add(
+                            egui::Slider::new(&mut self.ik_damping, 0.001..=0.5)
+                                .logarithmic(true)
+                                .text("λ"),
+                        );
+                    });
+                }
             }
             ui.separator();
 
@@ -794,16 +848,29 @@ impl RoboViewApp {
 
                 ui.add_space(8.0);
                 let vis_count = link.visuals.len();
-                egui::CollapsingHeader::new(format!(
+                let vis_header = egui::CollapsingHeader::new(format!(
                     "🎨 Visuals ({vis_count})"
                 ))
                 .default_open(true)
                 .show(ui, |ui| {
                     let mut geom_changed = false;
+                    let mut vis_to_remove: Option<usize> = None;
+                    let mut vis_to_duplicate: Option<usize> = None;
                     for vi in 0..link.visuals.len() {
                         let vis = &mut link.visuals[vi];
                         ui.push_id(vi, |ui| {
-                            ui.label(egui::RichText::new(format!("Visual #{vi}")).strong());
+                            let header_resp = ui.label(egui::RichText::new(format!("Visual #{vi}")).strong());
+                            // Right-click on individual visual item
+                            header_resp.context_menu(|ui| {
+                                if ui.button("📋 Duplicate").clicked() {
+                                    vis_to_duplicate = Some(vi);
+                                    ui.close();
+                                }
+                                if ui.button("🗑 Delete").clicked() {
+                                    vis_to_remove = Some(vi);
+                                    ui.close();
+                                }
+                            });
 
                             // --- Geometry editing ---
                             match &mut vis.geometry {
@@ -860,21 +927,73 @@ impl RoboViewApp {
                             ui.separator();
                         });
                     }
+                    // Process deferred add/remove/duplicate
+                    if let Some(idx) = vis_to_duplicate {
+                        let cloned = link.visuals[idx].clone();
+                        link.visuals.insert(idx + 1, cloned);
+                        geom_changed = true;
+                    }
+                    if let Some(idx) = vis_to_remove {
+                        link.visuals.remove(idx);
+                        geom_changed = true;
+                    }
                     if geom_changed {
                         self.needs_upload = true;
                     }
                 });
+                // Right-click on Visuals header to add new visual
+                vis_header.header_response.context_menu(|ui: &mut egui::Ui| {
+                    if ui.button("➕ Add Box").clicked() {
+                        link.visuals.push(crate::robot::VisualData {
+                            origin: na::Isometry3::identity(),
+                            geometry: GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.05 },
+                            color: [0.7, 0.7, 0.7, 1.0],
+                        });
+                        self.needs_upload = true;
+                        ui.close();
+                    }
+                    if ui.button("➕ Add Cylinder").clicked() {
+                        link.visuals.push(crate::robot::VisualData {
+                            origin: na::Isometry3::identity(),
+                            geometry: GeomData::Cylinder { radius: 0.02, half_length: 0.1 },
+                            color: [0.7, 0.7, 0.7, 1.0],
+                        });
+                        self.needs_upload = true;
+                        ui.close();
+                    }
+                    if ui.button("➕ Add Sphere").clicked() {
+                        link.visuals.push(crate::robot::VisualData {
+                            origin: na::Isometry3::identity(),
+                            geometry: GeomData::Sphere { radius: 0.05 },
+                            color: [0.7, 0.7, 0.7, 1.0],
+                        });
+                        self.needs_upload = true;
+                        ui.close();
+                    }
+                });
 
                 let col_count = link.collisions.len();
-                egui::CollapsingHeader::new(format!(
+                let col_header = egui::CollapsingHeader::new(format!(
                     "💥 Collisions ({col_count})"
                 ))
                 .show(ui, |ui| {
                     let mut col_changed = false;
+                    let mut col_to_remove: Option<usize> = None;
+                    let mut col_to_duplicate: Option<usize> = None;
                     for ci in 0..link.collisions.len() {
                         let col = &mut link.collisions[ci];
                         ui.push_id(format!("col_{ci}"), |ui| {
-                            ui.label(egui::RichText::new(format!("Collision #{ci}")).strong());
+                            let col_item_resp = ui.label(egui::RichText::new(format!("Collision #{ci}")).strong());
+                            col_item_resp.context_menu(|ui| {
+                                if ui.button("📋 Duplicate").clicked() {
+                                    col_to_duplicate = Some(ci);
+                                    ui.close();
+                                }
+                                if ui.button("🗑 Delete").clicked() {
+                                    col_to_remove = Some(ci);
+                                    ui.close();
+                                }
+                            });
                             match &mut col.geometry {
                                 GeomData::Box { hx, hy, hz } => {
                                     ui.horizontal(|ui| {
@@ -909,8 +1028,45 @@ impl RoboViewApp {
                             ui.separator();
                         });
                     }
+                    // Process deferred add/remove/duplicate for collisions
+                    if let Some(idx) = col_to_duplicate {
+                        let cloned = link.collisions[idx].clone();
+                        link.collisions.insert(idx + 1, cloned);
+                        col_changed = true;
+                    }
+                    if let Some(idx) = col_to_remove {
+                        link.collisions.remove(idx);
+                        col_changed = true;
+                    }
                     if col_changed {
                         self.needs_upload = true;
+                    }
+                });
+                // Right-click on Collisions header to add new collision
+                col_header.header_response.context_menu(|ui: &mut egui::Ui| {
+                    if ui.button("➕ Add Box").clicked() {
+                        link.collisions.push(crate::robot::CollisionData {
+                            origin: na::Isometry3::identity(),
+                            geometry: GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.05 },
+                        });
+                        self.needs_upload = true;
+                        ui.close();
+                    }
+                    if ui.button("➕ Add Cylinder").clicked() {
+                        link.collisions.push(crate::robot::CollisionData {
+                            origin: na::Isometry3::identity(),
+                            geometry: GeomData::Cylinder { radius: 0.02, half_length: 0.1 },
+                        });
+                        self.needs_upload = true;
+                        ui.close();
+                    }
+                    if ui.button("➕ Add Sphere").clicked() {
+                        link.collisions.push(crate::robot::CollisionData {
+                            origin: na::Isometry3::identity(),
+                            geometry: GeomData::Sphere { radius: 0.05 },
+                        });
+                        self.needs_upload = true;
+                        ui.close();
                     }
                 });
             }
@@ -1138,7 +1294,7 @@ impl RoboViewApp {
 
         // Hover highlight: cast ray on hover
         if let (Some(ndc), Some(model)) = (mouse_ndc, &self.model) {
-            if self.drag_state.is_none() {
+            if self.drag_state.is_none() && self.offset_drag_state.is_none() {
                 let (ro, rd) = self.camera.screen_ray(ndc, aspect);
                 self.hovered_link = model.pick_link(&ro, &rd, &transforms).map(|(li, _)| li);
             }
@@ -1146,55 +1302,147 @@ impl RoboViewApp {
             self.hovered_link = None;
         }
 
-        // Left mouse button pressed: start drag if a link is hit
-        if response.drag_started_by(egui::PointerButton::Primary) {
-            if let (Some(ndc), Some(model)) = (mouse_ndc, &self.model) {
-                let (ro, rd) = self.camera.screen_ray(ndc, aspect);
-                if let Some((li, _dist)) = model.pick_link(&ro, &rd, &transforms) {
-                    let link_name = &model.links[li].name;
-                    match self.drag_mode {
-                        DragMode::SingleJoint => {
-                            if let Some(ji) = model.parent_joint_of_link(link_name) {
-                                let joint = &model.joints[ji];
-                                if joint.joint_type == "revolute"
-                                    || joint.joint_type == "continuous"
-                                {
-                                    let parent_tf = transforms
-                                        .get(&joint.parent_link)
-                                        .copied()
-                                        .unwrap_or(na::Isometry3::identity());
-                                    let joint_tf = parent_tf * joint.origin;
-                                    let world_axis = joint_tf * joint.axis;
-                                    let pivot_world =
-                                        na::Point3::from(joint_tf.translation.vector);
+        // --- Gizmo hover detection (OffsetAdjust mode) ---
+        // Compute gizmo transform for the selected joint (if any)
+        let gizmo_tf: Option<na::Isometry3<f32>> =
+            if self.interaction_mode == InteractionMode::OffsetAdjust {
+                self.selected_joint.and_then(|ji| {
+                    self.model.as_ref().map(|m| {
+                        let joint = &m.joints[ji];
+                        let parent_tf = transforms
+                            .get(&joint.parent_link)
+                            .copied()
+                            .unwrap_or(na::Isometry3::identity());
+                        let joint_world = parent_tf * joint.origin;
+                        // Gizmo at joint world position, axes aligned with parent frame
+                        na::Isometry3::from_parts(joint_world.translation, parent_tf.rotation)
+                    })
+                })
+            } else {
+                None
+            };
 
-                                    self.drag_state = Some(DragState {
-                                        link_idx: li,
-                                        mode: DragMode::SingleJoint,
-                                        joint_idx: ji,
-                                        world_axis,
-                                        pivot_world,
-                                        chain: Vec::new(),
-                                    });
-                                    self.selected_link = Some(li);
-                                    self.selected_joint = Some(ji);
-                                }
+        const GIZMO_ARROW_LENGTH: f32 = 0.08; // shaft + head total
+        const GIZMO_PICK_RADIUS: f32 = 0.012;
+
+        // Hover: check which gizmo axis the mouse is over
+        self.hovered_gizmo_axis = None;
+        if self.interaction_mode == InteractionMode::OffsetAdjust
+            && self.offset_drag_state.is_none()
+        {
+            if let (Some(ndc), Some(gt)) = (mouse_ndc, gizmo_tf) {
+                let (ro, rd) = self.camera.screen_ray(ndc, aspect);
+                let origin = na::Point3::from(gt.translation.vector);
+                let axes = [
+                    gt.rotation * na::Vector3::x(),
+                    gt.rotation * na::Vector3::y(),
+                    gt.rotation * na::Vector3::z(),
+                ];
+                let mut best_dist = f32::MAX;
+                for (i, axis) in axes.iter().enumerate() {
+                    let (t_line, dist) = robot::ray_axis_closest(&ro, &rd, &origin, axis);
+                    if t_line >= 0.0
+                        && t_line <= GIZMO_ARROW_LENGTH
+                        && dist < GIZMO_PICK_RADIUS
+                        && dist < best_dist
+                    {
+                        best_dist = dist;
+                        self.hovered_gizmo_axis = Some(i as u8);
+                    }
+                }
+            }
+        }
+
+        // Left mouse button pressed: start drag
+        if response.drag_started_by(egui::PointerButton::Primary) {
+            match self.interaction_mode {
+                InteractionMode::OffsetAdjust => {
+                    // Try to pick a gizmo arrow first
+                    if let (Some(axis_idx), Some(gt), Some(ji)) =
+                        (self.hovered_gizmo_axis, gizmo_tf, self.selected_joint)
+                    {
+                        if let Some(ndc) = mouse_ndc {
+                            let (ro, rd) = self.camera.screen_ray(ndc, aspect);
+                            let origin = na::Point3::from(gt.translation.vector);
+                            let axes = [
+                                gt.rotation * na::Vector3::x(),
+                                gt.rotation * na::Vector3::y(),
+                                gt.rotation * na::Vector3::z(),
+                            ];
+                            let axis_dir = axes[axis_idx as usize];
+                            let (t_line, _) = robot::ray_axis_closest(&ro, &rd, &origin, &axis_dir);
+
+                            if let Some(model) = &self.model {
+                                self.offset_drag_state = Some(OffsetDragState {
+                                    axis: axis_idx,
+                                    joint_idx: ji,
+                                    axis_dir_world: axis_dir,
+                                    gizmo_origin: origin,
+                                    initial_t: t_line,
+                                    initial_translation: model.joints[ji].origin.translation,
+                                });
                             }
                         }
-                        DragMode::InverseKinematics => {
-                            let chain = ik::build_chain(model, link_name);
-                            if !chain.is_empty() {
-                                // Use first joint for display selection
-                                let ji = chain.last().map(|c| c.joint_idx).unwrap_or(0);
-                                self.drag_state = Some(DragState {
-                                    link_idx: li,
-                                    mode: DragMode::InverseKinematics,
-                                    joint_idx: ji,
-                                    world_axis: na::Vector3::zeros(),
-                                    pivot_world: na::Point3::origin(),
-                                    chain,
-                                });
-                                self.selected_link = Some(li);
+                    } else if let (Some(ndc), Some(model)) = (mouse_ndc, &self.model) {
+                        // No gizmo arrow hit: pick a link to select
+                        let (ro, rd) = self.camera.screen_ray(ndc, aspect);
+                        if let Some((li, _)) = model.pick_link(&ro, &rd, &transforms) {
+                            let link_name = &model.links[li].name;
+                            self.selected_link = Some(li);
+                            self.selected_joint = model.parent_joint_of_link(link_name);
+                        }
+                    }
+                }
+                InteractionMode::JointDrive => {
+                    if let (Some(ndc), Some(model)) = (mouse_ndc, &self.model) {
+                        let (ro, rd) = self.camera.screen_ray(ndc, aspect);
+                        if let Some((li, _dist)) = model.pick_link(&ro, &rd, &transforms) {
+                            let link_name = &model.links[li].name;
+                            match self.drag_mode {
+                                DragMode::SingleJoint => {
+                                    if let Some(ji) = model.parent_joint_of_link(link_name) {
+                                        let joint = &model.joints[ji];
+                                        if joint.joint_type == "revolute"
+                                            || joint.joint_type == "continuous"
+                                        {
+                                            let parent_tf = transforms
+                                                .get(&joint.parent_link)
+                                                .copied()
+                                                .unwrap_or(na::Isometry3::identity());
+                                            let joint_tf = parent_tf * joint.origin;
+                                            let world_axis = joint_tf * joint.axis;
+                                            let pivot_world =
+                                                na::Point3::from(joint_tf.translation.vector);
+
+                                            self.drag_state = Some(DragState {
+                                                link_idx: li,
+                                                mode: DragMode::SingleJoint,
+                                                joint_idx: ji,
+                                                world_axis,
+                                                pivot_world,
+                                                chain: Vec::new(),
+                                            });
+                                            self.selected_link = Some(li);
+                                            self.selected_joint = Some(ji);
+                                        }
+                                    }
+                                }
+                                DragMode::InverseKinematics => {
+                                    let chain = ik::build_chain(model, link_name);
+                                    if !chain.is_empty() {
+                                        let ji =
+                                            chain.last().map(|c| c.joint_idx).unwrap_or(0);
+                                        self.drag_state = Some(DragState {
+                                            link_idx: li,
+                                            mode: DragMode::InverseKinematics,
+                                            joint_idx: ji,
+                                            world_axis: na::Vector3::zeros(),
+                                            pivot_world: na::Point3::origin(),
+                                            chain,
+                                        });
+                                        self.selected_link = Some(li);
+                                    }
+                                }
                             }
                         }
                     }
@@ -1202,9 +1450,35 @@ impl RoboViewApp {
             }
         }
 
-        // While dragging: map mouse delta to joint angle change
+        // While dragging: handle joint drive or offset adjustment
         if response.dragged_by(egui::PointerButton::Primary) {
-            if let Some(ref drag) = self.drag_state.clone() {
+            if let Some(ref odrag) = self.offset_drag_state.clone() {
+                // --- Offset adjustment drag ---
+                if let Some(ndc) = mouse_ndc {
+                    let (ro, rd) = self.camera.screen_ray(ndc, aspect);
+                    let (t_line, _) =
+                        robot::ray_axis_closest(&ro, &rd, &odrag.gizmo_origin, &odrag.axis_dir_world);
+                    let delta_t = t_line - odrag.initial_t;
+
+                    if let Some(ref mut model) = self.model {
+                        // Convert world-space displacement to parent-local displacement
+                        let ji = odrag.joint_idx;
+                        let parent_tf = transforms
+                            .get(&model.joints[ji].parent_link)
+                            .copied()
+                            .unwrap_or(na::Isometry3::identity());
+                        let world_disp = odrag.axis_dir_world * delta_t;
+                        let local_disp = parent_tf.rotation.inverse() * world_disp;
+
+                        model.joints[ji].origin.translation = na::Translation3::new(
+                            odrag.initial_translation.vector.x + local_disp.x,
+                            odrag.initial_translation.vector.y + local_disp.y,
+                            odrag.initial_translation.vector.z + local_disp.z,
+                        );
+                        self.needs_upload = true;
+                    }
+                }
+            } else if let Some(ref drag) = self.drag_state.clone() {
                 let delta = response.drag_delta();
                 if delta.length_sq() > 0.0 {
                     match drag.mode {
@@ -1341,10 +1615,12 @@ impl RoboViewApp {
         // Drag released
         if response.drag_stopped_by(egui::PointerButton::Primary) {
             self.drag_state = None;
+            self.offset_drag_state = None;
         }
 
-        // Update highlight in renderer
+        // Update highlight and gizmo state in renderer
         {
+            let mut r = self.gl_renderer.lock().unwrap();
             let highlight = if self.drag_state.is_some() {
                 self.drag_state
                     .as_ref()
@@ -1353,30 +1629,44 @@ impl RoboViewApp {
                 self.hovered_link
                     .and_then(|li| self.model.as_ref().map(|m| m.links[li].name.clone()))
             };
-            self.gl_renderer.lock().unwrap().highlight_link = highlight;
+            r.highlight_link = highlight;
+
+            // Gizmo state
+            r.gizmo_transform = gizmo_tf;
+            r.gizmo_hovered_axis = self.hovered_gizmo_axis;
+            r.gizmo_dragged_axis = self.offset_drag_state.as_ref().map(|d| d.axis);
         }
 
-        // Change cursor when hovering a draggable link
-        if self.drag_state.is_some() {
+        // Change cursor when hovering a draggable link or gizmo arrow
+        if self.drag_state.is_some() || self.offset_drag_state.is_some() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        } else if self.hovered_gizmo_axis.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
         } else if self.hovered_link.is_some() {
             // Check if the hovered link has a movable parent joint (or IK chain)
             let is_draggable = self.hovered_link.and_then(|li| {
                 self.model.as_ref().and_then(|m| {
                     let link_name = &m.links[li].name;
-                    match self.drag_mode {
-                        DragMode::SingleJoint => m
-                            .parent_joint_of_link(link_name)
-                            .map(|ji| &m.joints[ji].joint_type)
-                            .filter(|jt| *jt == "revolute" || *jt == "continuous"),
-                        DragMode::InverseKinematics => {
-                            let chain = ik::build_chain(m, link_name);
-                            if chain.is_empty() {
-                                None
-                            } else {
-                                Some(&m.joints[chain[0].joint_idx].joint_type)
-                            }
+                    match self.interaction_mode {
+                        InteractionMode::OffsetAdjust => {
+                            // In offset mode, any link is "selectable"
+                            Some(&m.links[li].name as &str)
                         }
+                        InteractionMode::JointDrive => match self.drag_mode {
+                            DragMode::SingleJoint => m
+                                .parent_joint_of_link(link_name)
+                                .map(|ji| &m.joints[ji].joint_type)
+                                .filter(|jt| *jt == "revolute" || *jt == "continuous")
+                                .map(|s| s.as_str()),
+                            DragMode::InverseKinematics => {
+                                let chain = ik::build_chain(m, link_name);
+                                if chain.is_empty() {
+                                    None
+                                } else {
+                                    Some(m.joints[chain[0].joint_idx].joint_type.as_str())
+                                }
+                            }
+                        },
                     }
                 })
             });

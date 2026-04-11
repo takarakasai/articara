@@ -1072,6 +1072,42 @@ mod test_primitives {
         // 3 axes × 2 endpoints × 6 floats = 36
         assert_eq!(v.len(), 36);
     }
+
+    #[test]
+    fn generate_arrow_non_empty() {
+        let v = primitives::generate_arrow(0.003, 0.06, 0.009, 0.02, 12);
+        assert!(!v.is_empty());
+    }
+
+    #[test]
+    fn generate_arrow_vertex_count() {
+        // Per segment: 6 shaft side + 3 shaft cap + 3 cone side + 3 cone base = 15 vertices
+        // 12 segments × 15 × 6 floats = 1080
+        let v = primitives::generate_arrow(0.003, 0.06, 0.009, 0.02, 12);
+        assert_eq!(v.len(), 12 * 15 * 6);
+    }
+
+    #[test]
+    fn generate_arrow_z_bounded() {
+        let shaft_len = 0.06_f32;
+        let head_len = 0.02_f32;
+        let v = primitives::generate_arrow(0.003, shaft_len, 0.009, head_len, 12);
+        for chunk in v.chunks(6) {
+            let z = chunk[2];
+            assert!(z >= -1e-6, "z below origin: {z}");
+            assert!(z <= shaft_len + head_len + 1e-6, "z above tip: {z}");
+        }
+    }
+
+    #[test]
+    fn generate_arrow_radius_bounded() {
+        let head_radius = 0.009_f32;
+        let v = primitives::generate_arrow(0.003, 0.06, head_radius, 0.02, 12);
+        for chunk in v.chunks(6) {
+            let r = (chunk[0] * chunk[0] + chunk[1] * chunk[1]).sqrt();
+            assert!(r <= head_radius + 1e-4, "point beyond head_radius: r={r}");
+        }
+    }
 }
 
 // ============================================================
@@ -1422,5 +1458,145 @@ mod test_model_editing {
         let right_y = tf["right"].translation.vector.y;
         assert!((left_y - 0.1).abs() < 0.001);
         assert!((right_y + 0.1).abs() < 0.001);
+    }
+}
+
+// ============================================================
+// Gizmo / Offset Adjustment tests
+// ============================================================
+mod test_gizmo {
+    use nalgebra as na;
+    use roboview::robot::{self, GeomData, RobotModel};
+
+    #[test]
+    fn ray_axis_closest_perpendicular_hit() {
+        // Ray along +Y, axis along +X at origin → should be closest at t_line=0, dist=0
+        let ro = na::Point3::new(0.0, -1.0, 0.0);
+        let rd = na::Vector3::new(0.0, 1.0, 0.0);
+        let origin = na::Point3::origin();
+        let axis = na::Vector3::x();
+        let (t_line, dist) = robot::ray_axis_closest(&ro, &rd, &origin, &axis);
+        assert!(dist.abs() < 1e-5, "dist={dist}");
+        assert!(t_line.abs() < 1e-5, "t_line={t_line}");
+    }
+
+    #[test]
+    fn ray_axis_closest_offset_hit() {
+        // Ray along +Y at x=0.5, axis along +X at origin
+        // Closest point on axis should be at t_line=0.5 (i.e., [0.5, 0, 0])
+        let ro = na::Point3::new(0.5, -1.0, 0.0);
+        let rd = na::Vector3::new(0.0, 1.0, 0.0);
+        let origin = na::Point3::origin();
+        let axis = na::Vector3::x();
+        let (t_line, dist) = robot::ray_axis_closest(&ro, &rd, &origin, &axis);
+        assert!(dist.abs() < 1e-5, "dist={dist}");
+        assert!((t_line - 0.5).abs() < 1e-5, "t_line={t_line}");
+    }
+
+    #[test]
+    fn ray_axis_closest_skew_lines() {
+        // Ray along +Z at (1,0,0), axis along +X at origin
+        // Distance should be 0 (they intersect at (1,0,0) with t_line=1)
+        let ro = na::Point3::new(1.0, 0.0, -1.0);
+        let rd = na::Vector3::new(0.0, 0.0, 1.0);
+        let origin = na::Point3::origin();
+        let axis = na::Vector3::x();
+        let (t_line, dist) = robot::ray_axis_closest(&ro, &rd, &origin, &axis);
+        assert!(dist.abs() < 1e-5, "dist={dist}");
+        assert!((t_line - 1.0).abs() < 1e-5, "t_line={t_line}");
+    }
+
+    #[test]
+    fn ray_axis_closest_nonzero_distance() {
+        // Ray along +Z at (0, 0.1, 0), axis along +X at origin
+        // Closest distance should be 0.1 (the Y-offset)
+        let ro = na::Point3::new(0.0, 0.1, -1.0);
+        let rd = na::Vector3::new(0.0, 0.0, 1.0);
+        let origin = na::Point3::origin();
+        let axis = na::Vector3::x();
+        let (t_line, dist) = robot::ray_axis_closest(&ro, &rd, &origin, &axis);
+        assert!((dist - 0.1).abs() < 1e-5, "dist={dist}");
+        assert!(t_line.abs() < 1e-5, "t_line={t_line}");
+    }
+
+    #[test]
+    fn ray_axis_closest_parallel_rays() {
+        // Ray parallel to axis (both along X, offset in Y)
+        let ro = na::Point3::new(0.0, 0.5, 0.0);
+        let rd = na::Vector3::new(1.0, 0.0, 0.0);
+        let origin = na::Point3::origin();
+        let axis = na::Vector3::x();
+        let (_t_line, dist) = robot::ray_axis_closest(&ro, &rd, &origin, &axis);
+        assert!((dist - 0.5).abs() < 1e-5, "dist={dist}");
+    }
+
+    #[test]
+    fn joint_origin_translation_editable() {
+        // Build a simple robot model with a joint, verify we can modify the origin
+        let mut model = RobotModel::new_empty("gizmo_test");
+        model
+            .add_child(
+                "base_link",
+                "link1",
+                "joint1",
+                "revolute",
+                na::Isometry3::new(
+                    na::Vector3::new(0.0, 0.0, 0.1),
+                    na::Vector3::zeros(),
+                ),
+                na::Vector3::z(),
+                GeomData::Sphere { radius: 0.02 },
+                [1.0, 0.0, 0.0, 1.0],
+                -1.0,
+                1.0,
+            )
+            .unwrap();
+
+        // Verify initial translation
+        let ji = 0;
+        let orig = model.joints[ji].origin.translation.vector;
+        assert!((orig.z - 0.1).abs() < 1e-6);
+
+        // Simulate offset adjustment: move joint along X by 0.05
+        model.joints[ji].origin.translation.vector.x += 0.05;
+        let tf = model.compute_transforms();
+        let link1_pos = tf["link1"].translation.vector;
+        assert!((link1_pos.x - 0.05).abs() < 1e-5, "x={}", link1_pos.x);
+        assert!((link1_pos.z - 0.1).abs() < 1e-5, "z={}", link1_pos.z);
+    }
+
+    #[test]
+    fn gizmo_transform_at_joint_world_position() {
+        // Verify gizmo would be placed at the correct world position
+        let mut model = RobotModel::new_empty("gizmo_pos");
+        model
+            .add_child(
+                "base_link",
+                "link1",
+                "joint1",
+                "revolute",
+                na::Isometry3::new(
+                    na::Vector3::new(0.0, 0.0, 0.2),
+                    na::Vector3::zeros(),
+                ),
+                na::Vector3::z(),
+                GeomData::Sphere { radius: 0.02 },
+                [1.0, 0.0, 0.0, 1.0],
+                -1.0,
+                1.0,
+            )
+            .unwrap();
+
+        let tf = model.compute_transforms();
+        let joint = &model.joints[0];
+        let parent_tf = tf
+            .get(&joint.parent_link)
+            .copied()
+            .unwrap_or(na::Isometry3::identity());
+        let joint_world = parent_tf * joint.origin;
+
+        // Gizmo position should match joint world position
+        let gizmo_pos = joint_world.translation.vector;
+        assert!((gizmo_pos.z - 0.2).abs() < 1e-5);
     }
 }

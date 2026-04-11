@@ -168,6 +168,76 @@ pub fn generate_axes(length: f32) -> Vec<f32> {
     v
 }
 
+/// Generate vertex data for a 3D arrow along +Z axis.
+/// Shaft: cylinder from z=0 to z=shaft_length.
+/// Head: cone from z=shaft_length to z=shaft_length+head_length.
+pub fn generate_arrow(
+    shaft_radius: f32,
+    shaft_length: f32,
+    head_radius: f32,
+    head_length: f32,
+    segments: u32,
+) -> Vec<f32> {
+    let mut v = Vec::new();
+    let seg = segments as f32;
+    let z1 = shaft_length;
+    let z2 = shaft_length + head_length;
+
+    for i in 0..segments {
+        let a0 = (i as f32 / seg) * std::f32::consts::TAU;
+        let a1 = ((i + 1) as f32 / seg) * std::f32::consts::TAU;
+        let (c0, s0) = (a0.cos(), a0.sin());
+        let (c1, s1) = (a1.cos(), a1.sin());
+
+        // Shaft side
+        let n0 = [c0, s0, 0.0];
+        let n1 = [c1, s1, 0.0];
+        push_vert(&mut v, [shaft_radius * c0, shaft_radius * s0, 0.0], n0);
+        push_vert(&mut v, [shaft_radius * c1, shaft_radius * s1, 0.0], n1);
+        push_vert(&mut v, [shaft_radius * c1, shaft_radius * s1, z1], n1);
+        push_vert(&mut v, [shaft_radius * c0, shaft_radius * s0, 0.0], n0);
+        push_vert(&mut v, [shaft_radius * c1, shaft_radius * s1, z1], n1);
+        push_vert(&mut v, [shaft_radius * c0, shaft_radius * s0, z1], n0);
+
+        // Shaft bottom cap
+        push_vert(&mut v, [0.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
+        push_vert(
+            &mut v,
+            [shaft_radius * c1, shaft_radius * s1, 0.0],
+            [0.0, 0.0, -1.0],
+        );
+        push_vert(
+            &mut v,
+            [shaft_radius * c0, shaft_radius * s0, 0.0],
+            [0.0, 0.0, -1.0],
+        );
+
+        // Cone side
+        let slope = (head_radius / head_length).atan();
+        let nz = slope.sin();
+        let nr = slope.cos();
+        let cn0 = [nr * c0, nr * s0, nz];
+        let cn1 = [nr * c1, nr * s1, nz];
+        push_vert(&mut v, [head_radius * c0, head_radius * s0, z1], cn0);
+        push_vert(&mut v, [head_radius * c1, head_radius * s1, z1], cn1);
+        push_vert(&mut v, [0.0, 0.0, z2], [0.0, 0.0, 1.0]);
+
+        // Cone base cap
+        push_vert(&mut v, [0.0, 0.0, z1], [0.0, 0.0, -1.0]);
+        push_vert(
+            &mut v,
+            [head_radius * c1, head_radius * s1, z1],
+            [0.0, 0.0, -1.0],
+        );
+        push_vert(
+            &mut v,
+            [head_radius * c0, head_radius * s0, z1],
+            [0.0, 0.0, -1.0],
+        );
+    }
+    v
+}
+
 fn sph(r: f32, phi: f32, theta: f32) -> [f32; 3] {
     [
         r * phi.sin() * theta.cos(),
