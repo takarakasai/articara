@@ -41,7 +41,11 @@ pub enum GeomData {
     Box { hx: f32, hy: f32, hz: f32 },
     Cylinder { radius: f32, half_length: f32 },
     Sphere { radius: f32 },
-    Mesh { vertices: Vec<f32> }, // flat [x, y, z, nx, ny, nz, ...]
+    Mesh {
+        vertices: Vec<f32>,          // flat [x, y, z, nx, ny, nz, ...]
+        filename: Option<String>,    // original URI e.g. "package://..."
+        scale: Option<[f32; 3]>,
+    },
 }
 
 pub struct InertialData {
@@ -224,6 +228,19 @@ impl RobotModel {
         })
     }
 
+    /// Load a robot model from any supported format (auto-detected by extension).
+    pub fn from_file(path: &Path) -> Result<Self, String> {
+        use crate::format::RobotFormat;
+        let fmt = RobotFormat::detect(path)
+            .ok_or_else(|| format!("Unknown file format: {:?}", path.extension()))?;
+        match fmt {
+            RobotFormat::Urdf => Self::from_urdf(path),
+            RobotFormat::Sdf => crate::sdf::import_sdf(path),
+            RobotFormat::Mjcf => crate::mjcf::import_mjcf(path),
+            RobotFormat::IsaacUsd => Err("Isaac USD import is not supported (export only).".into()),
+        }
+    }
+
     /// Compute world transforms for all links based on current joint positions.
     pub fn compute_transforms(&self) -> HashMap<String, na::Isometry3<f32>> {
         let mut transforms: HashMap<String, na::Isometry3<f32>> = HashMap::new();
@@ -311,7 +328,7 @@ impl RobotModel {
                         points.push(vis.origin * na::Point3::new(d[0], d[1], d[2]));
                     }
                 }
-                GeomData::Mesh { vertices } => {
+                GeomData::Mesh { vertices, .. } => {
                     // Sample every Nth vertex for large meshes to keep it fast
                     let step = if vertices.len() > 6000 { 6 * 10 } else { 6 };
                     for chunk in vertices.chunks(step) {
@@ -413,7 +430,7 @@ fn precise_geometry_intersect(
         GeomData::Sphere { radius } => {
             ray_sphere_intersect(&local_origin, &local_dir, &na::Point3::origin(), *radius)
         }
-        GeomData::Mesh { vertices } => ray_mesh_intersect(&local_origin, &local_dir, vertices),
+        GeomData::Mesh { vertices, .. } => ray_mesh_intersect(&local_origin, &local_dir, vertices),
     }
 }
 
@@ -769,7 +786,14 @@ fn convert_geometry(geom: &urdf_rs::Geometry, package_dir: &Path) -> GeomData {
         urdf_rs::Geometry::Mesh { filename, scale } => {
             let mesh_path = resolve_package_path(filename, package_dir);
             let vertices = load_stl_mesh(&mesh_path, scale.as_ref());
-            GeomData::Mesh { vertices }
+            let sf = scale
+                .as_ref()
+                .map(|s| [s.0[0] as f32, s.0[1] as f32, s.0[2] as f32]);
+            GeomData::Mesh {
+                vertices,
+                filename: Some(filename.clone()),
+                scale: sf,
+            }
         }
         _ => GeomData::Box {
             hx: 0.01,
@@ -779,7 +803,7 @@ fn convert_geometry(geom: &urdf_rs::Geometry, package_dir: &Path) -> GeomData {
     }
 }
 
-fn resolve_package_path(filename: &str, package_dir: &Path) -> PathBuf {
+pub fn resolve_package_path(filename: &str, package_dir: &Path) -> PathBuf {
     if let Some(rest) = filename.strip_prefix("package://") {
         if let Some(slash_pos) = rest.find('/') {
             let rel_path = &rest[slash_pos + 1..];
@@ -837,4 +861,9 @@ fn load_stl_mesh(path: &PathBuf, scale: Option<&urdf_rs::Vec3>) -> Vec<f32> {
         mesh.faces.len()
     );
     vertices
+}
+
+/// Public wrapper for loading an STL mesh from an absolute path (no scale).
+pub fn load_stl_mesh_public(path: &PathBuf) -> Vec<f32> {
+    load_stl_mesh(path, None)
 }

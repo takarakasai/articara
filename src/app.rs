@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::camera::OrbitCamera;
+use crate::format::RobotFormat;
 use crate::ik;
 use crate::renderer::GlRenderer;
 use crate::robot::RobotModel;
@@ -64,6 +65,8 @@ pub struct RoboViewApp {
     wireframe: bool,
     /// Export output directory path.
     export_dir: String,
+    /// Selected format for export.
+    export_format: RobotFormat,
     /// Status message from last export attempt.
     export_message: String,
 }
@@ -96,12 +99,13 @@ impl RoboViewApp {
             com_scale: 0.01,
             wireframe: false,
             export_dir: String::new(),
+            export_format: RobotFormat::Urdf,
             export_message: String::new(),
         }
     }
 
-    pub fn load_urdf(&mut self, path: PathBuf) {
-        match RobotModel::from_urdf(&path) {
+    pub fn load_model(&mut self, path: PathBuf) {
+        match RobotModel::from_file(&path) {
             Ok(model) => {
                 self.status_message = format!(
                     "Loaded: {} ({} links, {} joints)",
@@ -111,6 +115,10 @@ impl RoboViewApp {
                 );
                 self.model = Some(model);
                 self.urdf_path_input = path.display().to_string();
+                // Auto-set export format to match source
+                if let Some(fmt) = RobotFormat::detect(&path) {
+                    self.export_format = fmt;
+                }
                 self.selected_link = None;
                 self.selected_joint = None;
                 self.needs_upload = true;
@@ -123,7 +131,7 @@ impl RoboViewApp {
             }
             Err(e) => {
                 self.status_message = format!("Error: {e}");
-                log::error!("Failed to load URDF: {e}");
+                log::error!("Failed to load model: {e}");
             }
         }
     }
@@ -132,13 +140,13 @@ impl RoboViewApp {
 
     fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label("URDF:");
+            ui.label("File:");
             let response = ui.text_edit_singleline(&mut self.urdf_path_input);
             if (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 || ui.button("Load").clicked()
             {
                 let path = PathBuf::from(&self.urdf_path_input);
-                self.load_urdf(path);
+                self.load_model(path);
             }
             ui.separator();
             ui.label(&self.status_message);
@@ -386,7 +394,7 @@ impl RoboViewApp {
                             crate::robot::GeomData::Sphere { radius } => {
                                 format!("Sphere r={radius:.3}")
                             }
-                            crate::robot::GeomData::Mesh { vertices } => {
+                            crate::robot::GeomData::Mesh { vertices, .. } => {
                                 format!("Mesh ({} tris)", vertices.len() / 18)
                             }
                         };
@@ -416,7 +424,7 @@ impl RoboViewApp {
                             crate::robot::GeomData::Sphere { radius } => {
                                 format!("Sphere r={radius:.3}")
                             }
-                            crate::robot::GeomData::Mesh { vertices } => {
+                            crate::robot::GeomData::Mesh { vertices, .. } => {
                                 format!("Mesh ({} tris)", vertices.len() / 18)
                             }
                         };
@@ -484,7 +492,7 @@ impl RoboViewApp {
         ui.separator();
         ui.heading("Save / Export");
 
-        // Save: overwrite original
+        // Save: overwrite original (always URDF)
         ui.horizontal(|ui| {
             if ui.button("💾 Save").clicked() {
                 self.do_save();
@@ -502,7 +510,19 @@ impl RoboViewApp {
 
         ui.add_space(4.0);
 
-        // Export: write to a different directory
+        // Export: write to a different directory in selected format
+        ui.horizontal(|ui| {
+            ui.label("Format:");
+            egui::ComboBox::from_id_salt("export_fmt")
+                .selected_text(self.export_format.label())
+                .show_ui(ui, |ui| {
+                    for &fmt in RobotFormat::ALL {
+                        if fmt.supports_export() {
+                            ui.selectable_value(&mut self.export_format, fmt, fmt.label());
+                        }
+                    }
+                });
+        });
         ui.horizontal(|ui| {
             ui.label("Dir:");
             ui.text_edit_singleline(&mut self.export_dir);
@@ -544,20 +564,66 @@ impl RoboViewApp {
             self.export_message = format!("⚠ Cannot create dir: {e}");
             return;
         }
-        // Determine output filename: same as source, or "robot.urdf"
-        let filename = model
+
+        let fmt = self.export_format;
+        let base_name = model
             .source_path
             .as_ref()
-            .and_then(|p| p.file_name().map(|f| f.to_owned()))
-            .unwrap_or_else(|| std::ffi::OsString::from("robot.urdf"));
-        let output_path = dir.join(filename);
-        match model.export_urdf_to_file(&output_path) {
-            Ok(()) => {
-                self.export_message =
-                    format!("✔ Exported to {} (with meshes)", output_path.display());
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| model.name.clone());
+
+        match fmt {
+            RobotFormat::Urdf => {
+                let filename = format!("{base_name}.urdf");
+                let output_path = dir.join(&filename);
+                match model.export_urdf_to_file(&output_path) {
+                    Ok(()) => {
+                        self.export_message =
+                            format!("✔ Exported URDF to {} (with meshes)", output_path.display());
+                    }
+                    Err(e) => {
+                        self.export_message = format!("⚠ URDF export failed: {e}");
+                    }
+                }
             }
-            Err(e) => {
-                self.export_message = format!("⚠ Export failed: {e}");
+            RobotFormat::Sdf => {
+                let filename = format!("{base_name}.sdf");
+                let output_path = dir.join(&filename);
+                let xml = crate::sdf::export_sdf(model);
+                match std::fs::write(&output_path, &xml) {
+                    Ok(()) => {
+                        self.export_message =
+                            format!("✔ Exported SDF to {}", output_path.display());
+                    }
+                    Err(e) => {
+                        self.export_message = format!("⚠ SDF export failed: {e}");
+                    }
+                }
+            }
+            RobotFormat::Mjcf => {
+                let filename = format!("{base_name}.xml");
+                let output_path = dir.join(&filename);
+                let xml = crate::mjcf::export_mjcf(model);
+                match std::fs::write(&output_path, &xml) {
+                    Ok(()) => {
+                        self.export_message =
+                            format!("✔ Exported MJCF to {}", output_path.display());
+                    }
+                    Err(e) => {
+                        self.export_message = format!("⚠ MJCF export failed: {e}");
+                    }
+                }
+            }
+            RobotFormat::IsaacUsd => {
+                match crate::isaac::export_isaac_to_dir(model, &dir) {
+                    Ok(()) => {
+                        self.export_message =
+                            format!("✔ Isaac export to {} (URDF + Python script)", dir.display());
+                    }
+                    Err(e) => {
+                        self.export_message = format!("⚠ Isaac export failed: {e}");
+                    }
+                }
             }
         }
     }

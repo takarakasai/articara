@@ -1,9 +1,13 @@
 mod app;
 mod camera;
+mod format;
 mod ik;
+mod isaac;
+mod mjcf;
 mod primitives;
 mod renderer;
 mod robot;
+mod sdf;
 
 use std::path::PathBuf;
 
@@ -28,7 +32,7 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             let mut app = app::RoboViewApp::new(cc);
             if let Some(path) = initial_path {
-                app.load_urdf(path);
+                app.load_model(path);
             }
             Ok(Box::new(app))
         }),

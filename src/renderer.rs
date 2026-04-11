@@ -166,7 +166,7 @@ impl GlRenderer {
                         half_length,
                     } => primitives::generate_cylinder(*radius, *half_length, 16),
                     GeomData::Sphere { radius } => primitives::generate_sphere(*radius, 16, 8),
-                    GeomData::Mesh { vertices } => vertices.clone(),
+                    GeomData::Mesh { vertices, .. } => vertices.clone(),
                 };
 
                 if vertex_data.is_empty() {
