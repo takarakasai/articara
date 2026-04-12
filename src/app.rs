@@ -1802,7 +1802,6 @@ impl ArticaraApp {
                             let link_name = &model.links[li].name;
                             let changed_link = self.selected_link != Some(li);
                             self.selected_link = Some(li);
-                            self.selected_joint = model.parent_joint_of_link(link_name);
                             // Auto-expand tree ancestors to reveal the selected link
                             self.tree_reveal_ancestors = model.ancestor_links(link_name);
                             // Auto-select first visual/collision when changing link
@@ -1819,6 +1818,17 @@ impl ArticaraApp {
                                         Some(0)
                                     };
                             }
+                            // Set joint selection based on offset target
+                            match self.offset_target {
+                                OffsetTarget::Joint => {
+                                    // Highlight the parent joint in the tree
+                                    self.selected_joint = model.parent_joint_of_link(link_name);
+                                }
+                                OffsetTarget::Visual | OffsetTarget::Collision => {
+                                    // Highlight the link itself; clear joint selection
+                                    self.selected_joint = None;
+                                }
+                            }
                         }
                     }
                 }
@@ -1827,6 +1837,12 @@ impl ArticaraApp {
                         let (ro, rd) = self.camera.screen_ray(ndc, aspect);
                         if let Some((li, _dist)) = model.pick_link(&ro, &rd, &transforms) {
                             let link_name = &model.links[li].name;
+                            // Always select the link and its parent joint in the
+                            // tree/properties panel so they are highlighted
+                            // regardless of whether a drag operation can start.
+                            self.selected_link = Some(li);
+                            self.selected_joint = model.parent_joint_of_link(link_name);
+                            self.tree_reveal_ancestors = model.ancestor_links(link_name);
                             match self.drag_mode {
                                 DragMode::SingleJoint => {
                                     if let Some(ji) = model.parent_joint_of_link(link_name) {
@@ -1853,9 +1869,6 @@ impl ArticaraApp {
                                                 ik_root_link: None,
                                                 ik_root_initial_tf: None,
                                             });
-                                            self.selected_link = Some(li);
-                                            self.selected_joint = Some(ji);
-                                            self.tree_reveal_ancestors = model.ancestor_links(link_name);
                                         }
                                     }
                                 }
@@ -1883,9 +1896,50 @@ impl ArticaraApp {
                                             ik_root_link: self.ik_root_link.clone(),
                                             ik_root_initial_tf: ik_root_tf,
                                         });
-                                        self.selected_link = Some(li);
-                                        self.tree_reveal_ancestors = model.ancestor_links(link_name);
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Plain click (no drag): select the clicked link in tree/properties
+        if response.clicked() {
+            if let (Some(ndc), Some(model)) = (mouse_ndc, &self.model) {
+                let (ro, rd) = self.camera.screen_ray(ndc, aspect);
+                if let Some((li, _)) = model.pick_link(&ro, &rd, &transforms) {
+                    let link_name = &model.links[li].name;
+                    let changed_link = self.selected_link != Some(li);
+                    self.selected_link = Some(li);
+                    self.tree_reveal_ancestors = model.ancestor_links(link_name);
+                    // Auto-select first visual/collision when changing link
+                    if changed_link {
+                        self.selected_visual = if model.links[li].visuals.is_empty() {
+                            None
+                        } else {
+                            Some(0)
+                        };
+                        self.selected_collision =
+                            if model.links[li].collisions.is_empty() {
+                                None
+                            } else {
+                                Some(0)
+                            };
+                    }
+                    // Set joint selection based on mode and target
+                    match self.interaction_mode {
+                        InteractionMode::JointDrive => {
+                            self.selected_joint = model.parent_joint_of_link(link_name);
+                        }
+                        InteractionMode::OffsetAdjust => {
+                            match self.offset_target {
+                                OffsetTarget::Joint => {
+                                    self.selected_joint = model.parent_joint_of_link(link_name);
+                                }
+                                OffsetTarget::Visual | OffsetTarget::Collision => {
+                                    self.selected_joint = None;
                                 }
                             }
                         }
