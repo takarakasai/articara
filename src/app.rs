@@ -374,6 +374,40 @@ impl ArticaraApp {
                     ui.close();
                 }
                 ui.separator();
+
+                // --- Auto-compute inertia for ALL links ---
+                let has_model = self.model.is_some();
+                if ui.add_enabled(has_model, egui::Button::new("⚡ Auto-compute All Inertia"))
+                    .on_hover_text("Re-compute inertia tensors for every link from visual geometries (uniform density)")
+                    .clicked()
+                {
+                    self.mark_edit("Auto-compute all inertia");
+                    if let Some(ref mut model) = self.model {
+                        let mut count = 0usize;
+                        for link in &mut model.links {
+                            if link.visuals.is_empty() || link.inertial.mass <= 0.0 {
+                                continue;
+                            }
+                            let computed = crate::robot::compute_link_inertia(
+                                &link.visuals,
+                                link.inertial.mass,
+                            );
+                            link.inertial.origin = computed.origin;
+                            link.inertial.ixx = computed.ixx;
+                            link.inertial.ixy = computed.ixy;
+                            link.inertial.ixz = computed.ixz;
+                            link.inertial.iyy = computed.iyy;
+                            link.inertial.iyz = computed.iyz;
+                            link.inertial.izz = computed.izz;
+                            count += 1;
+                        }
+                        self.needs_upload = true;
+                        self.status_message = format!("⚡ Auto-computed inertia for {count} links");
+                    }
+                    ui.close();
+                }
+
+                ui.separator();
                 ui.menu_button("Mode", |ui| {
                     let jd = self.interaction_mode == InteractionMode::JointDrive;
                     let oa = self.interaction_mode == InteractionMode::OffsetAdjust;
