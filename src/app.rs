@@ -87,6 +87,9 @@ struct DragState {
     chain: Vec<ik::ChainJoint>,
     /// The IK root link name (for base correction). None = URDF root.
     ik_root_link: Option<String>,
+    /// World-space transform of the IK root link at drag start.
+    /// Used as the fixed anchor so the root doesn't drift.
+    ik_root_initial_tf: Option<na::Isometry3<f32>>,
 }
 
 /// Drag state for gizmo offset adjustment.
@@ -1848,6 +1851,7 @@ impl ArticaraApp {
                                                 pivot_world,
                                                 chain: Vec::new(),
                                                 ik_root_link: None,
+                                                ik_root_initial_tf: None,
                                             });
                                             self.selected_link = Some(li);
                                             self.selected_joint = Some(ji);
@@ -1864,6 +1868,11 @@ impl ArticaraApp {
                                     if !chain.is_empty() {
                                         let ji =
                                             chain.last().map(|c| c.joint_idx).unwrap_or(0);
+                                        // Capture the IK root's world transform at drag start
+                                        // so we can anchor it exactly throughout the drag.
+                                        let ik_root_tf = self.ik_root_link.as_ref().and_then(|name| {
+                                            transforms.get(name).copied()
+                                        });
                                         self.drag_state = Some(DragState {
                                             link_idx: li,
                                             mode: DragMode::InverseKinematics,
@@ -1872,6 +1881,7 @@ impl ArticaraApp {
                                             pivot_world: na::Point3::origin(),
                                             chain,
                                             ik_root_link: self.ik_root_link.clone(),
+                                            ik_root_initial_tf: ik_root_tf,
                                         });
                                         self.selected_link = Some(li);
                                         self.tree_reveal_ancestors = model.ancestor_links(link_name);
@@ -2074,10 +2084,8 @@ impl ArticaraApp {
                                     &cur_transforms,
                                 );
 
-                                // Record IK root transform before IK step
-                                let ik_root_tf_before = drag.ik_root_link.as_ref().and_then(|name| {
-                                    cur_transforms.get(name).copied()
-                                });
+                                // Record IK root transform from drag start (fixed anchor)
+                                let ik_root_tf_desired = drag.ik_root_initial_tf;
 
                                 // Camera view direction for the intersection plane
                                 let (ray_o, ray_d) = self.camera.screen_ray(ndc, aspect);
@@ -2107,8 +2115,8 @@ impl ArticaraApp {
                                         ik::apply_ik_deltas(model, &drag.chain, &deltas);
 
                                         // If an IK root is set, correct base_transform
-                                        // so the IK root link stays fixed in world space.
-                                        if let Some(desired_tf) = ik_root_tf_before {
+                                        // so the IK root link stays fixed at its drag-start position.
+                                        if let Some(desired_tf) = ik_root_tf_desired {
                                             // Recompute with identity base to get
                                             // the root-relative transform of the IK root link.
                                             let saved_base = model.base_transform;
