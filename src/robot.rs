@@ -1243,3 +1243,317 @@ fn load_stl_mesh(path: &PathBuf, scale: Option<&urdf_rs::Vec3>) -> Vec<f32> {
 pub fn load_stl_mesh_public(path: &PathBuf) -> Vec<f32> {
     load_stl_mesh(path, None)
 }
+
+// =========================================================================
+//  Inertia tensor computation (uniform-density)
+// =========================================================================
+
+/// Inertia tensor components (about the geometry's own centroid).
+#[derive(Debug, Clone, Copy)]
+pub struct InertiaTensor {
+    pub ixx: f64,
+    pub ixy: f64,
+    pub ixz: f64,
+    pub iyy: f64,
+    pub iyz: f64,
+    pub izz: f64,
+}
+
+/// Compute the inertia tensor for a single geometry primitive at uniform
+/// density, given the total `mass` of that piece.
+///
+/// All results are about the geometry's own centroid (center of mass at origin).
+pub fn compute_geometry_inertia(geom: &GeomData, mass: f64) -> InertiaTensor {
+    match geom {
+        GeomData::Box { hx, hy, hz } => {
+            // Full dimensions: a=2*hx, b=2*hy, c=2*hz
+            let a2 = (2.0 * *hx as f64).powi(2);
+            let b2 = (2.0 * *hy as f64).powi(2);
+            let c2 = (2.0 * *hz as f64).powi(2);
+            InertiaTensor {
+                ixx: mass / 12.0 * (b2 + c2),
+                ixy: 0.0,
+                ixz: 0.0,
+                iyy: mass / 12.0 * (a2 + c2),
+                iyz: 0.0,
+                izz: mass / 12.0 * (a2 + b2),
+            }
+        }
+        GeomData::Cylinder { radius, half_length } => {
+            // Solid cylinder, axis along Z.
+            let r2 = (*radius as f64).powi(2);
+            let h2 = (2.0 * *half_length as f64).powi(2);
+            InertiaTensor {
+                ixx: mass / 12.0 * (3.0 * r2 + h2),
+                ixy: 0.0,
+                ixz: 0.0,
+                iyy: mass / 12.0 * (3.0 * r2 + h2),
+                iyz: 0.0,
+                izz: mass / 2.0 * r2,
+            }
+        }
+        GeomData::Sphere { radius } => {
+            // Solid sphere.
+            let r2 = (*radius as f64).powi(2);
+            let i = 2.0 / 5.0 * mass * r2;
+            InertiaTensor {
+                ixx: i,
+                ixy: 0.0,
+                ixz: 0.0,
+                iyy: i,
+                iyz: 0.0,
+                izz: i,
+            }
+        }
+        GeomData::Mesh { vertices, .. } => {
+            compute_mesh_inertia(vertices, mass)
+        }
+    }
+}
+
+/// Compute inertia tensor for a triangle mesh using the method described in
+/// "Efficient Feature Extraction for 2D/3D Objects in Mesh Representation"
+/// (Mirtich 1996) — canonicalised for a closed surface.  The mesh is treated
+/// as a solid with uniform density.
+///
+/// `vertices` is the flat buffer `[x, y, z, nx, ny, nz, ...]` (stride 6).
+fn compute_mesh_inertia(vertices: &[f32], mass: f64) -> InertiaTensor {
+    let num_verts = vertices.len() / 6;
+    let num_tris = num_verts / 3;
+    if num_tris == 0 {
+        return InertiaTensor {
+            ixx: 0.001, ixy: 0.0, ixz: 0.0,
+            iyy: 0.001, iyz: 0.0, izz: 0.001,
+        };
+    }
+
+    // Accumulate volume and moments using the divergence theorem.
+    let mut vol = 0.0f64;
+    // Second moments of volume about origin
+    let mut vxx = 0.0f64;
+    let mut vyy = 0.0f64;
+    let mut vzz = 0.0f64;
+    let mut vxy = 0.0f64;
+    let mut vxz = 0.0f64;
+    let mut vyz = 0.0f64;
+
+    for ti in 0..num_tris {
+        let i0 = ti * 3;
+        let p = |vi: usize| -> (f64, f64, f64) {
+            let base = (i0 + vi) * 6;
+            (
+                vertices[base] as f64,
+                vertices[base + 1] as f64,
+                vertices[base + 2] as f64,
+            )
+        };
+        let (x0, y0, z0) = p(0);
+        let (x1, y1, z1) = p(1);
+        let (x2, y2, z2) = p(2);
+
+        // Cross product of edges
+        let ex1 = x1 - x0;
+        let ey1 = y1 - y0;
+        let ez1 = z1 - z0;
+        let ex2 = x2 - x0;
+        let ey2 = y2 - y0;
+        let ez2 = z2 - z0;
+        let nx = ey1 * ez2 - ez1 * ey2;
+        let ny = ez1 * ex2 - ex1 * ez2;
+        let nz = ex1 * ey2 - ey1 * ex2;
+
+        // Signed volume of tetrahedron from origin to this triangle face
+        let det = x0 * nx + y0 * ny + z0 * nz; // 6 * signed volume
+        vol += det;
+
+        // For the tetrahedron (origin, v0, v1, v2) the volume integrals of
+        // x², y², z², xy, xz, yz can be expressed analytically.
+        // Using the factored forms for uniform-density tetrahedra:
+        let xs = x0 + x1 + x2;
+        let ys = y0 + y1 + y2;
+        let zs = z0 + z1 + z2;
+
+        vxx += det * (x0 * x0 + x1 * x1 + x2 * x2 + xs * xs);
+        vyy += det * (y0 * y0 + y1 * y1 + y2 * y2 + ys * ys);
+        vzz += det * (z0 * z0 + z1 * z1 + z2 * z2 + zs * zs);
+        vxy += det * (x0 * (2.0 * y0 + y1 + y2)
+                     + x1 * (y0 + 2.0 * y1 + y2)
+                     + x2 * (y0 + y1 + 2.0 * y2));
+        vxz += det * (x0 * (2.0 * z0 + z1 + z2)
+                     + x1 * (z0 + 2.0 * z1 + z2)
+                     + x2 * (z0 + z1 + 2.0 * z2));
+        vyz += det * (y0 * (2.0 * z0 + z1 + z2)
+                     + y1 * (z0 + 2.0 * z1 + z2)
+                     + y2 * (z0 + z1 + 2.0 * z2));
+    }
+
+    // vol is 6× the signed volume
+    let volume = vol / 6.0;
+    if volume.abs() < 1e-20 {
+        return InertiaTensor {
+            ixx: 0.001, ixy: 0.0, ixz: 0.0,
+            iyy: 0.001, iyz: 0.0, izz: 0.001,
+        };
+    }
+
+    // Normalise volume integrals
+    let density = mass / volume.abs();
+    let xx = density * vxx / 120.0;
+    let yy = density * vyy / 120.0;
+    let zz = density * vzz / 120.0;
+    let xy = density * vxy / 120.0;
+    let xz = density * vxz / 120.0;
+    let yz = density * vyz / 120.0;
+
+    InertiaTensor {
+        ixx: yy + zz,
+        ixy: -xy,
+        ixz: -xz,
+        iyy: xx + zz,
+        iyz: -yz,
+        izz: xx + yy,
+    }
+}
+
+/// Compute the volume of a geometry primitive.
+pub fn compute_geometry_volume(geom: &GeomData) -> f64 {
+    match geom {
+        GeomData::Box { hx, hy, hz } => {
+            (2.0 * *hx as f64) * (2.0 * *hy as f64) * (2.0 * *hz as f64)
+        }
+        GeomData::Cylinder { radius, half_length } => {
+            std::f64::consts::PI * (*radius as f64).powi(2) * (2.0 * *half_length as f64)
+        }
+        GeomData::Sphere { radius } => {
+            4.0 / 3.0 * std::f64::consts::PI * (*radius as f64).powi(3)
+        }
+        GeomData::Mesh { vertices, .. } => {
+            compute_mesh_volume(vertices)
+        }
+    }
+}
+
+/// Compute the signed volume of a triangle mesh using the divergence theorem.
+fn compute_mesh_volume(vertices: &[f32]) -> f64 {
+    let num_verts = vertices.len() / 6;
+    let num_tris = num_verts / 3;
+    let mut vol = 0.0f64;
+    for ti in 0..num_tris {
+        let i0 = ti * 3;
+        let p = |vi: usize| -> (f64, f64, f64) {
+            let base = (i0 + vi) * 6;
+            (
+                vertices[base] as f64,
+                vertices[base + 1] as f64,
+                vertices[base + 2] as f64,
+            )
+        };
+        let (x0, y0, z0) = p(0);
+        let (x1, y1, z1) = p(1);
+        let (x2, y2, z2) = p(2);
+        let nx = (y1 - y0) * (z2 - z0) - (z1 - z0) * (y2 - y0);
+        let ny = (z1 - z0) * (x2 - x0) - (x1 - x0) * (z2 - z0);
+        let nz = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
+        vol += x0 * nx + y0 * ny + z0 * nz;
+    }
+    (vol / 6.0).abs()
+}
+
+/// Compute combined inertia for all visuals of a link, distributing the
+/// total `mass` proportionally by volume to each visual, then using the
+/// parallel axis theorem to combine them about the link centroid.
+///
+/// Returns `(InertialData)` with the computed inertia and the combined
+/// center of mass as `origin`.
+pub fn compute_link_inertia(visuals: &[VisualData], total_mass: f64) -> InertialData {
+    if visuals.is_empty() || total_mass <= 0.0 {
+        return InertialData {
+            origin: na::Isometry3::identity(),
+            mass: total_mass,
+            ixx: 0.001, ixy: 0.0, ixz: 0.0,
+            iyy: 0.001, iyz: 0.0, izz: 0.001,
+        };
+    }
+
+    // 1) Compute volume and centroid (in visual-local frame) for each visual.
+    let vols: Vec<f64> = visuals.iter().map(|v| compute_geometry_volume(&v.geometry)).collect();
+    let total_vol: f64 = vols.iter().sum();
+    if total_vol < 1e-20 {
+        return InertialData {
+            origin: na::Isometry3::identity(),
+            mass: total_mass,
+            ixx: 0.001, ixy: 0.0, ixz: 0.0,
+            iyy: 0.001, iyz: 0.0, izz: 0.001,
+        };
+    }
+
+    // Mass of each visual (proportional to volume)
+    let masses: Vec<f64> = vols.iter().map(|v| total_mass * v / total_vol).collect();
+
+    // 2) Compute combined center of mass (in link frame).
+    let mut com = na::Vector3::<f64>::zeros();
+    for (i, vis) in visuals.iter().enumerate() {
+        let vis_center = vis.origin.translation.vector.cast::<f64>();
+        com += masses[i] * vis_center;
+    }
+    com /= total_mass;
+
+    // 3) For each visual, compute local inertia then apply parallel axis theorem
+    //    to shift to the combined CoM.
+    let mut ixx_total = 0.0f64;
+    let mut ixy_total = 0.0f64;
+    let mut ixz_total = 0.0f64;
+    let mut iyy_total = 0.0f64;
+    let mut iyz_total = 0.0f64;
+    let mut izz_total = 0.0f64;
+
+    for (i, vis) in visuals.iter().enumerate() {
+        let mi = masses[i];
+        if mi < 1e-20 {
+            continue;
+        }
+
+        // Inertia about the visual's own centroid (in visual-local axes)
+        let local_inertia = compute_geometry_inertia(&vis.geometry, mi);
+
+        // Rotate the inertia tensor from visual-local frame to link frame.
+        // I_link = R * I_local * R^T
+        let rot = vis.origin.rotation.to_rotation_matrix();
+        let r = rot.matrix().cast::<f64>();
+        let i_local = na::Matrix3::new(
+            local_inertia.ixx, local_inertia.ixy, local_inertia.ixz,
+            local_inertia.ixy, local_inertia.iyy, local_inertia.iyz,
+            local_inertia.ixz, local_inertia.iyz, local_inertia.izz,
+        );
+        let i_rotated = &r * &i_local * r.transpose();
+
+        // Parallel axis theorem: shift from visual centroid to combined CoM
+        let d = vis.origin.translation.vector.cast::<f64>() - com;
+        let dx = d.x;
+        let dy = d.y;
+        let dz = d.z;
+        let d2 = dx * dx + dy * dy + dz * dz;
+
+        // I_shifted = I_rotated + m * (d²·E - d⊗d)
+        ixx_total += i_rotated[(0, 0)] + mi * (d2 - dx * dx);
+        ixy_total += i_rotated[(0, 1)] + mi * (    - dx * dy);
+        ixz_total += i_rotated[(0, 2)] + mi * (    - dx * dz);
+        iyy_total += i_rotated[(1, 1)] + mi * (d2 - dy * dy);
+        iyz_total += i_rotated[(1, 2)] + mi * (    - dy * dz);
+        izz_total += i_rotated[(2, 2)] + mi * (d2 - dz * dz);
+    }
+
+    InertialData {
+        origin: na::Isometry3::from_parts(
+            na::Translation3::new(com.x as f32, com.y as f32, com.z as f32),
+            na::UnitQuaternion::identity(),
+        ),
+        mass: total_mass,
+        ixx: ixx_total,
+        ixy: ixy_total,
+        ixz: ixz_total,
+        iyy: iyy_total,
+        iyz: iyz_total,
+        izz: izz_total,
+    }
+}

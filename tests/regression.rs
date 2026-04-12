@@ -2029,3 +2029,173 @@ mod test_gizmo {
         assert_eq!(data.len() / 6, expected);
     }
 }
+
+// =========================================================================
+//  Inertia computation tests
+// =========================================================================
+
+mod test_inertia {
+    use articara::robot::*;
+
+    #[test]
+    fn box_inertia_values() {
+        // 1kg box with half-extents 0.1, 0.2, 0.3  (full: 0.2, 0.4, 0.6)
+        let geom = GeomData::Box { hx: 0.1, hy: 0.2, hz: 0.3 };
+        let i = compute_geometry_inertia(&geom, 1.0);
+        // Ixx = m/12 * (b² + c²) = (0.4² + 0.6²) / 12 = 0.0433..
+        let expected_ixx = (0.4f64.powi(2) + 0.6f64.powi(2)) / 12.0;
+        let expected_iyy = (0.2f64.powi(2) + 0.6f64.powi(2)) / 12.0;
+        let expected_izz = (0.2f64.powi(2) + 0.4f64.powi(2)) / 12.0;
+        assert!((i.ixx - expected_ixx).abs() < 1e-6, "ixx={}", i.ixx);
+        assert!((i.iyy - expected_iyy).abs() < 1e-6, "iyy={}", i.iyy);
+        assert!((i.izz - expected_izz).abs() < 1e-6, "izz={}", i.izz);
+        assert!((i.ixy).abs() < 1e-10);
+        assert!((i.ixz).abs() < 1e-10);
+        assert!((i.iyz).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cylinder_inertia_values() {
+        // 2kg cylinder, radius=0.05, half_length=0.1  (height=0.2)
+        let geom = GeomData::Cylinder { radius: 0.05, half_length: 0.1 };
+        let i = compute_geometry_inertia(&geom, 2.0);
+        let r2 = 0.05f64.powi(2);
+        let h2 = 0.2f64.powi(2);
+        let expected_ixx = 2.0 / 12.0 * (3.0 * r2 + h2);
+        let expected_izz = 2.0 / 2.0 * r2;
+        assert!((i.ixx - expected_ixx).abs() < 1e-6, "ixx={}", i.ixx);
+        assert!((i.iyy - expected_ixx).abs() < 1e-6, "iyy={}", i.iyy);
+        assert!((i.izz - expected_izz).abs() < 1e-6, "izz={}", i.izz);
+    }
+
+    #[test]
+    fn sphere_inertia_values() {
+        // 3kg sphere, radius=0.1
+        let geom = GeomData::Sphere { radius: 0.1 };
+        let i = compute_geometry_inertia(&geom, 3.0);
+        let expected = 2.0 / 5.0 * 3.0 * 0.1f64.powi(2);
+        assert!((i.ixx - expected).abs() < 1e-6);
+        assert!((i.iyy - expected).abs() < 1e-6);
+        assert!((i.izz - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn volume_box() {
+        let geom = GeomData::Box { hx: 0.5, hy: 0.5, hz: 0.5 };
+        let vol = compute_geometry_volume(&geom);
+        assert!((vol - 1.0).abs() < 1e-6); // 1x1x1 = 1 m³
+    }
+
+    #[test]
+    fn volume_cylinder() {
+        let geom = GeomData::Cylinder { radius: 1.0, half_length: 0.5 };
+        let vol = compute_geometry_volume(&geom);
+        assert!((vol - std::f64::consts::PI).abs() < 1e-6); // π×1²×1
+    }
+
+    #[test]
+    fn volume_sphere() {
+        let geom = GeomData::Sphere { radius: 1.0 };
+        let vol = compute_geometry_volume(&geom);
+        let expected = 4.0 / 3.0 * std::f64::consts::PI;
+        assert!((vol - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn combined_inertia_single_centered_visual() {
+        // A single visual at origin should produce the same inertia as
+        // compute_geometry_inertia, with CoM at origin.
+        use nalgebra as na;
+        let vis = VisualData {
+            origin: na::Isometry3::identity(),
+            geometry: GeomData::Box { hx: 0.1, hy: 0.1, hz: 0.1 },
+            color: [0.7, 0.7, 0.7, 1.0],
+        };
+        let result = compute_link_inertia(&[vis], 1.0);
+        assert!((result.mass - 1.0).abs() < 1e-15);
+        assert!(result.origin.translation.vector.norm() < 1e-10); // CoM at origin
+        let expected = compute_geometry_inertia(&GeomData::Box { hx: 0.1, hy: 0.1, hz: 0.1 }, 1.0);
+        assert!((result.ixx - expected.ixx).abs() < 1e-10);
+        assert!((result.iyy - expected.iyy).abs() < 1e-10);
+        assert!((result.izz - expected.izz).abs() < 1e-10);
+    }
+
+    #[test]
+    fn combined_inertia_offset_visual() {
+        // A visual offset along X should shift CoM and increase Iyy, Izz
+        // via the parallel axis theorem.
+        use nalgebra as na;
+        let vis = VisualData {
+            origin: na::Isometry3::from_parts(
+                na::Translation3::new(1.0, 0.0, 0.0),
+                na::UnitQuaternion::identity(),
+            ),
+            geometry: GeomData::Sphere { radius: 0.1 },
+            color: [1.0, 0.0, 0.0, 1.0],
+        };
+        let result = compute_link_inertia(&[vis], 2.0);
+        // CoM should be at (1, 0, 0)
+        assert!((result.origin.translation.x - 1.0).abs() < 1e-6);
+        assert!(result.origin.translation.y.abs() < 1e-6);
+        // With CoM exactly at the sphere center, the inertia should be
+        // the same as the sphere inertia (no parallel axis shift).
+        let expected = compute_geometry_inertia(&GeomData::Sphere { radius: 0.1 }, 2.0);
+        assert!((result.ixx - expected.ixx).abs() < 1e-8);
+        assert!((result.iyy - expected.iyy).abs() < 1e-8);
+    }
+
+    #[test]
+    fn combined_inertia_two_visuals_parallel_axis() {
+        // Two identical spheres at ±0.5 on X axis should have:
+        // - CoM at origin
+        // - Iyy, Izz increased by parallel axis theorem
+        use nalgebra as na;
+        let vis1 = VisualData {
+            origin: na::Isometry3::from_parts(
+                na::Translation3::new(0.5, 0.0, 0.0),
+                na::UnitQuaternion::identity(),
+            ),
+            geometry: GeomData::Sphere { radius: 0.1 },
+            color: [0.7, 0.7, 0.7, 1.0],
+        };
+        let vis2 = VisualData {
+            origin: na::Isometry3::from_parts(
+                na::Translation3::new(-0.5, 0.0, 0.0),
+                na::UnitQuaternion::identity(),
+            ),
+            geometry: GeomData::Sphere { radius: 0.1 },
+            color: [0.7, 0.7, 0.7, 1.0],
+        };
+        let result = compute_link_inertia(&[vis1, vis2], 2.0);
+        // CoM at origin
+        assert!(result.origin.translation.vector.norm() < 1e-6);
+        // Each sphere: mass=1.0, sphere inertia + parallel axis shift d=0.5
+        let i_sphere = compute_geometry_inertia(&GeomData::Sphere { radius: 0.1 }, 1.0);
+        // Iyy for each = i_sphere.iyy + 1.0 * 0.5² = i_sphere.iyy + 0.25
+        let expected_iyy = 2.0 * (i_sphere.iyy + 1.0 * 0.25);
+        // Ixx should have NO parallel axis shift (displacement along X, so d_y=d_z=0)
+        let expected_ixx = 2.0 * i_sphere.ixx;
+        assert!(
+            (result.ixx - expected_ixx).abs() < 1e-8,
+            "ixx: got {} expected {}",
+            result.ixx,
+            expected_ixx
+        );
+        assert!(
+            (result.iyy - expected_iyy).abs() < 1e-8,
+            "iyy: got {} expected {}",
+            result.iyy,
+            expected_iyy
+        );
+    }
+
+    #[test]
+    fn inertia_scales_with_mass() {
+        let geom = GeomData::Box { hx: 0.1, hy: 0.1, hz: 0.1 };
+        let i1 = compute_geometry_inertia(&geom, 1.0);
+        let i2 = compute_geometry_inertia(&geom, 5.0);
+        assert!((i2.ixx / i1.ixx - 5.0).abs() < 1e-6);
+        assert!((i2.iyy / i1.iyy - 5.0).abs() < 1e-6);
+        assert!((i2.izz / i1.izz - 5.0).abs() < 1e-6);
+    }
+}

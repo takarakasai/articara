@@ -212,6 +212,10 @@ pub struct ArticaraApp {
     pre_frame_snapshot: Option<RobotModel>,
     /// Whether any model edit occurred this frame.
     any_edit_this_frame: bool,
+    /// Show density input dialog for mass-from-density calculation.
+    show_density_input: bool,
+    /// Density value (kg/m³) for mass-from-density calculation.
+    density_value: f64,
 }
 
 impl ArticaraApp {
@@ -272,6 +276,8 @@ impl ArticaraApp {
             history: History::new(50),
             pre_frame_snapshot: None,
             any_edit_this_frame: false,
+            show_density_input: false,
+            density_value: 1000.0, // default: water (1000 kg/m³)
         }
     }
 
@@ -1211,6 +1217,78 @@ impl ArticaraApp {
                                 inertial_changed |= ui.add(egui::DragValue::new(&mut link.inertial.izz).speed(0.000001)).changed();
                                 ui.end_row();
                             });
+
+                        // --- Auto-compute inertia from geometry ---
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("⚡ Auto-compute from geometry")
+                                .on_hover_text("Compute inertia tensor assuming uniform density, based on visual geometries and current mass")
+                                .clicked()
+                            {
+                                let computed = crate::robot::compute_link_inertia(
+                                    &link.visuals,
+                                    link.inertial.mass,
+                                );
+                                link.inertial.origin = computed.origin;
+                                link.inertial.ixx = computed.ixx;
+                                link.inertial.ixy = computed.ixy;
+                                link.inertial.ixz = computed.ixz;
+                                link.inertial.iyy = computed.iyy;
+                                link.inertial.iyz = computed.iyz;
+                                link.inertial.izz = computed.izz;
+                                inertial_changed = true;
+                            }
+                        });
+
+                        // --- Compute mass from density + volume ---
+                        ui.horizontal(|ui| {
+                            if ui.button("📏 Mass from density")
+                                .on_hover_text("Set mass = density × total volume, then recompute inertia tensor")
+                                .clicked()
+                            {
+                                self.show_density_input = !self.show_density_input;
+                            }
+                        });
+                        if self.show_density_input {
+                            ui.horizontal(|ui| {
+                                ui.label("Density (kg/m³):");
+                                ui.add(egui::DragValue::new(&mut self.density_value).speed(1.0).range(0.1..=50000.0));
+                            });
+                            // Show computed volume and resulting mass
+                            let total_vol: f64 = link.visuals.iter()
+                                .map(|v| crate::robot::compute_geometry_volume(&v.geometry))
+                                .sum();
+                            let new_mass = self.density_value * total_vol;
+                            ui.label(egui::RichText::new(
+                                format!("Volume: {:.6} m³ → Mass: {:.4} kg", total_vol, new_mass)
+                            ).small());
+                            ui.horizontal(|ui| {
+                                if ui.button("✔ Apply").clicked() {
+                                    link.inertial.mass = new_mass;
+                                    let computed = crate::robot::compute_link_inertia(
+                                        &link.visuals,
+                                        new_mass,
+                                    );
+                                    link.inertial.origin = computed.origin;
+                                    link.inertial.ixx = computed.ixx;
+                                    link.inertial.ixy = computed.ixy;
+                                    link.inertial.ixz = computed.ixz;
+                                    link.inertial.iyy = computed.iyy;
+                                    link.inertial.iyz = computed.iyz;
+                                    link.inertial.izz = computed.izz;
+                                    inertial_changed = true;
+                                    self.show_density_input = false;
+                                }
+                                if ui.button("✖ Cancel").clicked() {
+                                    self.show_density_input = false;
+                                }
+                            });
+                            // Show common material reference
+                            ui.label(egui::RichText::new(
+                                "ABS: 1050 / Al: 2700 / Steel: 7800 / PLA: 1240"
+                            ).small().weak());
+                        }
+
                         if inertial_changed {
                             props_edit_desc = Some(format!("Edit inertial of '{}'", link_name));
                         }
