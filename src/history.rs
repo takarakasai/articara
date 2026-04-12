@@ -143,6 +143,34 @@ impl History {
         &self.undo_stack
     }
 
+    /// Read-only access to the redo stack entries.
+    /// The *last* element is the next entry to be redone.
+    pub fn redo_entries(&self) -> &[HistoryEntry] {
+        &self.redo_stack
+    }
+
+    /// Jump to a specific position in the timeline.
+    ///
+    /// `target_pos` is the desired undo-stack length after the jump.
+    /// Range: `0` (before all edits) …  `undo_count + redo_count`
+    /// (after all edits including redone ones).  Returns the last
+    /// description processed, if any.
+    pub fn goto(&mut self, target_pos: usize, current: &mut RobotModel) -> Option<String> {
+        self.finalize();
+        let mut last_desc: Option<String> = None;
+        let cur = self.undo_stack.len();
+        if target_pos < cur {
+            for _ in 0..(cur - target_pos) {
+                last_desc = self.undo(current);
+            }
+        } else if target_pos > cur {
+            for _ in 0..(target_pos - cur) {
+                last_desc = self.redo(current);
+            }
+        }
+        last_desc
+    }
+
     fn trim(&mut self) {
         while self.undo_stack.len() > self.max_entries {
             self.undo_stack.remove(0);
@@ -294,5 +322,45 @@ mod tests {
         assert!(!h.can_undo());
         assert!(!h.can_redo());
         assert!(h.log().is_empty());
+    }
+
+    #[test]
+    fn goto_jumps_to_target() {
+        let mut h = History::new(50);
+        let mut model = make_model("r");
+
+        // Build 3 edits: jp[0] = 0 → 1 → 2 → 3
+        h.record("A", model.clone());
+        model.joint_positions[0] = 1.0;
+        h.finalize();
+
+        h.record("B", model.clone());
+        model.joint_positions[0] = 2.0;
+        h.finalize();
+
+        h.record("C", model.clone());
+        model.joint_positions[0] = 3.0;
+        h.finalize();
+
+        // current pos = 3, model value = 3.0
+        assert_eq!(h.undo_count(), 3);
+
+        // goto pos 1 → after edit A, value = 1.0
+        h.goto(1, &mut model);
+        assert_eq!(model.joint_positions[0], 1.0);
+        assert_eq!(h.undo_count(), 1);
+        assert_eq!(h.redo_count(), 2);
+
+        // goto pos 3 → after edit C, value = 3.0
+        h.goto(3, &mut model);
+        assert_eq!(model.joint_positions[0], 3.0);
+        assert_eq!(h.undo_count(), 3);
+        assert_eq!(h.redo_count(), 0);
+
+        // goto pos 0 → before all edits, value = 0.0
+        h.goto(0, &mut model);
+        assert_eq!(model.joint_positions[0], 0.0);
+        assert_eq!(h.undo_count(), 0);
+        assert_eq!(h.redo_count(), 3);
     }
 }
