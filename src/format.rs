@@ -22,7 +22,7 @@ impl RobotFormat {
 
     /// Whether this format supports import (loading).
     pub fn supports_import(self) -> bool {
-        matches!(self, RobotFormat::Urdf | RobotFormat::Sdf | RobotFormat::Mjcf)
+        matches!(self, RobotFormat::Urdf | RobotFormat::Sdf | RobotFormat::Mjcf | RobotFormat::IsaacUsd)
     }
 
     /// Whether this format supports export.
@@ -58,6 +58,7 @@ impl RobotFormat {
             "urdf" | "xacro" => Some(RobotFormat::Urdf),
             "sdf" | "world" => Some(RobotFormat::Sdf),
             "xml" | "mjcf" => Some(RobotFormat::Mjcf),
+            "usda" | "usd" => Some(RobotFormat::IsaacUsd),
             _ => None,
         }
     }
@@ -83,6 +84,7 @@ impl RobotFormat {
                 }
                 Some(RobotFormat::Mjcf) // default for .xml
             }
+            "usda" | "usd" => Some(RobotFormat::IsaacUsd),
             _ => None,
         }
     }

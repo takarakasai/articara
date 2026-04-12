@@ -510,7 +510,7 @@ mod test_format {
         assert!(RobotFormat::Urdf.supports_import());
         assert!(RobotFormat::Sdf.supports_import());
         assert!(RobotFormat::Mjcf.supports_import());
-        assert!(!RobotFormat::IsaacUsd.supports_import());
+        assert!(RobotFormat::IsaacUsd.supports_import());
     }
 
     #[test]

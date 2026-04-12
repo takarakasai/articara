@@ -10,6 +10,7 @@ mod renderer;
 mod robot;
 mod sdf;
 mod usd;
+mod usd_import;
 
 use std::path::PathBuf;
 

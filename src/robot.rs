@@ -247,7 +247,7 @@ impl RobotModel {
             RobotFormat::Urdf => Self::from_urdf(path),
             RobotFormat::Sdf => crate::sdf::import_sdf(path),
             RobotFormat::Mjcf => crate::mjcf::import_mjcf(path),
-            RobotFormat::IsaacUsd => Err("Isaac USD import is not supported (export only).".into()),
+            RobotFormat::IsaacUsd => crate::usd_import::import_usda(path),
         }
     }
 
