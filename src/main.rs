@@ -1,6 +1,7 @@
 mod app;
 mod camera;
 mod format;
+mod history;
 mod ik;
 mod isaac;
 mod mjcf;

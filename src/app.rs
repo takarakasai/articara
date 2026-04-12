@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::camera::OrbitCamera;
 use crate::format::RobotFormat;
+use crate::history::History;
 use crate::ik;
 use crate::renderer::{DisplayMode, GlRenderer, MeshKind};
 use crate::robot::{self, GeomData, RobotModel};
@@ -205,6 +206,12 @@ pub struct ArticaraApp {
     new_joint_limits: [f32; 2],
     /// When set, these ancestor link names should be auto-expanded in the tree.
     tree_reveal_ancestors: Vec<String>,
+    /// Undo/redo history.
+    history: History,
+    /// Model snapshot taken at the start of each frame (before any edits).
+    pre_frame_snapshot: Option<RobotModel>,
+    /// Whether any model edit occurred this frame.
+    any_edit_this_frame: bool,
 }
 
 impl ArticaraApp {
@@ -262,6 +269,9 @@ impl ArticaraApp {
             new_link_color: [0.5, 0.7, 1.0],
             new_joint_limits: [-1.57, 1.57],
             tree_reveal_ancestors: Vec::new(),
+            history: History::new(50),
+            pre_frame_snapshot: None,
+            any_edit_this_frame: false,
         }
     }
 
@@ -284,6 +294,7 @@ impl ArticaraApp {
                 self.selected_joint = None;
                 self.needs_upload = true;
                 self.ik_root_link = None; // reset IK root on new model
+                self.history.clear();
                 // Default export dir to the URDF's parent directory
                 if self.export_dir.is_empty() {
                     if let Some(parent) = path.parent() {
@@ -298,6 +309,19 @@ impl ArticaraApp {
         }
     }
 
+    /// Record that an edit is about to happen (or is happening).
+    /// On the first call per continuous editing phase, the pre-frame model
+    /// snapshot is committed to the undo stack.  Subsequent calls with the
+    /// same description are merged (no duplicate entries).
+    fn mark_edit(&mut self, desc: &str) {
+        if !self.any_edit_this_frame {
+            if let Some(snapshot) = self.pre_frame_snapshot.take() {
+                self.history.record(desc, snapshot);
+            }
+        }
+        self.any_edit_this_frame = true;
+    }
+
     // ===== UI Panels =====
 
     fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
@@ -308,11 +332,42 @@ impl ArticaraApp {
                 self.selected_joint = None;
                 self.needs_upload = true;
                 self.status_message = "Created new empty model".into();
+                self.history.clear();
             }
             ui.separator();
 
             // ===== Edit menu =====
             ui.menu_button("Edit", |ui| {
+                // --- Undo / Redo ---
+                let undo_label = if let Some(desc) = self.history.undo_description() {
+                    format!("↩ Undo: {}  (Ctrl+Z)", desc)
+                } else {
+                    "↩ Undo  (Ctrl+Z)".to_string()
+                };
+                if ui.add_enabled(self.history.can_undo(), egui::Button::new(&undo_label)).clicked() {
+                    if let Some(ref mut model) = self.model {
+                        if let Some(desc) = self.history.undo(model) {
+                            self.status_message = format!("↩ Undo: {desc}");
+                            self.needs_upload = true;
+                        }
+                    }
+                    ui.close();
+                }
+                let redo_label = if let Some(desc) = self.history.redo_description() {
+                    format!("↪ Redo: {}  (Ctrl+Shift+Z)", desc)
+                } else {
+                    "↪ Redo  (Ctrl+Shift+Z)".to_string()
+                };
+                if ui.add_enabled(self.history.can_redo(), egui::Button::new(&redo_label)).clicked() {
+                    if let Some(ref mut model) = self.model {
+                        if let Some(desc) = self.history.redo(model) {
+                            self.status_message = format!("↪ Redo: {desc}");
+                            self.needs_upload = true;
+                        }
+                    }
+                    ui.close();
+                }
+                ui.separator();
                 ui.menu_button("Mode", |ui| {
                     let jd = self.interaction_mode == InteractionMode::JointDrive;
                     let oa = self.interaction_mode == InteractionMode::OffsetAdjust;
@@ -418,6 +473,7 @@ impl ArticaraApp {
             let is_root = link_name == self.model.as_ref().unwrap().root_link;
             ui.add_enabled_ui(!is_root, |ui| {
                 if ui.button("🗑 Remove Selected Link").clicked() {
+                    self.mark_edit(&format!("Remove link '{}'", link_name));
                     if let Some(model) = &mut self.model {
                         match model.remove_link(&link_name) {
                             Ok(removed) => {
@@ -708,6 +764,7 @@ impl ArticaraApp {
             (0.0, 0.0)
         };
 
+        self.mark_edit(&format!("Add child '{}'", self.new_link_name));
         if let Some(model) = &mut self.model {
             match model.add_child(
                 &self.new_parent_link,
@@ -972,17 +1029,56 @@ impl ArticaraApp {
             // Do NOT touch needs_upload here — it may be true from add/remove operations.
             let _ = changed;
 
-            if ui.button("Reset All Joints").clicked() {
+            let reset_clicked = ui.button("Reset All Joints").clicked();
+            if reset_clicked {
                 for pos in model.joint_positions.iter_mut() {
                     *pos = 0.0;
                 }
             }
+            drop(model);
+            // Record undo after releasing the model borrow
+            if changed {
+                self.mark_edit("Set joint position");
+            }
+            if reset_clicked {
+                self.mark_edit("Reset all joints");
+            }
         }
+    }
+
+    fn draw_history_panel(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("📋 History")
+            .default_open(false)
+            .show(ui, |ui| {
+                let entries = self.history.undo_entries();
+                if entries.is_empty() {
+                    ui.label(egui::RichText::new("(no operations)").weak());
+                } else {
+                    for (i, entry) in entries.iter().enumerate().rev() {
+                        let is_latest = i == entries.len() - 1;
+                        let text = if is_latest {
+                            egui::RichText::new(format!("▸ {}", entry.description)).strong()
+                        } else {
+                            egui::RichText::new(format!("  {}", entry.description)).weak()
+                        };
+                        ui.label(text);
+                    }
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(
+                        format!("Undo: {} / Redo: {}", self.history.undo_count(), self.history.redo_count())
+                    ).small().weak());
+                });
+            });
     }
 
     fn draw_properties_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Properties");
         ui.separator();
+
+        // Track whether any property was edited this frame
+        let mut props_edit_desc: Option<String> = None;
 
         if let Some(model) = &mut self.model {
             if let Some(li) = self.selected_link {
@@ -1047,42 +1143,46 @@ impl ArticaraApp {
                 egui::CollapsingHeader::new("📐 Inertial")
                     .default_open(true)
                     .show(ui, |ui| {
+                        let mut inertial_changed = false;
                         egui::Grid::new("inertial_grid")
                             .striped(true)
                             .num_columns(2)
                             .show(ui, |ui| {
                                 ui.label("Mass (kg):");
-                                ui.add(egui::DragValue::new(&mut link.inertial.mass).speed(0.001).range(0.0..=f64::MAX));
+                                inertial_changed |= ui.add(egui::DragValue::new(&mut link.inertial.mass).speed(0.001).range(0.0..=f64::MAX)).changed();
                                 ui.end_row();
 
                                 ui.label("Origin xyz:");
                                 ui.horizontal(|ui| {
                                     let t = &mut link.inertial.origin.translation;
-                                    ui.add(egui::DragValue::new(&mut t.x).speed(0.0001).prefix("x:"));
-                                    ui.add(egui::DragValue::new(&mut t.y).speed(0.0001).prefix("y:"));
-                                    ui.add(egui::DragValue::new(&mut t.z).speed(0.0001).prefix("z:"));
+                                    inertial_changed |= ui.add(egui::DragValue::new(&mut t.x).speed(0.0001).prefix("x:")).changed();
+                                    inertial_changed |= ui.add(egui::DragValue::new(&mut t.y).speed(0.0001).prefix("y:")).changed();
+                                    inertial_changed |= ui.add(egui::DragValue::new(&mut t.z).speed(0.0001).prefix("z:")).changed();
                                 });
                                 ui.end_row();
 
                                 ui.label("Ixx:");
-                                ui.add(egui::DragValue::new(&mut link.inertial.ixx).speed(0.000001));
+                                inertial_changed |= ui.add(egui::DragValue::new(&mut link.inertial.ixx).speed(0.000001)).changed();
                                 ui.end_row();
                                 ui.label("Ixy:");
-                                ui.add(egui::DragValue::new(&mut link.inertial.ixy).speed(0.000001));
+                                inertial_changed |= ui.add(egui::DragValue::new(&mut link.inertial.ixy).speed(0.000001)).changed();
                                 ui.end_row();
                                 ui.label("Ixz:");
-                                ui.add(egui::DragValue::new(&mut link.inertial.ixz).speed(0.000001));
+                                inertial_changed |= ui.add(egui::DragValue::new(&mut link.inertial.ixz).speed(0.000001)).changed();
                                 ui.end_row();
                                 ui.label("Iyy:");
-                                ui.add(egui::DragValue::new(&mut link.inertial.iyy).speed(0.000001));
+                                inertial_changed |= ui.add(egui::DragValue::new(&mut link.inertial.iyy).speed(0.000001)).changed();
                                 ui.end_row();
                                 ui.label("Iyz:");
-                                ui.add(egui::DragValue::new(&mut link.inertial.iyz).speed(0.000001));
+                                inertial_changed |= ui.add(egui::DragValue::new(&mut link.inertial.iyz).speed(0.000001)).changed();
                                 ui.end_row();
                                 ui.label("Izz:");
-                                ui.add(egui::DragValue::new(&mut link.inertial.izz).speed(0.000001));
+                                inertial_changed |= ui.add(egui::DragValue::new(&mut link.inertial.izz).speed(0.000001)).changed();
                                 ui.end_row();
                             });
+                        if inertial_changed {
+                            props_edit_desc = Some(format!("Edit inertial of '{}'", link_name));
+                        }
                     });
 
                 ui.add_space(8.0);
@@ -1158,9 +1258,9 @@ impl ArticaraApp {
                             ui.horizontal(|ui| {
                                 ui.label("Origin:");
                                 let t = &mut vis.origin.translation.vector;
-                                ui.add(egui::DragValue::new(&mut t.x).speed(0.005).prefix("x:"));
-                                ui.add(egui::DragValue::new(&mut t.y).speed(0.005).prefix("y:"));
-                                ui.add(egui::DragValue::new(&mut t.z).speed(0.005).prefix("z:"));
+                                geom_changed |= ui.add(egui::DragValue::new(&mut t.x).speed(0.005).prefix("x:")).changed();
+                                geom_changed |= ui.add(egui::DragValue::new(&mut t.y).speed(0.005).prefix("y:")).changed();
+                                geom_changed |= ui.add(egui::DragValue::new(&mut t.z).speed(0.005).prefix("z:")).changed();
                             });
                             // --- Rotation editing (RPY) ---
                             ui.horizontal(|ui| {
@@ -1190,13 +1290,18 @@ impl ArticaraApp {
                         let cloned = link.visuals[idx].clone();
                         link.visuals.insert(idx + 1, cloned);
                         geom_changed = true;
+                        props_edit_desc = Some(format!("Duplicate visual of '{}'", link_name));
                     }
                     if let Some(idx) = vis_to_remove {
                         link.visuals.remove(idx);
                         geom_changed = true;
+                        props_edit_desc = Some(format!("Remove visual from '{}'", link_name));
                     }
                     if geom_changed {
                         self.needs_upload = true;
+                        if props_edit_desc.is_none() {
+                            props_edit_desc = Some(format!("Edit visual of '{}'", link_name));
+                        }
                     }
                 });
                 // Right-click on Visuals header to add new visual
@@ -1208,6 +1313,7 @@ impl ArticaraApp {
                             color: [0.7, 0.7, 0.7, 1.0],
                         });
                         self.needs_upload = true;
+                        props_edit_desc = Some(format!("Add visual to '{}'", link_name));
                         ui.close();
                     }
                     if ui.button("➕ Add Cylinder").clicked() {
@@ -1217,6 +1323,7 @@ impl ArticaraApp {
                             color: [0.7, 0.7, 0.7, 1.0],
                         });
                         self.needs_upload = true;
+                        props_edit_desc = Some(format!("Add visual to '{}'", link_name));
                         ui.close();
                     }
                     if ui.button("➕ Add Sphere").clicked() {
@@ -1226,6 +1333,7 @@ impl ArticaraApp {
                             color: [0.7, 0.7, 0.7, 1.0],
                         });
                         self.needs_upload = true;
+                        props_edit_desc = Some(format!("Add visual to '{}'", link_name));
                         ui.close();
                     }
                 });
@@ -1279,9 +1387,9 @@ impl ArticaraApp {
                             ui.horizontal(|ui| {
                                 ui.label("Origin:");
                                 let t = &mut col.origin.translation.vector;
-                                ui.add(egui::DragValue::new(&mut t.x).speed(0.005).prefix("x:"));
-                                ui.add(egui::DragValue::new(&mut t.y).speed(0.005).prefix("y:"));
-                                ui.add(egui::DragValue::new(&mut t.z).speed(0.005).prefix("z:"));
+                                col_changed |= ui.add(egui::DragValue::new(&mut t.x).speed(0.005).prefix("x:")).changed();
+                                col_changed |= ui.add(egui::DragValue::new(&mut t.y).speed(0.005).prefix("y:")).changed();
+                                col_changed |= ui.add(egui::DragValue::new(&mut t.z).speed(0.005).prefix("z:")).changed();
                             });
                             // Rotation (RPY)
                             ui.horizontal(|ui| {
@@ -1310,13 +1418,18 @@ impl ArticaraApp {
                         let cloned = link.collisions[idx].clone();
                         link.collisions.insert(idx + 1, cloned);
                         col_changed = true;
+                        props_edit_desc = Some(format!("Duplicate collision of '{}'", link_name));
                     }
                     if let Some(idx) = col_to_remove {
                         link.collisions.remove(idx);
                         col_changed = true;
+                        props_edit_desc = Some(format!("Remove collision from '{}'", link_name));
                     }
                     if col_changed {
                         self.needs_upload = true;
+                        if props_edit_desc.is_none() {
+                            props_edit_desc = Some(format!("Edit collision of '{}'", link_name));
+                        }
                     }
                 });
                 // Right-click on Collisions header to add new collision
@@ -1327,6 +1440,7 @@ impl ArticaraApp {
                             geometry: GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.05 },
                         });
                         self.needs_upload = true;
+                        props_edit_desc = Some(format!("Add collision to '{}'", link_name));
                         ui.close();
                     }
                     if ui.button("➕ Add Cylinder").clicked() {
@@ -1335,6 +1449,7 @@ impl ArticaraApp {
                             geometry: GeomData::Cylinder { radius: 0.02, half_length: 0.1 },
                         });
                         self.needs_upload = true;
+                        props_edit_desc = Some(format!("Add collision to '{}'", link_name));
                         ui.close();
                     }
                     if ui.button("➕ Add Sphere").clicked() {
@@ -1343,6 +1458,7 @@ impl ArticaraApp {
                             geometry: GeomData::Sphere { radius: 0.05 },
                         });
                         self.needs_upload = true;
+                        props_edit_desc = Some(format!("Add collision to '{}'", link_name));
                         ui.close();
                     }
                 });
@@ -1350,8 +1466,10 @@ impl ArticaraApp {
 
             if let Some(ji) = self.selected_joint {
                 let joint = &mut model.joints[ji];
-                ui.label(egui::RichText::new(&joint.name).strong().size(16.0));
+                let joint_name = joint.name.clone();
+                ui.label(egui::RichText::new(&joint_name).strong().size(16.0));
                 ui.separator();
+                let mut joint_changed = false;
                 egui::Grid::new("joint_props")
                     .striped(true)
                     .num_columns(2)
@@ -1368,39 +1486,48 @@ impl ArticaraApp {
 
                         ui.label("Axis:");
                         ui.horizontal(|ui| {
-                            ui.add(egui::DragValue::new(&mut joint.axis.x).speed(0.01).prefix("x:"));
-                            ui.add(egui::DragValue::new(&mut joint.axis.y).speed(0.01).prefix("y:"));
-                            ui.add(egui::DragValue::new(&mut joint.axis.z).speed(0.01).prefix("z:"));
+                            joint_changed |= ui.add(egui::DragValue::new(&mut joint.axis.x).speed(0.01).prefix("x:")).changed();
+                            joint_changed |= ui.add(egui::DragValue::new(&mut joint.axis.y).speed(0.01).prefix("y:")).changed();
+                            joint_changed |= ui.add(egui::DragValue::new(&mut joint.axis.z).speed(0.01).prefix("z:")).changed();
                         });
                         ui.end_row();
 
                         ui.label("Lower (rad):");
-                        ui.add(egui::DragValue::new(&mut joint.lower).speed(0.01));
+                        joint_changed |= ui.add(egui::DragValue::new(&mut joint.lower).speed(0.01)).changed();
                         ui.end_row();
                         ui.label("Upper (rad):");
-                        ui.add(egui::DragValue::new(&mut joint.upper).speed(0.01));
+                        joint_changed |= ui.add(egui::DragValue::new(&mut joint.upper).speed(0.01)).changed();
                         ui.end_row();
                         ui.label("Effort (Nm):");
-                        ui.add(egui::DragValue::new(&mut joint.effort).speed(0.1).range(0.0..=f64::MAX));
+                        joint_changed |= ui.add(egui::DragValue::new(&mut joint.effort).speed(0.1).range(0.0..=f64::MAX)).changed();
                         ui.end_row();
                         ui.label("Velocity (rad/s):");
-                        ui.add(egui::DragValue::new(&mut joint.velocity).speed(0.1).range(0.0..=f64::MAX));
+                        joint_changed |= ui.add(egui::DragValue::new(&mut joint.velocity).speed(0.1).range(0.0..=f64::MAX)).changed();
                         ui.end_row();
 
                         ui.label("Origin xyz:");
                         ui.horizontal(|ui| {
                             let t = &mut joint.origin.translation;
-                            ui.add(egui::DragValue::new(&mut t.x).speed(0.0001).prefix("x:"));
-                            ui.add(egui::DragValue::new(&mut t.y).speed(0.0001).prefix("y:"));
-                            ui.add(egui::DragValue::new(&mut t.z).speed(0.0001).prefix("z:"));
+                            joint_changed |= ui.add(egui::DragValue::new(&mut t.x).speed(0.0001).prefix("x:")).changed();
+                            joint_changed |= ui.add(egui::DragValue::new(&mut t.y).speed(0.0001).prefix("y:")).changed();
+                            joint_changed |= ui.add(egui::DragValue::new(&mut t.z).speed(0.0001).prefix("z:")).changed();
                         });
                         ui.end_row();
                     });
+                if joint_changed {
+                    self.needs_upload = true;
+                    props_edit_desc = Some(format!("Edit joint '{}'", joint_name));
+                }
             }
 
             if self.selected_link.is_none() && self.selected_joint.is_none() {
                 ui.label("Select a link or joint to view properties.");
             }
+        }
+
+        // Commit any property edit to undo history
+        if let Some(desc) = props_edit_desc {
+            self.mark_edit(&desc);
         }
 
         // --- Save / Export section ---
@@ -1711,6 +1838,7 @@ impl ArticaraApp {
         }
 
         // Left mouse button pressed: start drag
+        let had_drag_before = self.drag_state.is_some() || self.offset_drag_state.is_some();
         if response.drag_started_by(egui::PointerButton::Primary) {
             match self.interaction_mode {
                 InteractionMode::OffsetAdjust => {
@@ -1907,6 +2035,30 @@ impl ArticaraApp {
                     }
                 }
             }
+        }
+        // Record undo snapshot if a new drag just started
+        if !had_drag_before && (self.drag_state.is_some() || self.offset_drag_state.is_some()) {
+            let desc = if let Some(ref odrag) = self.offset_drag_state {
+                let target_str = match odrag.target {
+                    OffsetTarget::Joint => "joint origin",
+                    OffsetTarget::Visual => "visual origin",
+                    OffsetTarget::Collision => "collision origin",
+                };
+                let op_str = match odrag.op {
+                    GizmoOp::Translate => "Translate",
+                    GizmoOp::Rotate => "Rotate",
+                    GizmoOp::Scale => "Scale",
+                };
+                format!("{op_str} {target_str}")
+            } else if let Some(ref ds) = self.drag_state {
+                match ds.mode {
+                    DragMode::SingleJoint => "Drive joint".to_string(),
+                    DragMode::InverseKinematics => "IK drag".to_string(),
+                }
+            } else {
+                "Drag".to_string()
+            };
+            self.mark_edit(&desc);
         }
 
         // Plain click (no drag): select the clicked link in tree/properties
@@ -2227,6 +2379,7 @@ impl ArticaraApp {
         if response.drag_stopped_by(egui::PointerButton::Primary) {
             self.drag_state = None;
             self.offset_drag_state = None;
+            self.history.finalize();
         }
 
         // Update highlight and gizmo state in renderer
@@ -3064,6 +3217,35 @@ impl eframe::App for ArticaraApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        // --- Undo/Redo history: snapshot model at frame start ---
+        self.any_edit_this_frame = false;
+        self.pre_frame_snapshot = self.model.as_ref().map(|m| m.clone());
+
+        // --- Undo/Redo keyboard shortcuts (Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y) ---
+        let undo_pressed = ctx.input(|i| {
+            i.key_pressed(egui::Key::Z) && i.modifiers.command && !i.modifiers.shift
+        });
+        let redo_pressed = ctx.input(|i| {
+            (i.key_pressed(egui::Key::Z) && i.modifiers.command && i.modifiers.shift)
+                || (i.key_pressed(egui::Key::Y) && i.modifiers.command)
+        });
+        if undo_pressed {
+            if let Some(ref mut model) = self.model {
+                if let Some(desc) = self.history.undo(model) {
+                    self.status_message = format!("↩ Undo: {desc}");
+                    self.needs_upload = true;
+                }
+            }
+        }
+        if redo_pressed {
+            if let Some(ref mut model) = self.model {
+                if let Some(desc) = self.history.redo(model) {
+                    self.status_message = format!("↪ Redo: {desc}");
+                    self.needs_upload = true;
+                }
+            }
+        }
+
         // Update transforms every frame (joint positions may have changed)
         if let Some(ref model) = self.model {
             let transforms = model.compute_transforms();
@@ -3092,6 +3274,8 @@ impl eframe::App for ArticaraApp {
                     self.draw_tree_panel(ui);
                     ui.separator();
                     self.draw_joint_sliders(ui);
+                    ui.separator();
+                    self.draw_history_panel(ui);
                 });
             });
 
@@ -3123,6 +3307,12 @@ impl eframe::App for ArticaraApp {
 
         // Request continuous repaint for smooth camera interaction
         ctx.request_repaint();
+
+        // --- End-of-frame: finalize history if no edits occurred ---
+        if !self.any_edit_this_frame {
+            self.history.finalize();
+        }
+        self.pre_frame_snapshot = None;
     }
 
     fn on_exit(&mut self, gl: Option<&glow::Context>) {

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 // ========== Data Structures ==========
 
+#[derive(Clone)]
 pub struct RobotModel {
     pub name: String,
     pub links: Vec<LinkData>,
@@ -22,6 +23,7 @@ pub struct RobotModel {
     pub base_transform: na::Isometry3<f32>,
 }
 
+#[derive(Clone)]
 pub struct LinkData {
     pub name: String,
     pub visuals: Vec<VisualData>,
@@ -53,6 +55,7 @@ pub enum GeomData {
     },
 }
 
+#[derive(Clone)]
 pub struct InertialData {
     pub origin: na::Isometry3<f32>,
     pub mass: f64,
@@ -64,6 +67,7 @@ pub struct InertialData {
     pub izz: f64,
 }
 
+#[derive(Clone)]
 pub struct JointData {
     pub name: String,
     pub joint_type: String,
