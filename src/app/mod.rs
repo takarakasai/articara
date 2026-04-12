@@ -1,0 +1,467 @@
+use eframe::egui;
+use nalgebra as na;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use crate::camera::OrbitCamera;
+use crate::format::RobotFormat;
+use crate::history::History;
+use crate::ik;
+use crate::renderer::{DisplayMode, GlRenderer, MeshKind};
+use crate::robot::RobotModel;
+
+/// Top-level interaction mode.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InteractionMode {
+    /// Drive joints by dragging links (single-joint or IK).
+    JointDrive,
+    /// Adjust link/joint origin offsets via gizmo arrows.
+    OffsetAdjust,
+}
+
+/// Gizmo operation type in Offset Adjust mode.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum GizmoOp {
+    Translate,
+    Rotate,
+    Scale,
+}
+
+/// Which element's origin to adjust in Offset Adjust mode.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OffsetTarget {
+    Joint,
+    Visual,
+    Collision,
+}
+
+impl OffsetTarget {
+    pub const ALL: [OffsetTarget; 3] = [
+        OffsetTarget::Joint,
+        OffsetTarget::Visual,
+        OffsetTarget::Collision,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            OffsetTarget::Joint => "Joint",
+            OffsetTarget::Visual => "Visual",
+            OffsetTarget::Collision => "Collision",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            OffsetTarget::Joint => "\u{1f517}",   // 🔗
+            OffsetTarget::Visual => "\u{1f441}",  // 👁
+            OffsetTarget::Collision => "\u{1f6e1}", // 🛡
+        }
+    }
+}
+
+/// Drag manipulation mode (within JointDrive).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DragMode {
+    /// Move only the immediate parent joint of the clicked link.
+    SingleJoint,
+    /// Solve IK on the entire chain from root to the clicked link.
+    InverseKinematics,
+}
+
+/// Drag state for manipulating joints by dragging links.
+#[derive(Clone)]
+struct DragState {
+    /// Index of the link being dragged.
+    link_idx: usize,
+    /// Mode at drag start.
+    mode: DragMode,
+    // --- Single-joint mode fields ---
+    /// Index of the parent joint to rotate (single-joint mode only).
+    joint_idx: usize,
+    /// The joint axis in world space at drag start.
+    world_axis: na::Vector3<f32>,
+    /// The joint pivot point in world space at drag start.
+    pivot_world: na::Point3<f32>,
+    // --- IK mode fields ---
+    /// The kinematic chain from root to end-effector.
+    chain: Vec<ik::ChainJoint>,
+    /// The IK root link name (for base correction). None = URDF root.
+    ik_root_link: Option<String>,
+    /// World-space transform of the IK root link at drag start.
+    /// Used as the fixed anchor so the root doesn't drift.
+    ik_root_initial_tf: Option<na::Isometry3<f32>>,
+}
+
+/// Drag state for gizmo offset adjustment.
+#[derive(Clone)]
+struct OffsetDragState {
+    /// Which axis is being dragged (0=X, 1=Y, 2=Z).
+    axis: u8,
+    /// What we are adjusting.
+    target: OffsetTarget,
+    /// Index of the link (for Visual/Collision targets) or joint (for Joint target).
+    entity_idx: usize,
+    /// Sub-index within link's visuals/collisions array.
+    sub_idx: usize,
+    /// World-space direction of the dragged axis (unit vector).
+    axis_dir_world: na::Vector3<f32>,
+    /// World-space gizmo origin at drag start.
+    gizmo_origin: na::Point3<f32>,
+    /// The ray-axis parameter "t" at drag start (translate mode).
+    initial_t: f32,
+    /// The origin translation at drag start.
+    initial_translation: na::Translation3<f32>,
+    /// Inverse rotation for converting world displacement to local displacement.
+    inv_parent_rotation: na::UnitQuaternion<f32>,
+    /// Current gizmo operation.
+    op: GizmoOp,
+    /// The origin rotation at drag start (for rotation mode).
+    initial_rotation: na::UnitQuaternion<f32>,
+    /// Angle at drag start (for rotation mode).
+    initial_angle: f32,
+    /// Initial geometry parameters at drag start (for scale mode).
+    /// Box: [hx, hy, hz], Cylinder: [radius, half_length, 0], Sphere: [radius, 0, 0]
+    initial_geom_params: [f32; 3],
+}
+
+pub struct ArticaraApp {
+    model: Option<RobotModel>,
+    camera: OrbitCamera,
+    gl: Arc<glow::Context>,
+    gl_renderer: Arc<Mutex<GlRenderer>>,
+    selected_link: Option<usize>,
+    selected_joint: Option<usize>,
+    needs_upload: bool,
+    urdf_path_input: String,
+    status_message: String,
+    /// Current drag interaction (link manipulation).
+    drag_state: Option<DragState>,
+    /// Link currently hovered by mouse (for highlighting).
+    hovered_link: Option<usize>,
+    /// Cached viewport rect from last frame.
+    viewport_rect: egui::Rect,
+    /// Current drag mode.
+    drag_mode: DragMode,
+    /// Current interaction mode (JointDrive vs OffsetAdjust).
+    interaction_mode: InteractionMode,
+    /// Gizmo drag state for offset adjustment mode.
+    offset_drag_state: Option<OffsetDragState>,
+    /// Currently hovered gizmo axis (0=X, 1=Y, 2=Z).
+    hovered_gizmo_axis: Option<u8>,
+    /// Which element type to adjust in Offset Adjust mode.
+    offset_target: OffsetTarget,
+    /// Gizmo operation: Translate or Rotate.
+    gizmo_op: GizmoOp,
+    /// Selected visual index within the currently selected link.
+    selected_visual: Option<usize>,
+    /// Selected collision index within the currently selected link.
+    selected_collision: Option<usize>,
+    /// IK damping factor (λ for DLS).
+    ik_damping: f32,
+    /// IK root link name. None = use URDF root (full chain).
+    ik_root_link: Option<String>,
+    /// Show center-of-mass markers and mass labels.
+    show_com: bool,
+    /// Show joint axis arrows in viewport.
+    show_joint_axes: bool,
+    /// Scale factor for CoM sphere size (sphere radius = mass × com_scale).
+    com_scale: f32,
+    /// Show robot links in wireframe mode (legacy, kept for compat).
+    wireframe: bool,
+    /// Global visual display mode.
+    visual_mode: DisplayMode,
+    /// Global collision display mode.
+    collision_mode: DisplayMode,
+    /// Per-link display mode overrides. Key=(link_name, MeshKind).
+    link_display_modes: HashMap<(String, MeshKind), DisplayMode>,
+    /// Export output directory path.
+    export_dir: String,
+    /// Selected format for export.
+    export_format: RobotFormat,
+    /// Status message from last export attempt.
+    export_message: String,
+    // --- Add link/joint dialog state ---
+    /// Whether the "Add Child" section is open.
+    show_add_child: bool,
+    /// New link name input.
+    new_link_name: String,
+    /// New joint name input.
+    new_joint_name: String,
+    /// Selected parent link name for the new child.
+    new_parent_link: String,
+    /// New joint type (revolute, prismatic, fixed, continuous).
+    new_joint_type_idx: usize,
+    /// New geometry type (box, cylinder, sphere).
+    new_geom_type_idx: usize,
+    /// Geometry size parameters [x, y, z] (reused for different shapes).
+    new_geom_size: [f32; 3],
+    /// New joint origin XYZ.
+    new_joint_origin: [f32; 3],
+    /// New joint axis.
+    new_joint_axis: [f32; 3],
+    /// New link color (RGBA).
+    new_link_color: [f32; 3],
+    /// Joint limits [lower, upper].
+    new_joint_limits: [f32; 2],
+    /// When set, these ancestor link names should be auto-expanded in the tree.
+    tree_reveal_ancestors: Vec<String>,
+    /// Undo/redo history.
+    history: History,
+    /// Model snapshot taken at the start of each frame (before any edits).
+    pre_frame_snapshot: Option<RobotModel>,
+    /// Whether any model edit occurred this frame.
+    any_edit_this_frame: bool,
+    /// Show density input dialog for mass-from-density calculation.
+    show_density_input: bool,
+    /// Density value (kg/m³) for mass-from-density calculation.
+    density_value: f64,
+    /// Show the inertia validation results window.
+    show_validation_window: bool,
+    /// Cached inertia validation results.
+    validation_results: Vec<crate::robot::InertiaValidation>,
+}
+
+impl ArticaraApp {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let gl = cc
+            .gl
+            .as_ref()
+            .expect("glow context required — use Renderer::Glow")
+            .clone();
+        let renderer = GlRenderer::new(&gl);
+
+        Self {
+            model: None,
+            camera: OrbitCamera::new(),
+            gl,
+            gl_renderer: Arc::new(Mutex::new(renderer)),
+            selected_link: None,
+            selected_joint: None,
+            needs_upload: false,
+            urdf_path_input: String::new(),
+            status_message: "No model loaded".into(),
+            drag_state: None,
+            hovered_link: None,
+            viewport_rect: egui::Rect::NOTHING,
+            drag_mode: DragMode::SingleJoint,
+            interaction_mode: InteractionMode::JointDrive,
+            offset_drag_state: None,
+            hovered_gizmo_axis: None,
+            offset_target: OffsetTarget::Joint,
+            gizmo_op: GizmoOp::Translate,
+            selected_visual: None,
+            selected_collision: None,
+            ik_damping: 0.05,
+            ik_root_link: None,
+            show_com: false,
+            show_joint_axes: false,
+            com_scale: 0.01,
+            wireframe: false,
+            visual_mode: DisplayMode::Solid,
+            collision_mode: DisplayMode::Off,
+            link_display_modes: HashMap::new(),
+            export_dir: String::new(),
+            export_format: RobotFormat::Urdf,
+            export_message: String::new(),
+            // Add child dialog defaults
+            show_add_child: false,
+            new_link_name: String::new(),
+            new_joint_name: String::new(),
+            new_parent_link: String::new(),
+            new_joint_type_idx: 0,
+            new_geom_type_idx: 0,
+            new_geom_size: [0.05, 0.05, 0.05],
+            new_joint_origin: [0.0, 0.0, 0.1],
+            new_joint_axis: [0.0, 0.0, 1.0],
+            new_link_color: [0.5, 0.7, 1.0],
+            new_joint_limits: [-1.57, 1.57],
+            tree_reveal_ancestors: Vec::new(),
+            history: History::new(50),
+            pre_frame_snapshot: None,
+            any_edit_this_frame: false,
+            show_density_input: false,
+            density_value: 1000.0, // default: water (1000 kg/m³)
+            show_validation_window: false,
+            validation_results: Vec::new(),
+        }
+    }
+
+    pub fn load_model(&mut self, path: PathBuf) {
+        match RobotModel::from_file(&path) {
+            Ok(model) => {
+                self.status_message = format!(
+                    "Loaded: {} ({} links, {} joints)",
+                    model.name,
+                    model.links.len(),
+                    model.joints.len()
+                );
+                self.model = Some(model);
+                self.urdf_path_input = path.display().to_string();
+                // Auto-set export format to match source
+                if let Some(fmt) = RobotFormat::detect(&path) {
+                    self.export_format = fmt;
+                }
+                self.selected_link = None;
+                self.selected_joint = None;
+                self.needs_upload = true;
+                self.ik_root_link = None; // reset IK root on new model
+                self.history.clear();
+                // Default export dir to the URDF's parent directory
+                if self.export_dir.is_empty() {
+                    if let Some(parent) = path.parent() {
+                        self.export_dir = parent.display().to_string();
+                    }
+                }
+            }
+            Err(e) => {
+                self.status_message = format!("Error: {e}");
+                log::error!("Failed to load model: {e}");
+            }
+        }
+    }
+
+    /// Record that an edit is about to happen (or is happening).
+    /// On the first call per continuous editing phase, the pre-frame model
+    /// snapshot is committed to the undo stack.  Subsequent calls with the
+    /// same description are merged (no duplicate entries).
+    fn mark_edit(&mut self, desc: &str) {
+        if !self.any_edit_this_frame {
+            if let Some(snapshot) = self.pre_frame_snapshot.take() {
+                self.history.record(desc, snapshot);
+            }
+        }
+        self.any_edit_this_frame = true;
+    }
+
+}
+
+// ===== UI sub-modules =====
+mod menu_bar;
+mod tree_panel;
+mod joint_sliders;
+mod properties_panel;
+mod validation;
+mod history_panel;
+mod viewport;
+mod viewport_overlay;
+
+// Sentinel to mark the end of module-level code.
+// Everything below was moved to sub-modules.
+// Only the eframe::App impl remains here.
+
+// ========== eframe::App ==========
+
+impl eframe::App for ArticaraApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+
+        // --- Undo/Redo history: snapshot model at frame start ---
+        self.any_edit_this_frame = false;
+        self.pre_frame_snapshot = self.model.as_ref().map(|m| m.clone());
+
+        // --- Undo/Redo keyboard shortcuts (Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y) ---
+        let undo_pressed = ctx.input(|i| {
+            i.key_pressed(egui::Key::Z) && i.modifiers.command && !i.modifiers.shift
+        });
+        let redo_pressed = ctx.input(|i| {
+            (i.key_pressed(egui::Key::Z) && i.modifiers.command && i.modifiers.shift)
+                || (i.key_pressed(egui::Key::Y) && i.modifiers.command)
+        });
+        if undo_pressed {
+            if let Some(ref mut model) = self.model {
+                if let Some(desc) = self.history.undo(model) {
+                    self.status_message = format!("↩ Undo: {desc}");
+                    self.needs_upload = true;
+                }
+            }
+        }
+        if redo_pressed {
+            if let Some(ref mut model) = self.model {
+                if let Some(desc) = self.history.redo(model) {
+                    self.status_message = format!("↪ Redo: {desc}");
+                    self.needs_upload = true;
+                }
+            }
+        }
+
+        // Update transforms every frame (joint positions may have changed)
+        if let Some(ref model) = self.model {
+            let transforms = model.compute_transforms();
+            let mut r = self.gl_renderer.lock().unwrap();
+            r.update_transforms(transforms);
+            r.show_com = self.show_com;
+            r.show_joint_axes = self.show_joint_axes;
+            r.com_scale = self.com_scale;
+            r.wireframe = self.wireframe;
+            r.visual_mode = self.visual_mode;
+            r.collision_mode = self.collision_mode;
+            r.link_display_modes = self.link_display_modes.clone();
+        }
+
+        // Top panel: menu / file selector
+        egui::Panel::top("menu_bar").show_inside(ui, |ui| {
+            self.draw_menu_bar(ui);
+        });
+
+        // Left panel: tree + joint sliders
+        egui::Panel::left("tree_panel")
+            .default_size(260.0)
+            .resizable(true)
+            .show_inside(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.draw_tree_panel(ui);
+                    ui.separator();
+                    self.draw_joint_sliders(ui);
+                    ui.separator();
+                    self.draw_history_panel(ui);
+                });
+            });
+
+        // Right panel: properties
+        egui::Panel::right("properties_panel")
+            .default_size(280.0)
+            .resizable(true)
+            .show_inside(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.draw_properties_panel(ui);
+                });
+            });
+
+        // Central viewport (use remaining space)
+        self.draw_viewport(ui);
+
+        // --- Validation results window ---
+        self.draw_validation_window(&ctx);
+
+        // Upload robot geometry to GPU when needed.
+        if self.needs_upload {
+            if let Some(ref model) = self.model {
+                self.gl_renderer
+                    .lock()
+                    .unwrap()
+                    .upload_robot(&self.gl, model);
+                self.needs_upload = false;
+            }
+        }
+
+        // Request continuous repaint for smooth camera interaction
+        ctx.request_repaint();
+
+        // --- End-of-frame: finalize history if no edits occurred ---
+        if self.drag_state.is_some() || self.offset_drag_state.is_some() {
+            self.any_edit_this_frame = true;
+        }
+        if !self.any_edit_this_frame {
+            self.history.finalize();
+        }
+        self.pre_frame_snapshot = None;
+    }
+
+    fn on_exit(&mut self, gl: Option<&glow::Context>) {
+        if let Some(gl) = gl {
+            self.gl_renderer.lock().unwrap().destroy(gl);
+        }
+    }
+}
+

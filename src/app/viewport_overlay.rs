@@ -1,0 +1,630 @@
+use eframe::egui;
+use nalgebra as na;
+
+use super::{ArticaraApp, DragMode, GizmoOp, InteractionMode, OffsetTarget};
+
+impl ArticaraApp {
+    /// Draw the mode toolbar overlay on the viewport.
+    pub(super) fn draw_viewport_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let painter = ui.painter();
+        let icon_size = egui::vec2(32.0, 32.0);
+        let margin = 8.0;
+        let toolbar_x = rect.left() + margin;
+        let toolbar_y = rect.top() + margin;
+
+        // --- Row 1: Interaction Mode buttons ---
+        let modes: [(InteractionMode, &str); 2] = [
+            (InteractionMode::JointDrive, "Joint Drive"),
+            (InteractionMode::OffsetAdjust, "Offset Adjust"),
+        ];
+
+        for (i, (mode, tooltip)) in modes.iter().enumerate() {
+            let btn_pos = egui::pos2(
+                toolbar_x + i as f32 * (icon_size.x + 4.0),
+                toolbar_y,
+            );
+            let btn_rect = egui::Rect::from_min_size(btn_pos, icon_size);
+            let is_active = self.interaction_mode == *mode;
+
+            let btn_response = ui.interact(
+                btn_rect,
+                ui.id().with("mode_btn").with(i),
+                egui::Sense::click(),
+            );
+
+            let bg_color = if is_active {
+                egui::Color32::from_rgba_unmultiplied(60, 130, 220, 200)
+            } else if btn_response.hovered() {
+                egui::Color32::from_rgba_unmultiplied(80, 80, 80, 180)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(40, 40, 50, 160)
+            };
+            painter.rect_filled(btn_rect, egui::CornerRadius::same(4), bg_color);
+
+            if is_active {
+                painter.rect_stroke(
+                    btn_rect,
+                    egui::CornerRadius::same(4),
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 180, 255)),
+                    egui::StrokeKind::Outside,
+                );
+            }
+
+            let icon_color = if is_active {
+                egui::Color32::WHITE
+            } else {
+                egui::Color32::from_gray(200)
+            };
+
+            // Draw custom icon
+            let c = btn_rect.center();
+            match mode {
+                InteractionMode::JointDrive => {
+                    self.draw_joint_drive_icon(painter, c, bg_color, icon_color, is_active);
+                }
+                InteractionMode::OffsetAdjust => {
+                    self.draw_offset_adjust_icon(painter, c, bg_color, icon_color, is_active);
+                }
+            }
+
+            if btn_response.clicked() {
+                self.interaction_mode = *mode;
+            }
+            if btn_response.hovered() {
+                let tip_pos = egui::pos2(btn_rect.left(), btn_rect.bottom() + 4.0);
+                painter.text(
+                    tip_pos,
+                    egui::Align2::LEFT_TOP,
+                    *tooltip,
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::from_gray(220),
+                );
+            }
+        }
+
+        // --- Row 2: Target buttons (only in OffsetAdjust mode) ---
+        if self.interaction_mode == InteractionMode::OffsetAdjust {
+            let row2_y = toolbar_y + icon_size.y + 4.0;
+            let small_size = egui::vec2(28.0, 28.0);
+
+            for (i, target) in OffsetTarget::ALL.iter().enumerate() {
+                let btn_pos = egui::pos2(
+                    toolbar_x + i as f32 * (small_size.x + 3.0),
+                    row2_y,
+                );
+                let btn_rect = egui::Rect::from_min_size(btn_pos, small_size);
+                let is_active = self.offset_target == *target;
+
+                let btn_response = ui.interact(
+                    btn_rect,
+                    ui.id().with("target_btn").with(i),
+                    egui::Sense::click(),
+                );
+
+                let bg_color = if is_active {
+                    egui::Color32::from_rgba_unmultiplied(60, 180, 100, 200)
+                } else if btn_response.hovered() {
+                    egui::Color32::from_rgba_unmultiplied(80, 80, 80, 180)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(40, 40, 50, 160)
+                };
+                painter.rect_filled(btn_rect, egui::CornerRadius::same(3), bg_color);
+
+                if is_active {
+                    painter.rect_stroke(
+                        btn_rect,
+                        egui::CornerRadius::same(3),
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 220, 130)),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+
+                let text_color = if is_active {
+                    egui::Color32::WHITE
+                } else {
+                    egui::Color32::from_gray(200)
+                };
+                painter.text(
+                    btn_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    target.icon(),
+                    egui::FontId::proportional(15.0),
+                    text_color,
+                );
+
+                if btn_response.clicked() {
+                    self.offset_target = *target;
+                    if *target == OffsetTarget::Joint && self.gizmo_op == GizmoOp::Scale {
+                        self.gizmo_op = GizmoOp::Translate;
+                    }
+                }
+                if btn_response.hovered() {
+                    let tip_pos = egui::pos2(btn_rect.left(), btn_rect.bottom() + 4.0);
+                    painter.text(
+                        tip_pos,
+                        egui::Align2::LEFT_TOP,
+                        target.label(),
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::from_gray(220),
+                    );
+                }
+            }
+
+            // --- Row 3: Gizmo op buttons (Translate / Rotate / Scale) ---
+            let row3_y = row2_y + small_size.y + 4.0;
+            let gizmo_ops: &[(GizmoOp, &str, &str)] = if self.offset_target != OffsetTarget::Joint {
+                &[
+                    (GizmoOp::Translate, "⬌", "Translate"),
+                    (GizmoOp::Rotate, "↻", "Rotate"),
+                    (GizmoOp::Scale, "⬡", "Scale"),
+                ]
+            } else {
+                &[
+                    (GizmoOp::Translate, "⬌", "Translate"),
+                    (GizmoOp::Rotate, "↻", "Rotate"),
+                ]
+            };
+            for (i, (op, icon, label)) in gizmo_ops.iter().enumerate() {
+                let btn_pos = egui::pos2(
+                    toolbar_x + i as f32 * (small_size.x + 3.0),
+                    row3_y,
+                );
+                let btn_rect = egui::Rect::from_min_size(btn_pos, small_size);
+                let is_active = self.gizmo_op == *op;
+
+                let btn_response = ui.interact(
+                    btn_rect,
+                    ui.id().with("gizmo_op_btn").with(i),
+                    egui::Sense::click(),
+                );
+
+                let bg_color = if is_active {
+                    egui::Color32::from_rgba_unmultiplied(60, 120, 200, 200)
+                } else if btn_response.hovered() {
+                    egui::Color32::from_rgba_unmultiplied(80, 80, 80, 180)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(40, 40, 50, 160)
+                };
+                painter.rect_filled(btn_rect, egui::CornerRadius::same(3), bg_color);
+
+                if is_active {
+                    painter.rect_stroke(
+                        btn_rect,
+                        egui::CornerRadius::same(3),
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 160, 255)),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+
+                let text_color = if is_active {
+                    egui::Color32::WHITE
+                } else {
+                    egui::Color32::from_gray(200)
+                };
+                painter.text(
+                    btn_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    *icon,
+                    egui::FontId::proportional(15.0),
+                    text_color,
+                );
+
+                if btn_response.clicked() {
+                    self.gizmo_op = *op;
+                }
+                if btn_response.hovered() {
+                    let tip_pos = egui::pos2(btn_rect.left(), btn_rect.bottom() + 4.0);
+                    painter.text(
+                        tip_pos,
+                        egui::Align2::LEFT_TOP,
+                        label,
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::from_gray(220),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Draw Joint Drive mode icon.
+    fn draw_joint_drive_icon(
+        &self,
+        painter: &egui::Painter,
+        c: egui::Pos2,
+        bg_color: egui::Color32,
+        icon_color: egui::Color32,
+        is_active: bool,
+    ) {
+        let ghost_color = if is_active {
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 70)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(200, 200, 200, 50)
+        };
+
+        let pivot = egui::pos2(c.x - 2.0, c.y + 1.0);
+        let arm1_start = egui::pos2(c.x - 11.0, c.y - 8.0);
+        painter.line_segment(
+            [arm1_start, pivot],
+            egui::Stroke::new(3.0, icon_color),
+        );
+
+        let ghost_end = egui::pos2(pivot.x + 10.0, pivot.y + 3.0);
+        painter.line_segment(
+            [pivot, ghost_end],
+            egui::Stroke::new(2.5, ghost_color),
+        );
+
+        let arm2_end = egui::pos2(pivot.x + 8.0, pivot.y - 7.0);
+        painter.line_segment(
+            [pivot, arm2_end],
+            egui::Stroke::new(3.0, icon_color),
+        );
+
+        painter.circle_filled(pivot, 3.0, icon_color);
+        painter.circle_stroke(
+            pivot,
+            3.0,
+            egui::Stroke::new(1.2, bg_color),
+        );
+
+        let arc_r = 7.0;
+        let a_start = -0.29_f32;
+        let a_end = 0.72_f32;
+        let n_seg = 8;
+        let arc_pts: Vec<egui::Pos2> = (0..=n_seg)
+            .map(|k| {
+                let t = k as f32 / n_seg as f32;
+                let a = a_start + (a_end - a_start) * t;
+                egui::pos2(
+                    pivot.x + arc_r * a.cos(),
+                    pivot.y - arc_r * a.sin(),
+                )
+            })
+            .collect();
+        for w in arc_pts.windows(2) {
+            painter.line_segment(
+                [w[0], w[1]],
+                egui::Stroke::new(1.2, icon_color),
+            );
+        }
+        if let Some(&tip) = arc_pts.last() {
+            let prev = arc_pts[arc_pts.len() - 2];
+            let dir = egui::vec2(tip.x - prev.x, tip.y - prev.y);
+            let len = (dir.x * dir.x + dir.y * dir.y).sqrt().max(0.01);
+            let nd = egui::vec2(dir.x / len, dir.y / len);
+            let perp = egui::vec2(-nd.y, nd.x);
+            let sz = 3.5;
+            painter.line_segment(
+                [tip, tip - nd * sz + perp * sz * 0.6],
+                egui::Stroke::new(1.2, icon_color),
+            );
+            painter.line_segment(
+                [tip, tip - nd * sz - perp * sz * 0.6],
+                egui::Stroke::new(1.2, icon_color),
+            );
+        }
+    }
+
+    /// Draw Offset Adjust mode icon.
+    fn draw_offset_adjust_icon(
+        &self,
+        painter: &egui::Painter,
+        c: egui::Pos2,
+        _bg_color: egui::Color32,
+        icon_color: egui::Color32,
+        is_active: bool,
+    ) {
+        let ghost_color = if is_active {
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 60)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(200, 200, 200, 45)
+        };
+        let solid_color = icon_color;
+        let arrow_color = if is_active {
+            egui::Color32::from_rgb(100, 200, 255)
+        } else {
+            egui::Color32::from_rgb(130, 170, 200)
+        };
+
+        let draw_box = |cx: f32, cy: f32, hw: f32, hh: f32, depth: f32,
+                        stroke: egui::Stroke| {
+            let fl = egui::pos2(cx - hw, cy - hh);
+            let fr = egui::pos2(cx + hw, cy - hh);
+            let br = egui::pos2(cx + hw, cy + hh);
+            let bl = egui::pos2(cx - hw, cy + hh);
+
+            let dx = depth * 0.6;
+            let dy = -depth * 0.5;
+            let fl2 = egui::pos2(fl.x + dx, fl.y + dy);
+            let fr2 = egui::pos2(fr.x + dx, fr.y + dy);
+            let br2 = egui::pos2(br.x + dx, br.y + dy);
+            let _bl2 = egui::pos2(bl.x + dx, bl.y + dy);
+
+            painter.line_segment([fl, fr], stroke);
+            painter.line_segment([fr, br], stroke);
+            painter.line_segment([br, bl], stroke);
+            painter.line_segment([bl, fl], stroke);
+
+            painter.line_segment([fl2, fr2], stroke);
+            painter.line_segment([fr2, br2], stroke);
+
+            painter.line_segment([fl, fl2], stroke);
+            painter.line_segment([fr, fr2], stroke);
+            painter.line_segment([br, br2], stroke);
+        };
+
+        let g_cx = c.x - 5.0;
+        let g_cy = c.y + 3.0;
+        draw_box(
+            g_cx, g_cy, 4.5, 3.5, 4.0,
+            egui::Stroke::new(1.2, ghost_color),
+        );
+
+        let s_cx = c.x + 4.5;
+        let s_cy = c.y - 3.5;
+        draw_box(
+            s_cx, s_cy, 4.5, 3.5, 4.0,
+            egui::Stroke::new(1.6, solid_color),
+        );
+
+        let arrow_start = egui::pos2(g_cx + 2.0, g_cy - 1.5);
+        let arrow_end = egui::pos2(s_cx - 2.0, s_cy + 1.5);
+        let n_dash = 3;
+        for k in 0..n_dash {
+            let t0 = (k as f32 * 2.0) / (n_dash as f32 * 2.0 - 1.0);
+            let t1 = (k as f32 * 2.0 + 1.0) / (n_dash as f32 * 2.0 - 1.0);
+            let t1 = t1.min(1.0);
+            let p0 = egui::pos2(
+                arrow_start.x + (arrow_end.x - arrow_start.x) * t0,
+                arrow_start.y + (arrow_end.y - arrow_start.y) * t0,
+            );
+            let p1 = egui::pos2(
+                arrow_start.x + (arrow_end.x - arrow_start.x) * t1,
+                arrow_start.y + (arrow_end.y - arrow_start.y) * t1,
+            );
+            painter.line_segment(
+                [p0, p1],
+                egui::Stroke::new(1.4, arrow_color),
+            );
+        }
+        let ad = egui::vec2(
+            arrow_end.x - arrow_start.x,
+            arrow_end.y - arrow_start.y,
+        );
+        let al = (ad.x * ad.x + ad.y * ad.y).sqrt().max(0.01);
+        let and = egui::vec2(ad.x / al, ad.y / al);
+        let aperp = egui::vec2(-and.y, and.x);
+        let ah = 3.5_f32;
+        painter.line_segment(
+            [arrow_end, arrow_end - and * ah + aperp * ah * 0.5],
+            egui::Stroke::new(1.4, arrow_color),
+        );
+        painter.line_segment(
+            [arrow_end, arrow_end - and * ah - aperp * ah * 0.5],
+            egui::Stroke::new(1.4, arrow_color),
+        );
+    }
+
+    /// Draw CoM mass labels on the viewport.
+    pub(super) fn draw_com_labels(
+        &self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        aspect: f32,
+    ) {
+        if !self.show_com {
+            return;
+        }
+        let com_positions = self.gl_renderer.lock().unwrap().com_world_positions();
+        let painter = ui.painter();
+        for (world_pos, mass) in &com_positions {
+            if let Some(ndc) = self.camera.project(world_pos, aspect) {
+                let screen_pos = egui::pos2(
+                    rect.left() + ndc.x * rect.width(),
+                    rect.top() + ndc.y * rect.height(),
+                );
+                if rect.contains(screen_pos) {
+                    let label = format!("{:.3} kg", mass);
+                    painter.text(
+                        screen_pos + egui::vec2(6.0, -6.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        &label,
+                        egui::FontId::proportional(11.0),
+                        egui::Color32::from_rgb(255, 128, 255),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Draw the IK root anchor icon on the viewport.
+    pub(super) fn draw_ik_root_anchor(
+        &self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        aspect: f32,
+    ) {
+        if self.interaction_mode != InteractionMode::JointDrive
+            || self.drag_mode != DragMode::InverseKinematics
+        {
+            return;
+        }
+        let Some(ref root_name) = self.ik_root_link else { return };
+        let Some(ref model) = self.model else { return };
+
+        let transforms = model.compute_transforms();
+        let Some(root_tf) = transforms.get(root_name) else { return };
+
+        let world_pos = na::Point3::from(root_tf.translation.vector);
+        let Some(ndc) = self.camera.project(&world_pos, aspect) else { return };
+
+        let screen_pos = egui::pos2(
+            rect.left() + ndc.x * rect.width(),
+            rect.top() + ndc.y * rect.height(),
+        );
+        if !rect.contains(screen_pos) {
+            return;
+        }
+
+        let painter = ui.painter();
+        let c = screen_pos;
+        let anchor_color = egui::Color32::from_rgb(255, 180, 50);
+        let anchor_bg = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140);
+
+        painter.circle_filled(c, 13.0, anchor_bg);
+
+        let ring_cy = c.y - 5.5;
+        painter.circle_stroke(
+            egui::pos2(c.x, ring_cy),
+            3.0,
+            egui::Stroke::new(1.6, anchor_color),
+        );
+
+        let shank_top = ring_cy + 3.0;
+        let shank_bot = c.y + 7.0;
+        painter.line_segment(
+            [egui::pos2(c.x, shank_top), egui::pos2(c.x, shank_bot)],
+            egui::Stroke::new(1.8, anchor_color),
+        );
+
+        let bar_y = c.y + 1.0;
+        painter.line_segment(
+            [egui::pos2(c.x - 5.0, bar_y), egui::pos2(c.x + 5.0, bar_y)],
+            egui::Stroke::new(1.6, anchor_color),
+        );
+
+        let n_seg = 6;
+        for &sign in &[-1.0_f32, 1.0] {
+            let pts: Vec<egui::Pos2> = (0..=n_seg)
+                .map(|k| {
+                    let t = k as f32 / n_seg as f32;
+                    let angle = t * std::f32::consts::FRAC_PI_2;
+                    egui::pos2(
+                        c.x + sign * 5.0 * angle.sin(),
+                        bar_y + 6.0 * angle.cos(),
+                    )
+                })
+                .collect();
+            for w in pts.windows(2) {
+                painter.line_segment(
+                    [w[0], w[1]],
+                    egui::Stroke::new(1.6, anchor_color),
+                );
+            }
+        }
+
+        painter.text(
+            egui::pos2(c.x, c.y + 15.0),
+            egui::Align2::CENTER_TOP,
+            root_name,
+            egui::FontId::proportional(10.0),
+            anchor_color,
+        );
+    }
+
+    /// Draw camera orientation axes (bottom-right corner).
+    pub(super) fn draw_camera_axes(&self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let painter = ui.painter();
+        let axes_size = 50.0_f32;
+        let margin = 10.0;
+        let center = egui::pos2(
+            rect.right() - margin - axes_size,
+            rect.bottom() - margin - axes_size,
+        );
+
+        painter.circle_filled(
+            center,
+            axes_size,
+            egui::Color32::from_rgba_unmultiplied(20, 20, 30, 150),
+        );
+
+        let view = self.camera.view_matrix();
+        let view3 = view.fixed_view::<3, 3>(0, 0);
+
+        let axis_len = axes_size * 0.7;
+        let world_axes: [(na::Vector3<f32>, egui::Color32, &str); 3] = [
+            (na::Vector3::x(), egui::Color32::from_rgb(230, 60, 60), "X"),
+            (na::Vector3::y(), egui::Color32::from_rgb(60, 200, 60), "Y"),
+            (na::Vector3::z(), egui::Color32::from_rgb(60, 100, 230), "Z"),
+        ];
+
+        let mut draw_order: Vec<(usize, f32)> = world_axes
+            .iter()
+            .enumerate()
+            .map(|(i, (ax, _, _))| {
+                let cam = view3 * ax;
+                (i, cam.z)
+            })
+            .collect();
+        draw_order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        for (i, _depth) in draw_order {
+            let (ax, color, label) = &world_axes[i];
+            let cam = view3 * ax;
+            let tip = egui::pos2(
+                center.x + cam.x * axis_len,
+                center.y - cam.y * axis_len,
+            );
+            painter.line_segment(
+                [center, tip],
+                egui::Stroke::new(2.5, *color),
+            );
+            painter.circle_filled(tip, 4.0, *color);
+            painter.text(
+                tip + egui::vec2(6.0, -6.0),
+                egui::Align2::LEFT_BOTTOM,
+                *label,
+                egui::FontId::proportional(11.0),
+                *color,
+            );
+        }
+    }
+
+    /// Draw camera reset button (bottom-right, above axes).
+    pub(super) fn draw_camera_reset_button(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let painter = ui.painter();
+        let btn_size = egui::vec2(28.0, 28.0);
+        let margin = 10.0;
+        let btn_pos = egui::pos2(
+            rect.right() - margin - 100.0 - btn_size.x,
+            rect.bottom() - margin - btn_size.y,
+        );
+        let btn_rect = egui::Rect::from_min_size(btn_pos, btn_size);
+
+        let btn_response = ui.interact(
+            btn_rect,
+            ui.id().with("camera_reset_btn"),
+            egui::Sense::click(),
+        );
+
+        let bg_color = if btn_response.hovered() {
+            egui::Color32::from_rgba_unmultiplied(100, 100, 100, 200)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(40, 40, 50, 160)
+        };
+        painter.rect_filled(btn_rect, egui::CornerRadius::same(4), bg_color);
+
+        painter.text(
+            btn_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "⟲",
+            egui::FontId::proportional(18.0),
+            egui::Color32::from_gray(220),
+        );
+
+        if btn_response.clicked() {
+            self.camera.reset();
+        }
+
+        if btn_response.hovered() {
+            let tip_pos = egui::pos2(btn_rect.left(), btn_rect.top() - 4.0);
+            painter.text(
+                tip_pos,
+                egui::Align2::LEFT_BOTTOM,
+                "Reset Camera",
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_gray(220),
+            );
+        }
+    }
+}
