@@ -36,7 +36,7 @@ impl RobotFormat {
             RobotFormat::Urdf => "URDF",
             RobotFormat::Sdf => "SDF",
             RobotFormat::Mjcf => "MJCF",
-            RobotFormat::IsaacUsd => "Isaac (USD Python)",
+            RobotFormat::IsaacUsd => "Isaac (USD ASCII)",
         }
     }
 
@@ -46,7 +46,7 @@ impl RobotFormat {
             RobotFormat::Urdf => "urdf",
             RobotFormat::Sdf => "sdf",
             RobotFormat::Mjcf => "xml",
-            RobotFormat::IsaacUsd => "py",
+            RobotFormat::IsaacUsd => "usda",
         }
     }
 

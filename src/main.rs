@@ -8,6 +8,7 @@ mod primitives;
 mod renderer;
 mod robot;
 mod sdf;
+mod usd;
 
 use std::path::PathBuf;
 

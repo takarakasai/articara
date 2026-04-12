@@ -1529,13 +1529,13 @@ impl ArticaraApp {
                 }
             }
             RobotFormat::IsaacUsd => {
-                match crate::isaac::export_isaac_to_dir(model, &dir) {
-                    Ok(()) => {
+                match crate::usd::export_usda_to_dir(model, &dir) {
+                    Ok(path) => {
                         self.export_message =
-                            format!("✔ Isaac export to {} (URDF + Python script)", dir.display());
+                            format!("✔ Exported USD ASCII to {}", path.display());
                     }
                     Err(e) => {
-                        self.export_message = format!("⚠ Isaac export failed: {e}");
+                        self.export_message = format!("⚠ USD export failed: {e}");
                     }
                 }
             }
