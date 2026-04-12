@@ -162,6 +162,8 @@ pub struct ArticaraApp {
     ik_root_link: Option<String>,
     /// Show center-of-mass markers and mass labels.
     show_com: bool,
+    /// Show joint axis arrows in viewport.
+    show_joint_axes: bool,
     /// Scale factor for CoM sphere size (sphere radius = mass × com_scale).
     com_scale: f32,
     /// Show robot links in wireframe mode (legacy, kept for compat).
@@ -238,6 +240,7 @@ impl ArticaraApp {
             ik_damping: 0.05,
             ik_root_link: None,
             show_com: false,
+            show_joint_axes: false,
             com_scale: 0.01,
             wireframe: false,
             visual_mode: DisplayMode::Solid,
@@ -926,6 +929,7 @@ impl ArticaraApp {
                     });
             });
             ui.checkbox(&mut self.show_com, "Show CoM & Mass");
+            ui.checkbox(&mut self.show_joint_axes, "Show Joint Axes");
             if self.show_com {
                 ui.horizontal(|ui| {
                     ui.label("CoM scale:");
@@ -3066,6 +3070,7 @@ impl eframe::App for ArticaraApp {
             let mut r = self.gl_renderer.lock().unwrap();
             r.update_transforms(transforms);
             r.show_com = self.show_com;
+            r.show_joint_axes = self.show_joint_axes;
             r.com_scale = self.com_scale;
             r.wireframe = self.wireframe;
             r.visual_mode = self.visual_mode;

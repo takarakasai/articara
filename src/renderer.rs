@@ -135,6 +135,15 @@ pub struct GlRenderer {
     gizmo_scale_num_vertices: i32,
     /// Current gizmo operation (0=translate arrows, 1=rotate rings, 2=scale handles).
     pub gizmo_op: u8, // 0=translate, 1=rotate, 2=scale
+    // --- Joint axis arrows ---
+    joint_arrow_vao: glow::VertexArray,
+    joint_arrow_vbo: glow::Buffer,
+    joint_arrow_num_vertices: i32,
+    /// Whether to draw joint axis arrows.
+    pub show_joint_axes: bool,
+    /// Joint axis definitions: (parent_link, local_origin, local_axis, is_revolute).
+    /// World positions are resolved at render time from `transforms`.
+    joint_axis_entries: Vec<(String, na::Isometry3<f32>, na::Vector3<f32>, bool)>,
 }
 
 impl GlRenderer {
@@ -181,6 +190,12 @@ impl GlRenderer {
             let gizmo_scale_num = (gizmo_scale_data.len() / 6) as i32;
             let (gizmo_scale_vao, gizmo_scale_vbo) = upload_mesh_data(gl, &gizmo_scale_data);
 
+            // Joint axis arrow (smaller than gizmo; shaft_r=0.002, shaft_l=0.04, head_r=0.007, head_l=0.015)
+            let joint_arrow_data =
+                primitives::generate_arrow(0.002, 0.04, 0.007, 0.015, 12);
+            let joint_arrow_num = (joint_arrow_data.len() / 6) as i32;
+            let (joint_arrow_vao, joint_arrow_vbo) = upload_mesh_data(gl, &joint_arrow_data);
+
             Self {
                 program,
                 u_mvp,
@@ -220,6 +235,11 @@ impl GlRenderer {
                 gizmo_scale_vbo,
                 gizmo_scale_num_vertices: gizmo_scale_num,
                 gizmo_op: 0,
+                joint_arrow_vao,
+                joint_arrow_vbo,
+                joint_arrow_num_vertices: joint_arrow_num,
+                show_joint_axes: false,
+                joint_axis_entries: Vec::new(),
             }
         }
     }
@@ -301,6 +321,21 @@ impl GlRenderer {
                     kind: MeshKind::Collision,
                 });
             }
+        }
+
+        // Build joint axis entries
+        self.joint_axis_entries.clear();
+        for joint in &model.joints {
+            if joint.joint_type == "fixed" {
+                continue;
+            }
+            let is_revolute = joint.joint_type == "revolute" || joint.joint_type == "continuous";
+            self.joint_axis_entries.push((
+                joint.parent_link.clone(),
+                joint.origin,
+                joint.axis,
+                is_revolute,
+            ));
         }
 
         // Compute initial transforms
@@ -483,6 +518,65 @@ impl GlRenderer {
                 }
             }
 
+            // Draw joint axis arrows
+            if self.show_joint_axes && !self.joint_axis_entries.is_empty() {
+                gl.uniform_1_i32(Some(&self.u_flat), 0);
+                gl.bind_vertex_array(Some(self.joint_arrow_vao));
+
+                for (parent_link, local_origin, local_axis, is_revolute) in &self.joint_axis_entries {
+                    let parent_tf = self
+                        .transforms
+                        .get(parent_link)
+                        .copied()
+                        .unwrap_or(na::Isometry3::identity());
+                    let joint_world = parent_tf * *local_origin;
+                    let world_axis = (joint_world.rotation * local_axis).normalize();
+
+                    // Build a rotation that aligns +Z with the joint axis
+                    let axis_rot = na::UnitQuaternion::rotation_between(
+                        &na::Vector3::z(),
+                        &world_axis,
+                    )
+                    .unwrap_or(na::UnitQuaternion::identity());
+
+                    // Position arrow so it is centered on the joint:
+                    // shift back by half the arrow length (0.04+0.015=0.055 total, half≈0.0275)
+                    let arrow_center_offset = world_axis * (-0.0275);
+                    let arrow_pos = joint_world.translation.vector + arrow_center_offset;
+                    let arrow_tf = na::Isometry3::from_parts(
+                        na::Translation3::from(arrow_pos),
+                        axis_rot,
+                    );
+
+                    let model_mat = arrow_tf.to_homogeneous();
+                    let mvp = vp * model_mat;
+                    gl.uniform_matrix_4_f32_slice(
+                        Some(&self.u_mvp),
+                        false,
+                        mvp.as_slice(),
+                    );
+                    let model3 = model_mat.fixed_view::<3, 3>(0, 0).into_owned();
+                    let normal_mat = model3
+                        .try_inverse()
+                        .map(|inv| inv.transpose())
+                        .unwrap_or(na::Matrix3::identity());
+                    gl.uniform_matrix_3_f32_slice(
+                        Some(&self.u_normal_mat),
+                        false,
+                        normal_mat.as_slice(),
+                    );
+
+                    // Revolute = orange, Prismatic = cyan
+                    if *is_revolute {
+                        gl.uniform_4_f32(Some(&self.u_color), 1.0, 0.6, 0.0, 1.0);
+                    } else {
+                        gl.uniform_4_f32(Some(&self.u_color), 0.0, 0.8, 1.0, 1.0);
+                    }
+
+                    gl.draw_arrays(glow::TRIANGLES, 0, self.joint_arrow_num_vertices);
+                }
+            }
+
             // Draw gizmo (offset adjustment mode): arrows or rings
             if let Some(gizmo_tf) = self.gizmo_transform {
                 // Draw on top of everything
@@ -620,6 +714,8 @@ impl GlRenderer {
             gl.delete_buffer(self.gizmo_ring_vbo);
             gl.delete_vertex_array(self.gizmo_scale_vao);
             gl.delete_buffer(self.gizmo_scale_vbo);
+            gl.delete_vertex_array(self.joint_arrow_vao);
+            gl.delete_buffer(self.joint_arrow_vbo);
             gl.delete_program(self.program);
         }
     }
