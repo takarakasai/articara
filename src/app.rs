@@ -375,8 +375,37 @@ impl ArticaraApp {
                 }
                 ui.separator();
 
-                // --- Auto-compute inertia for ALL links ---
+                // --- Validate all inertia ---
                 let has_model = self.model.is_some();
+                if ui.add_enabled(has_model, egui::Button::new("🔍 Validate All Inertia"))
+                    .on_hover_text("Check mass and inertia tensor consistency for every link")
+                    .clicked()
+                {
+                    if let Some(ref model) = self.model {
+                        let results = crate::robot::validate_all_inertia(model);
+                        let error_links: Vec<_> = results.iter()
+                            .filter(|v| v.has_errors())
+                            .map(|v| v.link_name.clone())
+                            .collect();
+                        let warn_links: Vec<_> = results.iter()
+                            .filter(|v| !v.has_errors() && v.has_warnings())
+                            .map(|v| v.link_name.clone())
+                            .collect();
+                        let ok_count = results.iter().filter(|v| v.is_ok()).count();
+                        let total = results.len();
+                        let mut msg = format!("🔍 Validation: {ok_count}/{total} OK");
+                        if !error_links.is_empty() {
+                            msg += &format!(" | ❌ Errors: {}", error_links.join(", "));
+                        }
+                        if !warn_links.is_empty() {
+                            msg += &format!(" | ⚠ Warnings: {}", warn_links.join(", "));
+                        }
+                        self.status_message = msg;
+                    }
+                    ui.close();
+                }
+
+                // --- Auto-compute inertia for ALL links ---
                 if ui.add_enabled(has_model, egui::Button::new("⚡ Auto-compute All Inertia"))
                     .on_hover_text("Re-compute inertia tensors for every link from visual geometries (uniform density)")
                     .clicked()
@@ -1321,6 +1350,25 @@ impl ArticaraApp {
                             ui.label(egui::RichText::new(
                                 "ABS: 1050 / Al: 2700 / Steel: 7800 / PLA: 1240"
                             ).small().weak());
+                        }
+
+                        // --- Inertia validation ---
+                        ui.add_space(4.0);
+                        let validation = crate::robot::validate_inertia(link);
+                        if validation.is_ok() {
+                            ui.label(egui::RichText::new("✅ Inertia OK")
+                                .small().color(egui::Color32::from_rgb(80, 200, 80)));
+                        } else {
+                            for issue in &validation.issues {
+                                let (icon, color) = match issue.severity {
+                                    crate::robot::ValidationSeverity::Error =>
+                                        ("❌", egui::Color32::from_rgb(220, 60, 60)),
+                                    crate::robot::ValidationSeverity::Warning =>
+                                        ("⚠", egui::Color32::from_rgb(220, 180, 40)),
+                                };
+                                ui.label(egui::RichText::new(format!("{icon} {}", issue.message))
+                                    .small().color(color));
+                            }
                         }
 
                         if inertial_changed {

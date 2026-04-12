@@ -1557,3 +1557,174 @@ pub fn compute_link_inertia(visuals: &[VisualData], total_mass: f64) -> Inertial
         izz: izz_total,
     }
 }
+
+// ========== Inertia Validation ==========
+
+/// Severity of a validation issue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationSeverity {
+    Error,
+    Warning,
+}
+
+/// A single validation diagnostic.
+#[derive(Debug, Clone)]
+pub struct ValidationIssue {
+    pub severity: ValidationSeverity,
+    pub message: String,
+}
+
+/// Result of validating one link's inertial data.
+#[derive(Debug, Clone)]
+pub struct InertiaValidation {
+    pub link_name: String,
+    pub issues: Vec<ValidationIssue>,
+}
+
+impl InertiaValidation {
+    pub fn is_ok(&self) -> bool {
+        self.issues.is_empty()
+    }
+
+    pub fn has_errors(&self) -> bool {
+        self.issues.iter().any(|i| i.severity == ValidationSeverity::Error)
+    }
+
+    pub fn has_warnings(&self) -> bool {
+        self.issues.iter().any(|i| i.severity == ValidationSeverity::Warning)
+    }
+}
+
+/// Validate mass and inertia tensor of a single link.
+///
+/// Checks performed:
+/// 1. Mass must be positive (> 0).
+/// 2. Diagonal elements (Ixx, Iyy, Izz) must be non-negative.
+/// 3. Triangle inequality on principal moments (Ixx + Iyy >= Izz, etc.).
+/// 4. Inertia tensor matrix must be positive semi-definite (all eigenvalues >= 0).
+/// 5. Each diagonal element should not exceed mass × reasonable_radius² heuristic
+///    (warning only — assumes max equivalent radius of 10 m).
+pub fn validate_inertia(link: &LinkData) -> InertiaValidation {
+    let mut issues = Vec::new();
+    let inertial = &link.inertial;
+
+    // --- 1. Mass check ---
+    if inertial.mass < 0.0 {
+        issues.push(ValidationIssue {
+            severity: ValidationSeverity::Error,
+            message: "Mass is negative".into(),
+        });
+    } else if inertial.mass == 0.0 {
+        // mass=0 is sometimes intentional (dummy link), just warn
+        issues.push(ValidationIssue {
+            severity: ValidationSeverity::Warning,
+            message: "Mass is zero".into(),
+        });
+    }
+
+    // --- 2. Diagonal elements non-negative ---
+    if inertial.ixx < 0.0 {
+        issues.push(ValidationIssue {
+            severity: ValidationSeverity::Error,
+            message: format!("Ixx is negative ({:.6e})", inertial.ixx),
+        });
+    }
+    if inertial.iyy < 0.0 {
+        issues.push(ValidationIssue {
+            severity: ValidationSeverity::Error,
+            message: format!("Iyy is negative ({:.6e})", inertial.iyy),
+        });
+    }
+    if inertial.izz < 0.0 {
+        issues.push(ValidationIssue {
+            severity: ValidationSeverity::Error,
+            message: format!("Izz is negative ({:.6e})", inertial.izz),
+        });
+    }
+
+    // --- 3. Triangle inequality on diagonal elements ---
+    // For any physically realizable rigid body: Ia + Ib >= Ic
+    let (ixx, iyy, izz) = (inertial.ixx, inertial.iyy, inertial.izz);
+    if ixx >= 0.0 && iyy >= 0.0 && izz >= 0.0 {
+        let eps = 1e-12;
+        if ixx + iyy + eps < izz {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Error,
+                message: format!("Triangle inequality violated: Ixx + Iyy < Izz ({:.6e} + {:.6e} < {:.6e})", ixx, iyy, izz),
+            });
+        }
+        if iyy + izz + eps < ixx {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Error,
+                message: format!("Triangle inequality violated: Iyy + Izz < Ixx ({:.6e} + {:.6e} < {:.6e})", iyy, izz, ixx),
+            });
+        }
+        if ixx + izz + eps < iyy {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Error,
+                message: format!("Triangle inequality violated: Ixx + Izz < Iyy ({:.6e} + {:.6e} < {:.6e})", ixx, izz, iyy),
+            });
+        }
+    }
+
+    // --- 4. Positive semi-definite (eigenvalue check) ---
+    let mat = na::Matrix3::new(
+        inertial.ixx, inertial.ixy, inertial.ixz,
+        inertial.ixy, inertial.iyy, inertial.iyz,
+        inertial.ixz, inertial.iyz, inertial.izz,
+    );
+    let eigen = na::SymmetricEigen::new(mat);
+    let min_eigenvalue = eigen.eigenvalues.min();
+    if min_eigenvalue < -1e-10 {
+        issues.push(ValidationIssue {
+            severity: ValidationSeverity::Error,
+            message: format!(
+                "Inertia tensor is not positive semi-definite (min eigenvalue = {:.6e})",
+                min_eigenvalue
+            ),
+        });
+    }
+
+    // --- 5. Sanity: diagonal vs mass (heuristic) ---
+    // For a solid sphere of radius R: I = 2/5 * m * R²
+    // We warn if any diagonal element exceeds m * (10 m)² = 100 * m
+    // which would imply an equivalent radius > 10 m — unusual for most robots.
+    if inertial.mass > 0.0 {
+        let max_reasonable = inertial.mass * 100.0; // m * R² with R=10m
+        for (name, val) in [("Ixx", ixx), ("Iyy", iyy), ("Izz", izz)] {
+            if val > max_reasonable {
+                issues.push(ValidationIssue {
+                    severity: ValidationSeverity::Warning,
+                    message: format!(
+                        "{name} ({:.4e}) seems very large for mass {:.4} kg (equivalent radius > 10 m)",
+                        val, inertial.mass
+                    ),
+                });
+            }
+        }
+
+        // Also warn if diagonal is extremely small relative to mass
+        // (point-mass like). Threshold: I < mass * 1e-10
+        let min_reasonable = inertial.mass * 1e-10;
+        let all_tiny = ixx < min_reasonable && iyy < min_reasonable && izz < min_reasonable;
+        if all_tiny && inertial.mass > 1e-6 {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Warning,
+                message: format!(
+                    "All diagonal elements are near zero for mass {:.4} kg (point-mass-like)",
+                    inertial.mass
+                ),
+            });
+        }
+    }
+
+    InertiaValidation {
+        link_name: link.name.clone(),
+        issues,
+    }
+}
+
+/// Validate inertia for all links in a model.
+pub fn validate_all_inertia(model: &RobotModel) -> Vec<InertiaValidation> {
+    model.links.iter().map(|link| validate_inertia(link)).collect()
+}

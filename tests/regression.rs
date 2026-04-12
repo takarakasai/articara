@@ -2199,3 +2199,130 @@ mod test_inertia {
         assert!((i2.izz / i1.izz - 5.0).abs() < 1e-6);
     }
 }
+
+// ========== Inertia Validation Tests ==========
+
+mod test_inertia_validation {
+    use articara::robot::*;
+
+    fn make_link(name: &str, mass: f64, ixx: f64, iyy: f64, izz: f64,
+                 ixy: f64, ixz: f64, iyz: f64) -> LinkData {
+        LinkData {
+            name: name.to_string(),
+            visuals: vec![],
+            collisions: vec![],
+            inertial: InertialData {
+                origin: nalgebra::Isometry3::identity(),
+                mass,
+                ixx, ixy, ixz,
+                iyy, iyz, izz,
+            },
+        }
+    }
+
+    #[test]
+    fn valid_box_inertia_passes() {
+        // 1 kg box 0.2×0.2×0.2 m
+        let m = 1.0;
+        let s = 0.2_f64;
+        let i_diag = m / 12.0 * (s * s + s * s); // ~0.006667
+        let link = make_link("box", m, i_diag, i_diag, i_diag, 0.0, 0.0, 0.0);
+        let v = validate_inertia(&link);
+        assert!(v.is_ok(), "Expected OK, got: {:?}", v.issues);
+    }
+
+    #[test]
+    fn negative_mass_is_error() {
+        let link = make_link("bad", -1.0, 0.01, 0.01, 0.01, 0.0, 0.0, 0.0);
+        let v = validate_inertia(&link);
+        assert!(v.has_errors());
+        assert!(v.issues.iter().any(|i| i.message.contains("negative")));
+    }
+
+    #[test]
+    fn zero_mass_is_warning() {
+        let link = make_link("dummy", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let v = validate_inertia(&link);
+        assert!(v.has_warnings());
+        assert!(!v.has_errors());
+    }
+
+    #[test]
+    fn negative_diagonal_is_error() {
+        let link = make_link("bad_ixx", 1.0, -0.01, 0.01, 0.01, 0.0, 0.0, 0.0);
+        let v = validate_inertia(&link);
+        assert!(v.has_errors());
+        assert!(v.issues.iter().any(|i| i.message.contains("Ixx") && i.message.contains("negative")));
+    }
+
+    #[test]
+    fn triangle_inequality_violation() {
+        // Izz much larger than Ixx + Iyy
+        let link = make_link("bad_tri", 1.0, 0.001, 0.001, 1.0, 0.0, 0.0, 0.0);
+        let v = validate_inertia(&link);
+        assert!(v.has_errors());
+        assert!(v.issues.iter().any(|i| i.message.contains("Triangle inequality")));
+    }
+
+    #[test]
+    fn triangle_inequality_satisfied() {
+        // Uniform sphere: all diagonal elements equal
+        let link = make_link("sphere", 1.0, 0.01, 0.01, 0.01, 0.0, 0.0, 0.0);
+        let v = validate_inertia(&link);
+        assert!(!v.has_errors(), "Unexpected errors: {:?}", v.issues);
+    }
+
+    #[test]
+    fn not_positive_semi_definite() {
+        // Large off-diagonal elements make the matrix non-PSD
+        let link = make_link("bad_psd", 1.0, 0.001, 0.001, 0.001, 0.1, 0.1, 0.1);
+        let v = validate_inertia(&link);
+        assert!(v.has_errors());
+        assert!(v.issues.iter().any(|i| i.message.contains("positive semi-definite")));
+    }
+
+    #[test]
+    fn large_inertia_for_mass_warns() {
+        // Mass 1 kg but Ixx = 200 → equivalent radius > 10 m
+        let link = make_link("huge", 1.0, 200.0, 200.0, 200.0, 0.0, 0.0, 0.0);
+        let v = validate_inertia(&link);
+        assert!(v.has_warnings());
+        assert!(v.issues.iter().any(|i| i.message.contains("very large")));
+    }
+
+    #[test]
+    fn validate_all_returns_per_link() {
+        let mut model = RobotModel::new_empty("test");
+        // new_empty creates "base_link" with mass=1.0 and valid inertia
+
+        // Add a child link
+        model.add_child(
+            "base_link", "bad_link", "j1",
+            "revolute",
+            nalgebra::Isometry3::identity(),
+            nalgebra::Vector3::z(),
+            GeomData::Box { hx: 0.1, hy: 0.1, hz: 0.1 },
+            [0.5, 0.5, 0.5, 1.0],
+            -1.0, 1.0,
+        ).unwrap();
+        // Make the child link have bad inertia (negative mass)
+        if let Some(idx) = model.link_map.get("bad_link") {
+            model.links[*idx].inertial.mass = -1.0;
+        }
+        let results = validate_all_inertia(&model);
+        assert_eq!(results.len(), 2);
+        let bad_result = results.iter().find(|r| r.link_name == "bad_link").unwrap();
+        assert!(bad_result.has_errors());
+        let good_result = results.iter().find(|r| r.link_name == "base_link").unwrap();
+        assert!(!good_result.has_errors());
+    }
+
+    #[test]
+    fn valid_nonzero_offdiag_passes() {
+        // A physically valid tensor with small off-diagonal elements
+        // that still satisfy PSD
+        let link = make_link("tilted", 2.0, 0.05, 0.04, 0.06, 0.001, 0.001, 0.001);
+        let v = validate_inertia(&link);
+        assert!(!v.has_errors(), "Unexpected errors: {:?}", v.issues);
+    }
+}
