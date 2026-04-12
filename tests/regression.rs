@@ -1841,4 +1841,21 @@ mod test_gizmo {
             );
         }
     }
+
+    #[test]
+    fn generate_scale_handle_non_empty() {
+        let data = articara::primitives::generate_scale_handle(0.003, 0.06, 0.006, 12);
+        assert!(!data.is_empty());
+        assert_eq!(data.len() % 6, 0);
+    }
+
+    #[test]
+    fn generate_scale_handle_vertex_count() {
+        let segs: u32 = 12;
+        let data = articara::primitives::generate_scale_handle(0.003, 0.06, 0.006, segs);
+        // Shaft: segs * 2 tris * 3 verts = segs * 6
+        // Cube: 6 faces * 2 tris * 3 verts = 36
+        let expected = (segs * 6 + 36) as usize;
+        assert_eq!(data.len() / 6, expected);
+    }
 }

@@ -24,6 +24,7 @@ pub enum InteractionMode {
 pub enum GizmoOp {
     Translate,
     Rotate,
+    Scale,
 }
 
 /// Which element's origin to adjust in Offset Adjust mode.
@@ -115,6 +116,9 @@ struct OffsetDragState {
     initial_rotation: na::UnitQuaternion<f32>,
     /// Angle at drag start (for rotation mode).
     initial_angle: f32,
+    /// Initial geometry parameters at drag start (for scale mode).
+    /// Box: [hx, hy, hz], Cylinder: [radius, half_length, 0], Sphere: [radius, 0, 0]
+    initial_geom_params: [f32; 3],
 }
 
 pub struct ArticaraApp {
@@ -322,6 +326,9 @@ impl ArticaraApp {
                             let label = format!("{} {}", t.icon(), t.label());
                             if ui.selectable_label(sel, label).clicked() {
                                 self.offset_target = t;
+                                if t == OffsetTarget::Joint && self.gizmo_op == GizmoOp::Scale {
+                                    self.gizmo_op = GizmoOp::Translate;
+                                }
                                 ui.close();
                             }
                         }
@@ -747,8 +754,15 @@ impl ArticaraApp {
                 // --- Offset Target selector ---
                 ui.horizontal(|ui| {
                     ui.label("Target:");
+                    let prev_target = self.offset_target;
                     for t in OffsetTarget::ALL {
                         ui.radio_value(&mut self.offset_target, t, t.label());
+                    }
+                    if self.offset_target == OffsetTarget::Joint
+                        && prev_target != OffsetTarget::Joint
+                        && self.gizmo_op == GizmoOp::Scale
+                    {
+                        self.gizmo_op = GizmoOp::Translate;
                     }
                 });
                 // --- Gizmo operation selector ---
@@ -756,6 +770,10 @@ impl ArticaraApp {
                     ui.label("Gizmo:");
                     ui.radio_value(&mut self.gizmo_op, GizmoOp::Translate, "⬌ Translate");
                     ui.radio_value(&mut self.gizmo_op, GizmoOp::Rotate, "↻ Rotate");
+                    // Scale only for Visual/Collision
+                    if self.offset_target != OffsetTarget::Joint {
+                        ui.radio_value(&mut self.gizmo_op, GizmoOp::Scale, "⬡ Scale");
+                    }
                 });
                 // Show which element is selected
                 match self.offset_target {
@@ -1559,7 +1577,7 @@ impl ArticaraApp {
         // In Translate mode the gizmo axes align with the parent/link frame.
         // In Rotate mode they align with the element's own world orientation
         // so the rings follow the current rotation during drag.
-        let use_element_rot = self.gizmo_op == GizmoOp::Rotate;
+        let use_element_rot = self.gizmo_op == GizmoOp::Rotate || self.gizmo_op == GizmoOp::Scale;
         let gizmo_tf: Option<na::Isometry3<f32>> =
             if self.interaction_mode == InteractionMode::OffsetAdjust {
                 self.model.as_ref().and_then(|m| {
@@ -1656,7 +1674,7 @@ impl ArticaraApp {
                     gt.rotation * na::Vector3::z(),
                 ];
 
-                if self.gizmo_op == GizmoOp::Translate {
+                if self.gizmo_op == GizmoOp::Translate || self.gizmo_op == GizmoOp::Scale {
                     let mut best_dist = f32::MAX;
                     for (i, axis) in axes.iter().enumerate() {
                         let (t_line, dist) = robot::ray_axis_closest(&ro, &rd, &origin, axis);
@@ -1729,6 +1747,7 @@ impl ArticaraApp {
                                             op: cur_op,
                                             initial_rotation: model.joints[ji].origin.rotation,
                                             initial_angle,
+                                            initial_geom_params: [0.0; 3],
                                         })
                                     }
                                     OffsetTarget::Visual => {
@@ -1746,6 +1765,7 @@ impl ArticaraApp {
                                                 op: cur_op,
                                                 initial_rotation: model.links[li].visuals[vi].origin.rotation,
                                                 initial_angle,
+                                                initial_geom_params: geom_params(&model.links[li].visuals[vi].geometry),
                                             })
                                         })
                                     }
@@ -1764,6 +1784,7 @@ impl ArticaraApp {
                                                 op: cur_op,
                                                 initial_rotation: model.links[li].collisions[ci].origin.rotation,
                                                 initial_angle,
+                                                initial_geom_params: geom_params(&model.links[li].collisions[ci].geometry),
                                             })
                                         })
                                     }
@@ -1932,6 +1953,28 @@ impl ArticaraApp {
                                         model.links[odrag.entity_idx].collisions[odrag.sub_idx]
                                             .origin.rotation = new_rot;
                                     }
+                                }
+                                self.needs_upload = true;
+                            }
+                        }
+                        GizmoOp::Scale => {
+                            let (t_line, _) =
+                                robot::ray_axis_closest(&ro, &rd, &odrag.gizmo_origin, &odrag.axis_dir_world);
+                            let delta_t = t_line - odrag.initial_t;
+
+                            if let Some(ref mut model) = self.model {
+                                match odrag.target {
+                                    OffsetTarget::Visual => {
+                                        let geom = &mut model.links[odrag.entity_idx]
+                                            .visuals[odrag.sub_idx].geometry;
+                                        apply_geom_scale(geom, odrag.axis, odrag.initial_geom_params, delta_t);
+                                    }
+                                    OffsetTarget::Collision => {
+                                        let geom = &mut model.links[odrag.entity_idx]
+                                            .collisions[odrag.sub_idx].geometry;
+                                        apply_geom_scale(geom, odrag.axis, odrag.initial_geom_params, delta_t);
+                                    }
+                                    OffsetTarget::Joint => {} // no geometry to scale
                                 }
                                 self.needs_upload = true;
                             }
@@ -2137,7 +2180,11 @@ impl ArticaraApp {
             r.gizmo_transform = gizmo_tf;
             r.gizmo_hovered_axis = self.hovered_gizmo_axis;
             r.gizmo_dragged_axis = self.offset_drag_state.as_ref().map(|d| d.axis);
-            r.gizmo_op = if self.gizmo_op == GizmoOp::Rotate { 1 } else { 0 };
+            r.gizmo_op = match self.gizmo_op {
+                GizmoOp::Translate => 0,
+                GizmoOp::Rotate => 1,
+                GizmoOp::Scale => 2,
+            };
         }
 
         // Change cursor when hovering a draggable link or gizmo arrow
@@ -2514,6 +2561,9 @@ impl ArticaraApp {
 
                     if btn_response.clicked() {
                         self.offset_target = *target;
+                        if *target == OffsetTarget::Joint && self.gizmo_op == GizmoOp::Scale {
+                            self.gizmo_op = GizmoOp::Translate;
+                        }
                     }
                     if btn_response.hovered() {
                         let tip_pos = egui::pos2(btn_rect.left(), btn_rect.bottom() + 4.0);
@@ -2527,12 +2577,20 @@ impl ArticaraApp {
                     }
                 }
 
-                // --- Row 3: Gizmo op buttons (Translate / Rotate) ---
+                // --- Row 3: Gizmo op buttons (Translate / Rotate / Scale) ---
                 let row3_y = row2_y + small_size.y + 4.0;
-                let gizmo_ops: [(GizmoOp, &str, &str); 2] = [
-                    (GizmoOp::Translate, "⬌", "Translate"),
-                    (GizmoOp::Rotate, "↻", "Rotate"),
-                ];
+                let gizmo_ops: &[(GizmoOp, &str, &str)] = if self.offset_target != OffsetTarget::Joint {
+                    &[
+                        (GizmoOp::Translate, "⬌", "Translate"),
+                        (GizmoOp::Rotate, "↻", "Rotate"),
+                        (GizmoOp::Scale, "⬡", "Scale"),
+                    ]
+                } else {
+                    &[
+                        (GizmoOp::Translate, "⬌", "Translate"),
+                        (GizmoOp::Rotate, "↻", "Rotate"),
+                    ]
+                };
                 for (i, (op, icon, label)) in gizmo_ops.iter().enumerate() {
                     let btn_pos = egui::pos2(
                         toolbar_x + i as f32 * (small_size.x + 3.0),
@@ -2862,6 +2920,46 @@ fn ray_ring_distance(
         }
         // Distance from the intersection point to the ring circumference
         (r_hit - radius).abs()
+    }
+}
+
+/// Extract geometry parameters as [f32; 3] for scale dragging.
+/// Box: [hx, hy, hz], Cylinder: [radius, half_length, 0], Sphere: [radius, 0, 0], Mesh: [0,0,0]
+fn geom_params(geom: &robot::GeomData) -> [f32; 3] {
+    match geom {
+        robot::GeomData::Box { hx, hy, hz } => [*hx, *hy, *hz],
+        robot::GeomData::Cylinder { radius, half_length } => [*radius, *half_length, 0.0],
+        robot::GeomData::Sphere { radius } => [*radius, 0.0, 0.0],
+        robot::GeomData::Mesh { .. } => [0.0, 0.0, 0.0],
+    }
+}
+
+/// Apply a per-axis scale delta to geometry.
+/// `axis` is 0=X, 1=Y, 2=Z; `delta_t` is the drag displacement along
+/// the element's local axis.
+fn apply_geom_scale(geom: &mut robot::GeomData, axis: u8, initial: [f32; 3], delta: f32) {
+    const MIN_DIM: f32 = 0.001;
+    match geom {
+        robot::GeomData::Box { hx, hy, hz } => {
+            // Each axis maps to (hx, hy, hz) respectively
+            match axis {
+                0 => *hx = (initial[0] + delta).max(MIN_DIM),
+                1 => *hy = (initial[1] + delta).max(MIN_DIM),
+                _ => *hz = (initial[2] + delta).max(MIN_DIM),
+            }
+        }
+        robot::GeomData::Cylinder { radius, half_length } => {
+            // X/Y → radius, Z → half_length
+            match axis {
+                0 | 1 => *radius = (initial[0] + delta).max(MIN_DIM),
+                _ => *half_length = (initial[1] + delta).max(MIN_DIM),
+            }
+        }
+        robot::GeomData::Sphere { radius } => {
+            // Any axis → radius
+            *radius = (initial[0] + delta).max(MIN_DIM);
+        }
+        robot::GeomData::Mesh { .. } => {} // Cannot scale mesh
     }
 }
 

@@ -260,6 +260,70 @@ fn push_vert(buf: &mut Vec<f32>, pos: [f32; 3], normal: [f32; 3]) {
     buf.extend_from_slice(&normal);
 }
 
+/// Generate a scale gizmo handle along +Z: a thin shaft with a small cube at the tip.
+///
+/// `shaft_radius` — radius of the cylindrical shaft.
+/// `shaft_length` — length of the shaft along +Z.
+/// `cube_half`    — half-size of the cube at the tip.
+/// `segments`     — number of segments around the shaft cylinder.
+pub fn generate_scale_handle(
+    shaft_radius: f32,
+    shaft_length: f32,
+    cube_half: f32,
+    segments: u32,
+) -> Vec<f32> {
+    let mut v = Vec::new();
+    let seg = segments as f32;
+
+    // --- Shaft (cylinder from z=0 to z=shaft_length) ---
+    for i in 0..segments {
+        let a0 = std::f32::consts::TAU * i as f32 / seg;
+        let a1 = std::f32::consts::TAU * (i + 1) as f32 / seg;
+        let (c0, s0) = (a0.cos(), a0.sin());
+        let (c1, s1) = (a1.cos(), a1.sin());
+
+        let p0b = [shaft_radius * c0, shaft_radius * s0, 0.0];
+        let p1b = [shaft_radius * c1, shaft_radius * s1, 0.0];
+        let p0t = [shaft_radius * c0, shaft_radius * s0, shaft_length];
+        let p1t = [shaft_radius * c1, shaft_radius * s1, shaft_length];
+        let n0 = [c0, s0, 0.0];
+        let n1 = [c1, s1, 0.0];
+
+        push_vert(&mut v, p0b, n0);
+        push_vert(&mut v, p1b, n1);
+        push_vert(&mut v, p1t, n1);
+
+        push_vert(&mut v, p0b, n0);
+        push_vert(&mut v, p1t, n1);
+        push_vert(&mut v, p0t, n0);
+    }
+
+    // --- Cube at z = shaft_length ---
+    let cz = shaft_length + cube_half; // center of cube
+    let ch = cube_half;
+    // 6 faces × 2 triangles × 3 vertices
+    let faces: [([f32; 3], [f32; 3], [f32; 3], [f32; 3], [f32; 3]); 6] = [
+        // (v0, v1, v2, v3, normal)  — two tris: v0-v1-v2, v0-v2-v3
+        ([-ch, -ch, cz+ch], [ ch, -ch, cz+ch], [ ch,  ch, cz+ch], [-ch,  ch, cz+ch], [0.0, 0.0, 1.0]),  // +Z
+        ([-ch, -ch, cz-ch], [-ch,  ch, cz-ch], [ ch,  ch, cz-ch], [ ch, -ch, cz-ch], [0.0, 0.0,-1.0]),  // -Z
+        ([-ch,  ch, cz-ch], [-ch,  ch, cz+ch], [ ch,  ch, cz+ch], [ ch,  ch, cz-ch], [0.0, 1.0, 0.0]),  // +Y
+        ([-ch, -ch, cz-ch], [ ch, -ch, cz-ch], [ ch, -ch, cz+ch], [-ch, -ch, cz+ch], [0.0,-1.0, 0.0]),  // -Y
+        ([ ch, -ch, cz-ch], [ ch,  ch, cz-ch], [ ch,  ch, cz+ch], [ ch, -ch, cz+ch], [1.0, 0.0, 0.0]),  // +X
+        ([-ch, -ch, cz-ch], [-ch, -ch, cz+ch], [-ch,  ch, cz+ch], [-ch,  ch, cz-ch], [-1.0, 0.0, 0.0]), // -X
+    ];
+    for (v0, v1, v2, v3, n) in &faces {
+        push_vert(&mut v, *v0, *n);
+        push_vert(&mut v, *v1, *n);
+        push_vert(&mut v, *v2, *n);
+
+        push_vert(&mut v, *v0, *n);
+        push_vert(&mut v, *v2, *n);
+        push_vert(&mut v, *v3, *n);
+    }
+
+    v
+}
+
 /// Generate a torus (ring) around the Z axis with arrowheads indicating
 /// the positive rotation direction (right-hand rule: counterclockwise
 /// when viewed from +Z).

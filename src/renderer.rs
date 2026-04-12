@@ -129,8 +129,12 @@ pub struct GlRenderer {
     gizmo_ring_vao: glow::VertexArray,
     gizmo_ring_vbo: glow::Buffer,
     gizmo_ring_num_vertices: i32,
-    /// Current gizmo operation (translate arrows vs rotate rings).
-    pub gizmo_op: u8, // 0=translate, 1=rotate
+    // --- Gizmo scale handle ---
+    gizmo_scale_vao: glow::VertexArray,
+    gizmo_scale_vbo: glow::Buffer,
+    gizmo_scale_num_vertices: i32,
+    /// Current gizmo operation (0=translate arrows, 1=rotate rings, 2=scale handles).
+    pub gizmo_op: u8, // 0=translate, 1=rotate, 2=scale
 }
 
 impl GlRenderer {
@@ -171,6 +175,12 @@ impl GlRenderer {
             let gizmo_ring_num = (gizmo_ring_data.len() / 6) as i32;
             let (gizmo_ring_vao, gizmo_ring_vbo) = upload_mesh_data(gl, &gizmo_ring_data);
 
+            // Gizmo scale handle (shaft + cube along +Z; rotated for each axis)
+            let gizmo_scale_data =
+                primitives::generate_scale_handle(0.003, 0.06, 0.006, 12);
+            let gizmo_scale_num = (gizmo_scale_data.len() / 6) as i32;
+            let (gizmo_scale_vao, gizmo_scale_vbo) = upload_mesh_data(gl, &gizmo_scale_data);
+
             Self {
                 program,
                 u_mvp,
@@ -206,6 +216,9 @@ impl GlRenderer {
                 gizmo_ring_vao,
                 gizmo_ring_vbo,
                 gizmo_ring_num_vertices: gizmo_ring_num,
+                gizmo_scale_vao,
+                gizmo_scale_vbo,
+                gizmo_scale_num_vertices: gizmo_scale_num,
                 gizmo_op: 0,
             }
         }
@@ -477,8 +490,21 @@ impl GlRenderer {
                 gl.uniform_1_i32(Some(&self.u_flat), 0);
 
                 let is_rotate = self.gizmo_op == 1;
-                let gizmo_vao = if is_rotate { self.gizmo_ring_vao } else { self.gizmo_arrow_vao };
-                let gizmo_num = if is_rotate { self.gizmo_ring_num_vertices } else { self.gizmo_arrow_num_vertices };
+                let is_scale = self.gizmo_op == 2;
+                let gizmo_vao = if is_rotate {
+                    self.gizmo_ring_vao
+                } else if is_scale {
+                    self.gizmo_scale_vao
+                } else {
+                    self.gizmo_arrow_vao
+                };
+                let gizmo_num = if is_rotate {
+                    self.gizmo_ring_num_vertices
+                } else if is_scale {
+                    self.gizmo_scale_num_vertices
+                } else {
+                    self.gizmo_arrow_num_vertices
+                };
                 gl.bind_vertex_array(Some(gizmo_vao));
 
                 // Axis colors: X=red, Y=green, Z=blue
@@ -592,6 +618,8 @@ impl GlRenderer {
             gl.delete_buffer(self.gizmo_arrow_vbo);
             gl.delete_vertex_array(self.gizmo_ring_vao);
             gl.delete_buffer(self.gizmo_ring_vbo);
+            gl.delete_vertex_array(self.gizmo_scale_vao);
+            gl.delete_buffer(self.gizmo_scale_vbo);
             gl.delete_program(self.program);
         }
     }
