@@ -459,9 +459,25 @@ pub struct LegJointSim {
     /// Max angular/linear velocity from URDF (rad/s or m/s). Clamped ≥ 1.0.
     pub max_velocity: f32,
     /// Whether this joint actively contributes to the vertical push-off.
-    /// Determined by the Z-component of the positional Jacobian.
     /// Non-contributing joints hold their initial posture during extension.
     pub contributes: bool,
+}
+
+/// Per-leg data for IK-based coordinated extension.
+#[derive(Clone, Debug)]
+pub struct LegSim {
+    /// Ground (foot) link name.
+    pub ground_link: String,
+    /// Body link name (the "root" of this leg's IK chain).
+    pub body_link: String,
+    /// IK chain from ground link to body link.
+    pub chain: Vec<crate::ik::ChainJoint>,
+    /// Foot position relative to body at the start of the sim (body-frame).
+    pub initial_foot_pos: na::Point3<f32>,
+    /// Maximum vertical stroke (m) the foot can push down.
+    pub max_stroke: f32,
+    /// Joint indices in this leg that are locked (hold posture).
+    pub locked_joint_indices: std::collections::HashSet<usize>,
 }
 
 /// State for an active jump simulation with per-step quasi-dynamics.
@@ -471,9 +487,12 @@ pub struct JumpSim {
     /// Elapsed time within the current phase (s).
     pub phase_time: f32,
 
-    // --- joint trajectory ---
+    // --- per-leg IK data ---
+    pub legs: Vec<LegSim>,
+
+    // --- joint trajectory (kept for per-joint torque tracking) ---
     pub leg_joints: Vec<LegJointSim>,
-    /// Planned extension duration (s) from joint velocities.
+    /// Planned extension duration (s).
     pub extension_duration: f32,
 
     // --- physics state (extension phase, computed per step) ---
@@ -579,7 +598,7 @@ impl DynSim {
 /// `extension_override` — if `Some(d)`, use `d` seconds as extension duration
 /// instead of the auto-computed value.
 pub fn start_jump_sim(
-    model: &RobotModel,
+    model: &mut RobotModel,
     ground_links: &[String],
     body_link: Option<&str>,
     speed: f32,
@@ -591,20 +610,66 @@ pub fn start_jump_sim(
         return None;
     }
 
-    let body = body_link.unwrap_or(&model.root_link);
+    let body = body_link.unwrap_or(&model.root_link).to_string();
 
-    // Collect leg joints
-    let mut seen = std::collections::HashSet::new();
+    let total_mass: f64 = model.links.iter().map(|l| l.inertial.mass).sum();
+    if total_mass <= 0.0 {
+        return None;
+    }
+
+    let transforms = model.compute_transforms();
+    let initial_foot_z = avg_link_z(&transforms, ground_links);
+
+    // Get body transform for computing foot positions in body frame
+    let body_tf = transforms
+        .get(&body)
+        .copied()
+        .unwrap_or(na::Isometry3::identity());
+    let body_tf_inv = body_tf.inverse();
+
+    // Collect per-joint metadata (for torque tracking) and per-leg IK data
+    let mut seen_joints = std::collections::HashSet::new();
     let mut leg_joints = Vec::new();
-    let mut max_extension_time = 0.0_f32;
+    let mut legs = Vec::new();
+
+    // Locked joint indices
+    let locked_idx: std::collections::HashSet<usize> = model
+        .joints
+        .iter()
+        .enumerate()
+        .filter(|(_, j)| locked_joints.contains(&j.name))
+        .map(|(i, _)| i)
+        .collect();
 
     for gl in ground_links {
-        let chain = crate::ik::build_chain_between(model, gl, Some(body));
+        let chain = crate::ik::build_chain_between(model, gl, Some(&body));
+        if chain.is_empty() {
+            continue;
+        }
+
+        // Foot position in body frame
+        let foot_world = foot_link_pos(&transforms, gl);
+        let foot_body = body_tf_inv * foot_world;
+
+        // Determine max stroke: how far down (−Z in world) the foot can go.
+        // We do a binary-search style: try pushing foot down in increments
+        // using IK, clamped to joint limits, to find the actual reachable stroke.
+        let max_stroke = compute_leg_max_stroke(
+            model, &chain, gl, &body, &foot_world, &locked_idx,
+        );
+
+        let leg_locked: std::collections::HashSet<usize> = chain
+            .iter()
+            .filter(|cj| locked_idx.contains(&cj.joint_idx))
+            .map(|cj| cj.joint_idx)
+            .collect();
+
+        // Collect per-joint metadata for this leg
         for cj in &chain {
-            if seen.contains(&cj.joint_idx) {
+            if seen_joints.contains(&cj.joint_idx) {
                 continue;
             }
-            seen.insert(cj.joint_idx);
+            seen_joints.insert(cj.joint_idx);
 
             let joint = &model.joints[cj.joint_idx];
             if joint.effort <= 0.0 {
@@ -617,99 +682,73 @@ pub fn start_jump_sim(
             }
 
             let cur = model.joint_positions[cj.joint_idx];
-            let to_lower = (cur - lower).abs();
-            let to_upper = (upper - cur).abs();
-
-            // Extension target = farther limit from current position
-            let extended = if to_upper >= to_lower { upper } else { lower };
-            let stroke = (extended - cur).abs();
-
-            // Velocity → extension time for this joint
             let vel = (joint.velocity as f32).max(1.0);
-            let joint_time = stroke / vel;
-            if joint_time > max_extension_time {
-                max_extension_time = joint_time;
-            }
+            let is_locked = locked_idx.contains(&cj.joint_idx);
 
             leg_joints.push(LegJointSim {
                 joint_idx: cj.joint_idx,
                 start_angle: cur,
-                extended_angle: extended,
+                extended_angle: cur, // will be updated by IK during sim
                 max_velocity: vel,
-                contributes: true, // will be refined below via Jacobian
+                contributes: !is_locked,
             });
         }
+
+        legs.push(LegSim {
+            ground_link: gl.clone(),
+            body_link: body.clone(),
+            chain,
+            initial_foot_pos: foot_body,
+            max_stroke,
+            locked_joint_indices: leg_locked,
+        });
     }
 
-    if leg_joints.is_empty() {
+    if legs.is_empty() {
         return None;
     }
 
-    let total_mass: f64 = model.links.iter().map(|l| l.inertial.mass).sum();
-    if total_mass <= 0.0 {
-        return None;
-    }
-
-    // --- Determine which joints contribute to the vertical push-off ---
-    // Compute the positional Jacobian for each ground→body chain and check
-    // the Z-row magnitude.  Joints with |∂body_z / ∂θ| below a threshold
-    // are posture-hold joints (e.g. hip Roll on namiashi).
-    let transforms = model.compute_transforms();
-    let body_li = *model.link_map.get(body)?;
-    let body_pos = crate::ik::get_ee_world_pos(model, body_li, &transforms);
-
-    let mut z_sensitivity: HashMap<usize, f32> = HashMap::new();
-    for gl in ground_links {
-        let chain = crate::ik::build_chain_between(model, gl, Some(body));
-        if chain.is_empty() {
-            continue;
-        }
-        let jac = crate::ik::compute_jacobian(model, &chain, &transforms, &body_pos);
-        for (col, cj) in chain.iter().enumerate() {
-            let jz = jac[(2, col)].abs(); // Z sensitivity
-            let entry = z_sensitivity.entry(cj.joint_idx).or_insert(0.0);
-            if jz > *entry {
-                *entry = jz;
-            }
-        }
-    }
-
-    // Threshold: joints with |J_z| < 1 cm per radian are posture-hold.
-    const Z_THRESHOLD: f32 = 0.01;
-    for lj in &mut leg_joints {
-        let jname = &model.joints[lj.joint_idx].name;
-        if locked_joints.contains(jname) {
-            // User explicitly locked this joint
-            lj.contributes = false;
-        } else {
-            let jz = z_sensitivity.get(&lj.joint_idx).copied().unwrap_or(0.0);
-            lj.contributes = jz >= Z_THRESHOLD;
-        }
-    }
-
-    // Recompute extension duration using only contributing joints.
-    let contributing_time = leg_joints
-        .iter()
-        .filter(|lj| lj.contributes)
-        .map(|lj| {
-            let stroke = (lj.extended_angle - lj.start_angle).abs();
-            stroke / lj.max_velocity
-        })
-        .fold(0.0_f32, f32::max);
-
-    // Clamp extension duration (at least 0.15s for visual clarity)
+    // Extension duration: estimate from slowest leg stroke / min joint velocity
     let extension_duration = if let Some(ovr) = extension_override {
         ovr.max(0.05)
     } else {
-        contributing_time.max(max_extension_time * 0.01).max(0.15)
+        let mut max_time = 0.15_f32;
+        for leg in &legs {
+            // Slowest joint velocity in this leg
+            let min_vel = leg
+                .chain
+                .iter()
+                .filter(|cj| !leg.locked_joint_indices.contains(&cj.joint_idx))
+                .map(|cj| (model.joints[cj.joint_idx].velocity as f32).max(1.0))
+                .fold(f32::MAX, f32::min);
+            if min_vel < f32::MAX && leg.max_stroke > 0.0 {
+                // Rough estimate: stroke ≈ joint_range * some_factor, time ≈ stroke / vel
+                // But max_stroke is in meters; we need an angular estimate.
+                // Use max_stroke / (min_vel * avg_link_length) as a rough time.
+                // Simpler: use avg contributing joint range / velocity.
+                let avg_time: f32 = leg
+                    .chain
+                    .iter()
+                    .filter(|cj| !leg.locked_joint_indices.contains(&cj.joint_idx))
+                    .map(|cj| {
+                        let j = &model.joints[cj.joint_idx];
+                        let range = (j.upper - j.lower).abs() as f32;
+                        let vel = (j.velocity as f32).max(1.0);
+                        range / vel
+                    })
+                    .fold(0.0_f32, f32::max);
+                if avg_time > max_time {
+                    max_time = avg_time;
+                }
+            }
+        }
+        max_time
     };
-
-    // Compute initial foot Z position (ground level)
-    let initial_foot_z = avg_link_z(&transforms, ground_links);
 
     Some(JumpSim {
         phase: JumpPhase::Extension,
         phase_time: 0.0,
+        legs,
         leg_joints,
         extension_duration,
         base_velocity_z: 0.0,
@@ -731,6 +770,87 @@ pub fn start_jump_sim(
         peak_velocities: HashMap::new(),
         prev_joint_angles: HashMap::new(),
     })
+}
+
+/// Compute the foot link world position (translation only).
+fn foot_link_pos(
+    transforms: &HashMap<String, na::Isometry3<f32>>,
+    link_name: &str,
+) -> na::Point3<f32> {
+    transforms
+        .get(link_name)
+        .map(|tf| na::Point3::from(tf.translation.vector))
+        .unwrap_or(na::Point3::origin())
+}
+
+/// Estimate the maximum downward stroke a leg can achieve via IK.
+///
+/// Uses iterative IK stepping with the foot target progressively lowered,
+/// respecting joint limits. Returns the Z distance (positive = downward)
+/// the foot can travel from its initial position.
+fn compute_leg_max_stroke(
+    model: &mut RobotModel,
+    chain: &[crate::ik::ChainJoint],
+    ground_link: &str,
+    body_link: &str,
+    initial_foot_world: &na::Point3<f32>,
+    locked_joints: &std::collections::HashSet<usize>,
+) -> f32 {
+    let saved_positions = model.joint_positions.clone();
+
+    // Try to push foot down by 1m in small IK steps
+    let target_drop = 1.0_f32; // try up to 1m
+    let n_steps = 50;
+    let step_size = target_drop / n_steps as f32;
+
+    let mut achieved_drop = 0.0_f32;
+
+    for i in 1..=n_steps {
+        let target = na::Point3::new(
+            initial_foot_world.x,
+            initial_foot_world.y,
+            initial_foot_world.z - step_size * i as f32,
+        );
+
+        // Run a few IK iterations
+        for _ in 0..5 {
+            let transforms = model.compute_transforms();
+            let foot_pos = foot_link_pos(&transforms, ground_link);
+            let deltas = crate::ik::solve_ik_step(
+                model, chain, &transforms, &foot_pos, &target, 0.01, 0.05,
+            );
+            // Apply deltas, skipping locked joints
+            for (k, cj) in chain.iter().enumerate() {
+                if locked_joints.contains(&cj.joint_idx) {
+                    continue;
+                }
+                let ji = cj.joint_idx;
+                let lower = model.joints[ji].lower as f32;
+                let upper = model.joints[ji].upper as f32;
+                model.joint_positions[ji] =
+                    (model.joint_positions[ji] + deltas[k]).clamp(lower, upper);
+            }
+        }
+
+        // Measure actual foot position
+        let transforms = model.compute_transforms();
+        let foot_pos = foot_link_pos(&transforms, ground_link);
+        let drop = initial_foot_world.z - foot_pos.z;
+        if drop > achieved_drop {
+            achieved_drop = drop;
+        }
+
+        // If foot barely moved this step, we've hit joint limits
+        let error = (foot_pos.z - (initial_foot_world.z - step_size * i as f32)).abs();
+        if error > step_size * 0.5 {
+            break;
+        }
+    }
+
+    // Restore model
+    model.joint_positions = saved_positions;
+
+    achieved_drop.max(0.001) // at least 1mm
 }
 
 /// Extract a result summary from a completed (or in-progress) jump simulation.
@@ -769,14 +889,13 @@ pub fn extract_jump_result(sim: &JumpSim, model: &RobotModel) -> JumpSimResult {
 /// Step the jump simulation by `dt` seconds.
 ///
 /// **Extension phase (quasi-dynamics):**
-/// 1. Advance joint positions along their trajectory patterns.
-/// 2. Re-compute FK and adjust `base_transform.z` so that feet stay
+/// 1. Compute per-joint gravity torque and utilisation; derive speed limit.
+/// 2. For each leg, use IK to drive the foot toward a straight-down target
+///    so that all joints in the leg coordinate for vertical push-off.
+/// 3. Re-compute FK and adjust `base_transform.z` so that feet stay
 ///    at the initial ground level (foot-constraint).
-/// 3. Compute base velocity from finite differences of base Z.
-/// 4. Compute ground reaction force: $F_{GRF} = M (a_z + g)$.
-/// 5. Compute per-joint gravity torque and utilisation at each step.
-/// 6. If any leg joint is torque-limited (gravity torque > effort),
-///    reduce the trajectory speed proportionally.
+/// 4. Compute base velocity from finite differences of base Z.
+/// 5. Compute ground reaction force: $F_{GRF} = M (a_z + g)$.
 ///
 /// **Flight phase:** pure ballistic with the launch velocity obtained
 /// at the end of the extension phase.
@@ -792,15 +911,12 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
     match sim.phase {
         JumpPhase::Extension => {
             // --- 1. Compute torque-limited speed ratio ---
-            // Compute gravity torques at current pose to check feasibility.
             let gravity_torques = compute_gravity_torques(model);
             let grav_map: HashMap<usize, f64> = gravity_torques
                 .iter()
                 .map(|t| (t.joint_idx, t.gravity_torque))
                 .collect();
 
-            // For each *contributing* leg joint, compute utilisation = |τ_gravity| / effort.
-            // If any contributing joint exceeds its effort limit, the trajectory slows down.
             let mut worst_ratio = 0.0_f64;
             sim.step_info.joint_utilisation.clear();
             for lj in &sim.leg_joints {
@@ -811,19 +927,18 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
                 let g_tau = grav_map.get(&lj.joint_idx).copied().unwrap_or(0.0);
                 let util = g_tau.abs() / joint.effort;
                 sim.step_info.joint_utilisation.push((lj.joint_idx, util, lj.contributes));
-                // Only contributing joints affect the speed limit
                 if lj.contributes && util > worst_ratio {
                     worst_ratio = util;
                 }
 
-                // --- Track peak torque ---
+                // Track peak torque
                 let abs_tau = g_tau.abs();
                 let entry = sim.peak_torques.entry(lj.joint_idx).or_insert(0.0);
                 if abs_tau > *entry {
                     *entry = abs_tau;
                 }
 
-                // --- Track peak angular velocity (finite difference) ---
+                // Track peak angular velocity (finite difference)
                 let cur_angle = model.joint_positions[lj.joint_idx];
                 if let Some(&prev) = sim.prev_joint_angles.get(&lj.joint_idx) {
                     let omega = ((cur_angle - prev) / dt).abs() as f64;
@@ -834,9 +949,7 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
                 }
                 sim.prev_joint_angles.insert(lj.joint_idx, cur_angle);
             }
-            // Speed reduction: if worst_ratio > 1.0, the joint can't even hold
-            // against gravity → clamp speed to 0.  Otherwise scale linearly in
-            // the 0.8–1.0 range so the robot visibly slows before stalling.
+
             let speed_scale = if worst_ratio >= 1.0 {
                 0.0_f32
             } else if worst_ratio > 0.8 {
@@ -845,24 +958,58 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
                 1.0_f32
             };
 
-            // --- 2. Advance joint trajectory ---
-            let effective_time = sim.phase_time; // already accumulated
+            // --- 2. Per-leg IK: drive feet straight down ---
+            let effective_time = sim.phase_time;
             let t_frac = (effective_time / sim.extension_duration).clamp(0.0, 1.0);
-            let alpha = smooth_step(t_frac);
+            let alpha = launch_profile(t_frac);
 
-            for lj in &sim.leg_joints {
-                if lj.contributes {
-                    // Drive this joint along the extension trajectory
-                    let target = lj.start_angle + (lj.extended_angle - lj.start_angle) * alpha;
-                    model.joint_positions[lj.joint_idx] = target;
-                } else {
-                    // Hold posture: keep at the saved start angle
-                    model.joint_positions[lj.joint_idx] = lj.start_angle;
+            // Get body transform for computing foot target in world frame
+            let body_tf = {
+                let transforms = model.compute_transforms();
+                transforms
+                    .get(&sim.legs[0].body_link)
+                    .copied()
+                    .unwrap_or(na::Isometry3::identity())
+            };
+
+            for leg in &sim.legs {
+                // Target foot position: initial pos in body frame, but pushed
+                // down by alpha * max_stroke in world Z.
+                let foot_world_initial = body_tf * leg.initial_foot_pos;
+                let target = na::Point3::new(
+                    foot_world_initial.x,
+                    foot_world_initial.y,
+                    foot_world_initial.z - alpha * leg.max_stroke,
+                );
+
+                // Run a few IK iterations to move foot toward target
+                let ik_iters = 3;
+                for _ in 0..ik_iters {
+                    let transforms = model.compute_transforms();
+                    let foot_pos = foot_link_pos(&transforms, &leg.ground_link);
+                    let deltas = crate::ik::solve_ik_step(
+                        model,
+                        &leg.chain,
+                        &transforms,
+                        &foot_pos,
+                        &target,
+                        0.01,  // damping
+                        0.1,   // max step
+                    );
+                    for (k, cj) in leg.chain.iter().enumerate() {
+                        if leg.locked_joint_indices.contains(&cj.joint_idx) {
+                            continue; // locked joints hold posture
+                        }
+                        let ji = cj.joint_idx;
+                        let lower = model.joints[ji].lower as f32;
+                        let upper = model.joints[ji].upper as f32;
+                        model.joint_positions[ji] =
+                            (model.joint_positions[ji] + deltas[k]).clamp(lower, upper);
+                    }
                 }
             }
 
             // Slow down the trajectory clock if torque-limited
-            // (roll back part of the time advance)
             if speed_scale < 1.0 {
                 let rollback = dt * (1.0 - speed_scale);
                 sim.phase_time -= rollback;
@@ -1110,6 +1257,17 @@ fn update_utilisation(
 fn smooth_step(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// Launch profile for jump extension: `1 − cos(πt/2)`.
+///
+/// Unlike `smooth_step` which has zero velocity at both endpoints,
+/// this profile starts from rest (derivative = 0 at t = 0) and reaches
+/// **maximum velocity** at t = 1 (derivative = π/2).  This ensures
+/// the robot has peak upward speed at the moment of launch.
+fn launch_profile(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (std::f32::consts::FRAC_PI_2 * t).cos()
 }
 
 // ========== Tests ==========

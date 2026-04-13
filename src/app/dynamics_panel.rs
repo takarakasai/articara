@@ -313,7 +313,7 @@ impl ArticaraApp {
                         )
                         .clicked()
                     {
-                        if let Some(ref model) = self.model {
+                        if let Some(ref mut model) = self.model {
                             if let Some(sim) = dynamics::start_jump_sim(
                                 model,
                                 &self.dynamics_ground_links,
