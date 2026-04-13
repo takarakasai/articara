@@ -372,11 +372,6 @@ impl ArticaraApp {
                 // --- Live simulation status ---
                 self.draw_sim_status(ui);
 
-                // --- Jump simulation result (shown after sim completes) ---
-                if let Some(ref result) = self.dynamics_sim_result {
-                    self.draw_jump_sim_result(ui, result);
-                }
-
                 ui.separator();
 
                 // --- Display static analysis results ---
@@ -492,69 +487,120 @@ impl ArticaraApp {
         }
     }
 
-    /// Draw jump simulation result panel.
-    fn draw_jump_sim_result(&self, ui: &mut egui::Ui, result: &JumpSimResult) {
-        ui.separator();
-        egui::CollapsingHeader::new("📋 Sim Result")
-            .default_open(true)
-            .show(ui, |ui| {
+    /// Draw jump simulation result as a standalone egui::Window dialog.
+    pub(super) fn draw_sim_result_window(&mut self, ctx: &egui::Context) {
+        if !self.show_sim_result_window {
+            return;
+        }
+        let result = match &self.dynamics_sim_result {
+            Some(r) => r.clone(),
+            None => {
+                self.show_sim_result_window = false;
+                return;
+            }
+        };
+
+        let mut open = true;
+        let mut close_clicked = false;
+
+        egui::Window::new("📋 Jump Simulation Result")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(420.0)
+            .default_height(350.0)
+            .show(ctx, |ui| {
                 // --- Summary ---
                 ui.horizontal(|ui| {
-                    ui.label("Reached height:");
+                    ui.label(
+                        egui::RichText::new("Reached Height")
+                            .strong()
+                            .size(14.0),
+                    );
                     ui.colored_label(
-                        egui::Color32::from_rgb(100, 200, 255),
-                        format!("{:.4} m", result.max_height),
+                        egui::Color32::from_rgb(80, 200, 255),
+                        egui::RichText::new(format!("{:.4} m", result.max_height))
+                            .size(18.0)
+                            .strong(),
                     );
                 });
-                ui.label(format!("Extension: {:.3} s", result.extension_duration));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Extension duration:");
+                    ui.monospace(format!("{:.3} s", result.extension_duration));
+                });
 
                 if result.joint_peaks.is_empty() {
-                    return;
+                    ui.separator();
+                    ui.label("No joint data recorded.");
+                } else {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("Per-Joint Peaks")
+                            .strong()
+                            .size(13.0),
+                    );
+                    ui.add_space(2.0);
+
+                    egui::ScrollArea::vertical()
+                        .max_height(300.0)
+                        .show(ui, |ui| {
+                            egui::Grid::new("sim_result_dialog_grid")
+                                .num_columns(4)
+                                .striped(true)
+                                .min_col_width(60.0)
+                                .show(ui, |ui| {
+                                    ui.strong("Joint");
+                                    ui.strong("Peak \u{03c4} (N\u{00b7}m)");
+                                    ui.strong("Peak \u{03c9} (rad/s)");
+                                    ui.strong("Role");
+                                    ui.end_row();
+
+                                    for jp in &result.joint_peaks {
+                                        ui.label(
+                                            egui::RichText::new(&jp.joint_name)
+                                                .monospace(),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{:.3}",
+                                                jp.peak_torque
+                                            ))
+                                            .monospace(),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{:.3}",
+                                                jp.peak_velocity
+                                            ))
+                                            .monospace(),
+                                        );
+                                        let (role, color) = if jp.contributes {
+                                            (
+                                                "drive",
+                                                egui::Color32::from_rgb(80, 200, 80),
+                                            )
+                                        } else {
+                                            (
+                                                "hold",
+                                                egui::Color32::from_gray(130),
+                                            )
+                                        };
+                                        ui.colored_label(color, role);
+                                        ui.end_row();
+                                    }
+                                });
+                        });
                 }
 
-                // --- Per-joint peak table ---
                 ui.separator();
-                ui.label(egui::RichText::new("Per-joint peaks").small().strong());
-                egui::Grid::new("sim_result_grid")
-                    .num_columns(4)
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.strong("Joint");
-                        ui.strong("Peak τ (N·m)");
-                        ui.strong("Peak ω (rad/s)");
-                        ui.strong("Role");
-                        ui.end_row();
-
-                        for jp in &result.joint_peaks {
-                            ui.label(
-                                egui::RichText::new(&jp.joint_name)
-                                    .small()
-                                    .monospace(),
-                            );
-                            ui.label(
-                                egui::RichText::new(format!("{:.3}", jp.peak_torque))
-                                    .small()
-                                    .monospace(),
-                            );
-                            ui.label(
-                                egui::RichText::new(format!("{:.3}", jp.peak_velocity))
-                                    .small()
-                                    .monospace(),
-                            );
-                            let role = if jp.contributes { "drive" } else { "hold" };
-                            let role_color = if jp.contributes {
-                                egui::Color32::from_rgb(100, 200, 100)
-                            } else {
-                                egui::Color32::from_gray(120)
-                            };
-                            ui.colored_label(
-                                role_color,
-                                egui::RichText::new(role).small(),
-                            );
-                            ui.end_row();
-                        }
-                    });
+                if ui.button("Close").clicked() {
+                    close_clicked = true;
+                }
             });
+
+        if !open || close_clicked {
+            self.show_sim_result_window = false;
+        }
     }
 
     /// Draw torque utilisation bars for jump sim: (joint_idx, ratio, contributes).
@@ -700,6 +746,11 @@ impl ArticaraApp {
             }
         }
         self.dynamics_last_instant = None;
+        // Auto-disable ground plane if we enabled it
+        if self.ground_plane_auto {
+            self.show_ground_plane = false;
+            self.ground_plane_auto = false;
+        }
     }
 
     fn draw_dynamics_results(&self, ui: &mut egui::Ui, result: &StaticAnalysis) {

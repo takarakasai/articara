@@ -172,6 +172,8 @@ pub struct ArticaraApp {
     ground_z: f32,
     /// Half-extent size of the ground plane.
     ground_size: f32,
+    /// Whether the ground plane was auto-enabled by a running simulation.
+    ground_plane_auto: bool,
     /// Scale factor for CoM sphere size (sphere radius = mass × com_scale).
     com_scale: f32,
     /// Show robot links in wireframe mode (legacy, kept for compat).
@@ -250,6 +252,8 @@ pub struct ArticaraApp {
     dynamics_extension_duration: Option<f32>,
     /// Last jump simulation result (displayed after sim ends).
     dynamics_sim_result: Option<dynamics::JumpSimResult>,
+    /// Show the sim result dialog window.
+    show_sim_result_window: bool,
     /// File path for sim config save/load.
     sim_config_path: String,
     // --- Posture save/load ---
@@ -306,6 +310,7 @@ impl ArticaraApp {
             show_joint_axes: false,
             show_ground_plane: false,
             ground_z: 0.0,
+            ground_plane_auto: false,
             ground_size: 2.0,
             com_scale: 0.01,
             wireframe: false,
@@ -346,6 +351,7 @@ impl ArticaraApp {
             dynamics_locked_joints: std::collections::HashSet::new(),
             dynamics_extension_duration: None,
             dynamics_sim_result: None,
+            show_sim_result_window: false,
             sim_config_path: String::new(),
             posture_path: String::new(),
             dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),
@@ -431,6 +437,12 @@ impl ArticaraApp {
 
         let still_running = match sim {
             dynamics::DynSim::Jump(js) => {
+                // Auto-enable ground plane at foot level during jump sim
+                if !self.ground_plane_auto {
+                    self.ground_plane_auto = true;
+                    self.show_ground_plane = true;
+                    self.ground_z = js.initial_foot_z;
+                }
                 if let Some(ref mut model) = self.model {
                     dynamics::step_jump_sim(js, model, dt)
                 } else {
@@ -453,7 +465,13 @@ impl ArticaraApp {
             if let Some(dynamics::DynSim::Jump(ref js)) = self.dynamics_sim {
                 if let Some(ref model) = self.model {
                     self.dynamics_sim_result = Some(dynamics::extract_jump_result(js, model));
+                    self.show_sim_result_window = true;
                 }
+            }
+            // Auto-disable ground plane if we enabled it
+            if self.ground_plane_auto {
+                self.show_ground_plane = false;
+                self.ground_plane_auto = false;
             }
             self.dynamics_sim = None;
             self.dynamics_last_instant = None;
@@ -668,6 +686,9 @@ impl eframe::App for ArticaraApp {
 
         // --- Validation results window ---
         self.draw_validation_window(&ctx);
+
+        // --- Sim result dialog ---
+        self.draw_sim_result_window(&ctx);
 
         // --- File dialogs ---
         self.process_file_dialogs(&ctx);

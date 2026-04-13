@@ -508,6 +508,9 @@ pub struct JumpSim {
     pub launch_velocity: f32,
     /// Base Z at the moment of launch.
     pub launch_z: f32,
+    /// Foot Z at the moment of launch (after extension).
+    /// Used to compute when feet touch ground during descent.
+    pub launch_foot_z: f32,
 
     // --- diagnostics ---
     pub step_info: SimStepInfo,
@@ -756,6 +759,7 @@ pub fn start_jump_sim(
         ground_link_names: ground_links.to_vec(),
         launch_velocity: 0.0,
         launch_z: model.base_transform.translation.vector.z,
+        launch_foot_z: initial_foot_z,
         step_info: SimStepInfo::default(),
         max_height_reached: 0.0,
         total_mass,
@@ -930,24 +934,6 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
                 if lj.contributes && util > worst_ratio {
                     worst_ratio = util;
                 }
-
-                // Track peak torque
-                let abs_tau = g_tau.abs();
-                let entry = sim.peak_torques.entry(lj.joint_idx).or_insert(0.0);
-                if abs_tau > *entry {
-                    *entry = abs_tau;
-                }
-
-                // Track peak angular velocity (finite difference)
-                let cur_angle = model.joint_positions[lj.joint_idx];
-                if let Some(&prev) = sim.prev_joint_angles.get(&lj.joint_idx) {
-                    let omega = ((cur_angle - prev) / dt).abs() as f64;
-                    let v_entry = sim.peak_velocities.entry(lj.joint_idx).or_insert(0.0);
-                    if omega > *v_entry {
-                        *v_entry = omega;
-                    }
-                }
-                sim.prev_joint_angles.insert(lj.joint_idx, cur_angle);
             }
 
             let speed_scale = if worst_ratio >= 1.0 {
@@ -1057,10 +1043,55 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
                 sim.max_height_reached = sim.step_info.height;
             }
 
-            // --- 6. Transition to flight when extension complete ---
+            // --- 6. Track per-joint dynamic torque and angular velocity ---
+            // Dynamic torque per joint = J_i^T · F_GRF + gravity_torque_i
+            // This captures the full load each joint sees during the push-off.
+            {
+                let transforms_post = model.compute_transforms();
+                let grf_force = na::DVector::from_column_slice(&[
+                    0.0_f32, 0.0, grf as f32,
+                ]);
+                for leg in &sim.legs {
+                    // Compute Jacobian for this leg chain
+                    let foot_pos = foot_link_pos(&transforms_post, &leg.ground_link);
+                    let jac = crate::ik::compute_jacobian(
+                        model, &leg.chain, &transforms_post, &foot_pos,
+                    );
+                    // τ = J^T · F
+                    let tau_grf = jac.transpose() * &grf_force;
+
+                    for (k, cj) in leg.chain.iter().enumerate() {
+                        // Total torque = GRF-induced + gravity
+                        let grf_tau = tau_grf[k].abs() as f64;
+                        let g_tau = grav_map.get(&cj.joint_idx).copied().unwrap_or(0.0).abs();
+                        let total_tau = grf_tau + g_tau;
+
+                        let entry = sim.peak_torques.entry(cj.joint_idx).or_insert(0.0);
+                        if total_tau > *entry {
+                            *entry = total_tau;
+                        }
+
+                        // Track angular velocity (post-IK)
+                        let cur_angle = model.joint_positions[cj.joint_idx];
+                        if let Some(&prev) = sim.prev_joint_angles.get(&cj.joint_idx) {
+                            let omega = ((cur_angle - prev) / dt).abs() as f64;
+                            let v_entry = sim.peak_velocities.entry(cj.joint_idx).or_insert(0.0);
+                            if omega > *v_entry {
+                                *v_entry = omega;
+                            }
+                        }
+                        sim.prev_joint_angles.insert(cj.joint_idx, cur_angle);
+                    }
+                }
+            }
+
+            // --- 7. Transition to flight when extension complete ---
             if sim.phase_time >= sim.extension_duration {
                 sim.launch_z = current_z;
                 sim.launch_velocity = sim.base_velocity_z;
+                // Compute foot Z at launch for landing detection
+                let transforms_at_launch = model.compute_transforms();
+                sim.launch_foot_z = avg_link_z(&transforms_at_launch, &sim.ground_link_names);
                 sim.phase = JumpPhase::Flight;
                 sim.phase_time = 0.0;
                 sim.prev_base_z = None;
@@ -1101,10 +1132,15 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
                 sim.max_height_reached = sim.step_info.height;
             }
 
-            // Land when descending back to or below start height
-            let start_z = sim.saved_base_transform.translation.vector.z;
-            if t > 0.0 && current_z <= start_z {
-                model.base_transform.translation.vector.z = start_z;
+            // Land when feet reach the original ground level.
+            // During flight, base-to-foot offset stays constant (joints frozen).
+            // foot_z = current_z - (launch_z - launch_foot_z)
+            let base_to_foot = sim.launch_z - sim.launch_foot_z;
+            let foot_z = current_z - base_to_foot;
+            if t > 0.0 && foot_z <= sim.initial_foot_z {
+                // Snap base so feet are exactly at initial_foot_z
+                let landing_base_z = sim.initial_foot_z + base_to_foot;
+                model.base_transform.translation.vector.z = landing_base_z;
                 sim.step_info.velocity_z = 0.0;
                 sim.phase = JumpPhase::Landed;
                 sim.phase_time = 0.0;
@@ -1115,6 +1151,15 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
         JumpPhase::Landed => {
             sim.step_info.grf_z = sim.total_mass * G; // resting on ground
             sim.step_info.velocity_z = 0.0;
+
+            // Keep feet at ground level during hold (joints are still extended)
+            let base_to_foot = sim.launch_z - sim.launch_foot_z;
+            let landed_base_z = sim.initial_foot_z + base_to_foot;
+            model.base_transform.translation.vector.z = landed_base_z;
+
+            sim.step_info.height =
+                landed_base_z - sim.saved_base_transform.translation.vector.z;
+
             if sim.phase_time >= sim.landed_hold {
                 // Restore everything
                 model.joint_positions = sim.saved_positions.clone();
