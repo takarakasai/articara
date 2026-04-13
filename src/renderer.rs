@@ -144,6 +144,16 @@ pub struct GlRenderer {
     /// Joint axis definitions: (parent_link, local_origin, local_axis, is_revolute).
     /// World positions are resolved at render time from `transforms`.
     joint_axis_entries: Vec<(String, na::Isometry3<f32>, na::Vector3<f32>, bool)>,
+    // --- Ground plane ---
+    ground_vao: glow::VertexArray,
+    ground_vbo: glow::Buffer,
+    ground_num_vertices: i32,
+    /// Whether to show a semi-transparent ground plate.
+    pub show_ground_plane: bool,
+    /// Z height of the ground plane (default 0.0).
+    pub ground_z: f32,
+    /// Size (half-extent) of the ground plate.
+    pub ground_size: f32,
 }
 
 impl GlRenderer {
@@ -196,6 +206,11 @@ impl GlRenderer {
             let joint_arrow_num = (joint_arrow_data.len() / 6) as i32;
             let (joint_arrow_vao, joint_arrow_vbo) = upload_mesh_data(gl, &joint_arrow_data);
 
+            // Ground plane quad (unit quad in XY at Z=0; will be scaled and translated at draw time)
+            let ground_data = generate_ground_quad();
+            let ground_num = (ground_data.len() / 6) as i32;
+            let (ground_vao, ground_vbo) = upload_mesh_data(gl, &ground_data);
+
             Self {
                 program,
                 u_mvp,
@@ -240,6 +255,12 @@ impl GlRenderer {
                 joint_arrow_num_vertices: joint_arrow_num,
                 show_joint_axes: false,
                 joint_axis_entries: Vec::new(),
+                ground_vao,
+                ground_vbo,
+                ground_num_vertices: ground_num,
+                show_ground_plane: false,
+                ground_z: 0.0,
+                ground_size: 2.0,
             }
         }
     }
@@ -460,6 +481,31 @@ impl GlRenderer {
             gl.uniform_4_f32(Some(&self.u_color), 0.2, 0.2, 1.0, 1.0);
             gl.draw_arrays(glow::LINES, 4, 2);
             gl.line_width(1.0);
+
+            // Draw ground plane (semi-transparent quad)
+            if self.show_ground_plane {
+                gl.enable(glow::BLEND);
+                gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+                gl.depth_mask(false); // don't write depth for transparent surface
+
+                let s = self.ground_size;
+                let scale = na::Matrix4::new_nonuniform_scaling(&na::Vector3::new(s, s, 1.0));
+                let translate = na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, self.ground_z));
+                let mvp = vp * translate * scale;
+                gl.uniform_matrix_4_f32_slice(Some(&self.u_mvp), false, mvp.as_slice());
+                gl.uniform_matrix_3_f32_slice(
+                    Some(&self.u_normal_mat),
+                    false,
+                    na::Matrix3::<f32>::identity().as_slice(),
+                );
+                gl.uniform_4_f32(Some(&self.u_color), 0.35, 0.38, 0.42, 0.55);
+                gl.uniform_1_i32(Some(&self.u_flat), 0);
+                gl.bind_vertex_array(Some(self.ground_vao));
+                gl.draw_arrays(glow::TRIANGLES, 0, self.ground_num_vertices);
+
+                gl.depth_mask(true);
+                gl.disable(glow::BLEND);
+            }
 
             // Draw robot meshes — iterate all entries, resolve per-link display mode
             gl.uniform_1_i32(Some(&self.u_flat), 0);
@@ -716,6 +762,8 @@ impl GlRenderer {
             gl.delete_buffer(self.gizmo_scale_vbo);
             gl.delete_vertex_array(self.joint_arrow_vao);
             gl.delete_buffer(self.joint_arrow_vbo);
+            gl.delete_vertex_array(self.ground_vao);
+            gl.delete_buffer(self.ground_vbo);
             gl.delete_program(self.program);
         }
     }
@@ -778,4 +826,26 @@ unsafe fn upload_mesh_data(gl: &glow::Context, data: &[f32]) -> (glow::VertexArr
 
         (vao, vbo)
     }
+}
+
+/// Generate a unit quad in the XY plane at Z=0 (two triangles, 6 vertices).
+/// Position + normal per vertex (6 floats each). Will be scaled at draw time.
+fn generate_ground_quad() -> Vec<f32> {
+    let n = [0.0_f32, 0.0, 1.0];
+    let mut v = Vec::with_capacity(6 * 6);
+    // Triangle 1
+    v.extend_from_slice(&[-1.0, -1.0, 0.0]);
+    v.extend_from_slice(&n);
+    v.extend_from_slice(&[ 1.0, -1.0, 0.0]);
+    v.extend_from_slice(&n);
+    v.extend_from_slice(&[ 1.0,  1.0, 0.0]);
+    v.extend_from_slice(&n);
+    // Triangle 2
+    v.extend_from_slice(&[-1.0, -1.0, 0.0]);
+    v.extend_from_slice(&n);
+    v.extend_from_slice(&[ 1.0,  1.0, 0.0]);
+    v.extend_from_slice(&n);
+    v.extend_from_slice(&[-1.0,  1.0, 0.0]);
+    v.extend_from_slice(&n);
+    v
 }

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::camera::OrbitCamera;
+use crate::dynamics;
 use crate::format::RobotFormat;
 use crate::history::History;
 use crate::ik;
@@ -165,6 +166,12 @@ pub struct ArticaraApp {
     show_com: bool,
     /// Show joint axis arrows in viewport.
     show_joint_axes: bool,
+    /// Show a semi-transparent ground plane in the viewport.
+    show_ground_plane: bool,
+    /// Z height of the ground plane.
+    ground_z: f32,
+    /// Half-extent size of the ground plane.
+    ground_size: f32,
     /// Scale factor for CoM sphere size (sphere radius = mass × com_scale).
     com_scale: f32,
     /// Show robot links in wireframe mode (legacy, kept for compat).
@@ -220,6 +227,21 @@ pub struct ArticaraApp {
     show_validation_window: bool,
     /// Cached inertia validation results.
     validation_results: Vec<crate::robot::InertiaValidation>,
+    // --- Dynamics analysis state ---
+    /// Selected end-effector link for payload capacity analysis.
+    dynamics_ee_link: Option<String>,
+    /// Body link (the torso/base that gets launched) for jump estimation.
+    dynamics_body_link: Option<String>,
+    /// Selected ground-contact links for jump height estimation.
+    dynamics_ground_links: Vec<String>,
+    /// Cached dynamics analysis result.
+    dynamics_result: Option<dynamics::StaticAnalysis>,
+    /// Active dynamics simulation (jump or payload).
+    dynamics_sim: Option<dynamics::DynSim>,
+    /// Simulation playback speed.
+    dynamics_sim_speed: f32,
+    /// Last frame instant for delta-time calculation.
+    dynamics_last_instant: Option<std::time::Instant>,
 }
 
 impl ArticaraApp {
@@ -256,6 +278,9 @@ impl ArticaraApp {
             ik_root_link: None,
             show_com: false,
             show_joint_axes: false,
+            show_ground_plane: false,
+            ground_z: 0.0,
+            ground_size: 2.0,
             com_scale: 0.01,
             wireframe: false,
             visual_mode: DisplayMode::Solid,
@@ -284,6 +309,13 @@ impl ArticaraApp {
             density_value: 1000.0, // default: water (1000 kg/m³)
             show_validation_window: false,
             validation_results: Vec::new(),
+            dynamics_ee_link: None,
+            dynamics_body_link: None,
+            dynamics_ground_links: Vec::new(),
+            dynamics_result: None,
+            dynamics_sim: None,
+            dynamics_sim_speed: 1.0,
+            dynamics_last_instant: None,
         }
     }
 
@@ -334,6 +366,49 @@ impl ArticaraApp {
         self.any_edit_this_frame = true;
     }
 
+    /// Advance the dynamics simulation by one frame, modifying model state.
+    fn step_dynamics_sim(&mut self) {
+        let sim = match self.dynamics_sim.as_mut() {
+            Some(s) => s,
+            None => {
+                self.dynamics_last_instant = None;
+                return;
+            }
+        };
+
+        // Compute delta-time
+        let now = std::time::Instant::now();
+        let dt = match self.dynamics_last_instant {
+            Some(prev) => now.duration_since(prev).as_secs_f32().min(0.05), // cap at 50ms
+            None => 0.016, // first frame ≈ 60fps
+        };
+        self.dynamics_last_instant = Some(now);
+
+        let still_running = match sim {
+            dynamics::DynSim::Jump(js) => {
+                if let Some(ref mut model) = self.model {
+                    dynamics::step_jump_sim(js, model, dt)
+                } else {
+                    false
+                }
+            }
+            dynamics::DynSim::Payload(ps) => {
+                ps.phase_time += dt;
+                if let Some(ref model) = self.model {
+                    let ee = self.dynamics_ee_link.as_deref().unwrap_or("");
+                    dynamics::step_payload_sim(ps, model, ee)
+                } else {
+                    false
+                }
+            }
+        };
+
+        if !still_running {
+            self.dynamics_sim = None;
+            self.dynamics_last_instant = None;
+        }
+    }
+
 }
 
 // ===== UI sub-modules =====
@@ -345,6 +420,7 @@ mod validation;
 mod history_panel;
 mod viewport;
 mod viewport_overlay;
+mod dynamics_panel;
 
 // Sentinel to mark the end of module-level code.
 // Everything below was moved to sub-modules.
@@ -392,12 +468,18 @@ impl eframe::App for ArticaraApp {
             r.update_transforms(transforms);
             r.show_com = self.show_com;
             r.show_joint_axes = self.show_joint_axes;
+            r.show_ground_plane = self.show_ground_plane;
+            r.ground_z = self.ground_z;
+            r.ground_size = self.ground_size;
             r.com_scale = self.com_scale;
             r.wireframe = self.wireframe;
             r.visual_mode = self.visual_mode;
             r.collision_mode = self.collision_mode;
             r.link_display_modes = self.link_display_modes.clone();
         }
+
+        // --- Step dynamics simulation (if active) ---
+        self.step_dynamics_sim();
 
         // Top panel: menu / file selector
         egui::Panel::top("menu_bar").show_inside(ui, |ui| {
@@ -413,6 +495,8 @@ impl eframe::App for ArticaraApp {
                     self.draw_tree_panel(ui);
                     ui.separator();
                     self.draw_joint_sliders(ui);
+                    ui.separator();
+                    self.draw_dynamics_panel(ui);
                     ui.separator();
                     self.draw_history_panel(ui);
                 });

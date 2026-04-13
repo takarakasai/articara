@@ -1,5 +1,6 @@
 // Re-export modules for integration tests.
 pub mod camera;
+pub mod dynamics;
 pub mod format;
 pub mod history;
 pub mod ik;

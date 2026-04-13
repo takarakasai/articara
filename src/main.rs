@@ -1,5 +1,6 @@
 mod app;
 mod camera;
+mod dynamics;
 mod format;
 mod history;
 mod ik;

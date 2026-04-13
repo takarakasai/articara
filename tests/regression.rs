@@ -28,8 +28,7 @@ fn fixture_mjcf() -> PathBuf {
 /// Return the real namiashi URDF path (for full integration tests).
 fn namiashi_urdf() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
+        .join("sample")
         .join("namiashi_description")
         .join("urdf")
         .join("namiashi.urdf")
