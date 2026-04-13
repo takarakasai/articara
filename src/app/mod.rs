@@ -246,6 +246,10 @@ pub struct ArticaraApp {
     dynamics_launch_axes: [bool; 3],
     /// Joint names that are locked (not driven) during jump sim.
     dynamics_locked_joints: std::collections::HashSet<String>,
+    /// User-specified extension duration override (None = auto-compute).
+    dynamics_extension_duration: Option<f32>,
+    /// Last jump simulation result (displayed after sim ends).
+    dynamics_sim_result: Option<dynamics::JumpSimResult>,
     /// File path for sim config save/load.
     sim_config_path: String,
     // --- Posture save/load ---
@@ -340,6 +344,8 @@ impl ArticaraApp {
             dynamics_last_instant: None,
             dynamics_launch_axes: [false, false, true], // Z-only by default
             dynamics_locked_joints: std::collections::HashSet::new(),
+            dynamics_extension_duration: None,
+            dynamics_sim_result: None,
             sim_config_path: String::new(),
             posture_path: String::new(),
             dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),
@@ -443,6 +449,12 @@ impl ArticaraApp {
         };
 
         if !still_running {
+            // Capture jump sim result before clearing
+            if let Some(dynamics::DynSim::Jump(ref js)) = self.dynamics_sim {
+                if let Some(ref model) = self.model {
+                    self.dynamics_sim_result = Some(dynamics::extract_jump_result(js, model));
+                }
+            }
             self.dynamics_sim = None;
             self.dynamics_last_instant = None;
         }

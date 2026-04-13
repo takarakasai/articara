@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use super::ArticaraApp;
-use crate::dynamics::{self, StaticAnalysis, DynSim, JumpPhase, PayloadPhase};
+use crate::dynamics::{self, StaticAnalysis, DynSim, JumpPhase, JumpSimResult, PayloadPhase};
 
 impl ArticaraApp {
     pub(super) fn draw_dynamics_panel(&mut self, ui: &mut egui::Ui) {
@@ -141,6 +141,30 @@ impl ArticaraApp {
                             .text("×"),
                     );
                 });
+
+                // --- Extension duration slider ---
+                {
+                    let mut use_auto = self.dynamics_extension_duration.is_none();
+                    ui.horizontal(|ui| {
+                        ui.label("Ext dur:");
+                        if ui.checkbox(&mut use_auto, "Auto").changed() {
+                            if use_auto {
+                                self.dynamics_extension_duration = None;
+                            } else {
+                                self.dynamics_extension_duration = Some(0.3);
+                            }
+                        }
+                        if let Some(ref mut dur) = self.dynamics_extension_duration {
+                            ui.add(
+                                egui::Slider::new(dur, 0.05..=3.0)
+                                    .suffix(" s")
+                                    .fixed_decimals(2),
+                            );
+                        }
+                    })
+                    .response
+                    .on_hover_text("Extension phase duration. Auto = computed from joint velocities.");
+                }
 
                 // --- Launch axes ---
                 ui.horizontal(|ui| {
@@ -297,7 +321,9 @@ impl ArticaraApp {
                                 self.dynamics_sim_speed,
                                 &self.dynamics_locked_joints,
                                 self.dynamics_launch_axes,
+                                self.dynamics_extension_duration,
                             ) {
+                                self.dynamics_sim_result = None; // clear previous result
                                 self.dynamics_sim = Some(DynSim::Jump(sim));
                             } else {
                                 self.status_message =
@@ -345,6 +371,11 @@ impl ArticaraApp {
 
                 // --- Live simulation status ---
                 self.draw_sim_status(ui);
+
+                // --- Jump simulation result (shown after sim completes) ---
+                if let Some(ref result) = self.dynamics_sim_result {
+                    self.draw_jump_sim_result(ui, result);
+                }
 
                 ui.separator();
 
@@ -459,6 +490,71 @@ impl ArticaraApp {
             }
             None => {}
         }
+    }
+
+    /// Draw jump simulation result panel.
+    fn draw_jump_sim_result(&self, ui: &mut egui::Ui, result: &JumpSimResult) {
+        ui.separator();
+        egui::CollapsingHeader::new("📋 Sim Result")
+            .default_open(true)
+            .show(ui, |ui| {
+                // --- Summary ---
+                ui.horizontal(|ui| {
+                    ui.label("Reached height:");
+                    ui.colored_label(
+                        egui::Color32::from_rgb(100, 200, 255),
+                        format!("{:.4} m", result.max_height),
+                    );
+                });
+                ui.label(format!("Extension: {:.3} s", result.extension_duration));
+
+                if result.joint_peaks.is_empty() {
+                    return;
+                }
+
+                // --- Per-joint peak table ---
+                ui.separator();
+                ui.label(egui::RichText::new("Per-joint peaks").small().strong());
+                egui::Grid::new("sim_result_grid")
+                    .num_columns(4)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong("Joint");
+                        ui.strong("Peak τ (N·m)");
+                        ui.strong("Peak ω (rad/s)");
+                        ui.strong("Role");
+                        ui.end_row();
+
+                        for jp in &result.joint_peaks {
+                            ui.label(
+                                egui::RichText::new(&jp.joint_name)
+                                    .small()
+                                    .monospace(),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("{:.3}", jp.peak_torque))
+                                    .small()
+                                    .monospace(),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("{:.3}", jp.peak_velocity))
+                                    .small()
+                                    .monospace(),
+                            );
+                            let role = if jp.contributes { "drive" } else { "hold" };
+                            let role_color = if jp.contributes {
+                                egui::Color32::from_rgb(100, 200, 100)
+                            } else {
+                                egui::Color32::from_gray(120)
+                            };
+                            ui.colored_label(
+                                role_color,
+                                egui::RichText::new(role).small(),
+                            );
+                            ui.end_row();
+                        }
+                    });
+            });
     }
 
     /// Draw torque utilisation bars for jump sim: (joint_idx, ratio, contributes).
@@ -872,6 +968,7 @@ pub(super) struct SimConfig {
     pub speed: f32,
     pub locked_joints: std::collections::HashSet<String>,
     pub ee_link: Option<String>,
+    pub extension_duration: Option<f32>,
 }
 
 /// Save the current simulation configuration to a TOML file.
@@ -902,6 +999,10 @@ pub(super) fn save_sim_config(app: &ArticaraApp, path: &Path) -> Result<(), Stri
     writeln!(f, "launch_axes = [{}, {}, {}]", ax[0], ax[1], ax[2])
         .map_err(|e| format!("{e}"))?;
     writeln!(f, "speed = {}", app.dynamics_sim_speed).map_err(|e| format!("{e}"))?;
+
+    if let Some(dur) = app.dynamics_extension_duration {
+        writeln!(f, "extension_duration = {}", dur).map_err(|e| format!("{e}"))?;
+    }
 
     if !app.dynamics_locked_joints.is_empty() {
         writeln!(f).map_err(|e| format!("{e}"))?;
@@ -937,6 +1038,7 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
         speed: 1.0,
         locked_joints: std::collections::HashSet::new(),
         ee_link: None,
+        extension_duration: None,
     };
 
     let mut section = SimSection::None;
@@ -986,6 +1088,11 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
                             cfg.speed = v;
                         }
                     }
+                    "extension_duration" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            cfg.extension_duration = Some(v);
+                        }
+                    }
                     _ => {}
                 },
                 SimSection::LockedJoints => {
@@ -1014,6 +1121,7 @@ pub(super) fn apply_sim_config(app: &mut ArticaraApp, cfg: SimConfig) {
     app.dynamics_sim_speed = cfg.speed;
     app.dynamics_locked_joints = cfg.locked_joints;
     app.dynamics_ee_link = cfg.ee_link;
+    app.dynamics_extension_duration = cfg.extension_duration;
 }
 
 // ───────── TOML helpers ─────────

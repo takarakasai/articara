@@ -424,6 +424,30 @@ pub struct SimStepInfo {
     pub joint_utilisation: Vec<(usize, f64, bool)>,
 }
 
+/// Per-joint peak value recorded across the entire simulation.
+#[derive(Clone, Debug)]
+pub struct JointPeakInfo {
+    pub joint_idx: usize,
+    pub joint_name: String,
+    /// Peak absolute gravity torque seen during extension (N·m).
+    pub peak_torque: f64,
+    /// Peak absolute angular velocity seen during extension (rad/s).
+    pub peak_velocity: f64,
+    /// Whether this joint contributed to vertical push-off.
+    pub contributes: bool,
+}
+
+/// Summary result captured when a jump simulation finishes.
+#[derive(Clone, Debug)]
+pub struct JumpSimResult {
+    /// Maximum height reached above starting position (m).
+    pub max_height: f32,
+    /// Extension duration used (s).
+    pub extension_duration: f32,
+    /// Per-joint peak torque and velocity.
+    pub joint_peaks: Vec<JointPeakInfo>,
+}
+
 /// Per-joint data for the jump animation.
 #[derive(Clone, Debug)]
 pub struct LegJointSim {
@@ -486,6 +510,14 @@ pub struct JumpSim {
     // --- internal tracking for finite differences ---
     prev_base_z: Option<f32>,
     prev_velocity_z: Option<f32>,
+
+    // --- per-joint peak tracking ---
+    /// Peak absolute gravity torque per joint (joint_idx → peak N·m).
+    pub peak_torques: HashMap<usize, f64>,
+    /// Peak absolute angular velocity per joint (joint_idx → peak rad/s).
+    pub peak_velocities: HashMap<usize, f64>,
+    /// Previous joint angles for finite-difference velocity estimation.
+    prev_joint_angles: HashMap<usize, f32>,
 }
 
 /// Phase of the payload ramp simulation.
@@ -544,6 +576,8 @@ impl DynSim {
 /// `ground_links` and `body_link` define the leg chains (same as the analysis).
 /// `locked_joints` — joint names that should not be driven (held at start angle).
 /// `launch_axes` — which body axes [X, Y, Z] are free during flight.
+/// `extension_override` — if `Some(d)`, use `d` seconds as extension duration
+/// instead of the auto-computed value.
 pub fn start_jump_sim(
     model: &RobotModel,
     ground_links: &[String],
@@ -551,6 +585,7 @@ pub fn start_jump_sim(
     speed: f32,
     locked_joints: &std::collections::HashSet<String>,
     launch_axes: [bool; 3],
+    extension_override: Option<f32>,
 ) -> Option<JumpSim> {
     if ground_links.is_empty() {
         return None;
@@ -663,7 +698,11 @@ pub fn start_jump_sim(
         .fold(0.0_f32, f32::max);
 
     // Clamp extension duration (at least 0.15s for visual clarity)
-    let extension_duration = contributing_time.max(max_extension_time * 0.01).max(0.15);
+    let extension_duration = if let Some(ovr) = extension_override {
+        ovr.max(0.05)
+    } else {
+        contributing_time.max(max_extension_time * 0.01).max(0.15)
+    };
 
     // Compute initial foot Z position (ground level)
     let initial_foot_z = avg_link_z(&transforms, ground_links);
@@ -688,7 +727,43 @@ pub fn start_jump_sim(
         launch_axes,
         prev_base_z: None,
         prev_velocity_z: None,
+        peak_torques: HashMap::new(),
+        peak_velocities: HashMap::new(),
+        prev_joint_angles: HashMap::new(),
     })
+}
+
+/// Extract a result summary from a completed (or in-progress) jump simulation.
+pub fn extract_jump_result(sim: &JumpSim, model: &RobotModel) -> JumpSimResult {
+    let mut joint_peaks: Vec<JointPeakInfo> = sim
+        .leg_joints
+        .iter()
+        .map(|lj| {
+            let jname = if lj.joint_idx < model.joints.len() {
+                model.joints[lj.joint_idx].name.clone()
+            } else {
+                format!("joint_{}", lj.joint_idx)
+            };
+            JointPeakInfo {
+                joint_idx: lj.joint_idx,
+                joint_name: jname,
+                peak_torque: sim.peak_torques.get(&lj.joint_idx).copied().unwrap_or(0.0),
+                peak_velocity: sim.peak_velocities.get(&lj.joint_idx).copied().unwrap_or(0.0),
+                contributes: lj.contributes,
+            }
+        })
+        .collect();
+    // Sort contributing joints first, then by peak torque descending
+    joint_peaks.sort_by(|a, b| {
+        b.contributes
+            .cmp(&a.contributes)
+            .then_with(|| b.peak_torque.partial_cmp(&a.peak_torque).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    JumpSimResult {
+        max_height: sim.max_height_reached,
+        extension_duration: sim.extension_duration,
+        joint_peaks,
+    }
 }
 
 /// Step the jump simulation by `dt` seconds.
@@ -740,6 +815,24 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
                 if lj.contributes && util > worst_ratio {
                     worst_ratio = util;
                 }
+
+                // --- Track peak torque ---
+                let abs_tau = g_tau.abs();
+                let entry = sim.peak_torques.entry(lj.joint_idx).or_insert(0.0);
+                if abs_tau > *entry {
+                    *entry = abs_tau;
+                }
+
+                // --- Track peak angular velocity (finite difference) ---
+                let cur_angle = model.joint_positions[lj.joint_idx];
+                if let Some(&prev) = sim.prev_joint_angles.get(&lj.joint_idx) {
+                    let omega = ((cur_angle - prev) / dt).abs() as f64;
+                    let v_entry = sim.peak_velocities.entry(lj.joint_idx).or_insert(0.0);
+                    if omega > *v_entry {
+                        *v_entry = omega;
+                    }
+                }
+                sim.prev_joint_angles.insert(lj.joint_idx, cur_angle);
             }
             // Speed reduction: if worst_ratio > 1.0, the joint can't even hold
             // against gravity → clamp speed to 0.  Otherwise scale linearly in
