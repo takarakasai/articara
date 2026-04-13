@@ -192,11 +192,11 @@ impl ArticaraApp {
     pub(super) fn draw_posture_menu(&mut self, ui: &mut egui::Ui) {
         let has_model = self.model.is_some();
 
-        // --- Path input ---
+        // --- Path input + browse buttons ---
         ui.horizontal(|ui| {
             ui.label("File:");
             ui.add_sized(
-                egui::vec2(220.0, 18.0),
+                egui::vec2(180.0, 18.0),
                 egui::TextEdit::singleline(&mut self.posture_path),
             );
         });
@@ -204,54 +204,94 @@ impl ArticaraApp {
         ui.separator();
 
         // --- Save ---
-        if ui
-            .add_enabled(
-                has_model && !self.posture_path.is_empty(),
-                egui::Button::new("💾 Save"),
-            )
-            .on_hover_text("Save joint positions and base transform to .toml")
-            .clicked()
-        {
-            if let Some(ref model) = self.model {
-                let path = std::path::PathBuf::from(&self.posture_path);
-                match save_posture(model, &path) {
-                    Ok(()) => {
-                        self.status_message = format!("Saved posture → {}", path.display());
-                    }
-                    Err(e) => {
-                        self.status_message = format!("Save error: {e}");
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    has_model && !self.posture_path.is_empty(),
+                    egui::Button::new("💾 Save"),
+                )
+                .on_hover_text("Save joint positions and base transform to .toml")
+                .clicked()
+            {
+                if let Some(ref model) = self.model {
+                    let path = std::path::PathBuf::from(&self.posture_path);
+                    match save_posture(model, &path) {
+                        Ok(()) => {
+                            self.status_message = format!("Saved posture → {}", path.display());
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Save error: {e}");
+                        }
                     }
                 }
+                ui.close();
             }
-            ui.close();
-        }
+            if ui
+                .add_enabled(has_model, egui::Button::new("📂 Save As…"))
+                .on_hover_text("Choose file to save posture to")
+                .clicked()
+            {
+                let start = if self.posture_path.is_empty() {
+                    None
+                } else {
+                    Some(std::path::Path::new(&self.posture_path).to_path_buf())
+                };
+                self.dlg_save_posture.open(
+                    "Save Posture",
+                    super::file_dialog::FileDialogMode::Save,
+                    start.as_deref(),
+                    &["toml"],
+                );
+                ui.close();
+            }
+        });
 
         // --- Load ---
-        if ui
-            .add_enabled(
-                has_model && !self.posture_path.is_empty(),
-                egui::Button::new("📂 Load"),
-            )
-            .on_hover_text("Load joint positions from .toml")
-            .clicked()
-        {
-            if let Some(ref mut model) = self.model {
-                let path = std::path::PathBuf::from(&self.posture_path);
-                match load_posture(model, &path) {
-                    Ok(n) => {
-                        self.needs_upload = true;
-                        self.status_message = format!(
-                            "Loaded posture ({n} joints matched) ← {}",
-                            path.display()
-                        );
-                    }
-                    Err(e) => {
-                        self.status_message = format!("Load error: {e}");
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    has_model && !self.posture_path.is_empty(),
+                    egui::Button::new("📂 Load"),
+                )
+                .on_hover_text("Load joint positions from the .toml path above")
+                .clicked()
+            {
+                if let Some(ref mut model) = self.model {
+                    let path = std::path::PathBuf::from(&self.posture_path);
+                    match load_posture(model, &path) {
+                        Ok(n) => {
+                            self.needs_upload = true;
+                            self.status_message = format!(
+                                "Loaded posture ({n} joints matched) ← {}",
+                                path.display()
+                            );
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Load error: {e}");
+                        }
                     }
                 }
+                ui.close();
             }
-            ui.close();
-        }
+            if ui
+                .add_enabled(has_model, egui::Button::new("📂 Load…"))
+                .on_hover_text("Browse for a posture file to load")
+                .clicked()
+            {
+                let start = if self.posture_path.is_empty() {
+                    None
+                } else {
+                    Some(std::path::Path::new(&self.posture_path).to_path_buf())
+                };
+                self.dlg_open_posture.open(
+                    "Load Posture",
+                    super::file_dialog::FileDialogMode::Open,
+                    start.as_deref(),
+                    &["toml"],
+                );
+                ui.close();
+            }
+        });
 
         ui.separator();
 

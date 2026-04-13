@@ -174,6 +174,19 @@ impl ArticaraApp {
                 let path = PathBuf::from(&self.urdf_path_input);
                 self.load_model(path);
             }
+            if ui.button("📂").on_hover_text("Browse for model file…").clicked() {
+                let start = if self.urdf_path_input.is_empty() {
+                    None
+                } else {
+                    Some(std::path::Path::new(&self.urdf_path_input).to_path_buf())
+                };
+                self.dlg_open_model.open(
+                    "Open Robot Model",
+                    super::file_dialog::FileDialogMode::Open,
+                    start.as_deref(),
+                    &["urdf", "sdf", "xml", "mjcf", "usd", "usda"],
+                );
+            }
             ui.separator();
             ui.label(&self.status_message);
         });

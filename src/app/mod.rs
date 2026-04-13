@@ -245,6 +245,15 @@ pub struct ArticaraApp {
     // --- Posture save/load ---
     /// File path for posture save/load (.toml).
     posture_path: String,
+    // --- File dialogs ---
+    /// Dialog for loading a robot model file.
+    dlg_open_model: file_dialog::FileDialog,
+    /// Dialog for loading a posture file.
+    dlg_open_posture: file_dialog::FileDialog,
+    /// Dialog for saving a posture file.
+    dlg_save_posture: file_dialog::FileDialog,
+    /// Dialog for choosing the export directory.
+    dlg_export_dir: file_dialog::FileDialog,
 }
 
 impl ArticaraApp {
@@ -320,6 +329,10 @@ impl ArticaraApp {
             dynamics_sim_speed: 1.0,
             dynamics_last_instant: None,
             posture_path: String::new(),
+            dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),
+            dlg_open_posture: file_dialog::FileDialog::new("dlg_open_posture"),
+            dlg_save_posture: file_dialog::FileDialog::new("dlg_save_posture"),
+            dlg_export_dir: file_dialog::FileDialog::new("dlg_export_dir"),
         }
     }
 
@@ -420,6 +433,69 @@ impl ArticaraApp {
         }
     }
 
+    /// Draw and process all file dialog windows, handling their results.
+    fn process_file_dialogs(&mut self, ctx: &egui::Context) {
+        use file_dialog::FileDialogResult;
+
+        // --- Open Model dialog ---
+        match self.dlg_open_model.show(ctx) {
+            FileDialogResult::Confirmed(path) => {
+                self.urdf_path_input = path.display().to_string();
+                self.load_model(path);
+            }
+            _ => {}
+        }
+
+        // --- Open Posture dialog ---
+        match self.dlg_open_posture.show(ctx) {
+            FileDialogResult::Confirmed(path) => {
+                self.posture_path = path.display().to_string();
+                if let Some(ref mut model) = self.model {
+                    match posture::load_posture(model, &path) {
+                        Ok(n) => {
+                            self.needs_upload = true;
+                            self.status_message = format!(
+                                "Loaded posture ({n} joints matched) ← {}",
+                                path.display()
+                            );
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Load error: {e}");
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // --- Save Posture dialog ---
+        match self.dlg_save_posture.show(ctx) {
+            FileDialogResult::Confirmed(path) => {
+                self.posture_path = path.display().to_string();
+                if let Some(ref model) = self.model {
+                    match posture::save_posture(model, &path) {
+                        Ok(()) => {
+                            self.status_message =
+                                format!("Saved posture → {}", path.display());
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Save error: {e}");
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // --- Export Directory dialog ---
+        match self.dlg_export_dir.show(ctx) {
+            FileDialogResult::Confirmed(path) => {
+                self.export_dir = path.display().to_string();
+            }
+            _ => {}
+        }
+    }
+
 }
 
 // ===== UI sub-modules =====
@@ -433,6 +509,7 @@ mod viewport;
 mod viewport_overlay;
 mod dynamics_panel;
 mod posture;
+mod file_dialog;
 
 // Sentinel to mark the end of module-level code.
 // Everything below was moved to sub-modules.
@@ -529,6 +606,9 @@ impl eframe::App for ArticaraApp {
 
         // --- Validation results window ---
         self.draw_validation_window(&ctx);
+
+        // --- File dialogs ---
+        self.process_file_dialogs(&ctx);
 
         // Upload robot geometry to GPU when needed.
         if self.needs_upload {

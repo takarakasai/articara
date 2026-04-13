@@ -594,6 +594,19 @@ impl ArticaraApp {
         ui.horizontal(|ui| {
             ui.label("Dir:");
             ui.text_edit_singleline(&mut self.export_dir);
+            if ui.button("📂").on_hover_text("Browse for export directory…").clicked() {
+                let start = if self.export_dir.is_empty() {
+                    None
+                } else {
+                    Some(std::path::Path::new(&self.export_dir).to_path_buf())
+                };
+                self.dlg_export_dir.open(
+                    "Select Export Directory",
+                    super::file_dialog::FileDialogMode::ChooseDir,
+                    start.as_deref(),
+                    &[],
+                );
+            }
         });
         if ui.button("📦 Export").clicked() {
             self.do_export();
