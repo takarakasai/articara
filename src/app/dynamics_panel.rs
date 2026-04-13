@@ -107,6 +107,27 @@ impl ArticaraApp {
                                 }
                             }
                         });
+                    // Auto-detect tip (leaf) links
+                    if ui
+                        .small_button("Auto")
+                        .on_hover_text(
+                            "Auto-select leaf links (links with no child joints) as ground contacts",
+                        )
+                        .clicked()
+                    {
+                        if let Some(ref model) = self.model {
+                            self.dynamics_ground_links.clear();
+                            for link in &model.links {
+                                let has_children = model
+                                    .children_joints
+                                    .get(&link.name)
+                                    .is_some_and(|v| !v.is_empty());
+                                if !has_children && link.name != model.root_link {
+                                    self.dynamics_ground_links.push(link.name.clone());
+                                }
+                            }
+                        }
+                    }
                 })
                 .response
                 .on_hover_text("Foot/end-effector links in contact with the ground");
