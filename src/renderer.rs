@@ -154,6 +154,10 @@ pub struct GlRenderer {
     pub ground_z: f32,
     /// Size (half-extent) of the ground plate.
     pub ground_size: f32,
+    /// Whether to show the gravity/bias direction arrow.
+    pub show_gravity_arrow: bool,
+    /// Gravity (bias) direction (unit vector).
+    pub gravity_dir: [f32; 3],
 }
 
 impl GlRenderer {
@@ -261,6 +265,8 @@ impl GlRenderer {
                 show_ground_plane: false,
                 ground_z: 0.0,
                 ground_size: 2.0,
+                show_gravity_arrow: true,
+                gravity_dir: [0.0, 0.0, -1.0],
             }
         }
     }

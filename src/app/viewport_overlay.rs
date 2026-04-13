@@ -580,6 +580,109 @@ impl ArticaraApp {
         }
     }
 
+    /// Draw gravity direction indicator (bottom-right corner, left of camera axes).
+    pub(super) fn draw_gravity_indicator(&self, ui: &mut egui::Ui, rect: egui::Rect) {
+        if !self.show_gravity_arrow {
+            return;
+        }
+
+        let painter = ui.painter();
+        let axes_size = 50.0_f32;
+        let margin = 10.0;
+        let gap = 8.0; // gap between gravity widget and camera axes widget
+
+        // Camera axes center is at (right - margin - axes_size, bottom - margin - axes_size).
+        // Place gravity indicator to its left.
+        let center = egui::pos2(
+            rect.right() - margin - axes_size - (axes_size * 2.0 + gap) ,
+            rect.bottom() - margin - axes_size,
+        );
+
+        // Background circle
+        painter.circle_filled(
+            center,
+            axes_size,
+            egui::Color32::from_rgba_unmultiplied(30, 15, 30, 150),
+        );
+        painter.circle_stroke(
+            center,
+            axes_size,
+            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(180, 80, 180, 100)),
+        );
+
+        // Project gravity direction through camera view matrix
+        let gd = na::Vector3::new(
+            self.gravity_dir[0],
+            self.gravity_dir[1],
+            self.gravity_dir[2],
+        );
+        let len = gd.norm();
+        if len < 1e-6 {
+            return;
+        }
+        let dir = gd / len;
+
+        let view = self.camera.view_matrix();
+        let view3 = view.fixed_view::<3, 3>(0, 0);
+        let cam = view3 * dir;
+
+        let arrow_len = axes_size * 0.75;
+        let tip = egui::pos2(
+            center.x + cam.x * arrow_len,
+            center.y - cam.y * arrow_len,
+        );
+
+        // Arrow shaft (purple)
+        let arrow_color = egui::Color32::from_rgb(210, 100, 210);
+        painter.line_segment(
+            [center, tip],
+            egui::Stroke::new(3.0, arrow_color),
+        );
+
+        // Arrowhead (two fins)
+        let dx = tip.x - center.x;
+        let dy = tip.y - center.y;
+        let shaft_len = (dx * dx + dy * dy).sqrt().max(1e-6);
+        let ux = dx / shaft_len;
+        let uy = dy / shaft_len;
+        let head_len = 10.0_f32;
+        let head_width = 5.0_f32;
+        let fin1 = egui::pos2(
+            tip.x - ux * head_len + uy * head_width,
+            tip.y - uy * head_len - ux * head_width,
+        );
+        let fin2 = egui::pos2(
+            tip.x - ux * head_len - uy * head_width,
+            tip.y - uy * head_len + ux * head_width,
+        );
+        painter.add(egui::Shape::convex_polygon(
+            vec![tip, fin1, fin2],
+            arrow_color,
+            egui::Stroke::NONE,
+        ));
+
+        // Filled circle at origin (base)
+        painter.circle_filled(center, 3.0, arrow_color);
+
+        // "g" label at tip
+        painter.text(
+            tip + egui::vec2(6.0, -6.0),
+            egui::Align2::LEFT_BOTTOM,
+            "g",
+            egui::FontId::proportional(13.0),
+            arrow_color,
+        );
+
+        // Title label at top of circle
+        painter.text(
+            egui::pos2(center.x, center.y - axes_size - 2.0),
+            egui::Align2::CENTER_BOTTOM,
+            "Gravity",
+            egui::FontId::proportional(10.0),
+            egui::Color32::from_rgba_unmultiplied(210, 100, 210, 180),
+        );
+    }
+
     /// Draw camera reset button (bottom-right, above axes).
     pub(super) fn draw_camera_reset_button(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let painter = ui.painter();
@@ -626,5 +729,8 @@ impl ArticaraApp {
                 egui::Color32::from_gray(220),
             );
         }
+
+        // --- Gravity direction label (bottom-left corner) ---
+        // (gravity indicator now drawn alongside camera axes in draw_gravity_indicator)
     }
 }

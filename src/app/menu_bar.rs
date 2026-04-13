@@ -136,6 +136,33 @@ impl ArticaraApp {
                     });
                 }
                 ui.checkbox(&mut self.show_joint_axes, "Show Joint Axes");
+                ui.checkbox(&mut self.show_gravity_arrow, "Show Gravity Arrow");
+                if self.show_gravity_arrow {
+                    ui.horizontal(|ui| {
+                        ui.label("Dir:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.gravity_dir[0])
+                                .speed(0.01)
+                                .prefix("X:")
+                                .range(-1.0..=1.0),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.gravity_dir[1])
+                                .speed(0.01)
+                                .prefix("Y:")
+                                .range(-1.0..=1.0),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.gravity_dir[2])
+                                .speed(0.01)
+                                .prefix("Z:")
+                                .range(-1.0..=1.0),
+                        );
+                        if ui.small_button("Reset").clicked() {
+                            self.gravity_dir = [0.0, 0.0, -1.0];
+                        }
+                    });
+                }
                 ui.separator();
                 ui.checkbox(&mut self.show_ground_plane, "Show Ground Plane");
                 if self.show_ground_plane {

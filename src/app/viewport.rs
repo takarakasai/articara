@@ -218,6 +218,7 @@ impl ArticaraApp {
         self.draw_com_labels(ui, rect, aspect);
         self.draw_ik_root_anchor(ui, rect, aspect);
         self.draw_camera_axes(ui, rect);
+        self.draw_gravity_indicator(ui, rect);
         self.draw_camera_reset_button(ui, rect);
     }
 
