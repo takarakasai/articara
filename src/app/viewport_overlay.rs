@@ -581,6 +581,12 @@ impl ArticaraApp {
     }
 
     /// Draw gravity direction indicator (bottom-right corner, left of camera axes).
+    ///
+    /// Shows:
+    ///  - Faint X/Y/Z reference axes (same projection as camera-axes widget)
+    ///  - Bold gravity arrow
+    ///  - Dashed horizontal-plane projection of gravity
+    ///  - Tilt angle from −Z displayed as text
     pub(super) fn draw_gravity_indicator(&self, ui: &mut egui::Ui, rect: egui::Rect) {
         if !self.show_gravity_arrow {
             return;
@@ -589,12 +595,12 @@ impl ArticaraApp {
         let painter = ui.painter();
         let axes_size = 50.0_f32;
         let margin = 10.0;
-        let gap = 8.0; // gap between gravity widget and camera axes widget
+        let gap = 8.0;
 
         // Camera axes center is at (right - margin - axes_size, bottom - margin - axes_size).
         // Place gravity indicator to its left.
         let center = egui::pos2(
-            rect.right() - margin - axes_size - (axes_size * 2.0 + gap) ,
+            rect.right() - margin - axes_size - (axes_size * 2.0 + gap),
             rect.bottom() - margin - axes_size,
         );
 
@@ -602,15 +608,51 @@ impl ArticaraApp {
         painter.circle_filled(
             center,
             axes_size,
-            egui::Color32::from_rgba_unmultiplied(30, 15, 30, 150),
+            egui::Color32::from_rgba_unmultiplied(20, 12, 25, 160),
         );
         painter.circle_stroke(
             center,
             axes_size,
-            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(180, 80, 180, 100)),
+            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(160, 70, 160, 100)),
         );
 
-        // Project gravity direction through camera view matrix
+        let view = self.camera.view_matrix();
+        let view3 = view.fixed_view::<3, 3>(0, 0);
+        let axis_len = axes_size * 0.7;
+
+        // ── 1. Faint reference axes (X / Y / Z) ──
+        let ref_axes: [(na::Vector3<f32>, egui::Color32, &str); 3] = [
+            (na::Vector3::x(), egui::Color32::from_rgba_unmultiplied(230, 60, 60, 55), "X"),
+            (na::Vector3::y(), egui::Color32::from_rgba_unmultiplied(60, 200, 60, 55), "Y"),
+            (na::Vector3::z(), egui::Color32::from_rgba_unmultiplied(60, 100, 230, 55), "Z"),
+        ];
+        // depth-sort
+        let mut ref_order: Vec<(usize, f32)> = ref_axes
+            .iter()
+            .enumerate()
+            .map(|(i, (ax, _, _))| {
+                let c = view3 * ax;
+                (i, c.z)
+            })
+            .collect();
+        ref_order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        for (i, _depth) in &ref_order {
+            let (ax, color, label) = &ref_axes[*i];
+            let c = view3 * ax;
+            let tip = egui::pos2(center.x + c.x * axis_len, center.y - c.y * axis_len);
+            painter.line_segment([center, tip], egui::Stroke::new(1.5, *color));
+            painter.circle_filled(tip, 6.0, *color);
+            painter.text(
+                tip + egui::vec2(5.0, -5.0),
+                egui::Align2::LEFT_BOTTOM,
+                *label,
+                egui::FontId::proportional(9.0),
+                *color,
+            );
+        }
+
+        // ── 2. Gravity vector ──
         let gd = na::Vector3::new(
             self.gravity_dir[0],
             self.gravity_dir[1],
@@ -621,25 +663,71 @@ impl ArticaraApp {
             return;
         }
         let dir = gd / len;
+        let cam_g = view3 * dir;
 
-        let view = self.camera.view_matrix();
-        let view3 = view.fixed_view::<3, 3>(0, 0);
-        let cam = view3 * dir;
-
-        let arrow_len = axes_size * 0.75;
+        let arrow_len = axes_size * 0.8;
         let tip = egui::pos2(
-            center.x + cam.x * arrow_len,
-            center.y - cam.y * arrow_len,
+            center.x + cam_g.x * arrow_len,
+            center.y - cam_g.y * arrow_len,
         );
 
-        // Arrow shaft (purple)
-        let arrow_color = egui::Color32::from_rgb(210, 100, 210);
+        // ── 3. Horizontal-plane projection (dashed) ──
+        // Project gravity onto the horizontal (XY) plane and draw as a dashed line.
+        let horiz = na::Vector3::new(dir.x, dir.y, 0.0);
+        let horiz_len = horiz.norm();
+        if horiz_len > 1e-4 {
+            let horiz_dir = horiz / horiz_len;
+            let cam_h = view3 * horiz_dir;
+            let h_screen_len = arrow_len * horiz_len; // scale by horizontal component magnitude
+            let h_tip = egui::pos2(
+                center.x + cam_h.x * h_screen_len,
+                center.y - cam_h.y * h_screen_len,
+            );
+            let dash_color = egui::Color32::from_rgba_unmultiplied(210, 100, 210, 70);
+            // Draw dashed line from center to h_tip
+            let n_dashes = 8;
+            for d in 0..n_dashes {
+                if d % 2 == 0 {
+                    let t0 = d as f32 / n_dashes as f32;
+                    let t1 = (d + 1) as f32 / n_dashes as f32;
+                    let p0 = egui::pos2(
+                        center.x + (h_tip.x - center.x) * t0,
+                        center.y + (h_tip.y - center.y) * t0,
+                    );
+                    let p1 = egui::pos2(
+                        center.x + (h_tip.x - center.x) * t1,
+                        center.y + (h_tip.y - center.y) * t1,
+                    );
+                    painter.line_segment([p0, p1], egui::Stroke::new(1.2, dash_color));
+                }
+            }
+            // Dashed vertical drop line from h_tip to arrow tip
+            let v_dashes = 6;
+            for d in 0..v_dashes {
+                if d % 2 == 0 {
+                    let t0 = d as f32 / v_dashes as f32;
+                    let t1 = (d + 1) as f32 / v_dashes as f32;
+                    let p0 = egui::pos2(
+                        h_tip.x + (tip.x - h_tip.x) * t0,
+                        h_tip.y + (tip.y - h_tip.y) * t0,
+                    );
+                    let p1 = egui::pos2(
+                        h_tip.x + (tip.x - h_tip.x) * t1,
+                        h_tip.y + (tip.y - h_tip.y) * t1,
+                    );
+                    painter.line_segment([p0, p1], egui::Stroke::new(1.0, dash_color));
+                }
+            }
+        }
+
+        // ── 4. Main gravity arrow (bold purple) ──
+        let arrow_color = egui::Color32::from_rgb(220, 110, 220);
         painter.line_segment(
             [center, tip],
             egui::Stroke::new(3.0, arrow_color),
         );
 
-        // Arrowhead (two fins)
+        // Arrowhead
         let dx = tip.x - center.x;
         let dy = tip.y - center.y;
         let shaft_len = (dx * dx + dy * dy).sqrt().max(1e-6);
@@ -661,16 +749,35 @@ impl ArticaraApp {
             egui::Stroke::NONE,
         ));
 
-        // Filled circle at origin (base)
+        // Origin dot
         painter.circle_filled(center, 3.0, arrow_color);
 
         // "g" label at tip
         painter.text(
-            tip + egui::vec2(6.0, -6.0),
+            tip + egui::vec2(7.0, -7.0),
             egui::Align2::LEFT_BOTTOM,
             "g",
             egui::FontId::proportional(13.0),
             arrow_color,
+        );
+
+        // ── 5. Tilt angle from −Z ──
+        let neg_z = na::Vector3::new(0.0, 0.0, -1.0);
+        let cos_angle = dir.dot(&neg_z).clamp(-1.0, 1.0);
+        let angle_deg = cos_angle.acos().to_degrees();
+        let angle_text = if angle_deg < 0.5 {
+            "0°".to_string()
+        } else {
+            format!("{:.1}°", angle_deg)
+        };
+
+        // Show below the circle
+        painter.text(
+            egui::pos2(center.x, center.y + axes_size + 3.0),
+            egui::Align2::CENTER_TOP,
+            format!("tilt {}", angle_text),
+            egui::FontId::monospace(10.0),
+            egui::Color32::from_rgba_unmultiplied(210, 140, 210, 200),
         );
 
         // Title label at top of circle
