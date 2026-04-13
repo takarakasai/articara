@@ -242,6 +242,9 @@ pub struct ArticaraApp {
     dynamics_sim_speed: f32,
     /// Last frame instant for delta-time calculation.
     dynamics_last_instant: Option<std::time::Instant>,
+    // --- Posture save/load ---
+    /// File path for posture save/load (.toml).
+    posture_path: String,
 }
 
 impl ArticaraApp {
@@ -316,6 +319,7 @@ impl ArticaraApp {
             dynamics_sim: None,
             dynamics_sim_speed: 1.0,
             dynamics_last_instant: None,
+            posture_path: String::new(),
         }
     }
 
@@ -339,6 +343,13 @@ impl ArticaraApp {
                 self.needs_upload = true;
                 self.ik_root_link = None; // reset IK root on new model
                 self.history.clear();
+                // Default posture path: <model_dir>/<robot_name>.toml
+                if let Some(parent) = path.parent() {
+                    if let Some(ref m) = self.model {
+                        self.posture_path =
+                            parent.join(format!("{}.toml", m.name)).display().to_string();
+                    }
+                }
                 // Default export dir to the URDF's parent directory
                 if self.export_dir.is_empty() {
                     if let Some(parent) = path.parent() {
@@ -421,6 +432,7 @@ mod history_panel;
 mod viewport;
 mod viewport_overlay;
 mod dynamics_panel;
+mod posture;
 
 // Sentinel to mark the end of module-level code.
 // Everything below was moved to sub-modules.

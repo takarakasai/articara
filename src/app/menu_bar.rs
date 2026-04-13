@@ -96,6 +96,11 @@ impl ArticaraApp {
                 }
             });
 
+            // ===== Posture menu =====
+            ui.menu_button("Posture", |ui| {
+                self.draw_posture_menu(ui);
+            });
+
             // ===== View menu =====
             ui.menu_button("View", |ui| {
                 ui.horizontal(|ui| {
