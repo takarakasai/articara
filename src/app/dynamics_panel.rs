@@ -142,6 +142,120 @@ impl ArticaraApp {
                     );
                 });
 
+                // --- Launch axes ---
+                ui.horizontal(|ui| {
+                    ui.label("Launch:");
+                    ui.checkbox(&mut self.dynamics_launch_axes[0], "X");
+                    ui.checkbox(&mut self.dynamics_launch_axes[1], "Y");
+                    ui.checkbox(&mut self.dynamics_launch_axes[2], "Z");
+                })
+                .response
+                .on_hover_text("Which axes the body link can move during flight");
+
+                // --- Locked joints selector ---
+                {
+                    let joint_names: Vec<String> = self
+                        .model
+                        .as_ref()
+                        .unwrap()
+                        .joints
+                        .iter()
+                        .filter(|j| j.joint_type != "fixed")
+                        .map(|j| j.name.clone())
+                        .collect();
+                    let locked_label = if self.dynamics_locked_joints.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        format!("{} locked", self.dynamics_locked_joints.len())
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label("Lock:");
+                        egui::ComboBox::from_id_salt("dynamics_locked_joints")
+                            .selected_text(&locked_label)
+                            .show_ui(ui, |ui| {
+                                for name in &joint_names {
+                                    let mut checked =
+                                        self.dynamics_locked_joints.contains(name);
+                                    if ui.checkbox(&mut checked, name).changed() {
+                                        if checked {
+                                            self.dynamics_locked_joints
+                                                .insert(name.clone());
+                                        } else {
+                                            self.dynamics_locked_joints.remove(name);
+                                        }
+                                    }
+                                }
+                            });
+                        if ui.small_button("Clear").clicked() {
+                            self.dynamics_locked_joints.clear();
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "Joints to lock (hold at initial angle) during jump simulation",
+                    );
+                }
+
+                // --- Sim config save/load ---
+                ui.horizontal(|ui| {
+                    ui.label("Config:");
+                    ui.add_sized(
+                        egui::vec2(100.0, 18.0),
+                        egui::TextEdit::singleline(&mut self.sim_config_path),
+                    );
+                    if ui.small_button("💾").on_hover_text("Save sim config").clicked() {
+                        if !self.sim_config_path.is_empty() {
+                            let path = std::path::PathBuf::from(&self.sim_config_path);
+                            match save_sim_config(self, &path) {
+                                Ok(()) => {
+                                    self.status_message =
+                                        format!("Saved sim config → {}", path.display());
+                                }
+                                Err(e) => {
+                                    self.status_message =
+                                        format!("Save sim config error: {e}");
+                                }
+                            }
+                        }
+                    }
+                    if ui.small_button("📂").on_hover_text("Load sim config").clicked() {
+                        if !self.sim_config_path.is_empty() {
+                            let path = std::path::PathBuf::from(&self.sim_config_path);
+                            match load_sim_config(&path) {
+                                Ok(cfg) => {
+                                    apply_sim_config(self, cfg);
+                                    self.status_message =
+                                        format!("Loaded sim config ← {}", path.display());
+                                }
+                                Err(e) => {
+                                    self.status_message =
+                                        format!("Load sim config error: {e}");
+                                }
+                            }
+                        }
+                    }
+                    if ui
+                        .small_button("…")
+                        .on_hover_text("Browse for sim config file")
+                        .clicked()
+                    {
+                        let start = if self.sim_config_path.is_empty() {
+                            None
+                        } else {
+                            Some(
+                                std::path::Path::new(&self.sim_config_path)
+                                    .to_path_buf(),
+                            )
+                        };
+                        self.dlg_open_sim_config.open(
+                            "Load Sim Config",
+                            super::file_dialog::FileDialogMode::Open,
+                            start.as_deref(),
+                            &["toml"],
+                        );
+                    }
+                });
+
                 ui.separator();
 
                 // --- Simulation controls ---
@@ -181,6 +295,8 @@ impl ArticaraApp {
                                 &self.dynamics_ground_links,
                                 self.dynamics_body_link.as_deref(),
                                 self.dynamics_sim_speed,
+                                &self.dynamics_locked_joints,
+                                self.dynamics_launch_axes,
                             ) {
                                 self.dynamics_sim = Some(DynSim::Jump(sim));
                             } else {
@@ -724,4 +840,241 @@ impl ArticaraApp {
             });
         }
     }
+}
+
+// ===== Sim config TOML save/load =====
+//
+// Format:
+// ```toml
+// # Articara Sim Config
+// [jump]
+// body_link = "trunk"
+// ground_links = ["RL_foot", "FL_foot", "RR_foot", "FR_foot"]
+// launch_axes = [false, false, true]
+// speed = 1.0
+//
+// [jump.locked_joints]
+// RL_hip_joint = true
+// FL_hip_joint = true
+//
+// [payload]
+// ee_link = "arm"
+// ```
+
+use std::io::{BufRead, Write};
+use std::path::Path;
+
+/// Intermediate struct holding all sim config values.
+pub(super) struct SimConfig {
+    pub body_link: Option<String>,
+    pub ground_links: Vec<String>,
+    pub launch_axes: [bool; 3],
+    pub speed: f32,
+    pub locked_joints: std::collections::HashSet<String>,
+    pub ee_link: Option<String>,
+}
+
+/// Save the current simulation configuration to a TOML file.
+pub(super) fn save_sim_config(app: &ArticaraApp, path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{e}"))?;
+        }
+    }
+    let mut f = std::fs::File::create(path).map_err(|e| format!("{e}"))?;
+
+    writeln!(f, "# Articara Sim Config").map_err(|e| format!("{e}"))?;
+    writeln!(f).map_err(|e| format!("{e}"))?;
+
+    writeln!(f, "[jump]").map_err(|e| format!("{e}"))?;
+    if let Some(ref bl) = app.dynamics_body_link {
+        writeln!(f, "body_link = \"{}\"", bl).map_err(|e| format!("{e}"))?;
+    }
+    // ground_links as TOML array
+    let gl_str: Vec<String> = app
+        .dynamics_ground_links
+        .iter()
+        .map(|s| format!("\"{}\"", s))
+        .collect();
+    writeln!(f, "ground_links = [{}]", gl_str.join(", ")).map_err(|e| format!("{e}"))?;
+
+    let ax = app.dynamics_launch_axes;
+    writeln!(f, "launch_axes = [{}, {}, {}]", ax[0], ax[1], ax[2])
+        .map_err(|e| format!("{e}"))?;
+    writeln!(f, "speed = {}", app.dynamics_sim_speed).map_err(|e| format!("{e}"))?;
+
+    if !app.dynamics_locked_joints.is_empty() {
+        writeln!(f).map_err(|e| format!("{e}"))?;
+        writeln!(f, "[jump.locked_joints]").map_err(|e| format!("{e}"))?;
+        let mut sorted: Vec<&String> = app.dynamics_locked_joints.iter().collect();
+        sorted.sort();
+        for name in sorted {
+            let key = toml_key(name);
+            writeln!(f, "{} = true", key).map_err(|e| format!("{e}"))?;
+        }
+    }
+
+    if app.dynamics_ee_link.is_some() {
+        writeln!(f).map_err(|e| format!("{e}"))?;
+        writeln!(f, "[payload]").map_err(|e| format!("{e}"))?;
+        if let Some(ref ee) = app.dynamics_ee_link {
+            writeln!(f, "ee_link = \"{}\"", ee).map_err(|e| format!("{e}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Load simulation configuration from a TOML file.
+pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("{e}"))?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut cfg = SimConfig {
+        body_link: None,
+        ground_links: Vec::new(),
+        launch_axes: [false, false, true],
+        speed: 1.0,
+        locked_joints: std::collections::HashSet::new(),
+        ee_link: None,
+    };
+
+    let mut section = SimSection::None;
+
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("{e}"))?;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        if line == "[jump]" {
+            section = SimSection::Jump;
+            continue;
+        }
+        if line == "[jump.locked_joints]" {
+            section = SimSection::LockedJoints;
+            continue;
+        }
+        if line == "[payload]" {
+            section = SimSection::Payload;
+            continue;
+        }
+        if line.starts_with('[') {
+            section = SimSection::Unknown;
+            continue;
+        }
+
+        if let Some((key, value)) = parse_kv(line) {
+            match section {
+                SimSection::Jump => match key {
+                    "body_link" => {
+                        cfg.body_link = Some(strip_quotes(value).to_string());
+                    }
+                    "ground_links" => {
+                        cfg.ground_links = parse_string_array(value);
+                    }
+                    "launch_axes" => {
+                        if let Some(bools) = parse_bool_array(value) {
+                            if bools.len() == 3 {
+                                cfg.launch_axes = [bools[0], bools[1], bools[2]];
+                            }
+                        }
+                    }
+                    "speed" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            cfg.speed = v;
+                        }
+                    }
+                    _ => {}
+                },
+                SimSection::LockedJoints => {
+                    if strip_quotes(value) == "true" {
+                        cfg.locked_joints.insert(key.to_string());
+                    }
+                }
+                SimSection::Payload => {
+                    if key == "ee_link" {
+                        cfg.ee_link = Some(strip_quotes(value).to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(cfg)
+}
+
+/// Apply a loaded sim config to the app state.
+pub(super) fn apply_sim_config(app: &mut ArticaraApp, cfg: SimConfig) {
+    app.dynamics_body_link = cfg.body_link;
+    app.dynamics_ground_links = cfg.ground_links;
+    app.dynamics_launch_axes = cfg.launch_axes;
+    app.dynamics_sim_speed = cfg.speed;
+    app.dynamics_locked_joints = cfg.locked_joints;
+    app.dynamics_ee_link = cfg.ee_link;
+}
+
+// ───────── TOML helpers ─────────
+
+#[derive(Clone, Copy, PartialEq)]
+enum SimSection {
+    None,
+    Jump,
+    LockedJoints,
+    Payload,
+    Unknown,
+}
+
+fn toml_key(name: &str) -> String {
+    let bare_ok = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if bare_ok {
+        name.to_string()
+    } else {
+        format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+}
+
+fn parse_kv(line: &str) -> Option<(&str, &str)> {
+    let eq = line.find('=')?;
+    let key = line[..eq].trim();
+    let value = line[eq + 1..].trim();
+    let key = key
+        .strip_prefix('"')
+        .and_then(|k| k.strip_suffix('"'))
+        .unwrap_or(key);
+    Some((key, value))
+}
+
+fn strip_quotes(s: &str) -> &str {
+    s.trim()
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(s.trim())
+}
+
+/// Parse `["a", "b", "c"]` into Vec<String>.
+fn parse_string_array(s: &str) -> Vec<String> {
+    let s = s.trim();
+    let inner = match s.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    inner
+        .split(',')
+        .map(|p| strip_quotes(p).to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Parse `[true, false, true]` into Vec<bool>.
+fn parse_bool_array(s: &str) -> Option<Vec<bool>> {
+    let s = s.trim();
+    let inner = s.strip_prefix('[')?.strip_suffix(']')?;
+    let vals: Result<Vec<bool>, _> = inner.split(',').map(|p| p.trim().parse::<bool>()).collect();
+    vals.ok()
 }

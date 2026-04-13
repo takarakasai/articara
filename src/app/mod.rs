@@ -242,6 +242,12 @@ pub struct ArticaraApp {
     dynamics_sim_speed: f32,
     /// Last frame instant for delta-time calculation.
     dynamics_last_instant: Option<std::time::Instant>,
+    /// Which axes the body link can move during flight (true = free).
+    dynamics_launch_axes: [bool; 3],
+    /// Joint names that are locked (not driven) during jump sim.
+    dynamics_locked_joints: std::collections::HashSet<String>,
+    /// File path for sim config save/load.
+    sim_config_path: String,
     // --- Posture save/load ---
     /// File path for posture save/load (.toml).
     posture_path: String,
@@ -254,6 +260,10 @@ pub struct ArticaraApp {
     dlg_save_posture: file_dialog::FileDialog,
     /// Dialog for choosing the export directory.
     dlg_export_dir: file_dialog::FileDialog,
+    /// Dialog for loading a sim config file.
+    dlg_open_sim_config: file_dialog::FileDialog,
+    /// Dialog for saving a sim config file.
+    dlg_save_sim_config: file_dialog::FileDialog,
 }
 
 impl ArticaraApp {
@@ -328,11 +338,16 @@ impl ArticaraApp {
             dynamics_sim: None,
             dynamics_sim_speed: 1.0,
             dynamics_last_instant: None,
+            dynamics_launch_axes: [false, false, true], // Z-only by default
+            dynamics_locked_joints: std::collections::HashSet::new(),
+            sim_config_path: String::new(),
             posture_path: String::new(),
             dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),
             dlg_open_posture: file_dialog::FileDialog::new("dlg_open_posture"),
             dlg_save_posture: file_dialog::FileDialog::new("dlg_save_posture"),
             dlg_export_dir: file_dialog::FileDialog::new("dlg_export_dir"),
+            dlg_open_sim_config: file_dialog::FileDialog::new("dlg_open_sim_config"),
+            dlg_save_sim_config: file_dialog::FileDialog::new("dlg_save_sim_config"),
         }
     }
 
@@ -491,6 +506,41 @@ impl ArticaraApp {
         match self.dlg_export_dir.show(ctx) {
             FileDialogResult::Confirmed(path) => {
                 self.export_dir = path.display().to_string();
+            }
+            _ => {}
+        }
+
+        // --- Open Sim Config dialog ---
+        match self.dlg_open_sim_config.show(ctx) {
+            FileDialogResult::Confirmed(path) => {
+                self.sim_config_path = path.display().to_string();
+                match dynamics_panel::load_sim_config(&path) {
+                    Ok(cfg) => {
+                        dynamics_panel::apply_sim_config(self, cfg);
+                        self.status_message =
+                            format!("Loaded sim config ← {}", path.display());
+                    }
+                    Err(e) => {
+                        self.status_message = format!("Load sim config error: {e}");
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // --- Save Sim Config dialog ---
+        match self.dlg_save_sim_config.show(ctx) {
+            FileDialogResult::Confirmed(path) => {
+                self.sim_config_path = path.display().to_string();
+                match dynamics_panel::save_sim_config(self, &path) {
+                    Ok(()) => {
+                        self.status_message =
+                            format!("Saved sim config → {}", path.display());
+                    }
+                    Err(e) => {
+                        self.status_message = format!("Save sim config error: {e}");
+                    }
+                }
             }
             _ => {}
         }

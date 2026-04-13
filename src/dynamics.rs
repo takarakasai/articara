@@ -480,6 +480,8 @@ pub struct JumpSim {
     pub saved_positions: Vec<f32>,
     pub saved_base_transform: na::Isometry3<f32>,
     pub speed: f32,
+    /// Which axes the body can move during flight [X, Y, Z].
+    pub launch_axes: [bool; 3],
 
     // --- internal tracking for finite differences ---
     prev_base_z: Option<f32>,
@@ -540,11 +542,15 @@ impl DynSim {
 /// Create a jump simulation from the current model state.
 ///
 /// `ground_links` and `body_link` define the leg chains (same as the analysis).
+/// `locked_joints` — joint names that should not be driven (held at start angle).
+/// `launch_axes` — which body axes [X, Y, Z] are free during flight.
 pub fn start_jump_sim(
     model: &RobotModel,
     ground_links: &[String],
     body_link: Option<&str>,
     speed: f32,
+    locked_joints: &std::collections::HashSet<String>,
+    launch_axes: [bool; 3],
 ) -> Option<JumpSim> {
     if ground_links.is_empty() {
         return None;
@@ -636,8 +642,14 @@ pub fn start_jump_sim(
     // Threshold: joints with |J_z| < 1 cm per radian are posture-hold.
     const Z_THRESHOLD: f32 = 0.01;
     for lj in &mut leg_joints {
-        let jz = z_sensitivity.get(&lj.joint_idx).copied().unwrap_or(0.0);
-        lj.contributes = jz >= Z_THRESHOLD;
+        let jname = &model.joints[lj.joint_idx].name;
+        if locked_joints.contains(jname) {
+            // User explicitly locked this joint
+            lj.contributes = false;
+        } else {
+            let jz = z_sensitivity.get(&lj.joint_idx).copied().unwrap_or(0.0);
+            lj.contributes = jz >= Z_THRESHOLD;
+        }
     }
 
     // Recompute extension duration using only contributing joints.
@@ -673,6 +685,7 @@ pub fn start_jump_sim(
         saved_positions: model.joint_positions.clone(),
         saved_base_transform: model.base_transform,
         speed,
+        launch_axes,
         prev_base_z: None,
         prev_velocity_z: None,
     })
@@ -826,7 +839,16 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
 
             let current_z = sim.launch_z + z_offset;
             let mut tf = sim.saved_base_transform;
-            tf.translation.vector.z = current_z;
+            // Apply motion only on enabled axes
+            if sim.launch_axes[0] {
+                // X: no force model yet, keep saved
+            }
+            if sim.launch_axes[1] {
+                // Y: no force model yet, keep saved
+            }
+            if sim.launch_axes[2] {
+                tf.translation.vector.z = current_z;
+            }
             model.base_transform = tf;
 
             // No ground contact during flight
