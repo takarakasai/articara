@@ -603,6 +603,44 @@ pub fn constrained_forward_dynamics(
 }
 
 // =========================================================================
+//  Joint trajectory profile
+// =========================================================================
+
+/// Pre-computed cosine trajectory for one joint.
+///
+/// $q(t) = q_0 + \frac{\Delta q}{2}(1 - \cos(\pi t / T))$
+/// $\dot{q}(t) = \frac{\Delta q}{2} \cdot \frac{\pi}{T} \sin(\pi t / T)$
+/// $\ddot{q}(t) = \frac{\Delta q}{2} \cdot \left(\frac{\pi}{T}\right)^2 \cos(\pi t / T)$
+///
+/// Smooth start/stop (zero velocity at both ends).
+#[derive(Clone, Debug)]
+pub struct JointTrajectoryPoint {
+    /// Start angle (rad).
+    pub q_start: f64,
+    /// End angle (rad).
+    pub q_end: f64,
+    /// Duration of the trajectory (s).
+    pub duration: f64,
+}
+
+impl JointTrajectoryPoint {
+    /// Evaluate desired position, velocity, and acceleration at time `t`.
+    pub fn evaluate(&self, t: f64) -> (f64, f64, f64) {
+        let t = t.clamp(0.0, self.duration);
+        let dq = self.q_end - self.q_start;
+        if self.duration <= 0.0 {
+            return (self.q_end, 0.0, 0.0);
+        }
+        let w = std::f64::consts::PI / self.duration; // angular frequency
+        let phase = w * t;
+        let q = self.q_start + 0.5 * dq * (1.0 - phase.cos());
+        let qd = 0.5 * dq * w * phase.sin();
+        let qdd = 0.5 * dq * w * w * phase.cos();
+        (q, qd, qdd)
+    }
+}
+
+// =========================================================================
 //  Forward dynamics state machine
 // =========================================================================
 
@@ -629,6 +667,15 @@ pub struct ForwardDynamicsState {
     /// Initial foot X positions at the start of the simulation,
     /// used by the position-feedback term to correct horizontal drift.
     pub initial_foot_x: Vec<f64>,
+    /// Pre-computed joint-space trajectory (joint_idx → trajectory).
+    /// When set, `step()` uses PD tracking instead of null-space control.
+    pub trajectory: HashMap<usize, JointTrajectoryPoint>,
+    /// Cumulative time elapsed since the trajectory started (s).
+    pub trajectory_time: f64,
+    /// PD position gain (N·m/rad).
+    pub kp: f64,
+    /// PD derivative gain (N·m·s/rad).
+    pub kd: f64,
 }
 
 impl ForwardDynamicsState {
@@ -678,30 +725,23 @@ impl ForwardDynamicsState {
             body_link: body_link.to_string(),
             total_mass,
             initial_foot_x,
+            trajectory: HashMap::new(),
+            trajectory_time: 0.0,
+            kp: 500.0,
+            kd: 20.0,
         }
     }
 
-    /// Perform one forward-dynamics integration step using a **null-space
-    /// velocity controller** with foot-position feedback.
+    /// Perform one forward-dynamics integration step.
     ///
-    /// # Algorithm
+    /// When a joint trajectory is set (`self.trajectory` is non-empty),
+    /// uses **PD position/velocity tracking** with gravity compensation:
     ///
-    /// 1. Build M(q) (CRBA) and h(q,q̇) (RNEA).
-    /// 2. Compute per-foot Jacobians and stack the X-rows into $J_x$.
-    /// 3. Compute the null-space projector $N = I - J_x^+ J_x$.
-    /// 4. Compute extension velocity $\dot{q}_{ext} = K \cdot (q_{target} - q)$.
-    /// 5. Project into null space: $\dot{q}_{null} = N \cdot \dot{q}_{ext}$.
-    /// 6. Add foot-X feedback: $\dot{q}_{fb} = -K_{fb} \cdot J_x^+ \cdot \Delta x$.
-    /// 7. Desired velocity: $\dot{q}_{des} = \dot{q}_{null} + \dot{q}_{fb}$.
-    /// 8. Inverse-dynamics torque: $\tau = M \cdot \frac{\dot{q}_{des} - \dot{q}}{dt} + h$.
-    /// 9. Clamp $\tau$ to URDF effort limits.
-    /// 10. Unconstrained FD: $\ddot{q} = M^{-1}(\tau - h)$.
-    /// 11. Semi-implicit Euler integration.
+    ///   $\tau = K_p (q_{des} - q) + K_d (\dot{q}_{des} - \dot{q}) + h$
     ///
-    /// When torque is NOT saturated, $\dot{q} \to \dot{q}_{des}$ (perfect
-    /// tracking).  When saturated, the dynamics still respect effort limits.
+    /// Otherwise falls back to the null-space velocity controller.
     ///
-    /// `target_angles` maps global joint index → desired (extend) angle.
+    /// `target_angles` is used only in the fallback path (null-space mode).
     ///
     /// This function only updates joint state, NOT `base_transform`.
     /// The caller handles base Z via FK foot-constraint.
@@ -715,6 +755,82 @@ impl ForwardDynamicsState {
             return;
         }
 
+        // Advance trajectory clock
+        self.trajectory_time += dt;
+
+        if !self.trajectory.is_empty() {
+            self.step_pd(model, dt);
+        } else {
+            self.step_nullspace(model, target_angles, dt);
+        }
+    }
+
+    /// Computed-torque (inverse-dynamics + PD) trajectory-tracking step.
+    ///
+    /// For each joint, evaluates the pre-computed cosine trajectory at
+    /// the current `trajectory_time` to obtain $(q_{des}, \dot{q}_{des},
+    /// \ddot{q}_{des})$, then computes:
+    ///
+    ///   $\tau = M(\ddot{q}_{des} + K_p (q_{des}-q) + K_d (\dot{q}_{des}-\dot{q})) + h$
+    ///
+    /// This produces the error dynamics $\ddot{e} + K_d\dot{e} + K_p e = 0$
+    /// (in the absence of effort saturation).
+    ///
+    /// Clamps to effort limits, runs unconstrained FD, and integrates.
+    fn step_pd(&mut self, model: &mut RobotModel, dt: f64) {
+        let n = self.joint_order.len();
+        let t = self.trajectory_time;
+
+        // --- 1. CRBA: M(q) ---
+        let (m_mat, _idx_in_m) = crba(model, &self.joint_order);
+
+        // --- 2. RNEA: h(q, q̇) = C(q,q̇)·q̇ + g(q) ---
+        let h = rnea_bias(model, &self.joint_order, &self.joint_velocities);
+
+        // --- 3. Computed-torque: τ = M·a_cmd + h ---
+        //   a_cmd = q̈_des + Kp·(q_des − q) + Kd·(q̇_des − q̇)
+        let mut a_cmd = na::DVector::zeros(n);
+        for (col, &ji) in self.joint_order.iter().enumerate() {
+            let q_cur = model.joint_positions[ji] as f64;
+            let qd_cur = self.joint_velocities.get(&ji).copied().unwrap_or(0.0);
+
+            let (q_des, qd_des, qdd_des) = if let Some(traj) = self.trajectory.get(&ji) {
+                traj.evaluate(t)
+            } else {
+                // No trajectory for this joint → hold current position
+                (q_cur, 0.0, 0.0)
+            };
+
+            a_cmd[col] = qdd_des
+                + self.kp * (q_des - q_cur)
+                + self.kd * (qd_des - qd_cur);
+        }
+
+        let tau_unclamped = &m_mat * &a_cmd + &h;
+
+        // Clamp to effort limits
+        let mut tau = tau_unclamped;
+        for (col, &ji) in self.joint_order.iter().enumerate() {
+            let effort = model.joints[ji].effort;
+            if effort > 0.0 {
+                tau[col] = tau[col].clamp(-effort, effort);
+            }
+        }
+
+        // --- 4. Forward dynamics: q̈ = M⁻¹(τ − h) ---
+        let qdd = forward_dynamics(&m_mat, &h, &tau);
+
+        // --- 5. Semi-implicit Euler integration ---
+        self.integrate(model, &qdd, dt);
+    }
+
+    /// Null-space velocity controller step (legacy path).
+    fn step_nullspace(
+        &mut self,
+        model: &mut RobotModel,
+        target_angles: &HashMap<usize, f64>,
+        dt: f64,
+    ) {
         let n = self.joint_order.len();
 
         // --- 1. CRBA: M(q) ---
@@ -831,6 +947,11 @@ impl ForwardDynamicsState {
         let qdd = forward_dynamics(&m_mat, &h, &tau);
 
         // --- 12. Semi-implicit Euler integration ---
+        self.integrate(model, &qdd, dt);
+    }
+
+    /// Semi-implicit Euler integration (shared by PD and null-space paths).
+    fn integrate(&mut self, model: &mut RobotModel, qdd: &na::DVector<f64>, dt: f64) {
         for (col, &ji) in self.joint_order.iter().enumerate() {
             let qd = self.joint_velocities.entry(ji).or_insert(0.0);
             *qd += qdd[col] * dt;

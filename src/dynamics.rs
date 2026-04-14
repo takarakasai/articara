@@ -939,13 +939,44 @@ pub fn start_jump_sim(
         let all_locked: std::collections::HashSet<usize> = legs.iter()
             .flat_map(|leg| leg.locked_joint_indices.iter().copied())
             .collect();
-        Some(crate::rbd::dynamics::ForwardDynamicsState::new(
+        let mut fd = crate::rbd::dynamics::ForwardDynamicsState::new(
             model,
             contact_feet,
             foot_chains,
             &body,
             &all_locked,
-        ))
+        );
+
+        // --- Pre-compute joint-space cosine trajectory ---
+        // Each non-locked leg joint gets a smooth trajectory from its
+        // current (start) angle to the extend angle, over extension_duration.
+        let mut traj = HashMap::new();
+        for leg in &legs {
+            for cj in &leg.chain {
+                let ji = cj.joint_idx;
+                if leg.locked_joint_indices.contains(&ji) {
+                    continue;
+                }
+                if traj.contains_key(&ji) {
+                    continue; // already set by another leg sharing this joint
+                }
+                let q_start = model.joint_positions[ji] as f64;
+                let q_end = if ji < leg.extend_angles.len() {
+                    leg.extend_angles[ji] as f64
+                } else {
+                    q_start
+                };
+                traj.insert(ji, crate::rbd::dynamics::JointTrajectoryPoint {
+                    q_start,
+                    q_end,
+                    duration: extension_duration as f64,
+                });
+            }
+        }
+        fd.trajectory = traj;
+        fd.trajectory_time = 0.0;
+
+        Some(fd)
     };
 
     Some(JumpSim {
@@ -1188,11 +1219,14 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
     match sim.phase {
         JumpPhase::Extension => {
             // ===== Forward-dynamics based Extension phase =====
+            //
+            // When a pre-computed trajectory is set on the FD state,
+            // step() uses PD tracking (Kp/Kd + gravity compensation).
+            // Otherwise it falls back to the null-space velocity
+            // controller.  target_angles are only used by the fallback
+            // path but we still build them for joint-utilisation display.
 
-            // --- 1. Build target angles for the velocity controller ---
-            // The FD step() uses a null-space velocity controller that
-            // drives joints toward target_angles while keeping foot X
-            // positions at their initial values.
+            // --- 1. Build target angles (used by null-space fallback) ---
             let mut target_angles: HashMap<usize, f64> = HashMap::new();
             sim.step_info.joint_utilisation.clear();
 
@@ -1219,8 +1253,8 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
             }
 
             // --- 2. Forward dynamics step ---
-            // step() uses null-space velocity control + foot-X feedback
-            // to drive joints toward extend angles without foot sliding.
+            // PD trajectory-tracking when trajectory is set;
+            // null-space velocity control + foot-X feedback otherwise.
             if let Some(ref mut fd) = sim.fd_state {
                 fd.step(model, &target_angles, dt as f64);
             }
@@ -1337,9 +1371,10 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
             //      (the robot has reached its "push-off apex")
             //  (b) Time-based fallback: extension_duration elapses
             //
-            // The launch velocity is the peak smoothed velocity, not the
-            // current (possibly negative) velocity.  The launch Z is also
-            // taken from the peak-velocity moment.
+            // Use the CURRENT base Z and velocity for launch to ensure
+            // smooth continuity at the Extension→Flight boundary.
+            // (The old peak-velocity snap-back caused a position
+            // discontinuity — a visible "drop" at flight start.)
             let min_phase = 0.01_f32;
             let peak_v = sim.peak_smoothed_velocity_z;
             let vel_declining = peak_v > 0.05
@@ -1349,14 +1384,12 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
                 || sim.phase_time >= sim.extension_duration;
 
             if should_launch {
-                let launch_vel = sim.peak_smoothed_velocity_z.max(0.0);
-                let launch_z = sim.peak_vel_base_z;
+                // Launch from current state — no snap-back.
+                let launch_z = model.base_transform.translation.vector.z;
+                let launch_vel = sim.base_velocity_z.max(0.0);
 
                 sim.launch_z = launch_z;
                 sim.launch_velocity = launch_vel;
-
-                // Restore model to peak-velocity base Z for a clean flight start
-                model.base_transform.translation.vector.z = launch_z;
 
                 let transforms_at_launch = model.compute_transforms();
                 sim.launch_foot_z = avg_link_z(&transforms_at_launch, &sim.ground_link_names);
@@ -1366,11 +1399,15 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
                 }
 
                 // Keep fd_state for FD-based flight, but clear contacts
-                // (no ground contact during flight → unconstrained FD)
+                // (no ground contact during flight → unconstrained FD).
+                // Also clear the Extension trajectory so the Flight
+                // retract animation uses the null-space velocity fallback.
                 if let Some(ref mut fd) = sim.fd_state {
                     fd.contact_feet.clear();
                     fd.initial_foot_x.clear();
                     fd.foot_chains.clear();
+                    fd.trajectory.clear();
+                    fd.trajectory_time = 0.0;
                 }
 
                 sim.phase = JumpPhase::Flight;
