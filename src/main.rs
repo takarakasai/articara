@@ -7,6 +7,7 @@ mod ik;
 mod isaac;
 mod mjcf;
 mod primitives;
+mod rbd;
 mod renderer;
 mod robot;
 mod sdf;

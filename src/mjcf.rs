@@ -632,32 +632,4 @@ fn parse_vec3_text(text: &str) -> na::Vector3<f32> {
     )
 }
 
-// Make GeomData Clone for MJCF import (geom used for both visual and collision)
-impl Clone for GeomData {
-    fn clone(&self) -> Self {
-        match self {
-            GeomData::Box { hx, hy, hz } => GeomData::Box {
-                hx: *hx,
-                hy: *hy,
-                hz: *hz,
-            },
-            GeomData::Cylinder {
-                radius,
-                half_length,
-            } => GeomData::Cylinder {
-                radius: *radius,
-                half_length: *half_length,
-            },
-            GeomData::Sphere { radius } => GeomData::Sphere { radius: *radius },
-            GeomData::Mesh {
-                vertices,
-                filename,
-                scale,
-            } => GeomData::Mesh {
-                vertices: vertices.clone(),
-                filename: filename.clone(),
-                scale: *scale,
-            },
-        }
-    }
-}
+// GeomData now derives Clone in rbd::model.

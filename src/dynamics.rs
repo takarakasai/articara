@@ -647,8 +647,7 @@ pub struct JumpSim {
     pub peak_velocities: HashMap<usize, f64>,
     /// Joint angle at the moment peak velocity was recorded.
     pub peak_velocity_angles: HashMap<usize, f64>,
-    /// Previous joint angles for finite-difference velocity estimation.
-    prev_joint_angles: HashMap<usize, f32>,
+
     /// When true, per-joint IK deltas are clamped so that the resulting
     /// torque (gravity + GRF) never exceeds the URDF effort limit.
     pub enforce_torque_limits: bool,
@@ -663,6 +662,16 @@ pub struct JumpSim {
     /// Smoothed base velocity (exponential moving average),
     /// used for launch velocity to ensure continuity at the Extension→Flight boundary.
     pub smoothed_velocity_z: f32,
+    /// Peak positive smoothed velocity seen during extension.
+    /// Used as launch velocity when the actual velocity at launch time
+    /// has already decayed (joints overshoot the FK-optimal point).
+    peak_smoothed_velocity_z: f32,
+    /// Base Z at the moment peak_smoothed_velocity_z was recorded.
+    peak_vel_base_z: f32,
+    /// Forward dynamics state (CRBA/RNEA integrator). When `Some`, the
+    /// Extension phase uses physics-based simulation instead of kinematic
+    /// interpolation.
+    pub fd_state: Option<crate::rbd::dynamics::ForwardDynamicsState>,
 }
 
 /// Phase of the payload ramp simulation.
@@ -886,6 +895,25 @@ pub fn start_jump_sim(
         max_time
     };
 
+    // Build the forward dynamics state for physics-based extension.
+    let fd_state = {
+        let foot_chains: Vec<Vec<crate::ik::ChainJoint>> = legs.iter()
+            .map(|leg| leg.chain.clone())
+            .collect();
+        let contact_feet: Vec<String> = ground_links.to_vec();
+        // Collect all locked joint indices across all legs.
+        let all_locked: std::collections::HashSet<usize> = legs.iter()
+            .flat_map(|leg| leg.locked_joint_indices.iter().copied())
+            .collect();
+        Some(crate::rbd::dynamics::ForwardDynamicsState::new(
+            model,
+            contact_feet,
+            foot_chains,
+            &body,
+            &all_locked,
+        ))
+    };
+
     Some(JumpSim {
         phase: JumpPhase::Extension,
         phase_time: 0.0,
@@ -912,13 +940,16 @@ pub fn start_jump_sim(
         peak_torque_angles: HashMap::new(),
         peak_velocities: HashMap::new(),
         peak_velocity_angles: HashMap::new(),
-        prev_joint_angles: HashMap::new(),
+
         enforce_torque_limits,
         enable_retract,
         retract_duration: extension_duration * 0.3,
         extended_positions: Vec::new(),
         start_base_z: model.base_transform.translation.vector.z,
         smoothed_velocity_z: 0.0,
+        peak_smoothed_velocity_z: 0.0,
+        peak_vel_base_z: model.base_transform.translation.vector.z,
+        fd_state,
     })
 }
 
@@ -1062,18 +1093,15 @@ pub fn extract_jump_result(sim: &JumpSim, model: &RobotModel) -> JumpSimResult {
 
 /// Step the jump simulation by `dt` seconds.
 ///
-/// **Extension phase (quasi-dynamics):**
-/// 1. Compute per-joint gravity torque and utilisation; derive speed limit.
-/// 2. Interpolate each leg's joints from the user's starting pose toward
-///    the most-extended configuration (found by FK sweep) using `launch_profile`.
-/// 3. Re-compute FK and adjust `base_transform.z` so that feet stay
-///    at the initial ground level (foot-constraint).
-/// 4. Compute base velocity from finite differences of base Z.
-/// 5. Compute ground reaction force: $F_{GRF} = M (a_z + g)$.
-/// 6. Track per-joint torque and angular velocity peaks.
-/// 7. Launch into flight when GRF drops to zero (or extension completes).
+/// **Extension phase (forward dynamics):**
+/// 1. Compute desired joint torques: each contributing joint applies max
+///    effort in the direction from start→extended angles.
+/// 2. Solve constrained forward dynamics (CRBA + RNEA + contact Jacobians)
+///    to get joint accelerations **q̈** and ground reaction forces **λ**.
+/// 3. Semi-implicit Euler integration updates q, q̇, and the base transform.
+/// 4. Launch into flight when GRF drops to zero (feet naturally lift off).
 ///
-/// **Flight phase:** pure ballistic with the launch velocity obtained
+/// **Flight phase:** pure ballistic with the base velocity obtained
 /// at the end of the extension phase.
 ///
 /// Returns `true` while still running.
@@ -1086,114 +1114,80 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
 
     match sim.phase {
         JumpPhase::Extension => {
-            // --- 1. Compute torque-limited speed ratio ---
-            let gravity_torques = compute_gravity_torques(model);
-            let grav_map: HashMap<usize, f64> = gravity_torques
-                .iter()
-                .map(|t| (t.joint_idx, t.gravity_torque))
-                .collect();
+            // ===== Forward-dynamics based Extension phase =====
 
-            let mut worst_ratio = 0.0_f64;
+            // --- 1. Build target angles for the velocity controller ---
+            // The FD step() uses a null-space velocity controller that
+            // drives joints toward target_angles while keeping foot X
+            // positions at their initial values.
+            let mut target_angles: HashMap<usize, f64> = HashMap::new();
             sim.step_info.joint_utilisation.clear();
-            for lj in &sim.leg_joints {
-                let joint = &model.joints[lj.joint_idx];
-                if joint.effort <= 0.0 {
-                    continue;
-                }
-                let g_tau = grav_map.get(&lj.joint_idx).copied().unwrap_or(0.0);
-                let util = g_tau.abs() / joint.effort;
-                sim.step_info.joint_utilisation.push((lj.joint_idx, util, lj.contributes));
-                if lj.contributes && util > worst_ratio {
-                    worst_ratio = util;
-                }
-            }
-
-            let speed_scale = if worst_ratio >= 1.0 {
-                0.0_f32
-            } else if worst_ratio > 0.8 {
-                ((1.0 - worst_ratio) / 0.2) as f32
-            } else {
-                1.0_f32
-            };
-
-            // --- 2. Direct joint interpolation: start angles → extend angles ---
-            // Interpolate each joint directly from the user's starting pose
-            // to the most-extended configuration found by FK sweep.
-            let effective_time = sim.phase_time;
-            let t_frac = (effective_time / sim.extension_duration).clamp(0.0, 1.0);
-            let alpha = launch_profile(t_frac);
 
             for leg in &sim.legs {
                 for cj in leg.chain.iter() {
-                    if leg.locked_joint_indices.contains(&cj.joint_idx) {
+                    let ji = cj.joint_idx;
+                    if leg.locked_joint_indices.contains(&ji) {
                         continue;
                     }
-                    let ji = cj.joint_idx;
-                    let lower = model.joints[ji].lower as f32;
-                    let upper = model.joints[ji].upper as f32;
+                    let joint = &model.joints[ji];
+                    if joint.effort <= 0.0 {
+                        continue;
+                    }
 
-                    let start_val = if ji < leg.start_angles.len() {
-                        leg.start_angles[ji]
-                    } else {
-                        model.joint_positions[ji]
-                    };
                     let extend_val = if ji < leg.extend_angles.len() {
-                        leg.extend_angles[ji]
+                        leg.extend_angles[ji] as f64
                     } else {
-                        model.joint_positions[ji]
+                        model.joint_positions[ji] as f64
                     };
 
-                    let target_angle = start_val + (extend_val - start_val) * alpha;
-                    model.joint_positions[ji] = target_angle.clamp(lower, upper);
+                    target_angles.insert(ji, extend_val);
+                    sim.step_info.joint_utilisation.push((ji, 1.0, true));
                 }
             }
 
-            // Slow down the trajectory clock if torque-limited
-            if speed_scale < 1.0 {
-                let rollback = dt * (1.0 - speed_scale);
-                sim.phase_time -= rollback;
+            // --- 2. Forward dynamics step ---
+            // step() uses null-space velocity control + foot-X feedback
+            // to drive joints toward extend angles without foot sliding.
+            if let Some(ref mut fd) = sim.fd_state {
+                fd.step(model, &target_angles, dt as f64);
             }
 
-            // --- 3. FK with base.z=0 to find foot-relative positions ---
-            let saved_base = model.base_transform;
-            let mut temp_base = sim.saved_base_transform;
-            temp_base.translation.vector.z = 0.0;
-            model.base_transform = temp_base;
+            // --- 3. FK foot-constraint: recompute base.z so feet stay on ground ---
+            // After joint integration the leg shape has changed, so we
+            // recalculate the base height that keeps the average foot at
+            // the initial ground level — same logic as the old kinematic code.
+            {
+                let saved_base = model.base_transform;
+                let mut temp_base = sim.saved_base_transform;
+                temp_base.translation.vector.z = 0.0;
+                model.base_transform = temp_base;
 
-            let transforms = model.compute_transforms();
-            let foot_z_at_zero = avg_link_z(&transforms, &sim.ground_link_names);
+                let transforms = model.compute_transforms();
+                let foot_z_at_zero = avg_link_z(&transforms, &sim.ground_link_names);
 
-            // Restore base and set new Z so feet stay at ground level:
-            //   foot_world_z = base_z + foot_z_at_zero = initial_foot_z
-            //   ∴ base_z = initial_foot_z − foot_z_at_zero
-            let new_base_z = sim.initial_foot_z - foot_z_at_zero;
-            model.base_transform = saved_base;
-            model.base_transform.translation.vector.z = new_base_z;
+                // base_z such that foot_z = initial_foot_z
+                let new_base_z = sim.initial_foot_z - foot_z_at_zero;
+                model.base_transform = saved_base;
+                model.base_transform.translation.vector.z = new_base_z;
+            }
 
-            // --- 4. Compute velocity from finite differences ---
-            let current_z = new_base_z;
+            // --- 4. Velocity & GRF from finite differences ---
+            let current_z = model.base_transform.translation.vector.z;
             if let Some(prev_z) = sim.prev_base_z {
                 sim.base_velocity_z = (current_z - prev_z) / dt;
             }
             sim.prev_base_z = Some(current_z);
 
-            // Smooth velocity via exponential moving average to reduce
-            // noise from torque-limit rollback oscillation.
-            let smooth_alpha = (dt * 10.0).clamp(0.05, 0.5);
-            sim.smoothed_velocity_z = (1.0 - smooth_alpha) * sim.smoothed_velocity_z
-                + smooth_alpha * sim.base_velocity_z;
-
-            // --- 5. Compute acceleration and GRF ---
+            // GRF from Newton's 2nd law: GRF = M*(a + g)
             let accel_z = if let Some(prev_v) = sim.prev_velocity_z {
                 (sim.base_velocity_z - prev_v) / dt
             } else {
                 0.0
             };
             sim.prev_velocity_z = Some(sim.base_velocity_z);
+            let grf_z = sim.total_mass * (accel_z as f64 + G);
 
-            // Newton's 2nd law: M·a = GRF − M·g  →  GRF = M·(a + g)
-            let grf = sim.total_mass * (accel_z as f64 + G);
-            sim.step_info.grf_z = grf;
+            sim.step_info.grf_z = grf_z;
             sim.step_info.velocity_z = sim.base_velocity_z;
             sim.step_info.height =
                 current_z - sim.saved_base_transform.translation.vector.z;
@@ -1202,70 +1196,43 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
                 sim.max_height_reached = sim.step_info.height;
             }
 
-            // --- 6. Track per-joint dynamic torque and angular velocity ---
-            //
-            // For a grounded-leg robot, each joint in the leg supports the
-            // weight of the BODY-SIDE links (trunk, other legs, etc.), not its
-            // foot-side descendants.  The "body-side gravity torque" is:
-            //
-            //   τ_body = Σ_{body-side links} axis · ((com - joint) × m·g)
-            //          = τ_all_links − τ_descendants
-            //
-            // During push-off the effective gravity scales by GRF/(M·g):
-            //
-            //   τ_effective_i  =  |τ_body_side_i|  ×  GRF / (M·g)
-            //
-            // When enforce_torque_limits is on, if any joint's torque exceeds
-            // its effort limit we roll back phase_time.
+            // Smoothed velocity for launch
+            let smooth_alpha = (dt * 10.0).clamp(0.05, 0.5);
+            sim.smoothed_velocity_z = (1.0 - smooth_alpha) * sim.smoothed_velocity_z
+                + smooth_alpha * sim.base_velocity_z;
+
+            // Track peak positive velocity (the physical "launch point").
+            if sim.smoothed_velocity_z > sim.peak_smoothed_velocity_z {
+                sim.peak_smoothed_velocity_z = sim.smoothed_velocity_z;
+                sim.peak_vel_base_z = current_z;
+            }
+
+            // --- 4. Track per-joint torque peaks and angular velocity ---
             {
-                // Collect all unique joint indices from leg chains
                 let mut joint_indices: Vec<usize> = sim.legs.iter()
                     .flat_map(|leg| leg.chain.iter().map(|cj| cj.joint_idx))
                     .collect();
                 joint_indices.sort_unstable();
                 joint_indices.dedup();
 
-                // Compute body-side gravity torques at the post-IK configuration
                 let body_tau_map = compute_body_side_gravity_torques(model, &joint_indices);
 
-                // Effective-gravity scale factor
-                let static_weight = sim.total_mass * G; // M·g
+                let static_weight = sim.total_mass * G;
                 let grf_scale = if static_weight > 1e-6 {
-                    (grf / static_weight).abs()
+                    (grf_z / static_weight).abs()
                 } else {
                     1.0
                 };
 
-                // Worst-case overload ratio across all joints (> 1.0 means violated).
-                let mut worst_overload: f64 = 0.0;
-
                 for leg in &sim.legs {
                     for cj in leg.chain.iter() {
-                        // Body-side gravity torque, scaled by effective gravity
                         let body_tau = body_tau_map.get(&cj.joint_idx).copied().unwrap_or(0.0).abs();
                         let total_tau = body_tau * grf_scale;
-
                         let cur_angle = model.joint_positions[cj.joint_idx];
 
-                        // If enforcing torque limits, compute overload ratio
-                        if sim.enforce_torque_limits {
-                            let effort = model.joints[cj.joint_idx].effort;
-                            if effort > 0.0 {
-                                let ratio = total_tau / effort;
-                                if ratio > worst_overload {
-                                    worst_overload = ratio;
-                                }
-                            }
-                        }
-
-                        // Clamp recorded torque to effort limit when enforcing
                         let record_tau = if sim.enforce_torque_limits {
                             let effort = model.joints[cj.joint_idx].effort;
-                            if effort > 0.0 {
-                                total_tau.min(effort)
-                            } else {
-                                total_tau
-                            }
+                            if effort > 0.0 { total_tau.min(effort) } else { total_tau }
                         } else {
                             total_tau
                         };
@@ -1276,57 +1243,57 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
                             sim.peak_torque_angles.insert(cj.joint_idx, cur_angle as f64);
                         }
 
-                        // Track angular velocity (post-IK)
-                        if let Some(&prev) = sim.prev_joint_angles.get(&cj.joint_idx) {
-                            let omega = ((cur_angle - prev) / dt).abs() as f64;
-                            let v_entry = sim.peak_velocities.entry(cj.joint_idx).or_insert(0.0);
-                            if omega > *v_entry {
-                                *v_entry = omega;
-                                sim.peak_velocity_angles.insert(cj.joint_idx, cur_angle as f64);
-                            }
+                        // Angular velocity from fd_state
+                        let omega = sim.fd_state.as_ref()
+                            .and_then(|fd| fd.joint_velocities.get(&cj.joint_idx))
+                            .copied()
+                            .unwrap_or(0.0)
+                            .abs();
+                        let v_entry = sim.peak_velocities.entry(cj.joint_idx).or_insert(0.0);
+                        if omega > *v_entry {
+                            *v_entry = omega;
+                            sim.peak_velocity_angles.insert(cj.joint_idx, cur_angle as f64);
                         }
-                        sim.prev_joint_angles.insert(cj.joint_idx, cur_angle);
                     }
-                }
-
-                // --- Enforce: if dynamic torque exceeds limits, slow down ---
-                // Rolling back phase_time reduces extension speed next frame,
-                // which lowers acceleration and GRF, converging iteratively.
-                if sim.enforce_torque_limits && worst_overload > 1.0 {
-                    // Scale factor to bring the worst joint to exactly its limit.
-                    // We roll back phase_time proportionally so extension is slower.
-                    let scale = (1.0 / worst_overload) as f32;
-                    let rollback = dt * (1.0 - scale);
-                    sim.phase_time = (sim.phase_time - rollback).max(0.0);
                 }
             }
 
-            // --- 7. Transition: launch when extension is complete ---
-            // Launch when the planned extension duration elapses.
-            // GRF-based early launch (before half extension) was removed
-            // because finite-difference noise caused premature triggering.
-            // After 50% of extension, we also launch if GRF drops to zero
-            // (feet physically leave the ground near FK singularity).
-            let half_done = sim.phase_time >= sim.extension_duration * 0.5;
-            let should_launch = sim.phase_time >= sim.extension_duration
-                || (half_done && grf <= 0.0);
+            // --- 6. Transition: launch ---
+            // Launch when:
+            //  (a) Velocity has peaked and is now declining significantly
+            //      (the robot has reached its "push-off apex")
+            //  (b) Time-based fallback: extension_duration elapses
+            //
+            // The launch velocity is the peak smoothed velocity, not the
+            // current (possibly negative) velocity.  The launch Z is also
+            // taken from the peak-velocity moment.
+            let min_phase = 0.01_f32;
+            let peak_v = sim.peak_smoothed_velocity_z;
+            let vel_declining = peak_v > 0.05
+                && sim.smoothed_velocity_z < peak_v * 0.5
+                && sim.phase_time > min_phase;
+            let should_launch = vel_declining
+                || sim.phase_time >= sim.extension_duration;
 
             if should_launch {
-                // Launch velocity = smoothed finite-difference velocity.
-                // This ensures velocity continuity at the Extension→Flight
-                // boundary (no discontinuous jump in speed).
-                let launch_vel = sim.smoothed_velocity_z.max(0.0);
+                let launch_vel = sim.peak_smoothed_velocity_z.max(0.0);
+                let launch_z = sim.peak_vel_base_z;
 
-                // Always transition to Flight — if retract is enabled, the
-                // leg-tuck animation will run during flight (in the air).
-                sim.launch_z = current_z;
+                sim.launch_z = launch_z;
                 sim.launch_velocity = launch_vel;
+
+                // Restore model to peak-velocity base Z for a clean flight start
+                model.base_transform.translation.vector.z = launch_z;
+
                 let transforms_at_launch = model.compute_transforms();
                 sim.launch_foot_z = avg_link_z(&transforms_at_launch, &sim.ground_link_names);
 
                 if sim.enable_retract {
                     sim.extended_positions = model.joint_positions.clone();
                 }
+
+                // Drop the fd_state to free memory during flight
+                sim.fd_state = None;
 
                 sim.phase = JumpPhase::Flight;
                 sim.phase_time = 0.0;
@@ -1578,6 +1545,7 @@ fn update_utilisation(
 }
 
 /// Smooth step (Hermite interpolation) for animations.
+#[allow(dead_code)]
 fn smooth_step(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -1589,6 +1557,7 @@ fn smooth_step(t: f32) -> f32 {
 /// this profile starts from rest (derivative = 0 at t = 0) and reaches
 /// **maximum velocity** at t = 1 (derivative = π/2).  This ensures
 /// the robot has peak upward speed at the moment of launch.
+#[allow(dead_code)]
 fn launch_profile(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (std::f32::consts::FRAC_PI_2 * t).cos()
@@ -1765,6 +1734,36 @@ mod tests {
             "max_height should be positive, got {}",
             sim.max_height_reached,
         );
+    }
+
+    #[test]
+    fn rnea_bias_matches_gravity_torques() {
+        // Verify that RNEA bias (at zero velocity) matches compute_gravity_torques.
+        let mut model = load_namiashi();
+        // Set a crouch pose
+        for j in &model.joints {
+            let ji = model.joints.iter().position(|jj| jj.name == j.name).unwrap();
+            if j.name.contains("thigh") { model.joint_positions[ji] = 0.8; }
+            if j.name.contains("calf")  { model.joint_positions[ji] = -1.5; }
+        }
+
+        let grav = compute_gravity_torques(&model);
+        let joint_order = crate::rbd::dynamics::topological_joint_order(&model);
+        let zero_vel: HashMap<usize, f64> = HashMap::new();
+        let h = crate::rbd::dynamics::rnea_bias(&model, &joint_order, &zero_vel);
+
+        eprintln!("=== RNEA bias vs compute_gravity_torques ===");
+        for (col, &ji) in joint_order.iter().enumerate() {
+            let gt = grav.iter().find(|t| t.joint_idx == ji);
+            let rnea_val = h[col];
+            let gt_val = gt.map(|t| t.gravity_torque).unwrap_or(0.0);
+            let diff = (rnea_val - gt_val).abs();
+            eprintln!("  joint {:2} {:20}: rnea_h={:+.6} gt={:+.6} diff={:.6} effort={:.2}",
+                ji, model.joints[ji].name, rnea_val, gt_val, diff, model.joints[ji].effort);
+            assert!(diff < 0.1,
+                "RNEA bias doesn't match gravity torque for {}: rnea={:.6}, gt={:.6}",
+                model.joints[ji].name, rnea_val, gt_val);
+        }
     }
 
     #[test]

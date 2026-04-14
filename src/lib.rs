@@ -7,6 +7,7 @@ pub mod ik;
 pub mod isaac;
 pub mod mjcf;
 pub mod primitives;
+pub mod rbd;
 pub mod robot;
 pub mod sdf;
 pub mod usd;
