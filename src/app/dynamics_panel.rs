@@ -381,12 +381,29 @@ impl ArticaraApp {
                     }
                 });
 
-                // Stop button
+                // Playback controls
                 if sim_active {
                     ui.horizontal(|ui| {
                         if ui.button("⏹ Stop").clicked() {
-                            // Restore model state
+                            self.dynamics_sim_paused = false;
                             self.stop_dynamics_sim();
+                        }
+                        if self.dynamics_sim_paused {
+                            if ui.button("▶ Play").clicked() {
+                                self.dynamics_sim_paused = false;
+                            }
+                        } else {
+                            if ui.button("⏸ Pause").clicked() {
+                                self.dynamics_sim_paused = true;
+                            }
+                        }
+                        if ui.add_enabled(
+                            self.dynamics_sim_paused,
+                            egui::Button::new("⏭ Step"),
+                        ).on_hover_text("Advance one frame (1/60s)")
+                         .clicked()
+                        {
+                            self.dynamics_step_once = true;
                         }
                     });
                 }

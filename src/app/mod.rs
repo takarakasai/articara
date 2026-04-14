@@ -246,6 +246,10 @@ pub struct ArticaraApp {
     dynamics_sim: Option<dynamics::DynSim>,
     /// Simulation playback speed.
     dynamics_sim_speed: f32,
+    /// Whether the simulation is paused.
+    dynamics_sim_paused: bool,
+    /// Advance exactly one frame, then re-pause.
+    dynamics_step_once: bool,
     /// Last frame instant for delta-time calculation.
     dynamics_last_instant: Option<std::time::Instant>,
     /// Which axes the body link can move during flight (true = free).
@@ -356,6 +360,8 @@ impl ArticaraApp {
             dynamics_result: None,
             dynamics_sim: None,
             dynamics_sim_speed: 1.0,
+            dynamics_sim_paused: false,
+            dynamics_step_once: false,
             dynamics_last_instant: None,
             dynamics_launch_axes: [false, false, true], // Z-only by default
             dynamics_locked_joints: std::collections::HashSet::new(),
@@ -438,6 +444,17 @@ impl ArticaraApp {
                 return;
             }
         };
+
+        // Handle pause / step-once
+        if self.dynamics_sim_paused && !self.dynamics_step_once {
+            // Still paused — skip physics but keep last_instant fresh
+            self.dynamics_last_instant = Some(std::time::Instant::now());
+            return;
+        }
+        if self.dynamics_step_once {
+            self.dynamics_step_once = false;
+            self.dynamics_sim_paused = true; // re-pause after this frame
+        }
 
         // Compute delta-time
         let now = std::time::Instant::now();
