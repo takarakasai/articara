@@ -254,6 +254,8 @@ pub struct ArticaraApp {
     dynamics_locked_joints: std::collections::HashSet<String>,
     /// User-specified extension duration override (None = auto-compute).
     dynamics_extension_duration: Option<f32>,
+    /// Whether to enforce URDF effort (torque) limits during jump sim.
+    dynamics_enforce_torque_limits: bool,
     /// Last jump simulation result (displayed after sim ends).
     dynamics_sim_result: Option<dynamics::JumpSimResult>,
     /// Show the sim result dialog window.
@@ -356,6 +358,7 @@ impl ArticaraApp {
             dynamics_launch_axes: [false, false, true], // Z-only by default
             dynamics_locked_joints: std::collections::HashSet::new(),
             dynamics_extension_duration: None,
+            dynamics_enforce_torque_limits: false,
             dynamics_sim_result: None,
             show_sim_result_window: false,
             sim_config_path: String::new(),

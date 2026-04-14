@@ -166,6 +166,16 @@ impl ArticaraApp {
                     .on_hover_text("Extension phase duration. Auto = computed from joint velocities.");
                 }
 
+                // --- Torque limit enforcement ---
+                ui.checkbox(
+                    &mut self.dynamics_enforce_torque_limits,
+                    "Enforce torque limits",
+                )
+                .on_hover_text(
+                    "When checked, joints whose gravity torque approaches the URDF \
+                     effort limit will have their IK motion scaled back during extension.",
+                );
+
                 // --- Launch axes ---
                 ui.horizontal(|ui| {
                     ui.label("Launch:");
@@ -322,6 +332,7 @@ impl ArticaraApp {
                                 &self.dynamics_locked_joints,
                                 self.dynamics_launch_axes,
                                 self.dynamics_extension_duration,
+                                self.dynamics_enforce_torque_limits,
                             ) {
                                 self.dynamics_sim_result = None; // clear previous result
                                 self.dynamics_sim = Some(DynSim::Jump(sim));
@@ -1036,6 +1047,7 @@ pub(super) struct SimConfig {
     pub locked_joints: std::collections::HashSet<String>,
     pub ee_link: Option<String>,
     pub extension_duration: Option<f32>,
+    pub enforce_torque_limits: bool,
 }
 
 /// Save the current simulation configuration to a TOML file.
@@ -1069,6 +1081,10 @@ pub(super) fn save_sim_config(app: &ArticaraApp, path: &Path) -> Result<(), Stri
 
     if let Some(dur) = app.dynamics_extension_duration {
         writeln!(f, "extension_duration = {}", dur).map_err(|e| format!("{e}"))?;
+    }
+
+    if app.dynamics_enforce_torque_limits {
+        writeln!(f, "enforce_torque_limits = true").map_err(|e| format!("{e}"))?;
     }
 
     if !app.dynamics_locked_joints.is_empty() {
@@ -1106,6 +1122,7 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
         locked_joints: std::collections::HashSet::new(),
         ee_link: None,
         extension_duration: None,
+        enforce_torque_limits: false,
     };
 
     let mut section = SimSection::None;
@@ -1160,6 +1177,10 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
                             cfg.extension_duration = Some(v);
                         }
                     }
+                    "enforce_torque_limits" => {
+                        cfg.enforce_torque_limits =
+                            value == "true" || value == "1";
+                    }
                     _ => {}
                 },
                 SimSection::LockedJoints => {
@@ -1189,6 +1210,7 @@ pub(super) fn apply_sim_config(app: &mut ArticaraApp, cfg: SimConfig) {
     app.dynamics_locked_joints = cfg.locked_joints;
     app.dynamics_ee_link = cfg.ee_link;
     app.dynamics_extension_duration = cfg.extension_duration;
+    app.dynamics_enforce_torque_limits = cfg.enforce_torque_limits;
 }
 
 // ───────── TOML helpers ─────────

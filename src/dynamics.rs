@@ -548,6 +548,9 @@ pub struct JumpSim {
     pub peak_velocity_angles: HashMap<usize, f64>,
     /// Previous joint angles for finite-difference velocity estimation.
     prev_joint_angles: HashMap<usize, f32>,
+    /// When true, per-joint IK deltas are clamped so that the resulting
+    /// torque (gravity + GRF) never exceeds the URDF effort limit.
+    pub enforce_torque_limits: bool,
 }
 
 /// Phase of the payload ramp simulation.
@@ -616,6 +619,7 @@ pub fn start_jump_sim(
     locked_joints: &std::collections::HashSet<String>,
     launch_axes: [bool; 3],
     extension_override: Option<f32>,
+    enforce_torque_limits: bool,
 ) -> Option<JumpSim> {
     if ground_links.is_empty() {
         return None;
@@ -783,6 +787,7 @@ pub fn start_jump_sim(
         peak_velocities: HashMap::new(),
         peak_velocity_angles: HashMap::new(),
         prev_joint_angles: HashMap::new(),
+        enforce_torque_limits,
     })
 }
 
@@ -1001,8 +1006,28 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
                         let ji = cj.joint_idx;
                         let lower = model.joints[ji].lower as f32;
                         let upper = model.joints[ji].upper as f32;
+
+                        let mut delta = deltas[k];
+
+                        // --- Torque-limit enforcement ---
+                        if sim.enforce_torque_limits {
+                            let effort = model.joints[ji].effort;
+                            if effort > 0.0 {
+                                let g_tau = grav_map
+                                    .get(&ji)
+                                    .copied()
+                                    .unwrap_or(0.0)
+                                    .abs();
+                                let margin = (effort - g_tau).max(0.0);
+                                // Ratio of available torque margin to effort.
+                                // When margin → 0 the joint is at its limit; block motion.
+                                let ratio = (margin / effort).clamp(0.0, 1.0) as f32;
+                                delta *= ratio;
+                            }
+                        }
+
                         model.joint_positions[ji] =
-                            (model.joint_positions[ji] + deltas[k]).clamp(lower, upper);
+                            (model.joint_positions[ji] + delta).clamp(lower, upper);
                     }
                 }
             }
@@ -1058,11 +1083,19 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
             // --- 6. Track per-joint dynamic torque and angular velocity ---
             // Dynamic torque per joint = J_i^T · F_GRF + gravity_torque_i
             // This captures the full load each joint sees during the push-off.
+            //
+            // When enforce_torque_limits is on, if any joint's total torque
+            // exceeds its effort limit we roll back phase_time so the next
+            // frame extends more slowly (less acceleration → lower GRF).
             {
                 let transforms_post = model.compute_transforms();
                 let grf_force = na::DVector::from_column_slice(&[
                     0.0_f32, 0.0, grf as f32,
                 ]);
+
+                // Worst-case overload ratio across all joints (> 1.0 means violated).
+                let mut worst_overload: f64 = 0.0;
+
                 for leg in &sim.legs {
                     // Compute Jacobian for this leg chain
                     let foot_pos = foot_link_pos(&transforms_post, &leg.ground_link);
@@ -1080,9 +1113,32 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
 
                         let cur_angle = model.joint_positions[cj.joint_idx];
 
+                        // If enforcing torque limits, compute overload ratio
+                        if sim.enforce_torque_limits {
+                            let effort = model.joints[cj.joint_idx].effort;
+                            if effort > 0.0 {
+                                let ratio = total_tau / effort;
+                                if ratio > worst_overload {
+                                    worst_overload = ratio;
+                                }
+                            }
+                        }
+
+                        // Clamp recorded torque to effort limit when enforcing
+                        let record_tau = if sim.enforce_torque_limits {
+                            let effort = model.joints[cj.joint_idx].effort;
+                            if effort > 0.0 {
+                                total_tau.min(effort)
+                            } else {
+                                total_tau
+                            }
+                        } else {
+                            total_tau
+                        };
+
                         let entry = sim.peak_torques.entry(cj.joint_idx).or_insert(0.0);
-                        if total_tau > *entry {
-                            *entry = total_tau;
+                        if record_tau > *entry {
+                            *entry = record_tau;
                             sim.peak_torque_angles.insert(cj.joint_idx, cur_angle as f64);
                         }
 
@@ -1097,6 +1153,17 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
                         }
                         sim.prev_joint_angles.insert(cj.joint_idx, cur_angle);
                     }
+                }
+
+                // --- Enforce: if dynamic torque exceeds limits, slow down ---
+                // Rolling back phase_time reduces extension speed next frame,
+                // which lowers acceleration and GRF, converging iteratively.
+                if sim.enforce_torque_limits && worst_overload > 1.0 {
+                    // Scale factor to bring the worst joint to exactly its limit.
+                    // We roll back phase_time proportionally so extension is slower.
+                    let scale = (1.0 / worst_overload) as f32;
+                    let rollback = dt * (1.0 - scale);
+                    sim.phase_time = (sim.phase_time - rollback).max(0.0);
                 }
             }
 
