@@ -90,6 +90,100 @@ fn descendant_links(model: &RobotModel, start_link: &str) -> Vec<usize> {
     result
 }
 
+/// Compute the gravity torque about a joint axis from a specific set of links.
+///
+/// `joint_tf` is the world-space transform of the joint.
+/// `world_axis` is the joint axis in world frame.
+/// `link_indices` are the links to sum over.
+fn gravity_torque_from_links(
+    model: &RobotModel,
+    transforms: &HashMap<String, na::Isometry3<f32>>,
+    joint_pos: &na::Vector3<f64>,
+    world_axis: &na::Vector3<f64>,
+    joint_type: &str,
+    link_indices: &[usize],
+) -> f64 {
+    let mut tau = 0.0_f64;
+    for &li in link_indices {
+        let link = &model.links[li];
+        let mass = link.inertial.mass;
+        if mass <= 0.0 {
+            continue;
+        }
+        let link_tf = transforms
+            .get(&link.name)
+            .copied()
+            .unwrap_or(na::Isometry3::identity());
+        let com_local = link.inertial.origin.translation.vector.cast::<f64>();
+        let com_world = link_tf.cast::<f64>() * na::Point3::from(com_local);
+        let r = com_world.coords - joint_pos;
+        let f_grav = G_VEC * mass;
+
+        match joint_type {
+            "revolute" | "continuous" => {
+                tau += world_axis.dot(&r.cross(&f_grav));
+            }
+            "prismatic" => {
+                tau += world_axis.dot(&f_grav);
+            }
+            _ => {}
+        }
+    }
+    tau
+}
+
+/// For joints in a grounded leg, compute the "body-side" gravity torque.
+///
+/// In a grounded configuration (feet on the floor), each leg joint must support
+/// the weight of links on the **body side** (ancestor side), not the foot side.
+/// This is the opposite of the free-hanging serial-arm convention used by
+/// `compute_gravity_torques` (which sums descendants only).
+///
+/// body-side torque = total_gravity_torque(all links) − descendant_gravity_torque
+///
+/// Returns a map: joint_idx → body-side gravity torque (absolute value).
+fn compute_body_side_gravity_torques(
+    model: &RobotModel,
+    joints: &[usize],  // joint indices to compute for
+) -> HashMap<usize, f64> {
+    let transforms = model.compute_transforms();
+    let all_link_indices: Vec<usize> = (0..model.links.len()).collect();
+    let mut result = HashMap::new();
+
+    for &ji in joints {
+        let joint = &model.joints[ji];
+        let jt = joint.joint_type.as_str();
+        if jt == "fixed" {
+            continue;
+        }
+
+        let parent_tf = transforms
+            .get(&joint.parent_link)
+            .copied()
+            .unwrap_or(na::Isometry3::identity());
+        let joint_tf = parent_tf * joint.origin;
+        let joint_pos = joint_tf.translation.vector.cast::<f64>();
+        let world_axis = (joint_tf.rotation * joint.axis).cast::<f64>();
+
+        // Torque from ALL links
+        let tau_all = gravity_torque_from_links(
+            model, &transforms, &joint_pos, &world_axis, jt, &all_link_indices,
+        );
+
+        // Torque from descendant links (foot-side)
+        let descendants = descendant_links(model, &joint.child_link);
+        let tau_descendants = gravity_torque_from_links(
+            model, &transforms, &joint_pos, &world_axis, jt, &descendants,
+        );
+
+        // Body-side torque = total − descendants
+        let tau_body_side = tau_all - tau_descendants;
+        result.insert(ji, tau_body_side);
+    }
+
+    result
+}
+
 /// Compute static gravity torque at every movable joint.
 ///
 /// For revolute/continuous joints the result is in N·m; for prismatic joints in N.
@@ -1094,35 +1188,47 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
             }
 
             // --- 6. Track per-joint dynamic torque and angular velocity ---
-            // Dynamic torque per joint = J_i^T · F_GRF + gravity_torque_i
-            // This captures the full load each joint sees during the push-off.
             //
-            // When enforce_torque_limits is on, if any joint's total torque
-            // exceeds its effort limit we roll back phase_time so the next
-            // frame extends more slowly (less acceleration → lower GRF).
+            // For a grounded-leg robot, each joint in the leg supports the
+            // weight of the BODY-SIDE links (trunk, other legs, etc.), not its
+            // foot-side descendants.  The "body-side gravity torque" is:
+            //
+            //   τ_body = Σ_{body-side links} axis · ((com - joint) × m·g)
+            //          = τ_all_links − τ_descendants
+            //
+            // During push-off the effective gravity scales by GRF/(M·g):
+            //
+            //   τ_effective_i  =  |τ_body_side_i|  ×  GRF / (M·g)
+            //
+            // When enforce_torque_limits is on, if any joint's torque exceeds
+            // its effort limit we roll back phase_time.
             {
-                let transforms_post = model.compute_transforms();
-                let grf_force = na::DVector::from_column_slice(&[
-                    0.0_f32, 0.0, grf as f32,
-                ]);
+                // Collect all unique joint indices from leg chains
+                let mut joint_indices: Vec<usize> = sim.legs.iter()
+                    .flat_map(|leg| leg.chain.iter().map(|cj| cj.joint_idx))
+                    .collect();
+                joint_indices.sort_unstable();
+                joint_indices.dedup();
+
+                // Compute body-side gravity torques at the post-IK configuration
+                let body_tau_map = compute_body_side_gravity_torques(model, &joint_indices);
+
+                // Effective-gravity scale factor
+                let static_weight = sim.total_mass * G; // M·g
+                let grf_scale = if static_weight > 1e-6 {
+                    (grf / static_weight).abs()
+                } else {
+                    1.0
+                };
 
                 // Worst-case overload ratio across all joints (> 1.0 means violated).
                 let mut worst_overload: f64 = 0.0;
 
                 for leg in &sim.legs {
-                    // Compute Jacobian for this leg chain
-                    let foot_pos = foot_link_pos(&transforms_post, &leg.ground_link);
-                    let jac = crate::ik::compute_jacobian(
-                        model, &leg.chain, &transforms_post, &foot_pos,
-                    );
-                    // τ = J^T · F
-                    let tau_grf = jac.transpose() * &grf_force;
-
-                    for (k, cj) in leg.chain.iter().enumerate() {
-                        // Total torque = GRF-induced + gravity
-                        let grf_tau = tau_grf[k].abs() as f64;
-                        let g_tau = grav_map.get(&cj.joint_idx).copied().unwrap_or(0.0).abs();
-                        let total_tau = grf_tau + g_tau;
+                    for cj in leg.chain.iter() {
+                        // Body-side gravity torque, scaled by effective gravity
+                        let body_tau = body_tau_map.get(&cj.joint_idx).copied().unwrap_or(0.0).abs();
+                        let total_tau = body_tau * grf_scale;
 
                         let cur_angle = model.joint_positions[cj.joint_idx];
 
