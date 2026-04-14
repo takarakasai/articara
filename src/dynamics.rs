@@ -431,8 +431,12 @@ pub struct JointPeakInfo {
     pub joint_name: String,
     /// Peak absolute gravity torque seen during extension (N·m).
     pub peak_torque: f64,
+    /// Joint angle (rad) at the moment peak torque was recorded.
+    pub peak_torque_angle: f64,
     /// Peak absolute angular velocity seen during extension (rad/s).
     pub peak_velocity: f64,
+    /// Joint angle (rad) at the moment peak velocity was recorded.
+    pub peak_velocity_angle: f64,
     /// Whether this joint contributed to vertical push-off.
     pub contributes: bool,
 }
@@ -536,8 +540,12 @@ pub struct JumpSim {
     // --- per-joint peak tracking ---
     /// Peak absolute gravity torque per joint (joint_idx → peak N·m).
     pub peak_torques: HashMap<usize, f64>,
+    /// Joint angle at the moment peak torque was recorded.
+    pub peak_torque_angles: HashMap<usize, f64>,
     /// Peak absolute angular velocity per joint (joint_idx → peak rad/s).
     pub peak_velocities: HashMap<usize, f64>,
+    /// Joint angle at the moment peak velocity was recorded.
+    pub peak_velocity_angles: HashMap<usize, f64>,
     /// Previous joint angles for finite-difference velocity estimation.
     prev_joint_angles: HashMap<usize, f32>,
 }
@@ -771,7 +779,9 @@ pub fn start_jump_sim(
         prev_base_z: None,
         prev_velocity_z: None,
         peak_torques: HashMap::new(),
+        peak_torque_angles: HashMap::new(),
         peak_velocities: HashMap::new(),
+        peak_velocity_angles: HashMap::new(),
         prev_joint_angles: HashMap::new(),
     })
 }
@@ -872,7 +882,9 @@ pub fn extract_jump_result(sim: &JumpSim, model: &RobotModel) -> JumpSimResult {
                 joint_idx: lj.joint_idx,
                 joint_name: jname,
                 peak_torque: sim.peak_torques.get(&lj.joint_idx).copied().unwrap_or(0.0),
+                peak_torque_angle: sim.peak_torque_angles.get(&lj.joint_idx).copied().unwrap_or(0.0),
                 peak_velocity: sim.peak_velocities.get(&lj.joint_idx).copied().unwrap_or(0.0),
+                peak_velocity_angle: sim.peak_velocity_angles.get(&lj.joint_idx).copied().unwrap_or(0.0),
                 contributes: lj.contributes,
             }
         })
@@ -1066,18 +1078,21 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
                         let g_tau = grav_map.get(&cj.joint_idx).copied().unwrap_or(0.0).abs();
                         let total_tau = grf_tau + g_tau;
 
+                        let cur_angle = model.joint_positions[cj.joint_idx];
+
                         let entry = sim.peak_torques.entry(cj.joint_idx).or_insert(0.0);
                         if total_tau > *entry {
                             *entry = total_tau;
+                            sim.peak_torque_angles.insert(cj.joint_idx, cur_angle as f64);
                         }
 
                         // Track angular velocity (post-IK)
-                        let cur_angle = model.joint_positions[cj.joint_idx];
                         if let Some(&prev) = sim.prev_joint_angles.get(&cj.joint_idx) {
                             let omega = ((cur_angle - prev) / dt).abs() as f64;
                             let v_entry = sim.peak_velocities.entry(cj.joint_idx).or_insert(0.0);
                             if omega > *v_entry {
                                 *v_entry = omega;
+                                sim.peak_velocity_angles.insert(cj.joint_idx, cur_angle as f64);
                             }
                         }
                         sim.prev_joint_angles.insert(cj.joint_idx, cur_angle);

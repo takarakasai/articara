@@ -545,13 +545,15 @@ impl ArticaraApp {
                         .max_height(300.0)
                         .show(ui, |ui| {
                             egui::Grid::new("sim_result_dialog_grid")
-                                .num_columns(4)
+                                .num_columns(6)
                                 .striped(true)
-                                .min_col_width(60.0)
+                                .min_col_width(55.0)
                                 .show(ui, |ui| {
                                     ui.strong("Joint");
-                                    ui.strong("Peak \u{03c4} (N\u{00b7}m)");
-                                    ui.strong("Peak \u{03c9} (rad/s)");
+                                    ui.strong("Peak τ (N·m)");
+                                    ui.strong("θ@τ (deg)");
+                                    ui.strong("Peak ω (rad/s)");
+                                    ui.strong("θ@ω (deg)");
                                     ui.strong("Role");
                                     ui.end_row();
 
@@ -569,8 +571,22 @@ impl ArticaraApp {
                                         );
                                         ui.label(
                                             egui::RichText::new(format!(
+                                                "{:.1}",
+                                                jp.peak_torque_angle.to_degrees()
+                                            ))
+                                            .monospace(),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!(
                                                 "{:.3}",
                                                 jp.peak_velocity
+                                            ))
+                                            .monospace(),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{:.1}",
+                                                jp.peak_velocity_angle.to_degrees()
                                             ))
                                             .monospace(),
                                         );
