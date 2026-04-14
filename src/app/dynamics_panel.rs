@@ -176,6 +176,16 @@ impl ArticaraApp {
                      effort limit will have their IK motion scaled back during extension.",
                 );
 
+                // --- Retract after extension ---
+                ui.checkbox(
+                    &mut self.dynamics_enable_retract,
+                    "Retract after extend",
+                )
+                .on_hover_text(
+                    "After full extension, rapidly pull legs back to the initial pose \
+                     while still on the ground. This adds upward momentum for more hang time.",
+                );
+
                 // --- Launch axes ---
                 ui.horizontal(|ui| {
                     ui.label("Launch:");
@@ -333,6 +343,7 @@ impl ArticaraApp {
                                 self.dynamics_launch_axes,
                                 self.dynamics_extension_duration,
                                 self.dynamics_enforce_torque_limits,
+                                self.dynamics_enable_retract,
                             ) {
                                 self.dynamics_sim_result = None; // clear previous result
                                 self.dynamics_sim = Some(DynSim::Jump(sim));
@@ -399,6 +410,7 @@ impl ArticaraApp {
                 ui.separator();
                 let phase_str = match sim.phase {
                     JumpPhase::Extension => "🦵 Extension",
+                    JumpPhase::Retract => "🔄 Retract",
                     JumpPhase::Flight => "🚀 Flight",
                     JumpPhase::Landed => "🛬 Landed",
                 };
@@ -418,7 +430,7 @@ impl ArticaraApp {
                     sim.step_info.velocity_z,
                 ));
 
-                if sim.phase == JumpPhase::Extension {
+                if sim.phase == JumpPhase::Extension || sim.phase == JumpPhase::Retract {
                     // GRF readout
                     let grf_color = if sim.step_info.grf_z >= 0.0 {
                         egui::Color32::from_rgb(100, 200, 100)
@@ -430,8 +442,13 @@ impl ArticaraApp {
                         ui.colored_label(grf_color, format!("{:.1} N", sim.step_info.grf_z));
                     });
 
-                    let pct = (sim.phase_time / sim.extension_duration * 100.0).min(100.0);
-                    ui.label(format!("Extension: {:.0}%", pct));
+                    if sim.phase == JumpPhase::Extension {
+                        let pct = (sim.phase_time / sim.extension_duration * 100.0).min(100.0);
+                        ui.label(format!("Extension: {:.0}%", pct));
+                    } else {
+                        let pct = (sim.phase_time / sim.retract_duration * 100.0).min(100.0);
+                        ui.label(format!("Retract: {:.0}%", pct));
+                    }
                 }
 
                 // Progress bar
@@ -444,12 +461,14 @@ impl ArticaraApp {
                 } else {
                     0.5
                 };
-                let total_dur = sim.extension_duration + est_flight + sim.landed_hold;
+                let retract_dur = if sim.enable_retract { sim.retract_duration } else { 0.0 };
+                let total_dur = sim.extension_duration + retract_dur + est_flight + sim.landed_hold;
                 let elapsed = match sim.phase {
                     JumpPhase::Extension => sim.phase_time,
-                    JumpPhase::Flight => sim.extension_duration + sim.phase_time,
+                    JumpPhase::Retract => sim.extension_duration + sim.phase_time,
+                    JumpPhase::Flight => sim.extension_duration + retract_dur + sim.phase_time,
                     JumpPhase::Landed => {
-                        sim.extension_duration + est_flight + sim.phase_time
+                        sim.extension_duration + retract_dur + est_flight + sim.phase_time
                     }
                 };
                 ui.add(
@@ -1048,6 +1067,7 @@ pub(super) struct SimConfig {
     pub ee_link: Option<String>,
     pub extension_duration: Option<f32>,
     pub enforce_torque_limits: bool,
+    pub enable_retract: bool,
 }
 
 /// Save the current simulation configuration to a TOML file.
@@ -1087,6 +1107,10 @@ pub(super) fn save_sim_config(app: &ArticaraApp, path: &Path) -> Result<(), Stri
         writeln!(f, "enforce_torque_limits = true").map_err(|e| format!("{e}"))?;
     }
 
+    if app.dynamics_enable_retract {
+        writeln!(f, "enable_retract = true").map_err(|e| format!("{e}"))?;
+    }
+
     if !app.dynamics_locked_joints.is_empty() {
         writeln!(f).map_err(|e| format!("{e}"))?;
         writeln!(f, "[jump.locked_joints]").map_err(|e| format!("{e}"))?;
@@ -1123,6 +1147,7 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
         ee_link: None,
         extension_duration: None,
         enforce_torque_limits: false,
+        enable_retract: false,
     };
 
     let mut section = SimSection::None;
@@ -1181,6 +1206,10 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
                         cfg.enforce_torque_limits =
                             value == "true" || value == "1";
                     }
+                    "enable_retract" => {
+                        cfg.enable_retract =
+                            value == "true" || value == "1";
+                    }
                     _ => {}
                 },
                 SimSection::LockedJoints => {
@@ -1211,6 +1240,7 @@ pub(super) fn apply_sim_config(app: &mut ArticaraApp, cfg: SimConfig) {
     app.dynamics_ee_link = cfg.ee_link;
     app.dynamics_extension_duration = cfg.extension_duration;
     app.dynamics_enforce_torque_limits = cfg.enforce_torque_limits;
+    app.dynamics_enable_retract = cfg.enable_retract;
 }
 
 // ───────── TOML helpers ─────────

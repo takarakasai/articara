@@ -405,6 +405,9 @@ pub fn analyze(
 pub enum JumpPhase {
     /// Joints are extending (push-off). Feet stay on ground.
     Extension,
+    /// Joints are retracting (pulling legs back) while still on ground.
+    /// This adds upward momentum by rapidly lifting the limbs.
+    Retract,
     /// Robot is in ballistic flight (base moves up then down).
     Flight,
     /// Landed; briefly hold, then restore.
@@ -551,6 +554,12 @@ pub struct JumpSim {
     /// When true, per-joint IK deltas are clamped so that the resulting
     /// torque (gravity + GRF) never exceeds the URDF effort limit.
     pub enforce_torque_limits: bool,
+    /// Whether to retract (pull legs back) after extension before flight.
+    pub enable_retract: bool,
+    /// Duration of the retract phase (s). Shorter = more aggressive.
+    pub retract_duration: f32,
+    /// Joint positions at the end of extension (snapshot for retract interpolation).
+    pub extended_positions: Vec<f32>,
 }
 
 /// Phase of the payload ramp simulation.
@@ -620,6 +629,7 @@ pub fn start_jump_sim(
     launch_axes: [bool; 3],
     extension_override: Option<f32>,
     enforce_torque_limits: bool,
+    enable_retract: bool,
 ) -> Option<JumpSim> {
     if ground_links.is_empty() {
         return None;
@@ -788,6 +798,9 @@ pub fn start_jump_sim(
         peak_velocity_angles: HashMap::new(),
         prev_joint_angles: HashMap::new(),
         enforce_torque_limits,
+        enable_retract,
+        retract_duration: extension_duration * 0.3, // retract 3× faster than extend
+        extended_positions: Vec::new(),
     })
 }
 
@@ -1167,11 +1180,87 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
                 }
             }
 
-            // --- 7. Transition to flight when extension complete ---
+            // --- 7. Transition when extension complete ---
             if sim.phase_time >= sim.extension_duration {
+                if sim.enable_retract {
+                    // Snapshot extended joint positions for retract interpolation
+                    sim.extended_positions = model.joint_positions.clone();
+                    sim.phase = JumpPhase::Retract;
+                    sim.phase_time = 0.0;
+                    // Keep prev_base_z/velocity for continuous velocity tracking
+                } else {
+                    sim.launch_z = current_z;
+                    sim.launch_velocity = sim.base_velocity_z;
+                    let transforms_at_launch = model.compute_transforms();
+                    sim.launch_foot_z = avg_link_z(&transforms_at_launch, &sim.ground_link_names);
+                    sim.phase = JumpPhase::Flight;
+                    sim.phase_time = 0.0;
+                    sim.prev_base_z = None;
+                    sim.prev_velocity_z = None;
+                }
+            }
+            true
+        }
+
+        JumpPhase::Retract => {
+            // Rapidly interpolate joints from extended_positions back to saved_positions.
+            // Feet stay on the ground (foot constraint), so pulling the legs up
+            // pushes the body higher, adding more launch velocity.
+            let t_frac = (sim.phase_time / sim.retract_duration).clamp(0.0, 1.0);
+            // Use a profile that starts fast and decelerates
+            let alpha = t_frac; // linear is fine; most momentum comes early
+
+            // Interpolate each joint
+            for lj in &sim.leg_joints {
+                let ji = lj.joint_idx;
+                if ji < sim.extended_positions.len() && ji < sim.saved_positions.len() {
+                    let ext = sim.extended_positions[ji];
+                    let sav = sim.saved_positions[ji];
+                    let lower = model.joints[ji].lower as f32;
+                    let upper = model.joints[ji].upper as f32;
+                    model.joint_positions[ji] =
+                        (ext + (sav - ext) * alpha).clamp(lower, upper);
+                }
+            }
+
+            // --- Foot constraint: adjust base Z so feet stay at ground level ---
+            let saved_base = model.base_transform;
+            let mut temp_base = sim.saved_base_transform;
+            temp_base.translation.vector.z = 0.0;
+            model.base_transform = temp_base;
+
+            let transforms = model.compute_transforms();
+            let foot_z_at_zero = avg_link_z(&transforms, &sim.ground_link_names);
+            let new_base_z = sim.initial_foot_z - foot_z_at_zero;
+            model.base_transform = saved_base;
+            model.base_transform.translation.vector.z = new_base_z;
+
+            // --- Velocity tracking via finite differences ---
+            let current_z = new_base_z;
+            if let Some(prev_z) = sim.prev_base_z {
+                sim.base_velocity_z = (current_z - prev_z) / dt;
+            }
+            sim.prev_base_z = Some(current_z);
+
+            if let Some(prev_v) = sim.prev_velocity_z {
+                let _accel_z = (sim.base_velocity_z - prev_v) / dt;
+            }
+            sim.prev_velocity_z = Some(sim.base_velocity_z);
+
+            sim.step_info.velocity_z = sim.base_velocity_z;
+            sim.step_info.height =
+                current_z - sim.saved_base_transform.translation.vector.z;
+            // GRF during retract: body is still on ground
+            sim.step_info.grf_z = sim.total_mass * G;
+
+            if sim.step_info.height > sim.max_height_reached {
+                sim.max_height_reached = sim.step_info.height;
+            }
+
+            // --- Transition to flight when retract complete ---
+            if sim.phase_time >= sim.retract_duration {
                 sim.launch_z = current_z;
                 sim.launch_velocity = sim.base_velocity_z;
-                // Compute foot Z at launch for landing detection
                 let transforms_at_launch = model.compute_transforms();
                 sim.launch_foot_z = avg_link_z(&transforms_at_launch, &sim.ground_link_names);
                 sim.phase = JumpPhase::Flight;

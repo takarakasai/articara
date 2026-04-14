@@ -256,6 +256,8 @@ pub struct ArticaraApp {
     dynamics_extension_duration: Option<f32>,
     /// Whether to enforce URDF effort (torque) limits during jump sim.
     dynamics_enforce_torque_limits: bool,
+    /// Whether to retract (pull legs back) after extension for extra hang time.
+    dynamics_enable_retract: bool,
     /// Last jump simulation result (displayed after sim ends).
     dynamics_sim_result: Option<dynamics::JumpSimResult>,
     /// Show the sim result dialog window.
@@ -359,6 +361,7 @@ impl ArticaraApp {
             dynamics_locked_joints: std::collections::HashSet::new(),
             dynamics_extension_duration: None,
             dynamics_enforce_torque_limits: false,
+            dynamics_enable_retract: false,
             dynamics_sim_result: None,
             show_sim_result_window: false,
             sim_config_path: String::new(),
