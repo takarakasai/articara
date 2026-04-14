@@ -586,6 +586,7 @@ impl ArticaraApp {
 
 // ===== UI sub-modules =====
 mod menu_bar;
+mod title_bar;
 mod tree_panel;
 mod joint_sliders;
 mod properties_panel;
@@ -657,6 +658,13 @@ impl eframe::App for ArticaraApp {
 
         // --- Step dynamics simulation (if active) ---
         self.step_dynamics_sim();
+
+        // Custom title bar (replaces OS window decorations)
+        egui::Panel::top("title_bar")
+            .height_range(28.0..=28.0)
+            .show_inside(ui, |ui| {
+                self.draw_title_bar(ui, &ctx);
+            });
 
         // Top panel: menu / file selector
         egui::Panel::top("menu_bar").show_inside(ui, |ui| {

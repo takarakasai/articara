@@ -63,7 +63,7 @@ impl ArticaraApp {
 
             // --- Joint sliders (collapsible) ---
             let header = egui::CollapsingHeader::new("Joint Positions")
-                .default_open(true)
+                .default_open(false)
                 .show(ui, |ui| {
                     for i in 0..model.joints.len() {
                         if model.joints[i].joint_type == "fixed" {
