@@ -1068,6 +1068,8 @@ pub(super) struct SimConfig {
     pub extension_duration: Option<f32>,
     pub enforce_torque_limits: bool,
     pub enable_retract: bool,
+    /// Joint positions that define the starting (crouched) pose.
+    pub start_pose: Vec<(String, f32)>,
 }
 
 /// Save the current simulation configuration to a TOML file.
@@ -1130,6 +1132,20 @@ pub(super) fn save_sim_config(app: &ArticaraApp, path: &Path) -> Result<(), Stri
         }
     }
 
+    // Save current joint positions as the starting pose
+    if let Some(ref model) = app.model {
+        writeln!(f).map_err(|e| format!("{e}"))?;
+        writeln!(f, "[jump.start_pose]").map_err(|e| format!("{e}"))?;
+        for (ji, joint) in model.joints.iter().enumerate() {
+            if joint.joint_type == "fixed" {
+                continue;
+            }
+            let angle = model.joint_positions[ji];
+            let key = toml_key(&joint.name);
+            writeln!(f, "{} = {}", key, angle).map_err(|e| format!("{e}"))?;
+        }
+    }
+
     Ok(())
 }
 
@@ -1148,6 +1164,7 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
         extension_duration: None,
         enforce_torque_limits: false,
         enable_retract: false,
+        start_pose: Vec::new(),
     };
 
     let mut section = SimSection::None;
@@ -1165,6 +1182,10 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
         }
         if line == "[jump.locked_joints]" {
             section = SimSection::LockedJoints;
+            continue;
+        }
+        if line == "[jump.start_pose]" {
+            section = SimSection::StartPose;
             continue;
         }
         if line == "[payload]" {
@@ -1217,6 +1238,11 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
                         cfg.locked_joints.insert(key.to_string());
                     }
                 }
+                SimSection::StartPose => {
+                    if let Ok(v) = value.parse::<f32>() {
+                        cfg.start_pose.push((key.to_string(), v));
+                    }
+                }
                 SimSection::Payload => {
                     if key == "ee_link" {
                         cfg.ee_link = Some(strip_quotes(value).to_string());
@@ -1241,6 +1267,17 @@ pub(super) fn apply_sim_config(app: &mut ArticaraApp, cfg: SimConfig) {
     app.dynamics_extension_duration = cfg.extension_duration;
     app.dynamics_enforce_torque_limits = cfg.enforce_torque_limits;
     app.dynamics_enable_retract = cfg.enable_retract;
+
+    // Apply saved joint positions (start pose) to the model
+    if !cfg.start_pose.is_empty() {
+        if let Some(ref mut model) = app.model {
+            for (name, angle) in &cfg.start_pose {
+                if let Some(ji) = model.joints.iter().position(|j| j.name == *name) {
+                    model.joint_positions[ji] = *angle;
+                }
+            }
+        }
+    }
 }
 
 // ───────── TOML helpers ─────────
@@ -1250,6 +1287,7 @@ enum SimSection {
     None,
     Jump,
     LockedJoints,
+    StartPose,
     Payload,
     Unknown,
 }
