@@ -248,8 +248,8 @@ pub struct ArticaraApp {
     dynamics_sim_speed: f32,
     /// Whether the simulation is paused.
     dynamics_sim_paused: bool,
-    /// Advance exactly one frame, then re-pause.
-    dynamics_step_once: bool,
+    /// When `Some(dt)`, advance by exactly `dt` seconds then re-pause.
+    dynamics_step_dt: Option<f32>,
     /// Last frame instant for delta-time calculation.
     dynamics_last_instant: Option<std::time::Instant>,
     /// Which axes the body link can move during flight (true = free).
@@ -266,6 +266,10 @@ pub struct ArticaraApp {
     dynamics_sim_result: Option<dynamics::JumpSimResult>,
     /// Show the sim result dialog window.
     show_sim_result_window: bool,
+    /// Link to track in the dynamics graph (position/velocity/acceleration).
+    dynamics_graph_link: Option<String>,
+    /// Whether to show the dynamics graph window.
+    show_dynamics_graph: bool,
     /// File path for sim config save/load.
     sim_config_path: String,
     // --- Posture save/load ---
@@ -361,7 +365,7 @@ impl ArticaraApp {
             dynamics_sim: None,
             dynamics_sim_speed: 1.0,
             dynamics_sim_paused: false,
-            dynamics_step_once: false,
+            dynamics_step_dt: None,
             dynamics_last_instant: None,
             dynamics_launch_axes: [false, false, true], // Z-only by default
             dynamics_locked_joints: std::collections::HashSet::new(),
@@ -370,6 +374,8 @@ impl ArticaraApp {
             dynamics_enable_retract: false,
             dynamics_sim_result: None,
             show_sim_result_window: false,
+            dynamics_graph_link: None,
+            show_dynamics_graph: false,
             sim_config_path: String::new(),
             posture_path: String::new(),
             dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),
@@ -446,23 +452,27 @@ impl ArticaraApp {
         };
 
         // Handle pause / step-once
-        if self.dynamics_sim_paused && !self.dynamics_step_once {
+        if self.dynamics_sim_paused && self.dynamics_step_dt.is_none() {
             // Still paused — skip physics but keep last_instant fresh
             self.dynamics_last_instant = Some(std::time::Instant::now());
             return;
         }
-        if self.dynamics_step_once {
-            self.dynamics_step_once = false;
-            self.dynamics_sim_paused = true; // re-pause after this frame
-        }
 
         // Compute delta-time
         let now = std::time::Instant::now();
-        let dt = match self.dynamics_last_instant {
-            Some(prev) => now.duration_since(prev).as_secs_f32().min(0.05), // cap at 50ms
-            None => 0.016, // first frame ≈ 60fps
+        let dt = if let Some(step_dt) = self.dynamics_step_dt.take() {
+            // Fixed step requested — use exact dt, then re-pause
+            self.dynamics_sim_paused = true;
+            self.dynamics_last_instant = Some(now);
+            step_dt
+        } else {
+            let d = match self.dynamics_last_instant {
+                Some(prev) => now.duration_since(prev).as_secs_f32().min(0.05),
+                None => 0.016,
+            };
+            self.dynamics_last_instant = Some(now);
+            d
         };
-        self.dynamics_last_instant = Some(now);
 
         let still_running = match sim {
             dynamics::DynSim::Jump(js) => {
@@ -728,6 +738,9 @@ impl eframe::App for ArticaraApp {
 
         // --- Sim result dialog ---
         self.draw_sim_result_window(&ctx);
+
+        // --- Dynamics graph window ---
+        self.draw_dynamics_graph_window(&ctx);
 
         // --- File dialogs ---
         self.process_file_dialogs(&ctx);

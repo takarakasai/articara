@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use super::ArticaraApp;
-use crate::dynamics::{self, StaticAnalysis, DynSim, JumpPhase, JumpSimResult, PayloadPhase};
+use crate::dynamics::{self, StaticAnalysis, DynSim, JumpPhase, JumpSimResult, PayloadPhase, SimGraphData};
 
 impl ArticaraApp {
     pub(super) fn draw_dynamics_panel(&mut self, ui: &mut egui::Ui) {
@@ -302,6 +302,40 @@ impl ArticaraApp {
 
                 ui.separator();
 
+                // --- Graph link selector ---
+                ui.horizontal(|ui| {
+                    ui.label("Graph:");
+                    let graph_label = self
+                        .dynamics_graph_link
+                        .as_deref()
+                        .unwrap_or("(Body link)")
+                        .to_string();
+                    egui::ComboBox::from_id_salt("dynamics_graph_link")
+                        .selected_text(&graph_label)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(
+                                    self.dynamics_graph_link.is_none(),
+                                    "(Body link)",
+                                )
+                                .clicked()
+                            {
+                                self.dynamics_graph_link = None;
+                            }
+                            for name in &link_names {
+                                let sel =
+                                    self.dynamics_graph_link.as_deref() == Some(name.as_str());
+                                if ui.selectable_label(sel, name).clicked() {
+                                    self.dynamics_graph_link = Some(name.clone());
+                                }
+                            }
+                        });
+                })
+                .response
+                .on_hover_text("Link whose position/velocity/acceleration to plot");
+
+                ui.separator();
+
                 // --- Simulation controls ---
                 let sim_active = self.dynamics_sim.is_some();
 
@@ -327,9 +361,9 @@ impl ArticaraApp {
                     // Jump simulation
                     let can_jump = !sim_active && !self.dynamics_ground_links.is_empty();
                     if ui
-                        .add_enabled(can_jump, egui::Button::new("🦘 Play Jump"))
+                        .add_enabled(can_jump, egui::Button::new("🦘 Jump"))
                         .on_hover_text(
-                            "Animate the robot jumping: extend legs → ballistic flight → land",
+                            "Prepare jump simulation (use ▶ Play or ⏭ Step to start)",
                         )
                         .clicked()
                     {
@@ -344,9 +378,11 @@ impl ArticaraApp {
                                 self.dynamics_extension_duration,
                                 self.dynamics_enforce_torque_limits,
                                 self.dynamics_enable_retract,
+                                self.dynamics_graph_link.as_deref(),
                             ) {
                                 self.dynamics_sim_result = None; // clear previous result
                                 self.dynamics_sim = Some(DynSim::Jump(sim));
+                                self.dynamics_sim_paused = true; // start paused
                             } else {
                                 self.status_message =
                                     "Cannot start jump sim (no leg joints with effort limits?)"
@@ -397,15 +433,25 @@ impl ArticaraApp {
                                 self.dynamics_sim_paused = true;
                             }
                         }
-                        if ui.add_enabled(
-                            self.dynamics_sim_paused,
-                            egui::Button::new("⏭ Step"),
-                        ).on_hover_text("Advance one frame (1/60s)")
-                         .clicked()
-                        {
-                            self.dynamics_step_once = true;
-                        }
                     });
+                    // Step buttons (only when paused)
+                    if self.dynamics_sim_paused {
+                        ui.horizontal(|ui| {
+                            ui.label("Step:");
+                            for (label, dt) in [
+                                ("1ms",  0.001_f32),
+                                ("10ms", 0.01_f32),
+                                ("100ms", 0.1_f32),
+                            ] {
+                                if ui.button(format!("⏭ {}", label))
+                                    .on_hover_text(format!("Advance {} then pause", label))
+                                    .clicked()
+                                {
+                                    self.dynamics_step_dt = Some(dt);
+                                }
+                            }
+                        });
+                    }
                 }
 
                 // --- Live simulation status ---
@@ -553,9 +599,10 @@ impl ArticaraApp {
         egui::Window::new("📋 Jump Simulation Result")
             .open(&mut open)
             .resizable(true)
-            .default_width(420.0)
-            .default_height(350.0)
+            .default_width(520.0)
+            .default_height(700.0)
             .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
                 // --- Summary ---
                 ui.horizontal(|ui| {
                     ui.label(
@@ -659,6 +706,90 @@ impl ArticaraApp {
                 if ui.button("Close").clicked() {
                     close_clicked = true;
                 }
+
+                // --- Graph plots (position / velocity / acceleration) ---
+                if !result.graph_data.time.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new(
+                        format!("📈 {} — 1 ms resolution", result.graph_data.link_name)
+                    ).strong().size(13.0));
+                    ui.add_space(2.0);
+
+                    let gd = &result.graph_data;
+                    let n = gd.time.len();
+
+                    let to_points = |vals: &[f32]| -> egui_plot::PlotPoints {
+                        egui_plot::PlotPoints::new(
+                            (0..n)
+                                .map(|i| [gd.time[i] as f64 * 1000.0, vals[i] as f64])
+                                .collect::<Vec<_>>(),
+                        )
+                    };
+
+                    // Position
+                    ui.label(egui::RichText::new("Position (m)").strong());
+                    egui_plot::Plot::new("result_pos_plot")
+                        .height(150.0)
+                        .x_axis_label("Time (ms)")
+                        .legend(egui_plot::Legend::default())
+                        .show(ui, |plot_ui| {
+                            plot_ui.line(
+                                egui_plot::Line::new("X", to_points(&gd.pos_x))
+                                    .color(egui::Color32::from_rgb(255, 100, 100)),
+                            );
+                            plot_ui.line(
+                                egui_plot::Line::new("Y", to_points(&gd.pos_y))
+                                    .color(egui::Color32::from_rgb(100, 255, 100)),
+                            );
+                            plot_ui.line(
+                                egui_plot::Line::new("Z", to_points(&gd.pos_z))
+                                    .color(egui::Color32::from_rgb(100, 100, 255)),
+                            );
+                        });
+
+                    // Velocity
+                    ui.label(egui::RichText::new("Velocity (m/s)").strong());
+                    egui_plot::Plot::new("result_vel_plot")
+                        .height(150.0)
+                        .x_axis_label("Time (ms)")
+                        .legend(egui_plot::Legend::default())
+                        .show(ui, |plot_ui| {
+                            plot_ui.line(
+                                egui_plot::Line::new("X", to_points(&gd.vel_x))
+                                    .color(egui::Color32::from_rgb(255, 100, 100)),
+                            );
+                            plot_ui.line(
+                                egui_plot::Line::new("Y", to_points(&gd.vel_y))
+                                    .color(egui::Color32::from_rgb(100, 255, 100)),
+                            );
+                            plot_ui.line(
+                                egui_plot::Line::new("Z", to_points(&gd.vel_z))
+                                    .color(egui::Color32::from_rgb(100, 100, 255)),
+                            );
+                        });
+
+                    // Acceleration
+                    ui.label(egui::RichText::new("Acceleration (m/s²)").strong());
+                    egui_plot::Plot::new("result_acc_plot")
+                        .height(150.0)
+                        .x_axis_label("Time (ms)")
+                        .legend(egui_plot::Legend::default())
+                        .show(ui, |plot_ui| {
+                            plot_ui.line(
+                                egui_plot::Line::new("X", to_points(&gd.acc_x))
+                                    .color(egui::Color32::from_rgb(255, 100, 100)),
+                            );
+                            plot_ui.line(
+                                egui_plot::Line::new("Y", to_points(&gd.acc_y))
+                                    .color(egui::Color32::from_rgb(100, 255, 100)),
+                            );
+                            plot_ui.line(
+                                egui_plot::Line::new("Z", to_points(&gd.acc_z))
+                                    .color(egui::Color32::from_rgb(100, 100, 255)),
+                            );
+                        });
+                }
+                }); // ScrollArea
             });
 
         if !open || close_clicked {
@@ -1295,6 +1426,12 @@ pub(super) fn apply_sim_config(app: &mut ArticaraApp, cfg: SimConfig) {
             }
         }
     }
+}
+
+impl ArticaraApp {
+    /// Dynamics graph window — now integrated into the result window.
+    /// Kept as a no-op for API compatibility.
+    pub(super) fn draw_dynamics_graph_window(&mut self, _ctx: &egui::Context) {}
 }
 
 // ───────── TOML helpers ─────────

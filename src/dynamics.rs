@@ -521,6 +521,27 @@ pub struct SimStepInfo {
     pub joint_utilisation: Vec<(usize, f64, bool)>,
 }
 
+/// Time-series graph data recorded during a simulation.
+#[derive(Clone, Debug, Default)]
+pub struct SimGraphData {
+    /// Cumulative simulation time per sample (s).
+    pub time: Vec<f32>,
+    /// World-frame position (x, y, z) of the tracked body.
+    pub pos_x: Vec<f32>,
+    pub pos_y: Vec<f32>,
+    pub pos_z: Vec<f32>,
+    /// World-frame velocity (x, y, z) of the tracked body (finite diff).
+    pub vel_x: Vec<f32>,
+    pub vel_y: Vec<f32>,
+    pub vel_z: Vec<f32>,
+    /// World-frame acceleration (x, y, z) of the tracked body (finite diff).
+    pub acc_x: Vec<f32>,
+    pub acc_y: Vec<f32>,
+    pub acc_z: Vec<f32>,
+    /// Name of the tracked link.
+    pub link_name: String,
+}
+
 /// Per-joint peak value recorded across the entire simulation.
 #[derive(Clone, Debug)]
 pub struct JointPeakInfo {
@@ -547,6 +568,8 @@ pub struct JumpSimResult {
     pub extension_duration: f32,
     /// Per-joint peak torque and velocity.
     pub joint_peaks: Vec<JointPeakInfo>,
+    /// Time-series graph data recorded at 1 ms intervals.
+    pub graph_data: SimGraphData,
 }
 
 /// Per-joint data for the jump animation.
@@ -672,6 +695,16 @@ pub struct JumpSim {
     /// Extension phase uses physics-based simulation instead of kinematic
     /// interpolation.
     pub fd_state: Option<crate::rbd::dynamics::ForwardDynamicsState>,
+    /// Cumulative simulation time (s) across all phases.
+    pub sim_time: f32,
+    /// Time-series graph data for the tracked body link.
+    pub graph_data: SimGraphData,
+    /// Previous position of the tracked body (for velocity finite diff).
+    graph_prev_pos: Option<[f32; 3]>,
+    /// Previous velocity of the tracked body (for accel finite diff).
+    graph_prev_vel: Option<[f32; 3]>,
+    /// Next sim_time at which to record a graph sample (1 ms interval).
+    graph_next_sample_time: f32,
 }
 
 /// Phase of the payload ramp simulation.
@@ -742,6 +775,7 @@ pub fn start_jump_sim(
     extension_override: Option<f32>,
     enforce_torque_limits: bool,
     enable_retract: bool,
+    graph_link: Option<&str>,
 ) -> Option<JumpSim> {
     if ground_links.is_empty() {
         return None;
@@ -950,6 +984,14 @@ pub fn start_jump_sim(
         peak_smoothed_velocity_z: 0.0,
         peak_vel_base_z: model.base_transform.translation.vector.z,
         fd_state,
+        sim_time: 0.0,
+        graph_data: SimGraphData {
+            link_name: graph_link.unwrap_or(&body).to_string(),
+            ..Default::default()
+        },
+        graph_prev_pos: None,
+        graph_prev_vel: None,
+        graph_next_sample_time: 0.0,
     })
 }
 
@@ -1088,6 +1130,7 @@ pub fn extract_jump_result(sim: &JumpSim, model: &RobotModel) -> JumpSimResult {
         max_height: sim.max_height_reached,
         extension_duration: sim.extension_duration,
         joint_peaks,
+        graph_data: sim.graph_data.clone(),
     }
 }
 
@@ -1101,17 +1144,47 @@ pub fn extract_jump_result(sim: &JumpSim, model: &RobotModel) -> JumpSimResult {
 /// 3. Semi-implicit Euler integration updates q, q̇, and the base transform.
 /// 4. Launch into flight when GRF drops to zero (feet naturally lift off).
 ///
-/// **Flight phase:** pure ballistic with the base velocity obtained
-/// at the end of the extension phase.
+/// **Flight phase:** base follows ballistic trajectory; joints are
+/// driven by forward dynamics (unconstrained, no ground contact) to
+/// retract toward the saved pre-jump pose.
 ///
 /// Returns `true` while still running.
 pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
-    let dt = dt * sim.speed;
-    if dt <= 0.0 {
+    let dt_frame = dt * sim.speed;
+    if dt_frame <= 0.0 {
         return true;
     }
-    sim.phase_time += dt;
 
+    // --- Fixed-timestep sub-stepping for numerical stability ---
+    // Forward dynamics with semi-implicit Euler requires ≤1 ms steps.
+    // The caller provides a frame-rate dt (~16 ms); we subdivide it.
+    const MAX_PHYSICS_DT: f32 = 0.0005; // 0.5 ms
+    let n_steps = ((dt_frame / MAX_PHYSICS_DT).ceil() as usize).max(1);
+    let sub_dt = dt_frame / n_steps as f32;
+
+    const GRAPH_INTERVAL: f32 = 0.001; // 1 ms
+
+    let mut still_running = true;
+    for _ in 0..n_steps {
+        if !still_running {
+            break;
+        }
+        sim.phase_time += sub_dt;
+        sim.sim_time += sub_dt;
+        still_running = step_jump_sub(sim, model, sub_dt);
+
+        // Record graph data at 1 ms intervals
+        if sim.sim_time >= sim.graph_next_sample_time {
+            record_graph_sample(sim, model, GRAPH_INTERVAL);
+            sim.graph_next_sample_time += GRAPH_INTERVAL;
+        }
+    }
+
+    still_running
+}
+
+/// One physics sub-step of the jump simulation.
+fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
     match sim.phase {
         JumpPhase::Extension => {
             // ===== Forward-dynamics based Extension phase =====
@@ -1292,8 +1365,13 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
                     sim.extended_positions = model.joint_positions.clone();
                 }
 
-                // Drop the fd_state to free memory during flight
-                sim.fd_state = None;
+                // Keep fd_state for FD-based flight, but clear contacts
+                // (no ground contact during flight → unconstrained FD)
+                if let Some(ref mut fd) = sim.fd_state {
+                    fd.contact_feet.clear();
+                    fd.initial_foot_x.clear();
+                    fd.foot_chains.clear();
+                }
 
                 sim.phase = JumpPhase::Flight;
                 sim.phase_time = 0.0;
@@ -1315,38 +1393,34 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
             let g = G as f32;
             let t = sim.phase_time;
 
-            // Ballistic trajectory: z(t) = z0 + v0·t − ½g·t²
+            // Ballistic trajectory for base: z(t) = z0 + v0·t − ½g·t²
+            // (CoM follows a parabola regardless of internal joint motion)
             let z_offset = sim.launch_velocity * t - 0.5 * g * t * t;
             let v_z = sim.launch_velocity - g * t;
 
             let current_z = sim.launch_z + z_offset;
             let mut tf = sim.saved_base_transform;
-            // Apply motion only on enabled axes
-            if sim.launch_axes[0] {
-                // X: no force model yet, keep saved
-            }
-            if sim.launch_axes[1] {
-                // Y: no force model yet, keep saved
-            }
             if sim.launch_axes[2] {
                 tf.translation.vector.z = current_z;
             }
             model.base_transform = tf;
 
-            // --- Retract animation during flight (tuck legs in the air) ---
-            if sim.enable_retract && !sim.extended_positions.is_empty() {
-                let retract_frac = (t / sim.retract_duration).clamp(0.0, 1.0);
+            // --- FD-based retract: drive joints toward saved (pre-jump) ---
+            // With contact_feet cleared, step() performs unconstrained FD
+            // (no foot-X constraint, no null-space projection).
+            if sim.enable_retract {
+                let mut retract_targets: HashMap<usize, f64> = HashMap::new();
                 for lj in &sim.leg_joints {
                     let ji = lj.joint_idx;
-                    if ji < sim.extended_positions.len() && ji < sim.saved_positions.len() {
-                        let ext = sim.extended_positions[ji];
-                        let sav = sim.saved_positions[ji];
-                        let lower = model.joints[ji].lower as f32;
-                        let upper = model.joints[ji].upper as f32;
-                        model.joint_positions[ji] =
-                            (ext + (sav - ext) * retract_frac).clamp(lower, upper);
+                    if ji < sim.saved_positions.len() {
+                        retract_targets.insert(ji, sim.saved_positions[ji] as f64);
                     }
                 }
+                if let Some(ref mut fd) = sim.fd_state {
+                    fd.step(model, &retract_targets, dt as f64);
+                }
+                // Restore base Z (step() doesn't touch base, but be safe)
+                model.base_transform.translation.vector.z = current_z;
             }
 
             // No ground contact during flight
@@ -1387,6 +1461,9 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
         }
 
         JumpPhase::Landed => {
+            // Drop FD state — no longer needed after landing.
+            sim.fd_state = None;
+
             sim.step_info.grf_z = sim.total_mass * G; // resting on ground
             sim.step_info.velocity_z = 0.0;
 
@@ -1416,6 +1493,56 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
             }
         }
     }
+}
+
+/// Record one sample of position/velocity/acceleration for the tracked body.
+fn record_graph_sample(sim: &mut JumpSim, model: &RobotModel, dt: f32) {
+    let transforms = model.compute_transforms();
+    let link_tf = transforms
+        .get(&sim.graph_data.link_name)
+        .copied()
+        .unwrap_or(na::Isometry3::identity());
+    let pos = link_tf.translation.vector;
+    let px = pos.x;
+    let py = pos.y;
+    let pz = pos.z;
+
+    // Velocity via finite difference
+    let (vx, vy, vz) = if let Some([ppx, ppy, ppz]) = sim.graph_prev_pos {
+        if dt > 1e-9 {
+            ((px - ppx) / dt, (py - ppy) / dt, (pz - ppz) / dt)
+        } else {
+            (0.0, 0.0, 0.0)
+        }
+    } else {
+        (0.0, 0.0, 0.0)
+    };
+
+    // Acceleration via finite difference of velocity
+    let (ax, ay, az) = if let Some([pvx, pvy, pvz]) = sim.graph_prev_vel {
+        if dt > 1e-9 {
+            ((vx - pvx) / dt, (vy - pvy) / dt, (vz - pvz) / dt)
+        } else {
+            (0.0, 0.0, 0.0)
+        }
+    } else {
+        (0.0, 0.0, 0.0)
+    };
+
+    sim.graph_prev_pos = Some([px, py, pz]);
+    sim.graph_prev_vel = Some([vx, vy, vz]);
+
+    let g = &mut sim.graph_data;
+    g.time.push(sim.sim_time);
+    g.pos_x.push(px);
+    g.pos_y.push(py);
+    g.pos_z.push(pz);
+    g.vel_x.push(vx);
+    g.vel_y.push(vy);
+    g.vel_z.push(vz);
+    g.acc_x.push(ax);
+    g.acc_y.push(ay);
+    g.acc_z.push(az);
 }
 
 /// Average Z position of the given links in world frame.
@@ -1659,6 +1786,7 @@ mod tests {
             None,
             false,
             false,
+            None,
         ).expect("failed to create jump sim");
 
         eprintln!("extension_duration = {:.4}", sim.extension_duration);
@@ -1815,6 +1943,7 @@ mod tests {
             None,
             true,  // enforce_torque_limits
             true,  // enable_retract
+            None,
         ).expect("failed to create jump sim");
 
         eprintln!("[TOML] extension_duration = {:.4}", sim.extension_duration);

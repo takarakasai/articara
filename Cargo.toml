@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 eframe = { version = "0.34.1", features = ["glow"] }
+egui_plot = "0.35"
 env_logger = "0.11.10"
 glow = "0.17.0"
 log = "0.4.29"
