@@ -776,6 +776,8 @@ pub fn start_jump_sim(
     enforce_torque_limits: bool,
     enable_retract: bool,
     graph_link: Option<&str>,
+    pd_kp: f64,
+    pd_kd: f64,
 ) -> Option<JumpSim> {
     if ground_links.is_empty() {
         return None;
@@ -947,9 +949,13 @@ pub fn start_jump_sim(
             &all_locked,
         );
 
-        // --- Pre-compute joint-space cosine trajectory ---
+        // --- Pre-compute joint-space trajectory ---
         // Each non-locked leg joint gets a smooth trajectory from its
         // current (start) angle to the extend angle, over extension_duration.
+        //
+        // We use the **Launch** profile (quarter-cosine): smooth start,
+        // maximum joint velocity at t = T.  This maximises the base
+        // velocity at the moment of launch.
         let mut traj = HashMap::new();
         for leg in &legs {
             for cj in &leg.chain {
@@ -970,11 +976,14 @@ pub fn start_jump_sim(
                     q_start,
                     q_end,
                     duration: extension_duration as f64,
+                    profile: crate::rbd::dynamics::TrajectoryProfile::Launch,
                 });
             }
         }
         fd.trajectory = traj;
         fd.trajectory_time = 0.0;
+        fd.kp = pd_kp;
+        fd.kd = pd_kd;
 
         Some(fd)
     };
@@ -1368,20 +1377,37 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
             // --- 6. Transition: launch ---
             // Launch when:
             //  (a) Velocity has peaked and is now declining significantly
-            //      (the robot has reached its "push-off apex")
-            //  (b) Time-based fallback: extension_duration elapses
+            //      (the robot has reached its "push-off apex"), OR
+            //  (b) Trajectory time elapsed AND joints are close to their
+            //      extend angles (≥ 95% travel), OR
+            //  (c) Safety timeout: 3× extension_duration (hard cap).
             //
             // Use the CURRENT base Z and velocity for launch to ensure
             // smooth continuity at the Extension→Flight boundary.
-            // (The old peak-velocity snap-back caused a position
-            // discontinuity — a visible "drop" at flight start.)
             let min_phase = 0.01_f32;
             let peak_v = sim.peak_smoothed_velocity_z;
             let vel_declining = peak_v > 0.05
                 && sim.smoothed_velocity_z < peak_v * 0.5
                 && sim.phase_time > min_phase;
+
+            // Check if joints have reached ≥ 95% of their total travel
+            let joints_extended = if let Some(ref fd) = sim.fd_state {
+                fd.trajectory.iter().all(|(&ji, traj)| {
+                    let total = (traj.q_end - traj.q_start).abs();
+                    if total < 1e-6 { return true; }
+                    let q = model.joint_positions[ji] as f64;
+                    let progress = (q - traj.q_start) / (traj.q_end - traj.q_start);
+                    progress >= 0.95
+                })
+            } else {
+                true
+            };
+
+            let time_elapsed = sim.phase_time >= sim.extension_duration;
+            let hard_timeout = sim.phase_time >= sim.extension_duration * 3.0;
             let should_launch = vel_declining
-                || sim.phase_time >= sim.extension_duration;
+                || (time_elapsed && joints_extended)
+                || hard_timeout;
 
             if should_launch {
                 // Launch from current state — no snap-back.
@@ -1400,14 +1426,45 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
 
                 // Keep fd_state for FD-based flight, but clear contacts
                 // (no ground contact during flight → unconstrained FD).
-                // Also clear the Extension trajectory so the Flight
-                // retract animation uses the null-space velocity fallback.
+                // Clear the Extension trajectory and zero joint velocities
+                // so joints don't carry extension momentum into flight.
                 if let Some(ref mut fd) = sim.fd_state {
                     fd.contact_feet.clear();
                     fd.initial_foot_x.clear();
                     fd.foot_chains.clear();
                     fd.trajectory.clear();
                     fd.trajectory_time = 0.0;
+
+                    // Zero all joint velocities — the launch velocity is
+                    // captured in the ballistic base trajectory; joints
+                    // should not coast forward during flight.
+                    for qd in fd.joint_velocities.values_mut() {
+                        *qd = 0.0;
+                    }
+
+                    // If retract is enabled, set up a Symmetric trajectory
+                    // from extended → saved positions so the PD controller
+                    // drives retraction smoothly (not the null-space path).
+                    if sim.enable_retract {
+                        let retract_duration = 0.15_f64; // 150 ms retract
+                        let mut traj = HashMap::new();
+                        for lj in &sim.leg_joints {
+                            let ji = lj.joint_idx;
+                            let q_now = model.joint_positions[ji] as f64;
+                            let q_saved = if ji < sim.saved_positions.len() {
+                                sim.saved_positions[ji] as f64
+                            } else {
+                                q_now
+                            };
+                            traj.insert(ji, crate::rbd::dynamics::JointTrajectoryPoint {
+                                q_start: q_now,
+                                q_end: q_saved,
+                                duration: retract_duration,
+                                profile: crate::rbd::dynamics::TrajectoryProfile::Symmetric,
+                            });
+                        }
+                        fd.trajectory = traj;
+                    }
                 }
 
                 sim.phase = JumpPhase::Flight;
@@ -1442,19 +1499,21 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
             }
             model.base_transform = tf;
 
-            // --- FD-based retract: drive joints toward saved (pre-jump) ---
-            // With contact_feet cleared, step() performs unconstrained FD
-            // (no foot-X constraint, no null-space projection).
-            if sim.enable_retract {
-                let mut retract_targets: HashMap<usize, f64> = HashMap::new();
-                for lj in &sim.leg_joints {
-                    let ji = lj.joint_idx;
-                    if ji < sim.saved_positions.len() {
-                        retract_targets.insert(ji, sim.saved_positions[ji] as f64);
-                    }
-                }
+            // --- Continue forward dynamics (unconstrained) ---
+            // Contacts were cleared at the Extension→Flight transition,
+            // so step() runs the same FD pipeline without foot constraints.
+            //
+            //  • If a retract trajectory was set at transition, the PD
+            //    computed-torque controller drives joints back smoothly.
+            //  • If no trajectory is set (retract disabled), joints evolve
+            //    under gravity alone (unconstrained FD, no applied torque
+            //    beyond gravity compensation in the null-space path).
+            {
+                let hold_targets: HashMap<usize, f64> = sim.leg_joints.iter()
+                    .map(|lj| (lj.joint_idx, model.joint_positions[lj.joint_idx] as f64))
+                    .collect();
                 if let Some(ref mut fd) = sim.fd_state {
-                    fd.step(model, &retract_targets, dt as f64);
+                    fd.step(model, &hold_targets, dt as f64);
                 }
                 // Restore base Z (step() doesn't touch base, but be safe)
                 model.base_transform.translation.vector.z = current_z;
@@ -1824,6 +1883,8 @@ mod tests {
             false,
             false,
             None,
+            500.0,  // pd_kp
+            20.0,   // pd_kd
         ).expect("failed to create jump sim");
 
         eprintln!("extension_duration = {:.4}", sim.extension_duration);
@@ -1981,6 +2042,8 @@ mod tests {
             true,  // enforce_torque_limits
             true,  // enable_retract
             None,
+            500.0,  // pd_kp
+            20.0,   // pd_kd
         ).expect("failed to create jump sim");
 
         eprintln!("[TOML] extension_duration = {:.4}", sim.extension_duration);

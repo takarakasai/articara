@@ -606,13 +606,24 @@ pub fn constrained_forward_dynamics(
 //  Joint trajectory profile
 // =========================================================================
 
-/// Pre-computed cosine trajectory for one joint.
-///
-/// $q(t) = q_0 + \frac{\Delta q}{2}(1 - \cos(\pi t / T))$
-/// $\dot{q}(t) = \frac{\Delta q}{2} \cdot \frac{\pi}{T} \sin(\pi t / T)$
-/// $\ddot{q}(t) = \frac{\Delta q}{2} \cdot \left(\frac{\pi}{T}\right)^2 \cos(\pi t / T)$
-///
-/// Smooth start/stop (zero velocity at both ends).
+/// Trajectory shape for a joint.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TrajectoryProfile {
+    /// Symmetric cosine: smooth start **and** stop (zero velocity at both ends).
+    ///
+    /// $q(t) = q_0 + \frac{\Delta q}{2}(1 - \cos(\frac{\pi t}{T}))$
+    Symmetric,
+
+    /// Launch-optimised: smooth start, **maximum velocity at the end**.
+    ///
+    /// $q(t) = q_0 + \Delta q (1 - \cos(\frac{\pi t}{2T}))$
+    ///
+    /// At $t = T$ the velocity is $\frac{\pi \Delta q}{2T}$ — ideal for
+    /// maximising launch speed in a jump.
+    Launch,
+}
+
+/// Pre-computed cosine-family trajectory for one joint.
 #[derive(Clone, Debug)]
 pub struct JointTrajectoryPoint {
     /// Start angle (rad).
@@ -621,22 +632,44 @@ pub struct JointTrajectoryPoint {
     pub q_end: f64,
     /// Duration of the trajectory (s).
     pub duration: f64,
+    /// Trajectory shape.
+    pub profile: TrajectoryProfile,
 }
 
 impl JointTrajectoryPoint {
     /// Evaluate desired position, velocity, and acceleration at time `t`.
+    ///
+    /// When `t >= duration` the trajectory is complete: returns
+    /// `(q_end, 0, 0)` so the PD controller holds position.
     pub fn evaluate(&self, t: f64) -> (f64, f64, f64) {
-        let t = t.clamp(0.0, self.duration);
         let dq = self.q_end - self.q_start;
-        if self.duration <= 0.0 {
+        if self.duration <= 0.0 || t >= self.duration {
             return (self.q_end, 0.0, 0.0);
         }
-        let w = std::f64::consts::PI / self.duration; // angular frequency
-        let phase = w * t;
-        let q = self.q_start + 0.5 * dq * (1.0 - phase.cos());
-        let qd = 0.5 * dq * w * phase.sin();
-        let qdd = 0.5 * dq * w * w * phase.cos();
-        (q, qd, qdd)
+        let t = t.max(0.0);
+        match self.profile {
+            TrajectoryProfile::Symmetric => {
+                // Half-period cosine: zero velocity at both ends.
+                //   ω = π / T
+                let w = std::f64::consts::PI / self.duration;
+                let phase = w * t;
+                let q   = self.q_start + 0.5 * dq * (1.0 - phase.cos());
+                let qd  = 0.5 * dq * w * phase.sin();
+                let qdd = 0.5 * dq * w * w * phase.cos();
+                (q, qd, qdd)
+            }
+            TrajectoryProfile::Launch => {
+                // Quarter-period cosine: zero velocity at start,
+                // maximum velocity at t = T.
+                //   ω = π / (2T)
+                let w = std::f64::consts::PI / (2.0 * self.duration);
+                let phase = w * t;
+                let q   = self.q_start + dq * (1.0 - phase.cos());
+                let qd  = dq * w * phase.sin();
+                let qdd = dq * w * w * phase.cos();
+                (q, qd, qdd)
+            }
+        }
     }
 }
 
@@ -765,31 +798,30 @@ impl ForwardDynamicsState {
         }
     }
 
-    /// Computed-torque (inverse-dynamics + PD) trajectory-tracking step.
+    /// Computed-torque (inverse-dynamics + PD) trajectory-tracking step
+    /// **with foot-X constraint**.
     ///
-    /// For each joint, evaluates the pre-computed cosine trajectory at
-    /// the current `trajectory_time` to obtain $(q_{des}, \dot{q}_{des},
-    /// \ddot{q}_{des})$, then computes:
+    /// 1. Compute the PD-based desired joint acceleration:
+    ///    $a_{pd} = \ddot{q}_{des} + K_p(q_{des}-q) + K_d(\dot{q}_{des}-\dot{q})$
     ///
-    ///   $\tau = M(\ddot{q}_{des} + K_p (q_{des}-q) + K_d (\dot{q}_{des}-\dot{q})) + h$
+    /// 2. If foot contacts exist, project $a_{pd}$ through the null-space
+    ///    of the foot-X Jacobian $J_x$ and add a proportional-derivative
+    ///    feedback term that corrects any X-axis drift:
+    ///    $a_{cmd} = N \cdot a_{pd} + J_x^+ (-K_{fb} \Delta x - K_{dfb} \dot{x})$
     ///
-    /// This produces the error dynamics $\ddot{e} + K_d\dot{e} + K_p e = 0$
-    /// (in the absence of effort saturation).
-    ///
-    /// Clamps to effort limits, runs unconstrained FD, and integrates.
+    /// 3. $\tau = M \cdot a_{cmd} + h$, clamp to effort limits, FD, integrate.
     fn step_pd(&mut self, model: &mut RobotModel, dt: f64) {
         let n = self.joint_order.len();
         let t = self.trajectory_time;
 
         // --- 1. CRBA: M(q) ---
-        let (m_mat, _idx_in_m) = crba(model, &self.joint_order);
+        let (m_mat, idx_in_m) = crba(model, &self.joint_order);
 
         // --- 2. RNEA: h(q, q̇) = C(q,q̇)·q̇ + g(q) ---
         let h = rnea_bias(model, &self.joint_order, &self.joint_velocities);
 
-        // --- 3. Computed-torque: τ = M·a_cmd + h ---
-        //   a_cmd = q̈_des + Kp·(q_des − q) + Kd·(q̇_des − q̇)
-        let mut a_cmd = na::DVector::zeros(n);
+        // --- 3. PD acceleration command per joint ---
+        let mut a_pd = na::DVector::zeros(n);
         for (col, &ji) in self.joint_order.iter().enumerate() {
             let q_cur = model.joint_positions[ji] as f64;
             let qd_cur = self.joint_velocities.get(&ji).copied().unwrap_or(0.0);
@@ -797,15 +829,91 @@ impl ForwardDynamicsState {
             let (q_des, qd_des, qdd_des) = if let Some(traj) = self.trajectory.get(&ji) {
                 traj.evaluate(t)
             } else {
-                // No trajectory for this joint → hold current position
                 (q_cur, 0.0, 0.0)
             };
 
-            a_cmd[col] = qdd_des
+            a_pd[col] = qdd_des
                 + self.kp * (q_des - q_cur)
                 + self.kd * (qd_des - qd_cur);
         }
 
+        // --- 4. Foot-X null-space projection (when contacts exist) ---
+        let a_cmd = if !self.contact_feet.is_empty() && !self.foot_chains.is_empty() {
+            let transforms = model.compute_transforms();
+            let n_feet = self.contact_feet.len().min(self.foot_chains.len());
+
+            // Build J_x (n_feet × n) and foot drift / velocity
+            let mut j_x = na::DMatrix::zeros(n_feet, n);
+            let mut foot_dx = na::DVector::zeros(n_feet);
+            let mut foot_vx = na::DVector::zeros(n_feet);
+
+            for i in 0..n_feet {
+                let foot_name = &self.contact_feet[i];
+                let foot_tf = transforms
+                    .get(foot_name)
+                    .copied()
+                    .unwrap_or(na::Isometry3::identity());
+                let foot_pos = na::Point3::from(foot_tf.translation.vector.cast::<f64>());
+
+                let jac_3d = foot_jacobian(
+                    model,
+                    &self.foot_chains[i],
+                    &self.joint_order,
+                    &idx_in_m,
+                    &transforms,
+                    &foot_pos,
+                );
+
+                // X row (row 0)
+                for col in 0..n {
+                    j_x[(i, col)] = jac_3d[(0, col)];
+                }
+
+                // Position drift
+                let x0 = self.initial_foot_x.get(i).copied().unwrap_or(foot_pos.x);
+                foot_dx[i] = foot_pos.x - x0;
+
+                // Velocity: ẋ = J_x · q̇
+                let mut vx = 0.0;
+                for (col, &ji) in self.joint_order.iter().enumerate() {
+                    vx += j_x[(i, col)] * self.joint_velocities.get(&ji).copied().unwrap_or(0.0);
+                }
+                foot_vx[i] = vx;
+            }
+
+            // Pseudoinverse: J_x^+ = J_xᵀ (J_x J_xᵀ + εI)⁻¹
+            let j_x_t = j_x.transpose();
+            let j_x_jxt = &j_x * &j_x_t;
+            let eps = 1e-6;
+            let mut j_x_jxt_reg = j_x_jxt.clone();
+            for i in 0..n_feet {
+                j_x_jxt_reg[(i, i)] += eps;
+            }
+
+            let j_x_pinv = match j_x_jxt_reg.try_inverse() {
+                Some(inv) => &j_x_t * inv,
+                None => na::DMatrix::zeros(n, n_feet),
+            };
+
+            // Null-space projector: N = I − J_x^+ J_x
+            let identity_n = na::DMatrix::identity(n, n);
+            let null_proj = &identity_n - &j_x_pinv * &j_x;
+
+            // Foot-X feedback acceleration (PD in Cartesian X):
+            //   a_fb = J_x^+ · (−Kfb·Δx − Kdfb·ẋ)
+            let k_fb: f64 = 200.0;   // position feedback [1/s²]
+            let k_dfb: f64 = 30.0;   // velocity damping  [1/s]
+            let foot_accel_cmd = -&foot_dx * k_fb - &foot_vx * k_dfb;
+            let a_fb = &j_x_pinv * &foot_accel_cmd;
+
+            // Combined: project PD through null-space + foot correction
+            &null_proj * &a_pd + a_fb
+        } else {
+            // No contacts → pure PD (flight phase)
+            a_pd
+        };
+
+        // --- 5. Computed torque: τ = M·a_cmd + h ---
         let tau_unclamped = &m_mat * &a_cmd + &h;
 
         // Clamp to effort limits
@@ -817,10 +925,10 @@ impl ForwardDynamicsState {
             }
         }
 
-        // --- 4. Forward dynamics: q̈ = M⁻¹(τ − h) ---
+        // --- 6. Forward dynamics: q̈ = M⁻¹(τ − h) ---
         let qdd = forward_dynamics(&m_mat, &h, &tau);
 
-        // --- 5. Semi-implicit Euler integration ---
+        // --- 7. Semi-implicit Euler integration ---
         self.integrate(model, &qdd, dt);
     }
 

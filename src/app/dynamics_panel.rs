@@ -186,6 +186,28 @@ impl ArticaraApp {
                      while still on the ground. This adds upward momentum for more hang time.",
                 );
 
+                // --- PD gains ---
+                ui.horizontal(|ui| {
+                    ui.label("Kp:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.dynamics_pd_kp)
+                            .speed(5.0)
+                            .range(0.0..=10000.0)
+                            .fixed_decimals(0)
+                            .suffix(" N·m/rad"),
+                    );
+                    ui.label("Kd:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.dynamics_pd_kd)
+                            .speed(0.5)
+                            .range(0.0..=1000.0)
+                            .fixed_decimals(1)
+                            .suffix(" N·m·s/rad"),
+                    );
+                })
+                .response
+                .on_hover_text("Computed-torque PD gains: Kp (position), Kd (velocity)");
+
                 // --- Launch axes ---
                 ui.horizontal(|ui| {
                     ui.label("Launch:");
@@ -379,6 +401,8 @@ impl ArticaraApp {
                                 self.dynamics_enforce_torque_limits,
                                 self.dynamics_enable_retract,
                                 self.dynamics_graph_link.as_deref(),
+                                self.dynamics_pd_kp,
+                                self.dynamics_pd_kd,
                             ) {
                                 self.dynamics_sim_result = None; // clear previous result
                                 self.dynamics_sim = Some(DynSim::Jump(sim));
@@ -1216,6 +1240,10 @@ pub(super) struct SimConfig {
     pub extension_duration: Option<f32>,
     pub enforce_torque_limits: bool,
     pub enable_retract: bool,
+    /// PD position gain Kp.
+    pub pd_kp: f64,
+    /// PD derivative gain Kd.
+    pub pd_kd: f64,
     /// Joint positions that define the starting (crouched) pose.
     pub start_pose: Vec<(String, f32)>,
 }
@@ -1260,6 +1288,9 @@ pub(super) fn save_sim_config(app: &ArticaraApp, path: &Path) -> Result<(), Stri
     if app.dynamics_enable_retract {
         writeln!(f, "enable_retract = true").map_err(|e| format!("{e}"))?;
     }
+
+    writeln!(f, "pd_kp = {}", app.dynamics_pd_kp).map_err(|e| format!("{e}"))?;
+    writeln!(f, "pd_kd = {}", app.dynamics_pd_kd).map_err(|e| format!("{e}"))?;
 
     if !app.dynamics_locked_joints.is_empty() {
         writeln!(f).map_err(|e| format!("{e}"))?;
@@ -1312,6 +1343,8 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
         extension_duration: None,
         enforce_torque_limits: false,
         enable_retract: false,
+        pd_kp: 500.0,
+        pd_kd: 20.0,
         start_pose: Vec::new(),
     };
 
@@ -1379,6 +1412,16 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
                         cfg.enable_retract =
                             value == "true" || value == "1";
                     }
+                    "pd_kp" => {
+                        if let Ok(v) = value.parse::<f64>() {
+                            cfg.pd_kp = v;
+                        }
+                    }
+                    "pd_kd" => {
+                        if let Ok(v) = value.parse::<f64>() {
+                            cfg.pd_kd = v;
+                        }
+                    }
                     _ => {}
                 },
                 SimSection::LockedJoints => {
@@ -1415,6 +1458,8 @@ pub(super) fn apply_sim_config(app: &mut ArticaraApp, cfg: SimConfig) {
     app.dynamics_extension_duration = cfg.extension_duration;
     app.dynamics_enforce_torque_limits = cfg.enforce_torque_limits;
     app.dynamics_enable_retract = cfg.enable_retract;
+    app.dynamics_pd_kp = cfg.pd_kp;
+    app.dynamics_pd_kd = cfg.pd_kd;
 
     // Apply saved joint positions (start pose) to the model
     if !cfg.start_pose.is_empty() {

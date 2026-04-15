@@ -262,6 +262,10 @@ pub struct ArticaraApp {
     dynamics_enforce_torque_limits: bool,
     /// Whether to retract (pull legs back) after extension for extra hang time.
     dynamics_enable_retract: bool,
+    /// PD position gain Kp (N·m/rad) for computed-torque controller.
+    dynamics_pd_kp: f64,
+    /// PD derivative gain Kd (N·m·s/rad) for computed-torque controller.
+    dynamics_pd_kd: f64,
     /// Last jump simulation result (displayed after sim ends).
     dynamics_sim_result: Option<dynamics::JumpSimResult>,
     /// Show the sim result dialog window.
@@ -372,6 +376,8 @@ impl ArticaraApp {
             dynamics_extension_duration: None,
             dynamics_enforce_torque_limits: false,
             dynamics_enable_retract: false,
+            dynamics_pd_kp: 500.0,
+            dynamics_pd_kd: 20.0,
             dynamics_sim_result: None,
             show_sim_result_window: false,
             dynamics_graph_link: None,
