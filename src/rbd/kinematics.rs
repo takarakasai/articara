@@ -10,6 +10,7 @@ use super::model::RobotModel;
 
 /// One entry in a kinematic chain from root to end-effector.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChainJoint {
     pub joint_idx: usize,
     pub joint_name: String,

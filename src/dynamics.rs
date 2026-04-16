@@ -523,6 +523,7 @@ pub struct SimStepInfo {
 
 /// Time-series graph data recorded during a simulation.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SimGraphData {
     /// Cumulative simulation time per sample (s).
     pub time: Vec<f32>,
@@ -544,6 +545,7 @@ pub struct SimGraphData {
 
 /// Per-joint peak value recorded across the entire simulation.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct JointPeakInfo {
     pub joint_idx: usize,
     pub joint_name: String,
@@ -561,6 +563,7 @@ pub struct JointPeakInfo {
 
 /// Summary result captured when a jump simulation finishes.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct JumpSimResult {
     /// Maximum height reached above starting position (m).
     pub max_height: f32,

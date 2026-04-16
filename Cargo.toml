@@ -3,13 +3,34 @@ name = "articara"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["gui"]
+gui = ["dep:eframe", "dep:egui_plot", "dep:glow", "dep:env_logger"]
+serde = ["dep:serde", "nalgebra/serde-serialize"]
+
 [dependencies]
-eframe = { version = "0.34.1", features = ["glow"] }
-egui_plot = "0.35"
-env_logger = "0.11.10"
-glow = "0.17.0"
+eframe = { version = "0.34.1", features = ["glow"], optional = true }
+egui_plot = { version = "0.35", optional = true }
+env_logger = { version = "0.11.10", optional = true }
+glow = { version = "0.17.0", optional = true }
 log = "0.4.29"
 nalgebra = "0.34.2"
+parry3d = "0.25"
 roxmltree = "0.20"
+serde = { version = "1", features = ["derive"], optional = true }
 stl_io = "0.11.0"
 urdf-rs = "0.9.0"
+
+[dev-dependencies]
+serde_json = "1"
+
+[workspace]
+members = [".", "jump-sim-wasm", "jump-sim-runner"]
+
+# Optimised profile for WASM builds:
+#   cargo build -p jump-sim-wasm --target wasm32-unknown-unknown --profile wasm-release
+[profile.wasm-release]
+inherits = "release"
+lto = true
+opt-level = "z"
+codegen-units = 1

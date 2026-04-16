@@ -83,6 +83,7 @@ impl OrbitCamera {
     }
 
     /// Orbit/pan/zoom handler. Returns true if camera consumed the drag (no picking should happen).
+    #[cfg(feature = "gui")]
     pub fn handle_orbit_pan_zoom(&mut self, response: &eframe::egui::Response) {
         // Orbit with left mouse drag (on empty space)
         if response.dragged_by(eframe::egui::PointerButton::Primary) {

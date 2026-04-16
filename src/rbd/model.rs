@@ -10,6 +10,7 @@ use std::path::PathBuf;
 // ========== Data Structures ==========
 
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RobotModel {
     pub name: String,
     pub links: Vec<LinkData>,
@@ -21,6 +22,7 @@ pub struct RobotModel {
     pub materials: HashMap<String, [f32; 4]>,
     pub joint_positions: Vec<f32>,
     /// Path of the originally loaded URDF file.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub source_path: Option<PathBuf>,
     /// World-space transform of the URDF root link (identity by default).
     /// Used to re-root the display when fixing a non-root link as IK base.
@@ -28,6 +30,7 @@ pub struct RobotModel {
 }
 
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LinkData {
     pub name: String,
     pub visuals: Vec<VisualData>,
@@ -36,6 +39,7 @@ pub struct LinkData {
 }
 
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VisualData {
     pub origin: na::Isometry3<f32>,
     pub geometry: GeomData,
@@ -43,12 +47,14 @@ pub struct VisualData {
 }
 
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CollisionData {
     pub origin: na::Isometry3<f32>,
     pub geometry: GeomData,
 }
 
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum GeomData {
     Box { hx: f32, hy: f32, hz: f32 },
     Cylinder { radius: f32, half_length: f32 },
@@ -61,6 +67,7 @@ pub enum GeomData {
 }
 
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InertialData {
     pub origin: na::Isometry3<f32>,
     pub mass: f64,
@@ -73,6 +80,7 @@ pub struct InertialData {
 }
 
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct JointData {
     pub name: String,
     pub joint_type: String,
