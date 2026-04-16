@@ -194,6 +194,8 @@ pub struct ArticaraApp {
     export_format: RobotFormat,
     /// Status message from last export attempt.
     export_message: String,
+    /// Whether to show the export dialog window.
+    show_export_dialog: bool,
     // --- Add link/joint dialog state ---
     /// Whether the "Add Child" section is open.
     show_add_child: bool,
@@ -342,6 +344,7 @@ impl ArticaraApp {
             export_dir: String::new(),
             export_format: RobotFormat::Urdf,
             export_message: String::new(),
+            show_export_dialog: false,
             // Add child dialog defaults
             show_add_child: false,
             new_link_name: String::new(),
@@ -584,6 +587,9 @@ impl ArticaraApp {
             }
             _ => {}
         }
+
+        // --- Export dialog window ---
+        self.draw_export_dialog(ctx);
 
         // --- Open Sim Config dialog ---
         match self.dlg_open_sim_config.show(ctx) {

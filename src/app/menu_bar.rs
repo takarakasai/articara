@@ -1,8 +1,6 @@
 use eframe::egui;
-use std::path::PathBuf;
 
 use super::{ArticaraApp, DragMode, GizmoOp, InteractionMode, OffsetTarget};
-use crate::format::RobotFormat;
 use crate::renderer::DisplayMode;
 use crate::robot::RobotModel;
 
@@ -40,21 +38,6 @@ impl ArticaraApp {
                     ui.close();
                 }
 
-                // --- Open Recent path (quick text entry) ---
-                ui.horizontal(|ui| {
-                    ui.label("Path:");
-                    let resp = ui.text_edit_singleline(&mut self.urdf_path_input);
-                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        let path = PathBuf::from(&self.urdf_path_input);
-                        self.load_model(path);
-                    }
-                });
-                if ui.button("   Load").clicked() {
-                    let path = PathBuf::from(&self.urdf_path_input);
-                    self.load_model(path);
-                    ui.close();
-                }
-
                 ui.separator();
 
                 // --- Save ---
@@ -70,45 +53,13 @@ impl ArticaraApp {
                 ui.separator();
 
                 // --- Export ---
-                ui.label("Export");
-                ui.horizontal(|ui| {
-                    ui.label("Format:");
-                    egui::ComboBox::from_id_salt("file_menu_export_fmt")
-                        .selected_text(self.export_format.label())
-                        .show_ui(ui, |ui| {
-                            for &fmt in RobotFormat::ALL {
-                                if fmt.supports_export() {
-                                    ui.selectable_value(&mut self.export_format, fmt, fmt.label());
-                                }
-                            }
-                        });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Dir:");
-                    ui.text_edit_singleline(&mut self.export_dir);
-                    if ui.button("📂").on_hover_text("Browse…").clicked() {
-                        let start = if self.export_dir.is_empty() {
-                            None
-                        } else {
-                            Some(std::path::Path::new(&self.export_dir).to_path_buf())
-                        };
-                        self.dlg_export_dir.open(
-                            "Select Export Directory",
-                            super::file_dialog::FileDialogMode::ChooseDir,
-                            start.as_deref(),
-                            &[],
-                        );
-                    }
-                });
                 let has_model = self.model.is_some();
-                if ui.add_enabled(has_model, egui::Button::new("📦 Export")).clicked() {
-                    self.do_export();
+                if ui.add_enabled(has_model, egui::Button::new("📦 Export…"))
+                    .on_hover_text("Export model to a chosen format and directory")
+                    .clicked()
+                {
+                    self.show_export_dialog = true;
                     ui.close();
-                }
-                if !self.export_message.is_empty() {
-                    ui.label(
-                        egui::RichText::new(&self.export_message).small().weak(),
-                    );
                 }
             });
 

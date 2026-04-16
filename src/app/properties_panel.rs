@@ -581,6 +581,74 @@ impl ArticaraApp {
 
     }
 
+    /// Draw the Export dialog window (format + directory + export button).
+    pub(super) fn draw_export_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_export_dialog {
+            return;
+        }
+
+        let mut open = self.show_export_dialog;
+        egui::Window::new("Export")
+            .open(&mut open)
+            .resizable(false)
+            .default_width(360.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Format:");
+                    egui::ComboBox::from_id_salt("export_dlg_fmt")
+                        .selected_text(self.export_format.label())
+                        .show_ui(ui, |ui| {
+                            for &fmt in RobotFormat::ALL {
+                                if fmt.supports_export() {
+                                    ui.selectable_value(&mut self.export_format, fmt, fmt.label());
+                                }
+                            }
+                        });
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Directory:");
+                    ui.text_edit_singleline(&mut self.export_dir);
+                    if ui.button("📂").on_hover_text("Browse…").clicked() {
+                        let start = if self.export_dir.is_empty() {
+                            None
+                        } else {
+                            Some(std::path::Path::new(&self.export_dir).to_path_buf())
+                        };
+                        self.dlg_export_dir.open(
+                            "Select Export Directory",
+                            super::file_dialog::FileDialogMode::ChooseDir,
+                            start.as_deref(),
+                            &[],
+                        );
+                    }
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("📦 Export").clicked() {
+                        self.do_export();
+                        if self.export_message.starts_with("✔") {
+                            self.show_export_dialog = false;
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.show_export_dialog = false;
+                    }
+                });
+                if !self.export_message.is_empty() {
+                    ui.add_space(4.0);
+                    let color = if self.export_message.starts_with("✔") {
+                        egui::Color32::from_rgb(80, 200, 80)
+                    } else {
+                        egui::Color32::from_rgb(220, 180, 40)
+                    };
+                    ui.label(egui::RichText::new(&self.export_message).color(color));
+                }
+            });
+        self.show_export_dialog = open;
+    }
+
     pub(super) fn do_save(&mut self) {
         let Some(ref model) = self.model else {
             self.export_message = "⚠ No model loaded.".into();
