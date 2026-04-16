@@ -230,8 +230,6 @@ impl ArticaraApp {
             // ===== Mode toggle buttons (inline in toolbar) =====
             self.draw_mode_toolbar(ui);
 
-            ui.separator();
-            ui.label(&self.status_message);
         });
     }
 

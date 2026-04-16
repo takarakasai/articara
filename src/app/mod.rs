@@ -642,6 +642,7 @@ mod viewport_overlay;
 mod dynamics_panel;
 mod posture;
 mod file_dialog;
+mod status_bar;
 
 // Sentinel to mark the end of module-level code.
 // Everything below was moved to sub-modules.
@@ -718,6 +719,13 @@ impl eframe::App for ArticaraApp {
         egui::Panel::top("menu_bar").show_inside(ui, |ui| {
             self.draw_menu_bar(ui);
         });
+
+        // Bottom status bar (before left/right panels so it spans full width)
+        egui::Panel::bottom("status_bar")
+            .size_range(20.0..=20.0)
+            .show_inside(ui, |ui| {
+                self.draw_status_bar(ui);
+            });
 
         // Left panel: tree + joint sliders
         egui::Panel::left("tree_panel")
