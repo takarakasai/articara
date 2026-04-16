@@ -790,14 +790,18 @@ impl ArticaraApp {
         );
     }
 
-    /// Draw camera reset button (bottom-right, above axes).
+    /// Draw camera reset button (above the camera axes widget, bottom-right).
     pub(super) fn draw_camera_reset_button(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let painter = ui.painter();
         let btn_size = egui::vec2(28.0, 28.0);
         let margin = 10.0;
+        let axes_size = 50.0_f32; // must match draw_camera_axes
+
+        // Place above the camera axes circle (center at rect.right()-margin-axes_size)
+        let axes_top = rect.bottom() - margin - axes_size * 2.0;
         let btn_pos = egui::pos2(
-            rect.right() - margin - 100.0 - btn_size.x,
-            rect.bottom() - margin - btn_size.y,
+            rect.right() - margin - axes_size - btn_size.x * 0.5,
+            axes_top - 8.0 - btn_size.y,
         );
         let btn_rect = egui::Rect::from_min_size(btn_pos, btn_size);
 
