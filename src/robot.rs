@@ -485,6 +485,56 @@ fn euler_from_isometry(iso: &na::Isometry3<f32>) -> (f32, f32, f32) {
     iso.rotation.euler_angles()
 }
 
+/// Convert a `GeomData` to a `urdf_rs::Geometry`.
+fn geom_to_urdf_geom(geom: &GeomData) -> urdf_rs::Geometry {
+    match geom {
+        GeomData::Box { hx, hy, hz } => urdf_rs::Geometry::Box {
+            size: urdf_rs::Vec3([*hx as f64 * 2.0, *hy as f64 * 2.0, *hz as f64 * 2.0]),
+        },
+        GeomData::Cylinder { radius, half_length } => urdf_rs::Geometry::Cylinder {
+            radius: *radius as f64,
+            length: *half_length as f64 * 2.0,
+        },
+        GeomData::Sphere { radius } => urdf_rs::Geometry::Sphere {
+            radius: *radius as f64,
+        },
+        GeomData::Mesh { filename, scale, .. } => urdf_rs::Geometry::Mesh {
+            filename: filename.clone().unwrap_or_else(|| "mesh.stl".into()),
+            scale: scale.map(|s| urdf_rs::Vec3([s[0] as f64, s[1] as f64, s[2] as f64])),
+        },
+    }
+}
+
+/// Convert a `VisualData` to a `urdf_rs::Visual`.
+fn visual_to_urdf(vis: &VisualData) -> urdf_rs::Visual {
+    urdf_rs::Visual {
+        name: None,
+        origin: isometry_to_pose(&vis.origin),
+        geometry: geom_to_urdf_geom(&vis.geometry),
+        material: Some(urdf_rs::Material {
+            name: String::new(),
+            color: Some(urdf_rs::Color {
+                rgba: urdf_rs::Vec4([
+                    vis.color[0] as f64,
+                    vis.color[1] as f64,
+                    vis.color[2] as f64,
+                    vis.color[3] as f64,
+                ]),
+            }),
+            texture: None,
+        }),
+    }
+}
+
+/// Convert a `CollisionData` to a `urdf_rs::Collision`.
+fn collision_to_urdf(col: &CollisionData) -> urdf_rs::Collision {
+    urdf_rs::Collision {
+        name: None,
+        origin: isometry_to_pose(&col.origin),
+        geometry: geom_to_urdf_geom(&col.geometry),
+    }
+}
+
 /// Convert a GeomData to URDF XML geometry element.
 fn geom_to_urdf_xml(geom: &GeomData) -> String {
     match geom {
@@ -769,6 +819,21 @@ impl RobotModel {
                 xml.push_str("    </visual>\n");
             }
 
+            // Collisions
+            for col in &link.collisions {
+                let (cx, cy, cz) = (
+                    col.origin.translation.x,
+                    col.origin.translation.y,
+                    col.origin.translation.z,
+                );
+                let (cr, cp, cya) = euler_from_isometry(&col.origin);
+                xml.push_str(&format!(
+                    "    <collision>\n      <origin xyz=\"{cx} {cy} {cz}\" rpy=\"{cr} {cp} {cya}\"/>\n"
+                ));
+                xml.push_str(&geom_to_urdf_xml(&col.geometry));
+                xml.push_str("    </collision>\n");
+            }
+
             xml.push_str("  </link>\n");
         }
 
@@ -817,6 +882,14 @@ impl RobotModel {
                 urdf_link.inertial.inertia.iyz = our_link.inertial.iyz;
                 urdf_link.inertial.inertia.izz = our_link.inertial.izz;
                 urdf_link.inertial.origin = isometry_to_pose(&our_link.inertial.origin);
+            }
+        }
+
+        // Patch visual and collision data
+        for our_link in &self.links {
+            if let Some(urdf_link) = robot.links.iter_mut().find(|l| l.name == our_link.name) {
+                urdf_link.visual = our_link.visuals.iter().map(visual_to_urdf).collect();
+                urdf_link.collision = our_link.collisions.iter().map(collision_to_urdf).collect();
             }
         }
 

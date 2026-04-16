@@ -578,64 +578,7 @@ impl ArticaraApp {
             self.mark_edit(&desc);
         }
 
-        // --- Save / Export section ---
-        ui.separator();
-        ui.heading("Save / Export");
 
-        // Save: overwrite original (always URDF)
-        ui.horizontal(|ui| {
-            if ui.button("💾 Save").clicked() {
-                self.do_save();
-            }
-            if let Some(ref model) = self.model {
-                if let Some(ref p) = model.source_path {
-                    ui.label(
-                        egui::RichText::new(p.display().to_string())
-                            .small()
-                            .weak(),
-                    );
-                }
-            }
-        });
-
-        ui.add_space(4.0);
-
-        // Export: write to a different directory in selected format
-        ui.horizontal(|ui| {
-            ui.label("Format:");
-            egui::ComboBox::from_id_salt("export_fmt")
-                .selected_text(self.export_format.label())
-                .show_ui(ui, |ui| {
-                    for &fmt in RobotFormat::ALL {
-                        if fmt.supports_export() {
-                            ui.selectable_value(&mut self.export_format, fmt, fmt.label());
-                        }
-                    }
-                });
-        });
-        ui.horizontal(|ui| {
-            ui.label("Dir:");
-            ui.text_edit_singleline(&mut self.export_dir);
-            if ui.button("📂").on_hover_text("Browse for export directory…").clicked() {
-                let start = if self.export_dir.is_empty() {
-                    None
-                } else {
-                    Some(std::path::Path::new(&self.export_dir).to_path_buf())
-                };
-                self.dlg_export_dir.open(
-                    "Select Export Directory",
-                    super::file_dialog::FileDialogMode::ChooseDir,
-                    start.as_deref(),
-                    &[],
-                );
-            }
-        });
-        if ui.button("📦 Export").clicked() {
-            self.do_export();
-        }
-        if !self.export_message.is_empty() {
-            ui.label(&self.export_message);
-        }
     }
 
     pub(super) fn do_save(&mut self) {

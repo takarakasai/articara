@@ -2,21 +2,115 @@ use eframe::egui;
 use std::path::PathBuf;
 
 use super::{ArticaraApp, DragMode, GizmoOp, InteractionMode, OffsetTarget};
+use crate::format::RobotFormat;
 use crate::renderer::DisplayMode;
 use crate::robot::RobotModel;
 
 impl ArticaraApp {
     pub(super) fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("📄 New").clicked() {
-                self.model = Some(RobotModel::new_empty("new_robot"));
-                self.selected_link = None;
-                self.selected_joint = None;
-                self.needs_upload = true;
-                self.status_message = "Created new empty model".into();
-                self.history.clear();
-            }
-            ui.separator();
+            // ===== File menu =====
+            ui.menu_button("File", |ui| {
+                // --- New ---
+                if ui.button("📄 New").clicked() {
+                    self.model = Some(RobotModel::new_empty("new_robot"));
+                    self.selected_link = None;
+                    self.selected_joint = None;
+                    self.needs_upload = true;
+                    self.status_message = "Created new empty model".into();
+                    self.history.clear();
+                    ui.close();
+                }
+
+                ui.separator();
+
+                // --- Open ---
+                if ui.button("📂 Open…").clicked() {
+                    let start = if self.urdf_path_input.is_empty() {
+                        None
+                    } else {
+                        Some(std::path::Path::new(&self.urdf_path_input).to_path_buf())
+                    };
+                    self.dlg_open_model.open(
+                        "Open Robot Model",
+                        super::file_dialog::FileDialogMode::Open,
+                        start.as_deref(),
+                        &["urdf", "sdf", "xml", "mjcf", "usd", "usda"],
+                    );
+                    ui.close();
+                }
+
+                // --- Open Recent path (quick text entry) ---
+                ui.horizontal(|ui| {
+                    ui.label("Path:");
+                    let resp = ui.text_edit_singleline(&mut self.urdf_path_input);
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        let path = PathBuf::from(&self.urdf_path_input);
+                        self.load_model(path);
+                    }
+                });
+                if ui.button("   Load").clicked() {
+                    let path = PathBuf::from(&self.urdf_path_input);
+                    self.load_model(path);
+                    ui.close();
+                }
+
+                ui.separator();
+
+                // --- Save ---
+                let has_source = self.model.as_ref().and_then(|m| m.source_path.as_ref()).is_some();
+                if ui.add_enabled(has_source, egui::Button::new("💾 Save"))
+                    .on_hover_text("Overwrite the original URDF file")
+                    .clicked()
+                {
+                    self.do_save();
+                    ui.close();
+                }
+
+                ui.separator();
+
+                // --- Export ---
+                ui.label("Export");
+                ui.horizontal(|ui| {
+                    ui.label("Format:");
+                    egui::ComboBox::from_id_salt("file_menu_export_fmt")
+                        .selected_text(self.export_format.label())
+                        .show_ui(ui, |ui| {
+                            for &fmt in RobotFormat::ALL {
+                                if fmt.supports_export() {
+                                    ui.selectable_value(&mut self.export_format, fmt, fmt.label());
+                                }
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Dir:");
+                    ui.text_edit_singleline(&mut self.export_dir);
+                    if ui.button("📂").on_hover_text("Browse…").clicked() {
+                        let start = if self.export_dir.is_empty() {
+                            None
+                        } else {
+                            Some(std::path::Path::new(&self.export_dir).to_path_buf())
+                        };
+                        self.dlg_export_dir.open(
+                            "Select Export Directory",
+                            super::file_dialog::FileDialogMode::ChooseDir,
+                            start.as_deref(),
+                            &[],
+                        );
+                    }
+                });
+                let has_model = self.model.is_some();
+                if ui.add_enabled(has_model, egui::Button::new("📦 Export")).clicked() {
+                    self.do_export();
+                    ui.close();
+                }
+                if !self.export_message.is_empty() {
+                    ui.label(
+                        egui::RichText::new(&self.export_message).small().weak(),
+                    );
+                }
+            });
 
             // ===== Edit menu =====
             ui.menu_button("Edit", |ui| {
@@ -185,29 +279,6 @@ impl ArticaraApp {
             // ===== Mode toggle buttons (inline in toolbar) =====
             self.draw_mode_toolbar(ui);
 
-            ui.separator();
-
-            ui.label("File:");
-            let response = ui.text_edit_singleline(&mut self.urdf_path_input);
-            if (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                || ui.button("Load").clicked()
-            {
-                let path = PathBuf::from(&self.urdf_path_input);
-                self.load_model(path);
-            }
-            if ui.button("📂").on_hover_text("Browse for model file…").clicked() {
-                let start = if self.urdf_path_input.is_empty() {
-                    None
-                } else {
-                    Some(std::path::Path::new(&self.urdf_path_input).to_path_buf())
-                };
-                self.dlg_open_model.open(
-                    "Open Robot Model",
-                    super::file_dialog::FileDialogMode::Open,
-                    start.as_deref(),
-                    &["urdf", "sdf", "xml", "mjcf", "usd", "usda"],
-                );
-            }
             ui.separator();
             ui.label(&self.status_message);
         });
