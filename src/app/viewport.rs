@@ -220,6 +220,7 @@ impl ArticaraApp {
         self.draw_camera_axes(ui, rect);
         self.draw_gravity_indicator(ui, rect);
         self.draw_camera_reset_button(ui, rect);
+        self.draw_display_toggles(ui, rect);
     }
 
     /// Compute gizmo transform based on target type and mode.

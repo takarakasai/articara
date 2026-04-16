@@ -54,16 +54,50 @@ pub enum DisplayMode {
     Off,
     Solid,
     Wireframe,
+    Transparent,
+    FlatShading,
+    Points,
 }
 
 impl DisplayMode {
-    pub const ALL: [DisplayMode; 3] = [DisplayMode::Off, DisplayMode::Solid, DisplayMode::Wireframe];
+    pub const ALL: [DisplayMode; 6] = [
+        DisplayMode::Off,
+        DisplayMode::Solid,
+        DisplayMode::Wireframe,
+        DisplayMode::Transparent,
+        DisplayMode::FlatShading,
+        DisplayMode::Points,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             DisplayMode::Off => "Off",
             DisplayMode::Solid => "Solid",
             DisplayMode::Wireframe => "Wireframe",
+            DisplayMode::Transparent => "Transparent",
+            DisplayMode::FlatShading => "Flat Shading",
+            DisplayMode::Points => "Points",
+        }
+    }
+
+    /// Cycle through the basic display modes (for viewport toggle):
+    /// Off → Solid → Wireframe → Off.
+    pub fn next(self) -> Self {
+        match self {
+            DisplayMode::Off => DisplayMode::Solid,
+            DisplayMode::Solid => DisplayMode::Wireframe,
+            // Any non-basic mode also cycles to Off
+            _ => DisplayMode::Off,
+        }
+    }
+
+    /// Cycle for collision viewport toggle:
+    /// Off → Transparent → Wireframe → Off.
+    pub fn next_collision(self) -> Self {
+        match self {
+            DisplayMode::Off => DisplayMode::Transparent,
+            DisplayMode::Transparent => DisplayMode::Wireframe,
+            _ => DisplayMode::Off,
         }
     }
 }
@@ -435,6 +469,66 @@ impl GlRenderer {
         }
     }
 
+    /// Draw a mesh entry in transparent mode (same as draw_mesh_entry but with reduced alpha).
+    unsafe fn draw_mesh_entry_transparent(
+        &self,
+        gl: &glow::Context,
+        entry: &GlMeshEntry,
+        vp: &na::Matrix4<f32>,
+        _light_dir: &na::Vector3<f32>,
+    ) {
+        unsafe {
+            let world_tf = self
+                .transforms
+                .get(&entry.link_name)
+                .copied()
+                .unwrap_or(na::Isometry3::identity());
+            let model_mat = (world_tf * entry.visual_origin).to_homogeneous();
+            let mvp = vp * model_mat;
+
+            gl.uniform_matrix_4_f32_slice(Some(&self.u_mvp), false, mvp.as_slice());
+
+            let model3 = model_mat.fixed_view::<3, 3>(0, 0).into_owned();
+            let normal_mat = model3
+                .try_inverse()
+                .map(|inv| inv.transpose())
+                .unwrap_or(na::Matrix3::identity());
+            gl.uniform_matrix_3_f32_slice(
+                Some(&self.u_normal_mat),
+                false,
+                normal_mat.as_slice(),
+            );
+
+            let alpha = 0.4_f32;
+            let is_highlighted = self
+                .highlight_link
+                .as_ref()
+                .map(|h| h == &entry.link_name)
+                .unwrap_or(false);
+            if is_highlighted {
+                let tint = 0.4;
+                gl.uniform_4_f32(
+                    Some(&self.u_color),
+                    (entry.color[0] + tint).min(1.0),
+                    (entry.color[1] + tint).min(1.0),
+                    (entry.color[2] + tint).min(1.0),
+                    alpha,
+                );
+            } else {
+                gl.uniform_4_f32(
+                    Some(&self.u_color),
+                    entry.color[0],
+                    entry.color[1],
+                    entry.color[2],
+                    alpha,
+                );
+            }
+
+            gl.bind_vertex_array(Some(entry.vao));
+            gl.draw_arrays(glow::TRIANGLES, 0, entry.num_vertices);
+        }
+    }
+
     pub fn render(&self, gl: &glow::Context, camera: &OrbitCamera, viewport: [i32; 4]) {
         let w = viewport[2].max(1);
         let h = viewport[3].max(1);
@@ -531,15 +625,50 @@ impl GlRenderer {
                     DisplayMode::Off => continue,
                     DisplayMode::Solid => {
                         gl.polygon_mode(glow::FRONT_AND_BACK, glow::FILL);
+                        gl.uniform_1_i32(Some(&self.u_flat), 0);
+                        gl.disable(glow::BLEND);
+                        gl.depth_mask(true);
                     }
                     DisplayMode::Wireframe => {
                         gl.polygon_mode(glow::FRONT_AND_BACK, glow::LINE);
+                        gl.uniform_1_i32(Some(&self.u_flat), 0);
+                        gl.disable(glow::BLEND);
+                        gl.depth_mask(true);
+                    }
+                    DisplayMode::Transparent => {
+                        gl.polygon_mode(glow::FRONT_AND_BACK, glow::FILL);
+                        gl.uniform_1_i32(Some(&self.u_flat), 0);
+                        gl.enable(glow::BLEND);
+                        gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+                        gl.depth_mask(false);
+                    }
+                    DisplayMode::FlatShading => {
+                        gl.polygon_mode(glow::FRONT_AND_BACK, glow::FILL);
+                        gl.uniform_1_i32(Some(&self.u_flat), 1);
+                        gl.disable(glow::BLEND);
+                        gl.depth_mask(true);
+                    }
+                    DisplayMode::Points => {
+                        gl.polygon_mode(glow::FRONT_AND_BACK, glow::POINT);
+                        gl.uniform_1_i32(Some(&self.u_flat), 1);
+                        gl.disable(glow::BLEND);
+                        gl.depth_mask(true);
                     }
                 }
-                self.draw_mesh_entry(gl, entry, &vp, &light_dir);
+                // For Transparent mode, reduce alpha of the entry color
+                if mode == DisplayMode::Transparent {
+                    // Temporarily override color alpha — draw_mesh_entry sets u_color,
+                    // so we handle alpha inside a wrapper.
+                    self.draw_mesh_entry_transparent(gl, entry, &vp, &light_dir);
+                } else {
+                    self.draw_mesh_entry(gl, entry, &vp, &light_dir);
+                }
             }
-            // Ensure fill mode is restored
+            // Ensure fill mode and state are restored
             gl.polygon_mode(glow::FRONT_AND_BACK, glow::FILL);
+            gl.uniform_1_i32(Some(&self.u_flat), 0);
+            gl.disable(glow::BLEND);
+            gl.depth_mask(true);
 
 
             // Draw CoM markers

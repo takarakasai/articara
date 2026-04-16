@@ -1,6 +1,8 @@
 use eframe::egui;
 use nalgebra as na;
 
+use crate::renderer::DisplayMode;
+
 use super::{ArticaraApp, DragMode, GizmoOp, InteractionMode, OffsetTarget};
 
 impl ArticaraApp {
@@ -843,5 +845,129 @@ impl ArticaraApp {
 
         // --- Gravity direction label (bottom-left corner) ---
         // (gravity indicator now drawn alongside camera axes in draw_gravity_indicator)
+    }
+
+    /// Draw Visual / Collision display toggle buttons (top-right of viewport).
+    pub(super) fn draw_display_toggles(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let painter = ui.painter();
+        let btn_size = egui::vec2(28.0, 28.0);
+        let margin = 8.0;
+        let gap = 4.0;
+
+        // Position: top-right corner of the viewport
+        let start_x = rect.right() - margin - btn_size.x * 2.0 - gap;
+        let start_y = rect.top() + margin;
+
+        // --- Visual toggle ---
+        let vis_on = self.visual_mode != DisplayMode::Off;
+        let vis_rect = egui::Rect::from_min_size(
+            egui::pos2(start_x, start_y),
+            btn_size,
+        );
+        let vis_resp = ui.interact(
+            vis_rect,
+            ui.id().with("toggle_visual"),
+            egui::Sense::click(),
+        );
+
+        let vis_bg = if vis_on {
+            egui::Color32::from_rgba_unmultiplied(60, 130, 220, 200)
+        } else if vis_resp.hovered() {
+            egui::Color32::from_rgba_unmultiplied(80, 80, 80, 180)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(40, 40, 50, 160)
+        };
+        painter.rect_filled(vis_rect, egui::CornerRadius::same(4), vis_bg);
+
+        // Eye icon for visual
+        let vis_icon = match self.visual_mode {
+            DisplayMode::Off => "ⓥ",
+            DisplayMode::Solid => "👁",
+            DisplayMode::Wireframe => "◫",
+            DisplayMode::Transparent => "◑",
+            DisplayMode::FlatShading => "▧",
+            DisplayMode::Points => "⁙",
+        };
+        painter.text(
+            vis_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            vis_icon,
+            egui::FontId::proportional(14.0),
+            if vis_on {
+                egui::Color32::WHITE
+            } else {
+                egui::Color32::from_gray(140)
+            },
+        );
+
+        if vis_resp.clicked() {
+            self.visual_mode = self.visual_mode.next();
+        }
+        if vis_resp.hovered() {
+            let label = format!("Visual: {}", self.visual_mode.label());
+            painter.text(
+                egui::pos2(vis_rect.left(), vis_rect.bottom() + 4.0),
+                egui::Align2::LEFT_TOP,
+                label,
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_gray(220),
+            );
+        }
+
+        // --- Collision toggle ---
+        let col_on = self.collision_mode != DisplayMode::Off;
+        let col_rect = egui::Rect::from_min_size(
+            egui::pos2(start_x + btn_size.x + gap, start_y),
+            btn_size,
+        );
+        let col_resp = ui.interact(
+            col_rect,
+            ui.id().with("toggle_collision"),
+            egui::Sense::click(),
+        );
+
+        let col_bg = if col_on {
+            egui::Color32::from_rgba_unmultiplied(220, 140, 40, 200)
+        } else if col_resp.hovered() {
+            egui::Color32::from_rgba_unmultiplied(80, 80, 80, 180)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(40, 40, 50, 160)
+        };
+        painter.rect_filled(col_rect, egui::CornerRadius::same(4), col_bg);
+
+        // Shield icon for collision
+        let col_icon = match self.collision_mode {
+            DisplayMode::Off => "ⓒ",
+            DisplayMode::Solid => "🛡",
+            DisplayMode::Wireframe => "◫",
+            DisplayMode::Transparent => "◑",
+            DisplayMode::FlatShading => "▧",
+            DisplayMode::Points => "⁙",
+        };
+        painter.text(
+            col_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            col_icon,
+            egui::FontId::proportional(14.0),
+            if col_on {
+                egui::Color32::WHITE
+            } else {
+                egui::Color32::from_gray(140)
+            },
+        );
+
+        if col_resp.clicked() {
+            self.collision_mode = self.collision_mode.next_collision();
+        }
+        if col_resp.hovered() {
+            let label = format!("Collision: {}", self.collision_mode.label());
+            painter.text(
+                egui::pos2(col_rect.left(), col_rect.bottom() + 4.0),
+                egui::Align2::LEFT_TOP,
+                label,
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_gray(220),
+            );
+        }
     }
 }
