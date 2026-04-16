@@ -3,6 +3,126 @@ use eframe::egui;
 use super::ArticaraApp;
 
 impl ArticaraApp {
+    /// Draw invisible resize handles at all edges and corners of the window.
+    /// Must be called once per frame (e.g. at the top of `ui()`).
+    pub(super) fn draw_resize_borders(&self, ctx: &egui::Context) {
+        let is_maximized = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
+        if is_maximized {
+            return; // no resize when maximized
+        }
+
+        let screen = ctx.input(|i| i.viewport_rect());
+        let edge = 5.0_f32; // width of the resize zone in logical pixels
+        let corner = 12.0_f32; // size of corner resize zone
+
+        // Helper: add an invisible resize zone at the given rect.
+        let resize_zone =
+            |id_salt: &str,
+             rect: egui::Rect,
+             cursor: egui::CursorIcon,
+             dir: egui::ResizeDirection| {
+                // Use an Area so the zone is always on top of all panels.
+                egui::Area::new(egui::Id::new(id_salt))
+                    .fixed_pos(rect.min)
+                    .order(egui::Order::Foreground)
+                    .interactable(true)
+                    .show(ctx, |ui| {
+                        let resp = ui.allocate_response(
+                            rect.size(),
+                            egui::Sense::click_and_drag(),
+                        );
+                        if resp.hovered() {
+                            ui.ctx().set_cursor_icon(cursor);
+                        }
+                        if resp.drag_started() {
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+                        }
+                    });
+            };
+
+        // ── Corners (checked first so they take priority) ──
+        // Top-left
+        resize_zone(
+            "resize_nw",
+            egui::Rect::from_min_size(screen.left_top(), egui::vec2(corner, corner)),
+            egui::CursorIcon::ResizeNwSe,
+            egui::ResizeDirection::NorthWest,
+        );
+        // Top-right
+        resize_zone(
+            "resize_ne",
+            egui::Rect::from_min_size(
+                egui::pos2(screen.right() - corner, screen.top()),
+                egui::vec2(corner, corner),
+            ),
+            egui::CursorIcon::ResizeNeSw,
+            egui::ResizeDirection::NorthEast,
+        );
+        // Bottom-left
+        resize_zone(
+            "resize_sw",
+            egui::Rect::from_min_size(
+                egui::pos2(screen.left(), screen.bottom() - corner),
+                egui::vec2(corner, corner),
+            ),
+            egui::CursorIcon::ResizeNeSw,
+            egui::ResizeDirection::SouthWest,
+        );
+        // Bottom-right
+        resize_zone(
+            "resize_se",
+            egui::Rect::from_min_size(
+                egui::pos2(screen.right() - corner, screen.bottom() - corner),
+                egui::vec2(corner, corner),
+            ),
+            egui::CursorIcon::ResizeNwSe,
+            egui::ResizeDirection::SouthEast,
+        );
+
+        // ── Edges (exclude corner regions) ──
+        // Top
+        resize_zone(
+            "resize_n",
+            egui::Rect::from_min_max(
+                egui::pos2(screen.left() + corner, screen.top()),
+                egui::pos2(screen.right() - corner, screen.top() + edge),
+            ),
+            egui::CursorIcon::ResizeVertical,
+            egui::ResizeDirection::North,
+        );
+        // Bottom
+        resize_zone(
+            "resize_s",
+            egui::Rect::from_min_max(
+                egui::pos2(screen.left() + corner, screen.bottom() - edge),
+                egui::pos2(screen.right() - corner, screen.bottom()),
+            ),
+            egui::CursorIcon::ResizeVertical,
+            egui::ResizeDirection::South,
+        );
+        // Left
+        resize_zone(
+            "resize_w",
+            egui::Rect::from_min_max(
+                egui::pos2(screen.left(), screen.top() + corner),
+                egui::pos2(screen.left() + edge, screen.bottom() - corner),
+            ),
+            egui::CursorIcon::ResizeHorizontal,
+            egui::ResizeDirection::West,
+        );
+        // Right
+        resize_zone(
+            "resize_e",
+            egui::Rect::from_min_max(
+                egui::pos2(screen.right() - edge, screen.top() + corner),
+                egui::pos2(screen.right(), screen.bottom() - corner),
+            ),
+            egui::CursorIcon::ResizeHorizontal,
+            egui::ResizeDirection::East,
+        );
+    }
+
     /// Render a custom title bar with drag-to-move, title text, and window control buttons.
     pub(super) fn draw_title_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let title_bar_rect = ui.max_rect();

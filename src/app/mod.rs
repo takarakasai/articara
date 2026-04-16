@@ -653,6 +653,9 @@ impl eframe::App for ArticaraApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        // Custom resize handles at window edges (since native decorations are off)
+        self.draw_resize_borders(&ctx);
+
         // --- Undo/Redo history: snapshot model at frame start ---
         self.any_edit_this_frame = false;
         self.pre_frame_snapshot = self.model.as_ref().map(|m| m.clone());
