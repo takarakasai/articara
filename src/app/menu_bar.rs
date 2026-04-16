@@ -103,25 +103,19 @@ impl ArticaraApp {
 
             // ===== View menu =====
             ui.menu_button("View", |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Visual:");
-                    egui::ComboBox::from_id_salt("menu_visual_mode")
-                        .selected_text(self.visual_mode.label())
-                        .show_ui(ui, |ui| {
-                            for m in DisplayMode::ALL {
-                                ui.selectable_value(&mut self.visual_mode, m, m.label());
-                            }
-                        });
+                ui.menu_button(format!("Visual: {}", self.visual_mode.label()), |ui| {
+                    for m in DisplayMode::ALL {
+                        if ui.selectable_value(&mut self.visual_mode, m, m.label()).clicked() {
+                            ui.close();
+                        }
+                    }
                 });
-                ui.horizontal(|ui| {
-                    ui.label("Collision:");
-                    egui::ComboBox::from_id_salt("menu_collision_mode")
-                        .selected_text(self.collision_mode.label())
-                        .show_ui(ui, |ui| {
-                            for m in DisplayMode::ALL {
-                                ui.selectable_value(&mut self.collision_mode, m, m.label());
-                            }
-                        });
+                ui.menu_button(format!("Collision: {}", self.collision_mode.label()), |ui| {
+                    for m in DisplayMode::ALL {
+                        if ui.selectable_value(&mut self.collision_mode, m, m.label()).clicked() {
+                            ui.close();
+                        }
+                    }
                 });
                 ui.separator();
                 ui.checkbox(&mut self.show_com, "Show CoM & Mass");

@@ -2,7 +2,7 @@ use eframe::egui;
 use nalgebra as na;
 use std::path::PathBuf;
 
-use super::ArticaraApp;
+use super::{ArticaraApp, InteractionMode, OffsetTarget};
 use crate::format::RobotFormat;
 use crate::renderer::{DisplayMode, MeshKind};
 use crate::robot::GeomData;
@@ -224,7 +224,18 @@ impl ArticaraApp {
                     for vi in 0..link.visuals.len() {
                         let vis = &mut link.visuals[vi];
                         ui.push_id(vi, |ui| {
-                            let header_resp = ui.label(egui::RichText::new(format!("Visual #{vi}")).strong());
+                            let is_selected = self.interaction_mode == InteractionMode::OffsetAdjust
+                                && self.offset_target == OffsetTarget::Visual
+                                && self.selected_visual == Some(vi);
+                            let header_resp = ui.selectable_label(
+                                is_selected,
+                                egui::RichText::new(format!("Visual #{vi}")).strong(),
+                            );
+                            if header_resp.clicked() {
+                                self.interaction_mode = InteractionMode::OffsetAdjust;
+                                self.offset_target = OffsetTarget::Visual;
+                                self.selected_visual = Some(vi);
+                            }
                             // Right-click on individual visual item
                             header_resp.context_menu(|ui| {
                                 if ui.button("📋 Duplicate").clicked() {
@@ -375,7 +386,18 @@ impl ArticaraApp {
                     for ci in 0..link.collisions.len() {
                         let col = &mut link.collisions[ci];
                         ui.push_id(format!("col_{ci}"), |ui| {
-                            let col_item_resp = ui.label(egui::RichText::new(format!("Collision #{ci}")).strong());
+                            let is_selected = self.interaction_mode == InteractionMode::OffsetAdjust
+                                && self.offset_target == OffsetTarget::Collision
+                                && self.selected_collision == Some(ci);
+                            let col_item_resp = ui.selectable_label(
+                                is_selected,
+                                egui::RichText::new(format!("Collision #{ci}")).strong(),
+                            );
+                            if col_item_resp.clicked() {
+                                self.interaction_mode = InteractionMode::OffsetAdjust;
+                                self.offset_target = OffsetTarget::Collision;
+                                self.selected_collision = Some(ci);
+                            }
                             col_item_resp.context_menu(|ui| {
                                 if ui.button("📋 Duplicate").clicked() {
                                     col_to_duplicate = Some(ci);
