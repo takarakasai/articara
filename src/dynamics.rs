@@ -20,6 +20,7 @@ use crate::robot::RobotModel;
 
 /// Per-joint static torque information.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct JointTorqueInfo {
     pub joint_name: String,
     pub joint_idx: usize,
@@ -36,6 +37,7 @@ pub struct JointTorqueInfo {
 
 /// Result of payload capacity analysis.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PayloadResult {
     /// Maximum payload mass the robot can hold statically (kg).
     pub max_mass_kg: f64,
@@ -47,6 +49,7 @@ pub struct PayloadResult {
 
 /// Result of jump-height estimation.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct JumpResult {
     /// Estimated max jump height (m) of the centre of mass.
     pub max_height_m: f64,
@@ -60,6 +63,7 @@ pub struct JumpResult {
 
 /// Full static analysis result.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StaticAnalysis {
     pub joint_torques: Vec<JointTorqueInfo>,
     pub payload: Option<PayloadResult>,

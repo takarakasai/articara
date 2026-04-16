@@ -184,7 +184,255 @@ $$\tau = M \cdot \frac{\dot{q}_{des} - \dot{q}}{\Delta t} + h$$
 
 ---
 
-## 8. 主要ソースファイル
+## 8. WASM プラグイン I/F 仕様
+
+汎用コマンドディスパッチ + **View プリミティブ** によるホスト描画方式。
+新しいコマンドを追加してもホスト側の修正は不要。
+
+### 8.1 アーキテクチャ
+
+```
+┌──────────────────┐                 ┌──────────────────────────┐
+│   Host (native)  │                 │  WASM Module (sandbox)   │
+│  jump-sim-runner │                 │  jump_sim_wasm.wasm      │
+│                  │                 │                          │
+│  Request {       │                 │  execute(ptr, len)       │
+│    version: 1,   │── JSON ──────> │    ├─ dispatch(command)   │
+│    command: "…",  │                │    │   ├─ jump_sim        │
+│    params: {…}   │                │    │   ├─ static_analysis │
+│  }               │                │    │   ├─ gravity_torques │
+│                  │                 │    │   ├─ payload_capacity│
+│  Response {      │                 │    │   ├─ jump_height     │
+│    ok, views,    │<── JSON ──────│    │   ├─ payload_sim     │
+│    data          │                │    │   └─ list_commands   │
+│  }               │                │    └─ → Response          │
+│                  │                 │                          │
+│  render_views()  │                 │  (GUIなし / serde only)   │
+│  ├─ Heading      │                 └──────────────────────────┘
+│  ├─ Scalars      │
+│  ├─ Table        │
+│  ├─ LinePlot     │
+│  ├─ BarChart     │
+│  ├─ Progress     │
+│  └─ Log          │
+└──────────────────┘
+```
+
+- WASM ターゲット: `wasm32-unknown-unknown`
+- ランタイム: wasmtime 33 (ホスト側)
+- シリアライズ: serde_json (JSON)
+- WASM モジュールは GUI 依存なし (`default-features = false`)
+- 共有型定義: `plugin-api` クレート (ホスト・WASM 双方が依存)
+
+### 8.2 Export 関数一覧
+
+| 関数 | シグネチャ | 用途 |
+|---|---|---|
+| `alloc` | `(size: u32) → u32` | WASM 線形メモリにバッファを確保しポインタを返す |
+| `dealloc` | `(ptr: u32, size: u32) → ()` | `alloc` で確保したバッファを解放 |
+| `execute` | `(ptr: u32, len: u32) → u32` | **汎用エントリポイント**: JSON Request → dispatch → Response。戻り値: 0=成功, 1=エラー |
+| `last_output_ptr` | `() → u32` | 直前の出力 JSON バイト列のポインタ |
+| `last_output_len` | `() → u32` | 直前の出力 JSON バイト列の長さ |
+| `run_jump_sim` | `(ptr: u32, len: u32) → u32` | *後方互換*: 旧ホスト向け。内部で `execute` に委譲 |
+| `memory` | *(Memory export)* | WASM 線形メモリ（読み書き用） |
+
+### 8.3 呼び出しプロトコル
+
+```
+Host                                WASM
+ │                                   │
+ │  1. alloc(json_len) ────────────> │  → input_ptr
+ │  2. memory.write(input_ptr, json) ─> │
+ │  3. execute(input_ptr, len) ─────> │  → 0 (成功) or 1 (エラー)
+ │  4. last_output_len() ────────────> │  → out_len
+ │  5. last_output_ptr() ────────────> │  → out_ptr
+ │  6. memory.read(out_ptr, out_len) ─> │  → Response JSON bytes
+ │  7. dealloc(input_ptr, json_len) ──> │
+ │                                   │
+```
+
+**注意事項**:
+- 出力バッファは WASM 側の `static` 領域が所有。次回 `execute` 呼び出しで上書きされる。
+- `dealloc` は入力バッファのみ呼び出す。出力バッファの解放はモジュール側が管理。
+
+### 8.4 Request / Response エンベロープ
+
+#### Request
+
+```json
+{
+  "version": 1,
+  "command": "jump_sim",
+  "params": { … }
+}
+```
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `version` | `u32` | プロトコルバージョン (現在 `1`) |
+| `command` | `String` | コマンド名 |
+| `params` | `Value` | コマンド固有のパラメータ (JSON object) |
+
+#### Response (成功時)
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "command": "jump_sim",
+  "views": [ … ],
+  "data": { … }
+}
+```
+
+#### Response (エラー時)
+
+```json
+{
+  "version": 1,
+  "ok": false,
+  "command": "jump_sim",
+  "error": "JSON parse error: …"
+}
+```
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `version` | `u32` | プロトコルバージョン |
+| `ok` | `bool` | 成功/失敗 |
+| `command` | `String` | コマンド名のエコー |
+| `error` | `String?` | エラーメッセージ (`ok=false` 時) |
+| `views` | `[View]?` | ホストが描画する **View プリミティブ** の順序付きリスト |
+| `data` | `Value?` | 機械可読な生データ (プログラム向け) |
+
+### 8.5 View プリミティブ
+
+ホスト側は `views` 配列を上から順にレンダリングする。
+新しい View 型の追加にはホスト更新が必要だが、
+**新しいコマンドの追加はホスト変更不要** （既存の View 型を組み合わせるだけ）。
+
+| View 型 | 用途 | 主なフィールド |
+|---|---|---|
+| `Heading` | セクション見出し | `text`, `level` (1=大, 2=中…) |
+| `Scalars` | キー・値のリスト | `title?`, `items: [{label, value, numeric?, emphasis?}]` |
+| `Table` | 列定義+行データ | `title?`, `columns: [{name, align?}]`, `rows: [[Cell]]` |
+| `LinePlot` | 時系列折れ線グラフ | `title`, `x_label`, `y_label`, `series: [{name, x, y, color?}]` |
+| `BarChart` | 棒グラフ | `title`, `bars: [{label, value, color?, tag?}]`, `max_value?` |
+| `Progress` | プログレスバー | `label`, `value` (0–1), `text?` |
+| `Log` | メッセージブロック | `messages: [{level, text}]` |
+
+#### Cell 型 (Table 内)
+
+| Cell 型 | 説明 |
+|---|---|
+| `Text` | プレーンテキスト (`value: String`) |
+| `Number` | 数値 (`value: f64`, `format?: String` — printf 形式) |
+| `Tag` | 色付きバッジ (`value: String`, `color?: "green"\|"yellow"\|"red"\|"gray"`) |
+
+### 8.6 コマンド一覧
+
+| コマンド | カテゴリ | 説明 | 必須 params |
+|---|---|---|---|
+| `list_commands` | meta | 利用可能コマンドの列挙 | なし |
+| `jump_sim` | simulation | 完全ジャンプシミュレーション | `model`, `ground_links`, … (§8.7 参照) |
+| `static_analysis` | analysis | 重力トルク + 可搬質量 + 推定跳躍高 | `model` |
+| `gravity_torques` | analysis | 関節ごとの静的重力トルク | `model` |
+| `payload_capacity` | analysis | エンドエフェクタでの最大可搬質量 | `model`, `ee_link` |
+| `jump_height` | analysis | エネルギー法に基づく跳躍高推定 | `model` |
+| `payload_sim` | simulation | ペイロード漸増シミュレーション | `model`, `ee_link` |
+
+### 8.7 コマンド固有 params
+
+#### `jump_sim`
+
+```json
+{
+  "model": { … },
+  "ground_links": ["RL_foot", "FL_foot", "RR_foot", "FR_foot"],
+  "body_link": "trunk",
+  "speed": 1.0,
+  "locked_joints": [],
+  "launch_axes": [false, false, true],
+  "extension_duration": null,
+  "enforce_torque_limits": false,
+  "enable_retract": true,
+  "graph_link": "trunk",
+  "pd_kp": 500.0,
+  "pd_kd": 20.0
+}
+```
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `model` | `RobotModel` | ✓ | URDF から解析済みのロボットモデル |
+| `ground_links` | `[String]` | ✓ | 接地リンク名リスト |
+| `body_link` | `String?` | | 胴体リンク名。`null` → ルートリンク |
+| `speed` | `f32` | ✓ | シミュレーション速度倍率 |
+| `locked_joints` | `[String]` | ✓ | ジャンプ中にロックする関節名セット |
+| `launch_axes` | `[bool; 3]` | ✓ | 飛行中のベース並進軸 `[x, y, z]` |
+| `extension_duration` | `f32?` | | 伸展時間 (秒)。`null` → 自動計算 |
+| `enforce_torque_limits` | `bool` | ✓ | URDF effort limit の適用 |
+| `enable_retract` | `bool` | ✓ | 飛行中の脚引き戻し |
+| `graph_link` | `String?` | | グラフ記録対象リンク。`null` → 記録なし |
+| `pd_kp` | `f64` | ✓ | PD 位置ゲイン (N·m/rad) |
+| `pd_kd` | `f64` | ✓ | PD 速度ゲイン (N·m·s/rad) |
+
+#### `gravity_torques` / `static_analysis` / `jump_height`
+
+```json
+{ "model": { … } }
+```
+
+#### `payload_capacity` / `payload_sim`
+
+```json
+{ "model": { … }, "ee_link": "FL_foot" }
+```
+
+### 8.8 Cargo Feature フラグ
+
+| Feature | 対象 | 内容 |
+|---|---|---|
+| `gui` (default) | articara | eframe, egui_plot, glow, env_logger |
+| `serde` | articara | serde derives + nalgebra/serde-serialize |
+
+WASM クレートは `default-features = false, features = ["serde"]` で GUI 非依存にする。
+
+### 8.9 ビルドコマンド
+
+```bash
+# WASM モジュール (最適化ビルド: LTO + opt-level=z)
+cargo build -p jump-sim-wasm --target wasm32-unknown-unknown --profile wasm-release
+
+# WASM モジュール (通常リリース → ~569 KB)
+cargo build -p jump-sim-wasm --target wasm32-unknown-unknown --release
+
+# ホストランナー
+cargo run -p jump-sim-runner --release -- <command> <urdf_path> [--wasm <wasm_path>] [--ee-link <link>]
+
+# 実行例
+target/release/jump-sim-runner list_commands sample/namiashi_description/urdf/namiashi.urdf
+target/release/jump-sim-runner gravity_torques sample/namiashi_description/urdf/namiashi.urdf
+target/release/jump-sim-runner payload_capacity sample/namiashi_description/urdf/namiashi.urdf --ee-link FL_foot
+
+# テスト (serde ラウンドトリップ含む)
+cargo test -p articara --features serde
+```
+
+### 8.10 ファイル構成
+
+| パス | 内容 |
+|---|---|
+| `plugin-api/Cargo.toml` | 共有プラグイン API クレート設定 |
+| `plugin-api/src/lib.rs` | Request/Response エンベロープ、View プリミティブ (7型)、CommandInfo |
+| `jump-sim-wasm/Cargo.toml` | WASM cdylib クレート設定 |
+| `jump-sim-wasm/src/lib.rs` | `execute` エントリポイント、コマンドディスパッチ、7 コマンドのハンドラ |
+| `jump-sim-runner/Cargo.toml` | wasmtime ホストランナー設定 |
+| `jump-sim-runner/src/main.rs` | 汎用 CLI ホスト: WASM ロード → Request 構築 → View レンダリング |
+
+---
+
+## 9. 主要ソースファイル
 
 | ファイル | 内容 |
 |---|---|
@@ -192,3 +440,6 @@ $$\tau = M \cdot \frac{\dot{q}_{des} - \dot{q}}{\Delta t} + h$$
 | `src/dynamics.rs` | `JumpSim`, `start_jump_sim()`, `step_jump_sim()`, `step_jump_sub()`, グラフ記録 |
 | `src/app/dynamics_panel.rs` | UI パネル、結果表示、グラフ描画、SimConfig 保存/読込 |
 | `src/app/mod.rs` | アプリ状態 (`dynamics_pd_kp`, `dynamics_pd_kd` 等) |
+| `plugin-api/src/lib.rs` | 共有プロトコル型: View enum, Request/Response, Cell, Series, Bar 等 |
+| `jump-sim-wasm/src/lib.rs` | WASM プラグイン: `execute` + command dispatch + 7 ハンドラ |
+| `jump-sim-runner/src/main.rs` | wasmtime ホスト: 汎用 CLI, `call_plugin()`, `render_views()` |
