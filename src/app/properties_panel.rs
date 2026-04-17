@@ -390,6 +390,19 @@ impl ArticaraApp {
                         props_edit_desc = Some(format!("Add visual to '{}'", link_name));
                         ui.close();
                     }
+                    if ui.button("📦 Add Mesh (STL/DAE)…").clicked() {
+                        self.add_mesh_target = Some(super::AddMeshTarget {
+                            link_index: li,
+                            kind: super::MeshAddKind::Visual,
+                        });
+                        self.dlg_add_mesh.open(
+                            "メッシュファイルを開く (Visual)",
+                            super::file_dialog::FileDialogMode::Open,
+                            None,
+                            &["stl", "dae"],
+                        );
+                        ui.close();
+                    }
                 });
 
                 let col_count = link.collisions.len();
@@ -539,6 +552,19 @@ impl ArticaraApp {
                         });
                         self.needs_upload = true;
                         props_edit_desc = Some(format!("Add collision to '{}'", link_name));
+                        ui.close();
+                    }
+                    if ui.button("📦 Add Mesh (STL/DAE)…").clicked() {
+                        self.add_mesh_target = Some(super::AddMeshTarget {
+                            link_index: li,
+                            kind: super::MeshAddKind::Collision,
+                        });
+                        self.dlg_add_mesh.open(
+                            "メッシュファイルを開く (Collision)",
+                            super::file_dialog::FileDialogMode::Open,
+                            None,
+                            &["stl", "dae"],
+                        );
                         ui.close();
                     }
                 });

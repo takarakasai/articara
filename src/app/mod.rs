@@ -294,6 +294,23 @@ pub struct ArticaraApp {
     dlg_open_sim_config: file_dialog::FileDialog,
     /// Dialog for saving a sim config file.
     dlg_save_sim_config: file_dialog::FileDialog,
+    /// Dialog for loading a mesh file (STL/DAE) to add as visual or collision.
+    dlg_add_mesh: file_dialog::FileDialog,
+    /// Target for the mesh file dialog: which link index and whether visual or collision.
+    add_mesh_target: Option<AddMeshTarget>,
+}
+
+/// Tracks which link and slot (visual / collision) a pending mesh-add dialog is for.
+#[derive(Clone)]
+struct AddMeshTarget {
+    link_index: usize,
+    kind: MeshAddKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MeshAddKind {
+    Visual,
+    Collision,
 }
 
 impl ArticaraApp {
@@ -393,6 +410,8 @@ impl ArticaraApp {
             dlg_export_dir: file_dialog::FileDialog::new("dlg_export_dir"),
             dlg_open_sim_config: file_dialog::FileDialog::new("dlg_open_sim_config"),
             dlg_save_sim_config: file_dialog::FileDialog::new("dlg_save_sim_config"),
+            dlg_add_mesh: file_dialog::FileDialog::new("dlg_add_mesh"),
+            add_mesh_target: None,
         }
     }
 
@@ -622,6 +641,59 @@ impl ArticaraApp {
                         self.status_message = format!("Save sim config error: {e}");
                     }
                 }
+            }
+            _ => {}
+        }
+
+        // --- Add Mesh (STL/DAE) dialog ---
+        match self.dlg_add_mesh.show(ctx) {
+            FileDialogResult::Confirmed(path) => {
+                let vertices = crate::robot::load_mesh_file(&path);
+                if vertices.is_empty() {
+                    self.status_message = format!(
+                        "メッシュ読み込み失敗: {}",
+                        path.display()
+                    );
+                } else if let Some(target) = self.add_mesh_target.take() {
+                    let tri_count = vertices.len() / 18;
+                    let fname = path.display().to_string();
+                    if let Some(ref mut model) = self.model {
+                        if target.link_index < model.links.len() {
+                            let link = &mut model.links[target.link_index];
+                            let geom = crate::robot::GeomData::Mesh {
+                                vertices,
+                                filename: Some(fname.clone()),
+                                scale: None,
+                            };
+                            match target.kind {
+                                MeshAddKind::Visual => {
+                                    link.visuals.push(crate::robot::VisualData {
+                                        origin: nalgebra::Isometry3::identity(),
+                                        geometry: geom,
+                                        color: [0.7, 0.7, 0.7, 1.0],
+                                    });
+                                    self.status_message = format!(
+                                        "Visual メッシュ追加 ({tri_count} tris) ← {fname}"
+                                    );
+                                }
+                                MeshAddKind::Collision => {
+                                    link.collisions.push(crate::robot::CollisionData {
+                                        origin: nalgebra::Isometry3::identity(),
+                                        geometry: geom,
+                                    });
+                                    self.status_message = format!(
+                                        "Collision メッシュ追加 ({tri_count} tris) ← {fname}"
+                                    );
+                                }
+                            }
+                            self.needs_upload = true;
+                            self.any_edit_this_frame = true;
+                        }
+                    }
+                }
+            }
+            FileDialogResult::Cancelled => {
+                self.add_mesh_target = None;
             }
             _ => {}
         }
