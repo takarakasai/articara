@@ -415,6 +415,14 @@ fn parse_sdf_geometry(node: roxmltree::Node, sdf_dir: &Path) -> GeomData {
                     let radius = get_child_f64(child, "radius") as f32;
                     return GeomData::Sphere { radius };
                 }
+                "capsule" => {
+                    let radius = get_child_f64(child, "radius") as f32;
+                    let length = get_child_f64(child, "length") as f32;
+                    return GeomData::Capsule {
+                        radius,
+                        half_length: length / 2.0,
+                    };
+                }
                 "mesh" => {
                     if let Some(uri) = child.children().find(|n| n.tag_name().name() == "uri") {
                         let filename = uri.text().unwrap_or("").to_string();
@@ -483,6 +491,12 @@ fn write_sdf_geometry(s: &mut String, geom: &GeomData, indent: usize) {
         GeomData::Sphere { radius } => {
             s.push_str(&format!(
                 "{pad}  <sphere><radius>{radius}</radius></sphere>\n"
+            ));
+        }
+        GeomData::Capsule { radius, half_length } => {
+            s.push_str(&format!(
+                "{pad}  <capsule><radius>{radius}</radius><length>{}</length></capsule>\n",
+                half_length * 2.0
             ));
         }
         GeomData::Mesh { filename, scale, .. } => {

@@ -853,6 +853,7 @@ fn geom_params(geom: &robot::GeomData) -> [f32; 3] {
         robot::GeomData::Box { hx, hy, hz } => [*hx, *hy, *hz],
         robot::GeomData::Cylinder { radius, half_length } => [*radius, *half_length, 0.0],
         robot::GeomData::Sphere { radius } => [*radius, 0.0, 0.0],
+        robot::GeomData::Capsule { radius, half_length } => [*radius, *half_length, 0.0],
         robot::GeomData::Mesh { .. } => [0.0, 0.0, 0.0],
     }
 }
@@ -876,6 +877,12 @@ fn apply_geom_scale(geom: &mut robot::GeomData, axis: u8, initial: [f32; 3], del
         }
         robot::GeomData::Sphere { radius } => {
             *radius = (initial[0] + delta).max(MIN_DIM);
+        }
+        robot::GeomData::Capsule { radius, half_length } => {
+            match axis {
+                0 | 1 => *radius = (initial[0] + delta).max(MIN_DIM),
+                _ => *half_length = (initial[1] + delta).max(MIN_DIM),
+            }
         }
         robot::GeomData::Mesh { .. } => {}
     }

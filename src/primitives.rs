@@ -138,6 +138,102 @@ pub fn generate_sphere(radius: f32, slices: u32, stacks: u32) -> Vec<f32> {
     v
 }
 
+/// Generate vertex data for a capsule (cylinder body + hemisphere caps, axis along Z).
+///
+/// `half_length` is the half-length of the cylindrical portion.
+/// Total height = 2*half_length + 2*radius.
+pub fn generate_capsule(radius: f32, half_length: f32, segments: u32, cap_stacks: u32) -> Vec<f32> {
+    let mut v = Vec::new();
+
+    // --- Cylinder body (same as generate_cylinder but without end caps) ---
+    for i in 0..segments {
+        let a0 = (i as f32 / segments as f32) * std::f32::consts::TAU;
+        let a1 = ((i + 1) as f32 / segments as f32) * std::f32::consts::TAU;
+        let (c0, s0) = (a0.cos(), a0.sin());
+        let (c1, s1) = (a1.cos(), a1.sin());
+        let p00 = [radius * c0, radius * s0, -half_length];
+        let p10 = [radius * c1, radius * s1, -half_length];
+        let p01 = [radius * c0, radius * s0, half_length];
+        let p11 = [radius * c1, radius * s1, half_length];
+        let n0 = [c0, s0, 0.0];
+        let n1 = [c1, s1, 0.0];
+        push_vert(&mut v, p00, n0);
+        push_vert(&mut v, p10, n1);
+        push_vert(&mut v, p11, n1);
+        push_vert(&mut v, p00, n0);
+        push_vert(&mut v, p11, n1);
+        push_vert(&mut v, p01, n0);
+    }
+
+    // --- Top hemisphere cap (z = +half_length, hemisphere going up) ---
+    for i in 0..cap_stacks {
+        let phi0 = (i as f32 / cap_stacks as f32) * std::f32::consts::FRAC_PI_2;
+        let phi1 = ((i + 1) as f32 / cap_stacks as f32) * std::f32::consts::FRAC_PI_2;
+        for j in 0..segments {
+            let th0 = (j as f32 / segments as f32) * std::f32::consts::TAU;
+            let th1 = ((j + 1) as f32 / segments as f32) * std::f32::consts::TAU;
+            // Spherical coords: phi from equator (0) to pole (PI/2)
+            let mk = |phi: f32, th: f32| -> ([f32; 3], [f32; 3]) {
+                let cp = phi.cos();
+                let sp = phi.sin();
+                let ct = th.cos();
+                let st = th.sin();
+                let nx = cp * ct;
+                let ny = cp * st;
+                let nz = sp;
+                let pos = [radius * nx, radius * ny, half_length + radius * nz];
+                let nrm = [nx, ny, nz];
+                (pos, nrm)
+            };
+            let (p00, n00) = mk(phi0, th0);
+            let (p10, n10) = mk(phi1, th0);
+            let (p01, n01) = mk(phi0, th1);
+            let (p11, n11) = mk(phi1, th1);
+            push_vert(&mut v, p00, n00);
+            push_vert(&mut v, p10, n10);
+            push_vert(&mut v, p11, n11);
+            push_vert(&mut v, p00, n00);
+            push_vert(&mut v, p11, n11);
+            push_vert(&mut v, p01, n01);
+        }
+    }
+
+    // --- Bottom hemisphere cap (z = -half_length, hemisphere going down) ---
+    for i in 0..cap_stacks {
+        let phi0 = (i as f32 / cap_stacks as f32) * std::f32::consts::FRAC_PI_2;
+        let phi1 = ((i + 1) as f32 / cap_stacks as f32) * std::f32::consts::FRAC_PI_2;
+        for j in 0..segments {
+            let th0 = (j as f32 / segments as f32) * std::f32::consts::TAU;
+            let th1 = ((j + 1) as f32 / segments as f32) * std::f32::consts::TAU;
+            let mk = |phi: f32, th: f32| -> ([f32; 3], [f32; 3]) {
+                let cp = phi.cos();
+                let sp = phi.sin();
+                let ct = th.cos();
+                let st = th.sin();
+                let nx = cp * ct;
+                let ny = cp * st;
+                let nz = -sp;
+                let pos = [radius * nx, radius * ny, -half_length + radius * nz];
+                let nrm = [nx, ny, nz];
+                (pos, nrm)
+            };
+            let (p00, n00) = mk(phi0, th0);
+            let (p10, n10) = mk(phi1, th0);
+            let (p01, n01) = mk(phi0, th1);
+            let (p11, n11) = mk(phi1, th1);
+            // Wind in opposite order for correct face direction
+            push_vert(&mut v, p00, n00);
+            push_vert(&mut v, p11, n11);
+            push_vert(&mut v, p10, n10);
+            push_vert(&mut v, p00, n00);
+            push_vert(&mut v, p01, n01);
+            push_vert(&mut v, p11, n11);
+        }
+    }
+
+    v
+}
+
 /// Generate vertex data for a grid on the XY plane.
 pub fn generate_grid(size: f32, divisions: u32) -> Vec<f32> {
     let mut v = Vec::new();

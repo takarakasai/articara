@@ -253,6 +253,15 @@ pub fn precise_geometry_intersect(
         GeomData::Sphere { radius } => {
             ray_sphere_intersect(&local_origin, &local_dir, &na::Point3::origin(), *radius)
         }
+        GeomData::Capsule { radius, half_length } => {
+            // Test cylinder body + two hemisphere caps
+            let t_cyl = ray_cylinder_intersect(&local_origin, &local_dir, *radius, *half_length);
+            let top_center = na::Point3::new(0.0, 0.0, *half_length);
+            let bot_center = na::Point3::new(0.0, 0.0, -*half_length);
+            let t_top = ray_sphere_intersect(&local_origin, &local_dir, &top_center, *radius);
+            let t_bot = ray_sphere_intersect(&local_origin, &local_dir, &bot_center, *radius);
+            [t_cyl, t_top, t_bot].iter().filter_map(|t| *t).reduce(f32::min)
+        }
         GeomData::Mesh { vertices, .. } => ray_mesh_intersect(&local_origin, &local_dir, vertices),
     }
 }
@@ -502,36 +511,117 @@ fn geom_to_urdf_geom(geom: &GeomData) -> urdf_rs::Geometry {
             filename: filename.clone().unwrap_or_else(|| "mesh.stl".into()),
             scale: scale.map(|s| urdf_rs::Vec3([s[0] as f64, s[1] as f64, s[2] as f64])),
         },
+        // Capsule is not supported by URDF — approximate as cylinder (caps ignored)
+        GeomData::Capsule { radius, half_length } => urdf_rs::Geometry::Cylinder {
+            radius: *radius as f64,
+            length: (*half_length * 2.0 + *radius * 2.0) as f64,
+        },
     }
 }
 
-/// Convert a `VisualData` to a `urdf_rs::Visual`.
-fn visual_to_urdf(vis: &VisualData) -> urdf_rs::Visual {
-    urdf_rs::Visual {
-        name: None,
-        origin: isometry_to_pose(&vis.origin),
-        geometry: geom_to_urdf_geom(&vis.geometry),
-        material: Some(urdf_rs::Material {
-            name: String::new(),
-            color: Some(urdf_rs::Color {
-                rgba: urdf_rs::Vec4([
-                    vis.color[0] as f64,
-                    vis.color[1] as f64,
-                    vis.color[2] as f64,
-                    vis.color[3] as f64,
-                ]),
+/// Convert a `VisualData` to one or more `urdf_rs::Visual` elements.
+/// Capsules are decomposed into a cylinder + 2 sphere visuals.
+fn visuals_to_urdf(vis: &VisualData) -> Vec<urdf_rs::Visual> {
+    let make_visual = |origin_iso: &na::Isometry3<f32>, geom: urdf_rs::Geometry| -> urdf_rs::Visual {
+        urdf_rs::Visual {
+            name: None,
+            origin: isometry_to_pose(origin_iso),
+            geometry: geom,
+            material: Some(urdf_rs::Material {
+                name: String::new(),
+                color: Some(urdf_rs::Color {
+                    rgba: urdf_rs::Vec4([
+                        vis.color[0] as f64,
+                        vis.color[1] as f64,
+                        vis.color[2] as f64,
+                        vis.color[3] as f64,
+                    ]),
+                }),
+                texture: None,
             }),
-            texture: None,
-        }),
+        }
+    };
+
+    match &vis.geometry {
+        GeomData::Capsule { radius, half_length } => {
+            let r = *radius;
+            let hl = *half_length;
+            let cyl = make_visual(&vis.origin, urdf_rs::Geometry::Cylinder {
+                radius: r as f64,
+                length: (hl * 2.0) as f64,
+            });
+            let top_origin = vis.origin * na::Translation3::new(0.0, 0.0, hl);
+            let top = make_visual(&na::Isometry3::from_parts(
+                top_origin.translation,
+                vis.origin.rotation,
+            ), urdf_rs::Geometry::Sphere { radius: r as f64 });
+            let bot_origin = vis.origin * na::Translation3::new(0.0, 0.0, -hl);
+            let bot = make_visual(&na::Isometry3::from_parts(
+                bot_origin.translation,
+                vis.origin.rotation,
+            ), urdf_rs::Geometry::Sphere { radius: r as f64 });
+            vec![cyl, top, bot]
+        }
+        _ => vec![urdf_rs::Visual {
+            name: None,
+            origin: isometry_to_pose(&vis.origin),
+            geometry: geom_to_urdf_geom(&vis.geometry),
+            material: Some(urdf_rs::Material {
+                name: String::new(),
+                color: Some(urdf_rs::Color {
+                    rgba: urdf_rs::Vec4([
+                        vis.color[0] as f64,
+                        vis.color[1] as f64,
+                        vis.color[2] as f64,
+                        vis.color[3] as f64,
+                    ]),
+                }),
+                texture: None,
+            }),
+        }],
     }
 }
 
-/// Convert a `CollisionData` to a `urdf_rs::Collision`.
-fn collision_to_urdf(col: &CollisionData) -> urdf_rs::Collision {
-    urdf_rs::Collision {
-        name: None,
-        origin: isometry_to_pose(&col.origin),
-        geometry: geom_to_urdf_geom(&col.geometry),
+/// Convert a `CollisionData` to one or more `urdf_rs::Collision` elements.
+/// Capsules are decomposed into a cylinder + 2 sphere collisions.
+fn collisions_to_urdf(col: &CollisionData) -> Vec<urdf_rs::Collision> {
+    match &col.geometry {
+        GeomData::Capsule { radius, half_length } => {
+            let r = *radius;
+            let hl = *half_length;
+            let cyl = urdf_rs::Collision {
+                name: None,
+                origin: isometry_to_pose(&col.origin),
+                geometry: urdf_rs::Geometry::Cylinder {
+                    radius: r as f64,
+                    length: (hl * 2.0) as f64,
+                },
+            };
+            let top_origin = col.origin * na::Translation3::new(0.0, 0.0, hl);
+            let top = urdf_rs::Collision {
+                name: None,
+                origin: isometry_to_pose(&na::Isometry3::from_parts(
+                    top_origin.translation,
+                    col.origin.rotation,
+                )),
+                geometry: urdf_rs::Geometry::Sphere { radius: r as f64 },
+            };
+            let bot_origin = col.origin * na::Translation3::new(0.0, 0.0, -hl);
+            let bot = urdf_rs::Collision {
+                name: None,
+                origin: isometry_to_pose(&na::Isometry3::from_parts(
+                    bot_origin.translation,
+                    col.origin.rotation,
+                )),
+                geometry: urdf_rs::Geometry::Sphere { radius: r as f64 },
+            };
+            vec![cyl, top, bot]
+        }
+        _ => vec![urdf_rs::Collision {
+            name: None,
+            origin: isometry_to_pose(&col.origin),
+            geometry: geom_to_urdf_geom(&col.geometry),
+        }],
     }
 }
 
@@ -561,6 +651,15 @@ fn geom_to_urdf_xml(geom: &GeomData) -> String {
             } else {
                 format!("      <geometry>\n        <mesh filename=\"{fname}\"/>\n      </geometry>\n")
             }
+        }
+        GeomData::Capsule { radius, half_length } => {
+            // URDF: decompose capsule into cylinder + 2 spheres
+            let cyl_len = half_length * 2.0;
+            let mut out = format!("      <geometry>\n        <cylinder radius=\"{radius}\" length=\"{cyl_len}\"/>\n      </geometry>\n");
+            // Note: multi-geometry per visual/collision is not standard URDF.
+            // For full fidelity, the caller should emit separate <visual>/<collision> elements.
+            // Here we output the cylinder portion; spheres must be added separately.
+            out
         }
     }
 }
@@ -802,36 +901,67 @@ impl RobotModel {
 
             // Visuals
             for vis in &link.visuals {
-                let (vx, vy, vz) = (
-                    vis.origin.translation.x,
-                    vis.origin.translation.y,
-                    vis.origin.translation.z,
-                );
-                let (vr, vp, vya) = euler_from_isometry(&vis.origin);
-                xml.push_str(&format!(
-                    "    <visual>\n      <origin xyz=\"{vx} {vy} {vz}\" rpy=\"{vr} {vp} {vya}\"/>\n"
-                ));
-                xml.push_str(&geom_to_urdf_xml(&vis.geometry));
-                xml.push_str(&format!(
-                    "      <material name=\"\">\n        <color rgba=\"{} {} {} {}\"/>\n      </material>\n",
-                    vis.color[0], vis.color[1], vis.color[2], vis.color[3]
-                ));
-                xml.push_str("    </visual>\n");
+                let emit_visual = |xml: &mut String, origin: &na::Isometry3<f32>, geom: &GeomData, color: &[f32; 4]| {
+                    let (vx, vy, vz) = (origin.translation.x, origin.translation.y, origin.translation.z);
+                    let (vr, vp, vya) = euler_from_isometry(origin);
+                    xml.push_str(&format!(
+                        "    <visual>\n      <origin xyz=\"{vx} {vy} {vz}\" rpy=\"{vr} {vp} {vya}\"/>\n"
+                    ));
+                    xml.push_str(&geom_to_urdf_xml(geom));
+                    xml.push_str(&format!(
+                        "      <material name=\"\">\n        <color rgba=\"{} {} {} {}\"/>\n      </material>\n",
+                        color[0], color[1], color[2], color[3]
+                    ));
+                    xml.push_str("    </visual>\n");
+                };
+
+                match &vis.geometry {
+                    GeomData::Capsule { radius, half_length } => {
+                        // Decompose into cylinder + 2 spheres
+                        let cyl_geom = GeomData::Cylinder { radius: *radius, half_length: *half_length };
+                        emit_visual(&mut xml, &vis.origin, &cyl_geom, &vis.color);
+                        let top = vis.origin * na::Translation3::new(0.0, 0.0, *half_length);
+                        let top_iso = na::Isometry3::from_parts(top.translation, vis.origin.rotation);
+                        let sph_geom = GeomData::Sphere { radius: *radius };
+                        emit_visual(&mut xml, &top_iso, &sph_geom, &vis.color);
+                        let bot = vis.origin * na::Translation3::new(0.0, 0.0, -*half_length);
+                        let bot_iso = na::Isometry3::from_parts(bot.translation, vis.origin.rotation);
+                        emit_visual(&mut xml, &bot_iso, &sph_geom, &vis.color);
+                    }
+                    _ => {
+                        emit_visual(&mut xml, &vis.origin, &vis.geometry, &vis.color);
+                    }
+                }
             }
 
             // Collisions
             for col in &link.collisions {
-                let (cx, cy, cz) = (
-                    col.origin.translation.x,
-                    col.origin.translation.y,
-                    col.origin.translation.z,
-                );
-                let (cr, cp, cya) = euler_from_isometry(&col.origin);
-                xml.push_str(&format!(
-                    "    <collision>\n      <origin xyz=\"{cx} {cy} {cz}\" rpy=\"{cr} {cp} {cya}\"/>\n"
-                ));
-                xml.push_str(&geom_to_urdf_xml(&col.geometry));
-                xml.push_str("    </collision>\n");
+                let emit_collision = |xml: &mut String, origin: &na::Isometry3<f32>, geom: &GeomData| {
+                    let (cx, cy, cz) = (origin.translation.x, origin.translation.y, origin.translation.z);
+                    let (cr, cp, cya) = euler_from_isometry(origin);
+                    xml.push_str(&format!(
+                        "    <collision>\n      <origin xyz=\"{cx} {cy} {cz}\" rpy=\"{cr} {cp} {cya}\"/>\n"
+                    ));
+                    xml.push_str(&geom_to_urdf_xml(geom));
+                    xml.push_str("    </collision>\n");
+                };
+
+                match &col.geometry {
+                    GeomData::Capsule { radius, half_length } => {
+                        let cyl_geom = GeomData::Cylinder { radius: *radius, half_length: *half_length };
+                        emit_collision(&mut xml, &col.origin, &cyl_geom);
+                        let top = col.origin * na::Translation3::new(0.0, 0.0, *half_length);
+                        let top_iso = na::Isometry3::from_parts(top.translation, col.origin.rotation);
+                        let sph_geom = GeomData::Sphere { radius: *radius };
+                        emit_collision(&mut xml, &top_iso, &sph_geom);
+                        let bot = col.origin * na::Translation3::new(0.0, 0.0, -*half_length);
+                        let bot_iso = na::Isometry3::from_parts(bot.translation, col.origin.rotation);
+                        emit_collision(&mut xml, &bot_iso, &sph_geom);
+                    }
+                    _ => {
+                        emit_collision(&mut xml, &col.origin, &col.geometry);
+                    }
+                }
             }
 
             xml.push_str("  </link>\n");
@@ -888,8 +1018,8 @@ impl RobotModel {
         // Patch visual and collision data
         for our_link in &self.links {
             if let Some(urdf_link) = robot.links.iter_mut().find(|l| l.name == our_link.name) {
-                urdf_link.visual = our_link.visuals.iter().map(visual_to_urdf).collect();
-                urdf_link.collision = our_link.collisions.iter().map(collision_to_urdf).collect();
+                urdf_link.visual = our_link.visuals.iter().flat_map(visuals_to_urdf).collect();
+                urdf_link.collision = our_link.collisions.iter().flat_map(collisions_to_urdf).collect();
             }
         }
 

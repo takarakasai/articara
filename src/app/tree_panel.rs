@@ -140,7 +140,7 @@ impl ArticaraApp {
 
     pub(super) fn draw_add_child_panel(&mut self, ui: &mut egui::Ui) {
         const JOINT_TYPES: &[&str] = &["revolute", "prismatic", "fixed", "continuous"];
-        const GEOM_TYPES: &[&str] = &["Box", "Cylinder", "Sphere"];
+        const GEOM_TYPES: &[&str] = &["Box", "Cylinder", "Sphere", "Capsule"];
 
         // Toggle button
         let toggle_label = if self.show_add_child {
@@ -251,6 +251,14 @@ impl ArticaraApp {
                         ui.add(egui::DragValue::new(&mut self.new_geom_size[0]).speed(0.005));
                     });
                 }
+                3 => {
+                    // Capsule: radius, half_length
+                    ui.horizontal(|ui| {
+                        ui.label("Cap:");
+                        ui.add(egui::DragValue::new(&mut self.new_geom_size[0]).speed(0.005).prefix("r:"));
+                        ui.add(egui::DragValue::new(&mut self.new_geom_size[1]).speed(0.005).prefix("l:"));
+                    });
+                }
                 _ => {}
             }
 
@@ -321,6 +329,10 @@ impl ArticaraApp {
             },
             2 => GeomData::Sphere {
                 radius: self.new_geom_size[0],
+            },
+            3 => GeomData::Capsule {
+                radius: self.new_geom_size[0],
+                half_length: self.new_geom_size[1] * 0.5,
             },
             _ => GeomData::Box {
                 hx: 0.05,

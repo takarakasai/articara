@@ -271,6 +271,13 @@ impl ArticaraApp {
                                         geom_changed |= ui.add(egui::DragValue::new(radius).speed(0.005).prefix("r:").range(0.001..=10.0)).changed();
                                     });
                                 }
+                                GeomData::Capsule { radius, half_length } => {
+                                    ui.label("Capsule:");
+                                    ui.horizontal(|ui| {
+                                        geom_changed |= ui.add(egui::DragValue::new(radius).speed(0.005).prefix("r:").range(0.001..=10.0)).changed();
+                                        geom_changed |= ui.add(egui::DragValue::new(half_length).speed(0.005).prefix("hl:").range(0.001..=10.0)).changed();
+                                    });
+                                }
                                 GeomData::Mesh { vertices, filename, .. } => {
                                     let tri_count = vertices.len() / 18;
                                     let fname = filename.as_deref().unwrap_or("(inline)");
@@ -373,6 +380,16 @@ impl ArticaraApp {
                         props_edit_desc = Some(format!("Add visual to '{}'", link_name));
                         ui.close();
                     }
+                    if ui.button("➕ Add Capsule").clicked() {
+                        link.visuals.push(crate::robot::VisualData {
+                            origin: na::Isometry3::identity(),
+                            geometry: GeomData::Capsule { radius: 0.02, half_length: 0.1 },
+                            color: [0.7, 0.7, 0.7, 1.0],
+                        });
+                        self.needs_upload = true;
+                        props_edit_desc = Some(format!("Add visual to '{}'", link_name));
+                        ui.close();
+                    }
                 });
 
                 let col_count = link.collisions.len();
@@ -425,6 +442,12 @@ impl ArticaraApp {
                                 GeomData::Sphere { radius } => {
                                     ui.horizontal(|ui| {
                                         col_changed |= ui.add(egui::DragValue::new(radius).speed(0.005).prefix("r:").range(0.001..=10.0)).changed();
+                                    });
+                                }
+                            GeomData::Capsule { radius, half_length } => {
+                                    ui.horizontal(|ui| {
+                                        col_changed |= ui.add(egui::DragValue::new(radius).speed(0.005).prefix("r:").range(0.001..=10.0)).changed();
+                                        col_changed |= ui.add(egui::DragValue::new(half_length).speed(0.005).prefix("hl:").range(0.001..=10.0)).changed();
                                     });
                                 }
                                 GeomData::Mesh { vertices, .. } => {
@@ -504,6 +527,15 @@ impl ArticaraApp {
                         link.collisions.push(crate::robot::CollisionData {
                             origin: na::Isometry3::identity(),
                             geometry: GeomData::Sphere { radius: 0.05 },
+                        });
+                        self.needs_upload = true;
+                        props_edit_desc = Some(format!("Add collision to '{}'", link_name));
+                        ui.close();
+                    }
+                    if ui.button("➕ Add Capsule").clicked() {
+                        link.collisions.push(crate::robot::CollisionData {
+                            origin: na::Isometry3::identity(),
+                            geometry: GeomData::Capsule { radius: 0.02, half_length: 0.1 },
                         });
                         self.needs_upload = true;
                         props_edit_desc = Some(format!("Add collision to '{}'", link_name));

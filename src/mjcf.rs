@@ -439,6 +439,12 @@ fn write_mjcf_body(
                     vis.color[0], vis.color[1], vis.color[2], vis.color[3]
                 ));
             }
+            GeomData::Capsule { radius, half_length } => {
+                s.push_str(&format!(
+                    "{pad}  <geom type=\"capsule\" pos=\"{pos_attr}\" size=\"{radius} {half_length}\" rgba=\"{} {} {} {}\"/>\n",
+                    vis.color[0], vis.color[1], vis.color[2], vis.color[3]
+                ));
+            }
             GeomData::Mesh { .. } => {
                 let ptr = &vis.geometry as *const GeomData;
                 if let Some(mesh_name) = geom_mesh_map.get(&ptr) {
@@ -581,10 +587,18 @@ fn parse_mjcf_geom(
             let hz = size.get(2).copied().unwrap_or(hy);
             GeomData::Box { hx, hy, hz }
         }
-        "cylinder" | "capsule" => {
+        "cylinder" => {
             let radius = size.first().copied().unwrap_or(0.05);
             let half_length = size.get(1).copied().unwrap_or(0.1);
             GeomData::Cylinder {
+                radius,
+                half_length,
+            }
+        }
+        "capsule" => {
+            let radius = size.first().copied().unwrap_or(0.05);
+            let half_length = size.get(1).copied().unwrap_or(0.1);
+            GeomData::Capsule {
                 radius,
                 half_length,
             }

@@ -6,7 +6,7 @@
 use crate::robot::{GeomData, RobotModel};
 use nalgebra as na;
 use parry3d::query;
-use parry3d::shape::{Ball, Cuboid, Cylinder, SharedShape, TriMesh};
+use parry3d::shape::{Ball, Capsule as ParryCapsule, Cuboid, Cylinder, SharedShape, TriMesh};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
@@ -76,6 +76,14 @@ fn collision_shape_and_local_pose(geom: &GeomData) -> Option<(SharedShape, na::I
             let shape = SharedShape::new(Cylinder::new(*half_length, *radius));
             let rot = na::UnitQuaternion::from_axis_angle(&na::Vector3::x_axis(), std::f32::consts::FRAC_PI_2);
             Some((shape, na::Isometry3::from_parts(na::Translation3::identity(), rot)))
+        }
+        GeomData::Capsule { radius, half_length } => {
+            let shape = SharedShape::new(ParryCapsule::new(
+                na::Point3::new(0.0, 0.0, -*half_length),
+                na::Point3::new(0.0, 0.0, *half_length),
+                *radius,
+            ));
+            Some((shape, na::Isometry3::identity()))
         }
         GeomData::Mesh {
             vertices,

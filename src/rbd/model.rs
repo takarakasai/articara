@@ -59,6 +59,9 @@ pub enum GeomData {
     Box { hx: f32, hy: f32, hz: f32 },
     Cylinder { radius: f32, half_length: f32 },
     Sphere { radius: f32 },
+    /// Capsule: cylinder body + hemispherical caps.
+    /// `half_length` is the half-length of the **cylindrical** portion only (total = 2*half_length + 2*radius).
+    Capsule { radius: f32, half_length: f32 },
     Mesh {
         vertices: Vec<f32>,          // flat [x, y, z, nx, ny, nz, ...]
         filename: Option<String>,    // original URI e.g. "package://..."
@@ -202,6 +205,15 @@ impl RobotModel {
                         points.push(vis.origin * na::Point3::new(d[0], d[1], d[2]));
                     }
                 }
+                GeomData::Capsule { radius, half_length } => {
+                    let total_h = *half_length + *radius;
+                    for i in 0..8 {
+                        let a = (i as f32) * std::f32::consts::TAU / 8.0;
+                        let (c, s) = (a.cos(), a.sin());
+                        points.push(vis.origin * na::Point3::new(radius * c, radius * s, total_h));
+                        points.push(vis.origin * na::Point3::new(radius * c, radius * s, -total_h));
+                    }
+                }
                 GeomData::Mesh { vertices, .. } => {
                     let step = if vertices.len() > 6000 { 6 * 10 } else { 6 };
                     for chunk in vertices.chunks(step) {
@@ -289,6 +301,36 @@ pub fn compute_geometry_inertia(geom: &GeomData, mass: f64) -> InertiaTensor {
                 iyy: i,
                 iyz: 0.0,
                 izz: i,
+            }
+        }
+        GeomData::Capsule { radius, half_length } => {
+            // Solid capsule = cylinder + 2 hemispheres (= 1 full sphere).
+            // Reference: https://www.gamedev.net/resources/_/technical/math-and-physics/capsule-inertia-tensor-r3149
+            let r = *radius as f64;
+            let h = 2.0 * *half_length as f64; // cylinder height
+            let r2 = r * r;
+            let h2 = h * h;
+            let vol_cyl = std::f64::consts::PI * r2 * h;
+            let vol_sph = 4.0 / 3.0 * std::f64::consts::PI * r2 * r;
+            let total_vol = vol_cyl + vol_sph;
+            let m_cyl = mass * vol_cyl / total_vol;
+            let m_sph = mass * vol_sph / total_vol;
+            // Cylinder about Z axis
+            let i_cyl_xx = m_cyl / 12.0 * (3.0 * r2 + h2);
+            let i_cyl_zz = m_cyl / 2.0 * r2;
+            // Sphere about its own center
+            let i_sph_own = 2.0 / 5.0 * m_sph * r2;
+            // Parallel axis: each hemisphere center is at ±(h/2 + 3r/8) from capsule center
+            let d = h / 2.0 + 3.0 * r / 8.0;
+            let i_sph_xx = i_sph_own + m_sph * d * d;
+            let i_sph_zz = i_sph_own;
+            InertiaTensor {
+                ixx: i_cyl_xx + i_sph_xx,
+                ixy: 0.0,
+                ixz: 0.0,
+                iyy: i_cyl_xx + i_sph_xx,
+                iyz: 0.0,
+                izz: i_cyl_zz + i_sph_zz,
             }
         }
         GeomData::Mesh { vertices, .. } => {
@@ -412,6 +454,12 @@ pub fn compute_geometry_volume(geom: &GeomData) -> f64 {
         }
         GeomData::Sphere { radius } => {
             4.0 / 3.0 * std::f64::consts::PI * (*radius as f64).powi(3)
+        }
+        GeomData::Capsule { radius, half_length } => {
+            let r = *radius as f64;
+            let h = 2.0 * *half_length as f64;
+            // cylinder + sphere
+            std::f64::consts::PI * r * r * h + 4.0 / 3.0 * std::f64::consts::PI * r * r * r
         }
         GeomData::Mesh { vertices, .. } => {
             compute_mesh_volume(vertices)

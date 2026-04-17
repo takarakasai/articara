@@ -262,6 +262,21 @@ fn write_geom_prim(
             ));
             ("Sphere", b)
         }
+        GeomData::Capsule { radius, half_length } => {
+            let mut b = String::new();
+            write_geom_xform_ops(&mut b, origin, None, &format!("{indent}    "));
+            b.push_str(&format!(
+                "{}    double radius = {}\n",
+                indent, *radius as f64
+            ));
+            b.push_str(&format!(
+                "{}    double height = {}\n",
+                indent,
+                (*half_length * 2.0 + *radius * 2.0) as f64
+            ));
+            b.push_str(&format!("{}    token axis = \"Z\"\n", indent));
+            ("Capsule", b)
+        }
         GeomData::Mesh { vertices, .. } => {
             let mut b = String::new();
             write_geom_xform_ops(&mut b, origin, None, &format!("{indent}    "));
