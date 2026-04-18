@@ -1198,6 +1198,16 @@ impl RobotModel {
     /// posture in the Jacobian null space so that redundant DOFs stay stable.
     ///
     /// Returns joint-angle deltas (one per element in `chain`).
+    /// Differential IK step.
+    ///
+    /// Computes a small joint velocity update using resolved-rate control:
+    ///   δq = J^T (J J^T + λ²I)⁻¹ · (gain · Δx)
+    ///
+    /// - `gain`: proportional gain ∈ (0, 1]. Controls how much of the
+    ///   position error to correct per call.  Small values (~0.2) yield
+    ///   smooth, stable tracking; 1.0 tries to close the full error.
+    /// - `damping`: DLS regularisation (λ).  Prevents singularity blow-up.
+    /// - `max_step`: hard clamp on ‖δq‖∞ as a safety net.
     pub fn solve_ik_step(
         &self,
         chain: &[usize],
@@ -1206,6 +1216,7 @@ impl RobotModel {
         ee_pos: &na::Point3<f64>,
         target_pos: &na::Point3<f64>,
         damping: f64,
+        gain: f64,
         max_step: f64,
         ref_positions: Option<&[f64]>,
     ) -> Vec<f64> {
@@ -1214,15 +1225,11 @@ impl RobotModel {
             return Vec::new();
         }
 
-        let dx = target_pos - ee_pos;
-        let error_mag = dx.norm();
-        let dx_clamped = if error_mag > max_step {
-            dx * (max_step / error_mag)
-        } else {
-            dx
-        };
+        // Proportional velocity command: only correct a fraction of the error
+        let dx = (target_pos - ee_pos) * gain;
+
         let dx_vec =
-            na::DVector::from_column_slice(&[dx_clamped.x, dx_clamped.y, dx_clamped.z]);
+            na::DVector::from_column_slice(&[dx.x, dx.y, dx.z]);
 
         let jac = self.chain_positional_jacobian(chain, ee_link, root_link);
 
@@ -1238,7 +1245,7 @@ impl RobotModel {
 
         // Null-space posture stabilization:
         //   Δq = J⁺ Δx  +  (I − J⁺ J) · k_ns · (q_ref − q_cur)
-        let dq = if let Some(ref_pos) = ref_positions {
+        let mut dq = if let Some(ref_pos) = ref_positions {
             // Build J⁺ explicitly (n×3)
             let j_pinv = {
                 let mut jp = na::DMatrix::<f64>::zeros(n, 3);
@@ -1269,6 +1276,11 @@ impl RobotModel {
         } else {
             dq_primary
         };
+
+        // Safety clamp: limit each joint delta to max_step
+        for i in 0..n {
+            dq[i] = dq[i].clamp(-max_step, max_step);
+        }
 
         (0..n).map(|i| dq[i]).collect()
     }

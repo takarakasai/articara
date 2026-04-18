@@ -1143,7 +1143,7 @@ mod test_ik {
         let target_f64: na::Point3<f64> = target.cast();
         let deltas = model.solve_ik_step(
             &chain, "link2", None,
-            &ee_pos_f64, &target_f64, 0.05, 0.1,
+            &ee_pos_f64, &target_f64, 0.05, 1.0, 0.1,
             None,
         );
         assert_eq!(deltas.len(), 2);

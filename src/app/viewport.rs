@@ -767,46 +767,44 @@ impl ArticaraApp {
                                     // Will compute IK error after solve loop
 
                                     let damping = self.ik_damping as f64;
-                                    let has_ik_root = drag.ik_root_link.is_some();
 
-                                    // Use iterative sub-stepping for cross-branch IK
-                                    // (IK root != URDF root) to keep base correction stable.
-                                    let n_sub = if has_ik_root { 4 } else { 1 };
-                                    let sub_max_step = if has_ik_root { 0.025 } else { 0.1 };
+                                    // Differential IK: apply one small velocity-level
+                                    // update per frame with proportional gain.
+                                    // gain < 1 ensures smooth convergence over frames.
+                                    let ik_gain = 0.3_f64;
+                                    let max_joint_step = 0.15_f64; // rad per frame safety clamp
 
-                                    for _ in 0..n_sub {
-                                        let cur_tf = model.compute_transforms();
-                                        let ee_now = model.ee_world_pos(
-                                            drag.link_idx, &cur_tf,
-                                        );
-                                        let deltas = model.solve_ik_step(
-                                            &drag.chain,
-                                            &drag.ee_link,
-                                            drag.ik_root_link.as_deref(),
-                                            &ee_now.cast::<f64>(),
-                                            &target_f64,
-                                            damping,
-                                            sub_max_step,
-                                            None,
-                                        );
-                                        model.apply_joint_deltas(&drag.chain, &deltas);
+                                    let cur_tf = model.compute_transforms();
+                                    let ee_now = model.ee_world_pos(
+                                        drag.link_idx, &cur_tf,
+                                    );
+                                    let deltas = model.solve_ik_step(
+                                        &drag.chain,
+                                        &drag.ee_link,
+                                        drag.ik_root_link.as_deref(),
+                                        &ee_now.cast::<f64>(),
+                                        &target_f64,
+                                        damping,
+                                        ik_gain,
+                                        max_joint_step,
+                                        None,
+                                    );
+                                    model.apply_joint_deltas(&drag.chain, &deltas);
 
-                                        // Full SE3 base correction:
-                                        // Pin the IK root link to its initial world pose.
-                                        if let Some(desired_tf) = drag.ik_root_initial_tf {
-                                            if let Some(ik_root_name) = drag.ik_root_link.as_ref() {
-                                                model.base_transform = na::Isometry3::identity();
-                                                let id_tf = model.compute_transforms();
-                                                if let Some(root_rel) = id_tf.get(ik_root_name) {
-                                                    model.base_transform =
-                                                        desired_tf.cast::<f64>()
-                                                        * root_rel.inverse().cast::<f64>();
-                                                }
+                                    // Base correction: pin the IK root to its initial pose.
+                                    if let Some(desired_tf) = drag.ik_root_initial_tf {
+                                        if let Some(ik_root_name) = drag.ik_root_link.as_ref() {
+                                            model.base_transform = na::Isometry3::identity();
+                                            let id_tf = model.compute_transforms();
+                                            if let Some(root_rel) = id_tf.get(ik_root_name) {
+                                                model.base_transform =
+                                                    desired_tf.cast::<f64>()
+                                                    * root_rel.inverse().cast::<f64>();
                                             }
                                         }
                                     }
 
-                                    // Compute IK error: distance from EE to target after solve
+                                    // Compute IK error for debug overlay
                                     let final_tf = model.compute_transforms();
                                     let ee_final = model.ee_world_pos(
                                         drag.link_idx, &final_tf,
