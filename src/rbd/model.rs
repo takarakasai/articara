@@ -2,12 +2,32 @@
 //!
 //! This module contains the core data model for rigid body robots,
 //! independent of any file format (URDF/SDF/MJCF) or UI framework.
+//!
+//! The kinematic tree, inertia, and dynamics are delegated to the embedded
+//! `misarta::Model<f64>`.  GUI-specific data (visual/collision geometry,
+//! joint limits, materials) lives alongside in the articara data structures.
 
 use nalgebra as na;
+use na::Matrix3;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use misarta::joint::JointType;
+use misarta::model::{LinkInertia, Model, ModelBuilder};
+use misarta::geometry::{GeometryModel, GeometryObject, GeometryShape};
+use misarta::mesh::MeshData;
+
 // ========== Data Structures ==========
+
+/// Cached misarta model + index mappings.
+#[derive(Clone, Debug)]
+pub struct MisartaCache {
+    pub model: Model<f64>,
+    /// `a2m[articara_joint_idx]` → misarta joint index (1-based), or `None`.
+    pub a2m: Vec<Option<usize>>,
+    /// `m2a[misarta_joint_idx]` → articara joint index. Index 0 (universe) → `None`.
+    pub m2a: Vec<Option<usize>>,
+}
 
 #[derive(Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -20,13 +40,18 @@ pub struct RobotModel {
     pub root_link: String,
     pub children_joints: HashMap<String, Vec<usize>>,
     pub materials: HashMap<String, [f32; 4]>,
-    pub joint_positions: Vec<f32>,
+    pub joint_positions: Vec<f64>,
     /// Path of the originally loaded URDF file.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub source_path: Option<PathBuf>,
     /// World-space transform of the URDF root link (identity by default).
     /// Used to re-root the display when fixing a non-root link as IK base.
-    pub base_transform: na::Isometry3<f32>,
+    pub base_transform: na::Isometry3<f64>,
+    /// Cached misarta model (kinematic tree + inertia).
+    /// Built eagerly by constructors; `None` after serde deserialization
+    /// until [`rebuild_misarta_model`] is called.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub misarta_cache: Option<MisartaCache>,
 }
 
 #[derive(Clone)]
@@ -102,8 +127,19 @@ pub struct JointData {
 
 impl RobotModel {
     pub fn compute_transforms(&self) -> HashMap<String, na::Isometry3<f32>> {
-        let adapter = super::adapter::ModelAdapter::from_robot_model(self);
-        adapter.compute_transforms_compat(self)
+        let mc = self.mc_or_temp();
+        let q = mc.build_q(self);
+        let data = misarta::fk::forward_kinematics(&mc.model, &q);
+
+        let base_f32 = isometry_f64_to_f32(&self.base_transform);
+        let mut transforms: HashMap<String, na::Isometry3<f32>> = HashMap::new();
+        transforms.insert(self.root_link.clone(), base_f32);
+        for i in 1..mc.model.joints.len() {
+            let link_name = &mc.model.link_names[i];
+            let world_pose_f32 = base_f32 * isometry_f64_to_f32(&data.oMi[i]);
+            transforms.insert(link_name.clone(), world_pose_f32);
+        }
+        transforms
     }
 
 
@@ -315,10 +351,10 @@ impl RobotModel {
     }
 
     /// Apply joint-angle deltas (one per joint index), clamping to limits.
-    pub fn apply_joint_deltas(&mut self, joint_indices: &[usize], deltas: &[f32]) {
+    pub fn apply_joint_deltas(&mut self, joint_indices: &[usize], deltas: &[f64]) {
         for (&ji, &d) in joint_indices.iter().zip(deltas.iter()) {
-            let lower = self.joints[ji].lower as f32;
-            let upper = self.joints[ji].upper as f32;
+            let lower = self.joints[ji].lower;
+            let upper = self.joints[ji].upper;
             self.joint_positions[ji] = (self.joint_positions[ji] + d).clamp(lower, upper);
         }
     }
@@ -844,4 +880,649 @@ pub fn validate_inertia(link: &LinkData) -> InertiaValidation {
 /// Validate inertia for all links in a model.
 pub fn validate_all_inertia(model: &RobotModel) -> Vec<InertiaValidation> {
     model.links.iter().map(|link| validate_inertia(link)).collect()
+}
+
+// =========================================================================
+//  Misarta integration: model building, FK, Jacobians, IK
+// =========================================================================
+
+impl MisartaCache {
+    /// Build the cache from a `RobotModel`.
+    pub fn build(robot: &RobotModel) -> Self {
+        let mut builder = ModelBuilder::<f64>::new()
+            .name(robot.name.clone())
+            .root_link_name(robot.root_link.clone());
+
+        builder = builder.gravity(na::Vector3::new(0.0, 0.0, -9.81));
+
+        let mut a2m: Vec<Option<usize>> = vec![None; robot.joints.len()];
+        let mut m2a: Vec<Option<usize>> = vec![None]; // index 0 = universe
+
+        let mut link_to_misarta_idx: HashMap<String, usize> = HashMap::new();
+        link_to_misarta_idx.insert(robot.root_link.clone(), 0);
+
+        // BFS from root
+        let mut queue = vec![robot.root_link.clone()];
+        while let Some(link_name) = queue.pop() {
+            let parent_misarta_idx = link_to_misarta_idx[&link_name];
+            if let Some(child_joint_indices) = robot.children_joints.get(&link_name) {
+                for &ji in child_joint_indices {
+                    let joint = &robot.joints[ji];
+                    let joint_type = convert_joint_type(joint);
+                    let placement = joint.origin.cast::<f64>();
+
+                    let child_link_name = &joint.child_link;
+                    let inertia = robot
+                        .link_map
+                        .get(child_link_name)
+                        .map(|&li| convert_link_inertia(&robot.links[li]))
+                        .unwrap_or_else(LinkInertia::zero);
+
+                    builder = builder.add_joint_with_link(
+                        joint.name.clone(),
+                        parent_misarta_idx,
+                        joint_type,
+                        placement,
+                        inertia,
+                        child_link_name.clone(),
+                    );
+
+                    let misarta_idx = m2a.len();
+                    a2m[ji] = Some(misarta_idx);
+                    m2a.push(Some(ji));
+                    link_to_misarta_idx.insert(child_link_name.clone(), misarta_idx);
+                    queue.push(child_link_name.clone());
+                }
+            }
+        }
+
+        let mut model = builder.build();
+        if let Some(&root_li) = robot.link_map.get(&robot.root_link) {
+            model.inertias[0] = convert_link_inertia(&robot.links[root_li]);
+        }
+
+        Self { model, a2m, m2a }
+    }
+
+    /// Build the full q-vector from `RobotModel.joint_positions`.
+    pub fn build_q(&self, robot: &RobotModel) -> Vec<f64> {
+        let mut q = self.model.neutral_q();
+        for (ji, &maybe_mi) in self.a2m.iter().enumerate() {
+            if let Some(mi) = maybe_mi {
+                let nq = self.model.joints[mi].joint_type.nq();
+                if nq == 1 {
+                    let qi = self.model.q_idx[mi];
+                    q[qi] = robot.joint_positions[ji];
+                }
+            }
+        }
+        q
+    }
+
+    /// Build the full velocity vector from a sparse map (keyed by articara joint index).
+    pub fn build_v(&self, velocities: &HashMap<usize, f64>) -> na::DVector<f64> {
+        let mut v = na::DVector::zeros(self.model.nv);
+        for (&ji, &qd) in velocities {
+            if let Some(mi) = self.a2m.get(ji).and_then(|&m| m) {
+                let nv = self.model.joints[mi].joint_type.nv();
+                if nv == 1 {
+                    let vi = self.model.v_idx[mi];
+                    v[vi] = qd;
+                }
+            }
+        }
+        v
+    }
+
+    /// Map a result vector indexed by misarta v-indices to a vector indexed by `joint_order`.
+    pub fn extract_subvector(
+        &self,
+        full: &na::DVector<f64>,
+        joint_order: &[usize],
+    ) -> (na::DVector<f64>, Vec<Option<usize>>) {
+        let n = joint_order.len();
+        let mut sub = na::DVector::zeros(n);
+        let mut idx_in_result: Vec<Option<usize>> = vec![None; self.a2m.len()];
+        for (col, &ji) in joint_order.iter().enumerate() {
+            if let Some(mi) = self.a2m.get(ji).and_then(|&m| m) {
+                let nv = self.model.joints[mi].joint_type.nv();
+                if nv == 1 {
+                    let vi = self.model.v_idx[mi];
+                    sub[col] = full[vi];
+                }
+            }
+            idx_in_result[ji] = Some(col);
+        }
+        (sub, idx_in_result)
+    }
+
+    /// Extract a sub-matrix from a full nv×nv matrix for joints in `joint_order`.
+    pub fn extract_submatrix(
+        &self,
+        full: &na::DMatrix<f64>,
+        joint_order: &[usize],
+    ) -> (na::DMatrix<f64>, Vec<Option<usize>>) {
+        let n = joint_order.len();
+        let mut sub = na::DMatrix::zeros(n, n);
+        let mut idx_in_m: Vec<Option<usize>> = vec![None; self.a2m.len()];
+
+        let mut v_indices: Vec<Option<usize>> = Vec::with_capacity(n);
+        for (col, &ji) in joint_order.iter().enumerate() {
+            idx_in_m[ji] = Some(col);
+            if let Some(mi) = self.a2m.get(ji).and_then(|&m| m) {
+                let nv = self.model.joints[mi].joint_type.nv();
+                if nv == 1 {
+                    v_indices.push(Some(self.model.v_idx[mi]));
+                } else {
+                    v_indices.push(None);
+                }
+            } else {
+                v_indices.push(None);
+            }
+        }
+
+        for (r, vi_r) in v_indices.iter().enumerate() {
+            for (c, vi_c) in v_indices.iter().enumerate() {
+                if let (Some(vr), Some(vc)) = (vi_r, vi_c) {
+                    sub[(r, c)] = full[(*vr, *vc)];
+                }
+            }
+        }
+
+        (sub, idx_in_m)
+    }
+
+    /// Look up the misarta joint index for a given articara link name.
+    pub fn link_name_to_misarta_joint(&self, link_name: &str) -> Option<usize> {
+        self.model.link_names.iter().position(|n| n == link_name)
+    }
+
+    /// Apply a solved misarta q-vector back to the `RobotModel`.
+    pub fn apply_q_to_robot(&self, robot: &mut RobotModel, q: &[f64]) {
+        for (ji, &maybe_mi) in self.a2m.iter().enumerate() {
+            if let Some(mi) = maybe_mi {
+                let nq = self.model.joints[mi].joint_type.nq();
+                if nq == 1 {
+                    let qi = self.model.q_idx[mi];
+                    robot.joint_positions[ji] = q[qi];
+                }
+            }
+        }
+    }
+}
+
+impl RobotModel {
+    /// Rebuild the cached misarta model from current links/joints.
+    ///
+    /// Called automatically by constructors. Must be called explicitly
+    /// after structural changes (add/remove joints) or serde deserialization.
+    pub fn rebuild_misarta_model(&mut self) {
+        self.misarta_cache = Some(MisartaCache::build(self));
+    }
+
+    /// Get the cached misarta model, or build a temporary one.
+    fn mc_or_temp(&self) -> std::borrow::Cow<'_, MisartaCache> {
+        match &self.misarta_cache {
+            Some(mc) => std::borrow::Cow::Borrowed(mc),
+            None => std::borrow::Cow::Owned(MisartaCache::build(self)),
+        }
+    }
+
+    /// Get the cached misarta model. Panics if not built.
+    pub fn mc(&self) -> &MisartaCache {
+        self.misarta_cache.as_ref().expect("misarta model not built; call rebuild_misarta_model()")
+    }
+
+    /// Build the q-vector from current joint positions.
+    pub fn build_q(&self) -> Vec<f64> {
+        self.mc().build_q(self)
+    }
+
+    /// Build a velocity vector from a sparse map.
+    pub fn build_v(&self, velocities: &HashMap<usize, f64>) -> na::DVector<f64> {
+        self.mc().build_v(velocities)
+    }
+
+    /// Compute 3×chain_len positional Jacobian for a chain of joint indices.
+    ///
+    /// When `root_link` is `Some`, uses a relative Jacobian.
+    /// Returns an f64 matrix.
+    pub fn chain_positional_jacobian(
+        &self,
+        chain: &[usize],
+        ee_link: &str,
+        root_link: Option<&str>,
+    ) -> na::DMatrix<f64> {
+        let mc = self.mc();
+        let q = mc.build_q(self);
+        let ee_mi = match mc.link_name_to_misarta_joint(ee_link) {
+            Some(v) if v > 0 => v,
+            _ => return na::DMatrix::zeros(3, chain.len()),
+        };
+
+        let full_jac: na::DMatrix<f64> = if let Some(rl) = root_link {
+            match mc.link_name_to_misarta_joint(rl) {
+                Some(base_mi) if base_mi > 0 => {
+                    misarta::jacobian::compute_relative_jacobian(&mc.model, &q, base_mi, ee_mi)
+                }
+                _ => misarta::jacobian::compute_joint_jacobian(&mc.model, &q, ee_mi),
+            }
+        } else {
+            misarta::jacobian::compute_joint_jacobian(&mc.model, &q, ee_mi)
+        };
+
+        let mut jac = na::DMatrix::<f64>::zeros(3, chain.len());
+        for (col, &ji) in chain.iter().enumerate() {
+            if let Some(&Some(mi)) = mc.a2m.get(ji) {
+                let vi = mc.model.q_idx[mi];
+                for row in 0..3 {
+                    jac[(row, col)] = full_jac[(row + 3, vi)];
+                }
+            }
+        }
+        jac
+    }
+
+    /// Compute 3×n_order positional Jacobian for a foot, remapped to `joint_order`.
+    pub fn foot_positional_jacobian(
+        &self,
+        foot_link: &str,
+        body_link: &str,
+        joint_order: &[usize],
+        idx_in_m: &[Option<usize>],
+    ) -> na::DMatrix<f64> {
+        let mc = self.mc();
+        let q = mc.build_q(self);
+        let n = joint_order.len();
+
+        let ee_mi = match mc.link_name_to_misarta_joint(foot_link) {
+            Some(v) if v > 0 => v,
+            _ => return na::DMatrix::zeros(3, n),
+        };
+        let base_mi = match mc.link_name_to_misarta_joint(body_link) {
+            Some(v) => v,
+            None => return na::DMatrix::zeros(3, n),
+        };
+
+        let full_jac = if base_mi > 0 {
+            misarta::jacobian::compute_relative_jacobian(&mc.model, &q, base_mi, ee_mi)
+        } else {
+            misarta::jacobian::compute_joint_jacobian(&mc.model, &q, ee_mi)
+        };
+
+        let mut jac = na::DMatrix::<f64>::zeros(3, n);
+        for &ji in joint_order {
+            let col = match idx_in_m.get(ji).and_then(|&c| c) {
+                Some(c) => c,
+                None => continue,
+            };
+            if let Some(&Some(mi)) = mc.a2m.get(ji) {
+                let vi = mc.model.q_idx[mi];
+                for row in 0..3 {
+                    jac[(row, col)] = full_jac[(row + 3, vi)];
+                }
+            }
+        }
+        jac
+    }
+
+    /// Perform one Damped-Least-Squares IK step.
+    ///
+    /// Returns joint-angle deltas (one per element in `chain`) clamped by `max_step`.
+    pub fn solve_ik_step(
+        &self,
+        chain: &[usize],
+        ee_link: &str,
+        root_link: Option<&str>,
+        ee_pos: &na::Point3<f64>,
+        target_pos: &na::Point3<f64>,
+        damping: f64,
+        max_step: f64,
+    ) -> Vec<f64> {
+        let n = chain.len();
+        if n == 0 {
+            return Vec::new();
+        }
+
+        let dx = target_pos - ee_pos;
+        let error_mag = dx.norm();
+        let dx_clamped = if error_mag > max_step {
+            dx * (max_step / error_mag)
+        } else {
+            dx
+        };
+        let dx_vec =
+            na::DVector::from_column_slice(&[dx_clamped.x, dx_clamped.y, dx_clamped.z]);
+
+        let jac = self.chain_positional_jacobian(chain, ee_link, root_link);
+
+        let jjt = &jac * jac.transpose();
+        let lambda_sq = damping * damping;
+        let identity = na::DMatrix::<f64>::identity(3, 3);
+        let jjt_reg = jjt + identity * lambda_sq;
+
+        let decomp = jjt_reg.lu();
+        let y = decomp.solve(&dx_vec).unwrap_or(na::DVector::zeros(3));
+        let dq = jac.transpose() * y;
+
+        (0..n).map(|i| dq[i]).collect()
+    }
+
+    /// Build collision `GeometryModel` from current model data.
+    pub fn build_collision_geometry(&self) -> GeometryModel {
+        self.build_collision_geometry_with_map().0
+    }
+
+    /// Build collision `GeometryModel` with a map from geo-obj index → `(link_idx, collision_idx)`.
+    pub fn build_collision_geometry_with_map(&self) -> (GeometryModel, Vec<(usize, usize)>) {
+        let mc = self.mc();
+        let mut gmodel = GeometryModel::new();
+        let mut geo_map: Vec<(usize, usize)> = Vec::new();
+
+        for link in &self.links {
+            let parent_joint = mc.link_name_to_misarta_joint(&link.name).unwrap_or(0);
+            let li = self.link_map.get(&link.name).copied().unwrap_or(0);
+
+            for (ci, col) in link.collisions.iter().enumerate() {
+                let (shape, mesh_data) = match convert_geom_to_shape_with_mesh(&col.geometry) {
+                    Some(pair) => pair,
+                    None => continue,
+                };
+                let placement = col.origin.cast::<f64>();
+                let mesh_scale = match &col.geometry {
+                    GeomData::Mesh { scale, .. } => {
+                        scale.map(|s| na::Vector3::new(s[0] as f64, s[1] as f64, s[2] as f64))
+                    }
+                    _ => None,
+                };
+                gmodel.add(GeometryObject {
+                    name: format!("{}_collision_{}", link.name, ci),
+                    parent_joint,
+                    placement,
+                    shape,
+                    mesh_path: None,
+                    mesh_scale,
+                    mesh_data,
+                    material: None,
+                });
+                geo_map.push((li, ci));
+            }
+        }
+
+        (gmodel, geo_map)
+    }
+
+    /// Apply a solved misarta q-vector back to joint positions.
+    pub fn apply_q(&mut self, q: &[f64]) {
+        // Take cache temporarily to avoid borrow conflict
+        let mc = self.misarta_cache.take().expect("misarta model not built");
+        mc.apply_q_to_robot(self, q);
+        self.misarta_cache = Some(mc);
+    }
+
+    /// Enforce mimic constraints on current joint positions.
+    pub fn enforce_mimic(&mut self) {
+        let mc = self.misarta_cache.as_ref().expect("misarta model not built");
+        if mc.model.mimic.is_empty() {
+            return;
+        }
+        let q = mc.build_q(self);
+        let q_enforced = misarta::mimic::enforce_mimic(&mc.model, &q);
+        // Must clone a2m since we borrow self mutably below
+        let a2m = mc.a2m.clone();
+        let model_joints = &mc.model.joints;
+        let q_idx = &mc.model.q_idx;
+        for (ji, &maybe_mi) in a2m.iter().enumerate() {
+            if let Some(mi) = maybe_mi {
+                let nq = model_joints[mi].joint_type.nq();
+                if nq == 1 {
+                    self.joint_positions[ji] = q_enforced[q_idx[mi]];
+                }
+            }
+        }
+    }
+}
+
+// =========================================================================
+//  Constraint IK via misarta
+// =========================================================================
+
+use misarta::constraint::{
+    ConstrainedIkConfig, ConstrainedIkResult, ConstraintModel,
+    RigidConstraint,
+};
+use misarta::frames::Frame;
+
+impl RobotModel {
+    /// Build a misarta `Frame` for an articara link name.
+    pub fn frame_for_link(&self, link_name: &str) -> Option<Frame<f64>> {
+        let mc = self.mc();
+        let mi = mc.link_name_to_misarta_joint(link_name)?;
+        Some(Frame {
+            name: link_name.to_string(),
+            parent_joint: mi,
+            placement: misarta::se3::identity(),
+        })
+    }
+
+    /// Build a misarta `Frame` for an articara link with a local offset.
+    pub fn frame_for_link_with_offset(
+        &self,
+        link_name: &str,
+        offset: na::Isometry3<f64>,
+    ) -> Option<Frame<f64>> {
+        let mc = self.mc();
+        let mi = mc.link_name_to_misarta_joint(link_name)?;
+        Some(Frame {
+            name: link_name.to_string(),
+            parent_joint: mi,
+            placement: offset,
+        })
+    }
+
+    /// Create a position-only (3D) constraint between two links.
+    pub fn position_constraint(
+        &self,
+        link_a: &str,
+        link_b: &str,
+    ) -> Option<RigidConstraint<f64>> {
+        let f1 = self.frame_for_link(link_a)?;
+        let f2 = self.frame_for_link(link_b)?;
+        Some(RigidConstraint::position(f1, f2))
+    }
+
+    /// Create a full-pose (6D) constraint between two links.
+    pub fn pose_constraint(
+        &self,
+        link_a: &str,
+        link_b: &str,
+    ) -> Option<RigidConstraint<f64>> {
+        let f1 = self.frame_for_link(link_a)?;
+        let f2 = self.frame_for_link(link_b)?;
+        Some(RigidConstraint::pose(f1, f2))
+    }
+
+    /// Solve constrained IK.
+    pub fn solve_constrained_ik(
+        &self,
+        constraints: Vec<RigidConstraint<f64>>,
+        config: &ConstrainedIkConfig,
+    ) -> ConstrainedIkResult {
+        let mc = self.mc();
+        let q0 = mc.build_q(self);
+        let cm = ConstraintModel::from_constraints(constraints);
+        misarta::constraint::solve_constrained_ik(&mc.model, &q0, &cm, config)
+    }
+
+    /// Solve IK with a primary task (position) and rigid constraints.
+    pub fn solve_task_with_constraints(
+        &self,
+        ee_link: &str,
+        target: na::Vector3<f64>,
+        constraints: Vec<RigidConstraint<f64>>,
+        config: &ConstrainedIkConfig,
+    ) -> ConstrainedIkResult {
+        let mc = self.mc();
+        let q0 = mc.build_q(self);
+        let cm = ConstraintModel::from_constraints(constraints);
+        let joint_idx = match mc.link_name_to_misarta_joint(ee_link) {
+            Some(idx) => idx,
+            None => {
+                return ConstrainedIkResult {
+                    q: q0,
+                    iterations: 0,
+                    constraint_error_norm: f64::INFINITY,
+                    task_error_norm: f64::INFINITY,
+                    converged: false,
+                };
+            }
+        };
+        misarta::constraint::solve_task_with_constraints(
+            &mc.model, &q0, joint_idx, target, &cm, config,
+        )
+    }
+}
+
+// ─── Conversion helpers ─────────────────────────────────────────────────────
+
+/// Convert an articara `JointData.joint_type` string + axis to a misarta `JointType`.
+fn convert_joint_type(joint: &JointData) -> JointType<f64> {
+    let axis = joint.axis.cast::<f64>();
+    match joint.joint_type.as_str() {
+        "revolute" | "continuous" => JointType::Revolute {
+            axis: na::Unit::new_normalize(axis).into_inner(),
+        },
+        "prismatic" => JointType::Prismatic {
+            axis: na::Unit::new_normalize(axis).into_inner(),
+        },
+        _ => JointType::Fixed,
+    }
+}
+
+/// Convert an articara `LinkData` inertial properties to a misarta `LinkInertia`.
+fn convert_link_inertia(link: &LinkData) -> LinkInertia<f64> {
+    let i = &link.inertial;
+    let mass = i.mass;
+    let com = i.origin.translation.vector.cast::<f64>();
+    let rot = i.origin.rotation.to_rotation_matrix();
+    let r = rot.matrix().cast::<f64>();
+
+    let i_com = Matrix3::new(
+        i.ixx, i.ixy, i.ixz,
+        i.ixy, i.iyy, i.iyz,
+        i.ixz, i.iyz, i.izz,
+    );
+    let rotational_inertia = &r * &i_com * r.transpose();
+
+    LinkInertia {
+        mass,
+        center_of_mass: com,
+        rotational_inertia,
+    }
+}
+
+/// Cast an `Isometry3<f64>` to `Isometry3<f32>`.
+pub fn isometry_f64_to_f32(iso: &na::Isometry3<f64>) -> na::Isometry3<f32> {
+    na::Isometry3::from_parts(
+        na::Translation3::new(
+            iso.translation.x as f32,
+            iso.translation.y as f32,
+            iso.translation.z as f32,
+        ),
+        na::UnitQuaternion::new_normalize(na::Quaternion::new(
+            iso.rotation.w as f32,
+            iso.rotation.i as f32,
+            iso.rotation.j as f32,
+            iso.rotation.k as f32,
+        )),
+    )
+}
+
+/// Convert an articara `GeomData` to a misarta `GeometryShape`,
+/// optionally returning `MeshData` for mesh shapes.
+pub fn convert_geom_to_shape_with_mesh(
+    geom: &GeomData,
+) -> Option<(GeometryShape, Option<MeshData>)> {
+    match geom {
+        GeomData::Box { hx, hy, hz } => {
+            Some((GeometryShape::Box {
+                x: *hx as f64 * 2.0,
+                y: *hy as f64 * 2.0,
+                z: *hz as f64 * 2.0,
+            }, None))
+        }
+        GeomData::Sphere { radius } => {
+            Some((GeometryShape::Sphere {
+                radius: *radius as f64,
+            }, None))
+        }
+        GeomData::Cylinder { radius, half_length } => {
+            Some((GeometryShape::Cylinder {
+                radius: *radius as f64,
+                length: *half_length as f64 * 2.0,
+            }, None))
+        }
+        GeomData::Capsule { radius, half_length } => {
+            Some((GeometryShape::Capsule {
+                radius: *radius as f64,
+                length: *half_length as f64 * 2.0,
+            }, None))
+        }
+        GeomData::Mesh { vertices, scale, .. } => {
+            let s = scale.unwrap_or([1.0, 1.0, 1.0]);
+            let n_verts = vertices.len() / 6;
+            if n_verts < 3 {
+                return None;
+            }
+
+            let mut points = Vec::with_capacity(n_verts);
+            for i in 0..n_verts {
+                let base = i * 6;
+                points.push(na::Point3::new(
+                    vertices[base] as f64 * s[0] as f64,
+                    vertices[base + 1] as f64 * s[1] as f64,
+                    vertices[base + 2] as f64 * s[2] as f64,
+                ));
+            }
+
+            let mut indices = Vec::new();
+            let mut face_normals = Vec::new();
+            for i in (0..n_verts).step_by(3) {
+                if i + 2 >= n_verts {
+                    break;
+                }
+                indices.push([i as u32, (i + 1) as u32, (i + 2) as u32]);
+                let v0 = &points[i];
+                let v1 = &points[i + 1];
+                let v2 = &points[i + 2];
+                let e1 = v1 - v0;
+                let e2 = v2 - v0;
+                let n = e1.cross(&e2);
+                let len = n.norm();
+                if len > 1e-12 {
+                    face_normals.push(n / len);
+                } else {
+                    face_normals.push(na::Vector3::z());
+                }
+            }
+            if indices.is_empty() {
+                return None;
+            }
+
+            let md = MeshData {
+                vertices: points,
+                indices,
+                face_normals,
+                vertex_normals: Vec::new(),
+                texcoords: Vec::new(),
+                materials: Vec::new(),
+                submeshes: Vec::new(),
+            };
+
+            Some((GeometryShape::Mesh {
+                scale: na::Vector3::new(1.0, 1.0, 1.0),
+                filename: String::new(),
+            }, Some(md)))
+        }
+    }
 }

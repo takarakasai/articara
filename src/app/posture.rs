@@ -107,14 +107,14 @@ pub fn load_posture(model: &mut RobotModel, path: &Path) -> Result<usize, String
             match section {
                 Section::Base => {
                     if key == "translation" {
-                        if let Some(v) = parse_f32_array(value) {
+                        if let Some(v) = parse_f64_array(value) {
                             if v.len() == 3 {
                                 model.base_transform.translation =
                                     na::Translation3::new(v[0], v[1], v[2]);
                             }
                         }
                     } else if key == "rotation" {
-                        if let Some(v) = parse_f32_array(value) {
+                        if let Some(v) = parse_f64_array(value) {
                             if v.len() == 4 {
                                 let quat = na::UnitQuaternion::from_quaternion(
                                     na::Quaternion::new(v[3], v[0], v[1], v[2]),
@@ -125,7 +125,7 @@ pub fn load_posture(model: &mut RobotModel, path: &Path) -> Result<usize, String
                     }
                 }
                 Section::Joints => {
-                    if let Ok(val) = value.trim().parse::<f32>() {
+                    if let Ok(val) = value.trim().parse::<f64>() {
                         if let Some(&ji) = model.joint_map.get(key) {
                             model.joint_positions[ji] = val;
                             matched += 1;
@@ -182,6 +182,14 @@ fn parse_f32_array(s: &str) -> Option<Vec<f32>> {
     let s = s.trim();
     let inner = s.strip_prefix('[')?.strip_suffix(']')?;
     let vals: Result<Vec<f32>, _> = inner.split(',').map(|p| p.trim().parse::<f32>()).collect();
+    vals.ok()
+}
+
+/// Parse a TOML inline array of f64 floats: `[1.0, 2.0, 3.0]`.
+fn parse_f64_array(s: &str) -> Option<Vec<f64>> {
+    let s = s.trim();
+    let inner = s.strip_prefix('[')?.strip_suffix(']')?;
+    let vals: Result<Vec<f64>, _> = inner.split(',').map(|p| p.trim().parse::<f64>()).collect();
     vals.ok()
 }
 

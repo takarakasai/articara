@@ -69,8 +69,8 @@ impl ArticaraApp {
                         if model.joints[i].joint_type == "fixed" {
                             continue;
                         }
-                        let lower = model.joints[i].lower as f32;
-                        let upper = model.joints[i].upper as f32;
+                        let lower = model.joints[i].lower;
+                        let upper = model.joints[i].upper;
                         if lower >= upper {
                             continue;
                         }
@@ -79,6 +79,8 @@ impl ArticaraApp {
                             ui.set_min_width(200.0);
                             ui.label(&name);
                         });
+                        // Slider operates on f64 (joint_positions is now Vec<f64>);
+                        // egui natively supports f64 sliders.
                         if ui
                             .add(
                                 egui::Slider::new(&mut model.joint_positions[i], lower..=upper)

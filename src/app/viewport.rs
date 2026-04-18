@@ -700,10 +700,10 @@ impl ArticaraApp {
                             if angle_delta.abs() > 1e-8 {
                                 if let Some(ref mut model) = self.model {
                                     let ji = drag.joint_idx;
-                                    let lower = model.joints[ji].lower as f32;
-                                    let upper = model.joints[ji].upper as f32;
+                                    let lower = model.joints[ji].lower;
+                                    let upper = model.joints[ji].upper;
                                     model.joint_positions[ji] =
-                                        (model.joint_positions[ji] + angle_delta)
+                                        (model.joint_positions[ji] + angle_delta as f64)
                                             .clamp(lower, upper);
                                 }
                             }
@@ -735,15 +735,13 @@ impl ArticaraApp {
                                     let target = ray_o + ray_d * t;
 
                                     let damping = self.ik_damping;
-                                    let adapter = crate::rbd::adapter::ModelAdapter::from_robot_model(model);
-                                    let deltas = adapter.solve_ik_step(
-                                        model,
+                                    let deltas = model.solve_ik_step(
                                         &drag.chain,
                                         &drag.ee_link,
                                         drag.ik_root_link.as_deref(),
-                                        &ee_pos,
-                                        &target,
-                                        damping,
+                                        &ee_pos.cast::<f64>(),
+                                        &target.cast::<f64>(),
+                                        damping as f64,
                                         0.1,
                                     );
                                     model.apply_joint_deltas(&drag.chain, &deltas);
@@ -752,10 +750,11 @@ impl ArticaraApp {
                                         let saved_base = model.base_transform;
                                         model.base_transform = na::Isometry3::identity();
                                         let identity_transforms = model.compute_transforms();
-                                        if let Some(&ik_root_tf_rel) = drag.ik_root_link.as_ref()
+                                        if let Some(ik_root_tf_rel) = drag.ik_root_link.as_ref()
                                             .and_then(|name| identity_transforms.get(name))
                                         {
-                                            model.base_transform = desired_tf * ik_root_tf_rel.inverse();
+                                            model.base_transform = ik_root_tf_rel.inverse().cast::<f64>();
+                                            model.base_transform = desired_tf.cast::<f64>() * model.base_transform;
                                         } else {
                                             model.base_transform = saved_base;
                                         }

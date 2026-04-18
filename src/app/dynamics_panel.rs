@@ -394,10 +394,10 @@ impl ArticaraApp {
                                 model,
                                 &self.dynamics_ground_links,
                                 self.dynamics_body_link.as_deref(),
-                                self.dynamics_sim_speed,
+                                self.dynamics_sim_speed as f64,
                                 &self.dynamics_locked_joints,
                                 self.dynamics_launch_axes,
-                                self.dynamics_extension_duration,
+                                self.dynamics_extension_duration.map(|d| d as f64),
                                 self.dynamics_enforce_torque_limits,
                                 self.dynamics_enable_retract,
                                 self.dynamics_graph_link.as_deref(),
@@ -429,7 +429,7 @@ impl ArticaraApp {
                             if let Some(sim) = dynamics::start_payload_sim(
                                 model,
                                 ee,
-                                self.dynamics_sim_speed,
+                                self.dynamics_sim_speed as f64,
                             ) {
                                 self.dynamics_sim = Some(DynSim::Payload(sim));
                             } else {
@@ -540,11 +540,11 @@ impl ArticaraApp {
 
                 // Progress bar
                 let est_flight = if sim.launch_velocity > 0.0 {
-                    2.0 * sim.launch_velocity / 9.80665_f32
+                    2.0 * sim.launch_velocity / 9.80665
                 } else if sim.phase == JumpPhase::Extension {
                     // Estimate from current velocity
                     let v = sim.base_velocity_z.max(0.0);
-                    2.0 * v / 9.80665_f32
+                    2.0 * v / 9.80665
                 } else {
                     0.5
                 };
@@ -559,7 +559,7 @@ impl ArticaraApp {
                     }
                 };
                 ui.add(
-                    egui::ProgressBar::new((elapsed / total_dur).clamp(0.0, 1.0))
+                    egui::ProgressBar::new((elapsed / total_dur).clamp(0.0, 1.0) as f32)
                         .text(format!("{:.1}s / {:.1}s", elapsed, total_dur)),
                 );
 
@@ -1466,7 +1466,7 @@ pub(super) fn apply_sim_config(app: &mut ArticaraApp, cfg: SimConfig) {
         if let Some(ref mut model) = app.model {
             for (name, angle) in &cfg.start_pose {
                 if let Some(ji) = model.joints.iter().position(|j| j.name == *name) {
-                    model.joint_positions[ji] = *angle;
+                    model.joint_positions[ji] = *angle as f64;
                 }
             }
         }

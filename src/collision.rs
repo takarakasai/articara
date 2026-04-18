@@ -1,10 +1,8 @@
 //! Collision detection helpers.
 //!
 //! Delegates to `misarta::collision` for the actual collision queries,
-//! building a `GeometryModel` from the `RobotModel`'s collision geometry
-//! via the adapter.
+//! building a `GeometryModel` from the `RobotModel`'s collision geometry.
 
-use crate::rbd::adapter::ModelAdapter;
 use crate::robot::RobotModel;
 
 #[derive(Debug, Clone)]
@@ -16,12 +14,12 @@ pub struct CollisionHit {
 }
 
 pub fn self_collision_hits(robot: &RobotModel, ignore_adjacent_links: bool) -> Vec<CollisionHit> {
-    let adapter = ModelAdapter::from_robot_model(robot);
-    let q = adapter.build_q(robot);
-    let (gmodel, geo_map) = adapter.build_collision_geometry_with_map(robot);
+    let mc = robot.mc();
+    let q = mc.build_q(robot);
+    let (gmodel, geo_map) = robot.build_collision_geometry_with_map();
 
     let pairs = misarta::collision::collision_pairs(
-        &adapter.model,
+        &mc.model,
         &gmodel,
         &q,
         ignore_adjacent_links,
@@ -43,22 +41,22 @@ pub fn self_collision_hits(robot: &RobotModel, ignore_adjacent_links: bool) -> V
 }
 
 pub fn has_self_collision(robot: &RobotModel, ignore_adjacent_links: bool) -> bool {
-    let adapter = ModelAdapter::from_robot_model(robot);
-    let q = adapter.build_q(robot);
-    let (gmodel, _) = adapter.build_collision_geometry_with_map(robot);
+    let mc = robot.mc();
+    let q = mc.build_q(robot);
+    let (gmodel, _) = robot.build_collision_geometry_with_map();
 
-    misarta::collision::has_collision(&adapter.model, &gmodel, &q, ignore_adjacent_links)
+    misarta::collision::has_collision(&mc.model, &gmodel, &q, ignore_adjacent_links)
 }
 
 pub fn minimum_separation_distance(
     robot: &RobotModel,
     ignore_adjacent_links: bool,
 ) -> Option<f32> {
-    let adapter = ModelAdapter::from_robot_model(robot);
-    let q = adapter.build_q(robot);
-    let (gmodel, _) = adapter.build_collision_geometry_with_map(robot);
+    let mc = robot.mc();
+    let q = mc.build_q(robot);
+    let (gmodel, _) = robot.build_collision_geometry_with_map();
 
-    misarta::collision::minimum_distance(&adapter.model, &gmodel, &q, ignore_adjacent_links)
+    misarta::collision::minimum_distance(&mc.model, &gmodel, &q, ignore_adjacent_links)
         .map(|d| d as f32)
 }
 
@@ -145,7 +143,7 @@ mod tests {
         let mut children_joints = HashMap::new();
         children_joints.insert("base".to_string(), vec![0]);
 
-        RobotModel {
+        let mut model = RobotModel {
             name: "test".to_string(),
             links,
             joints,
@@ -157,7 +155,10 @@ mod tests {
             joint_positions: vec![0.0],
             source_path: None,
             base_transform: na::Isometry3::identity(),
-        }
+            misarta_cache: None,
+        };
+        model.rebuild_misarta_model();
+        model
     }
 
     #[test]

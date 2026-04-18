@@ -14,7 +14,6 @@
 use nalgebra as na;
 use std::collections::HashMap;
 
-use crate::rbd::adapter::ModelAdapter;
 use crate::robot::RobotModel;
 
 // ========== Result types ==========
@@ -101,8 +100,8 @@ fn compute_body_side_gravity_torques(
 /// Delegates to `misarta::rnea::compute_gravity` and wraps results in
 /// `JointTorqueInfo` with effort limits and margins from the `RobotModel`.
 pub fn compute_gravity_torques(model: &RobotModel) -> Vec<JointTorqueInfo> {
-    let adapter = ModelAdapter::from_robot_model(model);
-    let q = adapter.build_q(model);
+    let adapter = model.mc();
+    let q = model.build_q();
     let g_full = misarta::rnea::compute_gravity(&adapter.model, &q);
 
     let mut result = Vec::new();
@@ -112,7 +111,7 @@ pub fn compute_gravity_torques(model: &RobotModel) -> Vec<JointTorqueInfo> {
             continue;
         }
 
-        let tau = if let Some(mi) = adapter.articara_to_misarta.get(ji).and_then(|&m| m) {
+        let tau = if let Some(mi) = adapter.a2m.get(ji).and_then(|&m| m) {
             let nv = adapter.model.joints[mi].joint_type.nv();
             if nv == 1 {
                 g_full[adapter.model.v_idx[mi]]
@@ -158,11 +157,10 @@ pub fn compute_payload_capacity(
     let ee_pos = model.ee_world_pos(ee_li, &transforms);
 
     // Compute positional Jacobian (3 × N) via misarta
-    let adapter = crate::rbd::adapter::ModelAdapter::from_robot_model(model);
-    let jac = adapter.chain_positional_jacobian(model, &chain, ee_link, None);
+    let jac = model.chain_positional_jacobian(&chain, ee_link, None);
 
     // Unit payload force: F = [0, 0, -g] (force per 1 kg)
-    let f_unit = na::DVector::from_column_slice(&[0.0_f32, 0.0, -G as f32]);
+    let f_unit = na::DVector::from_column_slice(&[0.0_f64, 0.0, -G]);
 
     // τ_payload_per_kg = J^T * F_unit  →  (N×1)
     let tau_payload = jac.transpose() * f_unit;
@@ -178,7 +176,7 @@ pub fn compute_payload_capacity(
     // Fill payload_torque_per_kg
     for (col, &ji) in chain.iter().enumerate() {
         if let Some(&pos) = idx_map.get(&ji) {
-            joint_torques[pos].payload_torque_per_kg = tau_payload[col] as f64;
+            joint_torques[pos].payload_torque_per_kg = tau_payload[col];
         }
     }
 
@@ -189,7 +187,7 @@ pub fn compute_payload_capacity(
     for (col, &ji) in chain.iter().enumerate() {
         if let Some(&pos) = idx_map.get(&ji) {
             let info = &joint_torques[pos];
-            let tau_p = tau_payload[col] as f64; // torque per 1 kg
+            let tau_p = tau_payload[col]; // torque per 1 kg
             if tau_p.abs() < 1e-12 {
                 continue; // this joint is not affected by the payload
             }
@@ -311,7 +309,7 @@ pub fn compute_jump_height(
             // Use the current joint position to determine the available
             // extension stroke: distance from current angle to the
             // nearer joint limit (conservative estimate).
-            let cur = model.joint_positions[ji] as f64;
+            let cur = model.joint_positions[ji];
             let stroke_to_lower = (cur - lower).abs();
             let stroke_to_upper = (upper - cur).abs();
             let stroke = stroke_to_lower.min(stroke_to_upper);
@@ -460,11 +458,11 @@ pub struct JumpSimResult {
 pub struct LegJointSim {
     pub joint_idx: usize,
     /// Joint angle at the start of extension.
-    pub start_angle: f32,
+    pub start_angle: f64,
     /// Joint angle at full extension (the farther limit from start).
-    pub extended_angle: f32,
+    pub extended_angle: f64,
     /// Max angular/linear velocity from URDF (rad/s or m/s). Clamped ≥ 1.0.
-    pub max_velocity: f32,
+    pub max_velocity: f64,
     /// Whether this joint actively contributes to the vertical push-off.
     /// Non-contributing joints hold their initial posture during extension.
     pub contributes: bool,
@@ -480,15 +478,15 @@ pub struct LegSim {
     /// IK chain from ground link to body link (joint indices).
     pub chain: Vec<usize>,
     /// Foot position relative to body at the start of the sim (body-frame).
-    pub initial_foot_pos: na::Point3<f32>,
+    pub initial_foot_pos: na::Point3<f64>,
     /// Maximum vertical stroke (m) — from user's start pose to fully extended.
-    pub max_stroke: f32,
+    pub max_stroke: f64,
     /// Joint indices in this leg that are locked (hold posture).
     pub locked_joint_indices: std::collections::HashSet<usize>,
     /// Joint angles at the user's starting (crouched) pose.
-    pub start_angles: Vec<f32>,
+    pub start_angles: Vec<f64>,
     /// Joint angles for the most-extended configuration (from FK sweep).
-    pub extend_angles: Vec<f32>,
+    pub extend_angles: Vec<f64>,
 }
 
 /// State for an active jump simulation with per-step quasi-dynamics.
@@ -496,7 +494,7 @@ pub struct LegSim {
 pub struct JumpSim {
     pub phase: JumpPhase,
     /// Elapsed time within the current phase (s).
-    pub phase_time: f32,
+    pub phase_time: f64,
 
     // --- per-leg IK data ---
     pub legs: Vec<LegSim>,
@@ -504,45 +502,45 @@ pub struct JumpSim {
     // --- joint trajectory (kept for per-joint torque tracking) ---
     pub leg_joints: Vec<LegJointSim>,
     /// Planned extension duration (s).
-    pub extension_duration: f32,
+    pub extension_duration: f64,
 
     // --- physics state (extension phase, computed per step) ---
     /// Current base vertical velocity (m/s).
-    pub base_velocity_z: f32,
+    pub base_velocity_z: f64,
     /// Average foot Z at the start (= ground level).
-    pub initial_foot_z: f32,
+    pub initial_foot_z: f64,
     /// Ground link names (for foot tracking).
     pub ground_link_names: Vec<String>,
 
     // --- physics state (flight phase) ---
     /// Base velocity at the moment of launch (m/s, upward).
-    pub launch_velocity: f32,
+    pub launch_velocity: f64,
     /// Base Z at the moment of launch.
-    pub launch_z: f32,
+    pub launch_z: f64,
     /// Foot Z at the moment of launch (after extension).
     /// Used to compute when feet touch ground during descent.
-    pub launch_foot_z: f32,
+    pub launch_foot_z: f64,
 
     // --- diagnostics ---
     pub step_info: SimStepInfo,
     /// Maximum height reached so far above initial base Z.
-    pub max_height_reached: f32,
+    pub max_height_reached: f64,
     /// Total robot mass (kg).
     pub total_mass: f64,
 
     // --- timing ---
-    pub landed_hold: f32,
+    pub landed_hold: f64,
 
     // --- saved state to restore ---
-    pub saved_positions: Vec<f32>,
-    pub saved_base_transform: na::Isometry3<f32>,
-    pub speed: f32,
+    pub saved_positions: Vec<f64>,
+    pub saved_base_transform: na::Isometry3<f64>,
+    pub speed: f64,
     /// Which axes the body can move during flight [X, Y, Z].
     pub launch_axes: [bool; 3],
 
     // --- internal tracking for finite differences ---
-    prev_base_z: Option<f32>,
-    prev_velocity_z: Option<f32>,
+    prev_base_z: Option<f64>,
+    prev_velocity_z: Option<f64>,
 
     // --- per-joint peak tracking ---
     /// Peak absolute gravity torque per joint (joint_idx → peak N·m).
@@ -560,34 +558,34 @@ pub struct JumpSim {
     /// Whether to retract (pull legs back) after extension before flight.
     pub enable_retract: bool,
     /// Duration of the retract phase (s). Shorter = more aggressive.
-    pub retract_duration: f32,
+    pub retract_duration: f64,
     /// Joint positions at the end of extension (snapshot for retract interpolation).
-    pub extended_positions: Vec<f32>,
+    pub extended_positions: Vec<f64>,
     /// Base Z at the start of the extension phase (for energy calculation).
-    pub start_base_z: f32,
+    pub start_base_z: f64,
     /// Smoothed base velocity (exponential moving average),
     /// used for launch velocity to ensure continuity at the Extension→Flight boundary.
-    pub smoothed_velocity_z: f32,
+    pub smoothed_velocity_z: f64,
     /// Peak positive smoothed velocity seen during extension.
     /// Used as launch velocity when the actual velocity at launch time
     /// has already decayed (joints overshoot the FK-optimal point).
-    peak_smoothed_velocity_z: f32,
+    peak_smoothed_velocity_z: f64,
     /// Base Z at the moment peak_smoothed_velocity_z was recorded.
-    peak_vel_base_z: f32,
+    peak_vel_base_z: f64,
     /// Forward dynamics state (CRBA/RNEA integrator). When `Some`, the
     /// Extension phase uses physics-based simulation instead of kinematic
     /// interpolation.
     pub fd_state: Option<crate::rbd::dynamics::ForwardDynamicsState>,
     /// Cumulative simulation time (s) across all phases.
-    pub sim_time: f32,
+    pub sim_time: f64,
     /// Time-series graph data for the tracked body link.
     pub graph_data: SimGraphData,
     /// Previous position of the tracked body (for velocity finite diff).
-    graph_prev_pos: Option<[f32; 3]>,
+    graph_prev_pos: Option<[f64; 3]>,
     /// Previous velocity of the tracked body (for accel finite diff).
-    graph_prev_vel: Option<[f32; 3]>,
+    graph_prev_vel: Option<[f64; 3]>,
     /// Next sim_time at which to record a graph sample (1 ms interval).
-    graph_next_sample_time: f32,
+    graph_next_sample_time: f64,
 }
 
 /// Phase of the payload ramp simulation.
@@ -605,22 +603,22 @@ pub enum PayloadPhase {
 #[derive(Clone, Debug)]
 pub struct PayloadSim {
     pub phase: PayloadPhase,
-    pub phase_time: f32,
+    pub phase_time: f64,
     /// Max mass to ramp up to (kg).
     pub max_mass: f64,
     /// Current virtual mass (kg).
     pub current_mass: f64,
     /// Ramp duration (s).
-    pub ramp_duration: f32,
+    pub ramp_duration: f64,
     /// Hold duration (s).
-    pub hold_duration: f32,
+    pub hold_duration: f64,
     /// Per-joint torque utilisation (0.0 – 1.0+). Updated each step.
     pub joint_utilisation: Vec<(usize, f64)>,
     /// Name of the limiting joint.
     pub limiting_joint: String,
     /// Saved positions for restoration.
-    pub saved_positions: Vec<f32>,
-    pub saved_base_transform: na::Isometry3<f32>,
+    pub saved_positions: Vec<f64>,
+    pub saved_base_transform: na::Isometry3<f64>,
 }
 
 /// Wrapper for either simulation type.
@@ -652,10 +650,10 @@ pub fn start_jump_sim(
     model: &mut RobotModel,
     ground_links: &[String],
     body_link: Option<&str>,
-    speed: f32,
+    speed: f64,
     locked_joints: &std::collections::HashSet<String>,
     launch_axes: [bool; 3],
-    extension_override: Option<f32>,
+    extension_override: Option<f64>,
     enforce_torque_limits: bool,
     enable_retract: bool,
     graph_link: Option<&str>,
@@ -674,7 +672,7 @@ pub fn start_jump_sim(
     }
 
     let transforms = model.compute_transforms();
-    let initial_foot_z = avg_link_z(&transforms, ground_links);
+    let initial_foot_z = avg_link_z(&transforms, ground_links) as f64;
 
     // Get body transform for computing foot positions in body frame
     let body_tf = transforms
@@ -736,14 +734,14 @@ pub fn start_jump_sim(
             if joint.effort <= 0.0 {
                 continue;
             }
-            let lower = joint.lower as f32;
-            let upper = joint.upper as f32;
+            let lower = joint.lower;
+            let upper = joint.upper;
             if lower >= upper {
                 continue;
             }
 
             let cur = model.joint_positions[ji];
-            let vel = (joint.velocity as f32).max(1.0);
+            let vel = joint.velocity.max(1.0);
             let is_locked = locked_idx.contains(&ji);
 
             leg_joints.push(LegJointSim {
@@ -759,11 +757,11 @@ pub fn start_jump_sim(
             ground_link: gl.clone(),
             body_link: body.clone(),
             chain,
-            initial_foot_pos: foot_body,
-            max_stroke,
+            initial_foot_pos: foot_body.cast::<f64>(),
+            max_stroke: max_stroke as f64,
             locked_joint_indices: leg_locked,
-            start_angles,
-            extend_angles,
+            start_angles: start_angles.iter().map(|&v| v as f64).collect(),
+            extend_angles: extend_angles.iter().map(|&v| v as f64).collect(),
         });
     }
 
@@ -779,13 +777,9 @@ pub fn start_jump_sim(
     let extension_duration = if let Some(ovr) = extension_override {
         ovr.max(0.05)
     } else {
-        let mut max_time = 0.05_f32;
+        let mut max_time = 0.05_f64;
         for leg in &legs {
-            // For each non-locked joint, compute actual travel / max velocity.
-            // The launch_profile derivative peaks at π/(2T), so the max angular
-            // velocity of joint i is |Δθ_i| * π/(2T).  To respect the URDF
-            // velocity limit: T ≥ |Δθ_i| * π / (2 * v_max_i).
-            let leg_time: f32 = leg
+            let leg_time: f64 = leg
                 .chain
                 .iter()
                 .filter(|ji| !leg.locked_joint_indices.contains(ji))
@@ -801,11 +795,10 @@ pub fn start_jump_sim(
                         0.0
                     };
                     let delta = (extend_val - start_val).abs();
-                    let vel = (model.joints[ji].velocity as f32).max(1.0);
-                    // T ≥ delta * π / (2 * vel)
-                    delta * std::f32::consts::FRAC_PI_2 / vel
+                    let vel = model.joints[ji].velocity.max(1.0);
+                    delta * std::f64::consts::FRAC_PI_2 / vel
                 })
-                .fold(0.0_f32, f32::max);
+                .fold(0.0_f64, f64::max);
             if leg_time > max_time {
                 max_time = leg_time;
             }
@@ -850,7 +843,7 @@ pub fn start_jump_sim(
                 if traj.contains_key(&ji) {
                     continue; // already set by another leg sharing this joint
                 }
-                let q_start = model.joint_positions[ji] as f64;
+                let q_start = model.joint_positions[ji];
                 let q_end = if ji < leg.extend_angles.len() {
                     leg.extend_angles[ji] as f64
                 } else {
@@ -941,7 +934,7 @@ fn compute_leg_z_range(
     chain: &[usize],
     ground_link: &str,
     locked_joints: &std::collections::HashSet<usize>,
-) -> (f32, f32, Vec<f32>, Vec<f32>) {
+) -> (f32, f32, Vec<f64>, Vec<f64>) {
     let saved_positions = model.joint_positions.clone();
     let transforms0 = model.compute_transforms();
     let initial_foot_z = foot_link_pos(&transforms0, ground_link).z;
@@ -973,11 +966,11 @@ fn compute_leg_z_range(
         for combo in 0..total_combos {
             let mut idx = combo;
             for &ji in &active {
-                let lo = model.joints[ji].lower as f32;
-                let hi = model.joints[ji].upper as f32;
+                let lo = model.joints[ji].lower;
+                let hi = model.joints[ji].upper;
                 let step_i = idx % (n_samples as u64);
                 idx /= n_samples as u64;
-                let frac = step_i as f32 / (n_samples - 1).max(1) as f32;
+                let frac = step_i as f64 / (n_samples - 1).max(1) as f64;
                 model.joint_positions[ji] = lo + (hi - lo) * frac;
             }
             let tf = model.compute_transforms();
@@ -997,12 +990,12 @@ fn compute_leg_z_range(
         use std::hash::{Hash, Hasher};
         for sample in 0..50_000_u64 {
             for &ji in &active {
-                let lo = model.joints[ji].lower as f32;
-                let hi = model.joints[ji].upper as f32;
+                let lo = model.joints[ji].lower;
+                let hi = model.joints[ji].upper;
                 let mut hasher = DefaultHasher::new();
                 (sample, ji).hash(&mut hasher);
                 let hash = hasher.finish();
-                let frac = (hash as f32) / (u64::MAX as f32);
+                let frac = (hash as f64) / (u64::MAX as f64);
                 model.joint_positions[ji] = lo + (hi - lo) * frac;
             }
             let tf = model.compute_transforms();
@@ -1051,8 +1044,8 @@ pub fn extract_jump_result(sim: &JumpSim, model: &RobotModel) -> JumpSimResult {
             .then_with(|| b.peak_torque.partial_cmp(&a.peak_torque).unwrap_or(std::cmp::Ordering::Equal))
     });
     JumpSimResult {
-        max_height: sim.max_height_reached,
-        extension_duration: sim.extension_duration,
+        max_height: sim.max_height_reached as f32,
+        extension_duration: sim.extension_duration as f32,
         joint_peaks,
         graph_data: sim.graph_data.clone(),
     }
@@ -1074,7 +1067,7 @@ pub fn extract_jump_result(sim: &JumpSim, model: &RobotModel) -> JumpSimResult {
 ///
 /// Returns `true` while still running.
 pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
-    let dt_frame = dt * sim.speed;
+    let dt_frame = (dt as f64) * sim.speed;
     if dt_frame <= 0.0 {
         return true;
     }
@@ -1082,11 +1075,11 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
     // --- Fixed-timestep sub-stepping for numerical stability ---
     // Forward dynamics with semi-implicit Euler requires ≤1 ms steps.
     // The caller provides a frame-rate dt (~16 ms); we subdivide it.
-    const MAX_PHYSICS_DT: f32 = 0.0005; // 0.5 ms
+    const MAX_PHYSICS_DT: f64 = 0.0005; // 0.5 ms
     let n_steps = ((dt_frame / MAX_PHYSICS_DT).ceil() as usize).max(1);
-    let sub_dt = dt_frame / n_steps as f32;
+    let sub_dt = dt_frame / n_steps as f64;
 
-    const GRAPH_INTERVAL: f32 = 0.001; // 1 ms
+    const GRAPH_INTERVAL: f64 = 0.001; // 1 ms
 
     let mut still_running = true;
     for _ in 0..n_steps {
@@ -1108,7 +1101,7 @@ pub fn step_jump_sim(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool
 }
 
 /// One physics sub-step of the jump simulation.
-fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
+fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f64) -> bool {
     match sim.phase {
         JumpPhase::Extension => {
             // ===== Forward-dynamics based Extension phase =====
@@ -1136,7 +1129,7 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
                     let extend_val = if ji < leg.extend_angles.len() {
                         leg.extend_angles[ji] as f64
                     } else {
-                        model.joint_positions[ji] as f64
+                        model.joint_positions[ji]
                     };
 
                     target_angles.insert(ji, extend_val);
@@ -1165,7 +1158,7 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
                 let foot_z_at_zero = avg_link_z(&transforms, &sim.ground_link_names);
 
                 // base_z such that foot_z = initial_foot_z
-                let new_base_z = sim.initial_foot_z - foot_z_at_zero;
+                let new_base_z = sim.initial_foot_z - foot_z_at_zero as f64;
                 model.base_transform = saved_base;
                 model.base_transform.translation.vector.z = new_base_z;
             }
@@ -1187,12 +1180,12 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
             let grf_z = sim.total_mass * (accel_z as f64 + G);
 
             sim.step_info.grf_z = grf_z;
-            sim.step_info.velocity_z = sim.base_velocity_z;
+            sim.step_info.velocity_z = sim.base_velocity_z as f32;
             sim.step_info.height =
-                current_z - sim.saved_base_transform.translation.vector.z;
+                (current_z - sim.saved_base_transform.translation.vector.z) as f32;
 
-            if sim.step_info.height > sim.max_height_reached {
-                sim.max_height_reached = sim.step_info.height;
+            if sim.step_info.height as f64 > sim.max_height_reached {
+                sim.max_height_reached = sim.step_info.height as f64;
             }
 
             // Smoothed velocity for launch
@@ -1239,7 +1232,7 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
                         let entry = sim.peak_torques.entry(ji).or_insert(0.0);
                         if record_tau > *entry {
                             *entry = record_tau;
-                            sim.peak_torque_angles.insert(ji, cur_angle as f64);
+                            sim.peak_torque_angles.insert(ji, cur_angle);
                         }
 
                         // Angular velocity from fd_state
@@ -1251,7 +1244,7 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
                         let v_entry = sim.peak_velocities.entry(ji).or_insert(0.0);
                         if omega > *v_entry {
                             *v_entry = omega;
-                            sim.peak_velocity_angles.insert(ji, cur_angle as f64);
+                            sim.peak_velocity_angles.insert(ji, cur_angle);
                         }
                     }
                 }
@@ -1267,7 +1260,7 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
             //
             // Use the CURRENT base Z and velocity for launch to ensure
             // smooth continuity at the Extension→Flight boundary.
-            let min_phase = 0.01_f32;
+            let min_phase = 0.01;
             let peak_v = sim.peak_smoothed_velocity_z;
             let vel_declining = peak_v > 0.05
                 && sim.smoothed_velocity_z < peak_v * 0.5
@@ -1278,7 +1271,7 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
                 fd.trajectory.iter().all(|(&ji, traj)| {
                     let total = (traj.q_end - traj.q_start).abs();
                     if total < 1e-6 { return true; }
-                    let q = model.joint_positions[ji] as f64;
+                    let q = model.joint_positions[ji];
                     let progress = (q - traj.q_start) / (traj.q_end - traj.q_start);
                     progress >= 0.95
                 })
@@ -1301,7 +1294,7 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
                 sim.launch_velocity = launch_vel;
 
                 let transforms_at_launch = model.compute_transforms();
-                sim.launch_foot_z = avg_link_z(&transforms_at_launch, &sim.ground_link_names);
+                sim.launch_foot_z = avg_link_z(&transforms_at_launch, &sim.ground_link_names) as f64;
 
                 if sim.enable_retract {
                     sim.extended_positions = model.joint_positions.clone();
@@ -1333,7 +1326,7 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
                         let mut traj = HashMap::new();
                         for lj in &sim.leg_joints {
                             let ji = lj.joint_idx;
-                            let q_now = model.joint_positions[ji] as f64;
+                            let q_now = model.joint_positions[ji];
                             let q_saved = if ji < sim.saved_positions.len() {
                                 sim.saved_positions[ji] as f64
                             } else {
@@ -1367,7 +1360,7 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
         }
 
         JumpPhase::Flight => {
-            let g = G as f32;
+            let g = G;
             let t = sim.phase_time;
 
             // Ballistic trajectory for base: z(t) = z0 + v0·t − ½g·t²
@@ -1393,7 +1386,7 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
             //    beyond gravity compensation in the null-space path).
             {
                 let hold_targets: HashMap<usize, f64> = sim.leg_joints.iter()
-                    .map(|lj| (lj.joint_idx, model.joint_positions[lj.joint_idx] as f64))
+                    .map(|lj| (lj.joint_idx, model.joint_positions[lj.joint_idx]))
                     .collect();
                 if let Some(ref mut fd) = sim.fd_state {
                     fd.step(model, &hold_targets, dt as f64);
@@ -1404,12 +1397,12 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
 
             // No ground contact during flight
             sim.step_info.grf_z = 0.0;
-            sim.step_info.velocity_z = v_z;
+            sim.step_info.velocity_z = v_z as f32;
             sim.step_info.height =
-                current_z - sim.saved_base_transform.translation.vector.z;
+                (current_z - sim.saved_base_transform.translation.vector.z) as f32;
 
-            if sim.step_info.height > sim.max_height_reached {
-                sim.max_height_reached = sim.step_info.height;
+            if sim.step_info.height as f64 > sim.max_height_reached {
+                sim.max_height_reached = sim.step_info.height as f64;
             }
 
             // Land when feet reach the original ground level.
@@ -1424,7 +1417,7 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
                 let fz = avg_link_z(&transforms, &sim.ground_link_names);
                 model.base_transform = saved_base;
                 // foot_world_z = current_z + fz (fz is foot offset from base at z=0)
-                current_z + fz
+                current_z + fz as f64
             };
 
             if t > 0.0 && foot_z <= sim.initial_foot_z {
@@ -1456,11 +1449,11 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
             let foot_z_at_zero = avg_link_z(&transforms, &sim.ground_link_names);
             model.base_transform = saved_base;
 
-            let landed_base_z = sim.initial_foot_z - foot_z_at_zero;
+            let landed_base_z = sim.initial_foot_z - foot_z_at_zero as f64;
             model.base_transform.translation.vector.z = landed_base_z;
 
             sim.step_info.height =
-                landed_base_z - sim.saved_base_transform.translation.vector.z;
+                (landed_base_z - sim.saved_base_transform.translation.vector.z) as f32;
 
             if sim.phase_time >= sim.landed_hold {
                 // Restore everything
@@ -1475,16 +1468,16 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
 }
 
 /// Record one sample of position/velocity/acceleration for the tracked body.
-fn record_graph_sample(sim: &mut JumpSim, model: &RobotModel, dt: f32) {
+fn record_graph_sample(sim: &mut JumpSim, model: &RobotModel, dt: f64) {
     let transforms = model.compute_transforms();
     let link_tf = transforms
         .get(&sim.graph_data.link_name)
         .copied()
         .unwrap_or(na::Isometry3::identity());
     let pos = link_tf.translation.vector;
-    let px = pos.x;
-    let py = pos.y;
-    let pz = pos.z;
+    let px = pos.x as f64;
+    let py = pos.y as f64;
+    let pz = pos.z as f64;
 
     // Velocity via finite difference
     let (vx, vy, vz) = if let Some([ppx, ppy, ppz]) = sim.graph_prev_pos {
@@ -1512,16 +1505,16 @@ fn record_graph_sample(sim: &mut JumpSim, model: &RobotModel, dt: f32) {
     sim.graph_prev_vel = Some([vx, vy, vz]);
 
     let g = &mut sim.graph_data;
-    g.time.push(sim.sim_time);
-    g.pos_x.push(px);
-    g.pos_y.push(py);
-    g.pos_z.push(pz);
-    g.vel_x.push(vx);
-    g.vel_y.push(vy);
-    g.vel_z.push(vz);
-    g.acc_x.push(ax);
-    g.acc_y.push(ay);
-    g.acc_z.push(az);
+    g.time.push(sim.sim_time as f32);
+    g.pos_x.push(px as f32);
+    g.pos_y.push(py as f32);
+    g.pos_z.push(pz as f32);
+    g.vel_x.push(vx as f32);
+    g.vel_y.push(vy as f32);
+    g.vel_z.push(vz as f32);
+    g.acc_x.push(ax as f32);
+    g.acc_y.push(ay as f32);
+    g.acc_z.push(az as f32);
 }
 
 /// Average Z position of the given links in world frame.
@@ -1550,7 +1543,7 @@ fn avg_link_z(
 pub fn start_payload_sim(
     model: &RobotModel,
     ee_link: &str,
-    speed: f32,
+    speed: f64,
 ) -> Option<PayloadSim> {
     // Run a static analysis to find max payload
     let mut torques = compute_gravity_torques(model);
@@ -1584,7 +1577,7 @@ pub fn step_payload_sim(
     match sim.phase {
         PayloadPhase::Ramping => {
             let t_frac = (sim.phase_time / sim.ramp_duration).clamp(0.0, 1.0);
-            sim.current_mass = sim.max_mass * t_frac as f64;
+            sim.current_mass = sim.max_mass * t_frac;
 
             // Compute per-joint utilisation at current mass
             update_utilisation(sim, model, ee_link);
@@ -1624,11 +1617,10 @@ fn update_utilisation(
         None => return,
     };
     let _ee_pos = model.ee_world_pos(ee_li, &transforms);
-    let adapter = crate::rbd::adapter::ModelAdapter::from_robot_model(model);
-    let jac = adapter.chain_positional_jacobian(model, &chain, ee_link, None);
+    let jac = model.chain_positional_jacobian(&chain, ee_link, None);
 
     // Force per current mass
-    let f = na::DVector::from_column_slice(&[0.0_f32, 0.0, -(G as f32) * sim.current_mass as f32]);
+    let f = na::DVector::from_column_slice(&[0.0_f64, 0.0, -G * sim.current_mass]);
     let tau_payload = jac.transpose() * f;
 
     // Gravity torques
@@ -1645,7 +1637,7 @@ fn update_utilisation(
             continue;
         }
         let g_tau = grav_map.get(&ji).copied().unwrap_or(0.0);
-        let total_tau = (g_tau + tau_payload[col] as f64).abs();
+        let total_tau = (g_tau + tau_payload[col]).abs();
         let util = total_tau / joint.effort;
         sim.joint_utilisation.push((ji, util));
     }
@@ -1738,7 +1730,7 @@ mod tests {
             model.base_transform = temp_base;
             let tf = model.compute_transforms();
             let foot_z = avg_link_z(&tf, &ground_links);
-            model.base_transform.translation.vector.z = -foot_z;
+            model.base_transform.translation.vector.z = -foot_z as f64;
         }
 
         let start_base_z = model.base_transform.translation.vector.z;
@@ -1789,7 +1781,7 @@ mod tests {
 
         let dt = 1.0 / 60.0_f32;
         let mut step = 0;
-        let mut peak_vel = 0.0_f32;
+        let mut peak_vel = 0.0_f64;
         loop {
             let running = step_jump_sim(&mut sim, &mut model, dt);
             step += 1;
@@ -1799,14 +1791,14 @@ mod tests {
                     peak_vel = sim.base_velocity_z;
                 }
                 let ext_h = model.base_transform.translation.vector.z - start_base_z;
-                let energy_vel = (2.0 * G as f32 * ext_h.max(0.0)).sqrt();
+                let energy_vel = (2.0 * G * ext_h.max(0.0)).sqrt();
                 if step % 5 == 0 {
                     eprintln!(
                         "  ext step={:3} t={:.3} base_z={:.4} vel={:.4} peak_v={:.4} energy_v={:.4} α={:.3}",
                         step, sim.phase_time,
                         model.base_transform.translation.vector.z,
                         sim.base_velocity_z, peak_vel, energy_vel,
-                        launch_profile((sim.phase_time / sim.extension_duration).clamp(0.0, 1.0)),
+                        launch_profile(((sim.phase_time / sim.extension_duration).clamp(0.0, 1.0)) as f32),
                     );
                 }
             }
@@ -1824,14 +1816,14 @@ mod tests {
         }
 
         let ext_height = sim.launch_z - start_base_z;
-        let energy_v = (2.0 * G as f32 * ext_height.max(0.0)).sqrt();
+        let energy_v = (2.0 * G * ext_height.max(0.0)).sqrt();
         eprintln!("--- SUMMARY ---");
         eprintln!("extension_height = {:.4}", ext_height);
         eprintln!("peak_geometric_vel = {:.4}", peak_vel);
         eprintln!("energy_based_vel = {:.4}", energy_v);
         eprintln!("launch_velocity_used = {:.4}", sim.launch_velocity);
         eprintln!("max_height_reached = {:.4}", sim.max_height_reached);
-        eprintln!("expected_flight_h (energy) = {:.4}", energy_v * energy_v / (2.0 * G as f32));
+        eprintln!("expected_flight_h (energy) = {:.4}", energy_v * energy_v / (2.0 * G));
 
         assert!(
             sim.launch_velocity > 0.01,
@@ -1911,7 +1903,7 @@ mod tests {
             model.base_transform = temp_base;
             let tf = model.compute_transforms();
             let foot_z = avg_link_z(&tf, &ground_links);
-            model.base_transform.translation.vector.z = -foot_z;
+            model.base_transform.translation.vector.z = -foot_z as f64;
         }
 
         let start_base_z = model.base_transform.translation.vector.z;

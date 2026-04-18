@@ -139,7 +139,7 @@ impl RobotModel {
             .map(|l| l.name.clone())
             .unwrap_or_default();
 
-        let joint_positions = vec![0.0f32; joints.len()];
+        let joint_positions = vec![0.0_f64; joints.len()];
 
         log::info!(
             "Loaded robot '{}': {} links, {} joints, root='{}'",
@@ -149,7 +149,7 @@ impl RobotModel {
             root_link
         );
 
-        Ok(Self {
+        let mut model = Self {
             name: robot.name.clone(),
             links,
             joints,
@@ -161,7 +161,10 @@ impl RobotModel {
             joint_positions,
             source_path: Some(path.to_path_buf()),
             base_transform: na::Isometry3::identity(),
-        })
+            misarta_cache: None,
+        };
+        model.rebuild_misarta_model();
+        Ok(model)
     }
 
     /// Load a robot model from any supported format (auto-detected by extension).
@@ -672,7 +675,7 @@ impl RobotModel {
         let root_name = "base_link".to_string();
         let mut link_map = HashMap::new();
         link_map.insert(root_name.clone(), 0);
-        Self {
+        let mut model = Self {
             name: name.to_string(),
             links: vec![LinkData {
                 name: root_name.clone(),
@@ -698,7 +701,10 @@ impl RobotModel {
             joint_positions: Vec::new(),
             source_path: None,
             base_transform: na::Isometry3::identity(),
-        }
+            misarta_cache: None,
+        };
+        model.rebuild_misarta_model();
+        model
     }
 
     /// Generate a unique link name that doesn't collide with existing ones.
@@ -748,6 +754,7 @@ impl RobotModel {
                 iyy: 0.0001, iyz: 0.0, izz: 0.0001,
             },
         });
+        self.misarta_cache = None; // invalidate stale cache
         idx
     }
 
@@ -789,6 +796,7 @@ impl RobotModel {
             velocity: 5.0,
         });
         self.joint_positions.push(0.0);
+        self.misarta_cache = None; // invalidate stale cache
         Ok(idx)
     }
 
@@ -871,6 +879,7 @@ impl RobotModel {
         }
         // Fix joint_positions length
         self.joint_positions.resize(self.joints.len(), 0.0);
+        self.rebuild_misarta_model();
     }
 
     /// Return a list of all link names (for UI combo boxes).

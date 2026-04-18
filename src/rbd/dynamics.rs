@@ -21,8 +21,7 @@
 use nalgebra as na;
 use std::collections::HashMap;
 
-use super::adapter::ModelAdapter;
-use super::model::RobotModel;
+use super::model::{RobotModel, MisartaCache};
 
 // ========== Constants ==========
 
@@ -71,14 +70,14 @@ pub fn topological_joint_order(model: &RobotModel) -> Vec<usize> {
 ///
 /// Delegates to [`misarta::crba::crba`] and extracts the submatrix for the
 /// requested joint subset.  Reuses a pre-built [`ModelAdapter`].
-pub fn crba_with_adapter(
+pub fn crba(
     model: &RobotModel,
     joint_order: &[usize],
-    adapter: &ModelAdapter,
+    mc: &MisartaCache,
 ) -> (na::DMatrix<f64>, Vec<Option<usize>>) {
-    let q = adapter.build_q(model);
-    let m_full = misarta::crba::crba(&adapter.model, &q);
-    adapter.extract_submatrix(&m_full, joint_order)
+    let q = mc.build_q(model);
+    let m_full = misarta::crba::crba(&mc.model, &q);
+    mc.extract_submatrix(&m_full, joint_order)
 }
 
 // =========================================================================
@@ -99,21 +98,21 @@ pub fn rnea_bias(
     joint_order: &[usize],
     joint_velocities: &HashMap<usize, f64>,
 ) -> na::DVector<f64> {
-    let adapter = ModelAdapter::from_robot_model(model);
-    rnea_bias_with_adapter(model, joint_order, joint_velocities, &adapter)
+    let mc = model.mc();
+    rnea_bias_with_mc(model, joint_order, joint_velocities, mc)
 }
 
-/// Like [`rnea_bias`] but reuses a pre-built [`ModelAdapter`].
-pub fn rnea_bias_with_adapter(
+/// Like [`rnea_bias`] but reuses a pre-built [`MisartaCache`].
+pub fn rnea_bias_with_mc(
     model: &RobotModel,
     joint_order: &[usize],
     joint_velocities: &HashMap<usize, f64>,
-    adapter: &ModelAdapter,
+    mc: &MisartaCache,
 ) -> na::DVector<f64> {
-    let q = adapter.build_q(model);
-    let v = adapter.build_v(joint_velocities);
-    let h_full = misarta::rnea::nonlinear_effects(&adapter.model, &q, v.as_slice());
-    let (h_sub, _) = adapter.extract_subvector(&h_full, joint_order);
+    let q = mc.build_q(model);
+    let v = mc.build_v(joint_velocities);
+    let h_full = misarta::rnea::nonlinear_effects(&mc.model, &q, v.as_slice());
+    let (h_sub, _) = mc.extract_subvector(&h_full, joint_order);
     h_sub
 }
 
@@ -159,9 +158,8 @@ pub fn foot_jacobian(
     body_link: &str,
     joint_order: &[usize],
     idx_in_m: &[Option<usize>],
-    adapter: &ModelAdapter,
 ) -> na::DMatrix<f64> {
-    adapter.foot_positional_jacobian(model, foot_link, body_link, joint_order, idx_in_m)
+    model.foot_positional_jacobian(foot_link, body_link, joint_order, idx_in_m)
 }
 
 // =========================================================================
@@ -271,8 +269,6 @@ pub struct ForwardDynamicsState {
     pub kp: f64,
     /// PD derivative gain (N·m·s/rad).
     pub kd: f64,
-    /// Cached adapter for misarta Model (avoids rebuilding every step).
-    pub adapter: ModelAdapter,
 }
 
 impl ForwardDynamicsState {
@@ -313,8 +309,6 @@ impl ForwardDynamicsState {
                 .unwrap_or(0.0)
         }).collect();
 
-        let adapter = ModelAdapter::from_robot_model(model);
-
         Self {
             joint_order,
             joint_velocities: HashMap::new(),
@@ -328,7 +322,6 @@ impl ForwardDynamicsState {
             trajectory_time: 0.0,
             kp: 500.0,
             kd: 20.0,
-            adapter,
         }
     }
 
@@ -380,17 +373,18 @@ impl ForwardDynamicsState {
     fn step_pd(&mut self, model: &mut RobotModel, dt: f64) {
         let n = self.joint_order.len();
         let t = self.trajectory_time;
+        let mc = model.mc();
 
         // --- 1. CRBA: M(q) ---
-        let (m_mat, idx_in_m) = crba_with_adapter(model, &self.joint_order, &self.adapter);
+        let (m_mat, idx_in_m) = crba(model, &self.joint_order, mc);
 
         // --- 2. RNEA: h(q, q̇) = C(q,q̇)·q̇ + g(q) ---
-        let h = rnea_bias_with_adapter(model, &self.joint_order, &self.joint_velocities, &self.adapter);
+        let h = rnea_bias_with_mc(model, &self.joint_order, &self.joint_velocities, mc);
 
         // --- 3. PD acceleration command per joint ---
         let mut a_pd = na::DVector::zeros(n);
         for (col, &ji) in self.joint_order.iter().enumerate() {
-            let q_cur = model.joint_positions[ji] as f64;
+            let q_cur = model.joint_positions[ji];
             let qd_cur = self.joint_velocities.get(&ji).copied().unwrap_or(0.0);
 
             let (q_des, qd_des, qdd_des) = if let Some(traj) = self.trajectory.get(&ji) {
@@ -428,7 +422,6 @@ impl ForwardDynamicsState {
                     &self.body_link,
                     &self.joint_order,
                     &idx_in_m,
-                    &self.adapter,
                 );
 
                 // X row (row 0)
@@ -507,12 +500,13 @@ impl ForwardDynamicsState {
         dt: f64,
     ) {
         let n = self.joint_order.len();
+        let mc = model.mc();
 
         // --- 1. CRBA: M(q) ---
-        let (m_mat, idx_in_m) = crba_with_adapter(model, &self.joint_order, &self.adapter);
+        let (m_mat, idx_in_m) = crba(model, &self.joint_order, mc);
 
         // --- 2. RNEA: h(q, q̇) = C(q,q̇)·q̇ + g(q) ---
-        let h = rnea_bias_with_adapter(model, &self.joint_order, &self.joint_velocities, &self.adapter);
+        let h = rnea_bias_with_mc(model, &self.joint_order, &self.joint_velocities, mc);
 
         // --- 3. Foot X-row Jacobians → J_x (n_feet × n) ---
         let transforms = model.compute_transforms();
@@ -534,7 +528,6 @@ impl ForwardDynamicsState {
                 &self.body_link,
                 &self.joint_order,
                 &idx_in_m,
-                &self.adapter,
             );
 
             // X row (row 0)
@@ -579,7 +572,7 @@ impl ForwardDynamicsState {
         let k_ext: f64 = 30.0;
         let mut qd_ext = na::DVector::zeros(n);
         for (col, &ji) in self.joint_order.iter().enumerate() {
-            let q_cur = model.joint_positions[ji] as f64;
+            let q_cur = model.joint_positions[ji];
             let q_target = target_angles.get(&ji).copied().unwrap_or(q_cur);
             qd_ext[col] = k_ext * (q_target - q_cur);
         }
@@ -638,16 +631,16 @@ impl ForwardDynamicsState {
             }
 
             // Integrate position
-            let new_q = model.joint_positions[ji] as f64 + *qd * dt;
+            let new_q = model.joint_positions[ji] + *qd * dt;
             let lo = model.joints[ji].lower;
             let hi = model.joints[ji].upper;
             if lo < hi {
-                model.joint_positions[ji] = new_q.clamp(lo, hi) as f32;
+                model.joint_positions[ji] = new_q.clamp(lo, hi);
                 if new_q <= lo || new_q >= hi {
                     *qd = 0.0;
                 }
             } else {
-                model.joint_positions[ji] = new_q as f32;
+                model.joint_positions[ji] = new_q;
             }
         }
     }
@@ -707,16 +700,16 @@ pub fn compute_body_side_gravity_torques(
     model: &RobotModel,
     joints: &[usize],
 ) -> HashMap<usize, f64> {
-    let adapter = ModelAdapter::from_robot_model(model);
-    let q = adapter.build_q(model);
-    let g_full = misarta::rnea::compute_gravity(&adapter.model, &q);
+    let mc = model.mc();
+    let q = mc.build_q(model);
+    let g_full = misarta::rnea::compute_gravity(&mc.model, &q);
 
     // Build a lookup: misarta joint idx → gravity torque value
     let g_for = |ji: usize| -> f64 {
-        if let Some(mi) = adapter.articara_to_misarta.get(ji).and_then(|&m| m) {
-            let nv = adapter.model.joints[mi].joint_type.nv();
+        if let Some(mi) = mc.a2m.get(ji).and_then(|&m| m) {
+            let nv = mc.model.joints[mi].joint_type.nv();
             if nv == 1 {
-                return g_full[adapter.model.v_idx[mi]];
+                return g_full[mc.model.v_idx[mi]];
             }
         }
         0.0
@@ -771,21 +764,21 @@ pub fn aba_forward_dynamics(
     joint_order: &[usize],
     joint_velocities: &HashMap<usize, f64>,
     joint_torques: &HashMap<usize, f64>,
-    adapter: &ModelAdapter,
+    mc: &MisartaCache,
 ) -> na::DVector<f64> {
-    let q = adapter.build_q(model);
-    let v = adapter.build_v(joint_velocities);
-    let mut tau = na::DVector::zeros(adapter.model.nv);
+    let q = mc.build_q(model);
+    let v = mc.build_v(joint_velocities);
+    let mut tau = na::DVector::zeros(mc.model.nv);
     for (&ji, &t) in joint_torques {
-        if let Some(mi) = adapter.articara_to_misarta.get(ji).and_then(|&m| m) {
-            let nv = adapter.model.joints[mi].joint_type.nv();
+        if let Some(mi) = mc.a2m.get(ji).and_then(|&m| m) {
+            let nv = mc.model.joints[mi].joint_type.nv();
             if nv == 1 {
-                tau[adapter.model.v_idx[mi]] = t;
+                tau[mc.model.v_idx[mi]] = t;
             }
         }
     }
-    let qdd_full = misarta::aba::aba(&adapter.model, &q, v.as_slice(), tau.as_slice());
-    let (qdd_sub, _) = adapter.extract_subvector(&qdd_full, joint_order);
+    let qdd_full = misarta::aba::aba(&mc.model, &q, v.as_slice(), tau.as_slice());
+    let (qdd_sub, _) = mc.extract_subvector(&qdd_full, joint_order);
     qdd_sub
 }
 
@@ -794,20 +787,20 @@ pub fn minv_times_vec(
     model: &RobotModel,
     joint_order: &[usize],
     joint_torques: &HashMap<usize, f64>,
-    adapter: &ModelAdapter,
+    mc: &MisartaCache,
 ) -> na::DVector<f64> {
-    let q = adapter.build_q(model);
-    let mut tau = na::DVector::zeros(adapter.model.nv);
+    let q = mc.build_q(model);
+    let mut tau = na::DVector::zeros(mc.model.nv);
     for (&ji, &t) in joint_torques {
-        if let Some(mi) = adapter.articara_to_misarta.get(ji).and_then(|&m| m) {
-            let nv = adapter.model.joints[mi].joint_type.nv();
+        if let Some(mi) = mc.a2m.get(ji).and_then(|&m| m) {
+            let nv = mc.model.joints[mi].joint_type.nv();
             if nv == 1 {
-                tau[adapter.model.v_idx[mi]] = t;
+                tau[mc.model.v_idx[mi]] = t;
             }
         }
     }
-    let result = misarta::aba::compute_minv_times_vec(&adapter.model, &q, tau.as_slice());
-    let (sub, _) = adapter.extract_subvector(&result, joint_order);
+    let result = misarta::aba::compute_minv_times_vec(&mc.model, &q, tau.as_slice());
+    let (sub, _) = mc.extract_subvector(&result, joint_order);
     sub
 }
 
@@ -816,33 +809,32 @@ pub fn minv_times_vec(
 // =========================================================================
 
 /// Compute world-frame center of mass position.
-pub fn compute_com(model: &RobotModel, adapter: &ModelAdapter) -> na::Point3<f64> {
-    let q = adapter.build_q(model);
-    let com = misarta::centroidal::compute_com(&adapter.model, &q);
+pub fn compute_com(model: &RobotModel, mc: &MisartaCache) -> na::Point3<f64> {
+    let q = mc.build_q(model);
+    let com = misarta::centroidal::compute_com(&mc.model, &q);
     na::Point3::from(com)
 }
 
 /// Compute total robot mass via misarta.
-pub fn total_mass(adapter: &ModelAdapter) -> f64 {
-    misarta::centroidal::total_mass(&adapter.model)
+pub fn total_mass(mc: &MisartaCache) -> f64 {
+    misarta::centroidal::total_mass(&mc.model)
 }
 
 /// Compute the CoM Jacobian (3 × nv), mapping generalized velocity to CoM velocity.
 pub fn compute_com_jacobian(
     model: &RobotModel,
     joint_order: &[usize],
-    adapter: &ModelAdapter,
+    mc: &MisartaCache,
 ) -> na::DMatrix<f64> {
-    let q = adapter.build_q(model);
-    let j_full = misarta::centroidal::compute_com_jacobian(&adapter.model, &q);
-    // Extract columns for joints in joint_order
+    let q = mc.build_q(model);
+    let j_full = misarta::centroidal::compute_com_jacobian(&mc.model, &q);
     let n = joint_order.len();
     let mut j_sub = na::DMatrix::zeros(3, n);
     for (col, &ji) in joint_order.iter().enumerate() {
-        if let Some(mi) = adapter.articara_to_misarta.get(ji).and_then(|&m| m) {
-            let nv = adapter.model.joints[mi].joint_type.nv();
+        if let Some(mi) = mc.a2m.get(ji).and_then(|&m| m) {
+            let nv = mc.model.joints[mi].joint_type.nv();
             if nv == 1 {
-                let vi = adapter.model.v_idx[mi];
+                let vi = mc.model.v_idx[mi];
                 for r in 0..3 {
                     j_sub[(r, col)] = j_full[(r, vi)];
                 }
@@ -856,17 +848,17 @@ pub fn compute_com_jacobian(
 pub fn compute_centroidal_momentum_matrix(
     model: &RobotModel,
     joint_order: &[usize],
-    adapter: &ModelAdapter,
+    mc: &MisartaCache,
 ) -> na::DMatrix<f64> {
-    let q = adapter.build_q(model);
-    let ag_full = misarta::centroidal::compute_centroidal_momentum_matrix(&adapter.model, &q);
+    let q = mc.build_q(model);
+    let ag_full = misarta::centroidal::compute_centroidal_momentum_matrix(&mc.model, &q);
     let n = joint_order.len();
     let mut ag_sub = na::DMatrix::zeros(6, n);
     for (col, &ji) in joint_order.iter().enumerate() {
-        if let Some(mi) = adapter.articara_to_misarta.get(ji).and_then(|&m| m) {
-            let nv = adapter.model.joints[mi].joint_type.nv();
+        if let Some(mi) = mc.a2m.get(ji).and_then(|&m| m) {
+            let nv = mc.model.joints[mi].joint_type.nv();
             if nv == 1 {
-                let vi = adapter.model.v_idx[mi];
+                let vi = mc.model.v_idx[mi];
                 for r in 0..6 {
                     ag_sub[(r, col)] = ag_full[(r, vi)];
                 }

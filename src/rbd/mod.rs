@@ -6,10 +6,8 @@
 //! # Sub-modules
 //!
 //! - [`model`] — Body structure: data types for links, joints, geometry,
-//!   inertial properties, FK, and tree navigation.
+//!   inertial properties, FK, tree navigation, and misarta integration.
 //! - [`dynamics`] — Gravity torques, payload capacity, forward dynamics.
-//! - [`adapter`] — Bridge between `RobotModel` and `misarta::Model`.
 
 pub mod model;
 pub mod dynamics;
-pub mod adapter;

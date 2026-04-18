@@ -509,7 +509,7 @@ impl ArticaraApp {
                 if !self.ground_plane_auto {
                     self.ground_plane_auto = true;
                     self.show_ground_plane = true;
-                    self.ground_z = js.initial_foot_z;
+                    self.ground_z = js.initial_foot_z as f32;
                 }
                 if let Some(ref mut model) = self.model {
                     dynamics::step_jump_sim(js, model, dt)
@@ -518,7 +518,7 @@ impl ArticaraApp {
                 }
             }
             dynamics::DynSim::Payload(ps) => {
-                ps.phase_time += dt;
+                ps.phase_time += dt as f64;
                 if let Some(ref model) = self.model {
                     let ee = self.dynamics_ee_link.as_deref().unwrap_or("");
                     dynamics::step_payload_sim(ps, model, ee)

@@ -818,9 +818,9 @@ pub fn import_usda_from_str(
         .map(|l| l.name.clone())
         .unwrap_or_else(|| links[0].name.clone());
 
-    let joint_positions = vec![0.0f32; joints.len()];
+    let joint_positions = vec![0.0_f64; joints.len()];
 
-    Ok(RobotModel {
+    let mut model = RobotModel {
         name: robot_name,
         links,
         joints,
@@ -832,7 +832,10 @@ pub fn import_usda_from_str(
         joint_positions,
         source_path: source_path.map(|p| p.to_path_buf()),
         base_transform: na::Isometry3::identity(),
-    })
+        misarta_cache: None,
+    };
+    model.rebuild_misarta_model();
+    Ok(model)
 }
 
 // =========================================================================

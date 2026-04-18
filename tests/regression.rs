@@ -179,7 +179,7 @@ mod test_robot {
         let mut model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
         // Set joint1 to 90 degrees (pi/2) around Y axis
         let ji = model.joints.iter().position(|j| j.name == "joint1").unwrap();
-        model.joint_positions[ji] = std::f32::consts::FRAC_PI_2;
+        model.joint_positions[ji] = std::f64::consts::FRAC_PI_2;
 
         let tf = model.compute_transforms();
         let l1_tf = tf.get("link1").unwrap();
@@ -1088,7 +1088,6 @@ mod test_ik {
     use super::*;
     use nalgebra as na;
     use articara::robot::RobotModel;
-    use articara::rbd::adapter::ModelAdapter;
 
     #[test]
     fn build_chain_two_joints() {
@@ -1125,8 +1124,7 @@ mod test_ik {
     fn jacobian_dimensions() {
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
         let chain = model.chain_joints("link2");
-        let adapter = ModelAdapter::from_robot_model(&model);
-        let jac = adapter.chain_positional_jacobian(&model, &chain, "link2", None);
+        let jac = model.chain_positional_jacobian(&chain, "link2", None);
         assert_eq!(jac.nrows(), 3);
         assert_eq!(jac.ncols(), 2);
     }
@@ -1141,10 +1139,11 @@ mod test_ik {
         let target = na::Point3::new(0.1, 0.0, 0.2_f32);
         let initial_error = na::distance(&ee_pos, &target);
 
-        let adapter = ModelAdapter::from_robot_model(&model);
-        let deltas = adapter.solve_ik_step(
-            &model, &chain, "link2", None,
-            &ee_pos, &target, 0.05, 0.1,
+        let ee_pos_f64: na::Point3<f64> = ee_pos.cast();
+        let target_f64: na::Point3<f64> = target.cast();
+        let deltas = model.solve_ik_step(
+            &chain, "link2", None,
+            &ee_pos_f64, &target_f64, 0.05, 0.1,
         );
         assert_eq!(deltas.len(), 2);
 
@@ -1168,8 +1167,8 @@ mod test_ik {
 
         let ji1 = chain[0];
         let ji2 = chain[1];
-        assert!(model.joint_positions[ji1] <= model.joints[ji1].upper as f32 + 1e-6);
-        assert!(model.joint_positions[ji2] <= model.joints[ji2].upper as f32 + 1e-6);
+        assert!(model.joint_positions[ji1] <= model.joints[ji1].upper + 1e-6);
+        assert!(model.joint_positions[ji2] <= model.joints[ji2].upper + 1e-6);
     }
 
     // --- chain_joints_between tests ---

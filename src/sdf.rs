@@ -142,9 +142,9 @@ pub fn import_sdf(path: &Path) -> Result<RobotModel, String> {
         .map(|l| l.name.clone())
         .unwrap_or_default();
 
-    let joint_positions = vec![0.0f32; joints.len()];
+    let joint_positions = vec![0.0_f64; joints.len()];
 
-    Ok(RobotModel {
+    let mut model = RobotModel {
         name: robot_name,
         links,
         joints,
@@ -156,7 +156,10 @@ pub fn import_sdf(path: &Path) -> Result<RobotModel, String> {
         joint_positions,
         source_path: Some(path.to_path_buf()),
         base_transform: na::Isometry3::identity(),
-    })
+        misarta_cache: None,
+    };
+    model.rebuild_misarta_model();
+    Ok(model)
 }
 
 // ========== Export ==========
