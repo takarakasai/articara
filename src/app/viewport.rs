@@ -459,6 +459,7 @@ impl ArticaraApp {
                                             ik_root_initial_tf: None,
                                             ik_root_initial_pos: None,
                                             ref_positions: Vec::new(),
+                                            drag_depth: 0.0,
                                         });
                                     }
                                 }
@@ -482,6 +483,14 @@ impl ArticaraApp {
                                     let ik_root_initial_pos = ik_root_tf.map(|tf| {
                                         na::Point3::from(tf.translation.vector).cast::<f64>()
                                     });
+                                    // Compute EE depth along camera forward at drag start
+                                    let ee_pos_start = model.ee_world_pos(
+                                        li, transforms,
+                                    );
+                                    let cam_fwd = (self.camera.target
+                                        - na::Point3::from(self.camera.eye().coords))
+                                        .normalize();
+                                    let drag_depth = (ee_pos_start - self.camera.eye()).dot(&cam_fwd);
                                     self.drag_state = Some(DragState {
                                         link_idx: li,
                                         mode: DragMode::InverseKinematics,
@@ -494,6 +503,7 @@ impl ArticaraApp {
                                         ik_root_initial_tf: ik_root_tf,
                                         ik_root_initial_pos,
                                         ref_positions,
+                                        drag_depth,
                                     });
                                 }
                             }
@@ -744,7 +754,9 @@ impl ArticaraApp {
 
                             let denom = ray_d.dot(&cam_forward);
                             if denom.abs() > 1e-6 {
-                                let t = (ee_pos - ray_o).dot(&cam_forward) / denom;
+                                // Use fixed depth from drag start instead of
+                                // current ee_pos to prevent target jumps.
+                                let t = drag.drag_depth / denom;
                                 if t > 0.0 {
                                     let target = ray_o + ray_d * t;
                                     let target_f64 = target.cast::<f64>();

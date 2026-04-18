@@ -97,6 +97,9 @@ struct DragState {
     ik_root_initial_pos: Option<na::Point3<f64>>,
     /// Reference joint positions at drag start for null-space posture stabilization.
     ref_positions: Vec<f64>,
+    /// Signed depth of the EE along the camera forward axis at drag start.
+    /// Used to keep the IK target plane stable during drag.
+    drag_depth: f32,
 }
 
 /// Drag state for gizmo offset adjustment.
