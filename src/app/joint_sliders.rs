@@ -102,6 +102,7 @@ impl ArticaraApp {
                 for pos in model.joint_positions.iter_mut() {
                     *pos = 0.0;
                 }
+                model.base_transform = na::Isometry3::identity();
             }
             drop(model);
             // Record undo after releasing the model borrow
