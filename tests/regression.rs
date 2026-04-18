@@ -1087,7 +1087,7 @@ mod test_camera {
 mod test_ik {
     use super::*;
     use nalgebra as na;
-    use articara::robot::RobotModel;
+    use articara::robot::{RobotModel, IkSolver};
 
     #[test]
     fn build_chain_two_joints() {
@@ -1145,6 +1145,7 @@ mod test_ik {
             &chain, "link2", None,
             &ee_pos_f64, &target_f64, 0.05, 1.0, 0.1,
             None,
+            IkSolver::Dls,
         );
         assert_eq!(deltas.len(), 2);
 

@@ -17,6 +17,61 @@ use misarta::model::{LinkInertia, Model, ModelBuilder};
 use misarta::geometry::{GeometryModel, GeometryObject, GeometryShape};
 use misarta::mesh::MeshData;
 
+// ========== IK Solver Variants ==========
+
+/// Differential IK solver method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IkSolver {
+    /// Damped Least Squares with fixed λ.
+    ///   δq = Jᵀ(JJᵀ + λ²I)⁻¹ · Δx
+    Dls,
+    /// Singularity-Robust Inverse (SR-Inverse, Nakamura & Hanafusa 1986).
+    /// λ adapts based on manipulability: large near singularities, zero away.
+    ///   λ² = λ_max²·(1 − (w/w₀)²)  when w < w₀,  else 0
+    SrInverse,
+    /// Jacobian Transpose.
+    ///   δq = α·Jᵀ·Δx,  α = Δxᵀ·J·Jᵀ·Δx / ‖JJᵀΔx‖²
+    JacobianTranspose,
+}
+
+impl IkSolver {
+    /// Human-readable label for UI display.
+    pub fn label(self) -> &'static str {
+        match self {
+            IkSolver::Dls => "DLS",
+            IkSolver::SrInverse => "SR-Inverse",
+            IkSolver::JacobianTranspose => "Jacobian Transpose",
+        }
+    }
+
+    /// All variants for iteration.
+    pub const ALL: [IkSolver; 3] = [
+        IkSolver::Dls,
+        IkSolver::SrInverse,
+        IkSolver::JacobianTranspose,
+    ];
+}
+
+/// IK constraint dimensionality.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IkDof {
+    /// 3-DoF: track target in full 3D (x, y, z).
+    World3D,
+    /// 2-DoF: track target only on the camera screen plane (right, up).
+    /// Depth (camera forward) is left unconstrained.
+    ScreenPlane2D,
+}
+
+impl IkDof {
+    pub fn label(self) -> &'static str {
+        match self {
+            IkDof::World3D => "3D (World)",
+            IkDof::ScreenPlane2D => "2D (Screen)",
+        }
+    }
+    pub const ALL: [IkDof; 2] = [IkDof::World3D, IkDof::ScreenPlane2D];
+}
+
 // ========== Data Structures ==========
 
 /// Cached misarta model + index mappings.
@@ -1191,23 +1246,18 @@ impl RobotModel {
         jac
     }
 
-    /// Perform one Damped-Least-Squares IK step with optional null-space
-    /// posture stabilization.
-    ///
-    /// When `ref_positions` is `Some`, joints are pulled toward the reference
-    /// posture in the Jacobian null space so that redundant DOFs stay stable.
-    ///
-    /// Returns joint-angle deltas (one per element in `chain`).
     /// Differential IK step.
     ///
-    /// Computes a small joint velocity update using resolved-rate control:
-    ///   δq = J^T (J J^T + λ²I)⁻¹ · (gain · Δx)
+    /// Computes a small joint velocity update using the selected solver.
     ///
-    /// - `gain`: proportional gain ∈ (0, 1]. Controls how much of the
-    ///   position error to correct per call.  Small values (~0.2) yield
-    ///   smooth, stable tracking; 1.0 tries to close the full error.
-    /// - `damping`: DLS regularisation (λ).  Prevents singularity blow-up.
-    /// - `max_step`: hard clamp on ‖δq‖∞ as a safety net.
+    /// Common parameters:
+    /// - `gain`: proportional gain ∈ (0, 1].  Fraction of position error
+    ///   to correct per call.
+    /// - `damping`: DLS/SR-Inverse regularisation (λ).
+    /// - `max_step`: hard clamp on each |δqᵢ| as a safety net.
+    /// - `solver`: which differential IK method to use.
+    /// - `screen_axes`: if `Some((right, up))`, project to 2-DoF screen
+    ///   plane (camera right/up).  Depth direction is unconstrained.
     pub fn solve_ik_step(
         &self,
         chain: &[usize],
@@ -1219,39 +1269,83 @@ impl RobotModel {
         gain: f64,
         max_step: f64,
         ref_positions: Option<&[f64]>,
+        solver: IkSolver,
+        screen_axes: Option<(na::Vector3<f64>, na::Vector3<f64>)>,
     ) -> Vec<f64> {
         let n = chain.len();
         if n == 0 {
             return Vec::new();
         }
 
-        // Proportional velocity command: only correct a fraction of the error
-        let dx = (target_pos - ee_pos) * gain;
+        // Full 3D Jacobian and error
+        let dx3 = (target_pos - ee_pos) * gain;
+        let jac3 = self.chain_positional_jacobian(chain, ee_link, root_link);
 
-        let dx_vec =
-            na::DVector::from_column_slice(&[dx.x, dx.y, dx.z]);
+        // Optionally project to 2-DoF screen plane
+        let (dx_vec, jac, m) = if let Some((cam_right, cam_up)) = screen_axes {
+            // Project error: 2D
+            let dx2 = na::DVector::from_column_slice(&[
+                dx3.dot(&cam_right),
+                dx3.dot(&cam_up),
+            ]);
+            // Project Jacobian rows: P (2×3) * J (3×n) => 2×n
+            let mut p = na::DMatrix::<f64>::zeros(2, 3);
+            p[(0, 0)] = cam_right.x; p[(0, 1)] = cam_right.y; p[(0, 2)] = cam_right.z;
+            p[(1, 0)] = cam_up.x;    p[(1, 1)] = cam_up.y;    p[(1, 2)] = cam_up.z;
+            let jac2 = &p * &jac3;
+            (dx2, jac2, 2_usize)
+        } else {
+            let dx = na::DVector::from_column_slice(&[dx3.x, dx3.y, dx3.z]);
+            (dx, jac3.clone(), 3_usize)
+        };
 
-        let jac = self.chain_positional_jacobian(chain, ee_link, root_link);
+        let jjt = &jac * jac.transpose(); // m×m
 
-        // Damped pseudo-inverse: J⁺ = J^T (J J^T + λ²I)⁻¹
-        let jjt = &jac * jac.transpose();
-        let lambda_sq = damping * damping;
-        let identity3 = na::DMatrix::<f64>::identity(3, 3);
-        let jjt_reg = jjt + &identity3 * lambda_sq;
+        let dq_primary = match solver {
+            IkSolver::JacobianTranspose => {
+                let jjt_dx = &jjt * &dx_vec;
+                let num = dx_vec.dot(&jjt_dx);
+                let den = jjt_dx.norm_squared();
+                let alpha = if den > 1e-30 { num / den } else { 1e-3 };
+                jac.transpose() * &dx_vec * alpha
+            }
+            IkSolver::Dls | IkSolver::SrInverse => {
+                let lambda_sq = match solver {
+                    IkSolver::Dls => damping * damping,
+                    IkSolver::SrInverse => {
+                        let det = jjt.determinant();
+                        let w = if det > 0.0 { det.sqrt() } else { 0.0 };
+                        let w0 = 0.05;
+                        let lambda_max = damping;
+                        if w >= w0 {
+                            0.0
+                        } else {
+                            let ratio = w / w0;
+                            lambda_max * lambda_max * (1.0 - ratio * ratio)
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+                let identity_m = na::DMatrix::<f64>::identity(m, m);
+                let jjt_reg = &jjt + &identity_m * lambda_sq;
+                let decomp = jjt_reg.lu();
+                let y = decomp.solve(&dx_vec).unwrap_or(na::DVector::zeros(m));
+                jac.transpose() * &y
+            }
+        };
 
-        let decomp = jjt_reg.lu();
-        let y = decomp.solve(&dx_vec).unwrap_or(na::DVector::zeros(3));
-        let dq_primary = jac.transpose() * &y;
-
-        // Null-space posture stabilization:
-        //   Δq = J⁺ Δx  +  (I − J⁺ J) · k_ns · (q_ref − q_cur)
+        // Null-space posture stabilization
         let mut dq = if let Some(ref_pos) = ref_positions {
-            // Build J⁺ explicitly (n×3)
+            let lambda_sq_ns = damping * damping;
+            let identity_m = na::DMatrix::<f64>::identity(m, m);
+            let jjt_ns = &jjt + &identity_m * lambda_sq_ns;
+            let decomp_ns = jjt_ns.lu();
+
             let j_pinv = {
-                let mut jp = na::DMatrix::<f64>::zeros(n, 3);
-                for col in 0..3 {
-                    let e = na::DVector::from_fn(3, |r, _| if r == col { 1.0 } else { 0.0 });
-                    let solved = decomp.solve(&e).unwrap_or(na::DVector::zeros(3));
+                let mut jp = na::DMatrix::<f64>::zeros(n, m);
+                for col in 0..m {
+                    let e = na::DVector::from_fn(m, |r, _| if r == col { 1.0 } else { 0.0 });
+                    let solved = decomp_ns.solve(&e).unwrap_or(na::DVector::zeros(m));
                     let jp_col = &jac.transpose() * &solved;
                     for row in 0..n {
                         jp[(row, col)] = jp_col[row];
@@ -1259,11 +1353,9 @@ impl RobotModel {
                 }
                 jp
             };
-            // Null-space projector: N = I − J⁺ J
             let identity_n = na::DMatrix::<f64>::identity(n, n);
             let null_proj = &identity_n - &j_pinv * &jac;
 
-            // Posture error: pull toward reference
             let k_ns = 0.5;
             let mut dq_posture = na::DVector::<f64>::zeros(n);
             for (i, &ji) in chain.iter().enumerate() {
@@ -1277,7 +1369,7 @@ impl RobotModel {
             dq_primary
         };
 
-        // Safety clamp: limit each joint delta to max_step
+        // Safety clamp
         for i in 0..n {
             dq[i] = dq[i].clamp(-max_step, max_step);
         }

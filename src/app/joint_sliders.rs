@@ -15,14 +15,43 @@ impl ArticaraApp {
                 egui::CollapsingHeader::new("IK Parameters")
                     .default_open(true)
                     .show(ui, |ui| {
+                        // Solver selector
                         ui.horizontal(|ui| {
-                            ui.label("Damping (λ):");
-                            ui.add(
-                                egui::Slider::new(&mut self.ik_damping, 0.001..=0.5)
-                                    .logarithmic(true)
-                                    .text("λ"),
-                            );
+                            ui.label("Solver:");
+                            egui::ComboBox::from_id_salt("ik_solver")
+                                .selected_text(self.ik_solver.label())
+                                .show_ui(ui, |ui| {
+                                    for &s in &crate::robot::IkSolver::ALL {
+                                        ui.selectable_value(&mut self.ik_solver, s, s.label());
+                                    }
+                                });
                         });
+                        // DoF selector (2D screen vs 3D world)
+                        ui.horizontal(|ui| {
+                            ui.label("DoF:");
+                            egui::ComboBox::from_id_salt("ik_dof")
+                                .selected_text(self.ik_dof.label())
+                                .show_ui(ui, |ui| {
+                                    for &d in &crate::robot::IkDof::ALL {
+                                        ui.selectable_value(&mut self.ik_dof, d, d.label());
+                                    }
+                                });
+                        });
+                        // Damping slider (not shown for JT which doesn't use it)
+                        if self.ik_solver != crate::robot::IkSolver::JacobianTranspose {
+                            ui.horizontal(|ui| {
+                                let label = match self.ik_solver {
+                                    crate::robot::IkSolver::SrInverse => "λ_max:",
+                                    _ => "Damping (λ):",
+                                };
+                                ui.label(label);
+                                ui.add(
+                                    egui::Slider::new(&mut self.ik_damping, 0.001..=0.5)
+                                        .logarithmic(true)
+                                        .text("λ"),
+                                );
+                            });
+                        }
                         // IK root link selector
                         let link_names: Vec<String> =
                             model.links.iter().map(|l| l.name.clone()).collect();

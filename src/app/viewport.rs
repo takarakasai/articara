@@ -778,6 +778,18 @@ impl ArticaraApp {
                                     let ee_now = model.ee_world_pos(
                                         drag.link_idx, &cur_tf,
                                     );
+                                    // Compute camera right/up for 2-DoF screen-plane mode
+                                    let screen_axes = if self.ik_dof == crate::robot::IkDof::ScreenPlane2D {
+                                        let cam_fwd_dir = cam_forward.cast::<f64>();
+                                        // World up hint (Z-up)
+                                        let world_up = na::Vector3::<f64>::new(0.0, 0.0, 1.0);
+                                        let cam_right = cam_fwd_dir.cross(&world_up).normalize();
+                                        let cam_up = cam_right.cross(&cam_fwd_dir).normalize();
+                                        Some((cam_right, cam_up))
+                                    } else {
+                                        None
+                                    };
+
                                     let deltas = model.solve_ik_step(
                                         &drag.chain,
                                         &drag.ee_link,
@@ -788,6 +800,8 @@ impl ArticaraApp {
                                         ik_gain,
                                         max_joint_step,
                                         None,
+                                        self.ik_solver,
+                                        screen_axes,
                                     );
                                     model.apply_joint_deltas(&drag.chain, &deltas);
 
