@@ -1249,18 +1249,11 @@ impl RobotModel {
     /// Differential IK step.
     ///
     /// Computes a small joint velocity update using the selected solver.
+    /// Delegates to [`misarta::ik::differential_ik_step`] for the core solve,
+    /// then optionally adds null-space posture stabilization.
     ///
-    /// Common parameters:
-    /// - `gain`: proportional gain ∈ (0, 1].  Fraction of position error
-    ///   to correct per call.
-    /// - `damping`: DLS/SR-Inverse regularisation (λ).
-    /// - `max_step`: hard clamp on each |δqᵢ| as a safety net.
-    /// - `solver`: which differential IK method to use.
-    /// - `screen_axes`: if `Some((right, up))`, project to 2-DoF screen
-    ///   plane (camera right/up).  Depth direction is unconstrained.
-    /// - `joint_weights`: if `Some`, per-joint cost weights (one per chain
-    ///   element).  Larger weight = more expensive to move that joint.
-    ///   Uses weighted pseudo-inverse: δq = W⁻¹Jᵀ(JW⁻¹Jᵀ + λ²I)⁻¹Δx.
+    /// - `screen_axes`: if `Some((right, up))`, project to 2-DoF screen plane.
+    /// - `joint_weights`: if `Some`, per-joint cost weights (one per chain element).
     pub fn solve_ik_step(
         &self,
         chain: &[usize],
@@ -1281,145 +1274,113 @@ impl RobotModel {
             return Vec::new();
         }
 
-        // Full 3D Jacobian and error
-        let dx3 = (target_pos - ee_pos) * gain;
+        // Build 3×n positional Jacobian in world frame
         let jac3 = self.chain_positional_jacobian(chain, ee_link, root_link);
 
-        // Optionally project to 2-DoF screen plane
-        let (dx_vec, jac, m) = if let Some((cam_right, cam_up)) = screen_axes {
-            // Project error: 2D
-            let dx2 = na::DVector::from_column_slice(&[
-                dx3.dot(&cam_right),
-                dx3.dot(&cam_up),
-            ]);
-            // Project Jacobian rows: P (2×3) * J (3×n) => 2×n
+        // Map articara IkSolver → misarta types
+        let misarta_damping = match solver {
+            IkSolver::SrInverse => misarta::ik::Damping::AdaptiveManipulability {
+                lambda_min: 0.0,
+                lambda_max: damping,
+                manipulability_threshold: 0.05,
+            },
+            _ => misarta::ik::Damping::Fixed(damping),
+        };
+        let misarta_method = match solver {
+            IkSolver::JacobianTranspose => misarta::ik::SolverMethod::JacobianTranspose,
+            _ => misarta::ik::SolverMethod::DampedLeastSquares,
+        };
+
+        // Build task-space projection for 2-DoF screen plane
+        let task_projection = screen_axes.map(|(cam_right, cam_up)| {
             let mut p = na::DMatrix::<f64>::zeros(2, 3);
             p[(0, 0)] = cam_right.x; p[(0, 1)] = cam_right.y; p[(0, 2)] = cam_right.z;
             p[(1, 0)] = cam_up.x;    p[(1, 1)] = cam_up.y;    p[(1, 2)] = cam_up.z;
-            let jac2 = &p * &jac3;
-            (dx2, jac2, 2_usize)
-        } else {
-            let dx = na::DVector::from_column_slice(&[dx3.x, dx3.y, dx3.z]);
-            (dx, jac3.clone(), 3_usize)
-        };
+            p
+        });
 
-        // Build W⁻¹ diagonal (inverse of cost weights).
-        // w_inv[i] = 1/w_i.  If no weights, w_inv = identity.
-        let w_inv = if let Some(weights) = joint_weights {
-            let mut v = na::DVector::<f64>::zeros(n);
-            for i in 0..n {
-                let w = if i < weights.len() { weights[i] } else { 1.0 };
-                v[i] = 1.0 / w.max(1e-6);
+        // Build misarta JointWeights
+        let misarta_weights = joint_weights.map(|w| {
+            misarta::ik::JointWeights {
+                weights: (0..n).map(|i| if i < w.len() { w[i].max(1e-6) } else { 1.0 }).collect(),
             }
-            Some(v)
-        } else {
-            None
+        });
+
+        let diff_config = misarta::ik::DiffIkConfig {
+            gain,
+            max_joint_step: max_step,
+            damping: misarta_damping,
+            solver_method: misarta_method,
+            joint_weights: misarta_weights.clone(),
+            task_projection,
         };
 
-        // Weighted Jacobian: J̃ = J · diag(w_inv) for computing J W⁻¹ Jᵀ
-        let (jac_eff, jjt) = if let Some(ref wi) = w_inv {
-            // J̃[:, i] = jac[:, i] * w_inv[i]
-            let mut jw = jac.clone();
-            for col in 0..n {
-                for row in 0..m {
-                    jw[(row, col)] *= wi[col];
+        let ee_v = na::Vector3::new(ee_pos.x, ee_pos.y, ee_pos.z);
+        let tgt_v = na::Vector3::new(target_pos.x, target_pos.y, target_pos.z);
+
+        let result = misarta::ik::differential_ik_step(&jac3, &ee_v, &tgt_v, &diff_config);
+
+        // Null-space posture stabilization (computed locally since it needs
+        // chain→joint_positions mapping that misarta doesn't have).
+        if let Some(ref_pos) = ref_positions {
+            // Need pseudo-inverse for null-space projector
+            let (jac, m) = if let Some((cam_right, cam_up)) = screen_axes {
+                let mut p = na::DMatrix::<f64>::zeros(2, 3);
+                p[(0, 0)] = cam_right.x; p[(0, 1)] = cam_right.y; p[(0, 2)] = cam_right.z;
+                p[(1, 0)] = cam_up.x;    p[(1, 1)] = cam_up.y;    p[(1, 2)] = cam_up.z;
+                (&p * &jac3, 2_usize)
+            } else {
+                (jac3.clone(), 3_usize)
+            };
+
+            // Build W⁻¹ diagonal
+            let w_inv: Option<Vec<f64>> = joint_weights.map(|w| {
+                (0..n).map(|i| 1.0 / (if i < w.len() { w[i] } else { 1.0 }).max(1e-6)).collect()
+            });
+
+            // Weighted JJᵀ
+            let jjt = if let Some(ref wi) = w_inv {
+                let mut jw = jac.clone();
+                for col in 0..n {
+                    for row in 0..m {
+                        jw[(row, col)] *= wi[col];
+                    }
                 }
-            }
-            let prod = &jw * jac.transpose(); // J W⁻¹ Jᵀ  (m×m)
-            (jw, prod)
-        } else {
-            let prod = &jac * jac.transpose();
-            (jac.clone(), prod)
-        };
+                &jw * jac.transpose()
+            } else {
+                &jac * jac.transpose()
+            };
 
-        let dq_primary = match solver {
-            IkSolver::JacobianTranspose => {
-                // Weighted JT: δq = W⁻¹ · α · Jᵀ · Δx
-                let jjt_dx = &jjt * &dx_vec;
-                let num = dx_vec.dot(&jjt_dx);
-                let den = jjt_dx.norm_squared();
-                let alpha = if den > 1e-30 { num / den } else { 1e-3 };
-                let mut dq = jac.transpose() * &dx_vec * alpha;
+            let lambda_sq = damping * damping;
+            let identity_m = na::DMatrix::<f64>::identity(m, m);
+            let jjt_reg = &jjt + &identity_m * lambda_sq;
+            if let Some(decomp_result) = jjt_reg.lu().solve(&na::DMatrix::identity(m, m)) {
+                let mut j_pinv = jac.transpose() * &decomp_result;
                 if let Some(ref wi) = w_inv {
-                    for i in 0..n { dq[i] *= wi[i]; }
-                }
-                dq
-            }
-            IkSolver::Dls | IkSolver::SrInverse => {
-                let lambda_sq = match solver {
-                    IkSolver::Dls => damping * damping,
-                    IkSolver::SrInverse => {
-                        let det = jjt.determinant();
-                        let w = if det > 0.0 { det.sqrt() } else { 0.0 };
-                        let w0 = 0.05;
-                        let lambda_max = damping;
-                        if w >= w0 {
-                            0.0
-                        } else {
-                            let ratio = w / w0;
-                            lambda_max * lambda_max * (1.0 - ratio * ratio)
+                    for row in 0..n {
+                        for col in 0..m {
+                            j_pinv[(row, col)] *= wi[row];
                         }
                     }
-                    _ => unreachable!(),
-                };
-                let identity_m = na::DMatrix::<f64>::identity(m, m);
-                let jjt_reg = &jjt + &identity_m * lambda_sq;
-                let decomp = jjt_reg.lu();
-                let y = decomp.solve(&dx_vec).unwrap_or(na::DVector::zeros(m));
-                // δq = W⁻¹ Jᵀ y  (when weighted) or Jᵀ y (uniform)
-                let mut dq = jac.transpose() * &y;
-                if let Some(ref wi) = w_inv {
-                    for i in 0..n { dq[i] *= wi[i]; }
                 }
-                dq
-            }
-        };
+                let identity_n = na::DMatrix::<f64>::identity(n, n);
+                let null_proj = &identity_n - &j_pinv * &jac;
 
-        // Null-space posture stabilization
-        let mut dq = if let Some(ref_pos) = ref_positions {
-            let lambda_sq_ns = damping * damping;
-            let identity_m = na::DMatrix::<f64>::identity(m, m);
-            let jjt_ns = &jjt + &identity_m * lambda_sq_ns;
-            let decomp_ns = jjt_ns.lu();
-
-            // Weighted pseudo-inverse: J⁺_w = W⁻¹ Jᵀ (J W⁻¹ Jᵀ + λ²I)⁻¹
-            let j_pinv = {
-                let mut jp = na::DMatrix::<f64>::zeros(n, m);
-                for col in 0..m {
-                    let e = na::DVector::from_fn(m, |r, _| if r == col { 1.0 } else { 0.0 });
-                    let solved = decomp_ns.solve(&e).unwrap_or(na::DVector::zeros(m));
-                    let mut jp_col = jac.transpose() * &solved; // Jᵀ · col
-                    if let Some(ref wi) = w_inv {
-                        for i in 0..n { jp_col[i] *= wi[i]; }
-                    }
-                    for row in 0..n {
-                        jp[(row, col)] = jp_col[row];
+                let k_ns = 0.5;
+                let mut dq_posture = na::DVector::<f64>::zeros(n);
+                for (i, &ji) in chain.iter().enumerate() {
+                    if i < ref_pos.len() {
+                        dq_posture[i] = k_ns * (ref_pos[i] - self.joint_positions[ji]);
                     }
                 }
-                jp
-            };
-            let identity_n = na::DMatrix::<f64>::identity(n, n);
-            let null_proj = &identity_n - &j_pinv * &jac;
 
-            let k_ns = 0.5;
-            let mut dq_posture = na::DVector::<f64>::zeros(n);
-            for (i, &ji) in chain.iter().enumerate() {
-                if i < ref_pos.len() {
-                    dq_posture[i] = k_ns * (ref_pos[i] - self.joint_positions[ji]);
-                }
+                let dq_primary = na::DVector::from_vec(result.dq);
+                let dq = &dq_primary + &null_proj * &dq_posture;
+                return (0..n).map(|i| dq[i]).collect();
             }
-
-            &dq_primary + &null_proj * &dq_posture
-        } else {
-            dq_primary
-        };
-
-        // Safety clamp
-        for i in 0..n {
-            dq[i] = dq[i].clamp(-max_step, max_step);
         }
 
-        (0..n).map(|i| dq[i]).collect()
+        result.dq
     }
 
     /// Build collision `GeometryModel` from current model data.
