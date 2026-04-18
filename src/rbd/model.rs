@@ -1258,6 +1258,9 @@ impl RobotModel {
     /// - `solver`: which differential IK method to use.
     /// - `screen_axes`: if `Some((right, up))`, project to 2-DoF screen
     ///   plane (camera right/up).  Depth direction is unconstrained.
+    /// - `joint_weights`: if `Some`, per-joint cost weights (one per chain
+    ///   element).  Larger weight = more expensive to move that joint.
+    ///   Uses weighted pseudo-inverse: δq = W⁻¹Jᵀ(JW⁻¹Jᵀ + λ²I)⁻¹Δx.
     pub fn solve_ik_step(
         &self,
         chain: &[usize],
@@ -1271,6 +1274,7 @@ impl RobotModel {
         ref_positions: Option<&[f64]>,
         solver: IkSolver,
         screen_axes: Option<(na::Vector3<f64>, na::Vector3<f64>)>,
+        joint_weights: Option<&[f64]>,
     ) -> Vec<f64> {
         let n = chain.len();
         if n == 0 {
@@ -1299,15 +1303,47 @@ impl RobotModel {
             (dx, jac3.clone(), 3_usize)
         };
 
-        let jjt = &jac * jac.transpose(); // m×m
+        // Build W⁻¹ diagonal (inverse of cost weights).
+        // w_inv[i] = 1/w_i.  If no weights, w_inv = identity.
+        let w_inv = if let Some(weights) = joint_weights {
+            let mut v = na::DVector::<f64>::zeros(n);
+            for i in 0..n {
+                let w = if i < weights.len() { weights[i] } else { 1.0 };
+                v[i] = 1.0 / w.max(1e-6);
+            }
+            Some(v)
+        } else {
+            None
+        };
+
+        // Weighted Jacobian: J̃ = J · diag(w_inv) for computing J W⁻¹ Jᵀ
+        let (jac_eff, jjt) = if let Some(ref wi) = w_inv {
+            // J̃[:, i] = jac[:, i] * w_inv[i]
+            let mut jw = jac.clone();
+            for col in 0..n {
+                for row in 0..m {
+                    jw[(row, col)] *= wi[col];
+                }
+            }
+            let prod = &jw * jac.transpose(); // J W⁻¹ Jᵀ  (m×m)
+            (jw, prod)
+        } else {
+            let prod = &jac * jac.transpose();
+            (jac.clone(), prod)
+        };
 
         let dq_primary = match solver {
             IkSolver::JacobianTranspose => {
+                // Weighted JT: δq = W⁻¹ · α · Jᵀ · Δx
                 let jjt_dx = &jjt * &dx_vec;
                 let num = dx_vec.dot(&jjt_dx);
                 let den = jjt_dx.norm_squared();
                 let alpha = if den > 1e-30 { num / den } else { 1e-3 };
-                jac.transpose() * &dx_vec * alpha
+                let mut dq = jac.transpose() * &dx_vec * alpha;
+                if let Some(ref wi) = w_inv {
+                    for i in 0..n { dq[i] *= wi[i]; }
+                }
+                dq
             }
             IkSolver::Dls | IkSolver::SrInverse => {
                 let lambda_sq = match solver {
@@ -1330,7 +1366,12 @@ impl RobotModel {
                 let jjt_reg = &jjt + &identity_m * lambda_sq;
                 let decomp = jjt_reg.lu();
                 let y = decomp.solve(&dx_vec).unwrap_or(na::DVector::zeros(m));
-                jac.transpose() * &y
+                // δq = W⁻¹ Jᵀ y  (when weighted) or Jᵀ y (uniform)
+                let mut dq = jac.transpose() * &y;
+                if let Some(ref wi) = w_inv {
+                    for i in 0..n { dq[i] *= wi[i]; }
+                }
+                dq
             }
         };
 
@@ -1341,12 +1382,16 @@ impl RobotModel {
             let jjt_ns = &jjt + &identity_m * lambda_sq_ns;
             let decomp_ns = jjt_ns.lu();
 
+            // Weighted pseudo-inverse: J⁺_w = W⁻¹ Jᵀ (J W⁻¹ Jᵀ + λ²I)⁻¹
             let j_pinv = {
                 let mut jp = na::DMatrix::<f64>::zeros(n, m);
                 for col in 0..m {
                     let e = na::DVector::from_fn(m, |r, _| if r == col { 1.0 } else { 0.0 });
                     let solved = decomp_ns.solve(&e).unwrap_or(na::DVector::zeros(m));
-                    let jp_col = &jac.transpose() * &solved;
+                    let mut jp_col = jac.transpose() * &solved; // Jᵀ · col
+                    if let Some(ref wi) = w_inv {
+                        for i in 0..n { jp_col[i] *= wi[i]; }
+                    }
                     for row in 0..n {
                         jp[(row, col)] = jp_col[row];
                     }

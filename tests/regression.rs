@@ -1146,6 +1146,8 @@ mod test_ik {
             &ee_pos_f64, &target_f64, 0.05, 1.0, 0.1,
             None,
             IkSolver::Dls,
+            None,
+            None,
         );
         assert_eq!(deltas.len(), 2);
 

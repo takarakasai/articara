@@ -790,6 +790,20 @@ impl ArticaraApp {
                                         None
                                     };
 
+                                    // Compute per-joint cost weights: joints far from EE
+                                    // are more expensive to move.
+                                    // w_i = α^(n-1-i), i=n-1 (EE joint) → 1, i=0 (root) → α^(n-1)
+                                    let weights = if self.ik_weight_gradient > 0.01 {
+                                        let n = drag.chain.len();
+                                        let alpha = (1.0 + self.ik_weight_gradient as f64).max(1.0);
+                                        let w: Vec<f64> = (0..n)
+                                            .map(|i| alpha.powi((n - 1 - i) as i32))
+                                            .collect();
+                                        Some(w)
+                                    } else {
+                                        None
+                                    };
+
                                     let deltas = model.solve_ik_step(
                                         &drag.chain,
                                         &drag.ee_link,
@@ -802,6 +816,7 @@ impl ArticaraApp {
                                         None,
                                         self.ik_solver,
                                         screen_axes,
+                                        weights.as_deref(),
                                     );
                                     model.apply_joint_deltas(&drag.chain, &deltas);
 

@@ -172,6 +172,8 @@ pub struct ArticaraApp {
     ik_solver: crate::robot::IkSolver,
     /// IK constraint dimensionality (2D screen-plane or 3D world).
     ik_dof: crate::robot::IkDof,
+    /// IK joint weight gradient: 0 = uniform, larger = prefer EE-proximal joints.
+    ik_weight_gradient: f32,
     /// IK root link name. None = use URDF root (full chain).
     ik_root_link: Option<String>,
     /// IK target position in world space (for debug overlay). None = no active IK.
@@ -362,6 +364,7 @@ impl ArticaraApp {
             ik_damping: 0.05,
             ik_solver: crate::robot::IkSolver::SrInverse,
             ik_dof: crate::robot::IkDof::ScreenPlane2D,
+            ik_weight_gradient: 1.5,
             ik_root_link: None,
             ik_target_marker: None,
             ik_error: None,

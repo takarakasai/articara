@@ -52,6 +52,16 @@ impl ArticaraApp {
                                 );
                             });
                         }
+                        // Joint weight gradient slider
+                        ui.horizontal(|ui| {
+                            ui.label("Weight:");
+                            ui.add(
+                                egui::Slider::new(&mut self.ik_weight_gradient, 0.0..=5.0)
+                                    .text("EE-proximal")
+                            );
+                        })
+                        .response
+                        .on_hover_text("0 = uniform weights, larger = prefer joints near EE");
                         // IK root link selector
                         let link_names: Vec<String> =
                             model.links.iter().map(|l| l.name.clone()).collect();
