@@ -1086,7 +1086,7 @@ impl RobotModel {
     /// Compute 3×chain_len positional Jacobian for a chain of joint indices.
     ///
     /// When `root_link` is `Some`, uses a relative Jacobian.
-    /// Returns an f64 matrix.
+    /// Returns an f64 matrix expressed in the **world frame**.
     pub fn chain_positional_jacobian(
         &self,
         chain: &[usize],
@@ -1111,13 +1111,22 @@ impl RobotModel {
             misarta::jacobian::compute_joint_jacobian(&mc.model, &q, ee_mi)
         };
 
+        // misarta Jacobian is in URDF-root frame; rotate to world frame
+        let r = self.base_transform.rotation.to_rotation_matrix();
+
         let mut jac = na::DMatrix::<f64>::zeros(3, chain.len());
         for (col, &ji) in chain.iter().enumerate() {
             if let Some(&Some(mi)) = mc.a2m.get(ji) {
                 let vi = mc.model.q_idx[mi];
-                for row in 0..3 {
-                    jac[(row, col)] = full_jac[(row + 3, vi)];
-                }
+                let v = na::Vector3::new(
+                    full_jac[(3, vi)],
+                    full_jac[(4, vi)],
+                    full_jac[(5, vi)],
+                );
+                let v_world = r * v;
+                jac[(0, col)] = v_world[0];
+                jac[(1, col)] = v_world[1];
+                jac[(2, col)] = v_world[2];
             }
         }
         jac
@@ -1150,6 +1159,9 @@ impl RobotModel {
             misarta::jacobian::compute_joint_jacobian(&mc.model, &q, ee_mi)
         };
 
+        // misarta Jacobian is in URDF-root frame; rotate to world frame
+        let r = self.base_transform.rotation.to_rotation_matrix();
+
         let mut jac = na::DMatrix::<f64>::zeros(3, n);
         for &ji in joint_order {
             let col = match idx_in_m.get(ji).and_then(|&c| c) {
@@ -1158,9 +1170,15 @@ impl RobotModel {
             };
             if let Some(&Some(mi)) = mc.a2m.get(ji) {
                 let vi = mc.model.q_idx[mi];
-                for row in 0..3 {
-                    jac[(row, col)] = full_jac[(row + 3, vi)];
-                }
+                let v = na::Vector3::new(
+                    full_jac[(3, vi)],
+                    full_jac[(4, vi)],
+                    full_jac[(5, vi)],
+                );
+                let v_world = r * v;
+                jac[(0, col)] = v_world[0];
+                jac[(1, col)] = v_world[1];
+                jac[(2, col)] = v_world[2];
             }
         }
         jac
