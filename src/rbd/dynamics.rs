@@ -32,43 +32,7 @@ pub const G: f64 = 9.80665;
 /// Gravity vector (pointing downward in Z-down convention).
 pub const G_VEC: na::Vector3<f64> = na::Vector3::new(0.0, 0.0, -G);
 
-// ========== Result types ==========
-
-/// Per-joint static torque information.
-#[derive(Clone, Debug)]
-pub struct JointTorqueInfo {
-    pub joint_name: String,
-    pub joint_idx: usize,
-    /// Gravity torque in joint coordinates (N·m for revolute, N for prismatic).
-    pub gravity_torque: f64,
-    /// Effort (torque/force) limit from URDF.
-    pub effort_limit: f64,
-    /// `effort_limit - |gravity_torque|`. Negative means the joint is overloaded.
-    pub torque_margin: f64,
-    /// Additional torque/force per 1 kg of payload at the end-effector.
-    /// Only populated when payload analysis is run.
-    pub payload_torque_per_kg: f64,
-}
-
 // ========== Tree helpers ==========
-
-/// Collect all descendant link indices (inclusive) reachable from `start_link`
-/// through the kinematic tree.
-pub fn descendant_links(model: &RobotModel, start_link: &str) -> Vec<usize> {
-    let mut result = Vec::new();
-    let mut stack = vec![start_link.to_string()];
-    while let Some(link_name) = stack.pop() {
-        if let Some(&li) = model.link_map.get(&link_name) {
-            result.push(li);
-        }
-        if let Some(child_joints) = model.children_joints.get(&link_name) {
-            for &ji in child_joints {
-                stack.push(model.joints[ji].child_link.clone());
-            }
-        }
-    }
-    result
-}
 
 /// Return **movable** joint indices in parent-first (topological) order.
 ///
@@ -107,17 +71,7 @@ pub fn topological_joint_order(model: &RobotModel) -> Vec<usize> {
 /// (or `None` if the joint is fixed).
 ///
 /// Delegates to [`misarta::crba::crba`] and extracts the submatrix for the
-/// requested joint subset.
-pub fn crba(
-    model: &RobotModel,
-    joint_order: &[usize],
-) -> (na::DMatrix<f64>, Vec<Option<usize>>) {
-    let adapter = ModelAdapter::from_robot_model(model);
-    crba_with_adapter(model, joint_order, &adapter)
-}
-
-/// Like [`crba`] but reuses a pre-built [`ModelAdapter`] (avoids rebuilding
-/// the misarta model on every call).
+/// requested joint subset.  Reuses a pre-built [`ModelAdapter`].
 pub fn crba_with_adapter(
     model: &RobotModel,
     joint_order: &[usize],
@@ -243,92 +197,6 @@ pub fn foot_jacobian(
     }
 
     jac
-}
-
-/// Solve **constrained** forward dynamics with ground contact.
-///
-/// The equations of motion with contact constraints are:
-///
-///   M q̈ + h = τ + Jᵀ λ
-///   J q̈ = −J̇ q̇                     (acceleration-level constraint)
-///
-/// Rearranging into a KKT system:
-///
-///   | M  −Jᵀ | | q̈ |   | τ − h        |
-///   | J   0  | | λ  | = | −J̇ q̇ (≈ 0) |
-///
-/// For simplicity we set J̇ q̇ ≈ 0 (valid when dt is small and the foot
-/// isn't moving much).
-///
-/// Returns `(qdd, grf)` where `qdd` is the joint accelerations (N×1) and
-/// `grf` is the ground reaction force at each foot (Σ of 3D forces).
-pub fn constrained_forward_dynamics(
-    m_mat: &na::DMatrix<f64>,
-    h: &na::DVector<f64>,
-    tau: &na::DVector<f64>,
-    j_feet: &[na::DMatrix<f64>],  // one 3×N Jacobian per foot
-) -> (na::DVector<f64>, Vec<na::Vector3<f64>>) {
-    let n = m_mat.nrows();
-    let n_constraints: usize = j_feet.iter().map(|j| j.nrows()).sum();
-
-    if n_constraints == 0 {
-        // No contacts — unconstrained
-        let qdd = forward_dynamics(m_mat, h, tau);
-        return (qdd, Vec::new());
-    }
-
-    // Build stacked Jacobian J (n_c × N)
-    let mut j_stack = na::DMatrix::zeros(n_constraints, n);
-    let mut row = 0;
-    for j in j_feet {
-        let nr = j.nrows();
-        j_stack.view_mut((row, 0), (nr, n)).copy_from(j);
-        row += nr;
-    }
-
-    // Build KKT system
-    let kkt_size = n + n_constraints;
-    let mut kkt = na::DMatrix::zeros(kkt_size, kkt_size);
-    let mut rhs = na::DVector::zeros(kkt_size);
-
-    // Top-left: M
-    kkt.view_mut((0, 0), (n, n)).copy_from(m_mat);
-    // Top-right: −Jᵀ
-    kkt.view_mut((0, n), (n, n_constraints)).copy_from(&(-j_stack.transpose()));
-    // Bottom-left: J
-    kkt.view_mut((n, 0), (n_constraints, n)).copy_from(&j_stack);
-    // Bottom-right: 0 (already zero) — add small regularisation for stability
-    for i in 0..n_constraints {
-        kkt[(n + i, n + i)] = -1e-9;
-    }
-
-    // RHS
-    let tau_minus_h = tau - h;
-    rhs.view_mut((0, 0), (n, 1)).copy_from(&tau_minus_h);
-    // Lower part = −J̇ q̇ ≈ 0 (already zero)
-
-    // Solve the KKT system
-    let solution = kkt.lu().solve(&rhs).unwrap_or_else(|| na::DVector::zeros(kkt_size));
-
-    let qdd = solution.rows(0, n).into_owned();
-    let lambda_full = solution.rows(n, n_constraints).into_owned();
-
-    // Split lambda back into per-foot forces
-    let mut grfs = Vec::new();
-    let mut offset = 0;
-    for j in j_feet {
-        let nr = j.nrows();
-        let lam = lambda_full.rows(offset, nr);
-        let f = na::Vector3::new(
-            if nr > 0 { lam[0] } else { 0.0 },
-            if nr > 1 { lam[1] } else { 0.0 },
-            if nr > 2 { lam[2] } else { 0.0 },
-        );
-        grfs.push(f);
-        offset += nr;
-    }
-
-    (qdd, grfs)
 }
 
 // =========================================================================
@@ -866,16 +734,34 @@ pub fn gravity_torque_from_links(
 
 /// For joints in a grounded leg, compute the "body-side" gravity torque.
 ///
-/// In a grounded configuration (feet on the floor), each leg joint must support
-/// the weight of links on the **body side** (ancestor side), not the foot side.
-///
-/// body-side torque = total_gravity_torque(all links) − descendant_gravity_torque
+/// Uses misarta's `compute_gravity` for full gravity vector, then computes
+/// body-side as (total - descendant) using the per-joint gravity values.
 ///
 /// Returns a map: joint_idx → body-side gravity torque.
 pub fn compute_body_side_gravity_torques(
     model: &RobotModel,
     joints: &[usize],
 ) -> HashMap<usize, f64> {
+    let adapter = ModelAdapter::from_robot_model(model);
+    let q = adapter.build_q(model);
+    let g_full = misarta::rnea::compute_gravity(&adapter.model, &q);
+
+    // Build a lookup: misarta joint idx → gravity torque value
+    let g_for = |ji: usize| -> f64 {
+        if let Some(mi) = adapter.articara_to_misarta.get(ji).and_then(|&m| m) {
+            let nv = adapter.model.joints[mi].joint_type.nv();
+            if nv == 1 {
+                return g_full[adapter.model.v_idx[mi]];
+            }
+        }
+        0.0
+    };
+
+    // For body-side torque we need: total_gravity - descendant_gravity.
+    // descendant_gravity = g(q) for the full model, but restricted to the sub-tree.
+    // However, g(q) from RNEA *already* is the descendant torque (it sums moments
+    // from all descendant links). So body-side = total_from_all_links - g(q).
+    // We compute total_from_all_links using the old method.
     let transforms = model.compute_transforms();
     let all_link_indices: Vec<usize> = (0..model.links.len()).collect();
     let mut result = HashMap::new();
@@ -899,11 +785,7 @@ pub fn compute_body_side_gravity_torques(
             model, &transforms, &joint_pos, &world_axis, jt, &all_link_indices,
         );
 
-        let descendants = descendant_links(model, &joint.child_link);
-        let tau_descendants = gravity_torque_from_links(
-            model, &transforms, &joint_pos, &world_axis, jt, &descendants,
-        );
-
+        let tau_descendants = g_for(ji);
         let tau_body_side = tau_all - tau_descendants;
         result.insert(ji, tau_body_side);
     }
@@ -911,70 +793,4 @@ pub fn compute_body_side_gravity_torques(
     result
 }
 
-/// Compute static gravity torque at every movable joint.
-///
-/// For revolute/continuous joints the result is in N·m; for prismatic joints in N.
-///
-/// Algorithm: for each joint, sum the gravitational moment contribution of all
-/// descendant links (child-side of the joint), projected onto the joint axis.
-pub fn compute_gravity_torques(model: &RobotModel) -> Vec<JointTorqueInfo> {
-    let transforms = model.compute_transforms();
-    let mut result = Vec::new();
 
-    for (ji, joint) in model.joints.iter().enumerate() {
-        let jt = joint.joint_type.as_str();
-        if jt == "fixed" {
-            continue;
-        }
-
-        let parent_tf = transforms
-            .get(&joint.parent_link)
-            .copied()
-            .unwrap_or(na::Isometry3::identity());
-        let joint_tf = parent_tf * joint.origin;
-        let joint_pos = joint_tf.translation.vector.cast::<f64>();
-        let world_axis = (joint_tf.rotation * joint.axis).cast::<f64>();
-
-        let descendants = descendant_links(model, &joint.child_link);
-        let mut tau = 0.0_f64;
-
-        for &li in &descendants {
-            let link = &model.links[li];
-            let mass = link.inertial.mass;
-            if mass <= 0.0 {
-                continue;
-            }
-
-            let link_tf = transforms
-                .get(&link.name)
-                .copied()
-                .unwrap_or(na::Isometry3::identity());
-            let com_local = link.inertial.origin.translation.vector.cast::<f64>();
-            let com_world = link_tf.cast::<f64>() * na::Point3::from(com_local);
-
-            let r = com_world.coords - joint_pos;
-            let f_grav = G_VEC * mass;
-
-            match jt {
-                "revolute" | "continuous" => {
-                    tau += world_axis.dot(&r.cross(&f_grav));
-                }
-                "prismatic" => {
-                    tau += world_axis.dot(&f_grav);
-                }
-                _ => {}
-            }
-        }
-
-        result.push(JointTorqueInfo {
-            joint_name: joint.name.clone(),
-            joint_idx: ji,
-            gravity_torque: tau,
-            effort_limit: joint.effort,
-            torque_margin: joint.effort - tau.abs(),
-            payload_torque_per_kg: 0.0,
-        });
-    }
-
-    result
-}

@@ -14,6 +14,7 @@
 use nalgebra as na;
 use std::collections::HashMap;
 
+use crate::rbd::adapter::ModelAdapter;
 use crate::robot::RobotModel;
 
 // ========== Result types ==========
@@ -72,69 +73,8 @@ pub struct StaticAnalysis {
 
 // ========== Gravity constant ==========
 const G: f64 = 9.80665;
-const G_VEC: na::Vector3<f64> = na::Vector3::new(0.0, 0.0, -G);
 
 // ========== Core Algorithms ==========
-
-/// Collect all descendant link indices (inclusive) reachable from `start_link`
-/// through the kinematic tree.
-fn descendant_links(model: &RobotModel, start_link: &str) -> Vec<usize> {
-    let mut result = Vec::new();
-    let mut stack = vec![start_link.to_string()];
-    while let Some(link_name) = stack.pop() {
-        if let Some(&li) = model.link_map.get(&link_name) {
-            result.push(li);
-        }
-        if let Some(child_joints) = model.children_joints.get(&link_name) {
-            for &ji in child_joints {
-                stack.push(model.joints[ji].child_link.clone());
-            }
-        }
-    }
-    result
-}
-
-/// Compute the gravity torque about a joint axis from a specific set of links.
-///
-/// `joint_tf` is the world-space transform of the joint.
-/// `world_axis` is the joint axis in world frame.
-/// `link_indices` are the links to sum over.
-fn gravity_torque_from_links(
-    model: &RobotModel,
-    transforms: &HashMap<String, na::Isometry3<f32>>,
-    joint_pos: &na::Vector3<f64>,
-    world_axis: &na::Vector3<f64>,
-    joint_type: &str,
-    link_indices: &[usize],
-) -> f64 {
-    let mut tau = 0.0_f64;
-    for &li in link_indices {
-        let link = &model.links[li];
-        let mass = link.inertial.mass;
-        if mass <= 0.0 {
-            continue;
-        }
-        let link_tf = transforms
-            .get(&link.name)
-            .copied()
-            .unwrap_or(na::Isometry3::identity());
-        let com_local = link.inertial.origin.translation.vector.cast::<f64>();
-        let com_world = link_tf.cast::<f64>() * na::Point3::from(com_local);
-        let r = com_world.coords - joint_pos;
-        let f_grav = G_VEC * mass;
-
-        match joint_type {
-            "revolute" | "continuous" => {
-                tau += world_axis.dot(&r.cross(&f_grav));
-            }
-            "prismatic" => {
-                tau += world_axis.dot(&f_grav);
-            }
-            _ => {}
-        }
-    }
-    tau
-}
 
 /// For joints in a grounded leg, compute the "body-side" gravity torque.
 ///
@@ -145,108 +85,43 @@ fn gravity_torque_from_links(
 ///
 /// body-side torque = total_gravity_torque(all links) − descendant_gravity_torque
 ///
-/// Returns a map: joint_idx → body-side gravity torque (absolute value).
+/// Uses misarta's `compute_gravity` for the full gravity vector, then
+/// body-side = total_from_rnea − descendant_from_rnea.
+///
+/// Returns a map: joint_idx → body-side gravity torque.
 fn compute_body_side_gravity_torques(
     model: &RobotModel,
-    joints: &[usize],  // joint indices to compute for
+    joints: &[usize],
 ) -> HashMap<usize, f64> {
-    let transforms = model.compute_transforms();
-    let all_link_indices: Vec<usize> = (0..model.links.len()).collect();
-    let mut result = HashMap::new();
-
-    for &ji in joints {
-        let joint = &model.joints[ji];
-        let jt = joint.joint_type.as_str();
-        if jt == "fixed" {
-            continue;
-        }
-
-        let parent_tf = transforms
-            .get(&joint.parent_link)
-            .copied()
-            .unwrap_or(na::Isometry3::identity());
-        let joint_tf = parent_tf * joint.origin;
-        let joint_pos = joint_tf.translation.vector.cast::<f64>();
-        let world_axis = (joint_tf.rotation * joint.axis).cast::<f64>();
-
-        // Torque from ALL links
-        let tau_all = gravity_torque_from_links(
-            model, &transforms, &joint_pos, &world_axis, jt, &all_link_indices,
-        );
-
-        // Torque from descendant links (foot-side)
-        let descendants = descendant_links(model, &joint.child_link);
-        let tau_descendants = gravity_torque_from_links(
-            model, &transforms, &joint_pos, &world_axis, jt, &descendants,
-        );
-
-        // Body-side torque = total − descendants
-        let tau_body_side = tau_all - tau_descendants;
-        result.insert(ji, tau_body_side);
-    }
-
-    result
+    crate::rbd::dynamics::compute_body_side_gravity_torques(model, joints)
 }
 
 /// Compute static gravity torque at every movable joint.
 ///
-/// For revolute/continuous joints the result is in N·m; for prismatic joints in N.
-///
-/// Algorithm: for each joint, sum the gravitational moment contribution of all
-/// descendant links (child-side of the joint), projected onto the joint axis.
+/// Delegates to `misarta::rnea::compute_gravity` and wraps results in
+/// `JointTorqueInfo` with effort limits and margins from the `RobotModel`.
 pub fn compute_gravity_torques(model: &RobotModel) -> Vec<JointTorqueInfo> {
-    let transforms = model.compute_transforms();
-    let mut result = Vec::new();
+    let adapter = ModelAdapter::from_robot_model(model);
+    let q = adapter.build_q(model);
+    let g_full = misarta::rnea::compute_gravity(&adapter.model, &q);
 
+    let mut result = Vec::new();
     for (ji, joint) in model.joints.iter().enumerate() {
         let jt = joint.joint_type.as_str();
         if jt == "fixed" {
             continue;
         }
 
-        // World-space joint frame
-        let parent_tf = transforms
-            .get(&joint.parent_link)
-            .copied()
-            .unwrap_or(na::Isometry3::identity());
-        let joint_tf = parent_tf * joint.origin;
-        let joint_pos = joint_tf.translation.vector.cast::<f64>();
-        let world_axis = (joint_tf.rotation * joint.axis).cast::<f64>();
-
-        // Sum gravitational torque from all downstream links
-        let descendants = descendant_links(model, &joint.child_link);
-        let mut tau = 0.0_f64;
-
-        for &li in &descendants {
-            let link = &model.links[li];
-            let mass = link.inertial.mass;
-            if mass <= 0.0 {
-                continue;
+        let tau = if let Some(mi) = adapter.articara_to_misarta.get(ji).and_then(|&m| m) {
+            let nv = adapter.model.joints[mi].joint_type.nv();
+            if nv == 1 {
+                g_full[adapter.model.v_idx[mi]]
+            } else {
+                0.0
             }
-
-            // CoM in world frame:  world_tf * inertial.origin
-            let link_tf = transforms
-                .get(&link.name)
-                .copied()
-                .unwrap_or(na::Isometry3::identity());
-            let com_local = link.inertial.origin.translation.vector.cast::<f64>();
-            let com_world = link_tf.cast::<f64>() * na::Point3::from(com_local);
-
-            let r = com_world.coords - joint_pos; // moment arm
-            let f_grav = G_VEC * mass;             // gravitational force
-
-            match jt {
-                "revolute" | "continuous" => {
-                    // τ = a · (r × F)
-                    tau += world_axis.dot(&r.cross(&f_grav));
-                }
-                "prismatic" => {
-                    // Force along joint axis
-                    tau += world_axis.dot(&f_grav);
-                }
-                _ => {}
-            }
-        }
+        } else {
+            0.0
+        };
 
         result.push(JointTorqueInfo {
             joint_name: joint.name.clone(),

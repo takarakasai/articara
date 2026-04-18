@@ -20,6 +20,8 @@ use na::Matrix3;
 
 use misarta::joint::JointType;
 use misarta::model::{LinkInertia, Model, ModelBuilder};
+use misarta::geometry::{GeometryModel, GeometryObject, GeometryShape};
+use misarta::mesh::MeshData;
 
 use super::model::RobotModel;
 
@@ -233,6 +235,91 @@ impl ModelAdapter {
 
         (sub, idx_in_m)
     }
+
+    /// Compute FK via misarta and return results in articara's
+    /// `HashMap<String, Isometry3<f32>>` format (link-name keyed, f32).
+    ///
+    /// Applies `robot.base_transform` to all results.
+    pub fn compute_transforms_compat(
+        &self,
+        robot: &RobotModel,
+    ) -> HashMap<String, na::Isometry3<f32>> {
+        let q = self.build_q(robot);
+        let data = misarta::fk::forward_kinematics(&self.model, &q);
+
+        let mut transforms: HashMap<String, na::Isometry3<f32>> = HashMap::new();
+
+        // Root link → base_transform (universe joint, oMi[0] = identity)
+        transforms.insert(robot.root_link.clone(), robot.base_transform);
+
+        // For each misarta joint i (1-based), oMi[i] is the world pose
+        // of the joint's child link frame.
+        for i in 1..self.model.joints.len() {
+            let link_name = &self.model.link_names[i];
+            let world_pose_f64 = &data.oMi[i];
+            // Cast f64 → f32 and pre-multiply by base_transform
+            let world_pose_f32 = robot.base_transform * isometry_f64_to_f32(world_pose_f64);
+            transforms.insert(link_name.clone(), world_pose_f32);
+        }
+
+        transforms
+    }
+
+    /// Look up the misarta joint index for a given articara link name.
+    ///
+    /// Returns `None` if the link is the root link (universe) or not found.
+    pub fn link_name_to_misarta_joint(&self, link_name: &str) -> Option<usize> {
+        self.model.link_names.iter().position(|n| n == link_name)
+    }
+
+    /// Build a `GeometryModel` for collision geometry from the `RobotModel`.
+    pub fn build_collision_geometry(&self, robot: &RobotModel) -> GeometryModel {
+        self.build_collision_geometry_with_map(robot).0
+    }
+
+    /// Build a `GeometryModel` for collision geometry from the `RobotModel`,
+    /// plus a map from geometry-object index → `(link_idx, collision_idx)`.
+    pub fn build_collision_geometry_with_map(
+        &self,
+        robot: &RobotModel,
+    ) -> (GeometryModel, Vec<(usize, usize)>) {
+        let mut gmodel = GeometryModel::new();
+        let mut geo_map: Vec<(usize, usize)> = Vec::new();
+
+        for (_li, link) in robot.links.iter().enumerate() {
+            let parent_joint = self
+                .link_name_to_misarta_joint(&link.name)
+                .unwrap_or(0);
+            let li = robot.link_map.get(&link.name).copied().unwrap_or(0);
+
+            for (ci, col) in link.collisions.iter().enumerate() {
+                let (shape, mesh_data) = match convert_geom_to_shape_with_mesh(&col.geometry) {
+                    Some(pair) => pair,
+                    None => continue,
+                };
+                let placement = col.origin.cast::<f64>();
+                let mesh_scale = match &col.geometry {
+                    super::model::GeomData::Mesh { scale, .. } => {
+                        scale.map(|s| na::Vector3::new(s[0] as f64, s[1] as f64, s[2] as f64))
+                    }
+                    _ => None,
+                };
+                gmodel.add(GeometryObject {
+                    name: format!("{}_collision_{}", link.name, ci),
+                    parent_joint,
+                    placement,
+                    shape,
+                    mesh_path: None,
+                    mesh_scale,
+                    mesh_data,
+                    material: None,
+                });
+                geo_map.push((li, ci));
+            }
+        }
+
+        (gmodel, geo_map)
+    }
 }
 
 // ─── Conversion helpers ─────────────────────────────────────────────────────
@@ -273,6 +360,114 @@ fn convert_link_inertia(link: &super::model::LinkData) -> LinkInertia<f64> {
         mass,
         center_of_mass: com,
         rotational_inertia,
+    }
+}
+
+/// Cast an `Isometry3<f64>` to `Isometry3<f32>`.
+fn isometry_f64_to_f32(iso: &na::Isometry3<f64>) -> na::Isometry3<f32> {
+    na::Isometry3::from_parts(
+        na::Translation3::new(
+            iso.translation.x as f32,
+            iso.translation.y as f32,
+            iso.translation.z as f32,
+        ),
+        na::UnitQuaternion::new_normalize(na::Quaternion::new(
+            iso.rotation.w as f32,
+            iso.rotation.i as f32,
+            iso.rotation.j as f32,
+            iso.rotation.k as f32,
+        )),
+    )
+}
+
+/// Convert an articara `GeomData` to a misarta `GeometryShape`,
+/// optionally returning `MeshData` for mesh shapes.
+fn convert_geom_to_shape_with_mesh(
+    geom: &super::model::GeomData,
+) -> Option<(GeometryShape, Option<MeshData>)> {
+    match geom {
+        super::model::GeomData::Box { hx, hy, hz } => {
+            Some((GeometryShape::Box {
+                x: *hx as f64 * 2.0,
+                y: *hy as f64 * 2.0,
+                z: *hz as f64 * 2.0,
+            }, None))
+        }
+        super::model::GeomData::Sphere { radius } => {
+            Some((GeometryShape::Sphere {
+                radius: *radius as f64,
+            }, None))
+        }
+        super::model::GeomData::Cylinder { radius, half_length } => {
+            Some((GeometryShape::Cylinder {
+                radius: *radius as f64,
+                length: *half_length as f64 * 2.0,
+            }, None))
+        }
+        super::model::GeomData::Capsule { radius, half_length } => {
+            Some((GeometryShape::Capsule {
+                radius: *radius as f64,
+                length: *half_length as f64 * 2.0,
+            }, None))
+        }
+        super::model::GeomData::Mesh { vertices, scale, .. } => {
+            let s = scale.unwrap_or([1.0, 1.0, 1.0]);
+            let n_verts = vertices.len() / 6;
+            if n_verts < 3 {
+                return None;
+            }
+
+            let mut points = Vec::with_capacity(n_verts);
+            for i in 0..n_verts {
+                let base = i * 6;
+                points.push(na::Point3::new(
+                    vertices[base] as f64 * s[0] as f64,
+                    vertices[base + 1] as f64 * s[1] as f64,
+                    vertices[base + 2] as f64 * s[2] as f64,
+                ));
+            }
+
+            let mut indices = Vec::new();
+            let mut face_normals = Vec::new();
+            for i in (0..n_verts).step_by(3) {
+                if i + 2 >= n_verts {
+                    break;
+                }
+                indices.push([i as u32, (i + 1) as u32, (i + 2) as u32]);
+                // Compute face normal from vertices.
+                let v0 = &points[i];
+                let v1 = &points[i + 1];
+                let v2 = &points[i + 2];
+                let e1 = v1 - v0;
+                let e2 = v2 - v0;
+                let n = e1.cross(&e2);
+                let len = n.norm();
+                if len > 1e-12 {
+                    face_normals.push(n / len);
+                } else {
+                    face_normals.push(na::Vector3::z());
+                }
+            }
+            if indices.is_empty() {
+                return None;
+            }
+
+            let md = MeshData {
+                vertices: points,
+                indices,
+                face_normals,
+                vertex_normals: Vec::new(),
+                texcoords: Vec::new(),
+                materials: Vec::new(),
+                submeshes: Vec::new(),
+            };
+
+            // Scale is already baked into vertices, so pass [1,1,1].
+            Some((GeometryShape::Mesh {
+                scale: na::Vector3::new(1.0, 1.0, 1.0),
+                filename: String::new(),
+            }, Some(md)))
+        }
     }
 }
 

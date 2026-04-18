@@ -102,42 +102,8 @@ pub struct JointData {
 
 impl RobotModel {
     pub fn compute_transforms(&self) -> HashMap<String, na::Isometry3<f32>> {
-        let mut transforms: HashMap<String, na::Isometry3<f32>> = HashMap::new();
-        transforms.insert(self.root_link.clone(), self.base_transform);
-
-        let mut stack = vec![self.root_link.clone()];
-        while let Some(link_name) = stack.pop() {
-            let parent_tf = transforms[&link_name];
-            if let Some(child_joints) = self.children_joints.get(&link_name) {
-                for &ji in child_joints {
-                    let joint = &self.joints[ji];
-                    let joint_rotation = match joint.joint_type.as_str() {
-                        "revolute" | "continuous" => {
-                            let angle = self.joint_positions[ji];
-                            na::Isometry3::from_parts(
-                                na::Translation3::identity(),
-                                na::UnitQuaternion::from_axis_angle(
-                                    &na::Unit::new_normalize(joint.axis),
-                                    angle,
-                                ),
-                            )
-                        }
-                        "prismatic" => {
-                            let offset = self.joint_positions[ji];
-                            na::Isometry3::from_parts(
-                                na::Translation3::from(joint.axis * offset),
-                                na::UnitQuaternion::identity(),
-                            )
-                        }
-                        _ => na::Isometry3::identity(),
-                    };
-                    let child_tf = parent_tf * joint.origin * joint_rotation;
-                    transforms.insert(joint.child_link.clone(), child_tf);
-                    stack.push(joint.child_link.clone());
-                }
-            }
-        }
-        transforms
+        let adapter = super::adapter::ModelAdapter::from_robot_model(self);
+        adapter.compute_transforms_compat(self)
     }
 
 
