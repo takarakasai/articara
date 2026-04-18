@@ -188,6 +188,10 @@ pub struct GlRenderer {
     pub ground_z: f32,
     /// Size (half-extent) of the ground plate.
     pub ground_size: f32,
+    /// Ground plane rotation about X axis (rad).
+    pub ground_plane_roll: f32,
+    /// Ground plane rotation about Y axis (rad).
+    pub ground_plane_pitch: f32,
     /// Whether to show the gravity/bias direction arrow.
     pub show_gravity_arrow: bool,
     /// Gravity (bias) direction (unit vector).
@@ -299,6 +303,8 @@ impl GlRenderer {
                 show_ground_plane: false,
                 ground_z: 0.0,
                 ground_size: 2.0,
+                ground_plane_roll: 0.0,
+                ground_plane_pitch: 0.0,
                 show_gravity_arrow: true,
                 gravity_dir: [0.0, 0.0, -1.0],
             }
@@ -593,12 +599,30 @@ impl GlRenderer {
                 let s = self.ground_size;
                 let scale = na::Matrix4::new_nonuniform_scaling(&na::Vector3::new(s, s, 1.0));
                 let translate = na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, self.ground_z));
-                let mvp = vp * translate * scale;
+                // Roll (X-axis) then pitch (Y-axis) rotation
+                let rot_x = na::Rotation3::from_axis_angle(
+                    &na::Vector3::x_axis(),
+                    self.ground_plane_roll,
+                );
+                let rot_y = na::Rotation3::from_axis_angle(
+                    &na::Vector3::y_axis(),
+                    self.ground_plane_pitch,
+                );
+                let rot = (rot_y * rot_x).to_homogeneous();
+                let mvp = vp * translate * rot * scale;
                 gl.uniform_matrix_4_f32_slice(Some(&self.u_mvp), false, mvp.as_slice());
+
+                // Compute rotated normal for proper lighting
+                let normal3 = (rot_y * rot_x) * na::Vector3::new(0.0, 0.0, 1.0);
+                let normal_mat = na::Matrix3::from_columns(&[
+                    na::Vector3::x(),
+                    na::Vector3::y(),
+                    normal3,
+                ]);
                 gl.uniform_matrix_3_f32_slice(
                     Some(&self.u_normal_mat),
                     false,
-                    na::Matrix3::<f32>::identity().as_slice(),
+                    normal_mat.as_slice(),
                 );
                 gl.uniform_4_f32(Some(&self.u_color), 0.35, 0.38, 0.42, 0.55);
                 gl.uniform_1_i32(Some(&self.u_flat), 0);

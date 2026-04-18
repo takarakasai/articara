@@ -203,7 +203,16 @@ impl ArticaraApp {
                     });
                 }
                 ui.separator();
+                let was_showing = self.show_ground_plane;
                 ui.checkbox(&mut self.show_ground_plane, "Show Ground Plane");
+                // Auto-position at robot's lowest Z when toggled on
+                if self.show_ground_plane && !was_showing {
+                    if let Some(ref model) = self.model {
+                        if let Some(min_z) = model.compute_min_z() {
+                            self.ground_z = min_z;
+                        }
+                    }
+                }
                 if self.show_ground_plane {
                     ui.horizontal(|ui| {
                         ui.label("Ground Z:");
@@ -212,6 +221,13 @@ impl ArticaraApp {
                                 .speed(0.01)
                                 .suffix(" m"),
                         );
+                        if ui.small_button("Auto").on_hover_text("Set to robot's lowest Z").clicked() {
+                            if let Some(ref model) = self.model {
+                                if let Some(min_z) = model.compute_min_z() {
+                                    self.ground_z = min_z;
+                                }
+                            }
+                        }
                     });
                     ui.horizontal(|ui| {
                         ui.label("Ground size:");
@@ -221,6 +237,24 @@ impl ArticaraApp {
                                 .range(0.1..=50.0)
                                 .suffix(" m"),
                         );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Roll (X):");
+                        ui.add(
+                            egui::DragValue::new(&mut self.ground_plane_roll)
+                                .speed(0.01)
+                                .suffix(" rad"),
+                        );
+                        ui.label("Pitch (Y):");
+                        ui.add(
+                            egui::DragValue::new(&mut self.ground_plane_pitch)
+                                .speed(0.01)
+                                .suffix(" rad"),
+                        );
+                        if ui.small_button("Reset").on_hover_text("Reset tilt to 0").clicked() {
+                            self.ground_plane_roll = 0.0;
+                            self.ground_plane_pitch = 0.0;
+                        }
                     });
                 }
             });

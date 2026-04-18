@@ -190,6 +190,10 @@ pub struct ArticaraApp {
     ground_z: f32,
     /// Half-extent size of the ground plane.
     ground_size: f32,
+    /// Ground plane rotation about X axis (rad).
+    ground_plane_roll: f32,
+    /// Ground plane rotation about Y axis (rad).
+    ground_plane_pitch: f32,
     /// Whether the ground plane was auto-enabled by a running simulation.
     ground_plane_auto: bool,
     /// Show gravity/bias direction arrow in viewport.
@@ -372,6 +376,8 @@ impl ArticaraApp {
             show_joint_axes: false,
             show_ground_plane: false,
             ground_z: 0.0,
+            ground_plane_roll: 0.0,
+            ground_plane_pitch: 0.0,
             ground_plane_auto: false,
             show_gravity_arrow: true,
             gravity_dir: [0.0, 0.0, -1.0],
@@ -791,6 +797,8 @@ impl eframe::App for ArticaraApp {
             r.show_ground_plane = self.show_ground_plane;
             r.ground_z = self.ground_z;
             r.ground_size = self.ground_size;
+            r.ground_plane_roll = self.ground_plane_roll;
+            r.ground_plane_pitch = self.ground_plane_pitch;
             r.show_gravity_arrow = self.show_gravity_arrow;
             r.gravity_dir = self.gravity_dir;
             r.com_scale = self.com_scale;

@@ -297,6 +297,85 @@ impl RobotModel {
         (center, radius * 1.05)
     }
 
+    /// Compute the world-space minimum Z coordinate across all visual geometry.
+    ///
+    /// Uses the current joint positions and base transform.  Returns `None` if
+    /// the model has no visual geometry at all.
+    pub fn compute_min_z(&self) -> Option<f32> {
+        let transforms = self.compute_transforms();
+        let mut min_z: Option<f32> = None;
+
+        for link in &self.links {
+            let world_tf = transforms
+                .get(&link.name)
+                .copied()
+                .unwrap_or(na::Isometry3::identity());
+
+            for vis in &link.visuals {
+                let full_tf = world_tf * vis.origin;
+                let sample_points = Self::geometry_sample_points(&vis.geometry);
+                for p in &sample_points {
+                    let wp = full_tf * p;
+                    min_z = Some(min_z.map_or(wp.z, |m: f32| m.min(wp.z)));
+                }
+            }
+        }
+        min_z
+    }
+
+    /// Generate representative sample points for a geometry primitive
+    /// (in the geometry's local frame).
+    fn geometry_sample_points(geom: &GeomData) -> Vec<na::Point3<f32>> {
+        let mut pts = Vec::new();
+        match geom {
+            GeomData::Box { hx, hy, hz } => {
+                for &sx in &[-1.0_f32, 1.0] {
+                    for &sy in &[-1.0_f32, 1.0] {
+                        for &sz in &[-1.0_f32, 1.0] {
+                            pts.push(na::Point3::new(*hx * sx, *hy * sy, *hz * sz));
+                        }
+                    }
+                }
+            }
+            GeomData::Cylinder { radius, half_length } => {
+                for i in 0..8 {
+                    let a = (i as f32) * std::f32::consts::TAU / 8.0;
+                    let (c, s) = (a.cos(), a.sin());
+                    pts.push(na::Point3::new(radius * c, radius * s, *half_length));
+                    pts.push(na::Point3::new(radius * c, radius * s, -*half_length));
+                }
+            }
+            GeomData::Sphere { radius } => {
+                let r = *radius;
+                for &d in &[
+                    [r, 0.0, 0.0], [-r, 0.0, 0.0],
+                    [0.0, r, 0.0], [0.0, -r, 0.0],
+                    [0.0, 0.0, r], [0.0, 0.0, -r],
+                ] {
+                    pts.push(na::Point3::new(d[0], d[1], d[2]));
+                }
+            }
+            GeomData::Capsule { radius, half_length } => {
+                let total_h = *half_length + *radius;
+                for i in 0..8 {
+                    let a = (i as f32) * std::f32::consts::TAU / 8.0;
+                    let (c, s) = (a.cos(), a.sin());
+                    pts.push(na::Point3::new(radius * c, radius * s, total_h));
+                    pts.push(na::Point3::new(radius * c, radius * s, -total_h));
+                }
+            }
+            GeomData::Mesh { vertices, .. } => {
+                let step = if vertices.len() > 6000 { 6 * 10 } else { 6 };
+                for chunk in vertices.chunks(step) {
+                    if chunk.len() >= 3 {
+                        pts.push(na::Point3::new(chunk[0], chunk[1], chunk[2]));
+                    }
+                }
+            }
+        }
+        pts
+    }
+
     // =====================================================================
     //  Kinematic chain traversal
     // =====================================================================
