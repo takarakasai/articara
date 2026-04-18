@@ -93,6 +93,10 @@ struct DragState {
     /// World-space transform of the IK root link at drag start.
     /// Used as the fixed anchor so the root doesn't drift.
     ik_root_initial_tf: Option<na::Isometry3<f32>>,
+    /// World-space position of the IK root link at drag start (for translation-only correction).
+    ik_root_initial_pos: Option<na::Point3<f64>>,
+    /// Reference joint positions at drag start for null-space posture stabilization.
+    ref_positions: Vec<f64>,
 }
 
 /// Drag state for gizmo offset adjustment.

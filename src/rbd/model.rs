@@ -1095,20 +1095,27 @@ impl RobotModel {
     ) -> na::DMatrix<f64> {
         let mc = self.mc();
         let q = mc.build_q(self);
-        let ee_mi = match mc.link_name_to_misarta_joint(ee_link) {
-            Some(v) if v > 0 => v,
-            _ => return na::DMatrix::zeros(3, chain.len()),
-        };
+        let ee_mi = mc.link_name_to_misarta_joint(ee_link).unwrap_or(0);
 
         let full_jac: na::DMatrix<f64> = if let Some(rl) = root_link {
-            match mc.link_name_to_misarta_joint(rl) {
-                Some(base_mi) if base_mi > 0 => {
-                    misarta::jacobian::compute_relative_jacobian(&mc.model, &q, base_mi, ee_mi)
-                }
-                _ => misarta::jacobian::compute_joint_jacobian(&mc.model, &q, ee_mi),
+            let base_mi = mc.link_name_to_misarta_joint(rl).unwrap_or(0);
+            if ee_mi > 0 && base_mi > 0 {
+                // Both non-root: standard relative Jacobian
+                misarta::jacobian::compute_relative_jacobian(&mc.model, &q, base_mi, ee_mi)
+            } else if ee_mi == 0 && base_mi > 0 {
+                // EE is URDF root: J_rel = J(root=0) - J(base) = -J(base)
+                -misarta::jacobian::compute_joint_jacobian(&mc.model, &q, base_mi)
+            } else if ee_mi > 0 {
+                // base is root: standard absolute Jacobian
+                misarta::jacobian::compute_joint_jacobian(&mc.model, &q, ee_mi)
+            } else {
+                // Both are root: zero
+                return na::DMatrix::zeros(3, chain.len());
             }
-        } else {
+        } else if ee_mi > 0 {
             misarta::jacobian::compute_joint_jacobian(&mc.model, &q, ee_mi)
+        } else {
+            return na::DMatrix::zeros(3, chain.len());
         };
 
         // misarta Jacobian is in URDF-root frame; rotate to world frame
@@ -1184,9 +1191,13 @@ impl RobotModel {
         jac
     }
 
-    /// Perform one Damped-Least-Squares IK step.
+    /// Perform one Damped-Least-Squares IK step with optional null-space
+    /// posture stabilization.
     ///
-    /// Returns joint-angle deltas (one per element in `chain`) clamped by `max_step`.
+    /// When `ref_positions` is `Some`, joints are pulled toward the reference
+    /// posture in the Jacobian null space so that redundant DOFs stay stable.
+    ///
+    /// Returns joint-angle deltas (one per element in `chain`).
     pub fn solve_ik_step(
         &self,
         chain: &[usize],
@@ -1196,6 +1207,7 @@ impl RobotModel {
         target_pos: &na::Point3<f64>,
         damping: f64,
         max_step: f64,
+        ref_positions: Option<&[f64]>,
     ) -> Vec<f64> {
         let n = chain.len();
         if n == 0 {
@@ -1214,14 +1226,49 @@ impl RobotModel {
 
         let jac = self.chain_positional_jacobian(chain, ee_link, root_link);
 
+        // Damped pseudo-inverse: J⁺ = J^T (J J^T + λ²I)⁻¹
         let jjt = &jac * jac.transpose();
         let lambda_sq = damping * damping;
-        let identity = na::DMatrix::<f64>::identity(3, 3);
-        let jjt_reg = jjt + identity * lambda_sq;
+        let identity3 = na::DMatrix::<f64>::identity(3, 3);
+        let jjt_reg = jjt + &identity3 * lambda_sq;
 
         let decomp = jjt_reg.lu();
         let y = decomp.solve(&dx_vec).unwrap_or(na::DVector::zeros(3));
-        let dq = jac.transpose() * y;
+        let dq_primary = jac.transpose() * &y;
+
+        // Null-space posture stabilization:
+        //   Δq = J⁺ Δx  +  (I − J⁺ J) · k_ns · (q_ref − q_cur)
+        let dq = if let Some(ref_pos) = ref_positions {
+            // Build J⁺ explicitly (n×3)
+            let j_pinv = {
+                let mut jp = na::DMatrix::<f64>::zeros(n, 3);
+                for col in 0..3 {
+                    let e = na::DVector::from_fn(3, |r, _| if r == col { 1.0 } else { 0.0 });
+                    let solved = decomp.solve(&e).unwrap_or(na::DVector::zeros(3));
+                    let jp_col = &jac.transpose() * &solved;
+                    for row in 0..n {
+                        jp[(row, col)] = jp_col[row];
+                    }
+                }
+                jp
+            };
+            // Null-space projector: N = I − J⁺ J
+            let identity_n = na::DMatrix::<f64>::identity(n, n);
+            let null_proj = &identity_n - &j_pinv * &jac;
+
+            // Posture error: pull toward reference
+            let k_ns = 0.5;
+            let mut dq_posture = na::DVector::<f64>::zeros(n);
+            for (i, &ji) in chain.iter().enumerate() {
+                if i < ref_pos.len() {
+                    dq_posture[i] = k_ns * (ref_pos[i] - self.joint_positions[ji]);
+                }
+            }
+
+            &dq_primary + &null_proj * &dq_posture
+        } else {
+            dq_primary
+        };
 
         (0..n).map(|i| dq[i]).collect()
     }

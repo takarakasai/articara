@@ -455,6 +455,8 @@ impl ArticaraApp {
                                             ee_link: String::new(),
                                             ik_root_link: None,
                                             ik_root_initial_tf: None,
+                                            ik_root_initial_pos: None,
+                                            ref_positions: Vec::new(),
                                         });
                                     }
                                 }
@@ -470,6 +472,14 @@ impl ArticaraApp {
                                     let ik_root_tf = self.ik_root_link.as_ref().and_then(|name| {
                                         transforms.get(name).copied()
                                     });
+                                    // Capture reference posture for null-space stabilization
+                                    let ref_positions: Vec<f64> = chain.iter()
+                                        .map(|&ji| model.joint_positions[ji])
+                                        .collect();
+                                    // Capture IK root world position for translation-only correction
+                                    let ik_root_initial_pos = ik_root_tf.map(|tf| {
+                                        na::Point3::from(tf.translation.vector).cast::<f64>()
+                                    });
                                     self.drag_state = Some(DragState {
                                         link_idx: li,
                                         mode: DragMode::InverseKinematics,
@@ -480,6 +490,8 @@ impl ArticaraApp {
                                         ee_link: link_name.to_string(),
                                         ik_root_link: self.ik_root_link.clone(),
                                         ik_root_initial_tf: ik_root_tf,
+                                        ik_root_initial_pos,
+                                        ref_positions,
                                     });
                                 }
                             }
@@ -733,30 +745,45 @@ impl ArticaraApp {
                                 let t = (ee_pos - ray_o).dot(&cam_forward) / denom;
                                 if t > 0.0 {
                                     let target = ray_o + ray_d * t;
+                                    let target_f64 = target.cast::<f64>();
 
-                                    let damping = self.ik_damping;
-                                    let deltas = model.solve_ik_step(
-                                        &drag.chain,
-                                        &drag.ee_link,
-                                        drag.ik_root_link.as_deref(),
-                                        &ee_pos.cast::<f64>(),
-                                        &target.cast::<f64>(),
-                                        damping as f64,
-                                        0.1,
-                                    );
-                                    model.apply_joint_deltas(&drag.chain, &deltas);
+                                    let damping = self.ik_damping as f64;
+                                    let has_ik_root = drag.ik_root_link.is_some();
 
-                                    if let Some(desired_tf) = ik_root_tf_desired {
-                                        let saved_base = model.base_transform;
-                                        model.base_transform = na::Isometry3::identity();
-                                        let identity_transforms = model.compute_transforms();
-                                        if let Some(ik_root_tf_rel) = drag.ik_root_link.as_ref()
-                                            .and_then(|name| identity_transforms.get(name))
-                                        {
-                                            model.base_transform = ik_root_tf_rel.inverse().cast::<f64>();
-                                            model.base_transform = desired_tf.cast::<f64>() * model.base_transform;
-                                        } else {
-                                            model.base_transform = saved_base;
+                                    // Use iterative sub-stepping for cross-branch IK
+                                    // (IK root != URDF root) to keep base correction stable.
+                                    let n_sub = if has_ik_root { 4 } else { 1 };
+                                    let sub_max_step = if has_ik_root { 0.025 } else { 0.1 };
+
+                                    for _ in 0..n_sub {
+                                        let cur_tf = model.compute_transforms();
+                                        let ee_now = model.ee_world_pos(
+                                            drag.link_idx, &cur_tf,
+                                        );
+                                        let deltas = model.solve_ik_step(
+                                            &drag.chain,
+                                            &drag.ee_link,
+                                            drag.ik_root_link.as_deref(),
+                                            &ee_now.cast::<f64>(),
+                                            &target_f64,
+                                            damping,
+                                            sub_max_step,
+                                            None,
+                                        );
+                                        model.apply_joint_deltas(&drag.chain, &deltas);
+
+                                        // Full SE3 base correction:
+                                        // Pin the IK root link to its initial world pose.
+                                        if let Some(desired_tf) = drag.ik_root_initial_tf {
+                                            if let Some(ik_root_name) = drag.ik_root_link.as_ref() {
+                                                model.base_transform = na::Isometry3::identity();
+                                                let id_tf = model.compute_transforms();
+                                                if let Some(root_rel) = id_tf.get(ik_root_name) {
+                                                    model.base_transform =
+                                                        desired_tf.cast::<f64>()
+                                                        * root_rel.inverse().cast::<f64>();
+                                                }
+                                            }
                                         }
                                     }
                                 }
