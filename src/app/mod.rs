@@ -172,6 +172,8 @@ pub struct ArticaraApp {
     ik_root_link: Option<String>,
     /// IK target position in world space (for debug overlay). None = no active IK.
     ik_target_marker: Option<na::Point3<f32>>,
+    /// IK residual error (distance between EE and target) for debug overlay.
+    ik_error: Option<f32>,
     /// Show center-of-mass markers and mass labels.
     show_com: bool,
     /// Show joint axis arrows in viewport.
@@ -356,6 +358,7 @@ impl ArticaraApp {
             ik_damping: 0.05,
             ik_root_link: None,
             ik_target_marker: None,
+            ik_error: None,
             show_com: false,
             show_joint_axes: false,
             show_ground_plane: false,

@@ -157,6 +157,7 @@ impl ArticaraApp {
             self.drag_state = None;
             self.offset_drag_state = None;
             self.ik_target_marker = None;
+            self.ik_error = None;
             self.history.finalize();
         }
 
@@ -763,6 +764,7 @@ impl ArticaraApp {
 
                                     // Store target for debug overlay
                                     self.ik_target_marker = Some(target);
+                                    // Will compute IK error after solve loop
 
                                     let damping = self.ik_damping as f64;
                                     let has_ik_root = drag.ik_root_link.is_some();
@@ -803,6 +805,15 @@ impl ArticaraApp {
                                             }
                                         }
                                     }
+
+                                    // Compute IK error: distance from EE to target after solve
+                                    let final_tf = model.compute_transforms();
+                                    let ee_final = model.ee_world_pos(
+                                        drag.link_idx, &final_tf,
+                                    );
+                                    self.ik_error = Some(
+                                        (ee_final.cast::<f32>() - target).norm()
+                                    );
                                 }
                             }
                         }

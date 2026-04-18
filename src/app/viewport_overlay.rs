@@ -478,10 +478,14 @@ impl ArticaraApp {
             egui::Stroke::new(1.5, color),
         );
 
-        // Numeric position label
+        // Numeric position label + IK error
+        let error_str = match self.ik_error {
+            Some(e) => format!("  err={:.4}", e),
+            None => String::new(),
+        };
         let label = format!(
-            "({:.3}, {:.3}, {:.3})",
-            target_world.x, target_world.y, target_world.z,
+            "({:.3}, {:.3}, {:.3}){}",
+            target_world.x, target_world.y, target_world.z, error_str,
         );
         let font = egui::FontId::monospace(11.0);
         let bg = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180);
