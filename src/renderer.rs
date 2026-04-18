@@ -178,10 +178,13 @@ pub struct GlRenderer {
     /// Joint axis definitions: (parent_link, local_origin, local_axis, is_revolute).
     /// World positions are resolved at render time from `transforms`.
     joint_axis_entries: Vec<(String, na::Isometry3<f32>, na::Vector3<f32>, bool)>,
-    // --- Ground plane ---
-    ground_vao: glow::VertexArray,
-    ground_vbo: glow::Buffer,
-    ground_num_vertices: i32,
+    // --- Ground plane (checkerboard) ---
+    ground_light_vao: glow::VertexArray,
+    ground_light_vbo: glow::Buffer,
+    ground_light_num_vertices: i32,
+    ground_dark_vao: glow::VertexArray,
+    ground_dark_vbo: glow::Buffer,
+    ground_dark_num_vertices: i32,
     /// Whether to show a semi-transparent ground plate.
     pub show_ground_plane: bool,
     /// Z height of the ground plane (default 0.0).
@@ -248,10 +251,12 @@ impl GlRenderer {
             let joint_arrow_num = (joint_arrow_data.len() / 6) as i32;
             let (joint_arrow_vao, joint_arrow_vbo) = upload_mesh_data(gl, &joint_arrow_data);
 
-            // Ground plane quad (unit quad in XY at Z=0; will be scaled and translated at draw time)
-            let ground_data = generate_ground_quad();
-            let ground_num = (ground_data.len() / 6) as i32;
-            let (ground_vao, ground_vbo) = upload_mesh_data(gl, &ground_data);
+            // Ground plane checkerboard tiles (two meshes: light/dark)
+            let (ground_light_data, ground_dark_data) = generate_checkerboard_tiles();
+            let ground_light_num = (ground_light_data.len() / 6) as i32;
+            let ground_dark_num = (ground_dark_data.len() / 6) as i32;
+            let (ground_light_vao, ground_light_vbo) = upload_mesh_data(gl, &ground_light_data);
+            let (ground_dark_vao, ground_dark_vbo) = upload_mesh_data(gl, &ground_dark_data);
 
             Self {
                 program,
@@ -297,9 +302,12 @@ impl GlRenderer {
                 joint_arrow_num_vertices: joint_arrow_num,
                 show_joint_axes: false,
                 joint_axis_entries: Vec::new(),
-                ground_vao,
-                ground_vbo,
-                ground_num_vertices: ground_num,
+                ground_light_vao,
+                ground_light_vbo,
+                ground_light_num_vertices: ground_light_num,
+                ground_dark_vao,
+                ground_dark_vbo,
+                ground_dark_num_vertices: ground_dark_num,
                 show_ground_plane: false,
                 ground_z: 0.0,
                 ground_size: 2.0,
@@ -590,14 +598,12 @@ impl GlRenderer {
             gl.draw_arrays(glow::LINES, 4, 2);
             gl.line_width(1.0);
 
-            // Draw ground plane (semi-transparent quad)
+            // Draw ground plane (checkerboard)
             if self.show_ground_plane {
                 gl.enable(glow::BLEND);
                 gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
                 gl.depth_mask(false); // don't write depth for transparent surface
 
-                let s = self.ground_size;
-                let scale = na::Matrix4::new_nonuniform_scaling(&na::Vector3::new(s, s, 1.0));
                 let translate = na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, self.ground_z));
                 // Roll (X-axis) then pitch (Y-axis) rotation
                 let rot_x = na::Rotation3::from_axis_angle(
@@ -609,6 +615,10 @@ impl GlRenderer {
                     self.ground_plane_pitch,
                 );
                 let rot = (rot_y * rot_x).to_homogeneous();
+                // Tile size is baked as 1.0 in the mesh; scale by ground_size
+                // to map [0..N tiles] to the desired world extent.
+                let tile_scale = self.ground_size / CHECKER_HALF_TILES as f32;
+                let scale = na::Matrix4::new_nonuniform_scaling(&na::Vector3::new(tile_scale, tile_scale, 1.0));
                 let mvp = vp * translate * rot * scale;
                 gl.uniform_matrix_4_f32_slice(Some(&self.u_mvp), false, mvp.as_slice());
 
@@ -624,10 +634,17 @@ impl GlRenderer {
                     false,
                     normal_mat.as_slice(),
                 );
-                gl.uniform_4_f32(Some(&self.u_color), 0.35, 0.38, 0.42, 0.55);
                 gl.uniform_1_i32(Some(&self.u_flat), 0);
-                gl.bind_vertex_array(Some(self.ground_vao));
-                gl.draw_arrays(glow::TRIANGLES, 0, self.ground_num_vertices);
+
+                // Light tiles
+                gl.uniform_4_f32(Some(&self.u_color), 0.45, 0.47, 0.50, 0.60);
+                gl.bind_vertex_array(Some(self.ground_light_vao));
+                gl.draw_arrays(glow::TRIANGLES, 0, self.ground_light_num_vertices);
+
+                // Dark tiles
+                gl.uniform_4_f32(Some(&self.u_color), 0.30, 0.32, 0.35, 0.60);
+                gl.bind_vertex_array(Some(self.ground_dark_vao));
+                gl.draw_arrays(glow::TRIANGLES, 0, self.ground_dark_num_vertices);
 
                 gl.depth_mask(true);
                 gl.disable(glow::BLEND);
@@ -923,8 +940,10 @@ impl GlRenderer {
             gl.delete_buffer(self.gizmo_scale_vbo);
             gl.delete_vertex_array(self.joint_arrow_vao);
             gl.delete_buffer(self.joint_arrow_vbo);
-            gl.delete_vertex_array(self.ground_vao);
-            gl.delete_buffer(self.ground_vbo);
+            gl.delete_vertex_array(self.ground_light_vao);
+            gl.delete_buffer(self.ground_light_vbo);
+            gl.delete_vertex_array(self.ground_dark_vao);
+            gl.delete_buffer(self.ground_dark_vbo);
             gl.delete_program(self.program);
         }
     }
@@ -989,24 +1008,41 @@ unsafe fn upload_mesh_data(gl: &glow::Context, data: &[f32]) -> (glow::VertexArr
     }
 }
 
-/// Generate a unit quad in the XY plane at Z=0 (two triangles, 6 vertices).
-/// Position + normal per vertex (6 floats each). Will be scaled at draw time.
-fn generate_ground_quad() -> Vec<f32> {
-    let n = [0.0_f32, 0.0, 1.0];
-    let mut v = Vec::with_capacity(6 * 6);
-    // Triangle 1
-    v.extend_from_slice(&[-1.0, -1.0, 0.0]);
-    v.extend_from_slice(&n);
-    v.extend_from_slice(&[ 1.0, -1.0, 0.0]);
-    v.extend_from_slice(&n);
-    v.extend_from_slice(&[ 1.0,  1.0, 0.0]);
-    v.extend_from_slice(&n);
-    // Triangle 2
-    v.extend_from_slice(&[-1.0, -1.0, 0.0]);
-    v.extend_from_slice(&n);
-    v.extend_from_slice(&[ 1.0,  1.0, 0.0]);
-    v.extend_from_slice(&n);
-    v.extend_from_slice(&[-1.0,  1.0, 0.0]);
-    v.extend_from_slice(&n);
-    v
+/// Number of tiles per half-axis for the checkerboard ground plane.
+/// Total grid is (2*N)×(2*N) tiles, centred at the origin.
+const CHECKER_HALF_TILES: i32 = 10;
+
+/// Generate two meshes (light tiles, dark tiles) for a checkerboard ground plane.
+///
+/// Each tile is a 1×1 quad in XY at Z=0.  The grid spans
+/// `[-N .. N] × [-N .. N]` where `N = CHECKER_HALF_TILES`.
+/// Returns `(light_vertices, dark_vertices)` with 6 floats per vertex
+/// (pos + normal).
+fn generate_checkerboard_tiles() -> (Vec<f32>, Vec<f32>) {
+    let n = CHECKER_HALF_TILES;
+    let total = (2 * n) * (2 * n); // total tiles
+    let cap = (total as usize / 2 + 1) * 6 * 6; // 6 vertices × 6 floats
+    let mut light = Vec::with_capacity(cap);
+    let mut dark = Vec::with_capacity(cap);
+    let nrm = [0.0_f32, 0.0, 1.0];
+
+    for iy in -n..n {
+        for ix in -n..n {
+            let x0 = ix as f32;
+            let y0 = iy as f32;
+            let x1 = x0 + 1.0;
+            let y1 = y0 + 1.0;
+            let is_light = (ix + iy) & 1 == 0;
+            let buf = if is_light { &mut light } else { &mut dark };
+            // Triangle 1
+            buf.extend_from_slice(&[x0, y0, 0.0]); buf.extend_from_slice(&nrm);
+            buf.extend_from_slice(&[x1, y0, 0.0]); buf.extend_from_slice(&nrm);
+            buf.extend_from_slice(&[x1, y1, 0.0]); buf.extend_from_slice(&nrm);
+            // Triangle 2
+            buf.extend_from_slice(&[x0, y0, 0.0]); buf.extend_from_slice(&nrm);
+            buf.extend_from_slice(&[x1, y1, 0.0]); buf.extend_from_slice(&nrm);
+            buf.extend_from_slice(&[x0, y1, 0.0]); buf.extend_from_slice(&nrm);
+        }
+    }
+    (light, dark)
 }
