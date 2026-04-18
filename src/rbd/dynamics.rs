@@ -21,6 +21,7 @@
 use nalgebra as na;
 use std::collections::HashMap;
 
+use super::adapter::ModelAdapter;
 use super::model::RobotModel;
 use super::kinematics::ChainJoint;
 
@@ -92,150 +93,6 @@ pub fn topological_joint_order(model: &RobotModel) -> Vec<usize> {
 }
 
 // =========================================================================
-//  6D Spatial Algebra helpers  (Featherstone convention: [ω; v])
-// =========================================================================
-
-type Vec6 = na::SVector<f64, 6>;
-type Mat6 = na::SMatrix<f64, 6, 6>;
-
-/// Build the 6×6 spatial (Plücker) inertia matrix for a rigid body.
-///
-///   Ic = | I + m·[c]×[c]×ᵀ   m·[c]× |
-///        |   m·[c]×ᵀ           m·E   |
-///
-/// where `I` is the rotational inertia about the link origin, `c` is the
-/// CoM offset, and `[c]×` is the skew-symmetric matrix of `c`.
-fn spatial_inertia(link: &super::model::LinkData) -> Mat6 {
-    let m = link.inertial.mass;
-    let c = link.inertial.origin.translation.vector.cast::<f64>();
-    let cx = skew(c);
-
-    // Rotational inertia about the link origin, *not* the CoM.
-    // We have I_com from URDF; shift to link origin via parallel axis:
-    //   I_origin = R * I_com * Rᵀ  +  m·([c]×·[c]×ᵀ)
-    // For simplicity we ignore the rotation of the inertial frame
-    // (most URDFs set it to identity).
-    let rot = link.inertial.origin.rotation.to_rotation_matrix();
-    let r = rot.matrix().cast::<f64>();
-    let i_com = na::Matrix3::new(
-        link.inertial.ixx, link.inertial.ixy, link.inertial.ixz,
-        link.inertial.ixy, link.inertial.iyy, link.inertial.iyz,
-        link.inertial.ixz, link.inertial.iyz, link.inertial.izz,
-    );
-    let i_origin = &r * &i_com * r.transpose() + cx * cx.transpose() * m;
-
-    let m_cx = cx * m;
-
-    let mut sp = Mat6::zeros();
-    // Top-left 3×3: I_origin
-    sp.fixed_view_mut::<3, 3>(0, 0).copy_from(&i_origin);
-    // Top-right 3×3: m·[c]×
-    sp.fixed_view_mut::<3, 3>(0, 3).copy_from(&m_cx);
-    // Bottom-left 3×3: m·[c]×ᵀ
-    sp.fixed_view_mut::<3, 3>(3, 0).copy_from(&m_cx.transpose());
-    // Bottom-right 3×3: m·I₃
-    sp[(3, 3)] = m;
-    sp[(4, 4)] = m;
-    sp[(5, 5)] = m;
-    sp
-}
-
-/// Skew-symmetric matrix from a 3-vector.
-fn skew(v: na::Vector3<f64>) -> na::Matrix3<f64> {
-    na::Matrix3::new(
-         0.0, -v.z,  v.y,
-         v.z,  0.0, -v.x,
-        -v.y,  v.x,  0.0,
-    )
-}
-
-/// Spatial cross-product operator for *motion* vectors: [v]× (6×6).
-///
-///   [v]× = | [ω]×   0   |
-///          | [d]×  [ω]× |
-///
-/// where v = [ω; d].
-fn spatial_cross_motion(v: &Vec6) -> Mat6 {
-    let w = na::Vector3::new(v[0], v[1], v[2]);
-    let d = na::Vector3::new(v[3], v[4], v[5]);
-    let wx = skew(w);
-    let dx = skew(d);
-    let mut m = Mat6::zeros();
-    m.fixed_view_mut::<3, 3>(0, 0).copy_from(&wx);
-    m.fixed_view_mut::<3, 3>(3, 0).copy_from(&dx);
-    m.fixed_view_mut::<3, 3>(3, 3).copy_from(&wx);
-    m
-}
-
-/// Spatial cross-product operator for *force* vectors: [v]×*.
-///
-///   [v]×* = −[v]×ᵀ
-fn spatial_cross_force(v: &Vec6) -> Mat6 {
-    -spatial_cross_motion(v).transpose()
-}
-
-/// Joint motion subspace vector `S` for a 1-DOF joint.
-///
-/// For a revolute joint with axis `a`:  S = [a; 0]
-/// For a prismatic joint with axis `a`: S = [0; a]
-fn joint_motion_subspace(joint: &super::model::JointData) -> Vec6 {
-    let a = joint.axis.cast::<f64>();
-    match joint.joint_type.as_str() {
-        "revolute" | "continuous" => {
-            Vec6::new(a.x, a.y, a.z, 0.0, 0.0, 0.0)
-        }
-        "prismatic" => {
-            Vec6::new(0.0, 0.0, 0.0, a.x, a.y, a.z)
-        }
-        _ => Vec6::zeros(),
-    }
-}
-
-/// Spatial transform from parent link frame to child link frame.
-///
-/// Given joint origin `X_J` (Isometry3) and the joint displacement `q`,
-/// returns the 6×6 Plücker transform `{}^{child}X_{parent}`.
-fn joint_spatial_transform(joint: &super::model::JointData, q: f64) -> (na::Isometry3<f64>, Mat6) {
-    let origin = joint.origin.cast::<f64>();
-    let joint_disp: na::Isometry3<f64> = match joint.joint_type.as_str() {
-        "revolute" | "continuous" => {
-            let axis = na::Unit::new_normalize(joint.axis.cast::<f64>());
-            na::Isometry3::from_parts(
-                na::Translation3::identity(),
-                na::UnitQuaternion::from_axis_angle(&axis, q),
-            )
-        }
-        "prismatic" => {
-            let a = joint.axis.cast::<f64>();
-            na::Isometry3::from_parts(
-                na::Translation3::from(a * q),
-                na::UnitQuaternion::identity(),
-            )
-        }
-        _ => na::Isometry3::identity(),
-    };
-
-    let tf = origin * joint_disp; // parent → child
-    let tf_inv = tf.inverse();    // child ← parent
-
-    // Build 6×6 Plücker transform  {}^{child}X_{parent}
-    let r = tf_inv.rotation.to_rotation_matrix();
-    let rm = r.matrix().clone();
-    let p = tf_inv.translation.vector;
-    let px = skew(p);
-
-    let mut x = Mat6::zeros();
-    // Top-left: R
-    x.fixed_view_mut::<3, 3>(0, 0).copy_from(&rm);
-    // Bottom-left: [p]× R
-    x.fixed_view_mut::<3, 3>(3, 0).copy_from(&(px * &rm));
-    // Bottom-right: R
-    x.fixed_view_mut::<3, 3>(3, 3).copy_from(&rm);
-
-    (tf, x)
-}
-
-// =========================================================================
 //  CRBA — Composite Rigid Body Algorithm
 // =========================================================================
 
@@ -248,89 +105,27 @@ fn joint_spatial_transform(joint: &super::model::JointData, q: f64) -> (na::Isom
 /// The `joint_order` parameter must be the output of [`topological_joint_order`].
 /// `idx_in_M[joint_idx]` maps a global joint index to its column/row in M
 /// (or `None` if the joint is fixed).
+///
+/// Delegates to [`misarta::crba::crba`] and extracts the submatrix for the
+/// requested joint subset.
 pub fn crba(
     model: &RobotModel,
     joint_order: &[usize],
 ) -> (na::DMatrix<f64>, Vec<Option<usize>>) {
-    let n = joint_order.len();
-    let mut m_mat = na::DMatrix::zeros(n, n);
+    let adapter = ModelAdapter::from_robot_model(model);
+    crba_with_adapter(model, joint_order, &adapter)
+}
 
-    // Map global joint index → column in M
-    let mut idx_in_m: Vec<Option<usize>> = vec![None; model.joints.len()];
-    for (col, &ji) in joint_order.iter().enumerate() {
-        idx_in_m[ji] = Some(col);
-    }
-
-    // -- 1. Compute per-joint spatial transforms and link spatial inertias --
-    // x_to_parent[ji]: 6×6 Plücker transform  {}^{child_link}X_{parent_link}
-    let mut x_to_parent: HashMap<usize, Mat6> = HashMap::new();
-    let mut s_vec: HashMap<usize, Vec6> = HashMap::new();
-
-    for &ji in joint_order {
-        let joint = &model.joints[ji];
-        let q = model.joint_positions[ji] as f64;
-        let (_tf, x) = joint_spatial_transform(joint, q);
-        x_to_parent.insert(ji, x);
-        s_vec.insert(ji, joint_motion_subspace(joint));
-    }
-
-    // Spatial inertia per link (in link-local frame)
-    let mut ic: HashMap<String, Mat6> = HashMap::new();
-    for link in &model.links {
-        ic.insert(link.name.clone(), spatial_inertia(link));
-    }
-
-    // -- 2. Backward pass: accumulate composite inertias --
-    // Process joints in reverse topological order (leaf → root)
-    for &ji in joint_order.iter().rev() {
-        let joint = &model.joints[ji];
-        let child_ic = ic[&joint.child_link];
-        let x = &x_to_parent[&ji];
-
-        // Transform child composite inertia to parent frame and add
-        // I_parent += Xᵀ · I_child · X
-        let x_t = x.transpose();
-        let ic_in_parent = &x_t * &child_ic * x;
-        let parent_ic = ic.get_mut(&joint.parent_link).unwrap();
-        *parent_ic += ic_in_parent;
-    }
-
-    // -- 3. Compute M (diagonal and off-diagonal) --
-    for (col_a, &ji_a) in joint_order.iter().enumerate() {
-        let joint_a = &model.joints[ji_a];
-        let s_a = s_vec[&ji_a];
-        let ic_a = ic[&joint_a.child_link];
-
-        // Diagonal: M[a,a] = Sᵀ · Ic · S
-        let f_a = ic_a * s_a;
-        m_mat[(col_a, col_a)] = s_a.dot(&f_a);
-
-        // Walk up toward root, accumulating off-diagonal entries
-        let mut f = f_a;
-        let mut current_joint = ji_a;
-        loop {
-            // Transform f to parent frame
-            let x = &x_to_parent[&current_joint];
-            f = x.transpose() * f;
-
-            // Find the parent joint of the parent link
-            let parent_link = &model.joints[current_joint].parent_link;
-            let parent_ji = model.parent_joint_of_link(parent_link);
-            match parent_ji {
-                Some(pji) if idx_in_m[pji].is_some() => {
-                    let col_b = idx_in_m[pji].unwrap();
-                    let s_b = s_vec[&pji];
-                    let val = s_b.dot(&f);
-                    m_mat[(col_a, col_b)] = val;
-                    m_mat[(col_b, col_a)] = val;
-                    current_joint = pji;
-                }
-                _ => break,
-            }
-        }
-    }
-
-    (m_mat, idx_in_m)
+/// Like [`crba`] but reuses a pre-built [`ModelAdapter`] (avoids rebuilding
+/// the misarta model on every call).
+pub fn crba_with_adapter(
+    model: &RobotModel,
+    joint_order: &[usize],
+    adapter: &ModelAdapter,
+) -> (na::DMatrix<f64>, Vec<Option<usize>>) {
+    let q = adapter.build_q(model);
+    let m_full = misarta::crba::crba(&adapter.model, &q);
+    adapter.extract_submatrix(&m_full, joint_order)
 }
 
 // =========================================================================
@@ -343,96 +138,30 @@ pub fn crba(
 /// Returns an N×1 vector (one entry per movable joint in `joint_order`).
 ///
 /// `joint_velocities` maps global joint index → q̇.
+///
+/// Delegates to [`misarta::rnea::nonlinear_effects`] and extracts the
+/// entries for the requested joint subset.
 pub fn rnea_bias(
     model: &RobotModel,
     joint_order: &[usize],
     joint_velocities: &HashMap<usize, f64>,
 ) -> na::DVector<f64> {
-    let n = joint_order.len();
-    let mut h = na::DVector::zeros(n);
+    let adapter = ModelAdapter::from_robot_model(model);
+    rnea_bias_with_adapter(model, joint_order, joint_velocities, &adapter)
+}
 
-    // Map global joint index → column in h
-    let mut idx_in_h: HashMap<usize, usize> = HashMap::new();
-    for (col, &ji) in joint_order.iter().enumerate() {
-        idx_in_h.insert(ji, col);
-    }
-
-    // Gravity expressed as a spatial acceleration of the base.
-    // In Featherstone's formulation the base has acceleration -g
-    // (equivalent to gravity acting on all bodies).
-    let a_grav = Vec6::new(0.0, 0.0, 0.0, -G_VEC.x, -G_VEC.y, -G_VEC.z);
-
-    // Per-joint intermediate results for the forward pass
-    let mut v_link: HashMap<usize, Vec6> = HashMap::new();  // spatial velocity
-    let mut a_link: HashMap<usize, Vec6> = HashMap::new();  // spatial acceleration
-    let mut s_vec: HashMap<usize, Vec6> = HashMap::new();
-    let mut x_to_parent: HashMap<usize, Mat6> = HashMap::new();
-
-    // -- Forward pass: propagate velocities & accelerations (root → leaves) --
-    for &ji in joint_order {
-        let joint = &model.joints[ji];
-        let q = model.joint_positions[ji] as f64;
-        let qd = joint_velocities.get(&ji).copied().unwrap_or(0.0);
-
-        let (_tf, x) = joint_spatial_transform(joint, q);
-        let s = joint_motion_subspace(joint);
-        x_to_parent.insert(ji, x.clone());
-        s_vec.insert(ji, s);
-
-        // Parent spatial velocity & acceleration
-        let parent_ji = model.parent_joint_of_link(&joint.parent_link);
-        let v_parent = parent_ji
-            .and_then(|pj| v_link.get(&pj))
-            .copied()
-            .unwrap_or(Vec6::zeros());
-        let a_parent = parent_ji
-            .and_then(|pj| a_link.get(&pj))
-            .copied()
-            .unwrap_or(a_grav); // base "acceleration" = -g
-
-        // Transform to this joint's frame
-        let v_j = &x * v_parent + s * qd;
-        let a_j = &x * a_parent
-            + spatial_cross_motion(&v_j) * (s * qd); // v × (S q̇) = Coriolis
-
-        v_link.insert(ji, v_j);
-        a_link.insert(ji, a_j);
-    }
-
-    // -- Backward pass: compute forces (leaves → root) --
-    let mut f_link: HashMap<usize, Vec6> = HashMap::new();
-
-    // Initialise force at each link: f = Ic · a + v ×* (Ic · v)
-    for &ji in joint_order.iter().rev() {
-        let joint = &model.joints[ji];
-        let link = &model.links[*model.link_map.get(&joint.child_link).unwrap()];
-        let ic = spatial_inertia(link);
-        let v = v_link[&ji];
-        let a = a_link[&ji];
-
-        let mut f = ic * a + spatial_cross_force(&v) * (ic * v);
-
-        // Add forces from child joints (already computed in reverse order)
-        if let Some(child_joints) = model.children_joints.get(&joint.child_link) {
-            for &cji in child_joints {
-                if let Some(f_child) = f_link.get(&cji) {
-                    let x_child = &x_to_parent[&cji];
-                    f += x_child.transpose() * f_child;
-                }
-            }
-        }
-
-        f_link.insert(ji, f);
-
-        // Project onto joint axis: τ = Sᵀ f
-        let s = s_vec[&ji];
-        let tau = s.dot(&f);
-        if let Some(&col) = idx_in_h.get(&ji) {
-            h[col] = tau;
-        }
-    }
-
-    h
+/// Like [`rnea_bias`] but reuses a pre-built [`ModelAdapter`].
+pub fn rnea_bias_with_adapter(
+    model: &RobotModel,
+    joint_order: &[usize],
+    joint_velocities: &HashMap<usize, f64>,
+    adapter: &ModelAdapter,
+) -> na::DVector<f64> {
+    let q = adapter.build_q(model);
+    let v = adapter.build_v(joint_velocities);
+    let h_full = misarta::rnea::nonlinear_effects(&adapter.model, &q, v.as_slice());
+    let (h_sub, _) = adapter.extract_subvector(&h_full, joint_order);
+    h_sub
 }
 
 // =========================================================================
@@ -709,6 +438,8 @@ pub struct ForwardDynamicsState {
     pub kp: f64,
     /// PD derivative gain (N·m·s/rad).
     pub kd: f64,
+    /// Cached adapter for misarta Model (avoids rebuilding every step).
+    pub adapter: ModelAdapter,
 }
 
 impl ForwardDynamicsState {
@@ -749,6 +480,8 @@ impl ForwardDynamicsState {
                 .unwrap_or(0.0)
         }).collect();
 
+        let adapter = ModelAdapter::from_robot_model(model);
+
         Self {
             joint_order,
             joint_velocities: HashMap::new(),
@@ -762,6 +495,7 @@ impl ForwardDynamicsState {
             trajectory_time: 0.0,
             kp: 500.0,
             kd: 20.0,
+            adapter,
         }
     }
 
@@ -815,10 +549,10 @@ impl ForwardDynamicsState {
         let t = self.trajectory_time;
 
         // --- 1. CRBA: M(q) ---
-        let (m_mat, idx_in_m) = crba(model, &self.joint_order);
+        let (m_mat, idx_in_m) = crba_with_adapter(model, &self.joint_order, &self.adapter);
 
         // --- 2. RNEA: h(q, q̇) = C(q,q̇)·q̇ + g(q) ---
-        let h = rnea_bias(model, &self.joint_order, &self.joint_velocities);
+        let h = rnea_bias_with_adapter(model, &self.joint_order, &self.joint_velocities, &self.adapter);
 
         // --- 3. PD acceleration command per joint ---
         let mut a_pd = na::DVector::zeros(n);
@@ -942,10 +676,10 @@ impl ForwardDynamicsState {
         let n = self.joint_order.len();
 
         // --- 1. CRBA: M(q) ---
-        let (m_mat, idx_in_m) = crba(model, &self.joint_order);
+        let (m_mat, idx_in_m) = crba_with_adapter(model, &self.joint_order, &self.adapter);
 
         // --- 2. RNEA: h(q, q̇) = C(q,q̇)·q̇ + g(q) ---
-        let h = rnea_bias(model, &self.joint_order, &self.joint_velocities);
+        let h = rnea_bias_with_adapter(model, &self.joint_order, &self.joint_velocities, &self.adapter);
 
         // --- 3. Foot X-row Jacobians → J_x (n_feet × n) ---
         let transforms = model.compute_transforms();

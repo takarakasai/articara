@@ -13,3 +13,4 @@
 pub mod model;
 pub mod kinematics;
 pub mod dynamics;
+pub mod adapter;
