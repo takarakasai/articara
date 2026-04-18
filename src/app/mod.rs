@@ -167,6 +167,8 @@ pub struct ArticaraApp {
     ik_damping: f32,
     /// IK root link name. None = use URDF root (full chain).
     ik_root_link: Option<String>,
+    /// IK target position in world space (for debug overlay). None = no active IK.
+    ik_target_marker: Option<na::Point3<f32>>,
     /// Show center-of-mass markers and mass labels.
     show_com: bool,
     /// Show joint axis arrows in viewport.
@@ -350,6 +352,7 @@ impl ArticaraApp {
             selected_collision: None,
             ik_damping: 0.05,
             ik_root_link: None,
+            ik_target_marker: None,
             show_com: false,
             show_joint_axes: false,
             show_ground_plane: false,

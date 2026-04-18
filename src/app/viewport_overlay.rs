@@ -439,6 +439,62 @@ impl ArticaraApp {
         }
     }
 
+    /// Draw a crosshair at the IK target position during IK drag.
+    pub(super) fn draw_ik_target_marker(
+        &self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        aspect: f32,
+    ) {
+        let Some(target_world) = self.ik_target_marker else { return };
+        let Some(ndc) = self.camera.project(&target_world, aspect) else { return };
+
+        let screen_pos = egui::pos2(
+            rect.left() + ndc.x * rect.width(),
+            rect.top() + ndc.y * rect.height(),
+        );
+        if !rect.contains(screen_pos) {
+            return;
+        }
+
+        let painter = ui.painter();
+        let c = screen_pos;
+        let color = egui::Color32::from_rgb(50, 255, 100);
+        let size = 10.0_f32;
+
+        // Crosshair: two lines
+        painter.line_segment(
+            [egui::pos2(c.x - size, c.y), egui::pos2(c.x + size, c.y)],
+            egui::Stroke::new(1.5, color),
+        );
+        painter.line_segment(
+            [egui::pos2(c.x, c.y - size), egui::pos2(c.x, c.y + size)],
+            egui::Stroke::new(1.5, color),
+        );
+        // Circle
+        painter.circle_stroke(
+            c,
+            size * 0.7,
+            egui::Stroke::new(1.5, color),
+        );
+
+        // Numeric position label
+        let label = format!(
+            "({:.3}, {:.3}, {:.3})",
+            target_world.x, target_world.y, target_world.z,
+        );
+        let font = egui::FontId::monospace(11.0);
+        let bg = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180);
+        let text_pos = egui::pos2(c.x + size + 4.0, c.y - 7.0);
+        let galley = painter.layout_no_wrap(label, font, color);
+        let text_rect = egui::Rect::from_min_size(
+            egui::pos2(text_pos.x - 2.0, text_pos.y - 1.0),
+            galley.size() + egui::vec2(4.0, 2.0),
+        );
+        painter.rect_filled(text_rect, 2.0, bg);
+        painter.galley(text_pos, galley, color);
+    }
+
     /// Draw the IK root anchor icon on the viewport.
     pub(super) fn draw_ik_root_anchor(
         &self,
