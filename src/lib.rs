@@ -4,7 +4,6 @@ pub mod collision;
 pub mod dynamics;
 pub mod format;
 pub mod history;
-pub mod ik;
 pub mod isaac;
 pub mod mjcf;
 pub mod primitives;

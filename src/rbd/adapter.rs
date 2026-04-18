@@ -471,6 +471,278 @@ fn convert_geom_to_shape_with_mesh(
     }
 }
 
+// =========================================================================
+//  Positional Jacobian / IK step via misarta
+// =========================================================================
+
+impl ModelAdapter {
+    /// Compute the 3×chain_len positional Jacobian for a chain of articara
+    /// joint indices, using misarta's world-frame Jacobian under the hood.
+    ///
+    /// When `root_link` is `Some`, a relative Jacobian (J_ee − J_base) is
+    /// used so that joints on the "inverted" path get the correct sign
+    /// automatically.  Otherwise the absolute Jacobian is computed.
+    ///
+    /// Returns an f32 matrix whose columns correspond 1-to-1 with `chain`.
+    pub fn chain_positional_jacobian(
+        &self,
+        robot: &RobotModel,
+        chain: &[usize],
+        ee_link: &str,
+        root_link: Option<&str>,
+    ) -> na::DMatrix<f32> {
+        let q = self.build_q(robot);
+        let ee_mi = match self.link_name_to_misarta_joint(ee_link) {
+            Some(v) if v > 0 => v,
+            _ => return na::DMatrix::zeros(3, chain.len()),
+        };
+
+        let full_jac: na::DMatrix<f64> = if let Some(rl) = root_link {
+            match self.link_name_to_misarta_joint(rl) {
+                Some(base_mi) if base_mi > 0 => {
+                    misarta::jacobian::compute_relative_jacobian(&self.model, &q, base_mi, ee_mi)
+                }
+                _ => {
+                    // base_mi == 0 means root/universe joint — use absolute Jacobian
+                    misarta::jacobian::compute_joint_jacobian(&self.model, &q, ee_mi)
+                }
+            }
+        } else {
+            misarta::jacobian::compute_joint_jacobian(&self.model, &q, ee_mi)
+        };
+
+        // Extract linear rows (3..6) and columns for chain joints.
+        let mut jac = na::DMatrix::<f32>::zeros(3, chain.len());
+        for (col, &ji) in chain.iter().enumerate() {
+            if let Some(&Some(mi)) = self.articara_to_misarta.get(ji) {
+                let vi = self.model.q_idx[mi]; // DOF index
+                for row in 0..3 {
+                    jac[(row, col)] = full_jac[(row + 3, vi)] as f32;
+                }
+            }
+        }
+        jac
+    }
+
+    /// Compute the 3×n_order positional Jacobian for a foot chain,
+    /// remapped to a specific joint order (columns correspond to `joint_order`).
+    ///
+    /// This replaces the old `foot_jacobian` function.
+    pub fn foot_positional_jacobian(
+        &self,
+        robot: &RobotModel,
+        foot_link: &str,
+        body_link: &str,
+        joint_order: &[usize],
+        idx_in_m: &[Option<usize>],
+    ) -> na::DMatrix<f64> {
+        let q = self.build_q(robot);
+        let n = joint_order.len();
+
+        let ee_mi = match self.link_name_to_misarta_joint(foot_link) {
+            Some(v) if v > 0 => v,
+            _ => return na::DMatrix::zeros(3, n),
+        };
+        let base_mi = match self.link_name_to_misarta_joint(body_link) {
+            Some(v) => v,
+            None => return na::DMatrix::zeros(3, n),
+        };
+
+        let full_jac = if base_mi > 0 {
+            misarta::jacobian::compute_relative_jacobian(&self.model, &q, base_mi, ee_mi)
+        } else {
+            misarta::jacobian::compute_joint_jacobian(&self.model, &q, ee_mi)
+        };
+
+        let mut jac = na::DMatrix::<f64>::zeros(3, n);
+        for &ji in joint_order {
+            let col = match idx_in_m.get(ji).and_then(|&c| c) {
+                Some(c) => c,
+                None => continue,
+            };
+            if let Some(&Some(mi)) = self.articara_to_misarta.get(ji) {
+                let vi = self.model.q_idx[mi];
+                for row in 0..3 {
+                    jac[(row, col)] = full_jac[(row + 3, vi)];
+                }
+            }
+        }
+        jac
+    }
+
+    /// Perform one Damped-Least-Squares IK step using misarta's Jacobian.
+    ///
+    /// Returns joint-angle deltas (one per element in `chain`) clamped by `max_step`.
+    /// The caller should apply them via `robot.apply_joint_deltas(chain, &deltas)`.
+    pub fn solve_ik_step(
+        &self,
+        robot: &RobotModel,
+        chain: &[usize],
+        ee_link: &str,
+        root_link: Option<&str>,
+        ee_pos: &na::Point3<f32>,
+        target_pos: &na::Point3<f32>,
+        damping: f32,
+        max_step: f32,
+    ) -> Vec<f32> {
+        let n = chain.len();
+        if n == 0 {
+            return Vec::new();
+        }
+
+        let dx = target_pos - ee_pos;
+        let error_mag = dx.norm();
+        let dx_clamped = if error_mag > max_step {
+            dx * (max_step / error_mag)
+        } else {
+            dx
+        };
+        let dx_vec =
+            na::DVector::from_column_slice(&[dx_clamped.x, dx_clamped.y, dx_clamped.z]);
+
+        let jac = self.chain_positional_jacobian(robot, chain, ee_link, root_link);
+
+        let jjt = &jac * jac.transpose();
+        let lambda_sq = damping * damping;
+        let identity = na::DMatrix::<f32>::identity(3, 3);
+        let jjt_reg = jjt + identity * lambda_sq;
+
+        let decomp = jjt_reg.lu();
+        let y = decomp.solve(&dx_vec).unwrap_or(na::DVector::zeros(3));
+        let dq = jac.transpose() * y;
+
+        (0..n).map(|i| dq[i]).collect()
+    }
+}
+
+// =========================================================================
+//  Constraint IK via misarta
+// =========================================================================
+
+use misarta::constraint::{
+    ConstrainedIkConfig, ConstrainedIkResult, ConstraintModel, ConstraintType,
+    RigidConstraint,
+};
+use misarta::frames::Frame;
+
+impl ModelAdapter {
+    /// Build a misarta `Frame` for an articara link name.
+    ///
+    /// The frame is placed at the joint that owns the link, with identity
+    /// local offset.  Returns `None` for unknown links.
+    pub fn frame_for_link(&self, link_name: &str) -> Option<Frame<f64>> {
+        let mi = self.link_name_to_misarta_joint(link_name)?;
+        Some(Frame {
+            name: link_name.to_string(),
+            parent_joint: mi,
+            placement: misarta::se3::identity(),
+        })
+    }
+
+    /// Build a misarta `Frame` for an articara link with a local offset.
+    pub fn frame_for_link_with_offset(
+        &self,
+        link_name: &str,
+        offset: na::Isometry3<f32>,
+    ) -> Option<Frame<f64>> {
+        let mi = self.link_name_to_misarta_joint(link_name)?;
+        Some(Frame {
+            name: link_name.to_string(),
+            parent_joint: mi,
+            placement: offset.cast::<f64>(),
+        })
+    }
+
+    /// Create a position-only (3D) constraint between two articara links.
+    pub fn position_constraint(
+        &self,
+        link_a: &str,
+        link_b: &str,
+    ) -> Option<RigidConstraint<f64>> {
+        let f1 = self.frame_for_link(link_a)?;
+        let f2 = self.frame_for_link(link_b)?;
+        Some(RigidConstraint::position(f1, f2))
+    }
+
+    /// Create a full-pose (6D) constraint between two articara links.
+    pub fn pose_constraint(
+        &self,
+        link_a: &str,
+        link_b: &str,
+    ) -> Option<RigidConstraint<f64>> {
+        let f1 = self.frame_for_link(link_a)?;
+        let f2 = self.frame_for_link(link_b)?;
+        Some(RigidConstraint::pose(f1, f2))
+    }
+
+    /// Solve constrained IK (loop-closure / cross-branch alignment).
+    ///
+    /// Returns the solved configuration mapped back to articara joint positions.
+    pub fn solve_constrained_ik(
+        &self,
+        robot: &RobotModel,
+        constraints: Vec<RigidConstraint<f64>>,
+        config: &ConstrainedIkConfig,
+    ) -> ConstrainedIkResult {
+        let q0 = self.build_q(robot);
+        let cm = ConstraintModel::from_constraints(constraints);
+        misarta::constraint::solve_constrained_ik(&self.model, &q0, &cm, config)
+    }
+
+    /// Solve IK with a primary task (position) and rigid constraints.
+    pub fn solve_task_with_constraints(
+        &self,
+        robot: &RobotModel,
+        ee_link: &str,
+        target: na::Vector3<f64>,
+        constraints: Vec<RigidConstraint<f64>>,
+        config: &ConstrainedIkConfig,
+    ) -> ConstrainedIkResult {
+        let q0 = self.build_q(robot);
+        let cm = ConstraintModel::from_constraints(constraints);
+        let joint_idx = match self.link_name_to_misarta_joint(ee_link) {
+            Some(idx) => idx,
+            None => {
+                return ConstrainedIkResult {
+                    q: q0,
+                    iterations: 0,
+                    constraint_error_norm: f64::INFINITY,
+                    task_error_norm: f64::INFINITY,
+                    converged: false,
+                };
+            }
+        };
+        misarta::constraint::solve_task_with_constraints(
+            &self.model, &q0, joint_idx, target, &cm, config,
+        )
+    }
+
+    /// Apply a solved misarta q-vector back to the articara RobotModel.
+    pub fn apply_q_to_robot(&self, robot: &mut RobotModel, q: &[f64]) {
+        for (ji, &maybe_mi) in self.articara_to_misarta.iter().enumerate() {
+            if let Some(mi) = maybe_mi {
+                let nq = self.model.joints[mi].joint_type.nq();
+                if nq == 1 {
+                    let qi = self.model.q_idx[mi];
+                    robot.joint_positions[ji] = q[qi] as f32;
+                }
+            }
+        }
+    }
+
+    /// Enforce mimic constraints on the current robot model.
+    ///
+    /// Converts q, applies `misarta::mimic::enforce_mimic`, writes back.
+    pub fn enforce_mimic(&self, robot: &mut RobotModel) {
+        if self.model.mimic.is_empty() {
+            return;
+        }
+        let q = self.build_q(robot);
+        let q_enforced = misarta::mimic::enforce_mimic(&self.model, &q);
+        self.apply_q_to_robot(robot, &q_enforced);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

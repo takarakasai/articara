@@ -3,7 +3,6 @@ mod camera;
 mod dynamics;
 mod format;
 mod history;
-mod ik;
 mod isaac;
 mod mjcf;
 mod primitives;

@@ -5,7 +5,6 @@ use std::sync::Arc;
 use super::{
     ArticaraApp, DragMode, DragState, GizmoOp, InteractionMode, OffsetDragState, OffsetTarget,
 };
-use crate::ik;
 use crate::robot;
 
 impl ArticaraApp {
@@ -453,6 +452,7 @@ impl ArticaraApp {
                                             world_axis,
                                             pivot_world,
                                             chain: Vec::new(),
+                                            ee_link: String::new(),
                                             ik_root_link: None,
                                             ik_root_initial_tf: None,
                                         });
@@ -460,14 +460,13 @@ impl ArticaraApp {
                                 }
                             }
                             DragMode::InverseKinematics => {
-                                let chain = ik::build_chain_between(
-                                    model,
+                                let chain = model.chain_joints_between(
                                     link_name,
                                     self.ik_root_link.as_deref(),
                                 );
                                 if !chain.is_empty() {
                                     let ji =
-                                        chain.last().map(|c| c.joint_idx).unwrap_or(0);
+                                        *chain.last().unwrap_or(&0);
                                     let ik_root_tf = self.ik_root_link.as_ref().and_then(|name| {
                                         transforms.get(name).copied()
                                     });
@@ -478,6 +477,7 @@ impl ArticaraApp {
                                         world_axis: na::Vector3::zeros(),
                                         pivot_world: na::Point3::origin(),
                                         chain,
+                                        ee_link: link_name.to_string(),
                                         ik_root_link: self.ik_root_link.clone(),
                                         ik_root_initial_tf: ik_root_tf,
                                     });
@@ -714,8 +714,7 @@ impl ArticaraApp {
                             (mouse_ndc, self.model.as_mut())
                         {
                             let cur_transforms = model.compute_transforms();
-                            let ee_pos = ik::get_ee_world_pos(
-                                model,
+                            let ee_pos = model.ee_world_pos(
                                 drag.link_idx,
                                 &cur_transforms,
                             );
@@ -736,16 +735,18 @@ impl ArticaraApp {
                                     let target = ray_o + ray_d * t;
 
                                     let damping = self.ik_damping;
-                                    let deltas = ik::solve_ik_step(
+                                    let adapter = crate::rbd::adapter::ModelAdapter::from_robot_model(model);
+                                    let deltas = adapter.solve_ik_step(
                                         model,
                                         &drag.chain,
-                                        &cur_transforms,
+                                        &drag.ee_link,
+                                        drag.ik_root_link.as_deref(),
                                         &ee_pos,
                                         &target,
                                         damping,
                                         0.1,
                                     );
-                                    ik::apply_ik_deltas(model, &drag.chain, &deltas);
+                                    model.apply_joint_deltas(&drag.chain, &deltas);
 
                                     if let Some(desired_tf) = ik_root_tf_desired {
                                         let saved_base = model.base_transform;
@@ -792,11 +793,11 @@ impl ArticaraApp {
                                 .filter(|jt| *jt == "revolute" || *jt == "continuous")
                                 .map(|s| s.as_str()),
                             DragMode::InverseKinematics => {
-                                let chain = ik::build_chain(m, link_name);
+                                let chain = m.chain_joints(link_name);
                                 if chain.is_empty() {
                                     None
                                 } else {
-                                    Some(m.joints[chain[0].joint_idx].joint_type.as_str())
+                                    Some(m.joints[chain[0]].joint_type.as_str())
                                 }
                             }
                         },

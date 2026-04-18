@@ -23,7 +23,6 @@ use std::collections::HashMap;
 
 use super::adapter::ModelAdapter;
 use super::model::RobotModel;
-use super::kinematics::ChainJoint;
 
 // ========== Constants ==========
 
@@ -150,53 +149,19 @@ pub fn forward_dynamics(
 /// Compute the 3×N positional Jacobian **J_foot** for a foot link,
 /// mapping joint velocities → foot Cartesian velocity.
 ///
+/// Delegates to `ModelAdapter::foot_positional_jacobian` which uses
+/// misarta's relative Jacobian internally.
+///
 /// Only joints in `joint_order` are included (mapped via `idx_in_m`).
 pub fn foot_jacobian(
     model: &RobotModel,
-    foot_chain: &[ChainJoint],
+    foot_link: &str,
+    body_link: &str,
     joint_order: &[usize],
     idx_in_m: &[Option<usize>],
-    transforms: &HashMap<String, na::Isometry3<f32>>,
-    foot_pos: &na::Point3<f64>,
+    adapter: &ModelAdapter,
 ) -> na::DMatrix<f64> {
-    let n = joint_order.len();
-    let mut jac = na::DMatrix::zeros(3, n);
-
-    for cj in foot_chain {
-        let col = match idx_in_m.get(cj.joint_idx).and_then(|&c| c) {
-            Some(c) => c,
-            None => continue,
-        };
-
-        let joint = &model.joints[cj.joint_idx];
-        let parent_tf = transforms
-            .get(&joint.parent_link)
-            .copied()
-            .unwrap_or(na::Isometry3::identity());
-        let joint_tf = parent_tf * joint.origin;
-        let world_axis = (joint_tf.rotation * joint.axis).cast::<f64>();
-        let joint_pos = joint_tf.translation.vector.cast::<f64>();
-
-        let sign: f64 = if cj.inverted { -1.0 } else { 1.0 };
-
-        match joint.joint_type.as_str() {
-            "revolute" | "continuous" => {
-                let r = foot_pos.coords - joint_pos;
-                let j_col = world_axis.cross(&r) * sign;
-                jac[(0, col)] = j_col.x;
-                jac[(1, col)] = j_col.y;
-                jac[(2, col)] = j_col.z;
-            }
-            "prismatic" => {
-                jac[(0, col)] = world_axis.x * sign;
-                jac[(1, col)] = world_axis.y * sign;
-                jac[(2, col)] = world_axis.z * sign;
-            }
-            _ => {}
-        }
-    }
-
-    jac
+    adapter.foot_positional_jacobian(model, foot_link, body_link, joint_order, idx_in_m)
 }
 
 // =========================================================================
@@ -288,8 +253,8 @@ pub struct ForwardDynamicsState {
     pub base_velocity: na::Vector3<f64>,
     /// Foot link names that are in ground contact.
     pub contact_feet: Vec<String>,
-    /// IK chains from each foot to the body link (for Jacobian computation).
-    pub foot_chains: Vec<Vec<ChainJoint>>,
+    /// Joint-index chains from each foot to the body link.
+    pub foot_chains: Vec<Vec<usize>>,
     /// Body link name (trunk).
     pub body_link: String,
     /// Total robot mass (kg).
@@ -319,7 +284,7 @@ impl ForwardDynamicsState {
     pub fn new(
         model: &RobotModel,
         contact_feet: Vec<String>,
-        foot_chains: Vec<Vec<ChainJoint>>,
+        foot_chains: Vec<Vec<usize>>,
         body_link: &str,
         locked_joints: &std::collections::HashSet<usize>,
     ) -> Self {
@@ -327,7 +292,7 @@ impl ForwardDynamicsState {
         // excluding any that are locked.
         let leg_joint_set: std::collections::HashSet<usize> = foot_chains
             .iter()
-            .flat_map(|chain| chain.iter().map(|cj| cj.joint_idx))
+            .flat_map(|chain| chain.iter().copied())
             .filter(|ji| !locked_joints.contains(ji))
             .collect();
 
@@ -459,11 +424,11 @@ impl ForwardDynamicsState {
 
                 let jac_3d = foot_jacobian(
                     model,
-                    &self.foot_chains[i],
+                    foot_name,
+                    &self.body_link,
                     &self.joint_order,
                     &idx_in_m,
-                    &transforms,
-                    &foot_pos,
+                    &self.adapter,
                 );
 
                 // X row (row 0)
@@ -565,11 +530,11 @@ impl ForwardDynamicsState {
 
             let jac_3d = foot_jacobian(
                 model,
-                &self.foot_chains[i],
+                foot_name,
+                &self.body_link,
                 &self.joint_order,
                 &idx_in_m,
-                &transforms,
-                &foot_pos,
+                &self.adapter,
             );
 
             // X row (row 0)
@@ -793,4 +758,131 @@ pub fn compute_body_side_gravity_torques(
     result
 }
 
+// =========================================================================
+//  ABA — Articulated Body Algorithm (O(n) forward dynamics)
+// =========================================================================
 
+/// Compute forward dynamics via ABA: q̈ = M(q)⁻¹ (τ − C(q,q̇)q̇ − g(q))
+///
+/// This is O(n) and avoids forming M(q) explicitly.
+/// Returns q̈ (one entry per joint in `joint_order`).
+pub fn aba_forward_dynamics(
+    model: &RobotModel,
+    joint_order: &[usize],
+    joint_velocities: &HashMap<usize, f64>,
+    joint_torques: &HashMap<usize, f64>,
+    adapter: &ModelAdapter,
+) -> na::DVector<f64> {
+    let q = adapter.build_q(model);
+    let v = adapter.build_v(joint_velocities);
+    let mut tau = na::DVector::zeros(adapter.model.nv);
+    for (&ji, &t) in joint_torques {
+        if let Some(mi) = adapter.articara_to_misarta.get(ji).and_then(|&m| m) {
+            let nv = adapter.model.joints[mi].joint_type.nv();
+            if nv == 1 {
+                tau[adapter.model.v_idx[mi]] = t;
+            }
+        }
+    }
+    let qdd_full = misarta::aba::aba(&adapter.model, &q, v.as_slice(), tau.as_slice());
+    let (qdd_sub, _) = adapter.extract_subvector(&qdd_full, joint_order);
+    qdd_sub
+}
+
+/// Compute M(q)⁻¹ τ using the O(n) ABA without forming M explicitly.
+pub fn minv_times_vec(
+    model: &RobotModel,
+    joint_order: &[usize],
+    joint_torques: &HashMap<usize, f64>,
+    adapter: &ModelAdapter,
+) -> na::DVector<f64> {
+    let q = adapter.build_q(model);
+    let mut tau = na::DVector::zeros(adapter.model.nv);
+    for (&ji, &t) in joint_torques {
+        if let Some(mi) = adapter.articara_to_misarta.get(ji).and_then(|&m| m) {
+            let nv = adapter.model.joints[mi].joint_type.nv();
+            if nv == 1 {
+                tau[adapter.model.v_idx[mi]] = t;
+            }
+        }
+    }
+    let result = misarta::aba::compute_minv_times_vec(&adapter.model, &q, tau.as_slice());
+    let (sub, _) = adapter.extract_subvector(&result, joint_order);
+    sub
+}
+
+// =========================================================================
+//  Centroidal dynamics — CoM, momentum
+// =========================================================================
+
+/// Compute world-frame center of mass position.
+pub fn compute_com(model: &RobotModel, adapter: &ModelAdapter) -> na::Point3<f64> {
+    let q = adapter.build_q(model);
+    let com = misarta::centroidal::compute_com(&adapter.model, &q);
+    na::Point3::from(com)
+}
+
+/// Compute total robot mass via misarta.
+pub fn total_mass(adapter: &ModelAdapter) -> f64 {
+    misarta::centroidal::total_mass(&adapter.model)
+}
+
+/// Compute the CoM Jacobian (3 × nv), mapping generalized velocity to CoM velocity.
+pub fn compute_com_jacobian(
+    model: &RobotModel,
+    joint_order: &[usize],
+    adapter: &ModelAdapter,
+) -> na::DMatrix<f64> {
+    let q = adapter.build_q(model);
+    let j_full = misarta::centroidal::compute_com_jacobian(&adapter.model, &q);
+    // Extract columns for joints in joint_order
+    let n = joint_order.len();
+    let mut j_sub = na::DMatrix::zeros(3, n);
+    for (col, &ji) in joint_order.iter().enumerate() {
+        if let Some(mi) = adapter.articara_to_misarta.get(ji).and_then(|&m| m) {
+            let nv = adapter.model.joints[mi].joint_type.nv();
+            if nv == 1 {
+                let vi = adapter.model.v_idx[mi];
+                for r in 0..3 {
+                    j_sub[(r, col)] = j_full[(r, vi)];
+                }
+            }
+        }
+    }
+    j_sub
+}
+
+/// Compute the 6D centroidal momentum matrix (6 × nv).
+pub fn compute_centroidal_momentum_matrix(
+    model: &RobotModel,
+    joint_order: &[usize],
+    adapter: &ModelAdapter,
+) -> na::DMatrix<f64> {
+    let q = adapter.build_q(model);
+    let ag_full = misarta::centroidal::compute_centroidal_momentum_matrix(&adapter.model, &q);
+    let n = joint_order.len();
+    let mut ag_sub = na::DMatrix::zeros(6, n);
+    for (col, &ji) in joint_order.iter().enumerate() {
+        if let Some(mi) = adapter.articara_to_misarta.get(ji).and_then(|&m| m) {
+            let nv = adapter.model.joints[mi].joint_type.nv();
+            if nv == 1 {
+                let vi = adapter.model.v_idx[mi];
+                for r in 0..6 {
+                    ag_sub[(r, col)] = ag_full[(r, vi)];
+                }
+            }
+        }
+    }
+    ag_sub
+}
+
+// =========================================================================
+//  iLQR optimal control — re-export from misarta
+// =========================================================================
+
+/// Re-export misarta's iLQR types and solver so articara callers
+/// can use them through the `rbd::dynamics` namespace.
+pub use misarta::optimization::{
+    IlqrConfig, IlqrResult, solve_ilqr,
+    discrete_dynamics_step,
+};

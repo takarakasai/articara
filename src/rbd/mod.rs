@@ -7,10 +7,9 @@
 //!
 //! - [`model`] — Body structure: data types for links, joints, geometry,
 //!   inertial properties, FK, and tree navigation.
-//! - [`kinematics`] — Kinematic chains, Jacobian computation, IK solver.
-//! - [`dynamics`] — Gravity torques, payload capacity, forward dynamics (WIP).
+//! - [`dynamics`] — Gravity torques, payload capacity, forward dynamics.
+//! - [`adapter`] — Bridge between `RobotModel` and `misarta::Model`.
 
 pub mod model;
-pub mod kinematics;
 pub mod dynamics;
 pub mod adapter;

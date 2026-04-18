@@ -8,7 +8,6 @@ use crate::camera::OrbitCamera;
 use crate::dynamics;
 use crate::format::RobotFormat;
 use crate::history::History;
-use crate::ik;
 use crate::renderer::{DisplayMode, GlRenderer, MeshKind};
 use crate::robot::RobotModel;
 
@@ -85,8 +84,10 @@ struct DragState {
     /// The joint pivot point in world space at drag start.
     pivot_world: na::Point3<f32>,
     // --- IK mode fields ---
-    /// The kinematic chain from root to end-effector.
-    chain: Vec<ik::ChainJoint>,
+    /// The kinematic chain (movable joint indices) from root to end-effector.
+    chain: Vec<usize>,
+    /// End-effector link name (for Jacobian computation).
+    ee_link: String,
     /// The IK root link name (for base correction). None = URDF root.
     ik_root_link: Option<String>,
     /// World-space transform of the IK root link at drag start.

@@ -206,6 +206,122 @@ impl RobotModel {
         (center, radius * 1.05)
     }
 
+    // =====================================================================
+    //  Kinematic chain traversal
+    // =====================================================================
+
+    /// Return the list of movable joint indices from the URDF root to `end_link`.
+    ///
+    /// Joints appear in root→end-effector order.
+    /// Only revolute, continuous, and prismatic joints are included.
+    pub fn chain_joints(&self, end_link: &str) -> Vec<usize> {
+        let mut chain = Vec::new();
+        let mut current = end_link.to_string();
+        while let Some(ji) = self.parent_joint_of_link(&current) {
+            let jt = self.joints[ji].joint_type.as_str();
+            if jt == "revolute" || jt == "continuous" || jt == "prismatic" {
+                chain.push(ji);
+            }
+            current = self.joints[ji].parent_link.clone();
+        }
+        chain.reverse();
+        chain
+    }
+
+    /// Return the list of movable joint indices between two arbitrary links.
+    ///
+    /// If `root_link` is `None`, equivalent to [`chain_joints`].
+    /// Otherwise, finds the Lowest Common Ancestor (LCA) and returns all
+    /// movable joints on both paths (root_link→LCA and LCA→end_link).
+    pub fn chain_joints_between(
+        &self,
+        end_link: &str,
+        root_link: Option<&str>,
+    ) -> Vec<usize> {
+        let root_link = match root_link {
+            Some(r) => r,
+            None => return self.chain_joints(end_link),
+        };
+        if root_link == end_link {
+            return Vec::new();
+        }
+
+        // Ancestors of both links
+        let anc_root = self.ancestors_with_self(root_link);
+        let anc_end = self.ancestors_with_self(end_link);
+
+        let anc_root_set: std::collections::HashSet<&str> =
+            anc_root.iter().map(|s| s.as_str()).collect();
+
+        let lca = anc_end
+            .iter()
+            .find(|a| anc_root_set.contains(a.as_str()))
+            .cloned()
+            .unwrap_or_else(|| self.root_link.clone());
+
+        // Collect joints root_link → LCA
+        let up = self.collect_path_joints(root_link, &lca);
+        // Collect joints end_link → LCA, then reverse
+        let mut down = self.collect_path_joints(end_link, &lca);
+        down.reverse();
+
+        let mut result = up;
+        result.extend(down);
+        result
+    }
+
+    /// Helper: all ancestor link names including `link` itself, from self → root.
+    fn ancestors_with_self(&self, link: &str) -> Vec<String> {
+        let mut list = vec![link.to_string()];
+        let mut current = link.to_string();
+        while let Some(ji) = self.parent_joint_of_link(&current) {
+            current = self.joints[ji].parent_link.clone();
+            list.push(current.clone());
+        }
+        list
+    }
+
+    /// Helper: collect movable joint indices from `from_link` up to `to_ancestor`.
+    fn collect_path_joints(&self, from_link: &str, to_ancestor: &str) -> Vec<usize> {
+        let mut joints = Vec::new();
+        let mut current = from_link.to_string();
+        while current != to_ancestor {
+            if let Some(ji) = self.parent_joint_of_link(&current) {
+                let jt = self.joints[ji].joint_type.as_str();
+                if jt == "revolute" || jt == "continuous" || jt == "prismatic" {
+                    joints.push(ji);
+                }
+                current = self.joints[ji].parent_link.clone();
+            } else {
+                break;
+            }
+        }
+        joints
+    }
+
+    /// World position of a link's bounding-sphere center.
+    pub fn ee_world_pos(
+        &self,
+        link_idx: usize,
+        transforms: &HashMap<String, na::Isometry3<f32>>,
+    ) -> na::Point3<f32> {
+        let link_name = &self.links[link_idx].name;
+        let world_tf = transforms
+            .get(link_name)
+            .copied()
+            .unwrap_or(na::Isometry3::identity());
+        let (local_center, _) = self.link_bounding_sphere(link_idx);
+        world_tf * local_center
+    }
+
+    /// Apply joint-angle deltas (one per joint index), clamping to limits.
+    pub fn apply_joint_deltas(&mut self, joint_indices: &[usize], deltas: &[f32]) {
+        for (&ji, &d) in joint_indices.iter().zip(deltas.iter()) {
+            let lower = self.joints[ji].lower as f32;
+            let upper = self.joints[ji].upper as f32;
+            self.joint_positions[ji] = (self.joint_positions[ji] + d).clamp(lower, upper);
+        }
+    }
 }
 
 // =========================================================================

@@ -1082,56 +1082,51 @@ mod test_camera {
 }
 
 // ============================================================
-// ik.rs — inverse kinematics
+// ik.rs — inverse kinematics (now via RobotModel + ModelAdapter)
 // ============================================================
 mod test_ik {
     use super::*;
     use nalgebra as na;
-    use articara::ik;
     use articara::robot::RobotModel;
+    use articara::rbd::adapter::ModelAdapter;
 
     #[test]
     fn build_chain_two_joints() {
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let chain = ik::build_chain(&model, "link2");
+        let chain = model.chain_joints("link2");
         assert_eq!(chain.len(), 2);
-        assert_eq!(model.joints[chain[0].joint_idx].name, "joint1");
-        assert_eq!(model.joints[chain[1].joint_idx].name, "joint2");
-        // build_chain should produce non-inverted joints
-        assert!(!chain[0].inverted);
-        assert!(!chain[1].inverted);
+        assert_eq!(model.joints[chain[0]].name, "joint1");
+        assert_eq!(model.joints[chain[1]].name, "joint2");
     }
 
     #[test]
     fn build_chain_one_joint() {
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let chain = ik::build_chain(&model, "link1");
+        let chain = model.chain_joints("link1");
         assert_eq!(chain.len(), 1);
-        assert_eq!(model.joints[chain[0].joint_idx].name, "joint1");
-        assert!(!chain[0].inverted);
+        assert_eq!(model.joints[chain[0]].name, "joint1");
     }
 
     #[test]
     fn build_chain_root_is_empty() {
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let chain = ik::build_chain(&model, "base_link");
+        let chain = model.chain_joints("base_link");
         assert_eq!(chain.len(), 0);
     }
 
     #[test]
     fn build_chain_fixed_joint_skipped() {
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let chain = ik::build_chain(&model, "fixed_part");
+        let chain = model.chain_joints("fixed_part");
         assert_eq!(chain.len(), 0); // fixed joints are not in chain
     }
 
     #[test]
     fn jacobian_dimensions() {
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let chain = ik::build_chain(&model, "link2");
-        let tf = model.compute_transforms();
-        let ee_pos = na::Point3::new(0.0, 0.0, 0.25_f32);
-        let jac = ik::compute_jacobian(&model, &chain, &tf, &ee_pos);
+        let chain = model.chain_joints("link2");
+        let adapter = ModelAdapter::from_robot_model(&model);
+        let jac = adapter.chain_positional_jacobian(&model, &chain, "link2", None);
         assert_eq!(jac.nrows(), 3);
         assert_eq!(jac.ncols(), 2);
     }
@@ -1139,19 +1134,23 @@ mod test_ik {
     #[test]
     fn ik_step_reduces_error() {
         let mut model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let chain = ik::build_chain(&model, "link2");
+        let chain = model.chain_joints("link2");
         let tf = model.compute_transforms();
         let li = model.link_map["link2"];
-        let ee_pos = ik::get_ee_world_pos(&model, li, &tf);
+        let ee_pos = model.ee_world_pos(li, &tf);
         let target = na::Point3::new(0.1, 0.0, 0.2_f32);
         let initial_error = na::distance(&ee_pos, &target);
 
-        let deltas = ik::solve_ik_step(&model, &chain, &tf, &ee_pos, &target, 0.05, 0.1);
+        let adapter = ModelAdapter::from_robot_model(&model);
+        let deltas = adapter.solve_ik_step(
+            &model, &chain, "link2", None,
+            &ee_pos, &target, 0.05, 0.1,
+        );
         assert_eq!(deltas.len(), 2);
 
-        ik::apply_ik_deltas(&mut model, &chain, &deltas);
+        model.apply_joint_deltas(&chain, &deltas);
         let tf2 = model.compute_transforms();
-        let new_pos = ik::get_ee_world_pos(&model, li, &tf2);
+        let new_pos = model.ee_world_pos(li, &tf2);
         let new_error = na::distance(&new_pos, &target);
 
         assert!(new_error < initial_error,
@@ -1159,53 +1158,50 @@ mod test_ik {
     }
 
     #[test]
-    fn apply_ik_deltas_respects_limits() {
+    fn apply_joint_deltas_respects_limits() {
         let mut model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let chain = ik::build_chain(&model, "link2");
+        let chain = model.chain_joints("link2");
 
         // Try to apply huge deltas
         let deltas = vec![100.0, 100.0];
-        ik::apply_ik_deltas(&mut model, &chain, &deltas);
+        model.apply_joint_deltas(&chain, &deltas);
 
-        let ji1 = chain[0].joint_idx;
-        let ji2 = chain[1].joint_idx;
+        let ji1 = chain[0];
+        let ji2 = chain[1];
         assert!(model.joint_positions[ji1] <= model.joints[ji1].upper as f32 + 1e-6);
         assert!(model.joint_positions[ji2] <= model.joints[ji2].upper as f32 + 1e-6);
     }
 
-    // --- build_chain_between / build_chain_with_root tests ---
+    // --- chain_joints_between tests ---
 
     #[test]
     fn build_chain_between_ancestor_root() {
-        // root=base_link (ancestor of link2) → full chain, all non-inverted
+        // root=base_link (ancestor of link2) → full chain
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let chain = ik::build_chain_between(&model, "link2", Some("base_link"));
+        let chain = model.chain_joints_between("link2", Some("base_link"));
         assert_eq!(chain.len(), 2);
-        assert_eq!(model.joints[chain[0].joint_idx].name, "joint1");
-        assert_eq!(model.joints[chain[1].joint_idx].name, "joint2");
-        assert!(!chain[0].inverted);
-        assert!(!chain[1].inverted);
+        assert_eq!(model.joints[chain[0]].name, "joint1");
+        assert_eq!(model.joints[chain[1]].name, "joint2");
     }
 
     #[test]
     fn build_chain_between_partial() {
-        // root=link1 → only joint2, non-inverted
+        // root=link1 → only joint2
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let chain = ik::build_chain_between(&model, "link2", Some("link1"));
+        let chain = model.chain_joints_between("link2", Some("link1"));
         assert_eq!(chain.len(), 1);
-        assert_eq!(model.joints[chain[0].joint_idx].name, "joint2");
-        assert!(!chain[0].inverted);
+        assert_eq!(model.joints[chain[0]].name, "joint2");
     }
 
     #[test]
     fn build_chain_between_none_matches_default() {
-        // root=None should behave identically to build_chain
+        // root=None should behave identically to chain_joints
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let chain_default = ik::build_chain(&model, "link2");
-        let chain_none = ik::build_chain_between(&model, "link2", None);
+        let chain_default = model.chain_joints("link2");
+        let chain_none = model.chain_joints_between("link2", None);
         assert_eq!(chain_default.len(), chain_none.len());
         for (a, b) in chain_default.iter().zip(chain_none.iter()) {
-            assert_eq!(a.joint_idx, b.joint_idx);
+            assert_eq!(a, b);
         }
     }
 
@@ -1213,39 +1209,30 @@ mod test_ik {
     fn build_chain_between_same_link_empty() {
         // root == end → empty chain
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let chain = ik::build_chain_between(&model, "link2", Some("link2"));
+        let chain = model.chain_joints_between("link2", Some("link2"));
         assert_eq!(chain.len(), 0);
     }
 
     #[test]
-    fn build_chain_between_cross_branch_inverted() {
+    fn build_chain_between_cross_branch() {
         // root=link2, end=fixed_part — these are on different branches
         // LCA = base_link
-        // Path: link2 → (joint2 inverted) → link1 → (joint1 inverted) → base_link
-        //       base_link → fixed_part (fixed_joint, skipped)
+        // up path from link2 to base_link has 2 movable joints
+        // down path from base_link to fixed_part has 0 movable joints (fixed)
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let chain = ik::build_chain_between(&model, "fixed_part", Some("link2"));
-        // fixed_part is connected by fixed joint, so down path has 0 movable joints
-        // up path from link2 to base_link has 2 inverted joints
+        let chain = model.chain_joints_between("fixed_part", Some("link2"));
         assert_eq!(chain.len(), 2);
-        assert!(chain[0].inverted);
-        assert!(chain[1].inverted);
-        // Order: joint2 (closer to root=link2) then joint1
-        assert_eq!(model.joints[chain[0].joint_idx].name, "joint2");
-        assert_eq!(model.joints[chain[1].joint_idx].name, "joint1");
+        assert_eq!(model.joints[chain[0]].name, "joint2");
+        assert_eq!(model.joints[chain[1]].name, "joint1");
     }
 
     #[test]
     fn build_chain_between_child_to_parent() {
-        // root=link2, end=link1 → goes up: link2 → joint2 (inv) → link1
-        // But link1 IS the end-effector; LCA = link1
-        // Up from link2 to link1: joint2 (inverted)
-        // Down from link1 to link1: nothing
+        // root=link2, end=link1 → goes up: link2 → joint2 → link1
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
-        let chain = ik::build_chain_between(&model, "link1", Some("link2"));
+        let chain = model.chain_joints_between("link1", Some("link2"));
         assert_eq!(chain.len(), 1);
-        assert_eq!(model.joints[chain[0].joint_idx].name, "joint2");
-        assert!(chain[0].inverted);
+        assert_eq!(model.joints[chain[0]].name, "joint2");
     }
 
     // --- Namiashi cross-branch tests ---
@@ -1253,59 +1240,34 @@ mod test_ik {
     #[test]
     fn namiashi_cross_branch_rl_to_arm() {
         // root=RL_hip, end=arm → cross-branch through trunk
-        // Up: RL_hip → RL_hip_joint (inv) → trunk (LCA)
-        // Down: trunk → arm_pitch_joint → arm
         let model = RobotModel::from_urdf(&namiashi_urdf()).unwrap();
-        let chain = ik::build_chain_between(&model, "arm", Some("RL_hip"));
+        let chain = model.chain_joints_between("arm", Some("RL_hip"));
         assert_eq!(chain.len(), 2);
-        assert!(chain[0].inverted, "RL_hip_joint should be inverted");
-        assert!(!chain[1].inverted, "arm_pitch_joint should be normal");
     }
 
     #[test]
     fn namiashi_cross_branch_foot_to_arm() {
         // root=RL_foot, end=arm → goes up the whole RL leg, across trunk, down to arm
-        // Up: RL_foot → (fixed, skip) → RL_calf → RL_calf_joint (inv)
-        //     → RL_thigh → RL_thigh_joint (inv) → RL_hip → RL_hip_joint (inv) → trunk
-        // Down: trunk → arm_pitch_joint → arm
         let model = RobotModel::from_urdf(&namiashi_urdf()).unwrap();
-        let chain = ik::build_chain_between(&model, "arm", Some("RL_foot"));
-        assert_eq!(chain.len(), 4); // 3 inverted leg joints + 1 normal arm joint
-        assert!(chain[0].inverted);
-        assert!(chain[1].inverted);
-        assert!(chain[2].inverted);
-        assert!(!chain[3].inverted);
+        let chain = model.chain_joints_between("arm", Some("RL_foot"));
+        assert_eq!(chain.len(), 4); // 3 leg joints + 1 arm joint
     }
 
     #[test]
     fn namiashi_same_leg_root_partial() {
-        // root=RL_hip, end=RL_calf → same branch, ancestral
-        // Down path: RL_hip → RL_thigh_joint → RL_thigh → RL_calf_joint → RL_calf
+        // root=RL_hip, end=RL_calf → same branch
         let model = RobotModel::from_urdf(&namiashi_urdf()).unwrap();
-        let chain = ik::build_chain_between(&model, "RL_calf", Some("RL_hip"));
+        let chain = model.chain_joints_between("RL_calf", Some("RL_hip"));
         assert_eq!(chain.len(), 2); // thigh + calf joints
-        assert!(!chain[0].inverted);
-        assert!(!chain[1].inverted);
     }
 
     #[test]
     fn namiashi_cross_leg() {
         // root=RL_foot, end=FL_foot → two different legs, through trunk
-        // Up: RL leg (3 inverted: calf, thigh, hip)
-        // Down: FL leg (3 normal: hip, thigh, calf)
         let model = RobotModel::from_urdf(&namiashi_urdf()).unwrap();
-        let chain = ik::build_chain_between(&model, "FL_foot", Some("RL_foot"));
-        // Up: 3 inverted (RL leg), Down: 3 normal (FL leg)
-        // FL_foot is child of FL_foot_fixed (fixed → not included)
+        let chain = model.chain_joints_between("FL_foot", Some("RL_foot"));
+        // 3 RL leg joints + 3 FL leg joints
         assert_eq!(chain.len(), 6);
-        // First 3 inverted (RL leg going up to trunk)
-        for i in 0..3 {
-            assert!(chain[i].inverted, "chain[{i}] should be inverted");
-        }
-        // Last 3 normal (FL leg going down from trunk)
-        for i in 3..6 {
-            assert!(!chain[i].inverted, "chain[{i}] should be normal");
-        }
     }
 }
 

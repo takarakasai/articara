@@ -148,17 +148,18 @@ pub fn compute_payload_capacity(
     let transforms = model.compute_transforms();
 
     // Build chain from root to ee_link
-    let chain = crate::ik::build_chain(model, ee_link);
+    let chain = model.chain_joints(ee_link);
     if chain.is_empty() {
         return None;
     }
 
     // EE world position
     let ee_li = *model.link_map.get(ee_link)?;
-    let ee_pos = crate::ik::get_ee_world_pos(model, ee_li, &transforms);
+    let ee_pos = model.ee_world_pos(ee_li, &transforms);
 
-    // Compute positional Jacobian (3 × N)
-    let jac = crate::ik::compute_jacobian(model, &chain, &transforms, &ee_pos);
+    // Compute positional Jacobian (3 × N) via misarta
+    let adapter = crate::rbd::adapter::ModelAdapter::from_robot_model(model);
+    let jac = adapter.chain_positional_jacobian(model, &chain, ee_link, None);
 
     // Unit payload force: F = [0, 0, -g] (force per 1 kg)
     let f_unit = na::DVector::from_column_slice(&[0.0_f32, 0.0, -G as f32]);
@@ -175,8 +176,8 @@ pub fn compute_payload_capacity(
         .collect();
 
     // Fill payload_torque_per_kg
-    for (col, cj) in chain.iter().enumerate() {
-        if let Some(&pos) = idx_map.get(&cj.joint_idx) {
+    for (col, &ji) in chain.iter().enumerate() {
+        if let Some(&pos) = idx_map.get(&ji) {
             joint_torques[pos].payload_torque_per_kg = tau_payload[col] as f64;
         }
     }
@@ -185,8 +186,8 @@ pub fn compute_payload_capacity(
     let mut max_mass = f64::INFINITY;
     let mut limiting = String::new();
 
-    for (col, cj) in chain.iter().enumerate() {
-        if let Some(&pos) = idx_map.get(&cj.joint_idx) {
+    for (col, &ji) in chain.iter().enumerate() {
+        if let Some(&pos) = idx_map.get(&ji) {
             let info = &joint_torques[pos];
             let tau_p = tau_payload[col] as f64; // torque per 1 kg
             if tau_p.abs() < 1e-12 {
@@ -288,14 +289,14 @@ pub fn compute_jump_height(
 
     for gl in ground_links {
         // Only joints between body and this ground link
-        let chain = crate::ik::build_chain_between(model, gl, Some(body));
-        for cj in &chain {
-            if seen.contains(&cj.joint_idx) {
+        let chain = model.chain_joints_between(gl, Some(body));
+        for &ji in &chain {
+            if seen.contains(&ji) {
                 continue;
             }
-            seen.insert(cj.joint_idx);
+            seen.insert(ji);
 
-            let joint = &model.joints[cj.joint_idx];
+            let joint = &model.joints[ji];
             let effort = joint.effort;
             if effort <= 0.0 {
                 continue;
@@ -310,7 +311,7 @@ pub fn compute_jump_height(
             // Use the current joint position to determine the available
             // extension stroke: distance from current angle to the
             // nearer joint limit (conservative estimate).
-            let cur = model.joint_positions[cj.joint_idx] as f64;
+            let cur = model.joint_positions[ji] as f64;
             let stroke_to_lower = (cur - lower).abs();
             let stroke_to_upper = (upper - cur).abs();
             let stroke = stroke_to_lower.min(stroke_to_upper);
@@ -476,8 +477,8 @@ pub struct LegSim {
     pub ground_link: String,
     /// Body link name (the "root" of this leg's IK chain).
     pub body_link: String,
-    /// IK chain from ground link to body link.
-    pub chain: Vec<crate::ik::ChainJoint>,
+    /// IK chain from ground link to body link (joint indices).
+    pub chain: Vec<usize>,
     /// Foot position relative to body at the start of the sim (body-frame).
     pub initial_foot_pos: na::Point3<f32>,
     /// Maximum vertical stroke (m) — from user's start pose to fully extended.
@@ -697,15 +698,15 @@ pub fn start_jump_sim(
         .collect();
 
     for gl in ground_links {
-        let chain = crate::ik::build_chain_between(model, gl, Some(&body));
+        let chain = model.chain_joints_between(gl, Some(&body));
         if chain.is_empty() {
             continue;
         }
 
         let leg_locked: std::collections::HashSet<usize> = chain
             .iter()
-            .filter(|cj| locked_idx.contains(&cj.joint_idx))
-            .map(|cj| cj.joint_idx)
+            .filter(|ji| locked_idx.contains(ji))
+            .copied()
             .collect();
 
         // Current foot position in world frame (user's starting pose)
@@ -725,13 +726,13 @@ pub fn start_jump_sim(
         let start_angles = model.joint_positions.clone();
 
         // Collect per-joint metadata for this leg
-        for cj in &chain {
-            if seen_joints.contains(&cj.joint_idx) {
+        for &ji in &chain {
+            if seen_joints.contains(&ji) {
                 continue;
             }
-            seen_joints.insert(cj.joint_idx);
+            seen_joints.insert(ji);
 
-            let joint = &model.joints[cj.joint_idx];
+            let joint = &model.joints[ji];
             if joint.effort <= 0.0 {
                 continue;
             }
@@ -741,12 +742,12 @@ pub fn start_jump_sim(
                 continue;
             }
 
-            let cur = model.joint_positions[cj.joint_idx];
+            let cur = model.joint_positions[ji];
             let vel = (joint.velocity as f32).max(1.0);
-            let is_locked = locked_idx.contains(&cj.joint_idx);
+            let is_locked = locked_idx.contains(&ji);
 
             leg_joints.push(LegJointSim {
-                joint_idx: cj.joint_idx,
+                joint_idx: ji,
                 start_angle: cur,
                 extended_angle: cur, // will be updated by IK during sim
                 max_velocity: vel,
@@ -787,9 +788,8 @@ pub fn start_jump_sim(
             let leg_time: f32 = leg
                 .chain
                 .iter()
-                .filter(|cj| !leg.locked_joint_indices.contains(&cj.joint_idx))
-                .map(|cj| {
-                    let ji = cj.joint_idx;
+                .filter(|ji| !leg.locked_joint_indices.contains(ji))
+                .map(|&ji| {
                     let start_val = if ji < leg.start_angles.len() {
                         leg.start_angles[ji]
                     } else {
@@ -815,8 +815,11 @@ pub fn start_jump_sim(
 
     // Build the forward dynamics state for physics-based extension.
     let fd_state = {
-        let foot_chains: Vec<Vec<crate::ik::ChainJoint>> = legs.iter()
+        let foot_chains: Vec<Vec<usize>> = legs.iter()
             .map(|leg| leg.chain.clone())
+            .collect();
+        let foot_links: Vec<String> = legs.iter()
+            .map(|leg| leg.ground_link.clone())
             .collect();
         let contact_feet: Vec<String> = ground_links.to_vec();
         // Collect all locked joint indices across all legs.
@@ -840,8 +843,7 @@ pub fn start_jump_sim(
         // velocity at the moment of launch.
         let mut traj = HashMap::new();
         for leg in &legs {
-            for cj in &leg.chain {
-                let ji = cj.joint_idx;
+            for &ji in &leg.chain {
                 if leg.locked_joint_indices.contains(&ji) {
                     continue;
                 }
@@ -936,7 +938,7 @@ fn foot_link_pos(
 /// gives `min_foot_z` (most extended).
 fn compute_leg_z_range(
     model: &mut RobotModel,
-    chain: &[crate::ik::ChainJoint],
+    chain: &[usize],
     ground_link: &str,
     locked_joints: &std::collections::HashSet<usize>,
 ) -> (f32, f32, Vec<f32>, Vec<f32>) {
@@ -947,8 +949,8 @@ fn compute_leg_z_range(
     // Collect only the movable (non-locked) joints in the chain
     let active: Vec<usize> = chain
         .iter()
-        .filter(|cj| !locked_joints.contains(&cj.joint_idx))
-        .map(|cj| cj.joint_idx)
+        .filter(|ji| !locked_joints.contains(ji))
+        .copied()
         .collect();
 
     if active.is_empty() {
@@ -1122,8 +1124,7 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
             sim.step_info.joint_utilisation.clear();
 
             for leg in &sim.legs {
-                for cj in leg.chain.iter() {
-                    let ji = cj.joint_idx;
+                for &ji in leg.chain.iter() {
                     if leg.locked_joint_indices.contains(&ji) {
                         continue;
                     }
@@ -1208,7 +1209,7 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
             // --- 4. Track per-joint torque peaks and angular velocity ---
             {
                 let mut joint_indices: Vec<usize> = sim.legs.iter()
-                    .flat_map(|leg| leg.chain.iter().map(|cj| cj.joint_idx))
+                    .flat_map(|leg| leg.chain.iter().copied())
                     .collect();
                 joint_indices.sort_unstable();
                 joint_indices.dedup();
@@ -1223,34 +1224,34 @@ fn step_jump_sub(sim: &mut JumpSim, model: &mut RobotModel, dt: f32) -> bool {
                 };
 
                 for leg in &sim.legs {
-                    for cj in leg.chain.iter() {
-                        let body_tau = body_tau_map.get(&cj.joint_idx).copied().unwrap_or(0.0).abs();
+                    for &ji in leg.chain.iter() {
+                        let body_tau = body_tau_map.get(&ji).copied().unwrap_or(0.0).abs();
                         let total_tau = body_tau * grf_scale;
-                        let cur_angle = model.joint_positions[cj.joint_idx];
+                        let cur_angle = model.joint_positions[ji];
 
                         let record_tau = if sim.enforce_torque_limits {
-                            let effort = model.joints[cj.joint_idx].effort;
+                            let effort = model.joints[ji].effort;
                             if effort > 0.0 { total_tau.min(effort) } else { total_tau }
                         } else {
                             total_tau
                         };
 
-                        let entry = sim.peak_torques.entry(cj.joint_idx).or_insert(0.0);
+                        let entry = sim.peak_torques.entry(ji).or_insert(0.0);
                         if record_tau > *entry {
                             *entry = record_tau;
-                            sim.peak_torque_angles.insert(cj.joint_idx, cur_angle as f64);
+                            sim.peak_torque_angles.insert(ji, cur_angle as f64);
                         }
 
                         // Angular velocity from fd_state
                         let omega = sim.fd_state.as_ref()
-                            .and_then(|fd| fd.joint_velocities.get(&cj.joint_idx))
+                            .and_then(|fd| fd.joint_velocities.get(&ji))
                             .copied()
                             .unwrap_or(0.0)
                             .abs();
-                        let v_entry = sim.peak_velocities.entry(cj.joint_idx).or_insert(0.0);
+                        let v_entry = sim.peak_velocities.entry(ji).or_insert(0.0);
                         if omega > *v_entry {
                             *v_entry = omega;
-                            sim.peak_velocity_angles.insert(cj.joint_idx, cur_angle as f64);
+                            sim.peak_velocity_angles.insert(ji, cur_angle as f64);
                         }
                     }
                 }
@@ -1614,7 +1615,7 @@ fn update_utilisation(
     ee_link: &str,
 ) {
     let transforms = model.compute_transforms();
-    let chain = crate::ik::build_chain(model, ee_link);
+    let chain = model.chain_joints(ee_link);
     if chain.is_empty() {
         return;
     }
@@ -1622,8 +1623,9 @@ fn update_utilisation(
         Some(&li) => li,
         None => return,
     };
-    let ee_pos = crate::ik::get_ee_world_pos(model, ee_li, &transforms);
-    let jac = crate::ik::compute_jacobian(model, &chain, &transforms, &ee_pos);
+    let _ee_pos = model.ee_world_pos(ee_li, &transforms);
+    let adapter = crate::rbd::adapter::ModelAdapter::from_robot_model(model);
+    let jac = adapter.chain_positional_jacobian(model, &chain, ee_link, None);
 
     // Force per current mass
     let f = na::DVector::from_column_slice(&[0.0_f32, 0.0, -(G as f32) * sim.current_mass as f32]);
@@ -1637,15 +1639,15 @@ fn update_utilisation(
         .collect();
 
     sim.joint_utilisation.clear();
-    for (col, cj) in chain.iter().enumerate() {
-        let joint = &model.joints[cj.joint_idx];
+    for (col, &ji) in chain.iter().enumerate() {
+        let joint = &model.joints[ji];
         if joint.effort <= 0.0 {
             continue;
         }
-        let g_tau = grav_map.get(&cj.joint_idx).copied().unwrap_or(0.0);
+        let g_tau = grav_map.get(&ji).copied().unwrap_or(0.0);
         let total_tau = (g_tau + tau_payload[col] as f64).abs();
         let util = total_tau / joint.effort;
-        sim.joint_utilisation.push((cj.joint_idx, util));
+        sim.joint_utilisation.push((ji, util));
     }
 }
 
@@ -1745,11 +1747,11 @@ mod tests {
         // Print start and extend angles for one leg
         {
             let body = "trunk".to_string();
-            let chain = crate::ik::build_chain_between(&model, "RL_foot", Some(&body));
-            for cj in &chain {
-                let j = &model.joints[cj.joint_idx];
+            let chain = model.chain_joints_between("RL_foot", Some(&body));
+            for &ji in &chain {
+                let j = &model.joints[ji];
                 eprintln!("  {} start={:.4} range=[{:.4}, {:.4}] vel={:.1}",
-                    j.name, model.joint_positions[cj.joint_idx],
+                    j.name, model.joint_positions[ji],
                     j.lower, j.upper, j.velocity);
             }
         }
@@ -1776,8 +1778,7 @@ mod tests {
         // Show start→extend angle differences
         for (li, leg) in sim.legs.iter().enumerate() {
             if li == 0 {
-                for cj in &leg.chain {
-                    let ji = cj.joint_idx;
+                for &ji in &leg.chain {
                     let s = if ji < leg.start_angles.len() { leg.start_angles[ji] } else { 0.0 };
                     let e = if ji < leg.extend_angles.len() { leg.extend_angles[ji] } else { 0.0 };
                     eprintln!("  joint[{}] start={:.4} extend={:.4} Δ={:.4}",
@@ -1932,8 +1933,7 @@ mod tests {
         eprintln!("[TOML] start_base_z (sim) = {:.6}", sim.start_base_z);
 
         // Dump start/extend angles for first leg
-        for cj in &sim.legs[0].chain {
-            let ji = cj.joint_idx;
+        for &ji in &sim.legs[0].chain {
             let s = if ji < sim.legs[0].start_angles.len() { sim.legs[0].start_angles[ji] } else { 0.0 };
             let e = if ji < sim.legs[0].extend_angles.len() { sim.legs[0].extend_angles[ji] } else { 0.0 };
             eprintln!("[TOML]   {} start={:.4} extend={:.4} Δ={:.4} locked={}",
