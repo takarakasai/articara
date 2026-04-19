@@ -11,13 +11,37 @@ use crate::history::History;
 use crate::renderer::{DisplayMode, GlRenderer, MeshKind};
 use crate::robot::RobotModel;
 
-/// A link pinned to a world-space position for multi-constraint IK.
+/// Pin constraint dimensionality.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinDof {
+    /// Position only (3-DoF).
+    Position,
+    /// Position + orientation (6-DoF).
+    Pose,
+}
+
+impl PinDof {
+    pub fn label(self) -> &'static str {
+        match self {
+            PinDof::Position => "Position (3D)",
+            PinDof::Pose => "Pose (6D)",
+        }
+    }
+    pub const ALL: [PinDof; 2] = [PinDof::Position, PinDof::Pose];
+}
+
+/// A link pinned to a world-space position (and optionally orientation)
+/// for multi-constraint IK.
 #[derive(Clone, Debug)]
 pub struct PinnedLink {
     /// Link name.
     pub link_name: String,
     /// Target world position to maintain.
     pub target_pos: na::Point3<f64>,
+    /// Target world orientation (for 6-DoF mode).
+    pub target_rot: na::UnitQuaternion<f64>,
+    /// Constraint dimensionality.
+    pub dof: PinDof,
 }
 
 /// Top-level interaction mode.
@@ -193,6 +217,10 @@ pub struct ArticaraApp {
     pinned_links: Vec<PinnedLink>,
     /// Weight for pin constraints (higher = harder constraint).
     ik_pin_weight: f32,
+    /// Links to auto-pin at IK drag start (chicken-head stabilization).
+    chicken_head_links: Vec<String>,
+    /// Default DoF mode for chicken-head pins.
+    chicken_head_dof: PinDof,
     /// Show center-of-mass markers and mass labels.
     show_com: bool,
     /// Show joint axis arrows in viewport.
@@ -387,6 +415,8 @@ impl ArticaraApp {
             ik_error: None,
             pinned_links: Vec::new(),
             ik_pin_weight: 10.0,
+            chicken_head_links: Vec::new(),
+            chicken_head_dof: PinDof::Position,
             show_com: false,
             show_joint_axes: false,
             show_ground_plane: false,

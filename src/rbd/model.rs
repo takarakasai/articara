@@ -72,6 +72,19 @@ impl IkDof {
     pub const ALL: [IkDof; 2] = [IkDof::World3D, IkDof::ScreenPlane2D];
 }
 
+/// Pin specification for multi-constraint IK.
+#[derive(Clone, Debug)]
+pub struct PinSpec {
+    /// Link name to pin.
+    pub link_name: String,
+    /// Target world position.
+    pub target_pos: na::Point3<f64>,
+    /// Target world orientation (used only when `pose_6dof` is true).
+    pub target_rot: na::UnitQuaternion<f64>,
+    /// Whether to constrain orientation as well (6-DoF).
+    pub pose_6dof: bool,
+}
+
 // ========== Data Structures ==========
 
 /// Cached misarta model + index mappings.
@@ -482,6 +495,20 @@ impl RobotModel {
             .unwrap_or(na::Isometry3::identity());
         let (local_center, _) = self.link_bounding_sphere(link_idx);
         world_tf * local_center
+    }
+
+    /// World orientation of a link.
+    pub fn link_world_orientation(
+        &self,
+        link_idx: usize,
+        transforms: &HashMap<String, na::Isometry3<f32>>,
+    ) -> na::UnitQuaternion<f32> {
+        let link_name = &self.links[link_idx].name;
+        let world_tf = transforms
+            .get(link_name)
+            .copied()
+            .unwrap_or(na::Isometry3::identity());
+        world_tf.rotation
     }
 
     /// Apply joint-angle deltas (one per joint index), clamping to limits.
@@ -1489,28 +1516,57 @@ impl RobotModel {
         jac
     }
 
+    /// Compute 6×nv full (angular + linear) Jacobian for a link in the
+    /// **full** joint space, expressed in the world frame.
+    ///
+    /// Row layout: [ω_x, ω_y, ω_z, v_x, v_y, v_z] (Featherstone ordering).
+    pub fn link_full_jacobian_full(&self, link_name: &str) -> na::DMatrix<f64> {
+        let mc = self.mc();
+        let q = mc.build_q(self);
+        let nv = mc.model.nv;
+        let mi = match mc.link_name_to_misarta_joint(link_name) {
+            Some(v) if v > 0 => v,
+            _ => return na::DMatrix::zeros(6, nv),
+        };
+        let full6 = misarta::jacobian::compute_joint_jacobian(&mc.model, &q, mi);
+        let r = self.base_transform.rotation.to_rotation_matrix();
+
+        let mut jac = na::DMatrix::<f64>::zeros(6, nv);
+        for col in 0..nv {
+            // Angular part (rows 0-2)
+            let w = na::Vector3::new(full6[(0, col)], full6[(1, col)], full6[(2, col)]);
+            let w_world = r * w;
+            jac[(0, col)] = w_world[0];
+            jac[(1, col)] = w_world[1];
+            jac[(2, col)] = w_world[2];
+            // Linear part (rows 3-5)
+            let v = na::Vector3::new(full6[(3, col)], full6[(4, col)], full6[(5, col)]);
+            let v_world = r * v;
+            jac[(3, col)] = v_world[0];
+            jac[(4, col)] = v_world[1];
+            jac[(5, col)] = v_world[2];
+        }
+        jac
+    }
+
     /// Differential IK step with pinned-link constraints.
     ///
     /// Like [`solve_ik_step`], but additionally enforces equality constraints
-    /// that keep pinned links at their target world positions (augmented
-    /// Jacobian approach via `misarta::ik::differential_ik_step_with_constraints`).
+    /// that keep pinned links at their target world positions/orientations
+    /// (augmented Jacobian approach via
+    /// `misarta::ik::differential_ik_step_with_constraints`).
     ///
     /// Returns deltas for **all model joints** (one per `joint_positions` entry),
     /// not just the chain.
     ///
-    /// # Parameters
-    /// - `ee_link` — end-effector link being dragged.
-    /// - `ee_pos` — current world position of the EE.
-    /// - `target_pos` — desired world position of the EE.
-    /// - `pins` — list of `(link_name, target_world_pos)` constraints.
-    /// - `damping`, `gain`, `max_step`, `solver`, `screen_axes`, `joint_weights`
-    ///   — same as `solve_ik_step`.
+    /// Each pin specifies link name, target position, optional target
+    /// orientation, and whether to use 3-DoF (position) or 6-DoF (pose).
     pub fn solve_ik_step_with_pins(
         &self,
         ee_link: &str,
         ee_pos: &na::Point3<f64>,
         target_pos: &na::Point3<f64>,
-        pins: &[(&str, na::Point3<f64>)],
+        pins: &[PinSpec],
         damping: f64,
         gain: f64,
         max_step: f64,
@@ -1531,25 +1587,57 @@ impl RobotModel {
         // Build constraints for each pinned link
         let transforms = self.compute_transforms();
         let mut constraints = Vec::with_capacity(pins.len());
-        for &(pin_link, ref pin_target) in pins {
-            let jac_pin = self.link_positional_jacobian_full(pin_link);
-            // Current world position of pinned link
-            let li = self.link_map.get(pin_link).copied();
-            let pin_world = li
-                .and_then(|idx| {
-                    let tf = transforms.get(&self.links[idx].name)?;
-                    let (center, _) = self.link_bounding_sphere(idx);
-                    Some(*tf * center)
-                })
-                .unwrap_or(na::Point3::origin())
-                .cast::<f64>();
+        for pin in pins {
+            let li = self.link_map.get(pin.link_name.as_str()).copied();
 
-            let err = pin_world - na::Point3::new(pin_target.x, pin_target.y, pin_target.z);
-            constraints.push(misarta::ik::DiffIkConstraint {
-                jacobian: jac_pin,
-                error: na::DVector::from_column_slice(&[err.x, err.y, err.z]),
-                weight: pin_weight,
-            });
+            if pin.pose_6dof {
+                // 6-DoF constraint (position + orientation)
+                let jac6 = self.link_full_jacobian_full(&pin.link_name);
+
+                // Current world pose
+                let (pin_pos, pin_rot) = li
+                    .map(|idx| {
+                        let pos = self.ee_world_pos(idx, &transforms).cast::<f64>();
+                        let rot = self.link_world_orientation(idx, &transforms).cast::<f64>();
+                        (pos, rot)
+                    })
+                    .unwrap_or((na::Point3::origin(), na::UnitQuaternion::identity()));
+
+                // Position error (rows 3-5 in Featherstone order)
+                let pos_err = pin_pos - pin.target_pos;
+                // Orientation error: log(R_cur * R_target^{-1}) → axis-angle 3-vector
+                let rot_err_q = pin_rot * pin.target_rot.inverse();
+                let rot_err = rot_err_q.scaled_axis();
+
+                // Error vector: [ω_err; v_err] (6D, Featherstone order)
+                let err = na::DVector::from_column_slice(&[
+                    rot_err.x, rot_err.y, rot_err.z,
+                    pos_err.x, pos_err.y, pos_err.z,
+                ]);
+                constraints.push(misarta::ik::DiffIkConstraint {
+                    jacobian: jac6,
+                    error: err,
+                    weight: pin_weight,
+                });
+            } else {
+                // 3-DoF constraint (position only)
+                let jac_pin = self.link_positional_jacobian_full(&pin.link_name);
+                let pin_world = li
+                    .and_then(|idx| {
+                        let tf = transforms.get(&self.links[idx].name)?;
+                        let (center, _) = self.link_bounding_sphere(idx);
+                        Some(*tf * center)
+                    })
+                    .unwrap_or(na::Point3::origin())
+                    .cast::<f64>();
+
+                let err = pin_world - pin.target_pos;
+                constraints.push(misarta::ik::DiffIkConstraint {
+                    jacobian: jac_pin,
+                    error: na::DVector::from_column_slice(&[err.x, err.y, err.z]),
+                    weight: pin_weight,
+                });
+            }
         }
 
         // Map solver → misarta types

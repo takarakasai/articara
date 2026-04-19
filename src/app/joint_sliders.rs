@@ -122,9 +122,12 @@ impl ArticaraApp {
                                 if ui.button(format!("📌 Pin \"{}\"", &link_name)).clicked() {
                                     let transforms = model.compute_transforms();
                                     let world_pos = model.ee_world_pos(li, &transforms);
+                                    let world_rot = model.link_world_orientation(li, &transforms);
                                     self.pinned_links.push(super::PinnedLink {
                                         link_name: link_name.clone(),
                                         target_pos: world_pos.cast::<f64>(),
+                                        target_rot: world_rot.cast::<f64>(),
+                                        dof: super::PinDof::Position,
                                     });
                                 }
                             }
@@ -158,6 +161,7 @@ impl ArticaraApp {
                                     if let Some(&li) = model.link_map.get(&pin.link_name) {
                                         let pos = model.ee_world_pos(li, &transforms);
                                         pin.target_pos = pos.cast::<f64>();
+                                        pin.target_rot = model.link_world_orientation(li, &transforms).cast::<f64>();
                                     }
                                 }
                             }
@@ -168,6 +172,60 @@ impl ArticaraApp {
 
                         if self.pinned_links.is_empty() {
                             ui.label("No links pinned. Select a link and click Pin.");
+                        }
+                    });
+
+                // --- Chicken Head (auto-pin at drag start) ---
+                egui::CollapsingHeader::new("Chicken Head")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        ui.label("Links auto-pinned during IK drag:");
+
+                        // DoF selector
+                        ui.horizontal(|ui| {
+                            ui.label("DoF:");
+                            for dof in super::PinDof::ALL {
+                                ui.selectable_value(
+                                    &mut self.chicken_head_dof,
+                                    dof,
+                                    dof.label(),
+                                );
+                            }
+                        });
+
+                        // Add selected link button
+                        if let Some(li) = self.selected_link {
+                            let link_name = &model.links[li].name;
+                            let already = self.chicken_head_links.iter().any(|n| n == link_name);
+                            if !already {
+                                if ui.button(format!("🐔 Add \"{}\"", link_name)).clicked() {
+                                    self.chicken_head_links.push(link_name.clone());
+                                }
+                            }
+                        }
+
+                        // List with remove buttons
+                        let mut ch_remove = None;
+                        for (i, name) in self.chicken_head_links.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("🐔 {}", name));
+                                if ui.small_button("✕").clicked() {
+                                    ch_remove = Some(i);
+                                }
+                            });
+                        }
+                        if let Some(idx) = ch_remove {
+                            self.chicken_head_links.remove(idx);
+                        }
+
+                        if !self.chicken_head_links.is_empty() {
+                            if ui.button("🗑 Clear all").clicked() {
+                                self.chicken_head_links.clear();
+                            }
+                        }
+
+                        if self.chicken_head_links.is_empty() {
+                            ui.label("Select a link and click Add.");
                         }
                     });
 

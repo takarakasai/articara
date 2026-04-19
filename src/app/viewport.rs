@@ -154,6 +154,17 @@ impl ArticaraApp {
 
         // Drag released
         if response.drag_stopped_by(egui::PointerButton::Primary) {
+            // Remove chicken-head auto-pins (those whose link name
+            // appears in chicken_head_links but not manually pinned).
+            if !self.chicken_head_links.is_empty() {
+                let ch_set: std::collections::HashSet<&str> = self
+                    .chicken_head_links
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect();
+                self.pinned_links
+                    .retain(|p| !ch_set.contains(p.link_name.as_str()));
+            }
             self.drag_state = None;
             self.offset_drag_state = None;
             self.ik_target_marker = None;
@@ -471,9 +482,11 @@ impl ArticaraApp {
                                     self.ik_root_link.as_deref(),
                                 );
                                 // Allow drag even with empty chain when pins
-                                // exist, because the constrained solver works
-                                // in full joint space.
-                                if !chain.is_empty() || !self.pinned_links.is_empty() {
+                                // or chicken-head links exist, because the
+                                // constrained solver works in full joint space.
+                                let has_constraints = !self.pinned_links.is_empty()
+                                    || !self.chicken_head_links.is_empty();
+                                if !chain.is_empty() || has_constraints {
                                     let ji =
                                         *chain.last().unwrap_or(&0);
                                     let ik_root_tf = self.ik_root_link.as_ref().and_then(|name| {
@@ -495,6 +508,29 @@ impl ArticaraApp {
                                         - na::Point3::from(self.camera.eye().coords))
                                         .normalize();
                                     let drag_depth = (ee_pos_start - self.camera.eye()).dot(&cam_fwd);
+
+                                    // Chicken-head: auto-pin designated links at their current poses
+                                    for ch_link in &self.chicken_head_links {
+                                        // Skip if already manually pinned
+                                        if self.pinned_links.iter().any(|p| p.link_name == *ch_link) {
+                                            continue;
+                                        }
+                                        // Skip if this is the link being dragged
+                                        if ch_link == link_name {
+                                            continue;
+                                        }
+                                        if let Some(&ch_li) = model.link_map.get(ch_link.as_str()) {
+                                            let pos = model.ee_world_pos(ch_li, transforms).cast::<f64>();
+                                            let rot = model.link_world_orientation(ch_li, transforms).cast::<f64>();
+                                            self.pinned_links.push(super::PinnedLink {
+                                                link_name: ch_link.clone(),
+                                                target_pos: pos,
+                                                target_rot: rot,
+                                                dof: self.chicken_head_dof,
+                                            });
+                                        }
+                                    }
+
                                     self.drag_state = Some(DragState {
                                         link_idx: li,
                                         mode: DragMode::InverseKinematics,
@@ -809,9 +845,14 @@ impl ArticaraApp {
 
                                     // Use constrained IK when links are pinned
                                     if !self.pinned_links.is_empty() {
-                                        let pins: Vec<(&str, na::Point3<f64>)> = self.pinned_links
+                                        let pins: Vec<crate::robot::PinSpec> = self.pinned_links
                                             .iter()
-                                            .map(|p| (p.link_name.as_str(), p.target_pos))
+                                            .map(|p| crate::robot::PinSpec {
+                                                link_name: p.link_name.clone(),
+                                                target_pos: p.target_pos,
+                                                target_rot: p.target_rot,
+                                                pose_6dof: p.dof == super::PinDof::Pose,
+                                            })
                                             .collect();
 
                                         let is_root_drag = drag.chain.is_empty();
@@ -862,25 +903,56 @@ impl ArticaraApp {
                                                 // Build pin constraints from post-move positions
                                                 let post_tf = model.compute_transforms();
                                                 let mut constraints = Vec::new();
-                                                for (pin_name, pin_target) in &pins {
-                                                    let jac_pin =
-                                                        model.link_positional_jacobian_full(pin_name);
+                                                for pin in &pins {
                                                     if let Some(&li) =
-                                                        model.link_map.get(*pin_name)
+                                                        model.link_map.get(pin.link_name.as_str())
                                                     {
-                                                        let pin_world = model
-                                                            .ee_world_pos(li, &post_tf)
-                                                            .cast::<f64>();
-                                                        let err = pin_world - pin_target;
-                                                        constraints.push(
-                                                            misarta::ik::DiffIkConstraint {
-                                                                jacobian: jac_pin,
-                                                                error: na::DVector::from_column_slice(
-                                                                    &[err.x, err.y, err.z],
-                                                                ),
-                                                                weight: self.ik_pin_weight as f64,
-                                                            },
-                                                        );
+                                                        if pin.pose_6dof {
+                                                            let jac = model.link_full_jacobian_full(
+                                                                &pin.link_name,
+                                                            );
+                                                            let pin_world = model
+                                                                .ee_world_pos(li, &post_tf)
+                                                                .cast::<f64>();
+                                                            let pin_rot = model
+                                                                .link_world_orientation(li, &post_tf)
+                                                                .cast::<f64>();
+                                                            let pos_err = pin_world - pin.target_pos;
+                                                            let rot_err = (pin_rot
+                                                                * pin.target_rot.inverse())
+                                                                .scaled_axis();
+                                                            constraints.push(
+                                                                misarta::ik::DiffIkConstraint {
+                                                                    jacobian: jac,
+                                                                    error: na::DVector::from_column_slice(
+                                                                        &[
+                                                                            rot_err.x, rot_err.y,
+                                                                            rot_err.z, pos_err.x,
+                                                                            pos_err.y, pos_err.z,
+                                                                        ],
+                                                                    ),
+                                                                    weight: self.ik_pin_weight as f64,
+                                                                },
+                                                            );
+                                                        } else {
+                                                            let jac_pin = model
+                                                                .link_positional_jacobian_full(
+                                                                    &pin.link_name,
+                                                                );
+                                                            let pin_world = model
+                                                                .ee_world_pos(li, &post_tf)
+                                                                .cast::<f64>();
+                                                            let err = pin_world - pin.target_pos;
+                                                            constraints.push(
+                                                                misarta::ik::DiffIkConstraint {
+                                                                    jacobian: jac_pin,
+                                                                    error: na::DVector::from_column_slice(
+                                                                        &[err.x, err.y, err.z],
+                                                                    ),
+                                                                    weight: self.ik_pin_weight as f64,
+                                                                },
+                                                            );
+                                                        }
                                                     }
                                                 }
 
