@@ -719,6 +719,10 @@ impl ArticaraApp {
         match model.save_urdf() {
             Ok(path) => {
                 self.export_message = format!("✔ Saved to {}", path.display());
+                // Save .misarta.toml sidecar alongside the model
+                if let Err(e) = model.save_sidecar_config(&path) {
+                    self.export_message += &format!(" (⚠ config: {e})");
+                }
             }
             Err(e) => {
                 self.export_message = format!("⚠ Save failed: {e}");
@@ -800,6 +804,12 @@ impl ArticaraApp {
                     }
                 }
             }
+        }
+
+        // Save .misarta.toml sidecar alongside the exported model
+        let model_file = dir.join(&base_name);
+        if let Err(e) = model.save_sidecar_config(&model_file) {
+            self.export_message += &format!(" (⚠ config: {e})");
         }
     }
 }

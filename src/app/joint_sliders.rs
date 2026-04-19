@@ -175,6 +175,134 @@ impl ArticaraApp {
                         }
                     });
 
+                // --- Loop Closures (closed kinematic chains) ---
+                egui::CollapsingHeader::new("Loop Closures")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        // Weight slider
+                        ui.horizontal(|ui| {
+                            ui.label("Weight:");
+                            ui.add(
+                                egui::Slider::new(&mut self.loop_closure_weight, 1.0..=200.0)
+                                    .logarithmic(true)
+                                    .text("w"),
+                            );
+                        })
+                        .response
+                        .on_hover_text("Constraint strength for loop closures during IK drag.");
+
+                        // List current loop closures
+                        let mut lc_remove = None;
+                        for (i, lc) in model.loop_closures.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                let dim = if lc.pose_6dof { "6D" } else { "3D" };
+                                ui.label(format!(
+                                    "🔗 {} ↔ {} [{}]",
+                                    &lc.link_a, &lc.link_b, dim
+                                ));
+                                if ui.small_button("✕").clicked() {
+                                    lc_remove = Some(i);
+                                }
+                            });
+                            // Show offsets on hover
+                            let oa = lc.offset_a.translation.vector;
+                            let ob = lc.offset_b.translation.vector;
+                            if oa.norm() > 1e-6 || ob.norm() > 1e-6 {
+                                ui.label(format!(
+                                    "  A({:.3},{:.3},{:.3}) B({:.3},{:.3},{:.3})",
+                                    oa.x, oa.y, oa.z, ob.x, ob.y, ob.z
+                                ));
+                            }
+                        }
+                        if let Some(idx) = lc_remove {
+                            model.loop_closures.remove(idx);
+                        }
+
+                        // Show error
+                        if !model.loop_closures.is_empty() {
+                            let err = model.loop_closure_error();
+                            ui.label(format!("Error: {:.6}", err));
+                            if ui.button("🗑 Clear all").clicked() {
+                                model.loop_closures.clear();
+                            }
+                        }
+
+                        ui.separator();
+                        ui.label("Add loop closure:");
+                        ui.label("1. Select link A in viewport");
+                        ui.label("2. Pick link B below, set offsets");
+
+                        // Link B selector (combo box of all links)
+                        if self.selected_link.is_some() {
+                            let sel_link_name = model.links[self.selected_link.unwrap()].name.clone();
+                            ui.label(format!("Link A: {}", &sel_link_name));
+
+                            // Persistent state for the add-loop form via egui's temp data
+                            let id_b = ui.id().with("lc_linkb");
+                            let id_ox = ui.id().with("lc_ox");
+                            let id_oy = ui.id().with("lc_oy");
+                            let id_oz = ui.id().with("lc_oz");
+                            let id_bx = ui.id().with("lc_bx");
+                            let id_by = ui.id().with("lc_by");
+                            let id_bz = ui.id().with("lc_bz");
+
+                            let mut link_b_idx: usize = ui.data(|d| d.get_temp(id_b).unwrap_or(0));
+                            let mut oa_x: f64 = ui.data(|d| d.get_temp(id_ox).unwrap_or(0.0));
+                            let mut oa_y: f64 = ui.data(|d| d.get_temp(id_oy).unwrap_or(0.0));
+                            let mut oa_z: f64 = ui.data(|d| d.get_temp(id_oz).unwrap_or(0.0));
+                            let mut ob_x: f64 = ui.data(|d| d.get_temp(id_bx).unwrap_or(0.0));
+                            let mut ob_y: f64 = ui.data(|d| d.get_temp(id_by).unwrap_or(0.0));
+                            let mut ob_z: f64 = ui.data(|d| d.get_temp(id_bz).unwrap_or(0.0));
+
+                            egui::ComboBox::from_label("Link B")
+                                .selected_text(&model.links[link_b_idx.min(model.links.len() - 1)].name)
+                                .show_ui(ui, |ui| {
+                                    for (i, link) in model.links.iter().enumerate() {
+                                        ui.selectable_value(&mut link_b_idx, i, &link.name);
+                                    }
+                                });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Offset A:");
+                                ui.add(egui::DragValue::new(&mut oa_x).speed(0.01).prefix("x:"));
+                                ui.add(egui::DragValue::new(&mut oa_y).speed(0.01).prefix("y:"));
+                                ui.add(egui::DragValue::new(&mut oa_z).speed(0.01).prefix("z:"));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Offset B:");
+                                ui.add(egui::DragValue::new(&mut ob_x).speed(0.01).prefix("x:"));
+                                ui.add(egui::DragValue::new(&mut ob_y).speed(0.01).prefix("y:"));
+                                ui.add(egui::DragValue::new(&mut ob_z).speed(0.01).prefix("z:"));
+                            });
+
+                            let link_b_name = model.links[link_b_idx.min(model.links.len() - 1)].name.clone();
+                            if ui.button(format!("🔗 Add closure: {} ↔ {}", &sel_link_name, &link_b_name)).clicked() {
+                                model.loop_closures.push(
+                                    crate::robot::LoopClosure::position(
+                                        format!("{}↔{}", &sel_link_name, &link_b_name),
+                                        sel_link_name.clone(),
+                                        na::Vector3::new(oa_x, oa_y, oa_z),
+                                        link_b_name.clone(),
+                                        na::Vector3::new(ob_x, ob_y, ob_z),
+                                    ),
+                                );
+                            }
+
+                            // Save form state
+                            ui.data_mut(|d| {
+                                d.insert_temp(id_b, link_b_idx);
+                                d.insert_temp(id_ox, oa_x);
+                                d.insert_temp(id_oy, oa_y);
+                                d.insert_temp(id_oz, oa_z);
+                                d.insert_temp(id_bx, ob_x);
+                                d.insert_temp(id_by, ob_y);
+                                d.insert_temp(id_bz, ob_z);
+                            });
+                        } else {
+                            ui.label("Select a link in the viewport first.");
+                        }
+                    });
+
                 // --- Chicken Head (auto-pin at drag start) ---
                 egui::CollapsingHeader::new("Chicken Head")
                     .default_open(false)

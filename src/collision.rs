@@ -156,6 +156,7 @@ mod tests {
             source_path: None,
             base_transform: na::Isometry3::identity(),
             misarta_cache: None,
+            loop_closures: Vec::new(),
         };
         model.rebuild_misarta_model();
         model

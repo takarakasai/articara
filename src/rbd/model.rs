@@ -85,6 +85,82 @@ pub struct PinSpec {
     pub pose_6dof: bool,
 }
 
+/// A kinematic loop-closure constraint.
+///
+/// Specifies that a point on `link_a` (at `offset_a` in link-local frame)
+/// should coincide with a point on `link_b` (at `offset_b`).
+#[derive(Clone, Debug)]
+pub struct LoopClosure {
+    /// Human-readable name.
+    pub name: String,
+    /// First link of the loop pair.
+    pub link_a: String,
+    /// Offset in link_a's local frame (typically a pure translation to a tip).
+    pub offset_a: na::Isometry3<f64>,
+    /// Second link of the loop pair.
+    pub link_b: String,
+    /// Offset in link_b's local frame.
+    pub offset_b: na::Isometry3<f64>,
+    /// Whether to enforce full pose (6-DoF) or position only (3-DoF).
+    pub pose_6dof: bool,
+}
+
+impl LoopClosure {
+    /// Create a position-only (3-DoF) loop closure between two link tips.
+    pub fn position(
+        name: impl Into<String>,
+        link_a: impl Into<String>,
+        offset_a: na::Vector3<f64>,
+        link_b: impl Into<String>,
+        offset_b: na::Vector3<f64>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            link_a: link_a.into(),
+            offset_a: na::Isometry3::from_parts(
+                na::Translation3::from(offset_a),
+                na::UnitQuaternion::identity(),
+            ),
+            link_b: link_b.into(),
+            offset_b: na::Isometry3::from_parts(
+                na::Translation3::from(offset_b),
+                na::UnitQuaternion::identity(),
+            ),
+            pose_6dof: false,
+        }
+    }
+
+    /// Convert to misarta's serialisable config representation.
+    pub fn to_config(&self) -> misarta::config::LoopClosureConfig {
+        misarta::config::LoopClosureConfig {
+            name: self.name.clone(),
+            link_a: self.link_a.clone(),
+            offset_a: self.offset_a.translation.vector.into(),
+            link_b: self.link_b.clone(),
+            offset_b: self.offset_b.translation.vector.into(),
+            pose_6dof: self.pose_6dof,
+        }
+    }
+
+    /// Construct from misarta's serialisable config representation.
+    pub fn from_config(cfg: &misarta::config::LoopClosureConfig) -> Self {
+        Self {
+            name: cfg.name.clone(),
+            link_a: cfg.link_a.clone(),
+            offset_a: na::Isometry3::from_parts(
+                na::Translation3::from(na::Vector3::from(cfg.offset_a)),
+                na::UnitQuaternion::identity(),
+            ),
+            link_b: cfg.link_b.clone(),
+            offset_b: na::Isometry3::from_parts(
+                na::Translation3::from(na::Vector3::from(cfg.offset_b)),
+                na::UnitQuaternion::identity(),
+            ),
+            pose_6dof: cfg.pose_6dof,
+        }
+    }
+}
+
 // ========== Data Structures ==========
 
 /// Cached misarta model + index mappings.
@@ -120,6 +196,10 @@ pub struct RobotModel {
     /// until [`rebuild_misarta_model`] is called.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub misarta_cache: Option<MisartaCache>,
+    /// Kinematic loop-closure constraints.
+    /// Populated via UI or from model file metadata.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub loop_closures: Vec<LoopClosure>,
 }
 
 #[derive(Clone)]
@@ -1574,6 +1654,7 @@ impl RobotModel {
         screen_axes: Option<(na::Vector3<f64>, na::Vector3<f64>)>,
         joint_weights_raw: Option<&[f64]>,
         pin_weight: f64,
+        extra_constraints: &[misarta::ik::DiffIkConstraint],
     ) -> Vec<f64> {
         let mc = self.mc();
         let nv = mc.model.nv;
@@ -1680,6 +1761,9 @@ impl RobotModel {
 
         let ee_v = na::Vector3::new(ee_pos.x, ee_pos.y, ee_pos.z);
         let tgt_v = na::Vector3::new(target_pos.x, target_pos.y, target_pos.z);
+
+        // Append any extra constraints (e.g. loop closures)
+        constraints.extend_from_slice(extra_constraints);
 
         let result = misarta::ik::differential_ik_step_with_constraints(
             &jac_ee, &ee_v, &tgt_v, &constraints, &diff_config,
@@ -1881,6 +1965,113 @@ impl RobotModel {
         misarta::constraint::solve_task_with_constraints(
             &mc.model, &q0, joint_idx, target, &cm, config,
         )
+    }
+
+    // ─── Loop closure helpers ─────────────────────────────────────────
+
+    /// Build a [`ConstraintModel`] from this model's stored loop closures.
+    pub fn build_loop_constraint_model(&self) -> ConstraintModel<f64> {
+        let mut constraints = Vec::with_capacity(self.loop_closures.len());
+        for lc in &self.loop_closures {
+            let f1 = match self.frame_for_link_with_offset(&lc.link_a, lc.offset_a) {
+                Some(f) => f,
+                None => continue,
+            };
+            let f2 = match self.frame_for_link_with_offset(&lc.link_b, lc.offset_b) {
+                Some(f) => f,
+                None => continue,
+            };
+            let c = if lc.pose_6dof {
+                RigidConstraint::pose(f1, f2).with_name(lc.name.clone())
+            } else {
+                RigidConstraint::position(f1, f2).with_name(lc.name.clone())
+            };
+            constraints.push(c);
+        }
+        ConstraintModel::from_constraints(constraints)
+    }
+
+    /// Build [`DiffIkConstraint`]s from stored loop closures at the current
+    /// configuration, suitable for single-step differential IK.
+    pub fn build_loop_diff_constraints(
+        &self,
+        weight: f64,
+    ) -> Vec<misarta::ik::DiffIkConstraint> {
+        let cm = self.build_loop_constraint_model();
+        if cm.is_empty() {
+            return Vec::new();
+        }
+        let mc = self.mc();
+        let q = mc.build_q(self);
+        misarta::constraint::build_diff_ik_constraints(&mc.model, &q, &cm, weight)
+    }
+
+    /// Compute the current loop-closure error norm.
+    pub fn loop_closure_error(&self) -> f64 {
+        let cm = self.build_loop_constraint_model();
+        if cm.is_empty() {
+            return 0.0;
+        }
+        let mc = self.mc();
+        let q = mc.build_q(self);
+        let err = misarta::constraint::compute_constraint_error(&mc.model, &q, &cm);
+        err.norm()
+    }
+
+    /// Build a `MisartaConfig` from the current loop closures.
+    pub fn to_misarta_config(&self) -> misarta::config::MisartaConfig {
+        let mut cfg = misarta::config::MisartaConfig::new();
+        for lc in &self.loop_closures {
+            cfg.loop_closure.push(lc.to_config());
+        }
+        cfg
+    }
+
+    /// Load loop closures from a `MisartaConfig`, replacing any existing ones.
+    pub fn load_misarta_config(&mut self, cfg: &misarta::config::MisartaConfig) {
+        self.loop_closures = cfg
+            .loop_closure
+            .iter()
+            .map(LoopClosure::from_config)
+            .collect();
+    }
+
+    /// Try to load the `.misarta.toml` sidecar file next to `source_path`.
+    /// Returns `true` if a config was found and loaded.
+    pub fn load_sidecar_config(&mut self) -> bool {
+        let Some(ref src) = self.source_path else {
+            return false;
+        };
+        let toml_path = misarta::config::MisartaConfig::config_path_for(src);
+        if !toml_path.exists() {
+            return false;
+        }
+        match misarta::config::MisartaConfig::load(&toml_path) {
+            Ok(cfg) => {
+                self.load_misarta_config(&cfg);
+                log::info!(
+                    "Loaded {} loop closure(s) from {}",
+                    self.loop_closures.len(),
+                    toml_path.display()
+                );
+                true
+            }
+            Err(e) => {
+                log::warn!("Failed to load {}: {}", toml_path.display(), e);
+                false
+            }
+        }
+    }
+
+    /// Save loop closures to the `.misarta.toml` sidecar file.
+    /// If there are no closures the file is NOT written (and any existing one is left).
+    pub fn save_sidecar_config(&self, model_path: &std::path::Path) -> Result<(), String> {
+        let cfg = self.to_misarta_config();
+        if cfg.is_empty() {
+            return Ok(());
+        }
+        let toml_path = misarta::config::MisartaConfig::config_path_for(model_path);
+        cfg.save(&toml_path)
     }
 }
 

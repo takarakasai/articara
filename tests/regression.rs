@@ -2486,3 +2486,230 @@ mod test_serde {
         assert!(!deser_result.graph_data.time.is_empty(), "graph data should have samples");
     }
 }
+
+// ============================================================
+// Closed-loop IK tests
+// ============================================================
+mod test_closed_loop_ik {
+    use super::*;
+    use articara::robot::*;
+    use articara::sdf;
+
+    fn fixture_four_bar() -> PathBuf {
+        fixtures_dir().join("sdf").join("four_bar.sdf")
+    }
+
+    fn fixture_five_bar() -> PathBuf {
+        fixtures_dir().join("sdf").join("five_bar_parallel.sdf")
+    }
+
+    /// Helper: compute loop-closure error for the four-bar linkage.
+    fn four_bar_loop_error(model: &RobotModel) -> f32 {
+        let transforms = model.compute_transforms();
+        let coupler_tf = transforms["coupler"];
+        let coupler_tip = coupler_tf * nalgebra::Point3::new(0.3_f32, 0.0, 0.0);
+        let crank_r_tf = transforms["crank_right"];
+        let crank_r_tip = crank_r_tf * nalgebra::Point3::new(0.0_f32, 0.0, 0.2);
+        (coupler_tip - crank_r_tip).norm()
+    }
+
+    #[test]
+    fn four_bar_constraint_model_builds() {
+        let mut model = sdf::import_sdf(&fixture_four_bar()).unwrap();
+        model.loop_closures.push(LoopClosure::position(
+            "four_bar_loop",
+            "coupler",
+            nalgebra::Vector3::new(0.3, 0.0, 0.0),
+            "crank_right",
+            nalgebra::Vector3::new(0.0, 0.0, 0.2),
+        ));
+
+        let cm = model.build_loop_constraint_model();
+        assert_eq!(cm.len(), 1);
+        assert_eq!(cm.total_dim(), 3); // position-only = 3 rows
+    }
+
+    #[test]
+    fn four_bar_diff_constraints_build() {
+        let mut model = sdf::import_sdf(&fixture_four_bar()).unwrap();
+        model.loop_closures.push(LoopClosure::position(
+            "loop",
+            "coupler",
+            nalgebra::Vector3::new(0.3, 0.0, 0.0),
+            "crank_right",
+            nalgebra::Vector3::new(0.0, 0.0, 0.2),
+        ));
+
+        let diffs = model.build_loop_diff_constraints(10.0);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].jacobian.nrows(), 3);
+        let mc = model.mc();
+        assert_eq!(diffs[0].jacobian.ncols(), mc.model.nv);
+    }
+
+    #[test]
+    fn four_bar_ik_step_maintains_closure() {
+        let mut model = sdf::import_sdf(&fixture_four_bar()).unwrap();
+        model.loop_closures.push(LoopClosure::position(
+            "loop",
+            "coupler",
+            nalgebra::Vector3::new(0.3, 0.0, 0.0),
+            "crank_right",
+            nalgebra::Vector3::new(0.0, 0.0, 0.2),
+        ));
+
+        // Perturb joint_left slightly (will break loop)
+        model.joint_positions[0] = 0.3;
+        let err_before = four_bar_loop_error(&model);
+        assert!(err_before > 0.01, "expected broken loop: err={}", err_before);
+
+        // Run several IK steps with loop constraint to restore closure
+        // Using the coupler link as "EE" target, moving it toward a position
+        // while maintaining the loop.
+        let loop_cs = model.build_loop_diff_constraints(50.0);
+        let transforms = model.compute_transforms();
+        let ee_pos = model.ee_world_pos(
+            *model.link_map.get("coupler").unwrap(),
+            &transforms,
+        ).cast::<f64>();
+        // Target = current position (just maintain loop)
+        let target = ee_pos;
+
+        for _ in 0..50 {
+            let lc = model.build_loop_diff_constraints(50.0);
+            let deltas = model.solve_ik_step_with_pins(
+                "coupler",
+                &ee_pos,
+                &target,
+                &[],
+                0.01,   // damping
+                0.3,    // gain
+                0.15,   // max_step
+                IkSolver::Dls,
+                None,
+                None,
+                10.0,
+                &lc,
+            );
+            model.apply_all_joint_deltas(&deltas);
+        }
+
+        let err_after = four_bar_loop_error(&model);
+        assert!(
+            err_after < err_before * 0.5,
+            "Loop closure should improve: before={} after={}",
+            err_before, err_after
+        );
+    }
+
+    #[test]
+    fn five_bar_ik_maintains_closure() {
+        let mut model = sdf::import_sdf(&fixture_five_bar()).unwrap();
+
+        // Loop constraint: end_effector ↔ distal_right tip
+        model.loop_closures.push(LoopClosure::position(
+            "five_bar_loop",
+            "end_effector",
+            nalgebra::Vector3::new(0.0, 0.0, 0.0),
+            "distal_right",
+            nalgebra::Vector3::new(0.0, 0.0, 0.2),
+        ));
+
+        // Perturb joint_L1
+        model.joint_positions[0] = 0.2;
+
+        let initial_err = model.loop_closure_error();
+        assert!(initial_err > 0.001, "expected broken loop: err={}", initial_err);
+
+        // Run iterative constraint-only IK to close the loop
+        let mc = model.mc();
+        let q0 = mc.build_q(&model);
+        let cm = model.build_loop_constraint_model();
+        let config = misarta::constraint::ConstrainedIkConfig {
+            max_iters: 200,
+            tol_constraint: 1e-5,
+            step_size: 0.5,
+            damping: 1e-3,
+            constraint_weight: 10.0,
+            tol_task: 1e-6,
+        };
+        let result = misarta::constraint::solve_constrained_ik(
+            &mc.model, &q0, &cm, &config,
+        );
+
+        assert!(
+            result.converged || result.constraint_error_norm < 1e-3,
+            "Five-bar loop closure should converge: err={}, iters={}",
+            result.constraint_error_norm, result.iterations
+        );
+    }
+
+    #[test]
+    fn misarta_build_diff_ik_constraints_basic() {
+        // Test the misarta-level bridge function directly
+        use misarta::{model::*, joint, se3};
+        use misarta::frames::Frame;
+        use misarta::constraint::*;
+
+        // Simple 3-joint chain
+        let model = ModelBuilder::<f64>::new()
+            .add_joint("j1", 0, joint::revolute_z(), se3::identity(), LinkInertia::zero())
+            .add_joint("j2", 1, joint::revolute_y(), se3::identity(), LinkInertia::zero())
+            .add_joint("j3", 1, joint::revolute_x(), se3::identity(), LinkInertia::zero())
+            .build();
+
+        let f1 = Frame { name: "a".into(), parent_joint: 2, placement: se3::identity() };
+        let f2 = Frame { name: "b".into(), parent_joint: 3, placement: se3::identity() };
+
+        // 3D constraint
+        let cm3 = ConstraintModel::from_constraints(vec![
+            RigidConstraint::position(f1.clone(), f2.clone()),
+        ]);
+        let q = vec![0.0; model.nq];
+        let cs3 = build_diff_ik_constraints(&model, &q, &cm3, 10.0);
+        assert_eq!(cs3.len(), 1);
+        assert_eq!(cs3[0].jacobian.nrows(), 3);
+        assert_eq!(cs3[0].weight, 10.0);
+
+        // 6D constraint
+        let cm6 = ConstraintModel::from_constraints(vec![
+            RigidConstraint::pose(f1, f2),
+        ]);
+        let cs6 = build_diff_ik_constraints(&model, &q, &cm6, 5.0);
+        assert_eq!(cs6.len(), 1);
+        assert_eq!(cs6[0].jacobian.nrows(), 6);
+        assert_eq!(cs6[0].weight, 5.0);
+    }
+
+    /// Verify that the `.misarta.toml` sidecar is loaded automatically via `load_sidecar_config()`.
+    #[test]
+    fn five_bar_sidecar_toml_loaded() {
+        let mut model = sdf::import_sdf(&fixture_five_bar()).unwrap();
+        // Before loading, no loop closures
+        assert!(model.loop_closures.is_empty());
+
+        // load_sidecar_config looks for five_bar_parallel.misarta.toml next to the .sdf
+        let loaded = model.load_sidecar_config();
+        assert!(loaded, "Expected .misarta.toml sidecar to be found and loaded");
+
+        // Should have exactly 1 loop closure
+        assert_eq!(model.loop_closures.len(), 1);
+        let lc = &model.loop_closures[0];
+        assert_eq!(lc.name, "ee_loop");
+        assert_eq!(lc.link_a, "end_effector");
+        assert_eq!(lc.link_b, "distal_right");
+        assert!(!lc.pose_6dof); // position-only (3-DoF)
+
+        // offset_a should be zero, offset_b should be (0, 0, 0.2)
+        let oa = lc.offset_a.translation.vector;
+        assert!((oa.norm()) < 1e-10, "offset_a should be zero, got {:?}", oa);
+        let ob = lc.offset_b.translation.vector;
+        assert!((ob - nalgebra::Vector3::new(0.0, 0.0, 0.2)).norm() < 1e-10,
+            "offset_b should be (0,0,0.2), got {:?}", ob);
+
+        // The loaded constraint should produce a valid constraint model and near-zero error at q=0
+        model.rebuild_misarta_model();
+        let err = model.loop_closure_error();
+        assert!(err < 0.01, "Loop closure error at q=0 should be near zero, got {}", err);
+    }
+}

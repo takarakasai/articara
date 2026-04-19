@@ -1,0 +1,9 @@
+[misarta]
+version = 1
+
+[[loop_closure]]
+name = "ee_loop"
+link_a = "end_effector"
+offset_a = [0.0, 0.0, 0.0]
+link_b = "distal_right"
+offset_b = [0.0, 0.0, 0.2]

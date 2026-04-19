@@ -217,6 +217,8 @@ pub struct ArticaraApp {
     pinned_links: Vec<PinnedLink>,
     /// Weight for pin constraints (higher = harder constraint).
     ik_pin_weight: f32,
+    /// Weight for loop-closure constraints (higher = harder).
+    loop_closure_weight: f32,
     /// Links to auto-pin at IK drag start (chicken-head stabilization).
     chicken_head_links: Vec<String>,
     /// Default DoF mode for chicken-head pins.
@@ -415,6 +417,7 @@ impl ArticaraApp {
             ik_error: None,
             pinned_links: Vec::new(),
             ik_pin_weight: 10.0,
+            loop_closure_weight: 50.0,
             chicken_head_links: Vec::new(),
             chicken_head_dof: PinDof::Position,
             show_com: false,
@@ -500,6 +503,10 @@ impl ArticaraApp {
                 );
                 self.model = Some(model);
                 self.urdf_path_input = path.display().to_string();
+                // Load .misarta.toml sidecar if present
+                if let Some(ref mut m) = self.model {
+                    m.load_sidecar_config();
+                }
                 // Auto-set export format to match source
                 if let Some(fmt) = RobotFormat::detect(&path) {
                     self.export_format = fmt;

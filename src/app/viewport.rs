@@ -481,11 +481,13 @@ impl ArticaraApp {
                                     link_name,
                                     self.ik_root_link.as_deref(),
                                 );
-                                // Allow drag even with empty chain when pins
-                                // or chicken-head links exist, because the
-                                // constrained solver works in full joint space.
+                                // Allow drag even with empty chain when pins,
+                                // chicken-head links, or loop closures exist,
+                                // because the constrained solver works in full
+                                // joint space.
                                 let has_constraints = !self.pinned_links.is_empty()
-                                    || !self.chicken_head_links.is_empty();
+                                    || !self.chicken_head_links.is_empty()
+                                    || !model.loop_closures.is_empty();
                                 if !chain.is_empty() || has_constraints {
                                     let ji =
                                         *chain.last().unwrap_or(&0);
@@ -843,8 +845,14 @@ impl ArticaraApp {
                                         None
                                     };
 
-                                    // Use constrained IK when links are pinned
-                                    if !self.pinned_links.is_empty() {
+                                    // Build loop-closure constraints (empty if none defined)
+                                    let loop_constraints = model.build_loop_diff_constraints(
+                                        self.loop_closure_weight as f64,
+                                    );
+                                    let has_loops = !loop_constraints.is_empty();
+
+                                    // Use constrained IK when pins or loop closures exist
+                                    if !self.pinned_links.is_empty() || has_loops {
                                         let pins: Vec<crate::robot::PinSpec> = self.pinned_links
                                             .iter()
                                             .map(|p| crate::robot::PinSpec {
@@ -856,10 +864,10 @@ impl ArticaraApp {
                                             .collect();
 
                                         let is_root_drag = drag.chain.is_empty();
-                                        if is_root_drag {
+                                        if is_root_drag && !self.pinned_links.is_empty() {
                                             // Dragged link is at or near the root: move
                                             // base_transform directly, then solve pin
-                                            // constraints via joints.
+                                            // + loop constraints via joints.
                                             let dx = (target_f64 - ee_now.cast::<f64>()) * ik_gain;
                                             let dx_clamped = {
                                                 let len = dx.norm();
@@ -872,11 +880,11 @@ impl ArticaraApp {
                                             model.base_transform.translation.vector +=
                                                 dx_clamped;
 
-                                            // Now solve pin constraints only (no primary
-                                            // task, just keep pins satisfied).
+                                            // Solve pin + loop constraints only (no primary
+                                            // task, just keep constraints satisfied).
                                             let mc = model.mc();
                                             let nv = mc.model.nv;
-                                            if nv > 0 && !pins.is_empty() {
+                                            if nv > 0 && (!pins.is_empty() || has_loops) {
                                                 let dummy_jac =
                                                     na::DMatrix::<f64>::zeros(3, nv);
                                                 let zero = na::Vector3::zeros();
@@ -902,7 +910,7 @@ impl ArticaraApp {
 
                                                 // Build pin constraints from post-move positions
                                                 let post_tf = model.compute_transforms();
-                                                let mut constraints = Vec::new();
+                                                let mut constraints: Vec<misarta::ik::DiffIkConstraint> = Vec::new();
                                                 for pin in &pins {
                                                     if let Some(&li) =
                                                         model.link_map.get(pin.link_name.as_str())
@@ -956,6 +964,12 @@ impl ArticaraApp {
                                                     }
                                                 }
 
+                                                // Add loop-closure constraints (recomputed after base move)
+                                                let loop_cs_post = model.build_loop_diff_constraints(
+                                                    self.loop_closure_weight as f64,
+                                                );
+                                                constraints.extend(loop_cs_post);
+
                                                 let diff_config = misarta::ik::DiffIkConfig {
                                                     gain: 1.0, // full correction
                                                     max_joint_step,
@@ -986,7 +1000,7 @@ impl ArticaraApp {
                                                 model.apply_all_joint_deltas(&deltas);
                                             }
                                         } else {
-                                            // Non-root drag with pins: augmented Jacobian
+                                            // Non-root drag with pins/loops: augmented Jacobian
                                             let mc = model.mc();
                                             let nv = mc.model.nv;
                                             let full_weights = if self.ik_weight_gradient > 0.01 {
@@ -1017,6 +1031,7 @@ impl ArticaraApp {
                                                 screen_axes,
                                                 full_weights.as_deref(),
                                                 self.ik_pin_weight as f64,
+                                                &loop_constraints,
                                             );
                                             model.apply_all_joint_deltas(&deltas);
                                         }

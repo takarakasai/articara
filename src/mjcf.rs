@@ -99,6 +99,7 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
         source_path: Some(path.to_path_buf()),
         base_transform: na::Isometry3::identity(),
         misarta_cache: None,
+        loop_closures: Vec::new(),
     };
     model.rebuild_misarta_model();
     Ok(model)
