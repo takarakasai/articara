@@ -1,0 +1,183 @@
+<?xml version="1.0"?>
+<!--
+  Four-bar linkage (parallelogram) — closed-loop kinematic chain.
+
+  Topology (spanning tree):
+
+      base_link ─── joint_left ──→ crank_left ─── joint_coupler ──→ coupler
+      base_link ─── joint_right ─→ crank_right
+
+  Loop closure constraint:
+      coupler tip  (offset (0.3, 0, 0) in coupler frame)
+    ≡ crank_right tip (offset (0, 0, 0.2) in crank_right frame)
+
+  At q = [0, 0, 0] the linkage forms a rectangle and the loop is closed.
+
+  DoF: 3 revolute joints − 2 effective position constraints = 1 DoF
+  (all joints rotate about Y — planar mechanism in the XZ plane)
+
+  Dimensions:
+    base width  = 0.30 m  (distance between ground pivots)
+    crank       = 0.20 m  (left & right, equal → parallelogram)
+    coupler     = 0.30 m  (same as base → parallelogram)
+-->
+<sdf version="1.7">
+  <model name="four_bar_linkage">
+
+    <!-- ==================== Links ==================== -->
+
+    <!-- Ground bar (fixed base) -->
+    <link name="base_link">
+      <inertial>
+        <pose>0 0 0 0 0 0</pose>
+        <mass>5.0</mass>
+        <inertia>
+          <ixx>0.01</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.01</iyy><iyz>0</iyz><izz>0.01</izz>
+        </inertia>
+      </inertial>
+      <visual name="base_bar">
+        <pose>0 0 -0.015 0 0 0</pose>
+        <geometry>
+          <box><size>0.36 0.04 0.03</size></box>
+        </geometry>
+        <material><diffuse>0.5 0.5 0.5 1</diffuse></material>
+      </visual>
+      <!-- Left pivot sphere -->
+      <visual name="pivot_left">
+        <pose>-0.15 0 0 0 0 0</pose>
+        <geometry><sphere><radius>0.018</radius></sphere></geometry>
+        <material><diffuse>0.3 0.3 0.3 1</diffuse></material>
+      </visual>
+      <!-- Right pivot sphere -->
+      <visual name="pivot_right">
+        <pose>0.15 0 0 0 0 0</pose>
+        <geometry><sphere><radius>0.018</radius></sphere></geometry>
+        <material><diffuse>0.3 0.3 0.3 1</diffuse></material>
+      </visual>
+    </link>
+
+    <!-- Left crank -->
+    <link name="crank_left">
+      <inertial>
+        <pose>0 0 0.1 0 0 0</pose>
+        <mass>0.4</mass>
+        <inertia>
+          <ixx>0.0014</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.0014</iyy><iyz>0</iyz><izz>0.0001</izz>
+        </inertia>
+      </inertial>
+      <visual name="bar">
+        <pose>0 0 0.1 0 0 0</pose>
+        <geometry>
+          <cylinder><radius>0.015</radius><length>0.2</length></cylinder>
+        </geometry>
+        <material><diffuse>0.9 0.2 0.2 1</diffuse></material>
+      </visual>
+      <visual name="pivot_top">
+        <pose>0 0 0.2 0 0 0</pose>
+        <geometry><sphere><radius>0.016</radius></sphere></geometry>
+        <material><diffuse>0.7 0.15 0.15 1</diffuse></material>
+      </visual>
+    </link>
+
+    <!-- Coupler bar (connects left crank tip → right crank tip) -->
+    <link name="coupler">
+      <inertial>
+        <pose>0.15 0 0 0 0 0</pose>
+        <mass>0.5</mass>
+        <inertia>
+          <ixx>0.0001</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.004</iyy><iyz>0</iyz><izz>0.004</izz>
+        </inertia>
+      </inertial>
+      <visual name="bar">
+        <pose>0.15 0 0 0 0 0</pose>
+        <geometry>
+          <box><size>0.3 0.03 0.025</size></box>
+        </geometry>
+        <material><diffuse>0.2 0.8 0.2 1</diffuse></material>
+      </visual>
+      <visual name="pivot_right">
+        <pose>0.3 0 0 0 0 0</pose>
+        <geometry><sphere><radius>0.016</radius></sphere></geometry>
+        <material><diffuse>0.15 0.6 0.15 1</diffuse></material>
+      </visual>
+    </link>
+
+    <!-- Right crank -->
+    <link name="crank_right">
+      <inertial>
+        <pose>0 0 0.1 0 0 0</pose>
+        <mass>0.4</mass>
+        <inertia>
+          <ixx>0.0014</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.0014</iyy><iyz>0</iyz><izz>0.0001</izz>
+        </inertia>
+      </inertial>
+      <visual name="bar">
+        <pose>0 0 0.1 0 0 0</pose>
+        <geometry>
+          <cylinder><radius>0.015</radius><length>0.2</length></cylinder>
+        </geometry>
+        <material><diffuse>0.2 0.3 0.9 1</diffuse></material>
+      </visual>
+      <visual name="pivot_top">
+        <pose>0 0 0.2 0 0 0</pose>
+        <geometry><sphere><radius>0.016</radius></sphere></geometry>
+        <material><diffuse>0.15 0.2 0.7 1</diffuse></material>
+      </visual>
+    </link>
+
+    <!-- ==================== Joints (spanning tree) ==================== -->
+
+    <!-- Left ground pivot -->
+    <joint name="joint_left" type="revolute">
+      <parent>base_link</parent>
+      <child>crank_left</child>
+      <pose>-0.15 0 0 0 0 0</pose>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>-2.356</lower>
+          <upper>2.356</upper>
+          <effort>10</effort>
+          <velocity>5</velocity>
+        </limit>
+      </axis>
+    </joint>
+
+    <!-- Coupler joint at left crank tip -->
+    <joint name="joint_coupler" type="revolute">
+      <parent>crank_left</parent>
+      <child>coupler</child>
+      <pose>0 0 0.2 0 0 0</pose>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>-3.14</lower>
+          <upper>3.14</upper>
+          <effort>10</effort>
+          <velocity>5</velocity>
+        </limit>
+      </axis>
+    </joint>
+
+    <!-- Right ground pivot -->
+    <joint name="joint_right" type="revolute">
+      <parent>base_link</parent>
+      <child>crank_right</child>
+      <pose>0.15 0 0 0 0 0</pose>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>-2.356</lower>
+          <upper>2.356</upper>
+          <effort>10</effort>
+          <velocity>5</velocity>
+        </limit>
+      </axis>
+    </joint>
+
+  </model>
+</sdf>

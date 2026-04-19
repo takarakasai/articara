@@ -691,6 +691,77 @@ mod test_sdf {
                 "Mass mismatch for {}: {} vs {}", a.name, a.inertial.mass, b.inertial.mass);
         }
     }
+
+    // ---- Closed-loop models ----
+
+    fn fixture_four_bar() -> PathBuf {
+        fixtures_dir().join("sdf").join("four_bar.sdf")
+    }
+
+    fn fixture_five_bar() -> PathBuf {
+        fixtures_dir().join("sdf").join("five_bar_parallel.sdf")
+    }
+
+    #[test]
+    fn four_bar_loads() {
+        let model = sdf::import_sdf(&fixture_four_bar()).expect("four_bar import failed");
+        assert_eq!(model.name, "four_bar_linkage");
+        assert_eq!(model.links.len(), 4);
+        assert_eq!(model.joints.len(), 3);
+        assert_eq!(model.root_link, "base_link");
+    }
+
+    #[test]
+    fn four_bar_loop_closed_at_q0() {
+        let model = sdf::import_sdf(&fixture_four_bar()).unwrap();
+        let transforms = model.compute_transforms();
+
+        // Coupler tip = coupler origin + (0.3, 0, 0) in coupler frame
+        let coupler_tf = transforms["coupler"];
+        let coupler_tip = coupler_tf * nalgebra::Point3::new(0.3_f32, 0.0, 0.0);
+
+        // Crank-right tip = crank_right origin + (0, 0, 0.2) in crank_right frame
+        let crank_r_tf = transforms["crank_right"];
+        let crank_r_tip = crank_r_tf * nalgebra::Point3::new(0.0_f32, 0.0, 0.2);
+
+        let err = (coupler_tip - crank_r_tip).norm();
+        assert!(
+            err < 0.01,
+            "Four-bar loop not closed at q=0: coupler_tip={:?} crank_r_tip={:?} err={}",
+            coupler_tip, crank_r_tip, err
+        );
+    }
+
+    #[test]
+    fn five_bar_loads() {
+        let model = sdf::import_sdf(&fixture_five_bar()).expect("five_bar import failed");
+        assert_eq!(model.name, "five_bar_parallel");
+        assert_eq!(model.links.len(), 6);  // base + 2 proximal + 2 distal + EE
+        // 4 revolute + 1 fixed = 5 joints
+        assert_eq!(model.joints.len(), 5);
+        assert_eq!(model.root_link, "base_link");
+    }
+
+    #[test]
+    fn five_bar_loop_closed_at_q0() {
+        let model = sdf::import_sdf(&fixture_five_bar()).unwrap();
+        let transforms = model.compute_transforms();
+
+        // EE position (fixed to distal_left tip)
+        let ee_pos = transforms["end_effector"]
+            * nalgebra::Point3::new(0.0_f32, 0.0, 0.0);
+
+        // Distal-right tip = distal_right origin + (0, 0, 0.2) in its frame
+        let dr_tf = transforms["distal_right"];
+        let dr_tip = dr_tf * nalgebra::Point3::new(0.0_f32, 0.0, 0.2);
+
+        let err = (ee_pos - dr_tip).norm();
+        assert!(
+            err < 0.01,
+            "Five-bar loop not closed at q=0: ee={:?} dr_tip={:?} err={}",
+            ee_pos, dr_tip, err
+        );
+    }
 }
 
 // ============================================================

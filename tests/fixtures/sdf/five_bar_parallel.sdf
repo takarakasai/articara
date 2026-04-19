@@ -1,0 +1,256 @@
+<?xml version="1.0"?>
+<!--
+  Five-bar parallel linkage — 2-DoF closed-loop planar mechanism.
+
+  Topology (spanning tree):
+
+      base_link ─── joint_L1 ──→ proximal_left ─── joint_L2 ──→ distal_left
+                                                                     │
+                                                               joint_ee (fixed)
+                                                                     │
+                                                               end_effector
+      base_link ─── joint_R1 ──→ proximal_right ── joint_R2 ──→ distal_right
+
+  Loop closure constraint:
+      end_effector position (= distal_left tip)
+    ≡ distal_right tip (offset (0, 0, 0.2) in distal_right frame)
+
+  At q = [0, 0, 0, 0] joints are at zero with rotation offsets baked into
+  the SDF joint poses so that the loop is closed by default.
+
+  Default configuration:
+    Proximal links tilt inward by 30° from vertical.
+    Distal links tilt inward by ~14.5° from vertical.
+    End-effector at (0, 0, 0.367) in world frame.
+
+  DoF: 4 revolute − 2 effective position constraints = 2 DoF
+  (all joints rotate about Y — planar mechanism in the XZ plane)
+
+  Dimensions:
+    base width       = 0.30 m  (pivots at x = ±0.15)
+    proximal links   = 0.20 m  (each)
+    distal links     = 0.20 m  (each)
+-->
+<sdf version="1.7">
+  <model name="five_bar_parallel">
+
+    <!-- ==================== Links ==================== -->
+
+    <!-- Ground bar (fixed base) -->
+    <link name="base_link">
+      <inertial>
+        <pose>0 0 0 0 0 0</pose>
+        <mass>5.0</mass>
+        <inertia>
+          <ixx>0.01</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.01</iyy><iyz>0</iyz><izz>0.01</izz>
+        </inertia>
+      </inertial>
+      <visual name="base_bar">
+        <pose>0 0 -0.015 0 0 0</pose>
+        <geometry>
+          <box><size>0.36 0.04 0.03</size></box>
+        </geometry>
+        <material><diffuse>0.5 0.5 0.5 1</diffuse></material>
+      </visual>
+      <visual name="pivot_left">
+        <pose>-0.15 0 0 0 0 0</pose>
+        <geometry><sphere><radius>0.018</radius></sphere></geometry>
+        <material><diffuse>0.3 0.3 0.3 1</diffuse></material>
+      </visual>
+      <visual name="pivot_right">
+        <pose>0.15 0 0 0 0 0</pose>
+        <geometry><sphere><radius>0.018</radius></sphere></geometry>
+        <material><diffuse>0.3 0.3 0.3 1</diffuse></material>
+      </visual>
+    </link>
+
+    <!-- Left proximal link -->
+    <link name="proximal_left">
+      <inertial>
+        <pose>0 0 0.1 0 0 0</pose>
+        <mass>0.4</mass>
+        <inertia>
+          <ixx>0.0014</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.0014</iyy><iyz>0</iyz><izz>0.0001</izz>
+        </inertia>
+      </inertial>
+      <visual name="bar">
+        <pose>0 0 0.1 0 0 0</pose>
+        <geometry>
+          <cylinder><radius>0.015</radius><length>0.2</length></cylinder>
+        </geometry>
+        <material><diffuse>0.9 0.2 0.2 1</diffuse></material>
+      </visual>
+      <visual name="pivot_top">
+        <pose>0 0 0.2 0 0 0</pose>
+        <geometry><sphere><radius>0.014</radius></sphere></geometry>
+        <material><diffuse>0.7 0.15 0.15 1</diffuse></material>
+      </visual>
+    </link>
+
+    <!-- Left distal link -->
+    <link name="distal_left">
+      <inertial>
+        <pose>0 0 0.1 0 0 0</pose>
+        <mass>0.3</mass>
+        <inertia>
+          <ixx>0.001</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.001</iyy><iyz>0</iyz><izz>0.0001</izz>
+        </inertia>
+      </inertial>
+      <visual name="bar">
+        <pose>0 0 0.1 0 0 0</pose>
+        <geometry>
+          <cylinder><radius>0.012</radius><length>0.2</length></cylinder>
+        </geometry>
+        <material><diffuse>0.95 0.55 0.1 1</diffuse></material>
+      </visual>
+    </link>
+
+    <!-- End-effector (at distal_left tip) -->
+    <link name="end_effector">
+      <inertial>
+        <pose>0 0 0 0 0 0</pose>
+        <mass>0.1</mass>
+        <inertia>
+          <ixx>0.00001</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.00001</iyy><iyz>0</iyz><izz>0.00001</izz>
+        </inertia>
+      </inertial>
+      <visual name="sphere">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry><sphere><radius>0.022</radius></sphere></geometry>
+        <material><diffuse>0.95 0.85 0.1 1</diffuse></material>
+      </visual>
+    </link>
+
+    <!-- Right proximal link -->
+    <link name="proximal_right">
+      <inertial>
+        <pose>0 0 0.1 0 0 0</pose>
+        <mass>0.4</mass>
+        <inertia>
+          <ixx>0.0014</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.0014</iyy><iyz>0</iyz><izz>0.0001</izz>
+        </inertia>
+      </inertial>
+      <visual name="bar">
+        <pose>0 0 0.1 0 0 0</pose>
+        <geometry>
+          <cylinder><radius>0.015</radius><length>0.2</length></cylinder>
+        </geometry>
+        <material><diffuse>0.2 0.3 0.9 1</diffuse></material>
+      </visual>
+      <visual name="pivot_top">
+        <pose>0 0 0.2 0 0 0</pose>
+        <geometry><sphere><radius>0.014</radius></sphere></geometry>
+        <material><diffuse>0.15 0.2 0.7 1</diffuse></material>
+      </visual>
+    </link>
+
+    <!-- Right distal link -->
+    <link name="distal_right">
+      <inertial>
+        <pose>0 0 0.1 0 0 0</pose>
+        <mass>0.3</mass>
+        <inertia>
+          <ixx>0.001</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.001</iyy><iyz>0</iyz><izz>0.0001</izz>
+        </inertia>
+      </inertial>
+      <visual name="bar">
+        <pose>0 0 0.1 0 0 0</pose>
+        <geometry>
+          <cylinder><radius>0.012</radius><length>0.2</length></cylinder>
+        </geometry>
+        <material><diffuse>0.1 0.75 0.85 1</diffuse></material>
+      </visual>
+      <visual name="pivot_top">
+        <pose>0 0 0.2 0 0 0</pose>
+        <geometry><sphere><radius>0.014</radius></sphere></geometry>
+        <material><diffuse>0.1 0.6 0.7 1</diffuse></material>
+      </visual>
+    </link>
+
+    <!-- ==================== Joints (spanning tree) ==================== -->
+
+    <!--
+      Proximal joints have a pitch (Y-rotation) offset baked in so that
+      at q=0 the proximal links tilt inward by 30° and the loop closes.
+      joint_L2/R2 have compensating offsets so distal links tilt ~14.5°.
+    -->
+
+    <!-- Left proximal pivot (30° inward = positive pitch) -->
+    <joint name="joint_L1" type="revolute">
+      <parent>base_link</parent>
+      <child>proximal_left</child>
+      <pose>-0.15 0 0 0 0.5236 0</pose>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>-2.356</lower>
+          <upper>2.356</upper>
+          <effort>10</effort>
+          <velocity>5</velocity>
+        </limit>
+      </axis>
+    </joint>
+
+    <!-- Left distal pivot (compensate −15.5° so distal tilts 14.5° from vertical) -->
+    <joint name="joint_L2" type="revolute">
+      <parent>proximal_left</parent>
+      <child>distal_left</child>
+      <pose>0 0 0.2 0 -0.2709 0</pose>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>-3.14</lower>
+          <upper>3.14</upper>
+          <effort>10</effort>
+          <velocity>5</velocity>
+        </limit>
+      </axis>
+    </joint>
+
+    <!-- End-effector (fixed at distal_left tip) -->
+    <joint name="joint_ee" type="fixed">
+      <parent>distal_left</parent>
+      <child>end_effector</child>
+      <pose>0 0 0.2 0 0 0</pose>
+    </joint>
+
+    <!-- Right proximal pivot (−30° inward = negative pitch) -->
+    <joint name="joint_R1" type="revolute">
+      <parent>base_link</parent>
+      <child>proximal_right</child>
+      <pose>0.15 0 0 0 -0.5236 0</pose>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>-2.356</lower>
+          <upper>2.356</upper>
+          <effort>10</effort>
+          <velocity>5</velocity>
+        </limit>
+      </axis>
+    </joint>
+
+    <!-- Right distal pivot (compensate +15.5° so distal tilts −14.5° from vertical) -->
+    <joint name="joint_R2" type="revolute">
+      <parent>proximal_right</parent>
+      <child>distal_right</child>
+      <pose>0 0 0.2 0 0.2709 0</pose>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>-3.14</lower>
+          <upper>3.14</upper>
+          <effort>10</effort>
+          <velocity>5</velocity>
+        </limit>
+      </axis>
+    </joint>
+
+  </model>
+</sdf>
