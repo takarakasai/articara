@@ -11,6 +11,15 @@ use crate::history::History;
 use crate::renderer::{DisplayMode, GlRenderer, MeshKind};
 use crate::robot::RobotModel;
 
+/// A link pinned to a world-space position for multi-constraint IK.
+#[derive(Clone, Debug)]
+pub struct PinnedLink {
+    /// Link name.
+    pub link_name: String,
+    /// Target world position to maintain.
+    pub target_pos: na::Point3<f64>,
+}
+
 /// Top-level interaction mode.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum InteractionMode {
@@ -180,6 +189,10 @@ pub struct ArticaraApp {
     ik_target_marker: Option<na::Point3<f32>>,
     /// IK residual error (distance between EE and target) for debug overlay.
     ik_error: Option<f32>,
+    /// Links pinned to their world positions for multi-constraint IK.
+    pinned_links: Vec<PinnedLink>,
+    /// Weight for pin constraints (higher = harder constraint).
+    ik_pin_weight: f32,
     /// Show center-of-mass markers and mass labels.
     show_com: bool,
     /// Show joint axis arrows in viewport.
@@ -372,6 +385,8 @@ impl ArticaraApp {
             ik_root_link: None,
             ik_target_marker: None,
             ik_error: None,
+            pinned_links: Vec::new(),
+            ik_pin_weight: 10.0,
             show_com: false,
             show_joint_axes: false,
             show_ground_plane: false,

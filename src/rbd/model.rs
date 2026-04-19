@@ -1462,6 +1462,165 @@ impl RobotModel {
         result.dq
     }
 
+    /// Compute 3×nv positional Jacobian for a link in the **full** joint space
+    /// (all model DoFs), expressed in the world frame.
+    ///
+    /// This is used by the multi-constraint IK solver where constraints span
+    /// different kinematic branches and must share a common column space.
+    pub fn link_positional_jacobian_full(&self, link_name: &str) -> na::DMatrix<f64> {
+        let mc = self.mc();
+        let q = mc.build_q(self);
+        let nv = mc.model.nv;
+        let mi = match mc.link_name_to_misarta_joint(link_name) {
+            Some(v) if v > 0 => v,
+            _ => return na::DMatrix::zeros(3, nv),
+        };
+        let full6 = misarta::jacobian::compute_joint_jacobian(&mc.model, &q, mi);
+        let r = self.base_transform.rotation.to_rotation_matrix();
+
+        let mut jac = na::DMatrix::<f64>::zeros(3, nv);
+        for col in 0..nv {
+            let v = na::Vector3::new(full6[(3, col)], full6[(4, col)], full6[(5, col)]);
+            let v_world = r * v;
+            jac[(0, col)] = v_world[0];
+            jac[(1, col)] = v_world[1];
+            jac[(2, col)] = v_world[2];
+        }
+        jac
+    }
+
+    /// Differential IK step with pinned-link constraints.
+    ///
+    /// Like [`solve_ik_step`], but additionally enforces equality constraints
+    /// that keep pinned links at their target world positions (augmented
+    /// Jacobian approach via `misarta::ik::differential_ik_step_with_constraints`).
+    ///
+    /// Returns deltas for **all model joints** (one per `joint_positions` entry),
+    /// not just the chain.
+    ///
+    /// # Parameters
+    /// - `ee_link` — end-effector link being dragged.
+    /// - `ee_pos` — current world position of the EE.
+    /// - `target_pos` — desired world position of the EE.
+    /// - `pins` — list of `(link_name, target_world_pos)` constraints.
+    /// - `damping`, `gain`, `max_step`, `solver`, `screen_axes`, `joint_weights`
+    ///   — same as `solve_ik_step`.
+    pub fn solve_ik_step_with_pins(
+        &self,
+        ee_link: &str,
+        ee_pos: &na::Point3<f64>,
+        target_pos: &na::Point3<f64>,
+        pins: &[(&str, na::Point3<f64>)],
+        damping: f64,
+        gain: f64,
+        max_step: f64,
+        solver: IkSolver,
+        screen_axes: Option<(na::Vector3<f64>, na::Vector3<f64>)>,
+        joint_weights_raw: Option<&[f64]>,
+        pin_weight: f64,
+    ) -> Vec<f64> {
+        let mc = self.mc();
+        let nv = mc.model.nv;
+        if nv == 0 {
+            return Vec::new();
+        }
+
+        // Full-nv Jacobian for the primary task (EE)
+        let jac_ee = self.link_positional_jacobian_full(ee_link);
+
+        // Build constraints for each pinned link
+        let transforms = self.compute_transforms();
+        let mut constraints = Vec::with_capacity(pins.len());
+        for &(pin_link, ref pin_target) in pins {
+            let jac_pin = self.link_positional_jacobian_full(pin_link);
+            // Current world position of pinned link
+            let li = self.link_map.get(pin_link).copied();
+            let pin_world = li
+                .and_then(|idx| {
+                    let tf = transforms.get(&self.links[idx].name)?;
+                    let (center, _) = self.link_bounding_sphere(idx);
+                    Some(*tf * center)
+                })
+                .unwrap_or(na::Point3::origin())
+                .cast::<f64>();
+
+            let err = pin_world - na::Point3::new(pin_target.x, pin_target.y, pin_target.z);
+            constraints.push(misarta::ik::DiffIkConstraint {
+                jacobian: jac_pin,
+                error: na::DVector::from_column_slice(&[err.x, err.y, err.z]),
+                weight: pin_weight,
+            });
+        }
+
+        // Map solver → misarta types
+        let misarta_damping = match solver {
+            IkSolver::SrInverse => misarta::ik::Damping::AdaptiveManipulability {
+                lambda_min: 0.0,
+                lambda_max: damping,
+                manipulability_threshold: 0.05,
+            },
+            _ => misarta::ik::Damping::Fixed(damping),
+        };
+        let misarta_method = match solver {
+            IkSolver::JacobianTranspose => misarta::ik::SolverMethod::JacobianTranspose,
+            _ => misarta::ik::SolverMethod::DampedLeastSquares,
+        };
+
+        // Task projection for 2-DoF screen plane
+        let task_projection = screen_axes.map(|(cam_right, cam_up)| {
+            let mut p = na::DMatrix::<f64>::zeros(2, 3);
+            p[(0, 0)] = cam_right.x; p[(0, 1)] = cam_right.y; p[(0, 2)] = cam_right.z;
+            p[(1, 0)] = cam_up.x;    p[(1, 1)] = cam_up.y;    p[(1, 2)] = cam_up.z;
+            p
+        });
+
+        // Full-nv joint weights
+        let misarta_weights = joint_weights_raw.map(|w| {
+            misarta::ik::JointWeights {
+                weights: (0..nv).map(|i| if i < w.len() { w[i].max(1e-6) } else { 1.0 }).collect(),
+            }
+        });
+
+        let diff_config = misarta::ik::DiffIkConfig {
+            gain,
+            max_joint_step: max_step,
+            damping: misarta_damping,
+            solver_method: misarta_method,
+            joint_weights: misarta_weights,
+            task_projection,
+        };
+
+        let ee_v = na::Vector3::new(ee_pos.x, ee_pos.y, ee_pos.z);
+        let tgt_v = na::Vector3::new(target_pos.x, target_pos.y, target_pos.z);
+
+        let result = misarta::ik::differential_ik_step_with_constraints(
+            &jac_ee, &ee_v, &tgt_v, &constraints, &diff_config,
+        );
+
+        // Map full-nv deltas back to articara joint indices
+        let mut deltas = vec![0.0_f64; self.joint_positions.len()];
+        for (ji, maybe_mi) in mc.a2m.iter().enumerate() {
+            if let Some(mi) = maybe_mi {
+                let vi = mc.model.q_idx[*mi];
+                if vi < result.dq.len() {
+                    deltas[ji] = result.dq[vi];
+                }
+            }
+        }
+        deltas
+    }
+
+    /// Apply all-joint deltas (one per joint_positions entry), clamping to limits.
+    pub fn apply_all_joint_deltas(&mut self, deltas: &[f64]) {
+        for (ji, d) in deltas.iter().enumerate() {
+            if ji < self.joints.len() && d.abs() > 1e-15 {
+                let lower = self.joints[ji].lower;
+                let upper = self.joints[ji].upper;
+                self.joint_positions[ji] = (self.joint_positions[ji] + d).clamp(lower, upper);
+            }
+        }
+    }
+
     /// Build collision `GeometryModel` from current model data.
     pub fn build_collision_geometry(&self) -> GeometryModel {
         self.build_collision_geometry_with_map().0

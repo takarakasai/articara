@@ -470,7 +470,10 @@ impl ArticaraApp {
                                     link_name,
                                     self.ik_root_link.as_deref(),
                                 );
-                                if !chain.is_empty() {
+                                // Allow drag even with empty chain when pins
+                                // exist, because the constrained solver works
+                                // in full joint space.
+                                if !chain.is_empty() || !self.pinned_links.is_empty() {
                                     let ji =
                                         *chain.last().unwrap_or(&0);
                                     let ik_root_tf = self.ik_root_link.as_ref().and_then(|name| {
@@ -804,31 +807,180 @@ impl ArticaraApp {
                                         None
                                     };
 
-                                    let deltas = model.solve_ik_step(
-                                        &drag.chain,
-                                        &drag.ee_link,
-                                        drag.ik_root_link.as_deref(),
-                                        &ee_now.cast::<f64>(),
-                                        &target_f64,
-                                        damping,
-                                        ik_gain,
-                                        max_joint_step,
-                                        None,
-                                        self.ik_solver,
-                                        screen_axes,
-                                        weights.as_deref(),
-                                    );
-                                    model.apply_joint_deltas(&drag.chain, &deltas);
+                                    // Use constrained IK when links are pinned
+                                    if !self.pinned_links.is_empty() {
+                                        let pins: Vec<(&str, na::Point3<f64>)> = self.pinned_links
+                                            .iter()
+                                            .map(|p| (p.link_name.as_str(), p.target_pos))
+                                            .collect();
+
+                                        let is_root_drag = drag.chain.is_empty();
+                                        if is_root_drag {
+                                            // Dragged link is at or near the root: move
+                                            // base_transform directly, then solve pin
+                                            // constraints via joints.
+                                            let dx = (target_f64 - ee_now.cast::<f64>()) * ik_gain;
+                                            let dx_clamped = {
+                                                let len = dx.norm();
+                                                if len > max_joint_step {
+                                                    dx * (max_joint_step / len)
+                                                } else {
+                                                    dx
+                                                }
+                                            };
+                                            model.base_transform.translation.vector +=
+                                                dx_clamped;
+
+                                            // Now solve pin constraints only (no primary
+                                            // task, just keep pins satisfied).
+                                            let mc = model.mc();
+                                            let nv = mc.model.nv;
+                                            if nv > 0 && !pins.is_empty() {
+                                                let dummy_jac =
+                                                    na::DMatrix::<f64>::zeros(3, nv);
+                                                let zero = na::Vector3::zeros();
+
+                                                let misarta_damping = match self.ik_solver {
+                                                    crate::robot::IkSolver::SrInverse => {
+                                                        misarta::ik::Damping::AdaptiveManipulability {
+                                                            lambda_min: 0.0,
+                                                            lambda_max: damping,
+                                                            manipulability_threshold: 0.05,
+                                                        }
+                                                    }
+                                                    _ => misarta::ik::Damping::Fixed(damping),
+                                                };
+                                                let misarta_method = match self.ik_solver {
+                                                    crate::robot::IkSolver::JacobianTranspose => {
+                                                        misarta::ik::SolverMethod::JacobianTranspose
+                                                    }
+                                                    _ => {
+                                                        misarta::ik::SolverMethod::DampedLeastSquares
+                                                    }
+                                                };
+
+                                                // Build pin constraints from post-move positions
+                                                let post_tf = model.compute_transforms();
+                                                let mut constraints = Vec::new();
+                                                for (pin_name, pin_target) in &pins {
+                                                    let jac_pin =
+                                                        model.link_positional_jacobian_full(pin_name);
+                                                    if let Some(&li) =
+                                                        model.link_map.get(*pin_name)
+                                                    {
+                                                        let pin_world = model
+                                                            .ee_world_pos(li, &post_tf)
+                                                            .cast::<f64>();
+                                                        let err = pin_world - pin_target;
+                                                        constraints.push(
+                                                            misarta::ik::DiffIkConstraint {
+                                                                jacobian: jac_pin,
+                                                                error: na::DVector::from_column_slice(
+                                                                    &[err.x, err.y, err.z],
+                                                                ),
+                                                                weight: self.ik_pin_weight as f64,
+                                                            },
+                                                        );
+                                                    }
+                                                }
+
+                                                let diff_config = misarta::ik::DiffIkConfig {
+                                                    gain: 1.0, // full correction
+                                                    max_joint_step,
+                                                    damping: misarta_damping,
+                                                    solver_method: misarta_method,
+                                                    joint_weights: None,
+                                                    task_projection: None,
+                                                };
+
+                                                let result =
+                                                    misarta::ik::differential_ik_step_with_constraints(
+                                                        &dummy_jac, &zero, &zero,
+                                                        &constraints, &diff_config,
+                                                    );
+
+                                                // Map full-nv deltas to articara joints
+                                                let mc = model.mc();
+                                                let mut deltas =
+                                                    vec![0.0_f64; model.joint_positions.len()];
+                                                for (ji, maybe_mi) in mc.a2m.iter().enumerate() {
+                                                    if let Some(mi) = maybe_mi {
+                                                        let vi = mc.model.q_idx[*mi];
+                                                        if vi < result.dq.len() {
+                                                            deltas[ji] = result.dq[vi];
+                                                        }
+                                                    }
+                                                }
+                                                model.apply_all_joint_deltas(&deltas);
+                                            }
+                                        } else {
+                                            // Non-root drag with pins: augmented Jacobian
+                                            let mc = model.mc();
+                                            let nv = mc.model.nv;
+                                            let full_weights = if self.ik_weight_gradient > 0.01 {
+                                                let alpha = (1.0 + self.ik_weight_gradient as f64).max(1.0);
+                                                let mut w = vec![alpha.powi(drag.chain.len().max(1) as i32 - 1); nv];
+                                                for (i, &ji) in drag.chain.iter().enumerate() {
+                                                    if let Some(&Some(mi)) = mc.a2m.get(ji) {
+                                                        let vi = mc.model.q_idx[mi];
+                                                        if vi < nv {
+                                                            w[vi] = alpha.powi((drag.chain.len() - 1 - i) as i32);
+                                                        }
+                                                    }
+                                                }
+                                                Some(w)
+                                            } else {
+                                                None
+                                            };
+
+                                            let deltas = model.solve_ik_step_with_pins(
+                                                &drag.ee_link,
+                                                &ee_now.cast::<f64>(),
+                                                &target_f64,
+                                                &pins,
+                                                damping,
+                                                ik_gain,
+                                                max_joint_step,
+                                                self.ik_solver,
+                                                screen_axes,
+                                                full_weights.as_deref(),
+                                                self.ik_pin_weight as f64,
+                                            );
+                                            model.apply_all_joint_deltas(&deltas);
+                                        }
+                                    } else {
+                                        let deltas = model.solve_ik_step(
+                                            &drag.chain,
+                                            &drag.ee_link,
+                                            drag.ik_root_link.as_deref(),
+                                            &ee_now.cast::<f64>(),
+                                            &target_f64,
+                                            damping,
+                                            ik_gain,
+                                            max_joint_step,
+                                            None,
+                                            self.ik_solver,
+                                            screen_axes,
+                                            weights.as_deref(),
+                                        );
+                                        model.apply_joint_deltas(&drag.chain, &deltas);
+                                    }
 
                                     // Base correction: pin the IK root to its initial pose.
-                                    if let Some(desired_tf) = drag.ik_root_initial_tf {
-                                        if let Some(ik_root_name) = drag.ik_root_link.as_ref() {
-                                            model.base_transform = na::Isometry3::identity();
-                                            let id_tf = model.compute_transforms();
-                                            if let Some(root_rel) = id_tf.get(ik_root_name) {
-                                                model.base_transform =
-                                                    desired_tf.cast::<f64>()
-                                                    * root_rel.inverse().cast::<f64>();
+                                    // Skip when using pinned-link mode with root drag
+                                    // (base_transform was moved intentionally).
+                                    let skip_base_correction = !self.pinned_links.is_empty()
+                                        && drag.chain.is_empty();
+                                    if !skip_base_correction {
+                                        if let Some(desired_tf) = drag.ik_root_initial_tf {
+                                            if let Some(ik_root_name) = drag.ik_root_link.as_ref() {
+                                                model.base_transform = na::Isometry3::identity();
+                                                let id_tf = model.compute_transforms();
+                                                if let Some(root_rel) = id_tf.get(ik_root_name) {
+                                                    model.base_transform =
+                                                        desired_tf.cast::<f64>()
+                                                        * root_rel.inverse().cast::<f64>();
+                                                }
                                             }
                                         }
                                     }
@@ -875,8 +1027,11 @@ impl ArticaraApp {
                                 .map(|s| s.as_str()),
                             DragMode::InverseKinematics => {
                                 let chain = m.chain_joints(link_name);
-                                if chain.is_empty() {
+                                if chain.is_empty() && self.pinned_links.is_empty() {
                                     None
+                                } else if chain.is_empty() {
+                                    // Pinned mode: allow drag even on root
+                                    Some("pinned_ik")
                                 } else {
                                     Some(m.joints[chain[0]].joint_type.as_str())
                                 }

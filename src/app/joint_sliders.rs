@@ -97,6 +97,80 @@ impl ArticaraApp {
                             model.base_transform = na::Isometry3::identity();
                         }
                     });
+
+                // --- Pinned Links (multi-constraint IK) ---
+                egui::CollapsingHeader::new("Pinned Links")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        // Pin weight slider
+                        ui.horizontal(|ui| {
+                            ui.label("Pin weight:");
+                            ui.add(
+                                egui::Slider::new(&mut self.ik_pin_weight, 1.0..=100.0)
+                                    .logarithmic(true)
+                                    .text("w"),
+                            );
+                        })
+                        .response
+                        .on_hover_text("Constraint strength. Higher = pinned links move less.");
+
+                        // Pin current selected link button
+                        if let Some(li) = self.selected_link {
+                            let link_name = model.links[li].name.clone();
+                            let already_pinned = self.pinned_links.iter().any(|p| p.link_name == link_name);
+                            if !already_pinned {
+                                if ui.button(format!("📌 Pin \"{}\"", &link_name)).clicked() {
+                                    let transforms = model.compute_transforms();
+                                    let world_pos = model.ee_world_pos(li, &transforms);
+                                    self.pinned_links.push(super::PinnedLink {
+                                        link_name: link_name.clone(),
+                                        target_pos: world_pos.cast::<f64>(),
+                                    });
+                                }
+                            }
+                        }
+
+                        // List pinned links with remove buttons
+                        let mut remove_idx = None;
+                        for (i, pin) in self.pinned_links.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("📌 {}", &pin.link_name));
+                                ui.label(format!(
+                                    "({:.3}, {:.3}, {:.3})",
+                                    pin.target_pos.x, pin.target_pos.y, pin.target_pos.z
+                                ));
+                                if ui.small_button("✕").clicked() {
+                                    remove_idx = Some(i);
+                                }
+                            });
+                        }
+                        if let Some(idx) = remove_idx {
+                            self.pinned_links.remove(idx);
+                        }
+
+                        if !self.pinned_links.is_empty() {
+                            // Update pin targets to current positions button
+                            if ui.button("🔄 Re-pin all to current").on_hover_text(
+                                "Update all pinned link targets to their current world positions"
+                            ).clicked() {
+                                let transforms = model.compute_transforms();
+                                for pin in &mut self.pinned_links {
+                                    if let Some(&li) = model.link_map.get(&pin.link_name) {
+                                        let pos = model.ee_world_pos(li, &transforms);
+                                        pin.target_pos = pos.cast::<f64>();
+                                    }
+                                }
+                            }
+                            if ui.button("🗑 Clear all pins").clicked() {
+                                self.pinned_links.clear();
+                            }
+                        }
+
+                        if self.pinned_links.is_empty() {
+                            ui.label("No links pinned. Select a link and click Pin.");
+                        }
+                    });
+
                 ui.separator();
             }
 
