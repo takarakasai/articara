@@ -381,6 +381,10 @@ pub struct ArticaraApp {
     script_scroll_to_bottom: bool,
     /// Pending tab-completion candidates (shown after Tab press).
     script_tab_candidates: Vec<String>,
+    /// Selected mesh decimation algorithm.
+    decimation_method: misarta::decimate::DecimationMethod,
+    /// Selected mesh decomposition method (V-HACD / Sphere Tree).
+    decomposition_method: misarta::decompose::DecompositionMethod,
 }
 
 /// A tagged line in the script console output.
@@ -529,6 +533,8 @@ impl ArticaraApp {
             script_history_idx: 0,
             script_scroll_to_bottom: false,
             script_tab_candidates: Vec::new(),
+            decimation_method: misarta::decimate::DecimationMethod::Qem,
+            decomposition_method: misarta::decompose::DecompositionMethod::Vhacd,
         }
     }
 

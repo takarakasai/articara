@@ -601,8 +601,12 @@ impl ModelScriptEngine {
         //  Mesh reduction
         // ────────────────────────────────────────────────────────────────
 
-        // reduce_mesh(link_name, visual_index, target_ratio)
-        // Returns new triangle count, or -1 on error.
+        // Helper closure to parse decimation method from Rhai (returns fn)
+        fn parse_method(s: &str) -> misarta::decimate::DecimationMethod {
+            misarta::decimate::DecimationMethod::from_str_loose(s)
+        }
+
+        // reduce_mesh(link_name, visual_index, target_ratio)  — QEM default
         let m = Rc::clone(&model);
         engine.register_fn("reduce_mesh", move |link: &str, vi: i64, ratio: f64| -> i64 {
             let mut borrow = m.borrow_mut();
@@ -613,6 +617,24 @@ impl ModelScriptEngine {
             if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = robot.links[li].visuals[vi].geometry {
                 let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
                 let reduced = mesh_data.decimate(ratio);
+                *vertices = reduced.to_flat_vertices_f32();
+                reduced.num_triangles() as i64
+            } else {
+                -1
+            }
+        });
+
+        // reduce_mesh(link_name, visual_index, target_ratio, method_string)
+        let m = Rc::clone(&model);
+        engine.register_fn("reduce_mesh", move |link: &str, vi: i64, ratio: f64, method: &str| -> i64 {
+            let mut borrow = m.borrow_mut();
+            let Some(robot) = borrow.as_mut() else { return -1 };
+            let Some(&li) = robot.link_map.get(link) else { return -1 };
+            let vi = vi as usize;
+            if vi >= robot.links[li].visuals.len() { return -1; }
+            if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = robot.links[li].visuals[vi].geometry {
+                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
+                let reduced = mesh_data.decimate_with(ratio, parse_method(method));
                 *vertices = reduced.to_flat_vertices_f32();
                 reduced.num_triangles() as i64
             } else {
@@ -638,39 +660,182 @@ impl ModelScriptEngine {
             }
         });
 
-        // reduce_all_meshes(target_ratio) → total triangles removed
+        // reduce_collision_mesh(link_name, collision_index, target_ratio, method_string)
+        let m = Rc::clone(&model);
+        engine.register_fn("reduce_collision_mesh", move |link: &str, ci: i64, ratio: f64, method: &str| -> i64 {
+            let mut borrow = m.borrow_mut();
+            let Some(robot) = borrow.as_mut() else { return -1 };
+            let Some(&li) = robot.link_map.get(link) else { return -1 };
+            let ci = ci as usize;
+            if ci >= robot.links[li].collisions.len() { return -1; }
+            if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = robot.links[li].collisions[ci].geometry {
+                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
+                let reduced = mesh_data.decimate_with(ratio, parse_method(method));
+                *vertices = reduced.to_flat_vertices_f32();
+                reduced.num_triangles() as i64
+            } else {
+                -1
+            }
+        });
+
+        // reduce_all_meshes(target_ratio) → total triangles removed (QEM)
         let m = Rc::clone(&model);
         engine.register_fn("reduce_all_meshes", move |ratio: f64| -> i64 {
             let mut borrow = m.borrow_mut();
             let Some(robot) = borrow.as_mut() else { return -1 };
-            let mut removed = 0i64;
-            for link in &mut robot.links {
-                for vis in &mut link.visuals {
-                    if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = vis.geometry {
-                        let before = vertices.len() as i64 / 18;
-                        let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
-                        let reduced = mesh_data.decimate(ratio);
-                        *vertices = reduced.to_flat_vertices_f32();
-                        let after = reduced.num_triangles() as i64;
-                        removed += before - after;
-                    }
-                }
-                for col in &mut link.collisions {
-                    if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = col.geometry {
-                        let before = vertices.len() as i64 / 18;
-                        let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
-                        let reduced = mesh_data.decimate(ratio);
-                        *vertices = reduced.to_flat_vertices_f32();
-                        let after = reduced.num_triangles() as i64;
-                        removed += before - after;
-                    }
-                }
-            }
-            removed
+            reduce_all_meshes_impl(robot, ratio, misarta::decimate::DecimationMethod::Qem)
+        });
+
+        // reduce_all_meshes(target_ratio, method_string)
+        let m = Rc::clone(&model);
+        engine.register_fn("reduce_all_meshes", move |ratio: f64, method: &str| -> i64 {
+            let mut borrow = m.borrow_mut();
+            let Some(robot) = borrow.as_mut() else { return -1 };
+            reduce_all_meshes_impl(robot, ratio, parse_method(method))
+        });
+
+        // ────────────────────────────────────────────────────────────────
+        //  Mesh decomposition (V-HACD / Sphere Tree)
+        // ────────────────────────────────────────────────────────────────
+
+        // decompose_vhacd(link_name, collision_index) → number of hulls produced
+        let m = Rc::clone(&model);
+        engine.register_fn("decompose_vhacd", move |link: &str, ci: i64| -> i64 {
+            let mut borrow = m.borrow_mut();
+            let Some(robot) = borrow.as_mut() else { return -1 };
+            decompose_collision_impl(robot, link, ci as usize, misarta::decompose::DecompositionMethod::Vhacd, None)
+        });
+
+        // decompose_vhacd(link_name, collision_index, max_hulls) → number of hulls
+        let m = Rc::clone(&model);
+        engine.register_fn("decompose_vhacd", move |link: &str, ci: i64, max_hulls: i64| -> i64 {
+            let mut borrow = m.borrow_mut();
+            let Some(robot) = borrow.as_mut() else { return -1 };
+            decompose_collision_impl(robot, link, ci as usize, misarta::decompose::DecompositionMethod::Vhacd, Some(max_hulls as usize))
+        });
+
+        // decompose_spheres(link_name, collision_index) → number of spheres
+        let m = Rc::clone(&model);
+        engine.register_fn("decompose_spheres", move |link: &str, ci: i64| -> i64 {
+            let mut borrow = m.borrow_mut();
+            let Some(robot) = borrow.as_mut() else { return -1 };
+            decompose_collision_impl(robot, link, ci as usize, misarta::decompose::DecompositionMethod::SphereTree, None)
+        });
+
+        // decompose_spheres(link_name, collision_index, max_spheres) → number of spheres
+        let m = Rc::clone(&model);
+        engine.register_fn("decompose_spheres", move |link: &str, ci: i64, max_count: i64| -> i64 {
+            let mut borrow = m.borrow_mut();
+            let Some(robot) = borrow.as_mut() else { return -1 };
+            decompose_collision_impl(robot, link, ci as usize, misarta::decompose::DecompositionMethod::SphereTree, Some(max_count as usize))
         });
 
         engine
     }
+}
+
+/// Shared implementation for reduce_all_meshes (avoids code duplication).
+fn reduce_all_meshes_impl(
+    robot: &mut crate::robot::RobotModel,
+    ratio: f64,
+    method: misarta::decimate::DecimationMethod,
+) -> i64 {
+    let mut removed = 0i64;
+    for link in &mut robot.links {
+        for vis in &mut link.visuals {
+            if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = vis.geometry {
+                let before = vertices.len() as i64 / 18;
+                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
+                let reduced = mesh_data.decimate_with(ratio, method);
+                *vertices = reduced.to_flat_vertices_f32();
+                let after = reduced.num_triangles() as i64;
+                removed += before - after;
+            }
+        }
+        for col in &mut link.collisions {
+            if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = col.geometry {
+                let before = vertices.len() as i64 / 18;
+                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
+                let reduced = mesh_data.decimate_with(ratio, method);
+                *vertices = reduced.to_flat_vertices_f32();
+                let after = reduced.num_triangles() as i64;
+                removed += before - after;
+            }
+        }
+    }
+    removed
+}
+
+/// Shared implementation for decompose_vhacd / decompose_spheres.
+///
+/// Replaces collision `ci` of the named link with multiple shapes.
+/// Returns the number of shapes produced, or -1 on error.
+fn decompose_collision_impl(
+    robot: &mut crate::robot::RobotModel,
+    link: &str,
+    ci: usize,
+    method: misarta::decompose::DecompositionMethod,
+    max_count: Option<usize>,
+) -> i64 {
+    let Some(&li) = robot.link_map.get(link) else { return -1 };
+    if ci >= robot.links[li].collisions.len() { return -1; }
+
+    let col = &robot.links[li].collisions[ci];
+    let origin = col.origin;
+
+    let vertices = match &col.geometry {
+        crate::robot::GeomData::Mesh { vertices, .. } => vertices.clone(),
+        _ => return -1,
+    };
+
+    let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(&vertices);
+
+    let new_collisions: Vec<crate::robot::CollisionData> = match method {
+        misarta::decompose::DecompositionMethod::Vhacd => {
+            let params = misarta::decompose::VhacdParams {
+                max_hulls: max_count.unwrap_or(16) as u32,
+                ..Default::default()
+            };
+            let hulls = misarta::decompose::vhacd(&mesh_data, &params);
+            hulls.iter().map(|h| {
+                crate::robot::CollisionData {
+                    origin,
+                    geometry: crate::robot::GeomData::Mesh {
+                        vertices: h.to_flat_vertices_f32(),
+                        filename: None,
+                        scale: None,
+                    },
+                }
+            }).collect()
+        }
+        misarta::decompose::DecompositionMethod::SphereTree => {
+            let params = misarta::decompose::SphereTreeParams {
+                max_spheres: max_count.unwrap_or(16),
+                ..Default::default()
+            };
+            let spheres = misarta::decompose::sphere_tree(&mesh_data, &params);
+            spheres.iter().map(|s| {
+                use nalgebra as na;
+                let t = na::Translation3::new(s.center.x as f32, s.center.y as f32, s.center.z as f32);
+                let sphere_origin = origin * na::Isometry3::from_parts(t, na::UnitQuaternion::identity());
+                crate::robot::CollisionData {
+                    origin: sphere_origin,
+                    geometry: crate::robot::GeomData::Sphere { radius: s.radius as f32 },
+                }
+            }).collect()
+        }
+    };
+
+    if new_collisions.is_empty() {
+        return 0;
+    }
+
+    let n = new_collisions.len() as i64;
+    robot.links[li].collisions.remove(ci);
+    for (i, c) in new_collisions.into_iter().enumerate() {
+        robot.links[li].collisions.insert(ci + i, c);
+    }
+    n
 }
 
 impl ModelScriptEngine {
@@ -690,6 +855,7 @@ impl ModelScriptEngine {
             "add_loop_closure", "loop_closure_error", "num_loop_closures",
             "export_urdf", "export_sdf", "export_mjcf",
             "reduce_mesh", "reduce_collision_mesh", "reduce_all_meshes",
+            "decompose_vhacd", "decompose_spheres",
             "abs", "sqrt", "sin", "cos", "atan2",
             "min_f", "max_f", "clamp", "to_deg", "to_rad", "PI",
             "dist",
