@@ -7,6 +7,7 @@ edition = "2024"
 default = ["gui"]
 gui = ["dep:eframe", "dep:egui_plot", "dep:glow", "dep:env_logger"]
 serde = ["dep:serde", "nalgebra/serde-serialize"]
+scripting = ["dep:rhai"]
 
 [dependencies]
 eframe = { version = "0.34.1", features = ["glow"], optional = true }
@@ -17,6 +18,7 @@ log = "0.4.29"
 misarta = { path = "misarta" }
 nalgebra = "0.34.2"
 parry3d = "0.25"
+rhai = { version = "1", optional = true }
 roxmltree = "0.20"
 serde = { version = "1", features = ["derive"], optional = true }
 stl_io = "0.11.0"

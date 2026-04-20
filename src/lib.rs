@@ -10,6 +10,8 @@ pub mod primitives;
 pub mod rbd;
 pub mod robot;
 pub mod sdf;
+#[cfg(feature = "scripting")]
+pub mod scripting;
 pub mod usd;
 pub mod usd_import;
 
