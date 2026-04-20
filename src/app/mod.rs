@@ -923,6 +923,9 @@ impl eframe::App for ArticaraApp {
                 self.draw_status_bar(ui);
             });
 
+        // --- Script console (docked bottom panel, above status bar) ---
+        self.draw_script_console(ui);
+
         // Left panel: tree + joint sliders
         egui::Panel::left("tree_panel")
             .default_size(260.0)
@@ -960,9 +963,6 @@ impl eframe::App for ArticaraApp {
 
         // --- Dynamics graph window ---
         self.draw_dynamics_graph_window(&ctx);
-
-        // --- Script console window ---
-        self.draw_script_console(&ctx);
 
         // --- File dialogs ---
         self.process_file_dialogs(&ctx);

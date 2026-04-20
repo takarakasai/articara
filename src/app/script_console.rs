@@ -18,28 +18,24 @@ const FONT_SIZE: f32 = 13.0;
 const INPUT_BG: egui::Color32 = egui::Color32::from_rgb(37, 37, 38);   // slightly lighter
 
 impl ArticaraApp {
-    /// Draw the script console as a VSCode-terminal-style window.
+    /// Draw the script console as a docked bottom panel (VSCode-terminal style).
     #[cfg(feature = "scripting")]
-    pub(super) fn draw_script_console(&mut self, ctx: &egui::Context) {
+    pub(super) fn draw_script_console(&mut self, ui: &mut egui::Ui) {
         if !self.show_script_console {
             return;
         }
 
-        let mut open = self.show_script_console;
         let frame = egui::Frame::new()
             .fill(BG)
             .inner_margin(egui::Margin::same(4))
-            .corner_radius(4.0);
+            .corner_radius(0.0);
 
-        egui::Window::new("Terminal")
-            .open(&mut open)
-            .frame(frame)
-            .default_size([600.0, 340.0])
-            .min_size([300.0, 150.0])
+        egui::Panel::bottom("script_console_panel")
+            .default_height(220.0)
+            .height_range(80.0..=600.0)
             .resizable(true)
-            .collapsible(true)
-            .title_bar(true)
-            .show(ctx, |ui| {
+            .frame(frame)
+            .show_inside(ui, |ui| {
                 // Lazy-init engine
                 #[cfg(feature = "scripting")]
                 if self.script_engine.is_none() {
@@ -61,9 +57,19 @@ impl ArticaraApp {
 
                 let mono = egui::FontId::monospace(FONT_SIZE);
 
-                // ── Tab bar (mimics VSCode terminal tabs) ──
+                // ── Header bar (mimics VSCode terminal header) ──
                 ui.horizontal(|ui| {
                     ui.visuals_mut().override_text_color = Some(FG);
+
+                    // "TERMINAL" label
+                    ui.label(
+                        egui::RichText::new("TERMINAL")
+                            .font(egui::FontId::proportional(11.0))
+                            .color(egui::Color32::from_rgb(150, 150, 150)),
+                    );
+
+                    ui.add_space(8.0);
+
                     let tab_frame = egui::Frame::new()
                         .fill(egui::Color32::from_rgb(37, 37, 38))
                         .inner_margin(egui::Margin::symmetric(8, 2))
@@ -82,6 +88,18 @@ impl ArticaraApp {
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Close button (×)
+                        if ui
+                            .add(egui::Button::new(
+                                egui::RichText::new("✕").color(FG).font(egui::FontId::proportional(12.0)),
+                            ).frame(false))
+                            .on_hover_text("Close")
+                            .clicked()
+                        {
+                            self.show_script_console = false;
+                        }
+
+                        // Clear button (🗑)
                         if ui
                             .add(egui::Button::new(
                                 egui::RichText::new("🗑").color(FG).font(egui::FontId::proportional(12.0)),
@@ -326,7 +344,6 @@ impl ArticaraApp {
                     }
                 });
             });
-        self.show_script_console = open;
     }
 
     /// Emit help text as system lines.
@@ -386,7 +403,7 @@ impl ArticaraApp {
 
     /// No-op when scripting feature is disabled.
     #[cfg(not(feature = "scripting"))]
-    pub(super) fn draw_script_console(&mut self, _ctx: &egui::Context) {}
+    pub(super) fn draw_script_console(&mut self, _ui: &mut egui::Ui) {}
 
     /// Find the longest common prefix among a set of strings.
     fn longest_common_prefix(strings: &[String]) -> String {
