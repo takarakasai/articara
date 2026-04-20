@@ -12,6 +12,8 @@ pub mod robot;
 pub mod sdf;
 #[cfg(feature = "scripting")]
 pub mod scripting;
+#[cfg(feature = "scripting")]
+pub mod scripting_model;
 pub mod usd;
 pub mod usd_import;
 

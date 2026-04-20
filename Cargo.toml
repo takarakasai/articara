@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["gui"]
+default = ["gui", "scripting"]
 gui = ["dep:eframe", "dep:egui_plot", "dep:glow", "dep:env_logger"]
 serde = ["dep:serde", "nalgebra/serde-serialize"]
 scripting = ["dep:rhai"]

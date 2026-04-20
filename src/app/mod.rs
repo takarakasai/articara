@@ -363,6 +363,35 @@ pub struct ArticaraApp {
     dlg_add_mesh: file_dialog::FileDialog,
     /// Target for the mesh file dialog: which link index and whether visual or collision.
     add_mesh_target: Option<AddMeshTarget>,
+    // --- Script console ---
+    /// Whether the script console window is visible.
+    show_script_console: bool,
+    /// Rhai script engine for model manipulation.
+    #[cfg(feature = "scripting")]
+    script_engine: Option<crate::scripting_model::ModelScriptEngine>,
+    /// Current script input text.
+    script_input: String,
+    /// Captured script output lines (with type tags for colouring).
+    script_output: Vec<ScriptLine>,
+    /// Input history (up/down arrow navigation).
+    script_history: Vec<String>,
+    /// Current position in input history (0 = newest).
+    script_history_idx: usize,
+    /// Whether to auto-scroll to bottom next frame.
+    script_scroll_to_bottom: bool,
+}
+
+/// A tagged line in the script console output.
+#[derive(Clone)]
+enum ScriptLine {
+    /// User input (echoed with prompt).
+    Input(String),
+    /// Normal output from `print()`.
+    Output(String),
+    /// Error message.
+    Error(String),
+    /// System/info message (help, greeting).
+    System(String),
 }
 
 /// Tracks which link and slot (visual / collision) a pending mesh-add dialog is for.
@@ -489,6 +518,14 @@ impl ArticaraApp {
             dlg_save_sim_config: file_dialog::FileDialog::new("dlg_save_sim_config"),
             dlg_add_mesh: file_dialog::FileDialog::new("dlg_add_mesh"),
             add_mesh_target: None,
+            show_script_console: false,
+            #[cfg(feature = "scripting")]
+            script_engine: None,
+            script_input: String::new(),
+            script_output: Vec::new(),
+            script_history: Vec::new(),
+            script_history_idx: 0,
+            script_scroll_to_bottom: false,
         }
     }
 
@@ -796,6 +833,7 @@ mod dynamics_panel;
 mod posture;
 mod file_dialog;
 mod status_bar;
+mod script_console;
 
 // Sentinel to mark the end of module-level code.
 // Everything below was moved to sub-modules.
@@ -919,6 +957,9 @@ impl eframe::App for ArticaraApp {
 
         // --- Dynamics graph window ---
         self.draw_dynamics_graph_window(&ctx);
+
+        // --- Script console window ---
+        self.draw_script_console(&ctx);
 
         // --- File dialogs ---
         self.process_file_dialogs(&ctx);
