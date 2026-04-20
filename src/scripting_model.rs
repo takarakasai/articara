@@ -597,6 +597,78 @@ impl ModelScriptEngine {
             ((ax - bx).powi(2) + (ay - by).powi(2) + (az - bz).powi(2)).sqrt()
         });
 
+        // ────────────────────────────────────────────────────────────────
+        //  Mesh reduction
+        // ────────────────────────────────────────────────────────────────
+
+        // reduce_mesh(link_name, visual_index, target_ratio)
+        // Returns new triangle count, or -1 on error.
+        let m = Rc::clone(&model);
+        engine.register_fn("reduce_mesh", move |link: &str, vi: i64, ratio: f64| -> i64 {
+            let mut borrow = m.borrow_mut();
+            let Some(robot) = borrow.as_mut() else { return -1 };
+            let Some(&li) = robot.link_map.get(link) else { return -1 };
+            let vi = vi as usize;
+            if vi >= robot.links[li].visuals.len() { return -1; }
+            if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = robot.links[li].visuals[vi].geometry {
+                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
+                let reduced = mesh_data.decimate(ratio);
+                *vertices = reduced.to_flat_vertices_f32();
+                reduced.num_triangles() as i64
+            } else {
+                -1
+            }
+        });
+
+        // reduce_collision_mesh(link_name, collision_index, target_ratio)
+        let m = Rc::clone(&model);
+        engine.register_fn("reduce_collision_mesh", move |link: &str, ci: i64, ratio: f64| -> i64 {
+            let mut borrow = m.borrow_mut();
+            let Some(robot) = borrow.as_mut() else { return -1 };
+            let Some(&li) = robot.link_map.get(link) else { return -1 };
+            let ci = ci as usize;
+            if ci >= robot.links[li].collisions.len() { return -1; }
+            if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = robot.links[li].collisions[ci].geometry {
+                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
+                let reduced = mesh_data.decimate(ratio);
+                *vertices = reduced.to_flat_vertices_f32();
+                reduced.num_triangles() as i64
+            } else {
+                -1
+            }
+        });
+
+        // reduce_all_meshes(target_ratio) → total triangles removed
+        let m = Rc::clone(&model);
+        engine.register_fn("reduce_all_meshes", move |ratio: f64| -> i64 {
+            let mut borrow = m.borrow_mut();
+            let Some(robot) = borrow.as_mut() else { return -1 };
+            let mut removed = 0i64;
+            for link in &mut robot.links {
+                for vis in &mut link.visuals {
+                    if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = vis.geometry {
+                        let before = vertices.len() as i64 / 18;
+                        let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
+                        let reduced = mesh_data.decimate(ratio);
+                        *vertices = reduced.to_flat_vertices_f32();
+                        let after = reduced.num_triangles() as i64;
+                        removed += before - after;
+                    }
+                }
+                for col in &mut link.collisions {
+                    if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = col.geometry {
+                        let before = vertices.len() as i64 / 18;
+                        let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
+                        let reduced = mesh_data.decimate(ratio);
+                        *vertices = reduced.to_flat_vertices_f32();
+                        let after = reduced.num_triangles() as i64;
+                        removed += before - after;
+                    }
+                }
+            }
+            removed
+        });
+
         engine
     }
 }
@@ -617,6 +689,7 @@ impl ModelScriptEngine {
             "fk", "ik", "ik_steps",
             "add_loop_closure", "loop_closure_error", "num_loop_closures",
             "export_urdf", "export_sdf", "export_mjcf",
+            "reduce_mesh", "reduce_collision_mesh", "reduce_all_meshes",
             "abs", "sqrt", "sin", "cos", "atan2",
             "min_f", "max_f", "clamp", "to_deg", "to_rad", "PI",
             "dist",

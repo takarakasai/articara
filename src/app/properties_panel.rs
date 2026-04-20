@@ -282,6 +282,21 @@ impl ArticaraApp {
                                     let tri_count = vertices.len() / 18;
                                     let fname = filename.as_deref().unwrap_or("(inline)");
                                     ui.label(format!("Mesh: {tri_count} tris — {fname}"));
+                                    if tri_count > 4 {
+                                        ui.horizontal(|ui| {
+                                            for (label, ratio) in [("75%", 0.75), ("50%", 0.5), ("25%", 0.25), ("10%", 0.1)] {
+                                                if ui.small_button(label).on_hover_text(
+                                                    format!("Reduce to ~{} tris", (tri_count as f64 * ratio).ceil() as usize)
+                                                ).clicked() {
+                                                    let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
+                                                    let reduced = mesh_data.decimate(ratio);
+                                                    *vertices = reduced.to_flat_vertices_f32();
+                                                    geom_changed = true;
+                                                    props_edit_desc = Some(format!("Reduce visual mesh of '{}' to {}", link_name, label));
+                                                }
+                                            }
+                                        });
+                                    }
                                 }
                             }
 
@@ -464,7 +479,23 @@ impl ArticaraApp {
                                     });
                                 }
                                 GeomData::Mesh { vertices, .. } => {
-                                    ui.label(format!("Mesh ({} tris)", vertices.len() / 18));
+                                    let tri_count = vertices.len() / 18;
+                                    ui.label(format!("Mesh ({tri_count} tris)"));
+                                    if tri_count > 4 {
+                                        ui.horizontal(|ui| {
+                                            for (label, ratio) in [("75%", 0.75), ("50%", 0.5), ("25%", 0.25), ("10%", 0.1)] {
+                                                if ui.small_button(label).on_hover_text(
+                                                    format!("Reduce to ~{} tris", (tri_count as f64 * ratio).ceil() as usize)
+                                                ).clicked() {
+                                                    let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
+                                                    let reduced = mesh_data.decimate(ratio);
+                                                    *vertices = reduced.to_flat_vertices_f32();
+                                                    col_changed = true;
+                                                    props_edit_desc = Some(format!("Reduce collision mesh of '{}' to {}", link_name, label));
+                                                }
+                                            }
+                                        });
+                                    }
                                 }
                             }
                             // Origin
