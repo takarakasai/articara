@@ -414,6 +414,8 @@ struct DecomposeTask {
     method: misarta::decompose::DecompositionMethod,
     /// Atomic progress phase (polled by UI thread).
     progress: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// Fine-grained 0–100 sub-progress within the current phase.
+    sub_progress: std::sync::Arc<std::sync::atomic::AtomicU8>,
     /// Join handle for the background thread.
     handle: Option<std::thread::JoinHandle<DecomposeResult>>,
     /// Instant the task was started (for elapsed time display).
@@ -1142,6 +1144,7 @@ impl ArticaraApp {
         };
 
         let phase = task.progress.load(std::sync::atomic::Ordering::Relaxed);
+        let sub = task.sub_progress.load(std::sync::atomic::Ordering::Relaxed);
         let phase_str = misarta::decompose::phase_label(phase);
         let elapsed = task.started.elapsed().as_secs_f64();
         let method_label = task.method.label();
@@ -1161,20 +1164,38 @@ impl ArticaraApp {
                     ui.add_space(8.0);
                     ui.spinner();
                     ui.add_space(4.0);
-                    ui.label(phase_str);
+                    // Show phase label with sub-progress percentage when available.
+                    if sub > 0
+                        && phase != misarta::decompose::PHASE_DONE
+                        && phase != misarta::decompose::PHASE_NOT_STARTED
+                    {
+                        ui.label(format!("{phase_str} ({sub}%)"));
+                    } else {
+                        ui.label(phase_str);
+                    }
                     ui.add_space(4.0);
                     ui.label(
                         egui::RichText::new(format!("Elapsed: {elapsed:.1}s"))
                             .weak()
                             .monospace(),
                     );
-                    // Phase progress bar (approximate).
+                    // Compute progress fraction from phase + sub-progress.
+                    // Phase ranges: PREPARING 0.00–0.05, DECOMPOSING 0.05–0.50,
+                    //               HULLS 0.50–0.90, BUILDING 0.90–1.00
                     let frac = match phase {
                         misarta::decompose::PHASE_NOT_STARTED => 0.0,
-                        misarta::decompose::PHASE_PREPARING => 0.05,
-                        misarta::decompose::PHASE_DECOMPOSING => 0.3,
-                        misarta::decompose::PHASE_HULLS => 0.8,
-                        misarta::decompose::PHASE_BUILDING => 0.95,
+                        misarta::decompose::PHASE_PREPARING => {
+                            0.00 + 0.05 * (sub as f64 / 100.0)
+                        }
+                        misarta::decompose::PHASE_DECOMPOSING => {
+                            0.05 + 0.45 * (sub as f64 / 100.0)
+                        }
+                        misarta::decompose::PHASE_HULLS => {
+                            0.50 + 0.40 * (sub as f64 / 100.0)
+                        }
+                        misarta::decompose::PHASE_BUILDING => {
+                            0.90 + 0.10 * (sub as f64 / 100.0)
+                        }
                         misarta::decompose::PHASE_DONE => 1.0,
                         _ => 0.5,
                     };

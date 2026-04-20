@@ -347,7 +347,9 @@ impl ArticaraApp {
                                                 let progress = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
                                                     misarta::decompose::PHASE_NOT_STARTED,
                                                 ));
+                                                let sub_progress = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
                                                 let prog_clone = std::sync::Arc::clone(&progress);
+                                                let sub_clone = std::sync::Arc::clone(&sub_progress);
                                                 let handle = std::thread::spawn(move || {
                                                     super::DecomposeResult::Visuals(match method {
                                                         misarta::decompose::DecompositionMethod::Vhacd => {
@@ -355,6 +357,7 @@ impl ArticaraApp {
                                                                 &mesh_data,
                                                                 &misarta::decompose::VhacdParams::default(),
                                                                 Some(&prog_clone),
+                                                                Some(&sub_clone),
                                                             );
                                                             hulls.iter().map(|h| {
                                                                 crate::robot::VisualData {
@@ -373,6 +376,7 @@ impl ArticaraApp {
                                                                 &mesh_data,
                                                                 &misarta::decompose::SphereTreeParams::default(),
                                                                 Some(&prog_clone),
+                                                                Some(&sub_clone),
                                                             );
                                                             spheres.iter().map(|s| {
                                                                 let t = na::Translation3::new(s.center.x as f32, s.center.y as f32, s.center.z as f32);
@@ -392,6 +396,7 @@ impl ArticaraApp {
                                                     target: super::DecomposeTarget::Visual,
                                                     method,
                                                     progress,
+                                                    sub_progress,
                                                     handle: Some(handle),
                                                     started: std::time::Instant::now(),
                                                 });
@@ -648,7 +653,9 @@ impl ArticaraApp {
                                                 let progress = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
                                                     misarta::decompose::PHASE_NOT_STARTED,
                                                 ));
+                                                let sub_progress = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
                                                 let prog_clone = std::sync::Arc::clone(&progress);
+                                                let sub_clone = std::sync::Arc::clone(&sub_progress);
                                                 let handle = std::thread::spawn(move || {
                                                     super::DecomposeResult::Collisions(match method {
                                                         misarta::decompose::DecompositionMethod::Vhacd => {
@@ -656,6 +663,7 @@ impl ArticaraApp {
                                                                 &mesh_data,
                                                                 &misarta::decompose::VhacdParams::default(),
                                                                 Some(&prog_clone),
+                                                                Some(&sub_clone),
                                                             );
                                                             hulls.iter().map(|h| {
                                                                 crate::robot::CollisionData {
@@ -673,6 +681,7 @@ impl ArticaraApp {
                                                                 &mesh_data,
                                                                 &misarta::decompose::SphereTreeParams::default(),
                                                                 Some(&prog_clone),
+                                                                Some(&sub_clone),
                                                             );
                                                             spheres.iter().map(|s| {
                                                                 let t = na::Translation3::new(s.center.x as f32, s.center.y as f32, s.center.z as f32);
@@ -691,6 +700,7 @@ impl ArticaraApp {
                                                     target: super::DecomposeTarget::Collision,
                                                     method,
                                                     progress,
+                                                    sub_progress,
                                                     handle: Some(handle),
                                                     started: std::time::Instant::now(),
                                                 });
