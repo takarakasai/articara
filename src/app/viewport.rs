@@ -440,7 +440,7 @@ impl ArticaraApp {
             InteractionMode::JointDrive => {
                 if let (Some(ndc), Some(model)) = (mouse_ndc, &self.model) {
                     let (ro, rd) = self.camera.screen_ray(ndc, aspect);
-                    if let Some((li, _dist)) = model.pick_link(&ro, &rd, transforms) {
+                    if let Some((li, hit_dist)) = model.pick_link(&ro, &rd, transforms) {
                         let link_name = &model.links[li].name;
                         self.selected_link = Some(li);
                         self.selected_joint = model.parent_joint_of_link(link_name);
@@ -474,6 +474,7 @@ impl ArticaraApp {
                                             ik_root_initial_pos: None,
                                             ref_positions: Vec::new(),
                                             drag_depth: 0.0,
+                                            ee_local_offset: na::Point3::origin(),
                                         });
                                     }
                                 }
@@ -504,14 +505,18 @@ impl ArticaraApp {
                                     let ik_root_initial_pos = ik_root_tf.map(|tf| {
                                         na::Point3::from(tf.translation.vector).cast::<f64>()
                                     });
-                                    // Compute EE depth along camera forward at drag start
-                                    let ee_pos_start = model.ee_world_pos(
-                                        li, transforms,
-                                    );
+                                    // Compute EE local offset from the clicked surface point
+                                    let hit_world = ro + rd * hit_dist;
+                                    let link_world_tf = transforms
+                                        .get(link_name)
+                                        .copied()
+                                        .unwrap_or(na::Isometry3::identity());
+                                    let ee_local_offset = link_world_tf.inverse() * hit_world;
+                                    // Use clicked surface point for drag depth
                                     let cam_fwd = (self.camera.target
                                         - na::Point3::from(self.camera.eye().coords))
                                         .normalize();
-                                    let drag_depth = (ee_pos_start - self.camera.eye()).dot(&cam_fwd);
+                                    let drag_depth = (hit_world - self.camera.eye()).dot(&cam_fwd);
 
                                     // Chicken-head: auto-pin designated links at their current poses
                                     for ch_link in &self.chicken_head_links {
@@ -548,6 +553,7 @@ impl ArticaraApp {
                                         ik_root_initial_pos,
                                         ref_positions,
                                         drag_depth,
+                                        ee_local_offset,
                                     });
                                 }
                             }
@@ -782,9 +788,10 @@ impl ArticaraApp {
                             (mouse_ndc, self.model.as_mut())
                         {
                             let cur_transforms = model.compute_transforms();
-                            let ee_pos = model.ee_world_pos(
+                            let ee_pos = model.ee_world_pos_at(
                                 drag.link_idx,
                                 &cur_transforms,
+                                &drag.ee_local_offset,
                             );
 
                             let ik_root_tf_desired = drag.ik_root_initial_tf;
@@ -818,8 +825,9 @@ impl ArticaraApp {
                                     let max_joint_step = 0.15_f64; // rad per frame safety clamp
 
                                     let cur_tf = model.compute_transforms();
-                                    let ee_now = model.ee_world_pos(
+                                    let ee_now = model.ee_world_pos_at(
                                         drag.link_idx, &cur_tf,
+                                        &drag.ee_local_offset,
                                     );
                                     // Compute camera right/up for 2-DoF screen-plane mode
                                     let screen_axes = if self.ik_dof == crate::robot::IkDof::ScreenPlane2D {
@@ -1076,8 +1084,9 @@ impl ArticaraApp {
 
                                     // Compute IK error for debug overlay
                                     let final_tf = model.compute_transforms();
-                                    let ee_final = model.ee_world_pos(
+                                    let ee_final = model.ee_world_pos_at(
                                         drag.link_idx, &final_tf,
+                                        &drag.ee_local_offset,
                                     );
                                     self.ik_ee_marker = Some(ee_final);
                                     self.ik_error = Some(

@@ -133,6 +133,9 @@ struct DragState {
     /// Signed depth of the EE along the camera forward axis at drag start.
     /// Used to keep the IK target plane stable during drag.
     drag_depth: f32,
+    /// Local-frame offset of the IK target point on the end-effector link.
+    /// Set to the surface point that was clicked (in link-local coordinates).
+    ee_local_offset: na::Point3<f32>,
 }
 
 /// Drag state for gizmo offset adjustment.

@@ -577,6 +577,21 @@ impl RobotModel {
         world_tf * local_center
     }
 
+    /// World position of an arbitrary point on a link, given a local-frame offset.
+    pub fn ee_world_pos_at(
+        &self,
+        link_idx: usize,
+        transforms: &HashMap<String, na::Isometry3<f32>>,
+        local_offset: &na::Point3<f32>,
+    ) -> na::Point3<f32> {
+        let link_name = &self.links[link_idx].name;
+        let world_tf = transforms
+            .get(link_name)
+            .copied()
+            .unwrap_or(na::Isometry3::identity());
+        world_tf * local_offset
+    }
+
     /// World orientation of a link.
     pub fn link_world_orientation(
         &self,
