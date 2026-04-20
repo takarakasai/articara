@@ -601,6 +601,50 @@ impl ModelScriptEngine {
     }
 }
 
+impl ModelScriptEngine {
+    /// Returns all function & keyword names available for tab completion.
+    pub fn completion_candidates(&self) -> Vec<String> {
+        // Registered Rhai functions
+        let mut names: Vec<String> = Vec::new();
+
+        // Model functions registered via register_fn
+        let builtins = [
+            "load", "model_name", "has_model",
+            "link_names", "num_links", "link_pos", "link_rpy",
+            "joint_names", "num_joints", "joint_pos", "joint_pos_idx",
+            "joint_positions", "set_joint", "set_joint_idx", "set_joints",
+            "joint_limits", "joint_type",
+            "fk", "ik", "ik_steps",
+            "add_loop_closure", "loop_closure_error", "num_loop_closures",
+            "export_urdf", "export_sdf", "export_mjcf",
+            "abs", "sqrt", "sin", "cos", "atan2",
+            "min_f", "max_f", "clamp", "to_deg", "to_rad", "PI",
+            "dist",
+            "print",
+            // Rhai keywords
+            "let", "const", "if", "else", "while", "for", "in", "loop",
+            "break", "continue", "return", "fn", "true", "false",
+            // Built-in console commands
+            "clear", "help",
+        ];
+        for name in builtins {
+            names.push(name.to_string());
+        }
+
+        // Also add variable names from current scope
+        for (name, _, _) in self.scope.iter() {
+            let s = name.to_string();
+            if !names.contains(&s) {
+                names.push(s);
+            }
+        }
+
+        names.sort();
+        names.dedup();
+        names
+    }
+}
+
 impl Default for ModelScriptEngine {
     fn default() -> Self {
         Self::new()

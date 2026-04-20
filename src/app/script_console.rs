@@ -200,6 +200,54 @@ impl ArticaraApp {
                             submit = true;
                         }
 
+                        // Tab → completion
+                        if re.has_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Tab))
+                        {
+                            #[cfg(feature = "scripting")]
+                            if let Some(eng) = &self.script_engine {
+                                let input = &self.script_input;
+                                // Extract the token being typed (last word-like fragment)
+                                let token_start = input.rfind(|c: char| !c.is_alphanumeric() && c != '_')
+                                    .map(|i| i + 1)
+                                    .unwrap_or(0);
+                                let prefix = &input[token_start..];
+
+                                if !prefix.is_empty() {
+                                    let candidates = eng.completion_candidates();
+                                    let matches: Vec<String> = candidates
+                                        .iter()
+                                        .filter(|c| c.starts_with(prefix) && c.len() > prefix.len())
+                                        .cloned()
+                                        .collect();
+
+                                    if matches.len() == 1 {
+                                        // Single match → auto-complete
+                                        let completed = &matches[0];
+                                        let suffix = &completed[prefix.len()..];
+                                        self.script_input.push_str(suffix);
+                                        self.script_tab_candidates.clear();
+                                    } else if matches.len() > 1 {
+                                        // Multiple matches → complete common prefix, show candidates
+                                        let common = Self::longest_common_prefix(&matches);
+                                        if common.len() > prefix.len() {
+                                            let suffix = &common[prefix.len()..];
+                                            self.script_input.push_str(suffix);
+                                        }
+                                        self.script_tab_candidates = matches;
+                                        // Show candidates in output
+                                        let display = self.script_tab_candidates
+                                            .chunks(6)
+                                            .map(|row| row.join("  "))
+                                            .collect::<Vec<_>>()
+                                            .join("\n");
+                                        self.script_output.push(ScriptLine::System(display));
+                                        self.script_scroll_to_bottom = true;
+                                    }
+                                }
+                            }
+                        }
+
                         // Up/Down arrow for history navigation
                         if re.has_focus() {
                             let up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
@@ -328,7 +376,7 @@ impl ArticaraApp {
             "  Math:  sin cos sqrt abs atan2 clamp to_deg to_rad PI()",
             "         min_f max_f dist(ax,ay,az,bx,by,bz)",
             "",
-            "  Console:  clear  help  ↑/↓ history",
+            "  Console:  clear  help  ↑/↓ history  Tab completion",
             "──────────────────────────────────────────────────",
         ];
         for l in lines {
@@ -339,4 +387,23 @@ impl ArticaraApp {
     /// No-op when scripting feature is disabled.
     #[cfg(not(feature = "scripting"))]
     pub(super) fn draw_script_console(&mut self, _ctx: &egui::Context) {}
+
+    /// Find the longest common prefix among a set of strings.
+    fn longest_common_prefix(strings: &[String]) -> String {
+        if strings.is_empty() {
+            return String::new();
+        }
+        let first = &strings[0];
+        let mut len = first.len();
+        for s in &strings[1..] {
+            len = len.min(s.len());
+            for (i, (a, b)) in first.chars().zip(s.chars()).enumerate() {
+                if a != b {
+                    len = len.min(i);
+                    break;
+                }
+            }
+        }
+        first[..len].to_string()
+    }
 }

@@ -379,6 +379,8 @@ pub struct ArticaraApp {
     script_history_idx: usize,
     /// Whether to auto-scroll to bottom next frame.
     script_scroll_to_bottom: bool,
+    /// Pending tab-completion candidates (shown after Tab press).
+    script_tab_candidates: Vec<String>,
 }
 
 /// A tagged line in the script console output.
@@ -526,6 +528,7 @@ impl ArticaraApp {
             script_history: Vec::new(),
             script_history_idx: 0,
             script_scroll_to_bottom: false,
+            script_tab_candidates: Vec::new(),
         }
     }
 
