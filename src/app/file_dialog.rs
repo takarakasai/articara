@@ -255,10 +255,11 @@ impl FileDialog {
             if meta.is_dir() {
                 dirs.push(DirEntry { name, is_dir: true });
             } else {
-                // Apply extension filter
+                // Apply extension filter (case-insensitive)
                 if !self.extension_filter.is_empty() {
+                    let name_lower = name.to_ascii_lowercase();
                     let has_ext = self.extension_filter.iter().any(|ext| {
-                        name.ends_with(&format!(".{ext}"))
+                        name_lower.ends_with(&format!(".{ext}"))
                     });
                     if !has_ext {
                         continue;

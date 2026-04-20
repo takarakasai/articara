@@ -385,6 +385,39 @@ pub struct ArticaraApp {
     decimation_method: misarta::decimate::DecimationMethod,
     /// Selected mesh decomposition method (V-HACD / Sphere Tree).
     decomposition_method: misarta::decompose::DecompositionMethod,
+    /// Background decomposition task (V-HACD is slow, so we run it off-thread).
+    decompose_task: Option<DecomposeTask>,
+}
+
+/// Whether a decompose task targets a visual or collision slot.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DecomposeTarget {
+    Visual,
+    Collision,
+}
+
+/// The result produced by a background decomposition thread.
+enum DecomposeResult {
+    Visuals(Vec<crate::robot::VisualData>),
+    Collisions(Vec<crate::robot::CollisionData>),
+}
+
+/// A running background decomposition task.
+struct DecomposeTask {
+    /// Link index where the result should be applied.
+    link_index: usize,
+    /// Slot index (visual or collision) to replace.
+    slot_index: usize,
+    /// Whether this targets a visual or collision.
+    target: DecomposeTarget,
+    /// Decomposition method used (for status messages).
+    method: misarta::decompose::DecompositionMethod,
+    /// Atomic progress phase (polled by UI thread).
+    progress: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// Join handle for the background thread.
+    handle: Option<std::thread::JoinHandle<DecomposeResult>>,
+    /// Instant the task was started (for elapsed time display).
+    started: std::time::Instant,
 }
 
 /// A tagged line in the script console output.
@@ -535,6 +568,7 @@ impl ArticaraApp {
             script_tab_candidates: Vec::new(),
             decimation_method: misarta::decimate::DecimationMethod::Qem,
             decomposition_method: misarta::decompose::DecompositionMethod::Vhacd,
+            decompose_task: None,
         }
     }
 
@@ -973,6 +1007,12 @@ impl eframe::App for ArticaraApp {
         // --- File dialogs ---
         self.process_file_dialogs(&ctx);
 
+        // --- Poll background decomposition task ---
+        self.poll_decompose_task();
+
+        // --- Draw decomposition progress overlay ---
+        self.draw_decompose_progress(&ctx);
+
         // Upload robot geometry to GPU when needed.
         if self.needs_upload {
             if let Some(ref model) = self.model {
@@ -1001,6 +1041,151 @@ impl eframe::App for ArticaraApp {
         if let Some(gl) = gl {
             self.gl_renderer.lock().unwrap().destroy(gl);
         }
+    }
+}
+
+// ── Background decomposition task ───────────────────────────────────────────
+
+impl ArticaraApp {
+    /// Poll the background decompose task; apply results when done.
+    fn poll_decompose_task(&mut self) {
+        let task = match self.decompose_task.as_mut() {
+            Some(t) => t,
+            None => return,
+        };
+
+        // Check if the thread has finished.
+        let is_finished = task
+            .handle
+            .as_ref()
+            .map_or(true, |h| h.is_finished());
+
+        if !is_finished {
+            return;
+        }
+
+        // Thread is done — join and apply results.
+        let handle = task.handle.take().unwrap();
+        let result = match handle.join() {
+            Ok(r) => r,
+            Err(_) => {
+                self.decompose_task = None;
+                self.status_message = "Decomposition thread panicked".into();
+                return;
+            }
+        };
+        let li = task.link_index;
+        let si = task.slot_index;
+        let target = task.target;
+        let method_label = task.method.label().to_string();
+        let elapsed = task.started.elapsed();
+
+        // Remove the task.
+        self.decompose_task = None;
+
+        // Apply to model.
+        if let Some(ref mut model) = self.model {
+            if li >= model.links.len() {
+                return;
+            }
+            let link_name = model.links[li].name.clone();
+            let kind_str = match target {
+                DecomposeTarget::Visual => "visual",
+                DecomposeTarget::Collision => "collision",
+            };
+
+            let n = match (target, result) {
+                (DecomposeTarget::Collision, DecomposeResult::Collisions(new_cols)) => {
+                    let n = new_cols.len();
+                    if n == 0 { self.status_message = format!("Decomposition produced 0 shapes ({method_label})"); return; }
+                    if si >= model.links[li].collisions.len() { return; }
+                    model.links[li].collisions.remove(si);
+                    for (i, c) in new_cols.into_iter().enumerate() {
+                        model.links[li].collisions.insert(si + i, c);
+                    }
+                    n
+                }
+                (DecomposeTarget::Visual, DecomposeResult::Visuals(new_vis)) => {
+                    let n = new_vis.len();
+                    if n == 0 { self.status_message = format!("Decomposition produced 0 shapes ({method_label})"); return; }
+                    if si >= model.links[li].visuals.len() { return; }
+                    model.links[li].visuals.remove(si);
+                    for (i, v) in new_vis.into_iter().enumerate() {
+                        model.links[li].visuals.insert(si + i, v);
+                    }
+                    n
+                }
+                _ => { return; }
+            };
+
+            self.needs_upload = true;
+            self.status_message = format!(
+                "Decomposed {kind_str} of '{}' into {} shapes ({method_label}, {:.1}s)",
+                link_name, n, elapsed.as_secs_f64()
+            );
+            // Record in undo history.
+            if let Some(snapshot) = self.pre_frame_snapshot.take() {
+                self.history.record(
+                    &format!("Decompose {kind_str} of '{}' ({method_label})", link_name),
+                    snapshot,
+                );
+                self.any_edit_this_frame = true;
+            }
+        }
+    }
+
+    /// Draw a progress overlay while a decomposition task is running.
+    fn draw_decompose_progress(&self, ctx: &egui::Context) {
+        let task = match self.decompose_task.as_ref() {
+            Some(t) => t,
+            None => return,
+        };
+
+        let phase = task.progress.load(std::sync::atomic::Ordering::Relaxed);
+        let phase_str = misarta::decompose::phase_label(phase);
+        let elapsed = task.started.elapsed().as_secs_f64();
+        let method_label = task.method.label();
+
+        egui::Window::new("⏳ Decomposing…")
+            .id(egui::Id::new("decompose_progress"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{method_label} Decomposition"))
+                            .strong()
+                            .size(16.0),
+                    );
+                    ui.add_space(8.0);
+                    ui.spinner();
+                    ui.add_space(4.0);
+                    ui.label(phase_str);
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(format!("Elapsed: {elapsed:.1}s"))
+                            .weak()
+                            .monospace(),
+                    );
+                    // Phase progress bar (approximate).
+                    let frac = match phase {
+                        misarta::decompose::PHASE_NOT_STARTED => 0.0,
+                        misarta::decompose::PHASE_PREPARING => 0.05,
+                        misarta::decompose::PHASE_DECOMPOSING => 0.3,
+                        misarta::decompose::PHASE_HULLS => 0.8,
+                        misarta::decompose::PHASE_BUILDING => 0.95,
+                        misarta::decompose::PHASE_DONE => 1.0,
+                        _ => 0.5,
+                    };
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::ProgressBar::new(frac as f32)
+                            .desired_width(250.0)
+                            .animate(true),
+                    );
+                });
+            });
     }
 }
 

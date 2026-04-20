@@ -311,6 +311,92 @@ impl ArticaraApp {
                                                 }
                                             }
                                         });
+                                        // ── Decomposition (V-HACD / Sphere Tree) ──
+                                        ui.horizontal(|ui| {
+                                            ui.label("Decompose:");
+                                            egui::ComboBox::from_id_salt(format!("decomp_vis_{vi}"))
+                                                .width(100.0)
+                                                .selected_text(self.decomposition_method.label())
+                                                .show_ui(ui, |ui| {
+                                                    for dm in misarta::decompose::DecompositionMethod::ALL {
+                                                        ui.selectable_value(
+                                                            &mut self.decomposition_method,
+                                                            dm,
+                                                            dm.label(),
+                                                        ).on_hover_text(dm.description());
+                                                    }
+                                                });
+                                        });
+                                        ui.horizontal(|ui| {
+                                            let busy = self.decompose_task.is_some();
+                                            let btn = ui.add_enabled(
+                                                !busy,
+                                                egui::Button::new("▶ Decompose"),
+                                            ).on_hover_text(
+                                                if busy {
+                                                    "Decomposition in progress…".to_string()
+                                                } else {
+                                                    format!("Replace this mesh with multiple visual shapes ({})", self.decomposition_method.label())
+                                                }
+                                            );
+                                            if btn.clicked() {
+                                                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
+                                                let origin = vis.origin;
+                                                let color = vis.color;
+                                                let method = self.decomposition_method;
+                                                let progress = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                                                    misarta::decompose::PHASE_NOT_STARTED,
+                                                ));
+                                                let prog_clone = std::sync::Arc::clone(&progress);
+                                                let handle = std::thread::spawn(move || {
+                                                    super::DecomposeResult::Visuals(match method {
+                                                        misarta::decompose::DecompositionMethod::Vhacd => {
+                                                            let hulls = misarta::decompose::vhacd_with_progress(
+                                                                &mesh_data,
+                                                                &misarta::decompose::VhacdParams::default(),
+                                                                Some(&prog_clone),
+                                                            );
+                                                            hulls.iter().map(|h| {
+                                                                crate::robot::VisualData {
+                                                                    origin,
+                                                                    geometry: GeomData::Mesh {
+                                                                        vertices: h.to_flat_vertices_f32(),
+                                                                        filename: None,
+                                                                        scale: None,
+                                                                    },
+                                                                    color,
+                                                                }
+                                                            }).collect::<Vec<_>>()
+                                                        }
+                                                        misarta::decompose::DecompositionMethod::SphereTree => {
+                                                            let spheres = misarta::decompose::sphere_tree_with_progress(
+                                                                &mesh_data,
+                                                                &misarta::decompose::SphereTreeParams::default(),
+                                                                Some(&prog_clone),
+                                                            );
+                                                            spheres.iter().map(|s| {
+                                                                let t = na::Translation3::new(s.center.x as f32, s.center.y as f32, s.center.z as f32);
+                                                                let sphere_origin = origin * na::Isometry3::from_parts(t, na::UnitQuaternion::identity());
+                                                                crate::robot::VisualData {
+                                                                    origin: sphere_origin,
+                                                                    geometry: GeomData::Sphere { radius: s.radius as f32 },
+                                                                    color,
+                                                                }
+                                                            }).collect::<Vec<_>>()
+                                                        }
+                                                    })
+                                                });
+                                                self.decompose_task = Some(super::DecomposeTask {
+                                                    link_index: li,
+                                                    slot_index: vi,
+                                                    target: super::DecomposeTarget::Visual,
+                                                    method,
+                                                    progress,
+                                                    handle: Some(handle),
+                                                    started: std::time::Instant::now(),
+                                                });
+                                            }
+                                        });
                                     }
                                 }
                             }
@@ -544,40 +630,70 @@ impl ArticaraApp {
                                                 });
                                         });
                                         ui.horizontal(|ui| {
-                                            if ui.small_button("▶ Decompose").on_hover_text(
-                                                format!("Replace this mesh with multiple collision shapes ({})", self.decomposition_method.label())
-                                            ).clicked() {
+                                            let busy = self.decompose_task.is_some();
+                                            let btn = ui.add_enabled(
+                                                !busy,
+                                                egui::Button::new("▶ Decompose"),
+                                            ).on_hover_text(
+                                                if busy {
+                                                    "Decomposition in progress…".to_string()
+                                                } else {
+                                                    format!("Replace this mesh with multiple collision shapes ({})", self.decomposition_method.label())
+                                                }
+                                            );
+                                            if btn.clicked() {
                                                 let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
                                                 let origin = col.origin;
-                                                let new_collisions = match self.decomposition_method {
-                                                    misarta::decompose::DecompositionMethod::Vhacd => {
-                                                        let hulls = misarta::decompose::vhacd(&mesh_data, &misarta::decompose::VhacdParams::default());
-                                                        hulls.iter().map(|h| {
-                                                            crate::robot::CollisionData {
-                                                                origin,
-                                                                geometry: GeomData::Mesh {
-                                                                    vertices: h.to_flat_vertices_f32(),
-                                                                    filename: None,
-                                                                    scale: None,
-                                                                },
-                                                            }
-                                                        }).collect::<Vec<_>>()
-                                                    }
-                                                    misarta::decompose::DecompositionMethod::SphereTree => {
-                                                        let spheres = misarta::decompose::sphere_tree(&mesh_data, &misarta::decompose::SphereTreeParams::default());
-                                                        spheres.iter().map(|s| {
-                                                            let t = na::Translation3::new(s.center.x as f32, s.center.y as f32, s.center.z as f32);
-                                                            let sphere_origin = origin * na::Isometry3::from_parts(t, na::UnitQuaternion::identity());
-                                                            crate::robot::CollisionData {
-                                                                origin: sphere_origin,
-                                                                geometry: GeomData::Sphere { radius: s.radius as f32 },
-                                                            }
-                                                        }).collect::<Vec<_>>()
-                                                    }
-                                                };
-                                                if !new_collisions.is_empty() {
-                                                    col_decompose = Some((ci, new_collisions));
-                                                }
+                                                let method = self.decomposition_method;
+                                                let progress = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                                                    misarta::decompose::PHASE_NOT_STARTED,
+                                                ));
+                                                let prog_clone = std::sync::Arc::clone(&progress);
+                                                let handle = std::thread::spawn(move || {
+                                                    super::DecomposeResult::Collisions(match method {
+                                                        misarta::decompose::DecompositionMethod::Vhacd => {
+                                                            let hulls = misarta::decompose::vhacd_with_progress(
+                                                                &mesh_data,
+                                                                &misarta::decompose::VhacdParams::default(),
+                                                                Some(&prog_clone),
+                                                            );
+                                                            hulls.iter().map(|h| {
+                                                                crate::robot::CollisionData {
+                                                                    origin,
+                                                                    geometry: GeomData::Mesh {
+                                                                        vertices: h.to_flat_vertices_f32(),
+                                                                        filename: None,
+                                                                        scale: None,
+                                                                    },
+                                                                }
+                                                            }).collect::<Vec<_>>()
+                                                        }
+                                                        misarta::decompose::DecompositionMethod::SphereTree => {
+                                                            let spheres = misarta::decompose::sphere_tree_with_progress(
+                                                                &mesh_data,
+                                                                &misarta::decompose::SphereTreeParams::default(),
+                                                                Some(&prog_clone),
+                                                            );
+                                                            spheres.iter().map(|s| {
+                                                                let t = na::Translation3::new(s.center.x as f32, s.center.y as f32, s.center.z as f32);
+                                                                let sphere_origin = origin * na::Isometry3::from_parts(t, na::UnitQuaternion::identity());
+                                                                crate::robot::CollisionData {
+                                                                    origin: sphere_origin,
+                                                                    geometry: GeomData::Sphere { radius: s.radius as f32 },
+                                                                }
+                                                            }).collect::<Vec<_>>()
+                                                        }
+                                                    })
+                                                });
+                                                self.decompose_task = Some(super::DecomposeTask {
+                                                    link_index: li,
+                                                    slot_index: ci,
+                                                    target: super::DecomposeTarget::Collision,
+                                                    method,
+                                                    progress,
+                                                    handle: Some(handle),
+                                                    started: std::time::Instant::now(),
+                                                });
                                             }
                                         });
                                     }
