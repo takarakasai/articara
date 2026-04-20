@@ -168,6 +168,7 @@ impl ArticaraApp {
             self.drag_state = None;
             self.offset_drag_state = None;
             self.ik_target_marker = None;
+            self.ik_ee_marker = None;
             self.ik_error = None;
             self.history.finalize();
         }
@@ -230,6 +231,7 @@ impl ArticaraApp {
         self.draw_com_labels(ui, rect, aspect);
         self.draw_ik_root_anchor(ui, rect, aspect);
         self.draw_ik_target_marker(ui, rect, aspect);
+        self.draw_ik_ee_marker(ui, rect, aspect);
         self.draw_camera_axes(ui, rect);
         self.draw_gravity_indicator(ui, rect);
         self.draw_camera_reset_button(ui, rect);
@@ -1077,6 +1079,7 @@ impl ArticaraApp {
                                     let ee_final = model.ee_world_pos(
                                         drag.link_idx, &final_tf,
                                     );
+                                    self.ik_ee_marker = Some(ee_final);
                                     self.ik_error = Some(
                                         (ee_final.cast::<f32>() - target).norm()
                                     );

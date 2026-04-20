@@ -211,6 +211,8 @@ pub struct ArticaraApp {
     ik_root_link: Option<String>,
     /// IK target position in world space (for debug overlay). None = no active IK.
     ik_target_marker: Option<na::Point3<f32>>,
+    /// Current end-effector position in world space (for debug overlay).
+    ik_ee_marker: Option<na::Point3<f32>>,
     /// IK residual error (distance between EE and target) for debug overlay.
     ik_error: Option<f32>,
     /// Links pinned to their world positions for multi-constraint IK.
@@ -484,6 +486,7 @@ impl ArticaraApp {
             ik_weight_gradient: 1.5,
             ik_root_link: None,
             ik_target_marker: None,
+            ik_ee_marker: None,
             ik_error: None,
             pinned_links: Vec::new(),
             ik_pin_weight: 10.0,

@@ -499,6 +499,61 @@ impl ArticaraApp {
         painter.galley(text_pos, galley, color);
     }
 
+    /// Draw a diamond marker at the current end-effector (bounding-sphere center)
+    /// position during IK drag so the user can see where the EE actually is.
+    pub(super) fn draw_ik_ee_marker(
+        &self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        aspect: f32,
+    ) {
+        let Some(ee_world) = self.ik_ee_marker else { return };
+        let Some(ndc) = self.camera.project(&ee_world, aspect) else { return };
+
+        let screen_pos = egui::pos2(
+            rect.left() + ndc.x * rect.width(),
+            rect.top() + ndc.y * rect.height(),
+        );
+        if !rect.contains(screen_pos) {
+            return;
+        }
+
+        let painter = ui.painter();
+        let c = screen_pos;
+        let color = egui::Color32::from_rgb(255, 180, 50); // orange
+        let size = 8.0_f32;
+
+        // Diamond shape (rotated square)
+        let points = vec![
+            egui::pos2(c.x, c.y - size),
+            egui::pos2(c.x + size, c.y),
+            egui::pos2(c.x, c.y + size),
+            egui::pos2(c.x - size, c.y),
+        ];
+        let shape = egui::Shape::convex_polygon(
+            points,
+            egui::Color32::from_rgba_unmultiplied(255, 180, 50, 80),
+            egui::Stroke::new(2.0, color),
+        );
+        painter.add(shape);
+
+        // Label: "EE" + coordinates
+        let label = format!(
+            "EE ({:.3}, {:.3}, {:.3})",
+            ee_world.x, ee_world.y, ee_world.z,
+        );
+        let font = egui::FontId::monospace(10.0);
+        let bg = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160);
+        let text_pos = egui::pos2(c.x + size + 4.0, c.y - 6.0);
+        let galley = painter.layout_no_wrap(label, font, color);
+        let text_rect = egui::Rect::from_min_size(
+            egui::pos2(text_pos.x - 2.0, text_pos.y - 1.0),
+            galley.size() + egui::vec2(4.0, 2.0),
+        );
+        painter.rect_filled(text_rect, 2.0, bg);
+        painter.galley(text_pos, galley, color);
+    }
+
     /// Draw the IK root anchor icon on the viewport.
     pub(super) fn draw_ik_root_anchor(
         &self,
