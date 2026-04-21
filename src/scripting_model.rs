@@ -64,8 +64,9 @@ impl ModelScriptEngine {
     }
 
     /// Create with a pre-loaded model.
+    #[allow(dead_code)]
     pub fn with_model(robot: RobotModel) -> Self {
-        let mut eng = Self::new();
+        let eng = Self::new();
         *eng.model.borrow_mut() = Some(robot);
         eng
     }
@@ -111,6 +112,7 @@ impl ModelScriptEngine {
     }
 
     /// Returns the last error, if any.
+    #[allow(dead_code)]
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
     }
@@ -131,6 +133,7 @@ impl ModelScriptEngine {
     }
 
     /// Clear scope (but keep model).
+    #[allow(dead_code)]
     pub fn reset_scope(&mut self) {
         self.scope.clear();
     }

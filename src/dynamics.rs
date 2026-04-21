@@ -205,7 +205,7 @@ pub fn compute_payload_capacity(
             //   → m ≤ (effort - g_tau) / tau_p   (if tau_p > 0)
             //   → m ≤ (-effort - g_tau) / tau_p  (if tau_p < 0)
             //   and similarly for the lower bound.
-            let m_candidates = [
+            let _m_candidates = [
                 (effort - g_tau) / tau_p,
                 (-effort - g_tau) / tau_p,
             ];
@@ -215,7 +215,7 @@ pub fn compute_payload_capacity(
             // m must satisfy both:
             //   m * tau_p ≤  effort - g_tau
             //   m * tau_p ≥ -effort - g_tau
-            let (lo, hi) = if tau_p > 0.0 {
+            let (_lo, hi) = if tau_p > 0.0 {
                 ((-effort - g_tau) / tau_p, (effort - g_tau) / tau_p)
             } else {
                 ((effort - g_tau) / tau_p, (-effort - g_tau) / tau_p)
@@ -424,6 +424,7 @@ pub struct SimGraphData {
 /// Per-joint peak value recorded across the entire simulation.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[allow(dead_code)]
 pub struct JointPeakInfo {
     pub joint_idx: usize,
     pub joint_name: String,
@@ -455,6 +456,7 @@ pub struct JumpSimResult {
 
 /// Per-joint data for the jump animation.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct LegJointSim {
     pub joint_idx: usize,
     /// Joint angle at the start of extension.
@@ -470,6 +472,7 @@ pub struct LegJointSim {
 
 /// Per-leg data for IK-based coordinated extension.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct LegSim {
     /// Ground (foot) link name.
     pub ground_link: String,
@@ -491,6 +494,7 @@ pub struct LegSim {
 
 /// State for an active jump simulation with per-step quasi-dynamics.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct JumpSim {
     pub phase: JumpPhase,
     /// Elapsed time within the current phase (s).
@@ -601,6 +605,7 @@ pub enum PayloadPhase {
 
 /// State for an active payload simulation.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct PayloadSim {
     pub phase: PayloadPhase,
     pub phase_time: f64,
@@ -623,12 +628,14 @@ pub struct PayloadSim {
 
 /// Wrapper for either simulation type.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum DynSim {
     Jump(JumpSim),
     Payload(PayloadSim),
 }
 
 impl DynSim {
+    #[allow(dead_code)]
     pub fn is_done(&self) -> bool {
         match self {
             DynSim::Jump(j) => j.phase == JumpPhase::Landed && j.phase_time >= j.landed_hold,
@@ -811,7 +818,7 @@ pub fn start_jump_sim(
         let foot_chains: Vec<Vec<usize>> = legs.iter()
             .map(|leg| leg.chain.clone())
             .collect();
-        let foot_links: Vec<String> = legs.iter()
+        let _foot_links: Vec<String> = legs.iter()
             .map(|leg| leg.ground_link.clone())
             .collect();
         let contact_feet: Vec<String> = ground_links.to_vec();

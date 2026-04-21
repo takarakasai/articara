@@ -93,6 +93,7 @@ pub fn crba(
 ///
 /// Delegates to [`misarta::rnea::nonlinear_effects`] and extracts the
 /// entries for the requested joint subset.
+#[allow(dead_code)]
 pub fn rnea_bias(
     model: &RobotModel,
     joint_order: &[usize],
@@ -242,6 +243,7 @@ impl JointTrajectoryPoint {
 /// Wraps joint velocities, the topological order, and per-foot contact
 /// information needed to step the simulation forward in time.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct ForwardDynamicsState {
     /// Movable joint indices in topological order.
     pub joint_order: Vec<usize>,
@@ -759,6 +761,7 @@ pub fn compute_body_side_gravity_torques(
 ///
 /// This is O(n) and avoids forming M(q) explicitly.
 /// Returns q̈ (one entry per joint in `joint_order`).
+#[allow(dead_code)]
 pub fn aba_forward_dynamics(
     model: &RobotModel,
     joint_order: &[usize],
@@ -783,6 +786,7 @@ pub fn aba_forward_dynamics(
 }
 
 /// Compute M(q)⁻¹ τ using the O(n) ABA without forming M explicitly.
+#[allow(dead_code)]
 pub fn minv_times_vec(
     model: &RobotModel,
     joint_order: &[usize],
@@ -809,6 +813,7 @@ pub fn minv_times_vec(
 // =========================================================================
 
 /// Compute world-frame center of mass position.
+#[allow(dead_code)]
 pub fn compute_com(model: &RobotModel, mc: &MisartaCache) -> na::Point3<f64> {
     let q = mc.build_q(model);
     let com = misarta::centroidal::compute_com(&mc.model, &q);
@@ -816,11 +821,13 @@ pub fn compute_com(model: &RobotModel, mc: &MisartaCache) -> na::Point3<f64> {
 }
 
 /// Compute total robot mass via misarta.
+#[allow(dead_code)]
 pub fn total_mass(mc: &MisartaCache) -> f64 {
     misarta::centroidal::total_mass(&mc.model)
 }
 
 /// Compute the CoM Jacobian (3 × nv), mapping generalized velocity to CoM velocity.
+#[allow(dead_code)]
 pub fn compute_com_jacobian(
     model: &RobotModel,
     joint_order: &[usize],
@@ -845,6 +852,7 @@ pub fn compute_com_jacobian(
 }
 
 /// Compute the 6D centroidal momentum matrix (6 × nv).
+#[allow(dead_code)]
 pub fn compute_centroidal_momentum_matrix(
     model: &RobotModel,
     joint_order: &[usize],
@@ -874,6 +882,7 @@ pub fn compute_centroidal_momentum_matrix(
 
 /// Re-export misarta's iLQR types and solver so articara callers
 /// can use them through the `rbd::dynamics` namespace.
+#[allow(unused_imports)]
 pub use misarta::optimization::{
     IlqrConfig, IlqrResult, solve_ilqr,
     discrete_dynamics_step,

@@ -127,6 +127,7 @@ pub struct GlRenderer {
     grid_num_vertices: i32,
     axes_vao: glow::VertexArray,
     axes_vbo: glow::Buffer,
+    #[allow(dead_code)]
     axes_num_vertices: i32,
     transforms: HashMap<String, na::Isometry3<f32>>,
     pub highlight_link: Option<String>,

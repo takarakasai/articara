@@ -788,13 +788,13 @@ impl ArticaraApp {
                             (mouse_ndc, self.model.as_mut())
                         {
                             let cur_transforms = model.compute_transforms();
-                            let ee_pos = model.ee_world_pos_at(
+                            let _ee_pos = model.ee_world_pos_at(
                                 drag.link_idx,
                                 &cur_transforms,
                                 &drag.ee_local_offset,
                             );
 
-                            let ik_root_tf_desired = drag.ik_root_initial_tf;
+                            let _ik_root_tf_desired = drag.ik_root_initial_tf;
 
                             let (ray_o, ray_d) = self.camera.screen_ray(ndc, aspect);
                             let cam_forward = (self.camera.target

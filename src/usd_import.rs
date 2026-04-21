@@ -306,6 +306,7 @@ fn parse_point_array(s: &str) -> Vec<(f32, f32, f32)> {
 }
 
 /// Parse an `int[]` array string into Vec<i32>.
+#[allow(dead_code)]
 fn parse_int_array(s: &str) -> Vec<i32> {
     let s = s.trim().trim_start_matches('[').trim_end_matches(']');
     s.split(',')

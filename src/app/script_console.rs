@@ -31,8 +31,8 @@ impl ArticaraApp {
             .corner_radius(0.0);
 
         egui::Panel::bottom("script_console_panel")
-            .default_height(220.0)
-            .height_range(80.0..=600.0)
+            .default_size(220.0)
+            .size_range(80.0..=600.0)
             .resizable(true)
             .frame(frame)
             .show_inside(ui, |ui| {

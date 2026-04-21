@@ -127,8 +127,10 @@ struct DragState {
     /// Used as the fixed anchor so the root doesn't drift.
     ik_root_initial_tf: Option<na::Isometry3<f32>>,
     /// World-space position of the IK root link at drag start (for translation-only correction).
+    #[allow(dead_code)]
     ik_root_initial_pos: Option<na::Point3<f64>>,
     /// Reference joint positions at drag start for null-space posture stabilization.
+    #[allow(dead_code)]
     ref_positions: Vec<f64>,
     /// Signed depth of the EE along the camera forward axis at drag start.
     /// Used to keep the IK target plane stable during drag.
@@ -345,6 +347,7 @@ pub struct ArticaraApp {
     /// Link to track in the dynamics graph (position/velocity/acceleration).
     dynamics_graph_link: Option<String>,
     /// Whether to show the dynamics graph window.
+    #[allow(dead_code)]
     show_dynamics_graph: bool,
     /// File path for sim config save/load.
     sim_config_path: String,
@@ -954,7 +957,7 @@ impl eframe::App for ArticaraApp {
 
         // Custom title bar (replaces OS window decorations)
         egui::Panel::top("title_bar")
-            .height_range(28.0..=28.0)
+            .size_range(28.0..=28.0)
             .show_inside(ui, |ui| {
                 self.draw_title_bar(ui, &ctx);
             });

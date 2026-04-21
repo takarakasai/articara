@@ -12,6 +12,7 @@ use crate::robot::*;
 ///
 /// The script uses `omni.isaac.urdf` extension to import the URDF,
 /// and also configures drive properties for interactive joints.
+#[allow(dead_code)]
 pub fn export_isaac_python(model: &RobotModel, urdf_relative_path: &str) -> String {
     let mut s = String::new();
 
@@ -121,6 +122,7 @@ pub fn export_isaac_python(model: &RobotModel, urdf_relative_path: &str) -> Stri
 }
 
 /// Export Isaac-compatible files: a URDF + Python import script.
+#[allow(dead_code)]
 pub fn export_isaac_to_dir(
     model: &RobotModel,
     output_dir: &Path,

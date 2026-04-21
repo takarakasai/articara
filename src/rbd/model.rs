@@ -170,6 +170,7 @@ pub struct MisartaCache {
     /// `a2m[articara_joint_idx]` → misarta joint index (1-based), or `None`.
     pub a2m: Vec<Option<usize>>,
     /// `m2a[misarta_joint_idx]` → articara joint index. Index 0 (universe) → `None`.
+    #[allow(dead_code)]
     pub m2a: Vec<Option<usize>>,
 }
 
@@ -183,6 +184,7 @@ pub struct RobotModel {
     pub joint_map: HashMap<String, usize>,
     pub root_link: String,
     pub children_joints: HashMap<String, Vec<usize>>,
+    #[allow(dead_code)]
     pub materials: HashMap<String, [f32; 4]>,
     pub joint_positions: Vec<f64>,
     /// Path of the originally loaded URDF file.
@@ -1294,6 +1296,7 @@ impl MisartaCache {
     }
 
     /// Apply a solved misarta q-vector back to the `RobotModel`.
+    #[allow(dead_code)]
     pub fn apply_q_to_robot(&self, robot: &mut RobotModel, q: &[f64]) {
         for (ji, &maybe_mi) in self.a2m.iter().enumerate() {
             if let Some(mi) = maybe_mi {
@@ -1335,6 +1338,7 @@ impl RobotModel {
     }
 
     /// Build a velocity vector from a sparse map.
+    #[allow(dead_code)]
     pub fn build_v(&self, velocities: &HashMap<usize, f64>) -> na::DVector<f64> {
         self.mc().build_v(velocities)
     }
@@ -1837,11 +1841,13 @@ impl RobotModel {
     }
 
     /// Build collision `GeometryModel` from current model data.
+    #[allow(dead_code)]
     pub fn build_collision_geometry(&self) -> GeometryModel {
         self.build_collision_geometry_with_map().0
     }
 
     /// Build collision `GeometryModel` with a map from geo-obj index → `(link_idx, collision_idx)`.
+    #[allow(dead_code)]
     pub fn build_collision_geometry_with_map(&self) -> (GeometryModel, Vec<(usize, usize)>) {
         let mc = self.mc();
         let mut gmodel = GeometryModel::new();
@@ -1881,6 +1887,7 @@ impl RobotModel {
     }
 
     /// Apply a solved misarta q-vector back to joint positions.
+    #[allow(dead_code)]
     pub fn apply_q(&mut self, q: &[f64]) {
         // Take cache temporarily to avoid borrow conflict
         let mc = self.misarta_cache.take().expect("misarta model not built");
@@ -1889,6 +1896,7 @@ impl RobotModel {
     }
 
     /// Enforce mimic constraints on current joint positions.
+    #[allow(dead_code)]
     pub fn enforce_mimic(&mut self) {
         let mc = self.misarta_cache.as_ref().expect("misarta model not built");
         if mc.model.mimic.is_empty() {
@@ -1923,6 +1931,7 @@ use misarta::frames::Frame;
 
 impl RobotModel {
     /// Build a misarta `Frame` for an articara link name.
+    #[allow(dead_code)]
     pub fn frame_for_link(&self, link_name: &str) -> Option<Frame<f64>> {
         let mc = self.mc();
         let mi = mc.link_name_to_misarta_joint(link_name)?;
@@ -1949,6 +1958,7 @@ impl RobotModel {
     }
 
     /// Create a position-only (3D) constraint between two links.
+    #[allow(dead_code)]
     pub fn position_constraint(
         &self,
         link_a: &str,
@@ -1960,6 +1970,7 @@ impl RobotModel {
     }
 
     /// Create a full-pose (6D) constraint between two links.
+    #[allow(dead_code)]
     pub fn pose_constraint(
         &self,
         link_a: &str,
@@ -1971,6 +1982,7 @@ impl RobotModel {
     }
 
     /// Solve constrained IK.
+    #[allow(dead_code)]
     pub fn solve_constrained_ik(
         &self,
         constraints: Vec<RigidConstraint<f64>>,
@@ -1983,6 +1995,7 @@ impl RobotModel {
     }
 
     /// Solve IK with a primary task (position) and rigid constraints.
+    #[allow(dead_code)]
     pub fn solve_task_with_constraints(
         &self,
         ee_link: &str,
@@ -2175,6 +2188,7 @@ pub fn isometry_f64_to_f32(iso: &na::Isometry3<f64>) -> na::Isometry3<f32> {
 
 /// Convert an articara `GeomData` to a misarta `GeometryShape`,
 /// optionally returning `MeshData` for mesh shapes.
+#[allow(dead_code)]
 pub fn convert_geom_to_shape_with_mesh(
     geom: &GeomData,
 ) -> Option<(GeometryShape, Option<MeshData>)> {

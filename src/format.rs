@@ -21,6 +21,7 @@ impl RobotFormat {
     ];
 
     /// Whether this format supports import (loading).
+    #[allow(dead_code)]
     pub fn supports_import(self) -> bool {
         matches!(self, RobotFormat::Urdf | RobotFormat::Sdf | RobotFormat::Mjcf | RobotFormat::IsaacUsd)
     }
@@ -41,6 +42,7 @@ impl RobotFormat {
     }
 
     /// File extension.
+    #[allow(dead_code)]
     pub fn extension(self) -> &'static str {
         match self {
             RobotFormat::Urdf => "urdf",
@@ -52,6 +54,7 @@ impl RobotFormat {
 
     /// Detect format from file extension only (no file I/O).
     /// For `.xml` files, defaults to MJCF. Use `detect()` for content-aware detection.
+    #[allow(dead_code)]
     pub fn detect_from_extension(path: &Path) -> Option<RobotFormat> {
         let ext = path.extension()?.to_str()?.to_lowercase();
         match ext.as_str() {

@@ -134,6 +134,7 @@ impl History {
     }
 
     /// Read-only access to the operation log.
+    #[allow(dead_code)]
     pub fn log(&self) -> &[String] {
         &self.log
     }

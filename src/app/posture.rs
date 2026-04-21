@@ -178,6 +178,7 @@ fn parse_kv(line: &str) -> Option<(&str, &str)> {
 }
 
 /// Parse a TOML inline array of floats: `[1.0, 2.0, 3.0]`.
+#[allow(dead_code)]
 fn parse_f32_array(s: &str) -> Option<Vec<f32>> {
     let s = s.trim();
     let inner = s.strip_prefix('[')?.strip_suffix(']')?;

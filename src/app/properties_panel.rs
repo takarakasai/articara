@@ -580,7 +580,7 @@ impl ArticaraApp {
                     let mut col_to_remove: Option<usize> = None;
                     let mut col_to_duplicate: Option<usize> = None;
                     // Deferred decomposition: (index, replacement CollisionData list)
-                    let mut col_decompose: Option<(usize, Vec<crate::robot::CollisionData>)> = None;
+                    let col_decompose: Option<(usize, Vec<crate::robot::CollisionData>)> = None;
                     for ci in 0..link.collisions.len() {
                         let col = &mut link.collisions[ci];
                         ui.push_id(format!("col_{ci}"), |ui| {

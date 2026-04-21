@@ -130,7 +130,7 @@ impl ArticaraApp {
         // Paint background – slightly lighter than the default dark panel
         let bg = egui::Color32::from_rgb(35, 35, 42);
         ui.painter()
-            .rect_filled(title_bar_rect, egui::Rounding::ZERO, bg);
+            .rect_filled(title_bar_rect, egui::CornerRadius::ZERO, bg);
 
         // Thin separator line along the bottom edge
         let sep_color = egui::Color32::from_rgb(60, 60, 72);
@@ -167,7 +167,7 @@ impl ArticaraApp {
         }
 
         // ── 2. Title text (painted over the drag zone) ──
-        ui.allocate_ui_at_rect(drag_rect, |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(drag_rect), |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(8.0);
                 ui.label(
@@ -192,7 +192,7 @@ impl ArticaraApp {
         let buttons_left = title_bar_rect.right() - buttons_total_w;
 
         // Helper: paint a title-bar button with hover/press highlight
-        let mut draw_btn = |index: usize,
+        let draw_btn = |index: usize,
                             label: &str,
                             text_color: egui::Color32,
                             hover_bg: egui::Color32,
@@ -207,12 +207,12 @@ impl ArticaraApp {
             // Background highlight on hover / press
             if resp.is_pointer_button_down_on() {
                 ui.painter()
-                    .rect_filled(btn_rect, egui::Rounding::ZERO, hover_bg);
+                    .rect_filled(btn_rect, egui::CornerRadius::ZERO, hover_bg);
             } else if resp.hovered() {
                 let mut c = hover_bg;
                 c = egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), c.a() / 2);
                 ui.painter()
-                    .rect_filled(btn_rect, egui::Rounding::ZERO, c);
+                    .rect_filled(btn_rect, egui::CornerRadius::ZERO, c);
             }
 
             // Centered text

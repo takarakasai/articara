@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use super::ArticaraApp;
-use crate::dynamics::{self, StaticAnalysis, DynSim, JumpPhase, JumpSimResult, PayloadPhase, SimGraphData};
+use crate::dynamics::{self, StaticAnalysis, DynSim, JumpPhase, PayloadPhase};
 
 impl ArticaraApp {
     pub(super) fn draw_dynamics_panel(&mut self, ui: &mut egui::Ui) {

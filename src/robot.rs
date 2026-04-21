@@ -659,7 +659,7 @@ fn geom_to_urdf_xml(geom: &GeomData) -> String {
         GeomData::Capsule { radius, half_length } => {
             // URDF: decompose capsule into cylinder + 2 spheres
             let cyl_len = half_length * 2.0;
-            let mut out = format!("      <geometry>\n        <cylinder radius=\"{radius}\" length=\"{cyl_len}\"/>\n      </geometry>\n");
+            let out = format!("      <geometry>\n        <cylinder radius=\"{radius}\" length=\"{cyl_len}\"/>\n      </geometry>\n");
             // Note: multi-geometry per visual/collision is not standard URDF.
             // For full fidelity, the caller should emit separate <visual>/<collision> elements.
             // Here we output the cylinder portion; spheres must be added separately.

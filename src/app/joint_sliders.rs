@@ -405,7 +405,7 @@ impl ArticaraApp {
                 }
                 model.base_transform = na::Isometry3::identity();
             }
-            drop(model);
+            let _ = model;
             // Record undo after releasing the model borrow
             if changed {
                 self.mark_edit("Set joint position");
