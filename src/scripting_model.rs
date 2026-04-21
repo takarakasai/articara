@@ -735,6 +735,14 @@ impl ModelScriptEngine {
             decompose_collision_impl(robot, link, ci as usize, misarta::decompose::DecompositionMethod::SphereTree, Some(max_count as usize))
         });
 
+        // decompose_primitive(link_name, collision_index) → 1 on success (single primitive, no V-HACD)
+        let m = Rc::clone(&model);
+        engine.register_fn("decompose_primitive", move |link: &str, ci: i64| -> i64 {
+            let mut borrow = m.borrow_mut();
+            let Some(robot) = borrow.as_mut() else { return -1 };
+            decompose_collision_impl(robot, link, ci as usize, misarta::decompose::DecompositionMethod::PrimitiveFitDirect, None)
+        });
+
         engine
     }
 }
@@ -870,6 +878,44 @@ fn decompose_collision_impl(
                 }
             }).collect()
         }
+        misarta::decompose::DecompositionMethod::PrimitiveFitDirect => {
+            use nalgebra as na;
+            let p = misarta::decompose::primitive_fit_direct(&mesh_data);
+            let t = na::Translation3::new(
+                p.center.x as f32,
+                p.center.y as f32,
+                p.center.z as f32,
+            );
+            let r = na::UnitQuaternion::new_normalize(na::Quaternion::new(
+                p.rotation.w as f32,
+                p.rotation.i as f32,
+                p.rotation.j as f32,
+                p.rotation.k as f32,
+            ));
+            let prim_origin = origin * na::Isometry3::from_parts(t, r);
+            let geometry = match p.kind {
+                misarta::decompose::PrimitiveKind::Box { hx, hy, hz } => {
+                    crate::robot::GeomData::Box {
+                        hx: hx as f32,
+                        hy: hy as f32,
+                        hz: hz as f32,
+                    }
+                }
+                misarta::decompose::PrimitiveKind::Cylinder { radius, half_length } => {
+                    crate::robot::GeomData::Cylinder {
+                        radius: radius as f32,
+                        half_length: half_length as f32,
+                    }
+                }
+                misarta::decompose::PrimitiveKind::Sphere { radius } => {
+                    crate::robot::GeomData::Sphere { radius: radius as f32 }
+                }
+            };
+            vec![crate::robot::CollisionData {
+                origin: prim_origin,
+                geometry,
+            }]
+        }
     };
 
     if new_collisions.is_empty() {
@@ -901,7 +947,7 @@ impl ModelScriptEngine {
             "add_loop_closure", "loop_closure_error", "num_loop_closures",
             "export_urdf", "export_sdf", "export_mjcf",
             "reduce_mesh", "reduce_collision_mesh", "reduce_all_meshes",
-            "decompose_vhacd", "decompose_spheres",
+            "decompose_vhacd", "decompose_spheres", "decompose_primitive",
             "abs", "sqrt", "sin", "cos", "atan2",
             "min_f", "max_f", "clamp", "to_deg", "to_rad", "PI",
             "dist",
