@@ -49,10 +49,12 @@ impl ArticaraApp {
             for (i, (name, jtype)) in joint_info.iter().enumerate() {
                 let selected = self.selected_joint == Some(i);
                 let label = format!("{name} [{jtype}]");
-                if ui.selectable_label(selected, &label).clicked() {
+                let resp = ui.selectable_label(selected, &label);
+                if resp.clicked() {
                     self.selected_joint = Some(i);
                     self.selected_link = None;
                 }
+                self.joint_context_menu(&resp, i, name);
             }
         });
 
@@ -109,10 +111,12 @@ impl ArticaraApp {
 
         if children.is_empty() {
             // Leaf node
-            if ui.selectable_label(selected, link_name).clicked() {
+            let resp = ui.selectable_label(selected, link_name);
+            if resp.clicked() {
                 self.selected_link = link_idx;
                 self.selected_joint = None;
             }
+            self.link_context_menu(&resp, link_name);
         } else {
             // Branch node
             let id = ui.make_persistent_id(link_name);
@@ -125,10 +129,12 @@ impl ArticaraApp {
             }
             state
                 .show_header(ui, |ui| {
-                    if ui.selectable_label(selected, link_name).clicked() {
+                    let resp = ui.selectable_label(selected, link_name);
+                    if resp.clicked() {
                         self.selected_link = link_idx;
                         self.selected_joint = None;
                     }
+                    self.link_context_menu(&resp, link_name);
                 })
                 .body(|ui| {
                     for (_joint_name, child_link) in &children {
@@ -402,5 +408,123 @@ impl ArticaraApp {
                 }
             }
         }
+    }
+
+    /// Right-click context menu for a link in the tree panel.
+    fn link_context_menu(&mut self, resp: &egui::Response, link_name: &str) {
+        resp.context_menu(|ui| {
+            // Select this link
+            if let Some(model) = &self.model {
+                if let Some(&li) = model.link_map.get(link_name) {
+                    if self.selected_link != Some(li) {
+                        self.selected_link = Some(li);
+                        self.selected_joint = None;
+                    }
+                }
+            }
+
+            if ui.button("✏ Rename…").clicked() {
+                // Select + set rename buffer so properties panel shows the text edit
+                if let Some(model) = &self.model {
+                    if let Some(&li) = model.link_map.get(link_name) {
+                        self.selected_link = Some(li);
+                        self.selected_joint = None;
+                        self.rename_link_buf = link_name.to_string();
+                    }
+                }
+                ui.close_menu();
+            }
+
+            if ui.button("➕ Add Child…").clicked() {
+                self.show_add_child = true;
+                self.new_parent_link = link_name.to_string();
+                if let Some(model) = &self.model {
+                    self.new_link_name = model.generate_link_name("new_link");
+                    self.new_joint_name = model.generate_joint_name("new_joint");
+                }
+                ui.close_menu();
+            }
+
+            if ui.button("📋 Copy Visuals → Collisions").clicked() {
+                if let Some(model) = &mut self.model {
+                    if let Some(&li) = model.link_map.get(link_name) {
+                        let new_cols: Vec<_> = model.links[li].visuals.iter().map(|v| {
+                            crate::robot::CollisionData {
+                                origin: v.origin,
+                                geometry: v.geometry.clone(),
+                            }
+                        }).collect();
+                        if !new_cols.is_empty() {
+                            model.links[li].collisions = new_cols;
+                            self.needs_upload = true;
+                            self.mark_edit(&format!("Copy visuals → collisions for '{}'", link_name));
+                        }
+                    }
+                }
+                ui.close_menu();
+            }
+
+            ui.separator();
+
+            let is_root = self.model.as_ref().map_or(false, |m| m.root_link == link_name);
+            let del_btn = ui.add_enabled(!is_root, egui::Button::new("🗑 Delete"))
+                .on_disabled_hover_text("Cannot delete root link");
+            if del_btn.clicked() {
+                if let Some(model) = &mut self.model {
+                    match model.remove_link(link_name) {
+                        Ok(_removed) => {
+                            self.selected_link = None;
+                            self.selected_joint = None;
+                            self.needs_upload = true;
+                            self.mark_edit(&format!("Delete link '{}'", link_name));
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Remove error: {e}");
+                        }
+                    }
+                }
+                ui.close_menu();
+            }
+        });
+    }
+
+    /// Right-click context menu for a joint in the tree panel.
+    fn joint_context_menu(&mut self, resp: &egui::Response, ji: usize, joint_name: &str) {
+        resp.context_menu(|ui| {
+            // Select this joint
+            if self.selected_joint != Some(ji) {
+                self.selected_joint = Some(ji);
+                self.selected_link = None;
+            }
+
+            if ui.button("✏ Rename…").clicked() {
+                self.selected_joint = Some(ji);
+                self.selected_link = None;
+                self.rename_joint_buf = joint_name.to_string();
+                ui.close_menu();
+            }
+
+            let mut type_change_msg: Option<String> = None;
+            ui.menu_button("🔄 Change Type", |ui| {
+                const JOINT_TYPES: &[&str] = &["revolute", "prismatic", "fixed", "continuous"];
+                if let Some(model) = &mut self.model {
+                    let current = model.joints[ji].joint_type.clone();
+                    for &jt in JOINT_TYPES {
+                        let is_current = current == jt;
+                        if ui.selectable_label(is_current, jt).clicked() && !is_current {
+                            model.joints[ji].joint_type = jt.to_string();
+                            model.rebuild_misarta_model();
+                            type_change_msg = Some(format!("Change joint '{}' type to {}", joint_name, jt));
+                            ui.close_menu();
+                            break;
+                        }
+                    }
+                }
+            });
+            if let Some(msg) = type_change_msg {
+                self.needs_upload = true;
+                self.mark_edit(&msg);
+            }
+        });
     }
 }
