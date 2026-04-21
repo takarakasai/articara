@@ -469,36 +469,52 @@ impl ArticaraApp {
                         self.tree_reveal_ancestors = model.ancestor_links(link_name);
                         match self.drag_mode {
                             DragMode::SingleJoint => {
-                                if let Some(ji) = model.parent_joint_of_link(link_name) {
-                                    let joint = &model.joints[ji];
-                                    if joint.joint_type == "revolute"
-                                        || joint.joint_type == "continuous"
-                                    {
-                                        let parent_tf = transforms
-                                            .get(&joint.parent_link)
-                                            .copied()
-                                            .unwrap_or(na::Isometry3::identity());
-                                        let joint_tf = parent_tf * joint.origin;
-                                        let world_axis = joint_tf * joint.axis;
-                                        let pivot_world =
-                                            na::Point3::from(joint_tf.translation.vector);
-
-                                        self.drag_state = Some(DragState {
-                                            link_idx: li,
-                                            mode: DragMode::SingleJoint,
-                                            joint_idx: ji,
-                                            world_axis,
-                                            pivot_world,
-                                            chain: Vec::new(),
-                                            ee_link: String::new(),
-                                            ik_root_link: None,
-                                            ik_root_initial_tf: None,
-                                            ik_root_initial_pos: None,
-                                            ref_positions: Vec::new(),
-                                            drag_depth: 0.0,
-                                            ee_local_offset: na::Point3::origin(),
-                                        });
+                                // Walk up the kinematic tree from the clicked
+                                // link to find the nearest revolute/continuous
+                                // ancestor joint.
+                                let mut cur_link = link_name.to_string();
+                                let mut found_ji = None;
+                                loop {
+                                    if let Some(ji) = model.parent_joint_of_link(&cur_link) {
+                                        let joint = &model.joints[ji];
+                                        if joint.joint_type == "revolute"
+                                            || joint.joint_type == "continuous"
+                                        {
+                                            found_ji = Some(ji);
+                                            break;
+                                        }
+                                        // Not movable — continue up to parent link
+                                        cur_link = joint.parent_link.clone();
+                                    } else {
+                                        break; // reached root
                                     }
+                                }
+                                if let Some(ji) = found_ji {
+                                    let joint = &model.joints[ji];
+                                    let parent_tf = transforms
+                                        .get(&joint.parent_link)
+                                        .copied()
+                                        .unwrap_or(na::Isometry3::identity());
+                                    let joint_tf = parent_tf * joint.origin;
+                                    let world_axis = joint_tf * joint.axis;
+                                    let pivot_world =
+                                        na::Point3::from(joint_tf.translation.vector);
+
+                                    self.drag_state = Some(DragState {
+                                        link_idx: li,
+                                        mode: DragMode::SingleJoint,
+                                        joint_idx: ji,
+                                        world_axis,
+                                        pivot_world,
+                                        chain: Vec::new(),
+                                        ee_link: String::new(),
+                                        ik_root_link: None,
+                                        ik_root_initial_tf: None,
+                                        ik_root_initial_pos: None,
+                                        ref_positions: Vec::new(),
+                                        drag_depth: 0.0,
+                                        ee_local_offset: na::Point3::origin(),
+                                    });
                                 }
                             }
                             DragMode::InverseKinematics => {
