@@ -1058,7 +1058,21 @@ impl ArticaraApp {
                     .num_columns(2)
                     .show(ui, |ui| {
                         ui.label("Type:");
-                        ui.label(&joint.joint_type);
+                        {
+                            const JOINT_TYPES: &[&str] = &["revolute", "prismatic", "fixed", "continuous"];
+                            let mut cur_type = joint.joint_type.clone();
+                            egui::ComboBox::from_id_salt(format!("jtype_{ji}"))
+                                .selected_text(&cur_type)
+                                .show_ui(ui, |ui| {
+                                    for &jt in JOINT_TYPES {
+                                        ui.selectable_value(&mut cur_type, jt.to_string(), jt);
+                                    }
+                                });
+                            if cur_type != joint.joint_type {
+                                joint.joint_type = cur_type;
+                                joint_changed = true;
+                            }
+                        }
                         ui.end_row();
                         ui.label("Parent:");
                         ui.label(&joint.parent_link);
@@ -1099,6 +1113,7 @@ impl ArticaraApp {
                     });
                 if joint_changed {
                     self.needs_upload = true;
+                    model.rebuild_misarta_model();
                     props_edit_desc = Some(format!("Edit joint '{}'", joint_name));
                 }
             }
