@@ -1342,12 +1342,15 @@ impl RobotModel {
     /// Compute 3×chain_len positional Jacobian for a chain of joint indices.
     ///
     /// When `root_link` is `Some`, uses a relative Jacobian.
+    /// When `ee_offset_world` is `Some`, shifts the reference point from the
+    /// link frame origin to an arbitrary point offset by that vector (world frame).
     /// Returns an f64 matrix expressed in the **world frame**.
     pub fn chain_positional_jacobian(
         &self,
         chain: &[usize],
         ee_link: &str,
         root_link: Option<&str>,
+        ee_offset_world: Option<&na::Vector3<f64>>,
     ) -> na::DMatrix<f64> {
         let mc = self.mc();
         let q = mc.build_q(self);
@@ -1386,7 +1389,17 @@ impl RobotModel {
                     full_jac[(4, vi)],
                     full_jac[(5, vi)],
                 );
-                let v_world = r * v;
+                let mut v_world = r * v;
+                // Apply offset correction: v_click = v_origin + ω × r
+                if let Some(offset) = ee_offset_world {
+                    let omega = na::Vector3::new(
+                        full_jac[(0, vi)],
+                        full_jac[(1, vi)],
+                        full_jac[(2, vi)],
+                    );
+                    let omega_world = r * omega;
+                    v_world += omega_world.cross(offset);
+                }
                 jac[(0, col)] = v_world[0];
                 jac[(1, col)] = v_world[1];
                 jac[(2, col)] = v_world[2];
@@ -1469,6 +1482,7 @@ impl RobotModel {
         solver: IkSolver,
         screen_axes: Option<(na::Vector3<f64>, na::Vector3<f64>)>,
         joint_weights: Option<&[f64]>,
+        ee_offset_world: Option<&na::Vector3<f64>>,
     ) -> Vec<f64> {
         let n = chain.len();
         if n == 0 {
@@ -1476,7 +1490,7 @@ impl RobotModel {
         }
 
         // Build 3×n positional Jacobian in world frame
-        let jac3 = self.chain_positional_jacobian(chain, ee_link, root_link);
+        let jac3 = self.chain_positional_jacobian(chain, ee_link, root_link, ee_offset_world);
 
         // Map articara IkSolver → misarta types
         let misarta_damping = match solver {
@@ -1589,7 +1603,14 @@ impl RobotModel {
     ///
     /// This is used by the multi-constraint IK solver where constraints span
     /// different kinematic branches and must share a common column space.
-    pub fn link_positional_jacobian_full(&self, link_name: &str) -> na::DMatrix<f64> {
+    ///
+    /// When `ee_offset_world` is `Some`, shifts the reference point from the
+    /// link frame origin by that vector (world frame): J_v += J_ω × r.
+    pub fn link_positional_jacobian_full(
+        &self,
+        link_name: &str,
+        ee_offset_world: Option<&na::Vector3<f64>>,
+    ) -> na::DMatrix<f64> {
         let mc = self.mc();
         let q = mc.build_q(self);
         let nv = mc.model.nv;
@@ -1603,7 +1624,13 @@ impl RobotModel {
         let mut jac = na::DMatrix::<f64>::zeros(3, nv);
         for col in 0..nv {
             let v = na::Vector3::new(full6[(3, col)], full6[(4, col)], full6[(5, col)]);
-            let v_world = r * v;
+            let mut v_world = r * v;
+            // Apply offset correction: v_click = v_origin + ω × r
+            if let Some(offset) = ee_offset_world {
+                let omega = na::Vector3::new(full6[(0, col)], full6[(1, col)], full6[(2, col)]);
+                let omega_world = r * omega;
+                v_world += omega_world.cross(offset);
+            }
             jac[(0, col)] = v_world[0];
             jac[(1, col)] = v_world[1];
             jac[(2, col)] = v_world[2];
@@ -1670,6 +1697,7 @@ impl RobotModel {
         joint_weights_raw: Option<&[f64]>,
         pin_weight: f64,
         extra_constraints: &[misarta::ik::DiffIkConstraint],
+        ee_offset_world: Option<&na::Vector3<f64>>,
     ) -> Vec<f64> {
         let mc = self.mc();
         let nv = mc.model.nv;
@@ -1678,7 +1706,7 @@ impl RobotModel {
         }
 
         // Full-nv Jacobian for the primary task (EE)
-        let jac_ee = self.link_positional_jacobian_full(ee_link);
+        let jac_ee = self.link_positional_jacobian_full(ee_link, ee_offset_world);
 
         // Build constraints for each pinned link
         let transforms = self.compute_transforms();
@@ -1717,7 +1745,7 @@ impl RobotModel {
                 });
             } else {
                 // 3-DoF constraint (position only)
-                let jac_pin = self.link_positional_jacobian_full(&pin.link_name);
+                let jac_pin = self.link_positional_jacobian_full(&pin.link_name, None);
                 let pin_world = li
                     .and_then(|idx| {
                         let tf = transforms.get(&self.links[idx].name)?;

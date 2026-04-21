@@ -829,6 +829,16 @@ impl ArticaraApp {
                                         drag.link_idx, &cur_tf,
                                         &drag.ee_local_offset,
                                     );
+                                    // Compute world-frame offset vector for Jacobian correction.
+                                    // r_world = R_link * r_local (vector from link origin to click point)
+                                    let ee_offset_world = {
+                                        let link_rot = model.link_world_orientation(
+                                            drag.link_idx, &cur_tf,
+                                        );
+                                        let r_local = drag.ee_local_offset.coords.cast::<f64>();
+                                        let r_world = link_rot.cast::<f64>() * r_local;
+                                        r_world
+                                    };
                                     // Compute camera right/up for 2-DoF screen-plane mode
                                     let screen_axes = if self.ik_dof == crate::robot::IkDof::ScreenPlane2D {
                                         let cam_fwd_dir = cam_forward.cast::<f64>();
@@ -956,6 +966,7 @@ impl ArticaraApp {
                                                             let jac_pin = model
                                                                 .link_positional_jacobian_full(
                                                                     &pin.link_name,
+                                                                    None,
                                                                 );
                                                             let pin_world = model
                                                                 .ee_world_pos(li, &post_tf)
@@ -1042,6 +1053,7 @@ impl ArticaraApp {
                                                 full_weights.as_deref(),
                                                 self.ik_pin_weight as f64,
                                                 &loop_constraints,
+                                                Some(&ee_offset_world),
                                             );
                                             model.apply_all_joint_deltas(&deltas);
                                         }
@@ -1059,6 +1071,7 @@ impl ArticaraApp {
                                             self.ik_solver,
                                             screen_axes,
                                             weights.as_deref(),
+                                            Some(&ee_offset_world),
                                         );
                                         model.apply_joint_deltas(&drag.chain, &deltas);
                                     }

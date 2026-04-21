@@ -1195,7 +1195,7 @@ mod test_ik {
     fn jacobian_dimensions() {
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
         let chain = model.chain_joints("link2");
-        let jac = model.chain_positional_jacobian(&chain, "link2", None);
+        let jac = model.chain_positional_jacobian(&chain, "link2", None, None);
         assert_eq!(jac.nrows(), 3);
         assert_eq!(jac.ncols(), 2);
     }
@@ -1217,6 +1217,7 @@ mod test_ik {
             &ee_pos_f64, &target_f64, 0.05, 1.0, 0.1,
             None,
             IkSolver::Dls,
+            None,
             None,
             None,
         );
@@ -2590,6 +2591,7 @@ mod test_closed_loop_ik {
                 None,
                 10.0,
                 &lc,
+                None,
             );
             model.apply_all_joint_deltas(&deltas);
         }

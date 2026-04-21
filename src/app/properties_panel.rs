@@ -388,6 +388,51 @@ impl ArticaraApp {
                                                                 }
                                                             }).collect::<Vec<_>>()
                                                         }
+                                                        misarta::decompose::DecompositionMethod::PrimitiveFit => {
+                                                            let prims = misarta::decompose::primitive_fit_with_progress(
+                                                                &mesh_data,
+                                                                &misarta::decompose::VhacdParams::default(),
+                                                                Some(&prog_clone),
+                                                                Some(&sub_clone),
+                                                            );
+                                                            prims.iter().map(|p| {
+                                                                let t = na::Translation3::new(
+                                                                    p.center.x as f32,
+                                                                    p.center.y as f32,
+                                                                    p.center.z as f32,
+                                                                );
+                                                                let r = na::UnitQuaternion::new_normalize(na::Quaternion::new(
+                                                                    p.rotation.w as f32,
+                                                                    p.rotation.i as f32,
+                                                                    p.rotation.j as f32,
+                                                                    p.rotation.k as f32,
+                                                                ));
+                                                                let prim_origin = origin * na::Isometry3::from_parts(t, r);
+                                                                let geometry = match p.kind {
+                                                                    misarta::decompose::PrimitiveKind::Box { hx, hy, hz } => {
+                                                                        GeomData::Box {
+                                                                            hx: hx as f32,
+                                                                            hy: hy as f32,
+                                                                            hz: hz as f32,
+                                                                        }
+                                                                    }
+                                                                    misarta::decompose::PrimitiveKind::Cylinder { radius, half_length } => {
+                                                                        GeomData::Cylinder {
+                                                                            radius: radius as f32,
+                                                                            half_length: half_length as f32,
+                                                                        }
+                                                                    }
+                                                                    misarta::decompose::PrimitiveKind::Sphere { radius } => {
+                                                                        GeomData::Sphere { radius: radius as f32 }
+                                                                    }
+                                                                };
+                                                                crate::robot::VisualData {
+                                                                    origin: prim_origin,
+                                                                    geometry,
+                                                                    color,
+                                                                }
+                                                            }).collect::<Vec<_>>()
+                                                        }
                                                     })
                                                 });
                                                 self.decompose_task = Some(super::DecomposeTask {
@@ -689,6 +734,50 @@ impl ArticaraApp {
                                                                 crate::robot::CollisionData {
                                                                     origin: sphere_origin,
                                                                     geometry: GeomData::Sphere { radius: s.radius as f32 },
+                                                                }
+                                                            }).collect::<Vec<_>>()
+                                                        }
+                                                        misarta::decompose::DecompositionMethod::PrimitiveFit => {
+                                                            let prims = misarta::decompose::primitive_fit_with_progress(
+                                                                &mesh_data,
+                                                                &misarta::decompose::VhacdParams::default(),
+                                                                Some(&prog_clone),
+                                                                Some(&sub_clone),
+                                                            );
+                                                            prims.iter().map(|p| {
+                                                                let t = na::Translation3::new(
+                                                                    p.center.x as f32,
+                                                                    p.center.y as f32,
+                                                                    p.center.z as f32,
+                                                                );
+                                                                let r = na::UnitQuaternion::new_normalize(na::Quaternion::new(
+                                                                    p.rotation.w as f32,
+                                                                    p.rotation.i as f32,
+                                                                    p.rotation.j as f32,
+                                                                    p.rotation.k as f32,
+                                                                ));
+                                                                let prim_origin = origin * na::Isometry3::from_parts(t, r);
+                                                                let geometry = match p.kind {
+                                                                    misarta::decompose::PrimitiveKind::Box { hx, hy, hz } => {
+                                                                        GeomData::Box {
+                                                                            hx: hx as f32,
+                                                                            hy: hy as f32,
+                                                                            hz: hz as f32,
+                                                                        }
+                                                                    }
+                                                                    misarta::decompose::PrimitiveKind::Cylinder { radius, half_length } => {
+                                                                        GeomData::Cylinder {
+                                                                            radius: radius as f32,
+                                                                            half_length: half_length as f32,
+                                                                        }
+                                                                    }
+                                                                    misarta::decompose::PrimitiveKind::Sphere { radius } => {
+                                                                        GeomData::Sphere { radius: radius as f32 }
+                                                                    }
+                                                                };
+                                                                crate::robot::CollisionData {
+                                                                    origin: prim_origin,
+                                                                    geometry,
                                                                 }
                                                             }).collect::<Vec<_>>()
                                                         }

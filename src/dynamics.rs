@@ -157,7 +157,7 @@ pub fn compute_payload_capacity(
     let ee_pos = model.ee_world_pos(ee_li, &transforms);
 
     // Compute positional Jacobian (3 × N) via misarta
-    let jac = model.chain_positional_jacobian(&chain, ee_link, None);
+    let jac = model.chain_positional_jacobian(&chain, ee_link, None, None);
 
     // Unit payload force: F = [0, 0, -g] (force per 1 kg)
     let f_unit = na::DVector::from_column_slice(&[0.0_f64, 0.0, -G]);
@@ -1617,7 +1617,7 @@ fn update_utilisation(
         None => return,
     };
     let _ee_pos = model.ee_world_pos(ee_li, &transforms);
-    let jac = model.chain_positional_jacobian(&chain, ee_link, None);
+    let jac = model.chain_positional_jacobian(&chain, ee_link, None, None);
 
     // Force per current mass
     let f = na::DVector::from_column_slice(&[0.0_f64, 0.0, -G * sim.current_mass]);
