@@ -395,6 +395,10 @@ pub struct ArticaraApp {
     decomposition_method: misarta::decompose::DecompositionMethod,
     /// Background decomposition task (V-HACD is slow, so we run it off-thread).
     decompose_task: Option<DecomposeTask>,
+    /// Edit buffer for renaming the currently selected link.
+    rename_link_buf: String,
+    /// Edit buffer for renaming the currently selected joint.
+    rename_joint_buf: String,
 }
 
 /// Whether a decompose task targets a visual or collision slot.
@@ -580,6 +584,8 @@ impl ArticaraApp {
             decimation_method: misarta::decimate::DecimationMethod::Qem,
             decomposition_method: misarta::decompose::DecompositionMethod::Vhacd,
             decompose_task: None,
+            rename_link_buf: String::new(),
+            rename_joint_buf: String::new(),
         }
     }
 

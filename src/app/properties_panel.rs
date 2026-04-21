@@ -14,12 +14,41 @@ impl ArticaraApp {
 
         // Track whether any property was edited this frame
         let mut props_edit_desc: Option<String> = None;
+        // Deferred link rename (for app-level ref update after model borrow is released)
+        let mut link_renamed: Option<(String, String)> = None;
 
         if let Some(model) = &mut self.model {
             if let Some(li) = self.selected_link {
+                let link_name = model.links[li].name.clone();
+
+                // Sync rename buffer when selection changes
+                if self.rename_link_buf.is_empty() || !model.link_map.contains_key(&self.rename_link_buf) {
+                    self.rename_link_buf = link_name.clone();
+                }
+                // Editable link name (before taking &mut link)
+                let mut rename_result: Option<(String, String)> = None;
+                ui.horizontal(|ui| {
+                    ui.label("Link:");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.rename_link_buf)
+                            .desired_width(160.0)
+                            .font(egui::TextStyle::Heading),
+                    );
+                    if resp.lost_focus() && self.rename_link_buf != link_name {
+                        rename_result = Some((link_name.clone(), self.rename_link_buf.clone()));
+                    }
+                });
+                if let Some((ref old_name, ref new_name)) = rename_result {
+                    if model.rename_link(old_name, new_name) {
+                        link_renamed = Some((old_name.clone(), new_name.clone()));
+                        props_edit_desc = Some(format!("Rename link '{}' → '{}'", old_name, new_name));
+                    } else {
+                        self.rename_link_buf = model.links[li].name.clone();
+                    }
+                }
+                // Re-read link_name after potential rename
+                let link_name = model.links[li].name.clone();
                 let link = &mut model.links[li];
-                let link_name = link.name.clone();
-                ui.label(egui::RichText::new(&link_name).strong().size(16.0));
                 ui.separator();
 
                 // --- Per-link display mode controls ---
@@ -995,9 +1024,33 @@ impl ArticaraApp {
             }
 
             if let Some(ji) = self.selected_joint {
+                let joint_name = model.joints[ji].name.clone();
+                // Sync rename buffer when selection changes
+                if self.rename_joint_buf.is_empty() || !model.joint_map.contains_key(&self.rename_joint_buf) {
+                    self.rename_joint_buf = joint_name.clone();
+                }
+                // Editable joint name (before taking &mut joint)
+                let mut jrename_result: Option<(String, String)> = None;
+                ui.horizontal(|ui| {
+                    ui.label("Joint:");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.rename_joint_buf)
+                            .desired_width(160.0)
+                            .font(egui::TextStyle::Heading),
+                    );
+                    if resp.lost_focus() && self.rename_joint_buf != joint_name {
+                        jrename_result = Some((joint_name.clone(), self.rename_joint_buf.clone()));
+                    }
+                });
+                if let Some((old_name, new_name)) = jrename_result {
+                    if model.rename_joint(&old_name, &new_name) {
+                        props_edit_desc = Some(format!("Rename joint '{}' → '{}'", old_name, new_name));
+                    } else {
+                        self.rename_joint_buf = model.joints[ji].name.clone();
+                    }
+                }
                 let joint = &mut model.joints[ji];
                 let joint_name = joint.name.clone();
-                ui.label(egui::RichText::new(&joint_name).strong().size(16.0));
                 ui.separator();
                 let mut joint_changed = false;
                 egui::Grid::new("joint_props")
@@ -1053,6 +1106,11 @@ impl ArticaraApp {
             if self.selected_link.is_none() && self.selected_joint.is_none() {
                 ui.label("Select a link or joint to view properties.");
             }
+        }
+
+        // Apply deferred link rename to app-level references
+        if let Some((old_name, new_name)) = link_renamed {
+            self.update_link_name_refs(&old_name, &new_name);
         }
 
         // Commit any property edit to undo history
@@ -1234,6 +1292,45 @@ impl ArticaraApp {
         let model_file = dir.join(&base_name);
         if let Err(e) = model.save_sidecar_config(&model_file) {
             self.export_message += &format!(" (⚠ config: {e})");
+        }
+    }
+
+    /// Update all app-level references when a link is renamed.
+    fn update_link_name_refs(&mut self, old: &str, new: &str) {
+        // Pinned links
+        for pin in &mut self.pinned_links {
+            if pin.link_name == old {
+                pin.link_name = new.to_string();
+            }
+        }
+        // Display mode overrides
+        let keys_to_update: Vec<_> = self
+            .link_display_modes
+            .keys()
+            .filter(|(name, _)| name == old)
+            .cloned()
+            .collect();
+        for key in keys_to_update {
+            if let Some(mode) = self.link_display_modes.remove(&key) {
+                self.link_display_modes.insert((new.to_string(), key.1), mode);
+            }
+        }
+        // IK root link
+        if self.ik_root_link.as_deref() == Some(old) {
+            self.ik_root_link = Some(new.to_string());
+        }
+        // Dynamics ground links
+        for gl in &mut self.dynamics_ground_links {
+            if gl == old {
+                *gl = new.to_string();
+            }
+        }
+        // Dynamics EE / body link
+        if self.dynamics_ee_link.as_deref() == Some(old) {
+            self.dynamics_ee_link = Some(new.to_string());
+        }
+        if self.dynamics_body_link.as_deref() == Some(old) {
+            self.dynamics_body_link = Some(new.to_string());
         }
     }
 }

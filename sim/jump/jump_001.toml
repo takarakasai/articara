@@ -1,0 +1,32 @@
+# Articara Sim Config
+
+[jump]
+ground_links = ["RL_foot", "FL_foot", "RR_foot", "FR_foot"]
+launch_axes = [false, false, true]
+speed = 1
+extension_duration = 0.05
+enable_retract = true
+pd_kp = 500
+pd_kd = 20
+
+[jump.locked_joints]
+FL_hip_joint = true
+FR_hip_joint = true
+RL_hip_joint = true
+RR_hip_joint = true
+arm_pitch_joint = true
+
+[jump.start_pose]
+arm_pitch_joint = 0.000000047683717
+RL_hip_joint = 0.004999974
+RL_thigh_joint = 1.4000001
+RL_calf_joint = -2.6
+FL_hip_joint = 0.004999974
+FL_thigh_joint = 1.4000001
+FL_calf_joint = -2.6
+RR_hip_joint = 0.000000047683717
+RR_thigh_joint = 1.4000001
+RR_calf_joint = -2.6
+FR_hip_joint = 0.000000047683717
+FR_thigh_joint = 1.4000001
+FR_calf_joint = -2.6

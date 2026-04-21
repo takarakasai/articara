@@ -884,6 +884,69 @@ impl RobotModel {
         self.rebuild_misarta_model();
     }
 
+    /// Rename a link.  Updates the canonical name, all joint parent/child
+    /// references, loop-closure references, and rebuilds derived indices.
+    /// Returns `true` on success, `false` if `new_name` is empty or already taken.
+    pub fn rename_link(&mut self, old_name: &str, new_name: &str) -> bool {
+        let new_name = new_name.trim();
+        if new_name.is_empty() || new_name == old_name {
+            return false;
+        }
+        // Reject duplicates
+        if self.link_map.contains_key(new_name) {
+            return false;
+        }
+        // Find link index
+        let Some(&li) = self.link_map.get(old_name) else {
+            return false;
+        };
+        // 1. Rename the link itself
+        self.links[li].name = new_name.to_string();
+        // 2. Update root_link
+        if self.root_link == old_name {
+            self.root_link = new_name.to_string();
+        }
+        // 3. Update all joints referencing this link
+        for joint in &mut self.joints {
+            if joint.parent_link == old_name {
+                joint.parent_link = new_name.to_string();
+            }
+            if joint.child_link == old_name {
+                joint.child_link = new_name.to_string();
+            }
+        }
+        // 4. Update loop-closure references
+        for lc in &mut self.loop_closures {
+            if lc.link_a == old_name {
+                lc.link_a = new_name.to_string();
+            }
+            if lc.link_b == old_name {
+                lc.link_b = new_name.to_string();
+            }
+        }
+        // 5. Rebuild all derived maps
+        self.rebuild_indices();
+        true
+    }
+
+    /// Rename a joint.  Updates the canonical name and rebuilds derived indices.
+    /// Returns `true` on success, `false` if `new_name` is empty or already taken.
+    pub fn rename_joint(&mut self, old_name: &str, new_name: &str) -> bool {
+        let new_name = new_name.trim();
+        if new_name.is_empty() || new_name == old_name {
+            return false;
+        }
+        if self.joint_map.contains_key(new_name) {
+            return false;
+        }
+        let Some(&ji) = self.joint_map.get(old_name) else {
+            return false;
+        };
+        self.joints[ji].name = new_name.to_string();
+        self.rebuild_indices();
+        true
+    }
+
     /// Return a list of all link names (for UI combo boxes).
     pub fn link_names(&self) -> Vec<String> {
         self.links.iter().map(|l| l.name.clone()).collect()
