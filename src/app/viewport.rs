@@ -440,7 +440,29 @@ impl ArticaraApp {
             InteractionMode::JointDrive => {
                 if let (Some(ndc), Some(model)) = (mouse_ndc, &self.model) {
                     let (ro, rd) = self.camera.screen_ray(ndc, aspect);
-                    if let Some((li, hit_dist)) = model.pick_link(&ro, &rd, transforms) {
+                    // Try precise ray-pick first; fall back to hovered link
+                    // so that a near-miss drag doesn't orbit the camera.
+                    // Only fall back when the cursor is visually over a link
+                    // (hovered_link), NOT when clicking empty space.
+                    let pick_result = model.pick_link(&ro, &rd, transforms);
+                    let (li, hit_dist) = if let Some(hit) = pick_result {
+                        hit
+                    } else if let Some(hov_li) = self.hovered_link {
+                        // Use the bounding-sphere center distance as an
+                        // approximate hit distance for the fallback.
+                        let link_tf = transforms
+                            .get(&model.links[hov_li].name)
+                            .copied()
+                            .unwrap_or(na::Isometry3::identity());
+                        let (center, _) = model.link_bounding_sphere(hov_li);
+                        let world_center = link_tf * center;
+                        let approx_dist = (world_center - ro).dot(&rd).max(0.01);
+                        (hov_li, approx_dist)
+                    } else {
+                        // Nothing selected and no hit — orbit camera
+                        return;
+                    };
+                    {
                         let link_name = &model.links[li].name;
                         self.selected_link = Some(li);
                         self.selected_joint = model.parent_joint_of_link(link_name);
