@@ -642,6 +642,22 @@ impl ArticaraApp {
                     }
                 });
 
+                // Button to copy all visuals as collisions
+                if !link.visuals.is_empty() {
+                    if ui.button("📋 Copy Visuals → Collisions").on_hover_text(
+                        "Replace all collision shapes with copies of the visual shapes"
+                    ).clicked() {
+                        link.collisions = link.visuals.iter().map(|v| {
+                            crate::robot::CollisionData {
+                                origin: v.origin,
+                                geometry: v.geometry.clone(),
+                            }
+                        }).collect();
+                        self.needs_upload = true;
+                        props_edit_desc = Some(format!("Copy visuals → collisions for '{}'", link_name));
+                    }
+                }
+
                 let col_count = link.collisions.len();
                 let col_header = egui::CollapsingHeader::new(format!(
                     "💥 Collisions ({col_count})"
