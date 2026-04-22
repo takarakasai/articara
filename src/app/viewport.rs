@@ -230,6 +230,7 @@ impl ArticaraApp {
         self.draw_viewport_overlay(ui, rect);
         self.draw_com_labels(ui, rect, aspect);
         self.draw_ik_root_anchor(ui, rect, aspect);
+        self.draw_ik_pin_markers(ui, rect, aspect);
         self.draw_ik_target_marker(ui, rect, aspect);
         self.draw_ik_ee_marker(ui, rect, aspect);
         self.draw_camera_axes(ui, rect);

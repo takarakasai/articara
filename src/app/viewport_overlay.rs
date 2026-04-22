@@ -639,6 +639,63 @@ impl ArticaraApp {
         );
     }
 
+    /// Draw IK pin markers (◆) on the viewport for each pinned link.
+    pub(super) fn draw_ik_pin_markers(
+        &self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        aspect: f32,
+    ) {
+        if self.pinned_links.is_empty() {
+            return;
+        }
+        let Some(ref model) = self.model else { return };
+        let transforms = model.compute_transforms();
+        let painter = ui.painter();
+        let pin_color = egui::Color32::from_rgb(255, 160, 0);
+        let pin_bg = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140);
+
+        for pin in &self.pinned_links {
+            let Some(&li) = model.link_map.get(&pin.link_name) else { continue };
+            let world_pos = model.ee_world_pos(li, &transforms);
+            let Some(ndc) = self.camera.project(&world_pos, aspect) else { continue };
+
+            let screen_pos = egui::pos2(
+                rect.left() + ndc.x * rect.width(),
+                rect.top() + ndc.y * rect.height(),
+            );
+            if !rect.contains(screen_pos) {
+                continue;
+            }
+
+            // Background circle
+            painter.circle_filled(screen_pos, 10.0, pin_bg);
+
+            // Diamond (◆) shape
+            let s = 6.0_f32;
+            let diamond = vec![
+                egui::pos2(screen_pos.x, screen_pos.y - s),
+                egui::pos2(screen_pos.x + s * 0.7, screen_pos.y),
+                egui::pos2(screen_pos.x, screen_pos.y + s),
+                egui::pos2(screen_pos.x - s * 0.7, screen_pos.y),
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                diamond,
+                pin_color,
+                egui::Stroke::NONE,
+            ));
+
+            // Label below
+            painter.text(
+                egui::pos2(screen_pos.x, screen_pos.y + 12.0),
+                egui::Align2::CENTER_TOP,
+                &pin.link_name,
+                egui::FontId::proportional(10.0),
+                pin_color,
+            );
+        }
+    }
+
     /// Draw camera orientation axes (bottom-right corner).
     pub(super) fn draw_camera_axes(&self, ui: &mut egui::Ui, rect: egui::Rect) {
         let painter = ui.painter();
