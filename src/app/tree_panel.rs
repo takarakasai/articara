@@ -89,10 +89,23 @@ impl ArticaraApp {
         }
     }
 
+    /// Build a display label for a link, appending IK icons if applicable.
+    fn link_tree_label(&self, link_name: &str) -> String {
+        let is_ik_root = self.ik_root_link.as_deref() == Some(link_name);
+        let is_pinned = self.pinned_links.iter().any(|p| p.link_name == link_name);
+        match (is_ik_root, is_pinned) {
+            (true, true)   => format!("{link_name} ⚓📌"),
+            (true, false)  => format!("{link_name} ⚓"),
+            (false, true)  => format!("{link_name} 📌"),
+            (false, false) => link_name.to_string(),
+        }
+    }
+
     pub(super) fn draw_link_tree(&mut self, ui: &mut egui::Ui, link_name: &str) {
         let model = self.model.as_ref().unwrap();
         let link_idx = model.link_map.get(link_name).copied();
         let selected = link_idx.is_some() && self.selected_link == link_idx;
+        let label_text = self.link_tree_label(link_name);
 
         // Collect child info before creating UI to avoid borrow conflicts
         let children: Vec<(String, String)> = model
@@ -111,7 +124,7 @@ impl ArticaraApp {
 
         if children.is_empty() {
             // Leaf node
-            let resp = ui.selectable_label(selected, link_name);
+            let resp = ui.selectable_label(selected, &label_text);
             if resp.clicked() {
                 self.selected_link = link_idx;
                 self.selected_joint = None;
@@ -129,7 +142,7 @@ impl ArticaraApp {
             }
             state
                 .show_header(ui, |ui| {
-                    let resp = ui.selectable_label(selected, link_name);
+                    let resp = ui.selectable_label(selected, &label_text);
                     if resp.clicked() {
                         self.selected_link = link_idx;
                         self.selected_joint = None;
