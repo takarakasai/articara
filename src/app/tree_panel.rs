@@ -89,23 +89,45 @@ impl ArticaraApp {
         }
     }
 
-    /// Build a display label for a link, appending IK icons if applicable.
-    fn link_tree_label(&self, link_name: &str) -> String {
+    /// Build a rich-text label for a link, appending colored IK markers.
+    ///
+    /// Uses BMP-safe symbols so they render in egui's default font:
+    /// - `⚓` (U+2693) for IK root link  (blue)
+    /// - `◆` (U+25C6) for IK-pinned link (orange)
+    fn link_tree_label(&self, link_name: &str, visuals: &egui::Visuals) -> egui::text::LayoutJob {
         let is_ik_root = self.ik_root_link.as_deref() == Some(link_name);
         let is_pinned = self.pinned_links.iter().any(|p| p.link_name == link_name);
-        match (is_ik_root, is_pinned) {
-            (true, true)   => format!("{link_name} ⚓📌"),
-            (true, false)  => format!("{link_name} ⚓"),
-            (false, true)  => format!("{link_name} 📌"),
-            (false, false) => link_name.to_string(),
+
+        let base_color = visuals.text_color();
+        let font_id = egui::FontId::proportional(13.0);
+        let mut job = egui::text::LayoutJob::default();
+        job.append(link_name, 0.0, egui::TextFormat {
+            font_id: font_id.clone(),
+            color: base_color,
+            ..Default::default()
+        });
+        if is_ik_root {
+            job.append(" ⚓", 0.0, egui::TextFormat {
+                font_id: font_id.clone(),
+                color: egui::Color32::from_rgb(70, 140, 255),
+                ..Default::default()
+            });
         }
+        if is_pinned {
+            job.append(" ◆", 0.0, egui::TextFormat {
+                font_id: font_id.clone(),
+                color: egui::Color32::from_rgb(255, 160, 0),
+                ..Default::default()
+            });
+        }
+        job
     }
 
     pub(super) fn draw_link_tree(&mut self, ui: &mut egui::Ui, link_name: &str) {
         let model = self.model.as_ref().unwrap();
         let link_idx = model.link_map.get(link_name).copied();
         let selected = link_idx.is_some() && self.selected_link == link_idx;
-        let label_text = self.link_tree_label(link_name);
+        let label_text = self.link_tree_label(link_name, ui.visuals());
 
         // Collect child info before creating UI to avoid borrow conflicts
         let children: Vec<(String, String)> = model
@@ -124,7 +146,7 @@ impl ArticaraApp {
 
         if children.is_empty() {
             // Leaf node
-            let resp = ui.selectable_label(selected, &label_text);
+            let resp = ui.selectable_label(selected, label_text);
             if resp.clicked() {
                 self.selected_link = link_idx;
                 self.selected_joint = None;
@@ -142,7 +164,7 @@ impl ArticaraApp {
             }
             state
                 .show_header(ui, |ui| {
-                    let resp = ui.selectable_label(selected, &label_text);
+                    let resp = ui.selectable_label(selected, label_text.clone());
                     if resp.clicked() {
                         self.selected_link = link_idx;
                         self.selected_joint = None;
