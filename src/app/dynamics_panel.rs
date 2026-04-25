@@ -359,7 +359,11 @@ impl ArticaraApp {
                 ui.separator();
 
                 // --- Simulation controls ---
-                let sim_active = self.dynamics_sim.is_some();
+                let mut sim_active = self.dynamics_sim.is_some();
+                #[cfg(feature = "mujoco")]
+                {
+                    sim_active = sim_active || self.mujoco_sim.is_some();
+                }
 
                 ui.horizontal(|ui| {
                     // Static analysis
@@ -439,7 +443,92 @@ impl ArticaraApp {
                             }
                         }
                     }
+
+                    // MuJoCo シミュレーション
+                    #[cfg(feature = "mujoco")]
+                    if ui
+                        .add_enabled(!sim_active, egui::Button::new("🦾 Play MuJoCo"))
+                        .on_hover_text("Start real-time MuJoCo physics simulation")
+                        .clicked()
+                    {
+                        if let Some(ref model) = self.model {
+                            let base_pos = if self.mujoco_auto_base {
+                                None
+                            } else {
+                                Some([
+                                    self.mujoco_base_pos[0] as f64,
+                                    self.mujoco_base_pos[1] as f64,
+                                    self.mujoco_base_pos[2] as f64,
+                                ])
+                            };
+                            // Embed a ground plane mirroring the viewport's
+                            // GroundPlane so the robot has a surface to land on.
+                            // Auto-show the visual ground if the user hadn't
+                            // enabled it; the same `ground_plane_auto` flag
+                            // makes Stop revert that change.
+                            if !self.show_ground_plane {
+                                self.show_ground_plane = true;
+                                self.ground_plane_auto = true;
+                            }
+                            let ground = Some(crate::mjcf::GroundPlaneCfg {
+                                z: self.ground_z as f64,
+                                half_size: self.ground_size as f64,
+                                roll: self.ground_plane_roll as f64,
+                                pitch: self.ground_plane_pitch as f64,
+                            });
+                            match crate::mujoco_sim::MujocoSim::new(model, base_pos, ground) {
+                                Ok(sim) => self.mujoco_sim = Some(sim),
+                                Err(e) => self.status_message = e,
+                            }
+                            self.dynamics_sim_paused = false;
+                        }
+                    }
                 });
+
+                // --- MuJoCo floating-base initial position (only meaningful for MuJoCo sim) ---
+                #[cfg(feature = "mujoco")]
+                {
+                    ui.horizontal(|ui| {
+                        ui.label("Base pos:");
+                        ui.checkbox(&mut self.mujoco_auto_base, "Auto")
+                            .on_hover_text(
+                                "When checked, the root link is auto-lifted just \
+                                 above the ground plane. When unchecked, the values \
+                                 below are used as the floating-base initial \
+                                 world-frame position.",
+                            );
+                    });
+                    ui.add_enabled_ui(!self.mujoco_auto_base, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("X:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.mujoco_base_pos[0])
+                                    .speed(0.01)
+                                    .fixed_decimals(3)
+                                    .suffix(" m"),
+                            );
+                            ui.label("Y:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.mujoco_base_pos[1])
+                                    .speed(0.01)
+                                    .fixed_decimals(3)
+                                    .suffix(" m"),
+                            );
+                            ui.label("Z:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.mujoco_base_pos[2])
+                                    .speed(0.01)
+                                    .fixed_decimals(3)
+                                    .suffix(" m"),
+                            );
+                        })
+                        .response
+                        .on_hover_text(
+                            "Initial world-frame position of the floating base \
+                             link at MuJoCo sim start.",
+                        );
+                    });
+                }
 
                 // Playback controls
                 if sim_active {
@@ -961,6 +1050,12 @@ impl ArticaraApp {
                         model.base_transform = ps.saved_base_transform;
                     }
                 }
+            }
+        }
+        #[cfg(feature = "mujoco")]
+        if let Some(mj_sim) = self.mujoco_sim.take() {
+            if let Some(ref mut model) = self.model {
+                mj_sim.restore(model);
             }
         }
         self.dynamics_last_instant = None;

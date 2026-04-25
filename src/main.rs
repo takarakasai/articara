@@ -5,6 +5,8 @@ mod format;
 mod history;
 mod isaac;
 mod mjcf;
+#[cfg(feature = "mujoco")]
+mod mujoco_sim;
 mod primitives;
 mod rbd;
 mod renderer;

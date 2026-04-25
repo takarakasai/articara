@@ -305,15 +305,54 @@ fn parse_mjcf_bodies(
 // ========== Export ==========
 
 /// Export a RobotModel to MJCF XML string.
+///
+/// The root body is placed at `(0, 0, auto-z)` where `auto-z` lifts the
+/// kinematic chain just above the ground plane.
 pub fn export_mjcf(model: &RobotModel) -> String {
+    export_mjcf_with_base_pos(model, None, None)
+}
+
+/// World-frame ground plane to embed in exported MJCF (for MuJoCo sim).
+#[derive(Clone, Copy, Debug)]
+pub struct GroundPlaneCfg {
+    /// Z height of the plane (world frame).
+    pub z: f64,
+    /// Half-extent (rendering hint; the plane is mathematically infinite).
+    pub half_size: f64,
+    /// Rotation about the X axis (radians).
+    pub roll: f64,
+    /// Rotation about the Y axis (radians).
+    pub pitch: f64,
+}
+
+/// Like [`export_mjcf`], but with an optional override for the floating-base
+/// initial position and an optional ground plane. When `base_pos` is `Some`,
+/// the root body is placed at that world-frame coordinate; otherwise the
+/// auto-lift heuristic is used. When `ground_plane` is `Some`, a `<geom
+/// type="plane">` is added to the worldbody so the simulation has a surface
+/// to collide with.
+pub fn export_mjcf_with_base_pos(
+    model: &RobotModel,
+    base_pos: Option<[f64; 3]>,
+    ground_plane: Option<GroundPlaneCfg>,
+) -> String {
     let mut s = String::new();
     s.push_str(&format!(
         "<mujoco model=\"{}\">\n",
         model.name
     ));
+
     s.push_str("  <compiler angle=\"radian\"/>\n\n");
 
-    // Collect mesh assets
+    // Resolve mesh URIs to absolute paths the same way the URDF loader does:
+    // package_dir = urdf_dir.parent() (one level above the URDF file).
+    let package_dir = model
+        .source_path
+        .as_ref()
+        .and_then(|p| p.parent())   // urdf_dir
+        .and_then(|d| d.parent());  // package_dir
+
+    // Collect mesh assets: (mjcf_name, resolved_absolute_path)
     let mut mesh_names: Vec<(String, String)> = Vec::new();
     let mut mesh_counter = 0usize;
     let mut geom_mesh_map: HashMap<*const GeomData, String> = HashMap::new();
@@ -322,11 +361,14 @@ pub fn export_mjcf(model: &RobotModel) -> String {
         for vis in &link.visuals {
             if let GeomData::Mesh { filename, .. } = &vis.geometry {
                 let mesh_name = format!("mesh_{mesh_counter}");
-                let fname = filename
-                    .as_deref()
-                    .and_then(|f| f.rsplit('/').next())
-                    .unwrap_or("mesh.stl");
-                mesh_names.push((mesh_name.clone(), fname.to_string()));
+                let resolved = match (filename.as_deref(), package_dir.as_ref()) {
+                    (Some(uri), Some(pkg)) => crate::robot::resolve_package_path(uri, pkg)
+                        .to_string_lossy()
+                        .into_owned(),
+                    (Some(uri), None) => uri.to_string(),
+                    (None, _) => "mesh.stl".to_string(),
+                };
+                mesh_names.push((mesh_name.clone(), resolved));
                 geom_mesh_map.insert(&vis.geometry as *const GeomData, mesh_name);
                 mesh_counter += 1;
             }
@@ -336,21 +378,49 @@ pub fn export_mjcf(model: &RobotModel) -> String {
     if !mesh_names.is_empty() {
         s.push_str("  <asset>\n");
         for (name, file) in &mesh_names {
-            s.push_str(&format!(
-                "    <mesh name=\"{name}\" file=\"meshes/{file}\"/>\n"
-            ));
+            s.push_str(&format!("    <mesh name=\"{name}\" file=\"{file}\"/>\n"));
         }
         s.push_str("  </asset>\n\n");
     }
 
     s.push_str("  <worldbody>\n");
 
-    // Build body hierarchy
-    write_mjcf_body(&mut s, model, &model.root_link, 4, &geom_mesh_map);
+    if let Some(gp) = ground_plane {
+        s.push_str(&format!(
+            "    <geom name=\"ground\" type=\"plane\" pos=\"0 0 {z}\" euler=\"{roll} {pitch} 0\" size=\"{hs} {hs} 0.1\" rgba=\"0.5 0.5 0.55 1\"/>\n",
+            z = gp.z,
+            roll = gp.roll,
+            pitch = gp.pitch,
+            hs = gp.half_size,
+        ));
+    }
+
+    // Either honour the user-supplied base position or auto-lift the root so
+    // the lowest link sits just above the ground plane.
+    let root_pos = base_pos.unwrap_or_else(|| [0.0, 0.0, compute_initial_z(model)]);
+    write_mjcf_body(&mut s, model, &model.root_link, 4, &geom_mesh_map, Some(root_pos));
 
     s.push_str("  </worldbody>\n");
     s.push_str("</mujoco>\n");
     s
+}
+
+/// Computes the minimum cumulative z translation in the kinematic chain
+/// (all joints at zero). Returns how much to lift the root so the lowest
+/// link is just above z = 0.
+fn compute_initial_z(model: &RobotModel) -> f64 {
+    fn min_z_recursive(model: &RobotModel, link: &str, z: f64) -> f64 {
+        let mut min = z;
+        if let Some(children) = model.children_joints.get(link) {
+            for &ji in children {
+                let dz = model.joints[ji].origin.translation.z as f64;
+                min = min.min(min_z_recursive(model, &model.joints[ji].child_link, z + dz));
+            }
+        }
+        min
+    }
+    let min_z = min_z_recursive(model, &model.root_link, 0.0);
+    if min_z < 0.0 { -min_z + 0.01 } else { 0.01 }
 }
 
 fn write_mjcf_body(
@@ -359,6 +429,7 @@ fn write_mjcf_body(
     link_name: &str,
     indent: usize,
     geom_mesh_map: &HashMap<*const GeomData, String>,
+    root_pos: Option<[f64; 3]>,
 ) {
     let pad: String = " ".repeat(indent);
 
@@ -369,16 +440,23 @@ fn write_mjcf_body(
     let link = &model.links[link_idx];
 
     // Find the joint connecting this link to its parent for pose
-    let (pos_str, joint_info) = if let Some(ji) = model.parent_joint_of_link(link_name) {
+    let (pos_str, joint_info) = if let Some([x, y, z]) = root_pos {
+        // Root body: place at user-specified or auto-lifted world position
+        (format!("{x} {y} {z}"), None)
+    } else if let Some(ji) = model.parent_joint_of_link(link_name) {
         let joint = &model.joints[ji];
         let t = &joint.origin.translation;
-        let pos = format!("{} {} {}", t.x, t.y, t.z);
-        (pos, Some(joint))
+        (format!("{} {} {}", t.x, t.y, t.z), Some(joint))
     } else {
         ("0 0 0".into(), None)
     };
 
     s.push_str(&format!("{pad}<body name=\"{link_name}\" pos=\"{pos_str}\">\n"));
+
+    // Root body gets a freejoint so it can fall and settle under gravity.
+    if root_pos.is_some() {
+        s.push_str(&format!("{pad}  <freejoint/>\n"));
+    }
 
     // Inertial
     if link.inertial.mass > 1e-12 {
@@ -465,7 +543,7 @@ fn write_mjcf_body(
     if let Some(child_joints) = model.children_joints.get(link_name) {
         for &ji in child_joints {
             let child_link = &model.joints[ji].child_link;
-            write_mjcf_body(s, model, child_link, indent + 2, geom_mesh_map);
+            write_mjcf_body(s, model, child_link, indent + 2, geom_mesh_map, None);
         }
     }
 

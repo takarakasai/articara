@@ -349,6 +349,17 @@ pub struct ArticaraApp {
     /// Whether to show the dynamics graph window.
     #[allow(dead_code)]
     show_dynamics_graph: bool,
+    /// Active MuJoCo simulation instance
+    #[cfg(feature = "mujoco")]
+    mujoco_sim: Option<crate::mujoco_sim::MujocoSim>,
+    /// When true, the MuJoCo sim auto-lifts the floating base just above z=0.
+    /// When false, [`Self::mujoco_base_pos`] is used as the initial world position.
+    #[cfg(feature = "mujoco")]
+    mujoco_auto_base: bool,
+    /// Manual initial world position for the floating base (used when
+    /// [`Self::mujoco_auto_base`] is false).
+    #[cfg(feature = "mujoco")]
+    mujoco_base_pos: [f32; 3],
     /// File path for sim config save/load.
     sim_config_path: String,
     // --- Posture save/load ---
@@ -562,6 +573,12 @@ impl ArticaraApp {
             show_sim_result_window: false,
             dynamics_graph_link: None,
             show_dynamics_graph: false,
+            #[cfg(feature = "mujoco")]
+            mujoco_sim: None,
+            #[cfg(feature = "mujoco")]
+            mujoco_auto_base: true,
+            #[cfg(feature = "mujoco")]
+            mujoco_base_pos: [0.0, 0.0, 0.3],
             sim_config_path: String::new(),
             posture_path: String::new(),
             dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),
@@ -649,10 +666,44 @@ impl ArticaraApp {
 
     /// Advance the dynamics simulation by one frame, modifying model state.
     fn step_dynamics_sim(&mut self) {
+        #[cfg(feature = "mujoco")]
+        let has_mujoco = self.mujoco_sim.is_some();
+        #[cfg(not(feature = "mujoco"))]
+        let has_mujoco = false;
+
         let sim = match self.dynamics_sim.as_mut() {
             Some(s) => s,
-            None => {
+            None if !has_mujoco => {
                 self.dynamics_last_instant = None;
+                return;
+            }
+            None => {
+                // mujoco_sim is active but dynamics_sim is not — fall through to MuJoCo step
+                // Use a dummy reference; the MuJoCo branch returns before using `sim`.
+                // We still need to compute dt, so skip to the MuJoCo block below.
+                let now = std::time::Instant::now();
+                if self.dynamics_sim_paused && self.dynamics_step_dt.is_none() {
+                    self.dynamics_last_instant = Some(now);
+                    return;
+                }
+                let dt = if let Some(step_dt) = self.dynamics_step_dt.take() {
+                    self.dynamics_sim_paused = true;
+                    self.dynamics_last_instant = Some(now);
+                    step_dt
+                } else {
+                    let d = match self.dynamics_last_instant {
+                        Some(prev) => now.duration_since(prev).as_secs_f32().min(0.05),
+                        None => 0.016,
+                    };
+                    self.dynamics_last_instant = Some(now);
+                    d
+                };
+                #[cfg(feature = "mujoco")]
+                if let Some(mj_sim) = self.mujoco_sim.as_mut() {
+                    if let Some(ref mut model) = self.model {
+                        mj_sim.step(model, dt as f64);
+                    }
+                }
                 return;
             }
         };
@@ -679,6 +730,15 @@ impl ArticaraApp {
             self.dynamics_last_instant = Some(now);
             d
         };
+        
+        // --- MuJoCo シミュレーションのステップ ---
+        #[cfg(feature = "mujoco")]
+        if let Some(mj_sim) = self.mujoco_sim.as_mut() {
+            if let Some(ref mut model) = self.model {
+                mj_sim.step(model, dt as f64);
+                return; // 組み込みシミュレーションと排他にする場合
+            }
+        }
 
         let still_running = match sim {
             dynamics::DynSim::Jump(js) => {
@@ -1224,4 +1284,3 @@ impl ArticaraApp {
             });
     }
 }
-
