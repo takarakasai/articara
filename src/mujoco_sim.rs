@@ -46,6 +46,10 @@ pub struct MujocoSim {
     /// Active pose-to-pose transition (drives `position_targets` per step).
     /// `None` when the controller should hold the current target.
     transition: Option<ActiveTransition>,
+    /// Active external force/torque pulses applied to specific bodies.
+    /// Each entry is decremented per physics tick; expired pulses are removed
+    /// and the body's `xfrc_applied` slot is cleared.
+    force_pulses: Vec<ExternalForcePulse>,
 }
 
 /// Smooth pose transition currently being played out.
@@ -53,6 +57,24 @@ struct ActiveTransition {
     traj: misarta::trajectory::PoseTransition<f64>,
     /// Sim-time elapsed since the transition started.
     elapsed: f64,
+}
+
+/// Time-bounded external wrench applied to a single body.
+///
+/// MuJoCo's `xfrc_applied[6]` (force [N] + torque [N·m] in the world frame)
+/// is written each tick while the pulse is active and zeroed when it
+/// expires, so the disturbance has a clean rectangular envelope.
+#[derive(Clone, Debug)]
+pub struct ExternalForcePulse {
+    pub link_name: String,
+    /// Force in world frame (N).
+    pub force: [f64; 3],
+    /// Torque in world frame (N·m).
+    pub torque: [f64; 3],
+    /// Total duration of the pulse (s).
+    pub duration: f64,
+    /// Sim-time elapsed since the pulse started.
+    pub elapsed: f64,
 }
 
 /// Finds the `bin/mujoco_plugin` directory inside the MuJoCo installation.
@@ -142,7 +164,49 @@ impl MujocoSim {
             velocity_targets,
             torque_targets,
             transition: None,
+            force_pulses: Vec::new(),
         })
+    }
+
+    /// Apply a world-frame force / torque to `link_name` for `duration`
+    /// seconds. Replaces any pulse currently targeting the same link so the
+    /// caller can update force on the fly without stacking entries.
+    pub fn apply_external_force(
+        &mut self,
+        link_name: &str,
+        force: [f64; 3],
+        torque: [f64; 3],
+        duration: f64,
+    ) {
+        // Drop any existing pulse on the same body, then push the new one.
+        self.force_pulses.retain(|p| p.link_name != link_name);
+        self.force_pulses.push(ExternalForcePulse {
+            link_name: link_name.to_string(),
+            force,
+            torque,
+            duration: duration.max(0.0),
+            elapsed: 0.0,
+        });
+    }
+
+    /// Cancel any external force currently applied to `link_name`.
+    /// Returns true if a pulse was found and removed.
+    pub fn cancel_external_force(&mut self, link_name: &str) -> bool {
+        let before = self.force_pulses.len();
+        self.force_pulses.retain(|p| p.link_name != link_name);
+        // Zero out xfrc_applied on the body so MuJoCo stops applying force.
+        if let Some(body) = self.data.body(link_name) {
+            let mut view = body.view_mut(&mut self.data);
+            for v in view.xfrc_applied.iter_mut() {
+                *v = 0.0;
+            }
+        }
+        self.force_pulses.len() != before
+    }
+
+    /// Iterate the active external-force pulses (for UI status display).
+    pub fn external_force_pulses(&self) -> &[ExternalForcePulse] {
+        &self.force_pulses
     }
 
     /// Begin a smooth transition from the current Position-mode targets to
@@ -273,6 +337,47 @@ impl MujocoSim {
         self.model.ffi().opt.timestep as f64
     }
 
+    /// Write the per-body `xfrc_applied` slots from the active force pulses
+    /// for the upcoming physics tick, then advance their timers and drop
+    /// expired entries (zeroing their slot first so MuJoCo stops applying).
+    fn advance_force_pulses(&mut self, mj_dt: f64) {
+        // Two-pass: first apply forces (immutable read of pulses, mutable
+        // write to data), then update timers (mutable write to pulses).
+        for pulse in &self.force_pulses {
+            if let Some(body) = self.data.body(&pulse.link_name) {
+                let mut view = body.view_mut(&mut self.data);
+                if view.xfrc_applied.len() >= 6 {
+                    view.xfrc_applied[0] = pulse.force[0];
+                    view.xfrc_applied[1] = pulse.force[1];
+                    view.xfrc_applied[2] = pulse.force[2];
+                    view.xfrc_applied[3] = pulse.torque[0];
+                    view.xfrc_applied[4] = pulse.torque[1];
+                    view.xfrc_applied[5] = pulse.torque[2];
+                }
+            }
+        }
+        // Advance timers and zero out expired pulses' slots.
+        let mut expired: Vec<String> = Vec::new();
+        for pulse in self.force_pulses.iter_mut() {
+            pulse.elapsed += mj_dt;
+            if pulse.elapsed >= pulse.duration {
+                expired.push(pulse.link_name.clone());
+            }
+        }
+        if !expired.is_empty() {
+            for name in &expired {
+                if let Some(body) = self.data.body(name) {
+                    let mut view = body.view_mut(&mut self.data);
+                    for v in view.xfrc_applied.iter_mut() {
+                        *v = 0.0;
+                    }
+                }
+            }
+            self.force_pulses
+                .retain(|p| !expired.contains(&p.link_name));
+        }
+    }
+
     /// Advance any active pose transition by `mj_dt` seconds and update
     /// `position_targets` to the interpolated joint vector. When the transition
     /// completes, it is dropped and `position_targets` snaps to the goal.
@@ -302,6 +407,7 @@ impl MujocoSim {
         let mj_dt = self.timestep();
         while self.time_accumulator >= mj_dt {
             self.advance_transition(mj_dt);
+            self.advance_force_pulses(mj_dt);
             self.apply_controller(robot);
             self.snapshot();
             self.data.step();
@@ -318,6 +424,7 @@ impl MujocoSim {
         let mj_dt = self.timestep();
         for _ in 0..n {
             self.advance_transition(mj_dt);
+            self.advance_force_pulses(mj_dt);
             self.apply_controller(robot);
             self.snapshot();
             self.data.step();

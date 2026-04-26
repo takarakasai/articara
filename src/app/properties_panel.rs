@@ -1330,6 +1330,13 @@ impl ArticaraApp {
             if let Some(desc) = self.draw_poses_panel(ui) {
                 props_edit_desc = Some(desc);
             }
+            // External force panel — lives on the right next to Poses since
+            // both are sim-time disturbance/replay primitives.
+            #[cfg(feature = "mujoco")]
+            {
+                ui.separator();
+                self.draw_external_force_panel(ui);
+            }
         }
 
         // Apply deferred link rename to app-level references
@@ -1370,6 +1377,10 @@ impl ArticaraApp {
             .default_open(true)
             .show(ui, |ui| {
                 // --- Save current pose ---
+                // The "default duration / curve" rows below seed both the new
+                // pose's stored defaults *and* the values used immediately by
+                // ▶ Play; per-pose rows further down let the user override
+                // them per pose without re-saving.
                 ui.horizontal(|ui| {
                     ui.label("Name:");
                     ui.add(
@@ -1388,12 +1399,20 @@ impl ArticaraApp {
                         .clicked()
                     {
                         let name = self.pose_save_name.trim().to_string();
-                        // Replace by name if exists, else append.
-                        let snap = crate::rbd::model::NamedPose::snapshot(&name, model);
+                        let snap = crate::rbd::model::NamedPose::snapshot(
+                            &name,
+                            model,
+                            self.pose_transition_duration as f64,
+                            self.pose_transition_kind,
+                        );
                         if let Some(existing) =
                             model.poses.iter_mut().find(|p| p.name == name)
                         {
                             existing.angles = snap.angles;
+                            // Refresh the saved defaults too so re-save acts
+                            // as "update everything about this pose".
+                            existing.duration = snap.duration;
+                            existing.kind = snap.kind;
                         } else {
                             model.poses.push(snap);
                         }
@@ -1401,9 +1420,9 @@ impl ArticaraApp {
                     }
                 });
 
-                // --- Transition settings ---
+                // --- Default transition settings (used by Save) ---
                 ui.horizontal(|ui| {
-                    ui.label("Duration:");
+                    ui.label("Default duration:");
                     ui.add(
                         egui::DragValue::new(&mut self.pose_transition_duration)
                             .speed(0.05)
@@ -1413,7 +1432,7 @@ impl ArticaraApp {
                     );
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Curve:");
+                    ui.label("Default curve:");
                     egui::ComboBox::from_id_salt("pose_curve_kind")
                         .selected_text(self.pose_transition_kind.label())
                         .show_ui(ui, |ui| {
@@ -1445,13 +1464,17 @@ impl ArticaraApp {
                 let mj_active = false;
 
                 // --- Pose list ---
+                // Each row owns its own duration / curve editor; edits flow
+                // straight back into `model.poses[i]` so they're persisted to
+                // the sidecar TOML on the next save and used by ▶ Play.
                 let mut to_remove: Option<usize> = None;
                 let mut to_play: Option<usize> = None;
                 let mut to_apply_static: Option<usize> = None;
                 egui::ScrollArea::vertical()
-                    .max_height(220.0)
+                    .max_height(260.0)
                     .show(ui, |ui| {
-                        for (i, pose) in model.poses.iter().enumerate() {
+                        for (i, pose) in model.poses.iter_mut().enumerate() {
+                            // Row 1: name + action buttons
                             ui.horizontal(|ui| {
                                 ui.label(
                                     egui::RichText::new(&pose.name).monospace(),
@@ -1473,7 +1496,7 @@ impl ArticaraApp {
                                     )
                                     .on_hover_text(if mj_active {
                                         "Smoothly transition the running MuJoCo \
-                                         sim to this pose."
+                                         sim to this pose using the row's duration / curve."
                                     } else {
                                         "Start MuJoCo first to enable playback."
                                     })
@@ -1489,6 +1512,45 @@ impl ArticaraApp {
                                     to_remove = Some(i);
                                 }
                             });
+                            // Row 2: per-pose duration + curve overrides.
+                            // Edits modify the saved defaults so the value the
+                            // user dialled in is what gets used next time.
+                            let mut row_changed = false;
+                            ui.horizontal(|ui| {
+                                ui.label("    Dur:");
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut pose.duration)
+                                            .speed(0.05)
+                                            .range(0.05..=30.0)
+                                            .fixed_decimals(2)
+                                            .suffix(" s"),
+                                    )
+                                    .changed()
+                                {
+                                    row_changed = true;
+                                }
+                                let mut k = pose.kind;
+                                egui::ComboBox::from_id_salt(format!("pose_kind_{i}"))
+                                    .selected_text(k.label())
+                                    .show_ui(ui, |ui| {
+                                        for kk in
+                                            misarta::trajectory::InterpolationKind::ALL
+                                        {
+                                            ui.selectable_value(
+                                                &mut k, kk, kk.label(),
+                                            );
+                                        }
+                                    });
+                                if k != pose.kind {
+                                    pose.kind = k;
+                                    row_changed = true;
+                                }
+                            });
+                            if row_changed {
+                                edit_desc =
+                                    Some(format!("Edit pose defaults '{}'", pose.name));
+                            }
                         }
                     });
 
@@ -1510,19 +1572,18 @@ impl ArticaraApp {
                     let pose = &model.poses[i];
                     let cur = model.joint_positions.clone();
                     let q = pose.to_vector(model, &cur);
+                    let dur = pose.duration;
+                    let kind = pose.kind;
+                    let pose_name = pose.name.clone();
                     if let Some(ref mut sim) = self.mujoco_sim {
-                        sim.start_transition(
-                            q,
-                            self.pose_transition_duration as f64,
-                            self.pose_transition_kind,
-                        );
+                        sim.start_transition(q, dur, kind);
                         // Auto-resume playback so the user sees motion.
                         self.dynamics_sim_paused = false;
                         self.status_message = format!(
                             "Playing pose '{}' over {:.2}s ({})",
-                            pose.name,
-                            self.pose_transition_duration,
-                            self.pose_transition_kind.label(),
+                            pose_name,
+                            dur,
+                            kind.label(),
                         );
                     }
                 }
@@ -1540,6 +1601,171 @@ impl ArticaraApp {
             });
 
         edit_desc
+    }
+
+    /// Draw the "apply external force/torque to a link for N seconds" panel.
+    ///
+    /// The pulse goes through [`crate::mujoco_sim::MujocoSim::apply_external_force`],
+    /// which writes `xfrc_applied` each tick until the timer expires. Force /
+    /// torque are interpreted in the world frame.
+    #[cfg(feature = "mujoco")]
+    fn draw_external_force_panel(&mut self, ui: &mut egui::Ui) {
+        // Build the link list outside of any closure that borrows self.
+        let link_names: Vec<String> = match self.model.as_ref() {
+            Some(m) => m.links.iter().map(|l| l.name.clone()).collect(),
+            None => return,
+        };
+        let mj_active = self.mujoco_sim.is_some();
+        // Snapshot the active pulses for the status display so we don't
+        // borrow `self.mujoco_sim` while UI closures hold `&mut self`.
+        let active_pulses: Vec<(String, f64, f64)> = self
+            .mujoco_sim
+            .as_ref()
+            .map(|s| {
+                s.external_force_pulses()
+                    .iter()
+                    .map(|p| (p.link_name.clone(), p.elapsed, p.duration))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        egui::CollapsingHeader::new("💥 External Force")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Link:");
+                    let label = self
+                        .ext_force_link
+                        .as_deref()
+                        .unwrap_or("(select)")
+                        .to_string();
+                    egui::ComboBox::from_id_salt("ext_force_link")
+                        .selected_text(label)
+                        .show_ui(ui, |ui| {
+                            for name in &link_names {
+                                let sel =
+                                    self.ext_force_link.as_deref() == Some(name.as_str());
+                                if ui.selectable_label(sel, name).clicked() {
+                                    self.ext_force_link = Some(name.clone());
+                                }
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Force (N):");
+                    ui.add(
+                        egui::DragValue::new(&mut self.ext_force_value[0])
+                            .speed(0.1).fixed_decimals(2).prefix("x:"),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.ext_force_value[1])
+                            .speed(0.1).fixed_decimals(2).prefix("y:"),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.ext_force_value[2])
+                            .speed(0.1).fixed_decimals(2).prefix("z:"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Torque (N·m):");
+                    ui.add(
+                        egui::DragValue::new(&mut self.ext_torque_value[0])
+                            .speed(0.05).fixed_decimals(2).prefix("x:"),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.ext_torque_value[1])
+                            .speed(0.05).fixed_decimals(2).prefix("y:"),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.ext_torque_value[2])
+                            .speed(0.05).fixed_decimals(2).prefix("z:"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Duration:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.ext_force_duration)
+                            .speed(0.05)
+                            .range(0.01..=30.0)
+                            .fixed_decimals(2)
+                            .suffix(" s"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    let can_apply = mj_active
+                        && self.ext_force_link.is_some()
+                        && (self.ext_force_value.iter().any(|&v| v != 0.0)
+                            || self.ext_torque_value.iter().any(|&v| v != 0.0));
+                    if ui
+                        .add_enabled(
+                            can_apply,
+                            egui::Button::new("⚡ Apply pulse"),
+                        )
+                        .on_hover_text(if mj_active {
+                            "Apply the wrench (world frame) to the selected link \
+                             for the specified duration."
+                        } else {
+                            "Start MuJoCo first to apply forces."
+                        })
+                        .clicked()
+                    {
+                        if let (Some(link), Some(ref mut sim)) =
+                            (self.ext_force_link.clone(), self.mujoco_sim.as_mut())
+                        {
+                            let f = [
+                                self.ext_force_value[0] as f64,
+                                self.ext_force_value[1] as f64,
+                                self.ext_force_value[2] as f64,
+                            ];
+                            let t = [
+                                self.ext_torque_value[0] as f64,
+                                self.ext_torque_value[1] as f64,
+                                self.ext_torque_value[2] as f64,
+                            ];
+                            sim.apply_external_force(
+                                &link, f, t, self.ext_force_duration as f64,
+                            );
+                            self.dynamics_sim_paused = false;
+                            self.status_message = format!(
+                                "Applying [{:.1},{:.1},{:.1}]N to '{}' for {:.2}s",
+                                f[0], f[1], f[2], link, self.ext_force_duration,
+                            );
+                        }
+                    }
+                    if ui
+                        .add_enabled(
+                            mj_active && self.ext_force_link.is_some(),
+                            egui::Button::new("⏹ Cancel"),
+                        )
+                        .on_hover_text("Stop any pulse currently on this link.")
+                        .clicked()
+                    {
+                        if let (Some(link), Some(ref mut sim)) =
+                            (self.ext_force_link.clone(), self.mujoco_sim.as_mut())
+                        {
+                            sim.cancel_external_force(&link);
+                        }
+                    }
+                });
+                if !active_pulses.is_empty() {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("Active pulses").small().strong(),
+                    );
+                    for (name, elapsed, duration) in &active_pulses {
+                        let frac =
+                            ((duration - elapsed).max(0.0) / duration.max(1e-9))
+                                as f32;
+                        ui.add(
+                            egui::ProgressBar::new(frac).text(format!(
+                                "{} — {:.2}s left",
+                                name,
+                                (duration - elapsed).max(0.0),
+                            )),
+                        );
+                    }
+                }
+            });
     }
 
     /// Draw the Export dialog window (format + directory + export button).

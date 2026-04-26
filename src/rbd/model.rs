@@ -215,11 +215,24 @@ pub struct NamedPose {
     /// Joint name → angle (or prismatic displacement). Joints not present
     /// here keep their current model value when the pose is replayed.
     pub angles: std::collections::BTreeMap<String, f64>,
+    /// Default transition time (s) used when this pose is replayed. The UI
+    /// shows it as a seed value the user can edit per play without modifying
+    /// the saved default.
+    pub duration: f64,
+    /// Default interpolation curve. Same role as `duration` — saved per-pose
+    /// but overridable in the UI at playback time.
+    pub kind: misarta::trajectory::InterpolationKind,
 }
 
 impl NamedPose {
-    /// Snapshot the model's current joint positions into a named pose.
-    pub fn snapshot(name: impl Into<String>, model: &RobotModel) -> Self {
+    /// Snapshot the model's current joint positions into a named pose,
+    /// using the supplied transition defaults.
+    pub fn snapshot(
+        name: impl Into<String>,
+        model: &RobotModel,
+        duration: f64,
+        kind: misarta::trajectory::InterpolationKind,
+    ) -> Self {
         let mut angles = std::collections::BTreeMap::new();
         for (ji, joint) in model.joints.iter().enumerate() {
             if joint.joint_type == "fixed" {
@@ -227,7 +240,7 @@ impl NamedPose {
             }
             angles.insert(joint.name.clone(), model.joint_positions[ji]);
         }
-        Self { name: name.into(), angles }
+        Self { name: name.into(), angles, duration, kind }
     }
 
     /// Resolve the pose into a full joint-position vector matching
@@ -2175,6 +2188,8 @@ impl RobotModel {
             cfg.pose.push(misarta::config::PoseConfig {
                 name: p.name.clone(),
                 angles: p.angles.clone(),
+                duration: p.duration,
+                kind: p.kind,
             });
         }
         cfg
@@ -2194,6 +2209,8 @@ impl RobotModel {
             .map(|p| NamedPose {
                 name: p.name.clone(),
                 angles: p.angles.clone(),
+                duration: p.duration,
+                kind: p.kind,
             })
             .collect();
     }
