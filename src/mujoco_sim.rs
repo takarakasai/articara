@@ -8,6 +8,7 @@ use mujoco::prelude::{MjData, MjModel, load_all_plugin_libraries};
 use nalgebra as na;
 
 use crate::mjcf::MjcfExportOptions;
+use crate::rbd::model::ActuatorMode;
 use crate::robot::RobotModel;
 
 /// One MuJoCo physics tick worth of state, captured *before* `data.step()` was
@@ -32,6 +33,14 @@ pub struct MujocoSim {
     history: VecDeque<FrameSnapshot>,
     /// Maximum number of snapshots to retain (older entries are discarded).
     history_max: usize,
+    /// Per-joint position target (used by Position-mode controller). Indexed
+    /// by joint index in the [`RobotModel`]. Initialised to the robot's pose
+    /// at sim start so the robot holds that pose against gravity.
+    position_targets: Vec<f64>,
+    /// Per-joint velocity target (used by Velocity-mode controller).
+    velocity_targets: Vec<f64>,
+    /// Per-joint direct torque command (used by Torque-mode controller).
+    torque_targets: Vec<f64>,
 }
 
 /// Finds the `bin/mujoco_plugin` directory inside the MuJoCo installation.
@@ -60,7 +69,14 @@ fn find_plugin_dir() -> Option<PathBuf> {
 impl MujocoSim {
     /// Create a new MuJoCo simulation instance from the current RobotModel
     /// using the supplied MJCF export options.
-    pub fn new(robot: &RobotModel, opts: MjcfExportOptions) -> Result<Self, String> {
+    ///
+    /// `opts.add_actuators` is forced to `true` — every interactive sim needs
+    /// per-joint actuators so the user-set initial pose can be held against
+    /// gravity. The actuator type for each joint is selected by its
+    /// `actuator_mode` field (Position / Velocity / Torque).
+    pub fn new(robot: &RobotModel, mut opts: MjcfExportOptions) -> Result<Self, String> {
+        opts.add_actuators = true;
+
         // Load MuJoCo plugins (STL decoder, OBJ decoder, etc.) before loading any model.
         if let Some(dir) = find_plugin_dir() {
             load_all_plugin_libraries(&dir, None)
@@ -89,9 +105,16 @@ impl MujocoSim {
                 }
             }
         }
+
         // Refresh xpos/xquat/qfrc_bias etc. from the seeded qpos so the very
-        // first sim_back can render the correct initial pose.
+        // first sync_back can render the correct initial pose.
         data.forward();
+
+        // Initial control targets: hold the start pose in Position mode, no
+        // velocity/torque command in the other modes.
+        let position_targets = robot.joint_positions.clone();
+        let velocity_targets = vec![0.0; robot.joints.len()];
+        let torque_targets = vec![0.0; robot.joints.len()];
 
         Ok(Self {
             model,
@@ -103,7 +126,78 @@ impl MujocoSim {
             // ~10s of history at the default 2 ms timestep — bounded so the
             // ring buffer can't grow without bound during long sessions.
             history_max: 5000,
+            position_targets,
+            velocity_targets,
+            torque_targets,
         })
+    }
+
+    /// Set the position target (rad / m) for a joint by index.
+    pub fn set_position_target(&mut self, joint_idx: usize, target: f64) {
+        if let Some(slot) = self.position_targets.get_mut(joint_idx) {
+            *slot = target;
+        }
+    }
+
+    /// Set the velocity target (rad/s / m/s) for a joint by index.
+    pub fn set_velocity_target(&mut self, joint_idx: usize, target: f64) {
+        if let Some(slot) = self.velocity_targets.get_mut(joint_idx) {
+            *slot = target;
+        }
+    }
+
+    /// Set the direct torque command for a joint by index.
+    pub fn set_torque_target(&mut self, joint_idx: usize, target: f64) {
+        if let Some(slot) = self.torque_targets.get_mut(joint_idx) {
+            *slot = target;
+        }
+    }
+
+    /// Compute and write each motor's `ctrl` (= applied torque) for the
+    /// upcoming physics tick, based on the per-joint mode + gains in `robot`
+    /// and the controller targets stored on `self`.
+    fn apply_controller(&mut self, robot: &RobotModel) {
+        for (ji, joint) in robot.joints.iter().enumerate() {
+            if joint.joint_type == "fixed" {
+                continue;
+            }
+
+            // Read current MuJoCo state for this joint.
+            let (q, qd) = match self.data.joint(&joint.name) {
+                Some(info) => {
+                    let view = info.view(&self.data);
+                    if view.qpos.is_empty() || view.qvel.is_empty() {
+                        continue;
+                    }
+                    (view.qpos[0], view.qvel[0])
+                }
+                None => continue,
+            };
+
+            let tau = match joint.actuator_mode {
+                ActuatorMode::Position => {
+                    let q_target = self.position_targets.get(ji).copied().unwrap_or(q);
+                    joint.actuator_kp * (q_target - q)
+                        + joint.actuator_kv * (0.0 - qd)
+                }
+                ActuatorMode::Velocity => {
+                    let qd_target = self.velocity_targets.get(ji).copied().unwrap_or(0.0);
+                    joint.actuator_kv * (qd_target - qd)
+                }
+                ActuatorMode::Torque => {
+                    self.torque_targets.get(ji).copied().unwrap_or(0.0)
+                }
+            };
+
+            // Write to the motor actuator's ctrl slot.
+            let actuator_name = format!("motor_{}", joint.name);
+            if let Some(act_info) = self.data.actuator(&actuator_name) {
+                let mut view = act_info.view_mut(&mut self.data);
+                if !view.ctrl.is_empty() {
+                    view.ctrl[0] = tau;
+                }
+            }
+        }
     }
 
     /// Restore the robot's pre-sim pose (called when the user stops the sim).
@@ -123,6 +217,7 @@ impl MujocoSim {
 
         let mj_dt = self.timestep();
         while self.time_accumulator >= mj_dt {
+            self.apply_controller(robot);
             self.snapshot();
             self.data.step();
             self.time_accumulator -= mj_dt;
@@ -136,6 +231,7 @@ impl MujocoSim {
     /// can be reversed via [`Self::step_back_frames`].
     pub fn step_n_frames(&mut self, robot: &mut RobotModel, n: u32) {
         for _ in 0..n {
+            self.apply_controller(robot);
             self.snapshot();
             self.data.step();
         }

@@ -809,6 +809,9 @@ pub fn import_usda_from_str(
             upper,
             effort: 0.0,
             velocity: 0.0,
+            actuator_mode: crate::rbd::model::ActuatorMode::default(),
+            actuator_kp: 50.0,
+            actuator_kv: 5.0,
         });
     }
 

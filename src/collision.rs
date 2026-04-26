@@ -131,6 +131,9 @@ mod tests {
             upper: 0.0,
             effort: 0.0,
             velocity: 0.0,
+            actuator_mode: crate::rbd::model::ActuatorMode::default(),
+            actuator_kp: 50.0,
+            actuator_kv: 5.0,
         }];
 
         let mut link_map = HashMap::new();

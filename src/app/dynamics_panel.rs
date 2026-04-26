@@ -215,8 +215,10 @@ impl ArticaraApp {
                                     // frame stepping or ▶ Play before any time
                                     // advances.
                                     self.dynamics_sim_paused = true;
+                                    self.status_message =
+                                        "MuJoCo paused at t=0 — press ▶ Play or ⏩ +N to advance".into();
                                 }
-                                Err(e) => self.status_message = e,
+                                Err(e) => self.status_message = format!("MuJoCo init error: {e}"),
                             }
                         }
                     }

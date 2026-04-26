@@ -129,6 +129,9 @@ impl RobotModel {
                 upper: joint.limit.upper,
                 effort: joint.limit.effort,
                 velocity: joint.limit.velocity,
+                actuator_mode: crate::rbd::model::ActuatorMode::default(),
+                actuator_kp: 50.0,
+                actuator_kv: 5.0,
             });
         }
 
@@ -796,6 +799,9 @@ impl RobotModel {
             upper,
             effort: 10.0,
             velocity: 5.0,
+            actuator_mode: crate::rbd::model::ActuatorMode::default(),
+            actuator_kp: 50.0,
+            actuator_kv: 5.0,
         });
         self.joint_positions.push(0.0);
         self.misarta_cache = None; // invalidate stale cache

@@ -218,6 +218,9 @@ fn parse_mjcf_bodies(
                     upper: 0.0,
                     effort: 0.0,
                     velocity: 0.0,
+                    actuator_mode: crate::rbd::model::ActuatorMode::default(),
+                    actuator_kp: 50.0,
+                    actuator_kv: 5.0,
                 });
             } else {
                 for joint_el in joint_els {
@@ -280,6 +283,9 @@ fn parse_mjcf_bodies(
                         upper,
                         effort: 0.0,
                         velocity: 0.0,
+                        actuator_mode: crate::rbd::model::ActuatorMode::default(),
+                        actuator_kp: 50.0,
+                        actuator_kv: 5.0,
                     });
                 }
             }
@@ -429,6 +435,11 @@ pub fn export_mjcf_with_options(
 /// `data.ctrl[motor_id]` applies that torque. `ctrlrange` mirrors the URDF
 /// `effort` limit when present; joints without an effort limit get an
 /// unbounded ctrl range.
+/// Emit one `<motor>` actuator per non-fixed joint. The host application
+/// computes per-step torque commands externally based on each joint's
+/// [`ActuatorMode`] / `kp` / `kv` (held in [`JointData`]). The MJCF itself
+/// is always plain torque-mode so the same file can be used for any control
+/// strategy when re-imported elsewhere.
 fn write_mjcf_actuators(s: &mut String, model: &RobotModel) {
     let movable: Vec<&JointData> = model
         .joints
@@ -440,19 +451,18 @@ fn write_mjcf_actuators(s: &mut String, model: &RobotModel) {
     }
     s.push_str("\n  <actuator>\n");
     for joint in movable {
-        if joint.effort > 0.0 {
-            s.push_str(&format!(
-                "    <motor name=\"motor_{name}\" joint=\"{name}\" gear=\"1\" ctrllimited=\"true\" ctrlrange=\"{lo} {hi}\"/>\n",
-                name = joint.name,
-                lo = -joint.effort,
-                hi = joint.effort,
-            ));
+        let force_attrs = if joint.effort > 0.0 {
+            format!(
+                " forcelimited=\"true\" forcerange=\"{} {}\"",
+                -joint.effort, joint.effort,
+            )
         } else {
-            s.push_str(&format!(
-                "    <motor name=\"motor_{name}\" joint=\"{name}\" gear=\"1\"/>\n",
-                name = joint.name,
-            ));
-        }
+            String::new()
+        };
+        s.push_str(&format!(
+            "    <motor name=\"motor_{name}\" joint=\"{name}\" gear=\"1\"{force_attrs}/>\n",
+            name = joint.name,
+        ));
     }
     s.push_str("  </actuator>\n");
 }

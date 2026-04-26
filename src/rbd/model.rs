@@ -257,6 +257,40 @@ pub struct InertialData {
     pub izz: f64,
 }
 
+/// Per-joint actuator control mode. Selects which MuJoCo actuator type is
+/// emitted in the exported MJCF.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ActuatorMode {
+    /// MuJoCo `<position>` — built-in PD: τ = kp·(q*−q) − kv·qd
+    Position,
+    /// MuJoCo `<velocity>` — proportional velocity tracker: τ = kv·(qd*−qd)
+    Velocity,
+    /// MuJoCo `<motor>` — direct torque command (no built-in feedback).
+    Torque,
+}
+
+impl Default for ActuatorMode {
+    fn default() -> Self {
+        ActuatorMode::Position
+    }
+}
+
+impl ActuatorMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            ActuatorMode::Position => "Position",
+            ActuatorMode::Velocity => "Velocity",
+            ActuatorMode::Torque => "Torque",
+        }
+    }
+    pub const ALL: [ActuatorMode; 3] = [
+        ActuatorMode::Position,
+        ActuatorMode::Velocity,
+        ActuatorMode::Torque,
+    ];
+}
+
 #[derive(Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct JointData {
@@ -270,7 +304,22 @@ pub struct JointData {
     pub upper: f64,
     pub effort: f64,
     pub velocity: f64,
+    /// Actuator control mode for MJCF export and physics sim.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub actuator_mode: ActuatorMode,
+    /// Position gain (used by Position mode; `kp` in MuJoCo `<position>`).
+    #[cfg_attr(feature = "serde", serde(default = "default_kp"))]
+    pub actuator_kp: f64,
+    /// Damping / velocity gain (used by Position and Velocity modes;
+    /// `kv` in MuJoCo `<position>` / `<velocity>`).
+    #[cfg_attr(feature = "serde", serde(default = "default_kv"))]
+    pub actuator_kv: f64,
 }
+
+#[cfg(feature = "serde")]
+fn default_kp() -> f64 { 50.0 }
+#[cfg(feature = "serde")]
+fn default_kv() -> f64 { 5.0 }
 
 
 // ========== Forward Kinematics & Tree Navigation ==========

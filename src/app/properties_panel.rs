@@ -1127,6 +1127,81 @@ impl ArticaraApp {
                         });
                         ui.end_row();
                     });
+
+                // --- Actuator (control mode + gains) ---
+                // Skip for fixed joints; they have no actuator.
+                if joint.joint_type != "fixed" {
+                    ui.separator();
+                    egui::CollapsingHeader::new("Actuator")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            egui::Grid::new(format!("actuator_props_{ji}"))
+                                .striped(true)
+                                .num_columns(2)
+                                .show(ui, |ui| {
+                                    ui.label("Mode:");
+                                    let mut mode = joint.actuator_mode;
+                                    egui::ComboBox::from_id_salt(format!("actmode_{ji}"))
+                                        .selected_text(mode.label())
+                                        .show_ui(ui, |ui| {
+                                            for m in crate::rbd::model::ActuatorMode::ALL {
+                                                ui.selectable_value(&mut mode, m, m.label());
+                                            }
+                                        });
+                                    if mode != joint.actuator_mode {
+                                        joint.actuator_mode = mode;
+                                        joint_changed = true;
+                                    }
+                                    ui.end_row();
+
+                                    let kp_enabled = matches!(
+                                        joint.actuator_mode,
+                                        crate::rbd::model::ActuatorMode::Position
+                                    );
+                                    let kv_enabled = matches!(
+                                        joint.actuator_mode,
+                                        crate::rbd::model::ActuatorMode::Position
+                                            | crate::rbd::model::ActuatorMode::Velocity
+                                    );
+
+                                    ui.label("Kp (N·m/rad):");
+                                    ui.add_enabled_ui(kp_enabled, |ui| {
+                                        joint_changed |= ui
+                                            .add(
+                                                egui::DragValue::new(&mut joint.actuator_kp)
+                                                    .speed(1.0)
+                                                    .range(0.0..=f64::MAX)
+                                                    .fixed_decimals(1),
+                                            )
+                                            .changed();
+                                    });
+                                    ui.end_row();
+
+                                    ui.label("Kv (N·m·s/rad):");
+                                    ui.add_enabled_ui(kv_enabled, |ui| {
+                                        joint_changed |= ui
+                                            .add(
+                                                egui::DragValue::new(&mut joint.actuator_kv)
+                                                    .speed(0.1)
+                                                    .range(0.0..=f64::MAX)
+                                                    .fixed_decimals(2),
+                                            )
+                                            .changed();
+                                    });
+                                    ui.end_row();
+                                });
+                            ui.label(
+                                egui::RichText::new(
+                                    "Gains apply on the next physics tick. \
+                                     Position holds the user-set pose; Velocity \
+                                     and Torque take their target via the API.",
+                                )
+                                .small()
+                                .weak(),
+                            );
+                        });
+                }
+
                 if joint_changed {
                     self.needs_upload = true;
                     model.rebuild_misarta_model();
@@ -1136,6 +1211,114 @@ impl ArticaraApp {
 
             if self.selected_link.is_none() && self.selected_joint.is_none() {
                 ui.label("Select a link or joint to view properties.");
+            }
+
+            // ===== Global Actuator panel — all movable joints in one grid =====
+            // Always visible (regardless of selection) so users can tune gains
+            // for the running MuJoCo sim without hunting through the tree.
+            ui.separator();
+            let mut actuators_changed = false;
+            egui::CollapsingHeader::new("⚙ Actuators (all joints)")
+                .default_open(false)
+                .show(ui, |ui| {
+                    let n_movable = model
+                        .joints
+                        .iter()
+                        .filter(|j| j.joint_type != "fixed")
+                        .count();
+                    if n_movable == 0 {
+                        ui.label("(no movable joints)");
+                        return;
+                    }
+                    ui.label(
+                        egui::RichText::new(
+                            "Edits apply on the next physics tick.",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(280.0)
+                        .show(ui, |ui| {
+                            egui::Grid::new("global_actuators_grid")
+                                .striped(true)
+                                .num_columns(4)
+                                .min_col_width(40.0)
+                                .show(ui, |ui| {
+                                    ui.strong("Joint");
+                                    ui.strong("Mode");
+                                    ui.strong("Kp");
+                                    ui.strong("Kv");
+                                    ui.end_row();
+                                    for joint in model
+                                        .joints
+                                        .iter_mut()
+                                        .filter(|j| j.joint_type != "fixed")
+                                    {
+                                        ui.label(
+                                            egui::RichText::new(&joint.name).monospace().small(),
+                                        );
+
+                                        let mut mode = joint.actuator_mode;
+                                        egui::ComboBox::from_id_salt(format!(
+                                            "all_actmode_{}", joint.name
+                                        ))
+                                        .selected_text(mode.label())
+                                        .width(72.0)
+                                        .show_ui(ui, |ui| {
+                                            for m in
+                                                crate::rbd::model::ActuatorMode::ALL
+                                            {
+                                                ui.selectable_value(
+                                                    &mut mode, m, m.label(),
+                                                );
+                                            }
+                                        });
+                                        if mode != joint.actuator_mode {
+                                            joint.actuator_mode = mode;
+                                            actuators_changed = true;
+                                        }
+
+                                        let kp_enabled = matches!(
+                                            joint.actuator_mode,
+                                            crate::rbd::model::ActuatorMode::Position
+                                        );
+                                        let kv_enabled = matches!(
+                                            joint.actuator_mode,
+                                            crate::rbd::model::ActuatorMode::Position
+                                                | crate::rbd::model::ActuatorMode::Velocity
+                                        );
+                                        ui.add_enabled_ui(kp_enabled, |ui| {
+                                            actuators_changed |= ui
+                                                .add(
+                                                    egui::DragValue::new(
+                                                        &mut joint.actuator_kp,
+                                                    )
+                                                    .speed(1.0)
+                                                    .range(0.0..=f64::MAX)
+                                                    .fixed_decimals(1),
+                                                )
+                                                .changed();
+                                        });
+                                        ui.add_enabled_ui(kv_enabled, |ui| {
+                                            actuators_changed |= ui
+                                                .add(
+                                                    egui::DragValue::new(
+                                                        &mut joint.actuator_kv,
+                                                    )
+                                                    .speed(0.1)
+                                                    .range(0.0..=f64::MAX)
+                                                    .fixed_decimals(2),
+                                                )
+                                                .changed();
+                                        });
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                });
+            if actuators_changed {
+                props_edit_desc = Some("Edit actuator gains".into());
             }
         }
 
