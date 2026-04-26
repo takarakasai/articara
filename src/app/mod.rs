@@ -335,6 +335,11 @@ pub struct ArticaraApp {
     /// [`Self::mujoco_auto_base`] is false).
     #[cfg(feature = "mujoco")]
     mujoco_base_pos: [f32; 3],
+    /// Per-axis lock state for the trunk before MuJoCo sim start, ordered
+    /// `[TX, TY, TZ, RX, RY, RZ]`. `true` = locked. All `false` = full
+    /// floating base (default), all `true` = welded to world.
+    #[cfg(feature = "mujoco")]
+    mujoco_base_locked: [bool; 6],
     /// File path for sim config save/load.
     sim_config_path: String,
     // --- Posture save/load ---
@@ -541,6 +546,8 @@ impl ArticaraApp {
             mujoco_auto_base: true,
             #[cfg(feature = "mujoco")]
             mujoco_base_pos: [0.0, 0.0, 0.0],
+            #[cfg(feature = "mujoco")]
+            mujoco_base_locked: [false; 6],
             sim_config_path: String::new(),
             posture_path: String::new(),
             dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),

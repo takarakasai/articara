@@ -207,6 +207,7 @@ impl ArticaraApp {
                                 base_pos,
                                 ground_plane: ground,
                                 add_actuators: false,
+                                base_locked_axes: self.mujoco_base_locked,
                             };
                             match crate::mujoco_sim::MujocoSim::new(model, opts) {
                                 Ok(sim) => {
@@ -267,6 +268,25 @@ impl ArticaraApp {
                              link at MuJoCo sim start.",
                         );
                     });
+
+                    // --- Base 6-DoF lock ---
+                    // All unchecked = full <freejoint/>; all checked = welded;
+                    // mixed = only the unlocked axes get individual joints.
+                    ui.label("Base lock:");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.mujoco_base_locked[0], "TX");
+                        ui.checkbox(&mut self.mujoco_base_locked[1], "TY");
+                        ui.checkbox(&mut self.mujoco_base_locked[2], "TZ");
+                    })
+                    .response
+                    .on_hover_text("Lock translation along world X / Y / Z");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.mujoco_base_locked[3], "RX");
+                        ui.checkbox(&mut self.mujoco_base_locked[4], "RY");
+                        ui.checkbox(&mut self.mujoco_base_locked[5], "RZ");
+                    })
+                    .response
+                    .on_hover_text("Lock rotation about world X / Y / Z");
                 }
 
                 // Playback controls

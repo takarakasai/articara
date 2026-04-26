@@ -338,6 +338,14 @@ pub struct MjcfExportOptions {
     /// When true, emit `<motor>` actuators (named `motor_<joint>`) for each
     /// non-fixed joint so torques can be applied via `data.ctrl`.
     pub add_actuators: bool,
+    /// Per-axis locks on the floating-base, ordered `[TX, TY, TZ, RX, RY, RZ]`.
+    /// `true` = axis locked (no DoF), `false` = axis free.
+    ///
+    /// - All `false` → emit `<freejoint/>` (full 6-DoF base, the default)
+    /// - All `true`  → emit no joint (base welded to the world at `base_pos`)
+    /// - Mixed       → emit individual `<joint type="slide"/>` / `<hinge>`
+    ///                 elements only for the unlocked axes
+    pub base_locked_axes: [bool; 6],
 }
 
 /// Export a RobotModel to MJCF XML string with default options.
@@ -354,6 +362,7 @@ pub fn export_mjcf_with_options(
         base_pos,
         ground_plane,
         add_actuators,
+        base_locked_axes,
     } = opts;
     let mut s = String::new();
     s.push_str(&format!(
@@ -417,7 +426,8 @@ pub fn export_mjcf_with_options(
     // Either honour the user-supplied base position or auto-lift the root so
     // the lowest link sits just above the ground plane.
     let root_pos = base_pos.unwrap_or_else(|| [0.0, 0.0, compute_initial_z(model)]);
-    write_mjcf_body(&mut s, model, &model.root_link, 4, &geom_mesh_map, Some(root_pos));
+    let base_spec = BaseSpec { pos: root_pos, locked: base_locked_axes };
+    write_mjcf_body(&mut s, model, &model.root_link, 4, &geom_mesh_map, Some(base_spec));
 
     s.push_str("  </worldbody>\n");
 
@@ -485,13 +495,21 @@ fn compute_initial_z(model: &RobotModel) -> f64 {
     if min_z < 0.0 { -min_z + 0.01 } else { 0.01 }
 }
 
+/// World-frame placement + per-axis lock state for the root body.
+#[derive(Clone, Copy)]
+struct BaseSpec {
+    pos: [f64; 3],
+    /// `[TX, TY, TZ, RX, RY, RZ]`: `true` = locked (no DoF).
+    locked: [bool; 6],
+}
+
 fn write_mjcf_body(
     s: &mut String,
     model: &RobotModel,
     link_name: &str,
     indent: usize,
     geom_mesh_map: &HashMap<*const GeomData, String>,
-    root_pos: Option<[f64; 3]>,
+    base_spec: Option<BaseSpec>,
 ) {
     let pad: String = " ".repeat(indent);
 
@@ -502,7 +520,8 @@ fn write_mjcf_body(
     let link = &model.links[link_idx];
 
     // Find the joint connecting this link to its parent for pose
-    let (pos_str, joint_info) = if let Some([x, y, z]) = root_pos {
+    let (pos_str, joint_info) = if let Some(spec) = base_spec {
+        let [x, y, z] = spec.pos;
         // Root body: place at user-specified or auto-lifted world position
         (format!("{x} {y} {z}"), None)
     } else if let Some(ji) = model.parent_joint_of_link(link_name) {
@@ -515,9 +534,35 @@ fn write_mjcf_body(
 
     s.push_str(&format!("{pad}<body name=\"{link_name}\" pos=\"{pos_str}\">\n"));
 
-    // Root body gets a freejoint so it can fall and settle under gravity.
-    if root_pos.is_some() {
-        s.push_str(&format!("{pad}  <freejoint/>\n"));
+    // Root body: emit floating-base joints based on the per-axis lock state.
+    if let Some(spec) = base_spec {
+        let any_free = spec.locked.iter().any(|&l| !l);
+        let all_free = spec.locked.iter().all(|&l| !l);
+        if all_free {
+            // Cleanest 6-DoF representation; avoids the gimbal singularity
+            // of stacking three hinge joints for orientation.
+            s.push_str(&format!("{pad}  <freejoint/>\n"));
+        } else if any_free {
+            // Partial constraint: emit only the unlocked axes as individual
+            // slide / hinge joints. Translations first, then rotations, so
+            // the kinematic chain is intuitive (X→Y→Z→roll→pitch→yaw).
+            const AXES: [(&str, &str, &str); 6] = [
+                ("base_tx", "slide", "1 0 0"),
+                ("base_ty", "slide", "0 1 0"),
+                ("base_tz", "slide", "0 0 1"),
+                ("base_rx", "hinge", "1 0 0"),
+                ("base_ry", "hinge", "0 1 0"),
+                ("base_rz", "hinge", "0 0 1"),
+            ];
+            for (i, (jname, jtype, axis)) in AXES.iter().enumerate() {
+                if !spec.locked[i] {
+                    s.push_str(&format!(
+                        "{pad}  <joint name=\"{jname}\" type=\"{jtype}\" axis=\"{axis}\"/>\n",
+                    ));
+                }
+            }
+        }
+        // else: all 6 locked → no joint emitted; body welds to world at `pos`.
     }
 
     // Inertial
