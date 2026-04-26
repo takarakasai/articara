@@ -342,10 +342,18 @@ pub struct ArticaraApp {
     mujoco_base_locked: [bool; 6],
     /// Name buffer for the next "Save current pose as…" entry.
     pose_save_name: String,
-    /// Selected interpolation kind for the next pose transition.
+    /// Default interpolation kind seeded into newly-saved poses.
     pose_transition_kind: misarta::trajectory::InterpolationKind,
-    /// Duration (s) of the next pose transition.
+    /// Default transition duration (s) seeded into newly-saved poses.
     pose_transition_duration: f32,
+    /// Currently selected target link for the external-force panel.
+    ext_force_link: Option<String>,
+    /// Force vector (N) for the external-force panel.
+    ext_force_value: [f32; 3],
+    /// Torque vector (N·m) for the external-force panel.
+    ext_torque_value: [f32; 3],
+    /// Duration (s) of the next external-force application.
+    ext_force_duration: f32,
     /// File path for sim config save/load.
     sim_config_path: String,
     // --- Posture save/load ---
@@ -557,6 +565,10 @@ impl ArticaraApp {
             pose_save_name: String::new(),
             pose_transition_kind: misarta::trajectory::InterpolationKind::QuinticSmooth,
             pose_transition_duration: 1.0,
+            ext_force_link: None,
+            ext_force_value: [0.0, 0.0, 0.0],
+            ext_torque_value: [0.0, 0.0, 0.0],
+            ext_force_duration: 0.5,
             sim_config_path: String::new(),
             posture_path: String::new(),
             dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),
