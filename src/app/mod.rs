@@ -11,6 +11,94 @@ use crate::history::History;
 use crate::renderer::{DisplayMode, GlRenderer, MeshKind};
 use crate::robot::RobotModel;
 
+/// How a left-mouse drag on a link is interpreted while a MuJoCo sim is running.
+#[cfg(feature = "mujoco")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SimDragMode {
+    /// Drag delta becomes a continuous world-frame force applied via
+    /// `xfrc_applied`. Magnitude is `sim_drag_force_gain` × drag distance.
+    Force,
+    /// Drag delta steers a posture target: an IK solve from the link's
+    /// kinematic root keeps the link at the dragged world position by
+    /// updating the controller's `position_targets`. The PD loop then
+    /// catches up to that target while obeying gains / limits.
+    Posture,
+}
+
+#[cfg(feature = "mujoco")]
+impl SimDragMode {
+    pub const ALL: [SimDragMode; 2] = [SimDragMode::Force, SimDragMode::Posture];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SimDragMode::Force => "Force (apply wrench)",
+            SimDragMode::Posture => "Posture (IK target)",
+        }
+    }
+}
+
+/// State for an in-flight sim-time drag interaction.
+#[cfg(feature = "mujoco")]
+#[derive(Clone)]
+pub(super) struct SimDragState {
+    pub mode: SimDragMode,
+    pub link_name: String,
+    /// Local-frame offset on the dragged link where the click landed.
+    /// Used so the dragged point follows the cursor, not just the link origin.
+    pub ee_local_offset: na::Point3<f32>,
+    /// Camera-forward depth of the click point, used to keep the drag plane
+    /// stable under perspective projection.
+    pub drag_depth: f32,
+    /// Kinematic chain from root to the dragged link, used by Posture mode
+    /// for the IK solve. Empty for Force mode.
+    pub chain: Vec<usize>,
+    /// IK root link (None = full chain from URDF root).
+    pub ik_root_link: Option<String>,
+}
+
+/// Which signal the Joint Peaks plot window is rendering.
+#[cfg(feature = "mujoco")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PeaksPlotMetric {
+    /// Joint angle / displacement q.
+    Position,
+    /// Joint velocity q̇.
+    Velocity,
+    /// Commanded torque / force τ.
+    Torque,
+}
+
+#[cfg(feature = "mujoco")]
+impl PeaksPlotMetric {
+    pub const ALL: [PeaksPlotMetric; 3] = [
+        PeaksPlotMetric::Position,
+        PeaksPlotMetric::Velocity,
+        PeaksPlotMetric::Torque,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PeaksPlotMetric::Position => "q (Position)",
+            PeaksPlotMetric::Velocity => "q̇ (Velocity)",
+            PeaksPlotMetric::Torque => "τ (Torque)",
+        }
+    }
+
+    pub fn unit(self, is_prismatic: bool) -> &'static str {
+        match self {
+            PeaksPlotMetric::Position => {
+                if is_prismatic { "m" } else { "rad" }
+            }
+            PeaksPlotMetric::Velocity => {
+                if is_prismatic { "m/s" } else { "rad/s" }
+            }
+            PeaksPlotMetric::Torque => {
+                if is_prismatic { "N" } else { "N·m" }
+            }
+        }
+    }
+}
+
 /// Pin constraint dimensionality.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PinDof {
@@ -354,6 +442,34 @@ pub struct ArticaraApp {
     ext_torque_value: [f32; 3],
     /// Duration (s) of the next external-force application.
     ext_force_duration: f32,
+    /// Whether contact-point markers + force vectors are drawn over the viewport.
+    #[cfg(feature = "mujoco")]
+    show_contacts: bool,
+    /// How a sim-time link drag is interpreted (force vs posture).
+    #[cfg(feature = "mujoco")]
+    sim_drag_mode: SimDragMode,
+    /// Active sim-drag state while the user is holding the mouse button.
+    #[cfg(feature = "mujoco")]
+    sim_drag_state: Option<SimDragState>,
+    /// Force gain (N per metre of drag) for Force mode. Tuned so a typical
+    /// 30 cm drag exerts ~150 N out of the box, enough to push a kg-scale
+    /// link around without flinging lighter ones.
+    #[cfg(feature = "mujoco")]
+    sim_drag_force_gain: f32,
+    /// Whether to enforce per-joint torque/velocity limits during MuJoCo
+    /// simulation. When `true`, the controller torque is clamped to ±τmax
+    /// and the velocity-mode reference / commanded torque are gated by ωmax.
+    #[cfg(feature = "mujoco")]
+    enforce_actuator_limits: bool,
+    /// Whether the Joint Peaks time-series plot window is open.
+    #[cfg(feature = "mujoco")]
+    show_peaks_plot: bool,
+    /// Joint selected for the Joint Peaks plot. `None` = plot all movable joints.
+    #[cfg(feature = "mujoco")]
+    peaks_plot_joint: Option<String>,
+    /// Which signal to display on the Joint Peaks plot.
+    #[cfg(feature = "mujoco")]
+    peaks_plot_metric: PeaksPlotMetric,
     /// File path for sim config save/load.
     sim_config_path: String,
     // --- Posture save/load ---
@@ -569,6 +685,22 @@ impl ArticaraApp {
             ext_force_value: [0.0, 0.0, 0.0],
             ext_torque_value: [0.0, 0.0, 0.0],
             ext_force_duration: 0.5,
+            #[cfg(feature = "mujoco")]
+            show_contacts: true,
+            #[cfg(feature = "mujoco")]
+            sim_drag_mode: SimDragMode::Force,
+            #[cfg(feature = "mujoco")]
+            sim_drag_state: None,
+            #[cfg(feature = "mujoco")]
+            sim_drag_force_gain: 500.0,
+            #[cfg(feature = "mujoco")]
+            enforce_actuator_limits: false,
+            #[cfg(feature = "mujoco")]
+            show_peaks_plot: false,
+            #[cfg(feature = "mujoco")]
+            peaks_plot_joint: None,
+            #[cfg(feature = "mujoco")]
+            peaks_plot_metric: PeaksPlotMetric::Torque,
             sim_config_path: String::new(),
             posture_path: String::new(),
             dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),
@@ -674,13 +806,14 @@ impl ArticaraApp {
                 #[cfg(feature = "mujoco")]
                 {
                     let frame_request = self.dynamics_step_frames.take();
+                    let enforce_limits = self.enforce_actuator_limits;
                     if let Some(mj_sim) = self.mujoco_sim.as_mut() {
                         if let Some(ref mut model) = self.model {
                             if let Some(n) = frame_request {
                                 self.dynamics_sim_paused = true;
                                 self.dynamics_last_instant = Some(now);
                                 if n > 0 {
-                                    mj_sim.step_n_frames(model, n as u32);
+                                    mj_sim.step_n_frames(model, n as u32, enforce_limits);
                                 } else if n < 0 {
                                     mj_sim.step_back_frames(model, (-n) as u32);
                                 }
@@ -695,7 +828,7 @@ impl ArticaraApp {
                                 None => 0.016,
                             };
                             self.dynamics_last_instant = Some(now);
-                            mj_sim.step(model, dt as f64);
+                            mj_sim.step(model, dt as f64, enforce_limits);
                         }
                     }
                 }
@@ -914,6 +1047,10 @@ mod posture;
 mod file_dialog;
 mod status_bar;
 mod script_console;
+#[cfg(feature = "mujoco")]
+mod peaks_plot_window;
+#[cfg(feature = "mujoco")]
+mod sim_drag;
 
 // Sentinel to mark the end of module-level code.
 // Everything below was moved to sub-modules.
@@ -1040,6 +1177,10 @@ impl eframe::App for ArticaraApp {
 
         // --- Dynamics graph window ---
         self.draw_dynamics_graph_window(&ctx);
+
+        // --- Joint Peaks time-series plot window ---
+        #[cfg(feature = "mujoco")]
+        self.draw_peaks_plot_window(&ctx);
 
         // --- File dialogs ---
         self.process_file_dialogs(&ctx);

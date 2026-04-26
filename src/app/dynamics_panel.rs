@@ -289,6 +289,56 @@ impl ArticaraApp {
                     .on_hover_text("Lock rotation about world X / Y / Z");
                 }
 
+                // ── Sim-time visualisation / safety toggles (MuJoCo only) ──
+                #[cfg(feature = "mujoco")]
+                {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.show_contacts, "👣 Contacts")
+                            .on_hover_text(
+                                "Draw contact points and contact-force \
+                                 vectors over the viewport.",
+                            );
+                        ui.checkbox(
+                            &mut self.enforce_actuator_limits,
+                            "⛔ Limits",
+                        )
+                        .on_hover_text(
+                            "Clamp commanded torque to ±τmax and the \
+                             velocity-mode reference to ±ωmax for every joint. \
+                             Off = unrestricted (current default).",
+                        );
+                    });
+                    // Mouse-drag interaction during sim:
+                    // pick Force (apply wrench) vs Posture (IK target) and
+                    // tune the force gain for Force mode.
+                    ui.horizontal(|ui| {
+                        ui.label("🖱 Drag:");
+                        let mut mode = self.sim_drag_mode;
+                        egui::ComboBox::from_id_salt("sim_drag_mode")
+                            .selected_text(mode.label())
+                            .show_ui(ui, |ui| {
+                                for m in super::SimDragMode::ALL {
+                                    ui.selectable_value(&mut mode, m, m.label());
+                                }
+                            });
+                        if mode != self.sim_drag_mode {
+                            self.sim_drag_mode = mode;
+                        }
+                    });
+                    if matches!(self.sim_drag_mode, super::SimDragMode::Force) {
+                        ui.horizontal(|ui| {
+                            ui.label("    Force gain:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.sim_drag_force_gain)
+                                    .speed(10.0)
+                                    .range(1.0..=10000.0)
+                                    .fixed_decimals(0)
+                                    .suffix(" N/m"),
+                            );
+                        });
+                    }
+                }
+
                 // Playback controls
                 if sim_active {
                     ui.horizontal(|ui| {

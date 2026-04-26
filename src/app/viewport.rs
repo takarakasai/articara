@@ -96,7 +96,17 @@ impl ArticaraApp {
         // Left mouse button pressed: start drag
         let had_drag_before = self.drag_state.is_some() || self.offset_drag_state.is_some();
         if response.drag_started_by(egui::PointerButton::Primary) {
-            self.handle_drag_start(&response, mouse_ndc, aspect, &transforms, gizmo_tf);
+            // Sim drag takes precedence when MuJoCo is running so the user
+            // can poke the live robot without the editor's joint-drive logic
+            // mutating angles directly.
+            #[cfg(feature = "mujoco")]
+            let sim_drag_started =
+                self.handle_sim_drag_start(mouse_ndc, aspect, &transforms);
+            #[cfg(not(feature = "mujoco"))]
+            let sim_drag_started = false;
+            if !sim_drag_started {
+                self.handle_drag_start(&response, mouse_ndc, aspect, &transforms, gizmo_tf);
+            }
         }
         // Record undo snapshot if a new drag just started
         if !had_drag_before && (self.drag_state.is_some() || self.offset_drag_state.is_some()) {
@@ -128,9 +138,20 @@ impl ArticaraApp {
             self.handle_click(mouse_ndc, aspect, &transforms);
         }
 
-        // While dragging: handle joint drive or offset adjustment
+        // While dragging: handle joint drive or offset adjustment.
+        // When a sim-drag is active, route there exclusively so the
+        // existing JointDrive update doesn't compete for the same button.
         if response.dragged_by(egui::PointerButton::Primary) {
-            self.handle_drag_update(&response, mouse_ndc, rect, aspect);
+            #[cfg(feature = "mujoco")]
+            let sim_drag_active = self.sim_drag_state.is_some();
+            #[cfg(not(feature = "mujoco"))]
+            let sim_drag_active = false;
+            if sim_drag_active {
+                #[cfg(feature = "mujoco")]
+                self.handle_sim_drag_update(mouse_ndc, aspect, &transforms);
+            } else {
+                self.handle_drag_update(&response, mouse_ndc, rect, aspect);
+            }
         }
 
         // Right-drag = pan, middle-drag = pan, scroll = zoom (always active)
@@ -167,6 +188,8 @@ impl ArticaraApp {
             }
             self.drag_state = None;
             self.offset_drag_state = None;
+            #[cfg(feature = "mujoco")]
+            self.handle_sim_drag_end();
             self.ik_target_marker = None;
             self.ik_ee_marker = None;
             self.ik_error = None;
@@ -235,6 +258,12 @@ impl ArticaraApp {
         self.draw_ik_ee_marker(ui, rect, aspect);
         self.draw_camera_axes(ui, rect);
         self.draw_gravity_indicator(ui, rect);
+        #[cfg(feature = "mujoco")]
+        {
+            self.draw_contact_markers(ui, rect, aspect);
+            self.draw_force_pulse_markers(ui, rect, aspect);
+            self.draw_sim_drag_overlay(ui, rect, aspect);
+        }
         self.draw_camera_reset_button(ui, rect);
         self.draw_display_toggles(ui, rect);
     }
