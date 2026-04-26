@@ -100,6 +100,7 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
         base_transform: na::Isometry3::identity(),
         misarta_cache: None,
         loop_closures: Vec::new(),
+        poses: Vec::new(),
     };
     model.rebuild_misarta_model();
     Ok(model)
