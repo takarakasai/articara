@@ -1322,6 +1322,16 @@ impl ArticaraApp {
             }
         }
 
+        // ===== Named-pose registry — register / replay / delete =====
+        // Done in its own scope so it can borrow `self` mutably (for the
+        // MuJoCo sim handle) and `self.model` separately.
+        if self.model.is_some() {
+            ui.separator();
+            if let Some(desc) = self.draw_poses_panel(ui) {
+                props_edit_desc = Some(desc);
+            }
+        }
+
         // Apply deferred link rename to app-level references
         if let Some((old_name, new_name)) = link_renamed {
             self.update_link_name_refs(&old_name, &new_name);
@@ -1333,6 +1343,203 @@ impl ArticaraApp {
         }
 
 
+    }
+
+    /// Draw the named-pose registry section. Returns an undo description if
+    /// the model was edited (pose added / renamed / removed).
+    fn draw_poses_panel(&mut self, ui: &mut egui::Ui) -> Option<String> {
+        // Take the model out for the duration of this call so we can borrow
+        // `self` mutably for the MuJoCo handle without overlapping borrows.
+        let mut model = match self.model.take() {
+            Some(m) => m,
+            None => return None,
+        };
+        let result = self.draw_poses_panel_with(ui, &mut model);
+        self.model = Some(model);
+        result
+    }
+
+    fn draw_poses_panel_with(
+        &mut self,
+        ui: &mut egui::Ui,
+        model: &mut crate::robot::RobotModel,
+    ) -> Option<String> {
+        let mut edit_desc: Option<String> = None;
+
+        egui::CollapsingHeader::new("🧍 Poses")
+            .default_open(true)
+            .show(ui, |ui| {
+                // --- Save current pose ---
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.pose_save_name)
+                            .desired_width(120.0),
+                    );
+                    if ui
+                        .add_enabled(
+                            !self.pose_save_name.trim().is_empty(),
+                            egui::Button::new("📌 Save"),
+                        )
+                        .on_hover_text(
+                            "Snapshot the model's current joint angles into a \
+                             named pose (saved to .misarta.toml).",
+                        )
+                        .clicked()
+                    {
+                        let name = self.pose_save_name.trim().to_string();
+                        // Replace by name if exists, else append.
+                        let snap = crate::rbd::model::NamedPose::snapshot(&name, model);
+                        if let Some(existing) =
+                            model.poses.iter_mut().find(|p| p.name == name)
+                        {
+                            existing.angles = snap.angles;
+                        } else {
+                            model.poses.push(snap);
+                        }
+                        edit_desc = Some(format!("Save pose '{name}'"));
+                    }
+                });
+
+                // --- Transition settings ---
+                ui.horizontal(|ui| {
+                    ui.label("Duration:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.pose_transition_duration)
+                            .speed(0.05)
+                            .range(0.05..=30.0)
+                            .fixed_decimals(2)
+                            .suffix(" s"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Curve:");
+                    egui::ComboBox::from_id_salt("pose_curve_kind")
+                        .selected_text(self.pose_transition_kind.label())
+                        .show_ui(ui, |ui| {
+                            for k in misarta::trajectory::InterpolationKind::ALL {
+                                ui.selectable_value(
+                                    &mut self.pose_transition_kind,
+                                    k,
+                                    k.label(),
+                                );
+                            }
+                        });
+                });
+
+                if model.poses.is_empty() {
+                    ui.label(
+                        egui::RichText::new(
+                            "(no poses yet — set the joint angles, type a name, and press Save)",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    return;
+                }
+
+                ui.separator();
+                #[cfg(feature = "mujoco")]
+                let mj_active = self.mujoco_sim.is_some();
+                #[cfg(not(feature = "mujoco"))]
+                let mj_active = false;
+
+                // --- Pose list ---
+                let mut to_remove: Option<usize> = None;
+                let mut to_play: Option<usize> = None;
+                let mut to_apply_static: Option<usize> = None;
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        for (i, pose) in model.poses.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(&pose.name).monospace(),
+                                );
+                                if ui
+                                    .small_button("📐")
+                                    .on_hover_text(
+                                        "Apply pose directly to the editor \
+                                         (no MuJoCo transition).",
+                                    )
+                                    .clicked()
+                                {
+                                    to_apply_static = Some(i);
+                                }
+                                if ui
+                                    .add_enabled(
+                                        mj_active,
+                                        egui::Button::new("▶ Play"),
+                                    )
+                                    .on_hover_text(if mj_active {
+                                        "Smoothly transition the running MuJoCo \
+                                         sim to this pose."
+                                    } else {
+                                        "Start MuJoCo first to enable playback."
+                                    })
+                                    .clicked()
+                                {
+                                    to_play = Some(i);
+                                }
+                                if ui
+                                    .small_button("🗑")
+                                    .on_hover_text("Delete this pose.")
+                                    .clicked()
+                                {
+                                    to_remove = Some(i);
+                                }
+                            });
+                        }
+                    });
+
+                if let Some(i) = to_remove {
+                    let name = model.poses[i].name.clone();
+                    model.poses.remove(i);
+                    edit_desc = Some(format!("Delete pose '{name}'"));
+                }
+                if let Some(i) = to_apply_static {
+                    let pose = &model.poses[i];
+                    let cur = model.joint_positions.clone();
+                    let q = pose.to_vector(model, &cur);
+                    model.joint_positions = q;
+                    self.needs_upload = true;
+                    edit_desc = Some(format!("Apply pose '{}'", pose.name));
+                }
+                #[cfg(feature = "mujoco")]
+                if let Some(i) = to_play {
+                    let pose = &model.poses[i];
+                    let cur = model.joint_positions.clone();
+                    let q = pose.to_vector(model, &cur);
+                    if let Some(ref mut sim) = self.mujoco_sim {
+                        sim.start_transition(
+                            q,
+                            self.pose_transition_duration as f64,
+                            self.pose_transition_kind,
+                        );
+                        // Auto-resume playback so the user sees motion.
+                        self.dynamics_sim_paused = false;
+                        self.status_message = format!(
+                            "Playing pose '{}' over {:.2}s ({})",
+                            pose.name,
+                            self.pose_transition_duration,
+                            self.pose_transition_kind.label(),
+                        );
+                    }
+                }
+
+                // --- Live transition status (visible during playback) ---
+                #[cfg(feature = "mujoco")]
+                if let Some(ref sim) = self.mujoco_sim {
+                    if let Some(p) = sim.transition_progress() {
+                        ui.add(
+                            egui::ProgressBar::new(p)
+                                .text(format!("Transitioning {:.0}%", p * 100.0)),
+                        );
+                    }
+                }
+            });
+
+        edit_desc
     }
 
     /// Draw the Export dialog window (format + directory + export button).

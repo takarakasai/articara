@@ -202,6 +202,48 @@ pub struct RobotModel {
     /// Populated via UI or from model file metadata.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub loop_closures: Vec<LoopClosure>,
+    /// Named joint-space poses for replay during simulation. Keyed by joint
+    /// name so renames don't break stored poses.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub poses: Vec<NamedPose>,
+}
+
+/// A user-registered joint-space pose with a display name.
+#[derive(Clone, Debug)]
+pub struct NamedPose {
+    pub name: String,
+    /// Joint name → angle (or prismatic displacement). Joints not present
+    /// here keep their current model value when the pose is replayed.
+    pub angles: std::collections::BTreeMap<String, f64>,
+}
+
+impl NamedPose {
+    /// Snapshot the model's current joint positions into a named pose.
+    pub fn snapshot(name: impl Into<String>, model: &RobotModel) -> Self {
+        let mut angles = std::collections::BTreeMap::new();
+        for (ji, joint) in model.joints.iter().enumerate() {
+            if joint.joint_type == "fixed" {
+                continue;
+            }
+            angles.insert(joint.name.clone(), model.joint_positions[ji]);
+        }
+        Self { name: name.into(), angles }
+    }
+
+    /// Resolve the pose into a full joint-position vector matching
+    /// `model.joints` order. Joints not in the pose keep `current[ji]`.
+    pub fn to_vector(&self, model: &RobotModel, current: &[f64]) -> Vec<f64> {
+        let n = model.joints.len();
+        let mut out = vec![0.0; n];
+        for (ji, joint) in model.joints.iter().enumerate() {
+            out[ji] = self
+                .angles
+                .get(&joint.name)
+                .copied()
+                .unwrap_or_else(|| current.get(ji).copied().unwrap_or(0.0));
+        }
+        out
+    }
 }
 
 #[derive(Clone)]
@@ -2123,21 +2165,36 @@ impl RobotModel {
         err.norm()
     }
 
-    /// Build a `MisartaConfig` from the current loop closures.
+    /// Build a `MisartaConfig` from the current loop closures and named poses.
     pub fn to_misarta_config(&self) -> misarta::config::MisartaConfig {
         let mut cfg = misarta::config::MisartaConfig::new();
         for lc in &self.loop_closures {
             cfg.loop_closure.push(lc.to_config());
         }
+        for p in &self.poses {
+            cfg.pose.push(misarta::config::PoseConfig {
+                name: p.name.clone(),
+                angles: p.angles.clone(),
+            });
+        }
         cfg
     }
 
-    /// Load loop closures from a `MisartaConfig`, replacing any existing ones.
+    /// Load loop closures and poses from a `MisartaConfig`, replacing any
+    /// existing ones.
     pub fn load_misarta_config(&mut self, cfg: &misarta::config::MisartaConfig) {
         self.loop_closures = cfg
             .loop_closure
             .iter()
             .map(LoopClosure::from_config)
+            .collect();
+        self.poses = cfg
+            .pose
+            .iter()
+            .map(|p| NamedPose {
+                name: p.name.clone(),
+                angles: p.angles.clone(),
+            })
             .collect();
     }
 
@@ -2155,8 +2212,9 @@ impl RobotModel {
             Ok(cfg) => {
                 self.load_misarta_config(&cfg);
                 log::info!(
-                    "Loaded {} loop closure(s) from {}",
+                    "Loaded {} loop closure(s) and {} pose(s) from {}",
                     self.loop_closures.len(),
+                    self.poses.len(),
                     toml_path.display()
                 );
                 true

@@ -340,6 +340,12 @@ pub struct ArticaraApp {
     /// floating base (default), all `true` = welded to world.
     #[cfg(feature = "mujoco")]
     mujoco_base_locked: [bool; 6],
+    /// Name buffer for the next "Save current pose as…" entry.
+    pose_save_name: String,
+    /// Selected interpolation kind for the next pose transition.
+    pose_transition_kind: misarta::trajectory::InterpolationKind,
+    /// Duration (s) of the next pose transition.
+    pose_transition_duration: f32,
     /// File path for sim config save/load.
     sim_config_path: String,
     // --- Posture save/load ---
@@ -548,6 +554,9 @@ impl ArticaraApp {
             mujoco_base_pos: [0.0, 0.0, 0.0],
             #[cfg(feature = "mujoco")]
             mujoco_base_locked: [false; 6],
+            pose_save_name: String::new(),
+            pose_transition_kind: misarta::trajectory::InterpolationKind::QuinticSmooth,
+            pose_transition_duration: 1.0,
             sim_config_path: String::new(),
             posture_path: String::new(),
             dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),

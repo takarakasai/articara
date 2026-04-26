@@ -11,6 +11,8 @@ use crate::mjcf::MjcfExportOptions;
 use crate::rbd::model::ActuatorMode;
 use crate::robot::RobotModel;
 
+pub use misarta::trajectory::InterpolationKind;
+
 /// One MuJoCo physics tick worth of state, captured *before* `data.step()` was
 /// called. Replaying it via [`MujocoSim::step_back_frames`] restores the sim to
 /// that pre-step state.
@@ -41,6 +43,16 @@ pub struct MujocoSim {
     velocity_targets: Vec<f64>,
     /// Per-joint direct torque command (used by Torque-mode controller).
     torque_targets: Vec<f64>,
+    /// Active pose-to-pose transition (drives `position_targets` per step).
+    /// `None` when the controller should hold the current target.
+    transition: Option<ActiveTransition>,
+}
+
+/// Smooth pose transition currently being played out.
+struct ActiveTransition {
+    traj: misarta::trajectory::PoseTransition<f64>,
+    /// Sim-time elapsed since the transition started.
+    elapsed: f64,
 }
 
 /// Finds the `bin/mujoco_plugin` directory inside the MuJoCo installation.
@@ -129,6 +141,56 @@ impl MujocoSim {
             position_targets,
             velocity_targets,
             torque_targets,
+            transition: None,
+        })
+    }
+
+    /// Begin a smooth transition from the current Position-mode targets to
+    /// `goal_targets` over `duration` seconds using the chosen interpolation
+    /// curve. Subsequent calls cancel any in-progress transition.
+    ///
+    /// `goal_targets` must be the same length as `position_targets`. Joints
+    /// not listed (or whose value matches the current target) simply hold.
+    pub fn start_transition(
+        &mut self,
+        goal_targets: Vec<f64>,
+        duration: f64,
+        kind: InterpolationKind,
+    ) {
+        let q_start = self.position_targets.clone();
+        let q_end = if goal_targets.len() == q_start.len() {
+            goal_targets
+        } else {
+            let mut padded = q_start.clone();
+            for (i, v) in goal_targets.iter().enumerate() {
+                if i < padded.len() {
+                    padded[i] = *v;
+                }
+            }
+            padded
+        };
+        self.transition = Some(ActiveTransition {
+            traj: misarta::trajectory::PoseTransition::new(
+                q_start,
+                q_end,
+                duration.max(1e-3),
+                kind,
+            ),
+            elapsed: 0.0,
+        });
+    }
+
+    /// Whether a pose transition is currently playing.
+    pub fn transition_in_progress(&self) -> bool {
+        self.transition.is_some()
+    }
+
+    /// Normalised progress (0.0 → 1.0) of the current transition; `None`
+    /// when no transition is active.
+    pub fn transition_progress(&self) -> Option<f32> {
+        self.transition.as_ref().map(|t| {
+            let dur = t.traj.duration.max(1e-9);
+            ((t.elapsed / dur).clamp(0.0, 1.0)) as f32
         })
     }
 
@@ -211,12 +273,35 @@ impl MujocoSim {
         self.model.ffi().opt.timestep as f64
     }
 
+    /// Advance any active pose transition by `mj_dt` seconds and update
+    /// `position_targets` to the interpolated joint vector. When the transition
+    /// completes, it is dropped and `position_targets` snaps to the goal.
+    fn advance_transition(&mut self, mj_dt: f64) {
+        let Some(t) = self.transition.as_mut() else {
+            return;
+        };
+        t.elapsed += mj_dt;
+        let q = t.traj.evaluate(t.elapsed);
+        let n = self.position_targets.len().min(q.len());
+        for i in 0..n {
+            self.position_targets[i] = q[i];
+        }
+        if t.traj.is_done(t.elapsed) {
+            // Snap exactly to the goal so any rounding error doesn't linger.
+            for i in 0..self.position_targets.len().min(t.traj.q_end.len()) {
+                self.position_targets[i] = t.traj.q_end[i];
+            }
+            self.transition = None;
+        }
+    }
+
     /// Step the simulation by `dt` seconds and sync the state back to `RobotModel`.
     pub fn step(&mut self, robot: &mut RobotModel, dt: f64) {
         self.time_accumulator += dt;
 
         let mj_dt = self.timestep();
         while self.time_accumulator >= mj_dt {
+            self.advance_transition(mj_dt);
             self.apply_controller(robot);
             self.snapshot();
             self.data.step();
@@ -230,7 +315,9 @@ impl MujocoSim {
     /// seconds) and sync the state back. Each frame is pre-snapshotted so it
     /// can be reversed via [`Self::step_back_frames`].
     pub fn step_n_frames(&mut self, robot: &mut RobotModel, n: u32) {
+        let mj_dt = self.timestep();
         for _ in 0..n {
+            self.advance_transition(mj_dt);
             self.apply_controller(robot);
             self.snapshot();
             self.data.step();
