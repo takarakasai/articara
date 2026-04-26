@@ -310,13 +310,9 @@ pub struct ArticaraApp {
     // --- Dynamics analysis state ---
     /// Selected end-effector link for payload capacity analysis.
     dynamics_ee_link: Option<String>,
-    /// Body link (the torso/base that gets launched) for jump estimation.
-    dynamics_body_link: Option<String>,
-    /// Selected ground-contact links for jump height estimation.
-    dynamics_ground_links: Vec<String>,
     /// Cached dynamics analysis result.
     dynamics_result: Option<dynamics::StaticAnalysis>,
-    /// Active dynamics simulation (jump or payload).
+    /// Active dynamics simulation (payload).
     dynamics_sim: Option<dynamics::DynSim>,
     /// Simulation playback speed.
     dynamics_sim_speed: f32,
@@ -326,32 +322,9 @@ pub struct ArticaraApp {
     dynamics_step_dt: Option<f32>,
     /// Last frame instant for delta-time calculation.
     dynamics_last_instant: Option<std::time::Instant>,
-    /// Which axes the body link can move during flight (true = free).
-    dynamics_launch_axes: [bool; 3],
-    /// Joint names that are locked (not driven) during jump sim.
-    dynamics_locked_joints: std::collections::HashSet<String>,
-    /// User-specified extension duration override (None = auto-compute).
-    dynamics_extension_duration: Option<f32>,
-    /// Whether to enforce URDF effort (torque) limits during jump sim.
-    dynamics_enforce_torque_limits: bool,
-    /// Whether to retract (pull legs back) after extension for extra hang time.
-    dynamics_enable_retract: bool,
-    /// PD position gain Kp (N·m/rad) for computed-torque controller.
-    dynamics_pd_kp: f64,
-    /// PD derivative gain Kd (N·m·s/rad) for computed-torque controller.
-    dynamics_pd_kd: f64,
-    /// Last jump simulation result (displayed after sim ends).
-    dynamics_sim_result: Option<dynamics::JumpSimResult>,
-    /// Show the sim result dialog window.
-    show_sim_result_window: bool,
-    /// Link to track in the dynamics graph (position/velocity/acceleration).
-    dynamics_graph_link: Option<String>,
-    /// Whether to show the dynamics graph window.
-    #[allow(dead_code)]
-    show_dynamics_graph: bool,
-    /// Active MuJoCo simulation instance (plain real-time playback or jump).
+    /// Active MuJoCo simulation instance.
     #[cfg(feature = "mujoco")]
-    mujoco_sim: Option<crate::mujoco_sim::MujocoActiveSim>,
+    mujoco_sim: Option<crate::mujoco_sim::MujocoSim>,
     /// When true, the MuJoCo sim auto-lifts the floating base just above z=0.
     /// When false, [`Self::mujoco_base_pos`] is used as the initial world position.
     #[cfg(feature = "mujoco")]
@@ -554,25 +527,12 @@ impl ArticaraApp {
             show_validation_window: false,
             validation_results: Vec::new(),
             dynamics_ee_link: None,
-            dynamics_body_link: None,
-            dynamics_ground_links: Vec::new(),
             dynamics_result: None,
             dynamics_sim: None,
             dynamics_sim_speed: 1.0,
             dynamics_sim_paused: false,
             dynamics_step_dt: None,
             dynamics_last_instant: None,
-            dynamics_launch_axes: [false, false, true], // Z-only by default
-            dynamics_locked_joints: std::collections::HashSet::new(),
-            dynamics_extension_duration: None,
-            dynamics_enforce_torque_limits: false,
-            dynamics_enable_retract: false,
-            dynamics_pd_kp: 500.0,
-            dynamics_pd_kd: 20.0,
-            dynamics_sim_result: None,
-            show_sim_result_window: false,
-            dynamics_graph_link: None,
-            show_dynamics_graph: false,
             #[cfg(feature = "mujoco")]
             mujoco_sim: None,
             #[cfg(feature = "mujoco")]
@@ -741,19 +701,6 @@ impl ArticaraApp {
         }
 
         let still_running = match sim {
-            dynamics::DynSim::Jump(js) => {
-                // Auto-enable ground plane at foot level during jump sim
-                if !self.ground_plane_auto {
-                    self.ground_plane_auto = true;
-                    self.show_ground_plane = true;
-                    self.ground_z = js.initial_foot_z as f32;
-                }
-                if let Some(ref mut model) = self.model {
-                    dynamics::step_jump_sim(js, model, dt)
-                } else {
-                    false
-                }
-            }
             dynamics::DynSim::Payload(ps) => {
                 ps.phase_time += dt as f64;
                 if let Some(ref model) = self.model {
@@ -766,13 +713,6 @@ impl ArticaraApp {
         };
 
         if !still_running {
-            // Capture jump sim result before clearing
-            if let Some(dynamics::DynSim::Jump(ref js)) = self.dynamics_sim {
-                if let Some(ref model) = self.model {
-                    self.dynamics_sim_result = Some(dynamics::extract_jump_result(js, model));
-                    self.show_sim_result_window = true;
-                }
-            }
             // Auto-disable ground plane if we enabled it
             if self.ground_plane_auto {
                 self.show_ground_plane = false;

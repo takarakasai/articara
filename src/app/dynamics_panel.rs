@@ -27,7 +27,7 @@ impl ArticaraApp {
 use eframe::egui;
 
 use super::ArticaraApp;
-use crate::dynamics::{self, StaticAnalysis, DynSim, JumpPhase, PayloadPhase};
+use crate::dynamics::{self, StaticAnalysis, DynSim, PayloadPhase};
 
 impl ArticaraApp {
     pub fn draw_dynamics_panel(&mut self, ui: &mut egui::Ui) {
@@ -75,89 +75,6 @@ impl ArticaraApp {
                         });
                 });
 
-                ui.separator();
-                ui.label(egui::RichText::new("Jump Estimation").strong());
-
-                // --- Body link selector ---
-                ui.horizontal(|ui| {
-                    ui.label("Body:");
-                    let body_label = self
-                        .dynamics_body_link
-                        .as_deref()
-                        .unwrap_or("Auto (URDF root)")
-                        .to_string();
-                    egui::ComboBox::from_id_salt("dynamics_body_link")
-                        .selected_text(&body_label)
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(
-                                    self.dynamics_body_link.is_none(),
-                                    "Auto (URDF root)",
-                                )
-                                .clicked()
-                            {
-                                self.dynamics_body_link = None;
-                            }
-                            for name in &link_names {
-                                let sel =
-                                    self.dynamics_body_link.as_deref() == Some(name.as_str());
-                                if ui.selectable_label(sel, name).clicked() {
-                                    self.dynamics_body_link = Some(name.clone());
-                                }
-                            }
-                        });
-                })
-                .response
-                .on_hover_text("The torso/base link that gets launched upward");
-
-                // --- Ground link selector for jump ---
-                ui.horizontal(|ui| {
-                    ui.label("Ground:");
-                    let current_label = if self.dynamics_ground_links.is_empty() {
-                        "(select)".to_string()
-                    } else {
-                        self.dynamics_ground_links.join(", ")
-                    };
-                    egui::ComboBox::from_id_salt("dynamics_ground_links")
-                        .selected_text(&current_label)
-                        .show_ui(ui, |ui| {
-                            for name in &link_names {
-                                let mut checked = self.dynamics_ground_links.contains(name);
-                                if ui.checkbox(&mut checked, name).changed() {
-                                    if checked {
-                                        self.dynamics_ground_links.push(name.clone());
-                                    } else {
-                                        self.dynamics_ground_links
-                                            .retain(|n| n != name);
-                                    }
-                                }
-                            }
-                        });
-                    // Auto-detect tip (leaf) links
-                    if ui
-                        .small_button("Auto")
-                        .on_hover_text(
-                            "Auto-select leaf links (links with no child joints) as ground contacts",
-                        )
-                        .clicked()
-                    {
-                        if let Some(ref model) = self.model {
-                            self.dynamics_ground_links.clear();
-                            for link in &model.links {
-                                let has_children = model
-                                    .children_joints
-                                    .get(&link.name)
-                                    .is_some_and(|v| !v.is_empty());
-                                if !has_children && link.name != model.root_link {
-                                    self.dynamics_ground_links.push(link.name.clone());
-                                }
-                            }
-                        }
-                    }
-                })
-                .response
-                .on_hover_text("Foot/end-effector links in contact with the ground");
-
                 // --- Speed slider ---
                 ui.horizontal(|ui| {
                     ui.label("Speed:");
@@ -167,126 +84,6 @@ impl ArticaraApp {
                             .text("×"),
                     );
                 });
-
-                // --- Extension duration slider ---
-                {
-                    let mut use_auto = self.dynamics_extension_duration.is_none();
-                    ui.horizontal(|ui| {
-                        ui.label("Ext dur:");
-                        if ui.checkbox(&mut use_auto, "Auto").changed() {
-                            if use_auto {
-                                self.dynamics_extension_duration = None;
-                            } else {
-                                self.dynamics_extension_duration = Some(0.3);
-                            }
-                        }
-                        if let Some(ref mut dur) = self.dynamics_extension_duration {
-                            ui.add(
-                                egui::Slider::new(dur, 0.05..=3.0)
-                                    .suffix(" s")
-                                    .fixed_decimals(2),
-                            );
-                        }
-                    })
-                    .response
-                    .on_hover_text("Extension phase duration. Auto = computed from joint velocities.");
-                }
-
-                // --- Torque limit enforcement ---
-                ui.checkbox(
-                    &mut self.dynamics_enforce_torque_limits,
-                    "Enforce torque limits",
-                )
-                .on_hover_text(
-                    "When checked, joints whose gravity torque approaches the URDF \
-                     effort limit will have their IK motion scaled back during extension.",
-                );
-
-                // --- Retract after extension ---
-                ui.checkbox(
-                    &mut self.dynamics_enable_retract,
-                    "Retract after extend",
-                )
-                .on_hover_text(
-                    "After full extension, rapidly pull legs back to the initial pose \
-                     while still on the ground. This adds upward momentum for more hang time.",
-                );
-
-                // --- PD gains ---
-                ui.horizontal(|ui| {
-                    ui.label("Kp:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.dynamics_pd_kp)
-                            .speed(5.0)
-                            .range(0.0..=10000.0)
-                            .fixed_decimals(0)
-                            .suffix(" N·m/rad"),
-                    );
-                    ui.label("Kd:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.dynamics_pd_kd)
-                            .speed(0.5)
-                            .range(0.0..=1000.0)
-                            .fixed_decimals(1)
-                            .suffix(" N·m·s/rad"),
-                    );
-                })
-                .response
-                .on_hover_text("Computed-torque PD gains: Kp (position), Kd (velocity)");
-
-                // --- Launch axes ---
-                ui.horizontal(|ui| {
-                    ui.label("Launch:");
-                    ui.checkbox(&mut self.dynamics_launch_axes[0], "X");
-                    ui.checkbox(&mut self.dynamics_launch_axes[1], "Y");
-                    ui.checkbox(&mut self.dynamics_launch_axes[2], "Z");
-                })
-                .response
-                .on_hover_text("Which axes the body link can move during flight");
-
-                // --- Locked joints selector ---
-                {
-                    let joint_names: Vec<String> = self
-                        .model
-                        .as_ref()
-                        .unwrap()
-                        .joints
-                        .iter()
-                        .filter(|j| j.joint_type != "fixed")
-                        .map(|j| j.name.clone())
-                        .collect();
-                    let locked_label = if self.dynamics_locked_joints.is_empty() {
-                        "(none)".to_string()
-                    } else {
-                        format!("{} locked", self.dynamics_locked_joints.len())
-                    };
-                    ui.horizontal(|ui| {
-                        ui.label("Lock:");
-                        egui::ComboBox::from_id_salt("dynamics_locked_joints")
-                            .selected_text(&locked_label)
-                            .show_ui(ui, |ui| {
-                                for name in &joint_names {
-                                    let mut checked =
-                                        self.dynamics_locked_joints.contains(name);
-                                    if ui.checkbox(&mut checked, name).changed() {
-                                        if checked {
-                                            self.dynamics_locked_joints
-                                                .insert(name.clone());
-                                        } else {
-                                            self.dynamics_locked_joints.remove(name);
-                                        }
-                                    }
-                                }
-                            });
-                        if ui.small_button("Clear").clicked() {
-                            self.dynamics_locked_joints.clear();
-                        }
-                    })
-                    .response
-                    .on_hover_text(
-                        "Joints to lock (hold at initial angle) during jump simulation",
-                    );
-                }
 
                 // --- Sim config save/load ---
                 ui.horizontal(|ui| {
@@ -350,40 +147,6 @@ impl ArticaraApp {
 
                 ui.separator();
 
-                // --- Graph link selector ---
-                ui.horizontal(|ui| {
-                    ui.label("Graph:");
-                    let graph_label = self
-                        .dynamics_graph_link
-                        .as_deref()
-                        .unwrap_or("(Body link)")
-                        .to_string();
-                    egui::ComboBox::from_id_salt("dynamics_graph_link")
-                        .selected_text(&graph_label)
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(
-                                    self.dynamics_graph_link.is_none(),
-                                    "(Body link)",
-                                )
-                                .clicked()
-                            {
-                                self.dynamics_graph_link = None;
-                            }
-                            for name in &link_names {
-                                let sel =
-                                    self.dynamics_graph_link.as_deref() == Some(name.as_str());
-                                if ui.selectable_label(sel, name).clicked() {
-                                    self.dynamics_graph_link = Some(name.clone());
-                                }
-                            }
-                        });
-                })
-                .response
-                .on_hover_text("Link whose position/velocity/acceleration to plot");
-
-                ui.separator();
-
                 // --- Simulation controls ---
                 let mut sim_active = self.dynamics_sim.is_some();
                 #[cfg(feature = "mujoco")]
@@ -401,47 +164,8 @@ impl ArticaraApp {
                             let result = dynamics::analyze(
                                 model,
                                 self.dynamics_ee_link.as_deref(),
-                                self.dynamics_body_link.as_deref(),
-                                &self.dynamics_ground_links,
                             );
                             self.dynamics_result = Some(result);
-                        }
-                    }
-                });
-
-                ui.horizontal(|ui| {
-                    // Jump simulation
-                    let can_jump = !sim_active && !self.dynamics_ground_links.is_empty();
-                    if ui
-                        .add_enabled(can_jump, egui::Button::new("🦘 Jump"))
-                        .on_hover_text(
-                            "Prepare jump simulation (use ▶ Play or ⏭ Step to start)",
-                        )
-                        .clicked()
-                    {
-                        if let Some(ref mut model) = self.model {
-                            if let Some(sim) = dynamics::start_jump_sim(
-                                model,
-                                &self.dynamics_ground_links,
-                                self.dynamics_body_link.as_deref(),
-                                self.dynamics_sim_speed as f64,
-                                &self.dynamics_locked_joints,
-                                self.dynamics_launch_axes,
-                                self.dynamics_extension_duration.map(|d| d as f64),
-                                self.dynamics_enforce_torque_limits,
-                                self.dynamics_enable_retract,
-                                self.dynamics_graph_link.as_deref(),
-                                self.dynamics_pd_kp,
-                                self.dynamics_pd_kd,
-                            ) {
-                                self.dynamics_sim_result = None; // clear previous result
-                                self.dynamics_sim = Some(DynSim::Jump(sim));
-                                self.dynamics_sim_paused = true; // start paused
-                            } else {
-                                self.status_message =
-                                    "Cannot start jump sim (no leg joints with effort limits?)"
-                                        .into();
-                            }
                         }
                     }
 
@@ -486,66 +210,11 @@ impl ArticaraApp {
                             };
                             match crate::mujoco_sim::MujocoSim::new(model, opts) {
                                 Ok(sim) => {
-                                    self.mujoco_sim = Some(
-                                        crate::mujoco_sim::MujocoActiveSim::Plain(sim),
-                                    );
+                                    self.mujoco_sim = Some(sim);
                                 }
                                 Err(e) => self.status_message = e,
                             }
                             self.dynamics_sim_paused = false;
-                        }
-                    }
-
-                    // MuJoCo ジャンプ (misarta CRBA/RNEA 計算トルク制御)
-                    #[cfg(feature = "mujoco")]
-                    {
-                        let can_jump_mj =
-                            !sim_active && !self.dynamics_ground_links.is_empty();
-                        if ui
-                            .add_enabled(can_jump_mj, egui::Button::new("🦘 MJ Jump"))
-                            .on_hover_text(
-                                "Plan a jump (FK sweep + Launch trajectory) and \
-                                 simulate it in MuJoCo. Control: misarta's full \
-                                 inverse-dynamics (CRBA mass matrix + RNEA bias) \
-                                 = computed-torque tracking.",
-                            )
-                            .clicked()
-                        {
-                            let (base_pos, ground) = self.collect_mujoco_setup();
-                            let ground_links = self.dynamics_ground_links.clone();
-                            let body_link = self.dynamics_body_link.clone();
-                            let speed = self.dynamics_sim_speed as f64;
-                            let locked = self.dynamics_locked_joints.clone();
-                            let ext_dur =
-                                self.dynamics_extension_duration.map(|d| d as f64);
-                            let kp = self.dynamics_pd_kp;
-                            let kd = self.dynamics_pd_kd;
-                            if let Some(ref mut model) = self.model {
-                                let base_xyz = base_pos.or_else(|| {
-                                    let t = model.base_transform.translation.vector;
-                                    Some([t.x, t.y, t.z])
-                                });
-                                match crate::mujoco_sim::MujocoMisartaJumpSim::new(
-                                    model,
-                                    &ground_links,
-                                    body_link.as_deref(),
-                                    speed,
-                                    &locked,
-                                    ext_dur,
-                                    kp,
-                                    kd,
-                                    base_xyz,
-                                    ground,
-                                ) {
-                                    Ok(sim) => {
-                                        self.mujoco_sim = Some(
-                                            crate::mujoco_sim::MujocoActiveSim::Jump(sim),
-                                        );
-                                        self.dynamics_sim_paused = true;
-                                    }
-                                    Err(e) => self.status_message = e,
-                                }
-                            }
                         }
                     }
                 });
@@ -615,15 +284,6 @@ impl ArticaraApp {
                     // Step buttons (only when paused)
                     if self.dynamics_sim_paused {
                         ui.horizontal(|ui| {
-                            // コマ戻し
-                            #[cfg(feature = "mujoco")]
-                            if ui.button("⏮ Step Back").on_hover_text("1フレーム戻す").clicked() {
-                                if let Some(crate::mujoco_sim::MujocoActiveSim::Jump(ref mut sim)) = self.mujoco_sim {
-                                    if let Some(ref mut model) = self.model {
-                                        sim.step_back(model);
-                                    }
-                                }
-                            }
                             ui.label("Step:");
                             for (label, dt) in [
                                 ("1ms",  0.001_f32),
@@ -636,17 +296,6 @@ impl ArticaraApp {
                                 {
                                     self.dynamics_step_dt = Some(dt);
                                 }
-                            }
-                            // --- 1x, 10x 再生 ---
-                            if ui.button("▶ 1x").on_hover_text("1倍速で1ステップ再生").clicked() {
-                                self.dynamics_sim_speed = 1.0;
-                                self.dynamics_sim_paused = false;
-                                self.dynamics_step_dt = Some(0.0); // 0.0で「1フレームだけ再生」等の判定に使う
-                            }
-                            if ui.button("▶ 10x").on_hover_text("10倍速で1ステップ再生").clicked() {
-                                self.dynamics_sim_speed = 10.0;
-                                self.dynamics_sim_paused = false;
-                                self.dynamics_step_dt = Some(0.0);
                             }
                         });
                     }
@@ -667,83 +316,6 @@ impl ArticaraApp {
     /// Draw live simulation status readout.
     fn draw_sim_status(&self, ui: &mut egui::Ui) {
         match &self.dynamics_sim {
-            Some(DynSim::Jump(sim)) => {
-                ui.separator();
-                let phase_str = match sim.phase {
-                    JumpPhase::Extension => "🦵 Extension",
-                    JumpPhase::Retract => "🔄 Retract",
-                    JumpPhase::Flight => "🚀 Flight",
-                    JumpPhase::Landed => "🛬 Landed",
-                };
-                ui.colored_label(
-                    egui::Color32::from_rgb(100, 200, 255),
-                    format!("▶ Jump: {}", phase_str),
-                );
-
-                // --- Per-step physics readout ---
-                ui.label(format!(
-                    "Height: {:.3} m  (max {:.3} m)",
-                    sim.step_info.height.max(0.0),
-                    sim.max_height_reached,
-                ));
-                ui.label(format!(
-                    "Velocity: {:.3} m/s",
-                    sim.step_info.velocity_z,
-                ));
-
-                if sim.phase == JumpPhase::Extension || sim.phase == JumpPhase::Retract {
-                    // GRF readout
-                    let grf_color = if sim.step_info.grf_z >= 0.0 {
-                        egui::Color32::from_rgb(100, 200, 100)
-                    } else {
-                        egui::Color32::from_rgb(255, 80, 80)
-                    };
-                    ui.horizontal(|ui| {
-                        ui.label("GRF:");
-                        ui.colored_label(grf_color, format!("{:.1} N", sim.step_info.grf_z));
-                    });
-
-                    if sim.phase == JumpPhase::Extension {
-                        let pct = (sim.phase_time / sim.extension_duration * 100.0).min(100.0);
-                        ui.label(format!("Extension: {:.0}%", pct));
-                    } else {
-                        let pct = (sim.phase_time / sim.retract_duration * 100.0).min(100.0);
-                        ui.label(format!("Retract: {:.0}%", pct));
-                    }
-                }
-
-                // Progress bar
-                let est_flight = if sim.launch_velocity > 0.0 {
-                    2.0 * sim.launch_velocity / 9.80665
-                } else if sim.phase == JumpPhase::Extension {
-                    // Estimate from current velocity
-                    let v = sim.base_velocity_z.max(0.0);
-                    2.0 * v / 9.80665
-                } else {
-                    0.5
-                };
-                let retract_dur = if sim.enable_retract { sim.retract_duration } else { 0.0 };
-                let total_dur = sim.extension_duration + retract_dur + est_flight + sim.landed_hold;
-                let elapsed = match sim.phase {
-                    JumpPhase::Extension => sim.phase_time,
-                    JumpPhase::Retract => sim.extension_duration + sim.phase_time,
-                    JumpPhase::Flight => sim.extension_duration + retract_dur + sim.phase_time,
-                    JumpPhase::Landed => {
-                        sim.extension_duration + retract_dur + est_flight + sim.phase_time
-                    }
-                };
-                ui.add(
-                    egui::ProgressBar::new((elapsed / total_dur).clamp(0.0, 1.0) as f32)
-                        .text(format!("{:.1}s / {:.1}s", elapsed, total_dur)),
-                );
-
-                // Per-joint torque utilisation bars (same renderer as payload)
-                if !sim.step_info.joint_utilisation.is_empty() {
-                    ui.separator();
-                    ui.label(egui::RichText::new("Joint Torque Load").small().strong());
-                    self.draw_jump_utilisation_bars(ui, &sim.step_info.joint_utilisation);
-                }
-            }
             Some(DynSim::Payload(sim)) => {
                 ui.separator();
                 let phase_str = match sim.phase {
@@ -778,292 +350,8 @@ impl ArticaraApp {
         }
     }
 
-    /// Draw jump simulation result as a standalone egui::Window dialog.
-    pub fn draw_sim_result_window(&mut self, ctx: &egui::Context) {
-        if !self.show_sim_result_window {
-            return;
-        }
-        let result = match &self.dynamics_sim_result {
-            Some(r) => r.clone(),
-            None => {
-                self.show_sim_result_window = false;
-                return;
-            }
-        };
-
-        let mut open = true;
-        let mut close_clicked = false;
-
-        egui::Window::new("📋 Jump Simulation Result")
-            .open(&mut open)
-            .resizable(true)
-            .default_width(520.0)
-            .default_height(700.0)
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                // --- Summary ---
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Reached Height")
-                            .strong()
-                            .size(14.0),
-                    );
-                    ui.colored_label(
-                        egui::Color32::from_rgb(80, 200, 255),
-                        egui::RichText::new(format!("{:.4} m", result.max_height))
-                            .size(18.0)
-                            .strong(),
-                    );
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label("Extension duration:");
-                    ui.monospace(format!("{:.3} s", result.extension_duration));
-                });
-
-                if result.joint_peaks.is_empty() {
-                    ui.separator();
-                    ui.label("No joint data recorded.");
-                } else {
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new("Per-Joint Peaks")
-                            .strong()
-                            .size(13.0),
-                    );
-                    ui.add_space(2.0);
-
-                    egui::ScrollArea::vertical()
-                        .max_height(300.0)
-                        .show(ui, |ui| {
-                            egui::Grid::new("sim_result_dialog_grid")
-                                .num_columns(6)
-                                .striped(true)
-                                .min_col_width(55.0)
-                                .show(ui, |ui| {
-                                    ui.strong("Joint");
-                                    ui.strong("Peak τ (N·m)");
-                                    ui.strong("θ@τ (deg)");
-                                    ui.strong("Peak ω (rad/s)");
-                                    ui.strong("θ@ω (deg)");
-                                    ui.strong("Role");
-                                    ui.end_row();
-
-                                    for jp in &result.joint_peaks {
-                                        ui.label(
-                                            egui::RichText::new(&jp.joint_name)
-                                                .monospace(),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "{:.3}",
-                                                jp.peak_torque
-                                            ))
-                                            .monospace(),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "{:.1}",
-                                                jp.peak_torque_angle.to_degrees()
-                                            ))
-                                            .monospace(),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "{:.3}",
-                                                jp.peak_velocity
-                                            ))
-                                            .monospace(),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "{:.1}",
-                                                jp.peak_velocity_angle.to_degrees()
-                                            ))
-                                            .monospace(),
-                                        );
-                                        let (role, color) = if jp.contributes {
-                                            (
-                                                "drive",
-                                                egui::Color32::from_rgb(80, 200, 80),
-                                            )
-                                        } else {
-                                            (
-                                                "hold",
-                                                egui::Color32::from_gray(130),
-                                            )
-                                        };
-                                        ui.colored_label(color, role);
-                                        ui.end_row();
-                                    }
-                                });
-                        });
-                }
-
-                ui.separator();
-                if ui.button("Close").clicked() {
-                    close_clicked = true;
-                }
-
-                // --- Graph plots (position / velocity / acceleration) ---
-                if !result.graph_data.time.is_empty() {
-                    ui.separator();
-                    ui.label(egui::RichText::new(
-                        format!("📈 {} — 1 ms resolution", result.graph_data.link_name)
-                    ).strong().size(13.0));
-                    ui.add_space(2.0);
-
-                    let gd = &result.graph_data;
-                    let n = gd.time.len();
-
-                    let to_points = |vals: &[f32]| -> egui_plot::PlotPoints {
-                        egui_plot::PlotPoints::new(
-                            (0..n)
-                                .map(|i| [gd.time[i] as f64 * 1000.0, vals[i] as f64])
-                                .collect::<Vec<_>>(),
-                        )
-                    };
-
-                    // Position
-                    ui.label(egui::RichText::new("Position (m)").strong());
-                    egui_plot::Plot::new("result_pos_plot")
-                        .height(150.0)
-                        .x_axis_label("Time (ms)")
-                        .legend(egui_plot::Legend::default())
-                        .show(ui, |plot_ui| {
-                            plot_ui.line(
-                                egui_plot::Line::new("X", to_points(&gd.pos_x))
-                                    .color(egui::Color32::from_rgb(255, 100, 100)),
-                            );
-                            plot_ui.line(
-                                egui_plot::Line::new("Y", to_points(&gd.pos_y))
-                                    .color(egui::Color32::from_rgb(100, 255, 100)),
-                            );
-                            plot_ui.line(
-                                egui_plot::Line::new("Z", to_points(&gd.pos_z))
-                                    .color(egui::Color32::from_rgb(100, 100, 255)),
-                            );
-                        });
-
-                    // Velocity
-                    ui.label(egui::RichText::new("Velocity (m/s)").strong());
-                    egui_plot::Plot::new("result_vel_plot")
-                        .height(150.0)
-                        .x_axis_label("Time (ms)")
-                        .legend(egui_plot::Legend::default())
-                        .show(ui, |plot_ui| {
-                            plot_ui.line(
-                                egui_plot::Line::new("X", to_points(&gd.vel_x))
-                                    .color(egui::Color32::from_rgb(255, 100, 100)),
-                            );
-                            plot_ui.line(
-                                egui_plot::Line::new("Y", to_points(&gd.vel_y))
-                                    .color(egui::Color32::from_rgb(100, 255, 100)),
-                            );
-                            plot_ui.line(
-                                egui_plot::Line::new("Z", to_points(&gd.vel_z))
-                                    .color(egui::Color32::from_rgb(100, 100, 255)),
-                            );
-                        });
-
-                    // Acceleration
-                    ui.label(egui::RichText::new("Acceleration (m/s²)").strong());
-                    egui_plot::Plot::new("result_acc_plot")
-                        .height(150.0)
-                        .x_axis_label("Time (ms)")
-                        .legend(egui_plot::Legend::default())
-                        .show(ui, |plot_ui| {
-                            plot_ui.line(
-                                egui_plot::Line::new("X", to_points(&gd.acc_x))
-                                    .color(egui::Color32::from_rgb(255, 100, 100)),
-                            );
-                            plot_ui.line(
-                                egui_plot::Line::new("Y", to_points(&gd.acc_y))
-                                    .color(egui::Color32::from_rgb(100, 255, 100)),
-                            );
-                            plot_ui.line(
-                                egui_plot::Line::new("Z", to_points(&gd.acc_z))
-                                    .color(egui::Color32::from_rgb(100, 100, 255)),
-                            );
-                        });
-                }
-                }); // ScrollArea
-            });
-
-        if !open || close_clicked {
-            self.show_sim_result_window = false;
-        }
-    }
-
-    /// Draw torque utilisation bars for jump sim: (joint_idx, ratio, contributes).
-    ///
-    /// Contributing joints show a coloured bar (green/yellow/red).
-    /// Hold joints are dimmed and labelled "hold".
-    fn draw_jump_utilisation_bars(&self, ui: &mut egui::Ui, utils: &[(usize, f64, bool)]) {
-        let available_width = ui.available_width().min(220.0);
-        let bar_height = 12.0;
-
-        for &(ji, util, contributes) in utils {
-            if let Some(ref model) = self.model {
-                if ji < model.joints.len() {
-                    let jname = &model.joints[ji].name;
-                    let name_short = if jname.len() > 10 {
-                        format!("{}\u{2026}", &jname[..9])
-                    } else {
-                        jname.clone()
-                    };
-
-                    ui.horizontal(|ui| {
-                        let label_color = if contributes {
-                            egui::Color32::from_gray(200)
-                        } else {
-                            egui::Color32::from_gray(100)
-                        };
-                        ui.label(
-                            egui::RichText::new(&name_short)
-                                .small()
-                                .monospace()
-                                .color(label_color),
-                        );
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::vec2(available_width, bar_height),
-                            egui::Sense::hover(),
-                        );
-                        let painter = ui.painter_at(rect);
-                        painter.rect_filled(
-                            rect,
-                            2.0,
-                            egui::Color32::from_gray(50),
-                        );
-                        let frac = (util as f32).clamp(0.0, 1.5);
-                        let color = if !contributes {
-                            // Hold joint: dim blue-grey
-                            egui::Color32::from_rgb(80, 100, 130)
-                        } else if util <= 0.7 {
-                            egui::Color32::from_rgb(80, 200, 80)
-                        } else if util <= 1.0 {
-                            egui::Color32::from_rgb(255, 200, 50)
-                        } else {
-                            egui::Color32::from_rgb(255, 60, 60)
-                        };
-                        let bar_w = (rect.width() * frac / 1.5).min(rect.width());
-                        let bar = egui::Rect::from_min_max(
-                            rect.min,
-                            egui::pos2(rect.min.x + bar_w, rect.max.y),
-                        );
-                        painter.rect_filled(bar, 2.0, color);
-                        let suffix = if contributes { "" } else { " hold" };
-                        ui.label(
-                            egui::RichText::new(format!("{:.0}%{}", util * 100.0, suffix))
-                                .small()
-                                .monospace()
-                                .color(label_color),
-                        );
-                    });
-                }
-            }
-        }
-    }
+    /// Placeholder retained for API compatibility — jump result UI was removed.
+    pub fn draw_sim_result_window(&mut self, _ctx: &egui::Context) {}
 
     /// Draw torque utilisation bars for a list of (joint_idx, ratio) pairs.
     fn draw_utilisation_bars(&self, ui: &mut egui::Ui, utils: &[(usize, f64)]) {
@@ -1126,10 +414,6 @@ impl ArticaraApp {
         if let Some(sim) = self.dynamics_sim.take() {
             if let Some(ref mut model) = self.model {
                 match sim {
-                    DynSim::Jump(js) => {
-                        model.joint_positions = js.saved_positions;
-                        model.base_transform = js.saved_base_transform;
-                    }
                     DynSim::Payload(ps) => {
                         model.joint_positions = ps.saved_positions;
                         model.base_transform = ps.saved_base_transform;
@@ -1250,51 +534,6 @@ impl ArticaraApp {
                 });
         }
 
-        // ===== Jump Height =====
-        if let Some(ref jump) = result.jump {
-            ui.separator();
-            egui::CollapsingHeader::new("🦘 Jump Estimate")
-                .default_open(true)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Max height:");
-                        ui.colored_label(
-                            egui::Color32::from_rgb(100, 180, 255),
-                            format!("{:.3} m", jump.max_height_m),
-                        );
-                    });
-                    ui.label(format!("Total energy: {:.2} J", jump.total_energy_j));
-                    ui.label(format!("Total mass: {:.2} kg", jump.total_mass_kg));
-
-                    egui::CollapsingHeader::new("Per-joint energy")
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            egui::Grid::new("jump_grid")
-                                .num_columns(2)
-                                .striped(true)
-                                .show(ui, |ui| {
-                                    ui.strong("Joint");
-                                    ui.strong("Energy");
-                                    ui.end_row();
-                                    for (name, energy) in &jump.per_joint_energy {
-                                        ui.label(name);
-                                        ui.label(format!("{:.3} J", energy));
-                                        ui.end_row();
-                                    }
-                                });
-                        });
-
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new(
-                            "⚠ Upper bound estimate. Assumes ideal energy transfer \
-                             and half joint range as extension stroke.",
-                        )
-                        .small()
-                        .weak(),
-                    );
-                });
-        }
     }
 
     fn draw_torque_bars(&self, ui: &mut egui::Ui, torques: &[dynamics::JointTorqueInfo]) {
@@ -1394,18 +633,9 @@ impl ArticaraApp {
 // Format:
 // ```toml
 // # Articara Sim Config
-// [jump]
-// body_link = "trunk"
-// ground_links = ["RL_foot", "FL_foot", "RR_foot", "FR_foot"]
-// launch_axes = [false, false, true]
-// speed = 1.0
-//
-// [jump.locked_joints]
-// RL_hip_joint = true
-// FL_hip_joint = true
-//
 // [payload]
 // ee_link = "arm"
+// speed = 1.0
 // ```
 
 use std::io::{BufRead, Write};
@@ -1413,20 +643,9 @@ use std::path::Path;
 
 /// Intermediate struct holding all sim config values.
 pub(super) struct SimConfig {
-    pub body_link: Option<String>,
-    pub ground_links: Vec<String>,
-    pub launch_axes: [bool; 3],
     pub speed: f32,
-    pub locked_joints: std::collections::HashSet<String>,
     pub ee_link: Option<String>,
-    pub extension_duration: Option<f32>,
-    pub enforce_torque_limits: bool,
-    pub enable_retract: bool,
-    /// PD position gain Kp.
-    pub pd_kp: f64,
-    /// PD derivative gain Kd.
-    pub pd_kd: f64,
-    /// Joint positions that define the starting (crouched) pose.
+    /// Joint positions that define the starting pose.
     pub start_pose: Vec<(String, f32)>,
 }
 
@@ -1442,61 +661,16 @@ pub(super) fn save_sim_config(app: &ArticaraApp, path: &Path) -> Result<(), Stri
     writeln!(f, "# Articara Sim Config").map_err(|e| format!("{e}"))?;
     writeln!(f).map_err(|e| format!("{e}"))?;
 
-    writeln!(f, "[jump]").map_err(|e| format!("{e}"))?;
-    if let Some(ref bl) = app.dynamics_body_link {
-        writeln!(f, "body_link = \"{}\"", bl).map_err(|e| format!("{e}"))?;
-    }
-    // ground_links as TOML array
-    let gl_str: Vec<String> = app
-        .dynamics_ground_links
-        .iter()
-        .map(|s| format!("\"{}\"", s))
-        .collect();
-    writeln!(f, "ground_links = [{}]", gl_str.join(", ")).map_err(|e| format!("{e}"))?;
-
-    let ax = app.dynamics_launch_axes;
-    writeln!(f, "launch_axes = [{}, {}, {}]", ax[0], ax[1], ax[2])
-        .map_err(|e| format!("{e}"))?;
+    writeln!(f, "[payload]").map_err(|e| format!("{e}"))?;
     writeln!(f, "speed = {}", app.dynamics_sim_speed).map_err(|e| format!("{e}"))?;
-
-    if let Some(dur) = app.dynamics_extension_duration {
-        writeln!(f, "extension_duration = {}", dur).map_err(|e| format!("{e}"))?;
-    }
-
-    if app.dynamics_enforce_torque_limits {
-        writeln!(f, "enforce_torque_limits = true").map_err(|e| format!("{e}"))?;
-    }
-
-    if app.dynamics_enable_retract {
-        writeln!(f, "enable_retract = true").map_err(|e| format!("{e}"))?;
-    }
-
-    writeln!(f, "pd_kp = {}", app.dynamics_pd_kp).map_err(|e| format!("{e}"))?;
-    writeln!(f, "pd_kd = {}", app.dynamics_pd_kd).map_err(|e| format!("{e}"))?;
-
-    if !app.dynamics_locked_joints.is_empty() {
-        writeln!(f).map_err(|e| format!("{e}"))?;
-        writeln!(f, "[jump.locked_joints]").map_err(|e| format!("{e}"))?;
-        let mut sorted: Vec<&String> = app.dynamics_locked_joints.iter().collect();
-        sorted.sort();
-        for name in sorted {
-            let key = toml_key(name);
-            writeln!(f, "{} = true", key).map_err(|e| format!("{e}"))?;
-        }
-    }
-
-    if app.dynamics_ee_link.is_some() {
-        writeln!(f).map_err(|e| format!("{e}"))?;
-        writeln!(f, "[payload]").map_err(|e| format!("{e}"))?;
-        if let Some(ref ee) = app.dynamics_ee_link {
-            writeln!(f, "ee_link = \"{}\"", ee).map_err(|e| format!("{e}"))?;
-        }
+    if let Some(ref ee) = app.dynamics_ee_link {
+        writeln!(f, "ee_link = \"{}\"", ee).map_err(|e| format!("{e}"))?;
     }
 
     // Save current joint positions as the starting pose
     if let Some(ref model) = app.model {
         writeln!(f).map_err(|e| format!("{e}"))?;
-        writeln!(f, "[jump.start_pose]").map_err(|e| format!("{e}"))?;
+        writeln!(f, "[start_pose]").map_err(|e| format!("{e}"))?;
         for (ji, joint) in model.joints.iter().enumerate() {
             if joint.joint_type == "fixed" {
                 continue;
@@ -1516,17 +690,8 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
     let reader = std::io::BufReader::new(file);
 
     let mut cfg = SimConfig {
-        body_link: None,
-        ground_links: Vec::new(),
-        launch_axes: [false, false, true],
         speed: 1.0,
-        locked_joints: std::collections::HashSet::new(),
         ee_link: None,
-        extension_duration: None,
-        enforce_torque_limits: false,
-        enable_retract: false,
-        pd_kp: 500.0,
-        pd_kd: 20.0,
         start_pose: Vec::new(),
     };
 
@@ -1539,20 +704,12 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
             continue;
         }
 
-        if line == "[jump]" {
-            section = SimSection::Jump;
-            continue;
-        }
-        if line == "[jump.locked_joints]" {
-            section = SimSection::LockedJoints;
-            continue;
-        }
-        if line == "[jump.start_pose]" {
-            section = SimSection::StartPose;
-            continue;
-        }
         if line == "[payload]" {
             section = SimSection::Payload;
+            continue;
+        }
+        if line == "[start_pose]" {
+            section = SimSection::StartPose;
             continue;
         }
         if line.starts_with('[') {
@@ -1562,63 +719,20 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
 
         if let Some((key, value)) = parse_kv(line) {
             match section {
-                SimSection::Jump => match key {
-                    "body_link" => {
-                        cfg.body_link = Some(strip_quotes(value).to_string());
-                    }
-                    "ground_links" => {
-                        cfg.ground_links = parse_string_array(value);
-                    }
-                    "launch_axes" => {
-                        if let Some(bools) = parse_bool_array(value) {
-                            if bools.len() == 3 {
-                                cfg.launch_axes = [bools[0], bools[1], bools[2]];
-                            }
-                        }
+                SimSection::Payload => match key {
+                    "ee_link" => {
+                        cfg.ee_link = Some(strip_quotes(value).to_string());
                     }
                     "speed" => {
                         if let Ok(v) = value.parse::<f32>() {
                             cfg.speed = v;
                         }
                     }
-                    "extension_duration" => {
-                        if let Ok(v) = value.parse::<f32>() {
-                            cfg.extension_duration = Some(v);
-                        }
-                    }
-                    "enforce_torque_limits" => {
-                        cfg.enforce_torque_limits =
-                            value == "true" || value == "1";
-                    }
-                    "enable_retract" => {
-                        cfg.enable_retract =
-                            value == "true" || value == "1";
-                    }
-                    "pd_kp" => {
-                        if let Ok(v) = value.parse::<f64>() {
-                            cfg.pd_kp = v;
-                        }
-                    }
-                    "pd_kd" => {
-                        if let Ok(v) = value.parse::<f64>() {
-                            cfg.pd_kd = v;
-                        }
-                    }
                     _ => {}
                 },
-                SimSection::LockedJoints => {
-                    if strip_quotes(value) == "true" {
-                        cfg.locked_joints.insert(key.to_string());
-                    }
-                }
                 SimSection::StartPose => {
                     if let Ok(v) = value.parse::<f32>() {
                         cfg.start_pose.push((key.to_string(), v));
-                    }
-                }
-                SimSection::Payload => {
-                    if key == "ee_link" {
-                        cfg.ee_link = Some(strip_quotes(value).to_string());
                     }
                 }
                 _ => {}
@@ -1631,17 +745,8 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
 
 /// Apply a loaded sim config to the app state.
 pub(super) fn apply_sim_config(app: &mut ArticaraApp, cfg: SimConfig) {
-    app.dynamics_body_link = cfg.body_link;
-    app.dynamics_ground_links = cfg.ground_links;
-    app.dynamics_launch_axes = cfg.launch_axes;
     app.dynamics_sim_speed = cfg.speed;
-    app.dynamics_locked_joints = cfg.locked_joints;
     app.dynamics_ee_link = cfg.ee_link;
-    app.dynamics_extension_duration = cfg.extension_duration;
-    app.dynamics_enforce_torque_limits = cfg.enforce_torque_limits;
-    app.dynamics_enable_retract = cfg.enable_retract;
-    app.dynamics_pd_kp = cfg.pd_kp;
-    app.dynamics_pd_kd = cfg.pd_kd;
 
     // Apply saved joint positions (start pose) to the model
     if !cfg.start_pose.is_empty() {
@@ -1656,8 +761,8 @@ pub(super) fn apply_sim_config(app: &mut ArticaraApp, cfg: SimConfig) {
 }
 
 impl ArticaraApp {
-    /// Dynamics graph window — now integrated into the result window.
-    /// Kept as a no-op for API compatibility.
+    /// Stub kept for API compatibility — graph window was removed with the
+    /// jump simulation.
     pub fn draw_dynamics_graph_window(&mut self, _ctx: &egui::Context) {}
 }
 
@@ -1666,8 +771,6 @@ impl ArticaraApp {
 #[derive(Clone, Copy, PartialEq)]
 enum SimSection {
     None,
-    Jump,
-    LockedJoints,
     StartPose,
     Payload,
     Unknown,
@@ -1703,24 +806,3 @@ fn strip_quotes(s: &str) -> &str {
         .unwrap_or(s.trim())
 }
 
-/// Parse `["a", "b", "c"]` into Vec<String>.
-fn parse_string_array(s: &str) -> Vec<String> {
-    let s = s.trim();
-    let inner = match s.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-        Some(i) => i,
-        None => return Vec::new(),
-    };
-    inner
-        .split(',')
-        .map(|p| strip_quotes(p).to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
-/// Parse `[true, false, true]` into Vec<bool>.
-fn parse_bool_array(s: &str) -> Option<Vec<bool>> {
-    let s = s.trim();
-    let inner = s.strip_prefix('[')?.strip_suffix(']')?;
-    let vals: Result<Vec<bool>, _> = inner.split(',').map(|p| p.trim().parse::<bool>()).collect();
-    vals.ok()
-}

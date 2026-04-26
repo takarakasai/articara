@@ -1350,18 +1350,9 @@ impl ArticaraApp {
         if self.ik_root_link.as_deref() == Some(old) {
             self.ik_root_link = Some(new.to_string());
         }
-        // Dynamics ground links
-        for gl in &mut self.dynamics_ground_links {
-            if gl == old {
-                *gl = new.to_string();
-            }
-        }
-        // Dynamics EE / body link
+        // Dynamics EE link
         if self.dynamics_ee_link.as_deref() == Some(old) {
             self.dynamics_ee_link = Some(new.to_string());
-        }
-        if self.dynamics_body_link.as_deref() == Some(old) {
-            self.dynamics_body_link = Some(new.to_string());
         }
     }
 }
