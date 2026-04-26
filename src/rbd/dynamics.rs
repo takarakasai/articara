@@ -1,22 +1,22 @@
-//! Core dynamics algorithms for rigid-body robots.
-//!
-//! Provides:
-//! - **Gravity torque computation**: static torque at each joint due to gravity.
-//! - **Descendant-link tree traversal** (used by torque computations).
-//! - **CRBA** (Composite Rigid Body Algorithm): joint-space inertia matrix M(q).
-//! - **RNEA** (Recursive Newton-Euler Algorithm): inverse dynamics / bias forces.
-//! - **Constrained forward dynamics**: solve q̈ with ground-contact constraints.
-//! - **Forward dynamics state & integrator**: semi-implicit Euler stepping.
-//!
-//! # Conventions
-//!
-//! All 6D spatial vectors use the **body-fixed** convention with ordering
-//! `[angular(3); linear(3)]` (Featherstone convention).
-//!
-//! The robot is assumed to have a **fixed base** (the URDF root link is
-//! rigidly attached to the world).  The floating-base extension (6 virtual
-//! DOFs) is *not* modelled — instead, the base translation is advanced as
-//! a rigid body driven by the net ground reaction force.
+/// Core dynamics algorithms for rigid-body robots.
+//
+/// Provides:
+// - **Gravity torque computation**: static torque at each joint due to gravity.
+// - **Descendant-link tree traversal** (used by torque computations).
+// - **CRBA** (Composite Rigid Body Algorithm): joint-space inertia matrix M(q).
+// - **RNEA** (Recursive Newton-Euler Algorithm): inverse dynamics / bias forces.
+// - **Constrained forward dynamics**: solve q̈ with ground-contact constraints.
+// - **Forward dynamics state & integrator**: semi-implicit Euler stepping.
+//
+/// # Conventions
+//
+// All 6D spatial vectors use the **body-fixed** convention with ordering
+// `[angular(3); linear(3)]` (Featherstone convention).
+//
+// The robot is assumed to have a **fixed base** (the URDF root link is
+// rigidly attached to the world).  The floating-base extension (6 virtual
+// DOFs) is *not* modelled — instead, the base translation is advanced as
+/// a rigid body driven by the net ground reaction force.
 
 use nalgebra as na;
 use std::collections::HashMap;
@@ -274,6 +274,32 @@ pub struct ForwardDynamicsState {
 }
 
 impl ForwardDynamicsState {
+        /// 現在のtrajectory/状態に基づくトルクベクトルを返す（MuJoCo等の外部制御用）
+        pub fn current_torque(&mut self, model: &mut RobotModel) -> Vec<f64> {
+            let n = model.joints.len();
+            let mut tau = vec![0.0; n];
+            let t = self.trajectory_time;
+            let mc = model.mc();
+            let (m_mat, _) = crba(model, &self.joint_order, mc);
+            let h = rnea_bias_with_mc(model, &self.joint_order, &self.joint_velocities, mc);
+            let mut a_pd = na::DVector::zeros(self.joint_order.len());
+            for (col, &ji) in self.joint_order.iter().enumerate() {
+                let q_cur = model.joint_positions[ji];
+                let qd_cur = self.joint_velocities.get(&ji).copied().unwrap_or(0.0);
+                let (q_des, qd_des, qdd_des): (f64, f64, f64) = if let Some(traj) = self.trajectory.get(&ji) {
+                    traj.evaluate(t)
+                } else {
+                    (q_cur, 0.0, 0.0)
+                };
+                a_pd[col] = qdd_des + self.kp * (q_des - q_cur) + self.kd * (qd_des - qd_cur);
+            }
+            // τ = M·a_pd + h
+            let tau_vec = &m_mat * a_pd + &h;
+            for (col, &ji) in self.joint_order.iter().enumerate() {
+                tau[ji] = tau_vec[col];
+            }
+            tau
+        }
     /// Create a new state from the current model configuration.
     ///
     /// Only joints that appear in `foot_chains` (i.e. leg joints) **and**

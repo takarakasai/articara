@@ -373,7 +373,7 @@ pub fn analyze(
 // ========== Simulation state machine ==========
 
 /// Phase of the jump animation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum JumpPhase {
     /// Joints are extending (push-off). Feet stay on ground.
     Extension,

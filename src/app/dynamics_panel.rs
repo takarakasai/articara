@@ -1,10 +1,36 @@
+#[cfg(feature = "mujoco")]
+impl ArticaraApp {
+    /// MuJoCo用のbase_posとground_plane設定をUI状態から取得
+    pub fn collect_mujoco_setup(&self) -> (Option<[f64; 3]>, Option<crate::mjcf::GroundPlaneCfg>) {
+        let base_pos = if self.mujoco_base_pos.iter().any(|&v| v != 0.0) {
+            Some([
+                self.mujoco_base_pos[0] as f64,
+                self.mujoco_base_pos[1] as f64,
+                self.mujoco_base_pos[2] as f64,
+            ])
+        } else {
+            None
+        };
+        let ground = if self.show_ground_plane {
+            Some(crate::mjcf::GroundPlaneCfg {
+                z: self.ground_z as f64,
+                half_size: self.ground_size as f64,
+                roll: self.ground_plane_roll as f64,
+                pitch: self.ground_plane_pitch as f64,
+            })
+        } else {
+            None
+        };
+        (base_pos, ground)
+    }
+}
 use eframe::egui;
 
 use super::ArticaraApp;
 use crate::dynamics::{self, StaticAnalysis, DynSim, JumpPhase, PayloadPhase};
 
 impl ArticaraApp {
-    pub(super) fn draw_dynamics_panel(&mut self, ui: &mut egui::Ui) {
+    pub fn draw_dynamics_panel(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("⚡ Dynamics Analysis")
             .default_open(false)
             .show(ui, |ui| {
@@ -451,36 +477,75 @@ impl ArticaraApp {
                         .on_hover_text("Start real-time MuJoCo physics simulation")
                         .clicked()
                     {
+                        let (base_pos, ground) = self.collect_mujoco_setup();
                         if let Some(ref model) = self.model {
-                            let base_pos = if self.mujoco_auto_base {
-                                None
-                            } else {
-                                Some([
-                                    self.mujoco_base_pos[0] as f64,
-                                    self.mujoco_base_pos[1] as f64,
-                                    self.mujoco_base_pos[2] as f64,
-                                ])
+                            let opts = crate::mjcf::MjcfExportOptions {
+                                base_pos,
+                                ground_plane: ground,
+                                add_actuators: false,
                             };
-                            // Embed a ground plane mirroring the viewport's
-                            // GroundPlane so the robot has a surface to land on.
-                            // Auto-show the visual ground if the user hadn't
-                            // enabled it; the same `ground_plane_auto` flag
-                            // makes Stop revert that change.
-                            if !self.show_ground_plane {
-                                self.show_ground_plane = true;
-                                self.ground_plane_auto = true;
-                            }
-                            let ground = Some(crate::mjcf::GroundPlaneCfg {
-                                z: self.ground_z as f64,
-                                half_size: self.ground_size as f64,
-                                roll: self.ground_plane_roll as f64,
-                                pitch: self.ground_plane_pitch as f64,
-                            });
-                            match crate::mujoco_sim::MujocoSim::new(model, base_pos, ground) {
-                                Ok(sim) => self.mujoco_sim = Some(sim),
+                            match crate::mujoco_sim::MujocoSim::new(model, opts) {
+                                Ok(sim) => {
+                                    self.mujoco_sim = Some(
+                                        crate::mujoco_sim::MujocoActiveSim::Plain(sim),
+                                    );
+                                }
                                 Err(e) => self.status_message = e,
                             }
                             self.dynamics_sim_paused = false;
+                        }
+                    }
+
+                    // MuJoCo ジャンプ (misarta CRBA/RNEA 計算トルク制御)
+                    #[cfg(feature = "mujoco")]
+                    {
+                        let can_jump_mj =
+                            !sim_active && !self.dynamics_ground_links.is_empty();
+                        if ui
+                            .add_enabled(can_jump_mj, egui::Button::new("🦘 MJ Jump"))
+                            .on_hover_text(
+                                "Plan a jump (FK sweep + Launch trajectory) and \
+                                 simulate it in MuJoCo. Control: misarta's full \
+                                 inverse-dynamics (CRBA mass matrix + RNEA bias) \
+                                 = computed-torque tracking.",
+                            )
+                            .clicked()
+                        {
+                            let (base_pos, ground) = self.collect_mujoco_setup();
+                            let ground_links = self.dynamics_ground_links.clone();
+                            let body_link = self.dynamics_body_link.clone();
+                            let speed = self.dynamics_sim_speed as f64;
+                            let locked = self.dynamics_locked_joints.clone();
+                            let ext_dur =
+                                self.dynamics_extension_duration.map(|d| d as f64);
+                            let kp = self.dynamics_pd_kp;
+                            let kd = self.dynamics_pd_kd;
+                            if let Some(ref mut model) = self.model {
+                                let base_xyz = base_pos.or_else(|| {
+                                    let t = model.base_transform.translation.vector;
+                                    Some([t.x, t.y, t.z])
+                                });
+                                match crate::mujoco_sim::MujocoMisartaJumpSim::new(
+                                    model,
+                                    &ground_links,
+                                    body_link.as_deref(),
+                                    speed,
+                                    &locked,
+                                    ext_dur,
+                                    kp,
+                                    kd,
+                                    base_xyz,
+                                    ground,
+                                ) {
+                                    Ok(sim) => {
+                                        self.mujoco_sim = Some(
+                                            crate::mujoco_sim::MujocoActiveSim::Jump(sim),
+                                        );
+                                        self.dynamics_sim_paused = true;
+                                    }
+                                    Err(e) => self.status_message = e,
+                                }
+                            }
                         }
                     }
                 });
@@ -550,6 +615,15 @@ impl ArticaraApp {
                     // Step buttons (only when paused)
                     if self.dynamics_sim_paused {
                         ui.horizontal(|ui| {
+                            // コマ戻し
+                            #[cfg(feature = "mujoco")]
+                            if ui.button("⏮ Step Back").on_hover_text("1フレーム戻す").clicked() {
+                                if let Some(crate::mujoco_sim::MujocoActiveSim::Jump(ref mut sim)) = self.mujoco_sim {
+                                    if let Some(ref mut model) = self.model {
+                                        sim.step_back(model);
+                                    }
+                                }
+                            }
                             ui.label("Step:");
                             for (label, dt) in [
                                 ("1ms",  0.001_f32),
@@ -562,6 +636,17 @@ impl ArticaraApp {
                                 {
                                     self.dynamics_step_dt = Some(dt);
                                 }
+                            }
+                            // --- 1x, 10x 再生 ---
+                            if ui.button("▶ 1x").on_hover_text("1倍速で1ステップ再生").clicked() {
+                                self.dynamics_sim_speed = 1.0;
+                                self.dynamics_sim_paused = false;
+                                self.dynamics_step_dt = Some(0.0); // 0.0で「1フレームだけ再生」等の判定に使う
+                            }
+                            if ui.button("▶ 10x").on_hover_text("10倍速で1ステップ再生").clicked() {
+                                self.dynamics_sim_speed = 10.0;
+                                self.dynamics_sim_paused = false;
+                                self.dynamics_step_dt = Some(0.0);
                             }
                         });
                     }
@@ -694,7 +779,7 @@ impl ArticaraApp {
     }
 
     /// Draw jump simulation result as a standalone egui::Window dialog.
-    pub(super) fn draw_sim_result_window(&mut self, ctx: &egui::Context) {
+    pub fn draw_sim_result_window(&mut self, ctx: &egui::Context) {
         if !self.show_sim_result_window {
             return;
         }
@@ -1058,6 +1143,8 @@ impl ArticaraApp {
                 mj_sim.restore(model);
             }
         }
+        #[cfg(not(feature = "mujoco"))]
+        let _ = ();
         self.dynamics_last_instant = None;
         // Auto-disable ground plane if we enabled it
         if self.ground_plane_auto {
@@ -1571,7 +1658,7 @@ pub(super) fn apply_sim_config(app: &mut ArticaraApp, cfg: SimConfig) {
 impl ArticaraApp {
     /// Dynamics graph window — now integrated into the result window.
     /// Kept as a no-op for API compatibility.
-    pub(super) fn draw_dynamics_graph_window(&mut self, _ctx: &egui::Context) {}
+    pub fn draw_dynamics_graph_window(&mut self, _ctx: &egui::Context) {}
 }
 
 // ───────── TOML helpers ─────────

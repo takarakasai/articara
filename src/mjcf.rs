@@ -304,14 +304,6 @@ fn parse_mjcf_bodies(
 
 // ========== Export ==========
 
-/// Export a RobotModel to MJCF XML string.
-///
-/// The root body is placed at `(0, 0, auto-z)` where `auto-z` lifts the
-/// kinematic chain just above the ground plane.
-pub fn export_mjcf(model: &RobotModel) -> String {
-    export_mjcf_with_base_pos(model, None, None)
-}
-
 /// World-frame ground plane to embed in exported MJCF (for MuJoCo sim).
 #[derive(Clone, Copy, Debug)]
 pub struct GroundPlaneCfg {
@@ -325,17 +317,38 @@ pub struct GroundPlaneCfg {
     pub pitch: f64,
 }
 
-/// Like [`export_mjcf`], but with an optional override for the floating-base
-/// initial position and an optional ground plane. When `base_pos` is `Some`,
-/// the root body is placed at that world-frame coordinate; otherwise the
-/// auto-lift heuristic is used. When `ground_plane` is `Some`, a `<geom
-/// type="plane">` is added to the worldbody so the simulation has a surface
-/// to collide with.
-pub fn export_mjcf_with_base_pos(
+/// Options controlling how a [`RobotModel`] is exported to MJCF XML.
+///
+/// All fields are optional / defaulted, so [`MjcfExportOptions::default()`]
+/// reproduces the legacy behaviour of [`export_mjcf`] (auto-lifted base, no
+/// ground plane, no actuators).
+#[derive(Default, Clone, Debug)]
+pub struct MjcfExportOptions {
+    /// Override for the floating-base world position. `None` = auto-lift so
+    /// the lowest link sits just above z = 0.
+    pub base_pos: Option<[f64; 3]>,
+    /// Embed a collidable ground plane geom at the given configuration.
+    pub ground_plane: Option<GroundPlaneCfg>,
+    /// When true, emit `<motor>` actuators (named `motor_<joint>`) for each
+    /// non-fixed joint so torques can be applied via `data.ctrl`.
+    pub add_actuators: bool,
+}
+
+/// Export a RobotModel to MJCF XML string with default options.
+pub fn export_mjcf(model: &RobotModel) -> String {
+    export_mjcf_with_options(model, MjcfExportOptions::default())
+}
+
+/// Full-configurability MJCF export.
+pub fn export_mjcf_with_options(
     model: &RobotModel,
-    base_pos: Option<[f64; 3]>,
-    ground_plane: Option<GroundPlaneCfg>,
+    opts: MjcfExportOptions,
 ) -> String {
+    let MjcfExportOptions {
+        base_pos,
+        ground_plane,
+        add_actuators,
+    } = opts;
     let mut s = String::new();
     s.push_str(&format!(
         "<mujoco model=\"{}\">\n",
@@ -401,8 +414,47 @@ pub fn export_mjcf_with_base_pos(
     write_mjcf_body(&mut s, model, &model.root_link, 4, &geom_mesh_map, Some(root_pos));
 
     s.push_str("  </worldbody>\n");
+
+    if add_actuators {
+        write_mjcf_actuators(&mut s, model);
+    }
+
     s.push_str("</mujoco>\n");
     s
+}
+
+/// Emit one `<motor>` actuator per non-fixed joint, named `motor_<joint>`.
+///
+/// The motor's `gear` is 1, so writing the joint torque directly into
+/// `data.ctrl[motor_id]` applies that torque. `ctrlrange` mirrors the URDF
+/// `effort` limit when present; joints without an effort limit get an
+/// unbounded ctrl range.
+fn write_mjcf_actuators(s: &mut String, model: &RobotModel) {
+    let movable: Vec<&JointData> = model
+        .joints
+        .iter()
+        .filter(|j| j.joint_type != "fixed")
+        .collect();
+    if movable.is_empty() {
+        return;
+    }
+    s.push_str("\n  <actuator>\n");
+    for joint in movable {
+        if joint.effort > 0.0 {
+            s.push_str(&format!(
+                "    <motor name=\"motor_{name}\" joint=\"{name}\" gear=\"1\" ctrllimited=\"true\" ctrlrange=\"{lo} {hi}\"/>\n",
+                name = joint.name,
+                lo = -joint.effort,
+                hi = joint.effort,
+            ));
+        } else {
+            s.push_str(&format!(
+                "    <motor name=\"motor_{name}\" joint=\"{name}\" gear=\"1\"/>\n",
+                name = joint.name,
+            ));
+        }
+    }
+    s.push_str("  </actuator>\n");
 }
 
 /// Computes the minimum cumulative z translation in the kinematic chain

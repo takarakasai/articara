@@ -349,9 +349,9 @@ pub struct ArticaraApp {
     /// Whether to show the dynamics graph window.
     #[allow(dead_code)]
     show_dynamics_graph: bool,
-    /// Active MuJoCo simulation instance
+    /// Active MuJoCo simulation instance (plain real-time playback or jump).
     #[cfg(feature = "mujoco")]
-    mujoco_sim: Option<crate::mujoco_sim::MujocoSim>,
+    mujoco_sim: Option<crate::mujoco_sim::MujocoActiveSim>,
     /// When true, the MuJoCo sim auto-lifts the floating base just above z=0.
     /// When false, [`Self::mujoco_base_pos`] is used as the initial world position.
     #[cfg(feature = "mujoco")]
