@@ -1142,4 +1142,222 @@ impl ArticaraApp {
             );
         }
     }
+
+    /// Project a world-space point to screen coordinates within `rect`.
+    /// Returns `None` if the point is behind the camera or off-screen by a
+    /// margin. Used by the contact-force / external-force overlays so they
+    /// share a single conversion routine instead of inlining the math.
+    pub(super) fn project_world(
+        &self,
+        world: na::Point3<f32>,
+        rect: egui::Rect,
+        aspect: f32,
+    ) -> Option<egui::Pos2> {
+        let ndc = self.camera.project(&world, aspect)?;
+        Some(egui::pos2(
+            rect.left() + ndc.x * rect.width(),
+            rect.top() + ndc.y * rect.height(),
+        ))
+    }
+
+    /// Draw a 2D arrow from `from` to `to` in screen space, with an
+    /// arrowhead at the tip. Used by the contact-force / external-force
+    /// overlays which both end up projecting a 3D vector onto the screen
+    /// before drawing.
+    pub(super) fn draw_screen_arrow(
+        painter: &egui::Painter,
+        from: egui::Pos2,
+        to: egui::Pos2,
+        color: egui::Color32,
+        thickness: f32,
+    ) {
+        let v = to - from;
+        let len = v.length();
+        if len < 1e-3 {
+            return;
+        }
+        painter.line_segment([from, to], egui::Stroke::new(thickness, color));
+        let dir = v / len;
+        let perp = egui::vec2(-dir.y, dir.x);
+        let head = (8.0_f32).min(len * 0.4);
+        let h_back = to - dir * head;
+        painter.line_segment(
+            [to, h_back + perp * (head * 0.5)],
+            egui::Stroke::new(thickness, color),
+        );
+        painter.line_segment(
+            [to, h_back - perp * (head * 0.5)],
+            egui::Stroke::new(thickness, color),
+        );
+    }
+
+    /// Draw markers + force vectors for every contact reported by the active
+    /// MuJoCo sim. Suppressed when [`Self::show_contacts`] is false. Force
+    /// arrow length is logarithmically scaled so small grazing contacts
+    /// remain visible alongside heavy load-bearing ones.
+    #[cfg(feature = "mujoco")]
+    pub(super) fn draw_contact_markers(
+        &self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        aspect: f32,
+    ) {
+        if !self.show_contacts {
+            return;
+        }
+        let Some(sim) = self.mujoco_sim.as_ref() else {
+            return;
+        };
+        let contacts = sim.contacts();
+        if contacts.is_empty() {
+            return;
+        }
+
+        let painter = ui.painter();
+        // Calibrate arrow length so a 100 N force renders at ~60 px regardless
+        // of zoom. Logarithmic scale keeps both 1 N and 1 kN on the same plot.
+        let base_px = 60.0_f32;
+        let calib_n = 100.0_f32;
+        for c in &contacts {
+            let p = na::Point3::new(c.pos[0] as f32, c.pos[1] as f32, c.pos[2] as f32);
+            let Some(p_screen) = self.project_world(p, rect, aspect) else {
+                continue;
+            };
+            // Marker dot
+            let dot_color = egui::Color32::from_rgb(255, 200, 80);
+            painter.circle_filled(p_screen, 4.0, dot_color);
+
+            if c.force_mag < 1e-3 {
+                continue;
+            }
+            // Tip in world space — scale linear force vector logarithmically.
+            let log_scale =
+                (1.0 + (c.force_mag as f32 / calib_n)).ln() / (1.0_f32 + 1.0).ln();
+            let scale = log_scale * base_px;
+            // Use the world force direction; convert to a world-space delta
+            // small enough that the projected arrow respects perspective.
+            let dir = na::Vector3::new(
+                c.force_world[0] as f32,
+                c.force_world[1] as f32,
+                c.force_world[2] as f32,
+            );
+            let dnorm = dir.norm().max(1e-6);
+            let world_step = 0.05_f32; // 5 cm step in world space
+            let tip_world = p + (dir / dnorm) * world_step;
+            let Some(tip_screen) = self.project_world(tip_world, rect, aspect) else {
+                continue;
+            };
+            // Stretch screen-space tip vector by `scale` so heavy contacts
+            // get longer arrows than light ones while keeping the orientation.
+            let v = tip_screen - p_screen;
+            let v_len = v.length().max(1e-3);
+            let scaled_tip = p_screen + v * (scale / v_len);
+            let color = egui::Color32::from_rgb(255, 90, 90);
+            Self::draw_screen_arrow(painter, p_screen, scaled_tip, color, 2.0);
+            // Magnitude label near the tip.
+            let label = format!("{:.1} N", c.force_mag);
+            painter.text(
+                scaled_tip + egui::vec2(4.0, -10.0),
+                egui::Align2::LEFT_BOTTOM,
+                label,
+                egui::FontId::monospace(10.0),
+                color,
+            );
+        }
+    }
+
+    /// Draw active external-force pulses as world-space arrows anchored at
+    /// each pulse's link origin. Pulses with a non-zero torque are drawn as
+    /// a separate dashed arrow alongside the linear force arrow.
+    #[cfg(feature = "mujoco")]
+    pub(super) fn draw_force_pulse_markers(
+        &self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        aspect: f32,
+    ) {
+        let Some(sim) = self.mujoco_sim.as_ref() else {
+            return;
+        };
+        let pulses = sim.external_force_pulses();
+        if pulses.is_empty() {
+            return;
+        }
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
+        let transforms = model.compute_transforms();
+        let painter = ui.painter();
+
+        for pulse in pulses {
+            let Some(tf) = transforms.get(&pulse.link_name) else {
+                continue;
+            };
+            let origin = na::Point3::new(
+                tf.translation.x,
+                tf.translation.y,
+                tf.translation.z,
+            );
+            let Some(p_screen) = self.project_world(origin, rect, aspect) else {
+                continue;
+            };
+
+            let f = na::Vector3::new(
+                pulse.force[0] as f32,
+                pulse.force[1] as f32,
+                pulse.force[2] as f32,
+            );
+            let f_norm = f.norm();
+            // Force arrow (cyan) — fixed-length screen render so direction
+            // is always visible regardless of scale.
+            if f_norm > 1e-4 {
+                let world_step = 0.1_f32;
+                let tip_world = origin + (f / f_norm) * world_step;
+                if let Some(tip_screen) = self.project_world(tip_world, rect, aspect) {
+                    let v = tip_screen - p_screen;
+                    let v_len = v.length().max(1e-3);
+                    let len_px = 80.0_f32; // fixed visible length
+                    let scaled = p_screen + v * (len_px / v_len);
+                    let color = egui::Color32::from_rgb(80, 200, 255);
+                    Self::draw_screen_arrow(painter, p_screen, scaled, color, 2.5);
+                    let remaining = (pulse.duration - pulse.elapsed).max(0.0);
+                    painter.text(
+                        scaled + egui::vec2(4.0, -10.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        format!("{:.1} N · {:.2}s", f_norm, remaining),
+                        egui::FontId::monospace(10.0),
+                        color,
+                    );
+                }
+            }
+
+            // Torque arrow (magenta) drawn slightly offset so it doesn't
+            // overlap with the linear force arrow.
+            let m = na::Vector3::new(
+                pulse.torque[0] as f32,
+                pulse.torque[1] as f32,
+                pulse.torque[2] as f32,
+            );
+            let m_norm = m.norm();
+            if m_norm > 1e-4 {
+                let world_step = 0.1_f32;
+                let tip_world = origin + (m / m_norm) * world_step;
+                if let Some(tip_screen) = self.project_world(tip_world, rect, aspect) {
+                    let v = tip_screen - p_screen;
+                    let v_len = v.length().max(1e-3);
+                    let len_px = 60.0_f32;
+                    let scaled = p_screen + v * (len_px / v_len);
+                    let color = egui::Color32::from_rgb(220, 100, 255);
+                    Self::draw_screen_arrow(painter, p_screen, scaled, color, 2.0);
+                    painter.text(
+                        scaled + egui::vec2(4.0, 4.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("{:.2} N·m", m_norm),
+                        egui::FontId::monospace(10.0),
+                        color,
+                    );
+                }
+            }
+        }
+    }
 }

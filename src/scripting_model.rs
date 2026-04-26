@@ -831,7 +831,10 @@ impl ModelScriptEngine {
 
             // Step the sim by `n` physics frames, advancing the model along.
             // Returns the number of frames actually stepped, or 0 if there is
-            // no active sim / no model.
+            // no active sim / no model. `mj_step` from scripts always runs
+            // *without* actuator-limit clamping so test scripts can probe
+            // the unconstrained response — use the UI toggle to enforce
+            // limits on the interactive playback path.
             let s = Rc::clone(&mujoco_sim);
             let m = Rc::clone(&model);
             engine.register_fn("mj_step", move |n: i64| -> i64 {
@@ -841,7 +844,7 @@ impl ModelScriptEngine {
                     return 0;
                 };
                 let n = n.max(0) as u32;
-                sim.step_n_frames(robot, n);
+                sim.step_n_frames(robot, n, false);
                 n as i64
             });
 

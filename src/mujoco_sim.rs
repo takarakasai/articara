@@ -55,6 +55,31 @@ pub struct MujocoSim {
     /// `apply_external_force` so each Play / pulse gets a fresh observation
     /// window. Use [`Self::reset_peaks`] to clear manually.
     peaks: Vec<JointPeak>,
+    /// Latest commanded torques per joint, populated by `apply_controller`
+    /// each tick and read by `record_trace` to fill the τ column of the
+    /// time-series plot. Indexed by RobotModel joint index; non-controlled
+    /// (fixed) joints stay at 0.
+    last_tau: Vec<f64>,
+    /// Recent (q, q̇, τ) samples per joint for the timeline plot in the UI.
+    /// Bounded ring buffer; the newest entry is at the back. Reset together
+    /// with `peaks` so the chart shows only the response to the latest
+    /// command. See [`Self::trace`] for the access API.
+    trace: VecDeque<TraceFrame>,
+    /// Cap on trace length (`~10s` of history at the default 2 ms timestep).
+    trace_max: usize,
+}
+
+/// One sample in the time-series ring buffer.
+///
+/// `q`, `qvel`, and `tau` are aligned with the [`RobotModel`] joint order,
+/// padded to the same length. `time` is MuJoCo's simulation clock at the
+/// instant the sample was captured (i.e. *after* the physics step).
+#[derive(Clone, Debug)]
+pub struct TraceFrame {
+    pub time: f64,
+    pub q: Vec<f64>,
+    pub qvel: Vec<f64>,
+    pub tau: Vec<f64>,
 }
 
 /// Running peak observations for a single joint, accumulated tick-by-tick.
@@ -77,6 +102,20 @@ struct ActiveTransition {
     traj: misarta::trajectory::PoseTransition<f64>,
     /// Sim-time elapsed since the transition started.
     elapsed: f64,
+}
+
+/// One contact between geoms reported by MuJoCo, in world frame.
+///
+/// `pos` is the contact point. `force_mag` is the magnitude of the linear
+/// contact force (N) and `force_world` is the linear part rotated into world
+/// coordinates so the UI can draw it directly.
+#[derive(Clone, Debug)]
+pub struct ContactInfo {
+    pub pos: [f64; 3],
+    /// Magnitude of the linear contact force (N).
+    pub force_mag: f64,
+    /// Linear contact force expressed in world coordinates (N).
+    pub force_world: [f64; 3],
 }
 
 /// Time-bounded external wrench applied to a single body.
@@ -186,7 +225,20 @@ impl MujocoSim {
             transition: None,
             force_pulses: Vec::new(),
             peaks: vec![JointPeak::default(); robot.joints.len()],
+            last_tau: vec![0.0; robot.joints.len()],
+            trace: VecDeque::new(),
+            trace_max: 5000,
         })
+    }
+
+    /// Read-only view of the time-series ring buffer (oldest → newest).
+    pub fn trace(&self) -> impl Iterator<Item = &TraceFrame> {
+        self.trace.iter()
+    }
+
+    /// Total samples currently stored in the trace.
+    pub fn trace_len(&self) -> usize {
+        self.trace.len()
     }
 
     /// Read-only access to the per-joint peak observations.
@@ -194,12 +246,14 @@ impl MujocoSim {
         &self.peaks
     }
 
-    /// Clear the per-joint peak observations to zero. Called automatically at
-    /// the start of every pose transition and external-force pulse.
+    /// Clear the per-joint peak observations and the time-series trace.
+    /// Called automatically at the start of every pose transition and
+    /// external-force pulse so the plot resets to the new command's response.
     pub fn reset_peaks(&mut self) {
         for p in self.peaks.iter_mut() {
             *p = JointPeak::default();
         }
+        self.trace.clear();
     }
 
     /// Apply a world-frame force / torque to `link_name` for `duration`
@@ -323,7 +377,14 @@ impl MujocoSim {
     /// Compute and write each motor's `ctrl` (= applied torque) for the
     /// upcoming physics tick, based on the per-joint mode + gains in `robot`
     /// and the controller targets stored on `self`.
-    fn apply_controller(&mut self, robot: &RobotModel) {
+    ///
+    /// When `enforce_limits` is true the commanded torque is clamped to the
+    /// joint's `effort` (τmax / Fmax) and a damping term is folded in once
+    /// the velocity exceeds `joint.velocity` (ωmax / vmax). The damping
+    /// follows `τ ← τ - kv·(qd - qd_max·sign(qd))` for the over-speed region
+    /// so the motor smoothly bleeds energy instead of clipping abruptly. The
+    /// flag mirrors the dynamics-panel `⛔ Limits` checkbox.
+    fn apply_controller(&mut self, robot: &RobotModel, enforce_limits: bool) {
         for (ji, joint) in robot.joints.iter().enumerate() {
             if joint.joint_type == "fixed" {
                 continue;
@@ -341,20 +402,53 @@ impl MujocoSim {
                 None => continue,
             };
 
-            let tau = match joint.actuator_mode {
+            let mut tau = match joint.actuator_mode {
                 ActuatorMode::Position => {
                     let q_target = self.position_targets.get(ji).copied().unwrap_or(q);
                     joint.actuator_kp * (q_target - q)
                         + joint.actuator_kv * (0.0 - qd)
                 }
                 ActuatorMode::Velocity => {
-                    let qd_target = self.velocity_targets.get(ji).copied().unwrap_or(0.0);
+                    let mut qd_target =
+                        self.velocity_targets.get(ji).copied().unwrap_or(0.0);
+                    if enforce_limits && joint.velocity > 0.0 {
+                        // Clamp the velocity reference to the joint's rated
+                        // q̇max so the controller doesn't ask for an
+                        // unreachable speed.
+                        qd_target = qd_target.clamp(-joint.velocity, joint.velocity);
+                    }
                     joint.actuator_kv * (qd_target - qd)
                 }
                 ActuatorMode::Torque => {
                     self.torque_targets.get(ji).copied().unwrap_or(0.0)
                 }
             };
+
+            if enforce_limits {
+                // Velocity-saturation back-off: when |q̇| has already exceeded
+                // q̇max, add a braking torque proportional to the overspeed so
+                // the joint can't keep accelerating past the rated velocity
+                // even if the user commands more. Without this, a torque-mode
+                // command would simply blow through the speed limit.
+                if joint.velocity > 0.0 {
+                    let qd_lim = joint.velocity;
+                    let overspeed = if qd > qd_lim {
+                        qd - qd_lim
+                    } else if qd < -qd_lim {
+                        qd + qd_lim
+                    } else {
+                        0.0
+                    };
+                    if overspeed != 0.0 {
+                        tau -= joint.actuator_kv.max(1.0) * overspeed;
+                    }
+                }
+                // Hard torque clip — Final-line-of-defence so the motor never
+                // commands more than the rated τmax / Fmax.
+                if joint.effort > 0.0 {
+                    tau = tau.clamp(-joint.effort, joint.effort);
+                }
+            }
 
             // Write to the motor actuator's ctrl slot.
             let actuator_name = format!("motor_{}", joint.name);
@@ -382,7 +476,43 @@ impl MujocoSim {
                     peak.qvel_signed = qd;
                 }
             }
+            if let Some(slot) = self.last_tau.get_mut(ji) {
+                *slot = tau;
+            }
         }
+    }
+
+    /// Capture a sample of (q, q̇, τ) per joint after the most recent
+    /// physics step and append to the trace ring. Called from the step loop
+    /// once per tick so the resulting timeline matches the plot's expected
+    /// dt = `self.timestep()` cadence.
+    fn record_trace(&mut self, robot: &RobotModel) {
+        if self.trace.len() >= self.trace_max {
+            self.trace.pop_front();
+        }
+        let n = robot.joints.len();
+        let mut q = vec![0.0; n];
+        let mut qvel = vec![0.0; n];
+        for (ji, joint) in robot.joints.iter().enumerate() {
+            if joint.joint_type == "fixed" {
+                continue;
+            }
+            if let Some(info) = self.data.joint(&joint.name) {
+                let view = info.view(&self.data);
+                if !view.qpos.is_empty() {
+                    q[ji] = view.qpos[0];
+                }
+                if !view.qvel.is_empty() {
+                    qvel[ji] = view.qvel[0];
+                }
+            }
+        }
+        self.trace.push_back(TraceFrame {
+            time: self.data.ffi().time,
+            q,
+            qvel,
+            tau: self.last_tau.clone(),
+        });
     }
 
     /// Restore the robot's pre-sim pose (called when the user stops the sim).
@@ -396,6 +526,46 @@ impl MujocoSim {
     /// in [`Self::peaks`] by name.
     pub fn joint_index(&self, robot: &RobotModel, name: &str) -> Option<usize> {
         robot.joint_map.get(name).copied()
+    }
+
+    /// Snapshot the active contacts reported by MuJoCo this tick.
+    ///
+    /// Each `ContactInfo` carries the world-frame contact point, surface
+    /// normal, force magnitude, and full linear force vector. Returns an
+    /// empty Vec when no contacts are active or when the sim has not run a
+    /// step yet (since `contact_force` is only meaningful after `step`).
+    pub fn contacts(&self) -> Vec<ContactInfo> {
+        // mujoco-rs deprecated `contacts()` in favour of `contact()` but the
+        // 3.0.1 release we depend on still ships the old name; suppress the
+        // warning rather than chase a single API rename.
+        #[allow(deprecated)]
+        let raw = self.data.contacts();
+        if raw.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::with_capacity(raw.len());
+        for (i, c) in raw.iter().enumerate() {
+            // MuJoCo's contact frame is row-major: rows = (normal, t1, t2)
+            // expressed in world coordinates. Local force is (Fn, Ft1, Ft2, …);
+            // mapping back to world is fᵂ = Rᵀ · fᶜ where R has those rows.
+            let f_local = self.data.contact_force(i);
+            let n = [c.frame[0], c.frame[1], c.frame[2]];
+            let t1 = [c.frame[3], c.frame[4], c.frame[5]];
+            let t2 = [c.frame[6], c.frame[7], c.frame[8]];
+            // f_world = Fn·n + Ft1·t1 + Ft2·t2
+            let fw = [
+                f_local[0] * n[0] + f_local[1] * t1[0] + f_local[2] * t2[0],
+                f_local[0] * n[1] + f_local[1] * t1[1] + f_local[2] * t2[1],
+                f_local[0] * n[2] + f_local[1] * t1[2] + f_local[2] * t2[2],
+            ];
+            let mag = (fw[0] * fw[0] + fw[1] * fw[1] + fw[2] * fw[2]).sqrt();
+            out.push(ContactInfo {
+                pos: [c.pos[0], c.pos[1], c.pos[2]],
+                force_mag: mag,
+                force_world: fw,
+            });
+        }
+        out
     }
 
     /// MuJoCo's native physics timestep (s).
@@ -467,16 +637,22 @@ impl MujocoSim {
     }
 
     /// Step the simulation by `dt` seconds and sync the state back to `RobotModel`.
-    pub fn step(&mut self, robot: &mut RobotModel, dt: f64) {
+    ///
+    /// `enforce_limits` is forwarded straight to [`Self::apply_controller`]
+    /// — when true the commanded torques and velocity references are clamped
+    /// to each joint's `effort` and `velocity` ratings. Wire it from the UI
+    /// `⛔ Limits` checkbox.
+    pub fn step(&mut self, robot: &mut RobotModel, dt: f64, enforce_limits: bool) {
         self.time_accumulator += dt;
 
         let mj_dt = self.timestep();
         while self.time_accumulator >= mj_dt {
             self.advance_transition(mj_dt);
             self.advance_force_pulses(mj_dt);
-            self.apply_controller(robot);
+            self.apply_controller(robot, enforce_limits);
             self.snapshot();
             self.data.step();
+            self.record_trace(robot);
             self.time_accumulator -= mj_dt;
         }
 
@@ -486,14 +662,15 @@ impl MujocoSim {
     /// Advance the simulation by exactly `n` physics frames (each = `timestep()`
     /// seconds) and sync the state back. Each frame is pre-snapshotted so it
     /// can be reversed via [`Self::step_back_frames`].
-    pub fn step_n_frames(&mut self, robot: &mut RobotModel, n: u32) {
+    pub fn step_n_frames(&mut self, robot: &mut RobotModel, n: u32, enforce_limits: bool) {
         let mj_dt = self.timestep();
         for _ in 0..n {
             self.advance_transition(mj_dt);
             self.advance_force_pulses(mj_dt);
-            self.apply_controller(robot);
+            self.apply_controller(robot, enforce_limits);
             self.snapshot();
             self.data.step();
+            self.record_trace(robot);
         }
         // Drop any partial-frame accumulator so explicit frame stepping is exact.
         self.time_accumulator = 0.0;

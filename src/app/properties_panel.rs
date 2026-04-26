@@ -1844,6 +1844,7 @@ impl ArticaraApp {
                     .small()
                     .weak(),
                 );
+                let mut plot_clicked = false;
                 ui.horizontal(|ui| {
                     if ui
                         .small_button("↺ Reset peaks")
@@ -1852,7 +1853,19 @@ impl ArticaraApp {
                     {
                         reset_clicked = true;
                     }
+                    if ui
+                        .small_button("📈 Plot")
+                        .on_hover_text(
+                            "Open the time-series plot window for q / q̇ / τ.",
+                        )
+                        .clicked()
+                    {
+                        plot_clicked = true;
+                    }
                 });
+                if plot_clicked {
+                    self.show_peaks_plot = true;
+                }
                 egui::ScrollArea::vertical()
                     .max_height(280.0)
                     .show(ui, |ui| {
