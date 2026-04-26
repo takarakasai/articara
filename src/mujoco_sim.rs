@@ -73,7 +73,25 @@ impl MujocoSim {
             MjModel::from_xml_string(&xml)
                 .map_err(|e| format!("Failed to load MuJoCo model: {e}"))?,
         );
-        let data = MjData::new(Arc::clone(&model));
+        let mut data = MjData::new(Arc::clone(&model));
+
+        // Seed MuJoCo's qpos with the user's current joint angles so the sim
+        // starts in the same pose the editor is showing. The MJCF only carries
+        // structure; per-joint qpos defaults to 0 unless we write them here.
+        for (ji, joint) in robot.joints.iter().enumerate() {
+            if joint.joint_type == "fixed" {
+                continue;
+            }
+            if let Some(joint_info) = data.joint(&joint.name) {
+                let mut view = joint_info.view_mut(&mut data);
+                if !view.qpos.is_empty() {
+                    view.qpos[0] = robot.joint_positions[ji];
+                }
+            }
+        }
+        // Refresh xpos/xquat/qfrc_bias etc. from the seeded qpos so the very
+        // first sim_back can render the correct initial pose.
+        data.forward();
 
         Ok(Self {
             model,
