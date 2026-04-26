@@ -318,8 +318,10 @@ pub struct ArticaraApp {
     dynamics_sim_speed: f32,
     /// Whether the simulation is paused.
     dynamics_sim_paused: bool,
-    /// When `Some(dt)`, advance by exactly `dt` seconds then re-pause.
-    dynamics_step_dt: Option<f32>,
+    /// When `Some(n)`, advance the active MuJoCo sim by exactly `n` physics
+    /// frames (negative = step backward through the snapshot history) then
+    /// re-pause. Ignored when the active sim is not MuJoCo.
+    dynamics_step_frames: Option<i32>,
     /// Last frame instant for delta-time calculation.
     dynamics_last_instant: Option<std::time::Instant>,
     /// Active MuJoCo simulation instance.
@@ -531,7 +533,7 @@ impl ArticaraApp {
             dynamics_sim: None,
             dynamics_sim_speed: 1.0,
             dynamics_sim_paused: false,
-            dynamics_step_dt: None,
+            dynamics_step_frames: None,
             dynamics_last_instant: None,
             #[cfg(feature = "mujoco")]
             mujoco_sim: None,
@@ -640,49 +642,48 @@ impl ArticaraApp {
             None => {
                 // mujoco_sim is active but dynamics_sim is not — fall through to MuJoCo step
                 // Use a dummy reference; the MuJoCo branch returns before using `sim`.
-                // We still need to compute dt, so skip to the MuJoCo block below.
                 let now = std::time::Instant::now();
-                if self.dynamics_sim_paused && self.dynamics_step_dt.is_none() {
-                    self.dynamics_last_instant = Some(now);
-                    return;
-                }
-                let dt = if let Some(step_dt) = self.dynamics_step_dt.take() {
-                    self.dynamics_sim_paused = true;
-                    self.dynamics_last_instant = Some(now);
-                    step_dt
-                } else {
-                    let d = match self.dynamics_last_instant {
-                        Some(prev) => now.duration_since(prev).as_secs_f32().min(0.05),
-                        None => 0.016,
-                    };
-                    self.dynamics_last_instant = Some(now);
-                    d
-                };
                 #[cfg(feature = "mujoco")]
-                if let Some(mj_sim) = self.mujoco_sim.as_mut() {
-                    if let Some(ref mut model) = self.model {
-                        mj_sim.step(model, dt as f64);
+                {
+                    let frame_request = self.dynamics_step_frames.take();
+                    if let Some(mj_sim) = self.mujoco_sim.as_mut() {
+                        if let Some(ref mut model) = self.model {
+                            if let Some(n) = frame_request {
+                                self.dynamics_sim_paused = true;
+                                self.dynamics_last_instant = Some(now);
+                                if n > 0 {
+                                    mj_sim.step_n_frames(model, n as u32);
+                                } else if n < 0 {
+                                    mj_sim.step_back_frames(model, (-n) as u32);
+                                }
+                                return;
+                            }
+                            if self.dynamics_sim_paused {
+                                self.dynamics_last_instant = Some(now);
+                                return;
+                            }
+                            let dt = match self.dynamics_last_instant {
+                                Some(prev) => now.duration_since(prev).as_secs_f32().min(0.05),
+                                None => 0.016,
+                            };
+                            self.dynamics_last_instant = Some(now);
+                            mj_sim.step(model, dt as f64);
+                        }
                     }
                 }
                 return;
             }
         };
 
-        // Handle pause / step-once
-        if self.dynamics_sim_paused && self.dynamics_step_dt.is_none() {
-            // Still paused — skip physics but keep last_instant fresh
+        // Handle pause / step-once (payload sim path; frame stepping is MuJoCo-only)
+        if self.dynamics_sim_paused {
             self.dynamics_last_instant = Some(std::time::Instant::now());
             return;
         }
 
         // Compute delta-time
         let now = std::time::Instant::now();
-        let dt = if let Some(step_dt) = self.dynamics_step_dt.take() {
-            // Fixed step requested — use exact dt, then re-pause
-            self.dynamics_sim_paused = true;
-            self.dynamics_last_instant = Some(now);
-            step_dt
-        } else {
+        let dt = {
             let d = match self.dynamics_last_instant {
                 Some(prev) => now.duration_since(prev).as_secs_f32().min(0.05),
                 None => 0.016,
@@ -690,15 +691,6 @@ impl ArticaraApp {
             self.dynamics_last_instant = Some(now);
             d
         };
-        
-        // --- MuJoCo シミュレーションのステップ ---
-        #[cfg(feature = "mujoco")]
-        if let Some(mj_sim) = self.mujoco_sim.as_mut() {
-            if let Some(ref mut model) = self.model {
-                mj_sim.step(model, dt as f64);
-                return; // 組み込みシミュレーションと排他にする場合
-            }
-        }
 
         let still_running = match sim {
             dynamics::DynSim::Payload(ps) => {

@@ -211,10 +211,13 @@ impl ArticaraApp {
                             match crate::mujoco_sim::MujocoSim::new(model, opts) {
                                 Ok(sim) => {
                                     self.mujoco_sim = Some(sim);
+                                    // Start paused so the user can choose between
+                                    // frame stepping or ▶ Play before any time
+                                    // advances.
+                                    self.dynamics_sim_paused = true;
                                 }
                                 Err(e) => self.status_message = e,
                             }
-                            self.dynamics_sim_paused = false;
                         }
                     }
                 });
@@ -281,20 +284,58 @@ impl ArticaraApp {
                             }
                         }
                     });
-                    // Step buttons (only when paused)
-                    if self.dynamics_sim_paused {
+                    // Frame stepper — MuJoCo only (payload sim has no frame
+                    // history). Visible whenever MuJoCo is running; clicking a
+                    // step button while playing also pauses the sim.
+                    #[cfg(feature = "mujoco")]
+                    if self.mujoco_sim.is_some() {
+                        let history_len = self
+                            .mujoco_sim
+                            .as_ref()
+                            .map(|s| s.history_len())
+                            .unwrap_or(0);
+                        let mj_dt_ms = self
+                            .mujoco_sim
+                            .as_ref()
+                            .map(|s| s.timestep() * 1000.0)
+                            .unwrap_or(0.0);
+
+                        ui.label(format!(
+                            "Frame step  ({:.1} ms each, {history_len} buffered)",
+                            mj_dt_ms,
+                        ));
+                        // Backward row (disabled when there's no history yet).
                         ui.horizontal(|ui| {
-                            ui.label("Step:");
-                            for (label, dt) in [
-                                ("1ms",  0.001_f32),
-                                ("10ms", 0.01_f32),
-                                ("100ms", 0.1_f32),
-                            ] {
-                                if ui.button(format!("⏭ {}", label))
-                                    .on_hover_text(format!("Advance {} then pause", label))
+                            let can_back = history_len > 0;
+                            for n in [100u32, 10, 1] {
+                                if ui
+                                    .add_enabled(
+                                        can_back,
+                                        egui::Button::new(format!("⏪ -{n}")),
+                                    )
+                                    .on_hover_text(format!(
+                                        "Restore state from {n} frame(s) ago \
+                                         (auto-pauses if running)",
+                                    ))
                                     .clicked()
                                 {
-                                    self.dynamics_step_dt = Some(dt);
+                                    self.dynamics_sim_paused = true;
+                                    self.dynamics_step_frames = Some(-(n as i32));
+                                }
+                            }
+                        });
+                        // Forward row.
+                        ui.horizontal(|ui| {
+                            for n in [1u32, 10, 100] {
+                                if ui
+                                    .button(format!("⏩ +{n}"))
+                                    .on_hover_text(format!(
+                                        "Advance {n} frame(s) then pause",
+                                    ))
+                                    .clicked()
+                                {
+                                    self.dynamics_sim_paused = true;
+                                    self.dynamics_step_frames = Some(n as i32);
                                 }
                             }
                         });
