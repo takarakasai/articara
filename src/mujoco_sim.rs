@@ -50,6 +50,26 @@ pub struct MujocoSim {
     /// Each entry is decremented per physics tick; expired pulses are removed
     /// and the body's `xfrc_applied` slot is cleared.
     force_pulses: Vec<ExternalForcePulse>,
+    /// Running peak |τ| and |q̇| per joint (indexed by RobotModel joint idx).
+    /// Reset on construction and at each `start_transition` /
+    /// `apply_external_force` so each Play / pulse gets a fresh observation
+    /// window. Use [`Self::reset_peaks`] to clear manually.
+    peaks: Vec<JointPeak>,
+}
+
+/// Running peak observations for a single joint, accumulated tick-by-tick.
+///
+/// `tau` carries the applied generalised effort (N·m for revolute, N for
+/// prismatic). `qvel` carries the absolute velocity (rad/s or m/s). All
+/// values are non-negative magnitudes — the sample with the largest absolute
+/// magnitude is kept along with its signed origin in `tau_signed` /
+/// `qvel_signed` so the UI can show direction.
+#[derive(Clone, Debug, Default)]
+pub struct JointPeak {
+    pub tau_abs: f64,
+    pub tau_signed: f64,
+    pub qvel_abs: f64,
+    pub qvel_signed: f64,
 }
 
 /// Smooth pose transition currently being played out.
@@ -165,7 +185,21 @@ impl MujocoSim {
             torque_targets,
             transition: None,
             force_pulses: Vec::new(),
+            peaks: vec![JointPeak::default(); robot.joints.len()],
         })
+    }
+
+    /// Read-only access to the per-joint peak observations.
+    pub fn peaks(&self) -> &[JointPeak] {
+        &self.peaks
+    }
+
+    /// Clear the per-joint peak observations to zero. Called automatically at
+    /// the start of every pose transition and external-force pulse.
+    pub fn reset_peaks(&mut self) {
+        for p in self.peaks.iter_mut() {
+            *p = JointPeak::default();
+        }
     }
 
     /// Apply a world-frame force / torque to `link_name` for `duration`
@@ -187,6 +221,9 @@ impl MujocoSim {
             duration: duration.max(0.0),
             elapsed: 0.0,
         });
+        // Fresh peaks window for this pulse so the user can read the
+        // disturbance response without stale history.
+        self.reset_peaks();
     }
 
     /// Cancel any external force currently applied to `link_name`.
@@ -242,6 +279,10 @@ impl MujocoSim {
             ),
             elapsed: 0.0,
         });
+        // Each Play starts a new measurement window for the peaks panel /
+        // scripting API; previous-pose peaks would otherwise occlude the
+        // current command's response.
+        self.reset_peaks();
     }
 
     /// Whether a pose transition is currently playing.
@@ -323,6 +364,24 @@ impl MujocoSim {
                     view.ctrl[0] = tau;
                 }
             }
+
+            // Update the running peaks for this joint. We store the *commanded*
+            // torque (=motor ctrl) since for a default-gear motor that is the
+            // applied generalised force; UI labels it as N·m or N depending on
+            // the joint type. q̇ is read straight from MuJoCo state for the
+            // step we just observed.
+            if let Some(peak) = self.peaks.get_mut(ji) {
+                let tau_abs = tau.abs();
+                if tau_abs > peak.tau_abs {
+                    peak.tau_abs = tau_abs;
+                    peak.tau_signed = tau;
+                }
+                let qd_abs = qd.abs();
+                if qd_abs > peak.qvel_abs {
+                    peak.qvel_abs = qd_abs;
+                    peak.qvel_signed = qd;
+                }
+            }
         }
     }
 
@@ -330,6 +389,13 @@ impl MujocoSim {
     pub fn restore(&self, robot: &mut RobotModel) {
         robot.base_transform = self.saved_base_transform;
         robot.joint_positions = self.saved_joint_positions.clone();
+    }
+
+    /// Resolve a joint name to its [`RobotModel`] joint index, or `None` if
+    /// the joint does not exist. Used by scripting / UI to look up entries
+    /// in [`Self::peaks`] by name.
+    pub fn joint_index(&self, robot: &RobotModel, name: &str) -> Option<usize> {
+        robot.joint_map.get(name).copied()
     }
 
     /// MuJoCo's native physics timestep (s).

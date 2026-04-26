@@ -318,7 +318,21 @@ impl ArticaraApp {
 
                         #[cfg(feature = "scripting")]
                         if let Some(eng) = &mut self.script_engine {
-                            match eng.eval(&src) {
+                            // Hand the live MuJoCo sim to the engine for the
+                            // duration of the eval so scripts can drive it
+                            // directly. Cleared on the way out, regardless
+                            // of script success.
+                            #[cfg(feature = "mujoco")]
+                            eng.set_mujoco_sim(self.mujoco_sim.take());
+
+                            let eval_result = eng.eval(&src);
+
+                            #[cfg(feature = "mujoco")]
+                            {
+                                self.mujoco_sim = eng.take_mujoco_sim();
+                            }
+
+                            match eval_result {
                                 Ok(lines) => {
                                     for line in lines {
                                         self.script_output.push(ScriptLine::Output(line));
@@ -401,6 +415,36 @@ impl ArticaraApp {
             "    decompose_vhacd(link, ci, max_hulls) V-HACD with limit",
             "    decompose_spheres(link, ci)          Sphere tree",
             "    decompose_spheres(link, ci, max_n)   Sphere tree with limit",
+            "",
+            "  MuJoCo Sim:",
+            "    mj_start()                  Construct sim (default options)",
+            "    mj_stop()                   Destroy sim, restore pose",
+            "    mj_active()                 Whether a sim is running",
+            "    mj_step(n)                  Advance n physics frames",
+            "    mj_step_back(n)             Replay n frames backwards",
+            "    mj_timestep()               Native physics dt (s)",
+            "    mj_history_len()            Frames available for step_back",
+            "",
+            "  Pose / Force:",
+            "    play_pose(name)             Smooth transition (saved dur)",
+            "    play_pose(name, dur)        Transition with explicit duration",
+            "    transition_in_progress()    Bool",
+            "    transition_progress()       0..1 (-1 if idle)",
+            "    apply_force(link,fx,fy,fz,tx,ty,tz,dur)  World-frame pulse",
+            "    cancel_force(link)          Stop active pulse on link",
+            "",
+            "  Joint peaks (max |τ| / |q̇| since last reset):",
+            "    reset_peaks()               Clear all peaks",
+            "    peak_torque(joint)          N·m or N",
+            "    peak_velocity(joint)        rad/s or m/s",
+            "    peaks()                     Map: name → [tau_abs, qvel_abs]",
+            "",
+            "  Actuator gain / target (per joint):",
+            "    set_kp(joint, kp)           Position-mode P gain",
+            "    set_kv(joint, kv)           Position/Velocity-mode D gain",
+            "    set_position_target(joint, q)",
+            "    set_velocity_target(joint, qd)",
+            "    set_torque_target(joint, tau)",
             "",
             "  Math:  sin cos sqrt abs atan2 clamp to_deg to_rad PI()",
             "         min_f max_f dist(ax,ay,az,bx,by,bz)",
