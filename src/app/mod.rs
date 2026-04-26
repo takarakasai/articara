@@ -540,7 +540,7 @@ impl ArticaraApp {
             #[cfg(feature = "mujoco")]
             mujoco_auto_base: true,
             #[cfg(feature = "mujoco")]
-            mujoco_base_pos: [0.0, 0.0, 0.3],
+            mujoco_base_pos: [0.0, 0.0, 0.0],
             sim_config_path: String::new(),
             posture_path: String::new(),
             dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),
