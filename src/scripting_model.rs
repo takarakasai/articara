@@ -32,6 +32,9 @@ use std::rc::Rc;
 use crate::robot::RobotModel;
 use crate::rbd::model::{IkSolver, LoopClosure};
 
+#[cfg(feature = "mujoco")]
+use crate::mujoco_sim::MujocoSim;
+
 // ─────────────────────────────────────────────────────────────────────────
 //  ModelScriptEngine
 // ─────────────────────────────────────────────────────────────────────────
@@ -42,6 +45,12 @@ pub struct ModelScriptEngine {
     ast: Option<AST>,
     scope: Scope<'static>,
     model: Rc<RefCell<Option<RobotModel>>>,
+    /// MuJoCo sim handle borrowed from the host app for the duration of an
+    /// `eval()` call. Set via [`Self::set_mujoco_sim`] before `run()` and
+    /// taken back via [`Self::take_mujoco_sim`] afterwards. While present,
+    /// scripts can drive playback through `mj_step`, `play_pose`, etc.
+    #[cfg(feature = "mujoco")]
+    mujoco_sim: Rc<RefCell<Option<MujocoSim>>>,
     /// Captured print output lines.
     output_lines: Rc<RefCell<Vec<String>>>,
     last_error: Option<String>,
@@ -52,12 +61,21 @@ impl ModelScriptEngine {
     pub fn new() -> Self {
         let model: Rc<RefCell<Option<RobotModel>>> = Rc::new(RefCell::new(None));
         let output_lines: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-        let engine = Self::build_engine(Rc::clone(&model), Rc::clone(&output_lines));
+        #[cfg(feature = "mujoco")]
+        let mujoco_sim: Rc<RefCell<Option<MujocoSim>>> = Rc::new(RefCell::new(None));
+        let engine = Self::build_engine(
+            Rc::clone(&model),
+            Rc::clone(&output_lines),
+            #[cfg(feature = "mujoco")]
+            Rc::clone(&mujoco_sim),
+        );
         Self {
             engine,
             ast: None,
             scope: Scope::new(),
             model,
+            #[cfg(feature = "mujoco")]
+            mujoco_sim,
             output_lines,
             last_error: None,
         }
@@ -132,6 +150,23 @@ impl ModelScriptEngine {
         *self.model.borrow_mut() = Some(robot);
     }
 
+    /// Hand the active MuJoCo sim to the script engine for the duration of
+    /// the next `eval()`. The script can drive it via `mj_step`, `play_pose`,
+    /// `apply_force`, etc. The host should call [`Self::take_mujoco_sim`]
+    /// after the eval to put the (possibly mutated) sim back.
+    #[cfg(feature = "mujoco")]
+    pub fn set_mujoco_sim(&mut self, sim: Option<MujocoSim>) {
+        *self.mujoco_sim.borrow_mut() = sim;
+    }
+
+    /// Take the MuJoCo sim back out of the engine. Returns whatever the
+    /// script left in place (including `None` if it was stopped via
+    /// `mj_stop`).
+    #[cfg(feature = "mujoco")]
+    pub fn take_mujoco_sim(&mut self) -> Option<MujocoSim> {
+        self.mujoco_sim.borrow_mut().take()
+    }
+
     /// Clear scope (but keep model).
     #[allow(dead_code)]
     pub fn reset_scope(&mut self) {
@@ -143,6 +178,7 @@ impl ModelScriptEngine {
     fn build_engine(
         model: Rc<RefCell<Option<RobotModel>>>,
         output: Rc<RefCell<Vec<String>>>,
+        #[cfg(feature = "mujoco")] mujoco_sim: Rc<RefCell<Option<MujocoSim>>>,
     ) -> Engine {
         let mut engine = Engine::new();
 
@@ -743,6 +779,356 @@ impl ModelScriptEngine {
             decompose_collision_impl(robot, link, ci as usize, misarta::decompose::DecompositionMethod::PrimitiveFitDirect, None)
         });
 
+        // ────────────────────────────────────────────────────────────────
+        //  MuJoCo sim control
+        // ────────────────────────────────────────────────────────────────
+        //
+        // The host (script_console.rs) hands the live `MujocoSim` to the
+        // engine via `set_mujoco_sim` before each eval and takes it back
+        // afterwards, so all sim functions below act on the actual sim
+        // shown in the viewport. `mj_active()` returns false outside that
+        // window so scripts can check before issuing commands.
+
+        #[cfg(feature = "mujoco")]
+        {
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("mj_active", move || -> bool {
+                s.borrow().is_some()
+            });
+
+            // mj_start() — construct a sim from the current model with
+            // default options (auto-base lift, ground plane, no axis locks,
+            // motor actuators on every joint). Returns true on success.
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn("mj_start", move || -> bool {
+                let model_borrow = m.borrow();
+                let Some(robot) = model_borrow.as_ref() else {
+                    return false;
+                };
+                let opts = crate::mjcf::MjcfExportOptions {
+                    base_pos: None,
+                    ground_plane: Some(crate::mjcf::GroundPlaneCfg {
+                        z: 0.0,
+                        half_size: 2.0,
+                        roll: 0.0,
+                        pitch: 0.0,
+                    }),
+                    add_actuators: true,
+                    base_locked_axes: [false; 6],
+                };
+                match MujocoSim::new(robot, opts) {
+                    Ok(sim) => {
+                        *s.borrow_mut() = Some(sim);
+                        true
+                    }
+                    Err(e) => {
+                        log::warn!("mj_start: {e}");
+                        false
+                    }
+                }
+            });
+
+            // Step the sim by `n` physics frames, advancing the model along.
+            // Returns the number of frames actually stepped, or 0 if there is
+            // no active sim / no model.
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn("mj_step", move |n: i64| -> i64 {
+                let mut sim_borrow = s.borrow_mut();
+                let mut model_borrow = m.borrow_mut();
+                let (Some(sim), Some(robot)) = (sim_borrow.as_mut(), model_borrow.as_mut()) else {
+                    return 0;
+                };
+                let n = n.max(0) as u32;
+                sim.step_n_frames(robot, n);
+                n as i64
+            });
+
+            // Step backwards through the snapshot history.
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn("mj_step_back", move |n: i64| -> i64 {
+                let mut sim_borrow = s.borrow_mut();
+                let mut model_borrow = m.borrow_mut();
+                let (Some(sim), Some(robot)) = (sim_borrow.as_mut(), model_borrow.as_mut()) else {
+                    return 0;
+                };
+                let n = n.max(0) as u32;
+                sim.step_back_frames(robot, n);
+                n as i64
+            });
+
+            // Native physics timestep (s).
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("mj_timestep", move || -> f64 {
+                s.borrow().as_ref().map(|x| x.timestep()).unwrap_or(0.0)
+            });
+
+            // History buffer length (number of frames available for backward stepping).
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("mj_history_len", move || -> i64 {
+                s.borrow().as_ref().map(|x| x.history_len() as i64).unwrap_or(0)
+            });
+
+            // Stop the sim and restore the pre-sim pose. Returns true if a
+            // sim was running.
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn("mj_stop", move || -> bool {
+                let mut sim_borrow = s.borrow_mut();
+                let Some(sim) = sim_borrow.as_ref() else {
+                    return false;
+                };
+                if let Some(robot) = m.borrow_mut().as_mut() {
+                    sim.restore(robot);
+                }
+                *sim_borrow = None;
+                true
+            });
+
+            // Start a smooth pose transition by name (uses the pose's stored
+            // duration / kind). Returns true on success.
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn("play_pose", move |name: &str| -> bool {
+                let mut sim_borrow = s.borrow_mut();
+                let model_borrow = m.borrow();
+                let (Some(sim), Some(robot)) = (sim_borrow.as_mut(), model_borrow.as_ref()) else {
+                    return false;
+                };
+                let Some(pose) = robot.poses.iter().find(|p| p.name == name) else {
+                    return false;
+                };
+                let q = pose.to_vector(robot, &robot.joint_positions);
+                sim.start_transition(q, pose.duration, pose.kind);
+                true
+            });
+
+            // play_pose(name, duration) — explicit duration override.
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn("play_pose", move |name: &str, duration: f64| -> bool {
+                let mut sim_borrow = s.borrow_mut();
+                let model_borrow = m.borrow();
+                let (Some(sim), Some(robot)) = (sim_borrow.as_mut(), model_borrow.as_ref()) else {
+                    return false;
+                };
+                let Some(pose) = robot.poses.iter().find(|p| p.name == name) else {
+                    return false;
+                };
+                let q = pose.to_vector(robot, &robot.joint_positions);
+                sim.start_transition(q, duration, pose.kind);
+                true
+            });
+
+            // Whether a transition is currently playing.
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("transition_in_progress", move || -> bool {
+                s.borrow().as_ref().map(|x| x.transition_in_progress()).unwrap_or(false)
+            });
+
+            // Normalised transition progress (0..1), or -1 if idle.
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("transition_progress", move || -> f64 {
+                s.borrow()
+                    .as_ref()
+                    .and_then(|x| x.transition_progress())
+                    .map(|p| p as f64)
+                    .unwrap_or(-1.0)
+            });
+
+            // apply_force(link, fx, fy, fz, tx, ty, tz, duration_s)
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn(
+                "apply_force",
+                move |link: &str,
+                      fx: f64,
+                      fy: f64,
+                      fz: f64,
+                      tx: f64,
+                      ty: f64,
+                      tz: f64,
+                      dur: f64|
+                      -> bool {
+                    let mut sim_borrow = s.borrow_mut();
+                    let Some(sim) = sim_borrow.as_mut() else {
+                        return false;
+                    };
+                    sim.apply_external_force(link, [fx, fy, fz], [tx, ty, tz], dur);
+                    true
+                },
+            );
+
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("cancel_force", move |link: &str| -> bool {
+                let mut sim_borrow = s.borrow_mut();
+                let Some(sim) = sim_borrow.as_mut() else {
+                    return false;
+                };
+                sim.cancel_external_force(link)
+            });
+
+            // ── Joint peaks (since last reset / last play / last pulse) ──
+
+            // Reset all peaks to zero.
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("reset_peaks", move || -> bool {
+                let mut sim_borrow = s.borrow_mut();
+                let Some(sim) = sim_borrow.as_mut() else {
+                    return false;
+                };
+                sim.reset_peaks();
+                true
+            });
+
+            // peak_torque(joint_name) → max |τ| observed since last reset
+            // (N·m for revolute, N for prismatic). Returns 0 if not found.
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn("peak_torque", move |name: &str| -> f64 {
+                let sim_borrow = s.borrow();
+                let model_borrow = m.borrow();
+                let (Some(sim), Some(robot)) = (sim_borrow.as_ref(), model_borrow.as_ref()) else {
+                    return 0.0;
+                };
+                let Some(idx) = sim.joint_index(robot, name) else {
+                    return 0.0;
+                };
+                sim.peaks().get(idx).map(|p| p.tau_abs).unwrap_or(0.0)
+            });
+
+            // peak_velocity(joint_name) → max |q̇| observed since last reset
+            // (rad/s for revolute, m/s for prismatic). Returns 0 if not found.
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn("peak_velocity", move |name: &str| -> f64 {
+                let sim_borrow = s.borrow();
+                let model_borrow = m.borrow();
+                let (Some(sim), Some(robot)) = (sim_borrow.as_ref(), model_borrow.as_ref()) else {
+                    return 0.0;
+                };
+                let Some(idx) = sim.joint_index(robot, name) else {
+                    return 0.0;
+                };
+                sim.peaks().get(idx).map(|p| p.qvel_abs).unwrap_or(0.0)
+            });
+
+            // peaks() → Map of {joint_name: [tau_abs, qvel_abs]} for all
+            // movable joints. Convenient one-shot read for status print.
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn("peaks", move || -> rhai::Map {
+                let mut map = rhai::Map::new();
+                let sim_borrow = s.borrow();
+                let model_borrow = m.borrow();
+                let (Some(sim), Some(robot)) = (sim_borrow.as_ref(), model_borrow.as_ref()) else {
+                    return map;
+                };
+                let peaks = sim.peaks();
+                for (i, j) in robot.joints.iter().enumerate() {
+                    if j.joint_type == "fixed" {
+                        continue;
+                    }
+                    let p = peaks.get(i).cloned().unwrap_or_default();
+                    let arr: Array = vec![
+                        Dynamic::from_float(p.tau_abs),
+                        Dynamic::from_float(p.qvel_abs),
+                    ];
+                    map.insert(j.name.clone().into(), Dynamic::from(arr));
+                }
+                map
+            });
+
+            // ── Per-joint actuator gain / mode / target setters ──
+
+            let m = Rc::clone(&model);
+            engine.register_fn("set_kp", move |name: &str, kp: f64| -> bool {
+                let mut model_borrow = m.borrow_mut();
+                let Some(robot) = model_borrow.as_mut() else {
+                    return false;
+                };
+                let Some(&idx) = robot.joint_map.get(name) else {
+                    return false;
+                };
+                robot.joints[idx].actuator_kp = kp;
+                true
+            });
+
+            let m = Rc::clone(&model);
+            engine.register_fn("set_kv", move |name: &str, kv: f64| -> bool {
+                let mut model_borrow = m.borrow_mut();
+                let Some(robot) = model_borrow.as_mut() else {
+                    return false;
+                };
+                let Some(&idx) = robot.joint_map.get(name) else {
+                    return false;
+                };
+                robot.joints[idx].actuator_kv = kv;
+                true
+            });
+
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn(
+                "set_position_target",
+                move |name: &str, target: f64| -> bool {
+                    let mut sim_borrow = s.borrow_mut();
+                    let model_borrow = m.borrow();
+                    let (Some(sim), Some(robot)) =
+                        (sim_borrow.as_mut(), model_borrow.as_ref())
+                    else {
+                        return false;
+                    };
+                    let Some(&idx) = robot.joint_map.get(name) else {
+                        return false;
+                    };
+                    sim.set_position_target(idx, target);
+                    true
+                },
+            );
+
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn(
+                "set_velocity_target",
+                move |name: &str, target: f64| -> bool {
+                    let mut sim_borrow = s.borrow_mut();
+                    let model_borrow = m.borrow();
+                    let (Some(sim), Some(robot)) =
+                        (sim_borrow.as_mut(), model_borrow.as_ref())
+                    else {
+                        return false;
+                    };
+                    let Some(&idx) = robot.joint_map.get(name) else {
+                        return false;
+                    };
+                    sim.set_velocity_target(idx, target);
+                    true
+                },
+            );
+
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn(
+                "set_torque_target",
+                move |name: &str, target: f64| -> bool {
+                    let mut sim_borrow = s.borrow_mut();
+                    let model_borrow = m.borrow();
+                    let (Some(sim), Some(robot)) =
+                        (sim_borrow.as_mut(), model_borrow.as_ref())
+                    else {
+                        return false;
+                    };
+                    let Some(&idx) = robot.joint_map.get(name) else {
+                        return false;
+                    };
+                    sim.set_torque_target(idx, target);
+                    true
+                },
+            );
+        }
+
         engine
     }
 }
@@ -948,6 +1334,13 @@ impl ModelScriptEngine {
             "export_urdf", "export_sdf", "export_mjcf",
             "reduce_mesh", "reduce_collision_mesh", "reduce_all_meshes",
             "decompose_vhacd", "decompose_spheres", "decompose_primitive",
+            "mj_active", "mj_start", "mj_stop", "mj_step", "mj_step_back",
+            "mj_timestep", "mj_history_len",
+            "play_pose", "transition_in_progress", "transition_progress",
+            "apply_force", "cancel_force",
+            "reset_peaks", "peak_torque", "peak_velocity", "peaks",
+            "set_kp", "set_kv",
+            "set_position_target", "set_velocity_target", "set_torque_target",
             "abs", "sqrt", "sin", "cos", "atan2",
             "min_f", "max_f", "clamp", "to_deg", "to_rad", "PI",
             "dist",

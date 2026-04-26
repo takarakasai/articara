@@ -1322,6 +1322,17 @@ impl ArticaraApp {
             }
         }
 
+        // ===== Joint Peaks — running max |τ|, |q̇| since last reset =====
+        // Sits directly under the Actuators panel because the two are read
+        // together: the user dials gains in Actuators and watches the peak
+        // τ / q̇ here to size the real motors / detect saturation. Peaks reset
+        // automatically when ▶ Play is hit on a pose or an external force
+        // pulse is applied so each command produces its own measurement window.
+        #[cfg(feature = "mujoco")]
+        if self.model.is_some() {
+            self.draw_joint_peaks_panel(ui);
+        }
+
         // ===== Named-pose registry — register / replay / delete =====
         // Done in its own scope so it can borrow `self` mutably (for the
         // MuJoCo sim handle) and `self.model` separately.
@@ -1766,6 +1777,132 @@ impl ArticaraApp {
                     }
                 }
             });
+    }
+
+    /// Draw the running max-|τ| / max-|q̇| table for the active MuJoCo sim.
+    ///
+    /// Displayed under the Actuators panel since it's the natural feedback
+    /// loop for tuning gains and sizing motors. Each row shows one movable
+    /// joint with the unit suffix selected by joint type (N·m / N for τ,
+    /// rad/s / m/s for q̇). The "↺ Reset" button manually clears the window;
+    /// the sim itself also resets the window on each ▶ Play / pulse so peak
+    /// readings only reflect the most recent command.
+    #[cfg(feature = "mujoco")]
+    fn draw_joint_peaks_panel(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        let mut reset_clicked = false;
+        // Snapshot peaks + joint metadata up-front so we don't borrow
+        // self.mujoco_sim while building the UI.
+        let peaks_snapshot: Vec<(String, String, f64, f64, f64, f64)> = match (
+            self.model.as_ref(),
+            self.mujoco_sim.as_ref(),
+        ) {
+            (Some(model), Some(sim)) => {
+                let peaks = sim.peaks();
+                model
+                    .joints
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, j)| j.joint_type != "fixed")
+                    .map(|(i, j)| {
+                        let p = peaks.get(i).cloned().unwrap_or_default();
+                        (
+                            j.name.clone(),
+                            j.joint_type.clone(),
+                            p.tau_abs,
+                            p.tau_signed,
+                            p.qvel_abs,
+                            p.qvel_signed,
+                        )
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+
+        egui::CollapsingHeader::new("📊 Joint Peaks")
+            .default_open(false)
+            .show(ui, |ui| {
+                if self.mujoco_sim.is_none() {
+                    ui.label(
+                        egui::RichText::new(
+                            "(start MuJoCo to record τ / q̇ peaks)",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    return;
+                }
+                if peaks_snapshot.is_empty() {
+                    ui.label("(no movable joints)");
+                    return;
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "Auto-resets on each ▶ Play / pulse. Suffix is N·m / rad/s for revolute, N / m/s for prismatic.",
+                    )
+                    .small()
+                    .weak(),
+                );
+                ui.horizontal(|ui| {
+                    if ui
+                        .small_button("↺ Reset peaks")
+                        .on_hover_text("Clear the running max values.")
+                        .clicked()
+                    {
+                        reset_clicked = true;
+                    }
+                });
+                egui::ScrollArea::vertical()
+                    .max_height(280.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("joint_peaks_grid")
+                            .striped(true)
+                            .num_columns(3)
+                            .min_col_width(60.0)
+                            .show(ui, |ui| {
+                                ui.strong("Joint");
+                                ui.strong("|τ|max");
+                                ui.strong("|q̇|max");
+                                ui.end_row();
+                                for (name, jt, tau_abs, tau_s, qd_abs, qd_s) in
+                                    &peaks_snapshot
+                                {
+                                    let is_prismatic = jt == "prismatic";
+                                    let tau_unit =
+                                        if is_prismatic { "N" } else { "N·m" };
+                                    let qd_unit =
+                                        if is_prismatic { "m/s" } else { "rad/s" };
+                                    ui.label(
+                                        egui::RichText::new(name).monospace().small(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{:>7.3} {} ({:+.3})",
+                                            tau_abs, tau_unit, tau_s,
+                                        ))
+                                        .monospace()
+                                        .small(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{:>7.3} {} ({:+.3})",
+                                            qd_abs, qd_unit, qd_s,
+                                        ))
+                                        .monospace()
+                                        .small(),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    });
+            });
+
+        if reset_clicked {
+            if let Some(ref mut sim) = self.mujoco_sim {
+                sim.reset_peaks();
+            }
+        }
     }
 
     /// Draw the Export dialog window (format + directory + export button).
