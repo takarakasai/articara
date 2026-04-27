@@ -225,9 +225,15 @@ impl ArticaraApp {
                     }
                 });
 
-                // --- MuJoCo floating-base initial position (only meaningful for MuJoCo sim) ---
+                // --- MuJoCo floating-base initial position + lock ---
+                // Wrapped in a collapsing header so users who only need the
+                // playback controls (Play / Pause / step) aren't forced to
+                // scroll past 6 axis checkboxes on every glance.
                 #[cfg(feature = "mujoco")]
-                {
+                egui::CollapsingHeader::new("🦿 Base setup")
+                    .default_open(false)
+                    .id_salt("dyn_base_setup")
+                    .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Base pos:");
                         ui.checkbox(&mut self.mujoco_auto_base, "Auto")
@@ -287,11 +293,16 @@ impl ArticaraApp {
                     })
                     .response
                     .on_hover_text("Lock rotation about world X / Y / Z");
-                }
+                });
 
                 // ── Sim-time visualisation / safety toggles (MuJoCo only) ──
+                // Same rationale as base setup — kept tucked away so the
+                // primary playback controls dominate the panel by default.
                 #[cfg(feature = "mujoco")]
-                {
+                egui::CollapsingHeader::new("🎛 Sim toggles")
+                    .default_open(false)
+                    .id_salt("dyn_sim_toggles")
+                    .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.show_contacts, "👣 Contacts")
                             .on_hover_text(
@@ -337,7 +348,7 @@ impl ArticaraApp {
                             );
                         });
                     }
-                }
+                });
 
                 // Playback controls
                 if sim_active {
