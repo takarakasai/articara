@@ -470,6 +470,11 @@ pub struct ArticaraApp {
     /// Which signal to display on the Joint Peaks plot.
     #[cfg(feature = "mujoco")]
     peaks_plot_metric: PeaksPlotMetric,
+    /// One-shot flag: when set, the next plot draw resets the zoom + pan
+    /// view to the data's auto-bounds. Cleared after the call so subsequent
+    /// frames retain the user's manipulated view.
+    #[cfg(feature = "mujoco")]
+    peaks_plot_reset_view: bool,
     /// File path for sim config save/load.
     sim_config_path: String,
     // --- Posture save/load ---
@@ -701,6 +706,8 @@ impl ArticaraApp {
             peaks_plot_joint: None,
             #[cfg(feature = "mujoco")]
             peaks_plot_metric: PeaksPlotMetric::Torque,
+            #[cfg(feature = "mujoco")]
+            peaks_plot_reset_view: false,
             sim_config_path: String::new(),
             posture_path: String::new(),
             dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),

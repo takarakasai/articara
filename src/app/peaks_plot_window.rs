@@ -9,6 +9,7 @@
 #![cfg(feature = "mujoco")]
 
 use eframe::egui;
+use egui::PointerButton;
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 
 use super::{ArticaraApp, PeaksPlotMetric};
@@ -27,6 +28,11 @@ impl ArticaraApp {
         let mut open = true;
         let mut metric = self.peaks_plot_metric;
         let mut selected_joint = self.peaks_plot_joint.clone();
+        // Capture the reset flag locally so the inner UI closure can clear
+        // it after triggering Plot::reset(); we flush back to self at the
+        // end of the function.
+        let mut reset_view = self.peaks_plot_reset_view;
+        let mut reset_clicked = false;
 
         // Snapshot trace + joint metadata up-front so the closure doesn't
         // borrow `self` while the plot widget runs.
@@ -159,6 +165,23 @@ impl ArticaraApp {
                                 }
                             }
                         });
+
+                    // Push the reset button to the right edge so it sits
+                    // out of the way until the user has zoomed in.
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if ui
+                                .button("⟲ Reset view")
+                                .on_hover_text(
+                                    "Reset zoom and pan to fit all samples.",
+                                )
+                                .clicked()
+                            {
+                                reset_clicked = true;
+                            }
+                        },
+                    );
                 });
 
                 if traces.is_empty()
@@ -180,30 +203,49 @@ impl ArticaraApp {
                     .unwrap_or("");
                 ui.label(
                     egui::RichText::new(format!(
-                        "x = sim time since last reset (s),  y in {unit}",
+                        "x = sim time since last reset (s),  y in {unit}  ·  scroll = zoom, L-drag = box zoom, R-drag = pan",
                     ))
                     .small()
                     .weak(),
                 );
 
-                Plot::new("peaks_plot")
+                let mut plot = Plot::new("peaks_plot")
                     .legend(Legend::default())
                     .x_axis_label("t [s]")
                     .y_axis_label(unit)
-                    .show(ui, |plot_ui| {
-                        for tr in &traces {
-                            let pts: PlotPoints = tr
-                                .samples
-                                .iter()
-                                .map(|(t, v)| [*t, *v])
-                                .collect();
-                            plot_ui.line(Line::new(tr.name.clone(), pts));
-                        }
-                    });
+                    // Wheel scroll → zoom about the cursor.
+                    .allow_zoom(true)
+                    .allow_scroll(true)
+                    // Left-drag = boxed (rectangle) zoom.
+                    .allow_boxed_zoom(true)
+                    .boxed_zoom_pointer_button(PointerButton::Primary)
+                    // Right-drag = pan. Only meaningful when the user has
+                    // zoomed past the auto-bounds — egui_plot just no-ops it
+                    // back to bounds when there's nothing to pan to.
+                    .allow_drag(true)
+                    .pan_pointer_button(PointerButton::Secondary);
+                if reset_clicked {
+                    plot = plot.reset();
+                    reset_view = false;
+                } else if reset_view {
+                    plot = plot.reset();
+                    reset_view = false;
+                }
+                plot.show(ui, |plot_ui| {
+                    for tr in &traces {
+                        let pts: PlotPoints = tr
+                            .samples
+                            .iter()
+                            .map(|(t, v)| [*t, *v])
+                            .collect();
+                        plot_ui.line(Line::new(tr.name.clone(), pts));
+                    }
+                });
             });
 
         self.peaks_plot_metric = metric;
         self.peaks_plot_joint = selected_joint;
+        self.peaks_plot_reset_view = reset_view;
         if !open {
             self.show_peaks_plot = false;
         }
