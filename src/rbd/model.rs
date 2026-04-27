@@ -2243,31 +2243,56 @@ impl RobotModel {
     }
 
     /// Try to load the `.misarta.toml` sidecar file next to `source_path`.
-    /// Returns `true` if a config was found and loaded.
-    pub fn load_sidecar_config(&mut self) -> bool {
-        let Some(ref src) = self.source_path else {
-            return false;
-        };
-        let toml_path = misarta::config::MisartaConfig::config_path_for(src);
+    /// Returns `Some(SidecarLoadReport)` when a config was found, parsed, and
+    /// applied; `None` when no sidecar exists.
+    pub fn load_sidecar_config(&mut self) -> Option<SidecarLoadReport> {
+        let src = self.source_path.as_ref()?.clone();
+        let toml_path = misarta::config::MisartaConfig::config_path_for(&src);
         if !toml_path.exists() {
-            return false;
+            return None;
         }
         match misarta::config::MisartaConfig::load(&toml_path) {
             Ok(cfg) => {
-                let n_act = cfg.actuator.len();
+                // Track which actuator entries failed to match a joint name —
+                // those silently dropped before, which made it look like the
+                // sidecar load did nothing when actually only the lookup failed.
+                let mut applied = Vec::new();
+                let mut unmatched = Vec::new();
+                for ac in &cfg.actuator {
+                    if self.joint_map.contains_key(&ac.joint_name) {
+                        applied.push(ac.joint_name.clone());
+                    } else {
+                        unmatched.push(ac.joint_name.clone());
+                    }
+                }
                 self.load_misarta_config(&cfg);
                 log::info!(
-                    "Loaded {} loop closure(s), {} pose(s), {} actuator setting(s) from {}",
+                    "Loaded {} loop closure(s), {} pose(s), {}/{} actuator setting(s) from {}",
                     self.loop_closures.len(),
                     self.poses.len(),
-                    n_act,
+                    applied.len(),
+                    cfg.actuator.len(),
                     toml_path.display()
                 );
-                true
+                if !unmatched.is_empty() {
+                    log::warn!(
+                        "{} actuator entry(ies) skipped (joint not found in model): {}",
+                        unmatched.len(),
+                        unmatched.join(", ")
+                    );
+                }
+                Some(SidecarLoadReport {
+                    path: toml_path,
+                    n_loop_closures: self.loop_closures.len(),
+                    n_poses: self.poses.len(),
+                    n_actuators_applied: applied.len(),
+                    n_actuators_total: cfg.actuator.len(),
+                    unmatched_actuators: unmatched,
+                })
             }
             Err(e) => {
                 log::warn!("Failed to load {}: {}", toml_path.display(), e);
-                false
+                None
             }
         }
     }
@@ -2282,6 +2307,20 @@ impl RobotModel {
         let toml_path = misarta::config::MisartaConfig::config_path_for(model_path);
         cfg.save(&toml_path)
     }
+}
+
+/// Summary of what [`RobotModel::load_sidecar_config`] applied. The UI surfaces
+/// this in the status bar so the user can confirm at a glance how many
+/// actuator entries actually reached `JointData` (and which were silently
+/// skipped because the joint name didn't match the model).
+#[derive(Debug, Clone)]
+pub struct SidecarLoadReport {
+    pub path: std::path::PathBuf,
+    pub n_loop_closures: usize,
+    pub n_poses: usize,
+    pub n_actuators_applied: usize,
+    pub n_actuators_total: usize,
+    pub unmatched_actuators: Vec<String>,
 }
 
 // ─── Conversion helpers ─────────────────────────────────────────────────────

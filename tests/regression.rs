@@ -2692,7 +2692,7 @@ mod test_closed_loop_ik {
 
         // load_sidecar_config looks for five_bar_parallel.misarta.toml next to the .sdf
         let loaded = model.load_sidecar_config();
-        assert!(loaded, "Expected .misarta.toml sidecar to be found and loaded");
+        assert!(loaded.is_some(), "Expected .misarta.toml sidecar to be found and loaded");
 
         // Should have exactly 1 loop closure
         assert_eq!(model.loop_closures.len(), 1);
@@ -2715,3 +2715,82 @@ mod test_closed_loop_ik {
         assert!(err < 0.01, "Loop closure error at q=0 should be near zero, got {}", err);
     }
 }
+
+/// Sidecar `.misarta.toml` round-trip — make sure mutated actuator settings
+/// (mode + Kp + Kv) survive a save / load cycle. This guards against the
+/// regression where loaded actuator entries appeared in the TOML but didn't
+/// reach `JointData` because the joint-name lookup failed.
+#[cfg(test)]
+mod test_sidecar {
+    use super::*;
+    use articara::rbd::model::ActuatorMode;
+    use articara::robot::RobotModel;
+
+    #[test]
+    fn actuator_settings_roundtrip_via_sidecar() {
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        let target_idx = model
+            .joints
+            .iter()
+            .position(|j| j.joint_type != "fixed")
+            .expect("fixture should have at least one movable joint");
+        let target_name = model.joints[target_idx].name.clone();
+
+        model.joints[target_idx].actuator_mode = ActuatorMode::Velocity;
+        model.joints[target_idx].actuator_kp = 123.0;
+        model.joints[target_idx].actuator_kv = 7.5;
+
+        let cfg = model.to_misarta_config();
+        let tmp = std::env::temp_dir().join("articara_actuator_roundtrip.misarta.toml");
+        cfg.save(&tmp).unwrap();
+
+        let mut model2 = RobotModel::from_file(&fixture_urdf()).unwrap();
+        let cfg2 = misarta::config::MisartaConfig::load(&tmp).unwrap();
+        model2.load_misarta_config(&cfg2);
+
+        let restored = &model2.joints[target_idx];
+        assert_eq!(restored.name, target_name);
+        assert_eq!(restored.actuator_mode, ActuatorMode::Velocity);
+        assert!((restored.actuator_kp - 123.0).abs() < 1e-9, "Kp not restored: got {}", restored.actuator_kp);
+        assert!((restored.actuator_kv - 7.5).abs() < 1e-9, "Kv not restored: got {}", restored.actuator_kv);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn actuator_load_via_load_sidecar_path() {
+        let urdf_src = fixture_urdf();
+        let tmp_dir = std::env::temp_dir().join("articara_sidecar_path_test");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let urdf_dst = tmp_dir.join("test_robot.urdf");
+        std::fs::copy(&urdf_src, &urdf_dst).unwrap();
+
+        let mut model = RobotModel::from_file(&urdf_dst).unwrap();
+        let target_idx = model
+            .joints
+            .iter()
+            .position(|j| j.joint_type != "fixed")
+            .unwrap();
+        model.joints[target_idx].actuator_mode = ActuatorMode::Torque;
+        model.joints[target_idx].actuator_kp = 999.0;
+        model.joints[target_idx].actuator_kv = 42.0;
+
+        model.save_sidecar_config(&urdf_dst).unwrap();
+
+        let mut model2 = RobotModel::from_file(&urdf_dst).unwrap();
+        let report = model2.load_sidecar_config();
+        let report = report.expect("load_sidecar_config should return Some after save");
+        assert!(report.n_actuators_total > 0, "saved sidecar should contain actuator entries");
+        assert_eq!(report.n_actuators_applied, report.n_actuators_total,
+            "all actuator entries should match the model: unmatched={:?}",
+            report.unmatched_actuators);
+        let restored = &model2.joints[target_idx];
+        assert_eq!(restored.actuator_mode, ActuatorMode::Torque,
+            "actuator mode not restored via load_sidecar_config");
+        assert!((restored.actuator_kp - 999.0).abs() < 1e-9);
+        assert!((restored.actuator_kv - 42.0).abs() < 1e-9);
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+}
+
