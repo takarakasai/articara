@@ -2178,7 +2178,8 @@ impl RobotModel {
         err.norm()
     }
 
-    /// Build a `MisartaConfig` from the current loop closures and named poses.
+    /// Build a `MisartaConfig` from the current loop closures, named poses,
+    /// and per-joint actuator settings (mode + Kp + Kv).
     pub fn to_misarta_config(&self) -> misarta::config::MisartaConfig {
         let mut cfg = misarta::config::MisartaConfig::new();
         for lc in &self.loop_closures {
@@ -2192,11 +2193,26 @@ impl RobotModel {
                 kind: p.kind,
             });
         }
+        // Persist actuator settings for every movable joint so re-loading
+        // restores the exact controller behaviour. Fixed joints have no
+        // actuator and are skipped.
+        for j in &self.joints {
+            if j.joint_type == "fixed" {
+                continue;
+            }
+            cfg.actuator.push(misarta::config::ActuatorConfig {
+                joint_name: j.name.clone(),
+                mode: actuator_mode_to_config(j.actuator_mode),
+                kp: j.actuator_kp,
+                kv: j.actuator_kv,
+            });
+        }
         cfg
     }
 
-    /// Load loop closures and poses from a `MisartaConfig`, replacing any
-    /// existing ones.
+    /// Load loop closures, poses, and actuator settings from a
+    /// `MisartaConfig`, replacing any existing ones (and updating per-joint
+    /// actuator fields by name match).
     pub fn load_misarta_config(&mut self, cfg: &misarta::config::MisartaConfig) {
         self.loop_closures = cfg
             .loop_closure
@@ -2213,6 +2229,17 @@ impl RobotModel {
                 kind: p.kind,
             })
             .collect();
+        // Restore actuator settings; joints not mentioned in the config keep
+        // their current values so partial sidecars don't blow away unrelated
+        // tuning.
+        for ac in &cfg.actuator {
+            if let Some(&ji) = self.joint_map.get(&ac.joint_name) {
+                self.joints[ji].actuator_mode =
+                    actuator_mode_from_config(ac.mode);
+                self.joints[ji].actuator_kp = ac.kp;
+                self.joints[ji].actuator_kv = ac.kv;
+            }
+        }
     }
 
     /// Try to load the `.misarta.toml` sidecar file next to `source_path`.
@@ -2227,11 +2254,13 @@ impl RobotModel {
         }
         match misarta::config::MisartaConfig::load(&toml_path) {
             Ok(cfg) => {
+                let n_act = cfg.actuator.len();
                 self.load_misarta_config(&cfg);
                 log::info!(
-                    "Loaded {} loop closure(s) and {} pose(s) from {}",
+                    "Loaded {} loop closure(s), {} pose(s), {} actuator setting(s) from {}",
                     self.loop_closures.len(),
                     self.poses.len(),
+                    n_act,
                     toml_path.display()
                 );
                 true
@@ -2256,6 +2285,26 @@ impl RobotModel {
 }
 
 // ─── Conversion helpers ─────────────────────────────────────────────────────
+
+/// Project the articara-side [`ActuatorMode`] onto the misarta config enum.
+/// Both share the same three variants; the conversion is a 1:1 mapping kept
+/// out-of-line so the misarta crate stays free of articara-specific imports.
+fn actuator_mode_to_config(m: ActuatorMode) -> misarta::config::ActuatorMode {
+    match m {
+        ActuatorMode::Position => misarta::config::ActuatorMode::Position,
+        ActuatorMode::Velocity => misarta::config::ActuatorMode::Velocity,
+        ActuatorMode::Torque => misarta::config::ActuatorMode::Torque,
+    }
+}
+
+/// Inverse of [`actuator_mode_to_config`].
+fn actuator_mode_from_config(m: misarta::config::ActuatorMode) -> ActuatorMode {
+    match m {
+        misarta::config::ActuatorMode::Position => ActuatorMode::Position,
+        misarta::config::ActuatorMode::Velocity => ActuatorMode::Velocity,
+        misarta::config::ActuatorMode::Torque => ActuatorMode::Torque,
+    }
+}
 
 /// Convert an articara `JointData.joint_type` string + axis to a misarta `JointType`.
 fn convert_joint_type(joint: &JointData) -> JointType<f64> {
