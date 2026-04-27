@@ -19,6 +19,19 @@ impl ArticaraApp {
 
         if let Some(model) = &mut self.model {
             if let Some(li) = self.selected_link {
+                // Wrap the link-properties block in a CollapsingHeader so it
+                // shares the visual chrome (▼/▶ icon, indent-line, body
+                // padding) of the Actuators / Peaks / Poses sections below
+                // and the user can clearly see where the section starts and
+                // ends. State is persisted by egui via `id_salt`.
+                let li_name_for_hdr = model.links[li].name.clone();
+                egui::CollapsingHeader::new(
+                    egui::RichText::new(format!("🔗 Link: {li_name_for_hdr}"))
+                        .heading(),
+                )
+                .id_salt("link_props_collapsing")
+                .default_open(true)
+                .show(ui, |ui| {
                 let link_name = model.links[li].name.clone();
 
                 // Sync rename buffer when selection changes
@@ -1037,10 +1050,21 @@ impl ArticaraApp {
                         ui.close();
                     }
                 });
+                }); // close link-properties CollapsingHeader::show closure
             }
 
             if let Some(ji) = self.selected_joint {
                 let joint_name = model.joints[ji].name.clone();
+                // Same CollapsingHeader treatment as the link section so the
+                // two top-level property blocks present consistently.
+                let ji_name_for_hdr = joint_name.clone();
+                egui::CollapsingHeader::new(
+                    egui::RichText::new(format!("⚙ Joint: {ji_name_for_hdr}"))
+                        .heading(),
+                )
+                .id_salt("joint_props_collapsing")
+                .default_open(true)
+                .show(ui, |ui| {
                 // Sync rename buffer when selection changes
                 if self.rename_joint_buf.is_empty() || !model.joint_map.contains_key(&self.rename_joint_buf) {
                     self.rename_joint_buf = joint_name.clone();
@@ -1207,6 +1231,7 @@ impl ArticaraApp {
                     model.rebuild_misarta_model();
                     props_edit_desc = Some(format!("Edit joint '{}'", joint_name));
                 }
+                }); // close joint-properties CollapsingHeader::show closure
             }
 
             if self.selected_link.is_none() && self.selected_joint.is_none() {
@@ -1359,8 +1384,6 @@ impl ArticaraApp {
         if let Some(desc) = props_edit_desc {
             self.mark_edit(&desc);
         }
-
-
     }
 
     /// Draw the named-pose registry section. Returns an undo description if
