@@ -746,9 +746,29 @@ impl ArticaraApp {
                 );
                 self.model = Some(model);
                 self.urdf_path_input = path.display().to_string();
-                // Load .misarta.toml sidecar if present
+                // Load .misarta.toml sidecar if present and surface what it
+                // applied so the user can confirm actuator/pose counts at a
+                // glance — env_logger defaults swallow log::info messages so
+                // the status bar is the only reliably-visible feedback.
                 if let Some(ref mut m) = self.model {
-                    m.load_sidecar_config();
+                    if let Some(report) = m.load_sidecar_config() {
+                        self.status_message = format!(
+                            "{}  ·  sidecar: {}/{} actuator(s), {} pose(s), {} loop(s){}",
+                            self.status_message,
+                            report.n_actuators_applied,
+                            report.n_actuators_total,
+                            report.n_poses,
+                            report.n_loop_closures,
+                            if report.unmatched_actuators.is_empty() {
+                                String::new()
+                            } else {
+                                format!(
+                                    "  ⚠ unmatched: {}",
+                                    report.unmatched_actuators.join(", ")
+                                )
+                            },
+                        );
+                    }
                 }
                 // Auto-set export format to match source
                 if let Some(fmt) = RobotFormat::detect(&path) {
