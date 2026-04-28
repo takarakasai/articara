@@ -101,6 +101,7 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
         misarta_cache: None,
         loop_closures: Vec::new(),
         poses: Vec::new(),
+        collision_pairs: Vec::new(),
     };
     model.rebuild_misarta_model();
     Ok(model)
@@ -436,8 +437,42 @@ pub fn export_mjcf_with_options(
         write_mjcf_actuators(&mut s, model);
     }
 
+    // Emit `<contact><exclude>` blocks for any link pairs the user has
+    // explicitly disabled in the collision-pair matrix. Pairs marked
+    // `enabled = true` are no-ops in MuJoCo (collide-by-default) and are
+    // skipped here.
+    write_mjcf_contact_excludes(&mut s, model);
+
     s.push_str("</mujoco>\n");
     s
+}
+
+/// Emit `<contact><exclude>` for every collision pair the user has marked
+/// as disabled. MuJoCo's default is "all geoms collide", so we only need to
+/// emit excludes — `enabled = true` pairs are implicit.
+fn write_mjcf_contact_excludes(s: &mut String, model: &RobotModel) {
+    let excluded: Vec<&crate::rbd::model::CollisionPair> = model
+        .collision_pairs
+        .iter()
+        .filter(|p| !p.enabled)
+        .filter(|p| {
+            // Only emit pairs where both links exist in the model — silently
+            // dropping orphans avoids confusing MuJoCo errors.
+            model.link_map.contains_key(&p.link_a)
+                && model.link_map.contains_key(&p.link_b)
+        })
+        .collect();
+    if excluded.is_empty() {
+        return;
+    }
+    s.push_str("\n  <contact>\n");
+    for p in excluded {
+        s.push_str(&format!(
+            "    <exclude body1=\"{}\" body2=\"{}\"/>\n",
+            p.link_a, p.link_b,
+        ));
+    }
+    s.push_str("  </contact>\n");
 }
 
 /// Emit one `<motor>` actuator per non-fixed joint, named `motor_<joint>`.

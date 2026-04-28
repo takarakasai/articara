@@ -206,6 +206,41 @@ pub struct RobotModel {
     /// name so renames don't break stored poses.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub poses: Vec<NamedPose>,
+    /// Per-link-pair collision overrides. Pairs are stored with `link_a <
+    /// link_b` (alphabetical) so the matrix UI / TOML stay symmetric and
+    /// diff-friendly. Default behaviour for unlisted pairs is "collide".
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub collision_pairs: Vec<CollisionPair>,
+}
+
+/// Per-link-pair collision setting (in-memory mirror of
+/// [`misarta::config::CollisionPairConfig`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollisionPair {
+    pub link_a: String,
+    pub link_b: String,
+    /// `true` = collide, `false` = excluded.
+    pub enabled: bool,
+}
+
+impl CollisionPair {
+    /// Build a normalised pair (link names sorted alphabetically) so equality
+    /// checks treat `(A, B)` and `(B, A)` the same.
+    pub fn new(a: impl Into<String>, b: impl Into<String>, enabled: bool) -> Self {
+        let (link_a, link_b) = {
+            let a: String = a.into();
+            let b: String = b.into();
+            if a <= b { (a, b) } else { (b, a) }
+        };
+        Self { link_a, link_b, enabled }
+    }
+
+    /// Whether this pair refers to the same two links as `(a, b)` ignoring
+    /// order.
+    pub fn matches(&self, a: &str, b: &str) -> bool {
+        (self.link_a == a && self.link_b == b)
+            || (self.link_a == b && self.link_b == a)
+    }
 }
 
 /// A user-registered joint-space pose with a display name.
@@ -2207,6 +2242,15 @@ impl RobotModel {
                 kv: j.actuator_kv,
             });
         }
+        // Persist per-link-pair collision overrides. Pairs are stored
+        // alphabetically so the TOML stays diff-friendly.
+        for cp in &self.collision_pairs {
+            cfg.collision_pair.push(misarta::config::CollisionPairConfig {
+                link_a: cp.link_a.clone(),
+                link_b: cp.link_b.clone(),
+                enabled: cp.enabled,
+            });
+        }
         cfg
     }
 
@@ -2240,6 +2284,14 @@ impl RobotModel {
                 self.joints[ji].actuator_kv = ac.kv;
             }
         }
+        // Restore collision pair overrides. We keep entries even when the
+        // referenced links are missing (the user might be mid-rename) so
+        // round-tripping doesn't silently drop them.
+        self.collision_pairs = cfg
+            .collision_pair
+            .iter()
+            .map(|cp| CollisionPair::new(cp.link_a.clone(), cp.link_b.clone(), cp.enabled))
+            .collect();
     }
 
     /// Try to load the `.misarta.toml` sidecar file next to `source_path`.

@@ -525,6 +525,8 @@ pub struct ArticaraApp {
     rename_link_buf: String,
     /// Edit buffer for renaming the currently selected joint.
     rename_joint_buf: String,
+    /// Whether the collision-pair matrix dialog is open.
+    show_collision_matrix: bool,
 }
 
 /// Whether a decompose task targets a visual or collision slot.
@@ -732,6 +734,7 @@ impl ArticaraApp {
             decompose_task: None,
             rename_link_buf: String::new(),
             rename_joint_buf: String::new(),
+            show_collision_matrix: false,
         }
     }
 
@@ -1078,6 +1081,7 @@ mod script_console;
 mod peaks_plot_window;
 #[cfg(feature = "mujoco")]
 mod sim_drag;
+mod collision_matrix;
 
 // Sentinel to mark the end of module-level code.
 // Everything below was moved to sub-modules.
@@ -1208,6 +1212,9 @@ impl eframe::App for ArticaraApp {
         // --- Joint Peaks time-series plot window ---
         #[cfg(feature = "mujoco")]
         self.draw_peaks_plot_window(&ctx);
+
+        // --- Collision pair matrix dialog ---
+        self.draw_collision_matrix_window(&ctx);
 
         // --- File dialogs ---
         self.process_file_dialogs(&ctx);
