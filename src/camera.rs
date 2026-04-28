@@ -35,6 +35,25 @@ impl OrbitCamera {
         na::Matrix4::look_at_rh(&self.eye(), &self.target, &na::Vector3::z())
     }
 
+    /// World-frame screen-right unit vector (i.e. the world direction that
+    /// maps to "+x on the rendered image"). Derived directly from the view
+    /// matrix's first row so it stays consistent with whatever look_at_rh
+    /// produced — useful for screen-plane IK projections, gizmo orientation,
+    /// etc. that need to match what the user actually sees.
+    pub fn world_right(&self) -> na::Vector3<f32> {
+        let view = self.view_matrix();
+        // The view matrix rotates world → camera. Its rows (in the upper-left
+        // 3×3 block) are the camera basis vectors expressed in world frame.
+        na::Vector3::new(view[(0, 0)], view[(0, 1)], view[(0, 2)])
+    }
+
+    /// World-frame screen-up unit vector (the world direction mapping to
+    /// "+y on the rendered image" — i.e. up on screen).
+    pub fn world_up_screen(&self) -> na::Vector3<f32> {
+        let view = self.view_matrix();
+        na::Vector3::new(view[(1, 0)], view[(1, 1)], view[(1, 2)])
+    }
+
     pub fn projection_matrix(&self, aspect: f32) -> na::Matrix4<f32> {
         na::Perspective3::new(aspect, self.fov_y, self.near, self.far).to_homogeneous()
     }
