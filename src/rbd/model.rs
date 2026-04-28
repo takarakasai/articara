@@ -1495,58 +1495,113 @@ impl RobotModel {
         root_link: Option<&str>,
         ee_offset_world: Option<&na::Vector3<f64>>,
     ) -> na::DMatrix<f64> {
+        // We want the Jacobian of `click_point` in world frame *with the
+        // IK-root pinned to its initial pose* (the same constraint the GUI
+        // re-applies via `base_transform` after each Δq). That isn't the
+        // same thing as the unconstrained relative Jacobian
+        // `J(ee) − J(base)`; pinning the base means we also need to undo
+        // the rigid-body twist that the unconstrained motion imparted at
+        // p_base. Working out the algebra for a single revolute joint θ
+        // with axis `ω` at world position `p_θ`:
+        //
+        //   v_constrained(p_click) = v_click − v_base − ω_base × (p_click − p_base)
+        //
+        // Splitting by where θ sits in the URDF tree (relative to the
+        // dragged EE link and the IK-root base link):
+        //
+        //   • θ upstream of EE only    →  v_constr = +ω × (p_click − p_θ)
+        //   • θ upstream of BASE only  →  v_constr = −ω × (p_click − p_θ)
+        //   • θ common ancestor        →  v_constr = 0
+        //   • θ neither                →  v_constr = 0
+        //
+        // The earlier implementation built `J_rel = J(ee) − J(base)` from
+        // misarta's relative Jacobian and tacked a uniform
+        // `ω × (click − p_ee)` lever-arm correction onto every column.
+        // That correction is right for the EE-upstream case but produces
+        // the wrong column (and wrong sign in many geometries) for
+        // BASE-upstream joints — the bug surfaced when picking RL_hip with
+        // ik_root=RL_foot, where every chain joint sits in the
+        // BASE-upstream branch. The dragged link then moved in the wrong
+        // direction. Computing each column from the case table above
+        // gives the correct constrained Jacobian and falls back to the
+        // standard tip-link Jacobian when ik_root = URDF root.
+        let n = chain.len();
+        if n == 0 {
+            return na::DMatrix::zeros(3, 0);
+        }
+
         let mc = self.mc();
         let q = mc.build_q(self);
+        let data = misarta::fk::forward_kinematics(&mc.model, &q);
+
         let ee_mi = mc.link_name_to_misarta_joint(ee_link).unwrap_or(0);
+        let base_mi = root_link
+            .and_then(|rl| mc.link_name_to_misarta_joint(rl))
+            .unwrap_or(0);
 
-        let full_jac: na::DMatrix<f64> = if let Some(rl) = root_link {
-            let base_mi = mc.link_name_to_misarta_joint(rl).unwrap_or(0);
-            if ee_mi > 0 && base_mi > 0 {
-                // Both non-root: standard relative Jacobian
-                misarta::jacobian::compute_relative_jacobian(&mc.model, &q, base_mi, ee_mi)
-            } else if ee_mi == 0 && base_mi > 0 {
-                // EE is URDF root: J_rel = J(root=0) - J(base) = -J(base)
-                -misarta::jacobian::compute_joint_jacobian(&mc.model, &q, base_mi)
-            } else if ee_mi > 0 {
-                // base is root: standard absolute Jacobian
-                misarta::jacobian::compute_joint_jacobian(&mc.model, &q, ee_mi)
-            } else {
-                // Both are root: zero
-                return na::DMatrix::zeros(3, chain.len());
-            }
-        } else if ee_mi > 0 {
-            misarta::jacobian::compute_joint_jacobian(&mc.model, &q, ee_mi)
+        // Click and base reference points, both in URDF-root frame. The
+        // result is rotated to world via `base_transform` at the end.
+        let r_base = self.base_transform.rotation.to_rotation_matrix();
+        let r_base_inv = r_base.transpose();
+        let p_ee_root = if ee_mi > 0 {
+            misarta::se3::translation(&data.oMi[ee_mi])
         } else {
-            return na::DMatrix::zeros(3, chain.len());
+            na::Vector3::zeros()
         };
+        let click_root: na::Vector3<f64> = match ee_offset_world {
+            Some(off_world) => p_ee_root + r_base_inv * off_world,
+            None => p_ee_root,
+        };
+        // (We don't need `p_base_root` separately — both branches operate
+        // on `click_root` only; see the case table.)
 
-        // misarta Jacobian is in URDF-root frame; rotate to world frame
-        let r = self.base_transform.rotation.to_rotation_matrix();
+        // Ancestor sets for fast "is θ on the EE/BASE path" lookups.
+        let ee_ancestors = ancestor_set(&mc.model, ee_mi);
+        let base_ancestors = ancestor_set(&mc.model, base_mi);
 
-        let mut jac = na::DMatrix::<f64>::zeros(3, chain.len());
+        let mut jac = na::DMatrix::<f64>::zeros(3, n);
         for (col, &ji) in chain.iter().enumerate() {
-            if let Some(&Some(mi)) = mc.a2m.get(ji) {
-                let vi = mc.model.q_idx[mi];
-                let v = na::Vector3::new(
-                    full_jac[(3, vi)],
-                    full_jac[(4, vi)],
-                    full_jac[(5, vi)],
-                );
-                let mut v_world = r * v;
-                // Apply offset correction: v_click = v_origin + ω × r
-                if let Some(offset) = ee_offset_world {
-                    let omega = na::Vector3::new(
-                        full_jac[(0, vi)],
-                        full_jac[(1, vi)],
-                        full_jac[(2, vi)],
-                    );
-                    let omega_world = r * omega;
-                    v_world += omega_world.cross(offset);
-                }
-                jac[(0, col)] = v_world[0];
-                jac[(1, col)] = v_world[1];
-                jac[(2, col)] = v_world[2];
+            let mi = match mc.a2m.get(ji).and_then(|x| *x) {
+                Some(m) if m > 0 => m,
+                _ => continue,
+            };
+            let in_ee = ee_ancestors.contains(&mi);
+            let in_base = base_ancestors.contains(&mi);
+            if !in_ee && !in_base {
+                continue;
             }
+
+            // Joint axis (angular subspace col 0) and origin in URDF-root.
+            let r_joint = misarta::se3::rotation_matrix(&data.oMi[mi]);
+            let p_joint = misarta::se3::translation(&data.oMi[mi]);
+            let qi = mc.model.q_idx[mi];
+            let nq = mc.model.joints[mi].joint_type.nq();
+            let s_local =
+                mc.model.joints[mi].joint_type.motion_subspace(&q[qi..qi + nq]);
+            let s_ang = na::Vector3::new(
+                s_local[(0, 0)],
+                s_local[(1, 0)],
+                s_local[(2, 0)],
+            );
+            let omega_root = r_joint * s_ang;
+
+            let mut v_root = na::Vector3::zeros();
+            // Both branches use `click_root - p_joint` (NOT `p_base - p_joint`):
+            // when θ is upstream of base only, pinning the base imparts a
+            // rigid-body correction that, evaluated at p_click, also picks
+            // up a `−ω × (p_click − p_base)` term — adding it to the raw
+            // `−ω × (p_base − p_θ)` from `J(base)` collapses to the form
+            // below (see the case derivation in the doc-comment above).
+            if in_ee {
+                v_root += omega_root.cross(&(click_root - p_joint));
+            }
+            if in_base {
+                v_root -= omega_root.cross(&(click_root - p_joint));
+            }
+            let v_world = r_base * v_root;
+            jac[(0, col)] = v_world.x;
+            jac[(1, col)] = v_world.y;
+            jac[(2, col)] = v_world.z;
         }
         jac
     }
@@ -2373,6 +2428,26 @@ pub struct SidecarLoadReport {
     pub n_actuators_applied: usize,
     pub n_actuators_total: usize,
     pub unmatched_actuators: Vec<String>,
+}
+
+/// Walk misarta's joint tree from `start` toward joint 0 (the URDF root)
+/// collecting every joint encountered into a set. Returns an empty set when
+/// `start` is 0. Used by [`RobotModel::chain_positional_jacobian`] to test
+/// whether a chain joint lies on the EE / base path.
+fn ancestor_set(
+    model: &misarta::model::Model<f64>,
+    start: usize,
+) -> std::collections::HashSet<usize> {
+    let mut set = std::collections::HashSet::new();
+    if start == 0 || start >= model.joints.len() {
+        return set;
+    }
+    let mut cur = start;
+    while cur > 0 {
+        set.insert(cur);
+        cur = model.joints[cur].parent;
+    }
+    set
 }
 
 // ─── Conversion helpers ─────────────────────────────────────────────────────
