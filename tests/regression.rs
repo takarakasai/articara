@@ -1160,6 +1160,131 @@ mod test_ik {
     use nalgebra as na;
     use articara::robot::{RobotModel, IkSolver};
 
+    /// Reproduces the user-reported case: with RL_foot as the IK root,
+    /// dragging RL_hip should move it in the SAME direction as the cursor
+    /// after the per-frame "pin IK root" base correction.
+    ///
+    /// Pre-fix, the chain Jacobian's lever-arm correction added a spurious
+    /// term for joints that were upstream of the BASE only, biasing the
+    /// solved Δq enough that the visible hip motion ended up reversed in
+    /// some configurations. We assert the post-IK hip displacement is
+    /// (a) non-zero and (b) on the same side of the original position as
+    /// the requested target.
+    #[test]
+    fn ik_with_explicit_root_moves_hip_toward_target() {
+        let path = namiashi_urdf();
+        if !path.exists() {
+            // Fixture submodule not initialised; skip.
+            eprintln!("namiashi.urdf missing — skipping");
+            return;
+        }
+        let mut model = RobotModel::from_file(&path).unwrap();
+        // The IK ee link and its kinematic-root counterpart.
+        let ee_link = "RL_hip";
+        let root_link = "RL_foot";
+        if !model.link_map.contains_key(ee_link)
+            || !model.link_map.contains_key(root_link)
+        {
+            return;
+        }
+
+        let chain = model.chain_joints_between(ee_link, Some(root_link));
+        assert!(!chain.is_empty(), "chain RL_foot → RL_hip should be non-empty");
+        eprintln!("chain joints (foot→hip):");
+        for &ji in &chain {
+            eprintln!("  {} ({}) axis={:?}",
+                model.joints[ji].name, model.joints[ji].joint_type,
+                model.joints[ji].axis);
+        }
+
+        let transforms = model.compute_transforms();
+        let hip_initial = transforms[ee_link].translation.vector.cast::<f64>();
+        let foot_initial = transforms[root_link].translation.vector.cast::<f64>();
+        eprintln!("hip_initial = {:?}", hip_initial);
+        eprintln!("foot_initial = {:?}", foot_initial);
+
+        // Target ~3 cm in +X from the hip's current position.
+        let target = na::Point3::new(
+            hip_initial.x + 0.03,
+            hip_initial.y,
+            hip_initial.z,
+        );
+
+        // The IK is iterative and can over/under-shoot at high gain, but
+        // the *direction* of the very first step must point at the target
+        // — that's the bit the constrained Jacobian determines, and the
+        // bit the user-reported "drag left → goes right" symptom touches.
+        // We assert direction at iter 1; later iterations may oscillate.
+        let mut hip_after_first_step: Option<na::Vector3<f64>> = None;
+        for iter in 0..3 {
+            let cur_tf_dbg = model.compute_transforms();
+            let hip_now = cur_tf_dbg[ee_link].translation.vector.cast::<f64>();
+            let foot_now = cur_tf_dbg[root_link].translation.vector.cast::<f64>();
+            eprintln!("iter {iter}: hip={:?} foot={:?} q_calf={} q_thigh={}",
+                hip_now, foot_now,
+                model.joint_positions[chain[0]], model.joint_positions[chain[1]]);
+            let cur_tf = model.compute_transforms();
+            let ee_now = na::Point3::from(
+                cur_tf[ee_link].translation.vector.cast::<f64>(),
+            );
+            // No surface offset for the test (use link origin) so we focus
+            // strictly on the chain Jacobian's directional correctness.
+            let deltas = model.solve_ik_step(
+                &chain,
+                ee_link,
+                Some(root_link),
+                &ee_now,
+                &target,
+                0.05,
+                0.3,
+                0.1,
+                None,
+                IkSolver::Dls,
+                None,
+                None,
+                None,
+            );
+            model.apply_joint_deltas(&chain, &deltas);
+
+            // Pin RL_foot back to its original world pose by adjusting
+            // base_transform — same correction the GUI does each frame.
+            let saved_rot = model.base_transform.rotation;
+            model.base_transform = na::Isometry3::identity();
+            let id_tf = model.compute_transforms();
+            if let Some(root_rel) = id_tf.get(root_link) {
+                let desired = na::Isometry3::from_parts(
+                    na::Translation3::from(foot_initial),
+                    saved_rot,
+                );
+                model.base_transform = desired * root_rel.inverse().cast::<f64>();
+            }
+
+            // Capture hip's pose right after the first IK step + base
+            // correction so we can assert direction independently of
+            // later iterations' over/undershoot.
+            if iter == 0 {
+                hip_after_first_step = Some(
+                    model.compute_transforms()[ee_link]
+                        .translation
+                        .vector
+                        .cast::<f64>(),
+                );
+            }
+        }
+
+        let hip_first = hip_after_first_step.expect("first iter ran");
+        let dx_first = hip_first.x - hip_initial.x;
+        eprintln!("hip after step 1: {:?}, Δx = {}", hip_first, dx_first);
+        assert!(
+            dx_first > 0.0,
+            "RL_hip should move toward +X target on first IK step, got Δx = {} \
+             (hip {:?} → {:?})",
+            dx_first,
+            hip_initial,
+            hip_first,
+        );
+    }
+
     #[test]
     fn build_chain_two_joints() {
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
