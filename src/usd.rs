@@ -384,14 +384,22 @@ fn write_link(
     robot_path: &str,
     material_map: &HashMap<u64, usize>,
     indent: &str,
+    // Other links this link's collision should be filtered against (i.e.
+    // disabled-pair partners). Emitted as `rel physics:filteredPairs`.
+    filter_partners: &[String],
 ) {
     let link_name = sanitize_name(&link.name);
 
     // Prim header with physics APIs
     s.push_str(&format!("{}def Xform \"{}\" (\n", indent, link_name));
+    let api_schemas = if filter_partners.is_empty() {
+        "[\"PhysicsRigidBodyAPI\", \"PhysicsMassAPI\"]"
+    } else {
+        "[\"PhysicsRigidBodyAPI\", \"PhysicsMassAPI\", \"PhysicsFilteredPairsAPI\"]"
+    };
     s.push_str(&format!(
-        "{}    prepend apiSchemas = [\"PhysicsRigidBodyAPI\", \"PhysicsMassAPI\"]\n",
-        indent
+        "{}    prepend apiSchemas = {}\n",
+        indent, api_schemas
     ));
     s.push_str(&format!("{})\n{}{{\n", indent, indent));
 
@@ -399,6 +407,19 @@ fn write_link(
 
     // World transform (rest pose)
     write_xform_ops(s, rest_tf, &inner);
+
+    // Filtered pair targets: USD uses absolute prim paths.
+    if !filter_partners.is_empty() {
+        let paths: Vec<String> = filter_partners
+            .iter()
+            .map(|n| format!("<{}/{}>", robot_path, sanitize_name(n)))
+            .collect();
+        s.push_str(&format!(
+            "{}rel physics:filteredPairs = [{}]\n",
+            inner,
+            paths.join(", "),
+        ));
+    }
 
     // Mass / inertia
     let mass = link.inertial.mass;
@@ -746,12 +767,35 @@ pub fn export_usda(model: &RobotModel) -> String {
     );
     s.push_str("    )\n    {\n");
 
+    // Build the per-link "filter against" list once so each call to
+    // write_link can attach a `physics:filteredPairs` rel for any disabled
+    // collision pairs it participates in. We list each pair only on the
+    // alphabetically-first link (which matches our normalised storage)
+    // since `filteredPairs` is symmetric in USD physics semantics.
+    let mut filter_map: HashMap<String, Vec<String>> = HashMap::new();
+    for cp in &model.collision_pairs {
+        if cp.enabled {
+            continue;
+        }
+        if !model.link_map.contains_key(&cp.link_a) || !model.link_map.contains_key(&cp.link_b) {
+            continue;
+        }
+        filter_map
+            .entry(cp.link_a.clone())
+            .or_default()
+            .push(cp.link_b.clone());
+    }
+
     // Links
     for link in &model.links {
         let tf = rest_transforms
             .get(&link.name)
             .copied()
             .unwrap_or(na::Isometry3::identity());
+        let partners = filter_map
+            .get(&link.name)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
         write_link(
             &mut s,
             link,
@@ -759,6 +803,7 @@ pub fn export_usda(model: &RobotModel) -> String {
             &robot_path,
             &material_map,
             "        ",
+            partners,
         );
     }
 

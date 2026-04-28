@@ -162,6 +162,7 @@ pub fn import_sdf(path: &Path) -> Result<RobotModel, String> {
         misarta_cache: None,
         loop_closures: Vec::new(),
         poses: Vec::new(),
+        collision_pairs: Vec::new(),
     };
     model.rebuild_misarta_model();
     Ok(model)

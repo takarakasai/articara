@@ -146,6 +146,23 @@ impl ArticaraApp {
                 self.draw_posture_menu(ui);
             });
 
+            // ===== Collision menu =====
+            ui.menu_button("Collision", |ui| {
+                let has_model = self.model.is_some();
+                if ui
+                    .add_enabled(has_model, egui::Button::new("🛡 Collision Pair Matrix…"))
+                    .on_hover_text(
+                        "Open the link × link collision-pair editor. \
+                         Disabled pairs are persisted to .misarta.toml and \
+                         emitted as MJCF <exclude> / USD filteredPairs.",
+                    )
+                    .clicked()
+                {
+                    self.show_collision_matrix = true;
+                    ui.close();
+                }
+            });
+
             // ===== View menu =====
             ui.menu_button("View", |ui| {
                 ui.menu_button(format!("Visual: {}", self.visual_mode.label()), |ui| {

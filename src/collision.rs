@@ -160,7 +160,8 @@ mod tests {
             base_transform: na::Isometry3::identity(),
             misarta_cache: None,
             loop_closures: Vec::new(),
-        poses: Vec::new(),
+            poses: Vec::new(),
+            collision_pairs: Vec::new(),
         };
         model.rebuild_misarta_model();
         model

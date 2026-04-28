@@ -2758,6 +2758,56 @@ mod test_sidecar {
     }
 
     #[test]
+    fn collision_pairs_roundtrip_via_sidecar() {
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        // Pick two link names from the fixture so the test isn't fragile to
+        // joint count.
+        assert!(model.links.len() >= 2);
+        let a = model.links[0].name.clone();
+        let b = model.links[1].name.clone();
+        model.collision_pairs.push(
+            articara::rbd::model::CollisionPair::new(a.clone(), b.clone(), false),
+        );
+
+        let cfg = model.to_misarta_config();
+        let toml = cfg.to_toml().unwrap();
+        assert!(toml.contains("[[collision_pair]]"),
+            "TOML should contain collision_pair entries:\n{}", toml);
+
+        let mut model2 = RobotModel::from_file(&fixture_urdf()).unwrap();
+        let cfg2 = misarta::config::MisartaConfig::from_toml(&toml).unwrap();
+        model2.load_misarta_config(&cfg2);
+        assert_eq!(model2.collision_pairs.len(), 1);
+        let cp = &model2.collision_pairs[0];
+        assert!(cp.matches(&a, &b));
+        assert!(!cp.enabled);
+    }
+
+    #[test]
+    fn mjcf_export_emits_contact_exclude_for_disabled_pairs() {
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        let a = model.links[0].name.clone();
+        let b = model.links[1].name.clone();
+        model.collision_pairs.push(
+            articara::rbd::model::CollisionPair::new(a.clone(), b.clone(), false),
+        );
+        let xml = articara::mjcf::export_mjcf(&model);
+        assert!(xml.contains("<contact>"),
+            "expected <contact> block:\n{}", xml);
+        assert!(xml.contains("<exclude"),
+            "expected <exclude/> entry:\n{}", xml);
+        assert!(xml.contains(&a) && xml.contains(&b));
+    }
+
+    #[test]
+    fn mjcf_export_omits_contact_when_no_disabled_pairs() {
+        let model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        let xml = articara::mjcf::export_mjcf(&model);
+        assert!(!xml.contains("<exclude"),
+            "no excludes should appear when collision_pairs is empty");
+    }
+
+    #[test]
     fn actuator_load_via_load_sidecar_path() {
         let urdf_src = fixture_urdf();
         let tmp_dir = std::env::temp_dir().join("articara_sidecar_path_test");
