@@ -1143,6 +1143,133 @@ impl ArticaraApp {
         }
     }
 
+    /// Draw a persistent marker on the currently-selected link and joint so
+    /// the user sees which entity they're editing in the Properties panel
+    /// even when the mouse is far away. The link receives a thin dashed
+    /// circle around its bounding-sphere centre; the joint gets a crosshair
+    /// at its origin, with the joint name tagged below.
+    pub(super) fn draw_selection_markers(
+        &self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        aspect: f32,
+    ) {
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
+        let painter = ui.painter();
+        let transforms = model.compute_transforms();
+
+        // ── Selected link: dashed circle at bounding-sphere centre ──
+        if let Some(li) = self.selected_link {
+            // Don't double-draw when the link is also being dragged or
+            // hovered — the renderer already colours it in those cases.
+            let already_highlit = self
+                .drag_state
+                .as_ref()
+                .map(|d| d.link_idx == li)
+                .unwrap_or(false)
+                || self.hovered_link == Some(li);
+            if !already_highlit {
+                let link_name = &model.links[li].name;
+                if let Some(tf) = transforms.get(link_name) {
+                    let (center, radius) = model.link_bounding_sphere(li);
+                    let world_center = *tf * center;
+                    if let Some(p_screen) =
+                        self.project_world(world_center, rect, aspect)
+                    {
+                        // Approximate screen radius by projecting a point
+                        // offset by `radius` along the camera right axis.
+                        let cam_right = na::Vector3::new(
+                            -self.camera.yaw.sin(),
+                            self.camera.yaw.cos(),
+                            0.0,
+                        );
+                        let edge_world = world_center + cam_right * radius;
+                        let edge_screen = self
+                            .project_world(edge_world, rect, aspect)
+                            .unwrap_or(p_screen + egui::vec2(20.0, 0.0));
+                        let r_screen =
+                            (edge_screen - p_screen).length().max(8.0);
+                        let color = egui::Color32::from_rgb(120, 220, 255);
+                        // Dashed circle approximation via short arcs.
+                        let segs = 24;
+                        let mut a = 0.0_f32;
+                        let step = std::f32::consts::TAU / segs as f32;
+                        for k in 0..segs {
+                            if k % 2 == 0 {
+                                let p0 = egui::pos2(
+                                    p_screen.x + r_screen * a.cos(),
+                                    p_screen.y + r_screen * a.sin(),
+                                );
+                                let p1 = egui::pos2(
+                                    p_screen.x + r_screen * (a + step).cos(),
+                                    p_screen.y + r_screen * (a + step).sin(),
+                                );
+                                painter.line_segment(
+                                    [p0, p1],
+                                    egui::Stroke::new(2.0, color),
+                                );
+                            }
+                            a += step;
+                        }
+                        // Name tag near the circle.
+                        painter.text(
+                            p_screen + egui::vec2(r_screen + 4.0, -r_screen),
+                            egui::Align2::LEFT_BOTTOM,
+                            format!("◆ {}", link_name),
+                            egui::FontId::monospace(11.0),
+                            color,
+                        );
+                    }
+                }
+            }
+        }
+
+        // ── Selected joint: crosshair at joint origin ──
+        if let Some(ji) = self.selected_joint {
+            if ji < model.joints.len() {
+                let joint = &model.joints[ji];
+                let parent_tf = transforms
+                    .get(&joint.parent_link)
+                    .copied()
+                    .unwrap_or(na::Isometry3::identity());
+                let joint_world = parent_tf * joint.origin;
+                let pivot = na::Point3::from(joint_world.translation.vector);
+                if let Some(p_screen) = self.project_world(pivot, rect, aspect) {
+                    let color = egui::Color32::from_rgb(255, 220, 100);
+                    let s = 10.0_f32;
+                    painter.line_segment(
+                        [
+                            egui::pos2(p_screen.x - s, p_screen.y),
+                            egui::pos2(p_screen.x + s, p_screen.y),
+                        ],
+                        egui::Stroke::new(2.0, color),
+                    );
+                    painter.line_segment(
+                        [
+                            egui::pos2(p_screen.x, p_screen.y - s),
+                            egui::pos2(p_screen.x, p_screen.y + s),
+                        ],
+                        egui::Stroke::new(2.0, color),
+                    );
+                    painter.circle_stroke(
+                        p_screen,
+                        s * 0.6,
+                        egui::Stroke::new(2.0, color),
+                    );
+                    painter.text(
+                        p_screen + egui::vec2(s + 4.0, -s),
+                        egui::Align2::LEFT_BOTTOM,
+                        format!("⚙ {}", joint.name),
+                        egui::FontId::monospace(11.0),
+                        color,
+                    );
+                }
+            }
+        }
+    }
+
     /// Project a world-space point to screen coordinates within `rect`.
     /// Returns `None` if the point is behind the camera or off-screen by a
     /// margin. Used by the contact-force / external-force overlays so they

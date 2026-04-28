@@ -196,15 +196,22 @@ impl ArticaraApp {
             self.history.finalize();
         }
 
-        // Update highlight and gizmo state in renderer
+        // Update highlight and gizmo state in renderer.
+        // Priority: drag > hover > selected. Falling through to `selected_link`
+        // means the user keeps a visual on the link they last picked even
+        // when the cursor is somewhere else (e.g. dragging a Properties
+        // panel slider) — without it the highlight disappeared the instant
+        // the mouse left the viewport.
         {
             let mut r = self.gl_renderer.lock().unwrap();
             let highlight = if self.drag_state.is_some() {
                 self.drag_state
                     .as_ref()
                     .and_then(|d| self.model.as_ref().map(|m| m.links[d.link_idx].name.clone()))
+            } else if let Some(li) = self.hovered_link {
+                self.model.as_ref().map(|m| m.links[li].name.clone())
             } else {
-                self.hovered_link
+                self.selected_link
                     .and_then(|li| self.model.as_ref().map(|m| m.links[li].name.clone()))
             };
             r.highlight_link = highlight;
@@ -258,6 +265,7 @@ impl ArticaraApp {
         self.draw_ik_ee_marker(ui, rect, aspect);
         self.draw_camera_axes(ui, rect);
         self.draw_gravity_indicator(ui, rect);
+        self.draw_selection_markers(ui, rect, aspect);
         #[cfg(feature = "mujoco")]
         {
             self.draw_contact_markers(ui, rect, aspect);
@@ -907,13 +915,21 @@ impl ArticaraApp {
                                         let r_world = link_rot.cast::<f64>() * r_local;
                                         r_world
                                     };
-                                    // Compute camera right/up for 2-DoF screen-plane mode
+                                    // Compute camera right/up for 2-DoF screen-plane mode.
+                                    // Pull the basis directly from the view
+                                    // matrix so the projection axes match
+                                    // whatever the user actually sees — the
+                                    // previous `cam_fwd × world_up` form
+                                    // could fall out of sync once the camera
+                                    // was pitched / rolled, leading to IK
+                                    // updates that pushed the link slightly
+                                    // off-axis from the cursor (which read
+                                    // as "wrong direction" for non-tip
+                                    // links because their click points sit
+                                    // off the joint origin).
                                     let screen_axes = if self.ik_dof == crate::robot::IkDof::ScreenPlane2D {
-                                        let cam_fwd_dir = cam_forward.cast::<f64>();
-                                        // World up hint (Z-up)
-                                        let world_up = na::Vector3::<f64>::new(0.0, 0.0, 1.0);
-                                        let cam_right = cam_fwd_dir.cross(&world_up).normalize();
-                                        let cam_up = cam_right.cross(&cam_fwd_dir).normalize();
+                                        let cam_right = self.camera.world_right().cast::<f64>();
+                                        let cam_up = self.camera.world_up_screen().cast::<f64>();
                                         Some((cam_right, cam_up))
                                     } else {
                                         None

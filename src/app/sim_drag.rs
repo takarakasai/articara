@@ -152,6 +152,26 @@ impl ArticaraApp {
                 let cur_world = link_world_tf * state.ee_local_offset;
                 let delta = target_world - cur_world;
                 let f = delta * self.sim_drag_force_gain;
+                // MuJoCo's `xfrc_applied` always acts at the body's COM, so
+                // a pure linear force applied there only translates the
+                // link and never rotates it. The user expects the click
+                // point to behave like a handle: pulling on a corner should
+                // both translate the link AND rotate it about the COM. We
+                // get that by adding the equivalent COM-applied torque
+                // M = r × F, where r = click_world − com_world.
+                let com_local = self
+                    .model
+                    .as_ref()
+                    .and_then(|m| {
+                        m.link_map
+                            .get(&state.link_name)
+                            .map(|&li| m.links[li].inertial.origin.translation.vector)
+                    })
+                    .unwrap_or_else(na::Vector3::zeros);
+                let com_world = link_world_tf
+                    * na::Point3::from(com_local);
+                let r = cur_world - com_world; // f32
+                let torque = r.cross(&f);
                 if let Some(ref mut sim) = self.mujoco_sim {
                     // Continuously refresh — short duration so the pulse
                     // dies the instant we stop calling apply, even if the
@@ -159,7 +179,11 @@ impl ArticaraApp {
                     sim.apply_external_force(
                         &state.link_name,
                         [f.x as f64, f.y as f64, f.z as f64],
-                        [0.0, 0.0, 0.0],
+                        [
+                            torque.x as f64,
+                            torque.y as f64,
+                            torque.z as f64,
+                        ],
                         0.1,
                     );
                 }
