@@ -1345,13 +1345,23 @@ impl ArticaraApp {
         // of zoom. Logarithmic scale keeps both 1 N and 1 kN on the same plot.
         let base_px = 60.0_f32;
         let calib_n = 100.0_f32;
+        // Magenta for self-collisions (= unintended interpenetration in
+        // most cases) so the user can spot them at a glance against the
+        // standard red ground/external contacts.
+        let color_external = egui::Color32::from_rgb(255, 90, 90);
+        let color_self = egui::Color32::from_rgb(220, 80, 220);
+        let dot_color_external = egui::Color32::from_rgb(255, 200, 80);
+        let dot_color_self = egui::Color32::from_rgb(220, 130, 220);
         for c in &contacts {
+            let is_self = c.is_self_collision();
+            let arrow_color = if is_self { color_self } else { color_external };
+            let dot_color = if is_self { dot_color_self } else { dot_color_external };
+
             let p = na::Point3::new(c.pos[0] as f32, c.pos[1] as f32, c.pos[2] as f32);
             let Some(p_screen) = self.project_world(p, rect, aspect) else {
                 continue;
             };
             // Marker dot
-            let dot_color = egui::Color32::from_rgb(255, 200, 80);
             painter.circle_filled(p_screen, 4.0, dot_color);
 
             if c.force_mag < 1e-3 {
@@ -1379,16 +1389,27 @@ impl ArticaraApp {
             let v = tip_screen - p_screen;
             let v_len = v.length().max(1e-3);
             let scaled_tip = p_screen + v * (scale / v_len);
-            let color = egui::Color32::from_rgb(255, 90, 90);
-            Self::draw_screen_arrow(painter, p_screen, scaled_tip, color, 2.0);
-            // Magnitude label near the tip.
-            let label = format!("{:.1} N", c.force_mag);
+            Self::draw_screen_arrow(painter, p_screen, scaled_tip, arrow_color, 2.0);
+            // Compose label: "<force>  <body1>↔<body2>". For ground
+            // contacts (body1 or body2 empty), abbreviate with "world".
+            let pair_label = match (c.body1.as_str(), c.body2.as_str()) {
+                ("", "") => String::new(),
+                ("", b) => format!("world↔{}", b),
+                (a, "") => format!("{}↔world", a),
+                (a, b) => format!("{}↔{}", a, b),
+            };
+            let force_label = format!("{:.1} N", c.force_mag);
+            let label = if pair_label.is_empty() {
+                force_label
+            } else {
+                format!("{}  {}", force_label, pair_label)
+            };
             painter.text(
                 scaled_tip + egui::vec2(4.0, -10.0),
                 egui::Align2::LEFT_BOTTOM,
                 label,
                 egui::FontId::monospace(10.0),
-                color,
+                arrow_color,
             );
         }
     }
