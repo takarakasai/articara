@@ -874,6 +874,51 @@ impl ModelScriptEngine {
                 s.borrow().as_ref().map(|x| x.history_len() as i64).unwrap_or(0)
             });
 
+            // Number of (q, q̇, τ) samples in the time-series trace ring buffer.
+            // Useful in tuning scripts that want to know how much data the
+            // upcoming `save_peaks_csv` call will write.
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("mj_trace_len", move || -> i64 {
+                s.borrow().as_ref().map(|x| x.trace_len() as i64).unwrap_or(0)
+            });
+
+            // Resize the trace ring buffer cap. Existing samples beyond the
+            // new cap are dropped from the front. Returns the value applied.
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("mj_set_trace_max", move |max: i64| -> i64 {
+                let mut sim_borrow = s.borrow_mut();
+                let Some(sim) = sim_borrow.as_mut() else {
+                    return 0;
+                };
+                let m = max.max(1) as usize;
+                sim.set_trace_max(m);
+                m as i64
+            });
+
+            // Write the captured trace to a CSV file (same format the UI
+            // "💾 Save CSV" button produces). Returns the number of rows
+            // written, or -1 on error so scripts can detect failures.
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn("save_peaks_csv", move |path: &str| -> i64 {
+                let sim_borrow = s.borrow();
+                let model_borrow = m.borrow();
+                let (Some(sim), Some(robot)) = (
+                    sim_borrow.as_ref(),
+                    model_borrow.as_ref(),
+                ) else {
+                    return -1;
+                };
+                let p = std::path::Path::new(path);
+                match crate::mujoco_sim::save_peaks_csv(robot, sim, p) {
+                    Ok(n) => n as i64,
+                    Err(e) => {
+                        log::warn!("save_peaks_csv: {e}");
+                        -1
+                    }
+                }
+            });
+
             // Stop the sim and restore the pre-sim pose. Returns true if a
             // sim was running.
             let s = Rc::clone(&mujoco_sim);
@@ -1110,6 +1155,107 @@ impl ModelScriptEngine {
                 };
                 robot.joints[idx].actuator_kv = kv;
                 true
+            });
+
+            // Per-joint armature (rotor inertia, kg·m²). Mapped to MuJoCo
+            // `<joint armature>` at the next sim start.
+            let m = Rc::clone(&model);
+            engine.register_fn("set_armature", move |name: &str, value: f64| -> bool {
+                let mut model_borrow = m.borrow_mut();
+                let Some(robot) = model_borrow.as_mut() else {
+                    return false;
+                };
+                let Some(&idx) = robot.joint_map.get(name) else {
+                    return false;
+                };
+                robot.joints[idx].armature = value;
+                true
+            });
+
+            // Per-joint passive viscous damping (N·m·s/rad). Mapped to MuJoCo
+            // `<joint damping>` at the next sim start.
+            let m = Rc::clone(&model);
+            engine.register_fn(
+                "set_joint_damping",
+                move |name: &str, value: f64| -> bool {
+                    let mut model_borrow = m.borrow_mut();
+                    let Some(robot) = model_borrow.as_mut() else {
+                        return false;
+                    };
+                    let Some(&idx) = robot.joint_map.get(name) else {
+                        return false;
+                    };
+                    robot.joints[idx].joint_damping = value;
+                    true
+                },
+            );
+
+            // Bulk setters: apply the same value to every non-fixed joint.
+            // Returns the number of joints touched. Designed for tuning sweeps
+            // where the user wants "set every leg motor to 0.1 damping" in
+            // one call rather than naming each joint.
+            let m = Rc::clone(&model);
+            engine.register_fn("set_kp_all", move |kp: f64| -> i64 {
+                let mut model_borrow = m.borrow_mut();
+                let Some(robot) = model_borrow.as_mut() else {
+                    return 0;
+                };
+                let mut n = 0i64;
+                for j in robot.joints.iter_mut() {
+                    if j.joint_type != "fixed" {
+                        j.actuator_kp = kp;
+                        n += 1;
+                    }
+                }
+                n
+            });
+
+            let m = Rc::clone(&model);
+            engine.register_fn("set_kv_all", move |kv: f64| -> i64 {
+                let mut model_borrow = m.borrow_mut();
+                let Some(robot) = model_borrow.as_mut() else {
+                    return 0;
+                };
+                let mut n = 0i64;
+                for j in robot.joints.iter_mut() {
+                    if j.joint_type != "fixed" {
+                        j.actuator_kv = kv;
+                        n += 1;
+                    }
+                }
+                n
+            });
+
+            let m = Rc::clone(&model);
+            engine.register_fn("set_armature_all", move |value: f64| -> i64 {
+                let mut model_borrow = m.borrow_mut();
+                let Some(robot) = model_borrow.as_mut() else {
+                    return 0;
+                };
+                let mut n = 0i64;
+                for j in robot.joints.iter_mut() {
+                    if j.joint_type != "fixed" {
+                        j.armature = value;
+                        n += 1;
+                    }
+                }
+                n
+            });
+
+            let m = Rc::clone(&model);
+            engine.register_fn("set_joint_damping_all", move |value: f64| -> i64 {
+                let mut model_borrow = m.borrow_mut();
+                let Some(robot) = model_borrow.as_mut() else {
+                    return 0;
+                };
+                let mut n = 0i64;
+                for j in robot.joints.iter_mut() {
+                    if j.joint_type != "fixed" {
+                        j.joint_damping = value;
+                        n += 1;
+                    }
+                }
+                n
             });
 
             let s = Rc::clone(&mujoco_sim);
@@ -1379,12 +1525,14 @@ impl ModelScriptEngine {
             "reduce_mesh", "reduce_collision_mesh", "reduce_all_meshes",
             "decompose_vhacd", "decompose_spheres", "decompose_primitive",
             "mj_active", "mj_start", "mj_stop", "mj_step", "mj_step_back",
-            "mj_timestep", "mj_history_len",
+            "mj_timestep", "mj_history_len", "mj_trace_len", "mj_set_trace_max",
+            "save_peaks_csv",
             "play_pose", "transition_in_progress", "transition_progress",
             "play_sequence", "sequence_in_progress", "sequence_progress",
             "apply_force", "cancel_force",
             "reset_peaks", "peak_torque", "peak_velocity", "peaks",
-            "set_kp", "set_kv",
+            "set_kp", "set_kv", "set_armature", "set_joint_damping",
+            "set_kp_all", "set_kv_all", "set_armature_all", "set_joint_damping_all",
             "set_position_target", "set_velocity_target", "set_torque_target",
             "abs", "sqrt", "sin", "cos", "atan2",
             "min_f", "max_f", "clamp", "to_deg", "to_rad", "PI",

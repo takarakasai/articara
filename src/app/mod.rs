@@ -536,6 +536,14 @@ pub struct ArticaraApp {
     /// File dialog for saving the trace as CSV.
     #[cfg(feature = "mujoco")]
     dlg_save_peaks_csv: file_dialog::FileDialog,
+    /// File dialog for loading a Rhai script to run in the console.
+    dlg_open_script: file_dialog::FileDialog,
+    /// Most-recently-loaded script path (used to pre-fill the file dialog).
+    script_path: String,
+    /// One-shot: when `Some`, the next console-update tick reads + runs this
+    /// path and clears the field. Set by the "📂 Run file…" button after the
+    /// file dialog confirms.
+    pending_script_run: Option<std::path::PathBuf>,
     /// File path for sim config save/load.
     sim_config_path: String,
     // --- Posture save/load ---
@@ -796,6 +804,9 @@ impl ArticaraApp {
             peaks_plot_csv_path: String::new(),
             #[cfg(feature = "mujoco")]
             dlg_save_peaks_csv: file_dialog::FileDialog::new("dlg_save_peaks_csv"),
+            dlg_open_script: file_dialog::FileDialog::new("dlg_open_script"),
+            script_path: String::new(),
+            pending_script_run: None,
             sim_config_path: String::new(),
             posture_path: String::new(),
             dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),
@@ -1081,6 +1092,19 @@ impl ArticaraApp {
                         self.status_message = format!("Load sim config error: {e}");
                     }
                 }
+            }
+            _ => {}
+        }
+
+        // --- Open Script File dialog ---
+        // Confirmed → store the chosen path on `pending_script_run`. The
+        // console (drawn elsewhere this frame) is what actually reads + runs
+        // it, since that's the only place with access to the live engine
+        // and the input/output buffers.
+        match self.dlg_open_script.show(ctx) {
+            FileDialogResult::Confirmed(path) => {
+                self.script_path = path.display().to_string();
+                self.pending_script_run = Some(path);
             }
             _ => {}
         }
