@@ -252,6 +252,51 @@ pub struct RobotModel {
     /// Sensors mounted on links.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub sensors: Vec<Sensor>,
+    /// Quadruped gait presets (in-memory mirror of the sidecar's
+    /// `[[gait]]` entries). The host UI / Rhai bindings read/write the
+    /// first entry as the active preset; multiple are supported for
+    /// future "switch gait by name" workflows.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub gaits: Vec<GaitDescriptor>,
+}
+
+/// Quadruped gait preset stored on the model. Mirrors
+/// [`misarta::config::GaitConfigEntry`] one-to-one. Holding this on
+/// `RobotModel` (rather than ArticaraApp) means the data round-trips
+/// through `to_misarta_config` / `load_misarta_config` with the same
+/// machinery as poses, sequences, and actuator settings.
+#[derive(Clone, Debug)]
+pub struct GaitDescriptor {
+    pub name: String,
+    pub gait_type: misarta::config::GaitTypeConfig,
+    pub cycle_period_s: f64,
+    pub duty_factor: f64,
+    pub swing_height_m: f64,
+    pub max_step_length_m: f64,
+    pub fl_foot: String,
+    pub fr_foot: String,
+    pub rl_foot: String,
+    pub rr_foot: String,
+    pub knee_forward: [bool; 4],
+}
+
+impl GaitDescriptor {
+    /// Sensible defaults: Trot with the standard CHAMP foot link names.
+    pub fn default_trot() -> Self {
+        Self {
+            name: "default".into(),
+            gait_type: misarta::config::GaitTypeConfig::Trot,
+            cycle_period_s: 0.4,
+            duty_factor: 0.5,
+            swing_height_m: 0.04,
+            max_step_length_m: 0.10,
+            fl_foot: "FL_foot".into(),
+            fr_foot: "FR_foot".into(),
+            rl_foot: "RL_foot".into(),
+            rr_foot: "RR_foot".into(),
+            knee_forward: [false; 4],
+        }
+    }
 }
 
 /// Linear coupling between two joints (in-memory mirror of
@@ -2518,6 +2563,25 @@ impl RobotModel {
                 kind: sensor_kind_to_config(&s.kind),
             });
         }
+        // Persist quadruped gait presets. The leg link lengths and hip
+        // offsets are intentionally NOT serialised — they're auto-detected
+        // from the URDF chain on every load so an out-of-date sidecar can
+        // never silently override the kinematics.
+        for g in &self.gaits {
+            cfg.gait.push(misarta::config::GaitConfigEntry {
+                name: g.name.clone(),
+                gait_type: g.gait_type,
+                cycle_period_s: g.cycle_period_s,
+                duty_factor: g.duty_factor,
+                swing_height_m: g.swing_height_m,
+                max_step_length_m: g.max_step_length_m,
+                fl_foot: g.fl_foot.clone(),
+                fr_foot: g.fr_foot.clone(),
+                rl_foot: g.rl_foot.clone(),
+                rr_foot: g.rr_foot.clone(),
+                knee_forward: g.knee_forward,
+            });
+        }
         cfg
     }
 
@@ -2607,6 +2671,24 @@ impl RobotModel {
                 ),
                 update_rate: s.update_rate,
                 kind: sensor_kind_from_config(&s.kind),
+            })
+            .collect();
+        // Restore quadruped gait presets.
+        self.gaits = cfg
+            .gait
+            .iter()
+            .map(|g| GaitDescriptor {
+                name: g.name.clone(),
+                gait_type: g.gait_type,
+                cycle_period_s: g.cycle_period_s,
+                duty_factor: g.duty_factor,
+                swing_height_m: g.swing_height_m,
+                max_step_length_m: g.max_step_length_m,
+                fl_foot: g.fl_foot.clone(),
+                fr_foot: g.fr_foot.clone(),
+                rl_foot: g.rl_foot.clone(),
+                rr_foot: g.rr_foot.clone(),
+                knee_forward: g.knee_forward,
             })
             .collect();
     }

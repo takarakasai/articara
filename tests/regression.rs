@@ -3509,6 +3509,53 @@ mod test_sidecar {
     }
 
     #[test]
+    fn gait_descriptor_roundtrips_through_sidecar() {
+        // Save a non-trivial gait preset, reload, and confirm every field
+        // comes back. The link lengths / hip offsets are intentionally not
+        // checked — they're auto-detected from the URDF chain on each
+        // load, never written to the sidecar.
+        use articara::rbd::model::GaitDescriptor;
+        use misarta::config::GaitTypeConfig;
+
+        let urdf_src = fixture_urdf();
+        let tmp_dir = std::env::temp_dir().join("articara_gait_sidecar_test");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let urdf_dst = tmp_dir.join("test_robot.urdf");
+        std::fs::copy(&urdf_src, &urdf_dst).unwrap();
+
+        let mut model = RobotModel::from_file(&urdf_dst).unwrap();
+        model.gaits.push(GaitDescriptor {
+            name: "fast".into(),
+            gait_type: GaitTypeConfig::Trot,
+            cycle_period_s: 0.30,
+            duty_factor: 0.45,
+            swing_height_m: 0.05,
+            max_step_length_m: 0.12,
+            fl_foot: "FL_paw".into(),
+            fr_foot: "FR_paw".into(),
+            rl_foot: "RL_paw".into(),
+            rr_foot: "RR_paw".into(),
+            knee_forward: [true, true, false, false],
+        });
+
+        model.save_sidecar_config(&urdf_dst).unwrap();
+
+        let mut model2 = RobotModel::from_file(&urdf_dst).unwrap();
+        model2
+            .load_sidecar_config()
+            .expect("sidecar should be present");
+        assert_eq!(model2.gaits.len(), 1);
+        let g = &model2.gaits[0];
+        assert_eq!(g.name, "fast");
+        assert!((g.cycle_period_s - 0.30).abs() < 1e-9);
+        assert!((g.duty_factor - 0.45).abs() < 1e-9);
+        assert_eq!(g.fl_foot, "FL_paw");
+        assert_eq!(g.knee_forward, [true, true, false, false]);
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[test]
     fn actuator_load_via_load_sidecar_path() {
         let urdf_src = fixture_urdf();
         let tmp_dir = std::env::temp_dir().join("articara_sidecar_path_test");

@@ -167,6 +167,7 @@ mod tests {
             sequences: Vec::new(),
             mimics: Vec::new(),
             sensors: Vec::new(),
+            gaits: Vec::new(),
         };
         model.rebuild_misarta_model();
         model

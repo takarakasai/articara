@@ -857,6 +857,54 @@ impl ArticaraApp {
         }
     }
 
+    /// Pull foot link names out of the model's first gait descriptor
+    /// (if any) into the UI panel state. Called after a sidecar load so
+    /// the user sees their saved configuration. Falls back to the default
+    /// FL/FR/RL/RR_foot when the model has no gait entries.
+    pub(crate) fn sync_gait_panel_from_model(&mut self) {
+        let descriptor = self
+            .model
+            .as_ref()
+            .and_then(|m| m.gaits.first().cloned());
+        let names = match descriptor {
+            Some(d) => [d.fl_foot, d.fr_foot, d.rl_foot, d.rr_foot],
+            None => crate::gait::DEFAULT_FOOT_LINKS.map(|(_, s)| s.to_string()),
+        };
+        for (slot, name) in names.into_iter().enumerate() {
+            self.gait_foot_links[slot].1 = name;
+        }
+    }
+
+    /// Push the UI's current foot link names + (if present) the live gait
+    /// controller's config into `model.gaits[0]` so the next sidecar save
+    /// picks them up. Inserts a default descriptor if none exists yet.
+    pub(crate) fn sync_gait_panel_to_model(&mut self) {
+        let Some(model) = self.model.as_mut() else {
+            return;
+        };
+        if model.gaits.is_empty() {
+            model.gaits.push(crate::rbd::model::GaitDescriptor::default_trot());
+        }
+        let g = &mut model.gaits[0];
+        g.fl_foot = self.gait_foot_links[0].1.clone();
+        g.fr_foot = self.gait_foot_links[1].1.clone();
+        g.rl_foot = self.gait_foot_links[2].1.clone();
+        g.rr_foot = self.gait_foot_links[3].1.clone();
+        if let Some(ctrl) = self.gait_controller.as_ref() {
+            let cfg = ctrl.config();
+            g.gait_type = match cfg.gait_type {
+                quadruped_gait::GaitType::Trot => misarta::config::GaitTypeConfig::Trot,
+                quadruped_gait::GaitType::Walk => misarta::config::GaitTypeConfig::Walk,
+                quadruped_gait::GaitType::Pace => misarta::config::GaitTypeConfig::Pace,
+                quadruped_gait::GaitType::Bound => misarta::config::GaitTypeConfig::Bound,
+            };
+            g.cycle_period_s = cfg.cycle_period_s;
+            g.duty_factor = cfg.duty_factor;
+            g.swing_height_m = cfg.swing_height_m;
+            g.max_step_length_m = cfg.max_step_length_m;
+        }
+    }
+
     pub fn load_model(&mut self, path: PathBuf) {
         match RobotModel::from_file(&path) {
             Ok(model) => {
@@ -901,6 +949,12 @@ impl ArticaraApp {
                 self.needs_upload = true;
                 self.ik_root_link = None; // reset IK root on new model
                 self.history.clear();
+                // Pull saved gait foot link names out of the sidecar (if
+                // any) so the UI panel reflects the user's last setup.
+                // Drop any stale gait controller — its kinematics belong
+                // to the previous model.
+                self.gait_controller = None;
+                self.sync_gait_panel_from_model();
                 // Default posture path: <model_dir>/<robot_name>.toml
                 if let Some(parent) = path.parent() {
                     if let Some(ref m) = self.model {
