@@ -36,6 +36,14 @@ impl ArticaraApp {
             .resizable(true)
             .frame(frame)
             .show_inside(ui, |ui| {
+                // egui Panel persists state by storing `inner_response.response.rect`
+                // (the *content* rect) rather than the panel rect itself, so a
+                // user-resized panel snaps back to whatever height the contents
+                // ended up using last frame. Forcing the inner ui's min height
+                // to its max fixes that — the response rect now extends to the
+                // panel's full allocated height, and PanelState faithfully
+                // round-trips the resized value.
+                ui.set_min_height(ui.max_rect().height());
                 // Lazy-init engine
                 #[cfg(feature = "scripting")]
                 if self.script_engine.is_none() {
