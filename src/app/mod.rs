@@ -902,6 +902,7 @@ impl ArticaraApp {
             g.duty_factor = cfg.duty_factor;
             g.swing_height_m = cfg.swing_height_m;
             g.max_step_length_m = cfg.max_step_length_m;
+            g.knee_forward = ctrl.knee_forward();
         }
     }
 

@@ -526,6 +526,8 @@ impl ArticaraApp {
             "    gait_running() / gait_active()  Bool — currently driving / built",
             "    gait_set_cycle_period(s) / gait_set_swing_height(m)",
             "    gait_set_duty(0..1) / gait_set_max_step(m)",
+            "    gait_set_knee_pattern(\"<<|<>|><|>>\")  Front/rear knee bend",
+            "    gait_knee_pattern()          Read back as shorthand string",
             "",
             "  Async timeline (UI animates the queue, viewport reflects it):",
             "    mj_async_step_seconds(s)    Queue advancing the sim by s seconds",

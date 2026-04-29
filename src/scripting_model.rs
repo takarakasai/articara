@@ -1666,6 +1666,33 @@ impl ModelScriptEngine {
                 ctrl.set_config(cfg);
                 true
             });
+            // Knee pattern shorthand: `<<` / `<>` / `><` / `>>`. Returns
+            // true on success, false on bad string or no controller.
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn("gait_set_knee_pattern", move |s: &str| -> bool {
+                let Some(p) = quadruped_gait::KneePattern::from_label(s) else {
+                    log::warn!(
+                        "gait_set_knee_pattern: unknown pattern {s:?} \
+                         (expected <<, <>, ><, or >>)"
+                    );
+                    return false;
+                };
+                let mut gb = g.borrow_mut();
+                let Some(ctrl) = gb.as_mut() else { return false; };
+                ctrl.set_knee_pattern(p);
+                true
+            });
+
+            // Read back as the same shorthand string. Returns "" if no
+            // controller — Rhai scripts can `if pattern != ""`.
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn("gait_knee_pattern", move || -> String {
+                let gb = g.borrow();
+                gb.as_ref()
+                    .map(|c| c.knee_pattern().label().to_string())
+                    .unwrap_or_default()
+            });
+
             let g = Rc::clone(&gait_controller);
             engine.register_fn("gait_set_max_step", move |m: f64| -> bool {
                 let mut gb = g.borrow_mut();
@@ -1889,6 +1916,7 @@ impl ModelScriptEngine {
             "gait_start", "gait_stop", "gait_running", "gait_active",
             "gait_set_cycle_period", "gait_set_swing_height",
             "gait_set_duty", "gait_set_max_step",
+            "gait_set_knee_pattern", "gait_knee_pattern",
             "mj_async_step_seconds", "mj_async_step_frames",
             "mj_async_set_position_target", "mj_async_print",
             "mj_async_save_csv", "mj_async_pending", "mj_async_clear",
