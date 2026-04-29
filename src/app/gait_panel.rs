@@ -20,8 +20,124 @@ impl ArticaraApp {
 
                 self.draw_gait_setup_section(ui);
                 ui.separator();
+                self.draw_gait_dpad(ui);
+                ui.separator();
                 self.draw_gait_runtime_section(ui);
             });
+    }
+
+    /// Hold-to-drive 4-button D-pad. Each button accumulates a velocity
+    /// component while held; on release the controller is reset to zero
+    /// so the robot stops the moment the user lets go. The conventional
+    /// numeric sliders below stay live for "set a static value" use.
+    fn draw_gait_dpad(&mut self, ui: &mut egui::Ui) {
+        // Don't render the D-pad until a controller exists; the buttons
+        // would have nothing to drive otherwise.
+        if self.gait_controller.is_none() {
+            return;
+        }
+
+        ui.label(
+            egui::RichText::new("D-pad (hold to drive)")
+                .strong()
+                .small(),
+        );
+        ui.label(
+            egui::RichText::new(
+                "Hold a direction button; the controller commands ±vx / \
+                 ±vy at the speed below while pressed, returns to zero on \
+                 release. Diagonal motion = press two adjacent buttons.",
+            )
+            .small()
+            .weak(),
+        );
+
+        let speed = self.gait_dpad_speed as f64;
+        let btn_size = egui::vec2(40.0, 40.0);
+        let mut vx = 0.0_f64;
+        let mut vy = 0.0_f64;
+        let mut any_held = false;
+
+        // 3-row layout — empty corners around the cross. Using a Grid
+        // keeps the buttons aligned regardless of the surrounding panel
+        // width, and the empty cells are zero-sized labels.
+        egui::Grid::new("gait_dpad_grid")
+            .num_columns(3)
+            .min_col_width(0.0)
+            .spacing(egui::vec2(2.0, 2.0))
+            .show(ui, |ui| {
+                ui.label("");
+                let r_up = ui
+                    .add_sized(btn_size, egui::Button::new("⬆"))
+                    .on_hover_text("Forward (+vx)");
+                ui.label("");
+                ui.end_row();
+
+                let r_left = ui
+                    .add_sized(btn_size, egui::Button::new("⬅"))
+                    .on_hover_text("Left (+vy)");
+                ui.label("");
+                let r_right = ui
+                    .add_sized(btn_size, egui::Button::new("➡"))
+                    .on_hover_text("Right (−vy)");
+                ui.end_row();
+
+                ui.label("");
+                let r_down = ui
+                    .add_sized(btn_size, egui::Button::new("⬇"))
+                    .on_hover_text("Backward (−vx)");
+                ui.label("");
+                ui.end_row();
+
+                if r_up.is_pointer_button_down_on() {
+                    vx += speed;
+                    any_held = true;
+                }
+                if r_down.is_pointer_button_down_on() {
+                    vx -= speed;
+                    any_held = true;
+                }
+                if r_left.is_pointer_button_down_on() {
+                    vy += speed;
+                    any_held = true;
+                }
+                if r_right.is_pointer_button_down_on() {
+                    vy -= speed;
+                    any_held = true;
+                }
+            });
+
+        // Speed knob — same row as the d-pad would be tidier but the
+        // grid above already used `min_col_width(0)` for tight buttons,
+        // so put the slider underneath.
+        ui.horizontal(|ui| {
+            ui.label("Speed (m/s):");
+            ui.add(
+                egui::Slider::new(&mut self.gait_dpad_speed, 0.0..=1.0)
+                    .fixed_decimals(2),
+            );
+        });
+
+        // Drive the controller. While at least one button is held,
+        // command the accumulated (vx, vy). On the first frame after
+        // release, send a single zero so the robot stops immediately
+        // instead of coasting at the last button-driven value.
+        if let Some(gc) = self.gait_controller.as_mut() {
+            if any_held {
+                gc.set_velocity_cmd(quadruped_gait::VelocityCmd {
+                    vx,
+                    vy,
+                    wz: gc.velocity_cmd().wz,
+                });
+            } else if self.gait_dpad_was_active {
+                gc.set_velocity_cmd(quadruped_gait::VelocityCmd {
+                    vx: 0.0,
+                    vy: 0.0,
+                    wz: gc.velocity_cmd().wz,
+                });
+            }
+        }
+        self.gait_dpad_was_active = any_held;
     }
 
     /// Foot-link configuration + auto-detect button. Always visible so the

@@ -611,6 +611,18 @@ pub struct ArticaraApp {
     /// Default mirror of [`crate::gait::DEFAULT_FOOT_LINKS`]; mutable so
     /// the UI panel can edit them per robot.
     gait_foot_links: [(quadruped_gait::LegId, String); 4],
+    /// Speed magnitude (m/s) commanded by the gait panel's hold-to-drive
+    /// D-pad. The four direction buttons map to ±vx / ±vy at this
+    /// magnitude; release zeroes the command. The conventional velocity
+    /// sliders below stay independent, so the user can fall back to
+    /// numeric entry whenever needed.
+    gait_dpad_speed: f32,
+    /// True while at least one D-pad button was held last frame. Used to
+    /// emit a single `VelocityCmd::zero()` on the rising edge of "all
+    /// released" so the robot doesn't keep coasting after the user lets
+    /// go (which would otherwise happen because the slider snapshot
+    /// lingers on the controller).
+    gait_dpad_was_active: bool,
     /// When `true`, the next viewport left-click sets [`Self::loop_closure_link_b`]
     /// instead of doing the usual JointDrive selection. Toggled on by the
     /// "👆 Pick B from viewport" button in the Loop Closures panel and
@@ -852,6 +864,8 @@ impl ArticaraApp {
             gait_controller: None,
             gait_foot_links: crate::gait::DEFAULT_FOOT_LINKS
                 .map(|(id, name)| (id, name.to_string())),
+            gait_dpad_speed: 0.3,
+            gait_dpad_was_active: false,
             loop_closure_picking_b: false,
             loop_closure_link_b: None,
         }
