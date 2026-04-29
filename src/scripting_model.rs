@@ -51,6 +51,10 @@ pub struct ModelScriptEngine {
     /// scripts can drive playback through `mj_step`, `play_pose`, etc.
     #[cfg(feature = "mujoco")]
     mujoco_sim: Rc<RefCell<Option<MujocoSim>>>,
+    /// Quadruped gait controller handle, borrowed from the host similarly
+    /// to `mujoco_sim`. Allows scripts to call `gait_setup`, `gait_start`,
+    /// `gait_set_velocity` etc. while the engine is evaluating.
+    gait_controller: Rc<RefCell<Option<crate::gait::GaitController>>>,
     /// Captured print output lines.
     output_lines: Rc<RefCell<Vec<String>>>,
     last_error: Option<String>,
@@ -63,11 +67,14 @@ impl ModelScriptEngine {
         let output_lines: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         #[cfg(feature = "mujoco")]
         let mujoco_sim: Rc<RefCell<Option<MujocoSim>>> = Rc::new(RefCell::new(None));
+        let gait_controller: Rc<RefCell<Option<crate::gait::GaitController>>> =
+            Rc::new(RefCell::new(None));
         let engine = Self::build_engine(
             Rc::clone(&model),
             Rc::clone(&output_lines),
             #[cfg(feature = "mujoco")]
             Rc::clone(&mujoco_sim),
+            Rc::clone(&gait_controller),
         );
         Self {
             engine,
@@ -76,6 +83,7 @@ impl ModelScriptEngine {
             model,
             #[cfg(feature = "mujoco")]
             mujoco_sim,
+            gait_controller,
             output_lines,
             last_error: None,
         }
@@ -167,6 +175,20 @@ impl ModelScriptEngine {
         self.mujoco_sim.borrow_mut().take()
     }
 
+    /// Same handover semantics as [`Self::set_mujoco_sim`] but for the
+    /// quadruped-gait controller. Lets scripts call `gait_setup`,
+    /// `gait_start` etc. while the engine is running.
+    pub fn set_gait_controller(
+        &mut self,
+        gc: Option<crate::gait::GaitController>,
+    ) {
+        *self.gait_controller.borrow_mut() = gc;
+    }
+
+    pub fn take_gait_controller(&mut self) -> Option<crate::gait::GaitController> {
+        self.gait_controller.borrow_mut().take()
+    }
+
     /// Clear scope (but keep model).
     #[allow(dead_code)]
     pub fn reset_scope(&mut self) {
@@ -179,6 +201,7 @@ impl ModelScriptEngine {
         model: Rc<RefCell<Option<RobotModel>>>,
         output: Rc<RefCell<Vec<String>>>,
         #[cfg(feature = "mujoco")] mujoco_sim: Rc<RefCell<Option<MujocoSim>>>,
+        gait_controller: Rc<RefCell<Option<crate::gait::GaitController>>>,
     ) -> Engine {
         let mut engine = Engine::new();
 
@@ -1486,6 +1509,174 @@ impl ModelScriptEngine {
             );
         }
 
+        // ── Quadruped gait API ──────────────────────────────────────────
+        // The gait controller is independent of the MuJoCo feature gate
+        // (it just produces joint targets); the actual sim hook lives in
+        // ArticaraApp's step loop where the targets are forwarded to
+        // mujoco_sim::set_position_target.
+        {
+            let g = Rc::clone(&gait_controller);
+            let m = Rc::clone(&model);
+            engine.register_fn("gait_setup", move || -> bool {
+                let model_borrow = m.borrow();
+                let Some(robot) = model_borrow.as_ref() else {
+                    return false;
+                };
+                let foot_links = crate::gait::DEFAULT_FOOT_LINKS;
+                let kin = match crate::gait::auto_detect_kinematics_config(
+                    robot, &foot_links,
+                ) {
+                    Ok(k) => k,
+                    Err(errs) => {
+                        for (leg, msg) in errs {
+                            log::warn!("gait_setup: {}: {msg}", leg.label());
+                        }
+                        return false;
+                    }
+                };
+                let cfg = quadruped_gait::GaitConfig::trot();
+                match crate::gait::GaitController::build(robot, kin, cfg) {
+                    Ok(ctrl) => {
+                        *g.borrow_mut() = Some(ctrl);
+                        true
+                    }
+                    Err(e) => {
+                        log::warn!("gait_setup build: {e}");
+                        false
+                    }
+                }
+            });
+
+            let g = Rc::clone(&gait_controller);
+            let m = Rc::clone(&model);
+            engine.register_fn(
+                "gait_setup_with_feet",
+                move |fl: &str, fr: &str, rl: &str, rr: &str| -> bool {
+                    let model_borrow = m.borrow();
+                    let Some(robot) = model_borrow.as_ref() else {
+                        return false;
+                    };
+                    let foot_links = [
+                        (quadruped_gait::LegId::FL, fl),
+                        (quadruped_gait::LegId::FR, fr),
+                        (quadruped_gait::LegId::RL, rl),
+                        (quadruped_gait::LegId::RR, rr),
+                    ];
+                    let kin = match crate::gait::auto_detect_kinematics_config(
+                        robot, &foot_links,
+                    ) {
+                        Ok(k) => k,
+                        Err(errs) => {
+                            for (leg, msg) in errs {
+                                log::warn!(
+                                    "gait_setup_with_feet: {}: {msg}",
+                                    leg.label(),
+                                );
+                            }
+                            return false;
+                        }
+                    };
+                    let cfg = quadruped_gait::GaitConfig::trot();
+                    match crate::gait::GaitController::build(robot, kin, cfg) {
+                        Ok(ctrl) => {
+                            *g.borrow_mut() = Some(ctrl);
+                            true
+                        }
+                        Err(e) => {
+                            log::warn!("gait_setup_with_feet build: {e}");
+                            false
+                        }
+                    }
+                },
+            );
+
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn(
+                "gait_set_velocity",
+                move |vx: f64, vy: f64, wz: f64| -> bool {
+                    let mut gb = g.borrow_mut();
+                    let Some(ctrl) = gb.as_mut() else {
+                        return false;
+                    };
+                    ctrl.set_velocity_cmd(quadruped_gait::VelocityCmd {
+                        vx,
+                        vy,
+                        wz,
+                    });
+                    true
+                },
+            );
+
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn("gait_start", move || -> bool {
+                let mut gb = g.borrow_mut();
+                let Some(ctrl) = gb.as_mut() else {
+                    return false;
+                };
+                ctrl.enable();
+                true
+            });
+
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn("gait_stop", move || -> bool {
+                let mut gb = g.borrow_mut();
+                let Some(ctrl) = gb.as_mut() else {
+                    return false;
+                };
+                ctrl.disable();
+                true
+            });
+
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn("gait_running", move || -> bool {
+                g.borrow().as_ref().map(|c| c.is_enabled()).unwrap_or(false)
+            });
+
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn("gait_active", move || -> bool {
+                g.borrow().is_some()
+            });
+
+            // Gait config tweaks. Each takes a single parameter and
+            // returns true on success / false if no controller exists.
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn("gait_set_cycle_period", move |s: f64| -> bool {
+                let mut gb = g.borrow_mut();
+                let Some(ctrl) = gb.as_mut() else { return false; };
+                let mut cfg = ctrl.config().clone();
+                cfg.cycle_period_s = s.max(0.05);
+                ctrl.set_config(cfg);
+                true
+            });
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn("gait_set_swing_height", move |m: f64| -> bool {
+                let mut gb = g.borrow_mut();
+                let Some(ctrl) = gb.as_mut() else { return false; };
+                let mut cfg = ctrl.config().clone();
+                cfg.swing_height_m = m.max(0.0);
+                ctrl.set_config(cfg);
+                true
+            });
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn("gait_set_duty", move |d: f64| -> bool {
+                let mut gb = g.borrow_mut();
+                let Some(ctrl) = gb.as_mut() else { return false; };
+                let mut cfg = ctrl.config().clone();
+                cfg.duty_factor = d.clamp(0.05, 0.95);
+                ctrl.set_config(cfg);
+                true
+            });
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn("gait_set_max_step", move |m: f64| -> bool {
+                let mut gb = g.borrow_mut();
+                let Some(ctrl) = gb.as_mut() else { return false; };
+                let mut cfg = ctrl.config().clone();
+                cfg.max_step_length_m = m.max(0.0);
+                ctrl.set_config(cfg);
+                true
+            });
+        }
+
         engine
     }
 }
@@ -1694,6 +1885,10 @@ impl ModelScriptEngine {
             "mj_active", "mj_start", "mj_stop", "mj_step", "mj_step_back",
             "mj_timestep", "mj_history_len", "mj_trace_len", "mj_set_trace_max",
             "mj_gravity_compensation", "save_peaks_csv",
+            "gait_setup", "gait_setup_with_feet", "gait_set_velocity",
+            "gait_start", "gait_stop", "gait_running", "gait_active",
+            "gait_set_cycle_period", "gait_set_swing_height",
+            "gait_set_duty", "gait_set_max_step",
             "mj_async_step_seconds", "mj_async_step_frames",
             "mj_async_set_position_target", "mj_async_print",
             "mj_async_save_csv", "mj_async_pending", "mj_async_clear",
@@ -1787,6 +1982,7 @@ mod tests {
             "scripts/example_jump.rhai",
             "scripts/example_jump_async.rhai",
             "scripts/verify_jump_tuning.rhai",
+            "scripts/walk_demo.rhai",
         ];
         for rel in scripts {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);

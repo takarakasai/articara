@@ -601,6 +601,16 @@ pub struct ArticaraApp {
     rename_joint_buf: String,
     /// Whether the collision-pair matrix dialog is open.
     show_collision_matrix: bool,
+    /// Optional quadruped gait controller. Built once on demand (via the
+    /// gait panel's "Setup" button or the Rhai `gait_setup` function),
+    /// then ticked from the MuJoCo sim loop while `is_enabled()` is true.
+    /// Keeping it as `Option` so models without quadruped legs simply
+    /// don't pay any cost.
+    gait_controller: Option<crate::gait::GaitController>,
+    /// Per-leg foot link names the user wants the auto-detector to use.
+    /// Default mirror of [`crate::gait::DEFAULT_FOOT_LINKS`]; mutable so
+    /// the UI panel can edit them per robot.
+    gait_foot_links: [(quadruped_gait::LegId, String); 4],
     /// When `true`, the next viewport left-click sets [`Self::loop_closure_link_b`]
     /// instead of doing the usual JointDrive selection. Toggled on by the
     /// "👆 Pick B from viewport" button in the Loop Closures panel and
@@ -839,6 +849,9 @@ impl ArticaraApp {
             rename_link_buf: String::new(),
             rename_joint_buf: String::new(),
             show_collision_matrix: false,
+            gait_controller: None,
+            gait_foot_links: crate::gait::DEFAULT_FOOT_LINKS
+                .map(|(id, name)| (id, name.to_string())),
             loop_closure_picking_b: false,
             loop_closure_link_b: None,
         }
@@ -986,6 +999,20 @@ impl ArticaraApp {
                             // slider is pushed up.
                             let speed = self.dynamics_sim_speed.clamp(0.05, 5.0);
                             let dt = wall_dt * speed;
+                            // If the gait controller is enabled, advance
+                            // it by the same `dt` as the physics step and
+                            // write its joint targets into the sim's
+                            // position_targets BEFORE the controller runs.
+                            // This way the underlying PD / computed-torque
+                            // loop sees fresh setpoints every tick.
+                            if let Some(gc) = self.gait_controller.as_mut() {
+                                if gc.is_enabled() {
+                                    let (_out, targets) = gc.tick(dt as f64);
+                                    for (idx, q) in targets {
+                                        mj_sim.set_position_target(idx, q);
+                                    }
+                                }
+                            }
                             mj_sim.step(model, dt as f64, enforce_limits);
                         }
                     }
@@ -1353,6 +1380,7 @@ mod history_panel;
 mod viewport;
 mod viewport_overlay;
 mod dynamics_panel;
+mod gait_panel;
 mod posture;
 mod file_dialog;
 mod status_bar;
@@ -1462,6 +1490,8 @@ impl eframe::App for ArticaraApp {
                     self.draw_joint_sliders(ui);
                     ui.separator();
                     self.draw_dynamics_panel(ui);
+                    ui.separator();
+                    self.draw_gait_panel(ui);
                     ui.separator();
                     self.draw_history_panel(ui);
                 });

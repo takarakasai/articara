@@ -2,6 +2,7 @@ mod app;
 mod camera;
 mod dynamics;
 mod format;
+mod gait;
 mod history;
 mod isaac;
 mod mjcf;

@@ -332,6 +332,7 @@ dependencies = [
  "mujoco-rs",
  "nalgebra 0.34.2",
  "parry3d",
+ "quadruped-gait",
  "rhai",
  "roxmltree",
  "serde",
