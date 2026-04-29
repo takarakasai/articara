@@ -463,12 +463,22 @@ pub struct InertialData {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ActuatorMode {
-    /// MuJoCo `<position>` — built-in PD: τ = kp·(q*−q) − kv·qd
+    /// Joint-side PD with trajectory-velocity feedforward:
+    /// `τ = Kp·(q*−q) + Kv·(q̇*−q̇)`. Cheapest mode; relies on the user's
+    /// trajectory + Kp/Kv to compensate gravity / inertia coupling.
     Position,
-    /// MuJoCo `<velocity>` — proportional velocity tracker: τ = kv·(qd*−qd)
+    /// Velocity tracker: `τ = Kv·(q̇*−q̇)`. Only Kv is meaningful.
     Velocity,
-    /// MuJoCo `<motor>` — direct torque command (no built-in feedback).
+    /// Direct torque command — the controller is the user's own code via
+    /// `set_torque_target`. No built-in feedback.
     Torque,
+    /// Computed-torque (inverse-dynamics feedforward) law:
+    /// `τ = M(q)·q̈* + h(q, q̇) + Kp·(q*−q) + Kv·(q̇*−q̇)`,
+    /// where M is the joint-space inertia matrix (CRBA) and h is the
+    /// nonlinear bias (gravity + Coriolis + centrifugal, RNEA at q̈=0).
+    /// The PD only has to correct tracking error, so Kp / Kv can be much
+    /// lower than in plain Position mode while delivering tighter tracking.
+    ComputedTorque,
 }
 
 impl Default for ActuatorMode {
@@ -483,12 +493,14 @@ impl ActuatorMode {
             ActuatorMode::Position => "Position",
             ActuatorMode::Velocity => "Velocity",
             ActuatorMode::Torque => "Torque",
+            ActuatorMode::ComputedTorque => "Computed-τ",
         }
     }
-    pub const ALL: [ActuatorMode; 3] = [
+    pub const ALL: [ActuatorMode; 4] = [
         ActuatorMode::Position,
         ActuatorMode::Velocity,
         ActuatorMode::Torque,
+        ActuatorMode::ComputedTorque,
     ];
 }
 
@@ -2788,6 +2800,7 @@ fn actuator_mode_to_config(m: ActuatorMode) -> misarta::config::ActuatorMode {
         ActuatorMode::Position => misarta::config::ActuatorMode::Position,
         ActuatorMode::Velocity => misarta::config::ActuatorMode::Velocity,
         ActuatorMode::Torque => misarta::config::ActuatorMode::Torque,
+        ActuatorMode::ComputedTorque => misarta::config::ActuatorMode::ComputedTorque,
     }
 }
 
@@ -2797,6 +2810,7 @@ fn actuator_mode_from_config(m: misarta::config::ActuatorMode) -> ActuatorMode {
         misarta::config::ActuatorMode::Position => ActuatorMode::Position,
         misarta::config::ActuatorMode::Velocity => ActuatorMode::Velocity,
         misarta::config::ActuatorMode::Torque => ActuatorMode::Torque,
+        misarta::config::ActuatorMode::ComputedTorque => ActuatorMode::ComputedTorque,
     }
 }
 

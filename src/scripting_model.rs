@@ -1169,6 +1169,60 @@ impl ModelScriptEngine {
                 true
             });
 
+            // Per-joint actuator mode by name. Accepts "Position", "Velocity",
+            // "Torque", or "ComputedTorque" (case-insensitive). Returns true
+            // on success.
+            let m = Rc::clone(&model);
+            engine.register_fn(
+                "set_actuator_mode",
+                move |name: &str, mode: &str| -> bool {
+                    let parsed = match mode.to_ascii_lowercase().as_str() {
+                        "position" => crate::rbd::model::ActuatorMode::Position,
+                        "velocity" => crate::rbd::model::ActuatorMode::Velocity,
+                        "torque" => crate::rbd::model::ActuatorMode::Torque,
+                        "computedtorque" | "computed_torque" | "computed-torque"
+                            | "ct" => crate::rbd::model::ActuatorMode::ComputedTorque,
+                        _ => return false,
+                    };
+                    let mut model_borrow = m.borrow_mut();
+                    let Some(robot) = model_borrow.as_mut() else {
+                        return false;
+                    };
+                    let Some(&idx) = robot.joint_map.get(name) else {
+                        return false;
+                    };
+                    robot.joints[idx].actuator_mode = parsed;
+                    true
+                },
+            );
+
+            // Bulk-set actuator mode on every non-fixed joint. Same string
+            // syntax as `set_actuator_mode`. Returns the number of joints
+            // touched, or -1 on a typo.
+            let m = Rc::clone(&model);
+            engine.register_fn("set_actuator_mode_all", move |mode: &str| -> i64 {
+                let parsed = match mode.to_ascii_lowercase().as_str() {
+                    "position" => crate::rbd::model::ActuatorMode::Position,
+                    "velocity" => crate::rbd::model::ActuatorMode::Velocity,
+                    "torque" => crate::rbd::model::ActuatorMode::Torque,
+                    "computedtorque" | "computed_torque" | "computed-torque"
+                        | "ct" => crate::rbd::model::ActuatorMode::ComputedTorque,
+                    _ => return -1,
+                };
+                let mut model_borrow = m.borrow_mut();
+                let Some(robot) = model_borrow.as_mut() else {
+                    return 0;
+                };
+                let mut n = 0i64;
+                for j in robot.joints.iter_mut() {
+                    if j.joint_type != "fixed" {
+                        j.actuator_mode = parsed;
+                        n += 1;
+                    }
+                }
+                n
+            });
+
             // Per-joint armature (rotor inertia, kg·m²). Mapped to MuJoCo
             // `<joint armature>` at the next sim start.
             let m = Rc::clone(&model);
@@ -1543,6 +1597,7 @@ impl ModelScriptEngine {
             "play_sequence", "sequence_in_progress", "sequence_progress",
             "apply_force", "cancel_force",
             "reset_peaks", "peak_torque", "peak_velocity", "peaks",
+            "set_actuator_mode", "set_actuator_mode_all",
             "set_kp", "set_kv", "set_armature", "set_joint_damping",
             "set_kp_all", "set_kv_all", "set_armature_all", "set_joint_damping_all",
             "set_position_target", "set_velocity_target", "set_torque_target",

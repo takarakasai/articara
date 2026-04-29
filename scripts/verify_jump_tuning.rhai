@@ -29,16 +29,19 @@ let WATCHED_JOINTS = [
     "FR_calf_joint", "FL_calf_joint", "RR_calf_joint", "RL_calf_joint",
 ];
 
-// Tuning sweeps. Each row is `[tag, armature, damping, Kp, Kv]`. Apply
-// uniformly to every movable joint via the `*_all` setters. For per-joint
-// asymmetry (e.g. heavier hip than calf), call set_kp(name,…) etc. instead.
+// Tuning sweeps. Each row carries everything needed to bake one config into
+// the sim. `mode` selects the controller law:
+//   "position"       — joint-side PD with q̇* feedforward (cheap, default)
+//   "computedtorque" — M(q)·q̈* + h(q, q̇) feedforward + PD residual
+// With computed-torque, Kp / Kv only correct tracking error and modelling
+// slack, so they can be much smaller than in position mode.
 let CONFIGS = [
-    // tag,                     armature, damping,  Kp,   Kv
-    // tag,                     armature, damping,  Kp,    Kv,    grav_comp
-    #{ tag: "baseline",         armature: 1.4e-3,   damping: 1.0,  kp: 50.0,  kv: 0.5, grav_comp: false },
-    #{ tag: "qdd_recommended",  armature: 1.4e-3,   damping: 0.1,  kp: 80.0,  kv: 1.2, grav_comp: false },
-    #{ tag: "qdd_grav_comp",    armature: 1.4e-3,   damping: 0.1,  kp: 80.0,  kv: 1.2, grav_comp: true  },
-    #{ tag: "qdd_aggressive",   armature: 1.4e-3,   damping: 0.05, kp: 120.0, kv: 1.5, grav_comp: true  },
+    // tag,                    mode,             armature, damping,  Kp,    Kv,    grav_comp
+    #{ tag: "baseline",        mode: "position",       armature: 1.4e-3, damping: 1.0,  kp: 50.0,  kv: 0.5, grav_comp: false },
+    #{ tag: "qdd_recommended", mode: "position",       armature: 1.4e-3, damping: 0.1,  kp: 80.0,  kv: 1.2, grav_comp: false },
+    #{ tag: "qdd_grav_comp",   mode: "position",       armature: 1.4e-3, damping: 0.1,  kp: 80.0,  kv: 1.2, grav_comp: true  },
+    #{ tag: "computed_torque", mode: "computedtorque", armature: 1.4e-3, damping: 0.1,  kp: 30.0,  kv: 0.5, grav_comp: false },
+    #{ tag: "ct_low_pd",       mode: "computedtorque", armature: 1.4e-3, damping: 0.1,  kp: 10.0,  kv: 0.3, grav_comp: false },
 ];
 
 // Trace ring buffer cap. The trace is captured in real time by MuJoCo, so
@@ -70,7 +73,7 @@ let summary = [];
 
 for cfg in CONFIGS {
     print(`──── ${cfg.tag} ────`);
-    print(`  armature=${cfg.armature}, damping=${cfg.damping}, Kp=${cfg.kp}, Kv=${cfg.kv}, grav_comp=${cfg.grav_comp}`);
+    print(`  mode=${cfg.mode}, armature=${cfg.armature}, damping=${cfg.damping}, Kp=${cfg.kp}, Kv=${cfg.kv}, grav_comp=${cfg.grav_comp}`);
 
     // Make sure no sim is alive before we re-bake the MJCF — armature and
     // damping only flow into MuJoCo at sim construction time.
@@ -78,11 +81,16 @@ for cfg in CONFIGS {
         mj_stop();
     }
 
+    let n0 = set_actuator_mode_all(cfg.mode);
+    if n0 < 0 {
+        print(`  ERROR: unknown mode "${cfg.mode}"; skipping`);
+        continue;
+    }
     let n1 = set_armature_all(cfg.armature);
     let n2 = set_joint_damping_all(cfg.damping);
     let n3 = set_kp_all(cfg.kp);
     let n4 = set_kv_all(cfg.kv);
-    print(`  applied to ${n1} joints (armature/damping/Kp/Kv all reached)`);
+    print(`  applied to ${n1} joints (mode/armature/damping/Kp/Kv all reached)`);
 
     if !mj_start() {
         print("  ERROR: mj_start() failed; skipping this config");
