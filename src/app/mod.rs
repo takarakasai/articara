@@ -497,6 +497,11 @@ pub struct ArticaraApp {
     /// and the velocity-mode reference / commanded torque are gated by ωmax.
     #[cfg(feature = "mujoco")]
     enforce_actuator_limits: bool,
+    /// Whether to enable gravity-compensation feedforward in the MuJoCo
+    /// controller. The flag mirrors `MujocoSim::set_gravity_compensation`
+    /// so the toggle survives Stop → Play (we re-apply it on `mj_start`).
+    #[cfg(feature = "mujoco")]
+    enforce_gravity_compensation: bool,
     /// Whether the Joint Peaks time-series plot window is open.
     #[cfg(feature = "mujoco")]
     show_peaks_plot: bool,
@@ -782,6 +787,8 @@ impl ArticaraApp {
             sim_drag_force_gain: 500.0,
             #[cfg(feature = "mujoco")]
             enforce_actuator_limits: false,
+            #[cfg(feature = "mujoco")]
+            enforce_gravity_compensation: false,
             #[cfg(feature = "mujoco")]
             show_peaks_plot: false,
             #[cfg(feature = "mujoco")]

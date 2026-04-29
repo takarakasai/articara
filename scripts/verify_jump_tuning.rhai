@@ -34,9 +34,11 @@ let WATCHED_JOINTS = [
 // asymmetry (e.g. heavier hip than calf), call set_kp(name,…) etc. instead.
 let CONFIGS = [
     // tag,                     armature, damping,  Kp,   Kv
-    #{ tag: "baseline",         armature: 1.4e-3,   damping: 1.0,  kp: 50.0, kv: 0.5 },
-    #{ tag: "qdd_recommended",  armature: 1.4e-3,   damping: 0.1,  kp: 80.0, kv: 1.2 },
-    #{ tag: "qdd_aggressive",   armature: 1.4e-3,   damping: 0.05, kp: 120.0, kv: 1.5 },
+    // tag,                     armature, damping,  Kp,    Kv,    grav_comp
+    #{ tag: "baseline",         armature: 1.4e-3,   damping: 1.0,  kp: 50.0,  kv: 0.5, grav_comp: false },
+    #{ tag: "qdd_recommended",  armature: 1.4e-3,   damping: 0.1,  kp: 80.0,  kv: 1.2, grav_comp: false },
+    #{ tag: "qdd_grav_comp",    armature: 1.4e-3,   damping: 0.1,  kp: 80.0,  kv: 1.2, grav_comp: true  },
+    #{ tag: "qdd_aggressive",   armature: 1.4e-3,   damping: 0.05, kp: 120.0, kv: 1.5, grav_comp: true  },
 ];
 
 // Trace ring buffer cap. The trace is captured in real time by MuJoCo, so
@@ -68,7 +70,7 @@ let summary = [];
 
 for cfg in CONFIGS {
     print(`──── ${cfg.tag} ────`);
-    print(`  armature=${cfg.armature}, damping=${cfg.damping}, Kp=${cfg.kp}, Kv=${cfg.kv}`);
+    print(`  armature=${cfg.armature}, damping=${cfg.damping}, Kp=${cfg.kp}, Kv=${cfg.kv}, grav_comp=${cfg.grav_comp}`);
 
     // Make sure no sim is alive before we re-bake the MJCF — armature and
     // damping only flow into MuJoCo at sim construction time.
@@ -86,6 +88,9 @@ for cfg in CONFIGS {
         print("  ERROR: mj_start() failed; skipping this config");
         continue;
     }
+    // Gravity comp must be set AFTER mj_start since it lives on the sim,
+    // not the model — a fresh sim defaults to off.
+    mj_gravity_compensation(cfg.grav_comp);
     mj_set_trace_max(TRACE_MAX);
     reset_peaks();
 

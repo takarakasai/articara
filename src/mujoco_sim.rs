@@ -77,6 +77,12 @@ pub struct MujocoSim {
     trace: VecDeque<TraceFrame>,
     /// Cap on trace length (`~10s` of history at the default 2 ms timestep).
     trace_max: usize,
+    /// When `true`, [`Self::apply_controller`] adds a feedforward gravity-
+    /// compensation torque (computed via misarta's RNEA) on top of the PD
+    /// command in Position and Velocity modes. Off by default to preserve the
+    /// existing controller behaviour for users who haven't opted in. The
+    /// equivalent UI knob lives in dynamics_panel "Sim toggles".
+    gravity_compensation: bool,
 }
 
 /// One sample in the time-series ring buffer.
@@ -270,7 +276,21 @@ impl MujocoSim {
             last_tau: vec![0.0; robot.joints.len()],
             trace: VecDeque::new(),
             trace_max: 5000,
+            gravity_compensation: false,
         })
+    }
+
+    /// Toggle gravity-compensation feedforward in [`Self::apply_controller`].
+    /// When enabled, each Position / Velocity-mode joint gets `τ_grav` added
+    /// before any clipping. Read by every tick of [`Self::step`] /
+    /// [`Self::step_n_frames`]; takes effect on the next physics tick.
+    pub fn set_gravity_compensation(&mut self, on: bool) {
+        self.gravity_compensation = on;
+    }
+
+    /// Whether gravity-compensation feedforward is currently enabled.
+    pub fn gravity_compensation(&self) -> bool {
+        self.gravity_compensation
     }
 
     /// Read-only view of the time-series ring buffer (oldest → newest).
@@ -474,7 +494,38 @@ impl MujocoSim {
     /// follows `τ ← τ - kv·(qd - qd_max·sign(qd))` for the over-speed region
     /// so the motor smoothly bleeds energy instead of clipping abruptly. The
     /// flag mirrors the dynamics-panel `⛔ Limits` checkbox.
-    fn apply_controller(&mut self, robot: &RobotModel, enforce_limits: bool) {
+    ///
+    /// When `self.gravity_compensation` is true, a feedforward gravity term
+    /// (RNEA evaluated at the current pose, q̇=0) is added to the PD output
+    /// for Position and Velocity modes. Torque-mode joints are left alone
+    /// since their command is supposed to be the user's full torque request.
+    fn apply_controller(&mut self, robot: &mut RobotModel, enforce_limits: bool) {
+        // Pre-compute the gravity feedforward vector once for the whole tick.
+        // Sync MuJoCo's pre-step state into `robot` first so build_q reflects
+        // the current configuration (joint angles + floating base). Without
+        // this the gravity vector would be stale by one physics tick.
+        let gravity_torques: Option<Vec<f64>> = if self.gravity_compensation {
+            self.sync_back(robot);
+            let adapter = robot.mc();
+            let q = robot.build_q();
+            let g_full = misarta::rnea::compute_gravity(&adapter.model, &q);
+            // Project the full nv-dim vector onto each non-fixed articara
+            // joint. nv != 1 joints (ball, free) get 0 — their drives aren't
+            // PD-controlled at the joint level here.
+            let mut g_per_joint = vec![0.0_f64; robot.joints.len()];
+            for ji in 0..robot.joints.len() {
+                if let Some(mi) = adapter.a2m.get(ji).and_then(|&m| m) {
+                    let nv = adapter.model.joints[mi].joint_type.nv();
+                    if nv == 1 {
+                        g_per_joint[ji] = g_full[adapter.model.v_idx[mi]];
+                    }
+                }
+            }
+            Some(g_per_joint)
+        } else {
+            None
+        };
+
         for (ji, joint) in robot.joints.iter().enumerate() {
             if joint.joint_type == "fixed" {
                 continue;
@@ -505,8 +556,18 @@ impl MujocoSim {
                         .get(ji)
                         .copied()
                         .unwrap_or(0.0);
-                    joint.actuator_kp * (q_target - q)
-                        + joint.actuator_kv * (qd_target - qd)
+                    let pd = joint.actuator_kp * (q_target - q)
+                        + joint.actuator_kv * (qd_target - qd);
+                    // Gravity feedforward: the PD now only has to correct
+                    // tracking error, not also fight the joint's static
+                    // load. This drops the static error from `τ_grav / Kp`
+                    // (typically a few degrees) to essentially zero.
+                    let grav = gravity_torques
+                        .as_ref()
+                        .and_then(|g| g.get(ji))
+                        .copied()
+                        .unwrap_or(0.0);
+                    pd + grav
                 }
                 ActuatorMode::Velocity => {
                     let mut qd_target =
@@ -517,9 +578,19 @@ impl MujocoSim {
                         // unreachable speed.
                         qd_target = qd_target.clamp(-joint.velocity, joint.velocity);
                     }
-                    joint.actuator_kv * (qd_target - qd)
+                    let pd = joint.actuator_kv * (qd_target - qd);
+                    let grav = gravity_torques
+                        .as_ref()
+                        .and_then(|g| g.get(ji))
+                        .copied()
+                        .unwrap_or(0.0);
+                    pd + grav
                 }
                 ActuatorMode::Torque => {
+                    // Pure torque mode is the user's explicit request — don't
+                    // add gravity comp here, otherwise scripts that command
+                    // `τ_target = 0` for a "freeze" would unexpectedly hold
+                    // the joint up against gravity.
                     self.torque_targets.get(ji).copied().unwrap_or(0.0)
                 }
             };

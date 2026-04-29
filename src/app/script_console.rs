@@ -503,6 +503,7 @@ impl ArticaraApp {
             "    mj_history_len()            Frames available for step_back",
             "    mj_trace_len()              Samples in (q,q̇,τ) trace ring",
             "    mj_set_trace_max(n)         Resize trace ring (returns n)",
+            "    mj_gravity_compensation(on) Toggle τ_grav feedforward",
             "    save_peaks_csv(path)        Write trace to CSV; rows or -1",
             "",
             "  Pose / Force:",
