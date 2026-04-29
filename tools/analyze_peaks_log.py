@@ -12,9 +12,14 @@ Usage:
   python tools/analyze_peaks_log.py log/log.csv
   python tools/analyze_peaks_log.py log/log.csv --joints RL_calf,FL_calf
   python tools/analyze_peaks_log.py log/log.csv --motor MG4005-i10:10
+  python tools/analyze_peaks_log.py log/log.csv --motor MG4005-i10:10:qdd
+  python tools/analyze_peaks_log.py --list-motors
 
 The optional --motor flag prints suggested armature / joint_damping values
-derived from a motor data sheet (see motor_specs/ below).
+derived from a motor data sheet. The drive style (`:qdd` or `:traditional`)
+overrides the preset default and changes how passive damping is suggested
+(QDD assumes active control + low backdrive friction; traditional includes
+electrical Kt²/R as a BRAKE-mode upper bound).
 """
 
 import argparse
@@ -32,6 +37,17 @@ from pathlib import Path
 # Each entry holds the catalogue values needed to back out armature and
 # joint damping. Reflect the rotor inertia by n² and the electrical damping
 # Kt²/R by n² for the joint-side numbers.
+#
+# `qdd` (Quasi-Direct-Drive) flag changes how `joint_damping` is suggested:
+# - QDD motors (low gear ratio, backdrivable, transparent) have very low
+#   mechanical friction. Their *passive* viscous damping is essentially just
+#   bearing + minor gear losses. The Kt²/R electrical-braking term only acts
+#   when the motor terminals are SHORTED (BRAKE mode); in active control it's
+#   already represented by the controller's Kv·(q̇* − q̇) term, so we should
+#   NOT double-count it as passive damping.
+# - Traditional gearboxed servos (high reduction, sticky, lossy) have
+#   significant mechanical damping; we add the electrical term as a rough
+#   upper bound since their drivers are often in BRAKE mode at idle.
 MOTOR_SPECS = {
     "MG4005-i10": {
         "rotor_inertia_kgm2": 140e-7,   # 140 g·cm² → SI
@@ -41,6 +57,7 @@ MOTOR_SPECS = {
         "max_torque_Nm": 2.5,
         "max_speed_rpm": 320,
         "default_gear_ratio": 10.0,
+        "qdd": True,   # 1:10 reducer, backdrivable, transparent → QDD
     },
 }
 
@@ -177,47 +194,84 @@ def print_joint_table(stats, fs):
     print("   pinned to one rail for many ticks, so q̇flip% is the more reliable cue.)")
 
 
-def estimate_armature_damping(motor, gear_ratio):
-    """Reflect catalogue rotor inertia and Kt²/R to the joint side."""
+def estimate_armature_damping(motor, gear_ratio, qdd):
+    """Reflect catalogue rotor inertia and back-EMF damping to the joint side.
+
+    For QDD motors (`qdd=True`) under active control, the electrical Kt²/R
+    term is omitted from the suggested *passive* damping — it's effectively
+    impersonated by the controller's Kv term. Mechanical friction is also
+    much smaller for backdrivable QDD gearboxes (0.1–0.5% of stall vs 1–5%
+    for traditional planetary or harmonic drives).
+    """
     n2 = gear_ratio ** 2
     armature = motor["rotor_inertia_kgm2"] * n2
     kt = motor["torque_const_Nm_per_A"]
     r = motor["line_resistance_ohm"]
-    damp_motor = (kt * kt) / r       # N·m·s/rad at the motor shaft
-    damp_joint = damp_motor * n2
-    # Mechanical friction is harder to estimate; report a typical 1–5% of
-    # stall torque per rad/s as a rough additional viscous term.
+    damp_electrical_motor = (kt * kt) / r       # N·m·s/rad at motor shaft
+    damp_electrical_joint = damp_electrical_motor * n2
     stall = motor["max_torque_Nm"]
-    mech_low = 0.01 * stall * gear_ratio   # very rough
-    mech_high = 0.05 * stall * gear_ratio
+    if qdd:
+        # Bearing + low-loss gear, ~0.1-0.5% of τ_max per rad/s reflected
+        mech_low = 0.001 * stall * gear_ratio
+        mech_high = 0.005 * stall * gear_ratio
+        # Electrical term excluded from the "active control" recommendation
+        total_low = mech_low
+        total_high = mech_high
+        electrical_note = ("(BRAKE-mode upper bound; not added to passive "
+                           "damping for QDD under active control)")
+    else:
+        # Traditional servo with high-reduction gearbox (~1-5% of τ_max)
+        mech_low = 0.01 * stall * gear_ratio
+        mech_high = 0.05 * stall * gear_ratio
+        total_low = damp_electrical_joint + mech_low
+        total_high = damp_electrical_joint + mech_high
+        electrical_note = "(included in passive damping for traditional servo)"
     return {
         "armature_kgm2": armature,
-        "damping_electrical_Nms_per_rad": damp_joint,
+        "damping_electrical_Nms_per_rad": damp_electrical_joint,
         "damping_mechanical_low_Nms_per_rad": mech_low,
         "damping_mechanical_high_Nms_per_rad": mech_high,
-        "damping_total_low_Nms_per_rad": damp_joint + mech_low,
-        "damping_total_high_Nms_per_rad": damp_joint + mech_high,
+        "damping_total_low_Nms_per_rad": total_low,
+        "damping_total_high_Nms_per_rad": total_high,
+        "electrical_note": electrical_note,
+        "qdd": qdd,
     }
 
 
 def parse_motor_arg(spec):
-    """Parse `MG4005-i10:10` → (motor_dict, gear_ratio)."""
-    if ":" in spec:
-        name, gr_str = spec.split(":", 1)
-        gear = float(gr_str)
-    else:
-        name = spec
-        gear = MOTOR_SPECS[name]["default_gear_ratio"]
+    """Parse `MG4005-i10[:gear[:qdd|traditional]]` → (motor_dict, gear, qdd, name).
+
+    The optional third token forces the drive style, overriding the preset's
+    own `qdd` flag — handy for "what-if" analysis when comparing the same
+    motor under different driver / control assumptions.
+    """
+    parts = spec.split(":")
+    name = parts[0]
     if name not in MOTOR_SPECS:
         raise SystemExit(
             f"Unknown motor '{name}'. Known: {list(MOTOR_SPECS.keys())}"
         )
-    return MOTOR_SPECS[name], gear, name
+    motor = MOTOR_SPECS[name]
+    gear = float(parts[1]) if len(parts) >= 2 and parts[1] else motor["default_gear_ratio"]
+    if len(parts) >= 3:
+        flag = parts[2].lower()
+        if flag == "qdd":
+            qdd = True
+        elif flag in ("traditional", "trad", "geared"):
+            qdd = False
+        else:
+            raise SystemExit(
+                f"Unknown drive style '{parts[2]}'. Use 'qdd' or 'traditional'."
+            )
+    else:
+        qdd = motor.get("qdd", False)
+    return motor, gear, qdd, name
 
 
-def print_motor_recommendation(motor, gear, name):
-    est = estimate_armature_damping(motor, gear)
-    print(f"=== Motor recommendation: {name} (gear ratio 1:{gear:g}) ===")
+def print_motor_recommendation(motor, gear, qdd, name):
+    est = estimate_armature_damping(motor, gear, qdd)
+    style = "QDD (Quasi-Direct Drive)" if qdd else "Traditional gearboxed servo"
+    print(f"=== Motor recommendation: {name} (gear ratio 1:{gear:g}, {style}) ===")
     print(f"  Catalogue rotor inertia : {motor['rotor_inertia_kgm2']*1e7:.1f} g·cm²")
     print(f"  Catalogue Kt / R        : {motor['torque_const_Nm_per_A']} N·m/A,"
           f" {motor['line_resistance_ohm']} Ω (line-to-line)")
@@ -225,12 +279,19 @@ def print_motor_recommendation(motor, gear, name):
     print()
     print(f"  → armature              ≈ {est['armature_kgm2']:.3e} kg·m²"
           f"   (= {motor['rotor_inertia_kgm2']*1e7:.0f} g·cm² × {gear:g}²)")
-    print(f"  → joint_damping (elec.) ≈ {est['damping_electrical_Nms_per_rad']:.3f} N·m·s/rad"
-          f"   (= Kt²/R × {gear:g}²)")
+    print(f"  → electrical damping     ≈ {est['damping_electrical_Nms_per_rad']:.3f} N·m·s/rad"
+          f"   {est['electrical_note']}")
     print(f"  → mechanical friction    ≈ {est['damping_mechanical_low_Nms_per_rad']:.3f} … "
-          f"{est['damping_mechanical_high_Nms_per_rad']:.3f} N·m·s/rad (rough; 1–5% τ_max)")
-    print(f"  → total joint_damping    ≈ {est['damping_total_low_Nms_per_rad']:.3f} … "
+          f"{est['damping_mechanical_high_Nms_per_rad']:.3f} N·m·s/rad")
+    print(f"  → joint_damping (passive) ≈ {est['damping_total_low_Nms_per_rad']:.3f} … "
           f"{est['damping_total_high_Nms_per_rad']:.3f} N·m·s/rad")
+    if qdd:
+        print()
+        print("  QDD note: passive damping intentionally LOW so kinetic energy")
+        print("  isn't dissipated during dynamic moves (e.g. jumping). Use the")
+        print("  controller's Kv term to provide active damping instead. With")
+        print("  I_eff = I_link + armature, target ζ = 0.7 via:")
+        print("      Kv ≈ 2·0.7·√(Kp·I_eff) − joint_damping")
     print()
 
 
@@ -242,17 +303,22 @@ def main():
     ap.add_argument("--joints", help="Comma-separated joint name prefixes to filter "
                                      "(e.g. RL_calf,FL_calf). Default: all.")
     ap.add_argument("--motor",
-                    help="Print suggested armature/joint_damping for a motor preset, "
-                         "with optional `:gear_ratio` (e.g. MG4005-i10:10).")
+                    help="Print suggested armature/joint_damping for a motor "
+                         "preset. Format: NAME[:gear[:qdd|traditional]]. "
+                         "Examples: 'MG4005-i10', 'MG4005-i10:10', "
+                         "'MG4005-i10:10:qdd', 'MG4005-i10:10:traditional'. "
+                         "If the drive style is omitted, the preset's own "
+                         "`qdd` flag is used.")
     ap.add_argument("--list-motors", action="store_true",
                     help="List known motor presets and exit.")
     args = ap.parse_args()
 
     if args.list_motors:
         for name, spec in MOTOR_SPECS.items():
+            style = "QDD" if spec.get("qdd", False) else "traditional"
             print(f"  {name}: rotor={spec['rotor_inertia_kgm2']*1e7:.0f} g·cm², "
                   f"τmax={spec['max_torque_Nm']} N·m, "
-                  f"default gear 1:{spec['default_gear_ratio']:g}")
+                  f"default gear 1:{spec['default_gear_ratio']:g}, {style}")
         return 0
 
     if not args.csv_path:
@@ -280,9 +346,9 @@ def main():
     print_joint_table(stats, fs)
 
     if args.motor:
-        motor, gear, name = parse_motor_arg(args.motor)
+        motor, gear, qdd, name = parse_motor_arg(args.motor)
         print()
-        print_motor_recommendation(motor, gear, name)
+        print_motor_recommendation(motor, gear, qdd, name)
 
     # Quick health verdict.
     nyquist = fs / 2.0
