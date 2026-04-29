@@ -168,11 +168,13 @@ impl ArticaraApp {
                             if let Some(eng) = &mut self.script_engine {
                                 #[cfg(feature = "mujoco")]
                                 eng.set_mujoco_sim(self.mujoco_sim.take());
+                                eng.set_gait_controller(self.gait_controller.take());
                                 let result = eng.eval(&source);
                                 #[cfg(feature = "mujoco")]
                                 {
                                     self.mujoco_sim = eng.take_mujoco_sim();
                                 }
+                                self.gait_controller = eng.take_gait_controller();
                                 match result {
                                     Ok(lines) => {
                                         for line in lines {
@@ -409,6 +411,7 @@ impl ArticaraApp {
                             // of script success.
                             #[cfg(feature = "mujoco")]
                             eng.set_mujoco_sim(self.mujoco_sim.take());
+                            eng.set_gait_controller(self.gait_controller.take());
 
                             let eval_result = eng.eval(&src);
 
@@ -416,6 +419,7 @@ impl ArticaraApp {
                             {
                                 self.mujoco_sim = eng.take_mujoco_sim();
                             }
+                            self.gait_controller = eng.take_gait_controller();
 
                             match eval_result {
                                 Ok(lines) => {
@@ -513,6 +517,15 @@ impl ArticaraApp {
             "    mj_set_trace_max(n)         Resize trace ring (returns n)",
             "    mj_gravity_compensation(on) Toggle τ_grav feedforward",
             "    save_peaks_csv(path)        Write trace to CSV; rows or -1",
+            "",
+            "  Quadruped gait (CHAMP-equivalent):",
+            "    gait_setup()                 Auto-detect from default foot links (FL/FR/RL/RR_foot)",
+            "    gait_setup_with_feet(fl,fr,rl,rr)  Same but custom names",
+            "    gait_set_velocity(vx,vy,wz)  Body-frame velocity command",
+            "    gait_start() / gait_stop()   Drive joint targets while sim runs",
+            "    gait_running() / gait_active()  Bool — currently driving / built",
+            "    gait_set_cycle_period(s) / gait_set_swing_height(m)",
+            "    gait_set_duty(0..1) / gait_set_max_step(m)",
             "",
             "  Async timeline (UI animates the queue, viewport reflects it):",
             "    mj_async_step_seconds(s)    Queue advancing the sim by s seconds",

@@ -3,6 +3,7 @@ pub mod camera;
 pub mod collision;
 pub mod dynamics;
 pub mod format;
+pub mod gait;
 pub mod history;
 pub mod isaac;
 pub mod mjcf;
