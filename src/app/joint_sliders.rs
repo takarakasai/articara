@@ -245,6 +245,16 @@ impl ArticaraApp {
                             let id_bx = ui.id().with("lc_bx");
                             let id_by = ui.id().with("lc_by");
                             let id_bz = ui.id().with("lc_bz");
+                            // 6-DoF rotation captures (quaternion x,y,z,w each).
+                            let id_rax = ui.id().with("lc_rax");
+                            let id_ray = ui.id().with("lc_ray");
+                            let id_raz = ui.id().with("lc_raz");
+                            let id_raw = ui.id().with("lc_raw");
+                            let id_rbx = ui.id().with("lc_rbx");
+                            let id_rby = ui.id().with("lc_rby");
+                            let id_rbz = ui.id().with("lc_rbz");
+                            let id_rbw = ui.id().with("lc_rbw");
+                            let id_pose_mode = ui.id().with("lc_pose_mode");
 
                             let mut link_b_idx: usize = ui.data(|d| d.get_temp(id_b).unwrap_or(0));
                             let mut oa_x: f64 = ui.data(|d| d.get_temp(id_ox).unwrap_or(0.0));
@@ -253,6 +263,17 @@ impl ArticaraApp {
                             let mut ob_x: f64 = ui.data(|d| d.get_temp(id_bx).unwrap_or(0.0));
                             let mut ob_y: f64 = ui.data(|d| d.get_temp(id_by).unwrap_or(0.0));
                             let mut ob_z: f64 = ui.data(|d| d.get_temp(id_bz).unwrap_or(0.0));
+                            // Rotation defaults: identity quaternion (x=y=z=0, w=1).
+                            let mut ra_x: f64 = ui.data(|d| d.get_temp(id_rax).unwrap_or(0.0));
+                            let mut ra_y: f64 = ui.data(|d| d.get_temp(id_ray).unwrap_or(0.0));
+                            let mut ra_z: f64 = ui.data(|d| d.get_temp(id_raz).unwrap_or(0.0));
+                            let mut ra_w: f64 = ui.data(|d| d.get_temp(id_raw).unwrap_or(1.0));
+                            let mut rb_x: f64 = ui.data(|d| d.get_temp(id_rbx).unwrap_or(0.0));
+                            let mut rb_y: f64 = ui.data(|d| d.get_temp(id_rby).unwrap_or(0.0));
+                            let mut rb_z: f64 = ui.data(|d| d.get_temp(id_rbz).unwrap_or(0.0));
+                            let mut rb_w: f64 = ui.data(|d| d.get_temp(id_rbw).unwrap_or(1.0));
+                            let mut pose_mode: bool =
+                                ui.data(|d| d.get_temp(id_pose_mode).unwrap_or(false));
 
                             egui::ComboBox::from_label("Link B")
                                 .selected_text(&model.links[link_b_idx.min(model.links.len() - 1)].name)
@@ -274,18 +295,119 @@ impl ArticaraApp {
                                 ui.add(egui::DragValue::new(&mut ob_y).speed(0.01).prefix("y:"));
                                 ui.add(egui::DragValue::new(&mut ob_z).speed(0.01).prefix("z:"));
                             });
-
-                            let link_b_name = model.links[link_b_idx.min(model.links.len() - 1)].name.clone();
-                            if ui.button(format!("🔗 Add closure: {} ↔ {}", &sel_link_name, &link_b_name)).clicked() {
-                                model.loop_closures.push(
-                                    crate::robot::LoopClosure::position(
-                                        format!("{}↔{}", &sel_link_name, &link_b_name),
-                                        sel_link_name.clone(),
-                                        na::Vector3::new(oa_x, oa_y, oa_z),
-                                        link_b_name.clone(),
-                                        na::Vector3::new(ob_x, ob_y, ob_z),
-                                    ),
+                            ui.checkbox(&mut pose_mode, "6-DoF (capture rotation too)")
+                                .on_hover_text(
+                                    "When enabled, the constraint pins both \
+                                     position AND orientation. The Capture \
+                                     button records each link's local rotation \
+                                     so the closure is satisfied at the \
+                                     current pose.",
                                 );
+
+                            // ── Capture-from-pose button ──
+                            // Pick a common world-frame target (midpoint of
+                            // the two link origins) and back out the local-
+                            // frame offsets so the loop-closure constraint
+                            // is exactly satisfied at the *current* model
+                            // pose. Saves the user from typing the offsets
+                            // manually after physically aligning the links.
+                            let link_b_name = model
+                                .links[link_b_idx.min(model.links.len() - 1)]
+                                .name
+                                .clone();
+                            if ui
+                                .button("📍 Capture from current pose")
+                                .on_hover_text(
+                                    "Compute offsets so the constraint is \
+                                     exactly satisfied at the current pose. \
+                                     The common world point is the midpoint \
+                                     of link A's and link B's origins.",
+                                )
+                                .clicked()
+                            {
+                                let transforms = model.compute_transforms();
+                                if let (Some(tf_a), Some(tf_b)) = (
+                                    transforms.get(&sel_link_name),
+                                    transforms.get(&link_b_name),
+                                ) {
+                                    let pa = tf_a.translation.vector;
+                                    let pb = tf_b.translation.vector;
+                                    let mid = (pa + pb) * 0.5;
+                                    let mid_pt = na::Point3::from(mid);
+                                    let oa = tf_a.inverse().transform_point(&mid_pt);
+                                    let ob = tf_b.inverse().transform_point(&mid_pt);
+                                    oa_x = oa.x as f64;
+                                    oa_y = oa.y as f64;
+                                    oa_z = oa.z as f64;
+                                    ob_x = ob.x as f64;
+                                    ob_y = ob.y as f64;
+                                    ob_z = ob.z as f64;
+                                    if pose_mode {
+                                        // For 6-DoF, capture each link's
+                                        // current world rotation as the
+                                        // local rotation offset. The common
+                                        // world frame (= identity rotation)
+                                        // means the constraint reduces to
+                                        // "both links at identity in world"
+                                        // — fine for 6-DoF welds because
+                                        // the SOLVER cares about the
+                                        // *relative* pose only.
+                                        let qa = tf_a.rotation.inverse();
+                                        let qb = tf_b.rotation.inverse();
+                                        let qa_q = qa.quaternion();
+                                        let qb_q = qb.quaternion();
+                                        ra_x = qa_q.i as f64;
+                                        ra_y = qa_q.j as f64;
+                                        ra_z = qa_q.k as f64;
+                                        ra_w = qa_q.w as f64;
+                                        rb_x = qb_q.i as f64;
+                                        rb_y = qb_q.j as f64;
+                                        rb_z = qb_q.k as f64;
+                                        rb_w = qb_q.w as f64;
+                                    }
+                                }
+                            }
+
+                            if ui.button(format!("🔗 Add closure: {} ↔ {}", &sel_link_name, &link_b_name)).clicked() {
+                                if pose_mode {
+                                    let q_a = na::UnitQuaternion::from_quaternion(
+                                        na::Quaternion::new(
+                                            ra_w as f32, ra_x as f32, ra_y as f32, ra_z as f32,
+                                        ),
+                                    ).cast::<f64>();
+                                    let q_b = na::UnitQuaternion::from_quaternion(
+                                        na::Quaternion::new(
+                                            rb_w as f32, rb_x as f32, rb_y as f32, rb_z as f32,
+                                        ),
+                                    ).cast::<f64>();
+                                    let off_a = na::Isometry3::from_parts(
+                                        na::Translation3::new(oa_x, oa_y, oa_z),
+                                        q_a,
+                                    );
+                                    let off_b = na::Isometry3::from_parts(
+                                        na::Translation3::new(ob_x, ob_y, ob_z),
+                                        q_b,
+                                    );
+                                    model.loop_closures.push(
+                                        crate::robot::LoopClosure::pose(
+                                            format!("{}↔{}", &sel_link_name, &link_b_name),
+                                            sel_link_name.clone(),
+                                            off_a,
+                                            link_b_name.clone(),
+                                            off_b,
+                                        ),
+                                    );
+                                } else {
+                                    model.loop_closures.push(
+                                        crate::robot::LoopClosure::position(
+                                            format!("{}↔{}", &sel_link_name, &link_b_name),
+                                            sel_link_name.clone(),
+                                            na::Vector3::new(oa_x, oa_y, oa_z),
+                                            link_b_name.clone(),
+                                            na::Vector3::new(ob_x, ob_y, ob_z),
+                                        ),
+                                    );
+                                }
                             }
 
                             // Save form state
@@ -297,6 +419,15 @@ impl ArticaraApp {
                                 d.insert_temp(id_bx, ob_x);
                                 d.insert_temp(id_by, ob_y);
                                 d.insert_temp(id_bz, ob_z);
+                                d.insert_temp(id_rax, ra_x);
+                                d.insert_temp(id_ray, ra_y);
+                                d.insert_temp(id_raz, ra_z);
+                                d.insert_temp(id_raw, ra_w);
+                                d.insert_temp(id_rbx, rb_x);
+                                d.insert_temp(id_rby, rb_y);
+                                d.insert_temp(id_rbz, rb_z);
+                                d.insert_temp(id_rbw, rb_w);
+                                d.insert_temp(id_pose_mode, pose_mode);
                             });
                         } else {
                             ui.label("Select a link in the viewport first.");
