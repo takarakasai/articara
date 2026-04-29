@@ -924,6 +924,20 @@ impl ArticaraApp {
 
     /// Advance the dynamics simulation by one frame, modifying model state.
     fn step_dynamics_sim(&mut self) {
+        // Async queue takes precedence over the regular wall-clock step path:
+        // if a Rhai script has scheduled `mj_async_*` ops, drain them here so
+        // the user sees their scripted timeline animate in the viewport
+        // rather than a synchronous freeze + final-pose snap.
+        #[cfg(feature = "mujoco")]
+        if self
+            .mujoco_sim
+            .as_ref()
+            .map_or(false, |s| s.async_pending() > 0)
+        {
+            self.tick_async_sim_queue();
+            return;
+        }
+
         #[cfg(feature = "mujoco")]
         let has_mujoco = self.mujoco_sim.is_some();
         #[cfg(not(feature = "mujoco"))]
@@ -1017,6 +1031,118 @@ impl ArticaraApp {
             }
             self.dynamics_sim = None;
             self.dynamics_last_instant = None;
+        }
+    }
+
+    /// Drain instantaneous ops from the head of the MuJoCo async queue, then
+    /// advance the sim by however many physics frames the wall clock × the
+    /// user's speed slider warrants. Step ops carry their own remaining-frame
+    /// counter so this method can chip away at long delays across many UI
+    /// ticks without losing track. Designed to integrate with the existing
+    /// pause / speed controls — the same pacing logic the regular path uses.
+    #[cfg(feature = "mujoco")]
+    fn tick_async_sim_queue(&mut self) {
+        use crate::mujoco_sim::AsyncSimOp;
+
+        // Drain non-step ops at the queue head greedily — none of them take
+        // wall-clock time so we should consume them up-front each tick.
+        loop {
+            let head_kind = match self.mujoco_sim.as_ref().and_then(|s| s.async_peek()) {
+                Some(AsyncSimOp::StepFrames(_)) => break,
+                Some(AsyncSimOp::SetPositionTarget(idx, q)) => {
+                    let (idx, q) = (*idx, *q);
+                    if let Some(sim) = self.mujoco_sim.as_mut() {
+                        sim.async_pop();
+                        sim.set_position_target(idx, q);
+                    }
+                    continue;
+                }
+                Some(AsyncSimOp::Print(_)) => "print",
+                Some(AsyncSimOp::SaveCsv(_)) => "save",
+                None => return,
+            };
+            if head_kind == "print" {
+                let msg = if let Some(sim) = self.mujoco_sim.as_mut() {
+                    if let Some(AsyncSimOp::Print(s)) = sim.async_pop() {
+                        s
+                    } else {
+                        continue;
+                    }
+                } else {
+                    return;
+                };
+                self.script_output.push(ScriptLine::System(msg));
+            } else if head_kind == "save" {
+                let path = if let Some(sim) = self.mujoco_sim.as_mut() {
+                    if let Some(AsyncSimOp::SaveCsv(p)) = sim.async_pop() {
+                        p
+                    } else {
+                        continue;
+                    }
+                } else {
+                    return;
+                };
+                let result = if let (Some(model), Some(sim)) =
+                    (self.model.as_ref(), self.mujoco_sim.as_ref())
+                {
+                    crate::mujoco_sim::save_peaks_csv(model, sim, &path)
+                } else {
+                    Err("simulation not active".to_string())
+                };
+                let line = match result {
+                    Ok(n) => ScriptLine::System(format!(
+                        "[async] saved {n} samples → {}",
+                        path.display(),
+                    )),
+                    Err(e) => ScriptLine::Error(format!(
+                        "[async] save_csv {}: {e}",
+                        path.display(),
+                    )),
+                };
+                self.script_output.push(line);
+                self.script_scroll_to_bottom = true;
+            }
+        }
+
+        // Now the queue head is a Step op (or queue is empty — handled above).
+        let now = std::time::Instant::now();
+        let wall_dt = match self.dynamics_last_instant {
+            Some(prev) => now.duration_since(prev).as_secs_f32().min(0.05),
+            None => 0.016,
+        };
+        self.dynamics_last_instant = Some(now);
+        let speed = self.dynamics_sim_speed.clamp(0.05, 5.0);
+        let mj_dt = self
+            .mujoco_sim
+            .as_ref()
+            .map(|s| s.timestep())
+            .unwrap_or(0.002);
+        let frames_budget =
+            ((wall_dt as f64) * (speed as f64) / mj_dt).floor() as u32;
+        if frames_budget == 0 {
+            return;
+        }
+
+        // Cap by the head Step op's remaining count so we don't overshoot.
+        let frames_to_step = if let Some(sim) = self.mujoco_sim.as_ref() {
+            match sim.async_peek() {
+                Some(AsyncSimOp::StepFrames(remaining)) => frames_budget.min(*remaining),
+                _ => 0,
+            }
+        } else {
+            0
+        };
+        if frames_to_step == 0 {
+            return;
+        }
+
+        let enforce_limits = self.enforce_actuator_limits;
+        if let (Some(sim), Some(model)) =
+            (self.mujoco_sim.as_mut(), self.model.as_mut())
+        {
+            sim.step_n_frames(model, frames_to_step, enforce_limits);
+            sim.async_consume_step_frames(frames_to_step);
+            self.needs_upload = true;
         }
     }
 

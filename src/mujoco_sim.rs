@@ -89,6 +89,29 @@ pub struct MujocoSim {
     /// existing controller behaviour for users who haven't opted in. The
     /// equivalent UI knob lives in dynamics_panel "Sim toggles".
     gravity_compensation: bool,
+    /// Pending operations queued by Rhai's `mj_async_*` family. Consumed
+    /// gradually by the UI animation loop so a script's intended timeline
+    /// plays out frame-by-frame in the viewport rather than being collapsed
+    /// into one synchronous batch. See [`AsyncSimOp`].
+    async_queue: VecDeque<AsyncSimOp>,
+}
+
+/// One op sitting on the [`MujocoSim`] async queue. Step ops carry their own
+/// remaining-frame counter so the host can chip away at them across UI ticks
+/// without losing track. All other ops are point-in-time and execute exactly
+/// once when popped.
+#[derive(Clone, Debug)]
+pub enum AsyncSimOp {
+    /// Advance the sim by this many physics frames, paced by the host's
+    /// wall-clock × speed slider. Decrements as frames are consumed.
+    StepFrames(u32),
+    /// Equivalent of `set_position_target(joint_idx, q)` deferred to the
+    /// timeline point at which it's popped.
+    SetPositionTarget(usize, f64),
+    /// Append a system line to the script console output.
+    Print(String),
+    /// Write the current trace as CSV at the timeline point it's popped.
+    SaveCsv(std::path::PathBuf),
 }
 
 /// One sample in the time-series ring buffer.
@@ -285,7 +308,57 @@ impl MujocoSim {
             trace: VecDeque::new(),
             trace_max: 5000,
             gravity_compensation: false,
+            async_queue: VecDeque::new(),
         })
+    }
+
+    /// Append an op to the async queue. The host UI loop drains it gradually,
+    /// so call this from script bindings instead of executing the op directly
+    /// when you want it to take effect on a future timeline point.
+    pub fn async_enqueue(&mut self, op: AsyncSimOp) {
+        self.async_queue.push_back(op);
+    }
+
+    /// Number of ops still queued.
+    pub fn async_pending(&self) -> usize {
+        self.async_queue.len()
+    }
+
+    /// Drop the entire async queue. Useful from scripts that want a clean
+    /// slate before re-queuing a new timeline.
+    pub fn async_clear(&mut self) {
+        self.async_queue.clear();
+    }
+
+    /// Read-only peek at the next op without consuming it.
+    pub fn async_peek(&self) -> Option<&AsyncSimOp> {
+        self.async_queue.front()
+    }
+
+    /// Pop the next op for execution.
+    pub fn async_pop(&mut self) -> Option<AsyncSimOp> {
+        self.async_queue.pop_front()
+    }
+
+    /// Decrement the head Step op's remaining frame count by `n`. Pops the op
+    /// off the queue when it hits zero. Returns `true` if the head op was
+    /// fully consumed (caller may want to drain the next non-step ops on the
+    /// same UI tick).
+    pub fn async_consume_step_frames(&mut self, n: u32) -> bool {
+        let Some(front) = self.async_queue.front_mut() else {
+            return false;
+        };
+        if let AsyncSimOp::StepFrames(remaining) = front {
+            if *remaining <= n {
+                self.async_queue.pop_front();
+                true
+            } else {
+                *remaining -= n;
+                false
+            }
+        } else {
+            false
+        }
     }
 
     /// Toggle gravity-compensation feedforward in [`Self::apply_controller`].

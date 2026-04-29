@@ -887,6 +887,102 @@ impl ModelScriptEngine {
                 s.borrow().as_ref().map(|x| x.trace_len() as i64).unwrap_or(0)
             });
 
+            // ── Async timeline API ────────────────────────────────────────
+            // These functions don't execute their op immediately — they push
+            // it to the sim's async queue, which the host UI loop drains a
+            // little each frame. This is what lets a script "schedule" a
+            // jump and have the user actually see it animate in the viewport
+            // rather than a synchronous mj_step batch that freezes the UI.
+
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("mj_async_step_seconds", move |seconds: f64| -> i64 {
+                let mut sim_borrow = s.borrow_mut();
+                let Some(sim) = sim_borrow.as_mut() else {
+                    return -1;
+                };
+                let dt = sim.timestep().max(1e-6);
+                let frames = (seconds / dt).max(0.0).round() as u32;
+                if frames == 0 {
+                    return 0;
+                }
+                sim.async_enqueue(crate::mujoco_sim::AsyncSimOp::StepFrames(frames));
+                frames as i64
+            });
+
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("mj_async_step_frames", move |n: i64| -> i64 {
+                let mut sim_borrow = s.borrow_mut();
+                let Some(sim) = sim_borrow.as_mut() else {
+                    return -1;
+                };
+                let frames = n.max(0) as u32;
+                if frames == 0 {
+                    return 0;
+                }
+                sim.async_enqueue(crate::mujoco_sim::AsyncSimOp::StepFrames(frames));
+                frames as i64
+            });
+
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn(
+                "mj_async_set_position_target",
+                move |name: &str, target: f64| -> bool {
+                    let mut sim_borrow = s.borrow_mut();
+                    let model_borrow = m.borrow();
+                    let (Some(sim), Some(robot)) =
+                        (sim_borrow.as_mut(), model_borrow.as_ref())
+                    else {
+                        return false;
+                    };
+                    let Some(&idx) = robot.joint_map.get(name) else {
+                        return false;
+                    };
+                    sim.async_enqueue(
+                        crate::mujoco_sim::AsyncSimOp::SetPositionTarget(idx, target),
+                    );
+                    true
+                },
+            );
+
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("mj_async_print", move |msg: &str| -> bool {
+                let mut sim_borrow = s.borrow_mut();
+                let Some(sim) = sim_borrow.as_mut() else {
+                    return false;
+                };
+                sim.async_enqueue(crate::mujoco_sim::AsyncSimOp::Print(msg.to_string()));
+                true
+            });
+
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("mj_async_save_csv", move |path: &str| -> bool {
+                let mut sim_borrow = s.borrow_mut();
+                let Some(sim) = sim_borrow.as_mut() else {
+                    return false;
+                };
+                sim.async_enqueue(crate::mujoco_sim::AsyncSimOp::SaveCsv(
+                    std::path::PathBuf::from(path),
+                ));
+                true
+            });
+
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("mj_async_pending", move || -> i64 {
+                s.borrow().as_ref().map(|x| x.async_pending() as i64).unwrap_or(-1)
+            });
+
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("mj_async_clear", move || -> i64 {
+                let mut sim_borrow = s.borrow_mut();
+                let Some(sim) = sim_borrow.as_mut() else {
+                    return -1;
+                };
+                let n = sim.async_pending() as i64;
+                sim.async_clear();
+                n
+            });
+
             // Toggle gravity-compensation feedforward in the controller.
             // Returns the new value as i64 (1=on, 0=off, -1 if no sim).
             let s = Rc::clone(&mujoco_sim);
@@ -1598,6 +1694,9 @@ impl ModelScriptEngine {
             "mj_active", "mj_start", "mj_stop", "mj_step", "mj_step_back",
             "mj_timestep", "mj_history_len", "mj_trace_len", "mj_set_trace_max",
             "mj_gravity_compensation", "save_peaks_csv",
+            "mj_async_step_seconds", "mj_async_step_frames",
+            "mj_async_set_position_target", "mj_async_print",
+            "mj_async_save_csv", "mj_async_pending", "mj_async_clear",
             "play_pose", "transition_in_progress", "transition_progress",
             "play_sequence", "sequence_in_progress", "sequence_progress",
             "apply_force", "cancel_force",
@@ -1686,6 +1785,7 @@ mod tests {
     fn example_scripts_parse() {
         let scripts = [
             "scripts/example_jump.rhai",
+            "scripts/example_jump_async.rhai",
             "scripts/verify_jump_tuning.rhai",
         ];
         for rel in scripts {
