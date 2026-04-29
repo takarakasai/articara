@@ -279,6 +279,74 @@ impl ArticaraApp {
 
         ui.painter().add(callback);
 
+        // ===== Picture-in-picture wipe (alternate camera) =====
+        // Render the *other* camera (free / tps, opposite of the active
+        // mode) into a small rect at the top-right of the viewport when
+        // `show_camera_wipe` is enabled. The renderer's own scissor +
+        // viewport calls keep its draws inside the sub-rect, so the
+        // main viewport's content underneath is preserved.
+        if self.show_camera_wipe {
+            use crate::camera::CameraMode;
+            let alt_camera = match self.camera_mode {
+                CameraMode::Free => self.tps_camera.clone(),
+                CameraMode::Tps => self.saved_free_camera.clone(),
+            };
+            let alt_label = match self.camera_mode {
+                CameraMode::Free => "TPS",
+                CameraMode::Tps => "Free",
+            };
+            // Sub-rect: 25% of width × ~28% of height (4:3-ish), pinned
+            // to the top-right corner with an 8 px margin.
+            let wipe_w = (rect.width() * 0.28).max(180.0).min(360.0);
+            let wipe_h = wipe_w * 0.72;
+            let margin = 8.0;
+            let wipe_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    rect.right() - wipe_w - margin,
+                    rect.top() + margin,
+                ),
+                egui::vec2(wipe_w, wipe_h),
+            );
+            // Frame outline so the wipe stands out from the background.
+            ui.painter().rect(
+                wipe_rect,
+                4.0,
+                egui::Color32::from_rgba_unmultiplied(20, 20, 30, 220),
+                egui::Stroke::new(1.0, egui::Color32::from_gray(180)),
+                egui::StrokeKind::Inside,
+            );
+            // Label inside the wipe.
+            ui.painter().text(
+                wipe_rect.left_top() + egui::vec2(4.0, 2.0),
+                egui::Align2::LEFT_TOP,
+                alt_label,
+                egui::FontId::monospace(10.0),
+                egui::Color32::from_gray(220),
+            );
+            // GL paint callback for the wipe — same pattern as the main
+            // viewport, but with the alt camera and sub-rect.
+            let renderer = self.gl_renderer.clone();
+            let wipe_callback = egui::PaintCallback {
+                rect: wipe_rect,
+                callback: Arc::new(eframe::egui_glow::CallbackFn::new(
+                    move |info, painter| {
+                        let gl = painter.gl();
+                        let renderer = renderer.lock().unwrap();
+                        let vp = info.viewport_in_pixels();
+                        let screen_h = info.screen_size_px[1] as i32;
+                        let gl_viewport = [
+                            vp.left_px,
+                            screen_h - vp.top_px - vp.height_px,
+                            vp.width_px,
+                            vp.height_px,
+                        ];
+                        renderer.render(gl, &alt_camera, gl_viewport);
+                    },
+                )),
+            };
+            ui.painter().add(wipe_callback);
+        }
+
         // ===== Viewport overlays =====
         self.draw_viewport_overlay(ui, rect);
         self.draw_com_labels(ui, rect, aspect);
@@ -1256,8 +1324,10 @@ impl ArticaraApp {
                 }
             }
         } else {
-            // No drag state: left-drag orbits camera
-            self.camera.handle_orbit_pan_zoom(response);
+            // No drag state: left-drag orbits camera. Dispatch by mode
+            // so TPS mode redirects yaw/pitch/scroll to the follow
+            // settings instead of the (now-derived) main `self.camera`.
+            self.handle_camera_input(response);
         }
     }
 
