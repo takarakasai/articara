@@ -22,11 +22,16 @@ let CALF_PATTERN  = "calf";
 let POSE_STAND   = #{ thigh:  0.4, calf: -0.8 };
 let POSE_CROUCH  = #{ thigh:  1.0, calf: -1.8 };
 let POSE_EXTEND  = #{ thigh: -0.1, calf: -0.3 };
+// Absorb pose: half-flexed knees. Commanded just after launch so the legs
+// retract during flight and stay flexed on contact, dissipating impact
+// energy as PD work rather than rebounding rigidly.
+let POSE_ABSORB  = #{ thigh:  0.7, calf: -1.4 };
 
 let DUR_STAND_S    = 0.5;
 let DUR_CROUCH_S   = 0.3;
 let DUR_EXTEND_S   = 0.1;
-let DUR_FLIGHT_S   = 1.0;
+let DUR_ABSORB_S   = 0.6;   // flight + landing absorption
+let DUR_SETTLE_S   = 0.4;   // hold absorbed pose; observe peaks
 
 let ARMATURE       = 1.4e-3;
 let JOINT_DAMPING  = 0.1;
@@ -101,8 +106,13 @@ queue_pose(thigh, POSE_EXTEND.thigh);
 queue_pose(calf,  POSE_EXTEND.calf);
 mj_async_step_seconds(DUR_EXTEND_S);
 
-mj_async_print("[async] phase 4: FLIGHT + LANDING");
-mj_async_step_seconds(DUR_FLIGHT_S);
+mj_async_print("[async] phase 4: ABSORB — flex to soak the landing");
+queue_pose(thigh, POSE_ABSORB.thigh);
+queue_pose(calf,  POSE_ABSORB.calf);
+mj_async_step_seconds(DUR_ABSORB_S);
+
+mj_async_print("[async] phase 5: SETTLE — hold absorbed pose");
+mj_async_step_seconds(DUR_SETTLE_S);
 
 mj_async_save_csv(CSV_PATH);
 mj_async_print(`[async] done — see ${CSV_PATH}`);

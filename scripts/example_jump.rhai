@@ -27,12 +27,19 @@ let CALF_PATTERN  = "calf";
 let POSE_STAND   = #{ thigh:  0.4, calf: -0.8 };  // legs slightly bent
 let POSE_CROUCH  = #{ thigh:  1.0, calf: -1.8 };  // wind up: knees deep
 let POSE_EXTEND  = #{ thigh: -0.1, calf: -0.3 };  // legs straight: launch
+// Absorb pose — knees half-flexed. Commanded during flight so the legs are
+// already retracting when the feet hit the ground; the controller then
+// holds this flexed pose against the impact, soaking up vertical kinetic
+// energy as PD work rather than a hard impulse. Roughly halfway between
+// STAND and CROUCH so the body settles to a stable mid-height posture.
+let POSE_ABSORB  = #{ thigh:  0.7, calf: -1.4 };
 
 // Phase durations in milliseconds.
 let DUR_STAND_MS   = 500;
 let DUR_CROUCH_MS  = 300;
 let DUR_EXTEND_MS  = 100;
-let DUR_FLIGHT_MS  = 1000;
+let DUR_ABSORB_MS  = 600;   // flight + landing absorption
+let DUR_SETTLE_MS  = 400;   // hold the absorbed pose and observe
 
 // QDD tuning for MG4005-i10 + 1:10 (override with your motor's values).
 let ARMATURE       = 1.4e-3;
@@ -116,11 +123,17 @@ print("[phase 3] EXTEND — JUMP!");
 apply_pose(thigh, calf, POSE_EXTEND);
 step_ms(DUR_EXTEND_MS, dt);
 
-print("[phase 4] FLIGHT — release controller, observe peaks");
-// Keep targets at extended pose so legs stay out during flight; controller
-// will hold them with the PD residual (no q̇*/q̈* feedforward since no
-// transition is active, which is desired during flight).
-step_ms(DUR_FLIGHT_MS, dt);
+print("[phase 4] ABSORB — flex to soak the landing");
+// Switch the target to the half-flexed pose immediately after launch.
+// While airborne the legs retract (light task, just inertia); when the
+// feet contact the ground the same target makes the controller hold the
+// flexed posture against the impact, dissipating energy through PD work
+// instead of bouncing.
+apply_pose(thigh, calf, POSE_ABSORB);
+step_ms(DUR_ABSORB_MS, dt);
+
+print("[phase 5] SETTLE — hold absorbed pose and observe peaks");
+step_ms(DUR_SETTLE_MS, dt);
 
 // ── Report ─────────────────────────────────────────────────────────────────
 
