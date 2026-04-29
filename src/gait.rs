@@ -240,6 +240,19 @@ pub struct GaitController {
     inner: InnerController,
     /// `[hip_idx, thigh_idx, calf_idx]` per leg in canonical FL/FR/RL/RR order.
     joint_indices: [[usize; 3]; 4],
+    /// `[hip_sign, thigh_sign, calf_sign]` per leg — sign multiplier
+    /// applied at the IK→MuJoCo handover.
+    ///
+    /// Why this is needed: the analytical IK in `quadruped_gait::solve_leg_ik`
+    /// follows a "positive q_thigh tilts thigh forward" convention. URDF +Y
+    /// pitch joints follow the *opposite* convention by the right-hand rule
+    /// (`R_y(q)·(0,0,-1) = (-sin q, 0, -cos q)` — positive q sends a
+    /// downward vector toward −X). So when the URDF axis is `(0, +1, 0)`
+    /// we need to negate q at the boundary; for `(0, -1, 0)` it's already
+    /// correct. Hip rolls about ±X follow the same pattern.
+    ///
+    /// `auto_detect_*` fills in the right signs from the URDF axis values.
+    joint_signs: [[f64; 3]; 4],
     /// Whether the controller is currently driving the sim. Off by default
     /// so opening a model + creating a controller doesn't accidentally
     /// command motion.
@@ -258,24 +271,46 @@ impl GaitController {
         cfg: GaitConfig,
     ) -> Result<Self, String> {
         let mut joint_indices = [[0usize; 3]; 4];
+        let mut joint_signs = [[1.0_f64; 3]; 4];
         for (slot, leg_kin) in [&kin.fl, &kin.fr, &kin.rl, &kin.rr].iter().enumerate() {
             let names = [
                 &leg_kin.hip_joint,
                 &leg_kin.thigh_joint,
                 &leg_kin.calf_joint,
             ];
+            // Expected dominant axis component per joint (in IK convention):
+            // hip about +X, thigh and calf about +Y. We read each joint's
+            // actual axis from the model and use its sign (+1 / −1) as a
+            // multiplier so the URDF's right-hand-rule rotation lines up
+            // with the IK's intent. See the doc comment on `joint_signs`.
+            // For hip the IK already uses URDF convention, so we only need
+            // to flip when axis.x is negative; for thigh/calf the IK uses
+            // the *opposite* of URDF's right-hand rule about +Y, so a +Y
+            // axis means we negate (and a −Y axis means we don't).
+            let axis_components = [
+                |a: na::Vector3<f32>| a.x,
+                |a: na::Vector3<f32>| a.y,
+                |a: na::Vector3<f32>| a.y,
+            ];
+            // For thigh and calf, IK output sign is the *opposite* of the
+            // URDF axis sign — `+1` axis ⇒ multiply IK output by `-1`.
+            let ik_to_urdf_factor = [1.0, -1.0, -1.0];
             for (k, name) in names.iter().enumerate() {
-                joint_indices[slot][k] =
-                    *model.joint_map.get(name.as_str()).ok_or_else(|| {
-                        format!(
-                            "joint {name:?} (referenced by gait kinematics) not in model"
-                        )
-                    })?;
+                let idx = *model.joint_map.get(name.as_str()).ok_or_else(|| {
+                    format!(
+                        "joint {name:?} (referenced by gait kinematics) not in model"
+                    )
+                })?;
+                joint_indices[slot][k] = idx;
+                let comp = axis_components[k](model.joints[idx].axis) as f64;
+                let urdf_sign = if comp >= 0.0 { 1.0 } else { -1.0 };
+                joint_signs[slot][k] = ik_to_urdf_factor[k] * urdf_sign;
             }
         }
         Ok(Self {
             inner: InnerController::new(cfg, kin),
             joint_indices,
+            joint_signs,
             enabled: false,
         })
     }
@@ -350,7 +385,8 @@ impl GaitController {
                 out.legs[slot].q_calf,
             ];
             for j in 0..3 {
-                targets[k] = (self.joint_indices[slot][j], qs[j]);
+                targets[k] =
+                    (self.joint_indices[slot][j], qs[j] * self.joint_signs[slot][j]);
                 k += 1;
             }
         }
@@ -372,6 +408,52 @@ mod tests {
             return None;
         }
         RobotModel::from_file(&path).ok()
+    }
+
+    /// Regression for the bug where the IK convention's "positive q_thigh
+    /// = thigh forward" disagreed with URDF's right-hand rule about +Y
+    /// (positive q rotates a downward vector toward −X, i.e. backward).
+    /// The user reported `>>` (knee_forward = true everywhere) producing
+    /// rear-bending knees in MuJoCo — the controller was forwarding
+    /// IK-frame angles to the simulator without sign-correction. Confirm
+    /// `GaitController::build` now stores `-1.0` signs for `+Y` thigh/calf
+    /// joints so the URDF's rotation direction matches the IK's intent.
+    #[test]
+    fn build_picks_correct_sign_for_positive_y_thigh_calf() {
+        let Some(model) = try_load_namiashi() else {
+            eprintln!("namiashi fixture missing — skipping sign test");
+            return;
+        };
+        let foot_links: [(LegId, &str); 4] = [
+            (LegId::FL, "FL_foot"),
+            (LegId::FR, "FR_foot"),
+            (LegId::RL, "RL_foot"),
+            (LegId::RR, "RR_foot"),
+        ];
+        let kin = auto_detect_kinematics_config(&model, &foot_links).unwrap();
+        let cfg = quadruped_gait::GaitConfig::trot();
+        let ctrl = GaitController::build(&model, kin, cfg).unwrap();
+
+        // FL row: hip about +X (sign +1), thigh about +Y (sign −1), calf about +Y (sign −1).
+        for slot in 0..4 {
+            let s = ctrl.joint_signs[slot];
+            assert_eq!(
+                s[0].abs(),
+                1.0,
+                "leg {slot} hip sign magnitude should be 1, got {}",
+                s[0],
+            );
+            assert!(
+                (s[1] - -1.0).abs() < 1e-9,
+                "leg {slot} thigh sign should be -1 for +Y URDF axis, got {}",
+                s[1],
+            );
+            assert!(
+                (s[2] - -1.0).abs() < 1e-9,
+                "leg {slot} calf sign should be -1 for +Y URDF axis, got {}",
+                s[2],
+            );
+        }
     }
 
     #[test]
