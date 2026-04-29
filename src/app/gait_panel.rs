@@ -26,13 +26,12 @@ impl ArticaraApp {
             });
     }
 
-    /// Hold-to-drive 4-button D-pad. Each button accumulates a velocity
-    /// component while held; on release the controller is reset to zero
-    /// so the robot stops the moment the user lets go. The conventional
-    /// numeric sliders below stay live for "set a static value" use.
+    /// Hold-to-drive D-pad with yaw rotation buttons. Each direction
+    /// button accumulates a velocity component while held; on release
+    /// every button-driven component returns to zero so the robot stops
+    /// the moment the user lets go. The conventional numeric sliders
+    /// below remain live for "set a static value" use cases.
     fn draw_gait_dpad(&mut self, ui: &mut egui::Ui) {
-        // Don't render the D-pad until a controller exists; the buttons
-        // would have nothing to drive otherwise.
         if self.gait_controller.is_none() {
             return;
         }
@@ -44,97 +43,116 @@ impl ArticaraApp {
         );
         ui.label(
             egui::RichText::new(
-                "Hold a direction button; the controller commands ±vx / \
-                 ±vy at the speed below while pressed, returns to zero on \
-                 release. Diagonal motion = press two adjacent buttons.",
+                "Hold a direction button to drive; release to stop. Diagonal \
+                 motion = two adjacent buttons. Yaw uses the right pair.",
             )
             .small()
             .weak(),
         );
 
+        // egui's default `Sense::click()` clears the "down on" flag the
+        // moment the cursor drifts even slightly off the button rect,
+        // which manifested as the gait stopping after ~1 s of holding
+        // when the user moved their hand a hair. `Sense::click_and_drag`
+        // adds drag-tracking so the response stays "active" as long as
+        // the primary button is down on the widget — ergonomically what
+        // the user expects of a hold-to-drive control.
+        let mk = |label: &str| {
+            egui::Button::new(label).sense(egui::Sense::click_and_drag())
+        };
+        // A button is "held" if either (a) the press originated on it
+        // and the primary mouse button is still down, OR (b) the user
+        // is dragging from it (mouse moved while held). Using both
+        // tolerates small cursor wobbles during a long press.
+        let held = |r: &egui::Response| -> bool {
+            r.is_pointer_button_down_on() || r.dragged()
+        };
+
         let speed = self.gait_dpad_speed as f64;
+        let yaw_speed = self.gait_dpad_yaw_speed as f64;
         let btn_size = egui::vec2(40.0, 40.0);
         let mut vx = 0.0_f64;
         let mut vy = 0.0_f64;
+        let mut wz = 0.0_f64;
         let mut any_held = false;
 
-        // 3-row layout — empty corners around the cross. Using a Grid
-        // keeps the buttons aligned regardless of the surrounding panel
-        // width, and the empty cells are zero-sized labels.
-        egui::Grid::new("gait_dpad_grid")
-            .num_columns(3)
-            .min_col_width(0.0)
-            .spacing(egui::vec2(2.0, 2.0))
-            .show(ui, |ui| {
-                ui.label("");
-                let r_up = ui
-                    .add_sized(btn_size, egui::Button::new("⬆"))
-                    .on_hover_text("Forward (+vx)");
-                ui.label("");
-                ui.end_row();
-
-                let r_left = ui
-                    .add_sized(btn_size, egui::Button::new("⬅"))
-                    .on_hover_text("Left (+vy)");
-                ui.label("");
-                let r_right = ui
-                    .add_sized(btn_size, egui::Button::new("➡"))
-                    .on_hover_text("Right (−vy)");
-                ui.end_row();
-
-                ui.label("");
-                let r_down = ui
-                    .add_sized(btn_size, egui::Button::new("⬇"))
-                    .on_hover_text("Backward (−vx)");
-                ui.label("");
-                ui.end_row();
-
-                if r_up.is_pointer_button_down_on() {
-                    vx += speed;
-                    any_held = true;
-                }
-                if r_down.is_pointer_button_down_on() {
-                    vx -= speed;
-                    any_held = true;
-                }
-                if r_left.is_pointer_button_down_on() {
-                    vy += speed;
-                    any_held = true;
-                }
-                if r_right.is_pointer_button_down_on() {
-                    vy -= speed;
-                    any_held = true;
-                }
-            });
-
-        // Speed knob — same row as the d-pad would be tidier but the
-        // grid above already used `min_col_width(0)` for tight buttons,
-        // so put the slider underneath.
+        // Side-by-side layout: 3×3 translation cross on the left, yaw
+        // pair on the right. Wrapping in `ui.horizontal` keeps both
+        // groups together visually.
         ui.horizontal(|ui| {
-            ui.label("Speed (m/s):");
+            // ── Translation D-pad ──
+            egui::Grid::new("gait_dpad_translation")
+                .num_columns(3)
+                .min_col_width(0.0)
+                .spacing(egui::vec2(2.0, 2.0))
+                .show(ui, |ui| {
+                    ui.label("");
+                    let r_up = ui.add_sized(btn_size, mk("⬆"))
+                        .on_hover_text("Forward (+vx)");
+                    ui.label("");
+                    ui.end_row();
+
+                    let r_left = ui.add_sized(btn_size, mk("⬅"))
+                        .on_hover_text("Left (+vy)");
+                    ui.label("");
+                    let r_right = ui.add_sized(btn_size, mk("➡"))
+                        .on_hover_text("Right (−vy)");
+                    ui.end_row();
+
+                    ui.label("");
+                    let r_down = ui.add_sized(btn_size, mk("⬇"))
+                        .on_hover_text("Backward (−vx)");
+                    ui.label("");
+                    ui.end_row();
+
+                    if held(&r_up)    { vx += speed; any_held = true; }
+                    if held(&r_down)  { vx -= speed; any_held = true; }
+                    if held(&r_left)  { vy += speed; any_held = true; }
+                    if held(&r_right) { vy -= speed; any_held = true; }
+                });
+
+            ui.add_space(12.0);
+
+            // ── Yaw rotation pair ──
+            // ↺ = counter-clockwise viewed from above = +wz.
+            // ↻ = clockwise = −wz.
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new("Yaw").small().weak());
+                let r_yaw_l = ui.add_sized(btn_size, mk("↺"))
+                    .on_hover_text("Turn left (+wz)");
+                let r_yaw_r = ui.add_sized(btn_size, mk("↻"))
+                    .on_hover_text("Turn right (−wz)");
+                if held(&r_yaw_l) { wz += yaw_speed; any_held = true; }
+                if held(&r_yaw_r) { wz -= yaw_speed; any_held = true; }
+            });
+        });
+
+        // Speed knobs.
+        ui.horizontal(|ui| {
+            ui.label("Linear (m/s):");
             ui.add(
                 egui::Slider::new(&mut self.gait_dpad_speed, 0.0..=1.0)
                     .fixed_decimals(2),
             );
         });
+        ui.horizontal(|ui| {
+            ui.label("Yaw (rad/s):");
+            ui.add(
+                egui::Slider::new(&mut self.gait_dpad_yaw_speed, 0.0..=2.0)
+                    .fixed_decimals(2),
+            );
+        });
 
         // Drive the controller. While at least one button is held,
-        // command the accumulated (vx, vy). On the first frame after
-        // release, send a single zero so the robot stops immediately
-        // instead of coasting at the last button-driven value.
+        // command the accumulated (vx, vy, wz). On the first frame
+        // after all buttons are released, send a single zero so the
+        // robot stops immediately. The slider section below can still
+        // be used afterward to set a sticky non-zero command.
         if let Some(gc) = self.gait_controller.as_mut() {
             if any_held {
-                gc.set_velocity_cmd(quadruped_gait::VelocityCmd {
-                    vx,
-                    vy,
-                    wz: gc.velocity_cmd().wz,
-                });
+                gc.set_velocity_cmd(quadruped_gait::VelocityCmd { vx, vy, wz });
             } else if self.gait_dpad_was_active {
-                gc.set_velocity_cmd(quadruped_gait::VelocityCmd {
-                    vx: 0.0,
-                    vy: 0.0,
-                    wz: gc.velocity_cmd().wz,
-                });
+                gc.set_velocity_cmd(quadruped_gait::VelocityCmd::zero());
             }
         }
         self.gait_dpad_was_active = any_held;
