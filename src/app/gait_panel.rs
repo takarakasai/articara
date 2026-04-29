@@ -207,6 +207,43 @@ impl ArticaraApp {
             gc.set_config(cfg);
         }
 
+        // Knee pattern (front/rear bend direction). Four-option radio so
+        // the user can flip to the typical mammalian `<>` (or whatever
+        // their robot demands) in one click; per-leg overrides are still
+        // possible via the Rhai `set_knee_forward` API.
+        let current_pattern = gc.knee_pattern();
+        let mut new_pattern = current_pattern;
+        ui.horizontal(|ui| {
+            ui.label("Knee pattern:")
+                .on_hover_text(
+                    "First char = front legs, second = rear legs.\n\
+                     '<' bends backward, '>' bends forward.\n\
+                     << = all back   <> = mammalian (dog/horse)\n\
+                     >< = reverse    >> = all forward",
+                );
+            for p in quadruped_gait::KneePattern::ALL {
+                if ui
+                    .selectable_label(p == current_pattern, p.label())
+                    .on_hover_text(match p {
+                        quadruped_gait::KneePattern::BothBack => "all knees backward",
+                        quadruped_gait::KneePattern::MammalianForward => {
+                            "front backward, rear forward (mammalian)"
+                        }
+                        quadruped_gait::KneePattern::MammalianReverse => {
+                            "front forward, rear backward"
+                        }
+                        quadruped_gait::KneePattern::BothForward => "all knees forward",
+                    })
+                    .clicked()
+                {
+                    new_pattern = p;
+                }
+            }
+        });
+        if new_pattern != current_pattern {
+            gc.set_knee_pattern(new_pattern);
+        }
+
         ui.separator();
 
         // Start / stop. Disabled when no MuJoCo sim — the controller
@@ -270,12 +307,35 @@ impl ArticaraApp {
         ];
         match crate::gait::auto_detect_kinematics_config(model, &foot_links) {
             Ok(kin) => {
-                let cfg = GaitConfig::trot();
+                // Seed the controller from the saved gait descriptor (if
+                // any) so re-running auto-detect doesn't reset the user's
+                // knee pattern / cycle period etc.
+                let (cfg, knee_forward) = match self
+                    .model
+                    .as_ref()
+                    .and_then(|m| m.gaits.first())
+                {
+                    Some(d) => {
+                        let cfg = GaitConfig::trot()
+                            .with_cycle_period(d.cycle_period_s)
+                            .with_duty_factor(d.duty_factor)
+                            .with_swing_height(d.swing_height_m)
+                            .with_max_step_length(d.max_step_length_m);
+                        (cfg, d.knee_forward)
+                    }
+                    None => (GaitConfig::trot(), [false; 4]),
+                };
                 match crate::gait::GaitController::build(model, kin, cfg) {
-                    Ok(gc) => {
+                    Ok(mut gc) => {
+                        for (slot, leg) in [LegId::FL, LegId::FR, LegId::RL, LegId::RR]
+                            .iter()
+                            .enumerate()
+                        {
+                            gc.set_knee_forward(*leg, knee_forward[slot]);
+                        }
                         self.gait_controller = Some(gc);
                         self.status_message =
-                            "Gait controller built (Trot defaults)".into();
+                            "Gait controller built (saved params restored)".into();
                     }
                     Err(e) => {
                         self.status_message = format!("Gait build failed: {e}");

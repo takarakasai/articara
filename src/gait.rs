@@ -319,6 +319,23 @@ impl GaitController {
         self.inner.set_knee_forward(leg, forward);
     }
 
+    /// Apply a symmetric front/rear [`KneePattern`] (`<<` / `<>` / `><` / `>>`).
+    pub fn set_knee_pattern(&mut self, pattern: quadruped_gait::KneePattern) {
+        self.inner.set_knee_pattern(pattern);
+    }
+
+    /// Read back the current configuration as a [`KneePattern`]. Returns
+    /// the best-matching symmetric pattern when per-leg flags are
+    /// asymmetric — see [`quadruped_gait::KneePattern::from_knee_forward`].
+    pub fn knee_pattern(&self) -> quadruped_gait::KneePattern {
+        self.inner.knee_pattern()
+    }
+
+    /// Per-leg knee-forward flags `[FL, FR, RL, RR]`.
+    pub fn knee_forward(&self) -> [bool; 4] {
+        self.inner.knee_forward()
+    }
+
     /// Advance the gait by `dt`. Returns the per-leg controller output
     /// plus a flat list of `(joint_idx, q)` pairs ready to feed into
     /// [`crate::mujoco_sim::MujocoSim::set_position_target`].
