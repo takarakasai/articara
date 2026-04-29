@@ -46,6 +46,9 @@ pub struct MujocoSim {
     /// Active pose-to-pose transition (drives `position_targets` per step).
     /// `None` when the controller should hold the current target.
     transition: Option<ActiveTransition>,
+    /// Active multi-step sequence playback (chained pose transitions).
+    /// Mutually exclusive with `transition` — starting one cancels the other.
+    sequence: Option<ActiveSequence>,
     /// Active external force/torque pulses applied to specific bodies.
     /// Each entry is decremented per physics tick; expired pulses are removed
     /// and the body's `xfrc_applied` slot is cleared.
@@ -102,6 +105,17 @@ struct ActiveTransition {
     traj: misarta::trajectory::PoseTransition<f64>,
     /// Sim-time elapsed since the transition started.
     elapsed: f64,
+}
+
+/// Multi-step sequence playback. Each tick we evaluate the underlying
+/// [`misarta::trajectory::KeyframeAnimation`] at the current `elapsed`
+/// time and copy the result into `position_targets`. The sequence is
+/// dropped once `is_done(elapsed)` returns true.
+struct ActiveSequence {
+    anim: misarta::trajectory::KeyframeAnimation<f64>,
+    elapsed: f64,
+    /// Optional human-readable name carried for status messages.
+    name: String,
 }
 
 /// One contact between geoms reported by MuJoCo, in world frame.
@@ -241,6 +255,7 @@ impl MujocoSim {
             velocity_targets,
             torque_targets,
             transition: None,
+            sequence: None,
             force_pulses: Vec::new(),
             peaks: vec![JointPeak::default(); robot.joints.len()],
             last_tau: vec![0.0; robot.joints.len()],
@@ -355,6 +370,42 @@ impl MujocoSim {
         // scripting API; previous-pose peaks would otherwise occlude the
         // current command's response.
         self.reset_peaks();
+    }
+
+    /// Begin chained-pose sequence playback. The animation already encodes
+    /// each waypoint's absolute time; the controller cancels any single
+    /// transition currently active and resets the peaks window so the
+    /// recorded τ / q̇ peaks reflect just this sequence.
+    pub fn start_sequence(
+        &mut self,
+        anim: misarta::trajectory::KeyframeAnimation<f64>,
+        name: impl Into<String>,
+    ) {
+        self.transition = None;
+        self.sequence = Some(ActiveSequence {
+            anim,
+            elapsed: 0.0,
+            name: name.into(),
+        });
+        self.reset_peaks();
+    }
+
+    /// Whether a chained sequence is currently being played.
+    pub fn sequence_in_progress(&self) -> bool {
+        self.sequence.is_some()
+    }
+
+    /// Normalised progress (0..1) of the current sequence; `None` if idle.
+    pub fn sequence_progress(&self) -> Option<f32> {
+        self.sequence.as_ref().map(|s| {
+            let dur = s.anim.duration().max(1e-9);
+            ((s.elapsed / dur).clamp(0.0, 1.0)) as f32
+        })
+    }
+
+    /// Name of the currently-playing sequence, if any.
+    pub fn current_sequence_name(&self) -> Option<&str> {
+        self.sequence.as_ref().map(|s| s.name.as_str())
     }
 
     /// Whether a pose transition is currently playing.
@@ -682,6 +733,26 @@ impl MujocoSim {
         }
     }
 
+    /// Advance the active multi-step sequence by `mj_dt` seconds and copy
+    /// the keyframe animation's interpolated joint vector into
+    /// `position_targets`. When the sequence completes, it is dropped (the
+    /// final keyframe's q-vector remains in `position_targets` as the new
+    /// hold pose).
+    fn advance_sequence(&mut self, mj_dt: f64) {
+        let Some(s) = self.sequence.as_mut() else {
+            return;
+        };
+        s.elapsed += mj_dt;
+        let q = s.anim.evaluate(s.elapsed);
+        let n = self.position_targets.len().min(q.len());
+        for i in 0..n {
+            self.position_targets[i] = q[i];
+        }
+        if s.anim.is_done(s.elapsed) {
+            self.sequence = None;
+        }
+    }
+
     /// Step the simulation by `dt` seconds and sync the state back to `RobotModel`.
     ///
     /// `enforce_limits` is forwarded straight to [`Self::apply_controller`]
@@ -693,6 +764,7 @@ impl MujocoSim {
 
         let mj_dt = self.timestep();
         while self.time_accumulator >= mj_dt {
+            self.advance_sequence(mj_dt);
             self.advance_transition(mj_dt);
             self.advance_force_pulses(mj_dt);
             self.apply_controller(robot, enforce_limits);
@@ -711,6 +783,7 @@ impl MujocoSim {
     pub fn step_n_frames(&mut self, robot: &mut RobotModel, n: u32, enforce_limits: bool) {
         let mj_dt = self.timestep();
         for _ in 0..n {
+            self.advance_sequence(mj_dt);
             self.advance_transition(mj_dt);
             self.advance_force_pulses(mj_dt);
             self.apply_controller(robot, enforce_limits);

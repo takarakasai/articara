@@ -162,6 +162,7 @@ mod tests {
             loop_closures: Vec::new(),
             poses: Vec::new(),
             collision_pairs: Vec::new(),
+            sequences: Vec::new(),
         };
         model.rebuild_misarta_model();
         model

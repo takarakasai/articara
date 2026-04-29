@@ -1375,6 +1375,10 @@ impl ArticaraApp {
             if let Some(desc) = self.draw_poses_panel(ui) {
                 props_edit_desc = Some(desc);
             }
+            ui.separator();
+            if let Some(desc) = self.draw_sequences_panel(ui) {
+                props_edit_desc = Some(desc);
+            }
             // External force panel — lives on the right next to Poses since
             // both are sim-time disturbance/replay primitives.
             #[cfg(feature = "mujoco")]
@@ -1639,6 +1643,291 @@ impl ArticaraApp {
                             egui::ProgressBar::new(p)
                                 .text(format!("Transitioning {:.0}%", p * 100.0)),
                         );
+                    }
+                }
+            });
+
+        edit_desc
+    }
+
+    /// Draw the named-sequence registry section. A sequence is an ordered
+    /// list of pose targets with per-step durations / interpolation kinds;
+    /// playing one chains the transitions back-to-back via
+    /// [`crate::mujoco_sim::MujocoSim::start_sequence`].
+    ///
+    /// Returns an undo description if the model was edited.
+    fn draw_sequences_panel(&mut self, ui: &mut egui::Ui) -> Option<String> {
+        // take/restore pattern, mirroring draw_poses_panel.
+        let mut model = self.model.take()?;
+        let result = self.draw_sequences_panel_with(ui, &mut model);
+        self.model = Some(model);
+        result
+    }
+
+    fn draw_sequences_panel_with(
+        &mut self,
+        ui: &mut egui::Ui,
+        model: &mut crate::robot::RobotModel,
+    ) -> Option<String> {
+        let mut edit_desc: Option<String> = None;
+
+        egui::CollapsingHeader::new("🎬 Sequences")
+            .default_open(false)
+            .show(ui, |ui| {
+                // ── Create a new (empty) sequence ──
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.sequence_save_name)
+                            .desired_width(120.0),
+                    );
+                    let name = self.sequence_save_name.trim().to_string();
+                    if ui
+                        .add_enabled(
+                            !name.is_empty()
+                                && !model.sequences.iter().any(|s| s.name == name),
+                            egui::Button::new("📌 New"),
+                        )
+                        .on_hover_text(
+                            "Create an empty sequence; add pose steps below.",
+                        )
+                        .clicked()
+                    {
+                        model.sequences.push(crate::rbd::model::Sequence {
+                            name: name.clone(),
+                            steps: Vec::new(),
+                        });
+                        edit_desc = Some(format!("Create sequence '{name}'"));
+                        self.sequence_save_name.clear();
+                    }
+                });
+
+                if model.sequences.is_empty() {
+                    ui.label(
+                        egui::RichText::new(
+                            "(no sequences yet — create one above and add pose steps)",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    return;
+                }
+
+                #[cfg(feature = "mujoco")]
+                let mj_active = self.mujoco_sim.is_some();
+                #[cfg(not(feature = "mujoco"))]
+                let mj_active = false;
+
+                // Pose dropdown candidates — needed by every step's edit row.
+                let pose_names: Vec<String> =
+                    model.poses.iter().map(|p| p.name.clone()).collect();
+
+                let mut to_remove_seq: Option<usize> = None;
+                let mut to_play_seq: Option<usize> = None;
+                let mut to_remove_step: Option<(usize, usize)> = None;
+                let mut to_add_step: Option<(usize, String)> = None;
+
+                for (si, seq) in model.sequences.iter_mut().enumerate() {
+                    egui::CollapsingHeader::new(format!("▶ {}  ({} steps)", seq.name, seq.steps.len()))
+                        .id_salt(format!("seq_{si}"))
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add_enabled(
+                                        mj_active && !seq.steps.is_empty(),
+                                        egui::Button::new("▶ Play"),
+                                    )
+                                    .on_hover_text(if mj_active {
+                                        "Replay the chained transitions in this sequence."
+                                    } else {
+                                        "Start MuJoCo first to enable playback."
+                                    })
+                                    .clicked()
+                                {
+                                    to_play_seq = Some(si);
+                                }
+                                if ui
+                                    .small_button("🗑")
+                                    .on_hover_text("Delete this sequence.")
+                                    .clicked()
+                                {
+                                    to_remove_seq = Some(si);
+                                }
+                            });
+
+                            // Step list
+                            for (stepi, step) in seq.steps.iter_mut().enumerate() {
+                                let mut row_changed = false;
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{stepi}."))
+                                            .small().weak(),
+                                    );
+                                    // Pose name dropdown
+                                    egui::ComboBox::from_id_salt(format!(
+                                        "seqstep_pose_{si}_{stepi}"
+                                    ))
+                                    .selected_text(&step.pose_name)
+                                    .width(120.0)
+                                    .show_ui(ui, |ui| {
+                                        for n in &pose_names {
+                                            if ui
+                                                .selectable_label(
+                                                    &step.pose_name == n,
+                                                    n,
+                                                )
+                                                .clicked()
+                                            {
+                                                step.pose_name = n.clone();
+                                                row_changed = true;
+                                            }
+                                        }
+                                    });
+                                    // Duration
+                                    if ui
+                                        .add(
+                                            egui::DragValue::new(&mut step.duration)
+                                                .speed(0.05)
+                                                .range(0.05..=30.0)
+                                                .fixed_decimals(2)
+                                                .suffix(" s"),
+                                        )
+                                        .changed()
+                                    {
+                                        row_changed = true;
+                                    }
+                                    // Curve
+                                    let mut k = step.kind;
+                                    egui::ComboBox::from_id_salt(format!(
+                                        "seqstep_kind_{si}_{stepi}"
+                                    ))
+                                    .selected_text(k.label())
+                                    .show_ui(ui, |ui| {
+                                        for kk in
+                                            misarta::trajectory::InterpolationKind::ALL
+                                        {
+                                            ui.selectable_value(
+                                                &mut k, kk, kk.label(),
+                                            );
+                                        }
+                                    });
+                                    if k != step.kind {
+                                        step.kind = k;
+                                        row_changed = true;
+                                    }
+                                    // Delete step
+                                    if ui
+                                        .small_button("🗑")
+                                        .on_hover_text("Remove this step.")
+                                        .clicked()
+                                    {
+                                        to_remove_step = Some((si, stepi));
+                                    }
+                                });
+                                if row_changed {
+                                    edit_desc = Some(format!(
+                                        "Edit sequence '{}' step {}",
+                                        seq.name, stepi
+                                    ));
+                                }
+                            }
+
+                            // Add-step row.
+                            ui.horizontal(|ui| {
+                                ui.label("    + Add:");
+                                let buf = self
+                                    .sequence_step_pose_buf
+                                    .entry(si)
+                                    .or_default();
+                                let label = if buf.is_empty() {
+                                    "(pick pose)".to_string()
+                                } else {
+                                    buf.clone()
+                                };
+                                egui::ComboBox::from_id_salt(format!("seqadd_pose_{si}"))
+                                    .selected_text(label)
+                                    .width(140.0)
+                                    .show_ui(ui, |ui| {
+                                        for n in &pose_names {
+                                            if ui.selectable_label(buf == n, n).clicked() {
+                                                *buf = n.clone();
+                                            }
+                                        }
+                                    });
+                                if ui
+                                    .add_enabled(
+                                        !buf.is_empty(),
+                                        egui::Button::new("➕"),
+                                    )
+                                    .on_hover_text("Append this pose as a new step.")
+                                    .clicked()
+                                {
+                                    to_add_step = Some((si, buf.clone()));
+                                    *buf = String::new();
+                                }
+                            });
+                        });
+                }
+
+                if let Some(i) = to_remove_seq {
+                    let name = model.sequences[i].name.clone();
+                    model.sequences.remove(i);
+                    edit_desc = Some(format!("Delete sequence '{name}'"));
+                }
+                if let Some((si, stepi)) = to_remove_step {
+                    if let Some(seq) = model.sequences.get_mut(si) {
+                        if stepi < seq.steps.len() {
+                            seq.steps.remove(stepi);
+                            edit_desc = Some(format!(
+                                "Remove step {} from sequence '{}'",
+                                stepi, seq.name
+                            ));
+                        }
+                    }
+                }
+                if let Some((si, pose_name)) = to_add_step {
+                    if let Some(seq) = model.sequences.get_mut(si) {
+                        seq.steps.push(crate::rbd::model::SequenceStep {
+                            pose_name: pose_name.clone(),
+                            duration: 1.0,
+                            kind: misarta::trajectory::InterpolationKind::QuinticSmooth,
+                        });
+                        edit_desc = Some(format!(
+                            "Add step '{}' to sequence '{}'",
+                            pose_name, seq.name
+                        ));
+                    }
+                }
+
+                #[cfg(feature = "mujoco")]
+                if let Some(si) = to_play_seq {
+                    let seq_name = model.sequences[si].name.clone();
+                    if let Some(anim) = model.build_sequence_animation(&seq_name) {
+                        if let Some(ref mut sim) = self.mujoco_sim {
+                            sim.start_sequence(anim, seq_name.clone());
+                            self.dynamics_sim_paused = false;
+                            self.status_message =
+                                format!("Playing sequence '{}'", seq_name);
+                        }
+                    } else {
+                        self.status_message = format!(
+                            "Sequence '{}' references missing pose(s)",
+                            seq_name
+                        );
+                    }
+                }
+
+                // Live progress (only one sequence at a time).
+                #[cfg(feature = "mujoco")]
+                if let Some(ref sim) = self.mujoco_sim {
+                    if let Some(p) = sim.sequence_progress() {
+                        let name = sim.current_sequence_name().unwrap_or("").to_string();
+                        ui.add(egui::ProgressBar::new(p).text(format!(
+                            "▶ {}  {:.0}%",
+                            name,
+                            p * 100.0
+                        )));
                     }
                 }
             });
