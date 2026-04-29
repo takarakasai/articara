@@ -2883,6 +2883,82 @@ mod test_sidecar {
     }
 
     #[test]
+    fn mjcf_export_emits_loop_closure_connect_and_weld() {
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        if model.links.len() < 2 {
+            return;
+        }
+        let a = model.links[0].name.clone();
+        let b = model.links[1].name.clone();
+        // 3-DoF loop closure (position only)
+        model.loop_closures.push(
+            articara::rbd::model::LoopClosure::position(
+                "lc_pos".to_string(),
+                a.clone(),
+                nalgebra::Vector3::new(0.1, 0.0, 0.0),
+                b.clone(),
+                nalgebra::Vector3::zeros(),
+            ),
+        );
+        // 6-DoF loop closure (full pose)
+        model.loop_closures.push(
+            articara::rbd::model::LoopClosure::pose(
+                "lc_weld".to_string(),
+                a.clone(),
+                nalgebra::Isometry3::translation(0.0, 0.05, 0.0),
+                b.clone(),
+                nalgebra::Isometry3::identity(),
+            ),
+        );
+        let xml = articara::mjcf::export_mjcf(&model);
+        assert!(xml.contains("<connect"), "expected <connect>:\n{}", xml);
+        assert!(xml.contains("<weld"), "expected <weld>:\n{}", xml);
+        assert!(xml.contains("anchor=\"0.1 0 0\""));
+    }
+
+    #[test]
+    fn urdf_export_decomposes_capsule_into_cylinder_and_spheres() {
+        // URDF has no native capsule. Capsules must be split into a
+        // cylinder + two end-cap spheres so the resulting URDF is valid.
+        // We check both the visual and collision sides.
+        let mut model = articara::rbd::model::RobotModel::new_empty("cap_test");
+        model.links[0].visuals.push(articara::robot::VisualData {
+            origin: nalgebra::Isometry3::identity(),
+            geometry: articara::robot::GeomData::Capsule {
+                radius: 0.05,
+                half_length: 0.20,
+            },
+            color: [0.5, 0.5, 1.0, 1.0],
+        });
+        model.links[0].collisions.push(articara::robot::CollisionData {
+            origin: nalgebra::Isometry3::identity(),
+            geometry: articara::robot::GeomData::Capsule {
+                radius: 0.05,
+                half_length: 0.20,
+            },
+        });
+
+        let xml = model.export_urdf().unwrap();
+        // Should contain cylinder + at least 2 sphere entries (2 visual + 2 collision)
+        let cyl_count = xml.matches("<cylinder").count();
+        let sph_count = xml.matches("<sphere").count();
+        assert!(
+            cyl_count >= 2,
+            "expected >=2 cylinder elements (vis+col), got {}:\n{}",
+            cyl_count,
+            xml,
+        );
+        assert!(
+            sph_count >= 4,
+            "expected >=4 sphere elements (2 caps × {{vis,col}}), got {}:\n{}",
+            sph_count,
+            xml,
+        );
+        // No <capsule> in URDF — that's the contract.
+        assert!(!xml.contains("<capsule"));
+    }
+
+    #[test]
     fn urdf_export_emits_mimic_for_master_format_entries() {
         let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
         // Find two non-fixed joints to wire up.

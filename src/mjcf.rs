@@ -86,10 +86,11 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
 
     let joint_positions = vec![0.0_f64; joints.len()];
 
-    // Parse top-level <equality><joint> elements as master-format Mimics.
-    // Linear coupling is the only form we surface (`polycoef = "off mult …"`);
-    // higher-order terms are clamped to linear.
+    // Parse top-level <equality> entries — both <joint> (mimic) and
+    // <connect>/<weld> (closed-loop) variants populate the master-format
+    // model so they round-trip through .misarta.toml.
     let mut mimics: Vec<crate::rbd::model::Mimic> = Vec::new();
+    let mut loop_closures: Vec<crate::rbd::model::LoopClosure> = Vec::new();
     if let Some(eq) = mujoco_el.children().find(|n| n.tag_name().name() == "equality") {
         for je in eq.children().filter(|n| n.tag_name().name() == "joint") {
             let (Some(j1), Some(j2)) = (je.attribute("joint1"), je.attribute("joint2")) else {
@@ -110,6 +111,56 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
                 multiplier,
                 offset,
             });
+        }
+        // <connect body1=… body2=… anchor="x y z"> → 3-DoF loop closure.
+        for ce in eq.children().filter(|n| n.tag_name().name() == "connect") {
+            let (Some(b1), Some(b2)) = (ce.attribute("body1"), ce.attribute("body2")) else {
+                continue;
+            };
+            let anchor = ce
+                .attribute("anchor")
+                .map(parse_vec3_text)
+                .unwrap_or(na::Vector3::zeros());
+            let name = ce
+                .attribute("name")
+                .unwrap_or(&format!("{b1}_{b2}_loop"))
+                .to_string();
+            loop_closures.push(crate::rbd::model::LoopClosure::position(
+                name,
+                b1.to_string(),
+                anchor.cast::<f64>(),
+                b2.to_string(),
+                na::Vector3::zeros(),
+            ));
+        }
+        // <weld body1=… body2=… relpose="x y z qw qx qy qz"> → 6-DoF.
+        for we in eq.children().filter(|n| n.tag_name().name() == "weld") {
+            let (Some(b1), Some(b2)) = (we.attribute("body1"), we.attribute("body2")) else {
+                continue;
+            };
+            let mut t = na::Vector3::zeros();
+            let mut q = na::UnitQuaternion::identity();
+            if let Some(rp) = we.attribute("relpose") {
+                let v: Vec<f64> = rp.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+                if v.len() >= 7 {
+                    t = na::Vector3::new(v[0], v[1], v[2]);
+                    q = na::UnitQuaternion::from_quaternion(na::Quaternion::new(
+                        v[3], v[4], v[5], v[6],
+                    ));
+                }
+            }
+            let off_a = na::Isometry3::from_parts(na::Translation3::from(t), q);
+            let name = we
+                .attribute("name")
+                .unwrap_or(&format!("{b1}_{b2}_weld"))
+                .to_string();
+            loop_closures.push(crate::rbd::model::LoopClosure::pose(
+                name,
+                b1.to_string(),
+                off_a,
+                b2.to_string(),
+                na::Isometry3::identity(),
+            ));
         }
     }
 
@@ -172,7 +223,7 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
         source_path: Some(path.to_path_buf()),
         base_transform: na::Isometry3::identity(),
         misarta_cache: None,
-        loop_closures: Vec::new(),
+        loop_closures,
         poses: Vec::new(),
         collision_pairs: Vec::new(),
         sequences: Vec::new(),
@@ -531,6 +582,8 @@ pub fn export_mjcf_with_options(
     // Emit `<equality><joint>` for any mimic relationships and `<sensor>`
     // entries for the master-format sensor list. Both are MuJoCo-native
     // representations of articara's master Mimic / Sensor types.
+    // `write_mjcf_equalities` also emits `<connect>` / `<weld>` for
+    // closed-kinematic-loop constraints stored in `model.loop_closures`.
     write_mjcf_equalities(&mut s, model);
     write_mjcf_sensors(&mut s, model);
 
@@ -544,13 +597,22 @@ pub fn export_mjcf_with_options(
     s
 }
 
-/// Emit `<equality><joint>` blocks for every master-format mimic.
+/// Emit `<equality>` block(s) covering both mimic relationships and closed
+/// kinematic loops:
 ///
-/// MuJoCo's `<joint>` equality fits a polynomial in the source joint:
-/// `target = poly[0] + poly[1]*src + poly[2]*src² + …`. Linear mimic
-/// (`target = mult·src + off`) maps to `polycoef="off mult 0 0 0"`.
+/// - `<joint joint1=… joint2=… polycoef="off mult 0 0 0">` per mimic
+///   (linear coupling, polynomial: `target = off + mult·src + 0·src² + …`).
+/// - `<connect body1=… body2=… anchor="x y z">` per 3-DoF loop closure
+///   (anchor in body1's local frame; body2 is constrained at the same world
+///   point as body1·anchor, with the corresponding body2-local point baked
+///   in by MuJoCo at compile time from the bodies' rest poses).
+/// - `<weld body1=… body2=… relpose="x y z qw qx qy qz">` per 6-DoF loop
+///   closure (full pose constraint).
+///
+/// All entries that reference unknown bodies / joints are silently dropped
+/// so a partial sidecar doesn't cause MuJoCo to refuse the file.
 fn write_mjcf_equalities(s: &mut String, model: &RobotModel) {
-    let active: Vec<&crate::rbd::model::Mimic> = model
+    let active_mimics: Vec<&crate::rbd::model::Mimic> = model
         .mimics
         .iter()
         .filter(|m| {
@@ -558,15 +620,47 @@ fn write_mjcf_equalities(s: &mut String, model: &RobotModel) {
                 && model.joint_map.contains_key(&m.source)
         })
         .collect();
-    if active.is_empty() {
+    let active_loops: Vec<&crate::rbd::model::LoopClosure> = model
+        .loop_closures
+        .iter()
+        .filter(|lc| {
+            model.link_map.contains_key(&lc.link_a)
+                && model.link_map.contains_key(&lc.link_b)
+        })
+        .collect();
+    if active_mimics.is_empty() && active_loops.is_empty() {
         return;
     }
     s.push_str("\n  <equality>\n");
-    for m in active {
+    for m in active_mimics {
         s.push_str(&format!(
             "    <joint name=\"mimic_{}\" joint1=\"{}\" joint2=\"{}\" polycoef=\"{} {} 0 0 0\"/>\n",
             m.joint, m.joint, m.source, m.offset, m.multiplier,
         ));
+    }
+    for lc in active_loops {
+        let oa = lc.offset_a.translation.vector;
+        if lc.pose_6dof {
+            // 6-DoF: weld with full relative pose. relpose = b2 in b1's
+            // frame at the constraint instant. We compute it from the
+            // user-set offsets: B-frame seen from A is offset_a · offset_b⁻¹.
+            let rel = lc.offset_a * lc.offset_b.inverse();
+            let rt = rel.translation.vector;
+            let rq = rel.rotation.quaternion();
+            s.push_str(&format!(
+                "    <weld name=\"{}\" body1=\"{}\" body2=\"{}\" relpose=\"{} {} {} {} {} {} {}\"/>\n",
+                lc.name, lc.link_a, lc.link_b,
+                rt.x, rt.y, rt.z, rq.w, rq.i, rq.j, rq.k,
+            ));
+        } else {
+            // 3-DoF: connect at offset_a in link_a's local frame. MuJoCo
+            // resolves the corresponding point on link_b from the bodies'
+            // rest configuration at compile time.
+            s.push_str(&format!(
+                "    <connect name=\"{}\" body1=\"{}\" body2=\"{}\" anchor=\"{} {} {}\"/>\n",
+                lc.name, lc.link_a, lc.link_b, oa.x, oa.y, oa.z,
+            ));
+        }
     }
     s.push_str("  </equality>\n");
 }
