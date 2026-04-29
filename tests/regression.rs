@@ -2883,6 +2883,79 @@ mod test_sidecar {
     }
 
     #[test]
+    fn mimic_and_sensor_roundtrip_via_sidecar() {
+        // Mimic + Sensor are now first-class master-format entries.
+        // Round-trip a model carrying one of each through TOML.
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        model.mimics.push(articara::rbd::model::Mimic {
+            joint: "j2".into(),
+            source: "j1".into(),
+            multiplier: 0.5,
+            offset: 0.1,
+        });
+        model.sensors.push(articara::rbd::model::Sensor {
+            name: "front_cam".into(),
+            link: model.links[0].name.clone(),
+            origin: nalgebra::Isometry3::translation(0.1, 0.0, 0.05),
+            update_rate: 30.0,
+            kind: articara::rbd::model::SensorKind::Camera {
+                fov: 1.2,
+                width: 320,
+                height: 240,
+                near: 0.05,
+                far: 50.0,
+            },
+        });
+        let cfg = model.to_misarta_config();
+        let toml = cfg.to_toml().unwrap();
+        assert!(toml.contains("[[mimic]]"));
+        assert!(toml.contains("[[sensor]]"));
+        let cfg2 = misarta::config::MisartaConfig::from_toml(&toml).unwrap();
+        let mut model2 = RobotModel::from_file(&fixture_urdf()).unwrap();
+        model2.load_misarta_config(&cfg2);
+        assert_eq!(model2.mimics.len(), 1);
+        assert_eq!(model2.mimics[0].joint, "j2");
+        assert!((model2.mimics[0].multiplier - 0.5).abs() < 1e-9);
+        assert_eq!(model2.sensors.len(), 1);
+        match &model2.sensors[0].kind {
+            articara::rbd::model::SensorKind::Camera { width, height, .. } => {
+                assert_eq!(*width, 320);
+                assert_eq!(*height, 240);
+            }
+            _ => panic!("expected Camera"),
+        }
+    }
+
+    #[test]
+    fn format_registry_dispatches_correctly() {
+        // The registry should pick the right handler for each extension.
+        use articara::format::FormatRegistry;
+        let reg = FormatRegistry::default_registry();
+        let urdf_h = reg.handler_for(std::path::Path::new("/x/foo.urdf"));
+        assert!(urdf_h.is_some());
+        assert_eq!(urdf_h.unwrap().name(), "URDF");
+        let sdf_h = reg.handler_for(std::path::Path::new("/x/foo.sdf"));
+        assert_eq!(sdf_h.unwrap().name(), "SDF");
+        let usd_h = reg.handler_for(std::path::Path::new("/x/foo.usda"));
+        assert_eq!(usd_h.unwrap().name(), "Isaac USD");
+        // Capabilities are honest about what each format can express.
+        let urdf_caps = urdf_h.unwrap().capabilities();
+        assert!(urdf_caps.mimic);
+        assert!(!urdf_caps.sensors);
+        assert!(!urdf_caps.collision_pairs);
+        let sdf_caps = sdf_h.unwrap().capabilities();
+        assert!(sdf_caps.sensors);
+    }
+
+    #[test]
+    fn format_registry_can_import_fixture_urdf() {
+        use articara::format::FormatRegistry;
+        let reg = FormatRegistry::default_registry();
+        let model = reg.import(&fixture_urdf()).unwrap();
+        assert!(!model.links.is_empty());
+    }
+
+    #[test]
     fn loop_closure_capture_from_pose_satisfies_constraint() {
         // The "📍 Capture from current pose" UI button uses the same
         // midpoint-of-origins formula tested here. We assert that after
