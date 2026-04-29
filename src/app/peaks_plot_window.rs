@@ -12,12 +12,12 @@ use eframe::egui;
 use egui::PointerButton;
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 
-use super::{ArticaraApp, PeaksPlotMetric};
-
-/// Maximum number of joint traces to render simultaneously to keep the plot
-/// readable on a smaller side window. When more joints are movable, the user
-/// has to pick one explicitly via the joint dropdown.
-const MAX_TRACES_ALL_MODE: usize = 8;
+use super::file_dialog::FileDialogMode;
+use super::{
+    ArticaraApp, PeaksPlotMetric, PeaksXAxisMode, PEAKS_PLOT_UNLIMITED_CAP,
+};
+use crate::mujoco_sim::MujocoSim;
+use crate::rbd::model::RobotModel;
 
 impl ArticaraApp {
     pub(super) fn draw_peaks_plot_window(&mut self, ctx: &egui::Context) {
@@ -34,6 +34,15 @@ impl ArticaraApp {
         let mut reset_view = self.peaks_plot_reset_view;
         let mut reset_clicked = false;
 
+        // Local copies of x-axis state so the closure can mutate without
+        // overlapping borrow on `self`.
+        let mut xaxis_mode = self.peaks_plot_xaxis_mode;
+        let mut auto_seconds = self.peaks_plot_auto_seconds;
+        let mut auto_unlimited = self.peaks_plot_auto_unlimited;
+        let mut fixed_seconds = self.peaks_plot_fixed_seconds;
+        let mut hidden_joints = self.peaks_plot_hidden_joints.clone();
+        let mut save_csv_clicked = false;
+
         // Snapshot trace + joint metadata up-front so the closure doesn't
         // borrow `self` while the plot widget runs.
         struct JointTrace {
@@ -42,7 +51,7 @@ impl ArticaraApp {
             samples: Vec<(f64, f64)>, // (time_s, value)
         }
 
-        let (joint_names, traces, t0) = {
+        let (joint_names, traces, t_latest, sim_dt) = {
             let model = match self.model.as_ref() {
                 Some(m) => m,
                 None => {
@@ -89,7 +98,7 @@ impl ArticaraApp {
                     .collect(),
                 None => movable_joints
                     .iter()
-                    .take(MAX_TRACES_ALL_MODE)
+                    .filter(|(_, n, _)| !hidden_joints.contains(*n))
                     .map(|(i, n, p)| (*i, n.to_string(), *p))
                     .collect(),
             };
@@ -98,6 +107,11 @@ impl ArticaraApp {
             // last reset" rather than the absolute MuJoCo clock — keeps
             // labels short and comparable across runs.
             let t0 = sim.trace().next().map(|f| f.time).unwrap_or(0.0);
+            let t_latest = sim
+                .trace()
+                .last()
+                .map(|f| f.time - t0)
+                .unwrap_or(0.0);
 
             let mut traces: Vec<JointTrace> = render_set
                 .iter()
@@ -108,8 +122,19 @@ impl ArticaraApp {
                 })
                 .collect();
 
+            // In Fixed mode, drop samples older than the window so the plot
+            // auto-bounds settle on exactly the last `fixed_seconds` of data.
+            let t_min = if matches!(xaxis_mode, PeaksXAxisMode::Fixed) {
+                t_latest - fixed_seconds as f64
+            } else {
+                f64::NEG_INFINITY
+            };
+
             for frame in sim.trace() {
                 let dt_anchor = frame.time - t0;
+                if dt_anchor < t_min {
+                    continue;
+                }
                 for (slot, (idx, _, _)) in traces.iter_mut().zip(render_set.iter()) {
                     let v = match metric {
                         PeaksPlotMetric::Position => frame.q.get(*idx).copied().unwrap_or(0.0),
@@ -120,14 +145,12 @@ impl ArticaraApp {
                 }
             }
 
-            (joint_names, traces, t0)
+            (joint_names, traces, t_latest, sim.timestep())
         };
-
-        let _ = t0; // anchor only needed during snapshot; kept for symmetry
 
         egui::Window::new("📈 Joint Peaks Plot")
             .open(&mut open)
-            .default_size([640.0, 360.0])
+            .default_size([640.0, 420.0])
             .resizable(true)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -145,9 +168,7 @@ impl ArticaraApp {
                     let label = selected_joint
                         .as_deref()
                         .map(|s| s.to_string())
-                        .unwrap_or_else(|| {
-                            format!("(all, ≤{} shown)", MAX_TRACES_ALL_MODE)
-                        });
+                        .unwrap_or_else(|| "(all visible)".to_string());
                     egui::ComboBox::from_id_salt("peaks_plot_joint")
                         .selected_text(label)
                         .width(180.0)
@@ -166,8 +187,6 @@ impl ArticaraApp {
                             }
                         });
 
-                    // Push the reset button to the right edge so it sits
-                    // out of the way until the user has zoomed in.
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
@@ -180,9 +199,95 @@ impl ArticaraApp {
                             {
                                 reset_clicked = true;
                             }
+                            if ui
+                                .button("💾 Save CSV")
+                                .on_hover_text(
+                                    "Export the recorded trace (time × all joints × q/q̇/τ) as CSV.",
+                                )
+                                .clicked()
+                            {
+                                save_csv_clicked = true;
+                            }
                         },
                     );
                 });
+
+                // ── X-axis controls ──
+                ui.horizontal(|ui| {
+                    ui.label("X-axis:");
+                    egui::ComboBox::from_id_salt("peaks_plot_xaxis_mode")
+                        .selected_text(xaxis_mode.label())
+                        .show_ui(ui, |ui| {
+                            for m in PeaksXAxisMode::ALL {
+                                ui.selectable_value(&mut xaxis_mode, m, m.label());
+                            }
+                        });
+                    match xaxis_mode {
+                        PeaksXAxisMode::Auto => {
+                            ui.checkbox(&mut auto_unlimited, "Unlimited")
+                                .on_hover_text(
+                                    "Keep all samples (capped at \
+                                     PEAKS_PLOT_UNLIMITED_CAP to bound memory).",
+                                );
+                            ui.add_enabled_ui(!auto_unlimited, |ui| {
+                                ui.label("Max length:");
+                                ui.add(
+                                    egui::DragValue::new(&mut auto_seconds)
+                                        .speed(0.5)
+                                        .range(0.5..=600.0)
+                                        .suffix(" s"),
+                                );
+                            });
+                        }
+                        PeaksXAxisMode::Fixed => {
+                            ui.label("Window:");
+                            ui.add(
+                                egui::DragValue::new(&mut fixed_seconds)
+                                    .speed(0.1)
+                                    .range(0.1..=600.0)
+                                    .suffix(" s"),
+                            );
+                        }
+                    }
+                });
+
+                // ── Per-joint visibility (only meaningful in "all" mode) ──
+                if selected_joint.is_none() && !joint_names.is_empty() {
+                    egui::CollapsingHeader::new(format!(
+                        "Visible joints ({}/{})",
+                        joint_names.len() - hidden_joints.len(),
+                        joint_names.len(),
+                    ))
+                    .id_salt("peaks_plot_visible")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui.small_button("Show all").clicked() {
+                                hidden_joints.clear();
+                            }
+                            if ui.small_button("Hide all").clicked() {
+                                for n in &joint_names {
+                                    hidden_joints.insert(n.clone());
+                                }
+                            }
+                        });
+                        egui::ScrollArea::vertical()
+                            .max_height(120.0)
+                            .id_salt("peaks_plot_visible_scroll")
+                            .show(ui, |ui| {
+                                for n in &joint_names {
+                                    let mut visible = !hidden_joints.contains(n);
+                                    if ui.checkbox(&mut visible, n).changed() {
+                                        if visible {
+                                            hidden_joints.remove(n);
+                                        } else {
+                                            hidden_joints.insert(n.clone());
+                                        }
+                                    }
+                                }
+                            });
+                    });
+                }
 
                 if traces.is_empty()
                     || traces.iter().all(|t| t.samples.is_empty())
@@ -213,21 +318,16 @@ impl ArticaraApp {
                     .legend(Legend::default())
                     .x_axis_label("t [s]")
                     .y_axis_label(unit)
-                    // Wheel scroll → zoom about the cursor.
                     .allow_zoom(true)
                     .allow_scroll(true)
-                    // Left-drag = boxed (rectangle) zoom.
                     .allow_boxed_zoom(true)
                     .boxed_zoom_pointer_button(PointerButton::Primary)
-                    // Right-drag = pan. Only meaningful when the user has
-                    // zoomed past the auto-bounds — egui_plot just no-ops it
-                    // back to bounds when there's nothing to pan to.
                     .allow_drag(true)
                     .pan_pointer_button(PointerButton::Secondary);
-                if reset_clicked {
-                    plot = plot.reset();
-                    reset_view = false;
-                } else if reset_view {
+                // Fixed mode: re-fit every frame so the window scrolls with
+                // the latest sample rather than freezing at a stale view.
+                let force_reset = matches!(xaxis_mode, PeaksXAxisMode::Fixed);
+                if reset_clicked || reset_view || force_reset {
                     plot = plot.reset();
                     reset_view = false;
                 }
@@ -240,14 +340,128 @@ impl ArticaraApp {
                             .collect();
                         plot_ui.line(Line::new(tr.name.clone(), pts));
                     }
+                    // In Fixed mode, force the x-axis to span exactly the
+                    // configured window even when fewer samples are present
+                    // (e.g. right after a reset).
+                    if matches!(xaxis_mode, PeaksXAxisMode::Fixed) {
+                        let t_end = t_latest;
+                        let t_start = t_end - fixed_seconds as f64;
+                        let bounds = plot_ui.plot_bounds();
+                        let y_min = bounds.min()[1];
+                        let y_max = bounds.max()[1];
+                        plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max(
+                            [t_start, y_min],
+                            [t_end, y_max],
+                        ));
+                    }
                 });
             });
+
+        // ── Apply trace_max according to current x-axis settings ──
+        if let Some(sim) = self.mujoco_sim.as_mut() {
+            let dt = sim_dt.max(1e-6);
+            let target = match xaxis_mode {
+                PeaksXAxisMode::Auto if auto_unlimited => PEAKS_PLOT_UNLIMITED_CAP,
+                PeaksXAxisMode::Auto => {
+                    ((auto_seconds as f64 / dt).ceil() as usize).max(1)
+                }
+                PeaksXAxisMode::Fixed => {
+                    ((fixed_seconds as f64 / dt).ceil() as usize).max(1)
+                }
+            };
+            sim.set_trace_max(target.min(PEAKS_PLOT_UNLIMITED_CAP));
+        }
+
+        // ── CSV save dialog trigger ──
+        if save_csv_clicked {
+            let start = if self.peaks_plot_csv_path.is_empty() {
+                None
+            } else {
+                Some(std::path::PathBuf::from(&self.peaks_plot_csv_path))
+            };
+            self.dlg_save_peaks_csv.open(
+                "Save Peaks Trace CSV",
+                FileDialogMode::Save,
+                start.as_deref(),
+                &["csv"],
+            );
+        }
 
         self.peaks_plot_metric = metric;
         self.peaks_plot_joint = selected_joint;
         self.peaks_plot_reset_view = reset_view;
+        self.peaks_plot_xaxis_mode = xaxis_mode;
+        self.peaks_plot_auto_seconds = auto_seconds;
+        self.peaks_plot_auto_unlimited = auto_unlimited;
+        self.peaks_plot_fixed_seconds = fixed_seconds;
+        self.peaks_plot_hidden_joints = hidden_joints;
         if !open {
             self.show_peaks_plot = false;
         }
+    }
+}
+
+/// Write the current MuJoCo trace as CSV. Each row is one recorded frame;
+/// columns are `time_s` followed by triplets of `q[name],qvel[name],tau[name]`
+/// for every non-fixed joint, in model order. Returns the number of data rows
+/// written on success.
+pub(super) fn save_peaks_csv(
+    model: &RobotModel,
+    sim: &MujocoSim,
+    path: &std::path::Path,
+) -> Result<usize, String> {
+    use std::io::Write;
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{e}"))?;
+        }
+    }
+
+    let movable: Vec<(usize, &str)> = model
+        .joints
+        .iter()
+        .enumerate()
+        .filter(|(_, j)| j.joint_type != "fixed")
+        .map(|(i, j)| (i, j.name.as_str()))
+        .collect();
+
+    let mut f = std::fs::File::create(path).map_err(|e| format!("{e}"))?;
+
+    // Header row.
+    let mut header = String::from("time_s");
+    for (_, name) in &movable {
+        header.push(',');
+        header.push_str(&csv_field(&format!("q[{name}]")));
+        header.push(',');
+        header.push_str(&csv_field(&format!("qvel[{name}]")));
+        header.push(',');
+        header.push_str(&csv_field(&format!("tau[{name}]")));
+    }
+    writeln!(f, "{header}").map_err(|e| format!("{e}"))?;
+
+    let mut count = 0usize;
+    let t0 = sim.trace().next().map(|fr| fr.time).unwrap_or(0.0);
+    for frame in sim.trace() {
+        let mut row = format!("{:.6}", frame.time - t0);
+        for (idx, _) in &movable {
+            let q = frame.q.get(*idx).copied().unwrap_or(0.0);
+            let v = frame.qvel.get(*idx).copied().unwrap_or(0.0);
+            let t = frame.tau.get(*idx).copied().unwrap_or(0.0);
+            row.push_str(&format!(",{q:.6},{v:.6},{t:.6}"));
+        }
+        writeln!(f, "{row}").map_err(|e| format!("{e}"))?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Quote a CSV field if it contains commas, quotes, or newlines (RFC 4180).
+fn csv_field(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+        let escaped = s.replace('"', "\"\"");
+        format!("\"{escaped}\"")
+    } else {
+        s.to_string()
     }
 }

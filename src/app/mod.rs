@@ -1,6 +1,6 @@
 use eframe::egui;
 use nalgebra as na;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -98,6 +98,35 @@ impl PeaksPlotMetric {
         }
     }
 }
+
+/// X-axis behaviour for the Joint Peaks plot.
+#[cfg(feature = "mujoco")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PeaksXAxisMode {
+    /// X-axis grows with each new sample. Older samples beyond the buffer
+    /// limit (or unlimited) are dropped from the front.
+    Auto,
+    /// X-axis is a sliding window of fixed length, anchored at the most
+    /// recent sample.
+    Fixed,
+}
+
+#[cfg(feature = "mujoco")]
+impl PeaksXAxisMode {
+    pub const ALL: [PeaksXAxisMode; 2] = [PeaksXAxisMode::Auto, PeaksXAxisMode::Fixed];
+    pub fn label(self) -> &'static str {
+        match self {
+            PeaksXAxisMode::Auto => "Auto-update",
+            PeaksXAxisMode::Fixed => "Fixed period",
+        }
+    }
+}
+
+/// Hard cap on the trace ring buffer when the user picks "Unlimited" history.
+/// Sized to keep worst-case memory bounded (≈200k samples × ~hundreds of
+/// joints × 3 metrics × 8 B → low hundreds of MB).
+#[cfg(feature = "mujoco")]
+pub const PEAKS_PLOT_UNLIMITED_CAP: usize = 200_000;
 
 /// Pin constraint dimensionality.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -482,6 +511,31 @@ pub struct ArticaraApp {
     /// frames retain the user's manipulated view.
     #[cfg(feature = "mujoco")]
     peaks_plot_reset_view: bool,
+    /// Whether the X-axis auto-fits to all stored samples or shows a fixed-
+    /// length sliding window anchored to the latest sample.
+    #[cfg(feature = "mujoco")]
+    peaks_plot_xaxis_mode: PeaksXAxisMode,
+    /// In Auto mode, how many seconds of history to retain (used to size the
+    /// MuJoCo trace ring buffer).
+    #[cfg(feature = "mujoco")]
+    peaks_plot_auto_seconds: f32,
+    /// In Auto mode, if `true` the buffer is uncapped (subject to a hard cap
+    /// of [`PEAKS_PLOT_UNLIMITED_CAP`] samples to prevent OOM).
+    #[cfg(feature = "mujoco")]
+    peaks_plot_auto_unlimited: bool,
+    /// In Fixed mode, length of the sliding x-axis window in seconds.
+    #[cfg(feature = "mujoco")]
+    peaks_plot_fixed_seconds: f32,
+    /// Joint names whose trace is hidden when rendering "all" mode. Single-
+    /// joint focus mode (`peaks_plot_joint = Some(_)`) bypasses this set.
+    #[cfg(feature = "mujoco")]
+    peaks_plot_hidden_joints: HashSet<String>,
+    /// File path used for the most recent CSV export.
+    #[cfg(feature = "mujoco")]
+    peaks_plot_csv_path: String,
+    /// File dialog for saving the trace as CSV.
+    #[cfg(feature = "mujoco")]
+    dlg_save_peaks_csv: file_dialog::FileDialog,
     /// File path for sim config save/load.
     sim_config_path: String,
     // --- Posture save/load ---
@@ -728,6 +782,20 @@ impl ArticaraApp {
             peaks_plot_metric: PeaksPlotMetric::Torque,
             #[cfg(feature = "mujoco")]
             peaks_plot_reset_view: false,
+            #[cfg(feature = "mujoco")]
+            peaks_plot_xaxis_mode: PeaksXAxisMode::Auto,
+            #[cfg(feature = "mujoco")]
+            peaks_plot_auto_seconds: 10.0,
+            #[cfg(feature = "mujoco")]
+            peaks_plot_auto_unlimited: false,
+            #[cfg(feature = "mujoco")]
+            peaks_plot_fixed_seconds: 5.0,
+            #[cfg(feature = "mujoco")]
+            peaks_plot_hidden_joints: HashSet::new(),
+            #[cfg(feature = "mujoco")]
+            peaks_plot_csv_path: String::new(),
+            #[cfg(feature = "mujoco")]
+            dlg_save_peaks_csv: file_dialog::FileDialog::new("dlg_save_peaks_csv"),
             sim_config_path: String::new(),
             posture_path: String::new(),
             dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),
@@ -1011,6 +1079,33 @@ impl ArticaraApp {
                     }
                     Err(e) => {
                         self.status_message = format!("Load sim config error: {e}");
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // --- Save Peaks Plot CSV dialog ---
+        #[cfg(feature = "mujoco")]
+        match self.dlg_save_peaks_csv.show(ctx) {
+            FileDialogResult::Confirmed(path) => {
+                self.peaks_plot_csv_path = path.display().to_string();
+                let result = if let (Some(model), Some(sim)) =
+                    (self.model.as_ref(), self.mujoco_sim.as_ref())
+                {
+                    peaks_plot_window::save_peaks_csv(model, sim, &path)
+                } else {
+                    Err("MuJoCo simulation is not running".to_string())
+                };
+                match result {
+                    Ok(n) => {
+                        self.status_message = format!(
+                            "Saved {n} samples → {}",
+                            path.display(),
+                        );
+                    }
+                    Err(e) => {
+                        self.status_message = format!("Save CSV error: {e}");
                     }
                 }
             }
