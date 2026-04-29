@@ -93,9 +93,32 @@ impl ArticaraApp {
             }
         }
 
+        // Loop-closure "Pick B" mode: the next left-click consumes the
+        // cursor as the link-B selector instead of the usual drag/drive
+        // flow. We have to intercept on BOTH `drag_started_by` (when the
+        // user begins a drag) AND `clicked()` (a clean press-release
+        // without crossing the drag threshold) — egui only fires one of
+        // them per interaction, so checking just `drag_started_by` would
+        // miss clean clicks and let the regular handler overwrite link A.
+        //
+        // `pick_b_active_this_frame` short-circuits the regular click/drag
+        // handlers below for the entire frame, so the press half of a
+        // press-release pair doesn't accidentally start a JointDrive drag
+        // before the release lands and resolves the pick.
+        let pick_b_active_this_frame = self.loop_closure_picking_b;
+        if self.loop_closure_picking_b {
+            let pressed = response.drag_started_by(egui::PointerButton::Primary);
+            let clicked = response.clicked();
+            if pressed || clicked {
+                self.handle_pick_b_click(mouse_ndc, aspect, &transforms);
+            }
+        }
+
         // Left mouse button pressed: start drag
         let had_drag_before = self.drag_state.is_some() || self.offset_drag_state.is_some();
-        if response.drag_started_by(egui::PointerButton::Primary) {
+        if !pick_b_active_this_frame
+            && response.drag_started_by(egui::PointerButton::Primary)
+        {
             // Sim drag takes precedence when MuJoCo is running so the user
             // can poke the live robot without the editor's joint-drive logic
             // mutating angles directly.
@@ -134,7 +157,7 @@ impl ArticaraApp {
         }
 
         // Plain click (no drag): select the clicked link in tree/properties
-        if response.clicked() {
+        if !pick_b_active_this_frame && response.clicked() {
             self.handle_click(mouse_ndc, aspect, &transforms);
         }
 
@@ -641,6 +664,43 @@ impl ArticaraApp {
     }
 
     /// Handle a plain click to select a link.
+    /// Click handler used while [`Self::loop_closure_picking_b`] is on.
+    /// Picks a link by ray-cast and stores it in
+    /// [`Self::loop_closure_link_b`] without disturbing the regular
+    /// `selected_link` (which is the loop closure's link A).
+    fn handle_pick_b_click(
+        &mut self,
+        mouse_ndc: Option<na::Point2<f32>>,
+        aspect: f32,
+        transforms: &std::collections::HashMap<String, na::Isometry3<f32>>,
+    ) {
+        let Some(ndc) = mouse_ndc else { return };
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
+        let (ro, rd) = self.camera.screen_ray(ndc, aspect);
+        if let Some((li, _)) = model.pick_link(&ro, &rd, transforms) {
+            self.loop_closure_link_b = Some(li);
+            self.status_message = format!(
+                "Loop-closure link B = '{}'",
+                model.links[li].name,
+            );
+        } else if let Some(hov_li) = self.hovered_link {
+            // Fallback when the precise mesh test misses but the hover
+            // pick succeeded.
+            self.loop_closure_link_b = Some(hov_li);
+            self.status_message = format!(
+                "Loop-closure link B = '{}'",
+                model.links[hov_li].name,
+            );
+        } else {
+            self.status_message =
+                "Loop-closure pick: no link under cursor".into();
+        }
+        // One-shot: turn off picking mode after a successful or failed click.
+        self.loop_closure_picking_b = false;
+    }
+
     fn handle_click(
         &mut self,
         mouse_ndc: Option<na::Point2<f32>>,

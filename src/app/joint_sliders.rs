@@ -232,13 +232,15 @@ impl ArticaraApp {
                         ui.label("1. Select link A in viewport");
                         ui.label("2. Pick link B below, set offsets");
 
-                        // Link B selector (combo box of all links)
+                        // Link B selector — viewport-pick or fallback dropdown.
                         if self.selected_link.is_some() {
                             let sel_link_name = model.links[self.selected_link.unwrap()].name.clone();
                             ui.label(format!("Link A: {}", &sel_link_name));
 
-                            // Persistent state for the add-loop form via egui's temp data
-                            let id_b = ui.id().with("lc_linkb");
+                            // Persistent state for the add-loop form via egui's temp data.
+                            // Link B is now stored on the app (so the
+                            // viewport click handler can write to it),
+                            // not in egui temp data.
                             let id_ox = ui.id().with("lc_ox");
                             let id_oy = ui.id().with("lc_oy");
                             let id_oz = ui.id().with("lc_oz");
@@ -256,7 +258,6 @@ impl ArticaraApp {
                             let id_rbw = ui.id().with("lc_rbw");
                             let id_pose_mode = ui.id().with("lc_pose_mode");
 
-                            let mut link_b_idx: usize = ui.data(|d| d.get_temp(id_b).unwrap_or(0));
                             let mut oa_x: f64 = ui.data(|d| d.get_temp(id_ox).unwrap_or(0.0));
                             let mut oa_y: f64 = ui.data(|d| d.get_temp(id_oy).unwrap_or(0.0));
                             let mut oa_z: f64 = ui.data(|d| d.get_temp(id_oz).unwrap_or(0.0));
@@ -275,13 +276,69 @@ impl ArticaraApp {
                             let mut pose_mode: bool =
                                 ui.data(|d| d.get_temp(id_pose_mode).unwrap_or(false));
 
-                            egui::ComboBox::from_label("Link B")
-                                .selected_text(&model.links[link_b_idx.min(model.links.len() - 1)].name)
-                                .show_ui(ui, |ui| {
-                                    for (i, link) in model.links.iter().enumerate() {
-                                        ui.selectable_value(&mut link_b_idx, i, &link.name);
-                                    }
-                                });
+                            // ── Link B: click-to-pick (primary) + dropdown (fallback) ──
+                            //
+                            // Stored on the app rather than ui temp data so the
+                            // viewport click handler can write to it from
+                            // outside this closure. Falls back to a Combo box
+                            // for users who prefer typing/scrolling.
+                            ui.horizontal(|ui| {
+                                ui.label("Link B:");
+                                let cur_b_label = self
+                                    .loop_closure_link_b
+                                    .and_then(|i| model.links.get(i).map(|l| l.name.as_str()))
+                                    .unwrap_or("(not set)")
+                                    .to_string();
+                                ui.label(
+                                    egui::RichText::new(&cur_b_label).monospace(),
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                let pick_label = if self.loop_closure_picking_b {
+                                    "🎯 Click a link in viewport…  (Esc to cancel)"
+                                } else {
+                                    "👆 Pick B from viewport"
+                                };
+                                if ui
+                                    .button(pick_label)
+                                    .on_hover_text(
+                                        "Toggle viewport-pick mode: the next \
+                                         left-click on a link sets it as link B.",
+                                    )
+                                    .clicked()
+                                {
+                                    self.loop_closure_picking_b =
+                                        !self.loop_closure_picking_b;
+                                }
+                                // Allow Esc to cancel the pick mode.
+                                if self.loop_closure_picking_b
+                                    && ui.input(|i| i.key_pressed(egui::Key::Escape))
+                                {
+                                    self.loop_closure_picking_b = false;
+                                }
+                                // Compact fallback dropdown for users who'd
+                                // rather pick by name.
+                                let mut dropdown_idx = self
+                                    .loop_closure_link_b
+                                    .unwrap_or(0)
+                                    .min(model.links.len().saturating_sub(1));
+                                let prev_dropdown_idx = dropdown_idx;
+                                egui::ComboBox::from_id_salt("lc_b_combo")
+                                    .selected_text("⌄")
+                                    .width(28.0)
+                                    .show_ui(ui, |ui| {
+                                        for (i, link) in model.links.iter().enumerate() {
+                                            ui.selectable_value(
+                                                &mut dropdown_idx,
+                                                i,
+                                                &link.name,
+                                            );
+                                        }
+                                    });
+                                if dropdown_idx != prev_dropdown_idx {
+                                    self.loop_closure_link_b = Some(dropdown_idx);
+                                }
+                            });
 
                             ui.horizontal(|ui| {
                                 ui.label("Offset A:");
@@ -311,12 +368,18 @@ impl ArticaraApp {
                             // is exactly satisfied at the *current* model
                             // pose. Saves the user from typing the offsets
                             // manually after physically aligning the links.
-                            let link_b_name = model
-                                .links[link_b_idx.min(model.links.len() - 1)]
-                                .name
-                                .clone();
+                            // Resolve link B's name from app state. When no B
+                            // has been chosen yet, the Add / Capture buttons
+                            // below stay disabled.
+                            let link_b_name = self
+                                .loop_closure_link_b
+                                .and_then(|i| model.links.get(i).map(|l| l.name.clone()));
+                            let has_b = link_b_name.is_some();
                             if ui
-                                .button("📍 Capture from current pose")
+                                .add_enabled(
+                                    has_b,
+                                    egui::Button::new("📍 Capture from current pose"),
+                                )
                                 .on_hover_text(
                                     "Compute offsets so the constraint is \
                                      exactly satisfied at the current pose. \
@@ -326,9 +389,10 @@ impl ArticaraApp {
                                 .clicked()
                             {
                                 let transforms = model.compute_transforms();
+                                let lbn = link_b_name.as_deref().unwrap_or("");
                                 if let (Some(tf_a), Some(tf_b)) = (
                                     transforms.get(&sel_link_name),
-                                    transforms.get(&link_b_name),
+                                    transforms.get(lbn),
                                 ) {
                                     let pa = tf_a.translation.vector;
                                     let pb = tf_b.translation.vector;
@@ -368,7 +432,15 @@ impl ArticaraApp {
                                 }
                             }
 
-                            if ui.button(format!("🔗 Add closure: {} ↔ {}", &sel_link_name, &link_b_name)).clicked() {
+                            let add_label = match link_b_name.as_deref() {
+                                Some(b) => format!("🔗 Add closure: {} ↔ {}", &sel_link_name, b),
+                                None => "🔗 Add closure (pick B first)".to_string(),
+                            };
+                            if ui
+                                .add_enabled(has_b, egui::Button::new(add_label))
+                                .clicked()
+                            {
+                                let lbn = link_b_name.clone().unwrap_or_default();
                                 if pose_mode {
                                     let q_a = na::UnitQuaternion::from_quaternion(
                                         na::Quaternion::new(
@@ -390,20 +462,20 @@ impl ArticaraApp {
                                     );
                                     model.loop_closures.push(
                                         crate::robot::LoopClosure::pose(
-                                            format!("{}↔{}", &sel_link_name, &link_b_name),
+                                            format!("{}↔{}", &sel_link_name, &lbn),
                                             sel_link_name.clone(),
                                             off_a,
-                                            link_b_name.clone(),
+                                            lbn.clone(),
                                             off_b,
                                         ),
                                     );
                                 } else {
                                     model.loop_closures.push(
                                         crate::robot::LoopClosure::position(
-                                            format!("{}↔{}", &sel_link_name, &link_b_name),
+                                            format!("{}↔{}", &sel_link_name, &lbn),
                                             sel_link_name.clone(),
                                             na::Vector3::new(oa_x, oa_y, oa_z),
-                                            link_b_name.clone(),
+                                            lbn.clone(),
                                             na::Vector3::new(ob_x, ob_y, ob_z),
                                         ),
                                     );
@@ -412,7 +484,6 @@ impl ArticaraApp {
 
                             // Save form state
                             ui.data_mut(|d| {
-                                d.insert_temp(id_b, link_b_idx);
                                 d.insert_temp(id_ox, oa_x);
                                 d.insert_temp(id_oy, oa_y);
                                 d.insert_temp(id_oz, oa_z);

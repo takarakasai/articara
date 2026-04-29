@@ -534,6 +534,15 @@ pub struct ArticaraApp {
     rename_joint_buf: String,
     /// Whether the collision-pair matrix dialog is open.
     show_collision_matrix: bool,
+    /// When `true`, the next viewport left-click sets [`Self::loop_closure_link_b`]
+    /// instead of doing the usual JointDrive selection. Toggled on by the
+    /// "👆 Pick B from viewport" button in the Loop Closures panel and
+    /// cleared when a click lands or the user cancels.
+    loop_closure_picking_b: bool,
+    /// Index into `model.links` of the selected loop-closure link B (set
+    /// either via the picker above or — historically — the dropdown).
+    /// `None` when nothing has been chosen yet.
+    loop_closure_link_b: Option<usize>,
 }
 
 /// Whether a decompose task targets a visual or collision slot.
@@ -744,6 +753,8 @@ impl ArticaraApp {
             rename_link_buf: String::new(),
             rename_joint_buf: String::new(),
             show_collision_matrix: false,
+            loop_closure_picking_b: false,
+            loop_closure_link_b: None,
         }
     }
 
