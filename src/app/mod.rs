@@ -611,12 +611,14 @@ pub struct ArticaraApp {
     /// Default mirror of [`crate::gait::DEFAULT_FOOT_LINKS`]; mutable so
     /// the UI panel can edit them per robot.
     gait_foot_links: [(quadruped_gait::LegId, String); 4],
-    /// Speed magnitude (m/s) commanded by the gait panel's hold-to-drive
-    /// D-pad. The four direction buttons map to ±vx / ±vy at this
-    /// magnitude; release zeroes the command. The conventional velocity
-    /// sliders below stay independent, so the user can fall back to
-    /// numeric entry whenever needed.
+    /// Linear-speed magnitude (m/s) commanded by the gait panel's
+    /// hold-to-drive D-pad. The four direction buttons map to ±vx / ±vy
+    /// at this magnitude; release zeroes the command.
     gait_dpad_speed: f32,
+    /// Yaw-rate magnitude (rad/s) commanded by the D-pad's ↺/↻ buttons.
+    /// Independent from `gait_dpad_speed` so a slow walk can still
+    /// dial in a snappy turn.
+    gait_dpad_yaw_speed: f32,
     /// True while at least one D-pad button was held last frame. Used to
     /// emit a single `VelocityCmd::zero()` on the rising edge of "all
     /// released" so the robot doesn't keep coasting after the user lets
@@ -865,6 +867,7 @@ impl ArticaraApp {
             gait_foot_links: crate::gait::DEFAULT_FOOT_LINKS
                 .map(|(id, name)| (id, name.to_string())),
             gait_dpad_speed: 0.3,
+            gait_dpad_yaw_speed: 0.5,
             gait_dpad_was_active: false,
             loop_closure_picking_b: false,
             loop_closure_link_b: None,
