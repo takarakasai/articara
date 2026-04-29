@@ -718,6 +718,21 @@ fn write_material(
 
 /// Export the robot model as a USD ASCII (.usda) string.
 pub fn export_usda(model: &RobotModel) -> String {
+    // USD has no native mimic/sensor concepts in plain UsdPhysics; warn so
+    // the user knows they're being dropped. Isaac Sim provides extensions
+    // (e.g. ContactSensor, IMU) that we'd need to wire separately.
+    if !model.mimics.is_empty() {
+        log::warn!(
+            "USD export: dropping {} mimic relationship(s) — USD has no native equivalent (use Isaac Articulation drives manually)",
+            model.mimics.len(),
+        );
+    }
+    if !model.sensors.is_empty() {
+        log::warn!(
+            "USD export: dropping {} sensor(s) — Isaac extension prims aren't yet emitted by articara",
+            model.sensors.len(),
+        );
+    }
     let mut s = String::with_capacity(16 * 1024);
     let robot_name = sanitize_name(&model.name);
     let robot_path = format!("/World/{robot_name}");

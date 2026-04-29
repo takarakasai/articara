@@ -2883,6 +2883,121 @@ mod test_sidecar {
     }
 
     #[test]
+    fn urdf_export_emits_mimic_for_master_format_entries() {
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        // Find two non-fixed joints to wire up.
+        let movable: Vec<String> = model
+            .joints
+            .iter()
+            .filter(|j| j.joint_type != "fixed")
+            .map(|j| j.name.clone())
+            .take(2)
+            .collect();
+        if movable.len() < 2 {
+            return;
+        }
+        model.mimics.push(articara::rbd::model::Mimic {
+            joint: movable[1].clone(),
+            source: movable[0].clone(),
+            multiplier: 0.5,
+            offset: 0.1,
+        });
+        let urdf_xml = model.export_urdf().unwrap();
+        assert!(
+            urdf_xml.contains("<mimic"),
+            "URDF should contain <mimic> tag:\n{}",
+            urdf_xml,
+        );
+        assert!(urdf_xml.contains(&format!("joint=\"{}\"", movable[0])));
+    }
+
+    #[test]
+    fn mjcf_export_emits_equality_and_sensor() {
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        let movable: Vec<String> = model
+            .joints
+            .iter()
+            .filter(|j| j.joint_type != "fixed")
+            .map(|j| j.name.clone())
+            .take(2)
+            .collect();
+        if movable.len() < 2 {
+            return;
+        }
+        model.mimics.push(articara::rbd::model::Mimic {
+            joint: movable[1].clone(),
+            source: movable[0].clone(),
+            multiplier: 2.0,
+            offset: 0.0,
+        });
+        model.sensors.push(articara::rbd::model::Sensor {
+            name: "imu0".into(),
+            link: model.links[0].name.clone(),
+            origin: nalgebra::Isometry3::identity(),
+            update_rate: 100.0,
+            kind: articara::rbd::model::SensorKind::Imu {
+                gyro_noise: 0.0,
+                accel_noise: 0.0,
+            },
+        });
+        let xml = articara::mjcf::export_mjcf(&model);
+        assert!(xml.contains("<equality>"), "expected <equality> block:\n{}", xml);
+        assert!(
+            xml.contains(&format!("joint1=\"{}\"", movable[1])),
+            "expected mimic joint1 in MJCF:\n{}",
+            xml,
+        );
+        assert!(xml.contains("polycoef=\"0 2 0 0 0\""));
+        assert!(xml.contains("<sensor>"));
+        assert!(xml.contains("accelerometer"));
+        assert!(xml.contains("gyro"));
+    }
+
+    #[test]
+    fn sdf_export_emits_mimic_and_sensor() {
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        let movable: Vec<String> = model
+            .joints
+            .iter()
+            .filter(|j| j.joint_type != "fixed")
+            .map(|j| j.name.clone())
+            .take(2)
+            .collect();
+        if movable.len() < 2 {
+            return;
+        }
+        model.mimics.push(articara::rbd::model::Mimic {
+            joint: movable[1].clone(),
+            source: movable[0].clone(),
+            multiplier: -1.0,
+            offset: 0.0,
+        });
+        model.sensors.push(articara::rbd::model::Sensor {
+            name: "front_lidar".into(),
+            link: model.links[0].name.clone(),
+            origin: nalgebra::Isometry3::translation(0.1, 0.0, 0.05),
+            update_rate: 10.0,
+            kind: articara::rbd::model::SensorKind::Lidar {
+                range_min: 0.05,
+                range_max: 30.0,
+                h_fov: std::f64::consts::TAU,
+                h_samples: 360,
+                v_fov: 0.0,
+                v_samples: 1,
+            },
+        });
+        let xml = articara::sdf::export_sdf(&model);
+        assert!(
+            xml.contains("<mimic joint=\""),
+            "expected SDF <mimic>:\n{}",
+            xml,
+        );
+        assert!(xml.contains(&format!("multiplier=\"{}\"", -1.0_f64)));
+        assert!(xml.contains("<sensor name=\"front_lidar\""));
+        assert!(xml.contains("<ray>"));
+    }
+
+    #[test]
     fn mimic_and_sensor_roundtrip_via_sidecar() {
         // Mimic + Sensor are now first-class master-format entries.
         // Round-trip a model carrying one of each through TOML.

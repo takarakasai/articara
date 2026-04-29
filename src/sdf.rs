@@ -31,6 +31,8 @@ pub fn import_sdf(path: &Path) -> Result<RobotModel, String> {
     let mut joint_map = HashMap::new();
     let mut children_joints: HashMap<String, Vec<usize>> = HashMap::new();
     let mut child_links: HashSet<String> = HashSet::new();
+    let mut mimics: Vec<crate::rbd::model::Mimic> = Vec::new();
+    let mut sensors: Vec<crate::rbd::model::Sensor> = Vec::new();
 
     // Parse links
     for (i, link_el) in model_el
@@ -59,6 +61,16 @@ pub fn import_sdf(path: &Path) -> Result<RobotModel, String> {
                 geometry: parse_sdf_geometry(c, sdf_dir),
             })
             .collect();
+
+        // Sensors mounted on this link.
+        for sensor_el in link_el
+            .children()
+            .filter(|n| n.tag_name().name() == "sensor")
+        {
+            if let Some(s) = parse_sdf_sensor(sensor_el, &name) {
+                sensors.push(s);
+            }
+        }
 
         link_map.insert(name.clone(), i);
         links.push(LinkData {
@@ -113,6 +125,27 @@ pub fn import_sdf(path: &Path) -> Result<RobotModel, String> {
                 effort = get_child_f64(limit_el, "effort");
                 velocity = get_child_f64(limit_el, "velocity");
             }
+            // <mimic joint="src" multiplier=".." offset=".."/> (SDF 1.7+).
+            if let Some(mimic_el) =
+                axis_el.children().find(|n| n.tag_name().name() == "mimic")
+            {
+                if let Some(src) = mimic_el.attribute("joint") {
+                    let mult = mimic_el
+                        .attribute("multiplier")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(1.0);
+                    let off = mimic_el
+                        .attribute("offset")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0.0);
+                    mimics.push(crate::rbd::model::Mimic {
+                        joint: name.clone(),
+                        source: src.to_string(),
+                        multiplier: mult,
+                        offset: off,
+                    });
+                }
+            }
         }
 
         joint_map.insert(name.clone(), i);
@@ -163,12 +196,112 @@ pub fn import_sdf(path: &Path) -> Result<RobotModel, String> {
         loop_closures: Vec::new(),
         poses: Vec::new(),
         collision_pairs: Vec::new(),
-            sequences: Vec::new(),
-            mimics: Vec::new(),
-            sensors: Vec::new(),
+        sequences: Vec::new(),
+        mimics,
+        sensors,
     };
     model.rebuild_misarta_model();
     Ok(model)
+}
+
+/// Parse one SDF `<sensor>` element into a master-format
+/// [`crate::rbd::model::Sensor`]. Returns `None` for unrecognised types
+/// (callers may want to round-trip those via `SensorKind::Generic`).
+fn parse_sdf_sensor(
+    el: roxmltree::Node,
+    link_name: &str,
+) -> Option<crate::rbd::model::Sensor> {
+    let name = el.attribute("name")?.to_string();
+    let stype = el.attribute("type").unwrap_or("").to_string();
+    let origin = parse_sdf_pose(el);
+    let update_rate = el
+        .children()
+        .find(|n| n.tag_name().name() == "update_rate")
+        .and_then(|n| n.text())
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+
+    let kind = match stype.as_str() {
+        "camera" | "depth_camera" => {
+            let cam = el.children().find(|n| n.tag_name().name() == "camera");
+            let mut fov = 1.047;
+            let mut width = 320u32;
+            let mut height = 240u32;
+            let mut near = 0.05;
+            let mut far = 100.0;
+            if let Some(c) = cam {
+                if let Some(h) = c.children().find(|n| n.tag_name().name() == "horizontal_fov") {
+                    fov = h.text().and_then(|s| s.parse().ok()).unwrap_or(fov);
+                }
+                if let Some(img) = c.children().find(|n| n.tag_name().name() == "image") {
+                    width = get_child_u32(img, "width").unwrap_or(width);
+                    height = get_child_u32(img, "height").unwrap_or(height);
+                }
+                if let Some(clip) = c.children().find(|n| n.tag_name().name() == "clip") {
+                    near = get_child_f64(clip, "near");
+                    far = get_child_f64(clip, "far");
+                }
+            }
+            crate::rbd::model::SensorKind::Camera { fov, width, height, near, far }
+        }
+        "ray" | "lidar" | "gpu_lidar" => {
+            let ray = el.children().find(|n| n.tag_name().name() == "ray");
+            let mut range_min = 0.05;
+            let mut range_max = 30.0;
+            let mut h_fov = std::f64::consts::TAU;
+            let mut h_samples = 360u32;
+            let mut v_fov = 0.0;
+            let mut v_samples = 1u32;
+            if let Some(r) = ray {
+                if let Some(scan) = r.children().find(|n| n.tag_name().name() == "scan") {
+                    if let Some(h) = scan.children().find(|n| n.tag_name().name() == "horizontal") {
+                        h_samples = get_child_u32(h, "samples").unwrap_or(h_samples);
+                        let min = get_child_f64(h, "min_angle");
+                        let max = get_child_f64(h, "max_angle");
+                        if max > min { h_fov = max - min; }
+                    }
+                    if let Some(v) = scan.children().find(|n| n.tag_name().name() == "vertical") {
+                        v_samples = get_child_u32(v, "samples").unwrap_or(v_samples);
+                        let min = get_child_f64(v, "min_angle");
+                        let max = get_child_f64(v, "max_angle");
+                        if max > min { v_fov = max - min; }
+                    }
+                }
+                if let Some(range) = r.children().find(|n| n.tag_name().name() == "range") {
+                    range_min = get_child_f64(range, "min");
+                    range_max = get_child_f64(range, "max");
+                }
+            }
+            crate::rbd::model::SensorKind::Lidar {
+                range_min, range_max, h_fov, h_samples, v_fov, v_samples,
+            }
+        }
+        "imu" => crate::rbd::model::SensorKind::Imu {
+            gyro_noise: 0.0,
+            accel_noise: 0.0,
+        },
+        "force_torque" => crate::rbd::model::SensorKind::ForceTorque { joint: None },
+        "contact" => crate::rbd::model::SensorKind::Contact { partner: None },
+        other => crate::rbd::model::SensorKind::Generic {
+            kind: other.to_string(),
+            params: std::collections::BTreeMap::new(),
+        },
+    };
+
+    Some(crate::rbd::model::Sensor {
+        name,
+        link: link_name.to_string(),
+        origin: origin.cast::<f64>(),
+        update_rate,
+        kind,
+    })
+}
+
+fn get_child_u32(node: roxmltree::Node, tag: &str) -> Option<u32> {
+    node.children()
+        .find(|n| n.tag_name().name() == tag)
+        .and_then(|n| n.text())
+        .and_then(|s| s.trim().parse::<u32>().ok())
 }
 
 // ========== Export ==========
@@ -223,6 +356,11 @@ pub fn export_sdf(model: &RobotModel) -> String {
             s.push_str("      </collision>\n");
         }
 
+        // Sensors mounted on this link.
+        for sensor in model.sensors.iter().filter(|s| s.link == link.name) {
+            write_sdf_sensor(&mut s, sensor);
+        }
+
         s.push_str("    </link>\n");
     }
 
@@ -246,6 +384,13 @@ pub fn export_sdf(model: &RobotModel) -> String {
         s.push_str(&format!("          <effort>{}</effort>\n", joint.effort));
         s.push_str(&format!("          <velocity>{}</velocity>\n", joint.velocity));
         s.push_str("        </limit>\n");
+        // Mimic relationship (SDF 1.7+).
+        if let Some(m) = model.mimics.iter().find(|m| m.joint == joint.name) {
+            s.push_str(&format!(
+                "        <mimic joint=\"{}\" multiplier=\"{}\" offset=\"{}\"/>\n",
+                m.source, m.multiplier, m.offset,
+            ));
+        }
         s.push_str("      </axis>\n");
         s.push_str("    </joint>\n");
     }
@@ -253,6 +398,73 @@ pub fn export_sdf(model: &RobotModel) -> String {
     s.push_str("  </model>\n");
     s.push_str("</sdf>\n");
     s
+}
+
+/// Emit one `<sensor>` block. Each kind maps to the SDF type the
+/// in-memory enum represents; Generic kinds are emitted as-is so they
+/// round-trip even when articara has no first-class support.
+fn write_sdf_sensor(s: &mut String, sensor: &crate::rbd::model::Sensor) {
+    let stype = match &sensor.kind {
+        crate::rbd::model::SensorKind::Camera { .. } => "camera",
+        crate::rbd::model::SensorKind::Lidar { .. } => "ray",
+        crate::rbd::model::SensorKind::Imu { .. } => "imu",
+        crate::rbd::model::SensorKind::ForceTorque { .. } => "force_torque",
+        crate::rbd::model::SensorKind::Contact { .. } => "contact",
+        crate::rbd::model::SensorKind::Generic { kind, .. } => kind.as_str(),
+    };
+    s.push_str(&format!(
+        "      <sensor name=\"{}\" type=\"{}\">\n",
+        sensor.name, stype,
+    ));
+    let origin_f32 = sensor.origin.cast::<f32>();
+    write_sdf_pose(s, &origin_f32, 8);
+    if sensor.update_rate > 0.0 {
+        s.push_str(&format!(
+            "        <update_rate>{}</update_rate>\n",
+            sensor.update_rate,
+        ));
+    }
+    match &sensor.kind {
+        crate::rbd::model::SensorKind::Camera { fov, width, height, near, far } => {
+            s.push_str("        <camera>\n");
+            s.push_str(&format!("          <horizontal_fov>{fov}</horizontal_fov>\n"));
+            s.push_str(&format!(
+                "          <image><width>{width}</width><height>{height}</height></image>\n",
+            ));
+            s.push_str(&format!(
+                "          <clip><near>{near}</near><far>{far}</far></clip>\n",
+            ));
+            s.push_str("        </camera>\n");
+        }
+        crate::rbd::model::SensorKind::Lidar {
+            range_min, range_max, h_fov, h_samples, v_fov, v_samples,
+        } => {
+            s.push_str("        <ray>\n");
+            s.push_str("          <scan>\n");
+            s.push_str(&format!(
+                "            <horizontal><samples>{}</samples><min_angle>{}</min_angle><max_angle>{}</max_angle></horizontal>\n",
+                h_samples, -h_fov / 2.0, h_fov / 2.0,
+            ));
+            if *v_samples > 1 || *v_fov > 0.0 {
+                s.push_str(&format!(
+                    "            <vertical><samples>{}</samples><min_angle>{}</min_angle><max_angle>{}</max_angle></vertical>\n",
+                    v_samples, -v_fov / 2.0, v_fov / 2.0,
+                ));
+            }
+            s.push_str("          </scan>\n");
+            s.push_str(&format!(
+                "          <range><min>{range_min}</min><max>{range_max}</max></range>\n",
+            ));
+            s.push_str("        </ray>\n");
+        }
+        crate::rbd::model::SensorKind::Imu { .. }
+        | crate::rbd::model::SensorKind::ForceTorque { .. }
+        | crate::rbd::model::SensorKind::Contact { .. }
+        | crate::rbd::model::SensorKind::Generic { .. } => {
+            // Default SDF behaviour for these is fine without inner blocks.
+        }
+    }
+    s.push_str("      </sensor>\n");
 }
 
 /// Export SDF to a file and copy referenced mesh files.
