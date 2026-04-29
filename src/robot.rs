@@ -101,6 +101,8 @@ impl RobotModel {
         let mut joint_map = HashMap::new();
         let mut children_joints: HashMap<String, Vec<usize>> = HashMap::new();
         let mut child_links: HashSet<String> = HashSet::new();
+        // Collect URDF <mimic> entries as the master format's `mimics` list.
+        let mut mimics: Vec<crate::rbd::model::Mimic> = Vec::new();
 
         for (i, joint) in robot.joints.iter().enumerate() {
             let jtype = format!("{:?}", joint.joint_type).to_lowercase();
@@ -133,6 +135,18 @@ impl RobotModel {
                 actuator_kp: 50.0,
                 actuator_kv: 5.0,
             });
+
+            // Capture <mimic> if present. URDF uses linear coupling; we
+            // store it as a master-format Mimic that other exporters can
+            // translate into their native form.
+            if let Some(ref m) = joint.mimic {
+                mimics.push(crate::rbd::model::Mimic {
+                    joint: joint.name.clone(),
+                    source: m.joint.clone(),
+                    multiplier: m.multiplier.unwrap_or(1.0),
+                    offset: m.offset.unwrap_or(0.0),
+                });
+            }
         }
 
         // Root link = not a child of any joint
@@ -169,7 +183,7 @@ impl RobotModel {
             poses: Vec::new(),
             collision_pairs: Vec::new(),
             sequences: Vec::new(),
-            mimics: Vec::new(),
+            mimics,
             sensors: Vec::new(),
         };
         model.rebuild_misarta_model();
@@ -1127,6 +1141,21 @@ impl RobotModel {
                 urdf_joint.limit.effort = our_joint.effort;
                 urdf_joint.limit.velocity = our_joint.velocity;
             }
+        }
+
+        // Patch / inject mimic entries from the master format. URDF uses
+        // a single linear `<mimic>` per joint; we set / clear it based on
+        // whether the joint appears in `self.mimics`.
+        for urdf_joint in robot.joints.iter_mut() {
+            urdf_joint.mimic = self
+                .mimics
+                .iter()
+                .find(|m| m.joint == urdf_joint.name)
+                .map(|m| urdf_rs::Mimic {
+                    joint: m.source.clone(),
+                    multiplier: Some(m.multiplier),
+                    offset: Some(m.offset),
+                });
         }
 
         urdf_rs::write_to_string(&robot).map_err(|e| format!("URDF serialize error: {e}"))

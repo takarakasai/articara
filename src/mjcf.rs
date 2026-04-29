@@ -86,6 +86,79 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
 
     let joint_positions = vec![0.0_f64; joints.len()];
 
+    // Parse top-level <equality><joint> elements as master-format Mimics.
+    // Linear coupling is the only form we surface (`polycoef = "off mult …"`);
+    // higher-order terms are clamped to linear.
+    let mut mimics: Vec<crate::rbd::model::Mimic> = Vec::new();
+    if let Some(eq) = mujoco_el.children().find(|n| n.tag_name().name() == "equality") {
+        for je in eq.children().filter(|n| n.tag_name().name() == "joint") {
+            let (Some(j1), Some(j2)) = (je.attribute("joint1"), je.attribute("joint2")) else {
+                continue;
+            };
+            let mut multiplier = 1.0;
+            let mut offset = 0.0;
+            if let Some(poly) = je.attribute("polycoef") {
+                let mut iter = poly
+                    .split_whitespace()
+                    .filter_map(|s| s.parse::<f64>().ok());
+                offset = iter.next().unwrap_or(0.0);
+                multiplier = iter.next().unwrap_or(1.0);
+            }
+            mimics.push(crate::rbd::model::Mimic {
+                joint: j1.to_string(),
+                source: j2.to_string(),
+                multiplier,
+                offset,
+            });
+        }
+    }
+
+    // Parse top-level <sensor>. Map each known sub-element type to a master
+    // Sensor; everything else stashes as Generic so the round-trip preserves it.
+    let mut sensors: Vec<crate::rbd::model::Sensor> = Vec::new();
+    if let Some(snode) = mujoco_el.children().find(|n| n.tag_name().name() == "sensor") {
+        for el in snode.children().filter(|n| n.is_element()) {
+            let kind_str = el.tag_name().name();
+            let name = el.attribute("name").unwrap_or(kind_str).to_string();
+            // The "site" attribute is more common than "body" for mounted
+            // sensors; fall back to "body" / "joint" for the other types.
+            let link = el
+                .attribute("site")
+                .or_else(|| el.attribute("body"))
+                .or_else(|| el.attribute("objname"))
+                .unwrap_or("")
+                .to_string();
+            let kind = match kind_str {
+                "accelerometer" | "gyro" | "velocimeter" => {
+                    crate::rbd::model::SensorKind::Imu {
+                        gyro_noise: 0.0,
+                        accel_noise: 0.0,
+                    }
+                }
+                "touch" => crate::rbd::model::SensorKind::Contact { partner: None },
+                "force" | "torque" | "jointactuatorfrc" | "force_torque" => {
+                    crate::rbd::model::SensorKind::ForceTorque {
+                        joint: el.attribute("joint").map(|s| s.to_string()),
+                    }
+                }
+                _ => crate::rbd::model::SensorKind::Generic {
+                    kind: kind_str.to_string(),
+                    params: el
+                        .attributes()
+                        .map(|a| (a.name().to_string(), a.value().to_string()))
+                        .collect(),
+                },
+            };
+            sensors.push(crate::rbd::model::Sensor {
+                name,
+                link,
+                origin: na::Isometry3::identity(),
+                update_rate: 0.0,
+                kind,
+            });
+        }
+    }
+
     let mut model = RobotModel {
         name: robot_name,
         links,
@@ -102,9 +175,9 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
         loop_closures: Vec::new(),
         poses: Vec::new(),
         collision_pairs: Vec::new(),
-            sequences: Vec::new(),
-            mimics: Vec::new(),
-            sensors: Vec::new(),
+        sequences: Vec::new(),
+        mimics,
+        sensors,
     };
     model.rebuild_misarta_model();
     Ok(model)
@@ -455,6 +528,12 @@ pub fn export_mjcf_with_options(
         write_mjcf_actuators(&mut s, model);
     }
 
+    // Emit `<equality><joint>` for any mimic relationships and `<sensor>`
+    // entries for the master-format sensor list. Both are MuJoCo-native
+    // representations of articara's master Mimic / Sensor types.
+    write_mjcf_equalities(&mut s, model);
+    write_mjcf_sensors(&mut s, model);
+
     // Emit `<contact><exclude>` blocks for any link pairs the user has
     // explicitly disabled in the collision-pair matrix. Pairs marked
     // `enabled = true` are no-ops in MuJoCo (collide-by-default) and are
@@ -463,6 +542,102 @@ pub fn export_mjcf_with_options(
 
     s.push_str("</mujoco>\n");
     s
+}
+
+/// Emit `<equality><joint>` blocks for every master-format mimic.
+///
+/// MuJoCo's `<joint>` equality fits a polynomial in the source joint:
+/// `target = poly[0] + poly[1]*src + poly[2]*src² + …`. Linear mimic
+/// (`target = mult·src + off`) maps to `polycoef="off mult 0 0 0"`.
+fn write_mjcf_equalities(s: &mut String, model: &RobotModel) {
+    let active: Vec<&crate::rbd::model::Mimic> = model
+        .mimics
+        .iter()
+        .filter(|m| {
+            model.joint_map.contains_key(&m.joint)
+                && model.joint_map.contains_key(&m.source)
+        })
+        .collect();
+    if active.is_empty() {
+        return;
+    }
+    s.push_str("\n  <equality>\n");
+    for m in active {
+        s.push_str(&format!(
+            "    <joint name=\"mimic_{}\" joint1=\"{}\" joint2=\"{}\" polycoef=\"{} {} 0 0 0\"/>\n",
+            m.joint, m.joint, m.source, m.offset, m.multiplier,
+        ));
+    }
+    s.push_str("  </equality>\n");
+}
+
+/// Emit `<sensor>` entries. MuJoCo's sensor model is rich; we map our
+/// core kinds to the closest native types and fall back to a comment for
+/// types that don't have a direct equivalent.
+fn write_mjcf_sensors(s: &mut String, model: &RobotModel) {
+    if model.sensors.is_empty() {
+        return;
+    }
+    // We need a `<site>` per sensor for those that mount on a site
+    // (force-torque, accelerometer, etc.); for v0 we attach to the
+    // body's frame via `objtype="body" objname=<link>`, which works for
+    // most sensor types in modern MuJoCo.
+    s.push_str("\n  <sensor>\n");
+    for sensor in &model.sensors {
+        match &sensor.kind {
+            crate::rbd::model::SensorKind::Imu { .. } => {
+                s.push_str(&format!(
+                    "    <accelerometer name=\"{}_accel\" site=\"{}\"/>\n",
+                    sensor.name, sensor.link,
+                ));
+                s.push_str(&format!(
+                    "    <gyro name=\"{}_gyro\" site=\"{}\"/>\n",
+                    sensor.name, sensor.link,
+                ));
+            }
+            crate::rbd::model::SensorKind::ForceTorque { joint } => {
+                if let Some(j) = joint {
+                    s.push_str(&format!(
+                        "    <jointactuatorfrc name=\"{}\" joint=\"{}\"/>\n",
+                        sensor.name, j,
+                    ));
+                } else {
+                    s.push_str(&format!(
+                        "    <!-- force_torque '{}' on link '{}' (no joint specified) -->\n",
+                        sensor.name, sensor.link,
+                    ));
+                }
+            }
+            crate::rbd::model::SensorKind::Contact { .. } => {
+                s.push_str(&format!(
+                    "    <touch name=\"{}\" site=\"{}\"/>\n",
+                    sensor.name, sensor.link,
+                ));
+            }
+            // Camera / Lidar / Generic don't have direct MJCF sensor
+            // counterparts; emit comments so users can wire them up
+            // manually if needed without losing the master record.
+            crate::rbd::model::SensorKind::Camera { .. } => {
+                s.push_str(&format!(
+                    "    <!-- camera '{}' on link '{}' — use <camera> element manually -->\n",
+                    sensor.name, sensor.link,
+                ));
+            }
+            crate::rbd::model::SensorKind::Lidar { .. } => {
+                s.push_str(&format!(
+                    "    <!-- lidar '{}' on link '{}' — MuJoCo has no native ray sensor -->\n",
+                    sensor.name, sensor.link,
+                ));
+            }
+            crate::rbd::model::SensorKind::Generic { kind, .. } => {
+                s.push_str(&format!(
+                    "    <!-- generic sensor '{}' (kind='{}') on link '{}' -->\n",
+                    sensor.name, kind, sensor.link,
+                ));
+            }
+        }
+    }
+    s.push_str("  </sensor>\n");
 }
 
 /// Emit `<contact><exclude>` for every collision pair the user has marked
