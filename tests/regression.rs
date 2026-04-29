@@ -3509,6 +3509,111 @@ mod test_sidecar {
     }
 
     #[test]
+    fn analyze_export_compatibility_flags_drops_and_approximations() {
+        // Build a model with several entities the URDF format can't
+        // express natively, plus a capsule that triggers approximation.
+        // Run the analyzer against the URDF handler and verify each
+        // category lands in the issue list with the right severity.
+        use articara::format::{
+            analyze_export_compatibility, ExportSeverity, FormatRegistry,
+        };
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+
+        // Add a sensor (URDF: drop).
+        model.sensors.push(articara::rbd::model::Sensor {
+            name: "front_camera".into(),
+            link: model.root_link.clone(),
+            origin: nalgebra::Isometry3::identity(),
+            update_rate: 30.0,
+            kind: articara::rbd::model::SensorKind::Camera {
+                fov: 1.0,
+                width: 640,
+                height: 480,
+                near: 0.05,
+                far: 50.0,
+            },
+        });
+
+        // Add a collision-pair override (URDF: drop).
+        model.collision_pairs.push(
+            articara::rbd::model::CollisionPair::new(
+                "a_link".to_string(),
+                "b_link".to_string(),
+                false,
+            ),
+        );
+
+        // Inject a capsule visual to trigger the URDF approximation
+        // warning. Pick the first link for simplicity.
+        if let Some(link) = model.links.first_mut() {
+            link.visuals.push(articara::robot::VisualData {
+                origin: nalgebra::Isometry3::identity(),
+                geometry: articara::robot::GeomData::Capsule {
+                    radius: 0.05,
+                    half_length: 0.10,
+                },
+                color: [0.5, 0.5, 0.5, 1.0],
+            });
+        }
+
+        let registry = FormatRegistry::default_registry();
+        let urdf = registry
+            .handlers()
+            .iter()
+            .find(|h| h.name() == "URDF")
+            .expect("URDF handler always registered")
+            .as_ref();
+        let issues = analyze_export_compatibility(&model, urdf);
+
+        // Expect at least sensor / collision_pairs / capsule issues.
+        let features: Vec<&str> =
+            issues.iter().map(|i| i.feature.as_str()).collect();
+        assert!(
+            features.contains(&"Sensors"),
+            "expected Sensors issue, got {:?}",
+            features,
+        );
+        assert!(
+            features.contains(&"Collision pairs"),
+            "expected Collision pairs issue, got {:?}",
+            features,
+        );
+        assert!(
+            features.contains(&"Capsule shapes"),
+            "expected Capsule shapes issue, got {:?}",
+            features,
+        );
+
+        // Capsule must be flagged as approximation, not drop.
+        let capsule = issues.iter().find(|i| i.feature == "Capsule shapes").unwrap();
+        assert_eq!(capsule.severity, ExportSeverity::Approximate);
+
+        // Sensors must be flagged as drop.
+        let sensor = issues.iter().find(|i| i.feature == "Sensors").unwrap();
+        assert_eq!(sensor.severity, ExportSeverity::Drop);
+    }
+
+    #[test]
+    fn analyze_export_compatibility_clean_model_returns_empty() {
+        // Plain URDF model with nothing extra → no warnings.
+        use articara::format::{analyze_export_compatibility, FormatRegistry};
+        let model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        let registry = FormatRegistry::default_registry();
+        let urdf = registry
+            .handlers()
+            .iter()
+            .find(|h| h.name() == "URDF")
+            .unwrap()
+            .as_ref();
+        let issues = analyze_export_compatibility(&model, urdf);
+        assert!(
+            issues.is_empty(),
+            "clean model should produce no warnings, got {:?}",
+            issues,
+        );
+    }
+
+    #[test]
     fn gait_descriptor_roundtrips_through_sidecar() {
         // Save a non-trivial gait preset, reload, and confirm every field
         // comes back. The link lengths / hip offsets are intentionally not
