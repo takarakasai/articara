@@ -469,8 +469,8 @@ pub struct GroundPlaneCfg {
 ///
 /// All fields are optional / defaulted, so [`MjcfExportOptions::default()`]
 /// reproduces the legacy behaviour of [`export_mjcf`] (auto-lifted base, no
-/// ground plane, no actuators).
-#[derive(Default, Clone, Debug)]
+/// ground plane, no actuators, all per-joint hardware limits baked in).
+#[derive(Clone, Debug)]
 pub struct MjcfExportOptions {
     /// Override for the floating-base world position. `None` = auto-lift so
     /// the lowest link sits just above z = 0.
@@ -488,6 +488,31 @@ pub struct MjcfExportOptions {
     /// - Mixed       → emit individual `<joint type="slide"/>` / `<hinge>`
     ///                 elements only for the unlocked axes
     pub base_locked_axes: [bool; 6],
+    /// When true, the `<motor>` actuators carry `forcelimited="true"
+    /// forcerange="-effort effort"`, making MuJoCo clamp `data.ctrl` to the
+    /// joint's catalogue effort. When false the motors are unrestricted at
+    /// the MuJoCo level — useful for "what if the motor were stronger" sweeps.
+    /// Defaults to true so a one-off `export_mjcf()` produces a faithful
+    /// hardware spec for re-loading in other tools.
+    pub bake_actuator_limits: bool,
+    /// When true, joints carry their `range="lower upper"` so MuJoCo enforces
+    /// the URDF position limits. False omits the range so the joint can swing
+    /// past mechanical stops — matching the semantics of "limits off" for
+    /// users probing the dynamic envelope.
+    pub bake_joint_position_limits: bool,
+}
+
+impl Default for MjcfExportOptions {
+    fn default() -> Self {
+        Self {
+            base_pos: None,
+            ground_plane: None,
+            add_actuators: false,
+            base_locked_axes: [false; 6],
+            bake_actuator_limits: true,
+            bake_joint_position_limits: true,
+        }
+    }
 }
 
 /// Export a RobotModel to MJCF XML string with default options.
@@ -505,6 +530,8 @@ pub fn export_mjcf_with_options(
         ground_plane,
         add_actuators,
         base_locked_axes,
+        bake_actuator_limits,
+        bake_joint_position_limits,
     } = opts;
     let mut s = String::new();
     s.push_str(&format!(
@@ -584,12 +611,20 @@ pub fn export_mjcf_with_options(
     // the lowest link sits just above the ground plane.
     let root_pos = base_pos.unwrap_or_else(|| [0.0, 0.0, compute_initial_z(model)]);
     let base_spec = BaseSpec { pos: root_pos, locked: base_locked_axes };
-    write_mjcf_body(&mut s, model, &model.root_link, 4, &geom_mesh_map, Some(base_spec));
+    write_mjcf_body(
+        &mut s,
+        model,
+        &model.root_link,
+        4,
+        &geom_mesh_map,
+        Some(base_spec),
+        bake_joint_position_limits,
+    );
 
     s.push_str("  </worldbody>\n");
 
     if add_actuators {
-        write_mjcf_actuators(&mut s, model);
+        write_mjcf_actuators(&mut s, model, bake_actuator_limits);
     }
 
     // Emit `<equality><joint>` for any mimic relationships and `<sensor>`
@@ -786,7 +821,7 @@ fn write_mjcf_contact_excludes(s: &mut String, model: &RobotModel) {
 /// [`ActuatorMode`] / `kp` / `kv` (held in [`JointData`]). The MJCF itself
 /// is always plain torque-mode so the same file can be used for any control
 /// strategy when re-imported elsewhere.
-fn write_mjcf_actuators(s: &mut String, model: &RobotModel) {
+fn write_mjcf_actuators(s: &mut String, model: &RobotModel, bake_limits: bool) {
     let movable: Vec<&JointData> = model
         .joints
         .iter()
@@ -797,7 +832,7 @@ fn write_mjcf_actuators(s: &mut String, model: &RobotModel) {
     }
     s.push_str("\n  <actuator>\n");
     for joint in movable {
-        let force_attrs = if joint.effort > 0.0 {
+        let force_attrs = if bake_limits && joint.effort > 0.0 {
             format!(
                 " forcelimited=\"true\" forcerange=\"{} {}\"",
                 -joint.effort, joint.effort,
@@ -846,6 +881,7 @@ fn write_mjcf_body(
     indent: usize,
     geom_mesh_map: &HashMap<*const GeomData, String>,
     base_spec: Option<BaseSpec>,
+    bake_joint_position_limits: bool,
 ) {
     let pad: String = " ".repeat(indent);
 
@@ -928,7 +964,7 @@ fn write_mjcf_body(
                 "{pad}  <joint name=\"{}\" type=\"{mjcf_type}\" axis=\"{} {} {}\"",
                 joint.name, joint.axis.x, joint.axis.y, joint.axis.z
             ));
-            if joint.lower < joint.upper {
+            if bake_joint_position_limits && joint.lower < joint.upper {
                 s.push_str(&format!(
                     " range=\"{} {}\"",
                     joint.lower, joint.upper
@@ -1047,7 +1083,15 @@ fn write_mjcf_body(
     if let Some(child_joints) = model.children_joints.get(link_name) {
         for &ji in child_joints {
             let child_link = &model.joints[ji].child_link;
-            write_mjcf_body(s, model, child_link, indent + 2, geom_mesh_map, None);
+            write_mjcf_body(
+                s,
+                model,
+                child_link,
+                indent + 2,
+                geom_mesh_map,
+                None,
+                bake_joint_position_limits,
+            );
         }
     }
 

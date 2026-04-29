@@ -3370,6 +3370,62 @@ mod test_sidecar {
     }
 
     #[test]
+    fn mjcf_export_respects_bake_limits_flags() {
+        // Regression: the "⛔ Limits" UI checkbox must reach all the way down
+        // to the MJCF. Both `forcelimited` on the actuator and `range` on the
+        // joint depend on the corresponding `bake_*` flags. If either flag
+        // is silently ignored, MuJoCo will keep clamping ctrl / qpos
+        // regardless of the user's choice and "limits off" experiments will
+        // produce identical behaviour to "limits on".
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        let movable_idx = model
+            .joints
+            .iter()
+            .position(|j| j.joint_type != "fixed" && j.lower < j.upper)
+            .expect("fixture should have a limited movable joint");
+        // Ensure the joint has effort > 0 so forcelimited would normally be emitted.
+        model.joints[movable_idx].effort = 2.5;
+        let with_limits = articara::mjcf::export_mjcf_with_options(
+            &model,
+            articara::mjcf::MjcfExportOptions {
+                add_actuators: true,
+                bake_actuator_limits: true,
+                bake_joint_position_limits: true,
+                ..Default::default()
+            },
+        );
+        let without_limits = articara::mjcf::export_mjcf_with_options(
+            &model,
+            articara::mjcf::MjcfExportOptions {
+                add_actuators: true,
+                bake_actuator_limits: false,
+                bake_joint_position_limits: false,
+                ..Default::default()
+            },
+        );
+        assert!(
+            with_limits.contains("forcelimited=\"true\""),
+            "with bake_actuator_limits=true, MJCF must include forcelimited:\n{}",
+            with_limits,
+        );
+        assert!(
+            !without_limits.contains("forcelimited"),
+            "with bake_actuator_limits=false, MJCF must omit forcelimited:\n{}",
+            without_limits,
+        );
+        assert!(
+            with_limits.contains(" range=\""),
+            "with bake_joint_position_limits=true, MJCF must include range=:\n{}",
+            with_limits,
+        );
+        assert!(
+            !without_limits.contains(" range=\""),
+            "with bake_joint_position_limits=false, MJCF must omit range:\n{}",
+            without_limits,
+        );
+    }
+
+    #[test]
     fn mjcf_export_emits_armature_and_damping_when_set() {
         // Regression: rotor inertia + passive damping must reach the MJCF so
         // MuJoCo's solver actually applies them. Without this, joints behave
