@@ -291,7 +291,25 @@ struct OffsetDragState {
 
 pub struct ArticaraApp {
     model: Option<RobotModel>,
+    /// Active camera used for the main viewport render and all
+    /// world-to-screen / screen-to-world projections. In Free mode this
+    /// is the user-controlled orbit camera; in TPS mode it's overwritten
+    /// each frame from `tps_settings` + the followed link's pose.
     camera: OrbitCamera,
+    /// Snapshot of the user-driven free camera, kept while TPS mode is
+    /// active so toggling back to Free restores the previous view
+    /// instead of leaving the camera mid-follow.
+    saved_free_camera: OrbitCamera,
+    /// Live TPS camera. Always tracked (regardless of which mode is
+    /// "main") so the wipe / picture-in-picture overlay can show the
+    /// non-active perspective without a one-frame lag.
+    tps_camera: OrbitCamera,
+    tps_settings: crate::camera::TpsSettings,
+    camera_mode: crate::camera::CameraMode,
+    /// When `true` the main viewport additionally renders the *other*
+    /// camera (free or TPS, opposite of the active one) as a small
+    /// picture-in-picture wipe in the upper-right corner.
+    show_camera_wipe: bool,
     gl: Arc<glow::Context>,
     gl_renderer: Arc<Mutex<GlRenderer>>,
     selected_link: Option<usize>,
@@ -707,6 +725,11 @@ impl ArticaraApp {
         Self {
             model: None,
             camera: OrbitCamera::new(),
+            saved_free_camera: OrbitCamera::new(),
+            tps_camera: OrbitCamera::new(),
+            tps_settings: crate::camera::TpsSettings::default(),
+            camera_mode: crate::camera::CameraMode::Free,
+            show_camera_wipe: false,
             gl,
             gl_renderer: Arc::new(Mutex::new(renderer)),
             selected_link: None,
@@ -1005,6 +1028,98 @@ impl ArticaraApp {
             }
         }
         self.any_edit_this_frame = true;
+    }
+
+    /// Recompute `self.tps_camera` from the current model pose and
+    /// `tps_settings`. The followed link defaults to the model's root
+    /// link when no explicit name is set. With no model loaded the TPS
+    /// camera resolves to "track the world origin".
+    pub(crate) fn refresh_tps_camera(&mut self) {
+        let link_world = if let Some(model) = self.model.as_ref() {
+            // Walk forward kinematics to find the followed link's world
+            // pose. We don't cache because the cost is cheap and the
+            // pose changes whenever joints / base_transform move.
+            let transforms = model.compute_transforms();
+            let link_name = self
+                .tps_settings
+                .follow_link
+                .as_deref()
+                .unwrap_or(&model.root_link);
+            transforms
+                .get(link_name)
+                .copied()
+                .unwrap_or_else(|| {
+                    // Fallback if the configured link disappeared
+                    // (mid-rename, etc.): use the base transform.
+                    model.base_transform.cast::<f32>()
+                })
+        } else {
+            na::Isometry3::identity()
+        };
+        self.tps_camera.update_from_tps(&link_world, &self.tps_settings);
+    }
+
+    /// Switch the active camera mode, preserving the user's free-camera
+    /// state across the transition so toggling Free → TPS → Free
+    /// returns to the same orbit pose.
+    pub(crate) fn set_camera_mode(&mut self, mode: crate::camera::CameraMode) {
+        use crate::camera::CameraMode;
+        if self.camera_mode == mode {
+            return;
+        }
+        match (self.camera_mode, mode) {
+            (CameraMode::Free, CameraMode::Tps) => {
+                // Save the user's current free-camera so we can come back to it.
+                self.saved_free_camera = self.camera.clone();
+            }
+            (CameraMode::Tps, CameraMode::Free) => {
+                // Restore the saved free camera.
+                self.camera = self.saved_free_camera.clone();
+            }
+            _ => {}
+        }
+        self.camera_mode = mode;
+    }
+
+    /// Dispatch mouse orbit/pan/zoom input depending on the active
+    /// camera mode. Free mode passes through to the standard
+    /// `OrbitCamera::handle_orbit_pan_zoom`; TPS mode redirects yaw /
+    /// pitch / scroll into `tps_settings` (panning is no-op in TPS
+    /// since the look-at follows the body).
+    pub(crate) fn handle_camera_input(&mut self, response: &eframe::egui::Response) {
+        use crate::camera::CameraMode;
+        match self.camera_mode {
+            CameraMode::Free => {
+                self.camera.handle_orbit_pan_zoom(response);
+            }
+            CameraMode::Tps => {
+                if response.dragged_by(eframe::egui::PointerButton::Primary) {
+                    let delta = response.drag_delta();
+                    self.tps_settings.yaw_offset -= delta.x * 0.005;
+                    self.tps_settings.pitch_offset += delta.y * 0.005;
+                    self.tps_settings.pitch_offset =
+                        self.tps_settings.pitch_offset.clamp(-1.5, 1.5);
+                }
+                if response.hovered() {
+                    let scroll = response.ctx.input(|i| i.smooth_scroll_delta.y);
+                    if scroll != 0.0 {
+                        self.tps_settings.distance *= 1.0 - scroll * 0.002;
+                        self.tps_settings.distance =
+                            self.tps_settings.distance.clamp(0.05, 50.0);
+                    }
+                }
+                // Right / middle drag: nudge the look-at point's local
+                // offset so the camera frames slightly above/around the
+                // body (e.g. raise to chest height). Use small gain.
+                if response.dragged_by(eframe::egui::PointerButton::Secondary)
+                    || response.dragged_by(eframe::egui::PointerButton::Middle)
+                {
+                    let delta = response.drag_delta();
+                    let pan_speed = self.tps_settings.distance * 0.002;
+                    self.tps_settings.target_local_offset.z += delta.y * pan_speed;
+                }
+            }
+        }
     }
 
     /// Advance the dynamics simulation by one frame, modifying model state.
@@ -1451,6 +1566,7 @@ mod validation;
 mod history_panel;
 mod viewport;
 mod viewport_overlay;
+mod camera_panel;
 mod dynamics_panel;
 mod gait_panel;
 mod posture;
@@ -1529,6 +1645,18 @@ impl eframe::App for ArticaraApp {
         // --- Step dynamics simulation (if active) ---
         self.step_dynamics_sim();
 
+        // --- Refresh TPS camera from the current body pose ---
+        // Always done (regardless of which mode is "main") so the wipe
+        // can render the opposite camera without a one-frame lag and
+        // toggling between modes is instantaneous.
+        self.refresh_tps_camera();
+        // When TPS is the active mode, mirror the live tps_camera into
+        // the main self.camera so screen-space projections, picking, and
+        // overlays all use the TPS view.
+        if matches!(self.camera_mode, crate::camera::CameraMode::Tps) {
+            self.camera = self.tps_camera.clone();
+        }
+
         // Custom title bar (replaces OS window decorations)
         egui::Panel::top("title_bar")
             .size_range(28.0..=28.0)
@@ -1562,6 +1690,8 @@ impl eframe::App for ArticaraApp {
                     self.draw_joint_sliders(ui);
                     ui.separator();
                     self.draw_dynamics_panel(ui);
+                    ui.separator();
+                    self.draw_camera_panel(ui);
                     ui.separator();
                     self.draw_gait_panel(ui);
                     ui.separator();

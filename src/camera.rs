@@ -1,5 +1,63 @@
 use nalgebra as na;
 
+/// Which camera the main viewport renders. `Free` is the original
+/// user-controlled orbit camera; `Tps` follows a chosen body link and
+/// gives a third-person-shooter-style trailing view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CameraMode {
+    Free,
+    Tps,
+}
+
+impl CameraMode {
+    pub const ALL: [CameraMode; 2] = [CameraMode::Free, CameraMode::Tps];
+    pub fn label(self) -> &'static str {
+        match self {
+            CameraMode::Free => "Free orbit",
+            CameraMode::Tps => "TPS (follow)",
+        }
+    }
+}
+
+/// Settings for the third-person follow camera. Each frame the host
+/// derives a concrete [`OrbitCamera`] from these values plus the live
+/// pose of the followed link.
+///
+/// Convention: the camera sits a fixed `distance` away from
+/// `target_local_offset` (in the followed link's frame), at world-frame
+/// `yaw_offset` rotation (added on top of the link's yaw so the camera
+/// can swing around the body) and `pitch_offset` elevation.
+#[derive(Clone, Debug)]
+pub struct TpsSettings {
+    /// Link to follow. `None` falls back to the model's root link.
+    pub follow_link: Option<String>,
+    /// Offset from the followed link's origin to the camera's look-at
+    /// point, in the link's local frame. Defaults to zero (look at the
+    /// link origin); raise z to look at the body's chest, etc.
+    pub target_local_offset: na::Vector3<f32>,
+    /// Distance from look-at to camera eye (m).
+    pub distance: f32,
+    /// Additional yaw rotation around the body (rad). `0` = camera
+    /// directly behind the body's local +x axis. Mouse drag in TPS
+    /// mode updates this.
+    pub yaw_offset: f32,
+    /// Camera elevation angle (rad). `0` = level with target; `+pi/4`
+    /// = looking down at ~45°.
+    pub pitch_offset: f32,
+}
+
+impl Default for TpsSettings {
+    fn default() -> Self {
+        Self {
+            follow_link: None,
+            target_local_offset: na::Vector3::new(0.0, 0.0, 0.0),
+            distance: 1.2,
+            yaw_offset: 0.0,
+            pitch_offset: 0.35, // ~20°, slight downward
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct OrbitCamera {
     pub yaw: f32,
@@ -142,5 +200,36 @@ impl OrbitCamera {
     /// Reset camera to default pose.
     pub fn reset(&mut self) {
         *self = Self::new();
+    }
+
+    /// Recompute this camera as the third-person trailing view of a
+    /// link whose pose is `link_world`. The look-at target is the link
+    /// origin shifted by `settings.target_local_offset` (rotated into
+    /// world frame); yaw / pitch / distance are taken from `settings`,
+    /// with the link's body-yaw added so a `yaw_offset = 0` puts the
+    /// camera directly behind the body's local +x axis.
+    pub fn update_from_tps(
+        &mut self,
+        link_world: &na::Isometry3<f32>,
+        settings: &TpsSettings,
+    ) {
+        // Look-at point: link origin + offset rotated into world frame.
+        let target_world =
+            link_world.translation.vector + link_world.rotation * settings.target_local_offset;
+        self.target = na::Point3::from(target_world);
+
+        // Body yaw = atan2(forward.y, forward.x) where forward = R · +x_local.
+        let forward_world = link_world.rotation * na::Vector3::x();
+        let body_yaw = forward_world.y.atan2(forward_world.x);
+
+        // OrbitCamera convention from `eye()`:
+        //   offset = distance · (cos pitch · cos yaw, cos pitch · sin yaw, sin pitch)
+        // We want yaw_world = body_yaw + π + yaw_offset so the camera
+        // sits BEHIND the body's forward direction. The +π flips us to
+        // the opposite side; without it, yaw_offset = 0 would put the
+        // camera in front of the body.
+        self.yaw = body_yaw + std::f32::consts::PI + settings.yaw_offset;
+        self.pitch = settings.pitch_offset;
+        self.distance = settings.distance.max(0.05);
     }
 }
