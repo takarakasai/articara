@@ -1678,6 +1678,26 @@ mod tests {
         assert!(eng.model().is_some());
     }
 
+    /// Compile-only check for the bundled example scripts so that future
+    /// edits to the API don't silently rot the demos. Each script must
+    /// parse with the production engine; we don't *run* them since that
+    /// would need a live MuJoCo sim.
+    #[test]
+    fn example_scripts_parse() {
+        let scripts = [
+            "scripts/example_jump.rhai",
+            "scripts/verify_jump_tuning.rhai",
+        ];
+        for rel in scripts {
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+            let src = std::fs::read_to_string(&path)
+                .expect(&format!("read {}", path.display()));
+            let mut eng = ModelScriptEngine::new();
+            eng.compile(&src)
+                .unwrap_or_else(|e| panic!("{} failed to compile: {e}", rel));
+        }
+    }
+
     #[test]
     fn test_model_name() {
         let mut eng = load_test_model();
