@@ -2909,6 +2909,41 @@ mod test_sidecar {
     }
 
     #[test]
+    fn mjcf_export_separates_visual_and_collision_geoms() {
+        // Regression for the bug where MJCF only emitted visuals — meaning
+        // MuJoCo did collision detection on the high-detail visual meshes
+        // and produced spurious self-collision penalties at joint
+        // boundaries. The fix is to emit both with the standard
+        // contype/conaffinity/group convention.
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        // Synthesize a collision shape on link0 if it has none, so the
+        // generic test_robot fixture exercises both paths.
+        if let Some(li) = model.links.iter().position(|l| l.collisions.is_empty()) {
+            model.links[li].collisions.push(articara::robot::CollisionData {
+                origin: nalgebra::Isometry3::identity(),
+                geometry: articara::robot::GeomData::Box {
+                    hx: 0.05, hy: 0.05, hz: 0.05,
+                },
+            });
+        }
+        let xml = articara::mjcf::export_mjcf(&model);
+        // Visual geoms should be no-collide (group 1).
+        assert!(xml.contains("contype=\"0\""),
+            "MJCF should mark visuals as contype=\"0\":\n{}", xml);
+        assert!(xml.contains("conaffinity=\"0\""),
+            "MJCF should mark visuals as conaffinity=\"0\":\n{}", xml);
+        assert!(xml.contains("group=\"1\""),
+            "MJCF should put visuals in group=\"1\":\n{}", xml);
+        // Collision geoms should be physics-enabled (group 3).
+        assert!(xml.contains("contype=\"1\""),
+            "MJCF should mark collisions as contype=\"1\":\n{}", xml);
+        assert!(xml.contains("conaffinity=\"1\""),
+            "MJCF should mark collisions as conaffinity=\"1\":\n{}", xml);
+        assert!(xml.contains("group=\"3\""),
+            "MJCF should put collisions in group=\"3\":\n{}", xml);
+    }
+
+    #[test]
     fn mjcf_export_emits_contact_exclude_for_disabled_pairs() {
         let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
         let a = model.links[0].name.clone();

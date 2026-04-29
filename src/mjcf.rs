@@ -382,24 +382,39 @@ pub fn export_mjcf_with_options(
         .and_then(|p| p.parent())   // urdf_dir
         .and_then(|d| d.parent());  // package_dir
 
-    // Collect mesh assets: (mjcf_name, resolved_absolute_path)
+    // Collect mesh assets from BOTH visuals and collisions. We previously
+    // only walked `link.visuals`, but the MJCF export now emits collision
+    // geoms separately (with `contype=1 conaffinity=1 group=3`) so the
+    // physics engine uses the URDF's simplified collision shapes — and any
+    // mesh-typed collision geom needs its asset registered too.
     let mut mesh_names: Vec<(String, String)> = Vec::new();
     let mut mesh_counter = 0usize;
     let mut geom_mesh_map: HashMap<*const GeomData, String> = HashMap::new();
+
+    let resolve = |filename: &Option<String>| -> String {
+        match (filename.as_deref(), package_dir.as_ref()) {
+            (Some(uri), Some(pkg)) => crate::robot::resolve_package_path(uri, pkg)
+                .to_string_lossy()
+                .into_owned(),
+            (Some(uri), None) => uri.to_string(),
+            (None, _) => "mesh.stl".to_string(),
+        }
+    };
 
     for link in &model.links {
         for vis in &link.visuals {
             if let GeomData::Mesh { filename, .. } = &vis.geometry {
                 let mesh_name = format!("mesh_{mesh_counter}");
-                let resolved = match (filename.as_deref(), package_dir.as_ref()) {
-                    (Some(uri), Some(pkg)) => crate::robot::resolve_package_path(uri, pkg)
-                        .to_string_lossy()
-                        .into_owned(),
-                    (Some(uri), None) => uri.to_string(),
-                    (None, _) => "mesh.stl".to_string(),
-                };
-                mesh_names.push((mesh_name.clone(), resolved));
+                mesh_names.push((mesh_name.clone(), resolve(filename)));
                 geom_mesh_map.insert(&vis.geometry as *const GeomData, mesh_name);
+                mesh_counter += 1;
+            }
+        }
+        for col in &link.collisions {
+            if let GeomData::Mesh { filename, .. } = &col.geometry {
+                let mesh_name = format!("mesh_{mesh_counter}");
+                mesh_names.push((mesh_name.clone(), resolve(filename)));
+                geom_mesh_map.insert(&col.geometry as *const GeomData, mesh_name);
                 mesh_counter += 1;
             }
         }
@@ -638,44 +653,96 @@ fn write_mjcf_body(
         }
     }
 
-    // Geoms (visuals)
+    // Geoms — emit visuals and collisions as separate <geom> elements.
+    //
+    // MuJoCo doesn't have a built-in visual/collision split, so we use the
+    // standard contype/conaffinity/group convention:
+    //   • visual    → contype=0  conaffinity=0  group=1   (no physics, render only)
+    //   • collision → contype=1  conaffinity=1  group=3   (physics, optionally hidden)
+    //
+    // The viewer can show either by toggling group bits, the physics engine
+    // only ever resolves the collision geoms (which are normally low-poly
+    // primitives in URDF and therefore avoid the visual mesh's intentional
+    // joint-boundary overlaps that were producing ~70 N spurious self-
+    // collision penalties pre-fix).
+    let visual_extra = " contype=\"0\" conaffinity=\"0\" group=\"1\"";
+    let collision_extra = " contype=\"1\" conaffinity=\"1\" group=\"3\"";
+
+    // Visuals (rendering only).
     for vis in &link.visuals {
         let t = &vis.origin.translation;
         let pos_attr = format!("{} {} {}", t.x, t.y, t.z);
+        let rgba = format!(
+            "{} {} {} {}",
+            vis.color[0], vis.color[1], vis.color[2], vis.color[3]
+        );
         match &vis.geometry {
             GeomData::Box { hx, hy, hz } => {
                 s.push_str(&format!(
-                    "{pad}  <geom type=\"box\" pos=\"{pos_attr}\" size=\"{hx} {hy} {hz}\" rgba=\"{} {} {} {}\"/>\n",
-                    vis.color[0], vis.color[1], vis.color[2], vis.color[3]
+                    "{pad}  <geom type=\"box\" pos=\"{pos_attr}\" size=\"{hx} {hy} {hz}\" rgba=\"{rgba}\"{visual_extra}/>\n",
                 ));
             }
-            GeomData::Cylinder {
-                radius,
-                half_length,
-            } => {
+            GeomData::Cylinder { radius, half_length } => {
                 s.push_str(&format!(
-                    "{pad}  <geom type=\"cylinder\" pos=\"{pos_attr}\" size=\"{radius} {half_length}\" rgba=\"{} {} {} {}\"/>\n",
-                    vis.color[0], vis.color[1], vis.color[2], vis.color[3]
+                    "{pad}  <geom type=\"cylinder\" pos=\"{pos_attr}\" size=\"{radius} {half_length}\" rgba=\"{rgba}\"{visual_extra}/>\n",
                 ));
             }
             GeomData::Sphere { radius } => {
                 s.push_str(&format!(
-                    "{pad}  <geom type=\"sphere\" pos=\"{pos_attr}\" size=\"{radius}\" rgba=\"{} {} {} {}\"/>\n",
-                    vis.color[0], vis.color[1], vis.color[2], vis.color[3]
+                    "{pad}  <geom type=\"sphere\" pos=\"{pos_attr}\" size=\"{radius}\" rgba=\"{rgba}\"{visual_extra}/>\n",
                 ));
             }
             GeomData::Capsule { radius, half_length } => {
                 s.push_str(&format!(
-                    "{pad}  <geom type=\"capsule\" pos=\"{pos_attr}\" size=\"{radius} {half_length}\" rgba=\"{} {} {} {}\"/>\n",
-                    vis.color[0], vis.color[1], vis.color[2], vis.color[3]
+                    "{pad}  <geom type=\"capsule\" pos=\"{pos_attr}\" size=\"{radius} {half_length}\" rgba=\"{rgba}\"{visual_extra}/>\n",
                 ));
             }
             GeomData::Mesh { .. } => {
                 let ptr = &vis.geometry as *const GeomData;
                 if let Some(mesh_name) = geom_mesh_map.get(&ptr) {
                     s.push_str(&format!(
-                        "{pad}  <geom type=\"mesh\" mesh=\"{mesh_name}\" pos=\"{pos_attr}\" rgba=\"{} {} {} {}\"/>\n",
-                        vis.color[0], vis.color[1], vis.color[2], vis.color[3]
+                        "{pad}  <geom type=\"mesh\" mesh=\"{mesh_name}\" pos=\"{pos_attr}\" rgba=\"{rgba}\"{visual_extra}/>\n",
+                    ));
+                }
+            }
+        }
+    }
+
+    // Collisions (physics).
+    //
+    // We give them a faint translucent green so the user can still inspect
+    // them when they enable the group=3 bit in the viewer; the physics
+    // engine ignores the rgba attribute.
+    let col_rgba = "0.4 0.85 0.4 0.25";
+    for col in &link.collisions {
+        let t = &col.origin.translation;
+        let pos_attr = format!("{} {} {}", t.x, t.y, t.z);
+        match &col.geometry {
+            GeomData::Box { hx, hy, hz } => {
+                s.push_str(&format!(
+                    "{pad}  <geom type=\"box\" pos=\"{pos_attr}\" size=\"{hx} {hy} {hz}\" rgba=\"{col_rgba}\"{collision_extra}/>\n",
+                ));
+            }
+            GeomData::Cylinder { radius, half_length } => {
+                s.push_str(&format!(
+                    "{pad}  <geom type=\"cylinder\" pos=\"{pos_attr}\" size=\"{radius} {half_length}\" rgba=\"{col_rgba}\"{collision_extra}/>\n",
+                ));
+            }
+            GeomData::Sphere { radius } => {
+                s.push_str(&format!(
+                    "{pad}  <geom type=\"sphere\" pos=\"{pos_attr}\" size=\"{radius}\" rgba=\"{col_rgba}\"{collision_extra}/>\n",
+                ));
+            }
+            GeomData::Capsule { radius, half_length } => {
+                s.push_str(&format!(
+                    "{pad}  <geom type=\"capsule\" pos=\"{pos_attr}\" size=\"{radius} {half_length}\" rgba=\"{col_rgba}\"{collision_extra}/>\n",
+                ));
+            }
+            GeomData::Mesh { .. } => {
+                let ptr = &col.geometry as *const GeomData;
+                if let Some(mesh_name) = geom_mesh_map.get(&ptr) {
+                    s.push_str(&format!(
+                        "{pad}  <geom type=\"mesh\" mesh=\"{mesh_name}\" pos=\"{pos_attr}\" rgba=\"{col_rgba}\"{collision_extra}/>\n",
                     ));
                 }
             }
