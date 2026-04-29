@@ -274,6 +274,18 @@ impl MujocoSim {
         self.trace.len()
     }
 
+    /// Resize the cap on the time-series ring buffer. Existing samples beyond
+    /// the new cap are dropped from the front (oldest first), matching the
+    /// per-step eviction behaviour in [`Self::record_trace`]. Setting this to
+    /// 0 effectively disables tracing — guard against that at the call site.
+    pub fn set_trace_max(&mut self, max: usize) {
+        let max = max.max(1);
+        self.trace_max = max;
+        while self.trace.len() > max {
+            self.trace.pop_front();
+        }
+    }
+
     /// Read-only access to the per-joint peak observations.
     pub fn peaks(&self) -> &[JointPeak] {
         &self.peaks
