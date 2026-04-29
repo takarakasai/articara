@@ -2514,6 +2514,10 @@ impl ArticaraApp {
     }
 
     pub(super) fn do_save(&mut self) {
+        // Refresh `model.gaits[0]` from the gait UI panel state + live
+        // controller config so the sidecar captures the user's current
+        // setup, not whatever was last loaded.
+        self.sync_gait_panel_to_model();
         let Some(ref model) = self.model else {
             self.export_message = "⚠ No model loaded.".into();
             return;
@@ -2541,6 +2545,9 @@ impl ArticaraApp {
             self.export_message = "⚠ Please specify an output directory.".into();
             return;
         }
+        // Refresh model.gaits[0] from the gait UI panel — same reason as
+        // do_save: the export's sidecar should reflect the current setup.
+        self.sync_gait_panel_to_model();
         let Some(ref model) = self.model else {
             self.export_message = "⚠ No model loaded.".into();
             return;

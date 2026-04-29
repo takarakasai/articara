@@ -187,6 +187,7 @@ impl RobotModel {
             sequences: Vec::new(),
             mimics,
             sensors: Vec::new(),
+            gaits: Vec::new(),
         };
         model.rebuild_misarta_model();
         Ok(model)
@@ -733,6 +734,7 @@ impl RobotModel {
             sequences: Vec::new(),
             mimics: Vec::new(),
             sensors: Vec::new(),
+            gaits: Vec::new(),
         };
         model.rebuild_misarta_model();
         model

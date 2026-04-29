@@ -229,6 +229,7 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
         sequences: Vec::new(),
         mimics,
         sensors,
+        gaits: Vec::new(),
     };
     model.rebuild_misarta_model();
     Ok(model)
