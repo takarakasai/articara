@@ -210,7 +210,13 @@ impl ArticaraApp {
                                 base_locked_axes: self.mujoco_base_locked,
                             };
                             match crate::mujoco_sim::MujocoSim::new(model, opts) {
-                                Ok(sim) => {
+                                Ok(mut sim) => {
+                                    // Carry the user's grav-comp toggle into
+                                    // the freshly-built sim so Stop → Play
+                                    // doesn't silently reset it to off.
+                                    sim.set_gravity_compensation(
+                                        self.enforce_gravity_compensation,
+                                    );
                                     self.mujoco_sim = Some(sim);
                                     // Start paused so the user can choose between
                                     // frame stepping or ▶ Play before any time
@@ -318,6 +324,27 @@ impl ArticaraApp {
                              velocity-mode reference to ±ωmax for every joint. \
                              Off = unrestricted (current default).",
                         );
+                        if ui
+                            .checkbox(
+                                &mut self.enforce_gravity_compensation,
+                                "🌍 Grav comp",
+                            )
+                            .on_hover_text(
+                                "Add a feedforward gravity-compensation \
+                                 torque (RNEA) to every Position/Velocity-\
+                                 mode joint. With this on, the PD only \
+                                 corrects tracking error, not the static \
+                                 load — Kp and the resulting deflection \
+                                 drop dramatically.",
+                            )
+                            .changed()
+                        {
+                            if let Some(sim) = self.mujoco_sim.as_mut() {
+                                sim.set_gravity_compensation(
+                                    self.enforce_gravity_compensation,
+                                );
+                            }
+                        }
                     });
                     // Mouse-drag interaction during sim:
                     // pick Force (apply wrench) vs Posture (IK target) and

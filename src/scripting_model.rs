@@ -882,6 +882,18 @@ impl ModelScriptEngine {
                 s.borrow().as_ref().map(|x| x.trace_len() as i64).unwrap_or(0)
             });
 
+            // Toggle gravity-compensation feedforward in the controller.
+            // Returns the new value as i64 (1=on, 0=off, -1 if no sim).
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("mj_gravity_compensation", move |on: bool| -> i64 {
+                let mut sim_borrow = s.borrow_mut();
+                let Some(sim) = sim_borrow.as_mut() else {
+                    return -1;
+                };
+                sim.set_gravity_compensation(on);
+                if on { 1 } else { 0 }
+            });
+
             // Resize the trace ring buffer cap. Existing samples beyond the
             // new cap are dropped from the front. Returns the value applied.
             let s = Rc::clone(&mujoco_sim);
@@ -1526,7 +1538,7 @@ impl ModelScriptEngine {
             "decompose_vhacd", "decompose_spheres", "decompose_primitive",
             "mj_active", "mj_start", "mj_stop", "mj_step", "mj_step_back",
             "mj_timestep", "mj_history_len", "mj_trace_len", "mj_set_trace_max",
-            "save_peaks_csv",
+            "mj_gravity_compensation", "save_peaks_csv",
             "play_pose", "transition_in_progress", "transition_progress",
             "play_sequence", "sequence_in_progress", "sequence_progress",
             "apply_force", "cancel_force",
