@@ -101,6 +101,152 @@ impl std::fmt::Display for RobotFormat {
 
 // ─── FormatHandler trait + registry ────────────────────────────────────────
 
+/// One concrete compatibility issue raised when the user is about to
+/// export to a format that can't natively express something currently in
+/// their model. Surface these from
+/// [`analyze_export_compatibility`] before writing the file so the user
+/// can confirm the loss (or cancel and re-export to a richer target).
+///
+/// Severity defines the dialog tone:
+/// - `Drop`     — the entity won't appear in the exported file at all.
+///   For sidecar-aware workflows this is fine (the `.misarta.toml`
+///   preserves the data) but consumers reading only the exported file
+///   will lose it.
+/// - `Approximate` — the entity is converted to a representable shape
+///   (e.g. capsule → cylinder + 2 spheres). Geometry survives but with
+///   slightly different physics (rounded ends become flat).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExportIssue {
+    /// Short label for grouping in the dialog (e.g. "Sensors").
+    pub feature: String,
+    /// How many entities of this kind are affected.
+    pub count: usize,
+    pub severity: ExportSeverity,
+    /// Human-readable explanation rendered in the warning dialog.
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportSeverity {
+    Drop,
+    Approximate,
+}
+
+impl ExportSeverity {
+    pub fn label(self) -> &'static str {
+        match self {
+            ExportSeverity::Drop => "DROP",
+            ExportSeverity::Approximate => "APPROX",
+        }
+    }
+}
+
+/// Run a pre-export compatibility check between the loaded model and
+/// the target format. Returns an empty vec when the format can express
+/// everything the model contains; otherwise one [`ExportIssue`] per
+/// feature category.
+///
+/// The function deliberately does NOT decide whether to proceed — that's
+/// up to the caller (typically a confirmation dialog). It's a pure
+/// query.
+pub fn analyze_export_compatibility(
+    model: &crate::robot::RobotModel,
+    target: &dyn FormatHandler,
+) -> Vec<ExportIssue> {
+    let caps = target.capabilities();
+    let mut issues = Vec::new();
+
+    if !caps.mimic && !model.mimics.is_empty() {
+        issues.push(ExportIssue {
+            feature: "Mimic joints".into(),
+            count: model.mimics.len(),
+            severity: ExportSeverity::Drop,
+            message: format!(
+                "{} cannot natively express linear-coupled (mimic) joints. \
+                 The relationship is preserved in `.misarta.toml` but \
+                 consumers reading only the exported file will see the \
+                 joints as independent.",
+                target.name(),
+            ),
+        });
+    }
+
+    if !caps.sensors && !model.sensors.is_empty() {
+        issues.push(ExportIssue {
+            feature: "Sensors".into(),
+            count: model.sensors.len(),
+            severity: ExportSeverity::Drop,
+            message: format!(
+                "{} has no native sensor primitives. Sensor entries are \
+                 preserved in `.misarta.toml` only.",
+                target.name(),
+            ),
+        });
+    }
+
+    if !caps.collision_pairs && !model.collision_pairs.is_empty() {
+        issues.push(ExportIssue {
+            feature: "Collision pairs".into(),
+            count: model.collision_pairs.len(),
+            severity: ExportSeverity::Drop,
+            message: format!(
+                "{} cannot enumerate per-pair collision overrides. The \
+                 SRDF-style allow/disallow list is preserved only in \
+                 `.misarta.toml`.",
+                target.name(),
+            ),
+        });
+    }
+
+    if !caps.closed_loops && !model.loop_closures.is_empty() {
+        issues.push(ExportIssue {
+            feature: "Closed-loop constraints".into(),
+            count: model.loop_closures.len(),
+            severity: ExportSeverity::Drop,
+            message: format!(
+                "{} is tree-structured and cannot express closed kinematic \
+                 loops. The constraints are preserved in `.misarta.toml`; \
+                 consumers reading only the exported file will see an open \
+                 chain.",
+                target.name(),
+            ),
+        });
+    }
+
+    // Capsule → URDF approximation. URDF doesn't have a `<capsule>` tag,
+    // so the exporter decomposes capsules into a cylinder + two end
+    // spheres. Geometry remains visually correct but the physics for
+    // contacts changes slightly (flat-ended cylinder vs spherical caps).
+    let mut capsule_total = 0;
+    for link in &model.links {
+        for v in &link.visuals {
+            if matches!(v.geometry, crate::robot::GeomData::Capsule { .. }) {
+                capsule_total += 1;
+            }
+        }
+        for c in &link.collisions {
+            if matches!(c.geometry, crate::robot::GeomData::Capsule { .. }) {
+                capsule_total += 1;
+            }
+        }
+    }
+    if capsule_total > 0 && target.name() == "URDF" {
+        issues.push(ExportIssue {
+            feature: "Capsule shapes".into(),
+            count: capsule_total,
+            severity: ExportSeverity::Approximate,
+            message:
+                "URDF has no `<capsule>` primitive. Each capsule is \
+                 decomposed into a cylinder plus two end spheres on \
+                 export — visually correct but slightly different \
+                 contact behaviour."
+                    .into(),
+        });
+    }
+
+    issues
+}
+
 /// What features a particular [`FormatHandler`] can express on round-trip.
 ///
 /// Used by the host (`articara` UI / scripting) to surface gaps to the user

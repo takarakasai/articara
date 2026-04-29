@@ -2446,6 +2446,89 @@ impl ArticaraApp {
     }
 
     /// Draw the Export dialog window (format + directory + export button).
+    /// Compatibility-warning dialog shown before Save / Export when the
+    /// selected format can't natively express something currently in
+    /// the model. The user picks Continue (proceed with the loss /
+    /// approximation, sidecar still preserves everything) or Cancel
+    /// (abort the export). When `pending_export_action` is `None` the
+    /// method early-returns, so it's cheap to call every frame.
+    pub(super) fn draw_export_compat_dialog(&mut self, ctx: &egui::Context) {
+        let Some(action) = self.pending_export_action else {
+            return;
+        };
+        let mut open = true;
+        let mut decision: Option<bool> = None; // Some(true)=continue, Some(false)=cancel
+        egui::Window::new(match action {
+            super::PendingExportAction::Save => "Save — compatibility warning",
+            super::PendingExportAction::Export => "Export — compatibility warning",
+        })
+        .open(&mut open)
+        .resizable(false)
+        .collapsible(false)
+        .show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new(
+                    "The target format can't natively express some items \
+                     in your model. Sidecar (.misarta.toml) still preserves \
+                     them, but the exported file alone will be incomplete.",
+                )
+                .small()
+                .weak(),
+            );
+            ui.separator();
+            for issue in &self.export_compat_issues {
+                ui.horizontal(|ui| {
+                    let color = match issue.severity {
+                        crate::format::ExportSeverity::Drop => {
+                            egui::Color32::from_rgb(230, 120, 80)
+                        }
+                        crate::format::ExportSeverity::Approximate => {
+                            egui::Color32::from_rgb(220, 200, 80)
+                        }
+                    };
+                    ui.colored_label(
+                        color,
+                        format!(
+                            "[{}] {} ({})",
+                            issue.severity.label(),
+                            issue.feature,
+                            issue.count,
+                        ),
+                    );
+                });
+                ui.label(
+                    egui::RichText::new(&issue.message)
+                        .small()
+                        .weak(),
+                );
+                ui.add_space(4.0);
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Continue (preserve in sidecar)").clicked() {
+                    decision = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+        // Window-close (X) acts like Cancel.
+        if !open {
+            decision = Some(false);
+        }
+        if let Some(go) = decision {
+            self.pending_export_action = None;
+            self.export_compat_issues.clear();
+            if go {
+                match action {
+                    super::PendingExportAction::Save => self.save_now(),
+                    super::PendingExportAction::Export => self.export_now(),
+                }
+            }
+        }
+    }
+
     pub(super) fn draw_export_dialog(&mut self, ctx: &egui::Context) {
         if !self.show_export_dialog {
             return;
@@ -2513,11 +2596,45 @@ impl ArticaraApp {
         self.show_export_dialog = open;
     }
 
+    /// Public entry point for the menu's Save button. Runs the
+    /// pre-export compatibility check and either proceeds (no issues)
+    /// or queues a confirmation dialog with the list of features that
+    /// would be lost / approximated.
     pub(super) fn do_save(&mut self) {
-        // Refresh `model.gaits[0]` from the gait UI panel state + live
-        // controller config so the sidecar captures the user's current
-        // setup, not whatever was last loaded.
         self.sync_gait_panel_to_model();
+        let Some(model) = self.model.as_ref() else {
+            self.export_message = "⚠ No model loaded.".into();
+            return;
+        };
+        if model.source_path.is_none() {
+            self.export_message = "⚠ New model has no source file. Use Export instead.".into();
+            return;
+        }
+        // Save always targets URDF (the model's source). Run the
+        // compatibility analysis against the URDF handler.
+        let registry = crate::format::FormatRegistry::default_registry();
+        let urdf_handler = registry
+            .handlers()
+            .iter()
+            .find(|h| h.name() == "URDF")
+            .map(|h| h.as_ref());
+        let issues = if let Some(h) = urdf_handler {
+            crate::format::analyze_export_compatibility(model, h)
+        } else {
+            Vec::new()
+        };
+        if issues.is_empty() {
+            self.save_now();
+        } else {
+            self.export_compat_issues = issues;
+            self.pending_export_action = Some(super::PendingExportAction::Save);
+        }
+    }
+
+    /// Bypass the confirmation dialog and write the file immediately.
+    /// Called from the dialog's Continue button and from the no-issues
+    /// fast path in [`Self::do_save`].
+    pub(super) fn save_now(&mut self) {
         let Some(ref model) = self.model else {
             self.export_message = "⚠ No model loaded.".into();
             return;
@@ -2529,7 +2646,6 @@ impl ArticaraApp {
         match model.save_urdf() {
             Ok(path) => {
                 self.export_message = format!("✔ Saved to {}", path.display());
-                // Save .misarta.toml sidecar alongside the model
                 if let Err(e) = model.save_sidecar_config(&path) {
                     self.export_message += &format!(" (⚠ config: {e})");
                 }
@@ -2540,14 +2656,47 @@ impl ArticaraApp {
         }
     }
 
+    /// Public entry for the Export dialog's `Export` button. Same
+    /// pattern as [`Self::do_save`] — pre-flight check then either
+    /// proceed or queue a confirmation dialog.
     pub(super) fn do_export(&mut self) {
         if self.export_dir.is_empty() {
             self.export_message = "⚠ Please specify an output directory.".into();
             return;
         }
-        // Refresh model.gaits[0] from the gait UI panel — same reason as
-        // do_save: the export's sidecar should reflect the current setup.
         self.sync_gait_panel_to_model();
+        let Some(model) = self.model.as_ref() else {
+            self.export_message = "⚠ No model loaded.".into();
+            return;
+        };
+        // Match the user's selected target format against the registry.
+        let registry = crate::format::FormatRegistry::default_registry();
+        let target_name = self.export_format.label().split_whitespace().next().unwrap_or("");
+        let handler = registry
+            .handlers()
+            .iter()
+            .find(|h| h.name().eq_ignore_ascii_case(target_name)
+                || h.name().contains(target_name))
+            .map(|h| h.as_ref());
+        let issues = if let Some(h) = handler {
+            crate::format::analyze_export_compatibility(model, h)
+        } else {
+            Vec::new()
+        };
+        if issues.is_empty() {
+            self.export_now();
+        } else {
+            self.export_compat_issues = issues;
+            self.pending_export_action = Some(super::PendingExportAction::Export);
+        }
+    }
+
+    /// Bypass the confirmation dialog and write the export immediately.
+    pub(super) fn export_now(&mut self) {
+        if self.export_dir.is_empty() {
+            self.export_message = "⚠ Please specify an output directory.".into();
+            return;
+        }
         let Some(ref model) = self.model else {
             self.export_message = "⚠ No model loaded.".into();
             return;

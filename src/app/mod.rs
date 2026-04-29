@@ -99,6 +99,17 @@ impl PeaksPlotMetric {
     }
 }
 
+/// Which write operation the user has queued behind a pre-export
+/// compatibility confirmation dialog. The dialog's Continue button
+/// dispatches on this; Cancel just clears it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingExportAction {
+    /// In-place save to the model's original URDF path.
+    Save,
+    /// Export to the directory + format selected in the export dialog.
+    Export,
+}
+
 /// X-axis behaviour for the Joint Peaks plot.
 #[cfg(feature = "mujoco")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -310,6 +321,12 @@ pub struct ArticaraApp {
     /// camera (free or TPS, opposite of the active one) as a small
     /// picture-in-picture wipe in the upper-right corner.
     show_camera_wipe: bool,
+    /// Pending Save/Export action awaiting user confirmation in the
+    /// `export_compat_issues` dialog. `None` outside the dialog flow.
+    pending_export_action: Option<PendingExportAction>,
+    /// Compatibility issues raised by the latest pre-export analysis.
+    /// Non-empty while the confirmation dialog is shown.
+    export_compat_issues: Vec<crate::format::ExportIssue>,
     gl: Arc<glow::Context>,
     gl_renderer: Arc<Mutex<GlRenderer>>,
     selected_link: Option<usize>,
@@ -730,6 +747,8 @@ impl ArticaraApp {
             tps_settings: crate::camera::TpsSettings::default(),
             camera_mode: crate::camera::CameraMode::Free,
             show_camera_wipe: false,
+            pending_export_action: None,
+            export_compat_issues: Vec::new(),
             gl,
             gl_renderer: Arc::new(Mutex::new(renderer)),
             selected_link: None,
@@ -1424,6 +1443,10 @@ impl ArticaraApp {
 
         // --- Export dialog window ---
         self.draw_export_dialog(ctx);
+
+        // --- Pre-export compatibility warning dialog ---
+        // Drawn after Export so it floats on top when both are visible.
+        self.draw_export_compat_dialog(ctx);
 
         // --- Open Sim Config dialog ---
         match self.dlg_open_sim_config.show(ctx) {
