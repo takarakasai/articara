@@ -873,11 +873,19 @@ impl ArticaraApp {
                                 self.dynamics_last_instant = Some(now);
                                 return;
                             }
-                            let dt = match self.dynamics_last_instant {
+                            let wall_dt = match self.dynamics_last_instant {
                                 Some(prev) => now.duration_since(prev).as_secs_f32().min(0.05),
                                 None => 0.016,
                             };
                             self.dynamics_last_instant = Some(now);
+                            // Apply the user's Speed multiplier so the
+                            // sim can be slowed down for inspection or
+                            // sped up for quick rollouts. Clamp the
+                            // multiplier to a sane range to avoid
+                            // pathological huge dt values when the
+                            // slider is pushed up.
+                            let speed = self.dynamics_sim_speed.clamp(0.05, 5.0);
+                            let dt = wall_dt * speed;
                             mj_sim.step(model, dt as f64, enforce_limits);
                         }
                     }
