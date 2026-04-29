@@ -169,6 +169,8 @@ pub fn import_sdf(path: &Path) -> Result<RobotModel, String> {
             actuator_mode: crate::rbd::model::ActuatorMode::default(),
             actuator_kp: 50.0,
             actuator_kv: 5.0,
+            armature: 0.0,
+            joint_damping: 0.0,
         });
     }
 

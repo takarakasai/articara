@@ -134,6 +134,8 @@ impl RobotModel {
                 actuator_mode: crate::rbd::model::ActuatorMode::default(),
                 actuator_kp: 50.0,
                 actuator_kv: 5.0,
+                armature: 0.0,
+                joint_damping: 0.0,
             });
 
             // Capture <mimic> if present. URDF uses linear coupling; we
@@ -826,6 +828,8 @@ impl RobotModel {
             actuator_mode: crate::rbd::model::ActuatorMode::default(),
             actuator_kp: 50.0,
             actuator_kv: 5.0,
+                    armature: 0.0,
+                    joint_damping: 0.0,
         });
         self.joint_positions.push(0.0);
         self.misarta_cache = None; // invalidate stale cache

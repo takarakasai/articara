@@ -515,6 +515,20 @@ pub struct JointData {
     /// `kv` in MuJoCo `<position>` / `<velocity>`).
     #[cfg_attr(feature = "serde", serde(default = "default_kv"))]
     pub actuator_kv: f64,
+    /// Reflected rotor inertia (kg·m² for revolute, kg for prismatic). Mapped
+    /// to MuJoCo's `<joint armature="…"/>` on export, this raises the joint's
+    /// effective inertia and acts as a natural high-frequency filter for the
+    /// external PD controller. Real motors and gearboxes always have non-zero
+    /// armature; leaving it at 0 makes the simulator more prone to numerical
+    /// oscillation than the physical system would be.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub armature: f64,
+    /// Passive linear damping coefficient at the joint (N·m·s/rad for revolute,
+    /// N·s/m for prismatic). Mapped to MuJoCo's `<joint damping="…"/>`. Models
+    /// bearing friction / lubricant drag and absorbs energy at impact, which
+    /// dampens the torque spike when a leg lands during a jump.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub joint_damping: f64,
 }
 
 #[cfg(feature = "serde")]
@@ -2443,6 +2457,8 @@ impl RobotModel {
                 mode: actuator_mode_to_config(j.actuator_mode),
                 kp: j.actuator_kp,
                 kv: j.actuator_kv,
+                armature: j.armature,
+                joint_damping: j.joint_damping,
             });
         }
         // Persist per-link-pair collision overrides. Pairs are stored
@@ -2521,6 +2537,8 @@ impl RobotModel {
                     actuator_mode_from_config(ac.mode);
                 self.joints[ji].actuator_kp = ac.kp;
                 self.joints[ji].actuator_kv = ac.kv;
+                self.joints[ji].armature = ac.armature;
+                self.joints[ji].joint_damping = ac.joint_damping;
             }
         }
         // Restore collision pair overrides. We keep entries even when the

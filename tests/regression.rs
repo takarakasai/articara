@@ -3370,6 +3370,89 @@ mod test_sidecar {
     }
 
     #[test]
+    fn mjcf_export_emits_armature_and_damping_when_set() {
+        // Regression: rotor inertia + passive damping must reach the MJCF so
+        // MuJoCo's solver actually applies them. Without this, joints behave
+        // as if there's no motor mass and the external PD controller drives
+        // discrete-time oscillation during fast moves like jumps.
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        let movable_idx = model
+            .joints
+            .iter()
+            .position(|j| j.joint_type != "fixed")
+            .expect("fixture should have at least one movable joint");
+        model.joints[movable_idx].armature = 0.012;
+        model.joints[movable_idx].joint_damping = 0.4;
+        let xml = articara::mjcf::export_mjcf(&model);
+        assert!(
+            xml.contains("armature=\"0.012\""),
+            "MJCF should emit armature=\"0.012\":\n{}",
+            xml,
+        );
+        assert!(
+            xml.contains("damping=\"0.4\""),
+            "MJCF should emit damping=\"0.4\":\n{}",
+            xml,
+        );
+    }
+
+    #[test]
+    fn mjcf_omits_armature_and_damping_when_zero() {
+        // Conversely, with zero values the attributes must NOT appear so the
+        // MJCF stays minimal and matches MuJoCo's defaults.
+        let model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        let xml = articara::mjcf::export_mjcf(&model);
+        assert!(
+            !xml.contains("armature="),
+            "MJCF should omit armature when value is 0:\n{}",
+            xml,
+        );
+        assert!(
+            !xml.contains("damping="),
+            "MJCF should omit damping when value is 0:\n{}",
+            xml,
+        );
+    }
+
+    #[test]
+    fn mjcf_armature_damping_roundtrip() {
+        // Set, export, re-import, and check the values come back. This is the
+        // canonical path: model → MJCF (export) → MuJoCo (or another tool) →
+        // MJCF (import) → model.
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        let target = model
+            .joints
+            .iter()
+            .position(|j| j.joint_type != "fixed")
+            .unwrap();
+        let target_name = model.joints[target].name.clone();
+        model.joints[target].armature = 0.0075;
+        model.joints[target].joint_damping = 1.25;
+        let xml = articara::mjcf::export_mjcf(&model);
+
+        let tmp = std::env::temp_dir()
+            .join("articara_armature_roundtrip.xml");
+        std::fs::write(&tmp, &xml).unwrap();
+        let parsed = RobotModel::from_file(&tmp).unwrap();
+        let restored = parsed
+            .joints
+            .iter()
+            .find(|j| j.name == target_name)
+            .expect("joint must survive roundtrip");
+        assert!(
+            (restored.armature - 0.0075).abs() < 1e-9,
+            "armature lost in roundtrip: got {}",
+            restored.armature,
+        );
+        assert!(
+            (restored.joint_damping - 1.25).abs() < 1e-9,
+            "joint_damping lost in roundtrip: got {}",
+            restored.joint_damping,
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
     fn actuator_load_via_load_sidecar_path() {
         let urdf_src = fixture_urdf();
         let tmp_dir = std::env::temp_dir().join("articara_sidecar_path_test");

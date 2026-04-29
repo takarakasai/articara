@@ -39,6 +39,13 @@ pub struct MujocoSim {
     /// by joint index in the [`RobotModel`]. Initialised to the robot's pose
     /// at sim start so the robot holds that pose against gravity.
     position_targets: Vec<f64>,
+    /// Per-joint trajectory velocity feedforward q̇* used by the Position-mode
+    /// controller. Updated each step from the active transition / sequence's
+    /// derivative; held at zero when no trajectory is running so the
+    /// controller naturally damps to rest. Without this, the Kv term would
+    /// fight any deliberate motion (`Kv·(0 − q̇)` brakes against the target),
+    /// causing high-amplitude torque oscillation during fast moves like jumps.
+    position_target_velocities: Vec<f64>,
     /// Per-joint velocity target (used by Velocity-mode controller).
     velocity_targets: Vec<f64>,
     /// Per-joint direct torque command (used by Torque-mode controller).
@@ -238,6 +245,7 @@ impl MujocoSim {
         // Initial control targets: hold the start pose in Position mode, no
         // velocity/torque command in the other modes.
         let position_targets = robot.joint_positions.clone();
+        let position_target_velocities = vec![0.0; robot.joints.len()];
         let velocity_targets = vec![0.0; robot.joints.len()];
         let torque_targets = vec![0.0; robot.joints.len()];
 
@@ -252,6 +260,7 @@ impl MujocoSim {
             // ring buffer can't grow without bound during long sessions.
             history_max: 5000,
             position_targets,
+            position_target_velocities,
             velocity_targets,
             torque_targets,
             transition: None,
@@ -486,8 +495,18 @@ impl MujocoSim {
             let mut tau = match joint.actuator_mode {
                 ActuatorMode::Position => {
                     let q_target = self.position_targets.get(ji).copied().unwrap_or(q);
+                    // Trajectory-velocity feedforward: damping must reference
+                    // the trajectory's q̇*, not zero. Otherwise the Kv term
+                    // would brake against the commanded motion every tick a
+                    // sequence is being played, which manifests as large
+                    // torque oscillation during fast moves like jumps.
+                    let qd_target = self
+                        .position_target_velocities
+                        .get(ji)
+                        .copied()
+                        .unwrap_or(0.0);
                     joint.actuator_kp * (q_target - q)
-                        + joint.actuator_kv * (0.0 - qd)
+                        + joint.actuator_kv * (qd_target - qd)
                 }
                 ActuatorMode::Velocity => {
                     let mut qd_target =
@@ -732,14 +751,25 @@ impl MujocoSim {
         };
         t.elapsed += mj_dt;
         let q = t.traj.evaluate(t.elapsed);
+        let qd = t.traj.evaluate_velocity(t.elapsed);
         let n = self.position_targets.len().min(q.len());
         for i in 0..n {
             self.position_targets[i] = q[i];
+        }
+        let nv = self.position_target_velocities.len().min(qd.len());
+        for i in 0..nv {
+            self.position_target_velocities[i] = qd[i];
         }
         if t.traj.is_done(t.elapsed) {
             // Snap exactly to the goal so any rounding error doesn't linger.
             for i in 0..self.position_targets.len().min(t.traj.q_end.len()) {
                 self.position_targets[i] = t.traj.q_end[i];
+            }
+            // After the transition completes the controller should hold pose,
+            // so the velocity feedforward must collapse back to zero — leaving
+            // a stale q̇* would have the PD continuously commanding motion.
+            for v in self.position_target_velocities.iter_mut() {
+                *v = 0.0;
             }
             self.transition = None;
         }
@@ -756,11 +786,22 @@ impl MujocoSim {
         };
         s.elapsed += mj_dt;
         let q = s.anim.evaluate(s.elapsed);
+        let qd = s.anim.evaluate_velocity(s.elapsed);
         let n = self.position_targets.len().min(q.len());
         for i in 0..n {
             self.position_targets[i] = q[i];
         }
+        let nv = self.position_target_velocities.len().min(qd.len());
+        for i in 0..nv {
+            self.position_target_velocities[i] = qd[i];
+        }
         if s.anim.is_done(s.elapsed) {
+            // Same rationale as advance_transition: drop the feedforward to
+            // zero once the playback ends, otherwise the controller would
+            // keep nudging joints in the direction of the last segment.
+            for v in self.position_target_velocities.iter_mut() {
+                *v = 0.0;
+            }
             self.sequence = None;
         }
     }
