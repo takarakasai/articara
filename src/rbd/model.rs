@@ -246,6 +246,66 @@ pub struct RobotModel {
     /// Named pose sequences for chained replay.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub sequences: Vec<Sequence>,
+    /// Coupled (mimic) joints — `joint = multiplier · source + offset`.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub mimics: Vec<Mimic>,
+    /// Sensors mounted on links.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub sensors: Vec<Sensor>,
+}
+
+/// Linear coupling between two joints (in-memory mirror of
+/// [`misarta::config::MimicConfig`]).
+#[derive(Clone, Debug)]
+pub struct Mimic {
+    pub joint: String,
+    pub source: String,
+    pub multiplier: f64,
+    pub offset: f64,
+}
+
+/// Sensor attached to a link (in-memory mirror of
+/// [`misarta::config::SensorConfig`]).
+#[derive(Clone, Debug)]
+pub struct Sensor {
+    pub name: String,
+    pub link: String,
+    pub origin: na::Isometry3<f64>,
+    pub update_rate: f64,
+    pub kind: SensorKind,
+}
+
+#[derive(Clone, Debug)]
+pub enum SensorKind {
+    Camera {
+        fov: f64,
+        width: u32,
+        height: u32,
+        near: f64,
+        far: f64,
+    },
+    Lidar {
+        range_min: f64,
+        range_max: f64,
+        h_fov: f64,
+        h_samples: u32,
+        v_fov: f64,
+        v_samples: u32,
+    },
+    Imu {
+        gyro_noise: f64,
+        accel_noise: f64,
+    },
+    ForceTorque {
+        joint: Option<String>,
+    },
+    Contact {
+        partner: Option<String>,
+    },
+    Generic {
+        kind: String,
+        params: std::collections::BTreeMap<String, String>,
+    },
 }
 
 /// A named, ordered sequence of pose-targets to replay one after another.
@@ -2409,6 +2469,27 @@ impl RobotModel {
                     .collect(),
             });
         }
+        // Persist mimics.
+        for m in &self.mimics {
+            cfg.mimic.push(misarta::config::MimicConfig {
+                joint: m.joint.clone(),
+                source: m.source.clone(),
+                multiplier: m.multiplier,
+                offset: m.offset,
+            });
+        }
+        // Persist sensors.
+        for s in &self.sensors {
+            let q = s.origin.rotation.quaternion();
+            cfg.sensor.push(misarta::config::SensorConfig {
+                name: s.name.clone(),
+                link: s.link.clone(),
+                origin: s.origin.translation.vector.into(),
+                orientation: [q.i, q.j, q.k, q.w],
+                update_rate: s.update_rate,
+                kind: sensor_kind_to_config(&s.kind),
+            });
+        }
         cfg
     }
 
@@ -2465,6 +2546,37 @@ impl RobotModel {
                         kind: s.kind,
                     })
                     .collect(),
+            })
+            .collect();
+        // Restore mimics.
+        self.mimics = cfg
+            .mimic
+            .iter()
+            .map(|m| Mimic {
+                joint: m.joint.clone(),
+                source: m.source.clone(),
+                multiplier: m.multiplier,
+                offset: m.offset,
+            })
+            .collect();
+        // Restore sensors.
+        self.sensors = cfg
+            .sensor
+            .iter()
+            .map(|s| Sensor {
+                name: s.name.clone(),
+                link: s.link.clone(),
+                origin: na::Isometry3::from_parts(
+                    na::Translation3::new(s.origin[0], s.origin[1], s.origin[2]),
+                    na::UnitQuaternion::from_quaternion(na::Quaternion::new(
+                        s.orientation[3],
+                        s.orientation[0],
+                        s.orientation[1],
+                        s.orientation[2],
+                    )),
+                ),
+                update_rate: s.update_rate,
+                kind: sensor_kind_from_config(&s.kind),
             })
             .collect();
     }
@@ -2548,6 +2660,84 @@ pub struct SidecarLoadReport {
     pub n_actuators_applied: usize,
     pub n_actuators_total: usize,
     pub unmatched_actuators: Vec<String>,
+}
+
+/// 1:1 conversion between in-memory [`SensorKind`] and the
+/// serialisation-friendly [`misarta::config::SensorKind`].
+fn sensor_kind_to_config(k: &SensorKind) -> misarta::config::SensorKind {
+    match k {
+        SensorKind::Camera { fov, width, height, near, far } => {
+            misarta::config::SensorKind::Camera {
+                fov: *fov, width: *width, height: *height, near: *near, far: *far,
+            }
+        }
+        SensorKind::Lidar {
+            range_min, range_max, h_fov, h_samples, v_fov, v_samples,
+        } => misarta::config::SensorKind::Lidar {
+            range_min: *range_min,
+            range_max: *range_max,
+            h_fov: *h_fov,
+            h_samples: *h_samples,
+            v_fov: *v_fov,
+            v_samples: *v_samples,
+        },
+        SensorKind::Imu { gyro_noise, accel_noise } => {
+            misarta::config::SensorKind::Imu {
+                gyro_noise: *gyro_noise,
+                accel_noise: *accel_noise,
+            }
+        }
+        SensorKind::ForceTorque { joint } => {
+            misarta::config::SensorKind::ForceTorque { joint: joint.clone() }
+        }
+        SensorKind::Contact { partner } => {
+            misarta::config::SensorKind::Contact { partner: partner.clone() }
+        }
+        SensorKind::Generic { kind, params } => {
+            misarta::config::SensorKind::Generic {
+                kind: kind.clone(),
+                params: params.clone(),
+            }
+        }
+    }
+}
+
+fn sensor_kind_from_config(k: &misarta::config::SensorKind) -> SensorKind {
+    match k {
+        misarta::config::SensorKind::Camera { fov, width, height, near, far } => {
+            SensorKind::Camera {
+                fov: *fov, width: *width, height: *height, near: *near, far: *far,
+            }
+        }
+        misarta::config::SensorKind::Lidar {
+            range_min, range_max, h_fov, h_samples, v_fov, v_samples,
+        } => SensorKind::Lidar {
+            range_min: *range_min,
+            range_max: *range_max,
+            h_fov: *h_fov,
+            h_samples: *h_samples,
+            v_fov: *v_fov,
+            v_samples: *v_samples,
+        },
+        misarta::config::SensorKind::Imu { gyro_noise, accel_noise } => {
+            SensorKind::Imu {
+                gyro_noise: *gyro_noise,
+                accel_noise: *accel_noise,
+            }
+        }
+        misarta::config::SensorKind::ForceTorque { joint } => {
+            SensorKind::ForceTorque { joint: joint.clone() }
+        }
+        misarta::config::SensorKind::Contact { partner } => {
+            SensorKind::Contact { partner: partner.clone() }
+        }
+        misarta::config::SensorKind::Generic { kind, params } => {
+            SensorKind::Generic {
+                kind: kind.clone(),
+                params: params.clone(),
+            }
+        }
+    }
 }
 
 /// Walk misarta's joint tree from `start` toward joint 0 (the URDF root)

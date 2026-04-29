@@ -164,6 +164,8 @@ pub fn import_sdf(path: &Path) -> Result<RobotModel, String> {
         poses: Vec::new(),
         collision_pairs: Vec::new(),
             sequences: Vec::new(),
+            mimics: Vec::new(),
+            sensors: Vec::new(),
     };
     model.rebuild_misarta_model();
     Ok(model)

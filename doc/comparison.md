@@ -3,6 +3,45 @@
 articara が入出力としてサポート (予定含む) するロボットモデルフォーマットの
 機能対応比較表。
 
+## マスタフォーマット (`.misarta.toml`)
+
+articara は **`.misarta.toml` を真のマスタフォーマット**として位置付けています。
+URDF / SDF / MJCF / USD はそれぞれ「派生 export 先 / import 元」となり、
+編集はマスタ (= articara のメモリ上のモデル + sidecar TOML) に対して行います。
+
+```
+              ┌─ modify ─┐
+              ▼          │
+         XXX.misarta.toml ← マスタ
+        ╱        │        ╲
+   import      export    (双方向)
+       ╱        │        ╲
+   ▼      ▼      ▼      ▼
+  URDF   SDF   MJCF    USD
+```
+
+各フォーマットの import/export は [`articara::format::FormatHandler`] trait
+経由でプラグイン化されており (`FormatRegistry::default_registry()`)、新しい
+フォーマットは impl を一つ書けば追加できます。
+
+### マスタに含まれるエンティティ
+
+| カテゴリ | 主たる保管先 | 備考 |
+|---|---|---|
+| Links / Joints / Inertia / Geometry | URDF/SDF/MJCF/USDのいずれか (構造ファイル) | TOML 側は重複保管しない |
+| Loop closures | `.misarta.toml` `[[loop_closure]]` | 6-DoF rotation 含む |
+| Pose registry | `.misarta.toml` `[[pose]]` | duration / kind 含む |
+| Sequences | `.misarta.toml` `[[sequence]]` | チェーン Pose 再生 |
+| Actuators (Kp/Kv/mode) | `.misarta.toml` `[[actuator]]` | per-joint |
+| Collision pairs | `.misarta.toml` `[[collision_pair]]` | 有効/除外 |
+| **Mimic (連動関節)** | `.misarta.toml` `[[mimic]]` | linear coupling |
+| **Sensors** | `.misarta.toml` `[[sensor]]` | Camera/Lidar/IMU/F-T/Contact/Generic |
+
+双方向往復は **best-effort**: 構造ファイル (URDF など) で表現できない要素は
+`.misarta.toml` 側に記録され、export 時に対象フォーマットがサポートする形で
+出力されます (例: mimic は URDF/SDF/MJCF それぞれの記法に変換、USD では警告)。
+
+
 対象フォーマット:
 
 1. **URDF** — ROS1/2 用の Unified Robot Description Format
