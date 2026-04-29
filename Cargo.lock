@@ -3770,6 +3770,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5a041e753da8b807c9255f28de81879c78c876392ff2469cde94799b2896b9d"
 
 [[package]]
+name = "quadruped-gait"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "misarta",
+ "nalgebra 0.34.2",
+ "serde",
+]
+
+[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
