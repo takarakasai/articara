@@ -806,6 +806,10 @@ impl ModelScriptEngine {
                 let Some(robot) = model_borrow.as_ref() else {
                     return false;
                 };
+                // Scripts default to "limits baked in" (matches the catalogue
+                // hardware spec). To probe unconstrained motion from a script,
+                // toggle `set_armature_all` / damping / Kp instead, or rebuild
+                // via the UI Play button with the ⛔ Limits checkbox off.
                 let opts = crate::mjcf::MjcfExportOptions {
                     base_pos: None,
                     ground_plane: Some(crate::mjcf::GroundPlaneCfg {
@@ -816,6 +820,7 @@ impl ModelScriptEngine {
                     }),
                     add_actuators: true,
                     base_locked_axes: [false; 6],
+                    ..Default::default()
                 };
                 match MujocoSim::new(robot, opts) {
                     Ok(sim) => {

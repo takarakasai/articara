@@ -203,11 +203,21 @@ impl ArticaraApp {
                     {
                         let (base_pos, ground) = self.collect_mujoco_setup();
                         if let Some(ref model) = self.model {
+                            // The "⛔ Limits" checkbox now controls BOTH the
+                            // runtime controller clamp AND the MuJoCo-level
+                            // `forcelimited` / joint `range` attributes —
+                            // otherwise the UI would mislead: the host could
+                            // command 100 N·m but MuJoCo would silently clip
+                            // to ±τmax baked into the MJCF, and the user
+                            // would see "no change" when toggling limits.
+                            let bake = self.enforce_actuator_limits;
                             let opts = crate::mjcf::MjcfExportOptions {
                                 base_pos,
                                 ground_plane: ground,
                                 add_actuators: false,
                                 base_locked_axes: self.mujoco_base_locked,
+                                bake_actuator_limits: bake,
+                                bake_joint_position_limits: bake,
                             };
                             match crate::mujoco_sim::MujocoSim::new(model, opts) {
                                 Ok(mut sim) => {
@@ -320,9 +330,14 @@ impl ArticaraApp {
                             "⛔ Limits",
                         )
                         .on_hover_text(
-                            "Clamp commanded torque to ±τmax and the \
-                             velocity-mode reference to ±ωmax for every joint. \
-                             Off = unrestricted (current default).",
+                            "Enforce per-joint hardware limits at three places:\n\
+                             • runtime PD: clamp τ to ±τmax, q̇* to ±ωmax\n\
+                             • MJCF <motor>: forcelimited=\"true\"\n\
+                             • MJCF <joint>: range=\"lower upper\"\n\
+                             The two MJCF flags are baked at sim construction \
+                             time, so changing this checkbox while a sim is \
+                             active requires Stop → Play to take effect on \
+                             MuJoCo's side. Off = unrestricted at all three.",
                         );
                         if ui
                             .checkbox(
