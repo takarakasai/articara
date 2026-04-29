@@ -1358,6 +1358,15 @@ impl ArticaraApp {
             self.draw_joint_peaks_panel(ui);
         }
 
+        // ===== Contacts list — every active MuJoCo contact this tick =====
+        // Surfaces self-collision pairs (and their force magnitudes) in a
+        // table so the user can pinpoint geom interpenetrations that
+        // wouldn't be obvious from the viewport arrows alone.
+        #[cfg(feature = "mujoco")]
+        if self.model.is_some() {
+            self.draw_contacts_panel(ui);
+        }
+
         // ===== Named-pose registry — register / replay / delete =====
         // Done in its own scope so it can borrow `self` mutably (for the
         // MuJoCo sim handle) and `self.model` separately.
@@ -1937,6 +1946,144 @@ impl ArticaraApp {
         if reset_clicked {
             if let Some(ref mut sim) = self.mujoco_sim {
                 sim.reset_peaks();
+            }
+        }
+    }
+
+    /// Per-tick contact table for the active MuJoCo sim.
+    ///
+    /// Lists every contact MuJoCo reported, sorted by force magnitude (so
+    /// the most concerning interpenetrations float to the top). Self-
+    /// collisions (both bodies are robot links) are tagged with `🟣` and
+    /// shown alongside ground contacts (`🟡`) in a single grid. A
+    /// per-row "🛡 Exclude" button drops that pair into the user's
+    /// `collision_pairs` so subsequent MJCF / USD exports emit the
+    /// appropriate `<exclude>` / `filteredPairs` entry.
+    #[cfg(feature = "mujoco")]
+    fn draw_contacts_panel(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        // Snapshot rows up-front so we don't keep `self.mujoco_sim` borrowed
+        // while egui's grid runs.
+        struct Row {
+            mag: f64,
+            body1: String,
+            body2: String,
+            is_self: bool,
+        }
+        let rows: Vec<Row> = match self.mujoco_sim.as_ref() {
+            Some(sim) => {
+                let mut v: Vec<Row> = sim
+                    .contacts()
+                    .into_iter()
+                    .map(|c| Row {
+                        mag: c.force_mag,
+                        is_self: c.is_self_collision(),
+                        body1: c.body1,
+                        body2: c.body2,
+                    })
+                    .collect();
+                v.sort_by(|a, b| {
+                    b.mag.partial_cmp(&a.mag).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                v
+            }
+            None => Vec::new(),
+        };
+        let n_self = rows.iter().filter(|r| r.is_self).count();
+        let n_external = rows.len() - n_self;
+
+        // Pending pair to add to collision_pairs after the closure releases self.
+        let mut pending_exclude: Option<(String, String)> = None;
+
+        egui::CollapsingHeader::new(format!(
+            "💥 Contacts  ({} self, {} ground)",
+            n_self, n_external,
+        ))
+        .default_open(false)
+        .show(ui, |ui| {
+            if self.mujoco_sim.is_none() {
+                ui.label(
+                    egui::RichText::new("(start MuJoCo to see contacts)")
+                        .small()
+                        .weak(),
+                );
+                return;
+            }
+            if rows.is_empty() {
+                ui.label(
+                    egui::RichText::new("(no contacts this tick)").small().weak(),
+                );
+                return;
+            }
+            ui.label(
+                egui::RichText::new(
+                    "🟣 self-collision · 🟡 ground/world contact. Sorted by |F|. \
+                     Click 🛡 Exclude to add a `[[collision_pair]]` entry that \
+                     persists to .misarta.toml and shows up in MJCF/USD export.",
+                )
+                .small()
+                .weak(),
+            );
+            egui::ScrollArea::vertical()
+                .max_height(220.0)
+                .show(ui, |ui| {
+                    egui::Grid::new("contacts_grid")
+                        .striped(true)
+                        .num_columns(4)
+                        .min_col_width(40.0)
+                        .show(ui, |ui| {
+                            ui.strong("");
+                            ui.strong("|F|");
+                            ui.strong("Pair");
+                            ui.strong("");
+                            ui.end_row();
+                            for r in &rows {
+                                let icon = if r.is_self { "🟣" } else { "🟡" };
+                                let pair = match (r.body1.as_str(), r.body2.as_str()) {
+                                    ("", "") => "(world↔world)".to_string(),
+                                    ("", b) => format!("world ↔ {b}"),
+                                    (a, "") => format!("{a} ↔ world"),
+                                    (a, b) => format!("{a} ↔ {b}"),
+                                };
+                                ui.label(icon);
+                                ui.label(
+                                    egui::RichText::new(format!("{:.2} N", r.mag))
+                                        .monospace()
+                                        .small(),
+                                );
+                                ui.label(
+                                    egui::RichText::new(pair).monospace().small(),
+                                );
+                                if r.is_self
+                                    && ui
+                                        .small_button("🛡 Exclude")
+                                        .on_hover_text(
+                                            "Add this self-collision pair to \
+                                             collision_pairs (excluded). \
+                                             Persists to .misarta.toml.",
+                                        )
+                                        .clicked()
+                                {
+                                    pending_exclude = Some((
+                                        r.body1.clone(),
+                                        r.body2.clone(),
+                                    ));
+                                }
+                                ui.end_row();
+                            }
+                        });
+                });
+        });
+
+        if let Some((a, b)) = pending_exclude {
+            if let Some(model) = self.model.as_mut() {
+                // Remove any existing entry for this pair (so we toggle
+                // explicit-enabled → excluded cleanly), then push disabled.
+                model.collision_pairs.retain(|p| !p.matches(&a, &b));
+                model
+                    .collision_pairs
+                    .push(crate::rbd::model::CollisionPair::new(a, b, false));
+                self.status_message = "Excluded self-collision pair (saved to model)".into();
             }
         }
     }

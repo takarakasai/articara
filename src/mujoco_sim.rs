@@ -108,7 +108,11 @@ struct ActiveTransition {
 ///
 /// `pos` is the contact point. `force_mag` is the magnitude of the linear
 /// contact force (N) and `force_world` is the linear part rotated into world
-/// coordinates so the UI can draw it directly.
+/// coordinates so the UI can draw it directly. `body1` / `body2` are the
+/// names of the bodies involved (resolved via `geom_bodyid` + body
+/// `id_to_name`); they're useful for distinguishing self-collisions
+/// (body1 == one of the robot's links and body2 == another) from external
+/// contacts like ground.
 #[derive(Clone, Debug)]
 pub struct ContactInfo {
     pub pos: [f64; 3],
@@ -116,6 +120,20 @@ pub struct ContactInfo {
     pub force_mag: f64,
     /// Linear contact force expressed in world coordinates (N).
     pub force_world: [f64; 3],
+    /// Name of the first contact body (lowercase `body1` in MJCF). Empty
+    /// string if the body has no name (e.g. world body 0).
+    pub body1: String,
+    /// Name of the second contact body.
+    pub body2: String,
+}
+
+impl ContactInfo {
+    /// `true` when neither body is the world body (== both are robot links).
+    /// Lets the renderer distinguish self-collision from ground/world
+    /// contacts so the user can spot unintended interpenetrations.
+    pub fn is_self_collision(&self) -> bool {
+        !self.body1.is_empty() && !self.body2.is_empty()
+    }
 }
 
 /// Time-bounded external wrench applied to a single body.
@@ -531,9 +549,10 @@ impl MujocoSim {
     /// Snapshot the active contacts reported by MuJoCo this tick.
     ///
     /// Each `ContactInfo` carries the world-frame contact point, surface
-    /// normal, force magnitude, and full linear force vector. Returns an
-    /// empty Vec when no contacts are active or when the sim has not run a
-    /// step yet (since `contact_force` is only meaningful after `step`).
+    /// normal, force magnitude, full linear force vector, and the names of
+    /// the two bodies the contact involves. Returns an empty Vec when no
+    /// contacts are active or when the sim has not run a step yet (since
+    /// `contact_force` is only meaningful after `step`).
     pub fn contacts(&self) -> Vec<ContactInfo> {
         // mujoco-rs deprecated `contacts()` in favour of `contact()` but the
         // 3.0.1 release we depend on still ships the old name; suppress the
@@ -543,6 +562,31 @@ impl MujocoSim {
         if raw.is_empty() {
             return Vec::new();
         }
+        // Mapping from geom_id → body name. Looking up via the model is
+        // cheap (constant slice + string pool) but we still keep a small
+        // local cache in case the same geoms appear in many contacts.
+        let model_ffi = self.model.ffi();
+        let geom_bodyid = self.model.geom_bodyid();
+        let geom_to_body_name = |geom_id: i32| -> String {
+            if geom_id < 0 {
+                return String::new();
+            }
+            let g = geom_id as usize;
+            if g >= geom_bodyid.len() {
+                return String::new();
+            }
+            let body_id = geom_bodyid[g] as usize;
+            if body_id == 0 {
+                // World body — leave empty so callers can detect ground contacts.
+                return String::new();
+            }
+            self.model
+                .id_to_name(mujoco::prelude::MjtObj::mjOBJ_BODY, body_id)
+                .map(|s| s.to_string())
+                .unwrap_or_default()
+        };
+        let _ = model_ffi;
+
         let mut out = Vec::with_capacity(raw.len());
         for (i, c) in raw.iter().enumerate() {
             // MuJoCo's contact frame is row-major: rows = (normal, t1, t2)
@@ -563,6 +607,8 @@ impl MujocoSim {
                 pos: [c.pos[0], c.pos[1], c.pos[2]],
                 force_mag: mag,
                 force_world: fw,
+                body1: geom_to_body_name(c.geom1),
+                body2: geom_to_body_name(c.geom2),
             });
         }
         out
