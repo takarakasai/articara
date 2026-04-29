@@ -46,6 +46,12 @@ pub struct MujocoSim {
     /// fight any deliberate motion (`Kv·(0 − q̇)` brakes against the target),
     /// causing high-amplitude torque oscillation during fast moves like jumps.
     position_target_velocities: Vec<f64>,
+    /// Per-joint trajectory acceleration feedforward q̈* used by the
+    /// `ComputedTorque` mode. Updated each step from the trajectory's
+    /// second derivative; zero when no trajectory is running. Multiplied by
+    /// the inertia matrix `M(q)` to give the inverse-dynamics torque
+    /// component that drives motion at the commanded rate.
+    position_target_accelerations: Vec<f64>,
     /// Per-joint velocity target (used by Velocity-mode controller).
     velocity_targets: Vec<f64>,
     /// Per-joint direct torque command (used by Torque-mode controller).
@@ -252,6 +258,7 @@ impl MujocoSim {
         // velocity/torque command in the other modes.
         let position_targets = robot.joint_positions.clone();
         let position_target_velocities = vec![0.0; robot.joints.len()];
+        let position_target_accelerations = vec![0.0; robot.joints.len()];
         let velocity_targets = vec![0.0; robot.joints.len()];
         let torque_targets = vec![0.0; robot.joints.len()];
 
@@ -267,6 +274,7 @@ impl MujocoSim {
             history_max: 5000,
             position_targets,
             position_target_velocities,
+            position_target_accelerations,
             velocity_targets,
             torque_targets,
             transition: None,
@@ -500,28 +508,71 @@ impl MujocoSim {
     /// for Position and Velocity modes. Torque-mode joints are left alone
     /// since their command is supposed to be the user's full torque request.
     fn apply_controller(&mut self, robot: &mut RobotModel, enforce_limits: bool) {
-        // Pre-compute the gravity feedforward vector once for the whole tick.
-        // Sync MuJoCo's pre-step state into `robot` first so build_q reflects
-        // the current configuration (joint angles + floating base). Without
-        // this the gravity vector would be stale by one physics tick.
-        let gravity_torques: Option<Vec<f64>> = if self.gravity_compensation {
+        // Pre-compute feedforward vectors once per tick. Two independent
+        // streams may need them:
+        //   gravity_comp  → τ_grav = compute_gravity(q)            (q̇=0, q̈=0)
+        //   ComputedTorque → τ_invdyn = rnea(q, q̇, q̈*)             (full inverse dynamics)
+        // We compute them separately because they're not the same vector:
+        // Position+grav_comp joints want pure gravity, while ComputedTorque
+        // joints additionally want the M·q̈* and Coriolis terms specific to
+        // the commanded acceleration.
+        let any_computed_torque = robot
+            .joints
+            .iter()
+            .any(|j| j.actuator_mode == ActuatorMode::ComputedTorque);
+        let need_state_sync = self.gravity_compensation || any_computed_torque;
+        if need_state_sync {
+            // Sync MuJoCo's pre-step state into `robot` so build_q reflects
+            // the current configuration (joint angles + floating base).
+            // Without this the feedforward vectors would be stale by one tick.
             self.sync_back(robot);
+        }
+
+        let gravity_torques: Option<Vec<f64>> = if self.gravity_compensation {
             let adapter = robot.mc();
             let q = robot.build_q();
             let g_full = misarta::rnea::compute_gravity(&adapter.model, &q);
-            // Project the full nv-dim vector onto each non-fixed articara
-            // joint. nv != 1 joints (ball, free) get 0 — their drives aren't
-            // PD-controlled at the joint level here.
-            let mut g_per_joint = vec![0.0_f64; robot.joints.len()];
+            Some(project_nv_to_joints(&g_full, &adapter, robot.joints.len()))
+        } else {
+            None
+        };
+
+        let computed_torque_ff: Option<Vec<f64>> = if any_computed_torque {
+            let adapter = robot.mc();
+            let q = robot.build_q();
+            // Build v (q̇) from MuJoCo and a (q̈*) from the trajectory
+            // feedforward — but only populate `a` for joints actually in
+            // ComputedTorque mode, so a Position-mode joint's q̈* isn't
+            // accidentally fed into the inverse-dynamics computation for
+            // a different joint's row of M(q).
+            let nv = adapter.model.nv;
+            let mut v = vec![0.0_f64; nv];
+            let mut a = vec![0.0_f64; nv];
             for ji in 0..robot.joints.len() {
-                if let Some(mi) = adapter.a2m.get(ji).and_then(|&m| m) {
-                    let nv = adapter.model.joints[mi].joint_type.nv();
-                    if nv == 1 {
-                        g_per_joint[ji] = g_full[adapter.model.v_idx[mi]];
+                let Some(mi) = adapter.a2m.get(ji).and_then(|&m| m) else {
+                    continue;
+                };
+                if adapter.model.joints[mi].joint_type.nv() != 1 {
+                    continue;
+                }
+                let vi = adapter.model.v_idx[mi];
+                // q̇ from MuJoCo state
+                if let Some(info) = self.data.joint(&robot.joints[ji].name) {
+                    let view = info.view(&self.data);
+                    if !view.qvel.is_empty() {
+                        v[vi] = view.qvel[0];
                     }
                 }
+                if robot.joints[ji].actuator_mode == ActuatorMode::ComputedTorque {
+                    a[vi] = self
+                        .position_target_accelerations
+                        .get(ji)
+                        .copied()
+                        .unwrap_or(0.0);
+                }
             }
-            Some(g_per_joint)
+            let tau_full = misarta::rnea::rnea(&adapter.model, &q, &v, &a);
+            Some(project_nv_to_joints(&tau_full, &adapter, robot.joints.len()))
         } else {
             None
         };
@@ -592,6 +643,27 @@ impl MujocoSim {
                     // `τ_target = 0` for a "freeze" would unexpectedly hold
                     // the joint up against gravity.
                     self.torque_targets.get(ji).copied().unwrap_or(0.0)
+                }
+                ActuatorMode::ComputedTorque => {
+                    // τ = M(q)·q̈* + h(q, q̇) + Kp·(q*−q) + Kv·(q̇*−q̇).
+                    // The first two terms come from `computed_torque_ff` (one
+                    // rnea call covers the whole robot); the PD residual
+                    // corrects for modelling error and tracks pose deviations.
+                    let q_target =
+                        self.position_targets.get(ji).copied().unwrap_or(q);
+                    let qd_target = self
+                        .position_target_velocities
+                        .get(ji)
+                        .copied()
+                        .unwrap_or(0.0);
+                    let pd = joint.actuator_kp * (q_target - q)
+                        + joint.actuator_kv * (qd_target - qd);
+                    let ff = computed_torque_ff
+                        .as_ref()
+                        .and_then(|t| t.get(ji))
+                        .copied()
+                        .unwrap_or(0.0);
+                    pd + ff
                 }
             };
 
@@ -823,6 +895,7 @@ impl MujocoSim {
         t.elapsed += mj_dt;
         let q = t.traj.evaluate(t.elapsed);
         let qd = t.traj.evaluate_velocity(t.elapsed);
+        let qdd = t.traj.evaluate_acceleration(t.elapsed);
         let n = self.position_targets.len().min(q.len());
         for i in 0..n {
             self.position_targets[i] = q[i];
@@ -831,16 +904,25 @@ impl MujocoSim {
         for i in 0..nv {
             self.position_target_velocities[i] = qd[i];
         }
+        let na = self.position_target_accelerations.len().min(qdd.len());
+        for i in 0..na {
+            self.position_target_accelerations[i] = qdd[i];
+        }
         if t.traj.is_done(t.elapsed) {
             // Snap exactly to the goal so any rounding error doesn't linger.
             for i in 0..self.position_targets.len().min(t.traj.q_end.len()) {
                 self.position_targets[i] = t.traj.q_end[i];
             }
             // After the transition completes the controller should hold pose,
-            // so the velocity feedforward must collapse back to zero — leaving
-            // a stale q̇* would have the PD continuously commanding motion.
+            // so the velocity / acceleration feedforward must collapse back
+            // to zero — leaving stale q̇* / q̈* would have the PD continuously
+            // commanding motion (and computed-torque would feed M·q̈* of zero
+            // anyway, but be explicit).
             for v in self.position_target_velocities.iter_mut() {
                 *v = 0.0;
+            }
+            for a in self.position_target_accelerations.iter_mut() {
+                *a = 0.0;
             }
             self.transition = None;
         }
@@ -858,6 +940,7 @@ impl MujocoSim {
         s.elapsed += mj_dt;
         let q = s.anim.evaluate(s.elapsed);
         let qd = s.anim.evaluate_velocity(s.elapsed);
+        let qdd = s.anim.evaluate_acceleration(s.elapsed);
         let n = self.position_targets.len().min(q.len());
         for i in 0..n {
             self.position_targets[i] = q[i];
@@ -866,12 +949,19 @@ impl MujocoSim {
         for i in 0..nv {
             self.position_target_velocities[i] = qd[i];
         }
+        let na = self.position_target_accelerations.len().min(qdd.len());
+        for i in 0..na {
+            self.position_target_accelerations[i] = qdd[i];
+        }
         if s.anim.is_done(s.elapsed) {
             // Same rationale as advance_transition: drop the feedforward to
             // zero once the playback ends, otherwise the controller would
             // keep nudging joints in the direction of the last segment.
             for v in self.position_target_velocities.iter_mut() {
                 *v = 0.0;
+            }
+            for a in self.position_target_accelerations.iter_mut() {
+                *a = 0.0;
             }
             self.sequence = None;
         }
@@ -1056,4 +1146,25 @@ fn csv_field(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// Project a misarta nv-dimensional vector (one entry per generalised
+/// velocity coordinate) onto a per-articara-joint vector. Joints that don't
+/// resolve to a misarta joint, or whose misarta joint has nv != 1 (ball,
+/// free), get 0. Used by the controller to consume gravity / inverse-
+/// dynamics feedforward without re-implementing the index dance everywhere.
+fn project_nv_to_joints(
+    nv_vec: &na::DVector<f64>,
+    adapter: &crate::rbd::model::MisartaCache,
+    n_joints: usize,
+) -> Vec<f64> {
+    let mut out = vec![0.0_f64; n_joints];
+    for ji in 0..n_joints {
+        if let Some(mi) = adapter.a2m.get(ji).and_then(|&m| m) {
+            if adapter.model.joints[mi].joint_type.nv() == 1 {
+                out[ji] = nv_vec[adapter.model.v_idx[mi]];
+            }
+        }
+    }
+    out
 }

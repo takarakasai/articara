@@ -1181,11 +1181,13 @@ impl ArticaraApp {
                                     let kp_enabled = matches!(
                                         joint.actuator_mode,
                                         crate::rbd::model::ActuatorMode::Position
+                                            | crate::rbd::model::ActuatorMode::ComputedTorque
                                     );
                                     let kv_enabled = matches!(
                                         joint.actuator_mode,
                                         crate::rbd::model::ActuatorMode::Position
                                             | crate::rbd::model::ActuatorMode::Velocity
+                                            | crate::rbd::model::ActuatorMode::ComputedTorque
                                     );
 
                                     ui.label("Kp (N·m/rad):");
