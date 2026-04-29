@@ -109,10 +109,87 @@ impl ArticaraApp {
                         {
                             self.script_output.clear();
                         }
+
+                        // Run script file (📂) — opens a file dialog. The
+                        // dialog itself is shown by the main update() loop
+                        // via the borrow on `dlg_open_script`; once the user
+                        // confirms, `pending_script_run` is populated and
+                        // we read+eval it below in this same panel draw.
+                        if ui
+                            .add(egui::Button::new(
+                                egui::RichText::new("📂").color(FG).font(egui::FontId::proportional(12.0)),
+                            ).frame(false))
+                            .on_hover_text("Run script from file (.rhai)")
+                            .clicked()
+                        {
+                            let start = if self.script_path.is_empty() {
+                                Some(std::path::PathBuf::from("scripts"))
+                            } else {
+                                Some(std::path::PathBuf::from(&self.script_path))
+                            };
+                            self.dlg_open_script.open(
+                                "Run Rhai Script",
+                                super::file_dialog::FileDialogMode::Open,
+                                start.as_deref(),
+                                &["rhai"],
+                            );
+                        }
                     });
                 });
 
                 ui.add_space(2.0);
+
+                // ── Run pending script file (set by the 📂 button) ──
+                // Read the file off disk and eval it as a single block. We
+                // echo the path and the source under it so users can scroll
+                // back to see exactly what was run.
+                if let Some(path) = self.pending_script_run.take() {
+                    self.script_output.push(ScriptLine::System(format!(
+                        "── Running script: {} ──",
+                        path.display(),
+                    )));
+                    match std::fs::read_to_string(&path) {
+                        Ok(source) => {
+                            // Echo the source so the run is reproducible from
+                            // history alone — users often re-tune by copying
+                            // a previous block out of the console.
+                            for line in source.lines() {
+                                self.script_output.push(ScriptLine::Input(line.to_string()));
+                            }
+                            #[cfg(feature = "scripting")]
+                            if let Some(eng) = &mut self.script_engine {
+                                #[cfg(feature = "mujoco")]
+                                eng.set_mujoco_sim(self.mujoco_sim.take());
+                                let result = eng.eval(&source);
+                                #[cfg(feature = "mujoco")]
+                                {
+                                    self.mujoco_sim = eng.take_mujoco_sim();
+                                }
+                                match result {
+                                    Ok(lines) => {
+                                        for line in lines {
+                                            self.script_output.push(ScriptLine::Output(line));
+                                        }
+                                        if let Some(model) = eng.model() {
+                                            self.model = Some(model.clone());
+                                            self.needs_upload = true;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        self.script_output.push(ScriptLine::Error(e));
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.script_output.push(ScriptLine::Error(format!(
+                                "Failed to read {}: {e}",
+                                path.display(),
+                            )));
+                        }
+                    }
+                    self.script_scroll_to_bottom = true;
+                }
 
                 // ── Output area (scrollable) ──
                 let available = ui.available_height() - 28.0; // reserve space for input row
@@ -424,6 +501,9 @@ impl ArticaraApp {
             "    mj_step_back(n)             Replay n frames backwards",
             "    mj_timestep()               Native physics dt (s)",
             "    mj_history_len()            Frames available for step_back",
+            "    mj_trace_len()              Samples in (q,q̇,τ) trace ring",
+            "    mj_set_trace_max(n)         Resize trace ring (returns n)",
+            "    save_peaks_csv(path)        Write trace to CSV; rows or -1",
             "",
             "  Pose / Force:",
             "    play_pose(name)             Smooth transition (saved dur)",
@@ -442,9 +522,12 @@ impl ArticaraApp {
             "    peak_velocity(joint)        rad/s or m/s",
             "    peaks()                     Map: name → [tau_abs, qvel_abs]",
             "",
-            "  Actuator gain / target (per joint):",
+            "  Actuator / motor properties (per joint):",
             "    set_kp(joint, kp)           Position-mode P gain",
             "    set_kv(joint, kv)           Position/Velocity-mode D gain",
+            "    set_armature(joint, I)      Reflected rotor inertia (kg·m²)",
+            "    set_joint_damping(joint, b) Passive damping (N·m·s/rad)",
+            "    set_kp_all(kp) … set_joint_damping_all(b)  → returns n joints",
             "    set_position_target(joint, q)",
             "    set_velocity_target(joint, qd)",
             "    set_torque_target(joint, tau)",
@@ -453,6 +536,7 @@ impl ArticaraApp {
             "         min_f max_f dist(ax,ay,az,bx,by,bz)",
             "",
             "  Console:  clear  help  ↑/↓ history  Tab completion",
+            "  Run a file: 📂 button at top-right (or set up your own .rhai)",
             "──────────────────────────────────────────────────",
         ];
         for l in lines {

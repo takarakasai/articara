@@ -918,3 +918,71 @@ impl MujocoSim {
         }
     }
 }
+
+/// Write the captured trace to a CSV file. Each row is one recorded frame;
+/// columns are `time_s` followed by `q[name],qvel[name],tau[name]` triplets
+/// for every non-fixed joint, in model order. Returns the number of data
+/// rows written on success.
+///
+/// Lives on `mujoco_sim` (not in the `app` UI module) so the scripting layer
+/// — which is published from `lib.rs` and can't see `app::*` — can call it
+/// to capture traces from automated tuning scripts.
+pub fn save_peaks_csv(
+    model: &RobotModel,
+    sim: &MujocoSim,
+    path: &std::path::Path,
+) -> Result<usize, String> {
+    use std::io::Write;
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{e}"))?;
+        }
+    }
+
+    let movable: Vec<(usize, &str)> = model
+        .joints
+        .iter()
+        .enumerate()
+        .filter(|(_, j)| j.joint_type != "fixed")
+        .map(|(i, j)| (i, j.name.as_str()))
+        .collect();
+
+    let mut f = std::fs::File::create(path).map_err(|e| format!("{e}"))?;
+
+    let mut header = String::from("time_s");
+    for (_, name) in &movable {
+        header.push(',');
+        header.push_str(&csv_field(&format!("q[{name}]")));
+        header.push(',');
+        header.push_str(&csv_field(&format!("qvel[{name}]")));
+        header.push(',');
+        header.push_str(&csv_field(&format!("tau[{name}]")));
+    }
+    writeln!(f, "{header}").map_err(|e| format!("{e}"))?;
+
+    let mut count = 0usize;
+    let t0 = sim.trace().next().map(|fr| fr.time).unwrap_or(0.0);
+    for frame in sim.trace() {
+        let mut row = format!("{:.6}", frame.time - t0);
+        for (idx, _) in &movable {
+            let q = frame.q.get(*idx).copied().unwrap_or(0.0);
+            let v = frame.qvel.get(*idx).copied().unwrap_or(0.0);
+            let t = frame.tau.get(*idx).copied().unwrap_or(0.0);
+            row.push_str(&format!(",{q:.6},{v:.6},{t:.6}"));
+        }
+        writeln!(f, "{row}").map_err(|e| format!("{e}"))?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Quote a CSV field if it contains commas, quotes, or newlines (RFC 4180).
+fn csv_field(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+        let escaped = s.replace('"', "\"\"");
+        format!("\"{escaped}\"")
+    } else {
+        s.to_string()
+    }
+}
