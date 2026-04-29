@@ -350,6 +350,8 @@ fn parse_mjcf_bodies(
                     actuator_mode: crate::rbd::model::ActuatorMode::default(),
                     actuator_kp: 50.0,
                     actuator_kv: 5.0,
+                    armature: 0.0,
+                    joint_damping: 0.0,
                 });
             } else {
                 for joint_el in joint_els {
@@ -389,6 +391,15 @@ fn parse_mjcf_bodies(
                         (0.0, 0.0)
                     };
 
+                    let armature = joint_el
+                        .attribute("armature")
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let joint_damping = joint_el
+                        .attribute("damping")
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+
                     let origin = na::Isometry3::from_parts(
                         na::Translation3::from(body_pos),
                         body_quat,
@@ -415,6 +426,8 @@ fn parse_mjcf_bodies(
                         actuator_mode: crate::rbd::model::ActuatorMode::default(),
                         actuator_kp: 50.0,
                         actuator_kv: 5.0,
+                        armature,
+                        joint_damping,
                     });
                 }
             }
@@ -920,6 +933,15 @@ fn write_mjcf_body(
                     " range=\"{} {}\"",
                     joint.lower, joint.upper
                 ));
+            }
+            // Emit rotor inertia + passive damping when set. Both default to
+            // 0; positive values stabilise the external PD controller and
+            // soak up landing impacts. Mapped 1:1 to MuJoCo's joint attrs.
+            if joint.armature > 0.0 {
+                s.push_str(&format!(" armature=\"{}\"", joint.armature));
+            }
+            if joint.joint_damping > 0.0 {
+                s.push_str(&format!(" damping=\"{}\"", joint.joint_damping));
             }
             s.push_str("/>\n");
         }

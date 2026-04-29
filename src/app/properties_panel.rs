@@ -1213,12 +1213,50 @@ impl ArticaraApp {
                                             .changed();
                                     });
                                     ui.end_row();
+
+                                    ui.label("Armature (kg·m²):")
+                                        .on_hover_text(
+                                            "Reflected rotor inertia. \
+                                             Mapped to MuJoCo `<joint armature>`. \
+                                             Acts as a low-pass filter for the PD \
+                                             controller and absorbs landing impacts. \
+                                             Real motors with gearboxes typically \
+                                             have 1e-4 .. 1e-2 kg·m².",
+                                        );
+                                    joint_changed |= ui
+                                        .add(
+                                            egui::DragValue::new(&mut joint.armature)
+                                                .speed(0.0001)
+                                                .range(0.0..=f64::MAX)
+                                                .fixed_decimals(5),
+                                        )
+                                        .changed();
+                                    ui.end_row();
+
+                                    ui.label("Damping (N·m·s/rad):")
+                                        .on_hover_text(
+                                            "Passive joint damping. Mapped to \
+                                             MuJoCo `<joint damping>`. Models bearing \
+                                             friction and dissipates impact energy.",
+                                        );
+                                    joint_changed |= ui
+                                        .add(
+                                            egui::DragValue::new(&mut joint.joint_damping)
+                                                .speed(0.01)
+                                                .range(0.0..=f64::MAX)
+                                                .fixed_decimals(3),
+                                        )
+                                        .changed();
+                                    ui.end_row();
                                 });
                             ui.label(
                                 egui::RichText::new(
-                                    "Gains apply on the next physics tick. \
-                                     Position holds the user-set pose; Velocity \
-                                     and Torque take their target via the API.",
+                                    "Kp / Kv apply on the next physics tick. \
+                                     Armature and damping are baked into the \
+                                     MJCF at sim start, so changing them \
+                                     requires Stop → Play. Position holds the \
+                                     user-set pose; Velocity / Torque modes \
+                                     take their target via the API.",
                                 )
                                 .small()
                                 .weak(),
@@ -1267,13 +1305,21 @@ impl ArticaraApp {
                         .show(ui, |ui| {
                             egui::Grid::new("global_actuators_grid")
                                 .striped(true)
-                                .num_columns(4)
+                                .num_columns(6)
                                 .min_col_width(40.0)
                                 .show(ui, |ui| {
                                     ui.strong("Joint");
                                     ui.strong("Mode");
                                     ui.strong("Kp");
                                     ui.strong("Kv");
+                                    ui.strong("Arm")
+                                        .on_hover_text(
+                                            "Armature (rotor inertia, kg·m²)",
+                                        );
+                                    ui.strong("Damp")
+                                        .on_hover_text(
+                                            "Joint damping (N·m·s/rad)",
+                                        );
                                     ui.end_row();
                                     for joint in model
                                         .joints
@@ -1337,6 +1383,26 @@ impl ArticaraApp {
                                                 )
                                                 .changed();
                                         });
+                                        actuators_changed |= ui
+                                            .add(
+                                                egui::DragValue::new(
+                                                    &mut joint.armature,
+                                                )
+                                                .speed(0.0001)
+                                                .range(0.0..=f64::MAX)
+                                                .fixed_decimals(5),
+                                            )
+                                            .changed();
+                                        actuators_changed |= ui
+                                            .add(
+                                                egui::DragValue::new(
+                                                    &mut joint.joint_damping,
+                                                )
+                                                .speed(0.01)
+                                                .range(0.0..=f64::MAX)
+                                                .fixed_decimals(3),
+                                            )
+                                            .changed();
                                         ui.end_row();
                                     }
                                 });
