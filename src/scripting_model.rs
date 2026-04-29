@@ -931,6 +931,47 @@ impl ModelScriptEngine {
                 s.borrow().as_ref().map(|x| x.transition_in_progress()).unwrap_or(false)
             });
 
+            // Start a chained-pose sequence by name. Returns true on
+            // success. The model is read to build the keyframe animation
+            // (uses each step's pose's stored joint vector at the moment
+            // play_sequence is called); the sim then drives position
+            // targets from the resulting timeline tick-by-tick.
+            let s = Rc::clone(&mujoco_sim);
+            let m = Rc::clone(&model);
+            engine.register_fn("play_sequence", move |name: &str| -> bool {
+                let mut sim_borrow = s.borrow_mut();
+                let model_borrow = m.borrow();
+                let (Some(sim), Some(robot)) =
+                    (sim_borrow.as_mut(), model_borrow.as_ref())
+                else {
+                    return false;
+                };
+                let Some(anim) = robot.build_sequence_animation(name) else {
+                    return false;
+                };
+                sim.start_sequence(anim, name.to_string());
+                true
+            });
+
+            // Whether a sequence is currently playing.
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("sequence_in_progress", move || -> bool {
+                s.borrow()
+                    .as_ref()
+                    .map(|x| x.sequence_in_progress())
+                    .unwrap_or(false)
+            });
+
+            // Normalised sequence progress in [0, 1], or -1 if no sequence.
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn("sequence_progress", move || -> f64 {
+                s.borrow()
+                    .as_ref()
+                    .and_then(|x| x.sequence_progress())
+                    .map(|p| p as f64)
+                    .unwrap_or(-1.0)
+            });
+
             // Normalised transition progress (0..1), or -1 if idle.
             let s = Rc::clone(&mujoco_sim);
             engine.register_fn("transition_progress", move || -> f64 {
@@ -1340,6 +1381,7 @@ impl ModelScriptEngine {
             "mj_active", "mj_start", "mj_stop", "mj_step", "mj_step_back",
             "mj_timestep", "mj_history_len",
             "play_pose", "transition_in_progress", "transition_progress",
+            "play_sequence", "sequence_in_progress", "sequence_progress",
             "apply_force", "cancel_force",
             "reset_peaks", "peak_torque", "peak_velocity", "peaks",
             "set_kp", "set_kv",

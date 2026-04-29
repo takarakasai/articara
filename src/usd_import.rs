@@ -840,6 +840,7 @@ pub fn import_usda_from_str(
         loop_closures: Vec::new(),
         poses: Vec::new(),
         collision_pairs: Vec::new(),
+            sequences: Vec::new(),
     };
     model.rebuild_misarta_model();
     Ok(model)

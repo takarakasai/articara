@@ -130,31 +130,63 @@ impl LoopClosure {
         }
     }
 
+    /// Create a 6-DoF (full pose) loop closure between two link tips.
+    ///
+    /// `offset_a` / `offset_b` are full local-frame transforms; the
+    /// constraint solver enforces `link_a · offset_a == link_b · offset_b`
+    /// in both translation and rotation.
+    pub fn pose(
+        name: impl Into<String>,
+        link_a: impl Into<String>,
+        offset_a: na::Isometry3<f64>,
+        link_b: impl Into<String>,
+        offset_b: na::Isometry3<f64>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            link_a: link_a.into(),
+            offset_a,
+            link_b: link_b.into(),
+            offset_b,
+            pose_6dof: true,
+        }
+    }
+
     /// Convert to misarta's serialisable config representation.
     pub fn to_config(&self) -> misarta::config::LoopClosureConfig {
+        let q_a = self.offset_a.rotation.quaternion();
+        let q_b = self.offset_b.rotation.quaternion();
         misarta::config::LoopClosureConfig {
             name: self.name.clone(),
             link_a: self.link_a.clone(),
             offset_a: self.offset_a.translation.vector.into(),
+            rot_a: [q_a.i, q_a.j, q_a.k, q_a.w],
             link_b: self.link_b.clone(),
             offset_b: self.offset_b.translation.vector.into(),
+            rot_b: [q_b.i, q_b.j, q_b.k, q_b.w],
             pose_6dof: self.pose_6dof,
         }
     }
 
     /// Construct from misarta's serialisable config representation.
     pub fn from_config(cfg: &misarta::config::LoopClosureConfig) -> Self {
+        let q_a = na::UnitQuaternion::from_quaternion(na::Quaternion::new(
+            cfg.rot_a[3], cfg.rot_a[0], cfg.rot_a[1], cfg.rot_a[2],
+        ));
+        let q_b = na::UnitQuaternion::from_quaternion(na::Quaternion::new(
+            cfg.rot_b[3], cfg.rot_b[0], cfg.rot_b[1], cfg.rot_b[2],
+        ));
         Self {
             name: cfg.name.clone(),
             link_a: cfg.link_a.clone(),
             offset_a: na::Isometry3::from_parts(
                 na::Translation3::from(na::Vector3::from(cfg.offset_a)),
-                na::UnitQuaternion::identity(),
+                q_a,
             ),
             link_b: cfg.link_b.clone(),
             offset_b: na::Isometry3::from_parts(
                 na::Translation3::from(na::Vector3::from(cfg.offset_b)),
-                na::UnitQuaternion::identity(),
+                q_b,
             ),
             pose_6dof: cfg.pose_6dof,
         }
@@ -211,6 +243,25 @@ pub struct RobotModel {
     /// diff-friendly. Default behaviour for unlisted pairs is "collide".
     #[cfg_attr(feature = "serde", serde(skip))]
     pub collision_pairs: Vec<CollisionPair>,
+    /// Named pose sequences for chained replay.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub sequences: Vec<Sequence>,
+}
+
+/// A named, ordered sequence of pose-targets to replay one after another.
+#[derive(Clone, Debug)]
+pub struct Sequence {
+    pub name: String,
+    pub steps: Vec<SequenceStep>,
+}
+
+/// One step in a [`Sequence`]: which pose to head for, how long the
+/// transition into it should take, and which interpolation curve to use.
+#[derive(Clone, Debug)]
+pub struct SequenceStep {
+    pub pose_name: String,
+    pub duration: f64,
+    pub kind: misarta::trajectory::InterpolationKind,
 }
 
 /// Per-link-pair collision setting (in-memory mirror of
@@ -2268,6 +2319,43 @@ impl RobotModel {
         err.norm()
     }
 
+    /// Build a `KeyframeAnimation` for the named sequence, suitable for
+    /// passing to [`crate::mujoco_sim::MujocoSim::start_sequence`]. The
+    /// first keyframe is the *current* joint configuration at time 0;
+    /// each subsequent keyframe sits at the cumulative sum of the steps'
+    /// `duration` values, with the q-vector for the pose looked up via
+    /// [`NamedPose::to_vector`] so renames / missing joints are handled.
+    /// Returns `None` if the sequence (or any referenced pose) doesn't
+    /// exist.
+    pub fn build_sequence_animation(
+        &self,
+        sequence_name: &str,
+    ) -> Option<misarta::trajectory::KeyframeAnimation<f64>> {
+        let seq = self.sequences.iter().find(|s| s.name == sequence_name)?;
+        let mut keyframes = Vec::with_capacity(seq.steps.len() + 1);
+        // Anchor: current joint vector at t=0. Use the model's current
+        // joint_positions so the first segment starts where the robot is.
+        let mut q_prev = self.joint_positions.clone();
+        keyframes.push(misarta::trajectory::Keyframe::new(
+            0.0,
+            q_prev.clone(),
+            misarta::trajectory::InterpolationKind::Linear,
+        ));
+        let mut t_acc = 0.0;
+        for step in &seq.steps {
+            let pose = self.poses.iter().find(|p| p.name == step.pose_name)?;
+            let q_target = pose.to_vector(self, &q_prev);
+            t_acc += step.duration;
+            keyframes.push(misarta::trajectory::Keyframe::new(
+                t_acc,
+                q_target.clone(),
+                step.kind,
+            ));
+            q_prev = q_target;
+        }
+        Some(misarta::trajectory::KeyframeAnimation::new(keyframes))
+    }
+
     /// Build a `MisartaConfig` from the current loop closures, named poses,
     /// and per-joint actuator settings (mode + Kp + Kv).
     pub fn to_misarta_config(&self) -> misarta::config::MisartaConfig {
@@ -2304,6 +2392,21 @@ impl RobotModel {
                 link_a: cp.link_a.clone(),
                 link_b: cp.link_b.clone(),
                 enabled: cp.enabled,
+            });
+        }
+        // Persist named sequences.
+        for seq in &self.sequences {
+            cfg.sequence.push(misarta::config::SequenceConfig {
+                name: seq.name.clone(),
+                steps: seq
+                    .steps
+                    .iter()
+                    .map(|s| misarta::config::SequenceStepConfig {
+                        pose_name: s.pose_name.clone(),
+                        duration: s.duration,
+                        kind: s.kind,
+                    })
+                    .collect(),
             });
         }
         cfg
@@ -2346,6 +2449,23 @@ impl RobotModel {
             .collision_pair
             .iter()
             .map(|cp| CollisionPair::new(cp.link_a.clone(), cp.link_b.clone(), cp.enabled))
+            .collect();
+        // Restore sequences.
+        self.sequences = cfg
+            .sequence
+            .iter()
+            .map(|sc| Sequence {
+                name: sc.name.clone(),
+                steps: sc
+                    .steps
+                    .iter()
+                    .map(|s| SequenceStep {
+                        pose_name: s.pose_name.clone(),
+                        duration: s.duration,
+                        kind: s.kind,
+                    })
+                    .collect(),
+            })
             .collect();
     }
 

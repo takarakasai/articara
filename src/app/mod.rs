@@ -430,6 +430,13 @@ pub struct ArticaraApp {
     mujoco_base_locked: [bool; 6],
     /// Name buffer for the next "Save current pose as…" entry.
     pose_save_name: String,
+    /// Name buffer for creating a new (empty) sequence.
+    sequence_save_name: String,
+    /// Pose name buffer for the per-row "+ Add step" form (per sequence).
+    /// Keyed by sequence index so multiple sequence panels can be edited
+    /// independently. Held on the app rather than per-frame so it survives
+    /// across frames.
+    sequence_step_pose_buf: std::collections::HashMap<usize, String>,
     /// Default interpolation kind seeded into newly-saved poses.
     pose_transition_kind: misarta::trajectory::InterpolationKind,
     /// Default transition duration (s) seeded into newly-saved poses.
@@ -686,6 +693,8 @@ impl ArticaraApp {
             #[cfg(feature = "mujoco")]
             mujoco_base_locked: [false; 6],
             pose_save_name: String::new(),
+            sequence_save_name: String::new(),
+            sequence_step_pose_buf: std::collections::HashMap::new(),
             pose_transition_kind: misarta::trajectory::InterpolationKind::QuinticSmooth,
             pose_transition_duration: 1.0,
             ext_force_link: None,

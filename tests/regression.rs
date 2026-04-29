@@ -2883,6 +2883,144 @@ mod test_sidecar {
     }
 
     #[test]
+    fn loop_closure_capture_from_pose_satisfies_constraint() {
+        // The "📍 Capture from current pose" UI button uses the same
+        // midpoint-of-origins formula tested here. We assert that after
+        // capturing offsets, the loop-closure error at the current pose is
+        // ~0 — i.e. the constraint is exactly satisfied.
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        if model.links.len() < 2 {
+            return;
+        }
+        let a_name = model.links[0].name.clone();
+        let b_name = model.links[1].name.clone();
+
+        // Move some joints so the two links are at non-trivial poses.
+        for q in model.joint_positions.iter_mut().take(2) {
+            *q = 0.3;
+        }
+        model.rebuild_misarta_model();
+
+        let transforms = model.compute_transforms();
+        let pa = transforms[&a_name].translation.vector;
+        let pb = transforms[&b_name].translation.vector;
+        let mid = (pa + pb) * 0.5;
+        let mid_pt = nalgebra::Point3::from(mid);
+        let oa = transforms[&a_name].inverse().transform_point(&mid_pt);
+        let ob = transforms[&b_name].inverse().transform_point(&mid_pt);
+
+        model.loop_closures.push(
+            articara::rbd::model::LoopClosure::position(
+                "captured".to_string(),
+                a_name,
+                nalgebra::Vector3::new(oa.x as f64, oa.y as f64, oa.z as f64),
+                b_name,
+                nalgebra::Vector3::new(ob.x as f64, ob.y as f64, ob.z as f64),
+            ),
+        );
+        model.rebuild_misarta_model();
+
+        let err = model.loop_closure_error();
+        assert!(
+            err < 1e-5,
+            "Captured offsets should satisfy the constraint at current pose, got err = {}",
+            err,
+        );
+    }
+
+    #[test]
+    fn loop_closure_rotation_roundtrips_via_sidecar() {
+        // 6-DoF pose loop closures must round-trip rotation as well.
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        let q_a = nalgebra::UnitQuaternion::from_axis_angle(
+            &nalgebra::Vector3::z_axis(),
+            0.5,
+        );
+        let q_b = nalgebra::UnitQuaternion::from_axis_angle(
+            &nalgebra::Vector3::x_axis(),
+            -0.3,
+        );
+        model.loop_closures.push(
+            articara::rbd::model::LoopClosure::pose(
+                "weld".to_string(),
+                model.links[0].name.clone(),
+                nalgebra::Isometry3::from_parts(
+                    nalgebra::Translation3::new(0.1, 0.0, 0.0),
+                    q_a,
+                ),
+                model.links[1].name.clone(),
+                nalgebra::Isometry3::from_parts(
+                    nalgebra::Translation3::new(0.0, 0.1, 0.0),
+                    q_b,
+                ),
+            ),
+        );
+        let cfg = model.to_misarta_config();
+        let toml = cfg.to_toml().unwrap();
+        let cfg2 = misarta::config::MisartaConfig::from_toml(&toml).unwrap();
+        let mut model2 = RobotModel::from_file(&fixture_urdf()).unwrap();
+        model2.load_misarta_config(&cfg2);
+        assert_eq!(model2.loop_closures.len(), 1);
+        let lc = &model2.loop_closures[0];
+        // Rotation preserved
+        let r_a = lc.offset_a.rotation;
+        let r_b = lc.offset_b.rotation;
+        let dq_a = (r_a.inverse() * q_a).angle();
+        let dq_b = (r_b.inverse() * q_b).angle();
+        assert!(dq_a.abs() < 1e-6, "rot_a not preserved: angle diff = {}", dq_a);
+        assert!(dq_b.abs() < 1e-6, "rot_b not preserved: angle diff = {}", dq_b);
+        assert!(lc.pose_6dof);
+    }
+
+    #[test]
+    fn sequence_roundtrip_and_animation_build() {
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        // Need at least one pose for the sequence step to reference.
+        let snap = articara::rbd::model::NamedPose::snapshot(
+            "rest", &model, 1.0, misarta::trajectory::InterpolationKind::Linear,
+        );
+        model.poses.push(snap);
+        model.sequences.push(articara::rbd::model::Sequence {
+            name: "demo".into(),
+            steps: vec![
+                articara::rbd::model::SequenceStep {
+                    pose_name: "rest".into(),
+                    duration: 0.5,
+                    kind: misarta::trajectory::InterpolationKind::QuinticSmooth,
+                },
+                articara::rbd::model::SequenceStep {
+                    pose_name: "rest".into(),
+                    duration: 0.3,
+                    kind: misarta::trajectory::InterpolationKind::Linear,
+                },
+            ],
+        });
+
+        // Roundtrip
+        let cfg = model.to_misarta_config();
+        let toml = cfg.to_toml().unwrap();
+        assert!(toml.contains("[[sequence]]"));
+        let cfg2 = misarta::config::MisartaConfig::from_toml(&toml).unwrap();
+        let mut model2 = RobotModel::from_file(&fixture_urdf()).unwrap();
+        // Pose must exist so build_sequence_animation can resolve the step.
+        let snap2 = articara::rbd::model::NamedPose::snapshot(
+            "rest", &model2, 1.0, misarta::trajectory::InterpolationKind::Linear,
+        );
+        model2.poses.push(snap2);
+        model2.load_misarta_config(&cfg2);
+        assert_eq!(model2.sequences.len(), 1);
+        assert_eq!(model2.sequences[0].steps.len(), 2);
+        assert!((model2.sequences[0].steps[0].duration - 0.5).abs() < 1e-9);
+
+        // Animation construction
+        let anim = model2.build_sequence_animation("demo").unwrap();
+        // 1 anchor + 2 steps = 3 keyframes
+        assert_eq!(anim.len(), 3);
+        // Total duration should be 0.5 + 0.3 = 0.8
+        assert!((anim.duration() - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
     fn collision_pairs_roundtrip_via_sidecar() {
         let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
         // Pick two link names from the fixture so the test isn't fragile to
