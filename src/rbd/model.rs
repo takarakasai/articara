@@ -2563,6 +2563,24 @@ impl RobotModel {
                 kind: sensor_kind_to_config(&s.kind),
             });
         }
+        // Persist the home pose — current joint angles + floating-base
+        // transform — so reopening the model resumes exactly where the
+        // user left off. The map only includes movable joints (fixed
+        // joints have no meaningful angle to record); joints not in the
+        // map inherit the URDF default at load time.
+        for (ji, joint) in self.joints.iter().enumerate() {
+            if joint.joint_type == "fixed" {
+                continue;
+            }
+            if let Some(&q) = self.joint_positions.get(ji) {
+                cfg.home.joint_positions.insert(joint.name.clone(), q);
+            }
+        }
+        let bp = self.base_transform.translation.vector;
+        cfg.home.base_position = [bp.x, bp.y, bp.z];
+        let q = self.base_transform.rotation.quaternion();
+        cfg.home.base_orientation = [q.i, q.j, q.k, q.w];
+
         // Persist quadruped gait presets. The leg link lengths and hip
         // offsets are intentionally NOT serialised — they're auto-detected
         // from the URDF chain on every load so an out-of-date sidecar can
@@ -2673,6 +2691,34 @@ impl RobotModel {
                 kind: sensor_kind_from_config(&s.kind),
             })
             .collect();
+        // Restore home pose. Only joints listed in the map are touched;
+        // unlisted joints keep whatever value the constructor (URDF /
+        // SDF / etc.) seeded. Skip the base_transform write when the
+        // sidecar carries the all-default identity since most newly
+        // imported URDFs already have the root at the origin and
+        // overwriting with identity would be a noisy no-op.
+        if !cfg.home.joint_positions.is_empty() {
+            for (name, q) in &cfg.home.joint_positions {
+                if let Some(&ji) = self.joint_map.get(name) {
+                    if ji < self.joint_positions.len() {
+                        self.joint_positions[ji] = *q;
+                    }
+                }
+            }
+        }
+        let bp = cfg.home.base_position;
+        let bq = cfg.home.base_orientation;
+        let identity_pos = bp == [0.0, 0.0, 0.0];
+        let identity_quat = bq == [0.0, 0.0, 0.0, 1.0];
+        if !(identity_pos && identity_quat) {
+            self.base_transform = na::Isometry3::from_parts(
+                na::Translation3::new(bp[0], bp[1], bp[2]),
+                na::UnitQuaternion::from_quaternion(na::Quaternion::new(
+                    bq[3], bq[0], bq[1], bq[2],
+                )),
+            );
+        }
+
         // Restore quadruped gait presets.
         self.gaits = cfg
             .gait
