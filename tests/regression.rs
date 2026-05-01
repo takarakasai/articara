@@ -3614,6 +3614,114 @@ mod test_sidecar {
     }
 
     #[test]
+    fn home_pose_roundtrips_through_sidecar() {
+        // Edit the model's joint_positions + base_transform, save the
+        // sidecar, reload from disk, and verify both come back. This is
+        // the user-visible "I closed and reopened — exactly where I
+        // left off" behaviour the [home] section provides.
+        let urdf_src = fixture_urdf();
+        let tmp_dir = std::env::temp_dir().join("articara_home_pose_test");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let urdf_dst = tmp_dir.join("test_robot.urdf");
+        std::fs::copy(&urdf_src, &urdf_dst).unwrap();
+
+        let mut model = RobotModel::from_file(&urdf_dst).unwrap();
+        // Pick the first movable joint and dial it to a non-zero value.
+        let target = model
+            .joints
+            .iter()
+            .position(|j| j.joint_type != "fixed")
+            .expect("fixture has at least one movable joint");
+        let target_name = model.joints[target].name.clone();
+        model.joint_positions[target] = 0.42;
+        // Move the base off the origin so the orientation roundtrip is
+        // exercised too.
+        model.base_transform = nalgebra::Isometry3::from_parts(
+            nalgebra::Translation3::new(0.5, -0.25, 1.0),
+            nalgebra::UnitQuaternion::from_quaternion(
+                nalgebra::Quaternion::new(0.7071, 0.7071, 0.0, 0.0),
+            ),
+        );
+
+        model.save_sidecar_config(&urdf_dst).unwrap();
+
+        let mut model2 = RobotModel::from_file(&urdf_dst).unwrap();
+        model2
+            .load_sidecar_config()
+            .expect("sidecar should be present");
+
+        // Joint angle restored.
+        let restored = model2
+            .joints
+            .iter()
+            .position(|j| j.name == target_name)
+            .unwrap();
+        assert!(
+            (model2.joint_positions[restored] - 0.42).abs() < 1e-9,
+            "joint angle drifted on roundtrip: {} vs 0.42",
+            model2.joint_positions[restored],
+        );
+
+        // Base position restored exactly.
+        let bp = model2.base_transform.translation.vector;
+        assert!((bp.x - 0.5).abs() < 1e-9);
+        assert!((bp.y - (-0.25)).abs() < 1e-9);
+        assert!((bp.z - 1.0).abs() < 1e-9);
+
+        // Base orientation: compare via the dot product of the underlying
+        // quaternions; a sign flip on the quat is equivalent to the same
+        // rotation, so we look at |dot|.
+        let original = nalgebra::UnitQuaternion::from_quaternion(
+            nalgebra::Quaternion::new(0.7071, 0.7071, 0.0, 0.0),
+        );
+        let restored_q = model2.base_transform.rotation;
+        let dot = original.coords.dot(&restored_q.coords);
+        assert!(
+            dot.abs() > 0.9999,
+            "base orientation drifted on roundtrip (|dot|={dot})",
+        );
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[test]
+    fn home_pose_absent_section_leaves_defaults_untouched() {
+        // A `.misarta.toml` without a `[home]` section (older sidecars,
+        // hand-written ones) must NOT clobber the URDF's neutral joint
+        // angles. Confirm this by writing a minimal sidecar manually
+        // and loading.
+        let urdf_src = fixture_urdf();
+        let tmp_dir = std::env::temp_dir().join("articara_home_absent_test");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let urdf_dst = tmp_dir.join("test_robot.urdf");
+        std::fs::copy(&urdf_src, &urdf_dst).unwrap();
+
+        // Write a sidecar with only the version header.
+        let toml_path = tmp_dir.join("test_robot.misarta.toml");
+        std::fs::write(
+            &toml_path,
+            "[misarta]\nversion = 1\n",
+        )
+        .unwrap();
+
+        let mut model = RobotModel::from_file(&urdf_dst).unwrap();
+        let original_q = model.joint_positions.clone();
+        let original_base = model.base_transform;
+
+        model.load_sidecar_config().expect("sidecar exists");
+
+        assert_eq!(model.joint_positions, original_q);
+        assert!(
+            (model.base_transform.translation.vector
+                - original_base.translation.vector)
+                .norm()
+                < 1e-12,
+        );
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[test]
     fn gait_descriptor_roundtrips_through_sidecar() {
         // Save a non-trivial gait preset, reload, and confirm every field
         // comes back. The link lengths / hip offsets are intentionally not
