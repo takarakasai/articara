@@ -1,7 +1,10 @@
 #!/bin/bash
-# MuJoCo Environment Setup Script
+# MuJoCo Environment Setup Script for macOS and Linux
 # This script detects MuJoCo installation and sets up the environment
 # Supports: macOS (Homebrew), Linux
+#
+# Windows users: Use setup-mujoco.ps1 instead
+#   . .\setup-mujoco.ps1
 
 set -e
 

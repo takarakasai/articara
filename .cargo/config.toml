@@ -1,3 +1,12 @@
-# MuJoCo configuration: Use setup-mujoco.sh for environment setup
-# This allows different machines to have different installation paths
-# See: README.md or run ./setup-mujoco.sh
+# MuJoCo Configuration - Platform-specific setup required
+# 
+# Before building with --features mujoco, run the appropriate setup script:
+#
+# macOS / Linux:
+#   source ./setup-mujoco.sh
+#
+# Windows (PowerShell):
+#   . .\setup-mujoco.ps1
+#
+# These scripts will automatically detect MuJoCo installation
+# and set the required environment variables for your platform.
