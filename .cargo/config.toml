@@ -1,0 +1,4 @@
+[env]
+MUJOCO_DYNAMIC_LINK_DIR = "/opt/homebrew/Caskroom/mujoco/3.8.0/mujoco.framework/Versions/A"
+DYLD_FRAMEWORK_PATH = "/opt/homebrew/Caskroom/mujoco/3.8.0"
+DYLD_LIBRARY_PATH = "/opt/homebrew/Caskroom/mujoco/3.8.0/mujoco.framework/Versions/A"
