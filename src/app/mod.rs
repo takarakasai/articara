@@ -641,6 +641,14 @@ pub struct ArticaraApp {
     /// closes itself when the user clicks OK; we don't auto-clear so the
     /// user has time to read sanitisation / missing-mesh entries.
     pending_misa_report: Option<misarta::native::LoadReport>,
+    /// Pending MuJoCo runtime version mismatch surfaced as a startup
+    /// dialog. Populated in [`Self::new`] from the cached
+    /// [`crate::mujoco_version::CheckResult`]; cleared when the user
+    /// dismisses the dialog. Only set when the `mujoco` feature is
+    /// active **and** the version check came back as `Mismatch`.
+    #[cfg(feature = "mujoco")]
+    pending_mujoco_warning:
+        Option<crate::mujoco_version::CheckResult>,
     /// Optional quadruped gait controller. Built once on demand (via the
     /// gait panel's "Setup" button or the Rhai `gait_setup` function),
     /// then ticked from the MuJoCo sim loop while `is_enabled()` is true.
@@ -911,6 +919,13 @@ impl ArticaraApp {
             rename_joint_buf: String::new(),
             show_collision_matrix: false,
             pending_misa_report: None,
+            #[cfg(feature = "mujoco")]
+            pending_mujoco_warning: match crate::mujoco_version::cached() {
+                Some(r @ crate::mujoco_version::CheckResult::Mismatch { .. }) => {
+                    Some(r.clone())
+                }
+                _ => None,
+            },
             gait_controller: None,
             gait_foot_links: crate::gait::DEFAULT_FOOT_LINKS
                 .map(|(id, name)| (id, name.to_string())),
@@ -1629,6 +1644,8 @@ mod peaks_plot_window;
 mod sim_drag;
 mod collision_matrix;
 mod misa_report_dialog;
+#[cfg(feature = "mujoco")]
+mod mujoco_warning_dialog;
 
 // Sentinel to mark the end of module-level code.
 // Everything below was moved to sub-modules.
@@ -1779,6 +1796,8 @@ impl eframe::App for ArticaraApp {
         // --- Collision pair matrix dialog ---
         self.draw_collision_matrix_window(&ctx);
         self.draw_misa_report_dialog(&ctx);
+        #[cfg(feature = "mujoco")]
+        self.draw_mujoco_warning_dialog(&ctx);
 
         // --- File dialogs ---
         self.process_file_dialogs(&ctx);
