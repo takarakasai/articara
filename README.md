@@ -42,6 +42,7 @@ tooling but are treated as **lossy derivatives** of the `.misa` master.
 | -------------------- | ---------------------------------------------------- |
 | `articara`           | Main editor / viewer application                     |
 | [`misarta`](misarta/)              | Rigid body kinematics & dynamics library |
+| [`misarta-py`](misarta-py/)        | Python bindings for `misarta` (PyO3 + maturin) |
 | [`quadruped-gait`](quadruped-gait/)      | Quadruped gait planning                  |
 | [`plugin-api`](plugin-api/)              | Plugin / extension interface             |
 | [`jump-sim-runner`](jump-sim-runner/)    | Native jump-simulation harness           |
