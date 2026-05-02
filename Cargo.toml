@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Takara Kasai <takara.kasai@gmail.com>"]
+description = "A high-performance robot model editor built in Rust. articara focuses on seamless URDF/SRDF manipulation and kinematic structure visualization."
 
 [features]
 default = ["gui", "scripting"]
