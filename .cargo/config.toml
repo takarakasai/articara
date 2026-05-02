@@ -1,4 +1,3 @@
-[env]
-MUJOCO_DYNAMIC_LINK_DIR = "/opt/homebrew/Caskroom/mujoco/3.8.0/mujoco.framework/Versions/A"
-DYLD_FRAMEWORK_PATH = "/opt/homebrew/Caskroom/mujoco/3.8.0"
-DYLD_LIBRARY_PATH = "/opt/homebrew/Caskroom/mujoco/3.8.0/mujoco.framework/Versions/A"
+# MuJoCo configuration: Use setup-mujoco.sh for environment setup
+# This allows different machines to have different installation paths
+# See: README.md or run ./setup-mujoco.sh
