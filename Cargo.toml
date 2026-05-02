@@ -2,6 +2,8 @@
 name = "articara"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+authors = ["Takara Kasai <takara.kasai@gmail.com>"]
 
 [features]
 default = ["gui", "scripting"]
