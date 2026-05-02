@@ -1509,7 +1509,8 @@ impl ArticaraApp {
                         )
                         .on_hover_text(
                             "Snapshot the model's current joint angles into a \
-                             named pose (saved to .misarta.toml).",
+                             named pose (saved with the model — to .misa or, \
+                             for legacy URDF workflows, to .misarta.toml).",
                         )
                         .clicked()
                     {
@@ -2376,7 +2377,8 @@ impl ArticaraApp {
                 egui::RichText::new(
                     "🟣 self-collision · 🟡 ground/world contact. Sorted by |F|. \
                      Click 🛡 Exclude to add a `[[collision_pair]]` entry that \
-                     persists to .misarta.toml and shows up in MJCF/USD export.",
+                     persists with the model (.misa or .misarta.toml sidecar) \
+                     and shows up in MJCF/USD export.",
                 )
                 .small()
                 .weak(),
@@ -2417,7 +2419,8 @@ impl ArticaraApp {
                                         .on_hover_text(
                                             "Add this self-collision pair to \
                                              collision_pairs (excluded). \
-                                             Persists to .misarta.toml.",
+                                             Persists with the model (.misa \
+                                             or legacy .misarta.toml sidecar).",
                                         )
                                         .clicked()
                                 {
@@ -2469,8 +2472,10 @@ impl ArticaraApp {
             ui.label(
                 egui::RichText::new(
                     "The target format can't natively express some items \
-                     in your model. Sidecar (.misarta.toml) still preserves \
-                     them, but the exported file alone will be incomplete.",
+                     in your model. The .misa master file (or the legacy \
+                     .misarta.toml sidecar) still preserves them, but the \
+                     exported file alone will be incomplete. Save as Misa \
+                     to keep everything in a single file.",
                 )
                 .small()
                 .weak(),
@@ -2639,20 +2644,39 @@ impl ArticaraApp {
             self.export_message = "⚠ No model loaded.".into();
             return;
         };
-        if model.source_path.is_none() {
+        let Some(source) = model.source_path.clone() else {
             self.export_message = "⚠ New model has no source file. Use Export instead.".into();
             return;
-        }
-        match model.save_urdf() {
-            Ok(path) => {
-                self.export_message = format!("✔ Saved to {}", path.display());
-                if let Err(e) = model.save_sidecar_config(&path) {
-                    self.export_message += &format!(" (⚠ config: {e})");
+        };
+
+        // Dispatch on source format. `.misa` is the master format and
+        // round-trips losslessly via save_as_misa; URDF (and other legacy
+        // sources) keep the URDF + `.misarta.toml` sidecar pair so users
+        // who haven't migrated yet don't silently lose state.
+        let fmt = crate::format::RobotFormat::detect(&source);
+        match fmt {
+            Some(crate::format::RobotFormat::Misa) => match model.save_as_misa(&source) {
+                Ok(()) => {
+                    self.export_message = format!("✔ Saved Misa to {}", source.display());
                 }
-            }
-            Err(e) => {
-                self.export_message = format!("⚠ Save failed: {e}");
-            }
+                Err(e) => {
+                    self.export_message = format!("⚠ Save failed: {e}");
+                }
+            },
+            _ => match model.save_urdf() {
+                Ok(path) => {
+                    self.export_message = format!("✔ Saved to {}", path.display());
+                    // Legacy: keep the .misarta.toml sidecar in sync so URDF
+                    // workflows that pre-date .misa don't lose actuator /
+                    // pose / sequence state on save → reload.
+                    if let Err(e) = model.save_sidecar_config(&path) {
+                        self.export_message += &format!(" (⚠ config: {e})");
+                    }
+                }
+                Err(e) => {
+                    self.export_message = format!("⚠ Save failed: {e}");
+                }
+            },
         }
     }
 
@@ -2767,18 +2791,32 @@ impl ArticaraApp {
                 }
             }
             RobotFormat::Misa => {
-                // Misa export (RobotModel::to_misa) is tracked in
-                // doc/refactor_20260502.md ToDo. Surface a clear message
-                // until that lands.
-                self.export_message =
-                    "⚠ Misa export is not yet implemented (use URDF/MJCF for now)".into();
+                let filename = format!("{base_name}.misa");
+                let output_path = dir.join(&filename);
+                match model.save_as_misa(&output_path) {
+                    Ok(()) => {
+                        self.export_message = format!(
+                            "✔ Exported Misa to {} (full state preserved — no sidecar needed)",
+                            output_path.display(),
+                        );
+                    }
+                    Err(e) => {
+                        self.export_message = format!("⚠ Misa export failed: {e}");
+                    }
+                }
             }
         }
 
-        // Save .misarta.toml sidecar alongside the exported model
-        let model_file = dir.join(&base_name);
-        if let Err(e) = model.save_sidecar_config(&model_file) {
-            self.export_message += &format!(" (⚠ config: {e})");
+        // For non-Misa exports, also drop a `.misarta.toml` sidecar so
+        // round-trips through that target format don't silently lose
+        // articara-specific data (poses, sequences, actuator gains, etc).
+        // For Misa exports the sidecar is redundant — `.misa` already
+        // carries everything.
+        if fmt != RobotFormat::Misa {
+            let model_file = dir.join(&base_name);
+            if let Err(e) = model.save_sidecar_config(&model_file) {
+                self.export_message += &format!(" (⚠ config: {e})");
+            }
         }
     }
 

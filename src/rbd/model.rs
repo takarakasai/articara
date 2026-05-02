@@ -2742,6 +2742,12 @@ impl RobotModel {
     /// Try to load the `.misarta.toml` sidecar file next to `source_path`.
     /// Returns `Some(SidecarLoadReport)` when a config was found, parsed, and
     /// applied; `None` when no sidecar exists.
+    ///
+    /// **Legacy path.** New work should use the `.misa` master format
+    /// (which subsumes everything the sidecar carries plus the kinematic
+    /// tree itself). This loader stays in place so users with existing
+    /// URDF + `.misarta.toml` workflows aren't broken; it will be
+    /// deprecated once those pairs have all been converted to `.misa`.
     pub fn load_sidecar_config(&mut self) -> Option<SidecarLoadReport> {
         let src = self.source_path.as_ref()?.clone();
         let toml_path = misarta::config::MisartaConfig::config_path_for(&src);
@@ -2794,8 +2800,17 @@ impl RobotModel {
         }
     }
 
-    /// Save loop closures to the `.misarta.toml` sidecar file.
-    /// If there are no closures the file is NOT written (and any existing one is left).
+    /// Save loop closures and other articara-specific metadata to a
+    /// `.misarta.toml` sidecar next to `model_path`.
+    ///
+    /// If the configuration would be empty the file is NOT written, and
+    /// any existing one is left untouched.
+    ///
+    /// **Legacy path.** Prefer [`RobotModel::save_as_misa`] — `.misa`
+    /// carries every field this sidecar holds plus the full kinematic
+    /// tree, so the model can round-trip from a single file. This
+    /// sidecar saver remains for URDF-centric workflows that still need
+    /// to interop with ROS-style consumers reading the `.urdf`.
     pub fn save_sidecar_config(&self, model_path: &std::path::Path) -> Result<(), String> {
         let cfg = self.to_misarta_config();
         if cfg.is_empty() {

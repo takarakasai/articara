@@ -153,7 +153,8 @@ impl ArticaraApp {
                     .add_enabled(has_model, egui::Button::new("🛡 Collision Pair Matrix…"))
                     .on_hover_text(
                         "Open the link × link collision-pair editor. \
-                         Disabled pairs are persisted to .misarta.toml and \
+                         Disabled pairs are persisted with the model (.misa, \
+                         or .misarta.toml sidecar for legacy URDF) and \
                          emitted as MJCF <exclude> / USD filteredPairs.",
                     )
                     .clicked()

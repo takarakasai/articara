@@ -4,8 +4,9 @@
 //! Default behaviour is "all pairs collide" (matching MuJoCo's collide-by-default
 //! and physics engines' usual default). Unchecking a cell stores a
 //! [`CollisionPair { enabled: false }`](crate::rbd::model::CollisionPair) in
-//! the model so it gets persisted to `.misarta.toml` and emitted as MJCF
-//! `<contact><exclude>` / USD `physics:filteredPairs` on export.
+//! the model so it gets persisted with the model — to `.misa` natively, or
+//! to a legacy `.misarta.toml` sidecar for URDF-based workflows — and emitted
+//! as MJCF `<contact><exclude>` / USD `physics:filteredPairs` on export.
 //!
 //! The matrix is symmetric, so we only render the upper triangle (j > i).
 //! Selecting either `(A, B)` or `(B, A)` flips the same stored pair —
@@ -56,8 +57,9 @@ impl ArticaraApp {
                 ui.label(
                     egui::RichText::new(
                         "Default: all link pairs collide. Uncheck a cell to \
-                         exclude that pair (saved to .misarta.toml; emitted \
-                         as MJCF <contact><exclude> and USD filteredPairs).",
+                         exclude that pair (saved with the model: .misa or \
+                         legacy .misarta.toml; emitted as MJCF <contact><exclude> \
+                         and USD filteredPairs).",
                     )
                     .small()
                     .weak(),
