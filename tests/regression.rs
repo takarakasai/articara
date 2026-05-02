@@ -4188,4 +4188,271 @@ child = "front-leg"
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
+
+    // ─── to_misa round-trip ────────────────────────────────────────────
+
+    #[test]
+    fn to_misa_then_from_misa_preserves_structure() {
+        // Build a `RobotModel` indirectly: spin up a MisaFile, load it,
+        // then re-serialise via to_misa and load again. The double-load
+        // ensures both paths agree.
+        let file_in = sample_misa_file();
+        let in_path = save_to_temp(&file_in, "to_misa_in");
+        let model_a = RobotModel::from_misa(&in_path).expect("first load");
+
+        // RobotModel → MisaFile → save → load
+        let dir = std::env::temp_dir().join("articara_misa_to_round");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("robot.misa");
+        model_a.save_as_misa(&out_path).expect("to_misa save");
+        let model_b = RobotModel::from_misa(&out_path).expect("second load");
+
+        // Structural equivalence
+        assert_eq!(model_a.name, model_b.name);
+        assert_eq!(model_a.root_link, model_b.root_link);
+        assert_eq!(model_a.links.len(), model_b.links.len());
+        assert_eq!(model_a.joints.len(), model_b.joints.len());
+
+        // Link names match (order may differ but URDF flat structure
+        // preserves source order)
+        let names_a: Vec<&str> = model_a.links.iter().map(|l| l.name.as_str()).collect();
+        let names_b: Vec<&str> = model_b.links.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names_a, names_b);
+
+        // Joint names + parent/child preserved
+        for (ja, jb) in model_a.joints.iter().zip(model_b.joints.iter()) {
+            assert_eq!(ja.name, jb.name);
+            assert_eq!(ja.parent_link, jb.parent_link);
+            assert_eq!(ja.child_link, jb.child_link);
+            assert_eq!(ja.joint_type, jb.joint_type);
+        }
+
+        // Mass + inertia preserved
+        for (la, lb) in model_a.links.iter().zip(model_b.links.iter()) {
+            assert!((la.inertial.mass - lb.inertial.mass).abs() < 1e-9);
+            assert!((la.inertial.ixx - lb.inertial.ixx).abs() < 1e-9);
+        }
+
+        std::fs::remove_dir_all(in_path.parent().unwrap()).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn to_misa_emits_named_material_when_color_matches() {
+        let file_in = sample_misa_file();
+        let in_path = save_to_temp(&file_in, "named_mat");
+        let model = RobotModel::from_misa(&in_path).expect("load");
+        let misa = model.to_misa().expect("to_misa");
+
+        // trunk visual references "red_plastic" — that should round-trip
+        // back to a named-material reference (not inline color).
+        let trunk = misa.link.iter().find(|l| l.name == "trunk").unwrap();
+        let v = &trunk.visual[0];
+        assert_eq!(v.material.as_deref(), Some("red_plastic"));
+        assert!(v.color.is_none());
+
+        std::fs::remove_dir_all(in_path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn to_misa_emits_inline_color_when_no_material_match() {
+        let file_in = sample_misa_file();
+        let in_path = save_to_temp(&file_in, "inline_col");
+        let model = RobotModel::from_misa(&in_path).expect("load");
+        let misa = model.to_misa().expect("to_misa");
+
+        // left_thigh visual uses inline RGBA in the input; no entry in
+        // [[material]] matches, so it should round-trip as inline color.
+        let thigh = misa.link.iter().find(|l| l.name == "left_thigh").unwrap();
+        let v = &thigh.visual[0];
+        assert!(v.color.is_some());
+        assert!(v.material.is_none());
+
+        std::fs::remove_dir_all(in_path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn to_misa_geometry_dimensions_round_trip() {
+        // Verify that half-extent (RobotModel internal) ↔ full size
+        // (.misa schema) conversion is symmetric.
+        let file_in = sample_misa_file();
+        let in_path = save_to_temp(&file_in, "geom_dim");
+        let model = RobotModel::from_misa(&in_path).expect("load");
+        let misa = model.to_misa().expect("to_misa");
+
+        let trunk = misa.link.iter().find(|l| l.name == "trunk").unwrap();
+        if let mn::Geom::Box { size } = &trunk.visual[0].geom {
+            // Should be back to [0.30, 0.20, 0.10] (the original input)
+            assert!((size[0] - 0.30).abs() < 1e-6);
+            assert!((size[1] - 0.20).abs() < 1e-6);
+            assert!((size[2] - 0.10).abs() < 1e-6);
+        } else {
+            panic!("expected Box geometry");
+        }
+
+        let thigh = misa.link.iter().find(|l| l.name == "left_thigh").unwrap();
+        if let mn::Geom::Cylinder { radius, length } = &thigh.visual[0].geom {
+            assert!((radius - 0.03).abs() < 1e-6);
+            assert!((length - 0.20).abs() < 1e-6);
+        } else {
+            panic!("expected Cylinder");
+        }
+
+        std::fs::remove_dir_all(in_path.parent().unwrap()).ok();
+    }
+
+    // ─── namiashi: real-world URDF + sidecar → .misa → round-trip ────────
+
+    /// Path to the namiashi URDF (skipped if the sample isn't present).
+    fn namiashi_urdf_path() -> Option<PathBuf> {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("sample/namiashi_description/urdf/namiashi.urdf");
+        if p.exists() { Some(p) } else { None }
+    }
+
+    /// Path to the checked-in namiashi.misa fixture.
+    fn namiashi_misa_path() -> Option<PathBuf> {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("sample/namiashi_description/namiashi.misa");
+        if p.exists() { Some(p) } else { None }
+    }
+
+    #[test]
+    fn namiashi_misa_fixture_loads_cleanly() {
+        let Some(misa_path) = namiashi_misa_path() else {
+            eprintln!("[skip] sample/namiashi_description/namiashi.misa not present");
+            return;
+        };
+
+        let (model, report) =
+            RobotModel::from_misa_with_report(&misa_path).expect("from_misa");
+
+        // Basic counts (matches what convert_to_misa produced)
+        assert_eq!(model.name, "namiashi_description");
+        assert_eq!(model.root_link, "trunk");
+        assert_eq!(model.links.len(), 19);
+        assert_eq!(model.joints.len(), 18);
+        assert_eq!(model.collision_pairs.len(), 6);
+        assert_eq!(model.poses.len(), 4);
+        assert_eq!(model.sequences.len(), 1);
+
+        // No sanitisation should have triggered on a clean file
+        assert!(
+            report.sanitized_names.is_empty(),
+            "fixture should have no sanitisation: {:?}",
+            report.sanitized_names,
+        );
+
+        // FK should compute clean
+        let tf = model.compute_transforms();
+        for link in &model.links {
+            assert!(tf.contains_key(&link.name), "missing transform for {}", link.name);
+        }
+    }
+
+    #[test]
+    fn namiashi_urdf_to_misa_round_trip() {
+        let Some(urdf_path) = namiashi_urdf_path() else {
+            eprintln!("[skip] namiashi URDF not present");
+            return;
+        };
+
+        // Load URDF + sidecar into a baseline RobotModel
+        let mut original = RobotModel::from_urdf(&urdf_path).expect("URDF load");
+        original.load_sidecar_config();
+
+        // Convert to .misa and write
+        let dir = std::env::temp_dir().join("articara_namiashi_misa_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Mesh dir alongside the .misa so relative path resolution works.
+        let meshes_src = urdf_path
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("meshes");
+        let meshes_dst = dir.join("meshes");
+        std::fs::create_dir_all(&meshes_dst).ok();
+        if meshes_src.exists() {
+            for entry in std::fs::read_dir(&meshes_src).unwrap() {
+                let entry = entry.unwrap();
+                let dst = meshes_dst.join(entry.file_name());
+                let _ = std::fs::copy(entry.path(), dst);
+            }
+        }
+        let misa_path = dir.join("namiashi.misa");
+        original
+            .save_as_misa(&misa_path)
+            .expect("namiashi to_misa save");
+
+        assert!(misa_path.exists(), ".misa file should be written");
+        let text = std::fs::read_to_string(&misa_path).unwrap();
+        assert!(text.contains("schema = \"misarta/1\""));
+        assert!(text.contains("[robot]"));
+
+        // Round-trip: load the .misa back and compare structure
+        let loaded = RobotModel::from_misa(&misa_path).expect("namiashi from_misa load");
+
+        assert_eq!(original.name, loaded.name, "robot name");
+        assert_eq!(
+            original.links.len(),
+            loaded.links.len(),
+            "link count: original={} loaded={}",
+            original.links.len(),
+            loaded.links.len()
+        );
+        assert_eq!(
+            original.joints.len(),
+            loaded.joints.len(),
+            "joint count"
+        );
+        assert_eq!(original.root_link, loaded.root_link, "root link");
+
+        // Link names preserved in order
+        let names_a: Vec<&str> = original.links.iter().map(|l| l.name.as_str()).collect();
+        let names_b: Vec<&str> = loaded.links.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names_a, names_b, "link name order");
+
+        // Joint topology preserved
+        for (ja, jb) in original.joints.iter().zip(loaded.joints.iter()) {
+            assert_eq!(ja.name, jb.name);
+            assert_eq!(ja.parent_link, jb.parent_link);
+            assert_eq!(ja.child_link, jb.child_link);
+            assert_eq!(ja.joint_type, jb.joint_type);
+        }
+
+        // Sidecar contents (actuator settings, collision pairs, poses)
+        // should round-trip
+        assert_eq!(
+            original.collision_pairs.len(),
+            loaded.collision_pairs.len(),
+            "collision_pairs count"
+        );
+        assert_eq!(original.poses.len(), loaded.poses.len(), "poses count");
+        assert_eq!(
+            original.sequences.len(),
+            loaded.sequences.len(),
+            "sequences count"
+        );
+
+        // Spot-check actuator settings on a known joint
+        let arm = original.joints.iter().find(|j| j.name == "arm_pitch_joint");
+        let arm_loaded = loaded.joints.iter().find(|j| j.name == "arm_pitch_joint");
+        if let (Some(a), Some(b)) = (arm, arm_loaded) {
+            assert_eq!(a.actuator_mode, b.actuator_mode, "actuator_mode arm");
+            assert!((a.actuator_kp - b.actuator_kp).abs() < 1e-9);
+            assert!((a.actuator_kv - b.actuator_kv).abs() < 1e-9);
+            assert!((a.armature - b.armature).abs() < 1e-9);
+            assert!((a.joint_damping - b.joint_damping).abs() < 1e-9);
+        }
+
+        // FK should still work on the loaded model
+        let tf = loaded.compute_transforms();
+        assert!(
+            tf.contains_key("trunk"),
+            "loaded model should compute trunk transform"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

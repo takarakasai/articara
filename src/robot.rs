@@ -245,6 +245,33 @@ impl RobotModel {
     ) -> Result<Self, String> {
         misa_load::build_robot_model(file, path)
     }
+
+    /// Build a [`misarta::native::MisaFile`] in memory from this
+    /// `RobotModel`. The inverse of [`Self::from_misa_file`].
+    ///
+    /// The resulting file is structurally complete — links, joints,
+    /// inertials, visuals, collisions, materials, mimics, loop closures,
+    /// collision pairs, sensors, actuators, poses, sequences, gaits, and
+    /// home pose are all populated. Mesh references keep whatever path
+    /// they had in the source format (URDF `package://…` or already-relative
+    /// `meshes/…`); callers that want clean relative paths should run
+    /// `normalise_mesh_paths_to_meshes_dir` before serialising.
+    ///
+    /// Per-joint actuator settings (mode/kp/kv) are emitted as 1:1
+    /// `[[actuator]]` entries — one actuator per movable joint with
+    /// `joints = [{ name = "<joint>", gear = 1.0 }]`. Multi-joint actuators
+    /// (N:M) are not reconstructed because `RobotModel` doesn't carry the
+    /// information needed to identify them; callers that need N:M output
+    /// must build the `MisaFile` directly and skip this convenience.
+    pub fn to_misa(&self) -> Result<misarta::native::MisaFile, String> {
+        misa_save::build_misa_file(self)
+    }
+
+    /// Convenience wrapper: convert to a `MisaFile` and write it to disk.
+    pub fn save_as_misa(&self, path: &Path) -> Result<(), String> {
+        let file = self.to_misa()?;
+        misarta::native::save(path, &file).map_err(|e| format!(".misa save: {e}"))
+    }
 }
 
 // ─── .misa → RobotModel conversion (internal) ──────────────────────────────
@@ -2133,3 +2160,327 @@ pub fn load_mesh_file(path: &std::path::Path) -> Vec<f32> {
 // Inertia computation (InertiaTensor, compute_geometry_inertia, compute_link_inertia,
 // compute_geometry_volume) and validation (validate_inertia, validate_all_inertia)
 // are now defined in crate::rbd::model (re-exported via pub use above).
+
+// ─── RobotModel → .misa conversion (internal) ──────────────────────────────
+
+mod misa_save {
+    use super::*;
+    use misarta::native as mn;
+
+    pub fn build_misa_file(model: &RobotModel) -> Result<mn::MisaFile, String> {
+        let mut out = mn::MisaFile::new(model.name.clone(), model.root_link.clone());
+
+        // ── Materials ───────────────────────────────────────────────────
+        // Sort by name so the on-disk order is stable across edits.
+        let mut mat_names: Vec<&String> = model.materials.keys().collect();
+        mat_names.sort();
+        for name in &mat_names {
+            let rgba = model.materials[*name];
+            out.material.push(mn::Material {
+                name: (*name).clone(),
+                color: mn::ColorSpec::Rgba(rgba),
+            });
+        }
+
+        // ── Links ───────────────────────────────────────────────────────
+        for link in &model.links {
+            let visuals = link
+                .visuals
+                .iter()
+                .map(|v| {
+                    let (color, material) = encode_visual_material(v.color, &model.materials);
+                    mn::Visual {
+                        origin: isometry_f32_to_origin(&v.origin),
+                        geom: geom_data_to_geom(&v.geometry),
+                        color,
+                        material,
+                    }
+                })
+                .collect();
+
+            let collisions = link
+                .collisions
+                .iter()
+                .map(|c| mn::Collision {
+                    origin: isometry_f32_to_origin(&c.origin),
+                    geom: geom_data_to_geom(&c.geometry),
+                })
+                .collect();
+
+            let inertial = mn::Inertial {
+                mass: link.inertial.mass,
+                ixx: link.inertial.ixx,
+                iyy: link.inertial.iyy,
+                izz: link.inertial.izz,
+                ixy: link.inertial.ixy,
+                ixz: link.inertial.ixz,
+                iyz: link.inertial.iyz,
+                origin: isometry_f32_to_origin(&link.inertial.origin),
+            };
+
+            out.link.push(mn::Link {
+                name: link.name.clone(),
+                description: String::new(),
+                inertial,
+                visual: visuals,
+                collision: collisions,
+            });
+        }
+
+        // ── Joints ──────────────────────────────────────────────────────
+        for j in &model.joints {
+            let kind = joint_type_str_to_kind(&j.joint_type)?;
+            out.joint.push(mn::Joint {
+                name: j.name.clone(),
+                kind,
+                parent: j.parent_link.clone(),
+                child: j.child_link.clone(),
+                axis: [j.axis.x as f64, j.axis.y as f64, j.axis.z as f64],
+                origin: isometry_f32_to_origin(&j.origin),
+                limit: mn::JointLimit {
+                    lower: j.lower,
+                    upper: j.upper,
+                    effort: j.effort,
+                    velocity: j.velocity,
+                },
+                dynamics: mn::JointDynamics {
+                    armature: j.armature,
+                    damping: j.joint_damping,
+                    friction: 0.0,
+                },
+            });
+        }
+
+        // ── Actuators (1:1 form) ────────────────────────────────────────
+        // RobotModel only carries 1:1 mappings, so we emit one [[actuator]]
+        // per movable joint. Authors who want N:M must hand-edit the .misa
+        // afterward.
+        for j in &model.joints {
+            if j.joint_type == "fixed" {
+                continue;
+            }
+            out.actuator.push(mn::Actuator {
+                name: format!("{}_motor", j.name),
+                mode: actuator_mode_to_native(j.actuator_mode),
+                joints: vec![mn::ActuatorJointRef {
+                    name: j.name.clone(),
+                    gear: 1.0,
+                }],
+                kp: j.actuator_kp,
+                kv: j.actuator_kv,
+            });
+        }
+
+        // ── Mimics ──────────────────────────────────────────────────────
+        for m in &model.mimics {
+            out.mimic.push(mn::Mimic {
+                joint: m.joint.clone(),
+                source: m.source.clone(),
+                multiplier: m.multiplier,
+                offset: m.offset,
+            });
+        }
+
+        // ── Loop closures ───────────────────────────────────────────────
+        for lc in &model.loop_closures {
+            out.loop_closure.push(lc.to_config());
+        }
+
+        // ── Collision pairs ─────────────────────────────────────────────
+        for cp in &model.collision_pairs {
+            out.collision_pair.push(misarta::config::CollisionPairConfig {
+                link_a: cp.link_a.clone(),
+                link_b: cp.link_b.clone(),
+                enabled: cp.enabled,
+            });
+        }
+
+        // ── Sensors ─────────────────────────────────────────────────────
+        for s in &model.sensors {
+            out.sensor.push(mn::Sensor {
+                name: s.name.clone(),
+                link: s.link.clone(),
+                origin: isometry_f64_to_origin(&s.origin),
+                update_rate: s.update_rate,
+                kind: sensor_kind_to_native(&s.kind),
+            });
+        }
+
+        // ── Poses, sequences, gaits, home (reuse misarta::config types) ─
+        // RobotModel.{poses, sequences, gaits} use articara-side mirror
+        // structs; convert via the existing to_misarta_config path which
+        // already handles the mapping.
+        let cfg = model.to_misarta_config();
+        for p in &cfg.pose {
+            out.pose.push(p.clone());
+        }
+        for s in &cfg.sequence {
+            out.sequence.push(s.clone());
+        }
+        for g in &cfg.gait {
+            out.gait.push(g.clone());
+        }
+        out.home = cfg.home;
+
+        Ok(out)
+    }
+
+    // ─── Conversion helpers ──────────────────────────────────────────────
+
+    fn isometry_f32_to_origin(iso: &na::Isometry3<f32>) -> mn::Origin {
+        let t = iso.translation.vector;
+        let (r, p, y) = iso.rotation.euler_angles();
+        let xyz = [t.x as f64, t.y as f64, t.z as f64];
+        let rpy = [r as f64, p as f64, y as f64];
+        let is_id = xyz[0] == 0.0
+            && xyz[1] == 0.0
+            && xyz[2] == 0.0
+            && rpy[0] == 0.0
+            && rpy[1] == 0.0
+            && rpy[2] == 0.0;
+        mn::Origin {
+            xyz,
+            rpy: if is_id { None } else { Some(rpy) },
+            quat: None,
+        }
+    }
+
+    fn isometry_f64_to_origin(iso: &na::Isometry3<f64>) -> mn::Origin {
+        let t = iso.translation.vector;
+        let (r, p, y) = iso.rotation.euler_angles();
+        let xyz = [t.x, t.y, t.z];
+        let rpy = [r, p, y];
+        let is_id = xyz == [0.0, 0.0, 0.0] && rpy == [0.0, 0.0, 0.0];
+        mn::Origin {
+            xyz,
+            rpy: if is_id { None } else { Some(rpy) },
+            quat: None,
+        }
+    }
+
+    fn geom_data_to_geom(g: &GeomData) -> mn::Geom {
+        match g {
+            GeomData::Box { hx, hy, hz } => mn::Geom::Box {
+                size: [*hx as f64 * 2.0, *hy as f64 * 2.0, *hz as f64 * 2.0],
+            },
+            GeomData::Cylinder { radius, half_length } => mn::Geom::Cylinder {
+                radius: *radius as f64,
+                length: *half_length as f64 * 2.0,
+            },
+            GeomData::Sphere { radius } => mn::Geom::Sphere {
+                radius: *radius as f64,
+            },
+            GeomData::Capsule { radius, half_length } => mn::Geom::Capsule {
+                radius: *radius as f64,
+                length: *half_length as f64 * 2.0,
+            },
+            GeomData::Mesh { filename, scale, .. } => {
+                let file = filename
+                    .as_ref()
+                    .map(|s| normalise_mesh_path(s))
+                    .unwrap_or_else(|| "meshes/unnamed.stl".to_string());
+                let scale_arr = scale
+                    .map(|s| [s[0] as f64, s[1] as f64, s[2] as f64])
+                    .unwrap_or([1.0, 1.0, 1.0]);
+                mn::Geom::Mesh {
+                    file,
+                    scale: scale_arr,
+                }
+            }
+        }
+    }
+
+    /// Convert a URDF-style mesh reference into a master-relative path.
+    /// `package://name/sub/path.stl` → `sub/path.stl`. Leaves already-relative
+    /// paths untouched (so `meshes/foo.stl` round-trips as itself).
+    fn normalise_mesh_path(s: &str) -> String {
+        if let Some(rest) = s.strip_prefix("package://") {
+            // Drop the package name (everything up to the first `/`).
+            if let Some(slash) = rest.find('/') {
+                return rest[slash + 1..].to_string();
+            }
+            return rest.to_string();
+        }
+        if let Some(rest) = s.strip_prefix("file://") {
+            return rest.to_string();
+        }
+        s.to_string()
+    }
+
+    /// If `color` matches an entry in `materials` exactly, emit
+    /// `material = "name"`; otherwise keep the inline RGBA. Picks the
+    /// alphabetically-first matching name when several materials share
+    /// the same colour, so the choice is deterministic.
+    fn encode_visual_material(
+        color: [f32; 4],
+        materials: &HashMap<String, [f32; 4]>,
+    ) -> (Option<mn::ColorSpec>, Option<String>) {
+        let mut matches: Vec<&String> = materials
+            .iter()
+            .filter(|(_, c)| **c == color)
+            .map(|(n, _)| n)
+            .collect();
+        matches.sort();
+        if let Some(name) = matches.first() {
+            (None, Some((*name).clone()))
+        } else {
+            (Some(mn::ColorSpec::Rgba(color)), None)
+        }
+    }
+
+    fn joint_type_str_to_kind(s: &str) -> Result<mn::JointKind, String> {
+        match s {
+            "revolute" => Ok(mn::JointKind::Revolute),
+            "continuous" => Ok(mn::JointKind::Continuous),
+            "prismatic" => Ok(mn::JointKind::Prismatic),
+            "fixed" => Ok(mn::JointKind::Fixed),
+            "floating" => Ok(mn::JointKind::Floating),
+            "planar" => Ok(mn::JointKind::Planar),
+            other => Err(format!(
+                "to_misa: unknown joint_type '{other}' (cannot map to JointKind)"
+            )),
+        }
+    }
+
+    fn actuator_mode_to_native(m: ActuatorMode) -> mn::ActuatorMode {
+        match m {
+            ActuatorMode::Position => mn::ActuatorMode::Position,
+            ActuatorMode::Velocity => mn::ActuatorMode::Velocity,
+            ActuatorMode::Torque => mn::ActuatorMode::Torque,
+            ActuatorMode::ComputedTorque => mn::ActuatorMode::ComputedTorque,
+        }
+    }
+
+    fn sensor_kind_to_native(k: &crate::rbd::model::SensorKind) -> mn::SensorKind {
+        use crate::rbd::model::SensorKind as In;
+        match k {
+            In::Camera { fov, width, height, near, far } => mn::SensorKind::Camera {
+                fov: *fov, width: *width, height: *height, near: *near, far: *far,
+            },
+            In::Lidar {
+                range_min, range_max, h_fov, h_samples, v_fov, v_samples,
+            } => mn::SensorKind::Lidar {
+                range_min: *range_min,
+                range_max: *range_max,
+                h_fov: *h_fov,
+                h_samples: *h_samples,
+                v_fov: *v_fov,
+                v_samples: *v_samples,
+            },
+            In::Imu { gyro_noise, accel_noise } => mn::SensorKind::Imu {
+                gyro_noise: *gyro_noise,
+                accel_noise: *accel_noise,
+            },
+            In::ForceTorque { joint } => mn::SensorKind::ForceTorque {
+                joint: joint.clone(),
+            },
+            In::Contact { partner } => mn::SensorKind::Contact {
+                partner: partner.clone(),
+            },
+            In::Generic { kind, params } => mn::SensorKind::Generic {
+                kind: kind.clone(),
+                params: params.clone(),
+            },
+        }
+    }
+}
