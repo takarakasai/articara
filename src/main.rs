@@ -8,6 +8,8 @@ mod isaac;
 mod mjcf;
 #[cfg(feature = "mujoco")]
 mod mujoco_sim;
+#[cfg(feature = "mujoco")]
+mod mujoco_version;
 mod primitives;
 mod rbd;
 mod renderer;
@@ -22,6 +24,30 @@ use std::path::PathBuf;
 
 fn main() -> eframe::Result {
     env_logger::init();
+
+    // MuJoCo runtime version pre-check. mujoco-rs panics deep in its
+    // crate when the linked libmujoco doesn't match its FFI bindings;
+    // pre-checking here surfaces the mismatch as a clear log line and
+    // a cached flag the dynamics panel can read, instead of a cryptic
+    // backtrace later. See `src/mujoco_version.rs`.
+    #[cfg(feature = "mujoco")]
+    {
+        let r = mujoco_version::init();
+        match r {
+            mujoco_version::CheckResult::Compatible(v) => {
+                log::info!("MuJoCo runtime {v} matches expected version — OK");
+            }
+            mujoco_version::CheckResult::Mismatch { .. } => {
+                log::error!("{}", r.diagnostic());
+                eprintln!("⚠ {}", r.diagnostic());
+                eprintln!(
+                    "    The app will keep running but MuJoCo-backed \
+                     features will be disabled to avoid the panic. \
+                     See MUJOCO_SETUP.md for installation steps."
+                );
+            }
+        }
+    }
 
     let args: Vec<String> = std::env::args().collect();
 

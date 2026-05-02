@@ -242,6 +242,15 @@ impl MujocoSim {
     /// gravity. The actuator type for each joint is selected by its
     /// `actuator_mode` field (Position / Velocity / Torque).
     pub fn new(robot: &RobotModel, mut opts: MjcfExportOptions) -> Result<Self, String> {
+        // Pre-flight: surface a MuJoCo runtime / FFI version mismatch as
+        // a clean error rather than letting `MjModel::from_xml_string`
+        // panic deep inside `mujoco-rs::util::assert_mujoco_version`.
+        if let Some(crate::mujoco_version::CheckResult::Mismatch { .. }) =
+            crate::mujoco_version::cached()
+        {
+            return Err(crate::mujoco_version::cached().unwrap().diagnostic());
+        }
+
         opts.add_actuators = true;
 
         // Load MuJoCo plugins (STL decoder, OBJ decoder, etc.) before loading any model.

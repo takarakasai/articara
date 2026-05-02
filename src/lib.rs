@@ -9,6 +9,8 @@ pub mod isaac;
 pub mod mjcf;
 #[cfg(feature = "mujoco")]
 pub mod mujoco_sim;
+#[cfg(feature = "mujoco")]
+pub mod mujoco_version;
 pub mod primitives;
 pub mod rbd;
 pub mod robot;
