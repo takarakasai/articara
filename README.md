@@ -1,11 +1,33 @@
 # articara
 
-A high-performance robot model editor built in Rust. articara focuses on
-seamless URDF/SRDF manipulation and kinematic structure visualization.
+A high-performance robot model editor built in Rust. articara is built around
+**`.misa`** — its own native master format that captures the full kinematic
+tree, geometry, materials, sensors, actuators, mimic / loop-closure
+constraints, and editor metadata (poses, sequences, gaits, home pose) in a
+single TOML file. URDF / SDF / MJCF / USD are supported as derivative
+import / export targets.
+
+## Master format: `.misa`
+
+`.misa` is articara's canonical on-disk representation. A single file holds
+everything `RobotModel` carries; round-tripping through `from_misa` /
+`to_misa` is lossless. Mesh files live alongside as a `meshes/` sibling
+directory. URDF / SDF / MJCF / USD remain available for interop with other
+tooling but are treated as **lossy derivatives** of the `.misa` master.
+
+- Schema reference: [`doc/misa_schema.md`](doc/misa_schema.md)
+- Format comparison: [`doc/comparison.md`](doc/comparison.md)
+- Design rationale: [`doc/refactor_20260502.md`](doc/refactor_20260502.md)
+- Sample: [`sample/namiashi_description/namiashi.misa`](sample/namiashi_description/)
+- Quick conversion: `cargo run --example convert_to_misa -- <urdf> <out.misa>`
 
 ## Features
 
-- **Multi-format model loading** — URDF, MJCF (MuJoCo XML), USD, SDF; SRDF-style collision allow/disallow lists are preserved via `.misarta.toml`.
+- **`.misa` master format** — single-file robot description in TOML
+  (kinematics + geometry + sensors + actuators + editor metadata),
+  via the [`misarta::native`](misarta/src/native/) module.
+- **Multi-format model loading** — `.misa` (native), URDF, MJCF (MuJoCo XML),
+  USD, SDF. Legacy URDF + `.misarta.toml` sidecar workflows continue to work.
 - **Rigid body dynamics** — O(n) Featherstone algorithms via [`misarta`](misarta/) (kinematics, dynamics, autodiff-ready).
 - **3D viewer & GUI** — `eframe` + `glow` renderer with `egui_plot` overlays (default `gui` feature).
 - **Physics backend** — optional MuJoCo integration (`--features mujoco`, requires `mujoco-rs`).

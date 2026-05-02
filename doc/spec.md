@@ -264,7 +264,99 @@ $$I_{xx} = I_{yy} = I_{zz} = \frac{2mr^2}{5}$$
 
 ---
 
-## 4. テスト概況
+## 4. `misarta::native` モジュール (.misa マスタフォーマット, 2026-05-02)
+
+### 概要
+
+URDF + `.misarta.toml` サイドカーの二重管理を解消する独自マスタ形式
+`.misa`(中身は TOML)を導入。`misarta::native` モジュールが parser /
+writer / 実行時 `Model` 変換を提供。articara の `RobotModel` を**完全
+可逆**に永続化できる唯一の形式。
+
+設計の経緯と決定事項は [`refactor_20260502.md`](refactor_20260502.md)、
+on-disk スキーマの完全リファレンスは [`misa_schema.md`](misa_schema.md)、
+他形式との機能比較は [`comparison.md`](comparison.md) を参照。
+
+### 4.1 アーキテクチャ(3 層)
+
+ファイルシステム依存を疎結合化し、組み込み・WASM 移植性を確保。
+
+```
+Layer 3: load(path) / save(path, &MisaFile)              [std + fs]
+Layer 2: parse_str(text, &dyn AssetSource) / write_str / build_model  [std]
+Layer 1: AssetSource trait + 4 built-in implementations  [no_std + alloc 互換]
+```
+
+### 4.2 対象ファイル
+
+| ファイル | 内容 |
+|---|---|
+| `misarta/src/native/mod.rs` | 公開 API、`load` / `save`、`NativeError`、`ParseOutput` |
+| `misarta/src/native/schema.rs` | serde 型定義(`MisaFile`, `Link`, `Joint`, `Geom`, `Origin`, `Actuator` 等) |
+| `misarta/src/native/source.rs` | `AssetSource` トレイト + `FileSystemSource` / `InMemorySource` / `StaticBundleSource` / `NullSource` |
+| `misarta/src/native/parse.rs` | TOML decode、識別子サニタイズ、構造バリデーション |
+| `misarta/src/native/write.rs` | スキーマタグ検証 + canonical-order TOML 書き出し |
+| `misarta/src/native/build.rs` | `MisaFile` → `Model + GeometryModel × 2` 変換 |
+| `misarta/src/native/report.rs` | `LoadReport`, `sanitize_identifier` |
+
+### 4.3 articara 側 API
+
+| API | 戻り値 | 説明 |
+|---|---|---|
+| `RobotModel::from_misa(path)` | `Result<Self, String>` | `.misa` から `RobotModel` をロード(レポート破棄) |
+| `RobotModel::from_misa_with_report(path)` | `Result<(Self, LoadReport), String>` | サニタイズ等の報告付き(GUI ダイアログ用) |
+| `RobotModel::from_misa_file(&MisaFile, path)` | `Result<Self, String>` | 既パース済 `MisaFile` から構築(テスト/スクリプト向け) |
+| `RobotModel::to_misa()` | `Result<MisaFile, String>` | `RobotModel` → メモリ上 `MisaFile` |
+| `RobotModel::save_as_misa(path)` | `Result<(), String>` | `to_misa` + ファイル書き出しの便利関数 |
+
+### 4.4 主要設計決定
+
+- **拡張子**: `.misa`、ヘッダ `schema = "misarta/1"` 必須
+- **構造表現**: フラット(URDF 型 + parent/child 参照)
+- **姿勢表現**: rpy 既定 + quat 代替の共存
+- **形状寸法**: URDF 流の全サイズ表現(`size = [w, h, d]`、`length` 全長)
+- **メッシュ**: 外部参照のみ、`meshes/` サブディレクトリ前提
+- **Actuator-Joint**: N:M 対応(`joints = [{name, gear}]`)、armature/damping は受動物理特性として joint 側に分離
+- **マテリアル**: インライン色既定 + `[[material]]` 名前参照は任意
+- **識別子規約**: `^[A-Za-z_][A-Za-z0-9_]*$`、違反は自動 sanitize + `LoadReport` 記録
+
+### 4.5 既存ワークフローとの関係
+
+- **`.misa` ソース** → `from_misa` / `save_as_misa`(完全可逆、サイドカー不要)
+- **URDF + `.misarta.toml` サイドカー** → `from_urdf` + `load_sidecar_config`
+  経路を **legacy として継続サポート**(既存ユーザ保護)
+- **新規エクスポート**: Misa 選択時はサイドカーを生成しない
+  (重複)、それ以外の format(URDF/MJCF/USD/SDF)は従来通り
+  サイドカー併出力
+
+### 4.6 テスト
+
+- `misarta::native` モジュール内: 44 ユニットテスト(スキーマ
+  ラウンドトリップ、サニタイズ、AssetSource 4 実装、N:M actuator、
+  rpy/quat 切替、mesh asset 欠損非致命、二重 child 拒否 等)
+- `articara::tests::regression::test_misa`: 16 統合テスト
+  (basic round-trip、色解決、mimic、N:M actuator、loop_closure +
+   collision_pair、pose + home、サニタイズレポート、from_file
+   ディスパッチ、format detection、`namiashi.urdf + .misarta.toml`
+   → `.misa` → `from_misa` の実機ラウンドトリップ全要素検証 等)
+
+### 4.7 実機検証
+
+`sample/namiashi_description/namiashi.misa` を URDF + サイドカーから
+変換生成。URDF (19 link / 18 joint) + `.misarta.toml` (4 pose / 13
+actuator / 6 collision_pair / 1 sequence / home) を単一 1894 行 TOML
+に統合し、ラウンドトリップで構造完全一致を確認。
+
+変換コマンド:
+```bash
+cargo run --example convert_to_misa -- \
+  sample/namiashi_description/urdf/namiashi.urdf \
+  sample/namiashi_description/namiashi.misa
+```
+
+---
+
+## 5. テスト概況
 
 全 171 テストが通過（PASS）している。
 
@@ -276,17 +368,22 @@ $$I_{xx} = I_{yy} = I_{zz} = \frac{2mr^2}{5}$$
 | 慣性テンソルテスト（regression.rs::test_inertia） | 10 |
 | **合計** | **171+α**（一部モジュール内テストを含む） |
 
+> ⚠ 上記カウントは 2026-04-13 時点。`misarta::native` (2026-05-02)
+> 追加で articara regression は 234 + misarta lib は 458 となっている。
+
 ---
 
-## 5. 変更ファイル一覧
+## 6. 変更ファイル一覧
 
 | ファイル | 変更内容 |
 |---|---|
 | `src/history.rs` | Undo/Redo コアロジック、`goto()` メソッド追加、ユニットテスト11個 |
 | `src/app.rs` | プロパティパネル計装、ビューポートドラッグ計装、履歴パネル UI、慣性テンソル計算 UI、密度入力ダイアログ |
-| `src/robot.rs` | `InertiaTensor` 構造体、`compute_geometry_inertia()`, `compute_geometry_volume()`, `compute_mesh_inertia()`, `compute_mesh_volume()`, `compute_link_inertia()` |
+| `src/robot.rs` | `InertiaTensor` 構造体、`compute_geometry_inertia()`, `compute_geometry_volume()`, `compute_mesh_inertia()`, `compute_mesh_volume()`, `compute_link_inertia()`、`from_misa` / `to_misa` (2026-05-02) |
 | `src/usd_import.rs` | USDA パーサー・インポーター（新規作成）、ユニットテスト12個 |
-| `src/format.rs` | `.usda`/`.usd` 拡張子検出、`IsaacUsd.supports_import()` 有効化 |
+| `src/format.rs` | `.usda`/`.usd` 拡張子検出、`IsaacUsd.supports_import()` 有効化、`Misa` バリアント追加 (2026-05-02) |
 | `src/main.rs` | `mod usd_import` 登録 |
 | `src/lib.rs` | `pub mod usd_import` 登録 |
-| `tests/regression.rs` | `supports_import` テスト更新、`test_inertia` モジュール追加（10テスト） |
+| `tests/regression.rs` | `supports_import` テスト更新、`test_inertia` モジュール追加（10テスト）、`test_misa` モジュール追加 (16テスト, 2026-05-02) |
+| `misarta/src/native/` (2026-05-02) | `.misa` マスタフォーマットの parser / writer / model builder / asset source / report |
+| `examples/convert_to_misa.rs` (2026-05-02) | URDF + sidecar → .misa CLI converter |
