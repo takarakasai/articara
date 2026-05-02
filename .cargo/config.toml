@@ -1,0 +1,12 @@
+# MuJoCo environment is set up by the xtask crate, which detects the local
+# install at runtime and forwards arguments to cargo.
+#
+#   cargo xtask build --features mujoco
+#   cargo xtask run   --features mujoco --example demo
+#   cargo xtask test  --features mujoco
+#
+# A bare `cargo build --features mujoco` still works if you've already exported
+# MUJOCO_DYNAMIC_LINK_DIR yourself (e.g. by sourcing setup-mujoco.sh).
+
+[alias]
+xtask = "run --package xtask --quiet --"
