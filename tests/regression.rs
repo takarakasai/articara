@@ -3615,6 +3615,89 @@ mod test_sidecar {
     }
 
     #[test]
+    fn analyze_export_compatibility_misa_target_never_warns() {
+        // Even a heavily-decorated model (mimic + sensor + collision_pair +
+        // loop_closure + capsule) should produce zero warnings when the
+        // target is `.misa` — the master format preserves everything.
+        use articara::format::{analyze_export_compatibility, FormatRegistry};
+        use articara::robot::{
+            CollisionPair, GeomData, LoopClosure, Mimic, RobotModel, Sensor, SensorKind,
+            VisualData,
+        };
+        use nalgebra as na;
+
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+
+        // Add at least one of every "warning-eligible" entity type
+        model.mimics.push(Mimic {
+            joint: model.joints[0].name.clone(),
+            source: model
+                .joints
+                .get(1)
+                .map(|j| j.name.clone())
+                .unwrap_or_else(|| model.joints[0].name.clone()),
+            multiplier: 1.0,
+            offset: 0.0,
+        });
+        model.sensors.push(Sensor {
+            name: "imu0".into(),
+            link: model.links[0].name.clone(),
+            origin: na::Isometry3::identity(),
+            update_rate: 100.0,
+            kind: SensorKind::Imu { gyro_noise: 0.0, accel_noise: 0.0 },
+        });
+        if model.links.len() >= 2 {
+            model.collision_pairs.push(CollisionPair::new(
+                model.links[0].name.clone(),
+                model.links[1].name.clone(),
+                false,
+            ));
+        }
+        model.loop_closures.push(LoopClosure {
+            name: "demo_loop".into(),
+            link_a: model.links[0].name.clone(),
+            offset_a: na::Isometry3::identity(),
+            link_b: model.links[0].name.clone(),
+            offset_b: na::Isometry3::identity(),
+            pose_6dof: false,
+        });
+        model.links[0].visuals.push(VisualData {
+            origin: na::Isometry3::identity(),
+            geometry: GeomData::Capsule { radius: 0.05, half_length: 0.10 },
+            color: [1.0, 0.0, 0.0, 1.0],
+        });
+
+        let registry = FormatRegistry::default_registry();
+        let misa = registry
+            .handlers()
+            .iter()
+            .find(|h| h.name() == "Misa")
+            .expect("Misa handler should be registered")
+            .as_ref();
+
+        let issues = analyze_export_compatibility(&model, misa);
+        assert!(
+            issues.is_empty(),
+            "Misa target should never produce warnings (master is lossless), \
+             but got {:?}",
+            issues,
+        );
+
+        // Sanity: the same model SHOULD produce warnings against URDF
+        let urdf = registry
+            .handlers()
+            .iter()
+            .find(|h| h.name() == "URDF")
+            .unwrap()
+            .as_ref();
+        let urdf_issues = analyze_export_compatibility(&model, urdf);
+        assert!(
+            !urdf_issues.is_empty(),
+            "control: same decorated model should warn against URDF target",
+        );
+    }
+
+    #[test]
     fn home_pose_roundtrips_through_sidecar() {
         // Edit the model's joint_positions + base_transform, save the
         // sidecar, reload from disk, and verify both come back. This is

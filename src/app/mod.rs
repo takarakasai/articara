@@ -636,6 +636,11 @@ pub struct ArticaraApp {
     rename_joint_buf: String,
     /// Whether the collision-pair matrix dialog is open.
     show_collision_matrix: bool,
+    /// Pending `.misa` LoadReport surfaced as a dialog after load.
+    /// `None` when nothing to show (or already dismissed). The dialog
+    /// closes itself when the user clicks OK; we don't auto-clear so the
+    /// user has time to read sanitisation / missing-mesh entries.
+    pending_misa_report: Option<misarta::native::LoadReport>,
     /// Optional quadruped gait controller. Built once on demand (via the
     /// gait panel's "Setup" button or the Rhai `gait_setup` function),
     /// then ticked from the MuJoCo sim loop while `is_enabled()` is true.
@@ -905,6 +910,7 @@ impl ArticaraApp {
             rename_link_buf: String::new(),
             rename_joint_buf: String::new(),
             show_collision_matrix: false,
+            pending_misa_report: None,
             gait_controller: None,
             gait_foot_links: crate::gait::DEFAULT_FOOT_LINKS
                 .map(|(id, name)| (id, name.to_string())),
@@ -966,7 +972,27 @@ impl ArticaraApp {
     }
 
     pub fn load_model(&mut self, path: PathBuf) {
-        match RobotModel::from_file(&path) {
+        // Dispatch on extension up-front so `.misa` files can capture the
+        // LoadReport (which includes identifier sanitisations and missing
+        // mesh references — the user needs to see those, not just the
+        // success summary).
+        let detected = RobotFormat::detect(&path);
+        let load_outcome: Result<RobotModel, String> =
+            if matches!(detected, Some(RobotFormat::Misa)) {
+                match RobotModel::from_misa_with_report(&path) {
+                    Ok((model, report)) => {
+                        if !report.is_empty() {
+                            self.pending_misa_report = Some(report);
+                        }
+                        Ok(model)
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                RobotModel::from_file(&path)
+            };
+
+        match load_outcome {
             Ok(model) => {
                 self.status_message = format!(
                     "Loaded: {} ({} links, {} joints)",
@@ -976,10 +1002,11 @@ impl ArticaraApp {
                 );
                 self.model = Some(model);
                 self.urdf_path_input = path.display().to_string();
-                // Load .misarta.toml sidecar if present and surface what it
-                // applied so the user can confirm actuator/pose counts at a
-                // glance — env_logger defaults swallow log::info messages so
-                // the status bar is the only reliably-visible feedback.
+                // Legacy URDF + `.misarta.toml` sidecar path. `.misa` already
+                // carries everything in a single file, so the sidecar load is
+                // a no-op for those — but we still call it unconditionally
+                // so an existing `<name>.misarta.toml` next to a `.misa`
+                // continues to merge in (helps users mid-migration).
                 if let Some(ref mut m) = self.model {
                     if let Some(report) = m.load_sidecar_config() {
                         self.status_message = format!(
@@ -1601,6 +1628,7 @@ mod peaks_plot_window;
 #[cfg(feature = "mujoco")]
 mod sim_drag;
 mod collision_matrix;
+mod misa_report_dialog;
 
 // Sentinel to mark the end of module-level code.
 // Everything below was moved to sub-modules.
@@ -1750,6 +1778,7 @@ impl eframe::App for ArticaraApp {
 
         // --- Collision pair matrix dialog ---
         self.draw_collision_matrix_window(&ctx);
+        self.draw_misa_report_dialog(&ctx);
 
         // --- File dialogs ---
         self.process_file_dialogs(&ctx);

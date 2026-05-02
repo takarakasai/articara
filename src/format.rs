@@ -163,10 +163,24 @@ impl ExportSeverity {
 /// The function deliberately does NOT decide whether to proceed — that's
 /// up to the caller (typically a confirmation dialog). It's a pure
 /// query.
+///
+/// **Misa target short-circuit**: when the target is the `.misa` master
+/// format, this returns an empty vec without running any per-feature
+/// checks. `.misa` is articara's canonical representation and round-trips
+/// every field of `RobotModel` losslessly — there is by definition
+/// nothing to warn about. The caller gets a fast path that matches the
+/// "master is the source of truth" mental model.
 pub fn analyze_export_compatibility(
     model: &crate::robot::RobotModel,
     target: &dyn FormatHandler,
 ) -> Vec<ExportIssue> {
+    if target.name() == "Misa" {
+        // Misa is the master format — by construction it preserves
+        // everything in `RobotModel`. Skip the per-feature checks both
+        // for correctness (no false-positive warnings) and to make the
+        // "no warnings on save-as-master" UX explicit in the code.
+        return Vec::new();
+    }
     let caps = target.capabilities();
     let mut issues = Vec::new();
 
