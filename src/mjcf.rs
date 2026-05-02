@@ -554,13 +554,24 @@ pub fn export_mjcf_with_options(
 
     s.push_str("  <compiler angle=\"radian\"/>\n\n");
 
-    // Resolve mesh URIs to absolute paths the same way the URDF loader does:
-    // package_dir = urdf_dir.parent() (one level above the URDF file).
-    let package_dir = model
+    // Mesh path resolution. Two source-format conventions to support:
+    //
+    // - URDF (`<robot>` at `<pkg>/urdf/<name>.urdf`): mesh references are
+    //   `package://<name>/...` and resolve against `<pkg>/` — i.e. the
+    //   grandparent directory of the model file.
+    // - `.misa` (master format at `<pkg>/<name>.misa`): mesh references
+    //   are plain relative paths like `meshes/trunk.stl` that resolve
+    //   against the model file's own directory (`<pkg>/`).
+    //
+    // The runtime XML we hand to MuJoCo via `MjModel::from_xml_string`
+    // has no on-disk anchor, so MuJoCo can't resolve relative paths
+    // itself — every `<mesh file="...">` we emit must be absolute.
+    let source_dir = model
         .source_path
         .as_ref()
-        .and_then(|p| p.parent())   // urdf_dir
-        .and_then(|d| d.parent());  // package_dir
+        .and_then(|p| p.parent());            // <pkg>/ (.misa) or <pkg>/urdf/ (URDF)
+    let package_dir = source_dir
+        .and_then(|d| d.parent());            // grandparent — only meaningful for URDF
 
     // Collect mesh assets from BOTH visuals and collisions. We previously
     // only walked `link.visuals`, but the MJCF export now emits collision
@@ -572,13 +583,33 @@ pub fn export_mjcf_with_options(
     let mut geom_mesh_map: HashMap<*const GeomData, String> = HashMap::new();
 
     let resolve = |filename: &Option<String>| -> String {
-        match (filename.as_deref(), package_dir.as_ref()) {
-            (Some(uri), Some(pkg)) => crate::robot::resolve_package_path(uri, pkg)
-                .to_string_lossy()
-                .into_owned(),
-            (Some(uri), None) => uri.to_string(),
-            (None, _) => "mesh.stl".to_string(),
+        let raw = match filename.as_deref() {
+            Some(s) => s,
+            None => return "mesh.stl".to_string(),
+        };
+        // package://<name>/sub/foo.stl  → URDF / SDF style; resolves
+        //   against the package root (grandparent of the URDF).
+        // file:///abs/path.stl          → strip prefix, treat as absolute.
+        if raw.starts_with("package://") || raw.starts_with("file://") {
+            if let Some(pkg) = package_dir {
+                return crate::robot::resolve_package_path(raw, pkg)
+                    .to_string_lossy()
+                    .into_owned();
+            }
+            return raw.to_string();
         }
+        // Already absolute → use as-is (handles users who hand-wrote
+        // absolute paths into a model file).
+        let p = std::path::Path::new(raw);
+        if p.is_absolute() {
+            return raw.to_string();
+        }
+        // Plain relative path (.misa convention: `meshes/trunk.stl`)
+        // → join against the model file's directory.
+        if let Some(src) = source_dir {
+            return src.join(raw).to_string_lossy().into_owned();
+        }
+        raw.to_string()
     };
 
     for link in &model.links {
