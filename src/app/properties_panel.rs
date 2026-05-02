@@ -2766,6 +2766,13 @@ impl ArticaraApp {
                     }
                 }
             }
+            RobotFormat::Misa => {
+                // Misa export (RobotModel::to_misa) is tracked in
+                // doc/refactor_20260502.md ToDo. Surface a clear message
+                // until that lands.
+                self.export_message =
+                    "⚠ Misa export is not yet implemented (use URDF/MJCF for now)".into();
+            }
         }
 
         // Save .misarta.toml sidecar alongside the exported model

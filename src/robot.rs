@@ -203,12 +203,473 @@ impl RobotModel {
             RobotFormat::Sdf => crate::sdf::import_sdf(path),
             RobotFormat::Mjcf => crate::mjcf::import_mjcf(path),
             RobotFormat::IsaacUsd => crate::usd_import::import_usda(path),
+            RobotFormat::Misa => Self::from_misa(path),
         }
     }
 
-    // compute_transforms, parent_joint_of_link, ancestor_links, link_bounding_sphere
-    // are now defined in crate::rbd::model (re-exported via pub use above).
+    /// Load a `.misa` master-format file. Convenience wrapper that
+    /// discards the [`misarta::native::LoadReport`]; use
+    /// [`Self::from_misa_with_report`] when the GUI needs to surface
+    /// sanitisations / missing meshes.
+    pub fn from_misa(path: &Path) -> Result<Self, String> {
+        let (model, _report) = Self::from_misa_with_report(path)?;
+        Ok(model)
+    }
 
+    /// Load a `.misa` master-format file along with the load report.
+    ///
+    /// The report carries identifier sanitisations, material renames,
+    /// and unresolved mesh references — surface it in the editor's
+    /// post-load dialog so the user can confirm the changes.
+    pub fn from_misa_with_report(
+        path: &Path,
+    ) -> Result<(Self, misarta::native::LoadReport), String> {
+        let out = misarta::native::load(path)
+            .map_err(|e| format!(".misa load: {e}"))?;
+        let report = out.report.clone();
+        let model = Self::from_misa_file(&out.file, path)?;
+        Ok((model, report))
+    }
+
+    /// Convert an already-parsed [`misarta::native::MisaFile`] into a
+    /// `RobotModel`. Used internally by [`Self::from_misa`]; exposed so
+    /// callers that produced a `MisaFile` in memory (tests, scripted
+    /// generators) can skip the parse step.
+    ///
+    /// `path` is used to resolve relative mesh references and is stored
+    /// as `source_path` on the returned model. Pass any path under the
+    /// directory mesh files live in.
+    pub fn from_misa_file(
+        file: &misarta::native::MisaFile,
+        path: &Path,
+    ) -> Result<Self, String> {
+        misa_load::build_robot_model(file, path)
+    }
+}
+
+// ─── .misa → RobotModel conversion (internal) ──────────────────────────────
+
+mod misa_load {
+    use super::*;
+    use misarta::native as mn;
+
+    pub fn build_robot_model(
+        file: &mn::MisaFile,
+        path: &Path,
+    ) -> Result<RobotModel, String> {
+        let base_dir = path.parent().unwrap_or(Path::new("."));
+
+        // ── Materials map: name → RGBA ──────────────────────────────────
+        let mut materials: HashMap<String, [f32; 4]> = HashMap::new();
+        for m in &file.material {
+            materials.insert(m.name.clone(), color_spec_to_rgba(&m.color));
+        }
+
+        // ── Links ───────────────────────────────────────────────────────
+        let mut links: Vec<LinkData> = Vec::with_capacity(file.link.len());
+        let mut link_map: HashMap<String, usize> = HashMap::new();
+        for (i, l) in file.link.iter().enumerate() {
+            link_map.insert(l.name.clone(), i);
+
+            let visuals: Vec<VisualData> = l
+                .visual
+                .iter()
+                .map(|v| VisualData {
+                    origin: misa_origin_to_isometry_f32(&v.origin),
+                    geometry: convert_misa_geom(&v.geom, base_dir),
+                    color: resolve_visual_color(v, &materials),
+                })
+                .collect();
+
+            let collisions: Vec<CollisionData> = l
+                .collision
+                .iter()
+                .map(|c| CollisionData {
+                    origin: misa_origin_to_isometry_f32(&c.origin),
+                    geometry: convert_misa_geom(&c.geom, base_dir),
+                })
+                .collect();
+
+            let inertial = InertialData {
+                origin: misa_origin_to_isometry_f32(&l.inertial.origin),
+                mass: l.inertial.mass,
+                ixx: l.inertial.ixx,
+                ixy: l.inertial.ixy,
+                ixz: l.inertial.ixz,
+                iyy: l.inertial.iyy,
+                iyz: l.inertial.iyz,
+                izz: l.inertial.izz,
+            };
+
+            links.push(LinkData {
+                name: l.name.clone(),
+                visuals,
+                collisions,
+                inertial,
+            });
+        }
+
+        // ── Joints ──────────────────────────────────────────────────────
+        // Build a per-joint actuator-config lookup. Multi-joint actuators
+        // (N:M) are flattened to per-joint settings: each participating
+        // joint inherits the actuator's mode/kp/kv. Multi-actuator-per-joint
+        // (N:1) is collapsed to "first wins" with a log warning — the
+        // current `JointData` schema can only hold one set of gains.
+        let mut joint_actuator_settings: HashMap<&str, (mn::ActuatorMode, f64, f64)> =
+            HashMap::new();
+        for a in &file.actuator {
+            for jr in &a.joints {
+                if joint_actuator_settings.contains_key(jr.name.as_str()) {
+                    log::warn!(
+                        "joint '{}' has multiple actuators ('{}' is the additional one); \
+                         only the first actuator's gains are kept in RobotModel",
+                        jr.name,
+                        a.name,
+                    );
+                    continue;
+                }
+                joint_actuator_settings.insert(jr.name.as_str(), (a.mode, a.kp, a.kv));
+            }
+        }
+
+        let mut joints: Vec<JointData> = Vec::with_capacity(file.joint.len());
+        let mut joint_map: HashMap<String, usize> = HashMap::new();
+        let mut children_joints: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, j) in file.joint.iter().enumerate() {
+            joint_map.insert(j.name.clone(), i);
+            children_joints
+                .entry(j.parent.clone())
+                .or_default()
+                .push(i);
+
+            let (actuator_mode, actuator_kp, actuator_kv) = joint_actuator_settings
+                .get(j.name.as_str())
+                .copied()
+                .map(|(m, kp, kv)| (convert_actuator_mode(m), kp, kv))
+                .unwrap_or((ActuatorMode::default(), 50.0, 5.0));
+
+            joints.push(JointData {
+                name: j.name.clone(),
+                joint_type: joint_kind_to_string(j.kind),
+                parent_link: j.parent.clone(),
+                child_link: j.child.clone(),
+                origin: misa_origin_to_isometry_f32(&j.origin),
+                axis: na::Vector3::new(j.axis[0] as f32, j.axis[1] as f32, j.axis[2] as f32),
+                lower: j.limit.lower,
+                upper: j.limit.upper,
+                effort: j.limit.effort,
+                velocity: j.limit.velocity,
+                actuator_mode,
+                actuator_kp,
+                actuator_kv,
+                armature: j.dynamics.armature,
+                joint_damping: j.dynamics.damping,
+            });
+        }
+
+        // ── Mimics (direct, same shape) ─────────────────────────────────
+        let mimics: Vec<crate::rbd::model::Mimic> = file
+            .mimic
+            .iter()
+            .map(|m| crate::rbd::model::Mimic {
+                joint: m.joint.clone(),
+                source: m.source.clone(),
+                multiplier: m.multiplier,
+                offset: m.offset,
+            })
+            .collect();
+
+        // ── Loop closures (use existing from_config) ────────────────────
+        let loop_closures: Vec<crate::rbd::model::LoopClosure> = file
+            .loop_closure
+            .iter()
+            .map(crate::rbd::model::LoopClosure::from_config)
+            .collect();
+
+        // ── Collision pairs (use normalising constructor) ───────────────
+        let collision_pairs: Vec<crate::rbd::model::CollisionPair> = file
+            .collision_pair
+            .iter()
+            .map(|cp| {
+                crate::rbd::model::CollisionPair::new(cp.link_a.clone(), cp.link_b.clone(), cp.enabled)
+            })
+            .collect();
+
+        // ── Sensors (Origin → Isometry3<f64>) ───────────────────────────
+        let sensors: Vec<crate::rbd::model::Sensor> = file
+            .sensor
+            .iter()
+            .map(|s| crate::rbd::model::Sensor {
+                name: s.name.clone(),
+                link: s.link.clone(),
+                origin: misa_origin_to_isometry_f64(&s.origin),
+                update_rate: s.update_rate,
+                kind: convert_sensor_kind(&s.kind),
+            })
+            .collect();
+
+        // ── Poses, sequences, gaits ─────────────────────────────────────
+        // These are direct re-exports of misarta::config types in the
+        // .misa schema, so we go through load_misarta_config to reuse the
+        // existing application logic (joint angle filtering, etc.).
+        let mut cfg = misarta::config::MisartaConfig::new();
+        for p in &file.pose {
+            cfg.pose.push(p.clone());
+        }
+        for s in &file.sequence {
+            cfg.sequence.push(s.clone());
+        }
+        for g in &file.gait {
+            cfg.gait.push(g.clone());
+        }
+        cfg.home = file.home.clone();
+
+        // ── Root link, joint positions ──────────────────────────────────
+        let joint_positions = vec![0.0_f64; joints.len()];
+        let root_link = file.robot.root.clone();
+
+        log::info!(
+            "Loaded .misa robot '{}': {} links, {} joints, root='{}'",
+            file.robot.name,
+            links.len(),
+            joints.len(),
+            root_link
+        );
+
+        let mut model = RobotModel {
+            name: file.robot.name.clone(),
+            links,
+            joints,
+            link_map,
+            joint_map,
+            root_link,
+            children_joints,
+            materials,
+            joint_positions,
+            source_path: Some(path.to_path_buf()),
+            base_transform: na::Isometry3::identity(),
+            misarta_cache: None,
+            loop_closures: Vec::new(),
+            poses: Vec::new(),
+            collision_pairs: Vec::new(),
+            sequences: Vec::new(),
+            mimics: Vec::new(),
+            sensors: Vec::new(),
+            gaits: Vec::new(),
+        };
+        // Apply the pose / sequence / gait / home subset via the existing
+        // sidecar loader (it handles joint_positions for `home` and per-joint
+        // actuator gains). load_misarta_config also blanks
+        // mimics / loop_closures / collision_pairs / sensors from the cfg
+        // contents, so we must populate those AFTER calling it (we passed
+        // them empty above to make the order explicit).
+        model.load_misarta_config(&cfg);
+        model.mimics = mimics;
+        model.loop_closures = loop_closures;
+        model.collision_pairs = collision_pairs;
+        model.sensors = sensors;
+        model.rebuild_misarta_model();
+        Ok(model)
+    }
+
+    // ─── Conversion helpers ──────────────────────────────────────────────
+
+    pub(super) fn misa_origin_to_isometry_f32(o: &mn::Origin) -> na::Isometry3<f32> {
+        let t = na::Translation3::new(o.xyz[0] as f32, o.xyz[1] as f32, o.xyz[2] as f32);
+        let r = misa_origin_rotation_f32(o);
+        na::Isometry3::from_parts(t, r)
+    }
+
+    fn misa_origin_to_isometry_f64(o: &mn::Origin) -> na::Isometry3<f64> {
+        let t = na::Translation3::new(o.xyz[0], o.xyz[1], o.xyz[2]);
+        let r = if let Some(q) = o.quat {
+            na::UnitQuaternion::from_quaternion(na::Quaternion::new(q[3], q[0], q[1], q[2]))
+        } else if let Some(rpy) = o.rpy {
+            na::UnitQuaternion::from_euler_angles(rpy[0], rpy[1], rpy[2])
+        } else {
+            na::UnitQuaternion::identity()
+        };
+        na::Isometry3::from_parts(t, r)
+    }
+
+    fn misa_origin_rotation_f32(o: &mn::Origin) -> na::UnitQuaternion<f32> {
+        if let Some(q) = o.quat {
+            na::UnitQuaternion::from_quaternion(na::Quaternion::new(
+                q[3] as f32,
+                q[0] as f32,
+                q[1] as f32,
+                q[2] as f32,
+            ))
+        } else if let Some(rpy) = o.rpy {
+            na::UnitQuaternion::from_euler_angles(rpy[0] as f32, rpy[1] as f32, rpy[2] as f32)
+        } else {
+            na::UnitQuaternion::identity()
+        }
+    }
+
+    fn convert_misa_geom(geom: &mn::Geom, base_dir: &Path) -> GeomData {
+        match geom {
+            mn::Geom::Box { size } => GeomData::Box {
+                hx: size[0] as f32 / 2.0,
+                hy: size[1] as f32 / 2.0,
+                hz: size[2] as f32 / 2.0,
+            },
+            mn::Geom::Cylinder { radius, length } => GeomData::Cylinder {
+                radius: *radius as f32,
+                half_length: *length as f32 / 2.0,
+            },
+            mn::Geom::Sphere { radius } => GeomData::Sphere {
+                radius: *radius as f32,
+            },
+            mn::Geom::Capsule { radius, length } => GeomData::Capsule {
+                radius: *radius as f32,
+                half_length: *length as f32 / 2.0,
+            },
+            mn::Geom::Mesh { file, scale } => {
+                let path = base_dir.join(file);
+                let scale_arr = [scale[0] as f32, scale[1] as f32, scale[2] as f32];
+                let vertices = load_stl_mesh_with_scale(&path, scale_arr);
+                GeomData::Mesh {
+                    vertices,
+                    filename: Some(file.clone()),
+                    scale: Some(scale_arr),
+                }
+            }
+        }
+    }
+
+    /// STL loader that takes a plain `[f32; 3]` scale (parallel to the
+    /// URDF-side `load_stl_mesh` which takes a `urdf_rs::Vec3`). Kept
+    /// separate to avoid touching the URDF code path while .misa lands;
+    /// can be unified in a follow-up refactor.
+    fn load_stl_mesh_with_scale(path: &PathBuf, scale: [f32; 3]) -> Vec<f32> {
+        let file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) => {
+                log::warn!("Failed to open STL file {:?}: {}", path, e);
+                return Vec::new();
+            }
+        };
+        let mut reader = BufReader::new(file);
+        let mesh = match stl_io::read_stl(&mut reader) {
+            Ok(m) => m,
+            Err(e) => {
+                log::warn!("Failed to read STL {:?}: {}", path, e);
+                return Vec::new();
+            }
+        };
+
+        let mut vertices = Vec::with_capacity(mesh.faces.len() * 3 * 6);
+        for face in &mesh.faces {
+            let nx = face.normal[0];
+            let ny = face.normal[1];
+            let nz = face.normal[2];
+            for &vi in &face.vertices {
+                let vtx = &mesh.vertices[vi];
+                vertices.push(vtx[0] * scale[0]);
+                vertices.push(vtx[1] * scale[1]);
+                vertices.push(vtx[2] * scale[2]);
+                vertices.push(nx);
+                vertices.push(ny);
+                vertices.push(nz);
+            }
+        }
+        vertices
+    }
+
+    pub(super) fn color_spec_to_rgba(c: &mn::ColorSpec) -> [f32; 4] {
+        match c {
+            mn::ColorSpec::Rgba(v) => *v,
+            mn::ColorSpec::Hex(s) => parse_hex_color(s).unwrap_or([0.8, 0.8, 0.8, 1.0]),
+        }
+    }
+
+    fn parse_hex_color(s: &str) -> Option<[f32; 4]> {
+        let s = s.strip_prefix('#').unwrap_or(s);
+        let byte = |i: usize| -> Option<f32> {
+            let pair = s.get(i..i + 2)?;
+            u8::from_str_radix(pair, 16).ok().map(|b| b as f32 / 255.0)
+        };
+        match s.len() {
+            6 => Some([byte(0)?, byte(2)?, byte(4)?, 1.0]),
+            8 => Some([byte(0)?, byte(2)?, byte(4)?, byte(6)?]),
+            _ => None,
+        }
+    }
+
+    fn resolve_visual_color(
+        v: &mn::Visual,
+        materials: &HashMap<String, [f32; 4]>,
+    ) -> [f32; 4] {
+        if let Some(c) = &v.color {
+            return color_spec_to_rgba(c);
+        }
+        if let Some(name) = &v.material {
+            if let Some(c) = materials.get(name) {
+                return *c;
+            }
+        }
+        [0.8, 0.8, 0.8, 1.0]
+    }
+
+    fn joint_kind_to_string(k: mn::JointKind) -> String {
+        match k {
+            mn::JointKind::Revolute => "revolute".into(),
+            mn::JointKind::Continuous => "continuous".into(),
+            mn::JointKind::Prismatic => "prismatic".into(),
+            mn::JointKind::Fixed => "fixed".into(),
+            mn::JointKind::Floating => "floating".into(),
+            mn::JointKind::Planar => "planar".into(),
+        }
+    }
+
+    fn convert_actuator_mode(m: mn::ActuatorMode) -> ActuatorMode {
+        match m {
+            mn::ActuatorMode::Position => ActuatorMode::Position,
+            mn::ActuatorMode::Velocity => ActuatorMode::Velocity,
+            mn::ActuatorMode::Torque => ActuatorMode::Torque,
+            mn::ActuatorMode::ComputedTorque => ActuatorMode::ComputedTorque,
+        }
+    }
+
+    fn convert_sensor_kind(k: &mn::SensorKind) -> crate::rbd::model::SensorKind {
+        use crate::rbd::model::SensorKind as Out;
+        match k {
+            mn::SensorKind::Camera { fov, width, height, near, far } => Out::Camera {
+                fov: *fov, width: *width, height: *height, near: *near, far: *far,
+            },
+            mn::SensorKind::Lidar {
+                range_min, range_max, h_fov, h_samples, v_fov, v_samples,
+            } => Out::Lidar {
+                range_min: *range_min,
+                range_max: *range_max,
+                h_fov: *h_fov,
+                h_samples: *h_samples,
+                v_fov: *v_fov,
+                v_samples: *v_samples,
+            },
+            mn::SensorKind::Imu { gyro_noise, accel_noise } => Out::Imu {
+                gyro_noise: *gyro_noise,
+                accel_noise: *accel_noise,
+            },
+            mn::SensorKind::ForceTorque { joint } => Out::ForceTorque {
+                joint: joint.clone(),
+            },
+            mn::SensorKind::Contact { partner } => Out::Contact {
+                partner: partner.clone(),
+            },
+            mn::SensorKind::Generic { kind, params } => Out::Generic {
+                kind: kind.clone(),
+                params: params.clone(),
+            },
+        }
+    }
+}
+
+// compute_transforms, parent_joint_of_link, ancestor_links, link_bounding_sphere
+// are now defined in crate::rbd::model (re-exported via pub use above).
+
+impl RobotModel {
     /// Pick: find the closest link hit by a ray, given current world transforms.
     /// Uses two-pass: bounding sphere (coarse) → triangle/analytic intersection (precise).
     /// Returns (link_index, distance) or None.

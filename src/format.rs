@@ -9,11 +9,14 @@ pub enum RobotFormat {
     Sdf,
     Mjcf,
     IsaacUsd,
+    /// articara/misarta native master format (TOML; `.misa`).
+    Misa,
 }
 
 impl RobotFormat {
     /// All supported formats for UI listing.
     pub const ALL: &[RobotFormat] = &[
+        RobotFormat::Misa,
         RobotFormat::Urdf,
         RobotFormat::Sdf,
         RobotFormat::Mjcf,
@@ -23,7 +26,14 @@ impl RobotFormat {
     /// Whether this format supports import (loading).
     #[allow(dead_code)]
     pub fn supports_import(self) -> bool {
-        matches!(self, RobotFormat::Urdf | RobotFormat::Sdf | RobotFormat::Mjcf | RobotFormat::IsaacUsd)
+        matches!(
+            self,
+            RobotFormat::Urdf
+                | RobotFormat::Sdf
+                | RobotFormat::Mjcf
+                | RobotFormat::IsaacUsd
+                | RobotFormat::Misa
+        )
     }
 
     /// Whether this format supports export.
@@ -38,6 +48,7 @@ impl RobotFormat {
             RobotFormat::Sdf => "SDF",
             RobotFormat::Mjcf => "MJCF",
             RobotFormat::IsaacUsd => "Isaac (USD ASCII)",
+            RobotFormat::Misa => "Misa (native)",
         }
     }
 
@@ -49,6 +60,7 @@ impl RobotFormat {
             RobotFormat::Sdf => "sdf",
             RobotFormat::Mjcf => "xml",
             RobotFormat::IsaacUsd => "usda",
+            RobotFormat::Misa => "misa",
         }
     }
 
@@ -62,6 +74,7 @@ impl RobotFormat {
             "sdf" | "world" => Some(RobotFormat::Sdf),
             "xml" | "mjcf" => Some(RobotFormat::Mjcf),
             "usda" | "usd" => Some(RobotFormat::IsaacUsd),
+            "misa" => Some(RobotFormat::Misa),
             _ => None,
         }
     }
@@ -88,6 +101,7 @@ impl RobotFormat {
                 Some(RobotFormat::Mjcf) // default for .xml
             }
             "usda" | "usd" => Some(RobotFormat::IsaacUsd),
+            "misa" => Some(RobotFormat::Misa),
             _ => None,
         }
     }
@@ -305,9 +319,10 @@ impl FormatRegistry {
         Self { handlers: Vec::new() }
     }
 
-    /// Built-in registry covering URDF / SDF / MJCF / USD.
+    /// Built-in registry covering Misa (native) / URDF / SDF / MJCF / USD.
     pub fn default_registry() -> Self {
         let mut r = Self::new();
+        r.register(Box::new(handlers::MisaHandler));
         r.register(Box::new(handlers::UrdfHandler));
         r.register(Box::new(handlers::SdfHandler));
         r.register(Box::new(handlers::MjcfHandler));
@@ -472,6 +487,37 @@ mod handlers {
         ) -> Result<(), String> {
             let xml = crate::mjcf::export_mjcf(model);
             std::fs::write(path, xml).map_err(|e| format!("Write MJCF: {e}"))
+        }
+    }
+
+    /// `.misa` — articara/misarta native master format. Designed to
+    /// represent every concept articara holds in memory, so it has all
+    /// capabilities enabled. This is the canonical format; URDF / MJCF
+    /// / USD exist as derivative export targets.
+    pub struct MisaHandler;
+    impl FormatHandler for MisaHandler {
+        fn name(&self) -> &str { "Misa" }
+        fn extensions(&self) -> &[&'static str] { &["misa"] }
+        fn capabilities(&self) -> FormatCapabilities {
+            FormatCapabilities {
+                mimic: true,
+                sensors: true,
+                collision_pairs: true,
+                closed_loops: true,
+                actuators: true,
+            }
+        }
+        fn import(&self, path: &Path) -> Result<crate::robot::RobotModel, String> {
+            crate::robot::RobotModel::from_misa(path)
+        }
+        fn export(
+            &self,
+            _model: &crate::robot::RobotModel,
+            _path: &Path,
+        ) -> Result<(), String> {
+            // Export path is not yet implemented; tracked in
+            // doc/refactor_20260502.md ToDo (RobotModel::to_misa).
+            Err("Misa export (RobotModel::to_misa) is not yet implemented".into())
         }
     }
 

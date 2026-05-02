@@ -520,8 +520,9 @@ mod test_format {
     }
 
     #[test]
-    fn all_contains_four() {
-        assert_eq!(RobotFormat::ALL.len(), 4);
+    fn all_contains_five() {
+        // Misa (native) + URDF + SDF + MJCF + USD
+        assert_eq!(RobotFormat::ALL.len(), 5);
     }
 
     #[test]
@@ -3805,3 +3806,386 @@ mod test_sidecar {
     }
 }
 
+mod test_misa {
+    use super::*;
+    use articara::format::RobotFormat;
+    use articara::robot::{ActuatorMode, RobotModel};
+    use misarta::native as mn;
+
+    /// Build a minimal but realistic MisaFile in code so tests don't
+    /// need a fixture file. Returns a 3-link biped (trunk + L/R thigh)
+    /// with one actuator per leg.
+    fn sample_misa_file() -> mn::MisaFile {
+        let mut f = mn::MisaFile::new("biped_test", "trunk");
+
+        f.material.push(mn::Material {
+            name: "red_plastic".into(),
+            color: mn::ColorSpec::Hex("#cc4422".into()),
+        });
+
+        f.link.push(mn::Link {
+            name: "trunk".into(),
+            description: String::new(),
+            inertial: mn::Inertial {
+                mass: 5.0,
+                ixx: 0.10,
+                iyy: 0.10,
+                izz: 0.10,
+                ..Default::default()
+            },
+            visual: vec![mn::Visual {
+                origin: mn::Origin::default(),
+                geom: mn::Geom::Box {
+                    size: [0.30, 0.20, 0.10],
+                },
+                color: None,
+                material: Some("red_plastic".into()),
+            }],
+            collision: vec![mn::Collision {
+                origin: mn::Origin::default(),
+                geom: mn::Geom::Box {
+                    size: [0.30, 0.20, 0.10],
+                },
+            }],
+        });
+
+        for side in &["left", "right"] {
+            f.link.push(mn::Link {
+                name: format!("{side}_thigh"),
+                description: String::new(),
+                inertial: mn::Inertial {
+                    mass: 0.8,
+                    ixx: 0.01,
+                    iyy: 0.01,
+                    izz: 0.001,
+                    ..Default::default()
+                },
+                visual: vec![mn::Visual {
+                    origin: mn::Origin::default(),
+                    geom: mn::Geom::Cylinder {
+                        radius: 0.03,
+                        length: 0.20,
+                    },
+                    color: Some(mn::ColorSpec::Rgba([0.5, 0.5, 0.5, 1.0])),
+                    material: None,
+                }],
+                collision: Vec::new(),
+            });
+            let y = if *side == "left" { 0.10 } else { -0.10 };
+            f.joint.push(mn::Joint {
+                name: format!("{side}_hip_pitch"),
+                kind: mn::JointKind::Revolute,
+                parent: "trunk".into(),
+                child: format!("{side}_thigh"),
+                axis: [0.0, 1.0, 0.0],
+                origin: mn::Origin {
+                    xyz: [0.0, y, -0.05],
+                    rpy: Some([0.0, 0.0, 0.0]),
+                    quat: None,
+                },
+                limit: mn::JointLimit {
+                    lower: -1.5,
+                    upper: 1.5,
+                    effort: 30.0,
+                    velocity: 10.0,
+                },
+                dynamics: mn::JointDynamics {
+                    armature: 0.001,
+                    damping: 0.05,
+                    friction: 0.0,
+                },
+            });
+        }
+
+        f.actuator.push(mn::Actuator {
+            name: "left_motor".into(),
+            mode: mn::ActuatorMode::Position,
+            joints: vec![mn::ActuatorJointRef {
+                name: "left_hip_pitch".into(),
+                gear: 1.0,
+            }],
+            kp: 100.0,
+            kv: 1.2,
+        });
+        f.actuator.push(mn::Actuator {
+            name: "right_motor".into(),
+            mode: mn::ActuatorMode::Position,
+            joints: vec![mn::ActuatorJointRef {
+                name: "right_hip_pitch".into(),
+                gear: 1.0,
+            }],
+            kp: 100.0,
+            kv: 1.2,
+        });
+
+        f
+    }
+
+    /// Save a MisaFile to a unique temp file and return its path.
+    fn save_to_temp(file: &mn::MisaFile, tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("articara_misa_test_{tag}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("robot.misa");
+        mn::save(&path, file).expect("save");
+        path
+    }
+
+    #[test]
+    fn from_misa_basic_round_trip() {
+        let file = sample_misa_file();
+        let path = save_to_temp(&file, "basic");
+        let model = RobotModel::from_misa(&path).expect("load");
+
+        assert_eq!(model.name, "biped_test");
+        assert_eq!(model.root_link, "trunk");
+        assert_eq!(model.links.len(), 3);
+        assert_eq!(model.joints.len(), 2);
+
+        // Links
+        let trunk_idx = model.link_map["trunk"];
+        let trunk = &model.links[trunk_idx];
+        assert!((trunk.inertial.mass - 5.0).abs() < 1e-9);
+        assert_eq!(trunk.visuals.len(), 1);
+        assert_eq!(trunk.collisions.len(), 1);
+
+        // Geom: full size 0.30 → half-extent 0.15 in articara's representation
+        match &trunk.visuals[0].geometry {
+            articara::robot::GeomData::Box { hx, hy, hz } => {
+                assert!((hx - 0.15).abs() < 1e-6);
+                assert!((hy - 0.10).abs() < 1e-6);
+                assert!((hz - 0.05).abs() < 1e-6);
+            }
+            _ => panic!("expected Box geometry"),
+        }
+
+        // Joints
+        let lhip = &model.joints[model.joint_map["left_hip_pitch"]];
+        assert_eq!(lhip.joint_type, "revolute");
+        assert_eq!(lhip.parent_link, "trunk");
+        assert_eq!(lhip.child_link, "left_thigh");
+        assert!((lhip.lower + 1.5).abs() < 1e-9);
+        assert!((lhip.upper - 1.5).abs() < 1e-9);
+
+        // Joint dynamics from `dynamics` table
+        assert!((lhip.armature - 0.001).abs() < 1e-9);
+        assert!((lhip.joint_damping - 0.05).abs() < 1e-9);
+
+        // Actuator gains from [[actuator]] table
+        assert_eq!(lhip.actuator_mode, ActuatorMode::Position);
+        assert!((lhip.actuator_kp - 100.0).abs() < 1e-9);
+        assert!((lhip.actuator_kv - 1.2).abs() < 1e-9);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn from_misa_color_resolution_inline_and_named() {
+        let file = sample_misa_file();
+        let path = save_to_temp(&file, "color");
+        let model = RobotModel::from_misa(&path).expect("load");
+
+        // trunk visual uses `material = "red_plastic"` → #cc4422 = (204/255, 68/255, 34/255, 1)
+        let trunk_color = model.links[model.link_map["trunk"]].visuals[0].color;
+        assert!((trunk_color[0] - 204.0 / 255.0).abs() < 1e-3);
+        assert!((trunk_color[1] - 68.0 / 255.0).abs() < 1e-3);
+        assert!((trunk_color[2] - 34.0 / 255.0).abs() < 1e-3);
+        assert!((trunk_color[3] - 1.0).abs() < 1e-6);
+
+        // left_thigh visual uses inline RGBA color
+        let leg_color = model.links[model.link_map["left_thigh"]].visuals[0].color;
+        assert!((leg_color[0] - 0.5).abs() < 1e-6);
+        assert!((leg_color[3] - 1.0).abs() < 1e-6);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn from_misa_mimic_round_trip() {
+        let mut file = sample_misa_file();
+        file.mimic.push(mn::Mimic {
+            joint: "right_hip_pitch".into(),
+            source: "left_hip_pitch".into(),
+            multiplier: -1.0,
+            offset: 0.0,
+        });
+        let path = save_to_temp(&file, "mimic");
+        let model = RobotModel::from_misa(&path).expect("load");
+        assert_eq!(model.mimics.len(), 1);
+        assert_eq!(model.mimics[0].joint, "right_hip_pitch");
+        assert_eq!(model.mimics[0].source, "left_hip_pitch");
+        assert!((model.mimics[0].multiplier + 1.0).abs() < 1e-9);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn from_misa_n_to_m_actuator_drives_both_joints() {
+        let mut file = sample_misa_file();
+        // Replace the per-leg actuators with a single differential
+        // actuator driving both hip joints (N:1 from joint POV).
+        file.actuator.clear();
+        file.actuator.push(mn::Actuator {
+            name: "diff_drive".into(),
+            mode: mn::ActuatorMode::Torque,
+            joints: vec![
+                mn::ActuatorJointRef {
+                    name: "left_hip_pitch".into(),
+                    gear: 1.0,
+                },
+                mn::ActuatorJointRef {
+                    name: "right_hip_pitch".into(),
+                    gear: -1.0,
+                },
+            ],
+            kp: 0.0,
+            kv: 5.0,
+        });
+        let path = save_to_temp(&file, "diff");
+        let model = RobotModel::from_misa(&path).expect("load");
+
+        // Both joints should inherit the actuator's mode/gains
+        let lhip = &model.joints[model.joint_map["left_hip_pitch"]];
+        let rhip = &model.joints[model.joint_map["right_hip_pitch"]];
+        assert_eq!(lhip.actuator_mode, ActuatorMode::Torque);
+        assert_eq!(rhip.actuator_mode, ActuatorMode::Torque);
+        assert!((lhip.actuator_kv - 5.0).abs() < 1e-9);
+        assert!((rhip.actuator_kv - 5.0).abs() < 1e-9);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn from_misa_loop_closure_and_collision_pair_preserved() {
+        let mut file = sample_misa_file();
+        file.loop_closure.push(mn::LoopClosure {
+            name: "demo_loop".into(),
+            link_a: "left_thigh".into(),
+            offset_a: [0.0, 0.0, -0.10],
+            rot_a: [0.0, 0.0, 0.0, 1.0],
+            link_b: "right_thigh".into(),
+            offset_b: [0.0, 0.0, -0.10],
+            rot_b: [0.0, 0.0, 0.0, 1.0],
+            pose_6dof: false,
+        });
+        file.collision_pair.push(mn::CollisionPair {
+            link_a: "left_thigh".into(),
+            link_b: "right_thigh".into(),
+            enabled: false,
+        });
+        let path = save_to_temp(&file, "loop_pair");
+        let model = RobotModel::from_misa(&path).expect("load");
+
+        assert_eq!(model.loop_closures.len(), 1);
+        assert_eq!(model.loop_closures[0].name, "demo_loop");
+        assert_eq!(model.collision_pairs.len(), 1);
+        assert!(!model.collision_pairs[0].enabled);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn from_misa_pose_and_home_applied() {
+        let mut file = sample_misa_file();
+        file.pose.push(mn::Pose {
+            name: "tucked".into(),
+            angles: [
+                ("left_hip_pitch".to_string(), 0.5),
+                ("right_hip_pitch".to_string(), -0.5),
+            ]
+            .into_iter()
+            .collect(),
+            duration: 0.3,
+            kind: misarta::trajectory::InterpolationKind::QuinticSmooth,
+        });
+        file.home.joint_positions =
+            [("left_hip_pitch".to_string(), 0.7)].into_iter().collect();
+        let path = save_to_temp(&file, "pose_home");
+        let model = RobotModel::from_misa(&path).expect("load");
+
+        assert_eq!(model.poses.len(), 1);
+        assert_eq!(model.poses[0].name, "tucked");
+        // Home applied: left_hip_pitch should be at 0.7 in joint_positions
+        let lhip_idx = model.joint_map["left_hip_pitch"];
+        assert!((model.joint_positions[lhip_idx] - 0.7).abs() < 1e-9);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn from_misa_with_report_surfaces_sanitisation() {
+        // Hand-build TOML directly so we can inject an invalid identifier
+        // (constructing a MisaFile in code can't test the parser sanitiser).
+        let toml_text = r#"
+schema = "misarta/1"
+
+[robot]
+name = "demo"
+root = "base"
+
+[[link]]
+name = "base"
+
+[[link]]
+name = "front-leg"
+
+[[joint]]
+name = "hip"
+type = "revolute"
+parent = "base"
+child = "front-leg"
+"#;
+        let dir = std::env::temp_dir().join("articara_misa_test_sanit");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("robot.misa");
+        std::fs::write(&path, toml_text).unwrap();
+
+        let (model, report) = RobotModel::from_misa_with_report(&path).expect("load");
+
+        assert_eq!(model.links[1].name, "front_leg");
+        assert_eq!(model.joints[0].child_link, "front_leg");
+        assert!(!report.is_empty());
+        assert_eq!(report.sanitized_names.len(), 1);
+        assert_eq!(report.sanitized_names[0].original, "front-leg");
+        assert_eq!(report.sanitized_names[0].sanitized, "front_leg");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn from_misa_dispatched_via_from_file() {
+        let file = sample_misa_file();
+        let path = save_to_temp(&file, "dispatch");
+        // from_file should detect the extension and route to from_misa
+        let model = RobotModel::from_file(&path).expect("load via from_file");
+        assert_eq!(model.name, "biped_test");
+        assert_eq!(model.links.len(), 3);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn misa_format_detection() {
+        let p = std::path::Path::new("foo/bar.misa");
+        assert_eq!(RobotFormat::detect(p), Some(RobotFormat::Misa));
+        assert_eq!(RobotFormat::detect_from_extension(p), Some(RobotFormat::Misa));
+        assert!(RobotFormat::Misa.supports_import());
+        assert!(RobotFormat::Misa.supports_export());
+        assert_eq!(RobotFormat::Misa.extension(), "misa");
+    }
+
+    #[test]
+    fn from_misa_rebuild_misarta_model_succeeds() {
+        let file = sample_misa_file();
+        let path = save_to_temp(&file, "rebuild");
+        let model = RobotModel::from_misa(&path).expect("load");
+        // misarta_cache is built during from_misa; smoke-check by computing
+        // FK transforms (which require the cache).
+        let transforms = model.compute_transforms();
+        // Should at least have transforms for root + 2 children
+        assert!(transforms.contains_key("trunk"));
+        assert!(transforms.contains_key("left_thigh"));
+        assert!(transforms.contains_key("right_thigh"));
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+}
