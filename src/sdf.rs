@@ -1,6 +1,18 @@
-//! SDF (Simulation Description Format) import and export.
+//! SDF (Simulation Description Format) import and export — articara layer.
 //!
-//! SDF is used by Gazebo. We support a subset that maps to our RobotModel.
+//! SDF is used by Gazebo. This module produces / consumes
+//! [`crate::robot::RobotModel`] directly and handles articara-specific
+//! extensions: sensors, mimic joints, named materials, sidecar
+//! integration, and editor-side metadata.
+//!
+//! # Layering
+//!
+//! [`misarta::sdf`] provides a thinner SDF parser that returns the runtime
+//! kinematic types (`Model<f64>` + `GeometryModel`) without articara's
+//! extensions. It exists for downstream consumers that depend on misarta
+//! but not on articara. The two parse paths are parallel; sharing them by
+//! having articara delegate is tracked as future work in
+//! `doc/refactor_20260502.md` §9.1.
 
 use nalgebra as na;
 use std::collections::{HashMap, HashSet};

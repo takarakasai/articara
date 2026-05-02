@@ -1,9 +1,12 @@
-//! USD ASCII (.usda) import for robot models.
+//! USD ASCII (.usda) import for robot models — articara layer.
 //!
 //! Parses `.usda` files that follow our export conventions (see `usd.rs`)
 //! and reconstructs a `RobotModel`.  The parser also handles typical
 //! USDA files from other sources (e.g. Isaac Sim), although not all USD
 //! features are supported.
+//!
+//! See [`crate::usd`] for the matching exporter and the layering note
+//! about why USD support lives only in articara (not misarta) for now.
 
 use nalgebra as na;
 use std::collections::{HashMap, HashSet};

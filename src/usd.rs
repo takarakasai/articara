@@ -1,8 +1,18 @@
-//! USD ASCII (.usda) export for robot models.
+//! USD ASCII (.usda) export for robot models — articara layer.
 //!
 //! Generates a `.usda` file conforming to the USD specification
 //! (<https://graphics.pixar.com/usd/docs/index.html>).
 //! The output is suitable for loading in NVIDIA Isaac Sim / Omniverse.
+//!
+//! # Layering note
+//!
+//! USD support (this exporter and [`crate::usd_import`]) lives only in
+//! articara. There is no `misarta::usd` parallel layer. A future split
+//! mirroring the URDF / SDF layering is tracked in
+//! `doc/refactor_20260502.md` §9.1 — defer until either a misarta-only
+//! consumer needs USD support, or a stable USD ↔ misarta::Model
+//! conversion can be defined without depending on articara's extension
+//! fields (sensors, mimic, named materials).
 
 use std::collections::HashMap;
 

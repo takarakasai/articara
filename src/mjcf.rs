@@ -1,7 +1,19 @@
-//! MJCF (MuJoCo XML) import and export.
+//! MJCF (MuJoCo XML) import and export — articara layer.
 //!
 //! MJCF uses a nested body hierarchy rather than flat link/joint lists.
-//! We support a practical subset that maps to our RobotModel.
+//! This module produces / consumes [`crate::robot::RobotModel`] directly
+//! and includes articara-specific handling: actuators with mode/kp/kv,
+//! `<equality>` constraints, sensors, and `[[contact]]` exclusion lists.
+//!
+//! # Layering note
+//!
+//! There is no `misarta::mjcf` parallel layer at the moment — unlike URDF
+//! and SDF, the MJCF importer lives only in articara. Splitting it into
+//! a "structural-only" misarta layer (returning `Model<f64>` +
+//! `GeometryModel`) plus an articara wrapper is tracked in
+//! `doc/refactor_20260502.md` §9.1 as future work. The parser is ~1300
+//! lines and tightly coupled to `RobotModel`'s extension fields, so a
+//! safe split needs a dedicated change with full round-trip regression.
 
 use nalgebra as na;
 use std::collections::{HashMap, HashSet};
