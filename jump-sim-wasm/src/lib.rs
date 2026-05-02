@@ -667,12 +667,13 @@ fn cmd_static_analysis(
     let input: StaticAnalysisParams =
         serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
-    let result = dynamics::analyze(
-        &input.model,
-        input.ee_link.as_deref(),
-        input.body_link.as_deref(),
-        &input.ground_links,
-    );
+    // dynamics::analyze was simplified in 8ca7bbc — body_link and
+    // ground_links were used only by the jump-height block (now removed).
+    // Inputs are still accepted from the WASM client for API stability;
+    // they're ignored here.
+    let _ = input.body_link.as_deref();
+    let _ = &input.ground_links;
+    let result = dynamics::analyze(&input.model, input.ee_link.as_deref());
 
     let mut views = Vec::new();
 
@@ -742,26 +743,10 @@ fn cmd_static_analysis(
         });
     }
 
-    // Jump
-    if let Some(ref j) = result.jump {
-        views.push(api::View::Scalars {
-            title: Some("Jump Height Estimate".into()),
-            items: vec![
-                api::ScalarItem {
-                    label: "Max Height".into(),
-                    value: format!("{:.4} m", j.max_height_m),
-                    numeric: Some(j.max_height_m),
-                    emphasis: Some("primary".into()),
-                },
-                api::ScalarItem {
-                    label: "Total Energy".into(),
-                    value: format!("{:.3} J", j.total_energy_j),
-                    numeric: Some(j.total_energy_j),
-                    emphasis: None,
-                },
-            ],
-        });
-    }
+    // Jump-height block was removed when StaticAnalysis lost its
+    // `jump` field in 8ca7bbc. Use the dedicated `jump_height` command
+    // instead — it goes through `dynamics::compute_jump_height`
+    // (currently a stub awaiting reimplementation).
 
     let data = serde_json::to_value(&result).map_err(|e| format!("Serialization error: {e}"))?;
     Ok((views, data))
@@ -791,7 +776,7 @@ fn cmd_payload_sim(
     let input: PayloadSimParams =
         serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
-    let mut sim = dynamics::start_payload_sim(&input.model, &input.ee_link, input.speed)
+    let mut sim = dynamics::start_payload_sim(&input.model, &input.ee_link, input.speed as f64)
         .ok_or_else(|| "Failed to initialise payload simulation".to_string())?;
 
     // Run to completion

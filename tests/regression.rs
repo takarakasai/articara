@@ -2564,7 +2564,16 @@ mod test_serde {
 
     /// Full jump simulation with serialised input/output (native, no WASM).
     /// This validates the same code path used by the WASM plugin.
+    ///
+    /// **Ignored**: the underlying jump-simulation engine was removed in
+    /// commit 8ca7bbc ("reflesh dyn sim", 2026-04-27); `start_jump_sim`
+    /// is currently a stub that returns `None`. Re-enable this test once
+    /// the engine is reimplemented. Type-level serde round-trip is still
+    /// covered by `sim_graph_data_json_roundtrip` and
+    /// `jump_result_json_roundtrip` above, which exercise every field
+    /// the WASM ABI needs.
     #[test]
+    #[ignore = "jump-sim engine removed in 8ca7bbc; awaiting reimplementation"]
     fn native_jump_sim_serde_roundtrip() {
         let model = RobotModel::from_urdf(&namiashi_urdf()).unwrap();
 

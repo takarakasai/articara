@@ -406,6 +406,139 @@ fn update_utilisation(
     }
 }
 
+// ========== Jump simulation — STUBS ==========
+//
+// The jump-simulation engine that backed `start_jump_sim` /
+// `step_jump_sim` / `extract_jump_result` / `compute_jump_height` was
+// removed in commit 8ca7bbc ("reflesh dyn sim", 2026-04-27) along with
+// large parts of `src/rbd/dynamics.rs`. The dependent code in
+// `jump-sim-wasm` and the `test_serde` regression tests still references
+// these symbols.
+//
+// To keep the workspace compile-clean while the new jump-sim
+// architecture is being designed, the original *type surface* is
+// reinstated here as **stubs**:
+//
+// - All types preserve their public field shape so serde round-trip
+//   tests still pass.
+// - Functions return `None` / empty values so anything that calls them
+//   gracefully reports "not available" rather than panicking.
+//
+// Runtime jump-simulation tests (`native_jump_sim_serde_roundtrip`) are
+// `#[ignore]`d until the engine is reimplemented. WASM clients receive
+// a clear error from `start_jump_sim` returning `None`.
+
+/// Time-series sampled during a jump simulation. Field shape preserves
+/// the pre-refactor schema so on-disk JSON / `.misa` round-trips remain
+/// stable across the stub period.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SimGraphData {
+    pub time: Vec<f32>,
+    pub pos_x: Vec<f32>,
+    pub pos_y: Vec<f32>,
+    pub pos_z: Vec<f32>,
+    pub vel_x: Vec<f32>,
+    pub vel_y: Vec<f32>,
+    pub vel_z: Vec<f32>,
+    pub acc_x: Vec<f32>,
+    pub acc_y: Vec<f32>,
+    pub acc_z: Vec<f32>,
+    pub link_name: String,
+}
+
+/// Per-joint peak observed during a jump.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct JointPeakInfo {
+    pub joint_idx: usize,
+    pub joint_name: String,
+    pub peak_torque: f64,
+    pub peak_torque_angle: f64,
+    pub peak_velocity: f64,
+    pub peak_velocity_angle: f64,
+    pub contributes: bool,
+}
+
+/// Output of a completed jump simulation.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct JumpSimResult {
+    pub max_height: f32,
+    pub extension_duration: f32,
+    pub joint_peaks: Vec<JointPeakInfo>,
+    pub graph_data: SimGraphData,
+}
+
+/// Energy-method jump-height estimate.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct JumpHeightResult {
+    pub max_height_m: f64,
+    pub total_energy_j: f64,
+    pub total_mass_kg: f64,
+    pub per_joint_energy: Vec<(String, f64)>,
+}
+
+/// Opaque handle to an in-flight jump simulation. Currently a stub —
+/// the algorithm was removed in 8ca7bbc and is awaiting reimplementation.
+#[derive(Clone, Debug, Default)]
+pub struct JumpSim {
+    /// Unused stub field; kept so `Default` works and so callers can
+    /// pattern-match in the future without API churn.
+    _phantom: (),
+}
+
+/// **STUB** — initialise a jump simulation. Returns `None` because the
+/// underlying algorithm was removed in 8ca7bbc; callers should treat
+/// this as "jump simulation is not currently available."
+#[allow(clippy::too_many_arguments)]
+pub fn start_jump_sim(
+    _model: &mut RobotModel,
+    _ground_links: &[String],
+    _body_link: Option<&str>,
+    _speed: f32,
+    _locked_joints: &std::collections::HashSet<String>,
+    _launch_axes: [bool; 3],
+    _extension_duration: Option<f32>,
+    _enforce_torque_limits: bool,
+    _enable_retract: bool,
+    _graph_link: Option<&str>,
+    _pd_kp: f64,
+    _pd_kd: f64,
+) -> Option<JumpSim> {
+    log::warn!(
+        "start_jump_sim: jump simulation engine was removed in 8ca7bbc \
+         and has not been reimplemented yet — returning None"
+    );
+    None
+}
+
+/// **STUB** — step the jump simulation. Always returns `false` (i.e.
+/// "simulation is done") because the stub `JumpSim` carries no state.
+pub fn step_jump_sim(_sim: &mut JumpSim, _model: &mut RobotModel, _dt: f32) -> bool {
+    false
+}
+
+/// **STUB** — extract the result of a (stubbed) jump simulation.
+pub fn extract_jump_result(_sim: &JumpSim, _model: &RobotModel) -> JumpSimResult {
+    JumpSimResult::default()
+}
+
+/// **STUB** — energy-based jump-height estimate. Returns `None` because
+/// the algorithm was removed alongside the jump-sim engine.
+pub fn compute_jump_height(
+    _model: &RobotModel,
+    _ground_links: &[String],
+    _body_link: Option<&str>,
+) -> Option<JumpHeightResult> {
+    log::warn!(
+        "compute_jump_height: implementation was removed in 8ca7bbc \
+         and has not been reimplemented yet — returning None"
+    );
+    None
+}
+
 // ========== Tests ==========
 #[cfg(test)]
 mod tests {
