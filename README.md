@@ -49,13 +49,24 @@ tooling but are treated as **lossy derivatives** of the `.misa` master.
 
 ## MuJoCo setup
 
-When using the `mujoco` feature, configure the MuJoCo download directory:
+The `mujoco` feature requires **MuJoCo 3.8.0** at runtime to match the
+`mujoco-rs` 4.0.x FFI bindings. See [MUJOCO_SETUP.md](MUJOCO_SETUP.md)
+for full per-platform instructions; the minimal Linux quickstart is:
 
+```bash
+# Download MuJoCo 3.8.0
+mkdir -p ~/.mujoco && cd ~/.mujoco
+wget https://github.com/google-deepmind/mujoco/releases/download/3.8.0/mujoco-3.8.0-linux-x86_64.tar.gz
+tar -xzf mujoco-3.8.0-linux-x86_64.tar.gz
+
+# Build & run with the cross-platform xtask helper (auto-detects the
+# install and exports MUJOCO_DYNAMIC_LINK_DIR for cargo).
+cargo xtask run --release --features mujoco
 ```
-export MUJOCO_DOWNLOAD_DIR="$HOME/.mujoco"
-echo 'export MUJOCO_DOWNLOAD_DIR="$HOME/.mujoco"' >> ~/.bashrc
-echo 'export LD_LIBRARY_PATH="$HOME/.mujoco/mujoco-3.6.0/lib:$LD_LIBRARY_PATH"' >> ~/.bashrc
-```
+
+`cargo xtask` is the recommended entry point on macOS / Linux / Windows.
+A bare `cargo run --features mujoco` works too if you've sourced
+`./setup-mujoco.sh` first (PowerShell: `. .\setup-mujoco.ps1`).
 
 ## License
 
