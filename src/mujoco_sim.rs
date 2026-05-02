@@ -210,9 +210,45 @@ pub struct ExternalForcePulse {
     pub elapsed: f64,
 }
 
-/// Finds the `bin/mujoco_plugin` directory inside the MuJoCo installation.
-/// Checks `MUJOCO_DOWNLOAD_DIR` first, then `$HOME/.mujoco`.
+/// Finds the `bin/mujoco_plugin` directory inside the MuJoCo installation
+/// **that matches the currently-linked runtime version**.
+///
+/// Loading plugins from a different MuJoCo version than the linked
+/// runtime is fatal: MuJoCo 3.8.0 has the OBJ / STL decoders built in,
+/// so loading the 3.6.0 `libobj_decoder.so` / `libstl_decoder.so`
+/// plugins triggers `mj_loadResource: ERROR: resource decoder
+/// 'model/obj' is already registered`, which `mju_error()` turns into
+/// process termination. So we have to be picky about the directory we
+/// hand to `load_all_plugin_libraries`.
+///
+/// Search order:
+/// 1. `MUJOCO_DYNAMIC_LINK_DIR` (the env var `mujoco-rs` uses for
+///    linking) → its parent's `bin/mujoco_plugin`. Most reliable —
+///    plugin dir is guaranteed to match the linked runtime.
+/// 2. `MUJOCO_DOWNLOAD_DIR` (or `$HOME/.mujoco`) + `mujoco-{version}/
+///    bin/mujoco_plugin`, where `{version}` comes from the live
+///    [`crate::mujoco_version`] cache. Lets us pick the right install
+///    when only the runtime path is set.
+/// 3. Fallback: first `mujoco-*` directory found under the base. Kept
+///    for backward compatibility with existing single-version installs;
+///    logs a warning when the chosen dir might not match the runtime.
 fn find_plugin_dir() -> Option<PathBuf> {
+    // ── 1. Derive directly from MUJOCO_DYNAMIC_LINK_DIR ──────────────
+    // mujoco-rs reads this at build time to pick the libmujoco to link
+    // against, so its parent directory is the install root we want
+    // plugins from. This path is identical to the linked runtime by
+    // construction.
+    if let Ok(lib_dir) = std::env::var("MUJOCO_DYNAMIC_LINK_DIR") {
+        let lib_path = PathBuf::from(&lib_dir);
+        if let Some(install_root) = lib_path.parent() {
+            let plugin_dir = install_root.join("bin").join("mujoco_plugin");
+            if plugin_dir.exists() {
+                return Some(plugin_dir);
+            }
+        }
+    }
+
+    // ── 2. Match against the runtime version reported by mj_version ──
     let base = std::env::var("MUJOCO_DOWNLOAD_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -221,7 +257,22 @@ fn find_plugin_dir() -> Option<PathBuf> {
                 .unwrap_or_default()
         });
 
-    std::fs::read_dir(&base).ok()?.find_map(|entry| {
+    if let Some(crate::mujoco_version::CheckResult::Compatible(v)) =
+        crate::mujoco_version::cached()
+    {
+        let exact = base
+            .join(format!("mujoco-{v}"))
+            .join("bin")
+            .join("mujoco_plugin");
+        if exact.exists() {
+            return Some(exact);
+        }
+    }
+
+    // ── 3. Last-resort fallback: first mujoco-* dir under base ──────
+    // Warn so the user can spot version mismatches when multiple
+    // installs are present.
+    let chosen = std::fs::read_dir(&base).ok()?.find_map(|entry| {
         let entry = entry.ok()?;
         let name = entry.file_name();
         if name.to_string_lossy().starts_with("mujoco-") {
@@ -230,7 +281,18 @@ fn find_plugin_dir() -> Option<PathBuf> {
         } else {
             None
         }
-    })
+    });
+    if let Some(ref dir) = chosen {
+        log::warn!(
+            "find_plugin_dir: falling back to first mujoco-* directory ({}). \
+             Set MUJOCO_DYNAMIC_LINK_DIR to disambiguate when multiple \
+             MuJoCo versions are installed under {} — loading plugins from \
+             a different version than the linked runtime can crash MuJoCo.",
+            dir.display(),
+            base.display(),
+        );
+    }
+    chosen
 }
 
 impl MujocoSim {
