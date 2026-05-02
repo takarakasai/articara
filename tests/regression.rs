@@ -415,7 +415,7 @@ mod test_robot {
         assert!(!trunk_inertia.visuals.is_empty());
         if let GeomData::Mesh { vertices, filename, .. } = &trunk_inertia.visuals[0].geometry {
             assert!(!vertices.is_empty(), "trunk mesh vertices should not be empty");
-            assert!(filename.as_ref().unwrap().contains("trunk.STL"));
+            assert!(filename.as_ref().unwrap().contains("trunk.stl"));
         } else {
             panic!("Expected trunk_interia to have mesh geometry");
         }
