@@ -533,6 +533,27 @@ pub fn export_mjcf(model: &RobotModel) -> String {
     export_mjcf_with_options(model, MjcfExportOptions::default())
 }
 
+/// Convert any path into an absolute one without requiring the target
+/// to exist (so a still-broken mesh reference doesn't make us silently
+/// drop the path).
+///
+/// - Already-absolute → returned unchanged.
+/// - Relative + cwd available → cwd-joined.
+/// - Cwd unavailable (extremely rare) → returned unchanged.
+///
+/// `canonicalize` is **not** used: it requires the target exist and
+/// resolves symlinks, both of which are surprises we don't want for
+/// mesh references that may legitimately point to procedural meshes
+/// or files in symlinked package roots.
+fn absolute_path(p: &std::path::Path) -> std::path::PathBuf {
+    if p.is_absolute() {
+        return p.to_path_buf();
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(p))
+        .unwrap_or_else(|_| p.to_path_buf())
+}
+
 /// Full-configurability MJCF export.
 pub fn export_mjcf_with_options(
     model: &RobotModel,
@@ -565,13 +586,18 @@ pub fn export_mjcf_with_options(
     //
     // The runtime XML we hand to MuJoCo via `MjModel::from_xml_string`
     // has no on-disk anchor, so MuJoCo can't resolve relative paths
-    // itself — every `<mesh file="...">` we emit must be absolute.
+    // itself — every `<mesh file="...">` we emit must be absolute,
+    // independent of the caller's `cwd` at sim-start time. We therefore
+    // canonicalise / cwd-join the source dir up front and use those
+    // absolute roots when resolving each mesh reference below.
     let source_dir = model
         .source_path
         .as_ref()
-        .and_then(|p| p.parent());            // <pkg>/ (.misa) or <pkg>/urdf/ (URDF)
+        .and_then(|p| p.parent())             // <pkg>/ (.misa) or <pkg>/urdf/ (URDF)
+        .map(absolute_path);                  // make absolute (cwd-joined when relative)
     let package_dir = source_dir
-        .and_then(|d| d.parent());            // grandparent — only meaningful for URDF
+        .as_ref()
+        .and_then(|d| d.parent().map(|p| p.to_path_buf())); // grandparent — only meaningful for URDF
 
     // Collect mesh assets from BOTH visuals and collisions. We previously
     // only walked `link.visuals`, but the MJCF export now emits collision
@@ -591,8 +617,8 @@ pub fn export_mjcf_with_options(
         //   against the package root (grandparent of the URDF).
         // file:///abs/path.stl          → strip prefix, treat as absolute.
         if raw.starts_with("package://") || raw.starts_with("file://") {
-            if let Some(pkg) = package_dir {
-                return crate::robot::resolve_package_path(raw, pkg)
+            if let Some(pkg) = package_dir.as_ref() {
+                return absolute_path(crate::robot::resolve_package_path(raw, pkg).as_path())
                     .to_string_lossy()
                     .into_owned();
             }
@@ -605,8 +631,8 @@ pub fn export_mjcf_with_options(
             return raw.to_string();
         }
         // Plain relative path (.misa convention: `meshes/trunk.stl`)
-        // → join against the model file's directory.
-        if let Some(src) = source_dir {
+        // → join against the model file's (already-absolute) directory.
+        if let Some(src) = source_dir.as_ref() {
             return src.join(raw).to_string_lossy().into_owned();
         }
         raw.to_string()
