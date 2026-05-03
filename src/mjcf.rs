@@ -770,21 +770,30 @@ fn write_mjcf_sensors(s: &mut String, model: &RobotModel) {
     if model.sensors.is_empty() {
         return;
     }
-    // We need a `<site>` per sensor for those that mount on a site
-    // (force-torque, accelerometer, etc.); for v0 we attach to the
-    // body's frame via `objtype="body" objname=<link>`, which works for
-    // most sensor types in modern MuJoCo.
+    // Sensor mount sites are emitted by `write_mjcf_body` as
+    // `<site name="<sensor>_site"/>` inside the body of `sensor.link`.
+    // The sensor entries below reference those sites by name.
     s.push_str("\n  <sensor>\n");
     for sensor in &model.sensors {
         match &sensor.kind {
-            crate::rbd::model::SensorKind::Imu { .. } => {
+            crate::rbd::model::SensorKind::Imu { gyro_noise, accel_noise } => {
+                let accel_noise_attr = if *accel_noise > 0.0 {
+                    format!(" noise=\"{}\"", accel_noise)
+                } else {
+                    String::new()
+                };
+                let gyro_noise_attr = if *gyro_noise > 0.0 {
+                    format!(" noise=\"{}\"", gyro_noise)
+                } else {
+                    String::new()
+                };
                 s.push_str(&format!(
-                    "    <accelerometer name=\"{}_accel\" site=\"{}\"/>\n",
-                    sensor.name, sensor.link,
+                    "    <accelerometer name=\"{}_accel\" site=\"{}_site\"{accel_noise_attr}/>\n",
+                    sensor.name, sensor.name,
                 ));
                 s.push_str(&format!(
-                    "    <gyro name=\"{}_gyro\" site=\"{}\"/>\n",
-                    sensor.name, sensor.link,
+                    "    <gyro name=\"{}_gyro\" site=\"{}_site\"{gyro_noise_attr}/>\n",
+                    sensor.name, sensor.name,
                 ));
             }
             crate::rbd::model::SensorKind::ForceTorque { joint } => {
@@ -1127,6 +1136,26 @@ fn write_mjcf_body(
                 }
             }
         }
+    }
+
+    // Sites for sensors mounted on this link. MuJoCo sensors like
+    // `<accelerometer>` / `<gyro>` reference a `<site>` for their
+    // attachment frame; without an explicit site definition the model
+    // load fails with "site not found". The site is named `<sensor>_site`
+    // so `write_mjcf_sensors` can refer to it deterministically.
+    for sensor in &model.sensors {
+        if sensor.link != link_name {
+            continue;
+        }
+        let t = &sensor.origin.translation;
+        let q = sensor.origin.rotation.quaternion();
+        // MuJoCo quaternion order is (w, x, y, z).
+        s.push_str(&format!(
+            "{pad}  <site name=\"{}_site\" pos=\"{} {} {}\" quat=\"{} {} {} {}\" size=\"0.005\"/>\n",
+            sensor.name,
+            t.x, t.y, t.z,
+            q.w, q.i, q.j, q.k,
+        ));
     }
 
     // Recurse children

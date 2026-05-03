@@ -1,4 +1,5 @@
 // Re-export modules for integration tests.
+pub mod attitude_estimator;
 pub mod camera;
 pub mod collision;
 pub mod dynamics;

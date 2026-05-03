@@ -479,6 +479,19 @@ pub struct ArticaraApp {
     /// Active MuJoCo simulation instance.
     #[cfg(feature = "mujoco")]
     mujoco_sim: Option<crate::mujoco_sim::MujocoSim>,
+    /// Madgwick attitude estimators keyed by IMU sensor name. Built on
+    /// MuJoCo sim start (one per `[[sensor]]` of kind `Imu` in the
+    /// loaded `RobotModel`); updated every physics tick from
+    /// `MujocoSim::imu_readings()`. The viewport overlay reads the
+    /// latest quaternion to draw an estimated-orientation triad next to
+    /// each IMU mount.
+    #[cfg(feature = "mujoco")]
+    imu_estimators: std::collections::HashMap<String, crate::attitude_estimator::MadgwickAhrs>,
+    /// Last sim time we fed an IMU sample, per sensor name. Used to
+    /// derive `dt` for the estimator without re-querying MuJoCo's clock
+    /// state (the estimator is sim-time-driven, not wall-clock).
+    #[cfg(feature = "mujoco")]
+    imu_last_sim_time: std::collections::HashMap<String, f64>,
     /// When true, the MuJoCo sim auto-lifts the floating base just above z=0.
     /// When false, [`Self::mujoco_base_pos`] is used as the initial world position.
     #[cfg(feature = "mujoco")]
@@ -842,6 +855,10 @@ impl ArticaraApp {
             #[cfg(feature = "mujoco")]
             mujoco_sim: None,
             #[cfg(feature = "mujoco")]
+            imu_estimators: std::collections::HashMap::new(),
+            #[cfg(feature = "mujoco")]
+            imu_last_sim_time: std::collections::HashMap::new(),
+            #[cfg(feature = "mujoco")]
             mujoco_auto_base: true,
             #[cfg(feature = "mujoco")]
             mujoco_base_pos: [0.0, 0.0, 0.0],
@@ -1183,6 +1200,64 @@ impl ArticaraApp {
         }
     }
 
+    /// Discard any existing IMU estimator state and create a fresh
+    /// Madgwick estimator for every IMU sensor in the loaded model.
+    /// Called when MuJoCo sim starts so old estimates from a previous
+    /// Play→Stop cycle don't bleed into the new run.
+    #[cfg(feature = "mujoco")]
+    pub(super) fn rebuild_imu_estimators(&mut self) {
+        self.imu_estimators.clear();
+        self.imu_last_sim_time.clear();
+        let Some(ref model) = self.model else {
+            return;
+        };
+        for sensor in &model.sensors {
+            if matches!(sensor.kind, crate::rbd::model::SensorKind::Imu { .. }) {
+                self.imu_estimators.insert(
+                    sensor.name.clone(),
+                    crate::attitude_estimator::MadgwickAhrs::default(),
+                );
+            }
+        }
+    }
+
+    /// Reset existing estimators (preserve the per-sensor map; just
+    /// zero each one's quaternion). Used when the user rewinds the sim
+    /// — Madgwick can't sensibly handle negative dt.
+    #[cfg(feature = "mujoco")]
+    pub(super) fn reset_imu_estimators(&mut self) {
+        for est in self.imu_estimators.values_mut() {
+            est.reset();
+        }
+        self.imu_last_sim_time.clear();
+    }
+
+    /// Pull fresh accel + gyro from MuJoCo and integrate each
+    /// estimator. Call after every `mj_sim.step` / `step_n_frames` so
+    /// the attitude triad in the viewport stays in sync with the sim.
+    #[cfg(feature = "mujoco")]
+    pub(super) fn update_imu_estimators(&mut self) {
+        let Some(ref mj) = self.mujoco_sim else { return };
+        let Some(ref model) = self.model else { return };
+        for reading in mj.imu_readings(model) {
+            // Compute dt from sim time (sim-synchronous, not wall-clock).
+            // First sample after rebuild / reset has no reference → skip
+            // the integration but seed `imu_last_sim_time` so the next
+            // sample produces a finite dt.
+            let dt = match self.imu_last_sim_time.get(&reading.name) {
+                Some(prev) if reading.sim_time > *prev => reading.sim_time - *prev,
+                _ => {
+                    self.imu_last_sim_time.insert(reading.name.clone(), reading.sim_time);
+                    continue;
+                }
+            };
+            self.imu_last_sim_time.insert(reading.name.clone(), reading.sim_time);
+            if let Some(est) = self.imu_estimators.get_mut(&reading.name) {
+                est.update_imu(reading.gyro, reading.accel, dt);
+            }
+        }
+    }
+
     /// Advance the dynamics simulation by one frame, modifying model state.
     fn step_dynamics_sim(&mut self) {
         // Async queue takes precedence over the regular wall-clock step path:
@@ -1225,8 +1300,15 @@ impl ArticaraApp {
                                 self.dynamics_last_instant = Some(now);
                                 if n > 0 {
                                     mj_sim.step_n_frames(model, n as u32, enforce_limits);
+                                    self.update_imu_estimators();
                                 } else if n < 0 {
                                     mj_sim.step_back_frames(model, (-n) as u32);
+                                    // Rewinding: reset estimators so the
+                                    // next forward step doesn't get a
+                                    // negative dt. Old estimate is
+                                    // discarded — Madgwick reconverges
+                                    // within ~1s of forward stepping.
+                                    self.reset_imu_estimators();
                                 }
                                 return;
                             }
@@ -1262,6 +1344,7 @@ impl ArticaraApp {
                                 }
                             }
                             mj_sim.step(model, dt as f64, enforce_limits);
+                            self.update_imu_estimators();
                         }
                     }
                 }
@@ -1643,6 +1726,8 @@ mod peaks_plot_window;
 #[cfg(feature = "mujoco")]
 mod sim_drag;
 mod collision_matrix;
+#[cfg(feature = "mujoco")]
+mod imu_overlay;
 mod misa_report_dialog;
 #[cfg(feature = "mujoco")]
 mod mujoco_warning_dialog;

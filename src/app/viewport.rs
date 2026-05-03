@@ -362,6 +362,7 @@ impl ArticaraApp {
             self.draw_contact_markers(ui, rect, aspect);
             self.draw_force_pulse_markers(ui, rect, aspect);
             self.draw_sim_drag_overlay(ui, rect, aspect);
+            self.draw_imu_attitude_overlay(ui, rect, aspect);
         }
         self.draw_camera_reset_button(ui, rect);
         self.draw_display_toggles(ui, rect);

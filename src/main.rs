@@ -1,4 +1,5 @@
 mod app;
+mod attitude_estimator;
 mod camera;
 mod dynamics;
 mod format;
