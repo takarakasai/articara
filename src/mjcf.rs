@@ -513,6 +513,14 @@ pub struct MjcfExportOptions {
     /// past mechanical stops — matching the semantics of "limits off" for
     /// users probing the dynamic envelope.
     pub bake_joint_position_limits: bool,
+    /// How `<mesh file="...">` paths are emitted. Default
+    /// [`MeshPathStyle::Absolute`] suits in-process loading via
+    /// [`mujoco-rs::MjModel::from_xml_string`] (no on-disk anchor →
+    /// MuJoCo would otherwise fail to resolve relative paths). When
+    /// exporting to a file the user can ship, switch to
+    /// [`MeshPathStyle::RelativeToDir`] and call
+    /// [`crate::mesh_paths::copy_meshes_to`] afterwards.
+    pub mesh_path_style: crate::mesh_paths::MeshPathStyle,
 }
 
 impl Default for MjcfExportOptions {
@@ -524,6 +532,7 @@ impl Default for MjcfExportOptions {
             base_locked_axes: [false; 6],
             bake_actuator_limits: true,
             bake_joint_position_limits: true,
+            mesh_path_style: crate::mesh_paths::MeshPathStyle::default(),
         }
     }
 }
@@ -533,26 +542,40 @@ pub fn export_mjcf(model: &RobotModel) -> String {
     export_mjcf_with_options(model, MjcfExportOptions::default())
 }
 
-/// Convert any path into an absolute one without requiring the target
-/// to exist (so a still-broken mesh reference doesn't make us silently
-/// drop the path).
+/// Export a RobotModel to a `.xml` file on disk, copying referenced
+/// meshes to `<output_dir>/meshes/` and emitting `meshes/<basename>`
+/// relative paths. The result is self-contained and portable —
+/// `tar`-ing the output directory and shipping it Just Works on the
+/// receiving end.
 ///
-/// - Already-absolute → returned unchanged.
-/// - Relative + cwd available → cwd-joined.
-/// - Cwd unavailable (extremely rare) → returned unchanged.
-///
-/// `canonicalize` is **not** used: it requires the target exist and
-/// resolves symlinks, both of which are surprises we don't want for
-/// mesh references that may legitimately point to procedural meshes
-/// or files in symlinked package roots.
-fn absolute_path(p: &std::path::Path) -> std::path::PathBuf {
-    if p.is_absolute() {
-        return p.to_path_buf();
-    }
-    std::env::current_dir()
-        .map(|cwd| cwd.join(p))
-        .unwrap_or_else(|_| p.to_path_buf())
+/// For in-process loading via `MjModel::from_xml_string` use
+/// [`export_mjcf`] / [`export_mjcf_with_options`] directly with the
+/// default `Absolute` mesh-path style.
+pub fn export_mjcf_to_file(
+    model: &RobotModel,
+    output_path: &std::path::Path,
+) -> Result<(), String> {
+    let output_dir = output_path
+        .parent()
+        .ok_or_else(|| format!("export_mjcf_to_file: invalid path {:?}", output_path))?
+        .to_path_buf();
+    let mut opts = MjcfExportOptions::default();
+    opts.mesh_path_style =
+        crate::mesh_paths::MeshPathStyle::RelativeToDir(output_dir.clone());
+    let xml = export_mjcf_with_options(model, opts);
+    std::fs::write(output_path, xml)
+        .map_err(|e| format!("write {:?}: {e}", output_path))?;
+    let copied = crate::mesh_paths::copy_meshes_to(model, &output_dir)?;
+    log::info!(
+        "Exported MJCF to {:?}, copied {} mesh file(s)",
+        output_path,
+        copied,
+    );
+    Ok(())
 }
+
+// `absolute_path` moved to `crate::mesh_paths` (shared helper) in the
+// MeshPathStyle refactor.
 
 /// Full-configurability MJCF export.
 pub fn export_mjcf_with_options(
@@ -566,6 +589,7 @@ pub fn export_mjcf_with_options(
         base_locked_axes,
         bake_actuator_limits,
         bake_joint_position_limits,
+        mesh_path_style,
     } = opts;
     let mut s = String::new();
     s.push_str(&format!(
@@ -575,67 +599,23 @@ pub fn export_mjcf_with_options(
 
     s.push_str("  <compiler angle=\"radian\"/>\n\n");
 
-    // Mesh path resolution. Two source-format conventions to support:
-    //
-    // - URDF (`<robot>` at `<pkg>/urdf/<name>.urdf`): mesh references are
-    //   `package://<name>/...` and resolve against `<pkg>/` — i.e. the
-    //   grandparent directory of the model file.
-    // - `.misa` (master format at `<pkg>/<name>.misa`): mesh references
-    //   are plain relative paths like `meshes/trunk.stl` that resolve
-    //   against the model file's own directory (`<pkg>/`).
-    //
-    // The runtime XML we hand to MuJoCo via `MjModel::from_xml_string`
-    // has no on-disk anchor, so MuJoCo can't resolve relative paths
-    // itself — every `<mesh file="...">` we emit must be absolute,
-    // independent of the caller's `cwd` at sim-start time. We therefore
-    // canonicalise / cwd-join the source dir up front and use those
-    // absolute roots when resolving each mesh reference below.
-    let source_dir = model
-        .source_path
-        .as_ref()
-        .and_then(|p| p.parent())             // <pkg>/ (.misa) or <pkg>/urdf/ (URDF)
-        .map(absolute_path);                  // make absolute (cwd-joined when relative)
-    let package_dir = source_dir
-        .as_ref()
-        .and_then(|d| d.parent().map(|p| p.to_path_buf())); // grandparent — only meaningful for URDF
-
-    // Collect mesh assets from BOTH visuals and collisions. We previously
-    // only walked `link.visuals`, but the MJCF export now emits collision
-    // geoms separately (with `contype=1 conaffinity=1 group=3`) so the
-    // physics engine uses the URDF's simplified collision shapes — and any
-    // mesh-typed collision geom needs its asset registered too.
+    // Mesh path resolution: delegate to the shared helper so all three
+    // exporters (MJCF / SDF / URDF) emit consistent paths and share a
+    // single resolution rule for the various URI flavours
+    // (package:// / file:// / .misa-style relative / absolute).
+    // Path style comes from `MjcfExportOptions.mesh_path_style`:
+    // - `Absolute` (default): in-process MuJoCo via `from_xml_string`
+    // - `RelativeToDir(dir)`: file export, paired with `copy_meshes_to`
+    // - `Preserve`: keep URI verbatim
     let mut mesh_names: Vec<(String, String)> = Vec::new();
     let mut mesh_counter = 0usize;
     let mut geom_mesh_map: HashMap<*const GeomData, String> = HashMap::new();
 
     let resolve = |filename: &Option<String>| -> String {
-        let raw = match filename.as_deref() {
-            Some(s) => s,
-            None => return "mesh.stl".to_string(),
-        };
-        // package://<name>/sub/foo.stl  → URDF / SDF style; resolves
-        //   against the package root (grandparent of the URDF).
-        // file:///abs/path.stl          → strip prefix, treat as absolute.
-        if raw.starts_with("package://") || raw.starts_with("file://") {
-            if let Some(pkg) = package_dir.as_ref() {
-                return absolute_path(crate::robot::resolve_package_path(raw, pkg).as_path())
-                    .to_string_lossy()
-                    .into_owned();
-            }
-            return raw.to_string();
+        match filename.as_deref() {
+            Some(uri) => crate::mesh_paths::emit_path(uri, model, &mesh_path_style),
+            None => "mesh.stl".to_string(),
         }
-        // Already absolute → use as-is (handles users who hand-wrote
-        // absolute paths into a model file).
-        let p = std::path::Path::new(raw);
-        if p.is_absolute() {
-            return raw.to_string();
-        }
-        // Plain relative path (.misa convention: `meshes/trunk.stl`)
-        // → join against the model file's (already-absolute) directory.
-        if let Some(src) = source_dir.as_ref() {
-            return src.join(raw).to_string_lossy().into_owned();
-        }
-        raw.to_string()
     };
 
     for link in &model.links {

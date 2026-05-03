@@ -1589,13 +1589,27 @@ impl RobotModel {
     /// joint limits, joint origin, joint axis), and serializes.
     /// For models created from scratch (no source_path), generates URDF XML directly.
     pub fn export_urdf(&self) -> Result<String, String> {
-        if self.source_path.is_none() {
-            return Ok(self.generate_urdf_xml());
-        }
-        let source = self
-            .source_path
-            .as_ref()
-            .ok_or("No source URDF path stored")?;
+        // No source / non-URDF source (e.g. `.misa`) → can't re-read
+        // the original XML to patch in place; fall back to from-scratch
+        // generation, which is lossier (drops vendor extensions) but
+        // works for every source format.
+        let source = match self.source_path.as_ref() {
+            None => return Ok(self.generate_urdf_xml()),
+            Some(p) => {
+                let is_urdf = p
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| {
+                        let e = e.to_ascii_lowercase();
+                        e == "urdf" || e == "xacro"
+                    })
+                    .unwrap_or(false);
+                if !is_urdf {
+                    return Ok(self.generate_urdf_xml());
+                }
+                p
+            }
+        };
         let mut robot =
             urdf_rs::read_file(source).map_err(|e| format!("Re-read URDF error: {e}"))?;
 
@@ -1667,76 +1681,36 @@ impl RobotModel {
         Ok(source.clone())
     }
 
-    /// Export the current model to a URDF file at the given path.
-    /// Also copies all referenced mesh files to the output directory,
-    /// preserving the relative directory structure from the package root.
+    /// Export the current model to a URDF file at the given path and
+    /// copy referenced mesh files to `<output_dir>/meshes/`.
+    ///
+    /// Source-format-agnostic: uses [`crate::mesh_paths::copy_meshes_to`]
+    /// so URDF and `.misa` source layouts both work. The emitted URDF
+    /// references meshes as `meshes/<basename>` regardless of how the
+    /// source represented them — keeping the output directory
+    /// self-contained for sharing.
     pub fn export_urdf_to_file(&self, output_path: &Path) -> Result<(), String> {
-        let xml = self.export_urdf()?;
+        let output_dir = output_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        // Generate the XML. When source is URDF, `export_urdf` re-reads
+        // and patches the original (preserves vendor extensions); when
+        // source is `.misa` or absent, it falls through to
+        // `generate_urdf_xml` (from-scratch, lossier).
+        let mut xml = self.export_urdf()?;
+
+        // For the from-scratch path, mesh `filename=` attributes carry
+        // the URI from `RobotModel.GeomData::Mesh` (e.g. `meshes/foo.stl`
+        // for `.misa` source, `package://name/...` for URDF source).
+        // Rewrite them to `meshes/<basename>` so the exported URDF
+        // resolves alongside the copied mesh files.
+        rewrite_urdf_mesh_filenames_to_basename(&mut xml);
+
         std::fs::write(output_path, &xml).map_err(|e| format!("Write error: {e}"))?;
 
-        // Copy mesh files (only if loaded from an existing file)
-        let source = match self.source_path.as_ref() {
-            Some(s) => s,
-            None => return Ok(()), // No source path — no meshes to copy
-        };
-        let urdf_dir = source.parent().unwrap_or(Path::new("."));
-        let package_dir = urdf_dir.parent().unwrap_or(urdf_dir);
-        let output_dir = output_path.parent().unwrap_or(Path::new("."));
-        // The output "package dir" is the parent of the output URDF dir,
-        // mirroring the original structure: <package_dir>/<urdf_subdir>/file.urdf
-        let output_package_dir = output_dir.parent().unwrap_or(output_dir);
-
-        // Re-read original URDF to get mesh filenames
-        let robot =
-            urdf_rs::read_file(source).map_err(|e| format!("Re-read URDF for meshes: {e}"))?;
-
-        let mut copied: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-        let mut copy_count = 0u32;
-
-        for link in &robot.links {
-            // Collect mesh geometries from both visual and collision
-            let geom_iter = link
-                .visual
-                .iter()
-                .map(|v| &v.geometry)
-                .chain(link.collision.iter().map(|c| &c.geometry));
-
-            for geom in geom_iter {
-                if let urdf_rs::Geometry::Mesh { filename, .. } = geom {
-                    let src_abs = resolve_package_path(filename, package_dir);
-                    if copied.contains(&src_abs) {
-                        continue;
-                    }
-                    copied.insert(src_abs.clone());
-
-                    if !src_abs.exists() {
-                        log::warn!("Mesh file not found, skipping: {:?}", src_abs);
-                        continue;
-                    }
-
-                    // Determine matched destination path
-                    let dst_abs = resolve_package_path(filename, output_package_dir);
-
-                    // Create parent directory for destination
-                    if let Some(dst_parent) = dst_abs.parent() {
-                        std::fs::create_dir_all(dst_parent)
-                            .map_err(|e| format!("Create mesh dir {:?}: {e}", dst_parent))?;
-                    }
-
-                    // Copy (skip if src == dst)
-                    if src_abs != dst_abs {
-                        std::fs::copy(&src_abs, &dst_abs).map_err(|e| {
-                            format!(
-                                "Copy mesh {:?} -> {:?}: {e}",
-                                src_abs.file_name().unwrap_or_default(),
-                                dst_abs
-                            )
-                        })?;
-                        copy_count += 1;
-                    }
-                }
-            }
-        }
+        let copy_count = crate::mesh_paths::copy_meshes_to(self, &output_dir)?;
 
         log::info!(
             "Exported URDF to {:?}, copied {} mesh file(s)",
@@ -1788,6 +1762,40 @@ fn convert_geometry(geom: &urdf_rs::Geometry, package_dir: &Path) -> GeomData {
             hz: 0.01,
         },
     }
+}
+
+/// Rewrite every `<mesh filename="...">` attribute in `xml` to
+/// `meshes/<basename>`. Pairs with [`crate::mesh_paths::copy_meshes_to`]
+/// to keep the URDF self-contained alongside its `meshes/` directory.
+///
+/// This is a string-level rewrite because the URDF generators emit XML
+/// directly (no DOM round-trip). A regex would be marginally cleaner but
+/// `urdf-rs` doesn't expose a writer that takes filename overrides, and
+/// the substring is unambiguous (`<mesh filename="..."` only appears in
+/// geometry blocks).
+fn rewrite_urdf_mesh_filenames_to_basename(xml: &mut String) {
+    let mut out = String::with_capacity(xml.len());
+    let mut rest = xml.as_str();
+    let needle = "<mesh filename=\"";
+    while let Some(pos) = rest.find(needle) {
+        out.push_str(&rest[..pos + needle.len()]);
+        let after = &rest[pos + needle.len()..];
+        if let Some(end) = after.find('"') {
+            let raw = &after[..end];
+            let basename = std::path::Path::new(raw)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| raw.to_string());
+            out.push_str(&format!("meshes/{basename}"));
+            rest = &after[end..];
+        } else {
+            out.push_str(after);
+            *xml = out;
+            return;
+        }
+    }
+    out.push_str(rest);
+    *xml = out;
 }
 
 pub fn resolve_package_path(filename: &str, package_dir: &Path) -> PathBuf {

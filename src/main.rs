@@ -5,6 +5,7 @@ mod format;
 mod gait;
 mod history;
 mod isaac;
+mod mesh_paths;
 mod mjcf;
 #[cfg(feature = "mujoco")]
 mod mujoco_sim;

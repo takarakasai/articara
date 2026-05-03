@@ -6,6 +6,7 @@ pub mod format;
 pub mod gait;
 pub mod history;
 pub mod isaac;
+pub mod mesh_paths;
 pub mod mjcf;
 #[cfg(feature = "mujoco")]
 pub mod mujoco_sim;

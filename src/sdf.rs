@@ -321,8 +321,18 @@ fn get_child_u32(node: roxmltree::Node, tag: &str) -> Option<u32> {
 
 // ========== Export ==========
 
-/// Export a RobotModel to SDF XML string.
+/// Export a RobotModel to SDF XML string with [`MeshPathStyle::Preserve`]
+/// (URI verbatim from the `RobotModel`).
 pub fn export_sdf(model: &RobotModel) -> String {
+    export_sdf_with_style(model, &crate::mesh_paths::MeshPathStyle::Preserve)
+}
+
+/// Export a RobotModel to SDF XML, applying `mesh_path_style` to every
+/// `<uri>` emission.
+pub fn export_sdf_with_style(
+    model: &RobotModel,
+    mesh_path_style: &crate::mesh_paths::MeshPathStyle,
+) -> String {
     let mut s = String::new();
     s.push_str("<?xml version=\"1.0\"?>\n");
     s.push_str("<sdf version=\"1.7\">\n");
@@ -355,7 +365,7 @@ pub fn export_sdf(model: &RobotModel) -> String {
         for (vi, vis) in link.visuals.iter().enumerate() {
             s.push_str(&format!("      <visual name=\"visual_{vi}\">\n"));
             write_sdf_pose(&mut s, &vis.origin, 8);
-            write_sdf_geometry(&mut s, &vis.geometry, 8);
+            write_sdf_geometry(&mut s, &vis.geometry, 8, model, mesh_path_style);
             s.push_str(&format!(
                 "        <material>\n          <ambient>{} {} {} {}</ambient>\n        </material>\n",
                 vis.color[0], vis.color[1], vis.color[2], vis.color[3]
@@ -367,7 +377,7 @@ pub fn export_sdf(model: &RobotModel) -> String {
         for (ci, col) in link.collisions.iter().enumerate() {
             s.push_str(&format!("      <collision name=\"collision_{ci}\">\n"));
             write_sdf_pose(&mut s, &col.origin, 8);
-            write_sdf_geometry(&mut s, &col.geometry, 8);
+            write_sdf_geometry(&mut s, &col.geometry, 8, model, mesh_path_style);
             s.push_str("      </collision>\n");
         }
 
@@ -482,58 +492,28 @@ fn write_sdf_sensor(s: &mut String, sensor: &crate::rbd::model::Sensor) {
     s.push_str("      </sensor>\n");
 }
 
-/// Export SDF to a file and copy referenced mesh files.
+/// Export SDF to a file with `meshes/<basename>` relative paths and
+/// copy referenced mesh files into `<output_dir>/meshes/`.
+///
+/// The result is a self-contained directory the user can ship — same
+/// shape produced by [`crate::mjcf::export_mjcf_to_file`] and
+/// [`crate::robot::RobotModel::export_urdf_to_file`].
+///
+/// Source-format-agnostic: works with `.misa` source (where
+/// `GeomData::Mesh.filename` is a plain relative path like
+/// `meshes/trunk.stl`) just as well as URDF source (`package://...`).
+/// Both flavours run through [`crate::mesh_paths::resolve_source`].
 pub fn export_sdf_to_file(model: &RobotModel, output_path: &Path) -> Result<(), String> {
-    let xml = export_sdf(model);
+    let output_dir = output_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let style = crate::mesh_paths::MeshPathStyle::RelativeToDir(output_dir.clone());
+    let xml = export_sdf_with_style(model, &style);
     std::fs::write(output_path, &xml).map_err(|e| format!("Write SDF: {e}"))?;
 
-    // Copy mesh files from source location
-    let source = match model.source_path.as_ref() {
-        Some(p) => p,
-        None => {
-            log::warn!("No source path — skipping mesh copy for SDF export");
-            return Ok(());
-        }
-    };
-    let source_dir = source.parent().unwrap_or(Path::new("."));
-    let source_package_dir = source_dir.parent().unwrap_or(source_dir);
-    let output_dir = output_path.parent().unwrap_or(Path::new("."));
-    let output_package_dir = output_dir.parent().unwrap_or(output_dir);
-
-    let mut copied: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-    let mut copy_count = 0u32;
-
-    // Collect all mesh filenames from visuals and collisions
-    for link in &model.links {
-        let geom_iter = link.visuals.iter().map(|v| &v.geometry)
-            .chain(link.collisions.iter().map(|c| &c.geometry));
-        for geom in geom_iter {
-            if let GeomData::Mesh { filename: Some(uri), .. } = geom {
-                let src_abs = crate::robot::resolve_package_path(uri, source_package_dir);
-                if copied.contains(&src_abs) || !src_abs.exists() {
-                    if !src_abs.exists() {
-                        log::warn!("Mesh file not found, skipping: {:?}", src_abs);
-                    }
-                    continue;
-                }
-                copied.insert(src_abs.clone());
-
-                let dst_abs = crate::robot::resolve_package_path(uri, output_package_dir);
-                if let Some(dst_parent) = dst_abs.parent() {
-                    std::fs::create_dir_all(dst_parent)
-                        .map_err(|e| format!("Create mesh dir {:?}: {e}", dst_parent))?;
-                }
-                if src_abs != dst_abs {
-                    std::fs::copy(&src_abs, &dst_abs).map_err(|e| {
-                        format!("Copy mesh {:?} -> {:?}: {e}",
-                            src_abs.file_name().unwrap_or_default(), dst_abs)
-                    })?;
-                    copy_count += 1;
-                }
-            }
-        }
-    }
-
+    let copy_count = crate::mesh_paths::copy_meshes_to(model, &output_dir)?;
     log::info!("Exported SDF to {:?}, copied {} mesh file(s)", output_path, copy_count);
     Ok(())
 }
@@ -706,7 +686,13 @@ fn write_sdf_pose(s: &mut String, iso: &na::Isometry3<f32>, indent: usize) {
     ));
 }
 
-fn write_sdf_geometry(s: &mut String, geom: &GeomData, indent: usize) {
+fn write_sdf_geometry(
+    s: &mut String,
+    geom: &GeomData,
+    indent: usize,
+    model: &RobotModel,
+    mesh_path_style: &crate::mesh_paths::MeshPathStyle,
+) {
     let pad: String = " ".repeat(indent);
     s.push_str(&format!("{pad}<geometry>\n"));
     match geom {
@@ -739,7 +725,10 @@ fn write_sdf_geometry(s: &mut String, geom: &GeomData, indent: usize) {
             ));
         }
         GeomData::Mesh { filename, scale, .. } => {
-            let uri = filename.as_deref().unwrap_or("mesh.stl");
+            let uri = match filename.as_deref() {
+                Some(u) => crate::mesh_paths::emit_path(u, model, mesh_path_style),
+                None => "mesh.stl".into(),
+            };
             s.push_str(&format!("{pad}  <mesh>\n"));
             s.push_str(&format!("{pad}    <uri>{uri}</uri>\n"));
             if let Some(sc) = scale {
