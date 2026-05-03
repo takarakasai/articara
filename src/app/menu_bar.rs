@@ -33,7 +33,7 @@ impl ArticaraApp {
                         "Open Robot Model",
                         super::file_dialog::FileDialogMode::Open,
                         start.as_deref(),
-                        &["urdf", "sdf", "xml", "mjcf", "usd", "usda"],
+                        &["misa", "urdf", "sdf", "xml", "mjcf", "usd", "usda"],
                     );
                     ui.close();
                 }

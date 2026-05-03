@@ -492,6 +492,15 @@ pub struct ArticaraApp {
     /// state (the estimator is sim-time-driven, not wall-clock).
     #[cfg(feature = "mujoco")]
     imu_last_sim_time: std::collections::HashMap<String, f64>,
+    /// Recent vertical (world-Z) **linear** acceleration samples per
+    /// IMU, derived from the proper-accel reading rotated by the
+    /// estimated attitude minus gravity. Drives the bottom-left
+    /// vibration strip chart so the user can see trunk bounce / impact
+    /// signatures over the last ~2 seconds of sim time. Bounded by
+    /// [`Self::IMU_VIBRATION_HISTORY_MAX`] entries.
+    #[cfg(feature = "mujoco")]
+    imu_vibration_history:
+        std::collections::HashMap<String, std::collections::VecDeque<(f64, f64)>>,
     /// When true, the MuJoCo sim auto-lifts the floating base just above z=0.
     /// When false, [`Self::mujoco_base_pos`] is used as the initial world position.
     #[cfg(feature = "mujoco")]
@@ -859,6 +868,8 @@ impl ArticaraApp {
             #[cfg(feature = "mujoco")]
             imu_last_sim_time: std::collections::HashMap::new(),
             #[cfg(feature = "mujoco")]
+            imu_vibration_history: std::collections::HashMap::new(),
+            #[cfg(feature = "mujoco")]
             mujoco_auto_base: true,
             #[cfg(feature = "mujoco")]
             mujoco_base_pos: [0.0, 0.0, 0.0],
@@ -1200,6 +1211,14 @@ impl ArticaraApp {
         }
     }
 
+    /// Maximum vibration-history length (in samples) per IMU. At
+    /// MuJoCo's default 1 ms tick this is ~2 s of history — enough to
+    /// see one or two gait cycles of trunk bounce without the chart
+    /// becoming illegible. Bounded so a long sim doesn't grow the
+    /// `VecDeque` unboundedly.
+    #[cfg(feature = "mujoco")]
+    pub(super) const IMU_VIBRATION_HISTORY_MAX: usize = 2000;
+
     /// Discard any existing IMU estimator state and create a fresh
     /// Madgwick estimator for every IMU sensor in the loaded model.
     /// Called when MuJoCo sim starts so old estimates from a previous
@@ -1208,6 +1227,7 @@ impl ArticaraApp {
     pub(super) fn rebuild_imu_estimators(&mut self) {
         self.imu_estimators.clear();
         self.imu_last_sim_time.clear();
+        self.imu_vibration_history.clear();
         let Some(ref model) = self.model else {
             return;
         };
@@ -1216,6 +1236,10 @@ impl ArticaraApp {
                 self.imu_estimators.insert(
                     sensor.name.clone(),
                     crate::attitude_estimator::MadgwickAhrs::default(),
+                );
+                self.imu_vibration_history.insert(
+                    sensor.name.clone(),
+                    std::collections::VecDeque::with_capacity(Self::IMU_VIBRATION_HISTORY_MAX),
                 );
             }
         }
@@ -1230,15 +1254,26 @@ impl ArticaraApp {
             est.reset();
         }
         self.imu_last_sim_time.clear();
+        for hist in self.imu_vibration_history.values_mut() {
+            hist.clear();
+        }
     }
 
     /// Pull fresh accel + gyro from MuJoCo and integrate each
     /// estimator. Call after every `mj_sim.step` / `step_n_frames` so
     /// the attitude triad in the viewport stays in sync with the sim.
+    ///
+    /// Also captures **vertical linear acceleration** for the
+    /// vibration overlay: rotates the IMU's body-frame proper
+    /// acceleration into world frame using the freshly-updated
+    /// quaternion estimate, then subtracts the gravity reaction so the
+    /// signal sits around 0 m/s² when the trunk is stationary.
     #[cfg(feature = "mujoco")]
     pub(super) fn update_imu_estimators(&mut self) {
         let Some(ref mj) = self.mujoco_sim else { return };
         let Some(ref model) = self.model else { return };
+        // World-frame gravity (Z-down). Matches MuJoCo default.
+        const G_Z: f64 = 9.81;
         for reading in mj.imu_readings(model) {
             // Compute dt from sim time (sim-synchronous, not wall-clock).
             // First sample after rebuild / reset has no reference → skip
@@ -1254,6 +1289,30 @@ impl ArticaraApp {
             self.imu_last_sim_time.insert(reading.name.clone(), reading.sim_time);
             if let Some(est) = self.imu_estimators.get_mut(&reading.name) {
                 est.update_imu(reading.gyro, reading.accel, dt);
+
+                // Vertical linear acceleration:
+                //   accel_proper_world = q · accel_body
+                //   accel_linear_world = accel_proper_world + gravity_world
+                //   (proper accel = total accel − gravity, so
+                //    total = proper + gravity; gravity_world = (0,0,−g))
+                // We only need the Z component for the vibration chart.
+                let q = est.quaternion();
+                let a_body = nalgebra::Vector3::new(
+                    reading.accel[0],
+                    reading.accel[1],
+                    reading.accel[2],
+                );
+                let a_world = q * a_body;
+                let vert_accel = a_world.z - G_Z;
+
+                if let Some(hist) =
+                    self.imu_vibration_history.get_mut(&reading.name)
+                {
+                    if hist.len() >= Self::IMU_VIBRATION_HISTORY_MAX {
+                        hist.pop_front();
+                    }
+                    hist.push_back((reading.sim_time, vert_accel));
+                }
             }
         }
     }
@@ -1728,6 +1787,8 @@ mod sim_drag;
 mod collision_matrix;
 #[cfg(feature = "mujoco")]
 mod imu_overlay;
+#[cfg(feature = "mujoco")]
+mod imu_vibration_overlay;
 mod misa_report_dialog;
 #[cfg(feature = "mujoco")]
 mod mujoco_warning_dialog;
