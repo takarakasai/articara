@@ -1420,11 +1420,30 @@ impl ArticaraApp {
                                             nalgebra::Vector3::new(v[0], v[1], v[2]),
                                         );
                                     }
-                                    let (_out, targets) = gc.tick(dt as f64);
+                                    let (_out, targets, torque_ff) =
+                                        gc.tick(dt as f64);
                                     for (idx, q) in targets {
                                         mj_sim.set_position_target(idx, q);
                                     }
+                                    // Phase 4 WBC: feed the SRBD-MPC's
+                                    // GRF-derived torque feedforward
+                                    // (`-J^T·f_GRF`) on top of the
+                                    // position-mode PD. CHAMP and the
+                                    // pre-first-MPC-tick path emit
+                                    // zeros, so this is a no-op for
+                                    // them.
+                                    for (idx, tau) in torque_ff {
+                                        mj_sim.set_torque_feedforward(idx, tau);
+                                    }
+                                } else {
+                                    // Disabled gait: drop any stale
+                                    // feedforward so the legs aren't
+                                    // commanded into motion by the last
+                                    // tick's GRF prediction.
+                                    mj_sim.clear_torque_feedforward();
                                 }
+                            } else {
+                                mj_sim.clear_torque_feedforward();
                             }
                             mj_sim.step(model, dt as f64, enforce_limits);
                             self.update_imu_estimators();

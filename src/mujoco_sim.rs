@@ -56,6 +56,13 @@ pub struct MujocoSim {
     velocity_targets: Vec<f64>,
     /// Per-joint direct torque command (used by Torque-mode controller).
     torque_targets: Vec<f64>,
+    /// Per-joint feedforward torque added on top of the PD output for
+    /// Position and ComputedTorque modes (used by the WBC layer to inject
+    /// `τ = -J^T · f_GRF` from the SRBD MPC). Held at zero unless the
+    /// caller updates it each tick — auto-zeroed by `clear_torque_feedforward`
+    /// when the gait controller is disabled, so a stale value can't keep
+    /// driving the leg after the user stops walking.
+    position_target_torque_ff: Vec<f64>,
     /// Active pose-to-pose transition (drives `position_targets` per step).
     /// `None` when the controller should hold the current target.
     transition: Option<ActiveTransition>,
@@ -373,6 +380,7 @@ impl MujocoSim {
         let position_target_accelerations = vec![0.0; robot.joints.len()];
         let velocity_targets = vec![0.0; robot.joints.len()];
         let torque_targets = vec![0.0; robot.joints.len()];
+        let position_target_torque_ff = vec![0.0; robot.joints.len()];
 
         Ok(Self {
             model,
@@ -389,6 +397,7 @@ impl MujocoSim {
             position_target_accelerations,
             velocity_targets,
             torque_targets,
+            position_target_torque_ff,
             transition: None,
             sequence: None,
             force_pulses: Vec::new(),
@@ -654,6 +663,29 @@ impl MujocoSim {
         }
     }
 
+    /// Set the per-joint torque feedforward (N·m) added on top of the
+    /// Position-mode PD output. The WBC layer writes here each tick to
+    /// inject `τ = -J^T · f_GRF` from the SRBD MPC; the residual PD
+    /// keeps the joint tracking the kinematic target. No effect on
+    /// Velocity / Torque / ComputedTorque modes' `qd*` and `τ*` paths
+    /// — those still get their own targets via `set_velocity_target` /
+    /// `set_torque_target`. Out-of-range `joint_idx` is silently ignored
+    /// (matches `set_position_target` semantics).
+    pub fn set_torque_feedforward(&mut self, joint_idx: usize, tau: f64) {
+        if let Some(slot) = self.position_target_torque_ff.get_mut(joint_idx) {
+            *slot = tau;
+        }
+    }
+
+    /// Zero out all per-joint torque feedforwards. Called when the gait
+    /// controller is disabled or switched away from MPC, so a stale
+    /// feedforward from the last MPC tick can't keep driving the legs.
+    pub fn clear_torque_feedforward(&mut self) {
+        for slot in self.position_target_torque_ff.iter_mut() {
+            *slot = 0.0;
+        }
+    }
+
     /// Compute and write each motor's `ctrl` (= applied torque) for the
     /// upcoming physics tick, based on the per-joint mode + gains in `robot`
     /// and the controller targets stored on `self`.
@@ -828,6 +860,21 @@ impl MujocoSim {
                     pd + ff
                 }
             };
+
+            // WBC torque feedforward (Phase 4): in Position / ComputedTorque
+            // modes the host can inject `τ = -J^T·f_GRF` from the SRBD MPC
+            // on top of the PD output, so the leg both tracks its kinematic
+            // target *and* produces the GRF the body-level MPC needs. Skip
+            // for Velocity / Torque modes — those are non-WBC paths and the
+            // user owns the entire torque command.
+            if matches!(
+                joint.actuator_mode,
+                ActuatorMode::Position | ActuatorMode::ComputedTorque
+            ) {
+                if let Some(&ff) = self.position_target_torque_ff.get(ji) {
+                    tau += ff;
+                }
+            }
 
             if enforce_limits {
                 // Velocity-saturation back-off: when |q̇| has already exceeded

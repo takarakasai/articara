@@ -408,12 +408,26 @@ impl GaitController {
         self.inner.knee_forward()
     }
 
-    /// Advance the gait by `dt`. Returns the per-leg controller output
-    /// plus a flat list of `(joint_idx, q)` pairs ready to feed into
-    /// [`crate::mujoco_sim::MujocoSim::set_position_target`].
-    pub fn tick(&mut self, dt: f64) -> (ControllerOutput, [(usize, f64); 12]) {
+    /// Advance the gait by `dt`. Returns:
+    /// - the per-leg controller output (kinematics + phase + foot pose),
+    /// - a flat list of 12 `(joint_idx, q)` pairs ready to feed into
+    ///   [`crate::mujoco_sim::MujocoSim::set_position_target`],
+    /// - a flat list of 12 `(joint_idx, τ_ff)` pairs ready to feed into
+    ///   [`crate::mujoco_sim::MujocoSim::set_torque_feedforward`]. In MPC
+    ///   mode τ_ff carries the SRBD-MPC ground reaction force mapped
+    ///   through the leg Jacobian (`-J^T·f_GRF`) for stance feet; for
+    ///   swing feet and for CHAMP mode τ_ff is zero. Sign-corrected per
+    ///   joint to match URDF axes.
+    pub fn tick(
+        &mut self,
+        dt: f64,
+    ) -> (ControllerOutput, [(usize, f64); 12], [(usize, f64); 12]) {
         let out = self.inner.tick(dt);
+        // Stance-leg torque feedforward from the MPC, in IK convention.
+        // [None; 4] when running CHAMP or before the first MPC solve.
+        let stance_ff = self.inner.stance_grf_torques(&out);
         let mut targets = [(0usize, 0.0); 12];
+        let mut torque_ff = [(0usize, 0.0); 12];
         let mut k = 0;
         for slot in 0..4 {
             let qs = [
@@ -421,13 +435,21 @@ impl GaitController {
                 out.legs[slot].q_thigh,
                 out.legs[slot].q_calf,
             ];
+            // Stance torques (IK convention) → URDF via `joint_signs` —
+            // the same sign mapping that converts q from IK to URDF
+            // applies to τ as well, since q_urdf = sign·q_ik implies
+            // τ_urdf[k] = sign[k]·τ_ik[k] (see derivation in
+            // `quadruped_gait::ik::foot_jacobian_body`'s callers).
+            let taus_ik = stance_ff[slot].unwrap_or([0.0, 0.0, 0.0]);
             for j in 0..3 {
-                targets[k] =
-                    (self.joint_indices[slot][j], qs[j] * self.joint_signs[slot][j]);
+                let ji = self.joint_indices[slot][j];
+                let sign = self.joint_signs[slot][j];
+                targets[k] = (ji, qs[j] * sign);
+                torque_ff[k] = (ji, taus_ik[j] * sign);
                 k += 1;
             }
         }
-        (out, targets)
+        (out, targets, torque_ff)
     }
 }
 
@@ -469,7 +491,7 @@ mod tests {
         ];
         let kin = auto_detect_kinematics_config(&model, &foot_links).unwrap();
         let cfg = quadruped_gait::GaitConfig::trot();
-        let ctrl = GaitController::build(&model, kin, cfg).unwrap();
+        let ctrl = GaitController::build(&model, kin, cfg, GaitMode::Champ).unwrap();
 
         // FL row: hip about +X (sign +1), thigh about +Y (sign −1), calf about +Y (sign −1).
         for slot in 0..4 {
