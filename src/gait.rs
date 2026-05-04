@@ -352,6 +352,25 @@ impl GaitController {
         self.inner.predicted_grfs()
     }
 
+    /// Override the SRBD MPC's body-mass / inertia / weight matrices.
+    /// No-op when the active mode is CHAMP. Hosts that know their
+    /// robot's actual mass should call this once after `build` — the
+    /// default 9 kg / Cheetah-3 inertia is wildly off for most robots
+    /// and produces grossly over- or under-scaled τ_ff.
+    pub fn set_srbd_mpc_config(
+        &mut self,
+        cfg: quadruped_gait::SrbdMpcConfig,
+    ) {
+        self.inner.set_srbd_mpc_config(cfg);
+    }
+
+    /// Read the active SRBD MPC config. `None` when running CHAMP.
+    pub fn srbd_mpc_config(
+        &self,
+    ) -> Option<&quadruped_gait::SrbdMpcConfig> {
+        self.inner.srbd_mpc_config()
+    }
+
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
