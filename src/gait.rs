@@ -343,6 +343,15 @@ impl GaitController {
         self.inner.set_body_state_observed(v_world);
     }
 
+    /// Latest SRBD-MPC predicted ground reaction forces (world
+    /// frame, per foot, in canonical FL/FR/RL/RR slot order). Returns
+    /// `None` when the active mode is CHAMP or the MPC hasn't ticked
+    /// yet. Used by the viewport's GRF overlay; not currently fed
+    /// back into MuJoCo (Phase 4 work).
+    pub fn predicted_grfs(&self) -> Option<&quadruped_gait::MpcSolution> {
+        self.inner.predicted_grfs()
+    }
+
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }

@@ -1809,6 +1809,7 @@ mod peaks_plot_window;
 #[cfg(feature = "mujoco")]
 mod sim_drag;
 mod collision_matrix;
+mod grf_overlay;
 #[cfg(feature = "mujoco")]
 mod imu_overlay;
 #[cfg(feature = "mujoco")]
