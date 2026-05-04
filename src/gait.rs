@@ -19,7 +19,8 @@ use std::collections::HashMap;
 
 use nalgebra as na;
 use quadruped_gait::{
-    ControllerOutput, GaitConfig, GaitController as InnerController, KinematicsConfig,
+    AnyGaitController as InnerController, ControllerOutput, GaitConfig,
+    GaitGenerator as _, GaitMode, KinematicsConfig,
     LegId, LegKinematics, VelocityCmd,
 };
 
@@ -261,7 +262,8 @@ pub struct GaitController {
 
 impl GaitController {
     /// Build the wrapper from a `RobotModel`, an auto-detected (or
-    /// manually constructed) [`KinematicsConfig`], and a [`GaitConfig`].
+    /// manually constructed) [`KinematicsConfig`], a [`GaitConfig`],
+    /// and the initial [`GaitMode`] (CHAMP or MPC).
     /// Returns an error if any of the joint names in the kinematics
     /// config can't be resolved in the model — typically a sign that
     /// the user's foot link name wasn't right for that robot.
@@ -269,6 +271,7 @@ impl GaitController {
         model: &RobotModel,
         kin: KinematicsConfig,
         cfg: GaitConfig,
+        mode: GaitMode,
     ) -> Result<Self, String> {
         let mut joint_indices = [[0usize; 3]; 4];
         let mut joint_signs = [[1.0_f64; 3]; 4];
@@ -308,11 +311,36 @@ impl GaitController {
             }
         }
         Ok(Self {
-            inner: InnerController::new(cfg, kin),
+            inner: InnerController::new(mode, cfg, kin),
             joint_indices,
             joint_signs,
             enabled: false,
         })
+    }
+
+    /// Currently-active generator mode (CHAMP / MPC).
+    pub fn mode(&self) -> GaitMode {
+        self.inner.mode()
+    }
+
+    /// Switch generator mode at runtime. Preserves the velocity
+    /// command, gait config, and per-leg knee_forward so the user
+    /// experiences a clean handoff. The phase / body integrator state
+    /// is reset because the two controllers don't share that
+    /// representation — gait restarts at cycle origin.
+    pub fn set_mode(&mut self, mode: GaitMode) {
+        self.inner.set_mode(mode);
+    }
+
+    /// Feed the latest observed body linear velocity (world frame)
+    /// from the host's state estimator. Used by closed-loop
+    /// generators (currently MPC) for capture-point feedback. CHAMP
+    /// ignores it.
+    pub fn set_body_state_observed(
+        &mut self,
+        v_world: nalgebra::Vector3<f64>,
+    ) {
+        self.inner.set_body_state_observed(v_world);
     }
 
     pub fn is_enabled(&self) -> bool {

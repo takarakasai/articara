@@ -677,6 +677,10 @@ pub struct ArticaraApp {
     /// Keeping it as `Option` so models without quadruped legs simply
     /// don't pay any cost.
     gait_controller: Option<crate::gait::GaitController>,
+    /// Active generator mode (CHAMP / MPC). Persisted on the app so
+    /// the picker UI's selection survives Setup → Clear → Setup; on
+    /// build / mode-change it's pushed into the controller.
+    gait_mode: quadruped_gait::GaitMode,
     /// Per-leg foot link names the user wants the auto-detector to use.
     /// Default mirror of [`crate::gait::DEFAULT_FOOT_LINKS`]; mutable so
     /// the UI panel can edit them per robot.
@@ -955,6 +959,7 @@ impl ArticaraApp {
                 _ => None,
             },
             gait_controller: None,
+            gait_mode: quadruped_gait::GaitMode::default(),
             gait_foot_links: crate::gait::DEFAULT_FOOT_LINKS
                 .map(|(id, name)| (id, name.to_string())),
             gait_dpad_speed: 0.3,
@@ -1396,6 +1401,25 @@ impl ArticaraApp {
                             // loop sees fresh setpoints every tick.
                             if let Some(gc) = self.gait_controller.as_mut() {
                                 if gc.is_enabled() {
+                                    // Feed observed body linear velocity to
+                                    // closed-loop generators (MPC). CHAMP
+                                    // ignores it. Use the kinematics' root
+                                    // body link as the reference; fallback
+                                    // to zero when MuJoCo doesn't know the
+                                    // body name (e.g. mid-rebuild).
+                                    let root = gc
+                                        .kinematics()
+                                        .legs()[0]
+                                        .hip_joint
+                                        .clone(); // placeholder; replaced below
+                                    let _ = root;
+                                    if let Some(v) = mj_sim
+                                        .body_world_linear_velocity(&model.root_link)
+                                    {
+                                        gc.set_body_state_observed(
+                                            nalgebra::Vector3::new(v[0], v[1], v[2]),
+                                        );
+                                    }
                                     let (_out, targets) = gc.tick(dt as f64);
                                     for (idx, q) in targets {
                                         mj_sim.set_position_target(idx, q);

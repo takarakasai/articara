@@ -1006,6 +1006,25 @@ impl MujocoSim {
         self.model.ffi().opt.timestep as f64
     }
 
+    /// World-frame linear velocity of `body_link`'s CoM (m/s). Returns
+    /// `None` when the body is unknown to the compiled MJCF (e.g. user
+    /// passed a sensor link name by mistake) — caller is expected to
+    /// fall through to a zero-velocity fallback so a missing body
+    /// doesn't crash the gait controller.
+    ///
+    /// Used to feed the closed-loop foot-placement feedback in
+    /// [`quadruped_gait::MpcGaitController`]. CHAMP ignores it.
+    pub fn body_world_linear_velocity(&self, body_link: &str) -> Option<[f64; 3]> {
+        let id = self
+            .model
+            .name_to_id(mujoco::prelude::MjtObj::mjOBJ_BODY, body_link)?;
+        // cvel layout per body is `[rot_x, rot_y, rot_z, lin_x, lin_y,
+        // lin_z]` (mjtNum × 6). We only want the linear half.
+        let cvel = self.data.cvel();
+        let row = &cvel[id];
+        Some([row[3], row[4], row[5]])
+    }
+
     /// Read the latest IMU readings (accelerometer + gyro) from
     /// MuJoCo's sensor array. Returns one [`ImuReading`] per IMU sensor
     /// declared in the [`RobotModel`]; sensors whose `_accel` / `_gyro`

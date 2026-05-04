@@ -1535,7 +1535,7 @@ impl ModelScriptEngine {
                     }
                 };
                 let cfg = quadruped_gait::GaitConfig::trot();
-                match crate::gait::GaitController::build(robot, kin, cfg) {
+                match crate::gait::GaitController::build(robot, kin, cfg, quadruped_gait::GaitMode::Champ) {
                     Ok(ctrl) => {
                         *g.borrow_mut() = Some(ctrl);
                         true
@@ -1577,7 +1577,7 @@ impl ModelScriptEngine {
                         }
                     };
                     let cfg = quadruped_gait::GaitConfig::trot();
-                    match crate::gait::GaitController::build(robot, kin, cfg) {
+                    match crate::gait::GaitController::build(robot, kin, cfg, quadruped_gait::GaitMode::Champ) {
                         Ok(ctrl) => {
                             *g.borrow_mut() = Some(ctrl);
                             true

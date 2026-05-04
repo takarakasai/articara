@@ -189,6 +189,39 @@ impl ArticaraApp {
                 }
             });
 
+        // Generator mode picker. Lives next to Setup so the user
+        // chooses CHAMP / MPC before building the controller; a live
+        // switch is also offered (apply to existing gc).
+        ui.horizontal(|ui| {
+            ui.label("Generator:");
+            let mut new_mode = self.gait_mode;
+            egui::ComboBox::from_id_salt("gait_mode_combo")
+                .selected_text(self.gait_mode.label())
+                .show_ui(ui, |ui| {
+                    for m in quadruped_gait::GaitMode::ALL {
+                        ui.selectable_value(&mut new_mode, m, m.label());
+                    }
+                });
+            if new_mode != self.gait_mode {
+                self.gait_mode = new_mode;
+                if let Some(gc) = self.gait_controller.as_mut() {
+                    gc.set_mode(new_mode);
+                    self.status_message =
+                        format!("Gait mode → {}", new_mode.label());
+                }
+            }
+        });
+        ui.label(
+            egui::RichText::new(
+                "CHAMP: open-loop Raibert footstep + Bezier swing. \
+                 MPC: + capture-point feedback (closed-loop) + LIP \
+                 horizon look-ahead — needs body velocity from the \
+                 sim, fed automatically when MuJoCo is running.",
+            )
+            .small()
+            .weak(),
+        );
+
         ui.horizontal(|ui| {
             if ui
                 .button("🔍 Auto-detect")
@@ -459,7 +492,7 @@ impl ArticaraApp {
                     }
                     None => (GaitConfig::trot(), [false; 4]),
                 };
-                match crate::gait::GaitController::build(model, kin, cfg) {
+                match crate::gait::GaitController::build(model, kin, cfg, self.gait_mode) {
                     Ok(mut gc) => {
                         for (slot, leg) in [LegId::FL, LegId::FR, LegId::RL, LegId::RR]
                             .iter()
