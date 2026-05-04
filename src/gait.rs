@@ -232,6 +232,64 @@ fn slot_of(id: LegId) -> usize {
     }
 }
 
+/// Auto-detect a per-robot [`SrbdMpcConfig`] from the model's link
+/// inertials, leaving all weights / horizon / friction at defaults.
+///
+/// - `mass_kg`: sum of every link's mass. The SRBD MPC treats the
+///   robot as a single rigid body, so the legs' mass shows up in the
+///   body lumped term. (For trotting robots the legs are typically
+///   <30% of total mass and this approximation is adequate; a future
+///   refinement could subtract the swing-leg contribution.)
+/// - `inertia_diag_body`: the **heaviest link's** body-frame moment
+///   of inertia diagonal. Heaviest-link is more robust than
+///   `root_link` because some URDFs (notably namiashi) split the
+///   structural root from the inertial root — the named "trunk" can
+///   carry zero mass while a child link holds the real inertia. Using
+///   `argmax(mass)` lands on the inertial carrier in both layouts.
+///   Coarse approximation: the true SRBD inertia would compose all
+///   link inertias via the parallel-axis theorem at a nominal pose.
+///
+/// If no link has positive mass / inertia, the corresponding field
+/// falls back to the [`SrbdMpcConfig::default`] value so a degenerate
+/// URDF still yields a usable (if poorly-tuned) config rather than
+/// panicking.
+///
+/// Use this for any model whose mass / inertia is known from the
+/// URDF; for hand-tuned setups call
+/// [`GaitController::set_srbd_mpc_config`] directly with custom
+/// values.
+pub fn auto_detect_srbd_mpc_config(
+    model: &RobotModel,
+) -> quadruped_gait::SrbdMpcConfig {
+    let mut cfg = quadruped_gait::SrbdMpcConfig::default();
+
+    let mass_total: f64 = model.links.iter().map(|l| l.inertial.mass).sum();
+    if mass_total > 1e-6 {
+        cfg.mass_kg = mass_total;
+    }
+
+    // Find the heaviest link and read its inertia diagonal. Reject
+    // near-zero diagonals — the SRBD MPC's QP becomes ill-conditioned
+    // with ~0 diagonal entries.
+    let heaviest = model
+        .links
+        .iter()
+        .max_by(|a, b| {
+            a.inertial
+                .mass
+                .partial_cmp(&b.inertial.mass)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    if let Some(link) = heaviest {
+        let i = &link.inertial;
+        let diag = na::Vector3::new(i.ixx, i.iyy, i.izz);
+        if diag.iter().all(|&x| x > 1e-9) {
+            cfg.inertia_diag_body = diag;
+        }
+    }
+    cfg
+}
+
 /// Wrapper around [`InnerController`] (= `quadruped_gait::GaitController`)
 /// that caches the joint-name → RobotModel-joint-idx mapping. The cache
 /// matters because the gait controller emits 12 (joint_name, q) pairs per
@@ -310,8 +368,16 @@ impl GaitController {
                 joint_signs[slot][k] = ik_to_urdf_factor[k] * urdf_sign;
             }
         }
+        let mut inner = InnerController::new(mode, cfg, kin);
+        // Auto-tune the SRBD MPC body-mass / inertia for *this* robot.
+        // The default 9 kg / Cheetah-3 inertia is wildly off for most
+        // legged robots; running with the default would scale every
+        // predicted GRF by the mass ratio and produce a huge τ_ff that
+        // either flails the legs or launches the body. CHAMP path
+        // ignores the call (no MPC state).
+        inner.set_srbd_mpc_config(auto_detect_srbd_mpc_config(model));
         Ok(Self {
-            inner: InnerController::new(mode, cfg, kin),
+            inner,
             joint_indices,
             joint_signs,
             enabled: false,
@@ -571,5 +637,77 @@ mod tests {
                 eprintln!("no working foot link for {leg:?}; tried {:?}", candidates[slot]);
             }
         }
+    }
+
+    /// `auto_detect_srbd_mpc_config` must produce a config whose mass
+    /// matches the sum of namiashi's link masses (~2.4 kg per the
+    /// URDF), and whose inertia diagonal comes from the trunk link
+    /// (the URDF root) — *not* the SRBD MPC's Cheetah-3-tuned default.
+    /// Catches regressions that would silently fall back to defaults
+    /// (e.g., a refactor that breaks the link_map lookup or the
+    /// inertial-non-zero gate).
+    #[test]
+    fn auto_detect_srbd_mpc_config_uses_model_mass_and_inertia() {
+        let Some(model) = try_load_namiashi() else {
+            eprintln!("namiashi fixture missing — skipping srbd auto-detect test");
+            return;
+        };
+        let cfg = auto_detect_srbd_mpc_config(&model);
+        let default = quadruped_gait::SrbdMpcConfig::default();
+
+        // Mass: ≈ 2.4 kg — well below the 9 kg default. Allow ±10%
+        // for URDF rounding, but reject "still at default".
+        assert!(
+            (cfg.mass_kg - 2.4).abs() < 0.3,
+            "mass should be ~2.4 kg from namiashi URDF, got {:.3}",
+            cfg.mass_kg,
+        );
+        assert!(
+            (cfg.mass_kg - default.mass_kg).abs() > 1e-3,
+            "mass should NOT match the Cheetah-3 default {:.3}",
+            default.mass_kg,
+        );
+
+        // Inertia: namiashi trunk inertia is ixx=0.00189, iyy=0.00857,
+        // izz=0.009 — orders of magnitude smaller than the Cheetah-3
+        // default. We don't pin exact numbers (URDF could change) but
+        // require the result to differ from default and to be positive.
+        let diag = cfg.inertia_diag_body;
+        assert!(diag.x > 0.0 && diag.y > 0.0 && diag.z > 0.0);
+        let differs_from_default = (diag - default.inertia_diag_body).norm() > 1e-3;
+        assert!(
+            differs_from_default,
+            "inertia diag {diag:?} matches default {:?} — model lookup likely broken",
+            default.inertia_diag_body,
+        );
+    }
+
+    /// `GaitController::build` must propagate the auto-detected config
+    /// into the inner MPC. Spot-check the round-trip via
+    /// `srbd_mpc_config()` accessor — guards against a refactor
+    /// dropping the `set_srbd_mpc_config` call inside `build`.
+    #[test]
+    fn build_propagates_auto_detected_srbd_config() {
+        let Some(model) = try_load_namiashi() else {
+            eprintln!("namiashi fixture missing — skipping build-propagate test");
+            return;
+        };
+        let foot_links: [(LegId, &str); 4] = [
+            (LegId::FL, "FL_foot"),
+            (LegId::FR, "FR_foot"),
+            (LegId::RL, "RL_foot"),
+            (LegId::RR, "RR_foot"),
+        ];
+        let kin = auto_detect_kinematics_config(&model, &foot_links).unwrap();
+        let cfg = quadruped_gait::GaitConfig::trot();
+        let gc = GaitController::build(&model, kin, cfg, GaitMode::Mpc).unwrap();
+        let active = gc.srbd_mpc_config().expect("MPC mode should expose the config");
+        let expected = auto_detect_srbd_mpc_config(&model);
+        assert!(
+            (active.mass_kg - expected.mass_kg).abs() < 1e-9,
+            "build did not apply auto-detected mass: got {:.3}, expected {:.3}",
+            active.mass_kg,
+            expected.mass_kg,
+        );
     }
 }
