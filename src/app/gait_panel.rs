@@ -239,6 +239,41 @@ impl ArticaraApp {
              on the trunk IMU's accel+gyro; GroundTruth reads MuJoCo's \
              xquat / xpos directly (sim oracle).",
         );
+
+        // Hierarchical WBC toggle (MPC mode only — CHAMP doesn't
+        // produce the GRF / contact references the WBC needs).
+        #[cfg(feature = "mujoco")]
+        ui.horizontal(|ui| {
+            let enabled =
+                self.gait_mode == quadruped_gait::GaitMode::Mpc;
+            let resp = ui.add_enabled(
+                enabled,
+                egui::Checkbox::new(
+                    &mut self.wbc_enabled,
+                    "Hierarchical WBC",
+                ),
+            );
+            if !enabled {
+                self.wbc_enabled = false;
+            }
+            if resp.changed() {
+                if self.wbc_enabled {
+                    self.status_message =
+                        "WBC enabled — torques solved by 3-priority HoQp".into();
+                } else {
+                    self.status_message =
+                        "WBC disabled — back to per-joint Position-PD + τ_ff".into();
+                }
+            }
+        })
+        .response
+        .on_hover_text(
+            "When ON, the gait controller's joint targets are routed \
+             through a 3-priority Hierarchical QP (floating-base EoM + \
+             friction cone + torque limits enforced as hard constraints) \
+             before being commanded to MuJoCo. Available only in MPC \
+             gait mode.",
+        );
         ui.label(
             egui::RichText::new(
                 "CHAMP: open-loop Raibert footstep + Bezier swing. \

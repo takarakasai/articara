@@ -22,6 +22,8 @@ mod sdf;
 mod scripting_model;
 mod usd;
 mod usd_import;
+#[cfg(feature = "mujoco")]
+mod wbc_pipeline;
 
 use std::path::PathBuf;
 

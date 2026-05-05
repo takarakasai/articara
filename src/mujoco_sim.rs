@@ -63,6 +63,13 @@ pub struct MujocoSim {
     /// when the gait controller is disabled, so a stale value can't keep
     /// driving the leg after the user stops walking.
     position_target_torque_ff: Vec<f64>,
+    /// Full per-joint torque override produced by the Hierarchical WBC.
+    /// When `Some`, [`Self::apply_controller`] writes these torques
+    /// **directly** to each motor's `ctrl` slot, bypassing per-joint
+    /// `ActuatorMode` logic (Position-PD, gravity FF, etc.). Length
+    /// matches `robot.joints.len()`; entries for fixed joints are
+    /// ignored. Cleared via [`Self::clear_wbc_torques`].
+    wbc_torque_override: Option<Vec<f64>>,
     /// Active pose-to-pose transition (drives `position_targets` per step).
     /// `None` when the controller should hold the current target.
     transition: Option<ActiveTransition>,
@@ -393,6 +400,7 @@ impl MujocoSim {
             velocity_targets,
             torque_targets,
             position_target_torque_ff,
+            wbc_torque_override: None,
             transition: None,
             sequence: None,
             force_pulses: Vec::new(),
@@ -678,6 +686,45 @@ impl MujocoSim {
         }
     }
 
+    /// Replace per-joint actuator-mode logic with a direct torque vector
+    /// produced by the Hierarchical WBC. The vector is indexed by
+    /// `RobotModel::joints` order; entries for fixed joints are
+    /// ignored. Stays in effect for every subsequent `step` until
+    /// [`Self::clear_wbc_torques`] is called.
+    ///
+    /// Use case: the gait + WBC pipeline solves the full
+    /// `(q̈, f_GRF, τ)` triple under hard physical constraints
+    /// (floating-base EoM, friction cone, torque limits) and writes
+    /// the resulting `τ` here. This bypasses Position / Velocity /
+    /// ComputedTorque paths, since the WBC's torque already
+    /// incorporates the equivalent of those PD residuals — adding
+    /// them on top would double-count.
+    pub fn set_wbc_torques(&mut self, taus: &[f64]) {
+        if taus.len() != self.position_targets.len() {
+            log::warn!(
+                "set_wbc_torques: length mismatch ({} given, {} expected)",
+                taus.len(),
+                self.position_targets.len()
+            );
+            return;
+        }
+        self.wbc_torque_override = Some(taus.to_vec());
+    }
+
+    /// Disable WBC-direct torque mode. Subsequent ticks fall back to
+    /// per-joint `ActuatorMode` logic (Position PD + τ_ff etc.). Call
+    /// when the WBC is turned off in the UI so a stale `τ_wbc` from a
+    /// previous run can't keep driving the legs.
+    pub fn clear_wbc_torques(&mut self) {
+        self.wbc_torque_override = None;
+    }
+
+    /// True when the WBC override is currently active. Exposed for the
+    /// UI panel so it can show the current control mode.
+    pub fn wbc_active(&self) -> bool {
+        self.wbc_torque_override.is_some()
+    }
+
     /// Compute and write each motor's `ctrl` (= applied torque) for the
     /// upcoming physics tick, based on the per-joint mode + gains in `robot`
     /// and the controller targets stored on `self`.
@@ -694,6 +741,63 @@ impl MujocoSim {
     /// for Position and Velocity modes. Torque-mode joints are left alone
     /// since their command is supposed to be the user's full torque request.
     fn apply_controller(&mut self, robot: &mut RobotModel, enforce_limits: bool) {
+        // ── WBC direct-torque override path ─────────────────────────
+        // When the host has handed us a per-joint τ vector from the
+        // Hierarchical WBC, write each motor's `ctrl` directly without
+        // running per-joint Position / Velocity / ComputedTorque PD
+        // logic. The WBC's torque already incorporates the equivalent
+        // of those PD residuals (the QP minimises tracking error of
+        // base accel + swing accel under hard constraints), so adding
+        // them on top would double-count.
+        if let Some(taus) = self.wbc_torque_override.clone() {
+            for (ji, joint) in robot.joints.iter().enumerate() {
+                if joint.joint_type == "fixed" {
+                    continue;
+                }
+                let mut tau = taus.get(ji).copied().unwrap_or(0.0);
+                if enforce_limits && joint.effort > 0.0 {
+                    tau = tau.clamp(-joint.effort, joint.effort);
+                }
+                let actuator_name = format!("motor_{}", joint.name);
+                if let Some(act_info) = self.data.actuator(&actuator_name) {
+                    let mut view = act_info.view_mut(&mut self.data);
+                    if !view.ctrl.is_empty() {
+                        view.ctrl[0] = tau;
+                    }
+                }
+                // Update the running peaks + last_tau the same way the
+                // per-joint path does so the trace plots line up
+                // regardless of which control mode is active.
+                if let Some(peak) = self.peaks.get_mut(ji) {
+                    let tau_abs = tau.abs();
+                    if tau_abs > peak.tau_abs {
+                        peak.tau_abs = tau_abs;
+                        peak.tau_signed = tau;
+                    }
+                    let qd = match self.data.joint(&joint.name) {
+                        Some(info) => {
+                            let view = info.view(&self.data);
+                            if view.qvel.is_empty() {
+                                0.0
+                            } else {
+                                view.qvel[0]
+                            }
+                        }
+                        None => 0.0,
+                    };
+                    let qd_abs = qd.abs();
+                    if qd_abs > peak.qvel_abs {
+                        peak.qvel_abs = qd_abs;
+                        peak.qvel_signed = qd;
+                    }
+                }
+                if let Some(slot) = self.last_tau.get_mut(ji) {
+                    *slot = tau;
+                }
+            }
+            return;
+        }
+
         // Pre-compute feedforward vectors once per tick. Two independent
         // streams may need them:
         //   gravity_comp  → τ_grav = compute_gravity(q)            (q̇=0, q̈=0)

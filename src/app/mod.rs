@@ -513,6 +513,19 @@ pub struct ArticaraApp {
     /// at typical 2 ms physics ticks.
     #[cfg(feature = "mujoco")]
     leg_odometry_last_stance: [bool; 4],
+    /// When true, the gait integration loop runs the Hierarchical WBC
+    /// (`wbc_pipeline::WbcPipeline`) and writes its solved torques
+    /// directly to `MujocoSim` via `set_wbc_torques`, bypassing
+    /// per-joint Position-PD. Off by default; toggled from the gait
+    /// panel. Active only in MPC gait mode (CHAMP doesn't produce
+    /// the GRF / contact references the WBC needs).
+    #[cfg(feature = "mujoco")]
+    wbc_enabled: bool,
+    /// Lazy-initialised WBC pipeline. Built on the first tick the
+    /// gait controller is enabled in MPC mode so we don't pay the
+    /// kinematic-cache lookup cost on robots that aren't quadrupeds.
+    #[cfg(feature = "mujoco")]
+    wbc_pipeline: Option<crate::wbc_pipeline::WbcPipeline>,
     /// When true, the MuJoCo sim auto-lifts the floating base just above z=0.
     /// When false, [`Self::mujoco_base_pos`] is used as the initial world position.
     #[cfg(feature = "mujoco")]
@@ -889,6 +902,10 @@ impl ArticaraApp {
             leg_odometry: crate::leg_odometry::LegOdometry::new(),
             #[cfg(feature = "mujoco")]
             leg_odometry_last_stance: [true; 4], // start in all-stance pose
+            #[cfg(feature = "mujoco")]
+            wbc_enabled: false,
+            #[cfg(feature = "mujoco")]
+            wbc_pipeline: None,
             #[cfg(feature = "mujoco")]
             mujoco_auto_base: true,
             #[cfg(feature = "mujoco")]
@@ -1561,11 +1578,12 @@ impl ArticaraApp {
                                     for (idx, q) in targets {
                                         mj_sim.set_position_target(idx, q);
                                     }
-                                    // Phase 4 WBC: layer the SRBD MPC's
-                                    // GRF-derived `-J^T · f_GRF` torque on
-                                    // top of the position-mode PD. CHAMP
-                                    // and the pre-first-MPC-tick path emit
-                                    // zeros, so this is a no-op for them.
+                                    // Phase 4 WBC (single-layer feedforward):
+                                    // layer the SRBD MPC's GRF-derived
+                                    // `-J^T · f_GRF` torque on top of the
+                                    // position-mode PD. CHAMP and the
+                                    // pre-first-MPC-tick path emit zeros,
+                                    // so this is a no-op for them.
                                     for (idx, tau) in torque_ff {
                                         mj_sim.set_torque_feedforward(idx, tau);
                                     }
@@ -1578,15 +1596,89 @@ impl ArticaraApp {
                                         self.leg_odometry_last_stance[slot] =
                                             out.legs[slot].phase.is_stance;
                                     }
+
+                                    // ── Phase A: Hierarchical WBC ──────
+                                    // When the user enables WBC, replace
+                                    // the per-joint position PD path with
+                                    // a full HoQp solve using the gait's
+                                    // post-tick targets + the SRBD MPC's
+                                    // predicted GRFs as references. Only
+                                    // active in MPC mode (CHAMP doesn't
+                                    // produce GRFs).
+                                    let wbc_active = self.wbc_enabled
+                                        && gc.mode() == quadruped_gait::GaitMode::Mpc;
+                                    if wbc_active {
+                                        // Lazy-initialise the pipeline on first use.
+                                        if self.wbc_pipeline.is_none() {
+                                            let foot_links: [String; 4] = [
+                                                self.gait_foot_links[0].1.clone(),
+                                                self.gait_foot_links[1].1.clone(),
+                                                self.gait_foot_links[2].1.clone(),
+                                                self.gait_foot_links[3].1.clone(),
+                                            ];
+                                            self.wbc_pipeline = Some(
+                                                crate::wbc_pipeline::WbcPipeline::new(
+                                                    model, foot_links,
+                                                ),
+                                            );
+                                        }
+                                        // Pull MPC predicted GRFs (if any)
+                                        // for the contact-force regulariser.
+                                        let f_grf_world: [nalgebra::Vector3<f64>; 4] = gc
+                                            .predicted_grfs()
+                                            .map(|sol| sol.grfs_first_step)
+                                            .unwrap_or([nalgebra::Vector3::zeros(); 4]);
+                                        let cmd = gc.velocity_cmd();
+                                        let (sin_y, cos_y) = yaw_observed.sin_cos();
+                                        let v_cmd_world = nalgebra::Vector3::new(
+                                            cos_y * cmd.vx - sin_y * cmd.vy,
+                                            sin_y * cmd.vx + cos_y * cmd.vy,
+                                            0.0,
+                                        );
+                                        let v_obs_v3 =
+                                            nalgebra::Vector3::new(v[0], v[1], v[2]);
+                                        let omega_obs_v3 =
+                                            nalgebra::Vector3::new(w[0], w[1], w[2]);
+                                        let kin = gc.kinematics().clone();
+                                        let joint_indices = gc.joint_indices();
+                                        let joint_signs = gc.joint_signs();
+                                        let contact_flag = [
+                                            out.legs[0].phase.is_stance,
+                                            out.legs[1].phase.is_stance,
+                                            out.legs[2].phase.is_stance,
+                                            out.legs[3].phase.is_stance,
+                                        ];
+                                        let pipeline = self.wbc_pipeline.as_mut().unwrap();
+                                        let taus = pipeline.solve(
+                                            model,
+                                            mj_sim,
+                                            &out,
+                                            &kin,
+                                            joint_indices,
+                                            joint_signs,
+                                            &v_cmd_world,
+                                            cmd.wz,
+                                            &v_obs_v3,
+                                            &omega_obs_v3,
+                                            &f_grf_world,
+                                            contact_flag,
+                                            dt as f64,
+                                        );
+                                        mj_sim.set_wbc_torques(&taus);
+                                    } else {
+                                        mj_sim.clear_wbc_torques();
+                                    }
                                 } else {
                                     // Disabled gait: drop any stale
                                     // feedforward so the legs aren't
                                     // commanded into motion by the last
                                     // tick's GRF prediction.
                                     mj_sim.clear_torque_feedforward();
+                                    mj_sim.clear_wbc_torques();
                                 }
                             } else {
                                 mj_sim.clear_torque_feedforward();
+                                mj_sim.clear_wbc_torques();
                             }
                             mj_sim.step(model, dt as f64, enforce_limits);
                         }
