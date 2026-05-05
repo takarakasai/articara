@@ -269,9 +269,19 @@ fn run_walk(mode: GaitMode, params: WalkParams) -> Option<Vec<TrunkSample>> {
         // (MPC). CHAMP ignores it — but always feeding it costs ~one
         // body-velocity lookup per tick and keeps the harness mode-
         // agnostic.
-        if let Some(v) = sim.body_world_linear_velocity(&robot.root_link) {
-            gc.set_body_state_observed(Vector3::new(v[0], v[1], v[2]));
-        }
+        // Feed both linear + angular velocity (the WBC integration
+        // expanded the API to take ω too — see commit f3b2fd2). CHAMP
+        // ignores both; MPC uses both for closed-loop tracking.
+        let v_obs = sim
+            .body_world_linear_velocity(&robot.root_link)
+            .unwrap_or([0.0, 0.0, 0.0]);
+        let w_obs = sim
+            .body_world_angular_velocity(&robot.root_link)
+            .unwrap_or([0.0, 0.0, 0.0]);
+        gc.set_body_state_observed(
+            Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+            Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+        );
 
         if gc.is_enabled() {
             let (_out, targets, torque_ff) = gc.tick(params.dt);
