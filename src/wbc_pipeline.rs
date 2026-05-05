@@ -123,7 +123,7 @@ impl WbcPipeline {
         kin: &KinematicsConfig,
         joint_indices: [[usize; 3]; 4],
         joint_signs: [[f64; 3]; 4],
-        v_cmd_world: &na::Vector3<f64>,
+        v_cmd_body: &na::Vector3<f64>,
         wz_cmd: f64,
         v_obs_world: &na::Vector3<f64>,
         omega_obs_world: &na::Vector3<f64>,
@@ -144,8 +144,36 @@ impl WbcPipeline {
             na: na_count,
         };
 
-        // ── Build q (FreeFlyer = identity, joints from RobotModel) ──
+        // ── Sync floating base from MuJoCo body pose ────────────────
+        // misarta's FreeFlyer q layout: [px, py, pz, qx, qy, qz, qw].
+        // Reading the actual MuJoCo body pose (xpos / xquat) — instead
+        // of leaving q at neutral every tick — makes `crba`,
+        // `nonlinear_effects`, and `compute_joint_jacobian` reflect the
+        // **real** body tilt. Critical for gravity-comp: with
+        // identity-quat q, the gravity term in `nle` always points
+        // along world −z; if the actual body is tilting and we don't
+        // sync, the WBC computes wrong support torques and the trunk
+        // collapses.
+        let body_pos_w = mj_sim
+            .body_world_position(&robot.root_link)
+            .map(|p| na::Vector3::new(p[0], p[1], p[2]))
+            .unwrap_or_else(na::Vector3::zeros);
+        let body_quat = mj_sim
+            .body_world_orientation(&robot.root_link)
+            .unwrap_or_else(na::UnitQuaternion::identity);
+        let r_wb = body_quat.to_rotation_matrix();
+        let r_bw = r_wb.transpose();
+
         let mut q = self.model.neutral_q();
+        // FreeFlyer occupies q[0..7]; assume the trunk's misarta idx is 1
+        // (which `build_floating_base_model` enforces).
+        q[0] = body_pos_w.x;
+        q[1] = body_pos_w.y;
+        q[2] = body_pos_w.z;
+        q[3] = body_quat.i;
+        q[4] = body_quat.j;
+        q[5] = body_quat.k;
+        q[6] = body_quat.w;
         for ji in 0..robot.joints.len() {
             let Some(mi) = self.a2m.get(ji).and_then(|&m| m) else {
                 continue;
@@ -158,17 +186,19 @@ impl WbcPipeline {
 
         // ── Build v ─────────────────────────────────────────────────
         // FreeFlyer's motion subspace S = I_6 expresses v[0..6] in the
-        // **body** frame. With base at identity orientation this
-        // numerically equals world-frame, so we can pass world-frame
-        // velocities directly. (When we later sync the actual base
-        // orientation, this will need a R_world_body^T rotation.)
+        // **body** frame. MuJoCo's `cvel` (and our
+        // `body_world_*_velocity` helpers) return world-frame velocity,
+        // so we rotate by R_body_world = R_world_body^T to get the
+        // body-frame velocity that misarta expects.
+        let v_obs_body = r_bw * v_obs_world;
+        let omega_obs_body = r_bw * omega_obs_world;
         let mut v = vec![0.0_f64; nv];
-        v[0] = v_obs_world.x;
-        v[1] = v_obs_world.y;
-        v[2] = v_obs_world.z;
-        v[3] = omega_obs_world.x;
-        v[4] = omega_obs_world.y;
-        v[5] = omega_obs_world.z;
+        v[0] = v_obs_body.x;
+        v[1] = v_obs_body.y;
+        v[2] = v_obs_body.z;
+        v[3] = omega_obs_body.x;
+        v[4] = omega_obs_body.y;
+        v[5] = omega_obs_body.z;
         for ji in 0..robot.joints.len() {
             let Some(mi) = self.a2m.get(ji).and_then(|&m| m) else {
                 continue;
@@ -211,9 +241,13 @@ impl WbcPipeline {
         }
 
         // ── a_base_des: P-control on body linear + angular velocity ─
-        let a_base_lin = self.base_kp_lin * (v_cmd_world - v_obs_world);
-        let omega_cmd_world = na::Vector3::new(0.0, 0.0, wz_cmd);
-        let a_base_ang = self.base_kp_ang * (omega_cmd_world - omega_obs_world);
+        // q̈[0..6] is body-frame for a FreeFlyer joint, so the
+        // base-acceleration reference must also be body-frame. The
+        // gait command (vx, vy, wz) is naturally body-frame; the
+        // observation comes from world frame and is rotated above.
+        let omega_cmd_body = na::Vector3::new(0.0, 0.0, wz_cmd);
+        let a_base_lin = self.base_kp_lin * (v_cmd_body - v_obs_body);
+        let a_base_ang = self.base_kp_ang * (omega_cmd_body - omega_obs_body);
         let a_base_des = na::DVector::from_iterator(
             6,
             [

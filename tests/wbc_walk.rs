@@ -240,16 +240,9 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     .map(|sol| sol.grfs_first_step)
                     .unwrap_or([Vector3::zeros(); 4]);
                 let cmd = gc.velocity_cmd();
-                // Body-frame command rotated to world via observed yaw.
-                let yaw = sim
-                    .body_world_yaw(&robot.root_link)
-                    .unwrap_or(0.0);
-                let (sin_y, cos_y) = yaw.sin_cos();
-                let v_cmd_world = Vector3::new(
-                    cos_y * cmd.vx - sin_y * cmd.vy,
-                    sin_y * cmd.vx + cos_y * cmd.vy,
-                    0.0,
-                );
+                // Body-frame command — the WBC pipeline rotates the
+                // observation internally using the current xquat.
+                let v_cmd_body = Vector3::new(cmd.vx, cmd.vy, 0.0);
                 let contact_flag = [
                     out.legs[0].phase.is_stance,
                     out.legs[1].phase.is_stance,
@@ -263,7 +256,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     gc.kinematics(),
                     gc.joint_indices(),
                     gc.joint_signs(),
-                    &v_cmd_world,
+                    &v_cmd_body,
                     cmd.wz,
                     &Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                     &Vector3::new(w_obs[0], w_obs[1], w_obs[2]),

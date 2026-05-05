@@ -1203,6 +1203,26 @@ impl MujocoSim {
         Some((view.qpos[0], view.qvel[0]))
     }
 
+    /// World-frame orientation of `body_link` as a unit quaternion.
+    /// MuJoCo's `xquat` stores `[w, x, y, z]` (Hamilton); we hand it
+    /// to `nalgebra::Quaternion::new(w, i, j, k)` directly. Used by
+    /// the WBC pipeline to sync the misarta floating-base `q[3..7]`
+    /// (so gravity-comp and Coriolis terms reflect the actual body
+    /// tilt, not a synthetic identity orientation).
+    pub fn body_world_orientation(
+        &self,
+        body_link: &str,
+    ) -> Option<nalgebra::UnitQuaternion<f64>> {
+        let id = self
+            .model
+            .name_to_id(mujoco::prelude::MjtObj::mjOBJ_BODY, body_link)?;
+        let xquat = self.data.xquat();
+        let q = &xquat[id];
+        Some(nalgebra::UnitQuaternion::from_quaternion(
+            nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]),
+        ))
+    }
+
     /// World-frame yaw of `body_link` (rad). Extracts the z-axis Euler
     /// angle from MuJoCo's `xquat = [w, x, y, z]` (Hamilton convention).
     pub fn body_world_yaw(&self, body_link: &str) -> Option<f64> {

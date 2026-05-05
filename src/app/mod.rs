@@ -1629,11 +1629,11 @@ impl ArticaraApp {
                                             .map(|sol| sol.grfs_first_step)
                                             .unwrap_or([nalgebra::Vector3::zeros(); 4]);
                                         let cmd = gc.velocity_cmd();
-                                        let (sin_y, cos_y) = yaw_observed.sin_cos();
-                                        let v_cmd_world = nalgebra::Vector3::new(
-                                            cos_y * cmd.vx - sin_y * cmd.vy,
-                                            sin_y * cmd.vx + cos_y * cmd.vy,
-                                            0.0,
+                                        // The gait command is naturally body-frame; the
+                                        // WBC pipeline now expects body-frame inputs and
+                                        // rotates the observation internally.
+                                        let v_cmd_body = nalgebra::Vector3::new(
+                                            cmd.vx, cmd.vy, 0.0,
                                         );
                                         let v_obs_v3 =
                                             nalgebra::Vector3::new(v[0], v[1], v[2]);
@@ -1656,7 +1656,7 @@ impl ArticaraApp {
                                             &kin,
                                             joint_indices,
                                             joint_signs,
-                                            &v_cmd_world,
+                                            &v_cmd_body,
                                             cmd.wz,
                                             &v_obs_v3,
                                             &omega_obs_v3,
