@@ -75,7 +75,7 @@ pub struct WbcPipeline {
     /// difference the swing reference velocity. Initialised to the
     /// nominal stance pose so the first tick doesn't see a huge
     /// fictitious velocity.
-    last_foot_body_des: [na::Vector3<f64>; 4],
+    last_foot_world_des: [na::Vector3<f64>; 4],
 }
 
 impl WbcPipeline {
@@ -89,10 +89,11 @@ impl WbcPipeline {
         for (slot, link) in foot_links.iter().enumerate() {
             foot_misarta_idx[slot] = link_to_idx.get(link).copied();
         }
-        // Initialise last_foot_body_des with each leg's nominal foot
-        // body position so the first finite-difference velocity is
-        // (nominal − nominal) / dt = 0.
-        let last_foot_body_des = [na::Vector3::zeros(); 4];
+        // First-tick velocity is finite-differenced against zero, but
+        // the initial p_des_world of an upright body at origin is also
+        // close to the nominal, so the resulting "fictitious velocity"
+        // is small. We seed at zeros and accept the first-tick bias.
+        let last_foot_world_des = [na::Vector3::zeros(); 4];
 
         Self {
             foot_links,
@@ -104,7 +105,7 @@ impl WbcPipeline {
             base_kp_lin: 30.0,
             base_kp_ang: 30.0,
             friction_mu: 0.5,
-            last_foot_body_des,
+            last_foot_world_des,
         }
     }
 
@@ -260,37 +261,56 @@ impl WbcPipeline {
             ],
         );
 
-        // ── a_swing_des per foot (Cartesian PD) ────────────────────
+        // ── a_swing_des per foot (Cartesian PD in **world** frame) ──
+        // The swing_leg task formulation is `J_world · q̈ = a_des − dJ·v`
+        // where J_world is the world-frame foot Jacobian. The PD must
+        // therefore produce a world-frame Cartesian acceleration target,
+        // so we rotate the gait controller's body-frame `foot_body`
+        // target into world via the current body pose.
         let mut a_swing_des = na::DVector::zeros(12);
         for slot in 0..4 {
-            let p_des = gait_out.legs[slot].foot_body;
+            let p_des_body = gait_out.legs[slot].foot_body;
+            let p_des_world = body_pos_w + r_wb * p_des_body;
             let leg_kin = kin.legs()[slot];
             let mut q_leg = [0.0_f64; 3];
-            let mut qd_leg = [0.0_f64; 3];
             for k in 0..3 {
                 let ji = joint_indices[slot][k];
                 let sign = joint_signs[slot][k];
-                if let Some((q_urdf, qd_urdf)) =
-                    mj_sim.joint_q_qd(&robot.joints[ji].name)
-                {
+                if let Some((q_urdf, _)) = mj_sim.joint_q_qd(&robot.joints[ji].name) {
                     q_leg[k] = sign * q_urdf;
-                    qd_leg[k] = sign * qd_urdf;
                 }
             }
-            let p_meas = forward_leg_kinematics(leg_kin, q_leg[0], q_leg[1], q_leg[2]);
-            let j_leg = foot_jacobian_body(leg_kin, q_leg[0], q_leg[1], q_leg[2]);
-            let qd_vec = na::Vector3::new(qd_leg[0], qd_leg[1], qd_leg[2]);
-            let v_meas = j_leg * qd_vec;
-            let v_des = if dt > 1e-6 {
-                (p_des - self.last_foot_body_des[slot]) / dt
+            // Measured world-frame foot position via FK on the leg.
+            let p_meas_body = forward_leg_kinematics(leg_kin, q_leg[0], q_leg[1], q_leg[2]);
+            let p_meas_world = body_pos_w + r_wb * p_meas_body;
+            // Measured world-frame foot velocity from the full Jacobian
+            // times the body-frame v vector (J already in world frame).
+            let mut v_meas_world = na::Vector3::zeros();
+            if let Some(mi) = self.foot_misarta_idx[slot] {
+                let row = 3 * slot;
+                for r in 0..3 {
+                    let mut acc = 0.0;
+                    for c in 0..nv {
+                        acc += j_contact[(row + r, c)] * v[c];
+                    }
+                    v_meas_world[r] = acc;
+                    let _ = mi; // silence unused-binding when slot has no foot
+                }
+            }
+            // Desired world-frame velocity: finite-difference the
+            // world-frame target. For the very first tick we fall back
+            // to zero (no history yet).
+            let v_des_world = if dt > 1e-6 {
+                (p_des_world - self.last_foot_world_des[slot]) / dt
             } else {
                 na::Vector3::zeros()
             };
-            let a = self.swing_kp * (p_des - p_meas) + self.swing_kd * (v_des - v_meas);
+            let a = self.swing_kp * (p_des_world - p_meas_world)
+                + self.swing_kd * (v_des_world - v_meas_world);
             for k in 0..3 {
                 a_swing_des[3 * slot + k] = a[k];
             }
-            self.last_foot_body_des[slot] = p_des;
+            self.last_foot_world_des[slot] = p_des_world;
         }
 
         // ── f_GRF_des: stack MPC GRFs ──────────────────────────────
