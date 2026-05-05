@@ -1143,21 +1143,27 @@ impl ArticaraApp {
         }
     }
 
-    /// Draw the MuJoCo realtime achievement ratio + UI render rate in
-    /// the top-centre of the viewport. Two stacked rows:
+    /// Draw the MuJoCo realtime achievement ratio + UI render rate +
+    /// WBC ON/OFF state in the top-centre of the viewport. Three
+    /// stacked rows:
     ///
     /// 1. **MuJoCo physics**: a thin progress bar [0..1] showing
     ///    realised step rate / 500 Hz target, with a label
     ///    `MuJoCo X.XX  (NNN / 500 Hz)`.
     /// 2. **UI render rate**: a label `UI NN FPS` colour-coded by
     ///    healthiness: ≥ 40 FPS green, ≥ 25 FPS orange, below red.
+    /// 3. **WBC state** (clickable): `WBC: ON` (green) when
+    ///    [`Self::wbc_enabled`] = true and gait mode is MPC,
+    ///    `WBC: OFF` (gray) otherwise. Clicking toggles the
+    ///    `wbc_enabled` flag — equivalent to the gait panel's
+    ///    "Hierarchical WBC" checkbox but always reachable from the
+    ///    viewport.
     ///
-    /// The two metrics are independent — the GUI thread runs all
-    /// physics + render work serially, so a slow WBC can starve both.
-    /// Showing them side-by-side lets the user separate
-    /// "controller is slow" (physics ratio drops) from "render
-    /// pipeline / panel layout is heavy" (FPS drops independently of
-    /// physics).
+    /// Showing physics rate + UI FPS side-by-side lets the user
+    /// separate "controller is slow" from "render pipeline is heavy".
+    /// The WBC button gives a one-click escape hatch back to the
+    /// proven Position-PD + τ_ff baseline when the WBC's QP solver is
+    /// destabilising the body.
     ///
     /// Hidden when no MuJoCo sim is active.
     #[cfg(feature = "mujoco")]
@@ -1184,8 +1190,8 @@ impl ArticaraApp {
         let bar_h = 6.0_f32;
         let pad = 4.0_f32;
         let line_h = 14.0_f32;
-        // Total widget = bar + 2 lines of text.
-        let total_h = bar_h + 2.0 * line_h;
+        // Total widget = bar + 3 lines of text (ratio, FPS, WBC state).
+        let total_h = bar_h + 3.0 * line_h;
         let centre_x = rect.center().x;
         let top = rect.top() + 12.0;
         let bar_rect = egui::Rect::from_min_size(
@@ -1193,7 +1199,7 @@ impl ArticaraApp {
             egui::vec2(bar_w, bar_h),
         );
 
-        // Background pill spanning bar + both labels.
+        // Background pill spanning bar + all labels.
         let bg_rect = egui::Rect::from_min_size(
             egui::pos2(bar_rect.left() - pad, bar_rect.top() - pad),
             egui::vec2(bar_w + 2.0 * pad, total_h + 2.0 * pad),
@@ -1250,6 +1256,65 @@ impl ArticaraApp {
             egui::FontId::proportional(11.0),
             ui_color,
         );
+
+        // Row 3: WBC state, clickable to toggle. CHAMP gait mode
+        // forces WBC off (CHAMP doesn't produce GRF references the
+        // WBC needs); reflect that with a "—" label so the click is
+        // a no-op without seeming broken.
+        let in_mpc_mode = self
+            .gait_controller
+            .as_ref()
+            .map(|gc| gc.mode() == quadruped_gait::GaitMode::Mpc)
+            .unwrap_or(false);
+        let wbc_label = if !in_mpc_mode {
+            "WBC: — (CHAMP)".to_string()
+        } else if self.wbc_enabled {
+            "WBC: ON".to_string()
+        } else {
+            "WBC: OFF".to_string()
+        };
+        let wbc_color = if !in_mpc_mode {
+            egui::Color32::from_gray(120)
+        } else if self.wbc_enabled {
+            egui::Color32::from_rgb(80, 200, 100)
+        } else {
+            egui::Color32::from_gray(180)
+        };
+        let wbc_text_pos =
+            egui::pos2(centre_x, bar_rect.bottom() + 2.0 + 2.0 * line_h);
+        let wbc_text_rect = painter.text(
+            wbc_text_pos,
+            egui::Align2::CENTER_TOP,
+            wbc_label,
+            egui::FontId::proportional(11.0),
+            wbc_color,
+        );
+        // Make the text area clickable. Expand the rect a few pixels
+        // for a comfier hit target.
+        let click_rect = wbc_text_rect.expand(4.0);
+        let resp = ui.interact(
+            click_rect,
+            ui.id().with("wbc_toggle"),
+            egui::Sense::click(),
+        );
+        if resp.clicked() && in_mpc_mode {
+            self.wbc_enabled = !self.wbc_enabled;
+            self.status_message = if self.wbc_enabled {
+                "WBC ON — torques solved by 3-priority HoQp".into()
+            } else {
+                "WBC OFF — Position-PD + τ_ff path (proven baseline)".into()
+            };
+        }
+        if resp.hovered() && in_mpc_mode {
+            // Subtle underline to hint at clickability.
+            painter.line_segment(
+                [
+                    egui::pos2(click_rect.left() + 4.0, click_rect.bottom() - 1.0),
+                    egui::pos2(click_rect.right() - 4.0, click_rect.bottom() - 1.0),
+                ],
+                egui::Stroke::new(1.0, wbc_color),
+            );
+        }
     }
 
     /// Draw a persistent marker on the currently-selected link and joint so
