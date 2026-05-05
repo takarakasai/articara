@@ -3842,6 +3842,7 @@ version = "0.1.0"
 dependencies = [
  "approx",
  "clarabel",
+ "log",
  "misarta",
  "nalgebra 0.34.2",
  "serde",
