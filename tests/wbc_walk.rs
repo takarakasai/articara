@@ -264,6 +264,29 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     contact_flag,
                     params.dt,
                 );
+                // Diagnostic dump every 100 ticks (200 ms): trunk z,
+                // WBC τ ranges, MPC GRF z-sums. Cheap, only fires
+                // ~5 times per test run.
+                if k % 100 == 0 {
+                    let body_pos = sim
+                        .body_world_position(&robot.root_link)
+                        .unwrap_or([0.0, 0.0, 0.0]);
+                    let tau_max = taus
+                        .iter()
+                        .cloned()
+                        .fold(0.0_f64, |a, b| a.max(b.abs()));
+                    let mpc_fz_sum: f64 = f_grf_world.iter().map(|v| v.z).sum();
+                    let stance_count = contact_flag.iter().filter(|b| **b).count();
+                    eprintln!(
+                        "[diag k={k:5} t={:.3}s] z={:.3} m  Σmpc_f_z={:.2} N  \
+                         max|τ|={:.2} N·m  stance={}/4",
+                        k as f64 * params.dt,
+                        body_pos[2],
+                        mpc_fz_sum,
+                        tau_max,
+                        stance_count
+                    );
+                }
                 sim.set_wbc_torques(&taus);
             } else {
                 sim.clear_wbc_torques();
