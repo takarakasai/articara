@@ -63,6 +63,17 @@ pub struct MujocoSim {
     /// when the gait controller is disabled, so a stale value can't keep
     /// driving the leg after the user stops walking.
     position_target_torque_ff: Vec<f64>,
+    /// Exponentially-weighted moving average of the realised physics-
+    /// step rate (MuJoCo sub-steps per wall-clock second). Updated each
+    /// [`Self::step`] / [`Self::step_n_frames`] call from the elapsed
+    /// time and number of inner sub-steps. Read by the viewport
+    /// overlay to display the realtime achievement ratio = `EMA / (1 / timestep)`,
+    /// which sits in [0, 1] when keeping up at speed=1 and drops below
+    /// 1 when the controller / WBC can't sustain the 500 Hz target.
+    realized_step_rate_hz_ema: f64,
+    /// EMA smoothing factor — higher = more responsive to bursts,
+    /// lower = smoother. 0.1 ≈ 10-frame time constant.
+    realized_step_rate_alpha: f64,
     /// Full per-joint torque override produced by the Hierarchical WBC.
     /// When `Some`, [`Self::apply_controller`] writes these torques
     /// **directly** to each motor's `ctrl` slot, bypassing per-joint
@@ -401,6 +412,8 @@ impl MujocoSim {
             torque_targets,
             position_target_torque_ff,
             wbc_torque_override: None,
+            realized_step_rate_hz_ema: 0.0,
+            realized_step_rate_alpha: 0.1,
             transition: None,
             sequence: None,
             force_pulses: Vec::new(),
@@ -1153,6 +1166,37 @@ impl MujocoSim {
         self.model.ffi().opt.timestep as f64
     }
 
+    /// Realtime achievement ratio of the physics integration:
+    /// `realised_step_rate_hz / target_step_rate_hz` where the target
+    /// is `1 / timestep()`. 1.0 means we're keeping up at the
+    /// requested speed-slider rate; below 1 means the controller +
+    /// WBC + MuJoCo loop can't sustain the target tick rate.
+    ///
+    /// Returns 0.0 before any step has run (no data yet). The value
+    /// **can** exceed 1.0 when the user has speed > 1 and the loop
+    /// keeps up; the viewport clamps for display purposes.
+    pub fn realtime_ratio(&self) -> f64 {
+        let target_hz = 1.0 / self.timestep();
+        if target_hz > 0.0 {
+            (self.realized_step_rate_hz_ema / target_hz).max(0.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// Update the realised-step-rate EMA from one step-loop's
+    /// `(n_substeps, wall_elapsed)` pair. Called internally by
+    /// [`Self::step`] and [`Self::step_n_frames`].
+    fn update_step_rate_ema(&mut self, n_steps: u32, wall_elapsed_s: f64) {
+        if n_steps == 0 || wall_elapsed_s <= 1e-9 {
+            return;
+        }
+        let rate_hz = n_steps as f64 / wall_elapsed_s;
+        let a = self.realized_step_rate_alpha;
+        self.realized_step_rate_hz_ema =
+            a * rate_hz + (1.0 - a) * self.realized_step_rate_hz_ema;
+    }
+
     /// Observed world-frame linear velocity of `body_link` (m/s).
     /// Returns `None` when the name isn't present in the compiled MJCF.
     /// MuJoCo's `cvel` row layout is `[ω_x, ω_y, ω_z, v_x, v_y, v_z]`.
@@ -1431,6 +1475,8 @@ impl MujocoSim {
         self.time_accumulator += dt;
 
         let mj_dt = self.timestep();
+        let wall_start = std::time::Instant::now();
+        let mut n_steps: u32 = 0;
         while self.time_accumulator >= mj_dt {
             self.advance_sequence(mj_dt);
             self.advance_transition(mj_dt);
@@ -1440,7 +1486,9 @@ impl MujocoSim {
             self.data.step();
             self.record_trace(robot);
             self.time_accumulator -= mj_dt;
+            n_steps += 1;
         }
+        self.update_step_rate_ema(n_steps, wall_start.elapsed().as_secs_f64());
 
         self.sync_back(robot);
     }
@@ -1450,6 +1498,7 @@ impl MujocoSim {
     /// can be reversed via [`Self::step_back_frames`].
     pub fn step_n_frames(&mut self, robot: &mut RobotModel, n: u32, enforce_limits: bool) {
         let mj_dt = self.timestep();
+        let wall_start = std::time::Instant::now();
         for _ in 0..n {
             self.advance_sequence(mj_dt);
             self.advance_transition(mj_dt);
@@ -1459,6 +1508,7 @@ impl MujocoSim {
             self.data.step();
             self.record_trace(robot);
         }
+        self.update_step_rate_ema(n, wall_start.elapsed().as_secs_f64());
         // Drop any partial-frame accumulator so explicit frame stepping is exact.
         self.time_accumulator = 0.0;
         self.sync_back(robot);

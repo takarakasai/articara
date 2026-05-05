@@ -1143,6 +1143,92 @@ impl ArticaraApp {
         }
     }
 
+    /// Draw the MuJoCo realtime achievement ratio in the top-centre of
+    /// the viewport: a thin progress bar [0..1] plus a label showing
+    /// the achieved step rate vs. the 500 Hz target (= 1 / 2 ms).
+    /// The fill colour shifts from green → orange → red as the ratio
+    /// drops, so the user spots controller-induced slowdowns at a
+    /// glance. Hidden when no MuJoCo sim is active.
+    #[cfg(feature = "mujoco")]
+    pub(super) fn draw_realtime_ratio_indicator(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+    ) {
+        let Some(sim) = self.mujoco_sim.as_ref() else {
+            return;
+        };
+        let ratio = sim.realtime_ratio();
+        let target_hz = 1.0 / sim.timestep();
+        let realised_hz = ratio * target_hz;
+
+        let painter = ui.painter();
+        let bar_w = 140.0_f32;
+        let bar_h = 6.0_f32;
+        let pad = 4.0_f32;
+        // Total widget = bar + label; centre horizontally on top.
+        let total_w = bar_w;
+        let total_h = bar_h + 14.0; // bar + 1 line of text
+        let centre_x = rect.center().x;
+        let top = rect.top() + 12.0;
+        let bar_rect = egui::Rect::from_min_size(
+            egui::pos2(centre_x - total_w * 0.5, top),
+            egui::vec2(bar_w, bar_h),
+        );
+
+        // Background pill.
+        let bg_rect = egui::Rect::from_min_size(
+            egui::pos2(bar_rect.left() - pad, bar_rect.top() - pad),
+            egui::vec2(bar_w + 2.0 * pad, total_h + 2.0 * pad),
+        );
+        painter.rect_filled(
+            bg_rect,
+            egui::CornerRadius::same(4),
+            egui::Color32::from_rgba_unmultiplied(20, 20, 30, 170),
+        );
+
+        // Fill colour by ratio band.
+        let fill_color = if ratio >= 0.9 {
+            egui::Color32::from_rgb(80, 200, 100) // green
+        } else if ratio >= 0.6 {
+            egui::Color32::from_rgb(220, 180, 60) // orange
+        } else {
+            egui::Color32::from_rgb(220, 80, 60) // red
+        };
+
+        // Empty-bar background.
+        painter.rect_filled(
+            bar_rect,
+            egui::CornerRadius::same(2),
+            egui::Color32::from_gray(60),
+        );
+
+        // Filled portion clamped to [0, 1] for display.
+        let display_ratio = ratio.clamp(0.0, 1.0) as f32;
+        if display_ratio > 0.0 {
+            let fill_rect = egui::Rect::from_min_size(
+                bar_rect.left_top(),
+                egui::vec2(bar_w * display_ratio, bar_h),
+            );
+            painter.rect_filled(fill_rect, egui::CornerRadius::same(2), fill_color);
+        }
+
+        // Text label below the bar.
+        let label = format!(
+            "MuJoCo {ratio:.2}  ({realised_hz:.0} / {target_hz:.0} Hz)",
+            ratio = ratio,
+            realised_hz = realised_hz,
+            target_hz = target_hz,
+        );
+        painter.text(
+            egui::pos2(centre_x, bar_rect.bottom() + 2.0),
+            egui::Align2::CENTER_TOP,
+            label,
+            egui::FontId::proportional(11.0),
+            egui::Color32::from_gray(220),
+        );
+    }
+
     /// Draw a persistent marker on the currently-selected link and joint so
     /// the user sees which entity they're editing in the Properties panel
     /// even when the mouse is far away. The link receives a thin dashed
