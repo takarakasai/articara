@@ -398,15 +398,18 @@ impl GaitController {
         self.inner.set_mode(mode);
     }
 
-    /// Feed the latest observed body linear velocity (world frame)
-    /// from the host's state estimator. Used by closed-loop
-    /// generators (currently MPC) for capture-point feedback. CHAMP
-    /// ignores it.
+    /// Feed the latest observed body linear and angular velocity
+    /// (world frame) from the host's state estimator. Linear feeds
+    /// the MPC's capture-point term; angular feeds the SRBD MPC's
+    /// `s_now.angular_velocity` so the yaw-rate error against the
+    /// reference is real (otherwise in-place rotation can't be
+    /// driven). CHAMP ignores both.
     pub fn set_body_state_observed(
         &mut self,
         v_world: nalgebra::Vector3<f64>,
+        omega_world: nalgebra::Vector3<f64>,
     ) {
-        self.inner.set_body_state_observed(v_world);
+        self.inner.set_body_state_observed(v_world, omega_world);
     }
 
     /// Latest SRBD-MPC predicted ground reaction forces (world

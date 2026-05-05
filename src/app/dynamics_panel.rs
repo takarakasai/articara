@@ -218,11 +218,8 @@ impl ArticaraApp {
                                 base_locked_axes: self.mujoco_base_locked,
                                 bake_actuator_limits: bake,
                                 bake_joint_position_limits: bake,
-                                // Live MuJoCo sim consumes the XML via
-                                // from_xml_string which has no on-disk
-                                // anchor → mesh paths must be absolute.
                                 mesh_path_style:
-                                    crate::mesh_paths::MeshPathStyle::Absolute,
+                                    crate::mesh_paths::MeshPathStyle::default(),
                             };
                             match crate::mujoco_sim::MujocoSim::new(model, opts) {
                                 Ok(mut sim) => {
@@ -233,11 +230,6 @@ impl ArticaraApp {
                                         self.enforce_gravity_compensation,
                                     );
                                     self.mujoco_sim = Some(sim);
-                                    // Initialise one Madgwick estimator
-                                    // per IMU sensor in the model. Old
-                                    // state (from a previous Play→Stop
-                                    // cycle) is discarded.
-                                    self.rebuild_imu_estimators();
                                     // Start paused so the user can choose between
                                     // frame stepping or ▶ Play before any time
                                     // advances.

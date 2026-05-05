@@ -56,13 +56,6 @@ pub struct MujocoSim {
     velocity_targets: Vec<f64>,
     /// Per-joint direct torque command (used by Torque-mode controller).
     torque_targets: Vec<f64>,
-    /// Per-joint feedforward torque added on top of the PD output for
-    /// Position and ComputedTorque modes (used by the WBC layer to inject
-    /// `τ = -J^T · f_GRF` from the SRBD MPC). Held at zero unless the
-    /// caller updates it each tick — auto-zeroed by `clear_torque_feedforward`
-    /// when the gait controller is disabled, so a stale value can't keep
-    /// driving the leg after the user stops walking.
-    position_target_torque_ff: Vec<f64>,
     /// Active pose-to-pose transition (drives `position_targets` per step).
     /// `None` when the controller should hold the current target.
     transition: Option<ActiveTransition>,
@@ -188,24 +181,6 @@ pub struct ContactInfo {
     pub body1: String,
     /// Name of the second contact body.
     pub body2: String,
-}
-
-/// One IMU sensor's accelerometer + gyroscope readings at a single
-/// simulation tick. Both vectors are expressed in the IMU's mounting
-/// frame (the `<site>` MuJoCo emits internally).
-///
-/// `accel` units: m/s² (includes gravity — a stationary IMU on a
-/// horizontal surface reads `[0, 0, +9.81]` along its local +Z, since
-/// MuJoCo's accelerometer reports proper acceleration).
-/// `gyro` units: rad/s (angular velocity around the IMU axes).
-#[derive(Clone, Debug)]
-pub struct ImuReading {
-    pub name: String,
-    pub link: String,
-    pub accel: [f64; 3],
-    pub gyro: [f64; 3],
-    /// MuJoCo simulation time at which the reading was captured.
-    pub sim_time: f64,
 }
 
 impl ContactInfo {
@@ -380,7 +355,6 @@ impl MujocoSim {
         let position_target_accelerations = vec![0.0; robot.joints.len()];
         let velocity_targets = vec![0.0; robot.joints.len()];
         let torque_targets = vec![0.0; robot.joints.len()];
-        let position_target_torque_ff = vec![0.0; robot.joints.len()];
 
         Ok(Self {
             model,
@@ -397,7 +371,6 @@ impl MujocoSim {
             position_target_accelerations,
             velocity_targets,
             torque_targets,
-            position_target_torque_ff,
             transition: None,
             sequence: None,
             force_pulses: Vec::new(),
@@ -663,29 +636,6 @@ impl MujocoSim {
         }
     }
 
-    /// Set the per-joint torque feedforward (N·m) added on top of the
-    /// Position-mode PD output. The WBC layer writes here each tick to
-    /// inject `τ = -J^T · f_GRF` from the SRBD MPC; the residual PD
-    /// keeps the joint tracking the kinematic target. No effect on
-    /// Velocity / Torque / ComputedTorque modes' `qd*` and `τ*` paths
-    /// — those still get their own targets via `set_velocity_target` /
-    /// `set_torque_target`. Out-of-range `joint_idx` is silently ignored
-    /// (matches `set_position_target` semantics).
-    pub fn set_torque_feedforward(&mut self, joint_idx: usize, tau: f64) {
-        if let Some(slot) = self.position_target_torque_ff.get_mut(joint_idx) {
-            *slot = tau;
-        }
-    }
-
-    /// Zero out all per-joint torque feedforwards. Called when the gait
-    /// controller is disabled or switched away from MPC, so a stale
-    /// feedforward from the last MPC tick can't keep driving the legs.
-    pub fn clear_torque_feedforward(&mut self) {
-        for slot in self.position_target_torque_ff.iter_mut() {
-            *slot = 0.0;
-        }
-    }
-
     /// Compute and write each motor's `ctrl` (= applied torque) for the
     /// upcoming physics tick, based on the per-joint mode + gains in `robot`
     /// and the controller targets stored on `self`.
@@ -860,21 +810,6 @@ impl MujocoSim {
                     pd + ff
                 }
             };
-
-            // WBC torque feedforward (Phase 4): in Position / ComputedTorque
-            // modes the host can inject `τ = -J^T·f_GRF` from the SRBD MPC
-            // on top of the PD output, so the leg both tracks its kinematic
-            // target *and* produces the GRF the body-level MPC needs. Skip
-            // for Velocity / Torque modes — those are non-WBC paths and the
-            // user owns the entire torque command.
-            if matches!(
-                joint.actuator_mode,
-                ActuatorMode::Position | ActuatorMode::ComputedTorque
-            ) {
-                if let Some(&ff) = self.position_target_torque_ff.get(ji) {
-                    tau += ff;
-                }
-            }
 
             if enforce_limits {
                 // Velocity-saturation back-off: when |q̇| has already exceeded
@@ -1053,95 +988,27 @@ impl MujocoSim {
         self.model.ffi().opt.timestep as f64
     }
 
-    /// World-frame linear velocity of `body_link`'s CoM (m/s). Returns
-    /// `None` when the body is unknown to the compiled MJCF (e.g. user
-    /// passed a sensor link name by mistake) — caller is expected to
-    /// fall through to a zero-velocity fallback so a missing body
-    /// doesn't crash the gait controller.
-    ///
-    /// Used to feed the closed-loop foot-placement feedback in
-    /// [`quadruped_gait::MpcGaitController`]. CHAMP ignores it.
+    /// Observed world-frame linear velocity of `body_link` (m/s).
+    /// Returns `None` when the name isn't present in the compiled MJCF.
+    /// MuJoCo's `cvel` row layout is `[ω_x, ω_y, ω_z, v_x, v_y, v_z]`.
     pub fn body_world_linear_velocity(&self, body_link: &str) -> Option<[f64; 3]> {
         let id = self
             .model
             .name_to_id(mujoco::prelude::MjtObj::mjOBJ_BODY, body_link)?;
-        // cvel layout per body is `[rot_x, rot_y, rot_z, lin_x, lin_y,
-        // lin_z]` (mjtNum × 6). We only want the linear half.
         let cvel = self.data.cvel();
         let row = &cvel[id];
         Some([row[3], row[4], row[5]])
     }
 
-    /// Read the latest IMU readings (accelerometer + gyro) from
-    /// MuJoCo's sensor array. Returns one [`ImuReading`] per IMU sensor
-    /// declared in the [`RobotModel`]; sensors whose `_accel` / `_gyro`
-    /// channels can't be located in the compiled MJCF are silently
-    /// skipped (logged once at trace level).
-    ///
-    /// Both readings are in the **sensor frame** (the `<site>` MuJoCo
-    /// emits internally). For an IMU mounted with identity origin on a
-    /// link, this matches the link's local frame.
-    ///
-    /// Designed to be called every `step` so an external attitude
-    /// estimator (Madgwick / Mahony / EKF) can integrate at simulation
-    /// rate. The returned `Vec` is small (3 * f64 + 3 * f64 + name per
-    /// IMU); allocation is fine in the sim hot path.
-    pub fn imu_readings(&self, robot: &RobotModel) -> Vec<ImuReading> {
-        let mut out = Vec::new();
-        let sensordata = self.data.sensordata();
-        let sensor_adr = self.model.sensor_adr();
-        let sensor_dim = self.model.sensor_dim();
-
-        for sensor in &robot.sensors {
-            let crate::rbd::model::SensorKind::Imu { .. } = &sensor.kind else {
-                continue;
-            };
-
-            let accel_name = format!("{}_accel", sensor.name);
-            let gyro_name = format!("{}_gyro", sensor.name);
-            let Some(accel_id) = self
-                .model
-                .name_to_id(mujoco::prelude::MjtObj::mjOBJ_SENSOR, &accel_name)
-            else {
-                log::trace!("imu_readings: sensor '{accel_name}' not in compiled MJCF");
-                continue;
-            };
-            let Some(gyro_id) = self
-                .model
-                .name_to_id(mujoco::prelude::MjtObj::mjOBJ_SENSOR, &gyro_name)
-            else {
-                log::trace!("imu_readings: sensor '{gyro_name}' not in compiled MJCF");
-                continue;
-            };
-
-            // Each accelerometer / gyro produces 3 scalars (X, Y, Z).
-            let accel_offset = sensor_adr[accel_id] as usize;
-            let gyro_offset = sensor_adr[gyro_id] as usize;
-            // Defence: the MJCF compiler always reports dim=3 for these,
-            // but assert so a future MJCF refactor can't silently slice
-            // garbage.
-            debug_assert_eq!(sensor_dim[accel_id], 3);
-            debug_assert_eq!(sensor_dim[gyro_id], 3);
-
-            let accel = [
-                sensordata[accel_offset],
-                sensordata[accel_offset + 1],
-                sensordata[accel_offset + 2],
-            ];
-            let gyro = [
-                sensordata[gyro_offset],
-                sensordata[gyro_offset + 1],
-                sensordata[gyro_offset + 2],
-            ];
-            out.push(ImuReading {
-                name: sensor.name.clone(),
-                link: sensor.link.clone(),
-                accel,
-                gyro,
-                sim_time: self.data.time(),
-            });
-        }
-        out
+    /// Observed world-frame angular velocity of `body_link` (rad/s).
+    /// Returns `None` when the name isn't present in the compiled MJCF.
+    pub fn body_world_angular_velocity(&self, body_link: &str) -> Option<[f64; 3]> {
+        let id = self
+            .model
+            .name_to_id(mujoco::prelude::MjtObj::mjOBJ_BODY, body_link)?;
+        let cvel = self.data.cvel();
+        let row = &cvel[id];
+        Some([row[0], row[1], row[2]])
     }
 
     /// Write the per-body `xfrc_applied` slots from the active force pulses
