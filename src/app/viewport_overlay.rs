@@ -1143,12 +1143,23 @@ impl ArticaraApp {
         }
     }
 
-    /// Draw the MuJoCo realtime achievement ratio in the top-centre of
-    /// the viewport: a thin progress bar [0..1] plus a label showing
-    /// the achieved step rate vs. the 500 Hz target (= 1 / 2 ms).
-    /// The fill colour shifts from green → orange → red as the ratio
-    /// drops, so the user spots controller-induced slowdowns at a
-    /// glance. Hidden when no MuJoCo sim is active.
+    /// Draw the MuJoCo realtime achievement ratio + UI render rate in
+    /// the top-centre of the viewport. Two stacked rows:
+    ///
+    /// 1. **MuJoCo physics**: a thin progress bar [0..1] showing
+    ///    realised step rate / 500 Hz target, with a label
+    ///    `MuJoCo X.XX  (NNN / 500 Hz)`.
+    /// 2. **UI render rate**: a label `UI NN FPS` colour-coded by
+    ///    healthiness: ≥ 40 FPS green, ≥ 25 FPS orange, below red.
+    ///
+    /// The two metrics are independent — the GUI thread runs all
+    /// physics + render work serially, so a slow WBC can starve both.
+    /// Showing them side-by-side lets the user separate
+    /// "controller is slow" (physics ratio drops) from "render
+    /// pipeline / panel layout is heavy" (FPS drops independently of
+    /// physics).
+    ///
+    /// Hidden when no MuJoCo sim is active.
     #[cfg(feature = "mujoco")]
     pub(super) fn draw_realtime_ratio_indicator(
         &mut self,
@@ -1162,21 +1173,27 @@ impl ArticaraApp {
         let target_hz = 1.0 / sim.timestep();
         let realised_hz = ratio * target_hz;
 
+        // Pull the egui-smoothed dt for UI FPS. `stable_dt` is the
+        // EMA-smoothed frame time the framework already maintains;
+        // we don't keep our own EMA. Avoid divide-by-zero by clamping.
+        let stable_dt = ui.ctx().input(|i| i.stable_dt).max(1e-4);
+        let ui_fps = 1.0 / stable_dt as f64;
+
         let painter = ui.painter();
-        let bar_w = 140.0_f32;
+        let bar_w = 160.0_f32;
         let bar_h = 6.0_f32;
         let pad = 4.0_f32;
-        // Total widget = bar + label; centre horizontally on top.
-        let total_w = bar_w;
-        let total_h = bar_h + 14.0; // bar + 1 line of text
+        let line_h = 14.0_f32;
+        // Total widget = bar + 2 lines of text.
+        let total_h = bar_h + 2.0 * line_h;
         let centre_x = rect.center().x;
         let top = rect.top() + 12.0;
         let bar_rect = egui::Rect::from_min_size(
-            egui::pos2(centre_x - total_w * 0.5, top),
+            egui::pos2(centre_x - bar_w * 0.5, top),
             egui::vec2(bar_w, bar_h),
         );
 
-        // Background pill.
+        // Background pill spanning bar + both labels.
         let bg_rect = egui::Rect::from_min_size(
             egui::pos2(bar_rect.left() - pad, bar_rect.top() - pad),
             egui::vec2(bar_w + 2.0 * pad, total_h + 2.0 * pad),
@@ -1187,7 +1204,7 @@ impl ArticaraApp {
             egui::Color32::from_rgba_unmultiplied(20, 20, 30, 170),
         );
 
-        // Fill colour by ratio band.
+        // Physics-rate bar fill colour by ratio band.
         let fill_color = if ratio >= 0.9 {
             egui::Color32::from_rgb(80, 200, 100) // green
         } else if ratio >= 0.6 {
@@ -1195,15 +1212,11 @@ impl ArticaraApp {
         } else {
             egui::Color32::from_rgb(220, 80, 60) // red
         };
-
-        // Empty-bar background.
         painter.rect_filled(
             bar_rect,
             egui::CornerRadius::same(2),
             egui::Color32::from_gray(60),
         );
-
-        // Filled portion clamped to [0, 1] for display.
         let display_ratio = ratio.clamp(0.0, 1.0) as f32;
         if display_ratio > 0.0 {
             let fill_rect = egui::Rect::from_min_size(
@@ -1213,19 +1226,29 @@ impl ArticaraApp {
             painter.rect_filled(fill_rect, egui::CornerRadius::same(2), fill_color);
         }
 
-        // Text label below the bar.
-        let label = format!(
-            "MuJoCo {ratio:.2}  ({realised_hz:.0} / {target_hz:.0} Hz)",
-            ratio = ratio,
-            realised_hz = realised_hz,
-            target_hz = target_hz,
-        );
+        // Row 1: physics ratio label.
         painter.text(
             egui::pos2(centre_x, bar_rect.bottom() + 2.0),
             egui::Align2::CENTER_TOP,
-            label,
+            format!("MuJoCo {ratio:.2}  ({realised_hz:.0} / {target_hz:.0} Hz)"),
             egui::FontId::proportional(11.0),
             egui::Color32::from_gray(220),
+        );
+
+        // Row 2: UI FPS label, colour-coded by smoothness band.
+        let ui_color = if ui_fps >= 40.0 {
+            egui::Color32::from_rgb(80, 200, 100)
+        } else if ui_fps >= 25.0 {
+            egui::Color32::from_rgb(220, 180, 60)
+        } else {
+            egui::Color32::from_rgb(220, 80, 60)
+        };
+        painter.text(
+            egui::pos2(centre_x, bar_rect.bottom() + 2.0 + line_h),
+            egui::Align2::CENTER_TOP,
+            format!("UI  {ui_fps:.0} FPS"),
+            egui::FontId::proportional(11.0),
+            ui_color,
         );
     }
 
