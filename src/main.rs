@@ -6,6 +6,7 @@ mod format;
 mod gait;
 mod history;
 mod isaac;
+mod leg_odometry;
 mod mesh_paths;
 mod mjcf;
 #[cfg(feature = "mujoco")]

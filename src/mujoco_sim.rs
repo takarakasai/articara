@@ -56,6 +56,13 @@ pub struct MujocoSim {
     velocity_targets: Vec<f64>,
     /// Per-joint direct torque command (used by Torque-mode controller).
     torque_targets: Vec<f64>,
+    /// Per-joint feedforward torque added on top of the PD output for
+    /// Position and ComputedTorque modes (used by the WBC layer to inject
+    /// `τ = -J^T · f_GRF` from the SRBD MPC). Held at zero unless the
+    /// caller updates it each tick — auto-zeroed by `clear_torque_feedforward`
+    /// when the gait controller is disabled, so a stale value can't keep
+    /// driving the leg after the user stops walking.
+    position_target_torque_ff: Vec<f64>,
     /// Active pose-to-pose transition (drives `position_targets` per step).
     /// `None` when the controller should hold the current target.
     transition: Option<ActiveTransition>,
@@ -190,6 +197,19 @@ impl ContactInfo {
     pub fn is_self_collision(&self) -> bool {
         !self.body1.is_empty() && !self.body2.is_empty()
     }
+}
+
+/// One IMU sensor's readings at a sim tick. `accel` units: m/s² (proper
+/// acceleration; static = +g along the up axis when the IMU is level).
+/// `gyro` units: rad/s.
+#[derive(Clone, Debug)]
+pub struct ImuReading {
+    pub name: String,
+    pub link: String,
+    pub accel: [f64; 3],
+    pub gyro: [f64; 3],
+    /// MuJoCo simulation time at which the reading was captured.
+    pub sim_time: f64,
 }
 
 /// Time-bounded external wrench applied to a single body.
@@ -355,6 +375,7 @@ impl MujocoSim {
         let position_target_accelerations = vec![0.0; robot.joints.len()];
         let velocity_targets = vec![0.0; robot.joints.len()];
         let torque_targets = vec![0.0; robot.joints.len()];
+        let position_target_torque_ff = vec![0.0; robot.joints.len()];
 
         Ok(Self {
             model,
@@ -371,6 +392,7 @@ impl MujocoSim {
             position_target_accelerations,
             velocity_targets,
             torque_targets,
+            position_target_torque_ff,
             transition: None,
             sequence: None,
             force_pulses: Vec::new(),
@@ -636,6 +658,26 @@ impl MujocoSim {
         }
     }
 
+    /// Set the feedforward torque added on top of the Position / ComputedTorque
+    /// PD output for one joint. Used by the WBC layer to inject
+    /// `-J^T · f_GRF` from the SRBD MPC. Caller must update this every
+    /// tick a fresh GRF is available; pair with [`Self::clear_torque_feedforward`]
+    /// when the gait controller is disabled.
+    pub fn set_torque_feedforward(&mut self, joint_idx: usize, tau: f64) {
+        if let Some(slot) = self.position_target_torque_ff.get_mut(joint_idx) {
+            *slot = tau;
+        }
+    }
+
+    /// Zero every joint's torque feedforward in one call. The host calls
+    /// this when the gait controller is turned off so a stale GRF-derived
+    /// τ_ff doesn't keep accelerating the leg after walking stops.
+    pub fn clear_torque_feedforward(&mut self) {
+        for slot in self.position_target_torque_ff.iter_mut() {
+            *slot = 0.0;
+        }
+    }
+
     /// Compute and write each motor's `ctrl` (= applied torque) for the
     /// upcoming physics tick, based on the per-joint mode + gains in `robot`
     /// and the controller targets stored on `self`.
@@ -762,7 +804,18 @@ impl MujocoSim {
                         .and_then(|g| g.get(ji))
                         .copied()
                         .unwrap_or(0.0);
-                    pd + grav
+                    // WBC torque feedforward: when the gait controller's
+                    // SRBD MPC has solved for stance-leg ground reaction
+                    // forces, it pushes `-J^T · f_GRF` here so the joint
+                    // produces those forces without the PD having to
+                    // chase them via tracking error. Zero unless the host
+                    // wired the gait→sim feedforward each tick.
+                    let tau_ff = self
+                        .position_target_torque_ff
+                        .get(ji)
+                        .copied()
+                        .unwrap_or(0.0);
+                    pd + grav + tau_ff
                 }
                 ActuatorMode::Velocity => {
                     let mut qd_target =
@@ -807,7 +860,15 @@ impl MujocoSim {
                         .and_then(|t| t.get(ji))
                         .copied()
                         .unwrap_or(0.0);
-                    pd + ff
+                    // WBC torque feedforward (same role as in Position
+                    // mode) — additive so the inverse-dynamics term and
+                    // the GRF-derived term coexist.
+                    let tau_ff = self
+                        .position_target_torque_ff
+                        .get(ji)
+                        .copied()
+                        .unwrap_or(0.0);
+                    pd + ff + tau_ff
                 }
             };
 
@@ -1009,6 +1070,108 @@ impl MujocoSim {
         let cvel = self.data.cvel();
         let row = &cvel[id];
         Some([row[0], row[1], row[2]])
+    }
+
+    /// World-frame position of `body_link` (m). Reads MuJoCo's `xpos` —
+    /// ground-truth position straight out of the integrator. Used as the
+    /// `GroundTruth` pose source and as a fallback when the IMU-fusion
+    /// path can't recover position (Madgwick is attitude-only).
+    pub fn body_world_position(&self, body_link: &str) -> Option<[f64; 3]> {
+        let id = self
+            .model
+            .name_to_id(mujoco::prelude::MjtObj::mjOBJ_BODY, body_link)?;
+        let xpos = self.data.xpos();
+        let row = &xpos[id];
+        Some([row[0], row[1], row[2]])
+    }
+
+    /// Read `(q, q̇)` for a single joint by name. Used by the leg-
+    /// odometry estimator to pull encoder data from MuJoCo without
+    /// going through the full `RobotModel` sync. Returns `None` for
+    /// joints absent from the compiled MJCF or with empty
+    /// position/velocity views.
+    pub fn joint_q_qd(&self, joint_name: &str) -> Option<(f64, f64)> {
+        let info = self.data.joint(joint_name)?;
+        let view = info.view(&self.data);
+        if view.qpos.is_empty() || view.qvel.is_empty() {
+            return None;
+        }
+        Some((view.qpos[0], view.qvel[0]))
+    }
+
+    /// World-frame yaw of `body_link` (rad). Extracts the z-axis Euler
+    /// angle from MuJoCo's `xquat = [w, x, y, z]` (Hamilton convention).
+    pub fn body_world_yaw(&self, body_link: &str) -> Option<f64> {
+        let id = self
+            .model
+            .name_to_id(mujoco::prelude::MjtObj::mjOBJ_BODY, body_link)?;
+        let xquat = self.data.xquat();
+        let q = &xquat[id];
+        // yaw = atan2(2(w·z + x·y), 1 − 2(y² + z²)) (ZYX Euler).
+        let yaw = (2.0 * (q[0] * q[3] + q[1] * q[2]))
+            .atan2(1.0 - 2.0 * (q[2] * q[2] + q[3] * q[3]));
+        Some(yaw)
+    }
+
+    /// Read every IMU sensor declared on the loaded `RobotModel` from
+    /// MuJoCo's sensor array. Each IMU is expected to have an
+    /// `<accelerometer>` and a `<gyro>` channel in the compiled MJCF
+    /// named `<imu_name>_accel` / `<imu_name>_gyro`. Sensors whose
+    /// channels can't be located are silently skipped (logged once at
+    /// trace level) so the caller doesn't have to special-case
+    /// partially-instrumented models. Both readings are in the **sensor
+    /// frame** (the `<site>` MuJoCo emits internally) — for an IMU
+    /// mounted with identity origin on a link, this matches the link's
+    /// local frame.
+    pub fn imu_readings(&self, robot: &RobotModel) -> Vec<ImuReading> {
+        let mut out = Vec::new();
+        let sensordata = self.data.sensordata();
+        let sensor_adr = self.model.sensor_adr();
+        let sensor_dim = self.model.sensor_dim();
+
+        for sensor in &robot.sensors {
+            let crate::rbd::model::SensorKind::Imu { .. } = &sensor.kind else {
+                continue;
+            };
+            let accel_name = format!("{}_accel", sensor.name);
+            let gyro_name = format!("{}_gyro", sensor.name);
+            let Some(accel_id) = self
+                .model
+                .name_to_id(mujoco::prelude::MjtObj::mjOBJ_SENSOR, &accel_name)
+            else {
+                log::trace!("imu_readings: sensor '{accel_name}' not in compiled MJCF");
+                continue;
+            };
+            let Some(gyro_id) = self
+                .model
+                .name_to_id(mujoco::prelude::MjtObj::mjOBJ_SENSOR, &gyro_name)
+            else {
+                log::trace!("imu_readings: sensor '{gyro_name}' not in compiled MJCF");
+                continue;
+            };
+            let accel_offset = sensor_adr[accel_id] as usize;
+            let gyro_offset = sensor_adr[gyro_id] as usize;
+            debug_assert_eq!(sensor_dim[accel_id], 3);
+            debug_assert_eq!(sensor_dim[gyro_id], 3);
+            let accel = [
+                sensordata[accel_offset],
+                sensordata[accel_offset + 1],
+                sensordata[accel_offset + 2],
+            ];
+            let gyro = [
+                sensordata[gyro_offset],
+                sensordata[gyro_offset + 1],
+                sensordata[gyro_offset + 2],
+            ];
+            out.push(ImuReading {
+                name: sensor.name.clone(),
+                link: sensor.link.clone(),
+                accel,
+                gyro,
+                sim_time: self.data.ffi().time,
+            });
+        }
+        out
     }
 
     /// Write the per-body `xfrc_applied` slots from the active force pulses

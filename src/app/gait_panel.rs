@@ -211,6 +211,34 @@ impl ArticaraApp {
                 }
             }
         });
+
+        // Pose-source picker. Switches the (yaw, position) feedback
+        // source for the MPC's body_state between IMU+Madgwick and
+        // MuJoCo ground truth — useful for A/B-debugging the
+        // estimator path.
+        #[cfg(feature = "mujoco")]
+        ui.horizontal(|ui| {
+            ui.label("Pose source:");
+            let mut new_src = self.pose_source;
+            egui::ComboBox::from_id_salt("pose_source_combo")
+                .selected_text(self.pose_source.label())
+                .show_ui(ui, |ui| {
+                    for s in crate::gait::PoseSource::ALL {
+                        ui.selectable_value(&mut new_src, s, s.label());
+                    }
+                });
+            if new_src != self.pose_source {
+                self.pose_source = new_src;
+                self.status_message = format!("Pose source → {}", new_src.label());
+            }
+        })
+        .response
+        .on_hover_text(
+            "Source for the body yaw + position the MPC's body_state \
+             tracks each tick. ImuFusion runs the Madgwick estimator \
+             on the trunk IMU's accel+gyro; GroundTruth reads MuJoCo's \
+             xquat / xpos directly (sim oracle).",
+        );
         ui.label(
             egui::RichText::new(
                 "CHAMP: open-loop Raibert footstep + Bezier swing. \

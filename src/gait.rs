@@ -292,6 +292,47 @@ pub fn auto_detect_srbd_mpc_config(
 
 /// Wrapper around [`InnerController`] (= `quadruped_gait::GaitController`)
 /// that caches the joint-name → RobotModel-joint-idx mapping. The cache
+/// Source for the body pose observation feeding the gait controller's
+/// MPC. The host picks one each tick and forwards
+/// `(yaw, world_position)` via [`GaitController::set_body_pose_observed`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PoseSource {
+    /// Yaw from a Madgwick attitude estimator fed by MuJoCo's IMU
+    /// sensor; position from MuJoCo's `xpos` ground truth (Madgwick is
+    /// attitude-only, so position needs another source). Closer in
+    /// behaviour to a real-robot stack but still uses the sim's
+    /// position oracle — switch to [`PoseSource::LegOdometry`] for the
+    /// fully-real pipeline.
+    #[default]
+    ImuFusion,
+    /// Yaw from Madgwick, position from kinematics-based leg odometry
+    /// (stance-foot-pinning + ω×r + leg Jacobian — see
+    /// [`crate::leg_odometry`]). End-to-end matches what a real
+    /// quadruped would compute on hardware (encoders + IMU only, no
+    /// external positioning).
+    LegOdometry,
+    /// Yaw + position both from MuJoCo's `xquat` / `xpos` ground truth.
+    /// Sim-only oracle — useful as a baseline when debugging the
+    /// estimator-based paths.
+    GroundTruth,
+}
+
+impl PoseSource {
+    /// Short user-facing label for the picker UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            PoseSource::ImuFusion => "IMU + Madgwick (pos from sim)",
+            PoseSource::LegOdometry => "IMU + leg odometry",
+            PoseSource::GroundTruth => "MuJoCo ground truth",
+        }
+    }
+    pub const ALL: [PoseSource; 3] = [
+        PoseSource::ImuFusion,
+        PoseSource::LegOdometry,
+        PoseSource::GroundTruth,
+    ];
+}
+
 /// matters because the gait controller emits 12 (joint_name, q) pairs per
 /// tick, and converting each name to a joint index by hash lookup on the
 /// MuJoCo sim is wasteful when the mapping is known to be stable.
@@ -412,6 +453,19 @@ impl GaitController {
         self.inner.set_body_state_observed(v_world, omega_world);
     }
 
+    /// Feed the latest observed body pose (world-frame yaw + position)
+    /// from the host's state estimator (e.g. Madgwick yaw + leg-odom
+    /// position, or MuJoCo ground truth). Replaces the controller's
+    /// command-integrated `body_state` so the SRBD MPC and footstep
+    /// planner reason about the *real* pose. CHAMP ignores it.
+    pub fn set_body_pose_observed(
+        &mut self,
+        world_yaw: f64,
+        world_position: nalgebra::Vector3<f64>,
+    ) {
+        self.inner.set_body_pose_observed(world_yaw, world_position);
+    }
+
     /// Latest SRBD-MPC predicted ground reaction forces (world
     /// frame, per foot, in canonical FL/FR/RL/RR slot order). Returns
     /// `None` when the active mode is CHAMP or the MPC hasn't ticked
@@ -473,6 +527,24 @@ impl GaitController {
 
     pub fn kinematics(&self) -> &KinematicsConfig {
         self.inner.kinematics()
+    }
+
+    /// `[hip_idx, thigh_idx, calf_idx]` per leg in canonical FL/FR/RL/RR
+    /// order. Indices are into the `RobotModel::joints` array. Used by
+    /// the host to look up MuJoCo joint state (q, q̇) for the leg-
+    /// odometry estimator without re-doing the name→index lookup that
+    /// `GaitController::build` already performed.
+    pub fn joint_indices(&self) -> [[usize; 3]; 4] {
+        self.joint_indices
+    }
+
+    /// `[hip_sign, thigh_sign, calf_sign]` per leg — the sign multiplier
+    /// applied at the IK ↔ URDF handover. The host applies the inverse
+    /// (`q_ik = sign · q_urdf`, `q̇_ik = sign · q̇_urdf`) when feeding
+    /// MuJoCo joint state back into IK-convention primitives such as
+    /// `forward_leg_kinematics` / `foot_jacobian_body`.
+    pub fn joint_signs(&self) -> [[f64; 3]; 4] {
+        self.joint_signs
     }
 
     pub fn set_knee_forward(&mut self, leg: LegId, forward: bool) {

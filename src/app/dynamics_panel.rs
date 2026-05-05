@@ -230,6 +230,27 @@ impl ArticaraApp {
                                         self.enforce_gravity_compensation,
                                     );
                                     self.mujoco_sim = Some(sim);
+                                    // Build a fresh Madgwick estimator per IMU
+                                    // for this run so a previous Play→Stop
+                                    // cycle's quaternion doesn't bleed in.
+                                    self.rebuild_imu_estimators();
+                                    // Reset the leg-odometry estimator and
+                                    // seed its position with the body's
+                                    // current world position so the integrated
+                                    // estimate doesn't start from origin.
+                                    self.leg_odometry.reset();
+                                    if let (Some(ref mj_sim), Some(ref m)) =
+                                        (self.mujoco_sim.as_ref(), self.model.as_ref())
+                                    {
+                                        if let Some(p) =
+                                            mj_sim.body_world_position(&m.root_link)
+                                        {
+                                            self.leg_odometry.set_position(
+                                                nalgebra::Vector3::new(p[0], p[1], p[2]),
+                                            );
+                                        }
+                                    }
+                                    self.leg_odometry_last_stance = [true; 4];
                                     // Start paused so the user can choose between
                                     // frame stepping or ▶ Play before any time
                                     // advances.

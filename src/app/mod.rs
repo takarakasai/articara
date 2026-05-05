@@ -479,6 +479,40 @@ pub struct ArticaraApp {
     /// Active MuJoCo simulation instance.
     #[cfg(feature = "mujoco")]
     mujoco_sim: Option<crate::mujoco_sim::MujocoSim>,
+    /// Madgwick attitude estimators keyed by IMU sensor name. Built on
+    /// MuJoCo sim start (one per `[[sensor]]` of kind `Imu` in the
+    /// loaded `RobotModel`); updated every physics tick from
+    /// `MujocoSim::imu_readings()`. The gait controller's pose-source
+    /// selector reads the primary IMU's quaternion to drive the MPC's
+    /// `body_state.world_yaw` in `PoseSource::ImuFusion` mode.
+    #[cfg(feature = "mujoco")]
+    imu_estimators:
+        std::collections::HashMap<String, crate::attitude_estimator::MadgwickAhrs>,
+    /// Last sim time we fed an IMU sample, per sensor name. Used to
+    /// derive `dt` for the estimator without re-querying MuJoCo's clock
+    /// state (the estimator is sim-time-driven, not wall-clock).
+    #[cfg(feature = "mujoco")]
+    imu_last_sim_time: std::collections::HashMap<String, f64>,
+    /// Source for the body pose (yaw + position) that's fed to the gait
+    /// controller's MPC each tick. Switchable from the gait panel so
+    /// the user can A/B compare the IMU-fusion path against MuJoCo's
+    /// oracle while debugging the controller.
+    #[cfg(feature = "mujoco")]
+    pose_source: crate::gait::PoseSource,
+    /// Kinematics-based leg-odometry estimator. Maintains an integrated
+    /// world-frame body position from stance-foot kinematics, used
+    /// when [`Self::pose_source`] is [`crate::gait::PoseSource::LegOdometry`].
+    /// Reset on MuJoCo sim start so a previous run's drift doesn't
+    /// bleed in.
+    #[cfg(feature = "mujoco")]
+    leg_odometry: crate::leg_odometry::LegOdometry,
+    /// Stance flags `[FL, FR, RL, RR]` from the gait controller's
+    /// previous tick output. The leg-odometry estimator runs *before*
+    /// `gc.tick`, so it relies on this last-tick snapshot to know
+    /// which legs are pinned to the ground. One-tick lag is harmless
+    /// at typical 2 ms physics ticks.
+    #[cfg(feature = "mujoco")]
+    leg_odometry_last_stance: [bool; 4],
     /// When true, the MuJoCo sim auto-lifts the floating base just above z=0.
     /// When false, [`Self::mujoco_base_pos`] is used as the initial world position.
     #[cfg(feature = "mujoco")]
@@ -846,6 +880,16 @@ impl ArticaraApp {
             #[cfg(feature = "mujoco")]
             mujoco_sim: None,
             #[cfg(feature = "mujoco")]
+            imu_estimators: std::collections::HashMap::new(),
+            #[cfg(feature = "mujoco")]
+            imu_last_sim_time: std::collections::HashMap::new(),
+            #[cfg(feature = "mujoco")]
+            pose_source: crate::gait::PoseSource::default(),
+            #[cfg(feature = "mujoco")]
+            leg_odometry: crate::leg_odometry::LegOdometry::new(),
+            #[cfg(feature = "mujoco")]
+            leg_odometry_last_stance: [true; 4], // start in all-stance pose
+            #[cfg(feature = "mujoco")]
             mujoco_auto_base: true,
             #[cfg(feature = "mujoco")]
             mujoco_base_pos: [0.0, 0.0, 0.0],
@@ -1188,6 +1232,83 @@ impl ArticaraApp {
         }
     }
 
+    /// Build a fresh Madgwick estimator for every IMU sensor in the
+    /// loaded `RobotModel`. Called when MuJoCo sim starts so a previous
+    /// Play→Stop cycle's estimator state doesn't bleed into the new
+    /// run.
+    #[cfg(feature = "mujoco")]
+    pub(super) fn rebuild_imu_estimators(&mut self) {
+        self.imu_estimators.clear();
+        self.imu_last_sim_time.clear();
+        let Some(ref model) = self.model else {
+            return;
+        };
+        for sensor in &model.sensors {
+            if matches!(sensor.kind, crate::rbd::model::SensorKind::Imu { .. }) {
+                self.imu_estimators.insert(
+                    sensor.name.clone(),
+                    crate::attitude_estimator::MadgwickAhrs::default(),
+                );
+            }
+        }
+    }
+
+    /// Pull fresh accel + gyro from MuJoCo and integrate each
+    /// estimator one step. Call after every physics step. Uses
+    /// sim-time `dt` so the estimator stays synchronous with the
+    /// simulation regardless of wall-clock pacing.
+    #[cfg(feature = "mujoco")]
+    pub(super) fn update_imu_estimators(&mut self) {
+        let Some(ref mj) = self.mujoco_sim else {
+            return;
+        };
+        let Some(ref model) = self.model else {
+            return;
+        };
+        for reading in mj.imu_readings(model) {
+            let dt = match self.imu_last_sim_time.get(&reading.name) {
+                Some(prev) if reading.sim_time > *prev => reading.sim_time - *prev,
+                _ => {
+                    self.imu_last_sim_time
+                        .insert(reading.name.clone(), reading.sim_time);
+                    continue;
+                }
+            };
+            self.imu_last_sim_time
+                .insert(reading.name.clone(), reading.sim_time);
+            if let Some(est) = self.imu_estimators.get_mut(&reading.name) {
+                est.update_imu(reading.gyro, reading.accel, dt);
+            }
+        }
+    }
+
+    /// Yaw (rad) from the *primary* IMU's Madgwick quaternion. The
+    /// "primary" IMU is the first one whose `link` matches the
+    /// kinematic root (i.e., the one mounted on the trunk). Falls
+    /// back to any estimator that exists, then to `None` when no IMU
+    /// is instrumented.
+    #[cfg(feature = "mujoco")]
+    pub(super) fn primary_imu_yaw(&self) -> Option<f64> {
+        let model = self.model.as_ref()?;
+        let trunk = &model.root_link;
+        let primary = model
+            .sensors
+            .iter()
+            .find(|s| {
+                matches!(s.kind, crate::rbd::model::SensorKind::Imu { .. })
+                    && &s.link == trunk
+            })
+            .or_else(|| {
+                model
+                    .sensors
+                    .iter()
+                    .find(|s| matches!(s.kind, crate::rbd::model::SensorKind::Imu { .. }))
+            })?;
+        let est = self.imu_estimators.get(&primary.name)?;
+        let (_roll, _pitch, yaw) = est.euler_zyx();
+        Some(yaw)
+    }
+
     /// Advance the dynamics simulation by one frame, modifying model state.
     fn step_dynamics_sim(&mut self) {
         // Async queue takes precedence over the regular wall-clock step path:
@@ -1258,6 +1379,155 @@ impl ArticaraApp {
                             // position_targets BEFORE the controller runs.
                             // This way the underlying PD / computed-torque
                             // loop sees fresh setpoints every tick.
+                            // ── Madgwick estimators (sim-time driven) ──
+                            // Pull fresh accel + gyro from MuJoCo and integrate
+                            // every IMU's quaternion. Inlined here (instead of
+                            // a `self.update_imu_estimators()` call) because
+                            // `mj_sim` and `model` are both held by this
+                            // scope's mutable borrow of `self.*`, so going
+                            // through a `&mut self` method would double-borrow.
+                            for reading in mj_sim.imu_readings(model) {
+                                let dt_imu = match self
+                                    .imu_last_sim_time
+                                    .get(&reading.name)
+                                {
+                                    Some(prev) if reading.sim_time > *prev => {
+                                        reading.sim_time - *prev
+                                    }
+                                    _ => {
+                                        self.imu_last_sim_time
+                                            .insert(reading.name.clone(), reading.sim_time);
+                                        continue;
+                                    }
+                                };
+                                self.imu_last_sim_time
+                                    .insert(reading.name.clone(), reading.sim_time);
+                                if let Some(est) =
+                                    self.imu_estimators.get_mut(&reading.name)
+                                {
+                                    est.update_imu(reading.gyro, reading.accel, dt_imu);
+                                }
+                            }
+
+                            // Resolve the body pose (yaw + position) for the
+                            // MPC's `body_state` based on the user's selected
+                            // PoseSource.
+                            let trunk = &model.root_link;
+                            let yaw_observed = match self.pose_source {
+                                crate::gait::PoseSource::ImuFusion
+                                | crate::gait::PoseSource::LegOdometry => {
+                                    // Primary IMU = first one mounted on the
+                                    // trunk; fallback to any IMU; fallback to
+                                    // MuJoCo's xquat when no IMU is wired.
+                                    let primary_imu = model
+                                        .sensors
+                                        .iter()
+                                        .find(|s| {
+                                            matches!(
+                                                s.kind,
+                                                crate::rbd::model::SensorKind::Imu { .. }
+                                            ) && &s.link == trunk
+                                        })
+                                        .or_else(|| {
+                                            model.sensors.iter().find(|s| {
+                                                matches!(
+                                                    s.kind,
+                                                    crate::rbd::model::SensorKind::Imu {
+                                                        ..
+                                                    }
+                                                )
+                                            })
+                                        });
+                                    primary_imu
+                                        .and_then(|s| self.imu_estimators.get(&s.name))
+                                        .map(|est| est.euler_zyx().2)
+                                        .or_else(|| mj_sim.body_world_yaw(trunk))
+                                        .unwrap_or(0.0)
+                                }
+                                crate::gait::PoseSource::GroundTruth => mj_sim
+                                    .body_world_yaw(trunk)
+                                    .unwrap_or(0.0),
+                            };
+
+                            // Update the leg-odometry estimator if the user
+                            // wants the LegOdometry source. We need joint
+                            // state from MuJoCo per leg + last-tick stance
+                            // flags + body angular velocity (gyro / cvel).
+                            // The estimator maintains its own integrated
+                            // position; we read it back below.
+                            if matches!(
+                                self.pose_source,
+                                crate::gait::PoseSource::LegOdometry
+                            ) {
+                                if let Some(gc) = self.gait_controller.as_ref() {
+                                    let kin = gc.kinematics().clone();
+                                    let joint_indices = gc.joint_indices();
+                                    let joint_signs = gc.joint_signs();
+                                    let mut legs =
+                                        [(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, false); 4];
+                                    for slot in 0..4 {
+                                        for k in 0..3 {
+                                            let ji = joint_indices[slot][k];
+                                            let sign = joint_signs[slot][k];
+                                            // MuJoCo state is in URDF axes;
+                                            // IK convention is `q_ik = sign · q_urdf`,
+                                            // same factor for q̇.
+                                            let (q_urdf, qd_urdf) = model
+                                                .joints
+                                                .get(ji)
+                                                .and_then(|j| {
+                                                    let info =
+                                                        mj_sim.joint_q_qd(&j.name)?;
+                                                    Some(info)
+                                                })
+                                                .unwrap_or((0.0, 0.0));
+                                            let q_ik = sign * q_urdf;
+                                            let qd_ik = sign * qd_urdf;
+                                            match k {
+                                                0 => {
+                                                    legs[slot].0 = q_ik;
+                                                    legs[slot].3 = qd_ik;
+                                                }
+                                                1 => {
+                                                    legs[slot].1 = q_ik;
+                                                    legs[slot].4 = qd_ik;
+                                                }
+                                                _ => {
+                                                    legs[slot].2 = q_ik;
+                                                    legs[slot].5 = qd_ik;
+                                                }
+                                            }
+                                        }
+                                        legs[slot].6 = self.leg_odometry_last_stance[slot];
+                                    }
+                                    // Body angular velocity from MuJoCo cvel
+                                    // (= gyro on hardware). Pre-feedback to
+                                    // the estimator so the ω×r term is real.
+                                    let omega_w = mj_sim
+                                        .body_world_angular_velocity(trunk)
+                                        .unwrap_or([0.0, 0.0, 0.0]);
+                                    self.leg_odometry.update(
+                                        &kin,
+                                        legs,
+                                        nalgebra::Vector3::new(
+                                            omega_w[0], omega_w[1], omega_w[2],
+                                        ),
+                                        yaw_observed,
+                                        dt as f64,
+                                    );
+                                }
+                            }
+
+                            let pos_observed = match self.pose_source {
+                                crate::gait::PoseSource::LegOdometry => {
+                                    let p = self.leg_odometry.position_world();
+                                    [p.x, p.y, p.z]
+                                }
+                                _ => mj_sim
+                                    .body_world_position(trunk)
+                                    .unwrap_or([0.0, 0.0, 0.0]),
+                            };
+
                             if let Some(gc) = self.gait_controller.as_mut() {
                                 if gc.is_enabled() {
                                     // Feed observed body linear + angular
@@ -1274,11 +1544,49 @@ impl ArticaraApp {
                                         nalgebra::Vector3::new(v[0], v[1], v[2]),
                                         nalgebra::Vector3::new(w[0], w[1], w[2]),
                                     );
-                                    let (_out, targets, _torque_ff) = gc.tick(dt as f64);
+                                    // Feed observed pose so the MPC's
+                                    // `body_state` reflects the *real* yaw +
+                                    // position instead of integrating cmd
+                                    // (which drifts whenever the robot
+                                    // can't perfectly track the command).
+                                    gc.set_body_pose_observed(
+                                        yaw_observed,
+                                        nalgebra::Vector3::new(
+                                            pos_observed[0],
+                                            pos_observed[1],
+                                            pos_observed[2],
+                                        ),
+                                    );
+                                    let (out, targets, torque_ff) = gc.tick(dt as f64);
                                     for (idx, q) in targets {
                                         mj_sim.set_position_target(idx, q);
                                     }
+                                    // Phase 4 WBC: layer the SRBD MPC's
+                                    // GRF-derived `-J^T · f_GRF` torque on
+                                    // top of the position-mode PD. CHAMP
+                                    // and the pre-first-MPC-tick path emit
+                                    // zeros, so this is a no-op for them.
+                                    for (idx, tau) in torque_ff {
+                                        mj_sim.set_torque_feedforward(idx, tau);
+                                    }
+                                    // Snapshot stance flags for the
+                                    // *next* leg-odometry update — the
+                                    // estimator runs *before* this tick,
+                                    // so it needs the previous tick's
+                                    // schedule.
+                                    for slot in 0..4 {
+                                        self.leg_odometry_last_stance[slot] =
+                                            out.legs[slot].phase.is_stance;
+                                    }
+                                } else {
+                                    // Disabled gait: drop any stale
+                                    // feedforward so the legs aren't
+                                    // commanded into motion by the last
+                                    // tick's GRF prediction.
+                                    mj_sim.clear_torque_feedforward();
                                 }
+                            } else {
+                                mj_sim.clear_torque_feedforward();
                             }
                             mj_sim.step(model, dt as f64, enforce_limits);
                         }
