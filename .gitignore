@@ -4,3 +4,7 @@
 /.claude
 /log
 /MUJOCO_LOG.TXT
+# `sample/` was moved out of this repo in 7229b82 (it lives as a
+# separate fork now). Local clones / experiments may leave a `sample/`
+# directory in the working tree — keep it out of `git status` noise.
+/sample

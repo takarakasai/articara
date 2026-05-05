@@ -28,8 +28,9 @@ fn fixture_mjcf() -> PathBuf {
 /// Return the real namiashi URDF path (for full integration tests).
 fn namiashi_urdf() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("sample")
-        .join("namiashi_description")
+        .join("tests")
+        .join("fixtures")
+        .join("namiashi")
         .join("urdf")
         .join("namiashi.urdf")
 }
@@ -1060,7 +1061,7 @@ mod test_usd {
     #[test]
     fn export_usda_namiashi() {
         let namiashi = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("test_fixtures/namiashi/urdf/namiashi.urdf");
+            .join("tests/fixtures/namiashi/urdf/namiashi.urdf");
         if !namiashi.exists() {
             return; // skip if fixture not available
         }
@@ -4395,24 +4396,24 @@ child = "front-leg"
 
     // ─── namiashi: real-world URDF + sidecar → .misa → round-trip ────────
 
-    /// Path to the namiashi URDF (skipped if the sample isn't present).
+    /// Path to the namiashi URDF (skipped if the fixture isn't present).
     fn namiashi_urdf_path() -> Option<PathBuf> {
         let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("sample/namiashi_description/urdf/namiashi.urdf");
+            .join("tests/fixtures/namiashi/urdf/namiashi.urdf");
         if p.exists() { Some(p) } else { None }
     }
 
     /// Path to the checked-in namiashi.misa fixture.
     fn namiashi_misa_path() -> Option<PathBuf> {
         let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("sample/namiashi_description/namiashi.misa");
+            .join("tests/fixtures/namiashi/namiashi.misa");
         if p.exists() { Some(p) } else { None }
     }
 
     #[test]
     fn namiashi_misa_fixture_loads_cleanly() {
         let Some(misa_path) = namiashi_misa_path() else {
-            eprintln!("[skip] sample/namiashi_description/namiashi.misa not present");
+            eprintln!("[skip] tests/fixtures/namiashi/namiashi.misa not present");
             return;
         };
 

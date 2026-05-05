@@ -573,7 +573,7 @@ mod tests {
 
     fn load_namiashi() -> RobotModel {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("sample/namiashi_description/urdf/namiashi.urdf");
+            .join("tests/fixtures/namiashi/urdf/namiashi.urdf");
         RobotModel::from_urdf(&path).unwrap()
     }
 

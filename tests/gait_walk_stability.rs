@@ -40,8 +40,9 @@ use quadruped_gait::{
 
 fn namiashi_urdf() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("sample")
-        .join("namiashi_description")
+        .join("tests")
+        .join("fixtures")
+        .join("namiashi")
         .join("urdf")
         .join("namiashi.urdf")
 }

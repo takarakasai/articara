@@ -622,7 +622,7 @@ mod tests {
     /// real URDF to exercise it.
     fn try_load_namiashi() -> Option<RobotModel> {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("sample/namiashi_description/urdf/namiashi.urdf");
+            .join("tests/fixtures/namiashi/urdf/namiashi.urdf");
         if !path.exists() {
             return None;
         }
