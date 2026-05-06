@@ -1616,11 +1616,23 @@ impl ArticaraApp {
                                                 self.gait_foot_links[2].1.clone(),
                                                 self.gait_foot_links[3].1.clone(),
                                             ];
-                                            self.wbc_pipeline = Some(
+                                            let mut new_pipe =
                                                 crate::wbc_pipeline::WbcPipeline::new(
                                                     model, foot_links,
-                                                ),
-                                            );
+                                                );
+                                            // Sync mass / inertia from the auto-detected
+                                            // SrbdMpcConfig so `predicted_base_accel_world`
+                                            // uses the **right** robot physics. Default
+                                            // values match a 9 kg Cheetah; running namiashi
+                                            // (2.4 kg) without this override produces a
+                                            // ~4× force overestimate that flings the legs
+                                            // into the ground and tips the robot over.
+                                            if let Some(srbd_cfg) = gc.srbd_mpc_config() {
+                                                new_pipe.mass_kg = srbd_cfg.mass_kg;
+                                                new_pipe.inertia_diag_body =
+                                                    srbd_cfg.inertia_diag_body;
+                                            }
+                                            self.wbc_pipeline = Some(new_pipe);
                                         }
                                         // Pull MPC predicted GRFs (if any)
                                         // for the contact-force regulariser.
@@ -1664,9 +1676,27 @@ impl ArticaraApp {
                                             contact_flag,
                                             dt as f64,
                                         );
-                                        mj_sim.set_wbc_torques(&taus);
-                                    } else {
+                                        // Hybrid joint command (legged_control 流):
+                                        // route the WBC τ as **feedforward** on top of
+                                        // Position-PD instead of replacing the whole PD
+                                        // path. The plain `set_wbc_torques` route bypasses
+                                        // gravity-comp + Position-PD entirely, which
+                                        // causes drift / collapse over time because the
+                                        // QP produces accelerations not positions. The
+                                        // Hybrid scheme is what `wbc_walk` /
+                                        // `integration_walk` regression tests use, so
+                                        // the GUI now matches their behaviour.
+                                        for (ji, &tau) in taus.iter().enumerate() {
+                                            mj_sim.set_torque_feedforward(ji, tau);
+                                        }
                                         mj_sim.clear_wbc_torques();
+                                    } else {
+                                        // WBC off: clear both override paths so a
+                                        // previous WBC ON tick's τ_ff doesn't keep
+                                        // pushing the joints after the user toggles WBC
+                                        // back off (otherwise the body drifts).
+                                        mj_sim.clear_wbc_torques();
+                                        mj_sim.clear_torque_feedforward();
                                     }
                                 } else {
                                     // Disabled gait: drop any stale
