@@ -63,13 +63,15 @@ pub struct WbcPipeline {
     /// acceleration target).
     pub swing_kp: f64,
     pub swing_kd: f64,
-    /// Body linear / angular velocity-tracking gain driving the
-    /// `base_accel` reference (units 1/s — applied to a velocity
-    /// error in world frame).
-    pub base_kp_lin: f64,
-    pub base_kp_ang: f64,
     /// Friction coefficient for the contact pyramid (per foot).
     pub friction_mu: f64,
+    /// SRBD physical parameters used by [`predicted_base_accel_world`]
+    /// to derive the WBC's `a_base_des` from the MPC's GRF prediction.
+    /// Mirror these to the host's [`SrbdMpcConfig`] so the WBC
+    /// reference is consistent with the MPC's optimisation. Defaults
+    /// match `SrbdMpcConfig::default()` (Cheetah-class).
+    pub mass_kg: f64,
+    pub inertia_diag_body: na::Vector3<f64>,
 
     /// Previous tick's body-frame foot-body targets, used to finite-
     /// difference the swing reference velocity. Initialised to the
@@ -154,9 +156,9 @@ impl WbcPipeline {
             foot_misarta_idx,
             swing_kp: 80.0,
             swing_kd: 8.0,
-            base_kp_lin: 10.0,
-            base_kp_ang: 10.0,
             friction_mu: 0.5,
+            mass_kg: 9.0,
+            inertia_diag_body: na::Vector3::new(0.07, 0.26, 0.242),
             last_foot_world_des,
             smoothed_f_grf: [na::Vector3::zeros(); 4],
             grf_smoothing_seeded: false,
@@ -319,39 +321,71 @@ impl WbcPipeline {
             }
         }
 
-        // ── a_base_des: P-control on body linear + angular velocity ─
-        // q̈[0..6] is body-frame for a FreeFlyer joint, so the
-        // base-acceleration reference must also be body-frame. The
-        // gait command (vx, vy, wz) is naturally body-frame; the
-        // observation comes from world frame and is rotated above.
+        // ── a_base_des from MPC predicted accel (legged_control style) ─
+        // legged_control's `formulateBaseAccelTask` derives the base
+        // acceleration reference from the OCS2 NMPC's centroidal
+        // momentum rate via `A_base⁻¹ · momentum_rate`. We don't have
+        // OCS2's centroidal model, but the SRBD reduction is just
+        // Newton's laws applied to the MPC's predicted GRFs:
+        //   p̈ = (Σf)/m + g
+        //   α = I⁻¹ · (Σ(r_i − p_body) × f_i  −  ω × (I·ω))
+        // Feeding these directly (instead of a hand-tuned PD on body
+        // velocity) makes the WBC track the MPC's own predicted body
+        // motion, eliminating MPC-vs-WBC mismatch. Velocity / yaw
+        // commands enter the MPC upstream and don't need a parallel
+        // PD here.
         //
-        // Layout: [angular; linear] to match misarta's spatial
-        // convention (see `v` build above for the Featherstone
-        // angular-first ordering).
-        let omega_cmd_body = na::Vector3::new(0.0, 0.0, wz_cmd);
-        // Gravity feedforward in body frame: world gravity is (0, 0, -9.81),
-        // so to *hold position* the body's commanded acceleration must be
-        // (0, 0, +9.81) in world. Rotate to body frame for the FreeFlyer's
-        // body-frame motion subspace. Without this, WBC happily picks
-        // (q̈=0, f≈0, τ=0) as a feasible — but physically incorrect — EoM
-        // solution: M·0 + h − Jᵀ·0 − Sᵀ·0 = h ≠ 0 unless h is forced into
-        // f or τ via the cost. The contact_force/τ_grav references push
-        // toward that, but the residual is small relative to other tasks
-        // and the body falls. Adding +g to a_base_lin makes "stay still"
-        // an explicit, hard equality target.
-        let g_world = na::Vector3::new(0.0, 0.0, 9.81);
-        let g_body = r_bw * g_world;
-        let a_base_lin = self.base_kp_lin * (v_cmd_body - v_obs_body) + g_body;
-        let a_base_ang = self.base_kp_ang * (omega_cmd_body - omega_obs_body);
+        // Foot positions in world frame: use the per-leg FK at the
+        // current MuJoCo joint state — this is the same expression
+        // the swing_leg block below builds for `p_meas_world`.
+        let mut foot_pos_world: [na::Vector3<f64>; 4] = [na::Vector3::zeros(); 4];
+        for slot in 0..4 {
+            let leg_kin = kin.legs()[slot];
+            let mut q_leg = [0.0_f64; 3];
+            for k in 0..3 {
+                let ji = joint_indices[slot][k];
+                let sign = joint_signs[slot][k];
+                if let Some((q_urdf, _)) = mj_sim.joint_q_qd(&robot.joints[ji].name) {
+                    q_leg[k] = sign * q_urdf;
+                }
+            }
+            let p_body = forward_leg_kinematics(leg_kin, q_leg[0], q_leg[1], q_leg[2]);
+            foot_pos_world[slot] = body_pos_w + r_wb * p_body;
+        }
+        let srbd_cfg = quadruped_gait::SrbdMpcConfig {
+            mass_kg: self.mass_kg,
+            inertia_diag_body: self.inertia_diag_body,
+            ..quadruped_gait::SrbdMpcConfig::default()
+        };
+        let euler = body_quat.euler_angles();
+        let srbd_state = quadruped_gait::SrbdState {
+            orientation_rpy: na::Vector3::new(euler.0, euler.1, euler.2),
+            position: body_pos_w,
+            angular_velocity: omega_obs_body, // SRBD layout: body frame
+            linear_velocity: *v_obs_world,    // SRBD layout: world frame
+        };
+        let (a_lin_world, a_ang_world) = quadruped_gait::predicted_base_accel_world(
+            &srbd_cfg,
+            &srbd_state,
+            f_grf_world_des,
+            &foot_pos_world,
+        );
+        // q̈[0..6] is body-frame for a FreeFlyer joint, so rotate the
+        // world-frame predicted accels in. Layout: [angular; linear].
+        let a_lin_body = r_bw * a_lin_world;
+        let a_ang_body = r_bw * a_ang_world;
+        // suppress unused-arg warnings during the PD-removal transition;
+        // velocity / yaw commands now flow into the MPC layer instead.
+        let _ = (v_cmd_body, wz_cmd, omega_obs_world);
         let a_base_des = na::DVector::from_iterator(
             6,
             [
-                a_base_ang.x,
-                a_base_ang.y,
-                a_base_ang.z,
-                a_base_lin.x,
-                a_base_lin.y,
-                a_base_lin.z,
+                a_ang_body.x,
+                a_ang_body.y,
+                a_ang_body.z,
+                a_lin_body.x,
+                a_lin_body.y,
+                a_lin_body.z,
             ],
         );
 
