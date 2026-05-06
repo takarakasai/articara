@@ -318,3 +318,68 @@ test result: ok. 118 passed; 0 failed; 0 ignored; 0 measured
 - `renderer.rs` — glow OpenGLレンダリング（GPUコンテキストが必要）
 
 これらは `src/lib.rs` からエクスポートされておらず、統合テストからはアクセスできません。
+
+---
+
+## 歩容制御 MuJoCo 回帰スイート
+
+`tests/regression.rs` (フォーマット / IK / カメラ等の純粋ロジック) とは別に、
+**MuJoCo を実際に走らせる歩容制御の e2e 回帰**を独立した integration test
+として用意しています。MPC・WBC・LKF を実装した各 layer に対して、組合せ
+ごとに「身体が落ちないか」「前進するか」「推定が収束するか」を検証します。
+
+### テスト一覧
+
+| ファイル | テスト | 構成 | 検証指標 |
+|---|---|---|---|
+| `tests/gait_walk_stability.rs` | `champ_walks_stable` | CHAMP + Position-PD | 1 cycle 安定 + 4 cm 以上前進 |
+| `tests/gait_walk_stability.rs` | `mpc_walks_stable` | SRBD MPC + Position-PD + τ_ff | 同上 |
+| `tests/wbc_walk.rs` | `wbc_static_stand_balances_gravity` | Hybrid joint (PD + WBC τ_ff) | min_z > 0.18 m, Σf_z ≈ m·g (±60%) |
+| `tests/wbc_walk.rs` | `wbc_forward_command_advances_body` | Hybrid joint + 前進指令 | **#[ignore]** (joint-space swing 待ち) |
+| `tests/lkf_pipeline.rs` | `lkf_static_stand_tracks_ground_truth_body_z` | LKF 単独 + ground truth | body z 推定誤差 < 5 cm |
+| `tests/integration_walk.rs` | `integration_position_pd_with_mpc_torque_ff` | PD + MPC τ_ff | min_z > 0.18 m, Δx > 2 cm |
+| `tests/integration_walk.rs` | `integration_position_pd_plus_wbc` | PD + WBC + ContactDrivenPhase | min_z > 0.18 m, Δx > -5 cm |
+| `tests/integration_walk.rs` | `integration_position_pd_plus_lkf` | PD + MPC + LKF (parallel) | min_z > 0.18 m, KF z-err < 5 cm |
+| `tests/misarta_mujoco_gravity_consistency.rs` | `*` | misarta vs MuJoCo 動力学一致 | 重力反作用 τ が一致 |
+
+### 共通ヘルパー (`tests/common/mod.rs`)
+
+URDF ロード、IK 経由の関節 seed、Position-PD アクチュエータ設定、`MujocoSim`
+構築をまとめた helper を提供。各テストは `mod common;` で取り込み、
+`build_namiashi_stand_fixture()` で `(robot, kin, sim)` を一発で得られる。
+
+### 1 コマンド回帰実行
+
+```bash
+# 全 MuJoCo 回帰を release で走らせる (約 30 秒、6 スイート)
+./scripts/test_regression.sh
+
+# Lib のみ + walk_stability だけ走らせる (約 5 秒、pre-commit に最適)
+./scripts/test_regression.sh --quick
+
+# Debug ビルド (開発中)
+./scripts/test_regression.sh --debug
+```
+
+スクリプトは `MUJOCO_DOWNLOAD_DIR` / `LD_LIBRARY_PATH` を自動補完するので、
+通常は引数なしで動く。各 stage の pass/fail がそれぞれの section header に
+出るので、どこで regress したかが一目で分かる。
+
+### 推奨ワークフロー
+
+```
+1. WBC / MPC / 推定器 / misarta::{qp,jacobian,fk} を変更
+2. ./scripts/test_regression.sh
+3. PASSED が出たら commit、FAILED ならどの section かを見て修正
+4. 大きな変更時は --quick でなく full を走らせる (15-30 秒)
+```
+
+### Phase 進捗との対応
+
+| 設計 doc Phase | 担当テスト |
+|---|---|
+| Phase A (WBC) | `wbc_walk` + `integration_walk::*_plus_wbc` |
+| Phase B (LKF) | `lkf_pipeline` + `integration_walk::*_plus_lkf` |
+| Phase C (Contact-driven phase) | `integration_walk::*_plus_wbc` (内部で `ContactDrivenPhase` を使用) |
+| Phase 1.5 残 (forward walk) | `wbc_walk::wbc_forward_command_advances_body` (現在 `#[ignore]`) |
+
