@@ -321,9 +321,30 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         stance_count
                     );
                 }
-                sim.set_wbc_torques(&taus);
+                // Hybrid-joint command (legged_control style):
+                // Position-PD already runs against the gait controller's
+                // q* (set_position_target above), so WBC τ goes in as
+                // feedforward — NOT as a full PD bypass.
+                //
+                // This is the single biggest difference from the previous
+                // `set_wbc_torques` path: the Position-PD is what actually
+                // drives the joints to track the gait controller's q*,
+                // while WBC's τ_ff adds the dynamic / contact-force
+                // contribution on top. Without this hybrid scheme, WBC's
+                // long-term tracking error accumulates because the QP
+                // produces accelerations not positions, and there's no
+                // integrator to drive joint-position drift back to zero.
+                for (ji, &tau) in taus.iter().enumerate() {
+                    sim.set_torque_feedforward(ji, tau);
+                }
+                sim.clear_wbc_torques();
             } else {
                 sim.clear_wbc_torques();
+                // No WBC active during burn-in — clear any feedforward
+                // torque so the per-joint PD path runs cleanly.
+                for ji in 0..robot.joints.len() {
+                    sim.set_torque_feedforward(ji, 0.0);
+                }
             }
         }
 
@@ -433,24 +454,28 @@ fn wbc_static_stand_balances_gravity() {
     let _ = burn_in;
 }
 
-/// `#[ignore]`d pending body-z trajectory tracking refinement.
-/// Phase C (contact-driven phase) is wired in (see the
-/// `ContactDrivenPhase::apply_correction` call above) and the
-/// `contact_flag` going into the WBC now reflects the real
-/// per-foot ground reaction force. That fixes the original
-/// "open-loop schedule mismatch" failure mode, but trotting
-/// (stance=2/4) still drifts down slowly: WBC's `sol.f_grf` doesn't
-/// hit the MPC's predicted f_GRF tightly enough during the brief
-/// 2-leg stance windows, so the body's average z drops a few mm per
-/// cycle until the 0.18 m trunk-fall threshold is crossed. Possible
-/// fixes (out of scope for Phase C):
-///   - bump W_CONTACT_FORCE in wbc::solve_warm so the WBC tracks
-///     the MPC's GRF more tightly,
-///   - or upgrade SRBD MPC to put a stronger weight on body z
-///     (q_diag[5] in SrbdMpcConfig) so the predicted GRF series
-///     restores z aggressively per cycle.
+/// `#[ignore]`d pending forward-displacement tuning.
+///
+/// After Phase 1.5-A (MPC-driven a_base_des), Phase C (contact-driven
+/// phase) and the hybrid-joint-command rework, the body **no longer
+/// falls** during trotting (z stays at 0.27..0.31 m, well above the
+/// 0.18 m fall threshold). What remains is that the body produces
+/// near-zero net forward displacement under a 0.15 m/s cmd: WBC's τ_ff
+/// adds a stance-leg force component that doesn't quite line up with
+/// what the gait controller's q* would have generated alone, leading
+/// to a "marching in place" final state.
+///
+/// legged_control sources the swing reference from OCS2's predicted
+/// joint state (`q_desired = mapping_.getPinocchioJointPosition(
+/// state_desired_)`); we don't have that predictor since SRBD MPC
+/// only emits base + GRF. Resolution candidates:
+///   - have the gait controller emit predicted joint q*, q̇* over the
+///     horizon and use them as the WBC swing-leg reference,
+///   - or move the swing-leg task to joint-space tracking
+///     (`q̈[joint_i] = kp·(q*−q) + kd·(q̇*−q̇)`), aligning with
+///     Position-PD's reference and removing the dual representation.
 #[test]
-#[ignore = "blocked on body-z tracking; Phase C wiring is in place"]
+#[ignore = "blocked on forward-displacement tuning (joint-space swing reference)"]
 fn wbc_forward_command_advances_body() {
     let Some(samples) = run_wbc_sim(WbcParams::forward_walk()) else {
         return;
