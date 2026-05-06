@@ -1161,6 +1161,43 @@ impl MujocoSim {
         out
     }
 
+    /// Sum the **vertical** (world-z) ground-contact force on each of
+    /// the four foot links, in `[FL, FR, RL, RR]` order matching
+    /// `foot_links`.
+    ///
+    /// Returns `[0; 4]` when no contacts are active. Contact forces
+    /// where neither body is the world (= self-collisions) are
+    /// ignored — only ground contacts contribute.
+    ///
+    /// Used by [`quadruped_gait::phase::ContactDrivenPhase`] to detect
+    /// **early touchdown** (foot loaded while the nominal schedule
+    /// still says swing) and **late liftoff** (foot still loaded
+    /// after the nominal stance window ended). Both are common when
+    /// trotting over uneven ground or when the MPC's phase clock
+    /// drifts relative to the actual physics, and they're the typical
+    /// failure mode of pure open-loop gait scheduling.
+    pub fn contact_force_per_foot(&self, foot_links: &[&str; 4]) -> [f64; 4] {
+        let mut out = [0.0_f64; 4];
+        for c in self.contacts() {
+            // Pick the non-world side as the "robot body" — ContactInfo
+            // leaves the world body's name empty, so exactly one side is
+            // empty for ground contacts. Self-collisions (both non-empty)
+            // skip via the early `continue`.
+            let foot_name: &str = match (c.body1.is_empty(), c.body2.is_empty()) {
+                (true, false) => c.body2.as_str(),
+                (false, true) => c.body1.as_str(),
+                _ => continue,
+            };
+            for (slot, &link) in foot_links.iter().enumerate() {
+                if foot_name == link {
+                    out[slot] += c.force_world[2];
+                    break;
+                }
+            }
+        }
+        out
+    }
+
     /// MuJoCo's native physics timestep (s).
     pub fn timestep(&self) -> f64 {
         self.model.ffi().opt.timestep as f64

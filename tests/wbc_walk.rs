@@ -41,8 +41,8 @@ use articara::robot::RobotModel;
 use articara::wbc_pipeline::WbcPipeline;
 use nalgebra::Vector3;
 use quadruped_gait::{
-    solve_leg_ik, GaitConfig, GaitMode, KinematicsConfig, LegIkSolution,
-    VelocityCmd,
+    solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, KinematicsConfig,
+    LegIkSolution, VelocityCmd,
 };
 
 fn namiashi_urdf() -> PathBuf {
@@ -243,11 +243,45 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 // Body-frame command — the WBC pipeline rotates the
                 // observation internally using the current xquat.
                 let v_cmd_body = Vector3::new(cmd.vx, cmd.vy, 0.0);
+                // Contact-driven phase correction (Phase C). Read the
+                // per-foot ground reaction force from MuJoCo and apply
+                // ContactDrivenPhase's stateless override to the
+                // gait controller's nominal phases. This catches early
+                // touchdown / late liftoff before the WBC's
+                // no_contact_motion task assumes the wrong contact
+                // pattern, which would otherwise destabilise the body
+                // during trotting (stance=2/4).
+                let foot_links_str: [&str; 4] = [
+                    wbc_pipeline.foot_links[0].as_str(),
+                    wbc_pipeline.foot_links[1].as_str(),
+                    wbc_pipeline.foot_links[2].as_str(),
+                    wbc_pipeline.foot_links[3].as_str(),
+                ];
+                let force_z = sim.contact_force_per_foot(&foot_links_str);
+                let nominal_phases = [
+                    out.legs[0].phase,
+                    out.legs[1].phase,
+                    out.legs[2].phase,
+                    out.legs[3].phase,
+                ];
+                let corrected = ContactDrivenPhase::apply_correction(
+                    &nominal_phases,
+                    force_z,
+                    /* early_contact_threshold_n = */ 5.0,
+                    // late_liftoff disabled (= 0 N): if every foot is
+                    // momentarily unloaded during a transient body fall,
+                    // a non-zero threshold would flip ALL legs to swing
+                    // and there would be no support at all → unrecoverable
+                    // collapse. Early touchdown is the more important
+                    // direction anyway; late liftoff matters mainly for
+                    // slip detection on real hardware.
+                    /* late_liftoff_threshold_n = */ 0.0,
+                );
                 let contact_flag = [
-                    out.legs[0].phase.is_stance,
-                    out.legs[1].phase.is_stance,
-                    out.legs[2].phase.is_stance,
-                    out.legs[3].phase.is_stance,
+                    corrected[0].is_stance,
+                    corrected[1].is_stance,
+                    corrected[2].is_stance,
+                    corrected[3].is_stance,
                 ];
                 let taus = wbc_pipeline.solve(
                     &robot,
@@ -399,17 +433,24 @@ fn wbc_static_stand_balances_gravity() {
     let _ = burn_in;
 }
 
-/// `#[ignore]`d pending Phase C (contact-driven phase). With the
-/// MPC-driven `a_base_des` fix the static stand now passes, but
-/// trotting (stance=2/4) still trips up: a swing foot occasionally
-/// touches down a few ms early or late relative to the open-loop
-/// schedule, momentarily breaking the QP's contact_flag assumption,
-/// and the body z drops a few cm per such mismatch until the trunk
-/// fall threshold (0.18 m) is hit. The fix is to make `stance` come
-/// from real contact sensing (`MujocoSim::contact_force_per_foot` →
-/// `quadruped_gait::phase::ContactDrivenPhase`).
+/// `#[ignore]`d pending body-z trajectory tracking refinement.
+/// Phase C (contact-driven phase) is wired in (see the
+/// `ContactDrivenPhase::apply_correction` call above) and the
+/// `contact_flag` going into the WBC now reflects the real
+/// per-foot ground reaction force. That fixes the original
+/// "open-loop schedule mismatch" failure mode, but trotting
+/// (stance=2/4) still drifts down slowly: WBC's `sol.f_grf` doesn't
+/// hit the MPC's predicted f_GRF tightly enough during the brief
+/// 2-leg stance windows, so the body's average z drops a few mm per
+/// cycle until the 0.18 m trunk-fall threshold is crossed. Possible
+/// fixes (out of scope for Phase C):
+///   - bump W_CONTACT_FORCE in wbc::solve_warm so the WBC tracks
+///     the MPC's GRF more tightly,
+///   - or upgrade SRBD MPC to put a stronger weight on body z
+///     (q_diag[5] in SrbdMpcConfig) so the predicted GRF series
+///     restores z aggressively per cycle.
 #[test]
-#[ignore = "blocked on Phase C contact-driven phase scheduling"]
+#[ignore = "blocked on body-z tracking; Phase C wiring is in place"]
 fn wbc_forward_command_advances_body() {
     let Some(samples) = run_wbc_sim(WbcParams::forward_walk()) else {
         return;
