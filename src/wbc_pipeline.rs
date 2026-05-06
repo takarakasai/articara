@@ -341,6 +341,31 @@ impl WbcPipeline {
             }
         }
 
+        // ── τ_gravity: project compute_gravity(q) to actuator rows ──
+        // RNEA's gravity-only call gives the static gravity-comp
+        // generalised force in `nv`-space; we extract the actuated
+        // component (`vi >= 6`) as the WBC's τ ≈ τ_grav anchor at
+        // priority 3. Without this anchor the QP can collapse τ → 0
+        // (contacts alone balance gravity) and the legs go floppy.
+        let g_full = misarta::rnea::compute_gravity(&self.model, &q);
+        let mut tau_gravity = na::DVector::zeros(na_count);
+        for ji in 0..robot.joints.len() {
+            let Some(mi) = self.a2m.get(ji).and_then(|&m| m) else {
+                continue;
+            };
+            if self.model.joints[mi].joint_type.nv() != 1 {
+                continue;
+            }
+            let vi = self.model.v_idx[mi];
+            if vi < 6 {
+                continue;
+            }
+            let actuator_idx = vi - 6;
+            if actuator_idx < na_count {
+                tau_gravity[actuator_idx] = g_full[vi];
+            }
+        }
+
         // ── Solve ──────────────────────────────────────────────────
         let inputs = WbcInputs {
             dims,
@@ -354,6 +379,7 @@ impl WbcPipeline {
             a_base_des: &a_base_des,
             a_swing_des: &a_swing_des,
             f_grf_des: &f_grf_des,
+            tau_gravity: &tau_gravity,
         };
         let sol = wbc::solve(&inputs);
 
