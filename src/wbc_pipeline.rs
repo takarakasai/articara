@@ -76,6 +76,25 @@ pub struct WbcPipeline {
     /// nominal stance pose so the first tick doesn't see a huge
     /// fictitious velocity.
     last_foot_world_des: [na::Vector3<f64>; 4],
+
+    /// EMA-smoothed `f_grf_des` from the SRBD MPC. The MPC's raw QP
+    /// output jitters tick-to-tick (clarabel picks slightly different
+    /// optima from a wide null space — observed 13 → 68 → 47 N at
+    /// namiashi static stand). Smoothing here, on the **WBC reference**
+    /// only, narrows the contact_force task's target without slowing
+    /// the τ_ff feedforward used by Position-PD modes — `gait::tick`
+    /// returns RAW GRFs for that path, only this WbcPipeline smooths.
+    /// Held at zero before the first call; first solve seeds without
+    /// blending.
+    smoothed_f_grf: [na::Vector3<f64>; 4],
+    /// True once `smoothed_f_grf` has been seeded; before that we
+    /// initialise to the input verbatim instead of blending into a
+    /// zeros vector.
+    grf_smoothing_seeded: bool,
+    /// EMA blending factor: `smoothed = α·new + (1-α)·prev`. 1.0 =
+    /// no smoothing (raw), 0.3 default ≈ 3-solve window at default
+    /// 30 ms ZOH.
+    pub grf_smoothing_alpha: f64,
 }
 
 impl WbcPipeline {
@@ -122,6 +141,9 @@ impl WbcPipeline {
             base_kp_ang: 30.0,
             friction_mu: 0.5,
             last_foot_world_des,
+            smoothed_f_grf: [na::Vector3::zeros(); 4],
+            grf_smoothing_seeded: false,
+            grf_smoothing_alpha: 1.0,
         }
     }
 
@@ -342,11 +364,27 @@ impl WbcPipeline {
             self.last_foot_world_des[slot] = p_des_world;
         }
 
-        // ── f_GRF_des: stack MPC GRFs ──────────────────────────────
+        // ── f_GRF_des: temporal EMA on MPC GRFs ────────────────────
+        // The SRBD MPC's raw output jitters tick-to-tick (clarabel
+        // picks slightly different optima from the wide null space —
+        // observed 13 → 68 → 47 N at namiashi static stand).
+        // Smoothing here, on the WBC reference only, avoids slowing
+        // the τ_ff feedforward used by Position-PD modes (which
+        // consume the raw GRFs via `gc.tick(...)`'s 3rd return).
+        let alpha = self.grf_smoothing_alpha.clamp(0.0, 1.0);
+        if !self.grf_smoothing_seeded || alpha >= 1.0 {
+            self.smoothed_f_grf = *f_grf_world_des;
+            self.grf_smoothing_seeded = true;
+        } else {
+            for slot in 0..4 {
+                self.smoothed_f_grf[slot] = alpha * f_grf_world_des[slot]
+                    + (1.0 - alpha) * self.smoothed_f_grf[slot];
+            }
+        }
         let mut f_grf_des = na::DVector::zeros(12);
         for slot in 0..4 {
             for k in 0..3 {
-                f_grf_des[3 * slot + k] = f_grf_world_des[slot][k];
+                f_grf_des[3 * slot + k] = self.smoothed_f_grf[slot][k];
             }
         }
 
