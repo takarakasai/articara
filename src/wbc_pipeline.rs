@@ -79,6 +79,22 @@ pub struct WbcPipeline {
 }
 
 impl WbcPipeline {
+    /// Test-only: borrow the internal misarta model with the
+    /// FreeFlyer base. Used by the dynamics-consistency cross-check
+    /// against MuJoCo so the test can call `compute_gravity` on
+    /// exactly the same model the WBC sees per tick.
+    #[doc(hidden)]
+    pub fn model_for_test(&self) -> &Model<f64> {
+        &self.model
+    }
+
+    /// Test-only: borrow the articara→misarta joint index mapping.
+    /// Same use case as [`Self::model_for_test`].
+    #[doc(hidden)]
+    pub fn a2m_for_test(&self) -> &[Option<usize>] {
+        &self.a2m
+    }
+
     pub fn new(robot: &RobotModel, foot_links: [String; 4]) -> Self {
         let (model, a2m, link_to_idx) = build_floating_base_model(robot);
 
@@ -187,19 +203,25 @@ impl WbcPipeline {
 
         // ── Build v ─────────────────────────────────────────────────
         // FreeFlyer's motion subspace S = I_6 expresses v[0..6] in the
-        // **body** frame. MuJoCo's `cvel` (and our
-        // `body_world_*_velocity` helpers) return world-frame velocity,
-        // so we rotate by R_body_world = R_world_body^T to get the
-        // body-frame velocity that misarta expects.
+        // body frame. MuJoCo's `cvel` returns world-frame velocity;
+        // we rotate by R_body_world = R_world_body^T to body frame.
+        //
+        // **Layout: [angular; linear]** (matches Featherstone's
+        // spatial-vector convention used by misarta — verified via
+        // misarta_mujoco_gravity_consistency test where
+        // `compute_gravity[5]` (= linear z) carries the m·g term and
+        // `compute_gravity[2]` (= angular z) is zero. MuJoCo uses
+        // the opposite [linear; angular] order — historic mistake of
+        // mine before that test was added).
         let v_obs_body = r_bw * v_obs_world;
         let omega_obs_body = r_bw * omega_obs_world;
         let mut v = vec![0.0_f64; nv];
-        v[0] = v_obs_body.x;
-        v[1] = v_obs_body.y;
-        v[2] = v_obs_body.z;
-        v[3] = omega_obs_body.x;
-        v[4] = omega_obs_body.y;
-        v[5] = omega_obs_body.z;
+        v[0] = omega_obs_body.x;
+        v[1] = omega_obs_body.y;
+        v[2] = omega_obs_body.z;
+        v[3] = v_obs_body.x;
+        v[4] = v_obs_body.y;
+        v[5] = v_obs_body.z;
         for ji in 0..robot.joints.len() {
             let Some(mi) = self.a2m.get(ji).and_then(|&m| m) else {
                 continue;
@@ -233,11 +255,14 @@ impl WbcPipeline {
             );
             let v_dvec = na::DVector::from_column_slice(&v);
             let dj_v_full = dj_dt * v_dvec;
+            // misarta's spatial Jacobian rows: [angular(0..3); linear(3..6)].
+            // The contact tasks need the *linear* foot velocity, so
+            // extract rows 3..6.
             for r in 0..3 {
                 for c in 0..nv {
-                    j_contact[(3 * slot + r, c)] = j_full[(r, c)];
+                    j_contact[(3 * slot + r, c)] = j_full[(3 + r, c)];
                 }
-                dj_v[3 * slot + r] = dj_v_full[r];
+                dj_v[3 * slot + r] = dj_v_full[3 + r];
             }
         }
 
@@ -246,18 +271,22 @@ impl WbcPipeline {
         // base-acceleration reference must also be body-frame. The
         // gait command (vx, vy, wz) is naturally body-frame; the
         // observation comes from world frame and is rotated above.
+        //
+        // Layout: [angular; linear] to match misarta's spatial
+        // convention (see `v` build above for the Featherstone
+        // angular-first ordering).
         let omega_cmd_body = na::Vector3::new(0.0, 0.0, wz_cmd);
         let a_base_lin = self.base_kp_lin * (v_cmd_body - v_obs_body);
         let a_base_ang = self.base_kp_ang * (omega_cmd_body - omega_obs_body);
         let a_base_des = na::DVector::from_iterator(
             6,
             [
-                a_base_lin.x,
-                a_base_lin.y,
-                a_base_lin.z,
                 a_base_ang.x,
                 a_base_ang.y,
                 a_base_ang.z,
+                a_base_lin.x,
+                a_base_lin.y,
+                a_base_lin.z,
             ],
         );
 

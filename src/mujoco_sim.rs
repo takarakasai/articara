@@ -1166,6 +1166,15 @@ impl MujocoSim {
         self.model.ffi().opt.timestep as f64
     }
 
+    /// MuJoCo's `qfrc_bias` = `C(q, q̇)·q̇ + g(q)`. With `q̇ = 0`
+    /// this collapses to the pure gravity-comp generalised force at
+    /// the current `q`. Used by the misarta vs MuJoCo dynamics
+    /// consistency test to verify that `misarta::compute_gravity`
+    /// returns the same value the real simulator uses.
+    pub fn qfrc_bias(&self) -> Vec<f64> {
+        self.data.qfrc_bias().to_vec()
+    }
+
     /// Realtime achievement ratio of the physics integration:
     /// `realised_step_rate_hz / target_step_rate_hz` where the target
     /// is `1 / timestep()`. 1.0 means we're keeping up at the
