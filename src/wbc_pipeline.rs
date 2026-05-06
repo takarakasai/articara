@@ -34,7 +34,7 @@ use nalgebra as na;
 use misarta::joint::JointType;
 use misarta::model::{LinkInertia, Model, ModelBuilder};
 
-use quadruped_gait::wbc::{self, WbcDims, WbcInputs, WbcWarmStart};
+use quadruped_gait::wbc::{self, WbcDims, WbcInputs, WbcSolution, WbcWarmStart};
 use quadruped_gait::{ControllerOutput, KinematicsConfig, foot_jacobian_body, forward_leg_kinematics};
 
 use crate::mujoco_sim::MujocoSim;
@@ -73,11 +73,11 @@ pub struct WbcPipeline {
     pub mass_kg: f64,
     pub inertia_diag_body: na::Vector3<f64>,
 
-    /// Previous tick's body-frame foot-body targets, used to finite-
-    /// difference the swing reference velocity. Initialised to the
-    /// nominal stance pose so the first tick doesn't see a huge
-    /// fictitious velocity.
-    last_foot_world_des: [na::Vector3<f64>; 4],
+    /// Previous tick's joint q* in URDF sign convention, indexed by
+    /// articara joint index. Used to finite-difference q̇* for the
+    /// joint-space swing reference. Resized on first construction
+    /// to match `robot.joints.len()`.
+    last_q_target_urdf: Vec<f64>,
 
     /// EMA-smoothed `f_grf_des` from the SRBD MPC. The MPC's raw QP
     /// output jitters tick-to-tick (clarabel picks slightly different
@@ -107,6 +107,12 @@ pub struct WbcPipeline {
     /// which would otherwise be invalid because the basis is rebuilt
     /// from a `q`-dependent equality matrix every tick.
     qp_x_prev: Option<na::DVector<f64>>,
+    /// Last [`WbcSolution`] returned by [`Self::solve`]. Cached so
+    /// diagnostic test rigs can inspect `f_grf` / `q_ddot` / `tau`
+    /// breakdowns without rerunning the QP. Populated from `solve()`'s
+    /// internal `wbc::solve_warm` result; unchanged during ticks
+    /// where the host bypasses `solve()` (e.g. the burn-in window).
+    pub last_solution: Option<WbcSolution>,
     /// Proximal regularisation weight passed to
     /// [`misarta::qp::QpConfig::prox_weight`] inside each HoQp level.
     /// 0.0 disables warm-start (cold solve every tick — original
@@ -147,7 +153,7 @@ impl WbcPipeline {
         // the initial p_des_world of an upright body at origin is also
         // close to the nominal, so the resulting "fictitious velocity"
         // is small. We seed at zeros and accept the first-tick bias.
-        let last_foot_world_des = [na::Vector3::zeros(); 4];
+        let last_q_target_urdf = vec![0.0_f64; robot.joints.len()];
 
         Self {
             foot_links,
@@ -159,12 +165,13 @@ impl WbcPipeline {
             friction_mu: 0.5,
             mass_kg: 9.0,
             inertia_diag_body: na::Vector3::new(0.07, 0.26, 0.242),
-            last_foot_world_des,
+            last_q_target_urdf,
             smoothed_f_grf: [na::Vector3::zeros(); 4],
             grf_smoothing_seeded: false,
             grf_smoothing_alpha: 1.0,
             qp_x_prev: None,
             qp_prox_weight: 1e-4,
+            last_solution: None,
         }
     }
 
@@ -389,56 +396,70 @@ impl WbcPipeline {
             ],
         );
 
-        // ── a_swing_des per foot (Cartesian PD in **world** frame) ──
-        // The swing_leg task formulation is `J_world · q̈ = a_des − dJ·v`
-        // where J_world is the world-frame foot Jacobian. The PD must
-        // therefore produce a world-frame Cartesian acceleration target,
-        // so we rotate the gait controller's body-frame `foot_body`
-        // target into world via the current body pose.
-        let mut a_swing_des = na::DVector::zeros(12);
+        // ── Joint-space swing-leg PD reference (legged_control 流) ──
+        // Compute `q̈_des = kp·(q* − q) + kd·(q̇* − q̇)` per actuator
+        // using the same `q*` that Position-PD tracks (= the gait
+        // controller's IK output of the swing trajectory). q̇* is
+        // finite-differenced from successive q* values.
+        //
+        // We only populate q̈_des for actuators whose leg is in
+        // **swing**; the corresponding flag is recorded in parallel so
+        // the WBC's `swing_leg` task knows which rows to enable.
+        // Stance / non-leg actuators get 0.0 (irrelevant — flag is
+        // false → row is skipped at the task level).
+        let mut swing_q_ddot_des = na::DVector::zeros(na_count);
+        let mut swing_actuator_flag = vec![false; na_count];
         for slot in 0..4 {
-            let p_des_body = gait_out.legs[slot].foot_body;
-            let p_des_world = body_pos_w + r_wb * p_des_body;
-            let leg_kin = kin.legs()[slot];
-            let mut q_leg = [0.0_f64; 3];
+            // Skip stance legs entirely — their q̈ is constrained by
+            // the priority-0 no_contact_motion task (foot velocity
+            // = 0), not the priority-1 swing task.
+            if gait_out.legs[slot].phase.is_stance {
+                continue;
+            }
+            // IK joint angles from the gait controller, mapped to
+            // URDF sign convention (same `joint_signs` Position-PD
+            // used to convert q* before writing it into MuJoCo).
+            let q_target_ik = [
+                gait_out.legs[slot].q_hip,
+                gait_out.legs[slot].q_thigh,
+                gait_out.legs[slot].q_calf,
+            ];
             for k in 0..3 {
                 let ji = joint_indices[slot][k];
                 let sign = joint_signs[slot][k];
-                if let Some((q_urdf, _)) = mj_sim.joint_q_qd(&robot.joints[ji].name) {
-                    q_leg[k] = sign * q_urdf;
+                let q_target_urdf = sign * q_target_ik[k];
+                let (q_actual, qd_actual) = mj_sim
+                    .joint_q_qd(&robot.joints[ji].name)
+                    .unwrap_or((0.0, 0.0));
+                // Joint-space velocity reference: finite-difference
+                // q* per leg with `last_q_target_urdf`. For the first
+                // tick we fall back to qd_actual (= zero error).
+                let qd_target_urdf = if dt > 1e-6 {
+                    let dq = q_target_urdf - self.last_q_target_urdf[ji];
+                    dq / dt
+                } else {
+                    qd_actual
+                };
+                self.last_q_target_urdf[ji] = q_target_urdf;
+                let q_ddot = self.swing_kp * (q_target_urdf - q_actual)
+                    + self.swing_kd * (qd_target_urdf - qd_actual);
+                // Map articara joint index → actuator index via misarta v_idx.
+                let Some(mi) = self.a2m.get(ji).and_then(|&m| m) else {
+                    continue;
+                };
+                if self.model.joints[mi].joint_type.nv() != 1 {
+                    continue;
+                }
+                let vi = self.model.v_idx[mi];
+                if vi < 6 {
+                    continue;
+                }
+                let act_idx = vi - 6;
+                if act_idx < na_count {
+                    swing_q_ddot_des[act_idx] = q_ddot;
+                    swing_actuator_flag[act_idx] = true;
                 }
             }
-            // Measured world-frame foot position via FK on the leg.
-            let p_meas_body = forward_leg_kinematics(leg_kin, q_leg[0], q_leg[1], q_leg[2]);
-            let p_meas_world = body_pos_w + r_wb * p_meas_body;
-            // Measured world-frame foot velocity from the full Jacobian
-            // times the body-frame v vector (J already in world frame).
-            let mut v_meas_world = na::Vector3::zeros();
-            if let Some(mi) = self.foot_misarta_idx[slot] {
-                let row = 3 * slot;
-                for r in 0..3 {
-                    let mut acc = 0.0;
-                    for c in 0..nv {
-                        acc += j_contact[(row + r, c)] * v[c];
-                    }
-                    v_meas_world[r] = acc;
-                    let _ = mi; // silence unused-binding when slot has no foot
-                }
-            }
-            // Desired world-frame velocity: finite-difference the
-            // world-frame target. For the very first tick we fall back
-            // to zero (no history yet).
-            let v_des_world = if dt > 1e-6 {
-                (p_des_world - self.last_foot_world_des[slot]) / dt
-            } else {
-                na::Vector3::zeros()
-            };
-            let a = self.swing_kp * (p_des_world - p_meas_world)
-                + self.swing_kd * (v_des_world - v_meas_world);
-            for k in 0..3 {
-                a_swing_des[3 * slot + k] = a[k];
-            }
-            self.last_foot_world_des[slot] = p_des_world;
         }
 
         // ── f_GRF_des: temporal EMA on MPC GRFs ────────────────────
@@ -521,7 +542,8 @@ impl WbcPipeline {
             friction_mu: self.friction_mu,
             torque_max: &torque_max,
             a_base_des: &a_base_des,
-            a_swing_des: &a_swing_des,
+            swing_q_ddot_des: &swing_q_ddot_des,
+            swing_actuator_flag: &swing_actuator_flag,
             f_grf_des: &f_grf_des,
             tau_gravity: &tau_gravity,
         };
@@ -541,6 +563,9 @@ impl WbcPipeline {
         let sol = wbc::solve_warm(&inputs, &warm);
         // Persist for the next tick.
         self.qp_x_prev = Some(sol.x_full.clone());
+        // Cache for diagnostic inspection (test rigs read q_ddot /
+        // f_grf / tau directly).
+        self.last_solution = Some(sol.clone());
 
         // ── Map sol.tau → robot.joints order ───────────────────────
         let mut robot_taus = vec![0.0_f64; robot.joints.len()];

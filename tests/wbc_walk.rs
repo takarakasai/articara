@@ -298,9 +298,13 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     contact_flag,
                     params.dt,
                 );
-                // Diagnostic dump every 100 ticks (200 ms): trunk z,
-                // WBC τ ranges, MPC GRF z-sums. Cheap, only fires
-                // ~5 times per test run.
+                // Diagnostic dump every 100 ticks (200 ms). Detailed
+                // breakdown for the G-step (Phase 1.5 / forward walk)
+                // root-cause hunt: per-leg q*-vs-q tracking error,
+                // swing target vs measured foot position, MPC f_GRF
+                // reference vs WBC sol.f_grf, and the body-frame
+                // foot offsets. Tab-aligned so a regression diff
+                // shows column-by-column.
                 if k % 100 == 0 {
                     let body_pos = sim
                         .body_world_position(&robot.root_link)
@@ -320,6 +324,81 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         tau_max,
                         stance_count
                     );
+                    // Per-leg tracking detail. `targets` carries
+                    // (joint_idx, q_target_urdf); compare against
+                    // mj_sim.joint_q_qd to see how well Position-PD
+                    // is following.
+                    let mut q_err_max = 0.0_f64;
+                    let mut qd_err_max = 0.0_f64;
+                    for (ji, q_target) in targets.iter() {
+                        if let Some((q_actual, qd_actual)) =
+                            sim.joint_q_qd(&robot.joints[*ji].name)
+                        {
+                            let q_err = (*q_target - q_actual).abs();
+                            q_err_max = q_err_max.max(q_err);
+                            qd_err_max = qd_err_max.max(qd_actual.abs());
+                        }
+                    }
+                    // WBC solution breakdown (cached on the pipeline).
+                    let (wbc_fz_sum, q_ddot_z, tau_norm) =
+                        if let Some(sol) = wbc_pipeline.last_solution.as_ref() {
+                            let fz: f64 =
+                                (0..4).map(|s| sol.f_grf[3 * s + 2]).sum();
+                            let q_ddot_z = sol.q_ddot[5]; // body z (Featherstone [ang;lin])
+                            let tau_norm: f64 = sol.tau.iter().map(|x| x * x).sum::<f64>().sqrt();
+                            (fz, q_ddot_z, tau_norm)
+                        } else {
+                            (0.0, 0.0, 0.0)
+                        };
+                    // Per-leg swing target vs measured: only meaningful
+                    // when the leg is in nominal swing, but compute
+                    // for all 4 so the dump is uniform width.
+                    let mut swing_err_max = 0.0_f64;
+                    for slot in 0..4 {
+                        if !out.legs[slot].phase.is_stance {
+                            // foot_body target (body frame).
+                            let target_body = out.legs[slot].foot_body;
+                            // Measured via FK on the actual joint q.
+                            let leg_kin = gc.kinematics().legs()[slot];
+                            let mut q_leg = [0.0_f64; 3];
+                            let signs = gc.joint_signs()[slot];
+                            for kk in 0..3 {
+                                let ji = gc.joint_indices()[slot][kk];
+                                if let Some((q, _)) =
+                                    sim.joint_q_qd(&robot.joints[ji].name)
+                                {
+                                    q_leg[kk] = signs[kk] * q;
+                                }
+                            }
+                            let measured_body =
+                                quadruped_gait::forward_leg_kinematics(
+                                    leg_kin, q_leg[0], q_leg[1], q_leg[2],
+                                );
+                            let err = (target_body - measured_body).norm();
+                            swing_err_max = swing_err_max.max(err);
+                        }
+                    }
+                    eprintln!(
+                        "[diag-detail k={k:5}] q*-q max={:.4} rad   q̇ max={:.3} rad/s   \
+                         WBC Σf_z={:.2} N  q̈_z={:.2}  ‖τ‖={:.2}  swing FK err={:.4} m",
+                        q_err_max, qd_err_max,
+                        wbc_fz_sum, q_ddot_z, tau_norm, swing_err_max,
+                    );
+                    // MPC vs WBC f_GRF per-leg comparison (z-component
+                    // only; horizontal components omitted to keep the
+                    // line readable).
+                    if let Some(sol) = wbc_pipeline.last_solution.as_ref() {
+                        let mpc_per_leg: [f64; 4] =
+                            std::array::from_fn(|s| f_grf_world[s].z);
+                        let wbc_per_leg: [f64; 4] =
+                            std::array::from_fn(|s| sol.f_grf[3 * s + 2]);
+                        eprintln!(
+                            "[diag-grf  k={k:5}] MPC_f_z=[{:.1} {:.1} {:.1} {:.1}]   \
+                             WBC_f_z=[{:.1} {:.1} {:.1} {:.1}]",
+                            mpc_per_leg[0], mpc_per_leg[1], mpc_per_leg[2], mpc_per_leg[3],
+                            wbc_per_leg[0], wbc_per_leg[1], wbc_per_leg[2], wbc_per_leg[3],
+                        );
+                    }
                 }
                 // Hybrid-joint command (legged_control style):
                 // Position-PD already runs against the gait controller's
@@ -454,28 +533,30 @@ fn wbc_static_stand_balances_gravity() {
     let _ = burn_in;
 }
 
-/// `#[ignore]`d pending forward-displacement tuning.
+/// `#[ignore]`d pending forward-thrust tuning.
 ///
 /// After Phase 1.5-A (MPC-driven a_base_des), Phase C (contact-driven
-/// phase) and the hybrid-joint-command rework, the body **no longer
-/// falls** during trotting (z stays at 0.27..0.31 m, well above the
-/// 0.18 m fall threshold). What remains is that the body produces
-/// near-zero net forward displacement under a 0.15 m/s cmd: WBC's τ_ff
-/// adds a stance-leg force component that doesn't quite line up with
-/// what the gait controller's q* would have generated alone, leading
-/// to a "marching in place" final state.
+/// phase), the hybrid-joint-command rework, and the joint-space
+/// swing_leg task (G2 — Position-PD and WBC swing now share the same
+/// `q*` reference), the body **no longer falls** during trotting
+/// (z stays at 0.28..0.31 m, well above the 0.18 m fall threshold)
+/// and WBC's `sol.f_grf` follows MPC predicted f_z at 45–65 % (up
+/// from 15–30 % under the previous Cartesian swing path).
 ///
-/// legged_control sources the swing reference from OCS2's predicted
-/// joint state (`q_desired = mapping_.getPinocchioJointPosition(
-/// state_desired_)`); we don't have that predictor since SRBD MPC
-/// only emits base + GRF. Resolution candidates:
-///   - have the gait controller emit predicted joint q*, q̇* over the
-///     horizon and use them as the WBC swing-leg reference,
-///   - or move the swing-leg task to joint-space tracking
-///     (`q̈[joint_i] = kp·(q*−q) + kd·(q̇*−q̇)`), aligning with
-///     Position-PD's reference and removing the dual representation.
+/// What remains is forward thrust: under 0.15 m/s commanded velocity
+/// the trunk produces ~−5 cm Δx over 2.5 s instead of the >+4 cm
+/// expected. Diagnostics show q*−q tracking error stays at 0.2 rad
+/// (the swing leg can't reach its IK target each cycle), and the
+/// WBC's f_x (forward thrust) contribution doesn't quite balance
+/// against MuJoCo's contact friction. Likely culprits:
+///   - SRBD MPC tuning (q_diag for body x velocity, footstep
+///     placement) optimised for static stand rather than trot,
+///   - W_CONTACT_FORCE / per-leg LSQ weights letting the WBC
+///     under-track the MPC's predicted forward GRF component,
+///   - Position-PD `kp = 30, kv = 0.6` insufficient stiffness for
+///     0.2 rad swing trajectories at 200 Hz.
 #[test]
-#[ignore = "blocked on forward-displacement tuning (joint-space swing reference)"]
+#[ignore = "blocked on forward-thrust tuning (MPC tuning + Position-PD stiffness)"]
 fn wbc_forward_command_advances_body() {
     let Some(samples) = run_wbc_sim(WbcParams::forward_walk()) else {
         return;
