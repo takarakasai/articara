@@ -3,6 +3,7 @@ pub mod attitude_estimator;
 pub mod camera;
 pub mod collision;
 pub mod dynamics;
+pub mod estimator;
 pub mod format;
 pub mod gait;
 pub mod history;

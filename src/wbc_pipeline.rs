@@ -573,7 +573,7 @@ impl WbcPipeline {
 /// - `a2m`: articara joint index → misarta joint index,
 /// - `link_to_idx`: link name → misarta joint index whose child link
 ///   is that link (used to resolve foot frame indices).
-fn build_floating_base_model(
+pub fn build_floating_base_model(
     robot: &RobotModel,
 ) -> (Model<f64>, Vec<Option<usize>>, std::collections::HashMap<String, usize>) {
     let mut builder = ModelBuilder::<f64>::new()
@@ -645,8 +645,11 @@ fn build_floating_base_model(
 }
 
 // ─── Inline conversion helpers (mirror rbd::model::convert_*) ──────
+// `pub` so siblings (e.g. estimator::LkfPipeline) can build the same
+// floating-base misarta model from a `RobotModel` without duplicating
+// the URDF→misarta translation.
 
-fn convert_joint_type(joint: &crate::rbd::model::JointData) -> JointType<f64> {
+pub fn convert_joint_type(joint: &crate::rbd::model::JointData) -> JointType<f64> {
     let axis = joint.axis.cast::<f64>();
     match joint.joint_type.as_str() {
         "revolute" | "continuous" => JointType::Revolute {
@@ -659,7 +662,7 @@ fn convert_joint_type(joint: &crate::rbd::model::JointData) -> JointType<f64> {
     }
 }
 
-fn convert_link_inertia(link: &crate::rbd::model::LinkData) -> LinkInertia<f64> {
+pub fn convert_link_inertia(link: &crate::rbd::model::LinkData) -> LinkInertia<f64> {
     let i = &link.inertial;
     let com = i.origin.translation.vector.cast::<f64>();
     let rot = i.origin.rotation.to_rotation_matrix();
