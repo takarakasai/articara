@@ -226,7 +226,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         );
 
         if gc.is_enabled() {
-            let (out, targets, _torque_ff) = gc.tick(params.dt);
+            let (out, targets, torque_ff) = gc.tick(params.dt);
             for (idx, q) in targets {
                 sim.set_position_target(idx, q);
             }
@@ -413,6 +413,13 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 // long-term tracking error accumulates because the QP
                 // produces accelerations not positions, and there's no
                 // integrator to drive joint-position drift back to zero.
+                // Hybrid joint command: Position-PD tracks q*, WBC τ
+                // adds dynamic + gravity + contact-force compensation
+                // on top. The WBC tries to produce τ such that the QP
+                // solution's f_GRF matches the MPC's predicted GRFs
+                // (= forward thrust included), but the actual tracking
+                // depends on `W_CONTACT_FORCE` in `quadruped_gait::wbc`.
+                let _ = torque_ff; // discard MPC ff — WBC owns the τ stream
                 for (ji, &tau) in taus.iter().enumerate() {
                     sim.set_torque_feedforward(ji, tau);
                 }
@@ -533,30 +540,17 @@ fn wbc_static_stand_balances_gravity() {
     let _ = burn_in;
 }
 
-/// `#[ignore]`d pending forward-thrust tuning.
+/// Forward walk under WBC + Position-PD hybrid joint command.
+/// Asserts the trunk advances at least `MIN_DISPLACEMENT_M` over the
+/// run without falling (`min_z > TRUNK_Z_FALL_THRESHOLD_M`).
 ///
-/// After Phase 1.5-A (MPC-driven a_base_des), Phase C (contact-driven
-/// phase), the hybrid-joint-command rework, and the joint-space
-/// swing_leg task (G2 — Position-PD and WBC swing now share the same
-/// `q*` reference), the body **no longer falls** during trotting
-/// (z stays at 0.28..0.31 m, well above the 0.18 m fall threshold)
-/// and WBC's `sol.f_grf` follows MPC predicted f_z at 45–65 % (up
-/// from 15–30 % under the previous Cartesian swing path).
-///
-/// What remains is forward thrust: under 0.15 m/s commanded velocity
-/// the trunk produces ~−5 cm Δx over 2.5 s instead of the >+4 cm
-/// expected. Diagnostics show q*−q tracking error stays at 0.2 rad
-/// (the swing leg can't reach its IK target each cycle), and the
-/// WBC's f_x (forward thrust) contribution doesn't quite balance
-/// against MuJoCo's contact friction. Likely culprits:
-///   - SRBD MPC tuning (q_diag for body x velocity, footstep
-///     placement) optimised for static stand rather than trot,
-///   - W_CONTACT_FORCE / per-leg LSQ weights letting the WBC
-///     under-track the MPC's predicted forward GRF component,
-///   - Position-PD `kp = 30, kv = 0.6` insufficient stiffness for
-///     0.2 rad swing trajectories at 200 Hz.
+/// The test sequence — MPC-driven `a_base_des` (Phase 1.5-A), the
+/// joint-space swing_leg task (G2, sharing q* with Position-PD), and
+/// `W_CONTACT_FORCE = 5` (H4 tuning, lets the WBC track MPC's
+/// predicted GRF tightly enough that stance forward thrust flows
+/// into joint torque) — together produce ~17 cm of forward
+/// displacement under a 0.15 m/s command over 2.5 s.
 #[test]
-#[ignore = "blocked on forward-thrust tuning (MPC tuning + Position-PD stiffness)"]
 fn wbc_forward_command_advances_body() {
     let Some(samples) = run_wbc_sim(WbcParams::forward_walk()) else {
         return;

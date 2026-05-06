@@ -74,9 +74,13 @@ pub struct WbcPipeline {
     pub inertia_diag_body: na::Vector3<f64>,
 
     /// Previous tick's joint q* in URDF sign convention, indexed by
-    /// articara joint index. Used to finite-difference q̇* for the
-    /// joint-space swing reference. Resized on first construction
-    /// to match `robot.joints.len()`.
+    /// articara joint index. Updated **only for swing legs** so that
+    /// during the stance phase the slot retains the swing-period
+    /// terminal value — re-using it as `q*_prev` on the next swing
+    /// entry produces a small, sane finite-diff q̇* (joint angles
+    /// across consecutive swing cycles are close), instead of the
+    /// "stance-hold q* → new swing-start q*" jump that a per-leg
+    /// always-update would produce.
     last_q_target_urdf: Vec<f64>,
 
     /// EMA-smoothed `f_grf_des` from the SRBD MPC. The MPC's raw QP
@@ -399,26 +403,26 @@ impl WbcPipeline {
         // ── Joint-space swing-leg PD reference (legged_control 流) ──
         // Compute `q̈_des = kp·(q* − q) + kd·(q̇* − q̇)` per actuator
         // using the same `q*` that Position-PD tracks (= the gait
-        // controller's IK output of the swing trajectory). q̇* is
-        // finite-differenced from successive q* values.
+        // controller's IK output of the swing trajectory).
         //
-        // We only populate q̈_des for actuators whose leg is in
-        // **swing**; the corresponding flag is recorded in parallel so
-        // the WBC's `swing_leg` task knows which rows to enable.
-        // Stance / non-leg actuators get 0.0 (irrelevant — flag is
-        // false → row is skipped at the task level).
+        // q̇* is finite-differenced from successive **swing-period**
+        // q* values (we skip stance updates so the per-leg slot
+        // retains the previous swing's terminal value, giving a sane
+        // q̇* on the next swing entry instead of the discontinuous
+        // jump that updating during stance would produce).
+        //
+        // The `JointReference` helper in
+        // [`quadruped_gait::mpc_reference`] documents the equivalent
+        // legged_control mapping; we keep this loop inline because
+        // its swing-only update behaviour is critical for stable
+        // q̇* finite-diff and isn't easily expressed in a stateless
+        // helper.
         let mut swing_q_ddot_des = na::DVector::zeros(na_count);
         let mut swing_actuator_flag = vec![false; na_count];
         for slot in 0..4 {
-            // Skip stance legs entirely — their q̈ is constrained by
-            // the priority-0 no_contact_motion task (foot velocity
-            // = 0), not the priority-1 swing task.
             if gait_out.legs[slot].phase.is_stance {
                 continue;
             }
-            // IK joint angles from the gait controller, mapped to
-            // URDF sign convention (same `joint_signs` Position-PD
-            // used to convert q* before writing it into MuJoCo).
             let q_target_ik = [
                 gait_out.legs[slot].q_hip,
                 gait_out.legs[slot].q_thigh,
@@ -431,19 +435,14 @@ impl WbcPipeline {
                 let (q_actual, qd_actual) = mj_sim
                     .joint_q_qd(&robot.joints[ji].name)
                     .unwrap_or((0.0, 0.0));
-                // Joint-space velocity reference: finite-difference
-                // q* per leg with `last_q_target_urdf`. For the first
-                // tick we fall back to qd_actual (= zero error).
                 let qd_target_urdf = if dt > 1e-6 {
-                    let dq = q_target_urdf - self.last_q_target_urdf[ji];
-                    dq / dt
+                    (q_target_urdf - self.last_q_target_urdf[ji]) / dt
                 } else {
                     qd_actual
                 };
                 self.last_q_target_urdf[ji] = q_target_urdf;
                 let q_ddot = self.swing_kp * (q_target_urdf - q_actual)
                     + self.swing_kd * (qd_target_urdf - qd_actual);
-                // Map articara joint index → actuator index via misarta v_idx.
                 let Some(mi) = self.a2m.get(ji).and_then(|&m| m) else {
                     continue;
                 };
