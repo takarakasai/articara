@@ -34,7 +34,7 @@ use nalgebra as na;
 use misarta::joint::JointType;
 use misarta::model::{LinkInertia, Model, ModelBuilder};
 
-use quadruped_gait::wbc::{self, WbcDims, WbcInputs};
+use quadruped_gait::wbc::{self, WbcDims, WbcInputs, WbcWarmStart};
 use quadruped_gait::{ControllerOutput, KinematicsConfig, foot_jacobian_body, forward_leg_kinematics};
 
 use crate::mujoco_sim::MujocoSim;
@@ -95,6 +95,23 @@ pub struct WbcPipeline {
     /// no smoothing (raw), 0.3 default ≈ 3-solve window at default
     /// 30 ms ZOH.
     pub grf_smoothing_alpha: f64,
+
+    /// Full decision-space solution `x = [q̈; f_GRF; τ]` from the
+    /// last [`Self::solve`]. Fed back as the next tick's warm-start
+    /// anchor (see `qp_prox_weight`) so the WBC's hierarchical QP
+    /// picks consistent solutions inside its wide null space.
+    /// Carrying the full `x_prev` (instead of per-level `y_prev`) lets
+    /// the inner solver re-project into each tick's per-level basis,
+    /// which would otherwise be invalid because the basis is rebuilt
+    /// from a `q`-dependent equality matrix every tick.
+    qp_x_prev: Option<na::DVector<f64>>,
+    /// Proximal regularisation weight passed to
+    /// [`misarta::qp::QpConfig::prox_weight`] inside each HoQp level.
+    /// 0.0 disables warm-start (cold solve every tick — original
+    /// behaviour). `1e-3` is a starting point: small enough to leave
+    /// the task residual untouched, large enough to anchor an optimum
+    /// to within ~mm/N units across ticks.
+    pub qp_prox_weight: f64,
 }
 
 impl WbcPipeline {
@@ -137,13 +154,15 @@ impl WbcPipeline {
             foot_misarta_idx,
             swing_kp: 80.0,
             swing_kd: 8.0,
-            base_kp_lin: 30.0,
-            base_kp_ang: 30.0,
+            base_kp_lin: 10.0,
+            base_kp_ang: 10.0,
             friction_mu: 0.5,
             last_foot_world_des,
             smoothed_f_grf: [na::Vector3::zeros(); 4],
             grf_smoothing_seeded: false,
             grf_smoothing_alpha: 1.0,
+            qp_x_prev: None,
+            qp_prox_weight: 1e-4,
         }
     }
 
@@ -253,7 +272,19 @@ impl WbcPipeline {
             }
             let vi = self.model.v_idx[mi];
             if let Some((_, qd)) = mj_sim.joint_q_qd(&robot.joints[ji].name) {
-                v[vi] = qd;
+                // Joint-velocity clip: the no_contact_motion task forms
+                // `J_c · q̈ + J̇_c · v = 0`; when MuJoCo's contact solver
+                // pushes a joint to abnormally high q̇ (transient
+                // bouncing during stance touchdown), `J̇_c · v` becomes
+                // large and the WBC has to request a matching big q̈,
+                // which then needs a big f_z to satisfy EoM, which
+                // bumps the joint via the integrator → positive
+                // feedback loop that diverges in <100 ms. Clipping to
+                // a reasonable joint speed (5 rad/s ≈ 287 °/s, well
+                // above any realistic gait command) breaks the loop
+                // without affecting normal operation.
+                const JOINT_V_MAX: f64 = 5.0;
+                v[vi] = qd.clamp(-JOINT_V_MAX, JOINT_V_MAX);
             }
         }
 
@@ -298,7 +329,19 @@ impl WbcPipeline {
         // convention (see `v` build above for the Featherstone
         // angular-first ordering).
         let omega_cmd_body = na::Vector3::new(0.0, 0.0, wz_cmd);
-        let a_base_lin = self.base_kp_lin * (v_cmd_body - v_obs_body);
+        // Gravity feedforward in body frame: world gravity is (0, 0, -9.81),
+        // so to *hold position* the body's commanded acceleration must be
+        // (0, 0, +9.81) in world. Rotate to body frame for the FreeFlyer's
+        // body-frame motion subspace. Without this, WBC happily picks
+        // (q̈=0, f≈0, τ=0) as a feasible — but physically incorrect — EoM
+        // solution: M·0 + h − Jᵀ·0 − Sᵀ·0 = h ≠ 0 unless h is forced into
+        // f or τ via the cost. The contact_force/τ_grav references push
+        // toward that, but the residual is small relative to other tasks
+        // and the body falls. Adding +g to a_base_lin makes "stay still"
+        // an explicit, hard equality target.
+        let g_world = na::Vector3::new(0.0, 0.0, 9.81);
+        let g_body = r_bw * g_world;
+        let a_base_lin = self.base_kp_lin * (v_cmd_body - v_obs_body) + g_body;
         let a_base_ang = self.base_kp_ang * (omega_cmd_body - omega_obs_body);
         let a_base_des = na::DVector::from_iterator(
             6,
@@ -448,7 +491,22 @@ impl WbcPipeline {
             f_grf_des: &f_grf_des,
             tau_gravity: &tau_gravity,
         };
-        let sol = wbc::solve(&inputs);
+        // Warm-start: feed back the previous tick's full decision-space
+        // solution. Each HoQp level reprojects it into its current null-
+        // space basis (`v_target = prev.zᵀ · (x_prev − prev.x)`) and
+        // adds a (ρ/2)·‖v − v_target‖² term to the cost. This biases
+        // the optimum toward the previous tick's solution — operator-
+        // splitting-style warm-start at the cost level — without
+        // touching hard constraints (EoM / friction cone / no-contact-
+        // motion). Anchors stay valid across ticks even though the
+        // basis rotates with `q`.
+        let warm = WbcWarmStart {
+            x_prev: self.qp_x_prev.as_ref(),
+            prox_weight: self.qp_prox_weight,
+        };
+        let sol = wbc::solve_warm(&inputs, &warm);
+        // Persist for the next tick.
+        self.qp_x_prev = Some(sol.x_full.clone());
 
         // ── Map sol.tau → robot.joints order ───────────────────────
         let mut robot_taus = vec![0.0_f64; robot.joints.len()];
