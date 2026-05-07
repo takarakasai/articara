@@ -779,3 +779,357 @@ fn integration_walk_yaw_mpc_wbc() {
     assert!(m.body_dy().abs() < 0.20,
         "yaw: body_dy = {:+.3} m, expected |·| < 0.20 m", m.body_dy());
 }
+
+// ─── P5a: per-task lateral diagnostic ─────────────────────────────
+//
+// Lateral cmd flips sign with WBC (MPC-only +0.026 m → MPC+WBC
+// -0.903 m). To isolate which WBC task is responsible, run the
+// lateral sim 4 times with one priority-1/2 LSQ task disabled at a
+// time and compare body_dy. The task whose disable **un-flips** the
+// sign (or noticeably reduces the negative drift) is the culprit.
+//
+// All four diagnostics are `#[ignore]`d so they don't slow down the
+// regular regression run; invoke with:
+//   cargo test --release --features mujoco --test integration_walk \
+//     diag_lateral -- --ignored --nocapture
+
+use quadruped_gait::wbc::WbcWeights;
+
+/// Run a lateral walk with custom WbcWeights and return the
+/// resulting body_dy / yaw drift / fall metric. Mirrors `run_walk`
+/// but lets the caller override the WBC task weights.
+fn run_lateral_with_weights(weights: WbcWeights) -> Option<WalkBenchmark> {
+    let common::StandFixture {
+        mut robot,
+        kin,
+        mut sim,
+    } = common::build_namiashi_stand_fixture()?;
+
+    let cfg = GaitConfig::trot();
+    let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::Mpc)
+        .expect("GaitController::build");
+    let mut wbc_pipeline = WbcPipeline::new(&robot, common::default_foot_links());
+    wbc_pipeline.weights = weights;
+    if let Some(srbd_cfg) = gc.srbd_mpc_config() {
+        wbc_pipeline.mass_kg = srbd_cfg.mass_kg;
+        wbc_pipeline.inertia_diag_body = srbd_cfg.inertia_diag_body;
+    }
+
+    let n_steps = (WALK_SIM_TIME_S / DT) as usize;
+    let burn_in_steps = (WALK_BURN_IN_S / DT) as usize;
+    let mut metrics = WalkBenchmark::default();
+    metrics.min_body_z = f64::INFINITY;
+    if let Some(pos) = sim.body_world_position(&robot.root_link) {
+        metrics.body_x_start = pos[0];
+        metrics.body_y_start = pos[1];
+    }
+    metrics.yaw_start = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+
+    gc.enable();
+    let cmd = lat_cmd();
+    for k in 0..n_steps {
+        if k == burn_in_steps {
+            gc.set_velocity_cmd(cmd);
+        }
+        let v_obs = sim
+            .body_world_linear_velocity(&robot.root_link)
+            .unwrap_or([0.0, 0.0, 0.0]);
+        let w_obs = sim
+            .body_world_angular_velocity(&robot.root_link)
+            .unwrap_or([0.0, 0.0, 0.0]);
+        gc.set_body_state_observed(
+            Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+            Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+        );
+        let body_pos = sim
+            .body_world_position(&robot.root_link)
+            .unwrap_or([0.0, 0.0, 0.0]);
+        let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+        gc.set_body_pose_observed(
+            yaw_obs,
+            Vector3::new(body_pos[0], body_pos[1], body_pos[2]),
+        );
+
+        let (out, targets, _torque_ff) = gc.tick(DT);
+        for (idx, q) in targets {
+            sim.set_position_target(idx, q);
+        }
+        if k >= burn_in_steps {
+            let f_grf_world = gc
+                .predicted_grfs()
+                .map(|sol| sol.grfs_first_step)
+                .unwrap_or([Vector3::zeros(); 4]);
+            let cmd_now = gc.velocity_cmd();
+            let v_cmd_body = Vector3::new(cmd_now.vx, cmd_now.vy, 0.0);
+            let foot_links_str: [&str; 4] = [
+                wbc_pipeline.foot_links[0].as_str(),
+                wbc_pipeline.foot_links[1].as_str(),
+                wbc_pipeline.foot_links[2].as_str(),
+                wbc_pipeline.foot_links[3].as_str(),
+            ];
+            let force_z = sim.contact_force_per_foot(&foot_links_str);
+            let nominal_phases = [
+                out.legs[0].phase,
+                out.legs[1].phase,
+                out.legs[2].phase,
+                out.legs[3].phase,
+            ];
+            let corrected = ContactDrivenPhase::apply_correction(
+                &nominal_phases,
+                force_z,
+                5.0,
+                0.0,
+            );
+            let contact_flag = [
+                corrected[0].is_stance,
+                corrected[1].is_stance,
+                corrected[2].is_stance,
+                corrected[3].is_stance,
+            ];
+            let taus = wbc_pipeline.solve(
+                &robot,
+                &sim,
+                &out,
+                gc.kinematics(),
+                gc.joint_indices(),
+                gc.joint_signs(),
+                &v_cmd_body,
+                cmd_now.wz,
+                &Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+                &Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+                &f_grf_world,
+                contact_flag,
+                DT,
+            );
+            for (ji, &tau) in taus.iter().enumerate() {
+                sim.set_torque_feedforward(ji, tau);
+            }
+        } else {
+            for ji in 0..robot.joints.len() {
+                sim.set_torque_feedforward(ji, 0.0);
+            }
+        }
+        sim.step(&mut robot, DT, true);
+
+        if let Some(pos) = sim.body_world_position(&robot.root_link) {
+            metrics.min_body_z = metrics.min_body_z.min(pos[2]);
+            metrics.body_x_end = pos[0];
+            metrics.body_y_end = pos[1];
+        }
+        metrics.yaw_end = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+    }
+    Some(metrics)
+}
+
+/// Diagnostic: lateral cmd with `base_accel` weight = 0.
+/// If body_dy goes from -0.90 → ~+0.03 (matching MPC-only), this
+/// task is the source of the sign-flip.
+#[test]
+#[ignore = "P5a diagnostic — run with --ignored to inspect"]
+fn diag_lateral_no_base_accel() {
+    let mut w = WbcWeights::default();
+    w.base_accel = 0.0;
+    let Some(m) = run_lateral_with_weights(w) else { return };
+    eprintln!(
+        "[diag-lat:no-base-accel] body_dx={:+.3} body_dy={:+.3} Δyaw={:+.3}",
+        m.body_dx(), m.body_dy(), m.dyaw(),
+    );
+}
+
+/// Diagnostic: lateral cmd with `swing_leg` weight = 0.
+#[test]
+#[ignore = "P5a diagnostic — run with --ignored to inspect"]
+fn diag_lateral_no_swing_leg() {
+    let mut w = WbcWeights::default();
+    w.swing_leg = 0.0;
+    let Some(m) = run_lateral_with_weights(w) else { return };
+    eprintln!(
+        "[diag-lat:no-swing-leg] body_dx={:+.3} body_dy={:+.3} Δyaw={:+.3}",
+        m.body_dx(), m.body_dy(), m.dyaw(),
+    );
+}
+
+/// Diagnostic: lateral cmd with `contact_force` weight = 0.
+#[test]
+#[ignore = "P5a diagnostic — run with --ignored to inspect"]
+fn diag_lateral_no_contact_force() {
+    let mut w = WbcWeights::default();
+    w.contact_force = 0.0;
+    let Some(m) = run_lateral_with_weights(w) else { return };
+    eprintln!(
+        "[diag-lat:no-contact-force] body_dx={:+.3} body_dy={:+.3} Δyaw={:+.3}",
+        m.body_dx(), m.body_dy(), m.dyaw(),
+    );
+}
+
+/// Diagnostic: lateral cmd with `tau_gravity` weight = 0.
+#[test]
+#[ignore = "P5a diagnostic — run with --ignored to inspect"]
+fn diag_lateral_no_tau_gravity() {
+    let mut w = WbcWeights::default();
+    w.tau_gravity = 0.0;
+    let Some(m) = run_lateral_with_weights(w) else { return };
+    eprintln!(
+        "[diag-lat:no-tau-gravity] body_dx={:+.3} body_dy={:+.3} Δyaw={:+.3}",
+        m.body_dx(), m.body_dy(), m.dyaw(),
+    );
+}
+
+/// Diagnostic: forward cmd with swing_leg = 0 (= P5a candidate fix).
+/// If forward walk still passes (Δx > +10 cm), we can safely default
+/// swing_leg to 0.
+#[test]
+#[ignore = "P5a candidate-fix verification"]
+fn diag_forward_no_swing_leg() {
+    let mut w = WbcWeights::default();
+    w.swing_leg = 0.0;
+    // Use the regular run_walk but feed weights via the fixture.
+    let common::StandFixture {
+        mut robot,
+        kin,
+        mut sim,
+    } = common::build_namiashi_stand_fixture().unwrap();
+    let cfg = GaitConfig::trot();
+    let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::Mpc).unwrap();
+    let mut wbc_pipeline = WbcPipeline::new(&robot, common::default_foot_links());
+    wbc_pipeline.weights = w;
+    if let Some(srbd_cfg) = gc.srbd_mpc_config() {
+        wbc_pipeline.mass_kg = srbd_cfg.mass_kg;
+        wbc_pipeline.inertia_diag_body = srbd_cfg.inertia_diag_body;
+    }
+    let n_steps = (WALK_SIM_TIME_S / DT) as usize;
+    let burn_in_steps = (WALK_BURN_IN_S / DT) as usize;
+    let mut m = WalkBenchmark::default();
+    m.min_body_z = f64::INFINITY;
+    if let Some(p) = sim.body_world_position(&robot.root_link) {
+        m.body_x_start = p[0]; m.body_y_start = p[1];
+    }
+    m.yaw_start = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+    gc.enable();
+    let cmd = fwd_cmd();
+    for k in 0..n_steps {
+        if k == burn_in_steps { gc.set_velocity_cmd(cmd); }
+        let v = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.;3]);
+        let w_o = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.;3]);
+        gc.set_body_state_observed(Vector3::new(v[0],v[1],v[2]), Vector3::new(w_o[0],w_o[1],w_o[2]));
+        let bp = sim.body_world_position(&robot.root_link).unwrap_or([0.;3]);
+        let ya = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+        gc.set_body_pose_observed(ya, Vector3::new(bp[0],bp[1],bp[2]));
+        let (out, targets, _) = gc.tick(DT);
+        for (idx, q) in targets { sim.set_position_target(idx, q); }
+        if k >= burn_in_steps {
+            let f = gc.predicted_grfs().map(|s| s.grfs_first_step).unwrap_or([Vector3::zeros();4]);
+            let cn = gc.velocity_cmd();
+            let vcb = Vector3::new(cn.vx, cn.vy, 0.0);
+            let fls: [&str;4] = [wbc_pipeline.foot_links[0].as_str(),wbc_pipeline.foot_links[1].as_str(),wbc_pipeline.foot_links[2].as_str(),wbc_pipeline.foot_links[3].as_str()];
+            let fz = sim.contact_force_per_foot(&fls);
+            let np = [out.legs[0].phase,out.legs[1].phase,out.legs[2].phase,out.legs[3].phase];
+            let cor = ContactDrivenPhase::apply_correction(&np, fz, 5.0, 0.0);
+            let cf = [cor[0].is_stance,cor[1].is_stance,cor[2].is_stance,cor[3].is_stance];
+            let taus = wbc_pipeline.solve(&robot,&sim,&out,gc.kinematics(),gc.joint_indices(),gc.joint_signs(),&vcb,cn.wz,&Vector3::new(v[0],v[1],v[2]),&Vector3::new(w_o[0],w_o[1],w_o[2]),&f,cf,DT);
+            for (ji,&t) in taus.iter().enumerate() { sim.set_torque_feedforward(ji,t); }
+        } else {
+            for ji in 0..robot.joints.len() { sim.set_torque_feedforward(ji,0.0); }
+        }
+        sim.step(&mut robot, DT, true);
+        if let Some(p) = sim.body_world_position(&robot.root_link) {
+            m.min_body_z = m.min_body_z.min(p[2]); m.body_x_end = p[0]; m.body_y_end = p[1];
+        }
+        m.yaw_end = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+    }
+    eprintln!(
+        "[diag-fwd:no-swing-leg] body_dx={:+.3} body_dy={:+.3} Δyaw={:+.3} min_z={:.3}",
+        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+    );
+}
+
+/// Diagnostic sweep: swing_leg ∈ {0.0, 0.1, 0.3, 0.5, 1.0} on lateral
+/// + forward to find a balance that fixes lateral without breaking
+/// forward.
+#[test]
+#[ignore = "P5a sweep"]
+fn diag_swing_leg_sweep_lateral() {
+    for w_swing in [0.0, 0.1, 0.3, 0.5, 1.0] {
+        let mut w = WbcWeights::default();
+        w.swing_leg = w_swing;
+        if let Some(m) = run_lateral_with_weights(w) {
+            eprintln!(
+                "[sweep-lat swing={:.1}] body_dx={:+.3}  body_dy={:+.3}  Δyaw={:+.3}",
+                w_swing, m.body_dx(), m.body_dy(), m.dyaw(),
+            );
+        }
+    }
+}
+
+/// Helper for the forward-walk sweep (mirrors run_lateral_with_weights
+/// but with cmd = forward).
+fn run_forward_with_weights(weights: WbcWeights) -> Option<WalkBenchmark> {
+    let common::StandFixture {
+        mut robot,
+        kin,
+        mut sim,
+    } = common::build_namiashi_stand_fixture()?;
+    let cfg = GaitConfig::trot();
+    let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::Mpc).unwrap();
+    let mut wbc_pipeline = WbcPipeline::new(&robot, common::default_foot_links());
+    wbc_pipeline.weights = weights;
+    if let Some(srbd_cfg) = gc.srbd_mpc_config() {
+        wbc_pipeline.mass_kg = srbd_cfg.mass_kg;
+        wbc_pipeline.inertia_diag_body = srbd_cfg.inertia_diag_body;
+    }
+    let n_steps = (WALK_SIM_TIME_S / DT) as usize;
+    let burn_in_steps = (WALK_BURN_IN_S / DT) as usize;
+    let mut m = WalkBenchmark::default();
+    m.min_body_z = f64::INFINITY;
+    if let Some(p) = sim.body_world_position(&robot.root_link) {
+        m.body_x_start = p[0]; m.body_y_start = p[1];
+    }
+    m.yaw_start = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+    gc.enable();
+    for k in 0..n_steps {
+        if k == burn_in_steps { gc.set_velocity_cmd(fwd_cmd()); }
+        let v = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.;3]);
+        let w_o = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.;3]);
+        gc.set_body_state_observed(Vector3::new(v[0],v[1],v[2]), Vector3::new(w_o[0],w_o[1],w_o[2]));
+        let bp = sim.body_world_position(&robot.root_link).unwrap_or([0.;3]);
+        let ya = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+        gc.set_body_pose_observed(ya, Vector3::new(bp[0],bp[1],bp[2]));
+        let (out, targets, _) = gc.tick(DT);
+        for (idx, q) in targets { sim.set_position_target(idx, q); }
+        if k >= burn_in_steps {
+            let f = gc.predicted_grfs().map(|s| s.grfs_first_step).unwrap_or([Vector3::zeros();4]);
+            let cn = gc.velocity_cmd();
+            let vcb = Vector3::new(cn.vx, cn.vy, 0.0);
+            let fls: [&str;4] = [wbc_pipeline.foot_links[0].as_str(),wbc_pipeline.foot_links[1].as_str(),wbc_pipeline.foot_links[2].as_str(),wbc_pipeline.foot_links[3].as_str()];
+            let fz = sim.contact_force_per_foot(&fls);
+            let np = [out.legs[0].phase,out.legs[1].phase,out.legs[2].phase,out.legs[3].phase];
+            let cor = ContactDrivenPhase::apply_correction(&np, fz, 5.0, 0.0);
+            let cf = [cor[0].is_stance,cor[1].is_stance,cor[2].is_stance,cor[3].is_stance];
+            let taus = wbc_pipeline.solve(&robot,&sim,&out,gc.kinematics(),gc.joint_indices(),gc.joint_signs(),&vcb,cn.wz,&Vector3::new(v[0],v[1],v[2]),&Vector3::new(w_o[0],w_o[1],w_o[2]),&f,cf,DT);
+            for (ji,&t) in taus.iter().enumerate() { sim.set_torque_feedforward(ji,t); }
+        } else {
+            for ji in 0..robot.joints.len() { sim.set_torque_feedforward(ji,0.0); }
+        }
+        sim.step(&mut robot, DT, true);
+        if let Some(p) = sim.body_world_position(&robot.root_link) {
+            m.min_body_z = m.min_body_z.min(p[2]); m.body_x_end = p[0]; m.body_y_end = p[1];
+        }
+        m.yaw_end = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+    }
+    Some(m)
+}
+
+#[test]
+#[ignore = "P5a sweep — forward axis"]
+fn diag_swing_leg_sweep_forward() {
+    for w_swing in [0.0, 0.1, 0.3, 0.5, 1.0] {
+        let mut w = WbcWeights::default();
+        w.swing_leg = w_swing;
+        if let Some(m) = run_forward_with_weights(w) {
+            eprintln!(
+                "[sweep-fwd swing={:.1}] body_dx={:+.3}  body_dy={:+.3}  Δyaw={:+.3}",
+                w_swing, m.body_dx(), m.body_dy(), m.dyaw(),
+            );
+        }
+    }
+}

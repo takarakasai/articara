@@ -34,7 +34,9 @@ use nalgebra as na;
 use misarta::joint::JointType;
 use misarta::model::{LinkInertia, Model, ModelBuilder};
 
-use quadruped_gait::wbc::{self, WbcDims, WbcInputs, WbcSolution, WbcWarmStart};
+use quadruped_gait::wbc::{
+    self, WbcDims, WbcInputs, WbcSolution, WbcWarmStart, WbcWeights,
+};
 use quadruped_gait::{ControllerOutput, KinematicsConfig, foot_jacobian_body, forward_leg_kinematics};
 
 use crate::mujoco_sim::MujocoSim;
@@ -111,6 +113,11 @@ pub struct WbcPipeline {
     /// which would otherwise be invalid because the basis is rebuilt
     /// from a `q`-dependent equality matrix every tick.
     qp_x_prev: Option<na::DVector<f64>>,
+    /// Per-task LSQ weights forwarded to
+    /// [`wbc::solve_warm_with_weights`]. Public so tests can zero
+    /// individual entries to isolate each task's contribution
+    /// (= the lateral / yaw sign-flip diagnostic in `integration_walk`).
+    pub weights: WbcWeights,
     /// Last [`WbcSolution`] returned by [`Self::solve`]. Cached so
     /// diagnostic test rigs can inspect `f_grf` / `q_ddot` / `tau`
     /// breakdowns without rerunning the QP. Populated from `solve()`'s
@@ -175,6 +182,7 @@ impl WbcPipeline {
             grf_smoothing_alpha: 1.0,
             qp_x_prev: None,
             qp_prox_weight: 1e-4,
+            weights: WbcWeights::default(),
             last_solution: None,
         }
     }
@@ -559,7 +567,7 @@ impl WbcPipeline {
             x_prev: self.qp_x_prev.as_ref(),
             prox_weight: self.qp_prox_weight,
         };
-        let sol = wbc::solve_warm(&inputs, &warm);
+        let sol = wbc::solve_warm_with_weights(&inputs, &warm, &self.weights);
         // Persist for the next tick.
         self.qp_x_prev = Some(sol.x_full.clone());
         // Cache for diagnostic inspection (test rigs read q_ddot /
