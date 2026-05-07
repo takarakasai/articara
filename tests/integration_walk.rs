@@ -392,31 +392,38 @@ fn integration_position_pd_plus_lkf() {
     );
 }
 
-// ─── Straight-walk track-quality benchmarks (Phase P1) ─────────────
+// ─── 3-axis track-quality benchmarks (Phase P1 + cross-coupling) ──
 //
-// `integration_position_pd_*` above asserts only `min_z > fall_thresh`
-// and a loose forward-displacement bound. That catches catastrophic
-// failures (body falls / locks up) but says nothing about whether the
-// trotting goes **straight**. This new pair of tests measures the
-// 2D track quality — lateral drift Δy, yaw drift Δyaw — under a pure
-// forward command, so we can compare CHAMP vs MPC+WBC as more
-// real-life-relevant control schemes get added.
+// We evaluate gait quality along three independent commanded motions:
 //
-// Test policy:
-// - Both stacks run the same 5 s sim under cmd_vx = 0.15 m/s.
-// - Print the tuple `(Δx, Δy, Δyaw)` so a regression diff shows the
-//   numbers visibly.
-// - Assertions: only the absolute fall guard (min_z > 0.18) is hard;
-//   the directional bounds are loose enough to pass on the current
-//   build but tight enough to catch a sign-flip regression.
-//   Once Phase P4-P6 tunes the MPC+WBC stack, the bounds can be
-//   tightened.
+//   1. **forward** (cmd.vx > 0)   — assert Δx > 0, cross-axis Δy / Δyaw small
+//   2. **lateral** (cmd.vy > 0)   — assert Δy > 0, cross-axis Δx / Δyaw small
+//   3. **yaw**     (cmd.wz > 0)   — assert |Δyaw| > 0, cross-axis Δx / Δy small
+//
+// Each axis test exposes a different failure mode: a forward walk
+// that secretly turns / drifts, a lateral walk that creeps forward,
+// or a turn-in-place that translates the body. Open-loop CHAMP can
+// only print the values for documentation — the closed-loop MPC+WBC
+// is what actually has to gate them.
+//
+// Both stacks run the same 5 s sim under `MuJoCo ground truth`
+// pose feedback so the comparison is between control logic, not
+// state estimation noise.
 
-const STRAIGHT_SIM_TIME_S: f64 = 5.0;
-const STRAIGHT_BURN_IN_S: f64 = 0.5;
+const WALK_SIM_TIME_S: f64 = 5.0;
+const WALK_BURN_IN_S: f64 = 0.5;
 
+/// Track-quality metrics for one walk run.
+///
+/// Δx / Δy are world-frame displacements, but for **lateral** and
+/// **yaw** commands we usually care about the body-frame components
+/// (the body has rotated under the cmd, so world Δx / Δy mix). The
+/// helper accessors `body_dx` / `body_dy` rotate the world-frame
+/// displacement into the **initial** body frame so cross-axis
+/// assertions stay consistent regardless of how the body turned
+/// during the run.
 #[derive(Debug, Default, Clone, Copy)]
-struct StraightMetrics {
+struct WalkBenchmark {
     body_x_start: f64,
     body_y_start: f64,
     yaw_start: f64,
@@ -426,12 +433,30 @@ struct StraightMetrics {
     min_body_z: f64,
 }
 
-impl StraightMetrics {
-    fn dx(&self) -> f64 {
+impl WalkBenchmark {
+    fn dx_world(&self) -> f64 {
         self.body_x_end - self.body_x_start
     }
-    fn dy(&self) -> f64 {
+    fn dy_world(&self) -> f64 {
         self.body_y_end - self.body_y_start
+    }
+    /// Forward (body-x) displacement projected onto the **initial**
+    /// body heading. Use this for the active-axis check on a forward
+    /// command and the cross-axis check on a lateral / yaw command.
+    fn body_dx(&self) -> f64 {
+        let dx = self.dx_world();
+        let dy = self.dy_world();
+        let c = self.yaw_start.cos();
+        let s = self.yaw_start.sin();
+        c * dx + s * dy
+    }
+    /// Lateral (body-y, +y = left) displacement.
+    fn body_dy(&self) -> f64 {
+        let dx = self.dx_world();
+        let dy = self.dy_world();
+        let c = self.yaw_start.cos();
+        let s = self.yaw_start.sin();
+        -s * dx + c * dy
     }
     fn dyaw(&self) -> f64 {
         // Wrap to (-π, π] so a near-360° turn doesn't print as ~0.
@@ -441,14 +466,15 @@ impl StraightMetrics {
     }
 }
 
-/// Run a 5 s straight-walk sim under the given controller / WBC mode
+/// Run a 5 s walk sim under the given controller / WBC mode + cmd
 /// and return the integrated track metrics. Body state observation
 /// uses MuJoCo ground truth (= matches `PoseSource::GroundTruth` in
 /// the GUI).
-fn run_straight_walk(
+fn run_walk(
     use_wbc: bool,
     gait_mode: GaitMode,
-) -> Option<StraightMetrics> {
+    cmd: VelocityCmd,
+) -> Option<WalkBenchmark> {
     let common::StandFixture {
         mut robot,
         kin,
@@ -472,9 +498,9 @@ fn run_straight_walk(
         pipeline.inertia_diag_body = srbd_cfg.inertia_diag_body;
     }
 
-    let n_steps = (STRAIGHT_SIM_TIME_S / DT) as usize;
-    let burn_in_steps = (STRAIGHT_BURN_IN_S / DT) as usize;
-    let mut metrics = StraightMetrics::default();
+    let n_steps = (WALK_SIM_TIME_S / DT) as usize;
+    let burn_in_steps = (WALK_BURN_IN_S / DT) as usize;
+    let mut metrics = WalkBenchmark::default();
     metrics.min_body_z = f64::INFINITY;
     if let Some(pos) = sim.body_world_position(&robot.root_link) {
         metrics.body_x_start = pos[0];
@@ -485,11 +511,7 @@ fn run_straight_walk(
     gc.enable();
     for k in 0..n_steps {
         if k == burn_in_steps {
-            gc.set_velocity_cmd(VelocityCmd {
-                vx: CMD_VX,
-                vy: 0.0,
-                wz: 0.0,
-            });
+            gc.set_velocity_cmd(cmd);
         }
         let v_obs = sim
             .body_world_linear_velocity(&robot.root_link)
@@ -599,64 +621,144 @@ fn run_straight_walk(
     Some(metrics)
 }
 
-/// Baseline benchmark: CHAMP open-loop trot under a 0.15 m/s forward
-/// command. CHAMP has **no closed-loop yaw / lateral correction** by
-/// design (it's a pure footstep + IK pipeline), so under MuJoCo's
-/// friction asymmetries the body accumulates yaw drift over a 5 s
-/// run. The test only asserts that the body doesn't fall — the
-/// printed Δx / Δy / Δyaw is documented as the "what open-loop
-/// drift looks like" baseline against which closed-loop stacks
-/// (MPC+WBC) should improve.
+// ─── Per-axis cmd values used across the benchmark suite ──────────
+const FORWARD_CMD_VX: f64 = 0.15;  // m/s forward command magnitude
+const LATERAL_CMD_VY: f64 = 0.10;  // m/s lateral command (slower than
+                                   //   forward — trot can't match
+                                   //   forward speed sideways)
+const YAW_CMD_WZ: f64 = 0.5;       // rad/s yaw rate command (~30°/s)
+
+fn fwd_cmd() -> VelocityCmd {
+    VelocityCmd { vx: FORWARD_CMD_VX, vy: 0.0, wz: 0.0 }
+}
+fn lat_cmd() -> VelocityCmd {
+    VelocityCmd { vx: 0.0, vy: LATERAL_CMD_VY, wz: 0.0 }
+}
+fn yaw_cmd() -> VelocityCmd {
+    VelocityCmd { vx: 0.0, vy: 0.0, wz: YAW_CMD_WZ }
+}
+
+// ─── Forward-walk benchmarks ──────────────────────────────────────
+
+/// CHAMP open-loop forward trot benchmark (5 s @ 0.15 m/s). CHAMP has
+/// no closed-loop yaw/lateral correction so cross-axis drift is
+/// expected; we only assert against falls and record the numbers.
 #[test]
 fn integration_walk_straight_champ() {
-    let Some(m) = run_straight_walk(false, GaitMode::Champ) else {
+    let Some(m) = run_walk(false, GaitMode::Champ, fwd_cmd()) else {
         return;
     };
     eprintln!(
-        "[straight:champ] Δx={:.3} m  Δy={:.3} m  Δyaw={:.3} rad  min_z={:.3} m",
-        m.dx(),
-        m.dy(),
-        m.dyaw(),
-        m.min_body_z,
+        "[forward:champ] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
     );
-    // Only fall guard is hard; track-quality numbers are recorded for
-    // comparison rather than asserted (CHAMP's open-loop behaviour is
-    // expected to drift over 5 s).
     assert!(m.min_body_z > FALL_THRESHOLD_Z, "CHAMP fell");
 }
 
-/// MPC+WBC with closed-loop yaw / lateral correction (q_diag boosted
-/// in `SrbdMpcConfig::default` for θ_z = 50, p_y = 20, ω_z = 10).
-/// Track-quality gates: under a 5 s, 0.15 m/s forward command, the
-/// body should advance ≥ +10 cm forward, drift < 20 cm laterally,
-/// and yaw < 1 rad. These are tighter than CHAMP can ever achieve
-/// (open-loop) and capture the value of having an MPC in the loop.
+/// MPC+WBC forward trot. Active axis: body-frame Δx > +10 cm. Cross
+/// axes: |body_dy| < 20 cm, |Δyaw| < 1 rad. Tightenable as P5/P6
+/// resolves the residual yaw bias.
 #[test]
 fn integration_walk_straight_mpc_wbc() {
-    let Some(m) = run_straight_walk(true, GaitMode::Mpc) else {
+    let Some(m) = run_walk(true, GaitMode::Mpc, fwd_cmd()) else {
         return;
     };
     eprintln!(
-        "[straight:mpc+wbc] Δx={:.3} m  Δy={:.3} m  Δyaw={:.3} rad  min_z={:.3} m",
-        m.dx(),
-        m.dy(),
-        m.dyaw(),
-        m.min_body_z,
+        "[forward:mpc+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
     );
-    assert!(m.min_body_z > FALL_THRESHOLD_Z, "MPC+WBC fell");
-    assert!(
-        m.dx() > 0.10,
-        "MPC+WBC forward motion too small: {:.3} m",
-        m.dx(),
+    assert!(m.min_body_z > FALL_THRESHOLD_Z, "MPC+WBC fell (forward)");
+    assert!(m.body_dx() > 0.10,
+        "forward: body_dx = {:+.3} m, expected > +0.10 m", m.body_dx());
+    assert!(m.body_dy().abs() < 0.20,
+        "forward: body_dy = {:+.3} m, expected |·| < 0.20 m", m.body_dy());
+    assert!(m.dyaw().abs() < 1.0,
+        "forward: Δyaw = {:+.3} rad, expected |·| < 1.0 rad", m.dyaw());
+}
+
+// ─── Lateral-walk benchmarks ──────────────────────────────────────
+
+/// CHAMP lateral walk benchmark — open-loop documentation only.
+#[test]
+fn integration_walk_lateral_champ() {
+    let Some(m) = run_walk(false, GaitMode::Champ, lat_cmd()) else {
+        return;
+    };
+    eprintln!(
+        "[lateral:champ] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
     );
-    assert!(
-        m.dy().abs() < 0.20,
-        "MPC+WBC lateral drift {:.3} m (gate ±0.20 m)",
-        m.dy(),
+    assert!(m.min_body_z > FALL_THRESHOLD_Z, "CHAMP fell (lateral)");
+}
+
+/// MPC+WBC lateral walk. Currently `#[ignore]` because the active
+/// axis fails — under a `+0.10 m/s` (left) command the body actually
+/// drifts ~ -0.90 m (right), with strong forward leakage (+0.48 m)
+/// and yaw drift (-1.83 rad). The numbers are recorded as a baseline
+/// for the lateral-cmd improvement task (planned P-step):
+///   - investigate how `cmd.vy` flows into the SRBD MPC reference
+///     trajectory (body_y predicted target),
+///   - check the footstep planner's lateral-stride generation,
+///   - verify the WBC contact_force task exposes the y-thrust
+///     component the MPC predicts.
+#[test]
+#[ignore = "lateral cmd routes through MPC ref path that's not yet correct (sign-flip + heavy cross-coupling)"]
+fn integration_walk_lateral_mpc_wbc() {
+    let Some(m) = run_walk(true, GaitMode::Mpc, lat_cmd()) else {
+        return;
+    };
+    eprintln!(
+        "[lateral:mpc+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
     );
-    assert!(
-        m.dyaw().abs() < 1.0,
-        "MPC+WBC yaw drift {:.3} rad (gate ±1.0 rad)",
-        m.dyaw(),
+    assert!(m.min_body_z > FALL_THRESHOLD_Z, "MPC+WBC fell (lateral)");
+    assert!(m.body_dy() > 0.05,
+        "lateral: body_dy = {:+.3} m, expected > +0.05 m", m.body_dy());
+    assert!(m.body_dx().abs() < 0.20,
+        "lateral: body_dx = {:+.3} m, expected |·| < 0.20 m", m.body_dx());
+    assert!(m.dyaw().abs() < 1.0,
+        "lateral: Δyaw = {:+.3} rad, expected |·| < 1.0 rad", m.dyaw());
+}
+
+// ─── Yaw-rotate benchmarks ────────────────────────────────────────
+
+/// CHAMP yaw rotate benchmark — open-loop documentation only.
+#[test]
+fn integration_walk_yaw_champ() {
+    let Some(m) = run_walk(false, GaitMode::Champ, yaw_cmd()) else {
+        return;
+    };
+    eprintln!(
+        "[yaw:champ] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
     );
+    assert!(m.min_body_z > FALL_THRESHOLD_Z, "CHAMP fell (yaw)");
+}
+
+/// MPC+WBC yaw rotate. Currently `#[ignore]` because the cross-axis
+/// translation gate fails — under a `+0.5 rad/s` command the body
+/// rotates ~ +1.13 rad over 5 s (correct sign, less than the
+/// commanded 2.5 rad due to the same yaw-tracking deficit that the
+/// forward test sees), but it also translates ~ 0.75 m to the right
+/// instead of turning in place. The footstep planner's yaw
+/// component appears to be applying its rotation by walking forward-
+/// + sideways rather than pivoting; needs review of the per-leg
+/// stride direction calculation under non-zero `cmd.wz`.
+#[test]
+#[ignore = "yaw cmd produces large cross-axis translation (planner pivots by translating instead of rotating in place)"]
+fn integration_walk_yaw_mpc_wbc() {
+    let Some(m) = run_walk(true, GaitMode::Mpc, yaw_cmd()) else {
+        return;
+    };
+    eprintln!(
+        "[yaw:mpc+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+    );
+    assert!(m.min_body_z > FALL_THRESHOLD_Z, "MPC+WBC fell (yaw)");
+    assert!(m.dyaw().abs() > 1.0,
+        "yaw: Δyaw = {:+.3} rad, expected |·| > 1.0 rad", m.dyaw());
+    assert!(m.body_dx().abs() < 0.20,
+        "yaw: body_dx = {:+.3} m, expected |·| < 0.20 m", m.body_dx());
+    assert!(m.body_dy().abs() < 0.20,
+        "yaw: body_dy = {:+.3} m, expected |·| < 0.20 m", m.body_dy());
 }
