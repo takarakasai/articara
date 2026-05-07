@@ -1661,6 +1661,14 @@ impl ArticaraApp {
                                             out.legs[3].phase.is_stance,
                                         ];
                                         let pipeline = self.wbc_pipeline.as_mut().unwrap();
+                                        // P5b: per-cmd-direction weight scheduling.
+                                        // For lateral / yaw commands the joint-space
+                                        // swing_leg PD reaction-torques the body in
+                                        // the wrong direction; `for_cmd` linearly fades
+                                        // the swing_leg weight from forward-default 1.0
+                                        // down to lateral-optimum 0.1.
+                                        pipeline.weights =
+                                            quadruped_gait::wbc::WbcWeights::for_cmd(&cmd);
                                         let taus = pipeline.solve(
                                             model,
                                             mj_sim,
