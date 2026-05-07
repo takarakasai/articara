@@ -678,6 +678,23 @@ fn integration_walk_straight_mpc_wbc() {
 
 // ─── Lateral-walk benchmarks ──────────────────────────────────────
 
+/// MPC + Position-PD (no WBC) lateral walk — diagnostic that
+/// **isolates the MPC path** from the WBC integration. If lateral
+/// works here and breaks in `*_mpc_wbc`, the WBC layer is at fault;
+/// if it breaks here too, the problem is in the gait controller's
+/// MPC mode itself.
+#[test]
+fn integration_walk_lateral_mpc_no_wbc() {
+    let Some(m) = run_walk(false, GaitMode::Mpc, lat_cmd()) else {
+        return;
+    };
+    eprintln!(
+        "[lateral:mpc-only] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+    );
+    assert!(m.min_body_z > FALL_THRESHOLD_Z, "MPC fell (lateral diagnostic)");
+}
+
 /// CHAMP lateral walk benchmark — open-loop documentation only.
 #[test]
 fn integration_walk_lateral_champ() {
