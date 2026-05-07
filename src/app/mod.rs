@@ -2313,6 +2313,20 @@ impl eframe::App for ArticaraApp {
 // ── Background decomposition task ───────────────────────────────────────────
 
 impl ArticaraApp {
+    /// Queue a Rhai script to auto-run on the next frame, opening
+    /// the Script Console panel so the run is visible. Used by the
+    /// `--script <path>` CLI flag to fire a startup script with no
+    /// manual GUI clicks (= reproducible benchmark / demo runs).
+    ///
+    /// The script file is read inside the console's normal "📂 run
+    /// from file" branch, so the same echo / output / error UX
+    /// applies as if the user had clicked the button.
+    #[cfg(feature = "scripting")]
+    pub fn queue_initial_script(&mut self, path: std::path::PathBuf) {
+        self.show_script_console = true;
+        self.pending_script_run = Some(path);
+    }
+
     /// Apply pending [`crate::scripting_model::ScriptOverrides`] from
     /// the most recent script run. Called once after the engine eval
     /// finishes — each `Some(_)` field maps to the corresponding

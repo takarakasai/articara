@@ -56,11 +56,33 @@ fn main() -> eframe::Result {
 
     let args: Vec<String> = std::env::args().collect();
 
-    // --script <file> [model]: run a Rhai script headlessly and exit
+    // ── CLI parsing ────────────────────────────────────────────────────────
+    //
+    //   --script-headless <file> [model]
+    //       Run a Rhai script with no GUI and exit. Original headless mode
+    //       (renamed from `--script`); useful for CI / batch runs.
+    //
+    //   --script <file>
+    //       Open the GUI, queue the named Rhai script for auto-run on the
+    //       first frame, and open the Script Console so the run is visible.
+    //       Combined with `--model <path>` (or a positional model arg) this
+    //       gives a fully no-click reproducible session.
+    //
+    //   --model <path>
+    //       Explicit model file. Equivalent to passing the path as the
+    //       first positional arg.
+    //
+    //   <model>          (positional)
+    //       Same as `--model <path>` for the legacy 1-arg invocation.
+
+    // Headless mode is checked first — if it matches we never enter the
+    // GUI codepath.
     #[cfg(feature = "scripting")]
     {
-        if let Some(pos) = args.iter().position(|a| a == "--script") {
-            let script_path = args.get(pos + 1).expect("--script requires a file path");
+        if let Some(pos) = args.iter().position(|a| a == "--script-headless") {
+            let script_path = args
+                .get(pos + 1)
+                .expect("--script-headless requires a file path");
             let model_path = args.get(pos + 2);
 
             let source = std::fs::read_to_string(script_path)
@@ -71,7 +93,6 @@ fn main() -> eframe::Result {
 
             let mut engine = scripting_model::ModelScriptEngine::new();
 
-            // Pre-load model if specified
             if let Some(mp) = model_path {
                 let robot = robot::RobotModel::from_file(std::path::Path::new(mp))
                     .unwrap_or_else(|e| {
@@ -96,9 +117,43 @@ fn main() -> eframe::Result {
         }
     }
 
-    let initial_path = args.get(1)
-        .filter(|a| !a.starts_with('-'))
-        .map(PathBuf::from);
+    // GUI-side flag scan. `--script <path>` queues a startup script;
+    // `--model <path>` (or the first positional arg) loads a model. These
+    // can be combined for a no-click reproducible session.
+    let mut initial_path: Option<PathBuf> = None;
+    #[cfg(feature = "scripting")]
+    let mut initial_script: Option<PathBuf> = None;
+    {
+        let mut i = 1usize;
+        while i < args.len() {
+            match args[i].as_str() {
+                #[cfg(feature = "scripting")]
+                "--script" => {
+                    initial_script = args.get(i + 1).map(PathBuf::from);
+                    if initial_script.is_none() {
+                        eprintln!("--script requires a file path");
+                        std::process::exit(1);
+                    }
+                    i += 2;
+                }
+                "--model" => {
+                    initial_path = args.get(i + 1).map(PathBuf::from);
+                    if initial_path.is_none() {
+                        eprintln!("--model requires a file path");
+                        std::process::exit(1);
+                    }
+                    i += 2;
+                }
+                a if !a.starts_with('-') => {
+                    if initial_path.is_none() {
+                        initial_path = Some(PathBuf::from(a));
+                    }
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+    }
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -118,6 +173,10 @@ fn main() -> eframe::Result {
             let mut app = app::ArticaraApp::new(cc);
             if let Some(path) = initial_path {
                 app.load_model(path);
+            }
+            #[cfg(feature = "scripting")]
+            if let Some(script) = initial_script {
+                app.queue_initial_script(script);
             }
             Ok(Box::new(app))
         }),
