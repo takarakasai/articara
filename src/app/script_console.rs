@@ -165,6 +165,11 @@ impl ArticaraApp {
                                 self.script_output.push(ScriptLine::Input(line.to_string()));
                             }
                             #[cfg(feature = "scripting")]
+                            #[allow(unused_assignments)]
+                            let mut script_overrides_pending: Option<
+                                crate::scripting_model::ScriptOverrides,
+                            > = None;
+                            #[cfg(feature = "scripting")]
                             if let Some(eng) = &mut self.script_engine {
                                 #[cfg(feature = "mujoco")]
                                 eng.set_mujoco_sim(self.mujoco_sim.take());
@@ -175,6 +180,7 @@ impl ArticaraApp {
                                     self.mujoco_sim = eng.take_mujoco_sim();
                                 }
                                 self.gait_controller = eng.take_gait_controller();
+                                script_overrides_pending = Some(eng.drain_overrides());
                                 match result {
                                     Ok(lines) => {
                                         for line in lines {
@@ -189,6 +195,10 @@ impl ArticaraApp {
                                         self.script_output.push(ScriptLine::Error(e));
                                     }
                                 }
+                            }
+                            #[cfg(feature = "scripting")]
+                            if let Some(ov) = script_overrides_pending.take() {
+                                self.apply_script_overrides(ov);
                             }
                         }
                         Err(e) => {
@@ -420,6 +430,7 @@ impl ArticaraApp {
                                 self.mujoco_sim = eng.take_mujoco_sim();
                             }
                             self.gait_controller = eng.take_gait_controller();
+                            let pending_ov = eng.drain_overrides();
 
                             match eval_result {
                                 Ok(lines) => {
@@ -436,6 +447,10 @@ impl ArticaraApp {
                                     self.script_output.push(ScriptLine::Error(e));
                                 }
                             }
+                            // End the `eng` borrow before mutating other
+                            // ArticaraApp fields via apply_script_overrides.
+                            drop(eng);
+                            self.apply_script_overrides(pending_ov);
                         }
 
                         // Bound log size

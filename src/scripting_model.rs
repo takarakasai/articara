@@ -36,6 +36,38 @@ use crate::rbd::model::{IkSolver, LoopClosure};
 use crate::mujoco_sim::MujocoSim;
 
 // ─────────────────────────────────────────────────────────────────────────
+//  ScriptOverrides — pending host-state changes from script setters
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Settings the host (`ArticaraApp`) owns but that scripts can override
+/// at run-time via `set_gait_mode` / `set_pose_source` /
+/// `set_wbc_enabled` / `set_ground_plane_*` setters.
+///
+/// Each field is `Option<>`: `None` = "no change requested",
+/// `Some(_)` = "apply this on the next host frame and reset to None".
+/// The host drains this each `update()` and clears the entries it
+/// applied.
+#[derive(Clone, Debug, Default)]
+pub struct ScriptOverrides {
+    /// New gait controller mode (`"mpc"` or `"champ"`). Triggers
+    /// `gc.set_mode(...)` via the host's gait_controller.
+    pub gait_mode: Option<quadruped_gait::GaitMode>,
+    /// New body-pose source for the closed-loop observer feed.
+    pub pose_source: Option<crate::gait::PoseSource>,
+    /// New Hierarchical-WBC enable flag.
+    pub wbc_enabled: Option<bool>,
+    /// Ground-plane "show" flag (toggles MJCF ground inclusion on the
+    /// **next** sim build).
+    pub ground_plane_enabled: Option<bool>,
+    /// Ground-plane height (m, world frame).
+    pub ground_plane_z: Option<f32>,
+    /// Ground-plane pitch about the world-y axis (rad).
+    pub ground_plane_pitch: Option<f32>,
+    /// Ground-plane roll about the world-x axis (rad).
+    pub ground_plane_roll: Option<f32>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 //  ModelScriptEngine
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -55,6 +87,9 @@ pub struct ModelScriptEngine {
     /// to `mujoco_sim`. Allows scripts to call `gait_setup`, `gait_start`,
     /// `gait_set_velocity` etc. while the engine is evaluating.
     gait_controller: Rc<RefCell<Option<crate::gait::GaitController>>>,
+    /// Pending host-state changes requested by scripts. The host
+    /// drains this each frame; see [`ScriptOverrides`].
+    overrides: Rc<RefCell<ScriptOverrides>>,
     /// Captured print output lines.
     output_lines: Rc<RefCell<Vec<String>>>,
     last_error: Option<String>,
@@ -69,12 +104,15 @@ impl ModelScriptEngine {
         let mujoco_sim: Rc<RefCell<Option<MujocoSim>>> = Rc::new(RefCell::new(None));
         let gait_controller: Rc<RefCell<Option<crate::gait::GaitController>>> =
             Rc::new(RefCell::new(None));
+        let overrides: Rc<RefCell<ScriptOverrides>> =
+            Rc::new(RefCell::new(ScriptOverrides::default()));
         let engine = Self::build_engine(
             Rc::clone(&model),
             Rc::clone(&output_lines),
             #[cfg(feature = "mujoco")]
             Rc::clone(&mujoco_sim),
             Rc::clone(&gait_controller),
+            Rc::clone(&overrides),
         );
         Self {
             engine,
@@ -84,6 +122,7 @@ impl ModelScriptEngine {
             #[cfg(feature = "mujoco")]
             mujoco_sim,
             gait_controller,
+            overrides,
             output_lines,
             last_error: None,
         }
@@ -189,6 +228,15 @@ impl ModelScriptEngine {
         self.gait_controller.borrow_mut().take()
     }
 
+    /// Drain the pending [`ScriptOverrides`] requested by the most
+    /// recent script run. The host (`ArticaraApp`) calls this each
+    /// frame and applies the non-`None` fields, then loses access to
+    /// them (each `take()` resets to `None`). Returns the snapshot.
+    pub fn drain_overrides(&mut self) -> ScriptOverrides {
+        let mut o = self.overrides.borrow_mut();
+        std::mem::take(&mut *o)
+    }
+
     /// Clear scope (but keep model).
     #[allow(dead_code)]
     pub fn reset_scope(&mut self) {
@@ -202,6 +250,7 @@ impl ModelScriptEngine {
         output: Rc<RefCell<Vec<String>>>,
         #[cfg(feature = "mujoco")] mujoco_sim: Rc<RefCell<Option<MujocoSim>>>,
         gait_controller: Rc<RefCell<Option<crate::gait::GaitController>>>,
+        overrides: Rc<RefCell<ScriptOverrides>>,
     ) -> Engine {
         let mut engine = Engine::new();
 
@@ -1723,6 +1772,88 @@ impl ModelScriptEngine {
                 true
             });
         }
+
+        // ────────────────────────────────────────────────────────────────
+        //  Host-state setters (drain via `drain_overrides`)
+        //
+        // These don't take effect synchronously inside the script
+        // run — they queue a request that the host (`ArticaraApp`)
+        // applies on its next `update()`. That keeps the borrow
+        // graph simple (no need to reach into the App struct from
+        // inside Rhai) while still letting scripts drive the GUI's
+        // gait / WBC / pose-source / ground-plane settings end-to-end.
+        // ────────────────────────────────────────────────────────────────
+
+        // set_gait_mode("mpc" | "champ"): switch the active gait
+        // controller's mode at the host's next frame.
+        let o = Rc::clone(&overrides);
+        engine.register_fn("set_gait_mode", move |s: &str| -> bool {
+            let mode = match s.trim().to_ascii_lowercase().as_str() {
+                "mpc" | "mpc(capture-point)" | "capture-point" | "capture_point"
+                    => quadruped_gait::GaitMode::Mpc,
+                "champ" => quadruped_gait::GaitMode::Champ,
+                _ => return false,
+            };
+            o.borrow_mut().gait_mode = Some(mode);
+            true
+        });
+
+        // set_pose_source(name): switch the body-pose feedback source.
+        // Accepts "groundtruth" / "imu_madgwick" / "leg_odometry"
+        // (case-insensitive, trims punctuation/spaces).
+        let o = Rc::clone(&overrides);
+        engine.register_fn("set_pose_source", move |s: &str| -> bool {
+            let cleaned = s
+                .trim()
+                .to_ascii_lowercase()
+                .replace(' ', "_")
+                .replace('-', "_");
+            let src = match cleaned.as_str() {
+                "groundtruth" | "ground_truth" | "mujoco_ground_truth" | "gt"
+                    => crate::gait::PoseSource::GroundTruth,
+                "imu_madgwick" | "madgwick" | "imu" | "imu_fusion"
+                    => crate::gait::PoseSource::ImuFusion,
+                "leg_odometry" | "leg_odom" | "legodometry"
+                    => crate::gait::PoseSource::LegOdometry,
+                _ => return false,
+            };
+            o.borrow_mut().pose_source = Some(src);
+            true
+        });
+
+        // set_wbc_enabled(on): toggle the Hierarchical-WBC pipeline.
+        let o = Rc::clone(&overrides);
+        engine.register_fn("set_wbc_enabled", move |on: bool| -> bool {
+            o.borrow_mut().wbc_enabled = Some(on);
+            true
+        });
+
+        // set_ground_plane_enabled(on): include / exclude the ground
+        // plane in the next sim build's MJCF. Combine with
+        // `set_ground_plane_z` / `_pitch` / `_roll` to control geometry.
+        let o = Rc::clone(&overrides);
+        engine.register_fn("set_ground_plane_enabled", move |on: bool| -> bool {
+            o.borrow_mut().ground_plane_enabled = Some(on);
+            true
+        });
+
+        let o = Rc::clone(&overrides);
+        engine.register_fn("set_ground_plane_z", move |z: f64| -> bool {
+            o.borrow_mut().ground_plane_z = Some(z as f32);
+            true
+        });
+
+        let o = Rc::clone(&overrides);
+        engine.register_fn("set_ground_plane_pitch", move |p: f64| -> bool {
+            o.borrow_mut().ground_plane_pitch = Some(p as f32);
+            true
+        });
+
+        let o = Rc::clone(&overrides);
+        engine.register_fn("set_ground_plane_roll", move |r: f64| -> bool {
+            o.borrow_mut().ground_plane_roll = Some(r as f32);
+            true
+        });
 
         engine
     }

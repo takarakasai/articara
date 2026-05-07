@@ -2313,6 +2313,45 @@ impl eframe::App for ArticaraApp {
 // ── Background decomposition task ───────────────────────────────────────────
 
 impl ArticaraApp {
+    /// Apply pending [`crate::scripting_model::ScriptOverrides`] from
+    /// the most recent script run. Called once after the engine eval
+    /// finishes — each `Some(_)` field maps to the corresponding
+    /// [`ArticaraApp`] field, and the override struct's contents are
+    /// consumed (`drain_overrides` already moved them out).
+    #[cfg(feature = "scripting")]
+    fn apply_script_overrides(
+        &mut self,
+        ov: crate::scripting_model::ScriptOverrides,
+    ) {
+        if let Some(mode) = ov.gait_mode {
+            self.gait_mode = mode;
+            // Re-build the gait controller in the new mode if one is
+            // already active (so the change isn't quietly deferred to
+            // the next mj_start).
+            if let Some(gc) = self.gait_controller.as_mut() {
+                gc.set_mode(mode);
+            }
+        }
+        if let Some(src) = ov.pose_source {
+            self.pose_source = src;
+        }
+        if let Some(on) = ov.wbc_enabled {
+            self.wbc_enabled = on;
+        }
+        if let Some(on) = ov.ground_plane_enabled {
+            self.show_ground_plane = on;
+        }
+        if let Some(z) = ov.ground_plane_z {
+            self.ground_z = z;
+        }
+        if let Some(p) = ov.ground_plane_pitch {
+            self.ground_plane_pitch = p;
+        }
+        if let Some(r) = ov.ground_plane_roll {
+            self.ground_plane_roll = r;
+        }
+    }
+
     /// Poll the background decompose task; apply results when done.
     fn poll_decompose_task(&mut self) {
         let task = match self.decompose_task.as_mut() {

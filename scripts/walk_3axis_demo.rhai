@@ -3,22 +3,18 @@
 // (forward / lateral / yaw) inside the GUI so the user can SEE the trot.
 //
 // Pipeline:
-//   1. Configure joints for Position-PD (matches the regression test stack).
-//   2. (Re)build a fresh MuJoCo sim.
-//   3. Auto-detect quadruped kinematics from the loaded URDF.
-//   4. Schedule 3 successive 5 s walks: forward → lateral → yaw, with
+//   1. Apply the GUI settings the regression test relies on:
+//        Generator         = MPC (capture-point)
+//        Pose source       = MuJoCo ground truth
+//        Hierarchical WBC  = ON
+//        Ground plane      = ON, z = 0, flat
+//      via the script-side setters (no manual UI clicks needed).
+//   2. Configure joints for Position-PD (matches the regression test stack).
+//   3. (Re)build a fresh MuJoCo sim.
+//   4. Auto-detect quadruped kinematics from the loaded URDF.
+//   5. Schedule 3 successive 5 s walks: forward → lateral → yaw, with
 //      brief 1 s zero-cmd settle phases between, then a final stop.
-//   5. Save CSV trace of the body trajectory.
-//
-// Prerequisites — set these in the Quadruped gait panel BEFORE running:
-//   - Generator   = MPC (capture-point)
-//   - Pose source = MuJoCo ground truth
-//   - Hierarchical WBC = ON
-//
-// Without WBC, lateral / yaw motion will look very different from the
-// integration_walk benchmark numbers. With WBC + ground truth + MPC,
-// the script reproduces P5b's per-cmd swing_leg scheduling that lets
-// all three axes follow the cmd cleanly.
+//   6. Save CSV trace of the body trajectory.
 //
 // Run from articara: Console (📂) → select this file. Watch the
 // viewport. CSV at log/walk_3axis_demo.csv when done.
@@ -61,10 +57,20 @@ if !has_model() {
 print(`Model: ${model_name()}, ${num_joints()} joints`);
 print("");
 print("=== walk_3axis_demo: forward → lateral → yaw ===");
-print("Prereqs (set via GUI before pressing Run):");
-print("  Generator   = MPC (capture-point)");
-print("  Pose source = MuJoCo ground truth");
-print("  Hierarchical WBC = ON");
+
+// ── Apply the GUI settings the regression test relies on ──────────────────
+// These setters queue ScriptOverrides; ArticaraApp drains them after this
+// script finishes. The mj_start below sees the new ground-plane state, and
+// the WBC active branch in the control loop sees the new wbc_enabled +
+// pose_source flags from the next frame onward.
+set_gait_mode("mpc");
+set_pose_source("groundtruth");
+set_wbc_enabled(true);
+set_ground_plane_enabled(true);
+set_ground_plane_z(0.0);
+set_ground_plane_pitch(0.0);
+set_ground_plane_roll(0.0);
+print("Settings: Mode=Mpc, PoseSource=GroundTruth, WBC=ON, GroundPlane=ON @ z=0");
 print("");
 
 // ── Configure joints for Position-PD ──────────────────────────────────────
