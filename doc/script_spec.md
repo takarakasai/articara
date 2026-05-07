@@ -106,6 +106,62 @@ Articara のスクリプトコンソールは **Rhai** スクリプト言語を�
 | `↑` / `↓` | コマンド履歴 |
 | `Tab` | 補完 |
 
+### 1.11 MuJoCo シミュレーション (mujoco feature)
+
+| 関数 | 戻り値 | 概要 |
+|---|---|---|
+| `mj_start()` / `mj_stop()` | `bool` | sim build / teardown |
+| `mj_active()` | `bool` | sim 起動中か |
+| `mj_step(n)` / `mj_step_seconds(s)` | `i64` | 同期ステップ |
+| `mj_set_trace_max(n)` | `bool` | sample buffer 上限 |
+| `mj_gravity_compensation(on)` | `i64` | gravity comp トグル |
+| `set_actuator_mode_all(s)` | — | "position" / "velocity" / "torque" / "computedtorque" |
+| `set_kp_all(v)` / `set_kv_all(v)` | — | Position-PD ゲイン |
+| `set_armature_all(v)` / `set_joint_damping_all(v)` | — | actuator dynamics |
+
+#### 非同期タイムライン (UI viewport で再生)
+
+| 関数 | 概要 |
+|---|---|
+| `mj_async_step_seconds(s)` | 指定秒数だけ非同期に進める |
+| `mj_async_step_frames(n)` | 指定フレーム数だけ非同期に進める |
+| `mj_async_set_position_target(joint, q)` | timeline 上で position target を変更 |
+| `mj_async_set_velocity(vx, vy, wz)` | timeline 上で gait controller の cmd を変更 |
+| `mj_async_print(msg)` / `mj_async_save_csv(path)` | timeline 上の echo / CSV save |
+| `mj_async_pending()` | キューに残っている op 数 |
+| `mj_async_clear()` | 未消化 op を破棄 |
+
+### 1.12 Quadruped gait controller
+
+| 関数 | 戻り値 | 概要 |
+|---|---|---|
+| `gait_setup()` / `gait_setup_with_feet(fl, fr, rl, rr)` | `bool` | URDF から自動検出して controller 構築 |
+| `gait_start()` / `gait_stop()` | `bool` | 制御開始 / 停止 |
+| `gait_set_velocity(vx, vy, wz)` | `bool` | 同期 cmd 設定 (body frame) |
+| `gait_set_cycle_period(s)` / `gait_set_swing_height(m)` / `gait_set_duty(d)` | `bool` | 歩容パラメータ |
+| `gait_set_max_step(m)` / `gait_set_knee_pattern(s)` | `bool` | 歩幅 / 膝パターン |
+| `gait_active()` / `gait_running()` | `bool` | 状態クエリ |
+
+### 1.13 GUI 設定 (ScriptOverrides)
+
+スクリプトから ArticaraApp の主要 GUI 設定を変更できる setter。
+スクリプト終了後の最初のフレームで host が apply する。
+
+| 関数 | 引数 | 効果 |
+|---|---|---|
+| `set_gait_mode(s)` | `"mpc"` / `"champ"` (case-insensitive) | Generator (gait controller mode) を切替 |
+| `set_pose_source(s)` | `"groundtruth"` / `"imu_madgwick"` / `"leg_odometry"` | Pose source を切替 |
+| `set_wbc_enabled(on)` | `bool` | Hierarchical WBC ON/OFF |
+| `set_ground_plane_enabled(on)` | `bool` | Ground plane の include/exclude (次回 mj_start で有効) |
+| `set_ground_plane_z(z)` | f64 (m) | Ground plane height |
+| `set_ground_plane_pitch(p)` | f64 (rad) | Ground plane pitch |
+| `set_ground_plane_roll(r)` | f64 (rad) | Ground plane roll |
+
+これらは `ScriptOverrides` 構造体に Option<> field として queue され、
+スクリプト終了後に `ArticaraApp::apply_script_overrides` で反映される。
+将来の他の設定 (camera angle, viewport overlays 等) も同じパターンで追加
+可能。
+
 ---
 
 ## 2. 拡張ロードマップ（未実装）
@@ -320,16 +376,33 @@ print(`Jacobian rows: ${J.len()}, cols: ${J[0].len()}`);
 
 ## 4. CLI 実行
 
-```bash
-# ヘッドレスバッチ実行
-articara --script analyze.rhai
+| 起動コマンド | 動作 |
+|---|---|
+| `articara` | 空 GUI |
+| `articara <model>` | GUI でモデルロード |
+| `articara --model <path>` | 同上 (明示 flag) |
+| `articara --script <s>` | GUI 起動 + スクリプト auto-run |
+| `articara --model <m> --script <s>` | **すべて自動 — クリック 0 回** |
+| `articara <m> --script <s>` | 同上 (positional model) |
+| `articara --script-headless <s> [m]` | ヘッドレス実行、 終了 (CI 用) |
 
-# スクリプト実行後にGUIを起動
-articara --script setup.rhai namiashi.urdf
+### 例
+
+```bash
+# 全自動: モデルロード → GUI 起動 → スクリプト auto-run
+articara --model tests/fixtures/namiashi/urdf/namiashi.urdf \
+         --script scripts/walk_3axis_demo.rhai
+
+# ヘッドレスでスクリプトを走らせて終了 (旧 --script 相当)
+articara --script-headless scripts/analyze.rhai namiashi.urdf
 ```
 
-`--script` オプションで GUI を起動せずにスクリプトを実行可能。
-標準出力に `print()` の結果が出力される。
+`--script` は GUI 起動時の自動実行で、スクリプト末尾までいったら viewport
+が動き続ける (sim が走っていれば)。 `--script-headless` は GUI を立ち上げず
+スクリプトの `print()` を stdout に流して終了。
+
+CI / ベンチマーク向けには `--script-headless` を、 デモ / 目視確認には
+`--script` を使う。
 
 ---
 

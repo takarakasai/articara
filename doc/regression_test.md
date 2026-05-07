@@ -335,12 +335,37 @@ test result: ok. 118 passed; 0 failed; 0 ignored; 0 measured
 | `tests/gait_walk_stability.rs` | `champ_walks_stable` | CHAMP + Position-PD | 1 cycle 安定 + 4 cm 以上前進 |
 | `tests/gait_walk_stability.rs` | `mpc_walks_stable` | SRBD MPC + Position-PD + τ_ff | 同上 |
 | `tests/wbc_walk.rs` | `wbc_static_stand_balances_gravity` | Hybrid joint (PD + WBC τ_ff) | min_z > 0.18 m, Σf_z ≈ m·g (±60%) |
-| `tests/wbc_walk.rs` | `wbc_forward_command_advances_body` | Hybrid joint + 前進指令 | **#[ignore]** (joint-space swing 待ち) |
+| `tests/wbc_walk.rs` | `wbc_forward_command_advances_body` | Hybrid joint + 前進指令 | min_z > 0.18 m, Δx > 4 cm (P5b 後 pass) |
 | `tests/lkf_pipeline.rs` | `lkf_static_stand_tracks_ground_truth_body_z` | LKF 単独 + ground truth | body z 推定誤差 < 5 cm |
 | `tests/integration_walk.rs` | `integration_position_pd_with_mpc_torque_ff` | PD + MPC τ_ff | min_z > 0.18 m, Δx > 2 cm |
-| `tests/integration_walk.rs` | `integration_position_pd_plus_wbc` | PD + WBC + ContactDrivenPhase | min_z > 0.18 m, Δx > -5 cm |
+| `tests/integration_walk.rs` | `integration_position_pd_plus_wbc` | PD + WBC + ContactDrivenPhase | min_z > 0.18 m, Δx > -10 cm |
 | `tests/integration_walk.rs` | `integration_position_pd_plus_lkf` | PD + MPC + LKF (parallel) | min_z > 0.18 m, KF z-err < 5 cm |
+| `tests/integration_walk.rs` | `integration_walk_straight_champ` | CHAMP open-loop forward | min_z > 0.18 m (drift は記録のみ) |
+| `tests/integration_walk.rs` | `integration_walk_straight_mpc_wbc` | MPC+WBC + Hybrid + 5 s forward | body_dx > +0.10 m, \|body_dy\| < 0.20 m, \|Δyaw\| < 1.0 rad |
+| `tests/integration_walk.rs` | `integration_walk_lateral_champ` | CHAMP open-loop lateral | min_z > 0.18 m (記録のみ) |
+| `tests/integration_walk.rs` | `integration_walk_lateral_mpc_wbc` | MPC+WBC + 5 s lateral | body_dy > +0.20 m, \|body_dx\| < 0.30 m, \|Δyaw\| < 1.5 rad |
+| `tests/integration_walk.rs` | `integration_walk_yaw_champ` | CHAMP open-loop yaw | min_z > 0.18 m (記録のみ) |
+| `tests/integration_walk.rs` | `integration_walk_yaw_mpc_wbc` | MPC+WBC + 5 s yaw | \|Δyaw\| > 1.5 rad, \|body_dx\| / \|body_dy\| < 0.35 m |
+| `tests/integration_walk.rs` | `integration_walk_lateral_mpc_no_wbc` | MPC + Position-PD のみ (WBC 無効) | 切り分け診断 (assertion = fall guard) |
+| `tests/integration_walk.rs` | `diag_lateral_no_*` × 4 | per-task 無効化 (WBC weights override) | **#[ignore]** P5a 診断のみ |
+| `tests/integration_walk.rs` | `diag_swing_leg_sweep_*` × 2 | swing_leg weight sweep | **#[ignore]** P5b sweep |
+| `tests/integration_walk.rs` | `diag_forward_no_swing_leg` | swing_leg=0 単独 | **#[ignore]** 候補 fix 検証 |
 | `tests/misarta_mujoco_gravity_consistency.rs` | `*` | misarta vs MuJoCo 動力学一致 | 重力反作用 τ が一致 |
+
+### 3 軸独立 benchmark の特徴 (P1 + P5b)
+
+`integration_walk_*` は **active axis (cmd 通りの進行) と cross axes (ずれてい
+ないか)** を独立に評価します:
+
+| 命令 | active axis (進む) | cross axis 1 | cross axis 2 |
+|---|---|---|---|
+| forward (cmd.vx=+0.15) | body_dx | body_dy (横ずれ) | Δyaw (回転) |
+| lateral (cmd.vy=+0.10) | body_dy | body_dx (前後ずれ) | Δyaw (旋回) |
+| yaw (cmd.wz=+0.5) | Δyaw | body_dx (前後) | body_dy (左右) |
+
+`body_dx` / `body_dy` は **初期 yaw で逆回転**して body 初期姿勢の前進 / 横移動
+成分を取り出すアクセサ (`WalkBenchmark::body_dx`, `body_dy`)。yaw 命令で
+body が回っても cross-axis 評価が一貫します。
 
 ### 共通ヘルパー (`tests/common/mod.rs`)
 
@@ -376,10 +401,63 @@ URDF ロード、IK 経由の関節 seed、Position-PD アクチュエータ設�
 
 ### Phase 進捗との対応
 
-| 設計 doc Phase | 担当テスト |
+| 設計 doc Phase | 担当テスト | 状態 |
+|---|---|---|
+| Phase A (WBC) | `wbc_walk::wbc_static_stand_balances_gravity` + `wbc_forward_command_advances_body` + `integration_walk::*_plus_wbc` + 3 軸 benchmark | ✅ 全 pass |
+| Phase B (LKF) | `lkf_pipeline::lkf_static_stand_tracks_ground_truth_body_z` + `integration_walk::*_plus_lkf` | ✅ 全 pass |
+| Phase C (Contact-driven phase) | `integration_walk::*_plus_wbc` (内部で `ContactDrivenPhase` を使用) | ✅ pass |
+| Phase 1.5 残 (forward walk) | `wbc_walk::wbc_forward_command_advances_body` | ✅ **P5b 後 #[ignore] 解除** |
+| Phase P1 / P5b (3 軸 benchmark) | `integration_walk_straight_*` / `_lateral_*` / `_yaw_*` | ✅ MPC+WBC pass |
+| Phase P5a 診断 | `diag_lateral_no_*`, `diag_swing_leg_sweep_*` | ⚪ #[ignore] 残 (診断専用) |
+
+## GUI で描画付きでベンチマークを再現する
+
+`./scripts/test_regression.sh` はヘッドレス (数値だけ出力) ですが、 同じ
+cmd 列を **viewport で目視確認**できる Rhai スクリプトと、 **GUI クリック
+0 回**で起動する CLI フラグも用意しています。
+
+### `--script <path>` CLI フラグ
+
+```bash
+# 全自動: モデルロード → スクリプト auto-run → 3 軸 benchmark を順次再生
+MUJOCO_DOWNLOAD_DIR="$HOME/.mujoco" \
+MUJOCO_DYNAMIC_LINK_DIR="$HOME/.mujoco/mujoco-3.8.0/lib" \
+LD_LIBRARY_PATH="$HOME/.mujoco/mujoco-3.8.0/lib:$LD_LIBRARY_PATH" \
+  cargo run --release --features "mujoco scripting" -- \
+    --model tests/fixtures/namiashi/urdf/namiashi.urdf \
+    --script scripts/walk_3axis_demo.rhai
+```
+
+GUI が起動して:
+- ✅ namiashi URDF 自動読み込み
+- ✅ Script Console が自動で開く
+- ✅ `walk_3axis_demo.rhai` が auto-run
+- ✅ スクリプトが GUI 設定 (Mode, Pose source, WBC, Ground plane) を全部適用
+- ✅ 18 秒の async timeline で forward → lateral → yaw を順次再生
+- ✅ 終了時 `log/walk_3axis_demo.csv` に軌跡保存
+
+### 手動で起動 (途中で介入したい場合)
+
+```bash
+cargo run --release --features mujoco
+```
+
+→ GUI で URDF 読み込み → Quadruped gait panel で:
+- Generator = MPC (capture-point)
+- Pose source = MuJoCo ground truth
+- Hierarchical WBC = ON
+
+→ Console (📂) → `scripts/walk_3axis_demo.rhai`
+
+### CLI 仕様まとめ
+
+| 起動コマンド | 動作 |
 |---|---|
-| Phase A (WBC) | `wbc_walk` + `integration_walk::*_plus_wbc` |
-| Phase B (LKF) | `lkf_pipeline` + `integration_walk::*_plus_lkf` |
-| Phase C (Contact-driven phase) | `integration_walk::*_plus_wbc` (内部で `ContactDrivenPhase` を使用) |
-| Phase 1.5 残 (forward walk) | `wbc_walk::wbc_forward_command_advances_body` (現在 `#[ignore]`) |
+| `articara` | 空 GUI |
+| `articara <model>` | GUI でモデルロード |
+| `articara --model <path>` | 同上 (明示) |
+| `articara --script <s>` | GUI + script auto-run (モデル未ロード) |
+| `articara --model <m> --script <s>` | **すべて自動 — クリック 0 回** |
+| `articara <m> --script <s>` | 同上 (positional model) |
+| `articara --script-headless <s> [m]` | ヘッドレス実行、 終了 |
 

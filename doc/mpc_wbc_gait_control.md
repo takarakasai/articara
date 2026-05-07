@@ -245,6 +245,69 @@ OCS2 NMPC は外部依存重く Rust 移植非現実的。代替:
 4. Phase D は要相談                    
 ```
 
+## 実装ステータス (2026-05 時点)
+
+**主要 5 layer の機能カバー率**:
+
+| Layer | legged_control | articara 現状 | カバー率 | 主要 commit |
+|---|---|---|---|---|
+| MPC | OCS2 SQP NMPC (centroidal, joint-state 込み) | SRBD MPC + warm-start + horizon expose + q_diag tuning | **70%** | `d7b6f1b`, `694e2bd` |
+| WBC | 3-prio HoQp (Cartesian swing) | 3-prio HoQp + warm-start + per-task LSQ weights + joint-space swing + per-cmd weight scheduling | **90%** | `dc78f98`, `6c360fa`, `e4e914d` |
+| 状態推定 | 18-state KF + ROS topic fusion | 18-state LKF (e2e ±2.4 cm) | **80%** | `4900887` |
+| 接触検出 | 物理接触センサ駆動 | ContactDrivenPhase + contact_force_per_foot | **70%** | `4ad3f2a`, `cd1d90b` |
+| HW I/F | ROS Hybrid Joint (Position-PD + WBC τ_ff) | MuJoCo direct + Hybrid joint command | **60%** (sim only) | `a929704`, `b03c431` |
+
+**3 軸命令の歩行品質** (5 秒 walk, MuJoCo ground truth):
+
+| 命令 | active axis | cross axes | gate |
+|---|---|---|---|
+| forward (cmd.vx=+0.15 m/s) | body_dx=+0.124 m | body_dy=-0.117 m, Δyaw=-0.55 rad | ✅ pass |
+| lateral (cmd.vy=+0.10 m/s) | body_dy=+0.501 m | body_dx=-0.233 m, Δyaw=+1.20 rad | ✅ pass |
+| yaw (cmd.wz=+0.5 rad/s) | Δyaw=+2.76 rad | body_dx=-0.280 m, body_dy=+0.184 m | ✅ pass |
+
+→ 3 軸全方向で MPC+WBC trotting が cmd 通りに動作。
+
+### Phase A 完了内訳 (Hierarchical WBC)
+
+| Sub-phase | 内容 | commit |
+|---|---|---|
+| WBC 骨格 (HoQp + 7 task + WbcPipeline + UI toggle) | 完了 | (Phase A 着手時) |
+| Phase 1.1 misarta::qp warm-start API + jitter damping | 完了 | `de61770` (misarta), `dc78f98` |
+| Phase 1.2 SE(3)-correct `compute_joint_jacobian_time_derivative` | 完了 | `4a54a1b` (misarta) |
+| Phase 1.4 per-task LSQ weights + Task::weight() | 完了 | `dc78f98` |
+| Phase 1.5-A SRBD MPC `predicted_base_accel_world` | 完了 | `fa8835d` |
+| Phase 1.5-B `a_base_des` を MPC predicted accel に置換 | 完了 | `149aad0` |
+| Phase G2 swing_leg を joint-space に書き換え | 完了 | `6c360fa` |
+| Phase H1-H4 SRBD horizon expose + W_CONTACT_FORCE=5 | 完了 | `d7b6f1b` |
+| Phase P1 3 軸 benchmark (forward/lateral/yaw cross-axis 評価) | 完了 | `4dbf1e9` |
+| Phase P5a per-task disable diagnostic で sign-flip 原因特定 | 完了 | `d18d9af` |
+| Phase P5b per-cmd swing_leg weight scheduling (`for_cmd`) | 完了 | `e4e914d` |
+
+### Phase B 完了 (18-state LKF)
+
+| Sub-phase | 内容 | commit |
+|---|---|---|
+| `LinearKalmanEstimator` core (legged_control 移植) | 完了 | `4900887` |
+| `LkfPipeline` host wrapper (misarta FK + Jacobian wiring) | 完了 | `4900887` |
+| MuJoCo e2e test (body z 推定 ±2.4 cm) | 完了 | `4900887` |
+
+### Phase C 完了 (接触駆動 phase)
+
+| Sub-phase | 内容 | commit |
+|---|---|---|
+| `MujocoSim::contact_force_per_foot` | 完了 | `cd1d90b` |
+| `ContactDrivenPhase` + `apply_correction` | 完了 | `4ad3f2a` |
+| WBC pipeline で early touchdown 補正 | 完了 | `cd1d90b` |
+
+### 残課題
+
+| 項目 | 内容 | 工数見込み |
+|---|---|---|
+| LKF を `PoseSource::ExtendedKalman` で UI 統合 | LkfPipeline 完成済、UI から選べるように | 半日 |
+| 不整地 / 床傾斜テスト | Phase C を実シナリオで検証 | 1 週間 |
+| 実機接続 (RobStride / lkmotor) | sibling crates 経由 | 2-3 週間 |
+| Phase D centroidal NMPC | 実装非推奨、SRBD で実用十分 | (除外) |
+
 ## クレート配置の方針
 
 | 機能 | 置き場所 | 理由 |

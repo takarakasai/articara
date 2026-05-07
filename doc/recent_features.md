@@ -1,7 +1,10 @@
-# Articara 直近2日間の新機能まとめ
+# Articara 最近の主要機能まとめ
 
-直近 (2 日間) で追加された主要機能の概観。コミットID参照付き。
-詳細は対応するソースのドキュメントコメント / `cargo doc` を参照。
+ここ数週間で追加された主要機能の概観。 コミットID参照付き。
+詳細は対応するソースのドキュメントコメント / `cargo doc` 、 関連 doc
+([mpc_wbc_gait_control.md](mpc_wbc_gait_control.md),
+[regression_test.md](regression_test.md),
+[script_spec.md](script_spec.md)) を参照。
 
 ## 1. シミュレーション解析・チューニング機能
 
@@ -313,10 +316,111 @@ articara/
 
 ---
 
+## ref/legged_control 再現スプリント (2026-05-06 〜 05-08)
+
+`legged_control` (Liao 2022) の主要 5 layer を articara native に移植する
+集中スプリント。詳細な phase 計画は
+[mpc_wbc_gait_control.md](mpc_wbc_gait_control.md) 参照。
+
+### 主要マイルストーン
+
+| 達成 | 内容 | commits |
+|---|---|---|
+| **Phase 1.1** | misarta::qp に proximal warm-start API 追加、 WBC tick jitter を damping | misarta `de61770`, `dc78f98` |
+| **Phase 1.2** | `compute_joint_jacobian_time_derivative` を SE(3) integration ベースに修正 (FreeFlyer 対応) | misarta `4a54a1b` |
+| **Phase 1.4** | Task::weight() + per-task LSQ weights を WBC に導入 | `dc78f98` |
+| **Phase 1.5-A** | SRBD MPC `predicted_base_accel_world` を新設 (legged_control の `formulateBaseAccelTask` 相当) | `fa8835d`, `149aad0` |
+| **Phase B** | 18-state Linear Kalman Filter 移植 (LkfPipeline + e2e ±2.4 cm) | `4900887` |
+| **Phase C** | ContactDrivenPhase + `MujocoSim::contact_force_per_foot` で接触駆動 phase | `4ad3f2a`, `cd1d90b` |
+| **Hybrid joint command 修正** | GUI が `set_wbc_torques` を使っていた問題を `set_torque_feedforward` (Position-PD + WBC τ_ff) に変更 | `b03c431` |
+| **Phase 1.5-C** | `wbc_static_stand_balances_gravity` を `#[ignore]` から pass に | `149aad0` |
+| **Phase G2** | WBC swing_leg を Cartesian → joint-space に書き換え | `6c360fa` |
+| **Phase H1-H4** | SRBD MPC horizon expose + W_CONTACT_FORCE=5 で `wbc_forward_command_advances_body` pass | `d7b6f1b` |
+| **mpc_reference module** | `JointReference` + 単体テストで OCS2 の `getJointAngles(state)` 相当 API | `d7b6f1b` |
+| **Phase P1** | 3 軸独立 benchmark (forward / lateral / yaw × CHAMP / MPC+WBC) で cross-coupling を可視化 | `4dbf1e9` |
+| **q_diag tuning** | SRBD MPC の yaw / lateral 重みを boost、 直進歩行の drift 抑制 | `694e2bd` |
+| **Phase P5a** | WbcWeights API + per-task disable diagnostic で lateral 不具合の主因 (swing_leg) を特定 | `d18d9af` |
+| **Phase P5b** | `WbcWeights::for_cmd` で per-cmd swing_leg weight scheduling、 lateral / yaw 命令を pass | `e4e914d` |
+
+### 達成: 3 軸全方向で MPC+WBC trotting
+
+5 秒走行 (MuJoCo ground truth) での測定値:
+
+| 命令 | active axis | cross axis 1 | cross axis 2 |
+|---|---|---|---|
+| forward (cmd.vx=+0.15 m/s) | body_dx=+0.124 m | body_dy=-0.117 m | Δyaw=-0.55 rad |
+| lateral (cmd.vy=+0.10 m/s) | body_dy=+0.501 m | body_dx=-0.233 m | Δyaw=+1.20 rad |
+| yaw (cmd.wz=+0.5 rad/s) | Δyaw=+2.76 rad | body_dx=-0.280 m | body_dy=+0.184 m |
+
+→ legged_control の主要 5 layer + 3 軸命令で同等の動作能力に到達。
+
+### Scripting 拡張 (`9e7b099` / `8bdf862` / `041416c`)
+
+| 機能 | commit |
+|---|---|
+| `walk_3axis_demo.rhai` (forward → lateral → yaw 自動再生 + CSV 保存) | `9e7b099` |
+| `mj_async_set_velocity` (timeline 上で gait cmd 切替) | `9e7b099` |
+| `set_gait_mode` / `set_pose_source` / `set_wbc_enabled` / `set_ground_plane_*` (GUI 設定の Rhai 化) | `8bdf862` |
+| `--script <path>` CLI flag (GUI 起動時に Rhai script を auto-run) | `041416c` |
+| `--script-headless` (旧 `--script` のヘッドレス実行を rename 保持) | `041416c` |
+
+これらにより **`cargo run --release --features "mujoco scripting" -- --model
+<URDF> --script <rhai>`** で GUI クリック 0 回で 3 軸 benchmark を描画付き再生
+できる:
+
+```bash
+cargo run --release --features "mujoco scripting" -- \
+  --model tests/fixtures/namiashi/urdf/namiashi.urdf \
+  --script scripts/walk_3axis_demo.rhai
+```
+
+### 回帰スイート (`299d451` / `4dbf1e9`)
+
+| 機能 | 内容 |
+|---|---|
+| `tests/common/mod.rs` | 共通ヘルパー (URDF load, IK seed, Position-PD setup, MujocoSim 構築) |
+| `tests/integration_walk.rs` | 全 layer 組み合わせ (PD-only / +WBC / +LKF / 3 軸 active+cross) を 1 ファイルで網羅 |
+| `tests/lkf_pipeline.rs` | LKF e2e (MuJoCo ground truth との body z 整合性) |
+| `scripts/test_regression.sh` | `--quick` / `--debug` / 引数なし (full release) の 1 コマンド回帰実行 |
+
+詳細は [regression_test.md](regression_test.md) 参照。
+
+### 残課題
+
+| 項目 | 状態 |
+|---|---|
+| LKF を `PoseSource::ExtendedKalman` で UI 統合 | LkfPipeline 完成済、UI 統合のみ未 (半日) |
+| 不整地 / 床傾斜テスト | Phase C 機能を実シナリオで検証 (1 週間) |
+| 実機接続 (RobStride / lkmotor) | sibling crates 経由 (2-3 週間) |
+| Phase D centroidal NMPC | 実装非推奨 (SRBD で実用十分) |
+
+---
+
 ## 関連コミット一覧 (時系列・新→旧)
 
 | Hash | 内容 |
 |---|---|
+| 041416c | `--script <path>` CLI flag (GUI 起動時に Rhai script auto-run) |
+| 8bdf862 | `set_gait_mode` / `set_pose_source` / `set_wbc_enabled` / `set_ground_plane_*` scripting setters |
+| 9e7b099 | `walk_3axis_demo.rhai` + `mj_async_set_velocity` (3 軸 benchmark の描画付き再現) |
+| e4e914d | P5b: per-cmd swing_leg scheduling で lateral / yaw 命令 pass |
+| d18d9af | P5a: WbcWeights API + lateral 不具合の主因 (swing_leg) を per-task disable で特定 |
+| 7cb5097 | lateral 命令の MPC-only vs MPC+WBC 切り分け診断 |
+| 4dbf1e9 | 3 軸独立 benchmark (forward / lateral / yaw × CHAMP / MPC+WBC) で cross-coupling を可視化 |
+| 694e2bd | SRBD MPC q_diag tuning で直進歩行の lateral / yaw drift を抑制 |
+| b03c431 | GUI の WBC 経路をテストと一致 (`set_torque_feedforward` Hybrid joint command) |
+| d7b6f1b | SRBD MPC `predicted_body_states` expose + W_CONTACT_FORCE=5 で wbc_forward_command pass |
+| 6c360fa | WBC swing_leg を joint-space に書き換え + 詳細診断ダンプ |
+| 299d451 | 歩容制御 MuJoCo 回帰スイート (`tests/common/`, `integration_walk`, `scripts/test_regression.sh`) |
+| 4900887 | 18-state Linear Kalman Filter (legged_control 移植) |
+| a929704 | Hybrid joint command — Position-PD + WBC τ_ff (legged_control 流) |
+| cd1d90b | `MujocoSim::contact_force_per_foot` + WBC pipeline で接触補正を有効化 |
+| 4ad3f2a | `ContactDrivenPhase` — early/late 接触補正レイヤー |
+| 149aad0 | `a_base_des` を MPC predicted accel に置換、 wbc_static_stand pass |
+| fa8835d | `predicted_base_accel_world` (SRBD MPC→WBC base reference bridge) |
+| 1d57465 | WBC pipeline 安定化 (warm-start + gravity FF + \|v\| clip) |
+| dc78f98 | WBC warm-start API + per-task LSQ weights |
+| 6f56765 | MPC GRF EMA を WBC pipeline 側へ移動 (mpc_walks_stable regression 解消) |
 | fff52a1 | TPS 追従カメラ + PiP wipe |
 | cd2290c | D-pad 押下持続改善 + yaw ボタン |
 | 8349105 | hold-to-drive D-pad |
