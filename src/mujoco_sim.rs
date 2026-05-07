@@ -137,6 +137,13 @@ pub enum AsyncSimOp {
     Print(String),
     /// Write the current trace as CSV at the timeline point it's popped.
     SaveCsv(std::path::PathBuf),
+    /// Set the active gait controller's `(vx, vy, wz)` velocity command.
+    /// Lets a script schedule cmd changes mid-timeline (e.g. forward
+    /// for 5 s, then lateral for 5 s, then yaw for 5 s — the
+    /// `walk_3axis_demo.rhai` benchmark reproducer).
+    /// All three components are body-frame; semantically identical to
+    /// the synchronous `gait_set_velocity(vx, vy, wz)` script call.
+    SetGaitVelocity(f64, f64, f64),
 }
 
 /// One sample in the time-series ring buffer.

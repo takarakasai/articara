@@ -1789,6 +1789,20 @@ impl ArticaraApp {
                     }
                     continue;
                 }
+                Some(AsyncSimOp::SetGaitVelocity(vx, vy, wz)) => {
+                    let (vx, vy, wz) = (*vx, *vy, *wz);
+                    if let Some(sim) = self.mujoco_sim.as_mut() {
+                        sim.async_pop();
+                    }
+                    if let Some(gc) = self.gait_controller.as_mut() {
+                        gc.set_velocity_cmd(quadruped_gait::VelocityCmd {
+                            vx,
+                            vy,
+                            wz,
+                        });
+                    }
+                    continue;
+                }
                 Some(AsyncSimOp::Print(_)) => "print",
                 Some(AsyncSimOp::SaveCsv(_)) => "save",
                 None => return,

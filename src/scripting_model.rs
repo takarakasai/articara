@@ -968,6 +968,26 @@ impl ModelScriptEngine {
                 },
             );
 
+            // Set the gait controller's velocity command at the
+            // timeline point at which the queue pops this op. Equivalent
+            // to a synchronous `gait_set_velocity` but deferred so a
+            // script can sequence (forward, then lateral, then yaw)
+            // back-to-back without re-evaluating the script.
+            let s = Rc::clone(&mujoco_sim);
+            engine.register_fn(
+                "mj_async_set_velocity",
+                move |vx: f64, vy: f64, wz: f64| -> bool {
+                    let mut sim_borrow = s.borrow_mut();
+                    let Some(sim) = sim_borrow.as_mut() else {
+                        return false;
+                    };
+                    sim.async_enqueue(
+                        crate::mujoco_sim::AsyncSimOp::SetGaitVelocity(vx, vy, wz),
+                    );
+                    true
+                },
+            );
+
             let s = Rc::clone(&mujoco_sim);
             engine.register_fn("mj_async_print", move |msg: &str| -> bool {
                 let mut sim_borrow = s.borrow_mut();
