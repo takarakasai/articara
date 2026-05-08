@@ -1328,19 +1328,26 @@ impl ArticaraApp {
 
     /// Advance the dynamics simulation by one frame, modifying model state.
     fn step_dynamics_sim(&mut self) {
-        // Async queue takes precedence over the regular wall-clock step path:
-        // if a Rhai script has scheduled `mj_async_*` ops, drain them here so
-        // the user sees their scripted timeline animate in the viewport
-        // rather than a synchronous freeze + final-pose snap.
+        // Async queue integration: instantaneous ops (Print, SaveCsv,
+        // SetGaitVelocity, SetPositionTarget) drain here at the top of the
+        // tick so they take effect *before* the gait+WBC control loop runs.
+        // A `StepFrames` op at the queue head doesn't bypass the regular
+        // path — instead it caps how many physics frames this UI tick can
+        // advance, so the gait controller still gets ticked and writes
+        // fresh position targets / WBC τ_ff each UI frame. Without this
+        // the script-driven timeline would step physics with whatever
+        // position_targets were latched at script start, and the robot
+        // wouldn't actually walk.
         #[cfg(feature = "mujoco")]
-        if self
+        self.drain_instantaneous_async_ops();
+        #[cfg(feature = "mujoco")]
+        let async_step_remaining: Option<u32> = self
             .mujoco_sim
             .as_ref()
-            .map_or(false, |s| s.async_pending() > 0)
-        {
-            self.tick_async_sim_queue();
-            return;
-        }
+            .and_then(|s| match s.async_peek() {
+                Some(crate::mujoco_sim::AsyncSimOp::StepFrames(n)) => Some(*n),
+                _ => None,
+            });
 
         #[cfg(feature = "mujoco")]
         let has_mujoco = self.mujoco_sim.is_some();
@@ -1718,7 +1725,33 @@ impl ArticaraApp {
                                 mj_sim.clear_torque_feedforward();
                                 mj_sim.clear_wbc_torques();
                             }
-                            mj_sim.step(model, dt as f64, enforce_limits);
+                            // Step physics. When a script's async queue has
+                            // a `StepFrames` op at the head, switch from the
+                            // wall-clock-driven `step(dt)` accumulator to an
+                            // exact `step_n_frames(N)` capped by both the
+                            // wall-clock budget and the remaining StepFrames
+                            // count. This keeps the script's timeline
+                            // deterministic while still ticking gait+WBC
+                            // each UI frame (so the robot actually walks).
+                            if let Some(remaining) = async_step_remaining {
+                                let mj_dt = mj_sim.timestep();
+                                let frames_from_wall =
+                                    ((dt as f64) / mj_dt).round().max(1.0) as u32;
+                                let frames_to_step =
+                                    frames_from_wall.min(remaining);
+                                if frames_to_step > 0 {
+                                    mj_sim.step_n_frames(
+                                        model,
+                                        frames_to_step,
+                                        enforce_limits,
+                                    );
+                                    mj_sim.async_consume_step_frames(
+                                        frames_to_step,
+                                    );
+                                }
+                            } else {
+                                mj_sim.step(model, dt as f64, enforce_limits);
+                            }
                         }
                     }
                 }
@@ -1766,21 +1799,17 @@ impl ArticaraApp {
         }
     }
 
-    /// Drain instantaneous ops from the head of the MuJoCo async queue, then
-    /// advance the sim by however many physics frames the wall clock × the
-    /// user's speed slider warrants. Step ops carry their own remaining-frame
-    /// counter so this method can chip away at long delays across many UI
-    /// ticks without losing track. Designed to integrate with the existing
-    /// pause / speed controls — the same pacing logic the regular path uses.
+    /// Drain instantaneous ops (Print, SaveCsv, SetGaitVelocity,
+    /// SetPositionTarget) from the head of the MuJoCo async queue. Stops
+    /// at the first `StepFrames` op (or empty queue). Caller is then
+    /// expected to run the regular gait+WBC+step path; the `StepFrames`
+    /// remaining count caps how many physics frames that path advances.
     #[cfg(feature = "mujoco")]
-    fn tick_async_sim_queue(&mut self) {
+    fn drain_instantaneous_async_ops(&mut self) {
         use crate::mujoco_sim::AsyncSimOp;
-
-        // Drain non-step ops at the queue head greedily — none of them take
-        // wall-clock time so we should consume them up-front each tick.
         loop {
             let head_kind = match self.mujoco_sim.as_ref().and_then(|s| s.async_peek()) {
-                Some(AsyncSimOp::StepFrames(_)) => break,
+                Some(AsyncSimOp::StepFrames(_)) => return,
                 Some(AsyncSimOp::SetPositionTarget(idx, q)) => {
                     let (idx, q) = (*idx, *q);
                     if let Some(sim) = self.mujoco_sim.as_mut() {
@@ -1848,47 +1877,6 @@ impl ArticaraApp {
                 self.script_output.push(line);
                 self.script_scroll_to_bottom = true;
             }
-        }
-
-        // Now the queue head is a Step op (or queue is empty — handled above).
-        let now = std::time::Instant::now();
-        let wall_dt = match self.dynamics_last_instant {
-            Some(prev) => now.duration_since(prev).as_secs_f32().min(0.05),
-            None => 0.016,
-        };
-        self.dynamics_last_instant = Some(now);
-        let speed = self.dynamics_sim_speed.clamp(0.05, 5.0);
-        let mj_dt = self
-            .mujoco_sim
-            .as_ref()
-            .map(|s| s.timestep())
-            .unwrap_or(0.002);
-        let frames_budget =
-            ((wall_dt as f64) * (speed as f64) / mj_dt).floor() as u32;
-        if frames_budget == 0 {
-            return;
-        }
-
-        // Cap by the head Step op's remaining count so we don't overshoot.
-        let frames_to_step = if let Some(sim) = self.mujoco_sim.as_ref() {
-            match sim.async_peek() {
-                Some(AsyncSimOp::StepFrames(remaining)) => frames_budget.min(*remaining),
-                _ => 0,
-            }
-        } else {
-            0
-        };
-        if frames_to_step == 0 {
-            return;
-        }
-
-        let enforce_limits = self.enforce_actuator_limits;
-        if let (Some(sim), Some(model)) =
-            (self.mujoco_sim.as_mut(), self.model.as_mut())
-        {
-            sim.step_n_frames(model, frames_to_step, enforce_limits);
-            sim.async_consume_step_frames(frames_to_step);
-            self.needs_upload = true;
         }
     }
 
