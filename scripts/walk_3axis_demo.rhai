@@ -94,18 +94,20 @@ gait_set_duty(DUTY);
 print("Gait controller built (Trot)");
 
 // ── Seed initial pose so the legs aren't locked at full extension ─────────
-// Try the misa-defined "constrain" pose first (works for namiashi.misa),
-// fall back to kinematic IK seed (works for any URDF / misa with
-// auto-detectable kin). Without this seed, mj_start places the robot at
-// `joint_positions = 0` which is the kinematic singularity for stance,
-// and the first contact tick collapses the body before gait can start.
-if set_initial_pose("constrain") {
-    print("Seeded initial pose: 'constrain' (from misa)");
-} else if seed_kinematic_pose() {
-    print("Seeded initial pose: kinematic IK from nominal_foot_body");
-} else {
-    print("WARNING: no initial pose seed applied — robot may collapse on start");
+// Use gait kin's nominal_foot_body + IK to compute a *stance* pose that
+// the gait controller already agrees with. This is the same seeding the
+// regression test (`tests/common/mod.rs::seed_joint_positions_from_kinematics`)
+// uses, so the demo starts from the same configuration as the benchmark.
+//
+// IMPORTANT: do NOT use `set_initial_pose("constrain")` from namiashi.misa —
+// that pose is the *jump-prep tucked* pose (calf=-2, thigh=1, foot under
+// body), not a standing pose. Starting from there leaves the gait IK target
+// far above the actual feet and the robot can't recover.
+if !seed_kinematic_pose() {
+    print("WARNING: seed_kinematic_pose() failed — gait kin not ready?");
+    print("         Robot will spawn with joint_positions = 0 and likely collapse.");
 }
+print("Seeded initial pose: kinematic IK from nominal_foot_body");
 
 // ── Build / rebuild sim ───────────────────────────────────────────────────
 
