@@ -1140,6 +1140,36 @@ impl ModelScriptEngine {
                 true
             });
 
+            // Set the model's `joint_positions` to a named pose's
+            // angles **synchronously**. Use this **before** `mj_start`
+            // to seed the simulator's initial qpos (the next sim build
+            // picks the seeded joint positions verbatim).
+            //
+            // Unlike `play_pose`, this doesn't require a running sim
+            // and doesn't animate — it's the right call for "stand up
+            // at the named pose, then start gait" scenarios where you
+            // want the body to be at e.g. the URDF's `constrain` pose
+            // before the controller takes over. Returns false if the
+            // pose name isn't in `robot.poses` (e.g. URDF without
+            // sidecar / unknown name).
+            let m = Rc::clone(&model);
+            engine.register_fn("set_initial_pose", move |name: &str| -> bool {
+                let mut model_borrow = m.borrow_mut();
+                let Some(robot) = model_borrow.as_mut() else {
+                    return false;
+                };
+                let Some(pose) = robot.poses.iter().find(|p| p.name == name) else {
+                    return false;
+                };
+                let pose_angles = pose.angles.clone();
+                for (ji, joint) in robot.joints.iter().enumerate() {
+                    if let Some(&q) = pose_angles.get(&joint.name) {
+                        robot.joint_positions[ji] = q;
+                    }
+                }
+                true
+            });
+
             // Start a smooth pose transition by name (uses the pose's stored
             // duration / kind). Returns true on success.
             let s = Rc::clone(&mujoco_sim);
@@ -1760,6 +1790,59 @@ impl ModelScriptEngine {
                 gb.as_ref()
                     .map(|c| c.knee_pattern().label().to_string())
                     .unwrap_or_default()
+            });
+
+            // Seed `robot.joint_positions` from the gait controller's
+            // `nominal_foot_body` pose via per-leg IK. Mirrors the
+            // regression test's `seed_joint_positions_from_kinematics`
+            // helper. Must be called **after `gait_setup()`** (kin is
+            // owned by the controller) and **before `mj_start()`**
+            // (the sim build picks up the seeded joint angles).
+            //
+            // Without this, a freshly-loaded URDF has all joints at
+            // 0 (= legs fully extended), which collapses on first
+            // contact under the Position-PD controller.
+            let g = Rc::clone(&gait_controller);
+            let m = Rc::clone(&model);
+            engine.register_fn("seed_kinematic_pose", move || -> bool {
+                let mut model_borrow = m.borrow_mut();
+                let gait_borrow = g.borrow();
+                let (Some(robot), Some(ctrl)) = (
+                    model_borrow.as_mut(),
+                    gait_borrow.as_ref(),
+                ) else {
+                    return false;
+                };
+                let kin = ctrl.kinematics();
+                for leg_kin in [&kin.fl, &kin.fr, &kin.rl, &kin.rr] {
+                    // Bump nominal foot z by 8 % of total leg length —
+                    // same fudge the regression-test fixture applies so
+                    // the legs sit slightly compressed at start-up
+                    // instead of locked at full extension.
+                    let total = leg_kin.upper_leg_m + leg_kin.lower_leg_m;
+                    let mut target = leg_kin.nominal_foot_body;
+                    target.z += 0.08 * total;
+                    let sol = quadruped_gait::solve_leg_ik(leg_kin, target, false);
+                    let quadruped_gait::LegIkSolution::Reached { hip, thigh, calf } = sol
+                    else {
+                        log::warn!(
+                            "seed_kinematic_pose: leg {:?} unreachable at nominal pose",
+                            leg_kin.leg
+                        );
+                        continue;
+                    };
+                    for (joint_name, q_ik, sign) in [
+                        (&leg_kin.hip_joint, hip, 1.0_f64),
+                        (&leg_kin.thigh_joint, thigh, -1.0_f64),
+                        (&leg_kin.calf_joint, calf, -1.0_f64),
+                    ] {
+                        let Some(&ji) = robot.joint_map.get(joint_name.as_str()) else {
+                            continue;
+                        };
+                        robot.joint_positions[ji] = q_ik * sign;
+                    }
+                }
+                true
             });
 
             let g = Rc::clone(&gait_controller);

@@ -80,7 +80,34 @@ set_kp_all(KP);
 set_kv_all(KV);
 print(`Set Position-PD: Kp=${KP}, Kv=${KV}`);
 
-// ── Build / rebuild sim ────────────────────────────────────────────────────
+// ── Auto-detect quadruped kinematics (must be before seed) ────────────────
+
+if !gait_setup() {
+    print("ERROR: gait_setup() failed.");
+    print("Likely your foot links don't match FL/FR/RL/RR_foot.");
+    print("Try: gait_setup_with_feet(\"YOUR_FL\", \"YOUR_FR\", \"YOUR_RL\", \"YOUR_RR\")");
+    return;
+}
+gait_set_cycle_period(CYCLE_PERIOD_S);
+gait_set_swing_height(SWING_HEIGHT_M);
+gait_set_duty(DUTY);
+print("Gait controller built (Trot)");
+
+// ── Seed initial pose so the legs aren't locked at full extension ─────────
+// Try the misa-defined "constrain" pose first (works for namiashi.misa),
+// fall back to kinematic IK seed (works for any URDF / misa with
+// auto-detectable kin). Without this seed, mj_start places the robot at
+// `joint_positions = 0` which is the kinematic singularity for stance,
+// and the first contact tick collapses the body before gait can start.
+if set_initial_pose("constrain") {
+    print("Seeded initial pose: 'constrain' (from misa)");
+} else if seed_kinematic_pose() {
+    print("Seeded initial pose: kinematic IK from nominal_foot_body");
+} else {
+    print("WARNING: no initial pose seed applied — robot may collapse on start");
+}
+
+// ── Build / rebuild sim ───────────────────────────────────────────────────
 
 if mj_active() { mj_stop(); }
 if !mj_start() {
@@ -89,20 +116,6 @@ if !mj_start() {
 }
 mj_set_trace_max(40000);
 reset_peaks();
-
-// ── Auto-detect quadruped kinematics ──────────────────────────────────────
-
-if !gait_setup() {
-    print("ERROR: gait_setup() failed.");
-    print("Likely your foot links don't match FL/FR/RL/RR_foot.");
-    print("Try: gait_setup_with_feet(\"YOUR_FL\", \"YOUR_FR\", \"YOUR_RL\", \"YOUR_RR\")");
-    mj_stop();
-    return;
-}
-gait_set_cycle_period(CYCLE_PERIOD_S);
-gait_set_swing_height(SWING_HEIGHT_M);
-gait_set_duty(DUTY);
-print("Gait controller built (Trot)");
 
 // ── Async timeline: 3 axes back to back ────────────────────────────────────
 // Each axis: zero-cmd burn-in → active cmd → zero-cmd settle.
