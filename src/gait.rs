@@ -529,6 +529,15 @@ impl GaitController {
         self.inner.kinematics()
     }
 
+    /// Replace the kinematics config on the inner controller. Joint names
+    /// must match the originally-built config so the cached
+    /// `joint_indices` / `joint_signs` stay valid; only fields that don't
+    /// change those (e.g. `nominal_foot_body`, link lengths) should be
+    /// modified between calls.
+    pub fn set_kinematics(&mut self, kin: KinematicsConfig) {
+        self.inner.set_kinematics(kin);
+    }
+
     /// `[hip_idx, thigh_idx, calf_idx]` per leg in canonical FL/FR/RL/RR
     /// order. Indices are into the `RobotModel::joints` array. Used by
     /// the host to look up MuJoCo joint state (q, q̇) for the leg-

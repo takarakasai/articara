@@ -93,21 +93,35 @@ gait_set_swing_height(SWING_HEIGHT_M);
 gait_set_duty(DUTY);
 print("Gait controller built (Trot)");
 
-// ── Seed initial pose so the legs aren't locked at full extension ─────────
-// Use gait kin's nominal_foot_body + IK to compute a *stance* pose that
-// the gait controller already agrees with. This is the same seeding the
-// regression test (`tests/common/mod.rs::seed_joint_positions_from_kinematics`)
-// uses, so the demo starts from the same configuration as the benchmark.
+// ── Seed initial pose + sync gait stance baseline to it ─────────────────
 //
-// IMPORTANT: do NOT use `set_initial_pose("constrain")` from namiashi.misa —
-// that pose is the *jump-prep tucked* pose (calf=-2, thigh=1, foot under
-// body), not a standing pose. Starting from there leaves the gait IK target
-// far above the actual feet and the robot can't recover.
-if !seed_kinematic_pose() {
-    print("WARNING: seed_kinematic_pose() failed — gait kin not ready?");
-    print("         Robot will spawn with joint_positions = 0 and likely collapse.");
+// Two-step: (1) write a stance pose into `joint_positions`, then (2) tell
+// the gait controller to adopt the resulting per-leg foot positions as its
+// `nominal_foot_body` (= the zero-cmd target).
+//
+// Step 1: prefer a model-defined stance pose if available. For misa-based
+// quadrupeds the convention is `constrain` (deeply bent knees); for plain
+// URDF without a misa sidecar we fall back to the IK-from-kin seed used by
+// the regression tests.
+//
+// Step 2: `gait_use_current_pose_as_stance()` recomputes
+// `nominal_foot_body` for all four legs from the just-seeded
+// joint_positions via FK. Without this, the gait controller's idle target
+// stays at the auto-detected q=0 fully-extended foot position, which is
+// far taller than the seeded crouch — controller can't track its own
+// baseline and the robot can't move.
+if set_initial_pose("constrain") {
+    print("Seeded initial pose: 'constrain' (model-defined stance)");
+} else if seed_kinematic_pose() {
+    print("Seeded initial pose: kinematic IK from nominal_foot_body");
+} else {
+    print("WARNING: no initial pose seed applied — robot may collapse on start");
 }
-print("Seeded initial pose: kinematic IK from nominal_foot_body");
+if !gait_use_current_pose_as_stance() {
+    print("WARNING: gait_use_current_pose_as_stance() failed — gait baseline");
+    print("         may not match the seeded pose; controller may fight the seed.");
+}
+print("Gait stance baseline = current joint pose");
 
 // ── Build / rebuild sim ───────────────────────────────────────────────────
 

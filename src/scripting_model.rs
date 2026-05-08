@@ -1854,6 +1854,63 @@ impl ModelScriptEngine {
                 ctrl.set_config(cfg);
                 true
             });
+
+            // gait_use_current_pose_as_stance() — recompute each leg's
+            // `nominal_foot_body` from the current `joint_positions` so the
+            // gait controller's stance baseline matches the seeded pose.
+            //
+            // `auto_detect_kinematics_config` derives `nominal_foot_body`
+            // from URDF q=0 (legs fully extended). For quadrupeds that
+            // walk in a bent-knee crouch (e.g. namiashi at the misa-defined
+            // `constrain` pose: thigh=1, calf=-2), q=0 is *not* the stance
+            // pose — it's much taller — so the controller's idle target
+            // would be unreachable and the robot can't track zero-cmd.
+            //
+            // Call sequence:
+            //   gait_setup();
+            //   set_initial_pose("constrain");          // or any other
+            //                                            // stance seed
+            //   gait_use_current_pose_as_stance();      // adopt as baseline
+            //   mj_start();
+            //
+            // Returns false if no gait controller / model is loaded.
+            let g = Rc::clone(&gait_controller);
+            let m = Rc::clone(&model);
+            engine.register_fn("gait_use_current_pose_as_stance", move || -> bool {
+                use nalgebra as na;
+                let model_borrow = m.borrow();
+                let mut gait_borrow = g.borrow_mut();
+                let (Some(robot), Some(ctrl)) = (
+                    model_borrow.as_ref(),
+                    gait_borrow.as_mut(),
+                ) else {
+                    return false;
+                };
+                let transforms = robot.compute_transforms();
+                let body_link = robot.root_link.clone();
+                let body_pos: na::Vector3<f64> = transforms
+                    .get(&body_link)
+                    .copied()
+                    .unwrap_or_else(na::Isometry3::identity)
+                    .translation
+                    .vector
+                    .cast::<f64>();
+                let mut new_kin = ctrl.kinematics().clone();
+                for kin_leg in [&mut new_kin.fl, &mut new_kin.fr, &mut new_kin.rl, &mut new_kin.rr] {
+                    let foot_link = kin_leg.foot_link.clone();
+                    let Some(foot_iso) = transforms.get(&foot_link) else {
+                        log::warn!(
+                            "gait_use_current_pose_as_stance: foot link '{foot_link}' not in transforms"
+                        );
+                        continue;
+                    };
+                    let foot_pos: na::Vector3<f64> =
+                        foot_iso.translation.vector.cast::<f64>();
+                    kin_leg.nominal_foot_body = foot_pos - body_pos;
+                }
+                ctrl.set_kinematics(new_kin);
+                true
+            });
         }
 
         // ────────────────────────────────────────────────────────────────
@@ -2151,6 +2208,8 @@ impl ModelScriptEngine {
             "gait_set_cycle_period", "gait_set_swing_height",
             "gait_set_duty", "gait_set_max_step",
             "gait_set_knee_pattern", "gait_knee_pattern",
+            "gait_use_current_pose_as_stance",
+            "set_initial_pose", "seed_kinematic_pose",
             "mj_async_step_seconds", "mj_async_step_frames",
             "mj_async_set_position_target", "mj_async_print",
             "mj_async_save_csv", "mj_async_pending", "mj_async_clear",
