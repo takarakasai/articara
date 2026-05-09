@@ -683,6 +683,203 @@ fn integration_walk_straight_mpc_wbc() {
         "forward: Δyaw = {:+.3} rad, expected |·| < 1.0 rad", m.dyaw());
 }
 
+/// Repro of the user-reported axis swap at high cmd magnitude: drives
+/// vx = +0.30 m/s (2× the standard test) and vy = +0.30 m/s separately
+/// for 5 s each, prints the (body_dx, body_dy, Δyaw) so we can see
+/// which axis dominates. No assertions — this is a diagnostic.
+#[test]
+#[ignore = "diagnostic — run with --ignored"]
+fn diag_high_cmd_axis_swap() {
+    let high_fwd = VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 };
+    let high_lat = VelocityCmd { vx: 0.0, vy: 0.30, wz: 0.0 };
+    if let Some(m) = run_walk(true, GaitMode::Mpc, high_fwd) {
+        eprintln!(
+            "[diag:vx=0.3] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad",
+            m.body_dx(), m.body_dy(), m.dyaw(),
+        );
+    }
+    if let Some(m) = run_walk(true, GaitMode::Mpc, high_lat) {
+        eprintln!(
+            "[diag:vy=0.3] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad",
+            m.body_dx(), m.body_dy(), m.dyaw(),
+        );
+    }
+}
+
+/// Reproduce the *user's GUI-driven* axis-swap report: load via misa,
+/// seed `constrain` pose, recompute kin's `nominal_foot_body` from FK
+/// (= what `gait_use_current_pose_as_stance()` does in the script),
+/// then drive vx = +0.30 / vy = +0.30 for 3 s each. Prints traj — no
+/// assertions.
+#[test]
+#[ignore = "diagnostic — run with --ignored"]
+fn diag_constrain_pose_axis_swap() {
+    use articara::gait::{auto_detect_kinematics_config, DEFAULT_FOOT_LINKS};
+    use articara::robot::RobotModel;
+    use articara::mujoco_sim::MujocoSim;
+    use articara::wbc_pipeline::WbcPipeline;
+
+    let misa_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("namiashi")
+        .join("namiashi.misa");
+    if !misa_path.exists() {
+        eprintln!("namiashi.misa missing — skipping");
+        return;
+    }
+    let mut robot = RobotModel::from_misa(&misa_path).expect("load misa");
+    common::setup_position_pd_actuators(&mut robot);
+
+    // Auto-detect kin (q=0 reference foot positions).
+    let mut kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS)
+        .expect("auto-detect kinematics");
+
+    // Seed constrain pose: copy [[pose]] "constrain" angles into joint_positions.
+    let constrain = robot.poses.iter().find(|p| p.name == "constrain")
+        .expect("constrain pose").clone();
+    for (ji, joint) in robot.joints.iter().enumerate() {
+        if let Some(&q) = constrain.angles.get(&joint.name) {
+            robot.joint_positions[ji] = q;
+        }
+    }
+
+    // gait_use_current_pose_as_stance(): recompute nominal_foot_body from FK
+    // at the just-seeded constrain joint angles.
+    let transforms = robot.compute_transforms();
+    let body_pos: nalgebra::Vector3<f64> = transforms
+        .get(&robot.root_link)
+        .map(|iso| iso.translation.vector.cast::<f64>())
+        .unwrap_or_else(nalgebra::Vector3::zeros);
+    for kin_leg in [&mut kin.fl, &mut kin.fr, &mut kin.rl, &mut kin.rr] {
+        if let Some(foot_iso) = transforms.get(&kin_leg.foot_link) {
+            let foot_pos: nalgebra::Vector3<f64> =
+                foot_iso.translation.vector.cast::<f64>();
+            kin_leg.nominal_foot_body = foot_pos - body_pos;
+        }
+    }
+    eprintln!(
+        "[diag:setup] nominal_foot_body FL=({:+.3}, {:+.3}, {:+.3})",
+        kin.fl.nominal_foot_body.x,
+        kin.fl.nominal_foot_body.y,
+        kin.fl.nominal_foot_body.z,
+    );
+
+    let mut sim = MujocoSim::new(&robot, common::default_mjcf_export_options())
+        .expect("MujocoSim::new");
+    sim.set_gravity_compensation(true);
+
+    // Quick test runner inline (mirrors run_walk but with custom kin
+    // already seeded in robot, plus this test runs only 3 s, no
+    // burn-in retune).
+    let cfg = quadruped_gait::GaitConfig::trot();
+    let mut gc = articara::gait::GaitController::build(
+        &robot, kin, cfg, quadruped_gait::GaitMode::Mpc,
+    ).expect("GaitController::build");
+    let use_wbc = std::env::var("DIAG_WBC").map(|v| v != "0").unwrap_or(true);
+    eprintln!("[diag:setup] use_wbc = {use_wbc}");
+    let mut wbc_pipeline = if use_wbc {
+        let mut p = WbcPipeline::new(&robot, common::default_foot_links());
+        if let Some(srbd_cfg) = gc.srbd_mpc_config() {
+            p.mass_kg = srbd_cfg.mass_kg;
+            p.inertia_diag_body = srbd_cfg.inertia_diag_body;
+        }
+        Some(p)
+    } else {
+        None
+    };
+
+    for (label, cmd) in [
+        ("vx=0.0", VelocityCmd::zero()),
+        ("vx=+0.3", VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 }),
+        ("vy=+0.3", VelocityCmd { vx: 0.0, vy: 0.30, wz: 0.0 }),
+    ] {
+        // 0.5 s burn-in @ zero cmd, then 3 s @ cmd.
+        gc.set_velocity_cmd(VelocityCmd::zero());
+        gc.enable();
+        let pos0 = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+        let yaw0 = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+        let dt = sim.timestep();
+        let burn = (0.5 / dt) as usize;
+        let active = (3.0 / dt) as usize;
+        for k in 0..(burn + active) {
+            if k == burn { gc.set_velocity_cmd(cmd); }
+            if let Some(p) = wbc_pipeline.as_mut() {
+                p.weights = quadruped_gait::wbc::WbcWeights::for_cmd(&gc.velocity_cmd());
+            }
+            let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            gc.set_body_state_observed(
+                nalgebra::Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+                nalgebra::Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+            );
+            let pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+            let yaw = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+            gc.set_body_pose_observed(
+                yaw, nalgebra::Vector3::new(pos[0], pos[1], pos[2]),
+            );
+            let (out, targets, torque_ff) = gc.tick(dt);
+            for (idx, q) in targets {
+                sim.set_position_target(idx, q);
+            }
+            if let Some(pipeline) = wbc_pipeline.as_mut() {
+                // WBC torques via Hybrid path (τ_ff on top of Position-PD).
+                let f_grf_world = gc.predicted_grfs()
+                    .map(|s| s.grfs_first_step)
+                    .unwrap_or([nalgebra::Vector3::zeros(); 4]);
+                let v_cmd_body = nalgebra::Vector3::new(cmd.vx, cmd.vy, 0.0);
+                let v_obs_v3 = nalgebra::Vector3::new(v_obs[0], v_obs[1], v_obs[2]);
+                let omega_obs_v3 = nalgebra::Vector3::new(w_obs[0], w_obs[1], w_obs[2]);
+                let kin_now = gc.kinematics().clone();
+                let joint_indices = gc.joint_indices();
+                let joint_signs = gc.joint_signs();
+                let foot_links_str: [&str; 4] = [
+                    pipeline.foot_links[0].as_str(),
+                    pipeline.foot_links[1].as_str(),
+                    pipeline.foot_links[2].as_str(),
+                    pipeline.foot_links[3].as_str(),
+                ];
+                let force_z = sim.contact_force_per_foot(&foot_links_str);
+                let nominal_phases = [
+                    out.legs[0].phase, out.legs[1].phase,
+                    out.legs[2].phase, out.legs[3].phase,
+                ];
+                let corrected = quadruped_gait::ContactDrivenPhase::apply_correction(
+                    &nominal_phases, force_z, 5.0, 0.0,
+                );
+                let contact_flag_corrected = [
+                    corrected[0].is_stance, corrected[1].is_stance,
+                    corrected[2].is_stance, corrected[3].is_stance,
+                ];
+                let taus = pipeline.solve(
+                    &robot, &sim, &out, &kin_now, joint_indices, joint_signs,
+                    &v_cmd_body, cmd.wz, &v_obs_v3, &omega_obs_v3,
+                    &f_grf_world, contact_flag_corrected, dt,
+                );
+                for (ji, &tau) in taus.iter().enumerate() {
+                    sim.set_torque_feedforward(ji, tau);
+                }
+            } else {
+                // No WBC → use the gait controller's MPC-derived τ_ff
+                for (idx, tau) in torque_ff {
+                    sim.set_torque_feedforward(idx, tau);
+                }
+            }
+            sim.step(&mut robot, dt, true);
+        }
+        let pos1 = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+        let yaw1 = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+        eprintln!(
+            "[diag:{}] pos start=({:+.2}, {:+.2}, {:+.2}) end=({:+.2}, {:+.2}, {:+.2})  Δ=({:+.3}, {:+.3}, {:+.3})  yaw {:+.0}°→{:+.0}°",
+            label,
+            pos0[0], pos0[1], pos0[2],
+            pos1[0], pos1[1], pos1[2],
+            pos1[0] - pos0[0], pos1[1] - pos0[1], pos1[2] - pos0[2],
+            yaw0.to_degrees(), yaw1.to_degrees(),
+        );
+    }
+}
+
 // ─── Lateral-walk benchmarks ──────────────────────────────────────
 
 /// MPC + Position-PD (no WBC) lateral walk — diagnostic that
