@@ -683,6 +683,79 @@ fn integration_walk_straight_mpc_wbc() {
         "forward: Δyaw = {:+.3} rad, expected |·| < 1.0 rad", m.dyaw());
 }
 
+// ─── Centroidal-SRBD MPC benchmarks (D1.3) ────────────────────────
+//
+// These exercise the new `GaitMode::CentroidalSrbd` path end-to-end.
+// Same assertions as the body-root SRBD `*_mpc_wbc` tests above so
+// the two MPC formulations can be compared head-to-head on identical
+// fixtures. Champ / Mpc / CentroidalSrbd are all kept side-by-side
+// as baselines per the D1 plan.
+//
+// **D1.3 status**: marked `#[ignore]` so they DON'T break CI yet —
+// the centroidal MPC's QP runs end-to-end and produces stable GRFs,
+// but the q_diag tune is still SRBD-equivalent and doesn't account
+// for the centroidal-momentum unit scale (h_ang/m differs from SRBD
+// ω by I/m ≈ 0.0038). D1.4 will re-tune the cost weights so these
+// pass with the same assertion thresholds as the SRBD baseline.
+// Run with `cargo test ... -- --ignored` to see current numbers.
+
+#[test]
+#[ignore = "D1.4 tuning target — assertions kept as goal"]
+fn integration_walk_straight_centroidal_wbc() {
+    let Some(m) = run_walk(true, GaitMode::CentroidalSrbd, fwd_cmd()) else {
+        return;
+    };
+    eprintln!(
+        "[forward:centroidal+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+    );
+    assert!(m.min_body_z > FALL_THRESHOLD_Z, "Centroidal+WBC fell (forward)");
+    assert!(m.body_dx() > 0.10,
+        "forward (centroidal): body_dx = {:+.3} m, expected > +0.10 m", m.body_dx());
+    assert!(m.body_dy().abs() < 0.20,
+        "forward (centroidal): body_dy = {:+.3} m, expected |·| < 0.20 m", m.body_dy());
+    assert!(m.dyaw().abs() < 1.0,
+        "forward (centroidal): Δyaw = {:+.3} rad, expected |·| < 1.0 rad", m.dyaw());
+}
+
+#[test]
+#[ignore = "D1.4 tuning target — assertions kept as goal"]
+fn integration_walk_lateral_centroidal_wbc() {
+    let Some(m) = run_walk(true, GaitMode::CentroidalSrbd, lat_cmd()) else {
+        return;
+    };
+    eprintln!(
+        "[lateral:centroidal+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+    );
+    assert!(m.min_body_z > FALL_THRESHOLD_Z, "Centroidal+WBC fell (lateral)");
+    assert!(m.body_dy() > 0.20,
+        "lateral (centroidal): body_dy = {:+.3} m, expected > +0.20 m", m.body_dy());
+    assert!(m.body_dx().abs() < 0.30,
+        "lateral (centroidal): body_dx = {:+.3} m, expected |·| < 0.30 m", m.body_dx());
+    assert!(m.dyaw().abs() < 1.5,
+        "lateral (centroidal): Δyaw = {:+.3} rad, expected |·| < 1.5 rad", m.dyaw());
+}
+
+#[test]
+#[ignore = "D1.4 tuning target — assertions kept as goal"]
+fn integration_walk_yaw_centroidal_wbc() {
+    let Some(m) = run_walk(true, GaitMode::CentroidalSrbd, yaw_cmd()) else {
+        return;
+    };
+    eprintln!(
+        "[yaw:centroidal+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+    );
+    assert!(m.min_body_z > FALL_THRESHOLD_Z, "Centroidal+WBC fell (yaw)");
+    assert!(m.dyaw().abs() > 1.5,
+        "yaw (centroidal): Δyaw = {:+.3} rad, expected |·| > 1.5 rad", m.dyaw());
+    assert!(m.body_dx().abs() < 0.35,
+        "yaw (centroidal): body_dx = {:+.3} m, expected |·| < 0.35 m", m.body_dx());
+    assert!(m.body_dy().abs() < 0.35,
+        "yaw (centroidal): body_dy = {:+.3} m, expected |·| < 0.35 m", m.body_dy());
+}
+
 /// Repro of the user-reported axis swap at high cmd magnitude: drives
 /// vx = +0.30 m/s (2× the standard test) and vy = +0.30 m/s separately
 /// for 5 s each, prints the (body_dx, body_dy, Δyaw) so we can see

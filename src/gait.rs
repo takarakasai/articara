@@ -290,6 +290,82 @@ pub fn auto_detect_srbd_mpc_config(
     cfg
 }
 
+/// Auto-fill a [`quadruped_gait::CentroidalMpcConfig`] from the URDF.
+/// Sibling of [`auto_detect_srbd_mpc_config`] that targets the
+/// centroidal-SRBD MPC.
+///
+/// - `mass_kg`           : sum over all links' inertials.
+/// - `centroidal_inertia_body` : 3×3 angular block of the centroidal
+///   composite-rigid-body inertia at q = 0 (`misarta::centroidal::
+///   compute_centroidal_inertia`'s top-left 3×3).
+/// - `com_offset_body`   : aggregate CoM relative to body root, body
+///   frame, at q = 0. The dominant correction the centroidal model
+///   provides over the body-root SRBD.
+///
+/// Used by [`GaitController::build`] to populate the centroidal MPC
+/// config so that mode-switching to `GaitMode::CentroidalSrbd` is
+/// instant.
+pub fn auto_detect_centroidal_mpc_config(
+    model: &RobotModel,
+) -> quadruped_gait::CentroidalMpcConfig {
+    let mut cfg = quadruped_gait::CentroidalMpcConfig::default();
+
+    let mass_total: f64 = model.links.iter().map(|l| l.inertial.mass).sum();
+    if mass_total > 1e-6 {
+        cfg.mass_kg = mass_total;
+    }
+
+    // CoM offset: aggregate CoM at q = 0 minus body root, expressed
+    // in body frame (= world frame at q = 0 with identity base).
+    let transforms = model.compute_transforms();
+    let body_pos: na::Vector3<f64> = transforms
+        .get(&model.root_link)
+        .map(|t| t.translation.vector.cast::<f64>())
+        .unwrap_or_else(na::Vector3::zeros);
+    let mut p_com_weighted = na::Vector3::<f64>::zeros();
+    let mut total_m = 0.0_f64;
+    for link in &model.links {
+        if link.inertial.mass <= 0.0 {
+            continue;
+        }
+        let Some(t_link_world) = transforms.get(&link.name) else {
+            continue;
+        };
+        let com_local = link.inertial.origin.translation.vector.cast::<f64>();
+        let r_link = t_link_world.rotation.to_rotation_matrix();
+        let r_link_f64 = r_link.matrix().cast::<f64>();
+        let t_link = t_link_world.translation.vector.cast::<f64>();
+        let com_world = r_link_f64 * com_local + t_link;
+        p_com_weighted += link.inertial.mass * com_world;
+        total_m += link.inertial.mass;
+    }
+    if total_m > 1e-6 {
+        cfg.com_offset_body = (p_com_weighted / total_m) - body_pos;
+    }
+
+    // Centroidal angular inertia: take misarta's centroidal CRBI's
+    // 3×3 angular block at q = 0. For type-1 SRBD this stays constant
+    // across the horizon; the host can override later for a different
+    // nominal pose.
+    if let Some(mc) = model.misarta_cache.as_ref() {
+        let q = mc.model.neutral_q();
+        let i6 = misarta::centroidal::compute_centroidal_inertia(&mc.model, &q);
+        let mut i_ang = nalgebra::Matrix3::<f64>::zeros();
+        for r in 0..3 {
+            for c in 0..3 {
+                i_ang[(r, c)] = i6[(r, c)];
+            }
+        }
+        // Skip near-singular results (degenerate URDF). Default value
+        // stays in `cfg.centroidal_inertia_body`.
+        if i_ang.determinant().abs() > 1e-9 {
+            cfg.centroidal_inertia_body = i_ang;
+        }
+    }
+
+    cfg
+}
+
 /// Wrapper around [`InnerController`] (= `quadruped_gait::GaitController`)
 /// that caches the joint-name → RobotModel-joint-idx mapping. The cache
 /// Source for the body pose observation feeding the gait controller's
@@ -414,9 +490,16 @@ impl GaitController {
         // The default 9 kg / Cheetah-3 inertia is wildly off for most
         // legged robots; running with the default would scale every
         // predicted GRF by the mass ratio and produce a huge τ_ff that
-        // either flails the legs or launches the body. CHAMP path
-        // ignores the call (no MPC state).
+        // either flails the legs or launches the body.
+        //
+        // We populate **both** SRBD and centroidal MPC configs so that
+        // `set_mode` switches between Mpc / CentroidalSrbd at runtime
+        // without needing a re-build. The `set_*_mpc_config` calls are
+        // no-ops in modes that don't carry that MPC type (CHAMP /
+        // wrong-MPC-mode), so this is safe regardless of the active
+        // mode at build time.
         inner.set_srbd_mpc_config(auto_detect_srbd_mpc_config(model));
+        inner.set_centroidal_mpc_config(auto_detect_centroidal_mpc_config(model));
         Ok(Self {
             inner,
             joint_indices,
