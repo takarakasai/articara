@@ -1185,13 +1185,29 @@ impl ArticaraApp {
         let stable_dt = ui.ctx().input(|i| i.stable_dt).max(1e-4);
         let ui_fps = 1.0 / stable_dt as f64;
 
+        // Body yaw + world position from MuJoCo. When a model is loaded,
+        // pull the trunk's pose so the user can see *where* and *which
+        // direction* the body actually points. Arrow-button cmds are in
+        // body frame, so a body that has yawed during a script run will
+        // produce screen-frame motion that doesn't match the cmd label
+        // (e.g. forward-cmd → lateral motion if yaw ≈ 90°). Surfacing
+        // yaw here makes that immediately obvious instead of looking like
+        // a controller bug.
+        let body_pose = self.model.as_ref().and_then(|m| {
+            let yaw_rad = sim.body_world_yaw(&m.root_link)?;
+            let pos = sim.body_world_position(&m.root_link)?;
+            Some((yaw_rad, pos))
+        });
+
         let painter = ui.painter();
-        let bar_w = 160.0_f32;
+        let bar_w = 200.0_f32;
         let bar_h = 6.0_f32;
         let pad = 4.0_f32;
         let line_h = 14.0_f32;
-        // Total widget = bar + 3 lines of text (ratio, FPS, WBC state).
-        let total_h = bar_h + 3.0 * line_h;
+        // Total widget = bar + 3 lines (ratio, FPS, WBC) + 1 extra line for
+        // body pose if available.
+        let extra_lines = if body_pose.is_some() { 1.0 } else { 0.0 };
+        let total_h = bar_h + (3.0 + extra_lines) * line_h;
         let centre_x = rect.center().x;
         let top = rect.top() + 12.0;
         let bar_rect = egui::Rect::from_min_size(
@@ -1313,6 +1329,32 @@ impl ArticaraApp {
                     egui::pos2(click_rect.right() - 4.0, click_rect.bottom() - 1.0),
                 ],
                 egui::Stroke::new(1.0, wbc_color),
+            );
+        }
+
+        // Row 4 (when a model is loaded): trunk yaw + world position.
+        // Arrow / GUI cmds are body-frame; this row exposes how rotated
+        // the body currently is so the user can interpret cmd directions
+        // correctly. Yaw colour-coded: green ≤ 5°, orange ≤ 30°, red beyond.
+        if let Some((yaw_rad, pos)) = body_pose {
+            let yaw_deg = yaw_rad.to_degrees();
+            let yaw_abs = yaw_deg.abs();
+            let pose_color = if yaw_abs <= 5.0 {
+                egui::Color32::from_rgb(80, 200, 100)
+            } else if yaw_abs <= 30.0 {
+                egui::Color32::from_rgb(220, 180, 60)
+            } else {
+                egui::Color32::from_rgb(220, 80, 60)
+            };
+            painter.text(
+                egui::pos2(centre_x, bar_rect.bottom() + 2.0 + 3.0 * line_h),
+                egui::Align2::CENTER_TOP,
+                format!(
+                    "Body: yaw={:+.0}°  pos=({:+.2}, {:+.2}, {:+.2})",
+                    yaw_deg, pos[0], pos[1], pos[2],
+                ),
+                egui::FontId::proportional(11.0),
+                pose_color,
             );
         }
     }
