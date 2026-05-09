@@ -1801,18 +1801,18 @@ kind = "QuinticSmooth"
 
 [pose.angles]
 FL_calf_joint = -1.9999999
-FL_hip_joint = 0.004999974
+FL_hip_joint = 0.0
 FL_thigh_joint = 1.0000001
 FR_calf_joint = -1.9999999
-FR_hip_joint = 0.000000047683717
+FR_hip_joint = 0.0
 FR_thigh_joint = 1.0000001
 RL_calf_joint = -1.9999999
-RL_hip_joint = 0.004999974
+RL_hip_joint = 0.0
 RL_thigh_joint = 1.0000001
 RR_calf_joint = -1.9999999
-RR_hip_joint = 0.000000047683717
+RR_hip_joint = 0.0
 RR_thigh_joint = 1.0000001
-arm_pitch_joint = 0.000000047683717
+arm_pitch_joint = 0.0
 
 [[pose]]
 name = "extend"
@@ -1821,13 +1821,13 @@ kind = "QuinticSmooth"
 
 [pose.angles]
 FL_calf_joint = -0.6000000000000001
-FL_hip_joint = 0.0050000000000000044
+FL_hip_joint = 0.0
 FL_thigh_joint = 0.2999999999999998
 FR_calf_joint = -0.6000000000000001
 FR_hip_joint = 0.0
 FR_thigh_joint = 0.2999999999999998
 RL_calf_joint = -0.6000000000000001
-RL_hip_joint = 0.0050000000000000044
+RL_hip_joint = 0.0
 RL_thigh_joint = 0.2999999999999998
 RR_calf_joint = -0.6000000000000001
 RR_hip_joint = 0.0
@@ -1841,13 +1841,13 @@ kind = "QuinticSmooth"
 
 [pose.angles]
 FL_calf_joint = -2.6
-FL_hip_joint = 0.0050000000000000044
+FL_hip_joint = 0.0
 FL_thigh_joint = 1.2999999999999998
 FR_calf_joint = -2.6
 FR_hip_joint = 0.0
 FR_thigh_joint = 1.2999999999999998
 RL_calf_joint = -2.6
-RL_hip_joint = 0.0050000000000000044
+RL_hip_joint = 0.0
 RL_thigh_joint = 1.2999999999999998
 RR_calf_joint = -2.5500000000000003
 RR_hip_joint = 0.0
