@@ -363,11 +363,19 @@ pub fn auto_detect_centroidal_mpc_config(
         }
     }
 
-    // SQP iterations: 3 = legged_control-style sweet spot for
-    // namiashi-class robots. 1 leaves yaw cmd tracking loose, 2 is
-    // unstable (under-converged), 4-5 is over-iteration with no
-    // measurable gain. Hosts can override after `auto_detect`.
-    cfg.sqp_iterations = 3;
+    // SQP iterations: default to 1 (single-shot) for conservative,
+    // visually predictable behaviour. Empirical comparison on namiashi:
+    //   SQP=1 → forward dx weak (+0.151) but cross-coupling small
+    //           (forward dy = -0.472), lateral inverted (-0.195),
+    //           visually clean
+    //   SQP=3 → forward dx ideal (+0.777, ≈ cmd target +0.75) but
+    //           lateral cross-coupling LARGE (forward dy = -1.143);
+    //           yaw target hit but body veers sideways visibly
+    // The cross-coupling explosion at SQP=3 is the predicted-trajectory
+    // yaw drift amplifying through linearisation re-solves. Hosts that
+    // prioritise tracking magnitude can override to 2-3; the default
+    // matches the visually-predictable D1.4 baseline.
+    cfg.sqp_iterations = 1;
 
     cfg
 }
