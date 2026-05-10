@@ -308,6 +308,7 @@ OCS2 NMPC は外部依存重く Rust 移植非現実的。代替:
 | 実機接続 (RobStride / lkmotor) | sibling crates 経由 | 2-3 週間 |
 | **Phase D1 Centroidal-SRBD MPC** | **完了** (legged_control type-1 相当、CoM オフセット込み) | (`bd457f8`-`f880ce1`) |
 | D2 SQP Multiple Shooting | 非線形再線形化反復、D1.5 で残った lateral 反転を再 tuning でなく構造的に解決 | 2-3 週間 |
+| D3.1 misarta primitive profiling | namiashi で per-node コスト ≈ 250 μs (95% が FD Ȧ) と判明、N≤20, SQP≤5 まで 30 ms budget 内 | **完了** |
 | D3 Full Centroidal Dynamics | joint q,q̇ も MPC 状態に含める (24-state)、legged_control type-0 完全等価 | 3-4 週間 |
 
 ## Phase D: Centroidal MPC モード

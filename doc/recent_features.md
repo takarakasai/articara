@@ -565,6 +565,70 @@ SQP=3 は forward dx を ideal まで上げる代わりに横ずれが 2.4× 拡
 | `5e383e3` | D1.2 clarabel ベース MPC QP ソルバ |
 | `bd457f8` | D1.1 centroidal 動力学関数 + unit tests |
 
+## 7. Phase D3.1: misarta dynamics primitive profiling
+
+D3 (Full Centroidal、24-state、joint q/q̇ を MPC 状態に含める) の
+**実装可否を判断する前提として**、 misarta の主要 dynamics primitive
+が namiashi (nq=nv=13) でどれだけ時間を要するかを `cargo run
+--release --example bench_misarta_dynamics` で計測。
+
+### 結果 (μs / call、release build、200 iter mean)
+
+| Primitive | μs/call | 用途 |
+|---|---:|---|
+| `compute_com` | 0.7 | CoM 位置 (FK + mass-weighted sum) |
+| `compute_centroidal_inertia` | 1.0 | 6×6 慣性テンソル |
+| `rnea` | 3.0 | 逆動力学 τ = ID(q,v,a) |
+| `crba` | 3.3 | mass matrix `M(q)` |
+| `compute_com_jacobian` | 3.4 | CoM Jacobian (3×nv) |
+| `compute_gravity` | 3.6 | g(q) |
+| `compute_centroidal_momentum_matrix` | 7.2 | CMM A(q) (6×nv) |
+| `compute_minv` | 98.5 | M⁻¹ (ABA-based) |
+| `compute_coriolis_matrix` | 100.6 | C(q,v) (FD ベース) |
+| **`compute_centroidal_momentum_matrix_time_derivative`** | **236.3** | **Ȧ(q,v) — FD! 2·nnz(v) CMM 呼び** |
+
+### MPC node-cost projection
+
+per-node コスト ≈ CMM + Ȧ + CRBA + RNEA = **249.8 μs**
+(うち 95% が Ȧ の有限差分)
+
+| horizon | sqp=1 | sqp=3 | sqp=5 |
+|---:|---:|---:|---:|
+| N=10 |  2.5 ms |  7.5 ms | 12.5 ms |
+| N=12 |  3.0 ms |  9.0 ms | 15.0 ms |
+| N=16 |  4.0 ms | 12.0 ms | 20.0 ms |
+| N=20 |  5.0 ms | 15.0 ms | 25.0 ms |
+
+→ 33 Hz re-plan target (≤ 30 ms/solve) を **N≤20, SQP≤5** まで
+余裕を持って満たす。 つまり misarta 側の追加最適化なしでも D3
+は機能的に書ける見込み。
+
+### 主要な所見と D3.2 以降への含意
+
+1. **Ȧ(q,v) が圧倒的ボトルネック (236 μs)** — 単一 CMM の 33×。
+   原因は `compute_centroidal_momentum_matrix_time_derivative` が
+   2·nnz(v) 回の CMM 評価による central FD だから (`misarta/src/centroidal.rs:288-316`)。
+   - 短期 (D3.2): Pinocchio `dccrba` 相当の解析的 Ȧ を misarta に追加 →
+     ~26× 高速化 (236 μs → ~9 μs) でき、horizon=20 + SQP=5 でも 1.5 ms 以下。
+   - D3 着手前に必須ではない (現状でも budget 内) が、 SQP iteration
+     を増やしたい (D2 の lateral 不具合対策) 場合に効く。
+2. **CRBA + CMM の融合余地** — 両者は同じ FK と spatial inertia
+   composite を伝播している。 fused evaluator で ~32% 削減見込み
+   (CMM 7.2 + CRBA 3.3 → 推定 7.5 程度)。 D3 のホットパスでは Ȧ
+   削減に比べ二次的。
+3. **`compute_coriolis_matrix` が 100 μs と高い** — 24-state MPC で
+   関節側の C(q,v) を直接使う場合は要注意。 ただし centroidal
+   formulation では関節側 ID は RNEA で済むため必要にならない。
+4. **`compute_minv` (98 μs)** は M⁻¹ の明示計算。 D3 で M⁻¹ が要る
+   なら Cholesky-of-M (CRBA 後) で 3.3 μs + back-substitution の方が
+   速い可能性大。
+
+### 関連コミット
+
+| Hash | 内容 |
+|---|---|
+| 次 commit | D3.1 — `examples/bench_misarta_dynamics.rs` + 本セクション |
+
 ---
 
 ## 関連コミット一覧 (時系列・新→旧)
