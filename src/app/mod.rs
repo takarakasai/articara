@@ -1690,8 +1690,19 @@ impl ArticaraApp {
                                         // the wrong direction; `for_cmd` linearly fades
                                         // the swing_leg weight from forward-default 1.0
                                         // down to lateral-optimum 0.1.
-                                        pipeline.weights =
-                                            quadruped_gait::wbc::WbcWeights::for_cmd(&cmd);
+                                        // Mode-aware swing_leg weight (D2/H):
+                                        // CentroidalSrbd halves swing_leg
+                                        // (`for_cmd_centroidal`) to reduce
+                                        // joint-PD reaction-torque amplification
+                                        // through the MPC's CoM-aware predictions.
+                                        pipeline.weights = if pipeline
+                                            .centroidal_inertia_body
+                                            .is_some()
+                                        {
+                                            quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&cmd)
+                                        } else {
+                                            quadruped_gait::wbc::WbcWeights::for_cmd(&cmd)
+                                        };
                                         let taus = pipeline.solve(
                                             model,
                                             mj_sim,

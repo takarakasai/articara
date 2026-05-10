@@ -525,8 +525,15 @@ fn run_walk(
         // is automatically dialled down for lateral / yaw commands
         // (avoids the joint-space-PD reaction torque sign-flip
         // documented in `WbcWeights::for_cmd`).
+        // Mode-aware (D2/H): CentroidalSrbd uses `for_cmd_centroidal`
+        // which halves swing_leg weights to reduce reaction-torque
+        // amplification through the MPC's CoM-aware predictions.
         if let Some(pipeline) = wbc_pipeline.as_mut() {
-            pipeline.weights = quadruped_gait::wbc::WbcWeights::for_cmd(&gc.velocity_cmd());
+            pipeline.weights = if pipeline.centroidal_inertia_body.is_some() {
+                quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd())
+            } else {
+                quadruped_gait::wbc::WbcWeights::for_cmd(&gc.velocity_cmd())
+            };
         }
         let v_obs = sim
             .body_world_linear_velocity(&robot.root_link)
