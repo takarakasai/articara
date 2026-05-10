@@ -363,11 +363,10 @@ pub fn auto_detect_centroidal_mpc_config(
         }
     }
 
-    // SQP iterations: 3 is the legged_control-style sweet spot for
-    // short-horizon convex MPCs — enough re-linearisation to track
-    // commanded yaw across the horizon, but not so many that the QP
-    // solve cost dominates. Hosts that need more reactivity (≤2) or
-    // higher fidelity (4-5) can override after `auto_detect`.
+    // SQP iterations: 3 = legged_control-style sweet spot for
+    // namiashi-class robots. 1 leaves yaw cmd tracking loose, 2 is
+    // unstable (under-converged), 4-5 is over-iteration with no
+    // measurable gain. Hosts can override after `auto_detect`.
     cfg.sqp_iterations = 3;
 
     cfg
