@@ -495,7 +495,15 @@ fn run_walk(
     // so the WBC switches to the CoM-aware `a_base_des` path; SRBD
     // mode leaves it `None` for the body-root baseline.
     if let Some(pipeline) = wbc_pipeline.as_mut() {
-        if let Some(centroidal_cfg) = gc.centroidal_mpc_config() {
+        if let Some(full_cfg) = gc.full_centroidal_mpc_config() {
+            // FullCentroidal mode shares the CoM-aware moment-arm
+            // `a_base_des` path with CentroidalSrbd — the 24-state MPC's
+            // GRFs satisfy the same `α = I_centroidal⁻¹ · Σ r × F`
+            // relationship by construction.
+            pipeline.mass_kg = full_cfg.mass_kg;
+            pipeline.centroidal_inertia_body = Some(full_cfg.centroidal_inertia_body);
+            pipeline.com_offset_body = full_cfg.com_offset_body;
+        } else if let Some(centroidal_cfg) = gc.centroidal_mpc_config() {
             pipeline.mass_kg = centroidal_cfg.mass_kg;
             pipeline.centroidal_inertia_body = Some(centroidal_cfg.centroidal_inertia_body);
             pipeline.com_offset_body = centroidal_cfg.com_offset_body;
@@ -792,6 +800,100 @@ fn integration_walk_yaw_centroidal_wbc() {
         "yaw (centroidal): body_dx = {:+.3} m, expected |·| < 0.35 m", m.body_dx());
     assert!(m.body_dy().abs() < 0.35,
         "yaw (centroidal): body_dy = {:+.3} m, expected |·| < 0.35 m", m.body_dy());
+}
+
+// ─── Full-centroidal MPC benchmarks (D3.3.6) ─────────────────────────
+//
+// Exercise the new `GaitMode::FullCentroidal` path end-to-end. Same
+// assertion thresholds as the CentroidalSrbd tests so the three MPC
+// formulations (Mpc / CentroidalSrbd / FullCentroidal) compare
+// directly on identical fixtures.
+//
+// **D3.3.6 status**: marked `#[ignore]` so they don't break CI while
+// the new 24-state path is being characterised on namiashi. The MPC's
+// QP runs end-to-end (D3.3.4 unit tests pass) and the gait controller
+// + WBC are wired (D3.3.5 + D3.3.6a); these tests measure whether the
+// 24-state formulation actually fixes the lateral inversion + forward
+// dy cross-coupling that empirical tuning + 12-state SQP could not.
+//
+// Run with `cargo test --test integration_walk --features mujoco -- --ignored`.
+
+/// Diagnostic: full-centroidal MPC + Position-PD (no WBC). Same role
+/// as `diag_centroidal_no_wbc_3axis` for the 12-state path — isolates
+/// the MPC's GRF quality from the WBC's `a_base_des` interpretation.
+#[test]
+#[ignore = "D3.3.6 diagnostic — run with --ignored to inspect"]
+fn diag_full_centroidal_no_wbc_3axis() {
+    for (label, cmd) in [
+        ("forward", fwd_cmd()),
+        ("lateral", lat_cmd()),
+        ("yaw", yaw_cmd()),
+    ] {
+        let Some(m) = run_walk(false, GaitMode::FullCentroidal, cmd) else {
+            return;
+        };
+        eprintln!(
+            "[{label}:full-centroidal-only] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+            m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        );
+    }
+}
+
+#[test]
+#[ignore = "D3.3.6 characterisation — assertions kept as goal"]
+fn integration_walk_straight_full_centroidal_wbc() {
+    let Some(m) = run_walk(true, GaitMode::FullCentroidal, fwd_cmd()) else {
+        return;
+    };
+    eprintln!(
+        "[forward:full-centroidal+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+    );
+    assert!(m.min_body_z > FALL_THRESHOLD_Z, "FullCentroidal+WBC fell (forward)");
+    assert!(m.body_dx() > 0.10,
+        "forward (full-centroidal): body_dx = {:+.3} m, expected > +0.10 m", m.body_dx());
+    assert!(m.body_dy().abs() < 0.20,
+        "forward (full-centroidal): body_dy = {:+.3} m, expected |·| < 0.20 m", m.body_dy());
+    assert!(m.dyaw().abs() < 1.0,
+        "forward (full-centroidal): Δyaw = {:+.3} rad, expected |·| < 1.0 rad", m.dyaw());
+}
+
+#[test]
+#[ignore = "D3.3.6 characterisation — assertions kept as goal"]
+fn integration_walk_lateral_full_centroidal_wbc() {
+    let Some(m) = run_walk(true, GaitMode::FullCentroidal, lat_cmd()) else {
+        return;
+    };
+    eprintln!(
+        "[lateral:full-centroidal+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+    );
+    assert!(m.min_body_z > FALL_THRESHOLD_Z, "FullCentroidal+WBC fell (lateral)");
+    assert!(m.body_dy() > 0.20,
+        "lateral (full-centroidal): body_dy = {:+.3} m, expected > +0.20 m", m.body_dy());
+    assert!(m.body_dx().abs() < 0.30,
+        "lateral (full-centroidal): body_dx = {:+.3} m, expected |·| < 0.30 m", m.body_dx());
+    assert!(m.dyaw().abs() < 1.5,
+        "lateral (full-centroidal): Δyaw = {:+.3} rad, expected |·| < 1.5 rad", m.dyaw());
+}
+
+#[test]
+#[ignore = "D3.3.6 characterisation — assertions kept as goal"]
+fn integration_walk_yaw_full_centroidal_wbc() {
+    let Some(m) = run_walk(true, GaitMode::FullCentroidal, yaw_cmd()) else {
+        return;
+    };
+    eprintln!(
+        "[yaw:full-centroidal+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+    );
+    assert!(m.min_body_z > FALL_THRESHOLD_Z, "FullCentroidal+WBC fell (yaw)");
+    assert!(m.dyaw().abs() > 1.5,
+        "yaw (full-centroidal): Δyaw = {:+.3} rad, expected |·| > 1.5 rad", m.dyaw());
+    assert!(m.body_dx().abs() < 0.35,
+        "yaw (full-centroidal): body_dx = {:+.3} m, expected |·| < 0.35 m", m.body_dx());
+    assert!(m.body_dy().abs() < 0.35,
+        "yaw (full-centroidal): body_dy = {:+.3} m, expected |·| < 0.35 m", m.body_dy());
 }
 
 /// Repro of the user-reported axis swap at high cmd magnitude: drives

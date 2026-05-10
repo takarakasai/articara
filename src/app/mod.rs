@@ -1613,7 +1613,12 @@ impl ArticaraApp {
                                     // active in MPC mode (CHAMP doesn't
                                     // produce GRFs).
                                     let wbc_active = self.wbc_enabled
-                                        && gc.mode() == quadruped_gait::GaitMode::Mpc;
+                                        && matches!(
+                                            gc.mode(),
+                                            quadruped_gait::GaitMode::Mpc
+                                                | quadruped_gait::GaitMode::CentroidalSrbd
+                                                | quadruped_gait::GaitMode::FullCentroidal
+                                        );
                                     if wbc_active {
                                         // Lazy-initialise the pipeline on first use.
                                         if self.wbc_pipeline.is_none() {
@@ -1634,7 +1639,21 @@ impl ArticaraApp {
                                             // (2.4 kg) without this override produces a
                                             // ~4× force overestimate that flings the legs
                                             // into the ground and tips the robot over.
-                                            if let Some(centroidal_cfg) =
+                                            if let Some(full_cfg) =
+                                                gc.full_centroidal_mpc_config()
+                                            {
+                                                // FullCentroidal mode shares the
+                                                // CoM-aware `a_base_des` path —
+                                                // the 24-state MPC's GRFs satisfy
+                                                // the centroidal moment-arm
+                                                // relationship.
+                                                new_pipe.mass_kg = full_cfg.mass_kg;
+                                                new_pipe.centroidal_inertia_body = Some(
+                                                    full_cfg.centroidal_inertia_body,
+                                                );
+                                                new_pipe.com_offset_body =
+                                                    full_cfg.com_offset_body;
+                                            } else if let Some(centroidal_cfg) =
                                                 gc.centroidal_mpc_config()
                                             {
                                                 // CentroidalSrbd mode: WBC uses

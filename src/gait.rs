@@ -637,6 +637,23 @@ impl GaitController {
         self.inner.centroidal_mpc_config()
     }
 
+    /// Override the 24-state full-centroidal MPC config. No-op outside
+    /// [`quadruped_gait::GaitMode::FullCentroidal`].
+    pub fn set_full_centroidal_mpc_config(
+        &mut self,
+        cfg: quadruped_gait::FullCentroidalMpcConfig,
+    ) {
+        self.inner.set_full_centroidal_mpc_config(cfg);
+    }
+
+    /// Read the active full-centroidal MPC config. `None` outside
+    /// [`quadruped_gait::GaitMode::FullCentroidal`].
+    pub fn full_centroidal_mpc_config(
+        &self,
+    ) -> Option<&quadruped_gait::FullCentroidalMpcConfig> {
+        self.inner.full_centroidal_mpc_config()
+    }
+
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
