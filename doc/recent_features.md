@@ -520,18 +520,22 @@ feedback がある現状では reference の方が常に良い** ことが判明
 100 Hz 目標に近づくには horizon 縮小が必要だが、現状の 33 Hz
 (dt_per_step = 30 ms) なら余裕あり。
 
-### D2 完了時の達成
+### D2 完了時の数値比較
 
-| Test | SRBD baseline | D1 final (1 iter) | **D2 final (3 iter)** |
-|---|---|---|---|
-| forward dx | +0.118 | +0.151 | **+0.777** ✓ ideal +0.75 達成 |
-| forward dy | -0.034 | -0.472 | -1.143 (cross 残) |
-| yaw dyaw | +2.759 | +1.599 | **+1.599** ✓ pass |
-| **yaw centroidal+wbc** | — | FAIL | **PASS** ✓ |
-| lateral dy | +0.501 | -0.195 | -0.134 (反転継続) |
+| Test | SRBD baseline | D1 final (1 iter) | D2 (3 iter) | **D2 final (1 iter, default)** |
+|---|---|---|---|---|
+| forward dx | +0.118 | +0.151 | +0.777 ideal | +0.151 |
+| forward dy | -0.034 | -0.472 | -1.143 (cross 倍増) | -0.472 |
+| yaw dyaw | +2.759 | +1.599 | +1.599 PASS | +1.599 PASS |
+| **yaw centroidal+wbc** | — | FAIL | **PASS** ✓ | **PASS** ✓ |
+| lateral dy | +0.501 | -0.195 | -0.134 (反転継続) | -0.195 (反転継続) |
 
-forward dx は **SRBD baseline (+0.118) を 6.6× 上回って ideal +0.75
-を達成**、yaw centroidal+wbc test が assertions all pass。
+**default は `sqp_iterations = 1`** に決定 (commit `397d5db`)。
+SQP=3 は forward dx を ideal まで上げる代わりに横ずれが 2.4× 拡大、
+**視覚的に「速く前進するが大きく横に流れる」挙動**となるため、
+保守的な D1.4 動作 (SQP=1) を default に戻した。SQP framework 自体は
+残るので、hosts は `set_centroidal_mpc_config` で `sqp_iterations`
+を override 可能。yaw centroidal+wbc test の PASS は SQP=1 でも維持。
 
 ### D2 関連コミット
 
