@@ -149,7 +149,7 @@ Articara のスクリプトコンソールは **Rhai** スクリプト言語を�
 
 | 関数 | 引数 | 効果 |
 |---|---|---|
-| `set_gait_mode(s)` | `"mpc"` / `"champ"` (case-insensitive) | Generator (gait controller mode) を切替 |
+| `set_gait_mode(s)` | `"mpc"` / `"champ"` / `"centroidal"` (case-insensitive) | Generator (gait controller mode) を切替。`"centroidal"` / `"centroidal-srbd"` / `"mpc-centroidal"` で legged_control type-1 相当の centroidal-SRBD MPC を選択 (CoM オフセット込み) |
 | `set_pose_source(s)` | `"groundtruth"` / `"imu_madgwick"` / `"leg_odometry"` | Pose source を切替 |
 | `set_wbc_enabled(on)` | `bool` | Hierarchical WBC ON/OFF |
 | `set_ground_plane_enabled(on)` | `bool` | Ground plane の include/exclude (次回 mj_start で有効) |

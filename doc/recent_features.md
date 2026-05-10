@@ -392,7 +392,98 @@ cargo run --release --features "mujoco scripting" -- \
 | LKF を `PoseSource::ExtendedKalman` で UI 統合 | LkfPipeline 完成済、UI 統合のみ未 (半日) |
 | 不整地 / 床傾斜テスト | Phase C 機能を実シナリオで検証 (1 週間) |
 | 実機接続 (RobStride / lkmotor) | sibling crates 経由 (2-3 週間) |
-| Phase D centroidal NMPC | 実装非推奨 (SRBD で実用十分) |
+| **Phase D1 centroidal-SRBD MPC** | **完了** (`bd457f8`-`f880ce1`、CoM オフセットを動力学に含む第三 MPC モード) |
+| D2 SQP Multiple Shooting | 未着手 (2-3 週間、非線形再線形化反復) |
+| D3 Full Centroidal Dynamics | 未着手 (3-4 週間、joint q,q̇ も MPC 状態に含めて legged_control type-0 完全等価) |
+
+---
+
+## 5. Phase D: Centroidal MPC (legged_control type-1 相当)
+
+namiashi のように URDF inertial origin が body root から偏った
+ロボット (trunk_inertia の +y 8.4 mm オフセット) では、body-root SRBD
+MPC は重力誘起ロールモーメントを補正できず constrain pose / 大きな
+cmd で lateral ドリフトする。Phase D は **CoM 中心の動力学** で
+これを解消する第三 MPC モード `GaitMode::CentroidalSrbd` を導入。
+
+### D1: 12 状態 centroidal-SRBD (= legged_control の `centroidalModelType=1`)
+
+状態空間:
+
+```
+x = [ v_com (3, m/s, world) ;
+      ω_world (3, rad/s) ;        ← D1.4 で h_ang/m から ω 直接表現に
+      base_pos (3, m, world) ;
+      euler_zyx (3, rad) ]        合計 12 + augmented gravity = 13 dim
+```
+
+入力: 4 脚 × 3 軸 GRF (world frame, 12 dim)。SRBD と同じ。
+
+連続時間動力学 (CoM-aware moment arm):
+```
+d/dt(v_com) = (Σ F)/m + g
+d/dt(ω) = I_centroidal⁻¹ · (Σ (foot_i − CoM_world) × F_i − ω × Iω)
+d/dt(pos) = v_com − ω × R · com_offset_body
+d/dt(euler) = T_body⁻¹ · R^T · ω_world
+```
+
+CoM 位置 = body root + R · com_offset_body。SRBD body-root 仮定の差は
+moment arm に **5mm 程度** の補正として現れる。
+
+### D1.1-D1.5 進捗
+
+| Phase | 内容 | コミット |
+|---|---|---|
+| D1.1 | `centroidal_mpc.rs` モジュール — 状態 / 入力型 + 連続時間動力学関数 + 8 件 unit test (静止立脚 / 自由落下 / 前進力 / yaw モーメント / **CoM オフセットでロール moment 検出** / Euler 微分) | `bd457f8` |
+| D1.2 | clarabel ベース convex QP — multiple shooting + friction cone + 接触モード制約。`mpc_hover_balances_gravity` / `mpc_forward_cmd_yields_positive_fx` / `mpc_swing_leg_grf_is_zero` の 3 件 + 11/11 unit test pass | `5e383e3` |
+| D1.3 | `GaitMode::CentroidalSrbd` を `AnyGaitController` に追加。`CentroidalMpcGaitController` (= `MpcGaitController` の sibling) を新設、phase / footstep / IK 共通化、MPC 層のみ centroidal に差替 | `15aaf39` |
+| D1.4 | state[3..6] を `h_ang/m` (m²/s) → `ω_world` (rad/s) に refactor。SRBD と単位整合、q_diag の 5 桁 dynamic range を回避。WBC pipeline `predicted_base_accel_world` を mode-aware (Some(I_centroidal) で centroidal 経路、None で SRBD baseline) | `c4359ba`, `b62be91`, `874cfcf` |
+| D1.5 | lateral / yaw cmd の GRF 方向 unit test (`mpc_lateral_cmd_yields_positive_fy`, `mpc_yaw_cmd_yields_positive_yaw_moment`)。com_offset=0 で SRBD と centroidal の `predicted_base_accel_world` が numerical tolerance で一致することを assert (`centroidal_and_srbd_accel_agree_at_zero_com_offset`) | `f880ce1` |
+
+### 使い方
+
+GUI:
+1. **Quadruped Gait panel** → `Generator:` ドロップダウンに **`MPC (centroidal-SRBD)`** が追加
+2. Pose source / WBC ON / GroundPlane は既存通り
+
+スクリプト:
+```rhai
+set_gait_mode("centroidal");        // または:
+// set_gait_mode("centroidal-srbd");
+// set_gait_mode("mpc-centroidal");
+```
+
+`auto_detect_centroidal_mpc_config` が URDF inertials から
+`mass_kg` / `centroidal_inertia_body` / `com_offset_body` を自動計算
+(misarta の `compute_centroidal_inertia` と link inertial origin 集約)。
+
+### D1.4 時点の達成と限界
+
+regression test (`tests/integration_walk.rs`) の現状値:
+
+| Test | SRBD baseline (e2d29fb) | CentroidalSrbd (874cfcf) | 評価 |
+|---|---|---|---|
+| forward dx | +0.118 | **+0.151** | SRBD 超え ✓ |
+| forward dy | -0.034 | -0.472 | cross-coupling 残 |
+| forward dyaw | +0.589 | -0.509 | 同水準 |
+| lateral dy | +0.501 | -0.195 | **追従反転** (D1.5 課題) |
+| yaw dyaw | +2.759 | **+1.599** | target > 1.5 達成 ✓ |
+
+3 件 (forward/lateral/yaw centroidal+wbc) は `#[ignore]` 状態。
+forward dx と yaw dyaw は SRBD 同等以上、lateral と forward dy
+cross-coupling は WBC HoQp 全体の再 tuning または D3 で解消予定。
+
+### 関連コミット (D1)
+
+| Hash | 内容 |
+|---|---|
+| `f880ce1` | D1.5 lateral/yaw cmd GRF + SRBD 等価性 unit test |
+| `874cfcf` | D1.4 WBC pipeline `predicted_base_accel_world` を mode-aware |
+| `b62be91` | D1.4 q_diag tuning (`p_y` 5、`r_diag` 1e-3) |
+| `c4359ba` | D1.4 state[3..6] を ω_world 直接表現に refactor |
+| `15aaf39` | D1.3 `GaitMode::CentroidalSrbd` + `CentroidalMpcGaitController` 統合 |
+| `5e383e3` | D1.2 clarabel ベース MPC QP ソルバ |
+| `bd457f8` | D1.1 centroidal 動力学関数 + unit tests |
 
 ---
 

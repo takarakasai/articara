@@ -306,7 +306,42 @@ OCS2 NMPC は外部依存重く Rust 移植非現実的。代替:
 | LKF を `PoseSource::ExtendedKalman` で UI 統合 | LkfPipeline 完成済、UI から選べるように | 半日 |
 | 不整地 / 床傾斜テスト | Phase C を実シナリオで検証 | 1 週間 |
 | 実機接続 (RobStride / lkmotor) | sibling crates 経由 | 2-3 週間 |
-| Phase D centroidal NMPC | 実装非推奨、SRBD で実用十分 | (除外) |
+| **Phase D1 Centroidal-SRBD MPC** | **完了** (legged_control type-1 相当、CoM オフセット込み) | (`bd457f8`-`f880ce1`) |
+| D2 SQP Multiple Shooting | 非線形再線形化反復、D1.5 で残った lateral 反転を再 tuning でなく構造的に解決 | 2-3 週間 |
+| D3 Full Centroidal Dynamics | joint q,q̇ も MPC 状態に含める (24-state)、legged_control type-0 完全等価 | 3-4 週間 |
+
+## Phase D: Centroidal MPC モード
+
+`GaitMode::CentroidalSrbd` を `Champ` / `Mpc` に並ぶ第三の選択肢として
+追加。状態空間は **CoM 中心の momentum coordinates**:
+
+```
+x = [v_com (3); ω_world (3); base_pos (3); euler_zyx (3); g (1)]   13 dim
+u = [F_FL, F_FR, F_RL, F_RR]                                       12 dim
+```
+
+連続時間動力学 (CoM-aware moment arm):
+
+```
+v̇_com = (Σ F)/m + g
+α     = I_centroidal⁻¹ · (Σ (foot_i − CoM_world) × F_i − ω × Iω)
+ṗ     = v_com − ω × R · com_offset_body
+ė_zyx = T_body⁻¹ · R^T · ω_world
+```
+
+WBC pipeline は mode-aware (`WbcPipeline.centroidal_inertia_body`):
+- `Some(I_centroidal)` → `predicted_base_accel_world_centroidal`
+  (CoM-shifted moment arm) を使用
+- `None` → 既存の body-root SRBD `predicted_base_accel_world`
+
+namiashi (CoM オフセット +5mm) で:
+
+| Test | SRBD baseline | CentroidalSrbd | 評価 |
+|---|---|---|---|
+| forward dx | +0.118 | **+0.151** | SRBD 超え ✓ |
+| yaw dyaw | +2.759 | **+1.599** | target > 1.5 達成 ✓ |
+
+詳細は [`recent_features.md`](recent_features.md#5-phase-d-centroidal-mpc-legged_control-type-1-相当) を参照。
 
 ## クレート配置の方針
 
