@@ -309,9 +309,10 @@ OCS2 NMPC は外部依存重く Rust 移植非現実的。代替:
 | **Phase D1 Centroidal-SRBD MPC** | **完了** (legged_control type-1 相当、CoM オフセット込み) | (`bd457f8`-`f880ce1`) |
 | D2 SQP Multiple Shooting | 非線形再線形化反復、D1.5 で残った lateral 反転を再 tuning でなく構造的に解決 | 2-3 週間 |
 | D3.1 misarta primitive profiling | namiashi で per-node コスト ≈ 250 μs (95% が FD Ȧ) と判明、N≤20, SQP≤5 まで 30 ms budget 内 | **完了** |
-| **D3.3 Full Centroidal MPC core** | 25-state SQP MPC + stance no-slip 制約。 quadruped-gait/src/full_centroidal_mpc.rs に独立モジュールとして実装、 19 unit test pass。 まだ gait controller / WBC 統合は未 | **コア完了** (`d7eafc4`-`9e3ee33`) |
-| D3.3.5 / D3.3.6 統合 | `GaitMode::FullCentroidal` 追加 + controller plumbing + WBC dispatch + integration_walk 回帰 | 1-2 週間 |
-| D3 Full Centroidal Dynamics | joint q,q̇ も MPC 状態に含める (24-state)、legged_control type-0 完全等価。 残りは integration | 完了が見えた |
+| **D3.3 Full Centroidal MPC core** | 25-state SQP MPC + stance no-slip 制約。 quadruped-gait/src/full_centroidal_mpc.rs に独立モジュールとして実装、 19 unit test pass | **完了** (`d7eafc4`-`9e3ee33`) |
+| **D3.3.5 / D3.3.6 統合** | `GaitMode::FullCentroidal` + controller plumbing + WBC dispatch + integration_walk 回帰 (forward PASS, lateral/yaw は tuning 待ち) | **完了** (`30b731f`, `bf25242`) |
+| D3.3.7 namiashi 向け cost weight tuning | lateral / yaw の cross-coupling 抑制 + Δyaw 倍率向上を q_diag / r_diag のスイープで探す | 1 週間 |
+| D3 Full Centroidal Dynamics | joint q,q̇ も MPC 状態に含める (24-state)、legged_control type-0 完全等価 | 構造完成、 tuning 残 |
 
 ## Phase D: Centroidal MPC モード
 

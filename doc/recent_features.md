@@ -744,6 +744,58 @@ WBC 統合 (D3.3.5 / D3.3.6) は別 session に残置**。
 | `62e567d` | D3.3.2 連続時間動力学 + per-node FK foot 位置 |
 | `d7eafc4` | D3.3.1 24-state state/input types |
 
+### D3.3.5 / D3.3.6 — 統合と end-to-end 検証
+
+D3.3 コアを articara の gait stack に統合。
+
+#### D3.3.5 (`30b731f`)
+
+- `FullCentroidalMpcGaitController` (~440 行) を追加。
+  `CentroidalMpcGaitController` を mirror し、 内部 MPC のみ 24-state
+  版に差し替え。 開いている joint_q reference は controller の現在 IK
+  出力を保持 (= D3.3 設計 (a) — pre-IK joint_q_ref は将来の D3.4 で
+  footstep 投影に置換可能)
+- `GaitMode::FullCentroidal` + `AnyGaitController::FullCentroidal` を
+  追加、 generator.rs の全 14 match arm を更新
+- `articara::gait::auto_detect_full_centroidal_mpc_config` を追加、
+  `GaitController::build` で 3 つの MPC config (SRBD / Centroidal / Full)
+  を同時に populate
+- scripting `set_gait_mode("full-centroidal" | "full" | ...)` で切替可
+
+#### D3.3.6 (`bf25242`)
+
+- WBC dispatch を FullCentroidal mode に対応:
+  GUI の `wbc_active` を `Mpc | CentroidalSrbd | FullCentroidal` に拡張、
+  `WbcPipeline.centroidal_inertia_body` を `full_centroidal_mpc_config()`
+  優先で populate。 24-state MPC の GRF は CoM-shifted moment arm を満たす
+  ので既存 `predicted_base_accel_world_centroidal` がそのまま使える
+- integration_walk に `*_full_centroidal_wbc` 3-axis test を追加
+  (forward / lateral / yaw、 既存 centroidal_wbc と同じ assertion 閾値)
+- `#[ignore]` 付きで CI を壊さず、特性評価ベンチとして残す
+
+#### namiashi での現状 (5 s walk, ground-truth pose, `bf25242`)
+
+| Test | dx [m] | dy [m] | Δyaw [rad] | min_z [m] | 評価 |
+|---|---:|---:|---:|---:|---|
+| forward + WBC | **+0.120** | -0.169 | -0.738 | 0.270 | ✅ pass |
+| lateral + WBC | -1.546 | **+0.386** | -2.132 | 0.084 | ✗ 倒れた |
+| yaw + WBC | +0.300 | -0.646 | **+0.728** | 0.264 | △ 弱い (目標 1.5) |
+
+参考: CentroidalSrbd (D1.4-D1.5) は forward dx = +0.151。 forward 軸
+は 24-state が body-root SRBD / 12-state centroidal と同等で機能して
+おり、 D3 の構造的仮説 (joint motion を MPC が直接モデル化) は forward
+では機能している。 lateral / yaw は q_diag / r_diag を namiashi 向け
+に再 tuning する D3.3.7 で改善見込み (D2 で 12-state にもあった
+empirical tuning 問題)。
+
+### D3.3 全体まとめ
+
+7 commit、 unit-test 19、 mujoco integration test 4 (1 PASS + 3
+characterization)。 24-state MPC は **構造的完成** (kernel + linearization
++ QP + SQP + 制約 + gait integration + WBC dispatch)。 forward 軸で
+end-to-end PASS、 残りは tuning と footstep-based joint reference の
+品質向上 (D3.3.7 / D3.4 候補)。
+
 ---
 
 ## 関連コミット一覧 (時系列・新→旧)
