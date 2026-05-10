@@ -1128,6 +1128,7 @@ fn run_walk_gui_v2(
         }
 
         if k < settle_steps {
+            // Settle phase: keep PD on the constrain pose.
             for (name, q) in constrain_pose {
                 if let Some(&idx) = robot.joint_map.get(name) {
                     sim.set_position_target(idx, q);
@@ -1208,6 +1209,95 @@ fn diag_walk_champ_forward_v2() {
         m.dx_world(), m.dy_world(), m.dyaw(), m.min_body_z);
     eprintln!("  metric = {}", q.line("forward"));
     eprintln!("  (user GUI reported: dx ≈ +1.13 over ~5-10s = track ≈ 0.55-0.65)");
+    eprintln!("  (user GUI reported: dz = +0.18 — body rises during walk; if test stays crouched, that's the gap)");
+}
+
+/// Time-series diagnostic: log body z and dx every 0.5 s of the walk
+/// phase to see whether the test reproduces the GUI's body-rising
+/// behaviour. User reports GUI ends at dz = +0.18 m above initial.
+#[test]
+#[ignore = "harness debug — run with --ignored"]
+fn diag_walk_champ_forward_v2_timeseries() {
+    let path = common::namiashi_urdf();
+    if !path.exists() { return; }
+    let mut robot = articara::robot::RobotModel::from_urdf(&path).expect("load");
+    for j in robot.joints.iter_mut() {
+        if j.joint_type == "fixed" { continue; }
+        j.actuator_mode = articara::robot::ActuatorMode::Position;
+        j.actuator_kp = 50.0;
+        j.actuator_kv = 5.0;
+    }
+    let constrain_pose = [
+        ("FL_hip_joint", 0.0), ("FL_thigh_joint", 1.0), ("FL_calf_joint", -2.0),
+        ("FR_hip_joint", 0.0), ("FR_thigh_joint", 1.0), ("FR_calf_joint", -2.0),
+        ("RL_hip_joint", 0.0), ("RL_thigh_joint", 1.0), ("RL_calf_joint", -2.0),
+        ("RR_hip_joint", 0.0), ("RR_thigh_joint", 1.0), ("RR_calf_joint", -2.0),
+        ("arm_pitch_joint", 0.0),
+    ];
+    for (name, q) in constrain_pose {
+        if let Some(&idx) = robot.joint_map.get(name) { robot.joint_positions[idx] = q; }
+    }
+    let kin = articara::gait::auto_detect_kinematics_config(
+        &robot, &articara::gait::DEFAULT_FOOT_LINKS).expect("kin");
+    let opts = articara::mjcf::MjcfExportOptions {
+        ground_plane: Some(articara::mjcf::GroundPlaneCfg { z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0 }),
+        add_actuators: false,
+        bake_actuator_limits: true,
+        bake_joint_position_limits: true,
+        ..Default::default()
+    };
+    let mut sim = articara::mujoco_sim::MujocoSim::new(&robot, opts).expect("sim");
+    sim.set_gravity_compensation(false);
+    let cfg = GaitConfig::trot();
+    let mut gc = GaitController::build(&robot, kin, cfg, GaitMode::Champ).expect("gc");
+    for (name, q) in constrain_pose {
+        if let Some(&idx) = robot.joint_map.get(name) { sim.set_position_target(idx, q); }
+    }
+    let cmd = VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 };
+    let settle_s = 2.0;
+    let cmd_s = 7.0;
+    let n_steps = ((settle_s + cmd_s) / DT) as usize;
+    let settle_steps = (settle_s / DT) as usize;
+    let log_every = (0.5 / DT) as usize;
+    let mut x0 = 0.0;
+    let mut z0 = 0.0;
+    eprintln!();
+    eprintln!("=== CHAMP forward v2 time-series ===");
+    eprintln!("  t_cmd[s]   dx[m]    dy[m]    dz[m]    yaw[rad]   body_z[m]");
+    for k in 0..n_steps {
+        if k == settle_steps {
+            gc.enable();
+            gc.set_velocity_cmd(cmd);
+            if let Some(p) = sim.body_world_position(&robot.root_link) {
+                x0 = p[0]; z0 = p[2];
+            }
+        }
+        if k < settle_steps {
+            for (name, q) in constrain_pose {
+                if let Some(&idx) = robot.joint_map.get(name) { sim.set_position_target(idx, q); }
+            }
+        } else {
+            let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            gc.set_body_state_observed(
+                Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+                Vector3::new(w_obs[0], w_obs[1], w_obs[2]));
+            let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+            let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+            gc.set_body_pose_observed(yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
+            let (_o, targets, _ff) = gc.tick(DT);
+            for (idx, q) in targets { sim.set_position_target(idx, q); }
+        }
+        sim.step(&mut robot, DT, true);
+        if k >= settle_steps && (k - settle_steps) % log_every == 0 {
+            if let Some(p) = sim.body_world_position(&robot.root_link) {
+                let yaw = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+                let t = (k - settle_steps) as f64 * DT;
+                eprintln!("  {:>5.2}    {:+.4}  {:+.4}  {:+.4}  {:+.4}    {:.4}",
+                    t, p[0]-x0, p[1], p[2]-z0, yaw, p[2]);
+            }
+        }
+    }
 }
 
 #[test]
