@@ -464,6 +464,103 @@ impl WalkBenchmark {
         ((raw + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI))
             - std::f64::consts::PI
     }
+
+    /// Compute the 5-dim quality score for a walk under `cmd`. The
+    /// score is single-cmd: feed `fwd_cmd()` / `lat_cmd()` / `yaw_cmd()`,
+    /// and the metrics auto-route the primary / secondary axes.
+    ///
+    /// `duration_s` is the time the cmd was actually applied (= total
+    /// sim time minus the burn-in window).
+    fn metrics(&self, cmd: VelocityCmd, duration_s: f64) -> WalkQuality {
+        if cmd.vx.abs() > 1e-9 {
+            let primary_cmd = cmd.vx.abs();
+            let primary_signed = self.body_dx() * cmd.vx.signum();
+            let secondary = self.body_dy().abs();
+            WalkQuality {
+                tracking: primary_signed / (primary_cmd * duration_s),
+                cross: secondary / (primary_cmd * duration_s),
+                yaw_drift_rps: self.dyaw().abs() / duration_s,
+                linear_drift_mps: 0.0,
+                min_z: self.min_body_z,
+            }
+        } else if cmd.vy.abs() > 1e-9 {
+            let primary_cmd = cmd.vy.abs();
+            let primary_signed = self.body_dy() * cmd.vy.signum();
+            let secondary = self.body_dx().abs();
+            WalkQuality {
+                tracking: primary_signed / (primary_cmd * duration_s),
+                cross: secondary / (primary_cmd * duration_s),
+                yaw_drift_rps: self.dyaw().abs() / duration_s,
+                linear_drift_mps: 0.0,
+                min_z: self.min_body_z,
+            }
+        } else if cmd.wz.abs() > 1e-9 {
+            let primary_cmd = cmd.wz.abs();
+            let primary_signed = self.dyaw() * cmd.wz.signum();
+            let linear_norm = (self.body_dx().powi(2) + self.body_dy().powi(2)).sqrt();
+            WalkQuality {
+                tracking: primary_signed / (primary_cmd * duration_s),
+                cross: 0.0, // n/a for yaw cmd; linear drift below is the cross-cmd metric
+                yaw_drift_rps: 0.0,
+                linear_drift_mps: linear_norm / duration_s,
+                min_z: self.min_body_z,
+            }
+        } else {
+            WalkQuality {
+                tracking: f64::NAN,
+                cross: f64::NAN,
+                yaw_drift_rps: 0.0,
+                linear_drift_mps: 0.0,
+                min_z: self.min_body_z,
+            }
+        }
+    }
+}
+
+/// Five-axis quality score for a walk benchmark under a single cmd.
+///
+/// **`tracking`** = signed primary-axis ratio. `1.0` = perfect
+/// cmd-following over the burn-in-trimmed window. Negative = robot
+/// went the wrong direction.
+///
+/// **`cross`** = unsigned secondary-axis (orthogonal in body frame)
+/// displacement, normalised by `cmd × duration` so it's directly
+/// comparable to `tracking`. `0.10` = robot drifted 10 % of the
+/// commanded distance sideways.
+///
+/// **`yaw_drift_rps`** = absolute yaw rate accumulated over the cmd
+/// window (rad/s, time-averaged). Only meaningful for linear cmds —
+/// the field is `0` under a yaw cmd (the yaw signal is the primary).
+///
+/// **`linear_drift_mps`** = absolute body-translation rate (m/s,
+/// time-averaged). Only meaningful for yaw cmds.
+///
+/// **`min_z`** = lowest body-root height seen during the run; matches
+/// the existing fall-detection signal.
+#[derive(Debug, Clone, Copy)]
+struct WalkQuality {
+    tracking: f64,
+    cross: f64,
+    yaw_drift_rps: f64,
+    linear_drift_mps: f64,
+    min_z: f64,
+}
+
+impl WalkQuality {
+    /// One-line summary suitable for `eprintln!` in the diag matrix.
+    fn line(&self, axis: &str) -> String {
+        match axis {
+            "forward" | "lateral" => format!(
+                "track={:+.2}  cross={:.2}  yaw_drift={:.3} rad/s  min_z={:.3}",
+                self.tracking, self.cross, self.yaw_drift_rps, self.min_z,
+            ),
+            "yaw" => format!(
+                "track={:+.2}  linear_drift={:.3} m/s  min_z={:.3}",
+                self.tracking, self.linear_drift_mps, self.min_z,
+            ),
+            _ => format!("{:?}", self),
+        }
+    }
 }
 
 /// Run a 5 s walk sim under the given controller / WBC mode + cmd
@@ -821,6 +918,227 @@ fn integration_walk_yaw_centroidal_wbc() {
 /// Diagnostic: full-centroidal MPC + Position-PD (no WBC). Same role
 /// as `diag_centroidal_no_wbc_3axis` for the 12-state path — isolates
 /// the MPC's GRF quality from the WBC's `a_base_des` interpretation.
+// ─── Walk quality metric matrix (Bench-Δ): all modes × all axes ──────
+//
+// Single diag test that runs every (gait_mode, cmd) pair through
+// `run_walk` and prints the 5-axis [`WalkMetrics`] score so we can
+// anchor Gold/Silver/Bronze threshold tiers against CHAMP's actual
+// numbers (= the metric design discussion). 12 sims × 5 s ≈ 8 min
+// total; gate behind `--ignored` so CI never pays it.
+
+/// One-off run of CHAMP forward with **GUI-default PD gains** (kp=50,
+/// kv=5) instead of the test harness's (kp=30, kv=0.6). The harness
+/// gains were inherited from `wbc_walk` / `gait_walk_stability` which
+/// optimise for low-jitter MPC tracking; CHAMP open-loop needs higher
+/// damping to actually follow joint targets, otherwise legs slip and
+/// the body drifts in unexpected directions.
+#[test]
+#[ignore = "metric debug — run with --ignored"]
+fn diag_champ_forward_gui_pd() {
+    let cmd = fwd_cmd();
+    let fixture = match common::build_namiashi_stand_fixture() {
+        Some(f) => f,
+        None => return,
+    };
+    let mut robot = fixture.robot;
+    let kin = fixture.kin;
+    drop(fixture.sim);
+    // Override the test PD with GUI defaults.
+    for j in robot.joints.iter_mut() {
+        if j.joint_type == "fixed" { continue; }
+        j.actuator_kp = 50.0;
+        j.actuator_kv = 5.0;
+    }
+    // Rebuild sim with the new PD.
+    let mut sim = articara::mujoco_sim::MujocoSim::new(
+        &robot,
+        common::default_mjcf_export_options(),
+    ).expect("MujocoSim::new");
+    sim.set_gravity_compensation(true);
+
+    // Initial joint seed identical to fixture.
+    common::seed_joint_positions_from_kinematics(&mut robot, &kin);
+
+    let cfg = GaitConfig::trot();
+    let mut gc = GaitController::build(&robot, kin, cfg, GaitMode::Champ)
+        .expect("GaitController::build");
+    gc.enable();
+    let n_steps = (WALK_SIM_TIME_S / DT) as usize;
+    let burn_in_steps = (WALK_BURN_IN_S / DT) as usize;
+    let mut metrics = WalkBenchmark::default();
+    metrics.min_body_z = f64::INFINITY;
+    if let Some(pos) = sim.body_world_position(&robot.root_link) {
+        metrics.body_x_start = pos[0];
+        metrics.body_y_start = pos[1];
+    }
+    metrics.yaw_start = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+    for k in 0..n_steps {
+        if k == burn_in_steps {
+            gc.set_velocity_cmd(cmd);
+        }
+        let v_obs = sim
+            .body_world_linear_velocity(&robot.root_link)
+            .unwrap_or([0.0, 0.0, 0.0]);
+        let w_obs = sim
+            .body_world_angular_velocity(&robot.root_link)
+            .unwrap_or([0.0, 0.0, 0.0]);
+        gc.set_body_state_observed(
+            Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+            Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+        );
+        let body_pos = sim
+            .body_world_position(&robot.root_link)
+            .unwrap_or([0.0, 0.0, 0.0]);
+        let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+        gc.set_body_pose_observed(
+            yaw_obs,
+            Vector3::new(body_pos[0], body_pos[1], body_pos[2]),
+        );
+        let (_out, targets, _torque_ff) = gc.tick(DT);
+        for (idx, q) in targets {
+            sim.set_position_target(idx, q);
+        }
+        sim.step(&mut robot, DT, false);
+        if let Some(pos) = sim.body_world_position(&robot.root_link) {
+            metrics.body_x_end = pos[0];
+            metrics.body_y_end = pos[1];
+            metrics.min_body_z = metrics.min_body_z.min(pos[2]);
+        }
+        metrics.yaw_end = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+    }
+    let m = metrics;
+    eprintln!();
+    eprintln!("=== CHAMP forward GUI-PD (kp=50, kv=5) — cmd vx=+{:.2} m/s, 4.5 s ===", cmd.vx);
+    eprintln!("  dx_world  = {:+.4} m", m.dx_world());
+    eprintln!("  dy_world  = {:+.4} m", m.dy_world());
+    eprintln!("  dyaw      = {:+.3} rad", m.dyaw());
+    eprintln!("  body_dx   = {:+.4} m", m.body_dx());
+    eprintln!("  body_dy   = {:+.4} m", m.body_dy());
+    eprintln!("  min_z     = {:.4} m", m.min_body_z);
+    let q = m.metrics(cmd, WALK_SIM_TIME_S - WALK_BURN_IN_S);
+    eprintln!("  metric    = {}", q.line("forward"));
+}
+
+/// Run CHAMP forward **without** the foot-nudge that the test fixture
+/// applies (`nominal_foot_body.z += 8 % * leg_total`). The GUI flow
+/// does not apply this nudge, so this test approximates the GUI's
+/// starting pose more closely. If the result differs noticeably from
+/// `diag_champ_forward_raw`, the nudge is the root cause.
+#[test]
+#[ignore = "metric debug — run with --ignored"]
+fn diag_champ_forward_no_nudge() {
+    let cmd = fwd_cmd();
+    let path = common::namiashi_urdf();
+    if !path.exists() { return; }
+    let mut robot = articara::robot::RobotModel::from_urdf(&path).expect("load");
+    common::setup_position_pd_actuators(&mut robot);
+    let kin = articara::gait::auto_detect_kinematics_config(
+        &robot,
+        &articara::gait::DEFAULT_FOOT_LINKS,
+    ).expect("kin");
+    // NO 8% nudge — leaves nominal_foot_body at the URDF q=0 pose.
+    common::seed_joint_positions_from_kinematics(&mut robot, &kin);
+
+    let mut sim = articara::mujoco_sim::MujocoSim::new(
+        &robot,
+        common::default_mjcf_export_options(),
+    ).expect("sim");
+    sim.set_gravity_compensation(true);
+
+    let cfg = GaitConfig::trot();
+    let mut gc = GaitController::build(&robot, kin, cfg, GaitMode::Champ)
+        .expect("build");
+    gc.enable();
+
+    let n_steps = (WALK_SIM_TIME_S / DT) as usize;
+    let burn_in_steps = (WALK_BURN_IN_S / DT) as usize;
+    let mut m = WalkBenchmark::default();
+    m.min_body_z = f64::INFINITY;
+    if let Some(p) = sim.body_world_position(&robot.root_link) {
+        m.body_x_start = p[0]; m.body_y_start = p[1];
+    }
+    m.yaw_start = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+    for k in 0..n_steps {
+        if k == burn_in_steps {
+            gc.set_velocity_cmd(cmd);
+        }
+        let (_o, targets, _ff) = gc.tick(DT);
+        for (idx, q) in targets { sim.set_position_target(idx, q); }
+        sim.step(&mut robot, DT, true);
+        if let Some(p) = sim.body_world_position(&robot.root_link) {
+            m.body_x_end = p[0]; m.body_y_end = p[1];
+            m.min_body_z = m.min_body_z.min(p[2]);
+        }
+        m.yaw_end = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+    }
+    eprintln!();
+    eprintln!("=== CHAMP forward NO-NUDGE (URDF q=0 nominal) ===");
+    eprintln!("  dx_world  = {:+.4} m   dy_world = {:+.4} m", m.dx_world(), m.dy_world());
+    eprintln!("  dyaw      = {:+.3} rad  min_z    = {:.4} m", m.dyaw(), m.min_body_z);
+    let q = m.metrics(cmd, WALK_SIM_TIME_S - WALK_BURN_IN_S);
+    eprintln!("  metric    = {}", q.line("forward"));
+}
+
+/// Same shape as `diag_champ_forward_gui_pd` but uses the test
+/// harness's default PD (kp=30, kv=0.6) for direct comparison. This
+/// is just `diag_champ_forward_raw` renamed for clarity.
+#[test]
+#[ignore = "metric debug — run with --ignored"]
+fn diag_champ_forward_raw() {
+    let cmd = fwd_cmd();
+    let Some(m) = run_walk(false, GaitMode::Champ, cmd) else {
+        return;
+    };
+    eprintln!();
+    eprintln!("=== CHAMP forward raw (cmd vx=+{:.2} m/s, 4.5 s under cmd) ===", cmd.vx);
+    eprintln!("  yaw_start = {:+.3} rad", m.yaw_start);
+    eprintln!("  yaw_end   = {:+.3} rad", m.yaw_end);
+    eprintln!("  dyaw      = {:+.3} rad", m.dyaw());
+    eprintln!("  dx_world  = {:+.4} m  (raw, world x)", m.dx_world());
+    eprintln!("  dy_world  = {:+.4} m  (raw, world y)", m.dy_world());
+    eprintln!("  body_dx   = {:+.4} m  (projected on initial yaw)", m.body_dx());
+    eprintln!("  body_dy   = {:+.4} m  (projected, perp to initial yaw)", m.body_dy());
+    eprintln!("  norm_xy   = {:.4} m   (path radius)", (m.dx_world().powi(2) + m.dy_world().powi(2)).sqrt());
+    eprintln!("  min_z     = {:.4} m", m.min_body_z);
+    let q = m.metrics(cmd, WALK_SIM_TIME_S - WALK_BURN_IN_S);
+    eprintln!("  metric    = {}", q.line("forward"));
+}
+
+#[test]
+#[ignore = "metric-anchor benchmark — run with --ignored"]
+fn diag_walk_metric_matrix() {
+    let cmd_duration = WALK_SIM_TIME_S - WALK_BURN_IN_S;
+    let scenarios = [
+        ("forward", fwd_cmd()),
+        ("lateral", lat_cmd()),
+        ("yaw", yaw_cmd()),
+    ];
+    // (label, gait_mode, use_wbc). CHAMP runs no-WBC (it has no GRF
+    // signal); the three MPC modes run with the host's WBC enabled
+    // (= matches the GUI default and the `*_wbc` regression tests).
+    let modes: [(&str, GaitMode, bool); 4] = [
+        ("champ-open", GaitMode::Champ, false),
+        ("mpc-srbd+wbc", GaitMode::Mpc, true),
+        ("centroidal+wbc", GaitMode::CentroidalSrbd, true),
+        ("full24+wbc", GaitMode::FullCentroidal, true),
+    ];
+    eprintln!();
+    eprintln!("=== diag_walk_metric_matrix (cmd_duration = {:.1} s) ===", cmd_duration);
+    eprintln!();
+    for (axis, cmd) in scenarios {
+        eprintln!("--- axis: {axis} ---");
+        for (label, mode, use_wbc) in &modes {
+            let Some(m) = run_walk(*use_wbc, *mode, cmd) else {
+                eprintln!("  {label:<18} [model load failed]");
+                continue;
+            };
+            let metrics = m.metrics(cmd, cmd_duration);
+            eprintln!("  {label:<18} {}", metrics.line(axis));
+        }
+        eprintln!();
+    }
+}
+
 #[test]
 #[ignore = "D3.3.6 diagnostic — run with --ignored to inspect"]
 fn diag_full_centroidal_no_wbc_3axis() {
