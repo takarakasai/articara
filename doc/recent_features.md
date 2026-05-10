@@ -627,7 +627,122 @@ per-node コスト ≈ CMM + Ȧ + CRBA + RNEA = **249.8 μs**
 
 | Hash | 内容 |
 |---|---|
-| 次 commit | D3.1 — `examples/bench_misarta_dynamics.rs` + 本セクション |
+| `ba40cab` | D3.1 — `examples/bench_misarta_dynamics.rs` + 本セクション |
+
+## 8. Phase D3.3: 24-state Full Centroidal MPC コア
+
+D2 で empirical tuning (G/H) と SQP 反復で取りきれなかった lateral
+反転 + forward dy cross-coupling を、 **MPC 状態空間そのものを
+拡張** することで構造的に解決するための新規モジュール。 [`quadruped-gait/src/full_centroidal_mpc.rs`](../quadruped-gait/src/full_centroidal_mpc.rs)
+に独立して実装、 12-state `centroidal_mpc.rs` (D1) はベースライン
+として残置。
+
+### 状態空間 (25-dim 拡張)
+
+```
+x = [ v_com_world (3)         CoM linear vel, world
+      ω_world     (3)         body angular vel, world
+      base_pos    (3)         base origin, world
+      base_euler  (3)         ZYX [roll, pitch, yaw]
+      joint_q     (12)        FL/FR/RL/RR × {hip, thigh, calf}
+      g_aug       (1)         augmented gravity (constant -9.81)
+    ]
+
+u = [ F_FL F_FR F_RL F_RR (12)    per-foot world-frame GRF
+      joint_v             (12)    per-leg joint velocity command
+    ]
+```
+
+= **legged_control `centroidalModelType = 0`** 相当の "kinematic
+centroidal" formulation (joint q を状態に、 joint v を入力に)。
+
+### D3.3.1 — 型定義 (`d7eafc4`)
+
+`FullCentroidalState` / `FullCentroidalInput` を round-trip vec24 と
+共に導入。 joint slot は `LegId` 標準順 × `[hip, thigh, calf]` で
+既存 `ik::forward_leg_kinematics` をそのまま使える packing にした。
+6 unit test pass。
+
+### D3.3.2 — 連続時間動力学 (`62e567d`)
+
+`full_centroidal_dynamics(state, input, cfg)`:
+- body 部は 12-state と同じ式 (v̇_com, α, ṗ_base, ė_zyx)
+- **moment arm が per-node**: r_i = R · (foot_body_i − com_offset) で
+  joint_q から FK 経由で更新される。 これが D3 の構造的本質
+- `q̇_j = v_j` (input pass-through)
+
+`compute_foot_positions_world(state, cfg)` を pub にし、 D3.3.3
+linearization と D3.3.5+ WBC dispatch から再利用可能に。
+6 unit test 追加 (joint_v=0 で 12-state と body 部 1e-9 一致を含む)。
+
+### D3.3.3 — Yaw-only 線形化 (`dc9bb0e`)
+
+`continuous_dynamics_full(state_ref, input_ref, cfg, stance, psi_ref)
+→ (A 25×25, B 25×24)`。
+
+新ブロック (12-state にはない部分):
+
+1. **∂α/∂joint_q** = -I_world⁻¹ · skew(F_ref) · R_z · J_foot_body(q_ref)
+   - 各脚 3 列 ずつ A[3..6, 12..24] に書く
+   - J_foot_body は `ik::foot_jacobian_body` (analytical 3R) を流用
+   - これが MPC に「joint 動かすと moment arm 動く」ことを教える
+2. **∂α/∂base_euler** =
+   - I_world⁻¹ · Σ (R_z · skew(e_k) · (foot_body − com_offset)) × F_ref
+   - + (-I_world⁻¹ · R_z · [skew(e_k), I_body] · R_z^T · I_world⁻¹) · τ_ref
+   - 両項とも必要 (1 項目だけだと FD と 5% ずれ)
+3. **∂q̇_j/∂joint_v** = I_12
+
+検証: `linearization_state_jacobian_matches_fd` (24 列 × 24 行) と
+`linearization_input_jacobian_matches_fd` (24 × 24) が
+`full_centroidal_dynamics` の central FD と analytical の差 < 1e-3 で
+pass。 4 unit test 追加 (FD 比較 2 + swing leg GRF zero check + aug-grav 列構造)。
+
+### D3.3.4a — Condensed QP + SQP iteration (`8a77add`)
+
+`FullCentroidalMpc::solve()`:
+- Decision var: U ∈ R^{24·N} (state lifting で X = A_x x_0 + B_u U に消去)
+- Cost: ‖X − X_ref‖²_Q + ‖U − U_ref‖²_R を P/q 形式で
+- 制約 (D3.3.4a 時点): swing leg GRF=0 + friction pyramid + f_z 上下限
+- SQP 反復: 前 iter の predicted (state, input) で全 ref 更新後 再線形化
+
+設計判断:
+- swing leg foot tracking: pre-IK joint_q_ref を cost で参照
+- SQP 再線形化: full state + input
+
+unit test 2 個追加 (静止立位で各脚 f_z ∈ [5, 70] N、 swing leg の GRF
+完全ゼロ)。
+
+### D3.3.4b — Stance no-slip 制約 (`9e3ee33`)
+
+各 stance leg について
+   `v_foot_world = v_com + ω × r_ref + R_z · J_foot · joint_v_leg = 0`
+を condensed QP の等式制約に追加。 U に対する線形式:
+
+  [B_u rows for v_com − skew(r_ref) · B_u rows for ω] · U
+    + [R_z · J_foot] (joint_v_leg slice) = -[同じ M · A_x[k_block][0..6, :]] · x_0
+
+`build_constraints_24` を A_x, B_u, x_now も取るシグネチャに変更。
+ZeroCone サイズに 3·(stance-leg-step) を加算。
+
+検証: body が v_com=(0.1,0,0) で動いている状態で MPC を解くと
+各脚 `v_com + J_foot · joint_v_leg` の norm が 3 cm/s 未満
+(unconstrained だと 10 cm/s) に収まる。
+
+### D3.3 コア合計
+
+5 commit、19 unit test。 計算カーネル / 線形化 / QP / SQP / 制約は
+完成し、 unit-test ベースで全要素が verified。 **gait controller /
+WBC 統合 (D3.3.5 / D3.3.6) は別 session に残置**。
+
+### 関連コミット
+
+| Hash | 内容 |
+|---|---|
+| `9e3ee33` | D3.3.4b stance no-slip equality 制約 |
+| `8a77add` | D3.3.4a condensed QP + SQP iteration |
+| `dc9bb0e` | D3.3.3 yaw-only linearization (FD-verified) |
+| `62e567d` | D3.3.2 連続時間動力学 + per-node FK foot 位置 |
+| `d7eafc4` | D3.3.1 24-state state/input types |
 
 ---
 
