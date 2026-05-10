@@ -473,6 +473,82 @@ regression test (`tests/integration_walk.rs`) の現状値:
 forward dx と yaw dyaw は SRBD 同等以上、lateral と forward dy
 cross-coupling は WBC HoQp 全体の再 tuning または D3 で解消予定。
 
+---
+
+## 6. Phase D2: SQP Multiple Shooting iteration
+
+D1 で確立した centroidal-SRBD MPC は単発 convex QP solve だった。
+D2 は **同 solve 内で再線形化反復** (Sequential Quadratic Programming)
+を導入し、yaw drift を含む horizon でも線形化精度を保つ。
+
+### 動機
+
+D1 の linearization は reference 軌道の yaw (`psi_ref`) で固定。
+yaw cmd (wz=0.5 rad/s) では horizon 0.3 s で 0.15 rad の yaw 変化が
+あるが、MPC は initial yaw で線形化したまま予測 → 解が真の最適から
+2-3% ずれて yaw cmd 追従が target より弱い (D1.4: dyaw=+1.599 vs
+target +1.5 ぎりぎり)。
+
+### D2.1: SQP iteration framework (commit `f783c7c`)
+
+`CentroidalMpcConfig.sqp_iterations: usize` 追加。各反復で:
+1. `psi_ref_per_step` で per-step 線形化、QP solve
+2. 解の予測軌道から `psi_ref_per_step[k] = predicted_state[k].euler.z`
+   で更新
+3. 次反復は予測軌道近傍で再線形化
+
+`sqp_iterations = 1` (default before D2): D1 互換 single-shot。
+`auto_detect_centroidal_mpc_config` は **3** に設定 (legged_control
+の SQP iteration count と同等)。
+
+### D2.2: warm-start scaffold (commit `ec5b5ae`)
+
+CentroidalMpc に `warm_psi_ref: Option<Vec<f64>>` を追加。次の solve
+で iter-0 線形化点として利用するインフラを実装したが、**閉ループ pose
+feedback がある現状では reference の方が常に良い** ことが判明
+(stale prediction が forward 転倒を誘発)。書き込み処理は残す
+(将来の 1-step 時間シフト or 開ループ feedback 用拡張点)、
+読み込みは disabled。
+
+### D2.3: 性能計測 (commit `47497e2`)
+
+`mpc_solve_under_25ms_at_sqp_3` benchmark 追加 (`#[ignore]`):
+- median = 11.7 ms
+- p99    = 13.4 ms
+- budget = 25 ms (`dt_per_step = 30 ms` に十分収まる)
+
+100 Hz 目標に近づくには horizon 縮小が必要だが、現状の 33 Hz
+(dt_per_step = 30 ms) なら余裕あり。
+
+### D2 完了時の達成
+
+| Test | SRBD baseline | D1 final (1 iter) | **D2 final (3 iter)** |
+|---|---|---|---|
+| forward dx | +0.118 | +0.151 | **+0.777** ✓ ideal +0.75 達成 |
+| forward dy | -0.034 | -0.472 | -1.143 (cross 残) |
+| yaw dyaw | +2.759 | +1.599 | **+1.599** ✓ pass |
+| **yaw centroidal+wbc** | — | FAIL | **PASS** ✓ |
+| lateral dy | +0.501 | -0.195 | -0.134 (反転継続) |
+
+forward dx は **SRBD baseline (+0.118) を 6.6× 上回って ideal +0.75
+を達成**、yaw centroidal+wbc test が assertions all pass。
+
+### D2 関連コミット
+
+| Hash | 内容 |
+|---|---|
+| `47497e2` | D2.3 perf benchmark (median 11.7 ms / p99 13.4 ms @ SQP=3) |
+| `ec5b5ae` | D2.2 warm-start scaffold (現状未使用) |
+| `f783c7c` | D2.1 SQP iteration framework — yaw centroidal test 初 pass |
+
+### 残課題
+
+- **forward dy cross-coupling**: SQP 反復が予測軌道 yaw drift を
+  amplify。D3 (Full Centroidal、joint state 込み) で関節 swing の
+  反作用を MPC が直接モデル化すれば改善見込み。
+- **lateral 反転**: 別現象。D1 から残存。q_diag empirical sweep か
+  WBC HoQp の swing_leg / contact_force task 重み再調整で対処。
+
 ### 関連コミット (D1)
 
 | Hash | 内容 |
