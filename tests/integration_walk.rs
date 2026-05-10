@@ -1212,6 +1212,82 @@ fn diag_walk_champ_forward_v2() {
     eprintln!("  (user GUI reported: dz = +0.18 — body rises during walk; if test stays crouched, that's the gap)");
 }
 
+/// Diff the MJCF that `mj_start` (script path) emits vs what
+/// `run_walk_gui_v2` (test path) emits. If they're byte-identical
+/// modulo ground_plane size, the physics state must match — which
+/// would mean the 3.4x gap is in the *runtime* (per-tick) logic.
+#[test]
+#[ignore = "harness debug — run with --ignored"]
+fn diag_mjcf_diff_test_vs_script() {
+    let path = common::namiashi_urdf();
+    if !path.exists() { return; }
+    let mut robot = articara::robot::RobotModel::from_urdf(&path).expect("load");
+    // Apply constrain pose and PD same as run_walk_gui_v2.
+    for j in robot.joints.iter_mut() {
+        if j.joint_type == "fixed" { continue; }
+        j.actuator_mode = articara::robot::ActuatorMode::Position;
+        j.actuator_kp = 50.0;
+        j.actuator_kv = 5.0;
+    }
+    let constrain_pose = [
+        ("FL_hip_joint", 0.0), ("FL_thigh_joint", 1.0), ("FL_calf_joint", -2.0),
+        ("FR_hip_joint", 0.0), ("FR_thigh_joint", 1.0), ("FR_calf_joint", -2.0),
+        ("RL_hip_joint", 0.0), ("RL_thigh_joint", 1.0), ("RL_calf_joint", -2.0),
+        ("RR_hip_joint", 0.0), ("RR_thigh_joint", 1.0), ("RR_calf_joint", -2.0),
+        ("arm_pitch_joint", 0.0),
+    ];
+    for (name, q) in constrain_pose {
+        if let Some(&idx) = robot.joint_map.get(name) { robot.joint_positions[idx] = q; }
+    }
+
+    // MujocoSim::new forces `add_actuators = true` regardless, so for
+    // both paths we use the post-override value.
+    let test_opts = articara::mjcf::MjcfExportOptions {
+        ground_plane: Some(articara::mjcf::GroundPlaneCfg { z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0 }),
+        add_actuators: true,
+        bake_actuator_limits: true,
+        bake_joint_position_limits: true,
+        ..Default::default()
+    };
+    let script_opts = articara::mjcf::MjcfExportOptions {
+        base_pos: None,
+        ground_plane: Some(articara::mjcf::GroundPlaneCfg { z: 0.0, half_size: 2.0, roll: 0.0, pitch: 0.0 }),
+        add_actuators: true,
+        base_locked_axes: [false; 6],
+        ..Default::default()
+    };
+
+    let test_xml = articara::mjcf::export_mjcf_with_options(&robot, test_opts);
+    let script_xml = articara::mjcf::export_mjcf_with_options(&robot, script_opts);
+
+    std::fs::write("/tmp/test_mjcf.xml", &test_xml).ok();
+    std::fs::write("/tmp/script_mjcf.xml", &script_xml).ok();
+
+    if test_xml == script_xml {
+        eprintln!("MJCF byte-identical");
+        return;
+    }
+    eprintln!("MJCF DIFFERS — wrote /tmp/test_mjcf.xml and /tmp/script_mjcf.xml");
+    eprintln!("test_xml length = {}, script_xml length = {}",
+        test_xml.len(), script_xml.len());
+
+    let test_lines: Vec<&str> = test_xml.lines().collect();
+    let script_lines: Vec<&str> = script_xml.lines().collect();
+    let max_lines = test_lines.len().max(script_lines.len());
+    let mut diffs = 0;
+    for i in 0..max_lines {
+        let t = test_lines.get(i).copied().unwrap_or("<missing>");
+        let s = script_lines.get(i).copied().unwrap_or("<missing>");
+        if t != s {
+            eprintln!("  line {i}:");
+            eprintln!("    test:   {t}");
+            eprintln!("    script: {s}");
+            diffs += 1;
+            if diffs >= 20 { eprintln!("  ... (truncated at 20 diffs)"); break; }
+        }
+    }
+}
+
 /// Time-series diagnostic: log body z and dx every 0.5 s of the walk
 /// phase to see whether the test reproduces the GUI's body-rising
 /// behaviour. User reports GUI ends at dz = +0.18 m above initial.
