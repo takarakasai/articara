@@ -1924,8 +1924,8 @@ impl ModelScriptEngine {
         // gait / WBC / pose-source / ground-plane settings end-to-end.
         // ────────────────────────────────────────────────────────────────
 
-        // set_gait_mode("mpc" | "champ" | "centroidal"): switch the
-        // active gait controller's mode at the host's next frame.
+        // set_gait_mode(name): switch the active gait controller's mode
+        // at the host's next frame.
         // Accepts:
         //   * "mpc" / "mpc(capture-point)" / "capture-point"
         //     → body-root SRBD MPC (Di Carlo 2018)
@@ -1933,6 +1933,9 @@ impl ModelScriptEngine {
         //     → CHAMP-derived open-loop controller
         //   * "centroidal" / "centroidal-srbd" / "mpc-centroidal"
         //     → centroidal-SRBD MPC (legged_control type-1 equivalent)
+        //   * "full-centroidal" / "full_centroidal" / "fullcentroidal"
+        //     / "full" / "mpc-full" / "centroidal-full"
+        //     → 24-state full-centroidal MPC (legged_control type-0)
         let o = Rc::clone(&overrides);
         engine.register_fn("set_gait_mode", move |s: &str| -> bool {
             let mode = match s.trim().to_ascii_lowercase().as_str() {
@@ -1942,6 +1945,10 @@ impl ModelScriptEngine {
                 "centroidal" | "centroidal-srbd" | "centroidal_srbd"
                     | "mpc-centroidal" | "mpc_centroidal"
                     => quadruped_gait::GaitMode::CentroidalSrbd,
+                "full-centroidal" | "full_centroidal" | "fullcentroidal"
+                    | "full" | "mpc-full" | "mpc_full"
+                    | "centroidal-full" | "centroidal_full"
+                    => quadruped_gait::GaitMode::FullCentroidal,
                 _ => return false,
             };
             o.borrow_mut().gait_mode = Some(mode);

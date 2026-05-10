@@ -2361,11 +2361,18 @@ impl ArticaraApp {
                 gc.set_mode(mode);
             }
         }
-        if let Some(src) = ov.pose_source {
-            self.pose_source = src;
+        #[cfg(feature = "mujoco")]
+        {
+            if let Some(src) = ov.pose_source {
+                self.pose_source = src;
+            }
+            if let Some(on) = ov.wbc_enabled {
+                self.wbc_enabled = on;
+            }
         }
-        if let Some(on) = ov.wbc_enabled {
-            self.wbc_enabled = on;
+        #[cfg(not(feature = "mujoco"))]
+        {
+            let _ = (ov.pose_source, ov.wbc_enabled);
         }
         if let Some(on) = ov.ground_plane_enabled {
             self.show_ground_plane = on;

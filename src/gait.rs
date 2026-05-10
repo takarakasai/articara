@@ -379,6 +379,33 @@ pub fn auto_detect_centroidal_mpc_config(
     cfg
 }
 
+/// Sibling of [`auto_detect_centroidal_mpc_config`] for the 24-state
+/// full-centroidal MPC. Populates mass + centroidal inertia + CoM
+/// offset from the URDF just like the 12-state version, then carries
+/// the per-leg `KinematicsConfig` directly into the config (the
+/// FullCentroidalMpc uses it for per-node FK).
+pub fn auto_detect_full_centroidal_mpc_config(
+    model: &RobotModel,
+    kin: &quadruped_gait::KinematicsConfig,
+) -> quadruped_gait::FullCentroidalMpcConfig {
+    // Build the 12-state-equivalent first so we share the physical
+    // parameter detection logic, then copy into the 24-state config
+    // shape with kinematics added.
+    let cent = auto_detect_centroidal_mpc_config(model);
+    let mut cfg = quadruped_gait::FullCentroidalMpcConfig::default_with_kin(kin.clone());
+    cfg.mass_kg = cent.mass_kg;
+    cfg.centroidal_inertia_body = cent.centroidal_inertia_body;
+    cfg.com_offset_body = cent.com_offset_body;
+    cfg.friction_mu = cent.friction_mu;
+    cfg.max_normal_force = cent.max_normal_force;
+    cfg.horizon_steps = cent.horizon_steps;
+    cfg.dt_per_step = cent.dt_per_step;
+    cfg.sqp_iterations = cent.sqp_iterations;
+    // q_diag, r_diag, kinematics retained from default_with_kin —
+    // they have no analogue in the 12-state cfg (12 vs 24 entries).
+    cfg
+}
+
 /// Wrapper around [`InnerController`] (= `quadruped_gait::GaitController`)
 /// that caches the joint-name → RobotModel-joint-idx mapping. The cache
 /// Source for the body pose observation feeding the gait controller's
@@ -513,6 +540,9 @@ impl GaitController {
         // mode at build time.
         inner.set_srbd_mpc_config(auto_detect_srbd_mpc_config(model));
         inner.set_centroidal_mpc_config(auto_detect_centroidal_mpc_config(model));
+        inner.set_full_centroidal_mpc_config(
+            auto_detect_full_centroidal_mpc_config(model, inner.kinematics()),
+        );
         Ok(Self {
             inner,
             joint_indices,
