@@ -699,6 +699,29 @@ fn integration_walk_straight_mpc_wbc() {
 // pass with the same assertion thresholds as the SRBD baseline.
 // Run with `cargo test ... -- --ignored` to see current numbers.
 
+/// Diagnostic: centroidal MPC + Position-PD (no WBC). Isolates the
+/// MPC's GRF quality from the WBC's body-root `a_base_des`
+/// interpretation. If forward tracking improves significantly here,
+/// the body-root assumption in `predicted_base_accel_world` is
+/// fighting the centroidal GRFs.
+#[test]
+#[ignore = "D1.4 diagnostic — run with --ignored to inspect"]
+fn diag_centroidal_no_wbc_3axis() {
+    for (label, cmd) in [
+        ("forward", fwd_cmd()),
+        ("lateral", lat_cmd()),
+        ("yaw", yaw_cmd()),
+    ] {
+        let Some(m) = run_walk(false, GaitMode::CentroidalSrbd, cmd) else {
+            return;
+        };
+        eprintln!(
+            "[{label}:centroidal-only] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
+            m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        );
+    }
+}
+
 #[test]
 #[ignore = "D1.4 tuning target — assertions kept as goal"]
 fn integration_walk_straight_centroidal_wbc() {
