@@ -1019,6 +1019,388 @@ fn diag_champ_forward_gui_pd() {
     eprintln!("  metric    = {}", q.line("forward"));
 }
 
+/// GUI-equivalent walk harness, mirroring the steps user reported:
+/// 1. Apply `constrain` pose to joint_positions BEFORE auto-detect
+///    (so `nominal_foot_body` captures the deeply-bent stance)
+/// 2. URDF-default PD (kp=50, kv=5)
+/// 3. MJCF export with `add_actuators=false`
+/// 4. Gravity comp OFF (GUI default)
+/// 5. 2 s settle (PD holding constrain pose, no gait active)
+/// 6. 7 s walk with gait controller + cmd
+///
+/// Returns the benchmark covering ONLY the walk window (cmd phase) so
+/// `body_dx` / `body_dy` / `dyaw` reflect post-cmd-application motion.
+fn run_walk_gui_v2(
+    use_wbc: bool,
+    gait_mode: GaitMode,
+    cmd: VelocityCmd,
+) -> Option<WalkBenchmark> {
+    const SETTLE_S: f64 = 2.0;
+    const CMD_S: f64 = 7.0;
+
+    let path = common::namiashi_urdf();
+    if !path.exists() { return None; }
+    let mut robot = articara::robot::RobotModel::from_urdf(&path).ok()?;
+    for j in robot.joints.iter_mut() {
+        if j.joint_type == "fixed" { continue; }
+        j.actuator_mode = articara::robot::ActuatorMode::Position;
+        j.actuator_kp = 50.0;
+        j.actuator_kv = 5.0;
+    }
+    let constrain_pose = [
+        ("FL_hip_joint", 0.0), ("FL_thigh_joint", 1.0), ("FL_calf_joint", -2.0),
+        ("FR_hip_joint", 0.0), ("FR_thigh_joint", 1.0), ("FR_calf_joint", -2.0),
+        ("RL_hip_joint", 0.0), ("RL_thigh_joint", 1.0), ("RL_calf_joint", -2.0),
+        ("RR_hip_joint", 0.0), ("RR_thigh_joint", 1.0), ("RR_calf_joint", -2.0),
+        ("arm_pitch_joint", 0.0),
+    ];
+    for (name, q) in constrain_pose {
+        if let Some(&idx) = robot.joint_map.get(name) {
+            robot.joint_positions[idx] = q;
+        }
+    }
+    let kin = articara::gait::auto_detect_kinematics_config(
+        &robot,
+        &articara::gait::DEFAULT_FOOT_LINKS,
+    ).ok()?;
+    let opts = articara::mjcf::MjcfExportOptions {
+        ground_plane: Some(articara::mjcf::GroundPlaneCfg {
+            z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0,
+        }),
+        // `add_actuators` is forced to `true` inside MujocoSim::new
+        // regardless of what we pass, so this value is cosmetic.
+        add_actuators: false,
+        // Test keeps bake=true even though GUI default is false: the
+        // baked range gives MuJoCo more upfront state to clamp against,
+        // measurably improves CHAMP track (0.15 → 0.25 in namiashi
+        // forward sweep). The residual ~2x gap vs GUI numbers is left
+        // unresolved (test_track 0.25 vs GUI_track 0.55-0.65) and
+        // documented in the doc comment above.
+        bake_actuator_limits: true,
+        bake_joint_position_limits: true,
+        ..Default::default()
+    };
+    let mut sim = articara::mujoco_sim::MujocoSim::new(&robot, opts).ok()?;
+    sim.set_gravity_compensation(false);
+
+    let cfg = GaitConfig::trot();
+    let mut gc = GaitController::build(&robot, kin.clone(), cfg, gait_mode).ok()?;
+
+    let mut wbc_pipeline = if use_wbc {
+        Some(WbcPipeline::new(&robot, common::default_foot_links()))
+    } else { None };
+    if let Some(pipeline) = wbc_pipeline.as_mut() {
+        if let Some(full_cfg) = gc.full_centroidal_mpc_config() {
+            pipeline.mass_kg = full_cfg.mass_kg;
+            pipeline.centroidal_inertia_body = Some(full_cfg.centroidal_inertia_body);
+            pipeline.com_offset_body = full_cfg.com_offset_body;
+        } else if let Some(centroidal_cfg) = gc.centroidal_mpc_config() {
+            pipeline.mass_kg = centroidal_cfg.mass_kg;
+            pipeline.centroidal_inertia_body = Some(centroidal_cfg.centroidal_inertia_body);
+            pipeline.com_offset_body = centroidal_cfg.com_offset_body;
+        } else if let Some(srbd_cfg) = gc.srbd_mpc_config() {
+            pipeline.mass_kg = srbd_cfg.mass_kg;
+            pipeline.inertia_diag_body = srbd_cfg.inertia_diag_body;
+            pipeline.centroidal_inertia_body = None;
+        }
+    }
+
+    // Initial PD targets: constrain pose (used during settle).
+    for (name, q) in constrain_pose {
+        if let Some(&idx) = robot.joint_map.get(name) {
+            sim.set_position_target(idx, q);
+        }
+    }
+
+    let n_steps = ((SETTLE_S + CMD_S) / DT) as usize;
+    let settle_steps = (SETTLE_S / DT) as usize;
+    let mut m = WalkBenchmark::default();
+    m.min_body_z = f64::INFINITY;
+
+    for k in 0..n_steps {
+        if k == settle_steps {
+            gc.enable();
+            gc.set_velocity_cmd(cmd);
+            if let Some(p) = sim.body_world_position(&robot.root_link) {
+                m.body_x_start = p[0]; m.body_y_start = p[1];
+            }
+            m.yaw_start = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+        }
+
+        if k < settle_steps {
+            for (name, q) in constrain_pose {
+                if let Some(&idx) = robot.joint_map.get(name) {
+                    sim.set_position_target(idx, q);
+                }
+            }
+        } else {
+            let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            gc.set_body_state_observed(
+                Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+                Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+            );
+            let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+            let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+            gc.set_body_pose_observed(yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
+            let (out, targets, torque_ff) = gc.tick(DT);
+            for (idx, q) in targets { sim.set_position_target(idx, q); }
+
+            if let Some(pipeline) = wbc_pipeline.as_mut() {
+                pipeline.weights = if pipeline.centroidal_inertia_body.is_some() {
+                    quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd())
+                } else {
+                    quadruped_gait::wbc::WbcWeights::for_cmd(&gc.velocity_cmd())
+                };
+                let f_grf = gc.predicted_grfs().map(|s| s.grfs_first_step)
+                    .unwrap_or([Vector3::zeros(); 4]);
+                let v_cmd_body = Vector3::new(cmd.vx, cmd.vy, 0.0);
+                let contact_flag = [
+                    out.legs[0].phase.is_stance,
+                    out.legs[1].phase.is_stance,
+                    out.legs[2].phase.is_stance,
+                    out.legs[3].phase.is_stance,
+                ];
+                let kin_ref = gc.kinematics().clone();
+                let joint_indices = gc.joint_indices();
+                let joint_signs = gc.joint_signs();
+                let taus = pipeline.solve(
+                    &robot, &sim, &out, &kin_ref, joint_indices, joint_signs,
+                    &v_cmd_body, cmd.wz,
+                    &Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+                    &Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+                    &f_grf, contact_flag, DT,
+                );
+                for (ji, &tau) in taus.iter().enumerate() {
+                    sim.set_torque_feedforward(ji, tau);
+                }
+            } else {
+                for (idx, tau) in torque_ff {
+                    sim.set_torque_feedforward(idx, tau);
+                }
+            }
+        }
+        // Keep `enforce_limits=true` at runtime for sim stability even
+        // though the GUI default is false; without runtime clipping the
+        // test's 2 ms timestep + kp=50 can blow up velocities. The
+        // GUI's slower wall clock keeps it stable without clamps.
+        sim.step(&mut robot, DT, true);
+        if let Some(p) = sim.body_world_position(&robot.root_link) {
+            m.body_x_end = p[0]; m.body_y_end = p[1];
+            m.min_body_z = m.min_body_z.min(p[2]);
+        }
+        m.yaw_end = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+    }
+    Some(m)
+}
+
+/// Quick single-axis sanity check: run CHAMP forward with the
+/// GUI-equivalent harness and print result. Used to iterate on
+/// harness diffs without paying the full 12-sim matrix cost.
+#[test]
+#[ignore = "harness debug — run with --ignored"]
+fn diag_walk_champ_forward_v2() {
+    let cmd = VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 };
+    let Some(m) = run_walk_gui_v2(false, GaitMode::Champ, cmd) else { return; };
+    let q = m.metrics(cmd, 7.0);
+    eprintln!();
+    eprintln!("[champ forward v2] dx_world={:+.4} dy_world={:+.4} dyaw={:+.3} rad min_z={:.3} m",
+        m.dx_world(), m.dy_world(), m.dyaw(), m.min_body_z);
+    eprintln!("  metric = {}", q.line("forward"));
+    eprintln!("  (user GUI reported: dx ≈ +1.13 over ~5-10s = track ≈ 0.55-0.65)");
+}
+
+#[test]
+#[ignore = "GUI-equivalent metric anchor — run with --ignored"]
+fn diag_walk_metric_matrix_gui_v2() {
+    let cmd_duration = 7.0;
+    // GUI uses Linear cmd = 0.30 m/s (NOT 0.15 — that's the test
+    // harness's `fwd_cmd()`). Match GUI here.
+    let fwd = VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 };
+    let lat = VelocityCmd { vx: 0.0, vy: 0.30, wz: 0.0 };
+    let yaw = VelocityCmd { vx: 0.0, vy: 0.0, wz: 0.5 };
+    let scenarios = [("forward", fwd), ("lateral", lat), ("yaw", yaw)];
+    let modes: [(&str, GaitMode, bool); 4] = [
+        ("champ-open",       GaitMode::Champ,          false),
+        ("mpc-srbd+wbc",     GaitMode::Mpc,            true),
+        ("centroidal+wbc",   GaitMode::CentroidalSrbd, true),
+        ("full24+wbc",       GaitMode::FullCentroidal, true),
+    ];
+    eprintln!();
+    eprintln!("=== diag_walk_metric_matrix_gui_v2 (constrain pose, kp=50/kv=5, grav_comp off, 7s cmd) ===");
+    for (axis, cmd) in scenarios {
+        eprintln!("--- axis: {axis} ---");
+        for (label, mode, use_wbc) in &modes {
+            let Some(m) = run_walk_gui_v2(*use_wbc, *mode, cmd) else {
+                eprintln!("  {label:<18} [skipped]");
+                continue;
+            };
+            let q = m.metrics(cmd, cmd_duration);
+            eprintln!("  {label:<18} {}", q.line(axis));
+        }
+        eprintln!();
+    }
+}
+
+/// Replicate the GUI's CHAMP-forward setup as reported by the user:
+/// 1. Load namiashi URDF
+/// 2. Apply the `constrain` pose from namiashi.misa
+///    (thigh = +1.0, calf = -2.0, deeply-bent crouch)
+/// 3. Start MuJoCo with gravity → robot falls from height onto its
+///    feet in the constrain pose
+/// 4. Start CHAMP with Linear cmd = 0.30 m/s (NOT 0.15 — user's
+///    default in the GUI)
+/// User reports body moves to (+1.13, +0.05..+0.10, 0.0) over 5-10 s.
+#[test]
+#[ignore = "metric debug — run with --ignored"]
+fn diag_champ_forward_constrain_pose() {
+    let path = common::namiashi_urdf();
+    if !path.exists() { return; }
+    let mut robot = articara::robot::RobotModel::from_urdf(&path).expect("load");
+    // GUI uses URDF-default PD (kp=50, kv=5) — NOT the test harness's
+    // (kp=30, kv=0.6). The constrain pose requires real joint torque
+    // to hold against gravity (deeply bent legs); kp=30 isn't enough
+    // and the robot collapses during the settle phase.
+    for j in robot.joints.iter_mut() {
+        if j.joint_type == "fixed" { continue; }
+        j.actuator_mode = articara::robot::ActuatorMode::Position;
+        j.actuator_kp = 50.0;
+        j.actuator_kv = 5.0;
+    }
+    // Apply the `constrain` pose FIRST so the subsequent auto-detect
+    // captures the deeply-bent stance as `nominal_foot_body` (= what
+    // the gait controller will target). In GUI: user picks the pose
+    // from the Poses panel, then later clicks Auto-Detect → Start Gait. This is what the user's GUI session does
+    // before launching the gait — fundamentally different from
+    // `seed_joint_positions_from_kinematics` which puts the legs near
+    // straight-down (q ≈ small bend).
+    let constrain_pose = [
+        ("FL_hip_joint", 0.0),  ("FL_thigh_joint", 1.0),  ("FL_calf_joint", -2.0),
+        ("FR_hip_joint", 0.0),  ("FR_thigh_joint", 1.0),  ("FR_calf_joint", -2.0),
+        ("RL_hip_joint", 0.0),  ("RL_thigh_joint", 1.0),  ("RL_calf_joint", -2.0),
+        ("RR_hip_joint", 0.0),  ("RR_thigh_joint", 1.0),  ("RR_calf_joint", -2.0),
+        ("arm_pitch_joint", 0.0),
+    ];
+    for (name, q) in constrain_pose {
+        if let Some(&idx) = robot.joint_map.get(name) {
+            robot.joint_positions[idx] = q;
+        } else {
+            eprintln!("WARN: joint {name:?} not found in model");
+        }
+    }
+
+    // Now run Auto-Detect — the foot transforms will reflect the
+    // constrain pose.
+    let kin = articara::gait::auto_detect_kinematics_config(
+        &robot,
+        &articara::gait::DEFAULT_FOOT_LINKS,
+    ).expect("kin");
+    eprintln!("nominal_foot_body after auto-detect at constrain pose:");
+    for (label, leg) in [("FL", &kin.fl), ("FR", &kin.fr), ("RL", &kin.rl), ("RR", &kin.rr)] {
+        eprintln!("  {label}: nominal_foot_body = {:?}, hip_offset = {:?}, upper={:.3} lower={:.3}",
+            leg.nominal_foot_body, leg.hip_offset, leg.upper_leg_m, leg.lower_leg_m);
+    }
+
+    // Two-phase: 2 s settle (no gait, holding constrain pose) +
+    // 7 s walk (gait active, cmd applied). Longer cmd windows cause
+    // CHAMP's open-loop yaw drift to accumulate and the body to curve
+    // off course; 7 s captures the linear-tracking regime.
+    let settle_s = 2.0;
+    let cmd_s = 7.0;
+
+    // GUI uses `add_actuators: false` in its MjcfExportOptions; the
+    // test harness default sets `true`. Match the GUI here.
+    let opts = articara::mjcf::MjcfExportOptions {
+        ground_plane: Some(articara::mjcf::GroundPlaneCfg {
+            z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0,
+        }),
+        add_actuators: false,
+        ..Default::default()
+    };
+    let mut sim = articara::mujoco_sim::MujocoSim::new(&robot, opts).expect("sim");
+    // GUI default is grav-comp OFF (`enforce_gravity_compensation = false`).
+    sim.set_gravity_compensation(false);
+
+    let cfg = GaitConfig::trot();
+    let mut gc = GaitController::build(&robot, kin, cfg, GaitMode::Champ).expect("build");
+    // NOT enabled yet — GUI's step 4 (PlayMuJoCo) runs WITHOUT gait
+    // active. The robot falls and stabilises in the constrain pose
+    // via PD position-hold. Step 5 (Auto-Detect + Start Gait) enables
+    // the gait AFTER the robot has settled.
+
+    // Set position targets to constrain pose initially so PD holds it
+    // during the settle window.
+    for (name, q) in constrain_pose {
+        if let Some(&idx) = robot.joint_map.get(name) {
+            sim.set_position_target(idx, q);
+        }
+    }
+
+    // GUI cmd = 0.30 m/s (not 0.15 in fwd_cmd()).
+    let cmd = VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 };
+
+    let total_s = settle_s + cmd_s;
+    let n_steps = (total_s / DT) as usize;
+    let settle_steps = (settle_s / DT) as usize;
+    let mut m = WalkBenchmark::default();
+    m.min_body_z = f64::INFINITY;
+
+    eprintln!("initial body pos: {:?}", sim.body_world_position(&robot.root_link));
+    for k in 0..n_steps {
+        if k == settle_steps {
+            // Settle done — start the gait and apply forward cmd.
+            gc.enable();
+            gc.set_velocity_cmd(cmd);
+            // Record start of cmd window.
+            if let Some(p) = sim.body_world_position(&robot.root_link) {
+                m.body_x_start = p[0]; m.body_y_start = p[1];
+            }
+            m.yaw_start = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+            eprintln!("at cmd start (t={settle_s}s): body_pos = ({:.3}, {:.3}, {:.3}), yaw = {:+.3}",
+                m.body_x_start, m.body_y_start,
+                sim.body_world_position(&robot.root_link).map(|p| p[2]).unwrap_or(0.0),
+                m.yaw_start);
+        }
+
+        if k < settle_steps {
+            // Settle phase: keep PD on the constrain pose.
+            for (name, q) in constrain_pose {
+                if let Some(&idx) = robot.joint_map.get(name) {
+                    sim.set_position_target(idx, q);
+                }
+            }
+        } else {
+            // Walk phase: gait controller drives joint targets.
+            let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            gc.set_body_state_observed(
+                Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+                Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+            );
+            let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+            let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+            gc.set_body_pose_observed(yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
+            let (_o, targets, _ff) = gc.tick(DT);
+            for (idx, q) in targets { sim.set_position_target(idx, q); }
+        }
+        sim.step(&mut robot, DT, true);
+        if let Some(p) = sim.body_world_position(&robot.root_link) {
+            m.body_x_end = p[0]; m.body_y_end = p[1];
+            m.min_body_z = m.min_body_z.min(p[2]);
+        }
+        m.yaw_end = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+    }
+    let cmd_duration = cmd_s;
+    eprintln!();
+    eprintln!("=== CHAMP forward CONSTRAIN-POSE (cmd vx=+{:.2} m/s, {:.1}s under cmd) ===",
+              cmd.vx, cmd_duration);
+    eprintln!("  dx_world  = {:+.4} m   dy_world = {:+.4} m", m.dx_world(), m.dy_world());
+    eprintln!("  dyaw      = {:+.3} rad  min_z    = {:.4} m", m.dyaw(), m.min_body_z);
+    let q = m.metrics(cmd, cmd_duration);
+    eprintln!("  metric    = {}", q.line("forward"));
+    eprintln!("  (user GUI reported: dx ≈ +1.13, dy ≈ +0.05..+0.10)");
+}
+
 /// Run CHAMP forward **without** the foot-nudge that the test fixture
 /// applies (`nominal_foot_body.z += 8 % * leg_total`). The GUI flow
 /// does not apply this nudge, so this test approximates the GUI's
