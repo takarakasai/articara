@@ -577,6 +577,23 @@ impl GaitController {
         self.inner.srbd_mpc_config()
     }
 
+    /// Override the centroidal-SRBD MPC config. No-op outside
+    /// [`quadruped_gait::GaitMode::CentroidalSrbd`].
+    pub fn set_centroidal_mpc_config(
+        &mut self,
+        cfg: quadruped_gait::CentroidalMpcConfig,
+    ) {
+        self.inner.set_centroidal_mpc_config(cfg);
+    }
+
+    /// Read the active centroidal MPC config. `None` outside
+    /// [`quadruped_gait::GaitMode::CentroidalSrbd`].
+    pub fn centroidal_mpc_config(
+        &self,
+    ) -> Option<&quadruped_gait::CentroidalMpcConfig> {
+        self.inner.centroidal_mpc_config()
+    }
+
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }

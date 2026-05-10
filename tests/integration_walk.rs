@@ -489,13 +489,21 @@ fn run_walk(
     } else {
         None
     };
-    // Sync mass / inertia from the auto-detected SrbdMpcConfig (same as
+    // Sync mass / inertia from the auto-detected MPC config (same as
     // the GUI fix in commit b03c431) so WBC physics matches the URDF.
-    if let (Some(pipeline), Some(srbd_cfg)) =
-        (wbc_pipeline.as_mut(), gc.srbd_mpc_config())
-    {
-        pipeline.mass_kg = srbd_cfg.mass_kg;
-        pipeline.inertia_diag_body = srbd_cfg.inertia_diag_body;
+    // CentroidalSrbd mode signals via `centroidal_inertia_body = Some(_)`
+    // so the WBC switches to the CoM-aware `a_base_des` path; SRBD
+    // mode leaves it `None` for the body-root baseline.
+    if let Some(pipeline) = wbc_pipeline.as_mut() {
+        if let Some(centroidal_cfg) = gc.centroidal_mpc_config() {
+            pipeline.mass_kg = centroidal_cfg.mass_kg;
+            pipeline.centroidal_inertia_body = Some(centroidal_cfg.centroidal_inertia_body);
+            pipeline.com_offset_body = centroidal_cfg.com_offset_body;
+        } else if let Some(srbd_cfg) = gc.srbd_mpc_config() {
+            pipeline.mass_kg = srbd_cfg.mass_kg;
+            pipeline.inertia_diag_body = srbd_cfg.inertia_diag_body;
+            pipeline.centroidal_inertia_body = None;
+        }
     }
 
     let n_steps = (WALK_SIM_TIME_S / DT) as usize;

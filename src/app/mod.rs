@@ -1634,10 +1634,26 @@ impl ArticaraApp {
                                             // (2.4 kg) without this override produces a
                                             // ~4× force overestimate that flings the legs
                                             // into the ground and tips the robot over.
-                                            if let Some(srbd_cfg) = gc.srbd_mpc_config() {
+                                            if let Some(centroidal_cfg) =
+                                                gc.centroidal_mpc_config()
+                                            {
+                                                // CentroidalSrbd mode: WBC uses
+                                                // the CoM-aware `a_base_des` path.
+                                                new_pipe.mass_kg = centroidal_cfg.mass_kg;
+                                                new_pipe.centroidal_inertia_body = Some(
+                                                    centroidal_cfg.centroidal_inertia_body,
+                                                );
+                                                new_pipe.com_offset_body =
+                                                    centroidal_cfg.com_offset_body;
+                                            } else if let Some(srbd_cfg) = gc.srbd_mpc_config() {
+                                                // body-root SRBD: leave
+                                                // centroidal_inertia_body = None
+                                                // so the WBC stays on the SRBD
+                                                // body-root reference path.
                                                 new_pipe.mass_kg = srbd_cfg.mass_kg;
                                                 new_pipe.inertia_diag_body =
                                                     srbd_cfg.inertia_diag_body;
+                                                new_pipe.centroidal_inertia_body = None;
                                             }
                                             self.wbc_pipeline = Some(new_pipe);
                                         }

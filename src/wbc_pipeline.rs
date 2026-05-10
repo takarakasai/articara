@@ -74,6 +74,16 @@ pub struct WbcPipeline {
     /// match `SrbdMpcConfig::default()` (Cheetah-class).
     pub mass_kg: f64,
     pub inertia_diag_body: na::Vector3<f64>,
+    /// CoM-aware overrides for `a_base_des`. When `centroidal_inertia_body`
+    /// is `Some`, the WBC pipeline computes its base-acceleration
+    /// reference via [`quadruped_gait::predicted_base_accel_world_centroidal`]
+    /// — using the CoM-shifted moment arm and the centroidal angular
+    /// inertia. Hosts mirror these from
+    /// [`quadruped_gait::CentroidalMpcConfig`] when the gait controller
+    /// runs in `GaitMode::CentroidalSrbd`. Leave `None` to use the
+    /// body-root SRBD path (default for `GaitMode::Mpc`).
+    pub centroidal_inertia_body: Option<na::Matrix3<f64>>,
+    pub com_offset_body: na::Vector3<f64>,
 
     /// Previous tick's joint q* in URDF sign convention, indexed by
     /// articara joint index. Updated **only for swing legs** so that
@@ -176,6 +186,8 @@ impl WbcPipeline {
             friction_mu: 0.5,
             mass_kg: 9.0,
             inertia_diag_body: na::Vector3::new(0.07, 0.26, 0.242),
+            centroidal_inertia_body: None,
+            com_offset_body: na::Vector3::zeros(),
             last_q_target_urdf,
             smoothed_f_grf: [na::Vector3::zeros(); 4],
             grf_smoothing_seeded: false,
@@ -371,24 +383,51 @@ impl WbcPipeline {
             let p_body = forward_leg_kinematics(leg_kin, q_leg[0], q_leg[1], q_leg[2]);
             foot_pos_world[slot] = body_pos_w + r_wb * p_body;
         }
-        let srbd_cfg = quadruped_gait::SrbdMpcConfig {
-            mass_kg: self.mass_kg,
-            inertia_diag_body: self.inertia_diag_body,
-            ..quadruped_gait::SrbdMpcConfig::default()
+        // a_base_des dispatch:
+        //   * `centroidal_inertia_body` is `Some` ⇒ host signalled
+        //     `GaitMode::CentroidalSrbd` — use the CoM-aware moment-arm
+        //     formulation. This is what makes the WBC reference and
+        //     the centroidal MPC's GRFs self-consistent (the failure
+        //     mode that broke the C1/C2 attempts when the SRBD MPC was
+        //     paired with body-root WBC reference).
+        //   * Otherwise ⇒ body-root SRBD path, exactly as before.
+        let (a_lin_world, a_ang_world) = if let Some(i_centroidal) =
+            self.centroidal_inertia_body
+        {
+            let cent_cfg = quadruped_gait::CentroidalMpcConfig {
+                mass_kg: self.mass_kg,
+                centroidal_inertia_body: i_centroidal,
+                com_offset_body: self.com_offset_body,
+                ..quadruped_gait::CentroidalMpcConfig::default()
+            };
+            quadruped_gait::predicted_base_accel_world_centroidal(
+                &cent_cfg,
+                body_pos_w,
+                body_quat,
+                *omega_obs_world,
+                f_grf_world_des,
+                &foot_pos_world,
+            )
+        } else {
+            let srbd_cfg = quadruped_gait::SrbdMpcConfig {
+                mass_kg: self.mass_kg,
+                inertia_diag_body: self.inertia_diag_body,
+                ..quadruped_gait::SrbdMpcConfig::default()
+            };
+            let euler = body_quat.euler_angles();
+            let srbd_state = quadruped_gait::SrbdState {
+                orientation_rpy: na::Vector3::new(euler.0, euler.1, euler.2),
+                position: body_pos_w,
+                angular_velocity: omega_obs_body, // SRBD layout: body frame
+                linear_velocity: *v_obs_world,    // SRBD layout: world frame
+            };
+            quadruped_gait::predicted_base_accel_world(
+                &srbd_cfg,
+                &srbd_state,
+                f_grf_world_des,
+                &foot_pos_world,
+            )
         };
-        let euler = body_quat.euler_angles();
-        let srbd_state = quadruped_gait::SrbdState {
-            orientation_rpy: na::Vector3::new(euler.0, euler.1, euler.2),
-            position: body_pos_w,
-            angular_velocity: omega_obs_body, // SRBD layout: body frame
-            linear_velocity: *v_obs_world,    // SRBD layout: world frame
-        };
-        let (a_lin_world, a_ang_world) = quadruped_gait::predicted_base_accel_world(
-            &srbd_cfg,
-            &srbd_state,
-            f_grf_world_des,
-            &foot_pos_world,
-        );
         // q̈[0..6] is body-frame for a FreeFlyer joint, so rotate the
         // world-frame predicted accels in. Layout: [angular; linear].
         let a_lin_body = r_bw * a_lin_world;
