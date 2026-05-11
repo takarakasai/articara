@@ -1376,6 +1376,96 @@ fn diag_walk_champ_forward_v2_timeseries() {
     }
 }
 
+/// Most faithful GUI replication so far: load `namiashi.misa` directly
+/// (not the URDF), which gives us the GUI's exact PD gains AND joint
+/// damping (URDF has damping=0; .misa has damping=0.1 on every leg
+/// joint). Combined with post-settle kin + 0.5 s cmd=0 hold.
+#[test]
+#[ignore = "harness debug — run with --ignored"]
+fn diag_walk_champ_forward_gui_replica_full_misa() {
+    let misa_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests").join("fixtures").join("namiashi").join("namiashi.misa");
+    if !misa_path.exists() { return; }
+    let mut robot = articara::robot::RobotModel::from_misa(&misa_path).expect("load misa");
+    let constrain_pose = [
+        ("FL_hip_joint", 0.0), ("FL_thigh_joint", 1.0), ("FL_calf_joint", -2.0),
+        ("FR_hip_joint", 0.0), ("FR_thigh_joint", 1.0), ("FR_calf_joint", -2.0),
+        ("RL_hip_joint", 0.0), ("RL_thigh_joint", 1.0), ("RL_calf_joint", -2.0),
+        ("RR_hip_joint", 0.0), ("RR_thigh_joint", 1.0), ("RR_calf_joint", -2.0),
+        ("arm_pitch_joint", 0.0),
+    ];
+    for (name, q) in constrain_pose {
+        if let Some(&idx) = robot.joint_map.get(name) { robot.joint_positions[idx] = q; }
+    }
+    // Dump the loaded PD gains + damping for diagnostic confirmation.
+    if let Some(&idx) = robot.joint_map.get("FL_thigh_joint") {
+        eprintln!("[diag] FL_thigh kp={} kv={} damping={}",
+            robot.joints[idx].actuator_kp,
+            robot.joints[idx].actuator_kv,
+            robot.joints[idx].joint_damping);
+    }
+    let opts = articara::mjcf::MjcfExportOptions {
+        ground_plane: Some(articara::mjcf::GroundPlaneCfg { z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0 }),
+        add_actuators: false,
+        bake_actuator_limits: true,
+        bake_joint_position_limits: true,
+        ..Default::default()
+    };
+    let mut sim = articara::mujoco_sim::MujocoSim::new(&robot, opts).expect("sim");
+    sim.set_gravity_compensation(false);
+    for (name, q) in constrain_pose {
+        if let Some(&idx) = robot.joint_map.get(name) { sim.set_position_target(idx, q); }
+    }
+    let settle_s = 2.0;
+    let cmd_zero_s = 0.5;
+    let cmd_s = 7.0;
+    let settle_steps = (settle_s / DT) as usize;
+    let cmd_zero_steps = (cmd_zero_s / DT) as usize;
+    let cmd_steps = (cmd_s / DT) as usize;
+    let log_every = (0.5 / DT) as usize;
+    for _ in 0..settle_steps {
+        for (name, q) in constrain_pose {
+            if let Some(&idx) = robot.joint_map.get(name) { sim.set_position_target(idx, q); }
+        }
+        sim.step(&mut robot, DT, true);
+    }
+    let kin = articara::gait::auto_detect_kinematics_config(
+        &robot, &articara::gait::DEFAULT_FOOT_LINKS).expect("kin");
+    let cfg = GaitConfig::trot();
+    let mut gc = GaitController::build(&robot, kin, cfg, GaitMode::Champ).expect("gc");
+    gc.enable();
+    gc.set_velocity_cmd(VelocityCmd::zero());
+    for _ in 0..cmd_zero_steps {
+        let (_o, targets, _ff) = gc.tick(DT);
+        for (idx, q) in targets { sim.set_position_target(idx, q); }
+        sim.step(&mut robot, DT, true);
+    }
+    let (x_cmd_start, z_cmd_start) = {
+        let p = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+        (p[0], p[2])
+    };
+    gc.set_velocity_cmd(VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 });
+    eprintln!();
+    eprintln!("=== diag_walk_champ_forward_gui_replica_full_misa ===");
+    eprintln!("  (from_misa loader: PD 100/1.2 + damping 0.1 + post-settle kin + 0.5 s hold)");
+    eprintln!("  t_cmd[s]   dx[m]    dy[m]    dz[m]    yaw[rad]   body_z[m]");
+    eprintln!("  {:>5.2}    {:+.4}  {:+.4}  {:+.4}  {:+.4}    {:.4}",
+        0.0, 0.0, 0.0, 0.0, 0.0, z_cmd_start);
+    for k in 0..cmd_steps {
+        let (_o, targets, _ff) = gc.tick(DT);
+        for (idx, q) in targets { sim.set_position_target(idx, q); }
+        sim.step(&mut robot, DT, true);
+        if (k + 1) % log_every == 0 {
+            if let Some(p) = sim.body_world_position(&robot.root_link) {
+                let yaw = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+                let t = (k + 1) as f64 * DT;
+                eprintln!("  {:>5.2}    {:+.4}  {:+.4}  {:+.4}  {:+.4}    {:.4}",
+                    t, p[0]-x_cmd_start, p[1], p[2]-z_cmd_start, yaw, p[2]);
+            }
+        }
+    }
+}
+
 #[test]
 #[ignore = "GUI-equivalent metric anchor — run with --ignored"]
 fn diag_walk_metric_matrix_gui_v2() {
