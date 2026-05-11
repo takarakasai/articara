@@ -71,7 +71,7 @@ fn integration_position_pd_with_mpc_torque_ff() {
         mut robot,
         kin,
         mut sim,
-    }) = common::build_namiashi_stand_fixture()
+    }) = common::build_namiashi_stand_fixture_misa()
     else {
         return;
     };
@@ -151,7 +151,7 @@ fn integration_position_pd_plus_wbc() {
         mut robot,
         kin,
         mut sim,
-    }) = common::build_namiashi_stand_fixture()
+    }) = common::build_namiashi_stand_fixture_misa()
     else {
         return;
     };
@@ -290,7 +290,7 @@ fn integration_position_pd_plus_lkf() {
         mut robot,
         kin,
         mut sim,
-    }) = common::build_namiashi_stand_fixture()
+    }) = common::build_namiashi_stand_fixture_misa()
     else {
         return;
     };

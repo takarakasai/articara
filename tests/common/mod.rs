@@ -32,6 +32,12 @@ use quadruped_gait::{solve_leg_ik, KinematicsConfig, LegIkSolution};
 
 /// Path to the namiashi URDF fixture (1.5 kg-class quadruped — the
 /// reference robot for every regression test in this directory).
+///
+/// **Note**: URDF only carries kinematics. For dynamics-fidelity tests
+/// (PD-tracking, walk envelopes), prefer [`namiashi_misa`] — the URDF
+/// lacks the `.misa` actuator config (kp=100/kv=1.2) and joint damping
+/// (0.1) that the GUI uses, so URDF-loaded tests under-stiff the legs
+/// and the body settles ~50 mm lower than reality.
 pub fn namiashi_urdf() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -39,6 +45,20 @@ pub fn namiashi_urdf() -> PathBuf {
         .join("namiashi")
         .join("urdf")
         .join("namiashi.urdf")
+}
+
+/// Path to the namiashi master format (.misa) fixture. Use this in
+/// preference to [`namiashi_urdf`] for any test that asserts on body
+/// trajectory or PD-tracking behaviour — the `.misa` carries actuator
+/// kp/kv and joint damping that the URDF doesn't, so loading via
+/// `RobotModel::from_misa` reproduces the GUI exactly (validated by
+/// `integration_walk::diag_walk_champ_forward_gui_replica_full_misa`).
+pub fn namiashi_misa() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("namiashi")
+        .join("namiashi.misa")
 }
 
 /// Solve per-leg IK at `nominal_foot_body` and write the joint angles
@@ -120,6 +140,11 @@ pub struct StandFixture {
 /// Returns `None` when the URDF fixture is missing — caller should
 /// `eprintln!` + early-return so the test silently skips on bare
 /// CI environments without the namiashi mesh fixture.
+///
+/// **For dynamics-fidelity tests, prefer [`build_namiashi_stand_fixture_misa`]**
+/// — the URDF path uses fabricated `kp=30, kv=0.6` and `damping=0` so
+/// the body settles ~50 mm lower than the GUI. Existing call sites
+/// retain this behaviour for envelope compatibility.
 pub fn build_namiashi_stand_fixture() -> Option<StandFixture> {
     use articara::gait::{auto_detect_kinematics_config, DEFAULT_FOOT_LINKS};
 
@@ -139,6 +164,45 @@ pub fn build_namiashi_stand_fixture() -> Option<StandFixture> {
     // Standard 8 % nudge above the URDF's nominal foot pose — same
     // adjustment the existing tests use to avoid bottoming out the
     // legs at full extension.
+    for leg_kin in [&mut kin.fl, &mut kin.fr, &mut kin.rl, &mut kin.rr] {
+        let total_leg = leg_kin.upper_leg_m + leg_kin.lower_leg_m;
+        leg_kin.nominal_foot_body.z += 0.08 * total_leg;
+    }
+    seed_joint_positions_from_kinematics(&mut robot, &kin);
+
+    let mut sim =
+        MujocoSim::new(&robot, default_mjcf_export_options()).expect("MujocoSim::new");
+    sim.set_gravity_compensation(true);
+
+    Some(StandFixture { robot, kin, sim })
+}
+
+/// Same shape as [`build_namiashi_stand_fixture`] but loads from
+/// `namiashi.misa` so the robot carries the GUI's real actuator config
+/// (`kp=100, kv=1.2` per leg motor, `damping=0.1` per leg joint).
+///
+/// Use this in any regression test that asserts on body trajectory
+/// or PD tracking. The URDF-based variant settles the body ~50 mm
+/// lower than reality (3.4× dx tracking gap) — see commit `bcbcdf7`
+/// + `diag_walk_champ_forward_gui_replica_full_misa` for the
+/// validation that the misa loader reproduces the GUI exactly.
+pub fn build_namiashi_stand_fixture_misa() -> Option<StandFixture> {
+    use articara::gait::{auto_detect_kinematics_config, DEFAULT_FOOT_LINKS};
+
+    let path = namiashi_misa();
+    if !path.exists() {
+        eprintln!(
+            "namiashi .misa fixture missing at {} — skipping regression test",
+            path.display()
+        );
+        return None;
+    }
+    let mut robot = RobotModel::from_misa(&path).expect("load namiashi .misa");
+    // No `setup_position_pd_actuators` call — the .misa already carries
+    // the actuator config (kp=100, kv=1.2) per joint.
+
+    let mut kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS)
+        .expect("auto-detect kinematics");
     for leg_kin in [&mut kin.fl, &mut kin.fr, &mut kin.rl, &mut kin.rr] {
         let total_leg = leg_kin.upper_leg_m + leg_kin.lower_leg_m;
         leg_kin.nominal_foot_body.z += 0.08 * total_leg;
