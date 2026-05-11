@@ -36,7 +36,6 @@ use articara::gait::{
 };
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
-use articara::rbd::model::ActuatorMode;
 use articara::robot::RobotModel;
 use articara::wbc_pipeline::WbcPipeline;
 use nalgebra::Vector3;
@@ -45,13 +44,12 @@ use quadruped_gait::{
     LegIkSolution, VelocityCmd,
 };
 
-fn namiashi_urdf() -> PathBuf {
+fn namiashi_misa() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
         .join("namiashi")
-        .join("urdf")
-        .join("namiashi.urdf")
+        .join("namiashi.misa")
 }
 
 /// Same seeding logic as `gait_walk_stability`. Keeps the legs out of
@@ -133,7 +131,7 @@ impl WbcParams {
 /// Run a WBC sim, sampling per-tick. Returns `None` if the namiashi
 /// fixture is missing (skip cleanly).
 fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
-    let path = namiashi_urdf();
+    let path = namiashi_misa();
     if !path.exists() {
         eprintln!(
             "namiashi fixture missing at {} — skipping WBC test",
@@ -141,19 +139,11 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         );
         return None;
     }
-    let mut robot = RobotModel::from_urdf(&path).expect("load namiashi URDF");
-
-    // Same per-joint PD as gait_walk_stability — the WBC overrides PD
-    // when active, but during burn-in (gait disabled) we still run
-    // Position-mode PD, so these gains matter for the settling phase.
-    for j in robot.joints.iter_mut() {
-        if j.joint_type == "fixed" {
-            continue;
-        }
-        j.actuator_mode = ActuatorMode::Position;
-        j.actuator_kp = 30.0;
-        j.actuator_kv = 0.6;
-    }
+    // Load from the master .misa so PD gains (kp=100, kv=1.2) and
+    // joint damping (0.1) come from the same source the GUI uses; the
+    // burn-in Position-PD then settles at the real GUI body-z. See
+    // commit `f53482c` for the same migration in gait_walk_stability.
+    let mut robot = RobotModel::from_misa(&path).expect("load namiashi .misa");
 
     let mut kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS)
         .expect("auto-detect kinematics");
@@ -506,9 +496,9 @@ fn wbc_static_stand_balances_gravity() {
         .sum::<f64>()
         / (samples.len() - start) as f64;
 
-    // Reference m·g. Recompute by reloading the URDF (cheap).
-    let path = namiashi_urdf();
-    let robot = RobotModel::from_urdf(&path).unwrap();
+    // Reference m·g. Recompute by reloading the .misa (cheap).
+    let path = namiashi_misa();
+    let robot = RobotModel::from_misa(&path).unwrap();
     let mg = robot_mass(&robot) * 9.81;
 
     let pct_err = ((avg_fz - mg) / mg).abs();
