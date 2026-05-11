@@ -15,18 +15,16 @@ use articara::estimator::LkfPipeline;
 use articara::gait::{auto_detect_kinematics_config, DEFAULT_FOOT_LINKS};
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
-use articara::rbd::model::ActuatorMode;
 use articara::robot::RobotModel;
 use nalgebra::{UnitQuaternion, Vector3};
 use quadruped_gait::{solve_leg_ik, KinematicsConfig, LegIkSolution};
 
-fn namiashi_urdf() -> PathBuf {
+fn namiashi_misa() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
         .join("namiashi")
-        .join("urdf")
-        .join("namiashi.urdf")
+        .join("namiashi.misa")
 }
 
 fn seed_joint_positions_from_kinematics(
@@ -62,23 +60,15 @@ fn seed_joint_positions_from_kinematics(
 /// it through Madgwick on real hardware).
 #[test]
 fn lkf_static_stand_tracks_ground_truth_body_z() {
-    let path = namiashi_urdf();
+    let path = namiashi_misa();
     if !path.exists() {
         eprintln!("namiashi fixture missing — skipping");
         return;
     }
-    let mut robot = RobotModel::from_urdf(&path).expect("load namiashi URDF");
-
-    // Position-PD only — keep the controller path simple to isolate
-    // the estimator.
-    for j in robot.joints.iter_mut() {
-        if j.joint_type == "fixed" {
-            continue;
-        }
-        j.actuator_mode = ActuatorMode::Position;
-        j.actuator_kp = 30.0;
-        j.actuator_kv = 0.6;
-    }
+    // Load from the master .misa so PD gains (kp=100, kv=1.2) and
+    // joint damping (0.1) match the GUI. See commit `f53482c` for the
+    // same migration in gait_walk_stability.
+    let mut robot = RobotModel::from_misa(&path).expect("load namiashi .misa");
 
     let mut kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS)
         .expect("auto-detect kinematics");
