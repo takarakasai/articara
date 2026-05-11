@@ -30,7 +30,6 @@ use articara::gait::{
 };
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
-use articara::rbd::model::ActuatorMode;
 use articara::robot::RobotModel;
 use nalgebra::Vector3;
 use quadruped_gait::{
@@ -38,13 +37,12 @@ use quadruped_gait::{
     VelocityCmd,
 };
 
-fn namiashi_urdf() -> PathBuf {
+fn namiashi_misa() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
         .join("namiashi")
-        .join("urdf")
-        .join("namiashi.urdf")
+        .join("namiashi.misa")
 }
 
 /// Solve IK at each leg's `nominal_foot_body` and write the resulting
@@ -159,7 +157,7 @@ impl WalkParams {
 /// and return per-tick trunk samples. The caller asserts on stability
 /// metrics. `mode` selects CHAMP or MPC.
 fn run_walk(mode: GaitMode, params: WalkParams) -> Option<Vec<TrunkSample>> {
-    let path = namiashi_urdf();
+    let path = namiashi_misa();
     if !path.exists() {
         eprintln!(
             "namiashi fixture missing at {} — skipping {:?} stability test",
@@ -168,23 +166,13 @@ fn run_walk(mode: GaitMode, params: WalkParams) -> Option<Vec<TrunkSample>> {
         );
         return None;
     }
-    let mut robot = RobotModel::from_urdf(&path).expect("load namiashi URDF");
-
-    // Per-joint PD gains. The URDF defaults are kp=50/kv=5 (joint
-    // catalogue-style soft-PD). We tighten them so the position-mode
-    // controller can actually hold the gait targets against gravity
-    // at namiashi's 2.4 kg body. The exact values aren't tuning-
-    // critical: the test's job is to detect catastrophic instability
-    // (falling, divergent oscillation), not to enforce tracking
-    // quality.
-    for j in robot.joints.iter_mut() {
-        if j.joint_type == "fixed" {
-            continue;
-        }
-        j.actuator_mode = ActuatorMode::Position;
-        j.actuator_kp = 30.0;
-        j.actuator_kv = 0.6;
-    }
+    // Load from the master .misa so PD gains (kp=100, kv=1.2) and
+    // joint damping (0.1) come from the same source the GUI uses.
+    // Loading the URDF instead causes the body to settle ~50 mm lower
+    // than reality and the walk to under-stride by 3.4× — see
+    // `integration_walk::diag_walk_champ_forward_gui_replica_full_misa`
+    // for the validation that the misa loader reproduces the GUI.
+    let mut robot = RobotModel::from_misa(&path).expect("load namiashi .misa");
 
     // Build the gait controller's kinematics from the URDF, then bend
     // the nominal stance ~10 cm vertically off fully-extended. The
