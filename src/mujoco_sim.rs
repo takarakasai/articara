@@ -157,6 +157,15 @@ pub struct TraceFrame {
     pub q: Vec<f64>,
     pub qvel: Vec<f64>,
     pub tau: Vec<f64>,
+    /// World-frame position `[x, y, z]` of the model's root link, captured
+    /// straight from MuJoCo's `xpos`. `None` when the root link is absent
+    /// from the compiled MJCF (e.g. fixed-base manipulators without a free
+    /// joint). Diagnostic-only — exported via [`save_peaks_csv`] so GUI
+    /// traces can be compared against headless-test body trajectories.
+    pub base_pos: Option<[f64; 3]>,
+    /// World-frame orientation quaternion `[w, x, y, z]` of the root link.
+    /// Same provenance and same `None` condition as [`Self::base_pos`].
+    pub base_quat: Option<[f64; 4]>,
 }
 
 /// Running peak observations for a single joint, accumulated tick-by-tick.
@@ -1079,11 +1088,24 @@ impl MujocoSim {
                 }
             }
         }
+        let (base_pos, base_quat) = match self
+            .model
+            .name_to_id(mujoco::prelude::MjtObj::mjOBJ_BODY, &robot.root_link)
+        {
+            Some(id) => {
+                let p = &self.data.xpos()[id];
+                let q = &self.data.xquat()[id];
+                (Some([p[0], p[1], p[2]]), Some([q[0], q[1], q[2], q[3]]))
+            }
+            None => (None, None),
+        };
         self.trace.push_back(TraceFrame {
             time: self.data.ffi().time,
             q,
             qvel,
             tau: self.last_tau.clone(),
+            base_pos,
+            base_quat,
         });
     }
 
@@ -1668,7 +1690,9 @@ pub fn save_peaks_csv(
 
     let mut f = std::fs::File::create(path).map_err(|e| format!("{e}"))?;
 
-    let mut header = String::from("time_s");
+    let mut header = String::from(
+        "time_s,base_px,base_py,base_pz,base_qw,base_qx,base_qy,base_qz,base_yaw",
+    );
     for (_, name) in &movable {
         header.push(',');
         header.push_str(&csv_field(&format!("q[{name}]")));
@@ -1683,6 +1707,19 @@ pub fn save_peaks_csv(
     let t0 = sim.trace().next().map(|fr| fr.time).unwrap_or(0.0);
     for frame in sim.trace() {
         let mut row = format!("{:.6}", frame.time - t0);
+        let p = frame.base_pos.unwrap_or([f64::NAN; 3]);
+        let q = frame.base_quat.unwrap_or([f64::NAN; 4]);
+        let yaw = match frame.base_quat {
+            Some([qw, qx, qy, qz]) => {
+                (2.0 * (qw * qz + qx * qy))
+                    .atan2(1.0 - 2.0 * (qy * qy + qz * qz))
+            }
+            None => f64::NAN,
+        };
+        row.push_str(&format!(
+            ",{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}",
+            p[0], p[1], p[2], q[0], q[1], q[2], q[3], yaw
+        ));
         for (idx, _) in &movable {
             let q = frame.q.get(*idx).copied().unwrap_or(0.0);
             let v = frame.qvel.get(*idx).copied().unwrap_or(0.0);
