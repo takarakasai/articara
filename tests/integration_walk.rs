@@ -785,9 +785,14 @@ fn yaw_cmd() -> VelocityCmd {
 /// CHAMP open-loop forward trot benchmark (5 s @ 0.15 m/s). CHAMP has
 /// no closed-loop yaw/lateral correction so cross-axis drift is
 /// expected; we only assert against falls and record the numbers.
+///
+/// Uses `use_misa = true` (2026-05-13): under URDF + soft PD the
+/// number was forward dx = −0.29 m (legs slipped backward); under
+/// `.misa` with kp=100/kv=1.2 it tracks at dx ≈ +0.60 m, matching the
+/// GUI behaviour and giving a fair side-by-side with `*_mpc_wbc`.
 #[test]
 fn integration_walk_straight_champ() {
-    let Some(m) = run_walk(false, GaitMode::Champ, fwd_cmd(), false) else {
+    let Some(m) = run_walk(false, GaitMode::Champ, fwd_cmd(), true) else {
         return;
     };
     eprintln!(
@@ -2202,9 +2207,11 @@ fn integration_walk_lateral_mpc_no_wbc() {
 }
 
 /// CHAMP lateral walk benchmark — open-loop documentation only.
+/// Uses `use_misa = true` for fair comparison with `*_mpc_wbc` (which
+/// also runs misa). See `integration_walk_straight_champ` doc comment.
 #[test]
 fn integration_walk_lateral_champ() {
-    let Some(m) = run_walk(false, GaitMode::Champ, lat_cmd(), false) else {
+    let Some(m) = run_walk(false, GaitMode::Champ, lat_cmd(), true) else {
         return;
     };
     eprintln!(
@@ -2246,9 +2253,10 @@ fn integration_walk_lateral_mpc_wbc() {
 // ─── Yaw-rotate benchmarks ────────────────────────────────────────
 
 /// CHAMP yaw rotate benchmark — open-loop documentation only.
+/// Uses `use_misa = true` for fair comparison with `*_mpc_wbc`.
 #[test]
 fn integration_walk_yaw_champ() {
-    let Some(m) = run_walk(false, GaitMode::Champ, yaw_cmd(), false) else {
+    let Some(m) = run_walk(false, GaitMode::Champ, yaw_cmd(), true) else {
         return;
     };
     eprintln!(

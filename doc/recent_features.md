@@ -975,6 +975,39 @@ legged_control では `cmd → reference → MPC plan → WBC` の chain で閉�
 | MPC+WBC (legged_control 整合 default) | Generator: "MPC", WBC ✓, Capture-point gain は default 0.0 のまま |
 | MPC+WBC (旧 capture-point heuristic, 比較用) | Generator: "MPC", WBC ✓, slider で k=0.175 に戻す |
 
+### 統一ベンチマーク表 (`.misa`, 5 s walk, namiashi)
+
+`tests/integration_walk.rs` の 3 mode が全て `use_misa=true` に揃った時点
+(`6f8...` 以降) の数値。 cmd は forward `vx=0.15`, lateral `vy=0.10`, yaw
+`wz=0.50` — それぞれの **期待値は 5 s で 0.75 m / 0.50 m / 2.5 rad**。
+
+| Mode \\ Axis | forward dx [m] | lateral dy [m] | yaw Δyaw [rad] | cross drift (最大) |
+|---|---:|---:|---:|---:|
+| CHAMP (open-loop, misa)                | **+0.597 (80%)** | **+0.408 (82%)** | **+1.548 (62%)** | 0.05 |
+| SRBD MPC+WBC (default k=0, misa)       | **+0.651 (87%)** | **+0.420 (84%)** | **+1.533 (61%)** | 0.05 |
+| FullCentroidal MPC+WBC (default, misa) | **+0.622 (83%)** | **+0.417 (83%)** | **+1.603 (64%)** | 0.07 |
+| legacy heuristic (k=0.175) [^1]        | +0.118 (16%) | +0.501 (100%, but yaw cross +1.2) | +2.759 (110% overshoot) | 0.28 (cross) |
+
+[^1]: legacy 列は misa+k=0.175 で旧 capture-point を再現した時の挙動。
+      `scripts/wbc_improvement_demo.rhai` で再現できる。
+
+#### 観察
+
+- **forward axis**: CHAMP / SRBD / FullCentroidal とも 80%+ で揃って前進、 cross drift も 5 cm 程度
+- **lateral axis**: 同じく 80%+、 cross 5 cm 程度
+- **yaw axis**: どの mode も 60% 前後の under-tracking — q_diag yaw 重みの tune
+  余地 (本来 D3.3.7 で予定されていた仕事の続き)
+- **legacy heuristic**: yaw overshoot 110% が見かけ「強い」 が、 forward は
+  正帰還ループのため壊滅的 (16%)。 旧挙動は本質的に不安定
+
+#### 含意
+
+- CHAMP も MPC+WBC も `.misa` + `k_capture=0` で **ほぼ同等の tracking**
+- MPC+WBC のメリットは tracking quality ではなく **roll/pitch/yaw 制御の
+  安定性** (`gait_walk_stability.rs` で peak |roll|/|pitch| が MPC で
+  3-4× 小さい)
+- yaw axis のみ 60% で頭打ち — capture-point 由来でなく q_diag の問題
+
 ### GUI 操作手順 (改善後)
 
 #### 方法 A: Script で全自動
