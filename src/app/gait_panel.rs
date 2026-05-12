@@ -75,6 +75,7 @@ impl ArticaraApp {
         let mut vy = 0.0_f64;
         let mut wz = 0.0_f64;
         let mut any_held = false;
+        let mut march_held = false;
 
         // Side-by-side layout: 3×3 translation cross on the left, yaw
         // pair on the right. Wrapping in `ui.horizontal` keeps both
@@ -94,7 +95,17 @@ impl ArticaraApp {
 
                     let r_left = ui.add_sized(btn_size, mk("⬅"))
                         .on_hover_text("Left (+vy)");
-                    ui.label("");
+                    // Center cell: march in place. Holding sends a
+                    // tiny-but-nonzero cmd so the phase generator keeps
+                    // cycling (it freezes at cmd=0) while the Raibert
+                    // stride amplitude collapses to ~0 — feet lift in
+                    // swing but the body doesn't translate.
+                    let r_march = ui.add_sized(btn_size, mk("👣"))
+                        .on_hover_text(
+                            "March in place (gait active, no translation). \
+                             Direction buttons override this when both are \
+                             held.",
+                        );
                     let r_right = ui.add_sized(btn_size, mk("➡"))
                         .on_hover_text("Right (−vy)");
                     ui.end_row();
@@ -109,6 +120,7 @@ impl ArticaraApp {
                     if held(&r_down)  { vx -= speed; any_held = true; }
                     if held(&r_left)  { vy += speed; any_held = true; }
                     if held(&r_right) { vy -= speed; any_held = true; }
+                    if held(&r_march) { march_held = true; }
                 });
 
             ui.add_space(12.0);
@@ -148,14 +160,27 @@ impl ArticaraApp {
         // after all buttons are released, send a single zero so the
         // robot stops immediately. The slider section below can still
         // be used afterward to set a sticky non-zero command.
+        //
+        // March-in-place: when 👣 is the only button held, we emit a
+        // tiny ε on `vx` (1e-6 m/s) — enough to keep `phase_gen` ticking
+        // (it freezes on `cmd.is_zero()`) while the Raibert step amplitude
+        // (= vx · T_stance) collapses to ~1e-7 m so the body stays put.
+        // Direction buttons + 👣 together: direction wins (any_held is
+        // already true, ε path skipped).
         if let Some(gc) = self.gait_controller.as_mut() {
             if any_held {
                 gc.set_velocity_cmd(quadruped_gait::VelocityCmd { vx, vy, wz });
+            } else if march_held {
+                gc.set_velocity_cmd(quadruped_gait::VelocityCmd {
+                    vx: 1e-6,
+                    vy: 0.0,
+                    wz: 0.0,
+                });
             } else if self.gait_dpad_was_active {
                 gc.set_velocity_cmd(quadruped_gait::VelocityCmd::zero());
             }
         }
-        self.gait_dpad_was_active = any_held;
+        self.gait_dpad_was_active = any_held || march_held;
     }
 
     /// Foot-link configuration + auto-detect button. Always visible so the
@@ -274,6 +299,61 @@ impl ArticaraApp {
              before being commanded to MuJoCo. Available only in MPC \
              gait mode.",
         );
+        // Capture-point feedback gain (MPC-only — CHAMP has no
+        // closed-loop foot placement correction). Lowering this to 0
+        // disables the positive-feedback loop documented in commit
+        // `eafbfc6` / `memory/project_mpc_frame_bug.md`. Required for
+        // namiashi (stiff PD via .misa) to get full forward tracking.
+        ui.horizontal(|ui| {
+            let is_mpc = matches!(
+                self.gait_mode,
+                quadruped_gait::GaitMode::Mpc
+                    | quadruped_gait::GaitMode::CentroidalSrbd
+                    | quadruped_gait::GaitMode::FullCentroidal
+            );
+            ui.add_enabled_ui(is_mpc, |ui| {
+                ui.label("Capture-point gain:");
+                let resp = ui.add(
+                    egui::Slider::new(&mut self.gait_capture_point_gain, 0.0..=0.5)
+                        .fixed_decimals(3),
+                );
+                if resp.changed() {
+                    if let Some(gc) = self.gait_controller.as_mut() {
+                        gc.set_capture_point_gain(self.gait_capture_point_gain as f64);
+                    }
+                    if self.gait_capture_point_gain == 0.0 {
+                        self.status_message =
+                            "Capture-point disabled (k=0) — stiff-PD safe mode".into();
+                    } else {
+                        self.status_message = format!(
+                            "Capture-point gain → {:.3}", self.gait_capture_point_gain,
+                        );
+                    }
+                }
+                if ui.small_button("0").on_hover_text(
+                    "Disable capture-point feedback. Use under stiff PD \
+                     (= namiashi .misa) to avoid the positive-feedback \
+                     loop that under-tracks forward cmd by ~80%.",
+                ).clicked() {
+                    self.gait_capture_point_gain = 0.0;
+                    if let Some(gc) = self.gait_controller.as_mut() {
+                        gc.set_capture_point_gain(0.0);
+                    }
+                    self.status_message =
+                        "Capture-point disabled (k=0) — stiff-PD safe mode".into();
+                }
+                if ui.small_button("default").on_hover_text(
+                    "Restore the controller default (k=0.175).",
+                ).clicked() {
+                    self.gait_capture_point_gain = 0.175;
+                    if let Some(gc) = self.gait_controller.as_mut() {
+                        gc.set_capture_point_gain(0.175);
+                    }
+                    self.status_message = "Capture-point gain → 0.175 (default)".into();
+                }
+            });
+        });
+
         ui.label(
             egui::RichText::new(
                 "CHAMP: open-loop Raibert footstep + Bezier swing. \
@@ -563,6 +643,10 @@ impl ArticaraApp {
                         {
                             gc.set_knee_forward(*leg, knee_forward[slot]);
                         }
+                        // Carry the slider's current capture-point gain
+                        // onto the freshly built controller (it has its
+                        // own internal default otherwise).
+                        gc.set_capture_point_gain(self.gait_capture_point_gain as f64);
                         self.gait_controller = Some(gc);
                         self.status_message =
                             "Gait controller built (saved params restored)".into();

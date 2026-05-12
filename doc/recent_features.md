@@ -798,6 +798,154 @@ end-to-end PASS、 残りは tuning と footstep-based joint reference の
 
 ---
 
+## 9. Phase D3.3.7: WBC tracking 改善 (`bcbcdf7` 〜 `b88d3aa`、 2026-05-12〜13)
+
+### 経緯
+
+namiashi で `MPC+WBC` モードを使うと、 `forward (cmd vx=+0.15 m/s)`
+コマンドで body が 5 秒に **+0.118 m** (= 期待 0.75 m の **16%**) しか
+進まないという「指示通り動かない」 問題が長期存在していた。 lateral /
+yaw コマンドでも cross-axis 方向に **±0.2〜0.3 m 規模** の意図しない
+ドリフトが出ていた。
+
+この session で root cause が **2 段階の不具合** だと判明:
+
+1. **URDF loader が `actuator config` と `joint damping` を読まない**
+   - `tests/fixtures/namiashi/urdf/namiashi.urdf` は構造 (link / joint / geometry)
+     のみで、 `kp / kv / damping` は持たない
+   - 既存 test fixture は `RobotModel::from_urdf` 経由で hardcoded
+     `kp=30, kv=0.6, damping=0` を使っていた
+   - GUI は `from_misa` で master format を読むので
+     `kp=100, kv=1.2, damping=0.1` (実機相当の stiff PD)
+   - test と GUI の dynamics fidelity が乖離していた
+
+2. **`compute_mpc_footstep` の capture-point feedback が正帰還ループ**
+   - 旧コード: `feedback = +k_capture · (v_obs - v_cmd)`
+   - 物理的には「想定外の v が出たら foot を逆方向に置いて braking」
+     を狙った LIP 由来の式
+   - CHAMP の linear stance-line model (foot が touch_down → lift_off
+     を線形補間で動く、 LIP の inverted-pendulum dynamics は無い) では
+     この式は **正帰還**: v_obs が +y にドリフトすると foot 配置も +y →
+     body は次 stride で更に +y へ → ループ暴走
+   - soft PD では脚 tracking が緩く正帰還が damped されていたが、
+     stiff PD では正確に追従するので顕在化
+
+### 修正
+
+a. **Test fixture を全面 `.misa` loader に移行** (`bcbcdf7`〜`09259ff`):
+   - `tests/common/mod.rs` に `namiashi_misa()` / `build_namiashi_stand_fixture_misa()` を追加
+   - `integration_walk` の `integration_position_pd_*` / `*_mpc_wbc`、
+     `gait_walk_stability` / `wbc_walk` / `lkf_pipeline` を misa 化
+   - 既存 envelope を維持したまま、 dynamics が GUI 同等に
+
+b. **`set_capture_point_gain(0.0)` で feedback を disable** (`eafbfc6`):
+   - `quadruped_gait::AnyGaitController::set_capture_point_gain` を
+     Mpc / CentroidalSrbd / FullCentroidal 全 mode に dispatch
+   - `articara::gait::GaitController::set_capture_point_gain` wrapper
+   - test の `run_walk` で `use_misa=true` の時に自動適用
+
+c. **GUI / Rhai script から操作可能に** (`b88d3aa`):
+   - `set_capture_point_gain(k)` の Rhai binding 追加
+   - `ScriptOverrides.capture_point_gain` 経由で app loop が
+     `gc.set_capture_point_gain(k)` を呼ぶ
+
+d. **GUI パネルに slider 追加** (本 commit):
+   - Gait Panel の WBC checkbox 下に "Capture-point gain" slider (0.0〜0.5)
+   - `[0]` ボタンでワンクリック disable、 `[default]` で 0.175 復帰
+   - 値が変わるたび、 また `gait_setup` 再走の度に active controller へ
+     `set_capture_point_gain` を sync
+
+e. **D-pad の中央に "👣 March in place" ボタン追加** (本 commit):
+   - 中央ボタンを押している間、 `cmd = (1e-6, 0, 0)` を送る
+   - `phase_gen` は `cmd.is_zero()` で停止するので、 ε で押し続けると
+     phase は進む / Raibert step amplitude は `ε · T_stance ≈ 1e-7 m`
+     と無視可能で body は translate せず、 swing 中の足上げだけ見える
+   - 方向ボタンと同時押しの場合、 方向側が勝つ
+
+### 数値証拠 (5 s walk, namiashi, SRBD MPC+WBC)
+
+| Axis | URDF (旧 default) | .misa + `k_capture=0` (fix) | 改善 |
+|---|---:|---:|---:|
+| forward dx (期待 +0.75) | +0.118 (16%) | **+0.651 (87%)** | **5.5×** |
+| forward dy (cross) | -0.034 | +0.002 | 17× cleaner |
+| forward Δyaw (cross) | +0.589 | +0.043 | 14× cleaner |
+| lateral dy (期待 +0.50) | +0.501 (100%) | +0.420 (84%) | comparable |
+| lateral dx (cross) | -0.233 | +0.012 | 19× cleaner |
+| lateral Δyaw (cross) | +1.196 | -0.052 | 23× cleaner |
+| yaw Δyaw (期待 +2.5) | +2.759 (110%) | +1.533 (61%) | 弱化 |
+| yaw dx (cross) | -0.280 | -0.008 | 35× cleaner |
+| yaw dy (cross) | +0.184 | -0.012 | 15× cleaner |
+
+forward が **5.5× 改善** (16% → 87%)、 cross-axis drift は全 axis で
+**1 桁減少**。 yaw のみ 110% → 61% に低下: 旧 URDF では capture-point の
+overshoot artifact で見かけ追従していたのが、 fix 後は正直な数字に。
+
+### 何が `capture_point_gain = 0` で起きるか / 何が悪かったか
+
+**悪かったこと:**
+旧 URDF + soft PD の test envelope は満たしていたものの、 GUI で動かすと
+forward 16% / cross drift 大という性能だった。 capture-point feedback が
+正帰還ループになっていることが見えていなかった。
+
+**`set_capture_point_gain(0.0)` で何が変わるか:**
+- `compute_mpc_footstep` で `feedback = k · v_err` が常に 0 になる
+- 結果、 foot 配置は **純 Raibert (open-loop)** に戻る:
+  `touch_down = nominal_foot + 0.5·T_stance·v_hip`
+- v_obs ノイズに追従して foot 配置が暴れることが無くなり、 cmd 通り
+  進むようになる
+- 副作用: yaw 軸で旧 110% overshoot していた追従が 61% undershoot に。
+  これは旧コードが「正帰還による artifact」 で見かけ追従していたという
+  事で、 fix 後の数字が「本来の controller 性能」
+
+**残る real な作業:**
+旧 capture-point 項を **CHAMP stance-line model に整合する式**に
+書き換える (LIP 由来式の根本書き直し、 例えば符号反転 / 別形式の
+feedback)。 これができれば yaw 軸も含めて全 axis で 80%+ tracking が
+期待できる。 現状の `k=0` は **fidelity-aware workaround**。
+
+詳細・bisect 過程は `memory/project_mpc_frame_bug.md`。
+
+### GUI 操作手順 (改善後)
+
+#### 方法 A: Script で全自動
+
+`scripts/wbc_improvement_demo.rhai` を Script Console から実行:
+
+```bash
+cargo run --features mujoco --bin articara -- \
+    tests/fixtures/namiashi/namiashi.misa \
+    --script scripts/wbc_improvement_demo.rhai
+```
+
+`k_capture=0.175` (bug) と `k_capture=0` (fix) で同じ forward walk
+benchmark を 2 pass 実行、 `/tmp/wbc_demo_{bug,fix}.csv` に trace 出力。
+viewport で進行距離の違いを目視確認できる。
+
+#### 方法 B: 手動操作
+
+1. **File → Open → `namiashi.misa`** (URDF を選ぶと soft PD のままで改善が見えません)
+2. **Pose Panel** → `constrain` pose を適用 (thigh=+1.0, calf=-2.0)
+3. **Ground Plane** ON
+4. **Play (MuJoCo)** → 2 秒待機 (settle)
+5. **Gait Panel → Setup** (`🔍 Auto-detect`)
+6. **Gait Panel → Generator** = "MPC" (FullCentroidal でも可)
+7. **Gait Panel → Pose source** = "GroundTruth" (推奨)
+8. **Gait Panel → Hierarchical WBC** check
+9. **Gait Panel → Capture-point gain → `[0]` ボタン**(または slider を 0 に) ← 今回追加の UI
+10. **Gait Panel → Start**
+11. D-pad の **⬆ / ⬇ / ⬅ / ➡** で並進、 **↺ / ↻** で旋回、 **👣** で足踏み
+
+#### 重要事項
+
+- **`.misa` ファイルを必ず使う**: URDF loader は actuator/damping を持たない
+  ので、 GUI で URDF を開くと旧 soft PD の挙動になり改善が見えない
+- **capture-point は MPC mode 限定**: CHAMP では feedback がそもそも無いので
+  slider は無効化される
+- **march-in-place + WBC は OK**: ε cmd でも phase が進めば WBC は通常通り
+  GRF を計算する
+
+---
+
 ## 関連コミット一覧 (時系列・新→旧)
 
 | Hash | 内容 |

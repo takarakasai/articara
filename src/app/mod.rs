@@ -724,6 +724,15 @@ pub struct ArticaraApp {
     /// go (which would otherwise happen because the slider snapshot
     /// lingers on the controller).
     gait_dpad_was_active: bool,
+    /// MPC capture-point feedback gain shown in the gait panel slider.
+    /// Default 0.175 (= `DEFAULT_CAPTURE_POINT_GAIN_S`) matches the
+    /// controller default; users running namiashi (stiff PD via `.misa`)
+    /// should drop this to `0.0` to disable the positive-feedback loop
+    /// — see `doc/recent_features.md` D3.3.7 section + memory note
+    /// `project_mpc_frame_bug.md`. Synced into the active gait
+    /// controller via `set_capture_point_gain` whenever the slider
+    /// changes or a controller is rebuilt.
+    gait_capture_point_gain: f32,
     /// When `true`, the next viewport left-click sets [`Self::loop_closure_link_b`]
     /// instead of doing the usual JointDrive selection. Toggled on by the
     /// "👆 Pick B from viewport" button in the Loop Closures panel and
@@ -997,6 +1006,7 @@ impl ArticaraApp {
                 .map(|(id, name)| (id, name.to_string())),
             gait_dpad_speed: 0.3,
             gait_dpad_yaw_speed: 0.5,
+            gait_capture_point_gain: 0.175,
             gait_dpad_was_active: false,
             loop_closure_picking_b: false,
             loop_closure_link_b: None,
