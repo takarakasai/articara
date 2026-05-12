@@ -456,33 +456,43 @@ impl ArticaraApp {
             return;
         };
 
-        // Velocity command.
+        // Velocity command sliders.
+        //
+        // **Subtle**: egui's `Slider` with `fixed_decimals(2)` rounds the
+        // underlying `&mut f64` to 2-decimal precision **on every draw**,
+        // even without user interaction, and reports `changed() = true`
+        // when the rounded value differs from the original. For the
+        // d-pad's march-in-place command (`vx = 1e-6`) this rounds to
+        // `0.00`, the slider reports changed=true, and the write-back
+        // below clobbers the d-pad's cmd back to zero — freezing the
+        // phase generator and killing the foot-lift animation.
+        //
+        // Fix: only write the cmd back when the user **actively
+        // interacted** with the slider — `dragged()` / `has_focus()` /
+        // `clicked()` — not when the slider auto-rounded the displayed
+        // value. The local `cmd` may still hold the rounded value, but
+        // the controller's stored cmd remains untouched, so the d-pad's
+        // tiny-ε hack continues to drive the phase generator.
         ui.label(egui::RichText::new("Velocity command").strong().small());
         let mut cmd = gc.velocity_cmd();
-        let mut changed = false;
-        ui.horizontal(|ui| {
+        let r_vx = ui.horizontal(|ui| {
             ui.label("vx (m/s):");
-            changed |= ui
-                .add(egui::Slider::new(&mut cmd.vx, -1.0..=1.0).fixed_decimals(2))
-                .changed();
-        });
-        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut cmd.vx, -1.0..=1.0).fixed_decimals(2))
+        }).inner;
+        let r_vy = ui.horizontal(|ui| {
             ui.label("vy (m/s):");
-            changed |= ui
-                .add(egui::Slider::new(&mut cmd.vy, -1.0..=1.0).fixed_decimals(2))
-                .changed();
-        });
-        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut cmd.vy, -1.0..=1.0).fixed_decimals(2))
+        }).inner;
+        let r_wz = ui.horizontal(|ui| {
             ui.label("wz (rad/s):");
-            changed |= ui
-                .add(egui::Slider::new(&mut cmd.wz, -2.0..=2.0).fixed_decimals(2))
-                .changed();
-        });
-        if ui.button("🛑 Zero velocity").clicked() {
-            cmd = VelocityCmd::zero();
-            changed = true;
-        }
-        if changed {
+            ui.add(egui::Slider::new(&mut cmd.wz, -2.0..=2.0).fixed_decimals(2))
+        }).inner;
+        let zero_clicked = ui.button("🛑 Zero velocity").clicked();
+        let user_interacted = r_vx.dragged() || r_vx.has_focus() || r_vx.clicked()
+            || r_vy.dragged() || r_vy.has_focus() || r_vy.clicked()
+            || r_wz.dragged() || r_wz.has_focus() || r_wz.clicked();
+        if user_interacted || zero_clicked {
+            if zero_clicked { cmd = VelocityCmd::zero(); }
             gc.set_velocity_cmd(cmd);
         }
 
