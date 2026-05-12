@@ -725,11 +725,11 @@ pub struct ArticaraApp {
     /// lingers on the controller).
     gait_dpad_was_active: bool,
     /// MPC capture-point feedback gain shown in the gait panel slider.
-    /// Default 0.175 (= `DEFAULT_CAPTURE_POINT_GAIN_S`) matches the
-    /// controller default; users running namiashi (stiff PD via `.misa`)
-    /// should drop this to `0.0` to disable the positive-feedback loop
-    /// — see `doc/recent_features.md` D3.3.7 section + memory note
-    /// `project_mpc_frame_bug.md`. Synced into the active gait
+    /// Default `0.0` (post-D3.3.7 C2: legged_control-style open-loop
+    /// Raibert + MPC reference, no closed-form foot placement
+    /// heuristic). Set to `LEGACY_CAPTURE_POINT_GAIN_S` (= 0.175) via
+    /// the slider's `[legacy]` button to A/B-compare against the
+    /// pre-fix capture-point behaviour. Synced into the active gait
     /// controller via `set_capture_point_gain` whenever the slider
     /// changes or a controller is rebuilt.
     gait_capture_point_gain: f32,
@@ -1006,7 +1006,7 @@ impl ArticaraApp {
                 .map(|(id, name)| (id, name.to_string())),
             gait_dpad_speed: 0.3,
             gait_dpad_yaw_speed: 0.5,
-            gait_capture_point_gain: 0.175,
+            gait_capture_point_gain: 0.0,
             gait_dpad_was_active: false,
             loop_closure_picking_b: false,
             loop_closure_link_b: None,

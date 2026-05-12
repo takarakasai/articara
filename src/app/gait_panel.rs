@@ -331,25 +331,29 @@ impl ArticaraApp {
                     }
                 }
                 if ui.small_button("0").on_hover_text(
-                    "Disable capture-point feedback. Use under stiff PD \
-                     (= namiashi .misa) to avoid the positive-feedback \
-                     loop that under-tracks forward cmd by ~80%.",
+                    "Set capture-point gain to 0 (= current controller default, \
+                     legged_control-style open-loop Raibert).",
                 ).clicked() {
                     self.gait_capture_point_gain = 0.0;
                     if let Some(gc) = self.gait_controller.as_mut() {
                         gc.set_capture_point_gain(0.0);
                     }
                     self.status_message =
-                        "Capture-point disabled (k=0) — stiff-PD safe mode".into();
+                        "Capture-point gain → 0 (default, open-loop Raibert)".into();
                 }
-                if ui.small_button("default").on_hover_text(
-                    "Restore the controller default (k=0.175).",
+                if ui.small_button("legacy").on_hover_text(
+                    "Restore the pre-D3.3.7 legacy heuristic gain (k=0.175). \
+                     Use for A/B comparison against the LIP capture-point \
+                     behaviour. Under stiff PD this turns into a positive \
+                     feedback loop and degrades tracking — keep at 0 for \
+                     production.",
                 ).clicked() {
                     self.gait_capture_point_gain = 0.175;
                     if let Some(gc) = self.gait_controller.as_mut() {
                         gc.set_capture_point_gain(0.175);
                     }
-                    self.status_message = "Capture-point gain → 0.175 (default)".into();
+                    self.status_message =
+                        "Capture-point gain → 0.175 (legacy heuristic, for A/B)".into();
                 }
             });
         });

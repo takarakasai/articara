@@ -586,11 +586,13 @@ fn run_walk(
     let cfg = GaitConfig::trot();
     let mut gc = GaitController::build(&robot, kin.clone(), cfg, gait_mode)
         .expect("GaitController::build");
-    // Under misa (stiff PD), disable capture-point feedback — the
-    // default +k·(v_obs - v_cmd) acts as a positive loop in y-axis
-    // and X↔Y swaps the body trajectory. See
-    // `memory/project_mpc_frame_bug.md` + `diag_mpc_grf_direction_forward_cmd`.
-    // No-op for CHAMP (k_capture is MPC-only).
+    // Under misa (stiff PD), pin capture-point gain to 0 explicitly.
+    // Redundant since D3.3.7-C2 (default is now 0.0), but kept as
+    // documentation: this test's envelope numbers assume the
+    // legged_control-aligned open-loop Raibert behaviour. If a future
+    // tweak ever defaults the gain back to non-zero, the misa path
+    // here must still report fix-side numbers. See
+    // `memory/project_mpc_frame_bug.md`.
     if use_misa {
         gc.set_capture_point_gain(0.0);
     }

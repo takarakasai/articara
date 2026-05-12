@@ -1,17 +1,20 @@
 // ============================================================================
-// wbc_improvement_demo.rhai — verify the D3.3.7 WBC tracking improvement
-// in the GUI.
+// wbc_improvement_demo.rhai — A/B compare the legacy capture-point heuristic
+// against the post-D3.3.7 default (no feedback, legged_control-aligned).
 //
-// Before this fix, MPC+WBC forward walk under namiashi achieved only ~16% of
-// commanded distance (dx ≈ +0.12 m vs cmd·T = +0.75 m). Root cause: the
-// `compute_mpc_footstep` capture-point feedback `+k·(v_obs - v_cmd)` was a
-// positive loop under stiff PD (= the GUI's actuator config loaded from
-// `namiashi.misa`). Disabling `k_capture` lifts tracking to ~87%.
+// Background: pre-D3.3.7 the MPC's `compute_mpc_footstep` added a
+// `+k·(v_obs - v_cmd)` capture-point feedback term. Under stiff PD (= the
+// GUI's actuator config loaded from `namiashi.misa`), this acted as a
+// positive feedback loop and capped forward tracking at ~16% of cmd·T.
+// `ref/legged_control` does not use any capture-point heuristic — its MPC
+// reference-tracking closes the loop instead. As of D3.3.7-C2 the default
+// `k_capture = 0.0` matches that architecture; the legacy gain (0.175)
+// can still be selected via `set_capture_point_gain` for A/B.
 //
 // This script drives the GUI through the same forward-walk benchmark as
 // `champ_forward_bench.rhai` but with `GaitMode::Mpc` + WBC enabled, twice:
-//   pass A: capture_point_gain = 0.175 (default, "bug visible")
-//   pass B: capture_point_gain = 0.000 (fix applied)
+//   pass A: capture_point_gain = 0.175 (LIP heuristic, legacy)
+//   pass B: capture_point_gain = 0.000 (current default, open-loop Raibert)
 // Each pass saves a CSV with the floating-base qpos so the user can plot
 // dx(t) side-by-side and see the difference visually in the viewport.
 //
@@ -21,8 +24,8 @@
 //     --script scripts/wbc_improvement_demo.rhai
 //
 // Outputs:
-//   /tmp/wbc_demo_bug.csv  (pass A — default capture-point, weak tracking)
-//   /tmp/wbc_demo_fix.csv  (pass B — capture-point disabled, real tracking)
+//   /tmp/wbc_demo_legacy.csv   (pass A — legacy LIP heuristic, weak tracking)
+//   /tmp/wbc_demo_default.csv  (pass B — current default, real tracking)
 // ============================================================================
 
 let SETTLE_S = 2.0;
@@ -77,8 +80,8 @@ fn run_pass(label, k_capture, csv_path) {
     mj_async_print(`[${label}] DONE — CSV: ${csv_path}`);
 }
 
-run_pass("pass A: bug (k_capture=0.175)", 0.175, "/tmp/wbc_demo_bug.csv");
-run_pass("pass B: fix (k_capture=0.000)", 0.000, "/tmp/wbc_demo_fix.csv");
+run_pass("pass A: legacy (k_capture=0.175)", 0.175, "/tmp/wbc_demo_legacy.csv");
+run_pass("pass B: default (k_capture=0.000)", 0.000, "/tmp/wbc_demo_default.csv");
 
 print(`Queued ${mj_async_pending()} ops total.`);
 print("Watch the viewport: pass A drifts ~0.12 m forward, pass B reaches ~0.65 m.");

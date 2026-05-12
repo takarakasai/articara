@@ -905,6 +905,76 @@ feedback)。 これができれば yaw 軸も含めて全 axis で 80%+ tracking
 
 詳細・bisect 過程は `memory/project_mpc_frame_bug.md`。
 
+### legged_control との対比 (2026-05-13 追加)
+
+調査の結果、 **本家 `ref/legged_control` には capture-point feedback が存在しない**
+ことが判明。 アーキテクチャ自体が articara の CHAMP 系コードと根本的に異なる。
+
+[`target_trajectories_publisher.cpp::cmdVelToTargetTrajectories`](../ref/legged_control/legged_controllers/src/target_trajectories_publisher.cpp):
+
+```cpp
+TargetTrajectories cmdVelToTargetTrajectories(const vector_t& cmd_vel, ...) {
+  const vector_t current_pose = observation.state.segment<6>(6);
+  vector_t cmd_vel_rot = getRotationMatrixFromZyxEulerAngles(zyx) * cmd_vel.head(3);
+
+  const scalar_t time_to_target = TIME_TO_TARGET;  // = MPC timeHorizon (1.0 s)
+  target(0) = current_pose(0) + cmd_vel_rot(0) * time_to_target;
+  target(1) = current_pose(1) + cmd_vel_rot(1) * time_to_target;
+  target(2) = COM_HEIGHT;  // 0.3 m
+  // ...
+}
+```
+
+cmd_vel を:
+1. 観測 yaw で **body → world frame に rotate**
+2. 観測 body 位置に **`cmd_vel · timeHorizon` を足す** → MPC reference の終端 pose
+3. MPC (DDP/SQP) が経路上の足配置・本体姿勢・GRF を **一括最適化**
+4. WBC が MPC 解を hard constraint として joint torque 出力
+
+`SwingTrajectoryPlanner` ([task.info: swing_trajectory_config](../ref/legged_control/legged_controllers/config/task.info)) は kinematic boundary 条件 (`liftOffVelocity / touchDownVelocity / swingHeight`) のみで、 動的補正項なし。
+
+#### アーキテクチャ対比表
+
+| 観点 | articara (CHAMP-derived) | legged_control (OCS2-based) |
+|---|---|---|
+| 足配置 | 閉形式 Raibert + capture-point `k·(v_obs − v_cmd)` | MPC の解 (DDP/SQP horizon optimization) |
+| Body 軌道 | cmd を body_state に積分 (閉ループで取らない) | 観測 pose + `cmd·timeHorizon` を MPC reference に渡す |
+| MPC の役割 | stance 力 (GRF) のみ計算、 配置は別経路 | **全状態 (12 + joint_q + GRF) を同時最適化** |
+| stance line | touch_down→lift_off を線形補間 | 連続関節軌道 (MPC 解の補間) |
+| 追従の閉ループ | 配置式に `+k·v_err` を heuristic 加算 | MPC が全状態最適化で自然に閉じる |
+
+#### 含意
+
+articara の capture-point feedback は **CHAMP heuristic の遺物**。 LIP 倒立振子
+モデルの「足を捉えて止める」 動学を、 線形 stance line + Raibert に強引に移植
+したもの。 LIP の動学は articara には実装されていないので、 stance-line model
+上では **正帰還になる方向の補正項** として作用していた。
+
+legged_control では `cmd → reference → MPC plan → WBC` の chain で閉ループが
+成立しているので、 「foot 配置式に補正項を足す」 必要が無い。
+
+#### 修正方向
+
+| 案 | 内容 | 工数 |
+|---|---|---|
+| C1: LIP 動学を articara に実装 | inverted pendulum で「foot を pivot として body を decelerate」 を本物の動学として stance line に重ねる。 capture-point 公式 `√(h/g)·v` が原典通り意味を持つようになる | 中〜大 |
+| **C2: legged_control 方式へ移行** | capture-point 概念ごと default 削除、 MPC reference 経路で閉ループを担う | 小〜中 (本 session で着手) |
+
+#### C2 着手 (2026-05-13)
+
+- `DEFAULT_CAPTURE_POINT_GAIN_S` を **0.175 → 0.0** に変更 (`quadruped_gait::mpc_controller`)
+- これにより新しく `GaitController::build` した時の **既定動作が legged_control
+  整合の open-loop Raibert** に
+- `set_capture_point_gain(k)` パラメータ自体と GUI slider / Rhai binding は
+  **残置** — 過去挙動 (k=0.175) を再現したい場合は引き続き設定可能
+- これで CHAMP / 新 default MPC+WBC / 旧 capture-point ON の **3 通り比較可能**:
+
+| 比較 | 操作 |
+|---|---|
+| CHAMP open-loop | Generator: "Champ" |
+| MPC+WBC (legged_control 整合 default) | Generator: "MPC", WBC ✓, Capture-point gain は default 0.0 のまま |
+| MPC+WBC (旧 capture-point heuristic, 比較用) | Generator: "MPC", WBC ✓, slider で k=0.175 に戻す |
+
 ### GUI 操作手順 (改善後)
 
 #### 方法 A: Script で全自動
