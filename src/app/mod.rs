@@ -2380,6 +2380,11 @@ impl ArticaraApp {
                 gc.set_mode(mode);
             }
         }
+        if let Some(k) = ov.capture_point_gain {
+            if let Some(gc) = self.gait_controller.as_mut() {
+                gc.set_capture_point_gain(k);
+            }
+        }
         #[cfg(feature = "mujoco")]
         {
             if let Some(src) = ov.pose_source {

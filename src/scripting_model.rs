@@ -65,6 +65,12 @@ pub struct ScriptOverrides {
     pub ground_plane_pitch: Option<f32>,
     /// Ground-plane roll about the world-x axis (rad).
     pub ground_plane_roll: Option<f32>,
+    /// MPC capture-point feedback gain override. `Some(0.0)` disables
+    /// the closed-loop foot placement correction — required under
+    /// stiff PD (.misa actuator config) to avoid the positive feedback
+    /// loop documented in commit `eafbfc6` /
+    /// `memory/project_mpc_frame_bug.md`. No-op for CHAMP.
+    pub capture_point_gain: Option<f64>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1982,6 +1988,16 @@ impl ModelScriptEngine {
         let o = Rc::clone(&overrides);
         engine.register_fn("set_wbc_enabled", move |on: bool| -> bool {
             o.borrow_mut().wbc_enabled = Some(on);
+            true
+        });
+
+        // set_capture_point_gain(k): override the MPC's capture-point
+        // feedback gain. Pass 0.0 to disable closed-loop foot placement
+        // correction (required under stiff PD — see commit `eafbfc6`).
+        // No-op for CHAMP mode.
+        let o = Rc::clone(&overrides);
+        engine.register_fn("set_capture_point_gain", move |k: f64| -> bool {
+            o.borrow_mut().capture_point_gain = Some(k);
             true
         });
 
