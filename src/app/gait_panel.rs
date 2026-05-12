@@ -102,9 +102,14 @@ impl ArticaraApp {
                     // swing but the body doesn't translate.
                     let r_march = ui.add_sized(btn_size, mk("👣"))
                         .on_hover_text(
-                            "March in place (gait active, no translation). \
-                             Direction buttons override this when both are \
-                             held.",
+                            "Press AND HOLD: march in place (gait active, \
+                             no translation). Feet lift through the swing \
+                             curve while the body stays put. A quick click \
+                             will only flash a tiny cmd for one frame — \
+                             the foot lift takes ~200 ms per stride, so \
+                             hold the button for at least one full gait \
+                             cycle (≈ 0.4 s) to see motion. Direction \
+                             buttons override this when both are held.",
                         );
                     let r_right = ui.add_sized(btn_size, mk("➡"))
                         .on_hover_text("Right (−vy)");
@@ -176,6 +181,14 @@ impl ArticaraApp {
                     vy: 0.0,
                     wz: 0.0,
                 });
+                // Feedback in the status bar on the rising edge so the
+                // user knows the button is wired — distinguishes
+                // "button isn't registering" from "march is too subtle
+                // to see in 200 ms swing windows".
+                if !self.gait_dpad_was_active {
+                    self.status_message =
+                        "March in place (hold 👣) — feet cycle every 0.4 s, body stays put".into();
+                }
             } else if self.gait_dpad_was_active {
                 gc.set_velocity_cmd(quadruped_gait::VelocityCmd::zero());
             }
