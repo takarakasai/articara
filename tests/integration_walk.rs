@@ -571,12 +571,17 @@ fn run_walk(
     use_wbc: bool,
     gait_mode: GaitMode,
     cmd: VelocityCmd,
+    use_misa: bool,
 ) -> Option<WalkBenchmark> {
     let common::StandFixture {
         mut robot,
         kin,
         mut sim,
-    } = common::build_namiashi_stand_fixture()?;
+    } = if use_misa {
+        common::build_namiashi_stand_fixture_misa()?
+    } else {
+        common::build_namiashi_stand_fixture()?
+    };
 
     let cfg = GaitConfig::trot();
     let mut gc = GaitController::build(&robot, kin.clone(), cfg, gait_mode)
@@ -772,7 +777,7 @@ fn yaw_cmd() -> VelocityCmd {
 /// expected; we only assert against falls and record the numbers.
 #[test]
 fn integration_walk_straight_champ() {
-    let Some(m) = run_walk(false, GaitMode::Champ, fwd_cmd()) else {
+    let Some(m) = run_walk(false, GaitMode::Champ, fwd_cmd(), false) else {
         return;
     };
     eprintln!(
@@ -787,7 +792,7 @@ fn integration_walk_straight_champ() {
 /// resolves the residual yaw bias.
 #[test]
 fn integration_walk_straight_mpc_wbc() {
-    let Some(m) = run_walk(true, GaitMode::Mpc, fwd_cmd()) else {
+    let Some(m) = run_walk(true, GaitMode::Mpc, fwd_cmd(), false) else {
         return;
     };
     eprintln!(
@@ -832,7 +837,7 @@ fn diag_centroidal_no_wbc_3axis() {
         ("lateral", lat_cmd()),
         ("yaw", yaw_cmd()),
     ] {
-        let Some(m) = run_walk(false, GaitMode::CentroidalSrbd, cmd) else {
+        let Some(m) = run_walk(false, GaitMode::CentroidalSrbd, cmd, false) else {
             return;
         };
         eprintln!(
@@ -845,7 +850,7 @@ fn diag_centroidal_no_wbc_3axis() {
 #[test]
 #[ignore = "D1.4 tuning target — assertions kept as goal"]
 fn integration_walk_straight_centroidal_wbc() {
-    let Some(m) = run_walk(true, GaitMode::CentroidalSrbd, fwd_cmd()) else {
+    let Some(m) = run_walk(true, GaitMode::CentroidalSrbd, fwd_cmd(), false) else {
         return;
     };
     eprintln!(
@@ -864,7 +869,7 @@ fn integration_walk_straight_centroidal_wbc() {
 #[test]
 #[ignore = "D1.4 tuning target — assertions kept as goal"]
 fn integration_walk_lateral_centroidal_wbc() {
-    let Some(m) = run_walk(true, GaitMode::CentroidalSrbd, lat_cmd()) else {
+    let Some(m) = run_walk(true, GaitMode::CentroidalSrbd, lat_cmd(), false) else {
         return;
     };
     eprintln!(
@@ -883,7 +888,7 @@ fn integration_walk_lateral_centroidal_wbc() {
 #[test]
 #[ignore = "D1.4 tuning target — assertions kept as goal"]
 fn integration_walk_yaw_centroidal_wbc() {
-    let Some(m) = run_walk(true, GaitMode::CentroidalSrbd, yaw_cmd()) else {
+    let Some(m) = run_walk(true, GaitMode::CentroidalSrbd, yaw_cmd(), false) else {
         return;
     };
     eprintln!(
@@ -1724,7 +1729,7 @@ fn diag_champ_forward_no_nudge() {
 #[ignore = "metric debug — run with --ignored"]
 fn diag_champ_forward_raw() {
     let cmd = fwd_cmd();
-    let Some(m) = run_walk(false, GaitMode::Champ, cmd) else {
+    let Some(m) = run_walk(false, GaitMode::Champ, cmd, false) else {
         return;
     };
     eprintln!();
@@ -1766,7 +1771,7 @@ fn diag_walk_metric_matrix() {
     for (axis, cmd) in scenarios {
         eprintln!("--- axis: {axis} ---");
         for (label, mode, use_wbc) in &modes {
-            let Some(m) = run_walk(*use_wbc, *mode, cmd) else {
+            let Some(m) = run_walk(*use_wbc, *mode, cmd, false) else {
                 eprintln!("  {label:<18} [model load failed]");
                 continue;
             };
@@ -1785,7 +1790,7 @@ fn diag_full_centroidal_no_wbc_3axis() {
         ("lateral", lat_cmd()),
         ("yaw", yaw_cmd()),
     ] {
-        let Some(m) = run_walk(false, GaitMode::FullCentroidal, cmd) else {
+        let Some(m) = run_walk(false, GaitMode::FullCentroidal, cmd, false) else {
             return;
         };
         eprintln!(
@@ -1798,7 +1803,7 @@ fn diag_full_centroidal_no_wbc_3axis() {
 #[test]
 #[ignore = "D3.3.6 characterisation — assertions kept as goal"]
 fn integration_walk_straight_full_centroidal_wbc() {
-    let Some(m) = run_walk(true, GaitMode::FullCentroidal, fwd_cmd()) else {
+    let Some(m) = run_walk(true, GaitMode::FullCentroidal, fwd_cmd(), true) else {
         return;
     };
     eprintln!(
@@ -1817,7 +1822,7 @@ fn integration_walk_straight_full_centroidal_wbc() {
 #[test]
 #[ignore = "D3.3.6 characterisation — assertions kept as goal"]
 fn integration_walk_lateral_full_centroidal_wbc() {
-    let Some(m) = run_walk(true, GaitMode::FullCentroidal, lat_cmd()) else {
+    let Some(m) = run_walk(true, GaitMode::FullCentroidal, lat_cmd(), true) else {
         return;
     };
     eprintln!(
@@ -1836,7 +1841,7 @@ fn integration_walk_lateral_full_centroidal_wbc() {
 #[test]
 #[ignore = "D3.3.6 characterisation — assertions kept as goal"]
 fn integration_walk_yaw_full_centroidal_wbc() {
-    let Some(m) = run_walk(true, GaitMode::FullCentroidal, yaw_cmd()) else {
+    let Some(m) = run_walk(true, GaitMode::FullCentroidal, yaw_cmd(), true) else {
         return;
     };
     eprintln!(
@@ -1861,13 +1866,13 @@ fn integration_walk_yaw_full_centroidal_wbc() {
 fn diag_high_cmd_axis_swap() {
     let high_fwd = VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 };
     let high_lat = VelocityCmd { vx: 0.0, vy: 0.30, wz: 0.0 };
-    if let Some(m) = run_walk(true, GaitMode::Mpc, high_fwd) {
+    if let Some(m) = run_walk(true, GaitMode::Mpc, high_fwd, false) {
         eprintln!(
             "[diag:vx=0.3] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad",
             m.body_dx(), m.body_dy(), m.dyaw(),
         );
     }
-    if let Some(m) = run_walk(true, GaitMode::Mpc, high_lat) {
+    if let Some(m) = run_walk(true, GaitMode::Mpc, high_lat, false) {
         eprintln!(
             "[diag:vy=0.3] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad",
             m.body_dx(), m.body_dy(), m.dyaw(),
@@ -2058,7 +2063,7 @@ fn diag_constrain_pose_axis_swap() {
 /// MPC mode itself.
 #[test]
 fn integration_walk_lateral_mpc_no_wbc() {
-    let Some(m) = run_walk(false, GaitMode::Mpc, lat_cmd()) else {
+    let Some(m) = run_walk(false, GaitMode::Mpc, lat_cmd(), false) else {
         return;
     };
     eprintln!(
@@ -2071,7 +2076,7 @@ fn integration_walk_lateral_mpc_no_wbc() {
 /// CHAMP lateral walk benchmark — open-loop documentation only.
 #[test]
 fn integration_walk_lateral_champ() {
-    let Some(m) = run_walk(false, GaitMode::Champ, lat_cmd()) else {
+    let Some(m) = run_walk(false, GaitMode::Champ, lat_cmd(), false) else {
         return;
     };
     eprintln!(
@@ -2093,7 +2098,7 @@ fn integration_walk_lateral_champ() {
 /// lateral motion.
 #[test]
 fn integration_walk_lateral_mpc_wbc() {
-    let Some(m) = run_walk(true, GaitMode::Mpc, lat_cmd()) else {
+    let Some(m) = run_walk(true, GaitMode::Mpc, lat_cmd(), false) else {
         return;
     };
     eprintln!(
@@ -2114,7 +2119,7 @@ fn integration_walk_lateral_mpc_wbc() {
 /// CHAMP yaw rotate benchmark — open-loop documentation only.
 #[test]
 fn integration_walk_yaw_champ() {
-    let Some(m) = run_walk(false, GaitMode::Champ, yaw_cmd()) else {
+    let Some(m) = run_walk(false, GaitMode::Champ, yaw_cmd(), false) else {
         return;
     };
     eprintln!(
@@ -2136,7 +2141,7 @@ fn integration_walk_yaw_champ() {
 /// CoM and the per-stride foot displacement adds up over 5 s.
 #[test]
 fn integration_walk_yaw_mpc_wbc() {
-    let Some(m) = run_walk(true, GaitMode::Mpc, yaw_cmd()) else {
+    let Some(m) = run_walk(true, GaitMode::Mpc, yaw_cmd(), false) else {
         return;
     };
     eprintln!(
