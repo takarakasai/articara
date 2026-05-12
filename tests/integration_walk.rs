@@ -586,6 +586,14 @@ fn run_walk(
     let cfg = GaitConfig::trot();
     let mut gc = GaitController::build(&robot, kin.clone(), cfg, gait_mode)
         .expect("GaitController::build");
+    // Under misa (stiff PD), disable capture-point feedback — the
+    // default +k·(v_obs - v_cmd) acts as a positive loop in y-axis
+    // and X↔Y swaps the body trajectory. See
+    // `memory/project_mpc_frame_bug.md` + `diag_mpc_grf_direction_forward_cmd`.
+    // No-op for CHAMP (k_capture is MPC-only).
+    if use_misa {
+        gc.set_capture_point_gain(0.0);
+    }
     let mut wbc_pipeline = if use_wbc {
         Some(WbcPipeline::new(&robot, common::default_foot_links()))
     } else {
