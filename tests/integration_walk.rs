@@ -796,11 +796,16 @@ fn integration_walk_straight_champ() {
 }
 
 /// MPC+WBC forward trot. Active axis: body-frame Δx > +10 cm. Cross
-/// axes: |body_dy| < 20 cm, |Δyaw| < 1 rad. Tightenable as P5/P6
-/// resolves the residual yaw bias.
+/// axes: |body_dy| < 20 cm, |Δyaw| < 1 rad.
+///
+/// Migrated to .misa loader (2026-05-13): under stiff PD with
+/// `set_capture_point_gain(0.0)` in `run_walk`, forward tracking
+/// jumped from dx=+0.118 (16% of cmd*T) to dx=+0.651 (87%). The
+/// envelope is loose for backward-compat; tightening to `dx > +0.40`
+/// would still pass and better catch regressions.
 #[test]
 fn integration_walk_straight_mpc_wbc() {
-    let Some(m) = run_walk(true, GaitMode::Mpc, fwd_cmd(), false) else {
+    let Some(m) = run_walk(true, GaitMode::Mpc, fwd_cmd(), true) else {
         return;
     };
     eprintln!(
@@ -2213,13 +2218,14 @@ fn integration_walk_lateral_champ() {
 /// PD reaction-torque sign flip.
 ///
 /// Active axis: body_dy > +20 cm under cmd.vy = +0.10 m/s, 5 s.
-/// Cross axes: |body_dx| < 30 cm, |Δyaw| < 1.5 rad. The yaw cross
-/// gate is loose because the trot's diagonal-pair phase produces a
-/// natural yaw oscillation that doesn't fully cancel during a pure
-/// lateral motion.
+/// Cross axes: |body_dx| < 30 cm, |Δyaw| < 1.5 rad.
+///
+/// Migrated to .misa loader (2026-05-13): cross-axis residuals
+/// collapsed an order of magnitude (dx ±0.23 → ±0.01, Δyaw ±1.20 →
+/// ±0.05) while dy tracking stayed near-identical (+0.501 → +0.420).
 #[test]
 fn integration_walk_lateral_mpc_wbc() {
-    let Some(m) = run_walk(true, GaitMode::Mpc, lat_cmd(), false) else {
+    let Some(m) = run_walk(true, GaitMode::Mpc, lat_cmd(), true) else {
         return;
     };
     eprintln!(
@@ -2250,19 +2256,21 @@ fn integration_walk_yaw_champ() {
     assert!(m.min_body_z > FALL_THRESHOLD_Z, "CHAMP fell (yaw)");
 }
 
-/// MPC+WBC yaw rotate under `WbcWeights::for_cmd` (P5b). With the
-/// scheduled swing_leg weight (0.1 at full yaw cmd), the body
-/// achieves ~ +2.76 rad over 5 s under a 0.5 rad/s cmd (= 2.5 rad
-/// expected, slightly over due to integrator overshoot at the
-/// stance/swing handoff), with ~ 30 cm cross-axis drift.
+/// MPC+WBC yaw rotate under `WbcWeights::for_cmd` (P5b).
 ///
 /// Active axis: |Δyaw| > 1.5 rad. Cross axes: |body_dx| / |body_dy|
-/// < 35 cm. The cross gates are looser than the lateral test
-/// because trotting-while-yawing has the body pivoting around its
-/// CoM and the per-stride foot displacement adds up over 5 s.
+/// < 35 cm.
+///
+/// Migrated to .misa loader (2026-05-13): cross-axis drift cleaned
+/// up dramatically (dx ±0.28 → ±0.01, dy ±0.18 → ±0.01). Δyaw
+/// dropped from +2.76 rad (overshoot, capture-point feedback
+/// amplifying) to +1.53 rad (just-above envelope). The undershoot is
+/// because disabling `k_capture` for misa removed the artifact that
+/// boosted yaw tracking under soft PD. Tracking 61% of cmd; could
+/// improve by tuning q_diag yaw weights (deferred).
 #[test]
 fn integration_walk_yaw_mpc_wbc() {
-    let Some(m) = run_walk(true, GaitMode::Mpc, yaw_cmd(), false) else {
+    let Some(m) = run_walk(true, GaitMode::Mpc, yaw_cmd(), true) else {
         return;
     };
     eprintln!(
