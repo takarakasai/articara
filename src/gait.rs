@@ -613,6 +613,13 @@ impl GaitController {
         self.inner.set_srbd_mpc_config(cfg);
     }
 
+    /// Override the SRBD MPC's capture-point feedback gain. No-op
+    /// outside [`quadruped_gait::GaitMode::Mpc`]. Pass `0.0` to disable
+    /// the closed-loop footstep correction.
+    pub fn set_capture_point_gain(&mut self, k: f64) {
+        self.inner.set_capture_point_gain(k);
+    }
+
     /// Read the active SRBD MPC config. `None` when running CHAMP.
     pub fn srbd_mpc_config(
         &self,

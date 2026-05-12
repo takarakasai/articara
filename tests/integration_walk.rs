@@ -1293,6 +1293,119 @@ fn diag_mjcf_diff_test_vs_script() {
     }
 }
 
+/// MPC frame-bug bisection diagnostic. Loads namiashi from `.misa`,
+/// settles for 0.5 s under PD-only (no gait), then enables the SRBD
+/// MPC with `cmd vx=+0.30 m/s` and walks for 1.0 s. Dumps every 50 ms:
+///   - body world pos / vel / yaw
+///   - MPC's `grfs_first_step` per leg in world frame
+///   - sum of GRFs (should be ≈ [F_x_drive, 0, m·g] for forward cmd)
+///
+/// Hypothesis check: if `Σ GRF_y > Σ GRF_x` under +x cmd, the MPC is
+/// commanding sideways force (frame error). If GRFs look correct but
+/// body still moves +y, the bug is downstream (τ_ff sign, IK, PD).
+/// Short 1 s window keeps `body_yaw ≈ 0` so frame rotation isn't a
+/// confounder.
+#[test]
+#[ignore = "MPC frame-bug bisect — run with --ignored"]
+fn diag_mpc_grf_direction_forward_cmd() {
+    let common::StandFixture {
+        mut robot,
+        kin,
+        mut sim,
+    } = match common::build_namiashi_stand_fixture_misa() {
+        Some(f) => f,
+        None => return,
+    };
+    let cfg = GaitConfig::trot();
+    let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::Mpc)
+        .expect("GaitController::build (Mpc)");
+    // Bisect (2026-05-13): leave defaults to reproduce the bug. The
+    // cross-coupling vanishes when:
+    //   - r_diag is raised from 1e-3 → 1.0 (suppress over-large GRFs)
+    //   - AND set_capture_point_gain(0.0) (= disable +k·v_err foot
+    //     placement feedback which acts as positive feedback under
+    //     stiff PD).
+    // To re-verify the fix locally, uncomment the two overrides below
+    // and run with --ignored.
+    //   if let Some(c) = gc.srbd_mpc_config() {
+    //       let mut new_cfg = c.clone();
+    //       new_cfg.r_diag = 1.0;
+    //       gc.set_srbd_mpc_config(new_cfg);
+    //   }
+    //   gc.set_capture_point_gain(0.0);
+    let mass_kg = gc.srbd_mpc_config()
+        .map(|c| c.mass_kg)
+        .unwrap_or(2.4);
+    if let Some(c) = gc.srbd_mpc_config() {
+        eprintln!("[diag] SRBD config: mass={:.3} kg, inertia_diag={:?}, dt_per_step={}",
+            c.mass_kg, c.inertia_diag_body, c.dt_per_step);
+        eprintln!("[diag] q_diag = {:?}", c.q_diag);
+        eprintln!("[diag] r_diag = {}", c.r_diag);
+    }
+    // Heaviest link inertia direct from the loaded model (= what
+    // auto_detect_srbd_mpc_config picks up).
+    let heaviest = robot.links.iter()
+        .max_by(|a, b| a.inertial.mass.partial_cmp(&b.inertial.mass)
+            .unwrap_or(std::cmp::Ordering::Equal));
+    if let Some(l) = heaviest {
+        let i = &l.inertial;
+        eprintln!("[diag] heaviest link = {:?}: mass={} ixx={} iyy={} izz={}",
+            l.name, i.mass, i.ixx, i.iyy, i.izz);
+    }
+    let burn_s = 0.5;
+    let walk_s = 1.0;
+    let burn_steps = (burn_s / DT) as usize;
+    let walk_steps = (walk_s / DT) as usize;
+    let log_every = (0.05 / DT).round() as usize; // 50 ms
+    let cmd = VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 };
+    eprintln!();
+    eprintln!("=== diag_mpc_grf_direction_forward_cmd (misa, kp=100/kv=1.2, cmd vx=+0.30) ===");
+    eprintln!("  mass = {mass_kg:.3} kg → expected ΣF_z ≈ {:.2} N (= m·g)", mass_kg * 9.81);
+    eprintln!("  t[s]   body_x   body_y   yaw      v_x      v_y      ΣF_x     ΣF_y     ΣF_z     stance_legs");
+    gc.enable();
+    for k in 0..(burn_steps + walk_steps) {
+        if k == burn_steps {
+            gc.set_velocity_cmd(cmd);
+        }
+        let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+        let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+        gc.set_body_state_observed(
+            Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+            Vector3::new(w_obs[0], w_obs[1], w_obs[2]));
+        let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+        let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+        gc.set_body_pose_observed(yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
+        let (out, targets, torque_ff) = gc.tick(DT);
+        for (idx, q) in targets { sim.set_position_target(idx, q); }
+        for (idx, tau) in torque_ff { sim.set_torque_feedforward(idx, tau); }
+        sim.step(&mut robot, DT, true);
+        // Log AFTER step so observed pos/vel reflect the tick that just
+        // ran. Subtract burn_steps so t=0 = cmd-applied instant.
+        if k >= burn_steps && (k - burn_steps) % log_every == 0 {
+            let t = (k - burn_steps) as f64 * DT;
+            let stance_flags: Vec<bool> = (0..4)
+                .map(|s| out.legs[s].phase.is_stance)
+                .collect();
+            let n_stance = stance_flags.iter().filter(|&&x| x).count();
+            let (sum_fx, sum_fy, sum_fz) = match gc.predicted_grfs() {
+                Some(sol) => {
+                    let mut sx = 0.0; let mut sy = 0.0; let mut sz = 0.0;
+                    for f in sol.grfs_first_step.iter() {
+                        sx += f.x; sy += f.y; sz += f.z;
+                    }
+                    (sx, sy, sz)
+                }
+                None => (f64::NAN, f64::NAN, f64::NAN),
+            };
+            eprintln!(
+                "  {:>5.3}  {:+.4}  {:+.4}  {:+.4}  {:+.4}  {:+.4}  {:+8.2}  {:+8.2}  {:+8.2}  {}/4",
+                t, body_pos[0], body_pos[1], yaw_obs, v_obs[0], v_obs[1],
+                sum_fx, sum_fy, sum_fz, n_stance,
+            );
+        }
+    }
+}
+
 /// Time-series diagnostic: log body z and dx every 0.5 s of the walk
 /// phase to see whether the test reproduces the GUI's body-rising
 /// behaviour. User reports GUI ends at dz = +0.18 m above initial.
