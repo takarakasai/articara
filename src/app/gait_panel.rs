@@ -76,6 +76,7 @@ impl ArticaraApp {
         let mut wz = 0.0_f64;
         let mut any_held = false;
         let mut march_held = false;
+        let mut march_clicked = false;
 
         // Side-by-side layout: 3×3 translation cross on the left, yaw
         // pair on the right. Wrapping in `ui.horizontal` keeps both
@@ -126,6 +127,7 @@ impl ArticaraApp {
                     if held(&r_left)  { vy += speed; any_held = true; }
                     if held(&r_right) { vy -= speed; any_held = true; }
                     if held(&r_march) { march_held = true; }
+                    if r_march.clicked() { march_clicked = true; }
                 });
 
             ui.add_space(12.0);
@@ -175,6 +177,10 @@ impl ArticaraApp {
         if let Some(gc) = self.gait_controller.as_mut() {
             if any_held {
                 gc.set_velocity_cmd(quadruped_gait::VelocityCmd { vx, vy, wz });
+                if !self.gait_dpad_was_active {
+                    self.status_message =
+                        format!("D-pad cmd vx={vx:+.2} vy={vy:+.2} wz={wz:+.2}");
+                }
             } else if march_held {
                 gc.set_velocity_cmd(quadruped_gait::VelocityCmd {
                     vx: 1e-6,
@@ -191,7 +197,14 @@ impl ArticaraApp {
                 }
             } else if self.gait_dpad_was_active {
                 gc.set_velocity_cmd(quadruped_gait::VelocityCmd::zero());
+                self.status_message = "D-pad released → cmd=0".into();
             }
+        }
+        // Even a quick click on 👣 (press+release within one frame) should
+        // give the user feedback that the button is wired up.
+        if march_clicked {
+            self.status_message =
+                "👣 clicked — for march-in-place, press AND HOLD for ≥ 0.4 s".into();
         }
         self.gait_dpad_was_active = any_held || march_held;
     }
