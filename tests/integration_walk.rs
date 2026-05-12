@@ -1604,6 +1604,265 @@ fn diag_walk_champ_forward_gui_replica_full_misa() {
     }
 }
 
+/// External-force robustness benchmark. Drives namiashi at `cmd vx=+0.15`
+/// (or 0 for stationary stand), applies a world-frame impulsive force on
+/// the trunk at `t = pre_force_s` for `force_duration_s`, then continues
+/// for `post_force_s` to observe recovery.
+///
+/// For each (mode, scenario) combination, prints:
+///   - peak |body_y| deviation during/after force (lateral robustness)
+///   - peak |body_x − expected| (forward tracking deviation)
+///   - peak |roll|, peak |pitch|, peak |Δyaw| (body attitude)
+///   - min_z over the whole window (fall detection)
+///   - recovery_time = time until |body_y| < 0.05 m after force end
+///
+/// The 3 modes use `.misa` fidelity + capture-point=0 (post-C2 defaults),
+/// matching the GUI's recommended setup. Forces are world-frame; the
+/// scenario list covers (lateral push, forward push, vertical jolt).
+#[test]
+#[ignore = "external-force robustness benchmark — run with --ignored"]
+fn diag_external_force_robustness() {
+    let common::StandFixture {
+        mut robot,
+        kin: _,
+        mut sim,
+    } = match common::build_namiashi_stand_fixture_misa() {
+        Some(f) => f,
+        None => return,
+    };
+    drop(robot);
+    drop(sim);
+
+    // Test parameters.
+    let cmd = VelocityCmd { vx: 0.15, vy: 0.0, wz: 0.0 };
+    let pre_force_s = 3.0;        // walk for 3 s before force
+    let force_duration_s = 0.2;   // impulse window
+    let post_force_s = 4.0;       // observe recovery
+    let total_s = pre_force_s + force_duration_s + post_force_s;
+
+    // Force levels are calibrated for namiashi (m = 2.4 kg). An impulse
+    // I = F · 0.2 s translates to Δv = I / m. We sweep 2 / 4 / 6 N to
+    // bracket the "comfortable / hard / break" range and surface where
+    // each mode loses stability.
+    let scenarios: [(&str, [f64; 3], [f64; 3]); 9] = [
+        // (label, force [N], torque [N·m])
+        ("lateral +y 2 N",  [0.0,  2.0, 0.0], [0.0; 3]),
+        ("lateral +y 4 N",  [0.0,  4.0, 0.0], [0.0; 3]),
+        ("lateral +y 6 N",  [0.0,  6.0, 0.0], [0.0; 3]),
+        ("forward −x 2 N",  [-2.0, 0.0, 0.0], [0.0; 3]),
+        ("forward −x 4 N",  [-4.0, 0.0, 0.0], [0.0; 3]),
+        ("forward −x 6 N",  [-6.0, 0.0, 0.0], [0.0; 3]),
+        ("vertical −z 4 N", [0.0, 0.0, -4.0], [0.0; 3]),
+        ("vertical −z 8 N", [0.0, 0.0, -8.0], [0.0; 3]),
+        ("yaw torque 1.5 N·m", [0.0; 3],      [0.0, 0.0, 1.5]),
+    ];
+
+    // (mode label, GaitMode, use_wbc).
+    let modes: [(&str, GaitMode, bool); 3] = [
+        ("CHAMP open-loop",     GaitMode::Champ, false),
+        ("SRBD MPC + WBC",      GaitMode::Mpc, true),
+        ("FullCentroidal+WBC",  GaitMode::FullCentroidal, true),
+    ];
+
+    eprintln!();
+    eprintln!(
+        "=== External-force robustness (cmd vx={:.2} m/s, force at t={}s for {}s, observe {}s) ===",
+        cmd.vx, pre_force_s, force_duration_s, post_force_s,
+    );
+    eprintln!(
+        "        {:<22} | peak |dy| | peak |roll| | peak |pitch| | peak |Δyaw| | min_z  | dx_end (exp +{:.2}) | recovery_s | result",
+        "Mode (scenario)",
+        cmd.vx * (pre_force_s + force_duration_s + post_force_s),
+    );
+    eprintln!("        {}", "─".repeat(140));
+
+    for (scen_label, force, torque) in &scenarios {
+        for (mode_label, mode, use_wbc) in &modes {
+            // Fresh fixture per (mode, scenario) so disturbance windows
+            // don't bleed across tests.
+            let Some(common::StandFixture {
+                mut robot,
+                kin,
+                mut sim,
+            }) = common::build_namiashi_stand_fixture_misa() else { continue; };
+
+            let cfg = GaitConfig::trot();
+            let mut gc = GaitController::build(&robot, kin.clone(), cfg, *mode)
+                .expect("GaitController::build");
+            // Post-C2 default is capture_point=0; explicit set as documentation.
+            gc.set_capture_point_gain(0.0);
+            let mut wbc_pipeline = if *use_wbc {
+                Some(WbcPipeline::new(&robot, common::default_foot_links()))
+            } else { None };
+            if let Some(pipeline) = wbc_pipeline.as_mut() {
+                if let Some(full_cfg) = gc.full_centroidal_mpc_config() {
+                    pipeline.mass_kg = full_cfg.mass_kg;
+                    pipeline.centroidal_inertia_body = Some(full_cfg.centroidal_inertia_body);
+                    pipeline.com_offset_body = full_cfg.com_offset_body;
+                } else if let Some(srbd_cfg) = gc.srbd_mpc_config() {
+                    pipeline.mass_kg = srbd_cfg.mass_kg;
+                    pipeline.inertia_diag_body = srbd_cfg.inertia_diag_body;
+                    pipeline.centroidal_inertia_body = None;
+                }
+            }
+
+            let n_steps = (total_s / DT) as usize;
+            let burn_in_steps = (WALK_BURN_IN_S / DT) as usize;
+            let force_start_step = ((WALK_BURN_IN_S + pre_force_s) / DT) as usize;
+            let force_applied_already = std::cell::Cell::new(false);
+
+            let mut peak_dy = 0.0_f64;
+            let mut peak_roll = 0.0_f64;
+            let mut peak_pitch = 0.0_f64;
+            let mut peak_dyaw = 0.0_f64;
+            let mut min_z = f64::INFINITY;
+            let mut body_x_start = 0.0;
+            let mut body_x_end = 0.0;
+            let mut yaw_start = 0.0;
+            let mut recovery_time_s: Option<f64> = None;
+            let force_end_step = force_start_step + (force_duration_s / DT) as usize;
+
+            gc.enable();
+            for k in 0..n_steps {
+                // Snapshot start-of-cmd reference.
+                if k == burn_in_steps {
+                    gc.set_velocity_cmd(cmd);
+                    if let Some(p) = sim.body_world_position(&robot.root_link) {
+                        body_x_start = p[0];
+                    }
+                    yaw_start = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+                }
+                // Inject force exactly once.
+                if k == force_start_step && !force_applied_already.get() {
+                    sim.apply_external_force(
+                        &robot.root_link, *force, *torque, force_duration_s,
+                    );
+                    force_applied_already.set(true);
+                }
+                let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+                let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+                gc.set_body_state_observed(
+                    Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+                    Vector3::new(w_obs[0], w_obs[1], w_obs[2]));
+                let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+                let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+                gc.set_body_pose_observed(
+                    yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
+                // Per-cmd WBC weights (mirrors run_walk).
+                if let Some(pipeline) = wbc_pipeline.as_mut() {
+                    pipeline.weights = if pipeline.centroidal_inertia_body.is_some() {
+                        quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd())
+                    } else {
+                        quadruped_gait::wbc::WbcWeights::for_cmd(&gc.velocity_cmd())
+                    };
+                }
+                let (out, targets, torque_ff) = gc.tick(DT);
+                for (idx, q) in targets { sim.set_position_target(idx, q); }
+                // WBC path: same shape as run_walk's hybrid joint command.
+                if let Some(pipeline) = wbc_pipeline.as_mut() {
+                    if k >= burn_in_steps {
+                        let f_grf_world = gc.predicted_grfs()
+                            .map(|sol| sol.grfs_first_step)
+                            .unwrap_or([Vector3::zeros(); 4]);
+                        let cmd_w = gc.velocity_cmd();
+                        let v_cmd_body = Vector3::new(cmd_w.vx, cmd_w.vy, 0.0);
+                        let foot_links_str: [&str; 4] = [
+                            pipeline.foot_links[0].as_str(),
+                            pipeline.foot_links[1].as_str(),
+                            pipeline.foot_links[2].as_str(),
+                            pipeline.foot_links[3].as_str(),
+                        ];
+                        let force_z = sim.contact_force_per_foot(&foot_links_str);
+                        let nominal_phases = [
+                            out.legs[0].phase,
+                            out.legs[1].phase,
+                            out.legs[2].phase,
+                            out.legs[3].phase,
+                        ];
+                        let corrected = ContactDrivenPhase::apply_correction(
+                            &nominal_phases, force_z, 5.0, 0.0,
+                        );
+                        let contact_flag = [
+                            corrected[0].is_stance,
+                            corrected[1].is_stance,
+                            corrected[2].is_stance,
+                            corrected[3].is_stance,
+                        ];
+                        let taus = pipeline.solve(
+                            &robot,
+                            &sim,
+                            &out,
+                            gc.kinematics(),
+                            gc.joint_indices(),
+                            gc.joint_signs(),
+                            &v_cmd_body,
+                            cmd_w.wz,
+                            &Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+                            &Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+                            &f_grf_world,
+                            contact_flag,
+                            DT,
+                        );
+                        for (ji, &tau) in taus.iter().enumerate() {
+                            sim.set_torque_feedforward(ji, tau);
+                        }
+                    } else {
+                        for ji in 0..robot.joints.len() {
+                            sim.set_torque_feedforward(ji, 0.0);
+                        }
+                    }
+                } else {
+                    for (idx, tau) in torque_ff { sim.set_torque_feedforward(idx, tau); }
+                }
+                sim.step(&mut robot, DT, true);
+
+                // Metric accumulation — only after cmd is applied so the
+                // burn-in settling doesn't contaminate peaks.
+                if k >= burn_in_steps {
+                    if let Some(p) = sim.body_world_position(&robot.root_link) {
+                        peak_dy = peak_dy.max(p[1].abs());
+                        min_z = min_z.min(p[2]);
+                        body_x_end = p[0];
+                    }
+                    if let Some(quat) = sim.body_world_orientation(&robot.root_link) {
+                        let euler = quat.euler_angles();  // (roll, pitch, yaw) in ZYX convention
+                        peak_roll = peak_roll.max(euler.0.abs());
+                        peak_pitch = peak_pitch.max(euler.1.abs());
+                    }
+                    let dyaw = (yaw_obs - yaw_start).abs();
+                    peak_dyaw = peak_dyaw.max(dyaw);
+                    // Recovery time: first sample post-force-end with
+                    // |dy| < 5 cm.
+                    if k >= force_end_step && recovery_time_s.is_none() {
+                        let dy = sim.body_world_position(&robot.root_link)
+                            .map(|p| p[1].abs()).unwrap_or(0.0);
+                        if dy < 0.05 {
+                            recovery_time_s = Some(
+                                (k - force_end_step) as f64 * DT
+                            );
+                        }
+                    }
+                }
+            }
+
+            let fell = min_z < FALL_THRESHOLD_Z;
+            let dx = body_x_end - body_x_start;
+            let recovery_label = match recovery_time_s {
+                Some(t) => format!("{:>6.2}", t),
+                None if fell => "fell".to_string(),
+                None => "no recov".to_string(),
+            };
+            let result = if fell { "✗ fell" } else if recovery_time_s.is_some() { "✓ recovered" } else { "△ no recovery" };
+            eprintln!(
+                "        {:<22} | {:>9.3} | {:>11.3} | {:>12.3} | {:>11.3} | {:>6.3} | {:>+8.3}             | {} | {}",
+                format!("{} ({})", mode_label, scen_label),
+                peak_dy, peak_roll, peak_pitch, peak_dyaw, min_z, dx, recovery_label, result,
+            );
+        }
+        eprintln!("        {}", "─".repeat(140));
+    }
+}
+
 #[test]
 #[ignore = "GUI-equivalent metric anchor — run with --ignored"]
 fn diag_walk_metric_matrix_gui_v2() {
