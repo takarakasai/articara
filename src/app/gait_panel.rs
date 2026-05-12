@@ -174,12 +174,21 @@ impl ArticaraApp {
         // (= vx · T_stance) collapses to ~1e-7 m so the body stays put.
         // Direction buttons + 👣 together: direction wins (any_held is
         // already true, ε path skipped).
+        // Track whether status_message changes this frame so we can
+        // force a follow-up repaint. egui draws `status_bar` BEFORE
+        // `gait_panel` in the frame, so an update here won't show until
+        // the next frame — and in reactive mode there is no next frame
+        // unless something requests it. Without `request_repaint` the
+        // user clicks 👣 but the status bar stays stale until they
+        // hover somewhere else.
+        let mut status_changed = false;
         if let Some(gc) = self.gait_controller.as_mut() {
             if any_held {
                 gc.set_velocity_cmd(quadruped_gait::VelocityCmd { vx, vy, wz });
                 if !self.gait_dpad_was_active {
                     self.status_message =
                         format!("D-pad cmd vx={vx:+.2} vy={vy:+.2} wz={wz:+.2}");
+                    status_changed = true;
                 }
             } else if march_held {
                 gc.set_velocity_cmd(quadruped_gait::VelocityCmd {
@@ -187,17 +196,15 @@ impl ArticaraApp {
                     vy: 0.0,
                     wz: 0.0,
                 });
-                // Feedback in the status bar on the rising edge so the
-                // user knows the button is wired — distinguishes
-                // "button isn't registering" from "march is too subtle
-                // to see in 200 ms swing windows".
                 if !self.gait_dpad_was_active {
                     self.status_message =
                         "March in place (hold 👣) — feet cycle every 0.4 s, body stays put".into();
+                    status_changed = true;
                 }
             } else if self.gait_dpad_was_active {
                 gc.set_velocity_cmd(quadruped_gait::VelocityCmd::zero());
                 self.status_message = "D-pad released → cmd=0".into();
+                status_changed = true;
             }
         }
         // Even a quick click on 👣 (press+release within one frame) should
@@ -205,6 +212,10 @@ impl ArticaraApp {
         if march_clicked {
             self.status_message =
                 "👣 clicked — for march-in-place, press AND HOLD for ≥ 0.4 s".into();
+            status_changed = true;
+        }
+        if status_changed {
+            ui.ctx().request_repaint();
         }
         self.gait_dpad_was_active = any_held || march_held;
     }
