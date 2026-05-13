@@ -1049,6 +1049,110 @@ viewport で進行距離の違いを目視確認できる。
 
 ---
 
+## 10. Phase D3.3.8: 外力ロバスト性ベンチと SRBD foot-offset 拡張の検討 (2026-05-13〜14)
+
+### 動機
+
+`integration_walk_*_mpc_wbc` を C2 採用後に走らせると「forward dx 16%
+追従」 等の重大な性能不足が解消したが、 外力に対するロバスト性が未測定
+だった。 `legged_control` 系の MPC は外力に対して足配置を含めて plan を
+書き換えるはず、 という直感を 3 mode (CHAMP / SRBD MPC+WBC /
+FullCentroidal+WBC) で定量比較する目的で
+`tests/integration_walk.rs::diag_external_force_robustness` を追加。
+
+### ベンチ設計 (`9c2fab0`)
+
+cmd vx=0.15 m/s で walk 開始 → 3 s 経過後にトランクへ 0.2 s の外力
+インパルスを world 系で印加 → 4 s 観察。 9 シナリオ × {CHAMP, SRBD+WBC,
+FullC+WBC} × {default, h20/sqp3, h10/sqp5} の組合せをスイープ。
+
+namiashi (2.4 kg) で得た主要観察:
+
+| Axis | impulse | 全 mode 結果 |
+|---|---|---|
+| lateral 2 N (Δv≈0.17 m/s) | small | 全 mode 回復 |
+| **lateral 4 N+ (Δv≈0.33 m/s)** | medium+ | **全 mode 転倒** |
+| forward 6 N まで | medium | 全 mode 回復 |
+| vertical 8 N まで | large vertical | 全 mode 回復 |
+| yaw torque 1.5 N·m | rotational | 全 mode 回復 |
+
+`lateral 4 N+ で全 mode が同時に倒れる` のは「歩容パターン (cycle
+timing / stance 切替時刻) が静的固定」 という制約 (= legged_control も
+同じ) と「足配置が open-loop Raibert で再計画されない」 ことの帰結。
+
+### Step C: FullCentroidal horizon 拡張 (`f819c40` で default 反映)
+
+`horizon_steps` を 10 → 20 (300 ms → 600 ms preview) にすると forward
+tracking が 14-16% 改善する一方、 lateral fall の閾値は変わらず。
+default に取り込み済。
+
+### Step B: SRBD MPC に foot offset Δr を追加して足配置を MPC に optimize させる試行
+
+仮説: SRBD MPC の input を `[F (12); Δr (12)]` 24-dim に拡張、
+`ω̇ = I⁻¹ · Σ (rᵢ + Δrᵢ) × Fᵢ` の bilinear 項を `Δrᵢ × F^*ᵢ` (hover
+F^* で SQP 1-iter linearize) で扱う → controller は MPC の
+`foot_offsets_first_step` を Raibert touchdown に加算。
+
+実装は `enable_foot_offset = false` を default にして opt-in。 unit
+test 2 本で QP 解可 + 0 default の sanity 確認。 bench で測定:
+
+| Scenario | SRBD+WBC baseline | SRBD+WBC + Δr (Step B v2、 bounds 2 cm) |
+|---|---|---|
+| lateral 2 N peak \|dy\| | 0.034 m | **0.610 m (18× 悪化)** |
+| forward 2 N dx_end | +0.954 m | +0.065 m (cmd 追従壊滅) |
+| vertical 4 N peak \|dy\| | 0.010 m | 0.655 m (66× 悪化) |
+| yaw torque peak \|dy\| | 0.068 m | 0.663 m |
+| forward 4-6 N min_z | 0.288 ✓ | 0.062 ✗ fell |
+
+**Step B は設計レベルで矛盾している** と結論:
+
+1. MPC の `Δr × F` 項は **stance leg にのみ** 影響 (swing は F=0 で
+   ヤコビアン 0)、 一方 controller は **swing leg の次 touchdown** に
+   Δr を適用したい → 物理量が一致しない
+2. 各 leg が独立 Δr を持つので、 body 1 つに対して 4 つの異なる相対
+   位置参照ができ機構的に不整合
+3. SQP の linearization 点 (`hover F^*`) が動的に変化する F に対して
+   1 iter では収束しない、 本物の SQP 外ループが必要
+
+### legged_control がなぜ type-0 (FullCentroidal 相当) を採るのか — 答え
+
+調査した `ref/legged_control` の OCS2 MPC は joint_q を **state** に
+含め、 horizon 全体で時間発展させる (`type-0` model)。 これが構造的に
+正しい理由は:
+
+- joint_q を時間発展させると **足配置 (= FK(joint_q)) が自動的に MPC
+  の最適化に乗る**
+- stance/swing の役割切替も joint_q の進化に自然に反映される
+- 「Δr を別物として追加」 のような bolt-on は不要、 bilinear 項も発生
+  しない
+
+articara の **FullCentroidalMpc が type-0 に相当**。 SRBD は構造上、
+foot 配置を closed-loop に組み込めない。
+
+### Plan B 採用 (本 commit): SRBD foot-offset インフラは残置、 controller 統合は撤回
+
+- `SrbdMpcConfig::enable_foot_offset` flag と QP 拡張は残す
+  (default `false`、 unit test pass、 既存挙動不変)
+- `mpc_controller.rs::tick` で `foot_offsets_first_step` を読まない
+  (bench で測定済の不安定動作を踏まないため)
+- 「Δr の正しい解釈」 が見つかれば flag だけで再活性化可能
+- bench から「SRBD + Δr」 行を削除
+
+### 残課題 (将来 task)
+
+外力ロバスト性をさらに改善するなら:
+- **FullCentroidal の `joint_q` reference を constant hold ではなく「次の
+  touchdown 用に予測した姿勢」 に書き換える** ([`full_centroidal_controller.rs:317`](../quadruped-gait/src/full_centroidal_controller.rs#L317)
+  の D3.3.5a 簡略化を解除) — これが legged_control 整合の本道
+- 工数: 中〜大 (joint_q 軌道生成 + swing 着地予測)
+
+短期で取れる改善:
+- q_diag[p_y] (lateral position weight) を `20.0 → 50.0+` に上げると
+  lateral fall 閾値が上がる可能性、 ただし forward axis 性能とのトレード
+  オフ
+
+---
+
 ## 関連コミット一覧 (時系列・新→旧)
 
 | Hash | 内容 |

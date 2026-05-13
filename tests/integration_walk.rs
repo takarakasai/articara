@@ -1657,15 +1657,16 @@ fn diag_external_force_robustness() {
         ("yaw torque 1.5 N·m", [0.0; 3],      [0.0, 0.0, 1.5]),
     ];
 
-    // (mode label, GaitMode, use_wbc, optional FullCentroidal config tweak (horizon, sqp_iter)).
-    // The `None` slot keeps the controller's auto-detected default
-    // (horizon=10, sqp_iter=3, dt=30ms).
-    let modes: [(&str, GaitMode, bool, Option<(usize, usize)>); 5] = [
-        ("CHAMP open-loop",     GaitMode::Champ, false, None),
-        ("SRBD MPC + WBC",      GaitMode::Mpc, true, None),
-        ("FullC default (h10,sqp3)", GaitMode::FullCentroidal, true, None),
-        ("FullC h20 sqp3 (600ms preview)",  GaitMode::FullCentroidal, true, Some((20, 3))),
-        ("FullC h10 sqp5",  GaitMode::FullCentroidal, true, Some((10, 5))),
+    // (mode label, GaitMode, use_wbc, FullCentroidal tweak (h,sqp_iter), enable SRBD foot-offset).
+    // The `enable_foot_offset` slot is left in the tuple for future
+    // experimentation but currently set to `false` everywhere — Step B's
+    // controller integration was reverted (see commit message + doc).
+    let modes: [(&str, GaitMode, bool, Option<(usize, usize)>, bool); 5] = [
+        ("CHAMP open-loop",            GaitMode::Champ, false, None, false),
+        ("SRBD MPC + WBC",             GaitMode::Mpc, true,    None, false),
+        ("FullC default",              GaitMode::FullCentroidal, true, None, false),
+        ("FullC h20 sqp3",             GaitMode::FullCentroidal, true, Some((20, 3)), false),
+        ("FullC h10 sqp5",             GaitMode::FullCentroidal, true, Some((10, 5)), false),
     ];
 
     eprintln!();
@@ -1681,7 +1682,7 @@ fn diag_external_force_robustness() {
     eprintln!("        {}", "─".repeat(140));
 
     for (scen_label, force, torque) in &scenarios {
-        for (mode_label, mode, use_wbc, full_cfg_tweak) in &modes {
+        for (mode_label, mode, use_wbc, full_cfg_tweak, enable_foot_offset) in &modes {
             // Fresh fixture per (mode, scenario) so disturbance windows
             // don't bleed across tests.
             let Some(common::StandFixture {
@@ -1702,6 +1703,21 @@ fn diag_external_force_robustness() {
                     new_cfg.horizon_steps = *horizon;
                     new_cfg.sqp_iterations = *sqp;
                     gc.set_full_centroidal_mpc_config(new_cfg);
+                }
+            }
+            // Step B: opt into the SRBD foot-offset extension. The
+            // default bounds (8 cm offset, r_diag_foot_offset=0.5) are
+            // tuned for Cheetah-class. namiashi (2.4 kg) needs tighter
+            // limits — the MPC's single-iteration SQP linearization
+            // (hover F^*) over-trusts the offset's authority and crashes
+            // the body, so cap at 2 cm and raise the regularizer.
+            if *enable_foot_offset {
+                if let Some(srbd_cfg) = gc.srbd_mpc_config() {
+                    let mut new_cfg = srbd_cfg.clone();
+                    new_cfg.enable_foot_offset = true;
+                    new_cfg.max_foot_offset_m = 0.02;
+                    new_cfg.r_diag_foot_offset = 10.0;
+                    gc.set_srbd_mpc_config(new_cfg);
                 }
             }
             let mut wbc_pipeline = if *use_wbc {
