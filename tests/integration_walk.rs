@@ -1657,11 +1657,15 @@ fn diag_external_force_robustness() {
         ("yaw torque 1.5 N·m", [0.0; 3],      [0.0, 0.0, 1.5]),
     ];
 
-    // (mode label, GaitMode, use_wbc).
-    let modes: [(&str, GaitMode, bool); 3] = [
-        ("CHAMP open-loop",     GaitMode::Champ, false),
-        ("SRBD MPC + WBC",      GaitMode::Mpc, true),
-        ("FullCentroidal+WBC",  GaitMode::FullCentroidal, true),
+    // (mode label, GaitMode, use_wbc, optional FullCentroidal config tweak (horizon, sqp_iter)).
+    // The `None` slot keeps the controller's auto-detected default
+    // (horizon=10, sqp_iter=3, dt=30ms).
+    let modes: [(&str, GaitMode, bool, Option<(usize, usize)>); 5] = [
+        ("CHAMP open-loop",     GaitMode::Champ, false, None),
+        ("SRBD MPC + WBC",      GaitMode::Mpc, true, None),
+        ("FullC default (h10,sqp3)", GaitMode::FullCentroidal, true, None),
+        ("FullC h20 sqp3 (600ms preview)",  GaitMode::FullCentroidal, true, Some((20, 3))),
+        ("FullC h10 sqp5",  GaitMode::FullCentroidal, true, Some((10, 5))),
     ];
 
     eprintln!();
@@ -1677,7 +1681,7 @@ fn diag_external_force_robustness() {
     eprintln!("        {}", "─".repeat(140));
 
     for (scen_label, force, torque) in &scenarios {
-        for (mode_label, mode, use_wbc) in &modes {
+        for (mode_label, mode, use_wbc, full_cfg_tweak) in &modes {
             // Fresh fixture per (mode, scenario) so disturbance windows
             // don't bleed across tests.
             let Some(common::StandFixture {
@@ -1691,6 +1695,15 @@ fn diag_external_force_robustness() {
                 .expect("GaitController::build");
             // Post-C2 default is capture_point=0; explicit set as documentation.
             gc.set_capture_point_gain(0.0);
+            // Apply FullCentroidal-specific tuning when the row asks for it.
+            if let Some((horizon, sqp)) = full_cfg_tweak {
+                if let Some(full_cfg) = gc.full_centroidal_mpc_config() {
+                    let mut new_cfg = full_cfg.clone();
+                    new_cfg.horizon_steps = *horizon;
+                    new_cfg.sqp_iterations = *sqp;
+                    gc.set_full_centroidal_mpc_config(new_cfg);
+                }
+            }
             let mut wbc_pipeline = if *use_wbc {
                 Some(WbcPipeline::new(&robot, common::default_foot_links()))
             } else { None };
