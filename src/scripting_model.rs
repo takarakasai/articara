@@ -1712,6 +1712,84 @@ impl ModelScriptEngine {
                 },
             );
 
+            // gait_set_goal_pose(x, y, yaw, max_v, max_wz): activate
+            // **goal-pose mode** on the FullCentroidal controller. The
+            // body will track an absolute (x, y, yaw) target in the
+            // world frame, so a disturbance that drifts the body off
+            // the path produces a non-zero v_y command pointing back
+            // at the goal — see [`quadruped_gait::velocity_cmd_for_goal`].
+            //
+            // Default tolerances: 2 cm position, ~3° yaw. Use
+            // `gait_set_goal_pose_full` for explicit tolerance control.
+            //
+            // Calling `gait_set_velocity` implicitly clears the goal
+            // (mode-switch semantics), so a script that mixes the two
+            // doesn't see surprising lingering position tracking.
+            //
+            // No-op outside `GaitMode::FullCentroidal` today.
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn(
+                "gait_set_goal_pose",
+                move |x: f64, y: f64, yaw: f64, max_v: f64, max_wz: f64| -> bool {
+                    let mut gb = g.borrow_mut();
+                    let Some(ctrl) = gb.as_mut() else { return false };
+                    ctrl.set_goal_pose_world(quadruped_gait::GoalPoseWorld {
+                        x_m: x,
+                        y_m: y,
+                        yaw_rad: yaw,
+                        max_v_m_s: max_v,
+                        max_wz_rad_s: max_wz,
+                        position_tolerance_m: 0.02,
+                        yaw_tolerance_rad: 0.05,
+                    });
+                    true
+                },
+            );
+
+            // gait_set_goal_pose_full(x, y, yaw, max_v, max_wz, pos_tol, yaw_tol):
+            // variant of `gait_set_goal_pose` with explicit position
+            // and yaw tolerances (m, rad).
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn(
+                "gait_set_goal_pose_full",
+                move |x: f64, y: f64, yaw: f64,
+                      max_v: f64, max_wz: f64,
+                      pos_tol: f64, yaw_tol: f64| -> bool {
+                    let mut gb = g.borrow_mut();
+                    let Some(ctrl) = gb.as_mut() else { return false };
+                    ctrl.set_goal_pose_world(quadruped_gait::GoalPoseWorld {
+                        x_m: x,
+                        y_m: y,
+                        yaw_rad: yaw,
+                        max_v_m_s: max_v,
+                        max_wz_rad_s: max_wz,
+                        position_tolerance_m: pos_tol,
+                        yaw_tolerance_rad: yaw_tol,
+                    });
+                    true
+                },
+            );
+
+            // gait_clear_goal_pose(): return to cmd_vel mode. The
+            // controller keeps whatever velocity was last set by
+            // `gait_set_velocity` (or zero if none).
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn("gait_clear_goal_pose", move || -> bool {
+                let mut gb = g.borrow_mut();
+                let Some(ctrl) = gb.as_mut() else { return false };
+                ctrl.clear_goal_pose();
+                true
+            });
+
+            // gait_has_goal_pose() -> bool: query whether goal-pose
+            // mode is currently active.
+            let g = Rc::clone(&gait_controller);
+            engine.register_fn("gait_has_goal_pose", move || -> bool {
+                let gb = g.borrow();
+                let Some(ctrl) = gb.as_ref() else { return false };
+                ctrl.goal_pose_world().is_some()
+            });
+
             let g = Rc::clone(&gait_controller);
             engine.register_fn("gait_start", move || -> bool {
                 let mut gb = g.borrow_mut();
