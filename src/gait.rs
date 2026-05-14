@@ -634,6 +634,26 @@ impl GaitController {
         self.inner.capture_point_pulse()
     }
 
+    /// Activate the FullCentroidal controller's goal-pose mode. After
+    /// this call, [`Self::tick`] computes the body velocity command at
+    /// each tick from `goal − observed_pose`, so the robot actively
+    /// recovers its position after a disturbance — the
+    /// `goalToTargetTrajectories` analogue from legged_control.
+    /// `set_velocity_cmd` implicitly clears the goal. No-op outside
+    /// FullCentroidal mode.
+    pub fn set_goal_pose_world(
+        &mut self,
+        goal: quadruped_gait::GoalPoseWorld,
+    ) {
+        self.inner.set_goal_pose_world(goal);
+    }
+    pub fn clear_goal_pose(&mut self) {
+        self.inner.clear_goal_pose();
+    }
+    pub fn goal_pose_world(&self) -> Option<quadruped_gait::GoalPoseWorld> {
+        self.inner.goal_pose_world()
+    }
+
     /// Read the active SRBD MPC config. `None` when running CHAMP.
     pub fn srbd_mpc_config(
         &self,

@@ -1963,6 +1963,225 @@ fn diag_external_force_robustness() {
     }
 }
 
+/// Goal-pose mode lateral recovery A/B.
+///
+/// The main `diag_external_force_robustness` benchmark uses cmd_vel
+/// mode: the robot is commanded a constant body velocity, so after a
+/// lateral push the body keeps drifting at the new offset (cap-pt 0.05
+/// is enough to prevent falling, but `recovery_s` never fires).
+///
+/// This test exercises the **goal-pose mode** added in the
+/// `goalToTargetTrajectories` analogue (see
+/// [`quadruped_gait::velocity_cmd_for_goal`]): the controller targets
+/// an absolute (x, y, yaw) goal in the world frame, so a lateral push
+/// produces a non-zero `vy_body` command pointing back at the goal,
+/// and the body actively recovers to y = 0.
+///
+/// Scope kept small (3 scenarios × 2 modes = 6 sims, ~2 min runtime)
+/// so this can iterate independently of the 33-minute main bench.
+#[test]
+#[ignore = "goal-pose lateral recovery — run with --ignored"]
+fn diag_goal_pose_lateral_recovery() {
+    let common::StandFixture {
+        robot, kin: _, sim,
+    } = match common::build_namiashi_stand_fixture_misa() {
+        Some(f) => f,
+        None => return,
+    };
+    drop(robot);
+    drop(sim);
+
+    let cmd_vx = 0.15_f64;
+    let pre_force_s = 3.0_f64;
+    let force_duration_s = 0.2_f64;
+    let post_force_s = 4.0_f64;
+    let total_s = pre_force_s + force_duration_s + post_force_s;
+    // Goal x is "where the body would be if no disturbance hit it"
+    // at the end of the cmd window. y_goal = 0 forces the controller
+    // to recover any lateral drift.
+    let goal_x = cmd_vx * total_s;
+
+    let scenarios: [(&str, [f64; 3]); 3] = [
+        ("lateral +y 2 N", [0.0, 2.0, 0.0]),
+        ("lateral +y 4 N", [0.0, 4.0, 0.0]),
+        ("lateral +y 6 N", [0.0, 6.0, 0.0]),
+    ];
+
+    enum CmdMode {
+        Velocity,
+        Goal,
+    }
+    let modes: [(&str, CmdMode); 2] = [
+        ("cmd_vel  (FullC default)", CmdMode::Velocity),
+        ("goal_pose (FullC default)", CmdMode::Goal),
+    ];
+
+    eprintln!();
+    eprintln!(
+        "=== Goal-pose lateral recovery (cmd vx={:.2} m/s → goal x={:.2} m, push at t={}s for {}s, observe {}s) ===",
+        cmd_vx, goal_x, pre_force_s, force_duration_s, post_force_s,
+    );
+    eprintln!(
+        "        {:<40} | peak |dy| | end |dy| | end dx (goal {:+.2}) | recovery_s | result",
+        "Mode (scenario)", goal_x,
+    );
+    eprintln!("        {}", "─".repeat(125));
+
+    for (scen_label, force) in &scenarios {
+        for (mode_label, mode) in &modes {
+            let Some(common::StandFixture {
+                mut robot,
+                kin,
+                mut sim,
+            }) = common::build_namiashi_stand_fixture_misa() else { continue; };
+
+            let cfg = GaitConfig::trot();
+            let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::FullCentroidal)
+                .expect("GaitController::build");
+
+            let mut wbc_pipeline = WbcPipeline::new(&robot, common::default_foot_links());
+            if let Some(full_cfg) = gc.full_centroidal_mpc_config() {
+                wbc_pipeline.mass_kg = full_cfg.mass_kg;
+                wbc_pipeline.centroidal_inertia_body = Some(full_cfg.centroidal_inertia_body);
+                wbc_pipeline.com_offset_body = full_cfg.com_offset_body;
+            }
+
+            let n_steps = (total_s / DT) as usize;
+            let burn_in_steps = (WALK_BURN_IN_S / DT) as usize;
+            let force_start_step = ((WALK_BURN_IN_S + pre_force_s) / DT) as usize;
+            let force_end_step = force_start_step + (force_duration_s / DT) as usize;
+            let force_applied_already = std::cell::Cell::new(false);
+
+            let mut peak_dy = 0.0_f64;
+            let mut min_z = f64::INFINITY;
+            let mut body_x_start = 0.0;
+            let mut body_x_end = 0.0;
+            let mut body_y_end = 0.0;
+            let mut recovery_time_s: Option<f64> = None;
+
+            gc.enable();
+            for k in 0..n_steps {
+                if k == burn_in_steps {
+                    match mode {
+                        CmdMode::Velocity => {
+                            gc.set_velocity_cmd(VelocityCmd { vx: cmd_vx, vy: 0.0, wz: 0.0 });
+                        }
+                        CmdMode::Goal => {
+                            gc.set_goal_pose_world(quadruped_gait::GoalPoseWorld {
+                                x_m: goal_x,
+                                y_m: 0.0,
+                                yaw_rad: 0.0,
+                                max_v_m_s: cmd_vx,
+                                max_wz_rad_s: 0.5,
+                                position_tolerance_m: 0.02,
+                                yaw_tolerance_rad: 0.05,
+                            });
+                        }
+                    }
+                    if let Some(p) = sim.body_world_position(&robot.root_link) {
+                        body_x_start = p[0];
+                    }
+                }
+                if k == force_start_step && !force_applied_already.get() {
+                    sim.apply_external_force(
+                        &robot.root_link, *force, [0.0; 3], force_duration_s,
+                    );
+                    force_applied_already.set(true);
+                }
+                let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+                let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+                gc.set_body_state_observed(
+                    Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+                    Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+                );
+                let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+                let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+                gc.set_body_pose_observed(
+                    yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
+                wbc_pipeline.weights = quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd());
+
+                let (out, targets, _) = gc.tick(DT);
+                for (idx, q) in targets { sim.set_position_target(idx, q); }
+                if k >= burn_in_steps {
+                    let f_grf_world = gc.predicted_grfs()
+                        .map(|sol| sol.grfs_first_step)
+                        .unwrap_or([Vector3::zeros(); 4]);
+                    let cmd_w = gc.velocity_cmd();
+                    let v_cmd_body = Vector3::new(cmd_w.vx, cmd_w.vy, 0.0);
+                    let foot_links_str: [&str; 4] = [
+                        wbc_pipeline.foot_links[0].as_str(),
+                        wbc_pipeline.foot_links[1].as_str(),
+                        wbc_pipeline.foot_links[2].as_str(),
+                        wbc_pipeline.foot_links[3].as_str(),
+                    ];
+                    let force_z = sim.contact_force_per_foot(&foot_links_str);
+                    let nominal_phases = [
+                        out.legs[0].phase, out.legs[1].phase,
+                        out.legs[2].phase, out.legs[3].phase,
+                    ];
+                    let corrected = ContactDrivenPhase::apply_correction(
+                        &nominal_phases, force_z, 5.0, 0.0,
+                    );
+                    let contact_flag = [
+                        corrected[0].is_stance, corrected[1].is_stance,
+                        corrected[2].is_stance, corrected[3].is_stance,
+                    ];
+                    let taus = wbc_pipeline.solve(
+                        &robot, &sim, &out, gc.kinematics(),
+                        gc.joint_indices(), gc.joint_signs(),
+                        &v_cmd_body, cmd_w.wz,
+                        &Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+                        &Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+                        &f_grf_world, contact_flag, DT,
+                    );
+                    for (ji, &tau) in taus.iter().enumerate() {
+                        sim.set_torque_feedforward(ji, tau);
+                    }
+                } else {
+                    for ji in 0..robot.joints.len() {
+                        sim.set_torque_feedforward(ji, 0.0);
+                    }
+                }
+                sim.step(&mut robot, DT, true);
+
+                if k >= burn_in_steps {
+                    if let Some(p) = sim.body_world_position(&robot.root_link) {
+                        peak_dy = peak_dy.max(p[1].abs());
+                        min_z = min_z.min(p[2]);
+                        body_x_end = p[0];
+                        body_y_end = p[1];
+                    }
+                    if k >= force_end_step && recovery_time_s.is_none() {
+                        let dy = sim.body_world_position(&robot.root_link)
+                            .map(|p| p[1].abs()).unwrap_or(0.0);
+                        if dy < 0.05 {
+                            recovery_time_s = Some((k - force_end_step) as f64 * DT);
+                        }
+                    }
+                }
+            }
+
+            let fell = min_z < FALL_THRESHOLD_Z;
+            let dx = body_x_end - body_x_start;
+            let recovery_label = match recovery_time_s {
+                Some(t) => format!("{:>6.2}", t),
+                None if fell => "fell".to_string(),
+                None => "no recov".to_string(),
+            };
+            let result = if fell { "✗ fell" }
+                         else if recovery_time_s.is_some() { "✓ recovered" }
+                         else { "△ no recovery" };
+            eprintln!(
+                "        {:<40} | {:>9.3} | {:>8.3} | {:>+7.3} (Δ {:+.3}) | {} | {}",
+                format!("{} ({})", mode_label, scen_label),
+                peak_dy, body_y_end.abs(), dx, dx - goal_x,
+                recovery_label, result,
+            );
+        }
+        eprintln!("        {}", "─".repeat(125));
+    }
+}
+
 #[test]
 #[ignore = "GUI-equivalent metric anchor — run with --ignored"]
 fn diag_walk_metric_matrix_gui_v2() {
