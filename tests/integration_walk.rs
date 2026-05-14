@@ -1703,24 +1703,35 @@ fn diag_external_force_robustness() {
     // stance no-slip stays active). Parity is on because the ramp
     // needs per-step stance sub-fractions — legacy path uses a
     // mid-stance proxy that always yields weight 1.0.
-    let modes: [(&str, GaitMode, bool, Option<(usize, usize)>, bool, bool, Option<f64>, bool, Option<(f64, f64)>, f64); 17] = [
-        ("CHAMP open-loop",                 GaitMode::Champ, false, None, false, false, None, false, None, 0.0),
-        ("SRBD MPC + WBC",                  GaitMode::Mpc, true,    None, false, false, None, false, None, 0.0),
-        ("FullC default",                   GaitMode::FullCentroidal, true, None, false, false, None, false, None, 0.0),
-        ("FullC h20 sqp3",                  GaitMode::FullCentroidal, true, Some((20, 3)), false, false, None, false, None, 0.0),
-        ("FullC h10 sqp5",                  GaitMode::FullCentroidal, true, Some((10, 5)), false, false, None, false, None, 0.0),
-        ("FullC + cap-pt 0.05",             GaitMode::FullCentroidal, true, None, false, false, Some(0.05),  false, None, 0.0),
-        ("FullC + cap-pt 0.10",             GaitMode::FullCentroidal, true, None, false, false, Some(0.10),  false, None, 0.0),
-        ("FullC + cap-pt 0.175",            GaitMode::FullCentroidal, true, None, false, false, Some(0.175), false, None, 0.0),
-        ("FullC + db 0.05 / k_p 0.20",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.20, 0.05)), 0.0),
-        ("FullC + db 0.05 / k_p 0.30",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.30, 0.05)), 0.0),
-        ("FullC + db 0.10 / k_p 0.30",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.30, 0.10)), 0.0),
-        ("FullC legged-parity",             GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.0),
-        ("FullC parity + cap-pt 0.175",     GaitMode::FullCentroidal, true, None, false, true, Some(0.175), false, None, 0.0),
-        ("FullC parity + nominal q_ref",    GaitMode::FullCentroidal, true, None, false, true, None, true, None, 0.0),
-        ("FullC parity + cap-pt + nom-q",   GaitMode::FullCentroidal, true, None, false, true, Some(0.175), true, None, 0.0),
-        ("FullC parity + trans 0.05",       GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.05),
-        ("FullC parity + trans 0.10",       GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.10),
+    //
+    // The trailing tuple element `transition_enforce_constraint`
+    // (bool) is the **C1-2 experiment**: when paired with
+    // `transition_fraction > 0`, the controller also tightens the
+    // per-leg per-step `max_normal_force` upper bound to
+    // `weight · cfg.max_normal_force`, forcing the MPC's friction-
+    // cone block to honour the ramp as a HARD constraint. This is
+    // where C1 (cost-side, bit-exact identical to parity baseline)
+    // graduates to a real intervention.
+    let modes: [(&str, GaitMode, bool, Option<(usize, usize)>, bool, bool, Option<f64>, bool, Option<(f64, f64)>, f64, bool); 19] = [
+        ("CHAMP open-loop",                 GaitMode::Champ, false, None, false, false, None, false, None, 0.0, false),
+        ("SRBD MPC + WBC",                  GaitMode::Mpc, true,    None, false, false, None, false, None, 0.0, false),
+        ("FullC default",                   GaitMode::FullCentroidal, true, None, false, false, None, false, None, 0.0, false),
+        ("FullC h20 sqp3",                  GaitMode::FullCentroidal, true, Some((20, 3)), false, false, None, false, None, 0.0, false),
+        ("FullC h10 sqp5",                  GaitMode::FullCentroidal, true, Some((10, 5)), false, false, None, false, None, 0.0, false),
+        ("FullC + cap-pt 0.05",             GaitMode::FullCentroidal, true, None, false, false, Some(0.05),  false, None, 0.0, false),
+        ("FullC + cap-pt 0.10",             GaitMode::FullCentroidal, true, None, false, false, Some(0.10),  false, None, 0.0, false),
+        ("FullC + cap-pt 0.175",            GaitMode::FullCentroidal, true, None, false, false, Some(0.175), false, None, 0.0, false),
+        ("FullC + db 0.05 / k_p 0.20",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.20, 0.05)), 0.0, false),
+        ("FullC + db 0.05 / k_p 0.30",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.30, 0.05)), 0.0, false),
+        ("FullC + db 0.10 / k_p 0.30",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.30, 0.10)), 0.0, false),
+        ("FullC legged-parity",             GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.0, false),
+        ("FullC parity + cap-pt 0.175",     GaitMode::FullCentroidal, true, None, false, true, Some(0.175), false, None, 0.0, false),
+        ("FullC parity + nominal q_ref",    GaitMode::FullCentroidal, true, None, false, true, None, true, None, 0.0, false),
+        ("FullC parity + cap-pt + nom-q",   GaitMode::FullCentroidal, true, None, false, true, Some(0.175), true, None, 0.0, false),
+        ("FullC parity + trans 0.05",       GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.05, false),
+        ("FullC parity + trans 0.10",       GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.10, false),
+        ("FullC parity + trans 0.05 hard",  GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.05, true),
+        ("FullC parity + trans 0.10 hard",  GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.10, true),
     ];
 
     eprintln!();
@@ -1736,7 +1747,7 @@ fn diag_external_force_robustness() {
     eprintln!("        {}", "─".repeat(140));
 
     for (scen_label, force, torque) in &scenarios {
-        for (mode_label, mode, use_wbc, full_cfg_tweak, enable_foot_offset, enable_parity, cap_pt_override, use_nominal_q_ref, pulse_db, transition_fraction) in &modes {
+        for (mode_label, mode, use_wbc, full_cfg_tweak, enable_foot_offset, enable_parity, cap_pt_override, use_nominal_q_ref, pulse_db, transition_fraction, enforce_constraint) in &modes {
             // Fresh fixture per (mode, scenario) so disturbance windows
             // don't bleed across tests.
             let Some(common::StandFixture {
@@ -1748,7 +1759,14 @@ fn diag_external_force_robustness() {
             // C1: opt into the GRF-reference transition ramp via
             // GaitConfig::transition_fraction. Default 0.0 leaves the
             // legacy even-split GRF behaviour untouched.
-            let cfg = GaitConfig::trot().with_transition_fraction(*transition_fraction);
+            // C1-2: also opt into the constraint-side hard
+            // `max_normal_force` ramp via
+            // `transition_enforce_constraint`. Without this flag the
+            // ramp is cost-side only (= bit-exact identical to
+            // baseline per the η-3 / C1 negative result).
+            let cfg = GaitConfig::trot()
+                .with_transition_fraction(*transition_fraction)
+                .with_transition_enforce_constraint(*enforce_constraint);
             let mut gc = GaitController::build(&robot, kin.clone(), cfg, *mode)
                 .expect("GaitController::build");
             // Per-row override (α / η experiments) overrides the
