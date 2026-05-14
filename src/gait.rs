@@ -661,6 +661,33 @@ impl GaitController {
         self.inner.full_centroidal_mpc_config()
     }
 
+    /// Enable / disable the legged_control-parity path on the
+    /// FullCentroidal controller (no-op for other gait modes). When on,
+    /// the MPC contact schedule is built from a per-leg per-step phase
+    /// projection and each swing-leg-step receives a planned vertical
+    /// foot velocity that the QP enforces via the
+    /// `NormalVelocityConstraintCppAd`-equivalent equality.
+    pub fn set_legged_control_parity(&mut self, enable: bool) {
+        self.inner.set_legged_control_parity(enable);
+    }
+
+    /// Read the parity flag. `None` outside FullCentroidal mode.
+    pub fn legged_control_parity(&self) -> Option<bool> {
+        self.inner.legged_control_parity()
+    }
+
+    /// Toggle whether the parity path uses the URDF nominal pose for
+    /// the joint_q tracking reference (β experiment — matches
+    /// legged_control's `DEFAULT_JOINT_STATE`). No-op outside
+    /// FullCentroidal mode.
+    pub fn set_parity_use_nominal_q_ref(&mut self, enable: bool) {
+        self.inner.set_parity_use_nominal_q_ref(enable);
+    }
+
+    pub fn parity_use_nominal_q_ref(&self) -> Option<bool> {
+        self.inner.parity_use_nominal_q_ref()
+    }
+
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }

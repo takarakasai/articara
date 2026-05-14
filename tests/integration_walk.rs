@@ -1657,16 +1657,50 @@ fn diag_external_force_robustness() {
         ("yaw torque 1.5 N·m", [0.0; 3],      [0.0, 0.0, 1.5]),
     ];
 
-    // (mode label, GaitMode, use_wbc, FullCentroidal tweak (h,sqp_iter), enable SRBD foot-offset).
+    // (mode label, GaitMode, use_wbc, FullCentroidal tweak (h,sqp_iter), enable SRBD foot-offset, enable legged_control parity, capture-point gain override, nominal q_ref).
     // The `enable_foot_offset` slot is left in the tuple for future
     // experimentation but currently set to `false` everywhere — Step B's
     // controller integration was reverted (see commit message + doc).
-    let modes: [(&str, GaitMode, bool, Option<(usize, usize)>, bool); 5] = [
-        ("CHAMP open-loop",            GaitMode::Champ, false, None, false),
-        ("SRBD MPC + WBC",             GaitMode::Mpc, true,    None, false),
-        ("FullC default",              GaitMode::FullCentroidal, true, None, false),
-        ("FullC h20 sqp3",             GaitMode::FullCentroidal, true, Some((20, 3)), false),
-        ("FullC h10 sqp5",             GaitMode::FullCentroidal, true, Some((10, 5)), false),
+    // `parity` toggles the FullCentroidal controller's
+    // legged_control-style per-step phase prediction + swing-leg
+    // vertical foot velocity equality constraint
+    // (NormalVelocityConstraintCppAd analog). The legacy three FullC
+    // rows are left with `parity = false` so the A/B comparison sits
+    // in a single table.
+    //
+    // `cap_pt_override = Some(g)` raises the footstep planner's
+    // capture-point feedback gain from its post-C2 default of 0.0 to
+    // `g` (legacy = 0.175). This is the **α** experiment: pair it with
+    // `parity = true` to see whether the missing closed-loop foothold
+    // correction is what kept the parity row from solving the lateral
+    // 4 N+ fall.
+    //
+    // `nominal_q_ref = true` switches the joint_q tracking reference
+    // from observed `joint_q_now` to the URDF nominal stance pose
+    // (matches legged_control's `DEFAULT_JOINT_STATE`). This is the
+    // **β** experiment: it biases swing legs back toward the
+    // standing pose, which is the other half of legged_control's
+    // joint-tracking semantics. Combined α+β is in the last row.
+    // The "FullC + cap-pt {0.05, 0.10, 0.175}" rows are the **η**
+    // experiment: capture-point feedback applied to the LEGACY
+    // FullCentroidal path (parity OFF) to isolate cap-pt's solo
+    // behaviour from parity's per-step contact + swing v_z
+    // interference. 0.175 is the pre-C2 legacy value;
+    // 0.05 / 0.10 sample a gentler regime in case the legacy gain is
+    // over-tuned for namiashi's lower mass/leg-length scale.
+    let modes: [(&str, GaitMode, bool, Option<(usize, usize)>, bool, bool, Option<f64>, bool); 12] = [
+        ("CHAMP open-loop",                 GaitMode::Champ, false, None, false, false, None, false),
+        ("SRBD MPC + WBC",                  GaitMode::Mpc, true,    None, false, false, None, false),
+        ("FullC default",                   GaitMode::FullCentroidal, true, None, false, false, None, false),
+        ("FullC h20 sqp3",                  GaitMode::FullCentroidal, true, Some((20, 3)), false, false, None, false),
+        ("FullC h10 sqp5",                  GaitMode::FullCentroidal, true, Some((10, 5)), false, false, None, false),
+        ("FullC + cap-pt 0.05",             GaitMode::FullCentroidal, true, None, false, false, Some(0.05),  false),
+        ("FullC + cap-pt 0.10",             GaitMode::FullCentroidal, true, None, false, false, Some(0.10),  false),
+        ("FullC + cap-pt 0.175",            GaitMode::FullCentroidal, true, None, false, false, Some(0.175), false),
+        ("FullC legged-parity",             GaitMode::FullCentroidal, true, None, false, true, None, false),
+        ("FullC parity + cap-pt 0.175",     GaitMode::FullCentroidal, true, None, false, true, Some(0.175), false),
+        ("FullC parity + nominal q_ref",    GaitMode::FullCentroidal, true, None, false, true, None, true),
+        ("FullC parity + cap-pt + nom-q",   GaitMode::FullCentroidal, true, None, false, true, Some(0.175), true),
     ];
 
     eprintln!();
@@ -1682,7 +1716,7 @@ fn diag_external_force_robustness() {
     eprintln!("        {}", "─".repeat(140));
 
     for (scen_label, force, torque) in &scenarios {
-        for (mode_label, mode, use_wbc, full_cfg_tweak, enable_foot_offset) in &modes {
+        for (mode_label, mode, use_wbc, full_cfg_tweak, enable_foot_offset, enable_parity, cap_pt_override, use_nominal_q_ref) in &modes {
             // Fresh fixture per (mode, scenario) so disturbance windows
             // don't bleed across tests.
             let Some(common::StandFixture {
@@ -1694,8 +1728,14 @@ fn diag_external_force_robustness() {
             let cfg = GaitConfig::trot();
             let mut gc = GaitController::build(&robot, kin.clone(), cfg, *mode)
                 .expect("GaitController::build");
-            // Post-C2 default is capture_point=0; explicit set as documentation.
-            gc.set_capture_point_gain(0.0);
+            // Per-row override (α / η experiments) overrides the
+            // current `DEFAULT_CAPTURE_POINT_GAIN_S` (= 0.05 post-η,
+            // 2026-05-15). When no override is set the row inherits
+            // whatever the constructor default is, so "FullC default"
+            // tracks any future re-tuning of that constant.
+            if let Some(gain) = cap_pt_override {
+                gc.set_capture_point_gain(*gain);
+            }
             // Apply FullCentroidal-specific tuning when the row asks for it.
             if let Some((horizon, sqp)) = full_cfg_tweak {
                 if let Some(full_cfg) = gc.full_centroidal_mpc_config() {
@@ -1703,6 +1743,16 @@ fn diag_external_force_robustness() {
                     new_cfg.horizon_steps = *horizon;
                     new_cfg.sqp_iterations = *sqp;
                     gc.set_full_centroidal_mpc_config(new_cfg);
+                }
+            }
+            // Activate the legged_control-parity path on the
+            // FullCentroidal controller for the dedicated comparison row.
+            // `use_nominal_q_ref` (β) is gated on parity so it has no
+            // effect on the legacy rows.
+            if *enable_parity {
+                gc.set_legged_control_parity(true);
+                if *use_nominal_q_ref {
+                    gc.set_parity_use_nominal_q_ref(true);
                 }
             }
             // Step B: opt into the SRBD foot-offset extension. The
