@@ -733,6 +733,17 @@ pub struct ArticaraApp {
     /// controller via `set_capture_point_gain` whenever the slider
     /// changes or a controller is rebuilt.
     gait_capture_point_gain: f32,
+    /// Goal-pose UI state: target (x, y, yaw) in the world frame plus
+    /// per-axis speed limits. Held in the panel even when goal mode is
+    /// inactive so the user can edit values, then click "Set goal" to
+    /// activate. `gait_goal_pose_active` reflects whether the
+    /// controller currently has a goal set.
+    gait_goal_x_m: f32,
+    gait_goal_y_m: f32,
+    gait_goal_yaw_rad: f32,
+    gait_goal_max_v_m_s: f32,
+    gait_goal_max_wz_rad_s: f32,
+    gait_goal_pose_active: bool,
     /// When `true`, the next viewport left-click sets [`Self::loop_closure_link_b`]
     /// instead of doing the usual JointDrive selection. Toggled on by the
     /// "👆 Pick B from viewport" button in the Loop Closures panel and
@@ -1007,6 +1018,12 @@ impl ArticaraApp {
             gait_dpad_speed: 0.3,
             gait_dpad_yaw_speed: 0.5,
             gait_capture_point_gain: 0.0,
+            gait_goal_x_m: 1.0,
+            gait_goal_y_m: 0.0,
+            gait_goal_yaw_rad: 0.0,
+            gait_goal_max_v_m_s: 0.15,
+            gait_goal_max_wz_rad_s: 0.5,
+            gait_goal_pose_active: false,
             gait_dpad_was_active: false,
             loop_closure_picking_b: false,
             loop_closure_link_b: None,

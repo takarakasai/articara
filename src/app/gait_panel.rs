@@ -406,6 +406,125 @@ impl ArticaraApp {
             .weak(),
         );
 
+        // ── Goal-pose mode ────────────────────────────────────────────────
+        // FullCentroidal can track an **absolute (x, y, yaw) goal** in
+        // the world frame. After a lateral push, the recomputed cmd
+        // pulls the body back to the goal instead of leaving it offset
+        // — the legged_control `goalToTargetTrajectories` equivalent.
+        ui.separator();
+        let is_fullc = matches!(self.gait_mode, quadruped_gait::GaitMode::FullCentroidal);
+        ui.add_enabled_ui(is_fullc, |ui| {
+            ui.label(
+                egui::RichText::new("Goal-pose mode (FullCentroidal only)")
+                    .strong()
+                    .small(),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "Absolute world-frame target. After a disturbance, \
+                     the body actively recovers to (x, y) — equivalent \
+                     to legged_control's /move_base_simple/goal path.",
+                )
+                .small()
+                .weak(),
+            );
+            ui.horizontal(|ui| {
+                ui.label("x:");
+                ui.add(egui::DragValue::new(&mut self.gait_goal_x_m).speed(0.05).suffix(" m"));
+                ui.label("y:");
+                ui.add(egui::DragValue::new(&mut self.gait_goal_y_m).speed(0.05).suffix(" m"));
+                ui.label("yaw:");
+                ui.add(
+                    egui::DragValue::new(&mut self.gait_goal_yaw_rad)
+                        .speed(0.05)
+                        .suffix(" rad"),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label("max v:");
+                ui.add(
+                    egui::DragValue::new(&mut self.gait_goal_max_v_m_s)
+                        .speed(0.01)
+                        .range(0.01..=1.0)
+                        .suffix(" m/s"),
+                );
+                ui.label("max wz:");
+                ui.add(
+                    egui::DragValue::new(&mut self.gait_goal_max_wz_rad_s)
+                        .speed(0.05)
+                        .range(0.05..=3.0)
+                        .suffix(" rad/s"),
+                );
+            });
+            ui.horizontal(|ui| {
+                let activate = ui
+                    .button("🎯 Set goal")
+                    .on_hover_text(
+                        "Activate goal-pose mode with the values above. \
+                         While active, the controller drives the body \
+                         toward (x, y, yaw) and actively recovers from \
+                         lateral disturbances. Calling D-pad or the \
+                         velocity sliders implicitly clears the goal.",
+                    )
+                    .clicked();
+                let clear = ui
+                    .add_enabled(self.gait_goal_pose_active, egui::Button::new("✕ Clear"))
+                    .on_hover_text(
+                        "Stop tracking the goal and return to velocity \
+                         (cmd_vel) mode. The last velocity command is \
+                         kept; press a D-pad button or move the \
+                         velocity sliders to issue a new one.",
+                    )
+                    .clicked();
+                if activate {
+                    if let Some(gc) = self.gait_controller.as_mut() {
+                        gc.set_goal_pose_world(quadruped_gait::GoalPoseWorld {
+                            x_m: self.gait_goal_x_m as f64,
+                            y_m: self.gait_goal_y_m as f64,
+                            yaw_rad: self.gait_goal_yaw_rad as f64,
+                            max_v_m_s: self.gait_goal_max_v_m_s as f64,
+                            max_wz_rad_s: self.gait_goal_max_wz_rad_s as f64,
+                            position_tolerance_m: 0.02,
+                            yaw_tolerance_rad: 0.05,
+                        });
+                        self.gait_goal_pose_active = true;
+                        self.status_message = format!(
+                            "Goal-pose mode → ({:+.2}, {:+.2}, {:+.2}) max_v={:.2}",
+                            self.gait_goal_x_m,
+                            self.gait_goal_y_m,
+                            self.gait_goal_yaw_rad,
+                            self.gait_goal_max_v_m_s,
+                        );
+                    }
+                }
+                if clear {
+                    if let Some(gc) = self.gait_controller.as_mut() {
+                        gc.clear_goal_pose();
+                        self.gait_goal_pose_active = false;
+                        self.status_message =
+                            "Goal-pose mode cleared → cmd_vel mode".into();
+                    }
+                }
+                // Active-state indicator. We also poll the controller
+                // each frame so a script clearing the goal via
+                // `gait_clear_goal_pose` reflects here.
+                let live_active = self
+                    .gait_controller
+                    .as_ref()
+                    .and_then(|gc| gc.goal_pose_world())
+                    .is_some();
+                self.gait_goal_pose_active = live_active;
+                if live_active {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(120, 200, 120),
+                        "● goal mode active",
+                    );
+                } else {
+                    ui.colored_label(egui::Color32::GRAY, "○ cmd_vel mode");
+                }
+            });
+        });
+
         ui.horizontal(|ui| {
             if ui
                 .button("🔍 Auto-detect")
