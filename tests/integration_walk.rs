@@ -1688,19 +1688,31 @@ fn diag_external_force_robustness() {
     // interference. 0.175 is the pre-C2 legacy value;
     // 0.05 / 0.10 sample a gentler regime in case the legacy gain is
     // over-tuned for namiashi's lower mass/leg-length scale.
-    let modes: [(&str, GaitMode, bool, Option<(usize, usize)>, bool, bool, Option<f64>, bool); 12] = [
-        ("CHAMP open-loop",                 GaitMode::Champ, false, None, false, false, None, false),
-        ("SRBD MPC + WBC",                  GaitMode::Mpc, true,    None, false, false, None, false),
-        ("FullC default",                   GaitMode::FullCentroidal, true, None, false, false, None, false),
-        ("FullC h20 sqp3",                  GaitMode::FullCentroidal, true, Some((20, 3)), false, false, None, false),
-        ("FullC h10 sqp5",                  GaitMode::FullCentroidal, true, Some((10, 5)), false, false, None, false),
-        ("FullC + cap-pt 0.05",             GaitMode::FullCentroidal, true, None, false, false, Some(0.05),  false),
-        ("FullC + cap-pt 0.10",             GaitMode::FullCentroidal, true, None, false, false, Some(0.10),  false),
-        ("FullC + cap-pt 0.175",            GaitMode::FullCentroidal, true, None, false, false, Some(0.175), false),
-        ("FullC legged-parity",             GaitMode::FullCentroidal, true, None, false, true, None, false),
-        ("FullC parity + cap-pt 0.175",     GaitMode::FullCentroidal, true, None, false, true, Some(0.175), false),
-        ("FullC parity + nominal q_ref",    GaitMode::FullCentroidal, true, None, false, true, None, true),
-        ("FullC parity + cap-pt + nom-q",   GaitMode::FullCentroidal, true, None, false, true, Some(0.175), true),
+    // The "FullC + db {0.05/k_p=0.20, 0.05/0.30, 0.10/0.30}" rows are
+    // the **η-2** experiment: replace the linear `k · v_err` foothold
+    // shift with a deadband-gated steeper pulse so the swing leg can
+    // commit a 5+ cm lateral offset on a real 4 N push without the
+    // y-axis amplification seen at linear `k ≥ 0.10`. The linear
+    // baseline `k_linear = 0.05` is retained alongside the pulse so
+    // small disturbances still get a (gentle) response, but cycle-
+    // noise below `v_db` produces no foothold shift at all — that's
+    // what kills the cross-axis drift.
+    let modes: [(&str, GaitMode, bool, Option<(usize, usize)>, bool, bool, Option<f64>, bool, Option<(f64, f64)>); 15] = [
+        ("CHAMP open-loop",                 GaitMode::Champ, false, None, false, false, None, false, None),
+        ("SRBD MPC + WBC",                  GaitMode::Mpc, true,    None, false, false, None, false, None),
+        ("FullC default",                   GaitMode::FullCentroidal, true, None, false, false, None, false, None),
+        ("FullC h20 sqp3",                  GaitMode::FullCentroidal, true, Some((20, 3)), false, false, None, false, None),
+        ("FullC h10 sqp5",                  GaitMode::FullCentroidal, true, Some((10, 5)), false, false, None, false, None),
+        ("FullC + cap-pt 0.05",             GaitMode::FullCentroidal, true, None, false, false, Some(0.05),  false, None),
+        ("FullC + cap-pt 0.10",             GaitMode::FullCentroidal, true, None, false, false, Some(0.10),  false, None),
+        ("FullC + cap-pt 0.175",            GaitMode::FullCentroidal, true, None, false, false, Some(0.175), false, None),
+        ("FullC + db 0.05 / k_p 0.20",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.20, 0.05))),
+        ("FullC + db 0.05 / k_p 0.30",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.30, 0.05))),
+        ("FullC + db 0.10 / k_p 0.30",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.30, 0.10))),
+        ("FullC legged-parity",             GaitMode::FullCentroidal, true, None, false, true, None, false, None),
+        ("FullC parity + cap-pt 0.175",     GaitMode::FullCentroidal, true, None, false, true, Some(0.175), false, None),
+        ("FullC parity + nominal q_ref",    GaitMode::FullCentroidal, true, None, false, true, None, true, None),
+        ("FullC parity + cap-pt + nom-q",   GaitMode::FullCentroidal, true, None, false, true, Some(0.175), true, None),
     ];
 
     eprintln!();
@@ -1716,7 +1728,7 @@ fn diag_external_force_robustness() {
     eprintln!("        {}", "─".repeat(140));
 
     for (scen_label, force, torque) in &scenarios {
-        for (mode_label, mode, use_wbc, full_cfg_tweak, enable_foot_offset, enable_parity, cap_pt_override, use_nominal_q_ref) in &modes {
+        for (mode_label, mode, use_wbc, full_cfg_tweak, enable_foot_offset, enable_parity, cap_pt_override, use_nominal_q_ref, pulse_db) in &modes {
             // Fresh fixture per (mode, scenario) so disturbance windows
             // don't bleed across tests.
             let Some(common::StandFixture {
@@ -1735,6 +1747,15 @@ fn diag_external_force_robustness() {
             // tracks any future re-tuning of that constant.
             if let Some(gain) = cap_pt_override {
                 gc.set_capture_point_gain(*gain);
+            }
+            // η-2 experiment: nonlinear deadband + steeper-slope
+            // pulse branch. `Some((k_pulse, v_db))` activates it on
+            // top of whichever linear `k_capture` is in effect for
+            // this row (so the pulse row inherits the constructor's
+            // default linear gain unless `cap_pt_override` is also
+            // set).
+            if let Some((k_pulse, v_db)) = pulse_db {
+                gc.set_capture_point_pulse(*k_pulse, *v_db);
             }
             // Apply FullCentroidal-specific tuning when the row asks for it.
             if let Some((horizon, sqp)) = full_cfg_tweak {

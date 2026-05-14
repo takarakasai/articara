@@ -620,6 +620,20 @@ impl GaitController {
         self.inner.set_capture_point_gain(k);
     }
 
+    /// Configure the FullCentroidal controller's nonlinear pulse
+    /// branch of the capture-point feedback. `k_pulse` is the slope
+    /// applied to `(|v_err| − v_db) · sign(v_err)`; `v_db` is the
+    /// deadband below which the pulse contributes 0. No-op outside
+    /// FullCentroidal mode. See
+    /// [`quadruped_gait::mpc_controller::capture_point_step`].
+    pub fn set_capture_point_pulse(&mut self, k_pulse: f64, v_db: f64) {
+        self.inner.set_capture_point_pulse(k_pulse, v_db);
+    }
+
+    pub fn capture_point_pulse(&self) -> Option<(f64, f64)> {
+        self.inner.capture_point_pulse()
+    }
+
     /// Read the active SRBD MPC config. `None` when running CHAMP.
     pub fn srbd_mpc_config(
         &self,
