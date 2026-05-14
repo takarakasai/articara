@@ -1697,22 +1697,30 @@ fn diag_external_force_robustness() {
     // small disturbances still get a (gentle) response, but cycle-
     // noise below `v_db` produces no foothold shift at all — that's
     // what kills the cross-axis drift.
-    let modes: [(&str, GaitMode, bool, Option<(usize, usize)>, bool, bool, Option<f64>, bool, Option<(f64, f64)>); 15] = [
-        ("CHAMP open-loop",                 GaitMode::Champ, false, None, false, false, None, false, None),
-        ("SRBD MPC + WBC",                  GaitMode::Mpc, true,    None, false, false, None, false, None),
-        ("FullC default",                   GaitMode::FullCentroidal, true, None, false, false, None, false, None),
-        ("FullC h20 sqp3",                  GaitMode::FullCentroidal, true, Some((20, 3)), false, false, None, false, None),
-        ("FullC h10 sqp5",                  GaitMode::FullCentroidal, true, Some((10, 5)), false, false, None, false, None),
-        ("FullC + cap-pt 0.05",             GaitMode::FullCentroidal, true, None, false, false, Some(0.05),  false, None),
-        ("FullC + cap-pt 0.10",             GaitMode::FullCentroidal, true, None, false, false, Some(0.10),  false, None),
-        ("FullC + cap-pt 0.175",            GaitMode::FullCentroidal, true, None, false, false, Some(0.175), false, None),
-        ("FullC + db 0.05 / k_p 0.20",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.20, 0.05))),
-        ("FullC + db 0.05 / k_p 0.30",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.30, 0.05))),
-        ("FullC + db 0.10 / k_p 0.30",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.30, 0.10))),
-        ("FullC legged-parity",             GaitMode::FullCentroidal, true, None, false, true, None, false, None),
-        ("FullC parity + cap-pt 0.175",     GaitMode::FullCentroidal, true, None, false, true, Some(0.175), false, None),
-        ("FullC parity + nominal q_ref",    GaitMode::FullCentroidal, true, None, false, true, None, true, None),
-        ("FullC parity + cap-pt + nom-q",   GaitMode::FullCentroidal, true, None, false, true, Some(0.175), true, None),
+    // "FullC parity + trans {0.05, 0.10}" are the **C1** experiment:
+    // GaitConfig::transition_fraction > 0 ramps the per-leg GRF
+    // reference at touchdown / lift-off (a soft cost-side smoother;
+    // stance no-slip stays active). Parity is on because the ramp
+    // needs per-step stance sub-fractions — legacy path uses a
+    // mid-stance proxy that always yields weight 1.0.
+    let modes: [(&str, GaitMode, bool, Option<(usize, usize)>, bool, bool, Option<f64>, bool, Option<(f64, f64)>, f64); 17] = [
+        ("CHAMP open-loop",                 GaitMode::Champ, false, None, false, false, None, false, None, 0.0),
+        ("SRBD MPC + WBC",                  GaitMode::Mpc, true,    None, false, false, None, false, None, 0.0),
+        ("FullC default",                   GaitMode::FullCentroidal, true, None, false, false, None, false, None, 0.0),
+        ("FullC h20 sqp3",                  GaitMode::FullCentroidal, true, Some((20, 3)), false, false, None, false, None, 0.0),
+        ("FullC h10 sqp5",                  GaitMode::FullCentroidal, true, Some((10, 5)), false, false, None, false, None, 0.0),
+        ("FullC + cap-pt 0.05",             GaitMode::FullCentroidal, true, None, false, false, Some(0.05),  false, None, 0.0),
+        ("FullC + cap-pt 0.10",             GaitMode::FullCentroidal, true, None, false, false, Some(0.10),  false, None, 0.0),
+        ("FullC + cap-pt 0.175",            GaitMode::FullCentroidal, true, None, false, false, Some(0.175), false, None, 0.0),
+        ("FullC + db 0.05 / k_p 0.20",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.20, 0.05)), 0.0),
+        ("FullC + db 0.05 / k_p 0.30",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.30, 0.05)), 0.0),
+        ("FullC + db 0.10 / k_p 0.30",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.30, 0.10)), 0.0),
+        ("FullC legged-parity",             GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.0),
+        ("FullC parity + cap-pt 0.175",     GaitMode::FullCentroidal, true, None, false, true, Some(0.175), false, None, 0.0),
+        ("FullC parity + nominal q_ref",    GaitMode::FullCentroidal, true, None, false, true, None, true, None, 0.0),
+        ("FullC parity + cap-pt + nom-q",   GaitMode::FullCentroidal, true, None, false, true, Some(0.175), true, None, 0.0),
+        ("FullC parity + trans 0.05",       GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.05),
+        ("FullC parity + trans 0.10",       GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.10),
     ];
 
     eprintln!();
@@ -1728,7 +1736,7 @@ fn diag_external_force_robustness() {
     eprintln!("        {}", "─".repeat(140));
 
     for (scen_label, force, torque) in &scenarios {
-        for (mode_label, mode, use_wbc, full_cfg_tweak, enable_foot_offset, enable_parity, cap_pt_override, use_nominal_q_ref, pulse_db) in &modes {
+        for (mode_label, mode, use_wbc, full_cfg_tweak, enable_foot_offset, enable_parity, cap_pt_override, use_nominal_q_ref, pulse_db, transition_fraction) in &modes {
             // Fresh fixture per (mode, scenario) so disturbance windows
             // don't bleed across tests.
             let Some(common::StandFixture {
@@ -1737,7 +1745,10 @@ fn diag_external_force_robustness() {
                 mut sim,
             }) = common::build_namiashi_stand_fixture_misa() else { continue; };
 
-            let cfg = GaitConfig::trot();
+            // C1: opt into the GRF-reference transition ramp via
+            // GaitConfig::transition_fraction. Default 0.0 leaves the
+            // legacy even-split GRF behaviour untouched.
+            let cfg = GaitConfig::trot().with_transition_fraction(*transition_fraction);
             let mut gc = GaitController::build(&robot, kin.clone(), cfg, *mode)
                 .expect("GaitController::build");
             // Per-row override (α / η experiments) overrides the
