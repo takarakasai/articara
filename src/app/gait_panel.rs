@@ -525,6 +525,129 @@ impl ArticaraApp {
             });
         });
 
+        // ── Experimental flags ────────────────────────────────────────────
+        // Research toggles that landed during the 2026-05 session.
+        // Default values are tuned so the panel matches the
+        // controller's behaviour at construction time; toggling here
+        // pushes the change into the live controller. Hover each row
+        // for the "what / why" summary.
+        ui.separator();
+        ui.add_enabled_ui(is_fullc, |ui| {
+            ui.label(
+                egui::RichText::new("Experimental flags (FullCentroidal only)")
+                    .strong()
+                    .small(),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "Research toggles from the external-force robustness \
+                     experiments. Most are off by default; hover for the \
+                     bench summary of each.",
+                )
+                .small()
+                .weak(),
+            );
+
+            // Poll live state so the panel reflects whatever the
+            // controller currently holds (script / test code may have
+            // toggled them out-of-band).
+            if let Some(gc) = self.gait_controller.as_ref() {
+                if let Some(p) = gc.legged_control_parity() {
+                    self.gait_exp_legged_control_parity = p;
+                }
+                if let Some(p) = gc.use_mpc_predicted_footstep() {
+                    self.gait_exp_use_mpc_predicted_footstep = p;
+                }
+                let cfg = gc.config();
+                self.gait_exp_transition_fraction = cfg.transition_fraction as f32;
+                self.gait_exp_transition_enforce_constraint = cfg.transition_enforce_constraint;
+            }
+
+            // legged_control parity (per-step phase + swing v_z constraint).
+            let parity_resp = ui
+                .checkbox(
+                    &mut self.gait_exp_legged_control_parity,
+                    "legged_control parity",
+                )
+                .on_hover_text(
+                    "Per-step phase projection + NormalVelocityConstraintCppAd \
+                     analogue (swing leg vertical foot velocity equality). \
+                     Bench note: didn't fix lateral 4N+ fall on its own \
+                     (cap-pt 0.05 did). Kept for A/B and as the prerequisite \
+                     for transition_fraction below.",
+                );
+            if parity_resp.changed() {
+                if let Some(gc) = self.gait_controller.as_mut() {
+                    gc.set_legged_control_parity(self.gait_exp_legged_control_parity);
+                }
+            }
+
+            // transition_fraction slider (C1, cost-side GRF ramp).
+            ui.horizontal(|ui| {
+                ui.label("transition_fraction:");
+                let resp = ui.add(
+                    egui::Slider::new(&mut self.gait_exp_transition_fraction, 0.0..=0.30)
+                        .fixed_decimals(2),
+                );
+                if resp.changed() {
+                    if let Some(gc) = self.gait_controller.as_mut() {
+                        let mut new_cfg = gc.config().clone();
+                        new_cfg.transition_fraction = self.gait_exp_transition_fraction as f64;
+                        gc.set_config(new_cfg);
+                    }
+                }
+            }).response.on_hover_text(
+                "C1 experiment: ramps the per-leg GRF reference at touchdown / \
+                 lift-off. By itself (cost-side) bench was bit-exact identical \
+                 to off — `r_diag[GRF]` is too small to make the MPC track the \
+                 ramp. Pair with the next checkbox for the real effect.",
+            );
+
+            // transition_enforce_constraint (C1-2, constraint-side hard f_max).
+            let enforce_resp = ui
+                .checkbox(
+                    &mut self.gait_exp_transition_enforce_constraint,
+                    "transition: enforce as hard constraint (C1-2)",
+                )
+                .on_hover_text(
+                    "C1-2: ramps the per-leg `max_normal_force` upper bound at \
+                     touchdown / lift-off as a HARD QP inequality. Bench: \
+                     lateral 6N peak roll −30 %, forward 6N peak |dy| −42 % \
+                     at trans_fraction = 0.05. Off when transition_fraction = 0.",
+                );
+            if enforce_resp.changed() {
+                if let Some(gc) = self.gait_controller.as_mut() {
+                    let mut new_cfg = gc.config().clone();
+                    new_cfg.transition_enforce_constraint =
+                        self.gait_exp_transition_enforce_constraint;
+                    gc.set_config(new_cfg);
+                }
+            }
+
+            // use_mpc_predicted_footstep (P2).
+            let pred_resp = ui
+                .checkbox(
+                    &mut self.gait_exp_use_mpc_predicted_footstep,
+                    "MPC-predicted footstep (P2)",
+                )
+                .on_hover_text(
+                    "Replaces cap-pt feedback with a footstep correction \
+                     derived from the MPC's predicted base trajectory \
+                     (legged_control SwingTrajectoryPlanner analogue). Bench: \
+                     **made lateral push worse** because articara's MPC \
+                     doesn't optimise foot XY — the predicted base reflects \
+                     sliding, not restoring. Kept as a documented negative \
+                     result; the real fix is A1 (MPC state expansion).",
+                );
+            if pred_resp.changed() {
+                if let Some(gc) = self.gait_controller.as_mut() {
+                    gc.set_use_mpc_predicted_footstep(
+                        self.gait_exp_use_mpc_predicted_footstep,
+                    );
+                }
+            }
+        });
+
         ui.horizontal(|ui| {
             if ui
                 .button("🔍 Auto-detect")

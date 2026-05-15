@@ -744,6 +744,16 @@ pub struct ArticaraApp {
     gait_goal_max_v_m_s: f32,
     gait_goal_max_wz_rad_s: f32,
     gait_goal_pose_active: bool,
+    /// Experimental research flags exposed via the gait panel's
+    /// "Experimental flags" sub-section. Each holds the desired
+    /// **panel** state; on edit the panel pushes the value into the
+    /// active gait controller (and, for GaitConfig fields, into the
+    /// controller's config + phase generator). When no controller is
+    /// active the panel state is just held until the next build.
+    gait_exp_transition_fraction: f32,
+    gait_exp_transition_enforce_constraint: bool,
+    gait_exp_use_mpc_predicted_footstep: bool,
+    gait_exp_legged_control_parity: bool,
     /// When `true`, the next viewport left-click sets [`Self::loop_closure_link_b`]
     /// instead of doing the usual JointDrive selection. Toggled on by the
     /// "👆 Pick B from viewport" button in the Loop Closures panel and
@@ -1024,6 +1034,10 @@ impl ArticaraApp {
             gait_goal_max_v_m_s: 0.15,
             gait_goal_max_wz_rad_s: 0.5,
             gait_goal_pose_active: false,
+            gait_exp_transition_fraction: 0.0,
+            gait_exp_transition_enforce_constraint: false,
+            gait_exp_use_mpc_predicted_footstep: false,
+            gait_exp_legged_control_parity: false,
             gait_dpad_was_active: false,
             loop_closure_picking_b: false,
             loop_closure_link_b: None,
