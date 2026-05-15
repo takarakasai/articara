@@ -1992,6 +1992,373 @@ fn diag_external_force_robustness() {
     }
 }
 
+/// **max_step_length sweep on lateral push recovery.**
+///
+/// `GaitConfig::max_step_length_m` caps how far each footstep can be
+/// offset from its nominal location, in both x and y. At the default
+/// `0.10 m` (= 5 cm half-stride radius) the swing leg can only chase
+/// the body laterally up to 5 cm per cycle — but a lateral 6 N push
+/// gives the body ~0.5 m/s sliding velocity, which over a 0.2 s swing
+/// reaches ~10 cm before the foot can catch up. Result: foot lands
+/// inside the body's lateral displacement, CoM ends up outside the
+/// support polygon, body topples.
+///
+/// This sweep tries widening the step length to see whether the
+/// physical recovery margin opens up. Range bounded by namiashi's
+/// leg geometry (upper + lower ≈ 0.36 m, but reachable workspace
+/// shrinks fast past ~50 % of leg length due to knee-joint limits and
+/// self-collision risk).
+#[test]
+#[ignore = "max_step_length sweep — run with --ignored"]
+fn diag_max_step_length_lateral_recovery() {
+    let common::StandFixture {
+        robot, kin: _, sim,
+    } = match common::build_namiashi_stand_fixture_misa() {
+        Some(f) => f,
+        None => return,
+    };
+    drop(robot);
+    drop(sim);
+
+    let cmd = VelocityCmd { vx: 0.15, vy: 0.0, wz: 0.0 };
+    let pre_force_s = 3.0;
+    let force_duration_s = 0.2;
+    let post_force_s = 4.0;
+    let total_s = pre_force_s + force_duration_s + post_force_s;
+
+    let scenarios: [(&str, [f64; 3]); 3] = [
+        ("lateral +y 2 N", [0.0, 2.0, 0.0]),
+        ("lateral +y 4 N", [0.0, 4.0, 0.0]),
+        ("lateral +y 6 N", [0.0, 6.0, 0.0]),
+    ];
+    // (max_step_length, use_mpc_predicted_footstep, label).
+    // 0.10 is trot() default. The third row enables the
+    // **MPC-predicted footstep** path (legged_control-style) — foot
+    // placement reads `last_solution.predicted_states[~swing_steps]`
+    // and snaps to the MPC's planned base trajectory. The wider
+    // `max_step_length = 0.15` gives that path room to commit a real
+    // lateral footstep without clamping.
+    let variants: [(f64, bool, &str); 4] = [
+        (0.10, false, "cap-pt baseline"),
+        (0.15, false, "wider step only"),
+        (0.10, true,  "MPC-pred footstep"),
+        (0.15, true,  "MPC-pred + wider"),
+    ];
+
+    eprintln!();
+    eprintln!(
+        "=== max_step_length sweep on lateral push (cmd vx={:.2} m/s, push at t={}s for {}s, observe {}s) ===",
+        cmd.vx, pre_force_s, force_duration_s, post_force_s,
+    );
+    eprintln!(
+        "        {:<28} | peak |dy| | end |dy| | peak roll | peak pitch | min_z  | result",
+        "Mode (scenario)",
+    );
+    eprintln!("        {}", "─".repeat(115));
+
+    for (scen_label, force) in &scenarios {
+        for (max_step, use_mpc_pred, variant_label) in &variants {
+            let Some(common::StandFixture {
+                mut robot,
+                kin,
+                mut sim,
+            }) = common::build_namiashi_stand_fixture_misa() else { continue; };
+
+            let cfg = GaitConfig::trot().with_max_step_length(*max_step);
+            let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::FullCentroidal)
+                .expect("GaitController::build");
+            if *use_mpc_pred {
+                gc.set_use_mpc_predicted_footstep(true);
+            }
+
+            let mut wbc_pipeline = WbcPipeline::new(&robot, common::default_foot_links());
+            if let Some(full_cfg) = gc.full_centroidal_mpc_config() {
+                wbc_pipeline.mass_kg = full_cfg.mass_kg;
+                wbc_pipeline.centroidal_inertia_body = Some(full_cfg.centroidal_inertia_body);
+                wbc_pipeline.com_offset_body = full_cfg.com_offset_body;
+            }
+
+            let n_steps = (total_s / DT) as usize;
+            let burn_in_steps = (WALK_BURN_IN_S / DT) as usize;
+            let force_start_step = ((WALK_BURN_IN_S + pre_force_s) / DT) as usize;
+            let force_applied_already = std::cell::Cell::new(false);
+
+            let mut peak_dy = 0.0_f64;
+            let mut peak_roll = 0.0_f64;
+            let mut peak_pitch = 0.0_f64;
+            let mut min_z = f64::INFINITY;
+            let mut body_y_end = 0.0;
+
+            gc.enable();
+            for k in 0..n_steps {
+                if k == burn_in_steps {
+                    gc.set_velocity_cmd(cmd);
+                }
+                if k == force_start_step && !force_applied_already.get() {
+                    sim.apply_external_force(
+                        &robot.root_link, *force, [0.0; 3], force_duration_s,
+                    );
+                    force_applied_already.set(true);
+                }
+                let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+                let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+                gc.set_body_state_observed(
+                    Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+                    Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+                );
+                let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+                let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+                gc.set_body_pose_observed(
+                    yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
+                wbc_pipeline.weights = quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd());
+
+                let (out, targets, _) = gc.tick(DT);
+                for (idx, q) in targets { sim.set_position_target(idx, q); }
+                if k >= burn_in_steps {
+                    let f_grf_world = gc.predicted_grfs()
+                        .map(|sol| sol.grfs_first_step)
+                        .unwrap_or([Vector3::zeros(); 4]);
+                    let cmd_w = gc.velocity_cmd();
+                    let v_cmd_body = Vector3::new(cmd_w.vx, cmd_w.vy, 0.0);
+                    let foot_links_str: [&str; 4] = [
+                        wbc_pipeline.foot_links[0].as_str(),
+                        wbc_pipeline.foot_links[1].as_str(),
+                        wbc_pipeline.foot_links[2].as_str(),
+                        wbc_pipeline.foot_links[3].as_str(),
+                    ];
+                    let force_z = sim.contact_force_per_foot(&foot_links_str);
+                    let nominal_phases = [out.legs[0].phase, out.legs[1].phase,
+                                          out.legs[2].phase, out.legs[3].phase];
+                    let corrected = ContactDrivenPhase::apply_correction(
+                        &nominal_phases, force_z, 5.0, 0.0,
+                    );
+                    let contact_flag = [corrected[0].is_stance, corrected[1].is_stance,
+                                        corrected[2].is_stance, corrected[3].is_stance];
+                    let taus = wbc_pipeline.solve(
+                        &robot, &sim, &out, gc.kinematics(),
+                        gc.joint_indices(), gc.joint_signs(),
+                        &v_cmd_body, cmd_w.wz,
+                        &Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+                        &Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+                        &f_grf_world, contact_flag, DT,
+                    );
+                    for (ji, &tau) in taus.iter().enumerate() {
+                        sim.set_torque_feedforward(ji, tau);
+                    }
+                } else {
+                    for ji in 0..robot.joints.len() {
+                        sim.set_torque_feedforward(ji, 0.0);
+                    }
+                }
+                sim.step(&mut robot, DT, true);
+
+                if k >= burn_in_steps {
+                    if let Some(p) = sim.body_world_position(&robot.root_link) {
+                        peak_dy = peak_dy.max(p[1].abs());
+                        min_z = min_z.min(p[2]);
+                        body_y_end = p[1];
+                    }
+                    if let Some(quat) = sim.body_world_orientation(&robot.root_link) {
+                        let euler = quat.euler_angles();
+                        peak_roll = peak_roll.max(euler.0.abs());
+                        peak_pitch = peak_pitch.max(euler.1.abs());
+                    }
+                }
+            }
+
+            let fell = min_z < FALL_THRESHOLD_Z;
+            let result = if fell { "✗ fell" } else { "✓ no fall" };
+            eprintln!(
+                "        {:<32} | {:>9.3} | {:>8.3} | {:>9.3} | {:>10.3} | {:>5.3} | {}",
+                format!("step={:.2} {} ({})", max_step, variant_label, scen_label),
+                peak_dy, body_y_end.abs(), peak_roll, peak_pitch, min_z, result,
+            );
+        }
+        eprintln!("        {}", "─".repeat(115));
+    }
+}
+
+/// **Friction-cone utilization diagnostic** — does the MPC ever
+/// approach the `|f_xy| ≤ μ·f_z` boundary during external-force
+/// scenarios?
+///
+/// If the cone is **never binding** (peak ratio stays well below 1.0),
+/// then the A3 candidate (soft friction cone with slack penalty) won't
+/// change the MPC's solution — the cone isn't the limiting factor,
+/// the geometry / footstep reach is. In that case A3 should be
+/// skipped and B3 (warm-start) is the next actionable item.
+///
+/// For each scenario, runs the same fixture as
+/// `diag_external_force_robustness` but extracts the per-leg per-tick
+/// `|f_xy| / (μ·f_z)` ratio from `gc.predicted_grfs()` and reports
+/// the **peak** across stance legs over the post-force observation
+/// window. The pre-force walk is allowed to settle first so the
+/// stance-leg cone activity reflects the steady-state response, not
+/// the burn-in.
+#[test]
+#[ignore = "friction-cone utilization probe — run with --ignored"]
+fn diag_friction_cone_utilization() {
+    let common::StandFixture {
+        robot, kin: _, sim,
+    } = match common::build_namiashi_stand_fixture_misa() {
+        Some(f) => f,
+        None => return,
+    };
+    drop(robot);
+    drop(sim);
+
+    let cmd = VelocityCmd { vx: 0.15, vy: 0.0, wz: 0.0 };
+    let pre_force_s = 3.0;
+    let force_duration_s = 0.2;
+    let post_force_s = 4.0;
+    let total_s = pre_force_s + force_duration_s + post_force_s;
+
+    let scenarios: [(&str, [f64; 3]); 4] = [
+        ("baseline (no push)", [0.0; 3]),
+        ("lateral +y 2 N",     [0.0,  2.0, 0.0]),
+        ("lateral +y 4 N",     [0.0,  4.0, 0.0]),
+        ("lateral +y 6 N",     [0.0,  6.0, 0.0]),
+    ];
+
+    eprintln!();
+    eprintln!(
+        "=== Friction-cone utilization (cmd vx={:.2} m/s) — peak |f_xy|/(μ·f_z) across stance legs ===",
+        cmd.vx,
+    );
+    eprintln!(
+        "        {:<22} | peak ratio (post-force) | peak |f_xy| (N) | peak f_z (N) | μ·f_z at peak (N)",
+        "Scenario",
+    );
+    eprintln!("        {}", "─".repeat(110));
+
+    for (scen_label, force) in &scenarios {
+        let Some(common::StandFixture {
+            mut robot,
+            kin,
+            mut sim,
+        }) = common::build_namiashi_stand_fixture_misa() else { continue; };
+
+        let cfg = GaitConfig::trot();
+        let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::FullCentroidal)
+            .expect("GaitController::build");
+        let mu = gc.full_centroidal_mpc_config()
+            .map(|c| c.friction_mu)
+            .unwrap_or(0.5);
+        let mut wbc_pipeline = WbcPipeline::new(&robot, common::default_foot_links());
+        if let Some(full_cfg) = gc.full_centroidal_mpc_config() {
+            wbc_pipeline.mass_kg = full_cfg.mass_kg;
+            wbc_pipeline.centroidal_inertia_body = Some(full_cfg.centroidal_inertia_body);
+            wbc_pipeline.com_offset_body = full_cfg.com_offset_body;
+        }
+
+        let n_steps = (total_s / DT) as usize;
+        let burn_in_steps = (WALK_BURN_IN_S / DT) as usize;
+        let force_start_step = ((WALK_BURN_IN_S + pre_force_s) / DT) as usize;
+        let force_end_step = force_start_step + (force_duration_s / DT) as usize;
+        let force_applied_already = std::cell::Cell::new(false);
+
+        let mut peak_ratio = 0.0_f64;
+        let mut peak_fxy_at_peak = 0.0_f64;
+        let mut peak_fz_at_peak = 0.0_f64;
+        let mut mu_fz_at_peak = 0.0_f64;
+
+        gc.enable();
+        for k in 0..n_steps {
+            if k == burn_in_steps {
+                gc.set_velocity_cmd(cmd);
+            }
+            if k == force_start_step && !force_applied_already.get() && force != &[0.0; 3] {
+                sim.apply_external_force(
+                    &robot.root_link, *force, [0.0; 3], force_duration_s,
+                );
+                force_applied_already.set(true);
+            }
+            let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            gc.set_body_state_observed(
+                Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+                Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+            );
+            let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+            let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+            gc.set_body_pose_observed(
+                yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
+            wbc_pipeline.weights = quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd());
+
+            let (out, targets, _) = gc.tick(DT);
+            for (idx, q) in targets { sim.set_position_target(idx, q); }
+            if k >= burn_in_steps {
+                let f_grf_world = gc.predicted_grfs()
+                    .map(|sol| sol.grfs_first_step)
+                    .unwrap_or([Vector3::zeros(); 4]);
+                let cmd_w = gc.velocity_cmd();
+                let v_cmd_body = Vector3::new(cmd_w.vx, cmd_w.vy, 0.0);
+                let foot_links_str: [&str; 4] = [
+                    wbc_pipeline.foot_links[0].as_str(),
+                    wbc_pipeline.foot_links[1].as_str(),
+                    wbc_pipeline.foot_links[2].as_str(),
+                    wbc_pipeline.foot_links[3].as_str(),
+                ];
+                let force_z = sim.contact_force_per_foot(&foot_links_str);
+                let nominal_phases = [out.legs[0].phase, out.legs[1].phase,
+                                      out.legs[2].phase, out.legs[3].phase];
+                let corrected = ContactDrivenPhase::apply_correction(
+                    &nominal_phases, force_z, 5.0, 0.0,
+                );
+                let contact_flag = [corrected[0].is_stance, corrected[1].is_stance,
+                                    corrected[2].is_stance, corrected[3].is_stance];
+                let taus = wbc_pipeline.solve(
+                    &robot, &sim, &out, gc.kinematics(),
+                    gc.joint_indices(), gc.joint_signs(),
+                    &v_cmd_body, cmd_w.wz,
+                    &Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
+                    &Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+                    &f_grf_world, contact_flag, DT,
+                );
+                for (ji, &tau) in taus.iter().enumerate() {
+                    sim.set_torque_feedforward(ji, tau);
+                }
+            } else {
+                for ji in 0..robot.joints.len() {
+                    sim.set_torque_feedforward(ji, 0.0);
+                }
+            }
+            sim.step(&mut robot, DT, true);
+
+            // Cone utilization probe — only after the impulse has been
+            // delivered, so the steady-state walking baseline doesn't
+            // dilute the peak.
+            if k >= force_end_step {
+                if let Some(sol) = gc.predicted_grfs() {
+                    for leg in 0..4 {
+                        let f = sol.grfs_first_step[leg];
+                        if f.z < 1e-3 {
+                            continue; // swing leg
+                        }
+                        let f_xy = (f.x * f.x + f.y * f.y).sqrt();
+                        let limit = mu * f.z;
+                        if limit < 1e-6 {
+                            continue;
+                        }
+                        let ratio = f_xy / limit;
+                        if ratio > peak_ratio {
+                            peak_ratio = ratio;
+                            peak_fxy_at_peak = f_xy;
+                            peak_fz_at_peak = f.z;
+                            mu_fz_at_peak = limit;
+                        }
+                    }
+                }
+            }
+        }
+
+        eprintln!(
+            "        {:<22} | {:>22.3} | {:>14.3} | {:>11.3} | {:>17.3}",
+            scen_label, peak_ratio, peak_fxy_at_peak, peak_fz_at_peak, mu_fz_at_peak,
+        );
+    }
+}
+
 /// Goal-pose mode lateral recovery A/B.
 ///
 /// The main `diag_external_force_robustness` benchmark uses cmd_vel

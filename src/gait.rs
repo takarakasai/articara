@@ -654,6 +654,17 @@ impl GaitController {
         self.inner.goal_pose_world()
     }
 
+    /// Toggle the "use MPC-predicted base for footstep target" path
+    /// on the FullCentroidal controller (legged_control-style foot
+    /// placement against MPC's body prediction). No-op outside
+    /// FullCentroidal mode.
+    pub fn set_use_mpc_predicted_footstep(&mut self, enable: bool) {
+        self.inner.set_use_mpc_predicted_footstep(enable);
+    }
+    pub fn use_mpc_predicted_footstep(&self) -> Option<bool> {
+        self.inner.use_mpc_predicted_footstep()
+    }
+
     /// Read the active SRBD MPC config. `None` when running CHAMP.
     pub fn srbd_mpc_config(
         &self,
