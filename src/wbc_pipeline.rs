@@ -183,6 +183,8 @@ impl WbcPipeline {
             foot_misarta_idx,
             swing_kp: 80.0,
             swing_kd: 8.0,
+            // Match the sim's ground geom friction (= 0.5) so WBC and
+            // MPC agree on the friction limit.
             friction_mu: 0.5,
             mass_kg: 9.0,
             inertia_diag_body: na::Vector3::new(0.07, 0.26, 0.242),

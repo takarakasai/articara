@@ -599,6 +599,20 @@ pub fn export_mjcf_with_options(
 
     s.push_str("  <compiler angle=\"radian\"/>\n\n");
 
+    // Sim-side default contact friction. MuJoCo's built-in default
+    // (μ_sliding = 1.0) is artificially high — it overshoots typical
+    // real-robot rubber-on-lab-floor values (0.4 – 0.7) and creates a
+    // mismatch with the MPC's `friction_mu` (0.5 by design here).
+    // Setting `<default><geom friction="0.5 0.005 0.0001"/></default>`
+    // makes every emitted geom — ground plane, foot collisions, link
+    // colliders — start at μ_sliding = 0.5. Contact pairs combine via
+    // MuJoCo's default policy (per-axis `max` of the two geoms'
+    // friction values), so foot-on-ground at 0.5 both ends gives a
+    // contact μ of 0.5 — exactly what the MPC plans against.
+    s.push_str("  <default>\n");
+    s.push_str("    <geom friction=\"0.5 0.005 0.0001\"/>\n");
+    s.push_str("  </default>\n\n");
+
     // Mesh path resolution: delegate to the shared helper so all three
     // exporters (MJCF / SDF / URDF) emit consistent paths and share a
     // single resolution rule for the various URI flavours
