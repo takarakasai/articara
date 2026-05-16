@@ -754,6 +754,16 @@ pub struct ArticaraApp {
     gait_exp_transition_enforce_constraint: bool,
     gait_exp_use_mpc_predicted_footstep: bool,
     gait_exp_legged_control_parity: bool,
+    /// A3: friction cone soft + slack (FullCentroidal MPC).
+    gait_exp_friction_cone_soft: bool,
+    /// A3: per-slack quadratic penalty.
+    gait_exp_friction_cone_slack_penalty: f32,
+    /// B3: MPC warm-start.
+    gait_exp_warm_start: bool,
+    /// A1: MPC-optimised footstep XY.
+    gait_exp_mpc_optimized_footstep: bool,
+    /// A1: foot-XY cost weight.
+    gait_exp_q_foot_xy_world: f32,
     /// When `true`, the next viewport left-click sets [`Self::loop_closure_link_b`]
     /// instead of doing the usual JointDrive selection. Toggled on by the
     /// "👆 Pick B from viewport" button in the Loop Closures panel and
@@ -1038,6 +1048,11 @@ impl ArticaraApp {
             gait_exp_transition_enforce_constraint: false,
             gait_exp_use_mpc_predicted_footstep: false,
             gait_exp_legged_control_parity: false,
+            gait_exp_friction_cone_soft: false,
+            gait_exp_friction_cone_slack_penalty: 1000.0,
+            gait_exp_warm_start: false,
+            gait_exp_mpc_optimized_footstep: false,
+            gait_exp_q_foot_xy_world: 500.0,
             gait_dpad_was_active: false,
             loop_closure_picking_b: false,
             loop_closure_link_b: None,

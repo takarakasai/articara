@@ -561,6 +561,12 @@ impl ArticaraApp {
                 let cfg = gc.config();
                 self.gait_exp_transition_fraction = cfg.transition_fraction as f32;
                 self.gait_exp_transition_enforce_constraint = cfg.transition_enforce_constraint;
+                self.gait_exp_friction_cone_soft = cfg.friction_cone_soft;
+                self.gait_exp_friction_cone_slack_penalty =
+                    cfg.friction_cone_slack_penalty as f32;
+                self.gait_exp_warm_start = cfg.warm_start;
+                self.gait_exp_mpc_optimized_footstep = cfg.mpc_optimized_footstep;
+                self.gait_exp_q_foot_xy_world = cfg.q_foot_xy_world as f32;
             }
 
             // legged_control parity (per-step phase + swing v_z constraint).
@@ -623,6 +629,119 @@ impl ArticaraApp {
                     gc.set_config(new_cfg);
                 }
             }
+
+            // friction_cone_soft (A3): replace pyramid hard constraint
+            // with slack-relaxed form + quadratic penalty.
+            let soft_resp = ui
+                .checkbox(
+                    &mut self.gait_exp_friction_cone_soft,
+                    "friction cone soft + slack (A3)",
+                )
+                .on_hover_text(
+                    "A3: relaxes the friction pyramid via per-(leg, step) \
+                     slack variables `s_x, s_y ≥ 0` with quadratic penalty \
+                     `λ · s²`. Useful at the pyramid corner (μ=0.5 lateral \
+                     4-6N regime) where the hard form returns AlmostSolved \
+                     or falls back to the reference. f_z bounds stay hard. \
+                     legged_control analogue: FrictionConeConstraint + \
+                     RelaxedBarrierPenalty.",
+                );
+            if soft_resp.changed() {
+                if let Some(gc) = self.gait_controller.as_mut() {
+                    let mut new_cfg = gc.config().clone();
+                    new_cfg.friction_cone_soft = self.gait_exp_friction_cone_soft;
+                    gc.set_config(new_cfg);
+                }
+            }
+            // A3 slack penalty slider.
+            ui.horizontal(|ui| {
+                ui.label("slack penalty:");
+                let resp = ui.add(
+                    egui::Slider::new(
+                        &mut self.gait_exp_friction_cone_slack_penalty,
+                        10.0..=10000.0,
+                    )
+                    .logarithmic(true)
+                    .fixed_decimals(0),
+                );
+                if resp.changed() {
+                    if let Some(gc) = self.gait_controller.as_mut() {
+                        let mut new_cfg = gc.config().clone();
+                        new_cfg.friction_cone_slack_penalty =
+                            self.gait_exp_friction_cone_slack_penalty as f64;
+                        gc.set_config(new_cfg);
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "Quadratic cost on each `s_i`. Larger → cone stays closer to \
+                 hard. Smaller → more slack budget under disturbance. Only \
+                 effective when A3 is on.",
+            );
+
+            // warm-start (B3).
+            let warm_resp = ui
+                .checkbox(&mut self.gait_exp_warm_start, "MPC warm-start (B3)")
+                .on_hover_text(
+                    "B3: seed each MPC tick's SQP iter 0 from the previous \
+                     tick's solved trajectory (shifted by one step) instead \
+                     of the gravity-balanced cmd reference. Same convergence \
+                     point at steady state, but fewer iterations to get \
+                     there — typical 2× speed-up on cmd-held workloads. \
+                     legged_control analogue: OCS2's solverObservation \
+                     warm-start.",
+                );
+            if warm_resp.changed() {
+                if let Some(gc) = self.gait_controller.as_mut() {
+                    let mut new_cfg = gc.config().clone();
+                    new_cfg.warm_start = self.gait_exp_warm_start;
+                    gc.set_config(new_cfg);
+                }
+            }
+
+            // mpc_optimized_footstep (A1).
+            let a1_resp = ui
+                .checkbox(
+                    &mut self.gait_exp_mpc_optimized_footstep,
+                    "MPC-optimised footstep XY (A1)",
+                )
+                .on_hover_text(
+                    "A1: adds a soft cost penalising the predicted foot-XY \
+                     vs the planner-supplied touchdown target. The MPC \
+                     deviates the swing-leg joint trajectory to land at \
+                     the target, self-consistently with its predicted base \
+                     motion. Closes the loop that P2 (above) couldn't.",
+                );
+            if a1_resp.changed() {
+                if let Some(gc) = self.gait_controller.as_mut() {
+                    let mut new_cfg = gc.config().clone();
+                    new_cfg.mpc_optimized_footstep = self.gait_exp_mpc_optimized_footstep;
+                    gc.set_config(new_cfg);
+                }
+            }
+            // A1 weight slider.
+            ui.horizontal(|ui| {
+                ui.label("q_foot_xy_world:");
+                let resp = ui.add(
+                    egui::Slider::new(&mut self.gait_exp_q_foot_xy_world, 10.0..=5000.0)
+                        .logarithmic(true)
+                        .fixed_decimals(0),
+                );
+                if resp.changed() {
+                    if let Some(gc) = self.gait_controller.as_mut() {
+                        let mut new_cfg = gc.config().clone();
+                        new_cfg.q_foot_xy_world = self.gait_exp_q_foot_xy_world as f64;
+                        gc.set_config(new_cfg);
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "Weight on the foot-XY tracking residual. Only active when \
+                 A1 is on. Higher → more aggressive footstep tracking, \
+                 may overshoot on jumpy planner targets.",
+            );
 
             // use_mpc_predicted_footstep (P2).
             let pred_resp = ui
