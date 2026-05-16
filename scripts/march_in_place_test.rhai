@@ -35,7 +35,9 @@ mj_async_print("[march-test] settle 1 s");
 mj_async_step_seconds(1.0);
 
 gait_setup();
-set_gait_mode("champ");
+set_gait_mode("mpc");
+set_pose_source("groundtruth");
+set_wbc_enabled(true);
 gait_start();
 mj_async_print("[march-test] gait started, cmd=0, 0.5 s stance");
 mj_async_step_seconds(0.5);

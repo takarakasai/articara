@@ -2768,10 +2768,11 @@ impl ArticaraApp {
             RobotFormat::Mjcf => {
                 let filename = format!("{base_name}.xml");
                 let output_path = dir.join(&filename);
-                match crate::mjcf::export_mjcf_to_file(model, &output_path) {
+                let xml = crate::mjcf::export_mjcf(model);
+                match std::fs::write(&output_path, &xml) {
                     Ok(()) => {
                         self.export_message =
-                            format!("✔ Exported MJCF to {} (with meshes)", output_path.display());
+                            format!("✔ Exported MJCF to {}", output_path.display());
                     }
                     Err(e) => {
                         self.export_message = format!("⚠ MJCF export failed: {e}");
