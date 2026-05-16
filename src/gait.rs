@@ -543,6 +543,16 @@ impl GaitController {
         inner.set_full_centroidal_mpc_config(
             auto_detect_full_centroidal_mpc_config(model, inner.kinematics()),
         );
+        // Re-apply the gait config so flags that the FullCentroidal
+        // controller mirrors onto its MPC config (A3 friction_cone_soft,
+        // B3 warm_start, A1 mpc_optimized_footstep / q_foot_xy_world)
+        // survive the `set_full_centroidal_mpc_config` overwrite above.
+        // Without this round-trip the inner controller holds the
+        // caller's GaitConfig but the MPC silently runs with the
+        // auto-detected defaults — every A1/A3/B3 toggle would be a
+        // no-op at build time.
+        let cfg_clone = inner.config().clone();
+        inner.set_config(cfg_clone);
         Ok(Self {
             inner,
             joint_indices,
