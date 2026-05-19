@@ -93,6 +93,7 @@ impl RobotModel {
                 visuals,
                 collisions,
                 inertial,
+                collision_enabled: true,
             });
         }
 
@@ -351,6 +352,7 @@ mod misa_load {
                 visuals,
                 collisions,
                 inertial,
+                collision_enabled: l.collision_enabled,
             });
         }
 
@@ -1239,6 +1241,7 @@ impl RobotModel {
                     ixx: 0.001, ixy: 0.0, ixz: 0.0,
                     iyy: 0.001, iyz: 0.0, izz: 0.001,
                 },
+                collision_enabled: true,
             }],
             joints: Vec::new(),
             link_map,
@@ -1308,6 +1311,7 @@ impl RobotModel {
                 ixx: 0.0001, ixy: 0.0, ixz: 0.0,
                 iyy: 0.0001, iyz: 0.0, izz: 0.0001,
             },
+            collision_enabled: true,
         });
         self.misarta_cache = None; // invalidate stale cache
         idx
@@ -2616,6 +2620,7 @@ mod misa_save {
                 inertial,
                 visual: visuals,
                 collision: collisions,
+                collision_enabled: link.collision_enabled,
             });
         }
 

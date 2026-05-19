@@ -90,6 +90,7 @@ pub fn import_sdf(path: &Path) -> Result<RobotModel, String> {
             visuals,
             collisions,
             inertial,
+            collision_enabled: true,
         });
     }
 
