@@ -652,6 +652,7 @@ pub fn import_usda_from_str(
             visuals,
             collisions,
             inertial,
+            collision_enabled: true,
         });
     }
 

@@ -127,17 +127,132 @@ impl ArticaraApp {
         let currently_colliding: std::collections::HashSet<(String, String)> =
             std::collections::HashSet::new();
 
-        egui::Window::new("🛡 Collision Pair Matrix")
+        // Per-link "collision enabled" snapshot (default true). The
+        // checkbox below mutates the model's `link.collision_enabled`
+        // field; we record the desired state in `link_collision_toggles`
+        // and apply after the closure to keep the borrow tidy.
+        let mut link_collision_toggles: Vec<(String, bool)> = Vec::new();
+        let link_collision_enabled: std::collections::HashMap<String, bool> = self
+            .model
+            .as_ref()
+            .map(|m| {
+                m.links
+                    .iter()
+                    .map(|l| (l.name.clone(), l.collision_enabled))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        egui::Window::new("🛡 Collision Settings")
             .open(&mut open)
-            .default_size([720.0, 520.0])
+            .default_size([780.0, 600.0])
             .resizable(true)
             .show(ctx, |ui| {
                 ui.label(
                     egui::RichText::new(
+                        "Collision Settings combines two controls:\n\
+                         (1) Per-link enable: turn whole links off so their \
+                         geoms render but skip every contact (MuJoCo \
+                         contype=0/conaffinity=0).\n\
+                         (2) Per-pair matrix: fine-grained exclusion of \
+                         specific link↔link pairs (MJCF <contact><exclude>).",
+                    )
+                    .small()
+                    .weak(),
+                );
+                ui.separator();
+
+                // ── Per-link collision-enable section ───────────────────
+                egui::CollapsingHeader::new("⛔ Per-link collision enable")
+                    .default_open(true)
+                    .id_salt("collision_per_link_enable")
+                    .show(ui, |ui| {
+                        let n_disabled = link_collision_enabled
+                            .values()
+                            .filter(|v| !**v)
+                            .count();
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}/{} links currently disabled",
+                                    n_disabled, link_names.len()
+                                ))
+                                .small()
+                                .weak(),
+                            );
+                            if ui.small_button("Enable all").clicked() {
+                                for name in &link_names {
+                                    if let Some(&cur) = link_collision_enabled.get(name) {
+                                        if !cur {
+                                            link_collision_toggles
+                                                .push((name.clone(), true));
+                                        }
+                                    }
+                                }
+                            }
+                            if ui.small_button("Disable all").clicked() {
+                                for name in &link_names {
+                                    if let Some(&cur) = link_collision_enabled.get(name) {
+                                        if cur {
+                                            link_collision_toggles
+                                                .push((name.clone(), false));
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                        egui::ScrollArea::vertical()
+                            .id_salt("link_enable_scroll")
+                            .max_height(160.0)
+                            .show(ui, |ui| {
+                                // 4-column grid so a 20-link model fits in
+                                // a few rows without endless vertical scroll.
+                                egui::Grid::new("link_enable_grid")
+                                    .num_columns(4)
+                                    .spacing([16.0, 2.0])
+                                    .show(ui, |ui| {
+                                        for (i, name) in link_names.iter().enumerate() {
+                                            let cur = link_collision_enabled
+                                                .get(name)
+                                                .copied()
+                                                .unwrap_or(true);
+                                            let mut next = cur;
+                                            ui.checkbox(
+                                                &mut next,
+                                                egui::RichText::new(name)
+                                                    .monospace()
+                                                    .small(),
+                                            )
+                                            .on_hover_text(if cur {
+                                                "Disable contacts: contype=0 conaffinity=0"
+                                            } else {
+                                                "Re-enable contacts"
+                                            });
+                                            if next != cur {
+                                                link_collision_toggles
+                                                    .push((name.clone(), next));
+                                            }
+                                            if (i + 1) % 4 == 0 {
+                                                ui.end_row();
+                                            }
+                                        }
+                                        // Pad the last row so the grid closes.
+                                        if link_names.len() % 4 != 0 {
+                                            ui.end_row();
+                                        }
+                                    });
+                            });
+                    });
+                ui.separator();
+                ui.label(
+                    egui::RichText::new("Per-pair exclusion matrix")
+                        .strong(),
+                );
+                ui.label(
+                    egui::RichText::new(
                         "Default: all link pairs collide. Uncheck a cell to \
-                         exclude that pair (saved with the model: .misa or \
-                         legacy .misarta.toml; emitted as MJCF <contact><exclude> \
-                         and USD filteredPairs).",
+                         exclude that pair (saved with the model and emitted \
+                         as MJCF <contact><exclude> / USD filteredPairs).",
                     )
                     .small()
                     .weak(),
@@ -305,6 +420,26 @@ impl ArticaraApp {
 
         // Apply toggles AFTER the closure so we can take &mut self.model.
         if let Some(model) = self.model.as_mut() {
+            // Per-link collision_enabled flips.
+            if !link_collision_toggles.is_empty() {
+                let mut flipped_disabled = 0usize;
+                let mut flipped_enabled = 0usize;
+                for (name, want) in &link_collision_toggles {
+                    if let Some(link) =
+                        model.links.iter_mut().find(|l| &l.name == name)
+                    {
+                        if link.collision_enabled != *want {
+                            link.collision_enabled = *want;
+                            if *want { flipped_enabled += 1; } else { flipped_disabled += 1; }
+                        }
+                    }
+                }
+                if flipped_disabled > 0 || flipped_enabled > 0 {
+                    self.status_message = format!(
+                        "Collision: {flipped_disabled} disabled · {flipped_enabled} re-enabled (link-level)"
+                    );
+                }
+            }
             for (a, b) in toggles {
                 // Determine current state and flip.
                 let cur = model

@@ -2692,6 +2692,7 @@ mod test_inertia_validation {
                 ixx, ixy, ixz,
                 iyy, iyz, izz,
             },
+            collision_enabled: true,
         }
     }
 
@@ -4273,6 +4274,7 @@ mod test_misa {
                     size: [0.30, 0.20, 0.10],
                 },
             }],
+            collision_enabled: true,
         });
 
         for side in &["left", "right"] {
@@ -4296,6 +4298,7 @@ mod test_misa {
                     material: None,
                 }],
                 collision: Vec::new(),
+                collision_enabled: true,
             });
             let y = if *side == "left" { 0.10 } else { -0.10 };
             f.joint.push(mn::Joint {

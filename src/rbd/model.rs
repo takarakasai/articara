@@ -457,6 +457,12 @@ pub struct LinkData {
     pub visuals: Vec<VisualData>,
     pub collisions: Vec<CollisionData>,
     pub inertial: InertialData,
+    /// Whether this link's collision geoms participate in contact detection.
+    /// `false` is the moral equivalent of MuJoCo `contype=0 conaffinity=0`:
+    /// the geoms are still rendered (as collision-group visuals) but the
+    /// physics engine skips every contact pair involving them. Defaults to
+    /// `true` so legacy models load with their original behaviour.
+    pub collision_enabled: bool,
 }
 
 #[derive(Clone)]

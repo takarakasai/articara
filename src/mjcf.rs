@@ -324,6 +324,7 @@ fn parse_mjcf_bodies(
             visuals,
             collisions,
             inertial,
+            collision_enabled: true,
         });
 
         // Joint(s) between parent and this body
@@ -1169,7 +1170,17 @@ fn write_mjcf_body(
     // joint-boundary overlaps that were producing ~70 N spurious self-
     // collision penalties pre-fix).
     let visual_extra = " contype=\"0\" conaffinity=\"0\" group=\"1\"";
-    let collision_extra = " contype=\"1\" conaffinity=\"1\" group=\"3\"";
+    // When the link's `collision_enabled` flag is OFF, the collision geoms
+    // get the same contype/conaffinity bits as visuals — they're rendered
+    // in the collision-group viewer but the physics solver skips every
+    // contact pair involving them. Same effect as the MuJoCo
+    // contype=0/conaffinity=0 convention without needing dedicated bit-mask
+    // bookkeeping.
+    let collision_extra = if link.collision_enabled {
+        " contype=\"1\" conaffinity=\"1\" group=\"3\""
+    } else {
+        " contype=\"0\" conaffinity=\"0\" group=\"3\""
+    };
 
     // Visuals (rendering only).
     for vis in &link.visuals {

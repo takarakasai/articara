@@ -109,11 +109,12 @@ impl ArticaraApp {
                     ui.close();
                 }
 
-                // --- Collision Pair editor ---
+                // --- Collision Settings ---
                 if ui
-                    .add_enabled(has_model, egui::Button::new("🛡 Collision Pairs…"))
+                    .add_enabled(has_model, egui::Button::new("🛡 Collision Settings…"))
                     .on_hover_text(
-                        "Open the link × link collision-pair editor. \
+                        "Per-link collision enable (contype/conaffinity) \
+                         + per-pair exclusion matrix in one dialog. \
                          Pre-populate joint-connected exclusions, or import \
                          the live MuJoCo contact set with one click.",
                     )
@@ -180,12 +181,13 @@ impl ArticaraApp {
             ui.menu_button("Collision", |ui| {
                 let has_model = self.model.is_some();
                 if ui
-                    .add_enabled(has_model, egui::Button::new("🛡 Collision Pair Matrix…"))
+                    .add_enabled(has_model, egui::Button::new("🛡 Collision Settings…"))
                     .on_hover_text(
-                        "Open the link × link collision-pair editor. \
-                         Disabled pairs are persisted with the model (.misa, \
+                        "Per-link collision enable + per-pair exclusion editor. \
+                         Disabled state is persisted with the model (.misa, \
                          or .misarta.toml sidecar for legacy URDF) and \
-                         emitted as MJCF <exclude> / USD filteredPairs.",
+                         emitted as MJCF contype/conaffinity + <contact><exclude>, \
+                         or USD filteredPairs.",
                     )
                     .clicked()
                 {
