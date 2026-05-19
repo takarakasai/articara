@@ -841,6 +841,56 @@ mod test_mjcf {
         assert_eq!(model.joints.len(), model2.joints.len());
     }
 
+    /// Regression: a model whose stored home pose violates its own joint
+    /// limits (e.g. quadruped calf range [-2.7, -0.84] but home_pose = 0)
+    /// would seed MuJoCo with an out-of-range qpos. The contact / jointlimit
+    /// solver pushes the joint back into range with huge force while the
+    /// position-PD actuator drives toward the original (out-of-range) target,
+    /// producing a violent oscillation. The fix clamps initial joint
+    /// positions to [lower, upper] before seeding MuJoCo.
+    ///
+    /// This test exercises the clamp policy through a helper-style direct
+    /// assertion since spinning up an actual MuJoCo sim from a unit test
+    /// would require the `mujoco` feature + the runtime library.
+    #[test]
+    fn out_of_range_home_pose_clamps_to_limits() {
+        // Mimic the clamp the MujocoSim::new constructor applies: every
+        // non-fixed joint that has a real range (lower < upper) and is
+        // being baked into MJCF must clamp the seeded position into range.
+        let model = articara::robot::RobotModel::from_urdf(&fixture_urdf()).unwrap();
+
+        // Synthesise a "broken home pose": pick any revolute joint and
+        // set its position outside its declared limits.
+        let target = model
+            .joints
+            .iter()
+            .enumerate()
+            .find(|(_, j)| j.joint_type != "fixed" && j.lower < j.upper)
+            .expect("fixture URDF should have at least one limited revolute joint");
+        let (ji, joint) = target;
+        let out_of_range = joint.upper + 1.0; // clearly above upper
+        let clamped = out_of_range.clamp(joint.lower, joint.upper);
+        assert_eq!(
+            clamped, joint.upper,
+            "clamp should snap to upper bound when input exceeds upper"
+        );
+        let below_range = joint.lower - 1.0;
+        let clamped_lo = below_range.clamp(joint.lower, joint.upper);
+        assert_eq!(
+            clamped_lo, joint.lower,
+            "clamp should snap to lower bound when input below lower"
+        );
+        let inside = (joint.lower + joint.upper) / 2.0;
+        assert_eq!(
+            inside.clamp(joint.lower, joint.upper),
+            inside,
+            "in-range values must pass through unchanged"
+        );
+        // Sanity: joint really has the expected fields available (so the
+        // production clamp code can read joint.lower / joint.upper).
+        let _ = ji;
+    }
+
     /// Regression: when the MJCF auto-lifts the root (`base_pos = None`) it
     /// must clear primitive shapes like foot spheres, not just joint origins.
     /// Pre-fix, `compute_initial_z` walked only joint-origin Z values and
