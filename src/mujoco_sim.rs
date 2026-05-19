@@ -368,6 +368,9 @@ impl MujocoSim {
         }
 
         opts.add_actuators = true;
+        // Snapshot the limit-baking flag before `opts` is moved into the
+        // MJCF exporter below — we need it again when seeding qpos.
+        let bake_joint_position_limits = opts.bake_joint_position_limits;
 
         // Load MuJoCo plugins (STL decoder, OBJ decoder, etc.) before loading any model.
         if let Some(dir) = find_plugin_dir() {
@@ -386,14 +389,43 @@ impl MujocoSim {
         // Seed MuJoCo's qpos with the user's current joint angles so the sim
         // starts in the same pose the editor is showing. The MJCF only carries
         // structure; per-joint qpos defaults to 0 unless we write them here.
+        //
+        // **Clamp to the joint's [lower, upper] range** when the joint declares
+        // one and the limit is being baked into MJCF. Without this guard a
+        // model whose stored home pose sits outside its own joint limits
+        // (e.g. a quadruped with calf range [-2.7, -0.84] but home = 0.0)
+        // starts MuJoCo with qpos violating a hard constraint — the contact /
+        // jointlimit solver pushes it back into range with huge force while
+        // the Position-PD actuator simultaneously drives toward the original
+        // (out-of-range) target. Net effect is a violent oscillation that
+        // looks like the robot is shaking on the ground.
+        let mut seeded_positions = robot.joint_positions.clone();
         for (ji, joint) in robot.joints.iter().enumerate() {
             if joint.joint_type == "fixed" {
                 continue;
             }
+            // Only clamp when the joint really has a limit (lower < upper)
+            // and we're baking that limit into MJCF — otherwise leave the
+            // value alone so velocity / floating-base joints aren't touched.
+            if bake_joint_position_limits && joint.lower < joint.upper {
+                let q = seeded_positions[ji].clamp(joint.lower, joint.upper);
+                if (q - seeded_positions[ji]).abs() > 1e-9 {
+                    log::warn!(
+                        "joint {:?} initial position {:.4} clamped to [{:.4}, {:.4}] → {:.4} \
+                         (home pose violated joint range — fix the source model's home_pose)",
+                        joint.name,
+                        seeded_positions[ji],
+                        joint.lower,
+                        joint.upper,
+                        q,
+                    );
+                }
+                seeded_positions[ji] = q;
+            }
             if let Some(joint_info) = data.joint(&joint.name) {
                 let mut view = joint_info.view_mut(&mut data);
                 if !view.qpos.is_empty() {
-                    view.qpos[0] = robot.joint_positions[ji];
+                    view.qpos[0] = seeded_positions[ji];
                 }
             }
         }
@@ -403,8 +435,10 @@ impl MujocoSim {
         data.forward();
 
         // Initial control targets: hold the start pose in Position mode, no
-        // velocity/torque command in the other modes.
-        let position_targets = robot.joint_positions.clone();
+        // velocity/torque command in the other modes. Use the *clamped*
+        // positions so the Position-PD controller doesn't fight the joint
+        // range limiter — see the clamp block above for the failure mode.
+        let position_targets = seeded_positions.clone();
         let position_target_velocities = vec![0.0; robot.joints.len()];
         let position_target_accelerations = vec![0.0; robot.joints.len()];
         let velocity_targets = vec![0.0; robot.joints.len()];
