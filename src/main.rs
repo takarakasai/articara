@@ -28,7 +28,10 @@ mod wbc_pipeline;
 use std::path::PathBuf;
 
 fn main() -> eframe::Result {
-    env_logger::init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn"),
+    )
+    .init();
 
     // MuJoCo runtime version pre-check. mujoco-rs panics deep in its
     // crate when the linked libmujoco doesn't match its FFI bindings;

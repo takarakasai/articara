@@ -268,8 +268,23 @@ impl RobotModel {
     }
 
     /// Convenience wrapper: convert to a `MisaFile` and write it to disk.
+    ///
+    /// In-memory decomposed meshes (`GeomData::Mesh` with `filename: None`,
+    /// produced by V-HACD) are materialised to STL files alongside the
+    /// `.misa` so the saved file references real meshes. The materialisation
+    /// is done on an internal clone so the caller's model is left untouched.
     pub fn save_as_misa(&self, path: &Path) -> Result<(), String> {
-        let file = self.to_misa()?;
+        let misa_dir = path.parent().unwrap_or(Path::new("."));
+        let mut working = self.clone();
+        materialize_decomposed_meshes(&mut working, misa_dir, |fname| {
+            format!("meshes/decomposed/{fname}")
+        })?;
+        // Copy referenced (pre-existing) mesh files next to the `.misa` so
+        // the `AssetSource` sandbox can find them on re-load. Without this
+        // step a `.misa` saved into a fresh directory loads with empty mesh
+        // visuals (`missing_meshes` in the LoadReport).
+        copy_referenced_meshes_to_misa_dir(&working, self.source_path.as_deref(), misa_dir)?;
+        let file = working.to_misa()?;
         misarta::native::save(path, &file).map_err(|e| format!(".misa save: {e}"))
     }
 }
@@ -555,7 +570,23 @@ mod misa_load {
             mn::Geom::Mesh { file, scale } => {
                 let path = base_dir.join(file);
                 let scale_arr = [scale[0] as f32, scale[1] as f32, scale[2] as f32];
-                let vertices = load_stl_mesh_with_scale(&path, scale_arr);
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let vertices = match ext.as_str() {
+                    "stl" => load_stl_mesh_with_scale(&path, scale_arr),
+                    "obj" => super::load_obj_mesh(&path, Some(&scale_arr)),
+                    "dae" => super::load_dae_mesh(&path, Some(&scale_arr)),
+                    _ => {
+                        log::warn!(
+                            ".misa references unsupported mesh format {:?}: {:?}",
+                            ext, path
+                        );
+                        Vec::new()
+                    }
+                };
                 GeomData::Mesh {
                     vertices,
                     filename: Some(file.clone()),
@@ -1660,18 +1691,29 @@ impl RobotModel {
     pub fn save_urdf(&self) -> Result<PathBuf, String> {
         let source = self
             .source_path
-            .as_ref()
+            .clone()
             .ok_or("No source URDF path stored")?;
-        let xml = self.export_urdf()?;
-        std::fs::write(source, &xml).map_err(|e| format!("Save error: {e}"))?;
-        Ok(source.clone())
+        // Materialise any in-memory decomposed meshes (V-HACD output)
+        // to STL files next to the URDF, so the saved XML references
+        // real files instead of an `unwrap_or("mesh.stl")` placeholder.
+        // Done on a clone so the caller's model is left untouched.
+        let mut working = self.clone();
+        materialize_urdf_decomposed_meshes(&mut working, &source)?;
+        let xml = working.export_urdf()?;
+        std::fs::write(&source, &xml).map_err(|e| format!("Save error: {e}"))?;
+        Ok(source)
     }
 
     /// Export the current model to a URDF file at the given path.
     /// Also copies all referenced mesh files to the output directory,
     /// preserving the relative directory structure from the package root.
     pub fn export_urdf_to_file(&self, output_path: &Path) -> Result<(), String> {
-        let xml = self.export_urdf()?;
+        // Materialise in-memory decomposed meshes to STL files next to
+        // the *output* URDF (so the exported tree is self-contained).
+        // Done on a clone so the caller's model is left untouched.
+        let mut working = self.clone();
+        materialize_urdf_decomposed_meshes(&mut working, output_path)?;
+        let xml = working.export_urdf()?;
         std::fs::write(output_path, &xml).map_err(|e| format!("Write error: {e}"))?;
 
         // Copy mesh files (only if loaded from an existing file)
@@ -1772,10 +1814,27 @@ fn convert_geometry(geom: &urdf_rs::Geometry, package_dir: &Path) -> GeomData {
         },
         urdf_rs::Geometry::Mesh { filename, scale } => {
             let mesh_path = resolve_package_path(filename, package_dir);
-            let vertices = load_stl_mesh(&mesh_path, scale.as_ref());
             let sf = scale
                 .as_ref()
                 .map(|s| [s.0[0] as f32, s.0[1] as f32, s.0[2] as f32]);
+            let ext = mesh_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let vertices = match ext.as_str() {
+                "stl" => load_stl_mesh(&mesh_path, scale.as_ref()),
+                "obj" => load_obj_mesh(&mesh_path, sf.as_ref()),
+                "dae" => load_dae_mesh(&mesh_path, sf.as_ref()),
+                _ => {
+                    log::warn!(
+                        "Unsupported mesh format {:?}: {:?}",
+                        ext,
+                        mesh_path
+                    );
+                    Vec::new()
+                }
+            };
             GeomData::Mesh {
                 vertices,
                 filename: Some(filename.clone()),
@@ -1792,12 +1851,25 @@ fn convert_geometry(geom: &urdf_rs::Geometry, package_dir: &Path) -> GeomData {
 
 pub fn resolve_package_path(filename: &str, package_dir: &Path) -> PathBuf {
     if let Some(rest) = filename.strip_prefix("package://") {
-        if let Some(slash_pos) = rest.find('/') {
-            let rel_path = &rest[slash_pos + 1..];
-            package_dir.join(rel_path)
-        } else {
-            package_dir.join(rest)
+        let (pkg_name, rel_path) = match rest.find('/') {
+            Some(slash_pos) => (&rest[..slash_pos], &rest[slash_pos + 1..]),
+            None => (rest, ""),
+        };
+        // ROS layout: URDF at <pkg>/urdf/foo.urdf, so package_dir IS the package root.
+        let ros_candidate = package_dir.join(rel_path);
+        if ros_candidate.exists() {
+            return ros_candidate;
         }
+        // Direct-in-package layout: URDF at <pkg>/foo.urdf (no urdf/ subdir),
+        // so package_dir is the *parent* of the named package — append pkg_name.
+        if !pkg_name.is_empty() {
+            let direct_candidate = package_dir.join(pkg_name).join(rel_path);
+            if direct_candidate.exists() {
+                return direct_candidate;
+            }
+        }
+        // Neither exists — return ROS candidate so the caller's warn! surfaces the expected path.
+        ros_candidate
     } else if filename.starts_with("file://") {
         PathBuf::from(filename.strip_prefix("file://").unwrap())
     } else {
@@ -1853,6 +1925,304 @@ fn load_stl_mesh(path: &PathBuf, scale: Option<&urdf_rs::Vec3>) -> Vec<f32> {
 /// Public wrapper for loading an STL mesh from an absolute path (no scale).
 pub fn load_stl_mesh_public(path: &PathBuf) -> Vec<f32> {
     load_stl_mesh(path, None)
+}
+
+/// Load a Wavefront OBJ mesh, returning flat `[x, y, z, nx, ny, nz]` per vertex
+/// (same format as `load_stl_mesh`). Normals are recomputed per-triangle
+/// (flat shading) — the file's own normals are ignored so output matches STL.
+pub fn load_obj_mesh(path: &PathBuf, scale: Option<&[f32; 3]>) -> Vec<f32> {
+    let sf = scale.copied().unwrap_or([1.0, 1.0, 1.0]);
+
+    let (models, _materials) = match tobj::load_obj(
+        path,
+        &tobj::LoadOptions {
+            triangulate: true,
+            single_index: true,
+            ..Default::default()
+        },
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("Failed to load OBJ {:?}: {}", path, e);
+            return Vec::new();
+        }
+    };
+
+    let mut vertices: Vec<f32> = Vec::new();
+    let mut tri_count: usize = 0;
+    for model in &models {
+        let mesh = &model.mesh;
+        let pos = &mesh.positions;
+        for tri in mesh.indices.chunks_exact(3) {
+            let i0 = tri[0] as usize * 3;
+            let i1 = tri[1] as usize * 3;
+            let i2 = tri[2] as usize * 3;
+            if i0 + 2 >= pos.len() || i1 + 2 >= pos.len() || i2 + 2 >= pos.len() {
+                continue;
+            }
+            let v0 = [pos[i0], pos[i0 + 1], pos[i0 + 2]];
+            let v1 = [pos[i1], pos[i1 + 1], pos[i1 + 2]];
+            let v2 = [pos[i2], pos[i2 + 1], pos[i2 + 2]];
+            let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+            let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+            let mut nx = e1[1] * e2[2] - e1[2] * e2[1];
+            let mut ny = e1[2] * e2[0] - e1[0] * e2[2];
+            let mut nz = e1[0] * e2[1] - e1[1] * e2[0];
+            let nlen = (nx * nx + ny * ny + nz * nz).sqrt();
+            if nlen > 1e-20 {
+                nx /= nlen;
+                ny /= nlen;
+                nz /= nlen;
+            }
+            for v in [v0, v1, v2] {
+                vertices.push(v[0] * sf[0]);
+                vertices.push(v[1] * sf[1]);
+                vertices.push(v[2] * sf[2]);
+                vertices.push(nx);
+                vertices.push(ny);
+                vertices.push(nz);
+            }
+            tri_count += 1;
+        }
+    }
+
+    log::info!(
+        "Loaded OBJ {:?}: {} triangles",
+        path.file_name().unwrap_or_default(),
+        tri_count
+    );
+    vertices
+}
+
+/// Write a flat `[x, y, z, nx, ny, nz]` vertex array (3 verts per tri, no indexing —
+/// same shape produced by `load_stl_mesh` / `load_obj_mesh`) as a **binary STL** file.
+///
+/// The per-vertex normal of the first vertex is used as the per-triangle (face) normal,
+/// matching what the loaders produce for flat-shaded meshes.
+pub fn write_stl_binary(path: &Path, vertices: &[f32]) -> std::io::Result<()> {
+    use std::io::Write;
+    if vertices.len() % 18 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("vertex array length {} is not a multiple of 18", vertices.len()),
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+    f.write_all(&[0u8; 80])?; // 80-byte header
+    let n_tris = (vertices.len() / 18) as u32;
+    f.write_all(&n_tris.to_le_bytes())?;
+    for tri in vertices.chunks_exact(18) {
+        // face normal = first vertex's normal (loaders write the same normal
+        // to all 3 verts of a flat-shaded triangle)
+        for off in [3, 4, 5] {
+            f.write_all(&tri[off].to_le_bytes())?;
+        }
+        for vi in 0..3 {
+            let base = vi * 6;
+            for off in 0..3 {
+                f.write_all(&tri[base + off].to_le_bytes())?;
+            }
+        }
+        f.write_all(&[0u8; 2])?; // attribute byte count
+    }
+    f.flush()?;
+    Ok(())
+}
+
+/// Walk the model and materialise every `GeomData::Mesh` whose `filename` is
+/// `None` (i.e. produced by V-HACD / other in-memory decomposition) as a
+/// binary STL file under `mesh_root/meshes/decomposed/`.
+///
+/// `make_ref` builds the string written back into the model's `filename` —
+/// for URDF it should produce `package://<pkg>/meshes/decomposed/<fname>`;
+/// for `.misa` it should produce the relative `meshes/decomposed/<fname>`.
+///
+/// Filenames are deterministic (`<link>_(vis|col)_<idx>.stl`), so repeated
+/// Save calls overwrite the same files rather than accumulating duplicates.
+pub fn materialize_decomposed_meshes<F>(
+    model: &mut RobotModel,
+    mesh_root: &Path,
+    make_ref: F,
+) -> Result<usize, String>
+where
+    F: Fn(&str) -> String,
+{
+    let subdir = Path::new("meshes/decomposed");
+    let abs_dir = mesh_root.join(subdir);
+    let mut written = 0usize;
+    let mut need_dir = true;
+
+    for link in &mut model.links {
+        let link_name = sanitize_filename(&link.name);
+        for (vi, vis) in link.visuals.iter_mut().enumerate() {
+            if let GeomData::Mesh { vertices, filename, .. } = &mut vis.geometry {
+                if filename.is_none() && !vertices.is_empty() {
+                    if need_dir {
+                        std::fs::create_dir_all(&abs_dir)
+                            .map_err(|e| format!("create {abs_dir:?}: {e}"))?;
+                        need_dir = false;
+                    }
+                    let fname = format!("{link_name}_vis_{vi}.stl");
+                    write_stl_binary(&abs_dir.join(&fname), vertices)
+                        .map_err(|e| format!("write {fname}: {e}"))?;
+                    *filename = Some(make_ref(&fname));
+                    written += 1;
+                }
+            }
+        }
+        for (ci, col) in link.collisions.iter_mut().enumerate() {
+            if let GeomData::Mesh { vertices, filename, .. } = &mut col.geometry {
+                if filename.is_none() && !vertices.is_empty() {
+                    if need_dir {
+                        std::fs::create_dir_all(&abs_dir)
+                            .map_err(|e| format!("create {abs_dir:?}: {e}"))?;
+                        need_dir = false;
+                    }
+                    let fname = format!("{link_name}_col_{ci}.stl");
+                    write_stl_binary(&abs_dir.join(&fname), vertices)
+                        .map_err(|e| format!("write {fname}: {e}"))?;
+                    *filename = Some(make_ref(&fname));
+                    written += 1;
+                }
+            }
+        }
+    }
+    if written > 0 {
+        log::info!("Materialised {written} decomposed mesh(es) under {abs_dir:?}");
+    }
+    Ok(written)
+}
+
+/// URDF-side wrapper: pick the correct mesh root + `package://` package name
+/// based on the URDF's on-disk layout (ROS vs direct-in-package), then call
+/// [`materialize_decomposed_meshes`].
+pub fn materialize_urdf_decomposed_meshes(
+    model: &mut RobotModel,
+    urdf_path: &Path,
+) -> Result<usize, String> {
+    let urdf_dir = urdf_path.parent().unwrap_or(Path::new("."));
+    let package_dir = urdf_dir.parent().unwrap_or(urdf_dir);
+
+    // Pick the package root based on whether the URDF lives in a `urdf/`
+    // subfolder (ROS convention) or directly in the package directory.
+    //   ROS layout:    <base>/<pkg>/urdf/foo.urdf  →  mesh_root = <base>/<pkg>
+    //   Direct layout: <base>/<pkg>/foo.urdf      →  mesh_root = <base>/<pkg>
+    let urdf_dir_name = urdf_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let mesh_root: PathBuf = if urdf_dir_name == "urdf" {
+        package_dir.to_path_buf()
+    } else {
+        urdf_dir.to_path_buf()
+    };
+
+    // The URI's package name must match `mesh_root`'s directory name so that
+    // `resolve_package_path` on re-load picks the file back up via its
+    // `package_dir.join(pkg_name).join(rel_path)` candidate.
+    let pkg_name = mesh_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "robot".to_string());
+
+    materialize_decomposed_meshes(model, &mesh_root, move |fname| {
+        format!("package://{pkg_name}/meshes/decomposed/{fname}")
+    })
+}
+
+/// Copy every referenced mesh file ([`GeomData::Mesh`] with
+/// `filename: Some(_)`) from its current on-disk location into `misa_dir`,
+/// placing it at the same relative path the `.misa` will use to reference it.
+///
+/// `source_path` is the path the model was originally loaded from (URDF or
+/// `.misa`); it's used to resolve `package://` / relative mesh references.
+/// If `None`, the helper is a no-op.
+///
+/// Files already at the destination (same source and destination path) are
+/// skipped. Files whose source can't be found are logged via `log::warn!`
+/// — non-fatal so a half-broken model still saves something useful.
+fn copy_referenced_meshes_to_misa_dir(
+    model: &RobotModel,
+    source_path: Option<&Path>,
+    misa_dir: &Path,
+) -> Result<(), String> {
+    let Some(source) = source_path else {
+        return Ok(()); // No on-disk origin — nothing to copy.
+    };
+    let source_dir = source.parent().unwrap_or(Path::new("."));
+    let source_pkg_dir = source_dir.parent().unwrap_or(source_dir);
+    let source_is_misa = source
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.eq_ignore_ascii_case("misa"))
+        .unwrap_or(false);
+
+    let mut copied: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+    let mut visit = |filename: &str| -> Result<(), String> {
+        // misa-relative path (after stripping `package://pkg/` etc).
+        let rel = misa_save::normalise_mesh_path_for_misa(filename);
+        if rel.is_empty() {
+            return Ok(());
+        }
+        let src_abs = if source_is_misa {
+            source_dir.join(&rel)
+        } else {
+            // URDF (or other) source — use the same resolver the loader uses.
+            resolve_package_path(filename, source_pkg_dir)
+        };
+        let dst_abs = misa_dir.join(&rel);
+        if !copied.insert(dst_abs.clone()) {
+            return Ok(());
+        }
+        if src_abs == dst_abs {
+            return Ok(()); // saving in place
+        }
+        if !src_abs.exists() {
+            log::warn!(
+                "Mesh source not found, .misa will reference a missing file: {:?} (resolved from {:?})",
+                src_abs, filename
+            );
+            return Ok(());
+        }
+        if let Some(parent) = dst_abs.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create {parent:?}: {e}"))?;
+        }
+        std::fs::copy(&src_abs, &dst_abs)
+            .map_err(|e| format!("copy {src_abs:?} -> {dst_abs:?}: {e}"))?;
+        Ok(())
+    };
+
+    for link in &model.links {
+        for v in &link.visuals {
+            if let GeomData::Mesh { filename: Some(f), .. } = &v.geometry {
+                visit(f)?;
+            }
+        }
+        for c in &link.collisions {
+            if let GeomData::Mesh { filename: Some(f), .. } = &c.geometry {
+                visit(f)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn sanitize_filename(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Load a Collada (.dae) mesh file, returning flat vertex data
@@ -2149,6 +2519,7 @@ pub fn load_mesh_file(path: &std::path::Path) -> Vec<f32> {
     let pb = path.to_path_buf();
     match ext.as_str() {
         "stl" => load_stl_mesh(&pb, None),
+        "obj" => load_obj_mesh(&pb, None),
         "dae" => load_dae_mesh(&pb, None),
         _ => {
             log::warn!("Unsupported mesh format: {:?}", path);
@@ -2393,6 +2764,10 @@ mod misa_save {
     /// Convert a URDF-style mesh reference into a master-relative path.
     /// `package://name/sub/path.stl` → `sub/path.stl`. Leaves already-relative
     /// paths untouched (so `meshes/foo.stl` round-trips as itself).
+    pub(super) fn normalise_mesh_path_for_misa(s: &str) -> String {
+        normalise_mesh_path(s)
+    }
+
     fn normalise_mesh_path(s: &str) -> String {
         if let Some(rest) = s.strip_prefix("package://") {
             // Drop the package name (everything up to the first `/`).

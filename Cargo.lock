@@ -336,6 +336,7 @@ dependencies = [
  "serde",
  "serde_json",
  "stl_io",
+ "tobj",
  "urdf-rs",
 ]
 
@@ -2759,6 +2760,7 @@ dependencies = [
  "roxmltree",
  "serde",
  "stl_io",
+ "tobj",
  "toml",
 ]
 
@@ -4715,6 +4717,15 @@ checksum = "c8323304221c2a851516f22236c5722a72eaa19749016521d6dff0824447d96d"
 dependencies = [
  "displaydoc",
  "zerovec",
+]
+
+[[package]]
+name = "tobj"
+version = "4.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04aca6092e5978e708ee784e8ab9b5cf3cdb598b28f99a2f257446e7081a7025"
+dependencies = [
+ "ahash",
 ]
 
 [[package]]

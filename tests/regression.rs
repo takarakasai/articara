@@ -4801,3 +4801,332 @@ child = "front-leg"
         std::fs::remove_dir_all(&pkg).ok();
     }
 }
+
+// ============================================================
+// Mesh I/O regressions — bugs caught while wiring OBJ support
+// and V-HACD save in May 2026. Each test pins one specific
+// behaviour that broke at least once; all are self-contained
+// (write tiny synthetic URDF + mesh into a tempdir).
+// ============================================================
+mod test_mesh_io_regressions {
+    use super::*;
+    use articara::rbd::model::{CollisionData, GeomData};
+    use articara::robot::{resolve_package_path, RobotModel};
+
+    /// A 2-triangle Wavefront OBJ (forms a corner of a cube). 4 unique
+    /// verts (deduped by tobj's `single_index` pass) → 2 triangles → 12
+    /// `f32`s per vert × 3 verts × 2 tris = 36 floats in the flat output.
+    const TINY_OBJ: &str = "\
+o tri
+v 0.0 0.0 0.0
+v 1.0 0.0 0.0
+v 0.0 1.0 0.0
+v 0.0 0.0 1.0
+f 1 2 3
+f 1 3 4
+";
+
+    /// Minimal binary STL with one triangle (header + tri-count + 1 triangle record).
+    fn one_tri_stl_bytes() -> Vec<u8> {
+        let mut buf = vec![0u8; 80]; // header
+        buf.extend_from_slice(&1u32.to_le_bytes()); // 1 triangle
+        // normal (0,0,1)
+        buf.extend_from_slice(&0f32.to_le_bytes());
+        buf.extend_from_slice(&0f32.to_le_bytes());
+        buf.extend_from_slice(&1f32.to_le_bytes());
+        // 3 vertices in z=0 plane
+        for v in [[0f32, 0., 0.], [1., 0., 0.], [0., 1., 0.]] {
+            for f in v { buf.extend_from_slice(&f.to_le_bytes()); }
+        }
+        buf.extend_from_slice(&[0u8, 0u8]); // attribute byte count
+        buf
+    }
+
+    /// Minimal URDF with one base link carrying a single mesh visual.
+    fn tiny_urdf(mesh_uri: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?>
+<robot name="test_pkg">
+  <link name="base">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1.0"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="{mesh_uri}"/>
+      </geometry>
+    </visual>
+  </link>
+</robot>
+"#
+        )
+    }
+
+    fn tempdir(prefix: &str) -> PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let p = std::env::temp_dir().join(format!("articara_meshio_{prefix}_{nanos}"));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    /// Lay out a tiny self-contained URDF package at `<root>/test_pkg/`
+    /// with `mesh/tri.obj` and a URDF that references it. Returns the
+    /// path to the URDF.
+    fn write_tiny_obj_package(root: &Path) -> PathBuf {
+        let pkg = root.join("test_pkg");
+        let mesh_dir = pkg.join("mesh");
+        std::fs::create_dir_all(&mesh_dir).unwrap();
+        std::fs::write(mesh_dir.join("tri.obj"), TINY_OBJ).unwrap();
+        let urdf_path = pkg.join("robot.urdf");
+        std::fs::write(
+            &urdf_path,
+            tiny_urdf("package://test_pkg/mesh/tri.obj"),
+        )
+        .unwrap();
+        urdf_path
+    }
+
+    // ── Lesson 1: convert_geometry must dispatch on extension ────────────
+    /// Regression: a URDF that references a `.obj` file must populate
+    /// `GeomData::Mesh.vertices` (broken when `convert_geometry`
+    /// unconditionally called the STL parser).
+    #[test]
+    fn urdf_with_obj_mesh_loads_vertices() {
+        let dir = tempdir("urdf_obj");
+        let urdf_path = write_tiny_obj_package(&dir);
+        let model = RobotModel::from_urdf(&urdf_path).expect("load URDF");
+
+        let mut obj_meshes = 0;
+        for link in &model.links {
+            for v in &link.visuals {
+                if let GeomData::Mesh { vertices, filename, .. } = &v.geometry {
+                    if filename.as_deref().map(|s| s.ends_with(".obj")).unwrap_or(false) {
+                        assert!(
+                            !vertices.is_empty(),
+                            "OBJ vertices empty — convert_geometry probably regressed to STL-only"
+                        );
+                        // 2 tris × 3 verts × 6 floats = 36 floats expected
+                        assert_eq!(vertices.len(), 36, "expected 2 tris worth of floats");
+                        obj_meshes += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(obj_meshes, 1, "expected exactly one OBJ visual");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── Lesson 2: resolve_package_path must handle direct-in-package layout ──
+    /// Regression: when the URDF lives directly inside its package dir
+    /// (`<pkg>/foo.urdf` rather than the ROS-canonical `<pkg>/urdf/foo.urdf`),
+    /// `package://<pkg>/mesh/x.stl` must still resolve. The fix added a
+    /// second-candidate lookup (`package_dir.join(pkg).join(rel)`) on top
+    /// of the original ROS-only `package_dir.join(rel)`.
+    #[test]
+    fn resolve_package_path_direct_in_package_layout() {
+        let dir = tempdir("direct_layout");
+        let pkg = dir.join("my_pkg");
+        std::fs::create_dir_all(pkg.join("mesh")).unwrap();
+        let mesh_path = pkg.join("mesh/foo.stl");
+        std::fs::write(&mesh_path, b"").unwrap();
+
+        // Direct layout: URDF is at <root>/my_pkg/foo.urdf, so the loader
+        // computes `package_dir = <root>` (parent of urdf_dir = my_pkg).
+        let resolved = resolve_package_path(
+            "package://my_pkg/mesh/foo.stl",
+            &dir, // = package_dir
+        );
+        assert_eq!(
+            resolved, mesh_path,
+            "resolver should fall back to package_dir.join(pkg_name).join(rel)"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── Lesson 3: V-HACD output survives save_urdf ───────────────────────
+    /// Regression: a `GeomData::Mesh` with `filename: None` (the shape
+    /// V-HACD produces) must be materialised to a real STL file at save
+    /// time. Pre-fix, `geom_to_urdf_geom` wrote `filename="mesh.stl"`
+    /// and silently dropped the vertex data.
+    #[test]
+    fn vhacd_decomposed_mesh_survives_urdf_save() {
+        let dir = tempdir("vhacd_urdf");
+        let urdf_path = write_tiny_obj_package(&dir);
+        let mut model = RobotModel::from_urdf(&urdf_path).expect("load URDF");
+
+        // Inject a fake V-HACD output as an additional collision on link 0.
+        let fake_verts = one_tri_flat_verts();
+        model.links[0].collisions.push(CollisionData {
+            origin: nalgebra::Isometry3::identity(),
+            geometry: GeomData::Mesh {
+                vertices: fake_verts.clone(),
+                filename: None,
+                scale: None,
+            },
+        });
+        let link_name = model.links[0].name.clone();
+        let col_idx = model.links[0].collisions.len() - 1;
+
+        model.save_urdf().expect("save_urdf");
+
+        // STL must exist next to the URDF — file path is deterministic.
+        let expected_stl = urdf_path
+            .parent()
+            .unwrap()
+            .join(format!("meshes/decomposed/{link_name}_col_{col_idx}.stl"));
+        assert!(
+            expected_stl.exists(),
+            "decomposed STL not materialised at {expected_stl:?}"
+        );
+
+        // Reload and confirm the round-tripped mesh has vertices populated.
+        let reloaded = RobotModel::from_urdf(&urdf_path).expect("reload URDF");
+        let target_link = reloaded
+            .links
+            .iter()
+            .find(|l| l.name == link_name)
+            .expect("link survives round-trip");
+        let any_decomposed_loaded = target_link.collisions.iter().any(|c| {
+            matches!(
+                &c.geometry,
+                GeomData::Mesh { filename: Some(f), vertices, .. }
+                    if f.contains("meshes/decomposed") && !vertices.is_empty()
+            )
+        });
+        assert!(
+            any_decomposed_loaded,
+            "reloaded URDF should reference the materialised STL with non-empty verts"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── Lesson 4: V-HACD output survives save_as_misa ────────────────────
+    /// Regression: same as #3 but for the `.misa` save path
+    /// (`materialize_decomposed_meshes` is called from there too).
+    #[test]
+    fn vhacd_decomposed_mesh_survives_misa_save() {
+        let dir = tempdir("vhacd_misa");
+        let urdf_path = write_tiny_obj_package(&dir);
+        let mut model = RobotModel::from_urdf(&urdf_path).expect("load URDF");
+        model.links[0].collisions.push(CollisionData {
+            origin: nalgebra::Isometry3::identity(),
+            geometry: GeomData::Mesh {
+                vertices: one_tri_flat_verts(),
+                filename: None,
+                scale: None,
+            },
+        });
+        let link_name = model.links[0].name.clone();
+        let col_idx = model.links[0].collisions.len() - 1;
+        let misa_path = dir.join("out.misa");
+
+        model.save_as_misa(&misa_path).expect("save_as_misa");
+
+        let expected_stl = dir.join(format!(
+            "meshes/decomposed/{link_name}_col_{col_idx}.stl"
+        ));
+        assert!(
+            expected_stl.exists(),
+            "decomposed STL not materialised at {expected_stl:?}"
+        );
+        // save_as_misa works on a clone — caller's model must stay untouched.
+        assert!(
+            matches!(
+                &model.links[0].collisions[col_idx].geometry,
+                GeomData::Mesh { filename: None, .. }
+            ),
+            "save_as_misa must not mutate caller's model"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── Lesson 5: save_as_misa copies referenced meshes ──────────────────
+    /// Regression: `save_as_misa` to a fresh directory must copy every
+    /// referenced mesh next to the `.misa`, so the `AssetSource` sandbox
+    /// can resolve them on reload. Pre-fix, the OBJ files were left at
+    /// the original URDF location and the reload reported them as
+    /// `missing_meshes`.
+    #[test]
+    fn save_as_misa_copies_referenced_meshes_to_output_dir() {
+        let src_dir = tempdir("misa_copy_src");
+        let urdf_path = write_tiny_obj_package(&src_dir);
+        let model = RobotModel::from_urdf(&urdf_path).expect("load URDF");
+
+        let dst_dir = tempdir("misa_copy_dst");
+        let misa_path = dst_dir.join("out.misa");
+        model.save_as_misa(&misa_path).expect("save_as_misa");
+
+        // .misa references `mesh/tri.obj` (relative). That file must now
+        // exist relative to the .misa.
+        let expected = dst_dir.join("mesh/tri.obj");
+        assert!(
+            expected.exists(),
+            "referenced OBJ was not copied to {expected:?}"
+        );
+        std::fs::remove_dir_all(&src_dir).ok();
+        std::fs::remove_dir_all(&dst_dir).ok();
+    }
+
+    // ── Lesson 6: .misa loader dispatches on extension (OBJ via .misa) ───
+    /// Regression: end-to-end. URDF references an OBJ → save as `.misa` →
+    /// reload via `from_misa_with_report`. Must report no missing meshes
+    /// and the in-memory model's OBJ visual must have populated vertices.
+    /// This catches both the misarta `parse_mesh_bytes` dispatch AND the
+    /// articara `convert_misa_geom` dispatch (both were STL-only).
+    #[test]
+    fn misa_roundtrip_loads_obj() {
+        let src_dir = tempdir("misa_obj_rt_src");
+        let urdf_path = write_tiny_obj_package(&src_dir);
+        let model = RobotModel::from_urdf(&urdf_path).expect("load URDF");
+
+        let dst_dir = tempdir("misa_obj_rt_dst");
+        let misa_path = dst_dir.join("out.misa");
+        model.save_as_misa(&misa_path).expect("save_as_misa");
+
+        let (loaded, report) =
+            RobotModel::from_misa_with_report(&misa_path).expect("reload misa");
+        assert!(
+            report.missing_meshes.is_empty(),
+            "expected no missing meshes after .misa round-trip, got: {:?}",
+            report.missing_meshes
+        );
+
+        let mut obj_meshes_with_verts = 0;
+        for link in &loaded.links {
+            for v in &link.visuals {
+                if let GeomData::Mesh { filename: Some(f), vertices, .. } = &v.geometry {
+                    if f.to_lowercase().ends_with(".obj") && !vertices.is_empty() {
+                        obj_meshes_with_verts += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            obj_meshes_with_verts > 0,
+            "expected at least one OBJ visual to have vertices after .misa reload"
+        );
+        std::fs::remove_dir_all(&src_dir).ok();
+        std::fs::remove_dir_all(&dst_dir).ok();
+    }
+
+    /// Build a single-triangle flat `[x,y,z,nx,ny,nz]` vertex buffer
+    /// (matching what `load_stl_mesh` / `load_obj_mesh` emit).
+    fn one_tri_flat_verts() -> Vec<f32> {
+        vec![
+            0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+        ]
+    }
+
+    // Unused at present but kept available if a future test wants a
+    // genuine STL file to round-trip.
+    #[allow(dead_code)]
+    fn write_tiny_stl(path: &Path) {
+        std::fs::write(path, one_tri_stl_bytes()).unwrap();
+    }
+}
