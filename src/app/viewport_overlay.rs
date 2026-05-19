@@ -1568,57 +1568,119 @@ impl ArticaraApp {
         let color_self = egui::Color32::from_rgb(220, 80, 220);
         let dot_color_external = egui::Color32::from_rgb(255, 200, 80);
         let dot_color_self = egui::Color32::from_rgb(220, 130, 220);
+
+        // Per-contact dots (unaggregated) so the user can still see how the
+        // contact points are distributed; labels and arrows are aggregated
+        // separately below.
         for c in &contacts {
             let is_self = c.is_self_collision();
-            let arrow_color = if is_self { color_self } else { color_external };
             let dot_color = if is_self { dot_color_self } else { dot_color_external };
-
             let p = na::Point3::new(c.pos[0] as f32, c.pos[1] as f32, c.pos[2] as f32);
-            let Some(p_screen) = self.project_world(p, rect, aspect) else {
-                continue;
-            };
-            // Marker dot
-            painter.circle_filled(p_screen, 4.0, dot_color);
+            if let Some(p_screen) = self.project_world(p, rect, aspect) {
+                painter.circle_filled(p_screen, 4.0, dot_color);
+            }
+        }
 
-            if c.force_mag < 1e-3 {
+        // Aggregate contacts by canonical (body1, body2) pair so the dozens
+        // of micro-contacts MuJoCo produces between a single mesh-vs-mesh
+        // intersection collapse into one labelled arrow at their centroid.
+        // Without this, the label text from each contact stacks on top of
+        // its neighbours and becomes unreadable (the screenshot from a user
+        // showed "33490NN RR_thigh↔UGV_link" — actually 5+ labels overlaid).
+        struct PairAgg {
+            pos_sum: [f64; 3],          // world-frame centroid accumulator
+            force_sum: [f64; 3],        // vector sum of contact forces
+            n: usize,
+            is_self: bool,
+            body1: String,
+            body2: String,
+        }
+        let mut groups: std::collections::HashMap<(String, String), PairAgg> =
+            std::collections::HashMap::new();
+        for c in &contacts {
+            // Canonical key: sort so (A,B) and (B,A) collapse.
+            let (a, b) = if c.body1 <= c.body2 {
+                (c.body1.clone(), c.body2.clone())
+            } else {
+                (c.body2.clone(), c.body1.clone())
+            };
+            let key = (a.clone(), b.clone());
+            let entry = groups.entry(key).or_insert(PairAgg {
+                pos_sum: [0.0; 3],
+                force_sum: [0.0; 3],
+                n: 0,
+                is_self: c.is_self_collision(),
+                body1: a,
+                body2: b,
+            });
+            entry.pos_sum[0] += c.pos[0];
+            entry.pos_sum[1] += c.pos[1];
+            entry.pos_sum[2] += c.pos[2];
+            entry.force_sum[0] += c.force_world[0];
+            entry.force_sum[1] += c.force_world[1];
+            entry.force_sum[2] += c.force_world[2];
+            entry.n += 1;
+        }
+
+        for agg in groups.values() {
+            let n = agg.n as f64;
+            let centroid = na::Point3::new(
+                (agg.pos_sum[0] / n) as f32,
+                (agg.pos_sum[1] / n) as f32,
+                (agg.pos_sum[2] / n) as f32,
+            );
+            let force_mag = (agg.force_sum[0] * agg.force_sum[0]
+                + agg.force_sum[1] * agg.force_sum[1]
+                + agg.force_sum[2] * agg.force_sum[2])
+                .sqrt() as f32;
+            if force_mag < 1e-3 {
                 continue;
             }
+            let Some(p_screen) = self.project_world(centroid, rect, aspect) else {
+                continue;
+            };
+
+            let arrow_color = if agg.is_self { color_self } else { color_external };
+
             // Tip in world space — scale linear force vector logarithmically.
             let log_scale =
-                (1.0 + (c.force_mag as f32 / calib_n)).ln() / (1.0_f32 + 1.0).ln();
+                (1.0 + (force_mag / calib_n)).ln() / (1.0_f32 + 1.0).ln();
             let scale = log_scale * base_px;
-            // Use the world force direction; convert to a world-space delta
-            // small enough that the projected arrow respects perspective.
             let dir = na::Vector3::new(
-                c.force_world[0] as f32,
-                c.force_world[1] as f32,
-                c.force_world[2] as f32,
+                agg.force_sum[0] as f32,
+                agg.force_sum[1] as f32,
+                agg.force_sum[2] as f32,
             );
             let dnorm = dir.norm().max(1e-6);
-            let world_step = 0.05_f32; // 5 cm step in world space
-            let tip_world = p + (dir / dnorm) * world_step;
+            let world_step = 0.05_f32;
+            let tip_world = centroid + (dir / dnorm) * world_step;
             let Some(tip_screen) = self.project_world(tip_world, rect, aspect) else {
                 continue;
             };
-            // Stretch screen-space tip vector by `scale` so heavy contacts
-            // get longer arrows than light ones while keeping the orientation.
             let v = tip_screen - p_screen;
             let v_len = v.length().max(1e-3);
             let scaled_tip = p_screen + v * (scale / v_len);
             Self::draw_screen_arrow(painter, p_screen, scaled_tip, arrow_color, 2.0);
-            // Compose label: "<force>  <body1>↔<body2>". For ground
-            // contacts (body1 or body2 empty), abbreviate with "world".
-            let pair_label = match (c.body1.as_str(), c.body2.as_str()) {
+
+            // Compose label: "<sum>  <body1>↔<body2> ×<n>" so the user knows
+            // multiple contacts were aggregated. Ground contacts (one body
+            // empty) become "world↔<link>".
+            let pair_label = match (agg.body1.as_str(), agg.body2.as_str()) {
                 ("", "") => String::new(),
                 ("", b) => format!("world↔{}", b),
                 (a, "") => format!("{}↔world", a),
                 (a, b) => format!("{}↔{}", a, b),
             };
-            let force_label = format!("{:.1} N", c.force_mag);
-            let label = if pair_label.is_empty() {
-                force_label
+            let count_label = if agg.n > 1 {
+                format!(" ×{}", agg.n)
             } else {
-                format!("{}  {}", force_label, pair_label)
+                String::new()
+            };
+            let force_label = format_force(force_mag);
+            let label = if pair_label.is_empty() {
+                format!("{force_label}{count_label}")
+            } else {
+                format!("{force_label}  {pair_label}{count_label}")
             };
             painter.text(
                 scaled_tip + egui::vec2(4.0, -10.0),
@@ -1723,5 +1785,22 @@ impl ArticaraApp {
                 }
             }
         }
+    }
+}
+
+/// Format a Newton magnitude with sensible unit auto-scaling so the overlay
+/// stays readable when contacts span six orders of magnitude:
+///   * < 1 kN  → "%.1f N"
+///   * < 1 MN  → "%.2f kN"
+///   *  ≥ 1 MN → "%.2f MN"
+#[cfg(feature = "mujoco")]
+fn format_force(mag: f32) -> String {
+    let a = mag.abs();
+    if a >= 1.0e6 {
+        format!("{:.2} MN", mag / 1.0e6)
+    } else if a >= 1.0e3 {
+        format!("{:.2} kN", mag / 1.0e3)
+    } else {
+        format!("{:.1} N", mag)
     }
 }
