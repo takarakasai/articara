@@ -390,24 +390,32 @@ impl MujocoSim {
         // starts in the same pose the editor is showing. The MJCF only carries
         // structure; per-joint qpos defaults to 0 unless we write them here.
         //
-        // **Clamp to the joint's [lower, upper] range** when the joint declares
-        // one and the limit is being baked into MJCF. Without this guard a
-        // model whose stored home pose sits outside its own joint limits
-        // (e.g. a quadruped with calf range [-2.7, -0.84] but home = 0.0)
-        // starts MuJoCo with qpos violating a hard constraint — the contact /
-        // jointlimit solver pushes it back into range with huge force while
-        // the Position-PD actuator simultaneously drives toward the original
-        // (out-of-range) target. Net effect is a violent oscillation that
-        // looks like the robot is shaking on the ground.
+        // **Clamp to the joint's [lower, upper] range whenever the joint
+        // declares one** (lower < upper). The clamp is unconditional — not
+        // gated on `bake_joint_position_limits` — because the failure mode
+        // it guards against bites regardless of whether MuJoCo enforces the
+        // limit:
+        //
+        //   * limits baked    → MuJoCo's hard-constraint solver shoves the
+        //                       joint back into range with a huge spike at
+        //                       t=0 (origin of the "robot explodes" symptom).
+        //   * limits NOT baked → the PD actuator drives toward the stored
+        //                       (out-of-range) target while gravity + self-
+        //                       collision impulses act on a kinematically
+        //                       invalid pose — the first sim step can fling
+        //                       a joint by π radians.
+        //
+        // A real motor can't physically reach an angle outside its mechanical
+        // range, so silently starting the sim there is never the right
+        // behaviour; clamp and log a warn! so the user knows to fix the
+        // source model's home_pose.
         let mut seeded_positions = robot.joint_positions.clone();
+        let _ = bake_joint_position_limits; // kept for symmetry with the older path
         for (ji, joint) in robot.joints.iter().enumerate() {
             if joint.joint_type == "fixed" {
                 continue;
             }
-            // Only clamp when the joint really has a limit (lower < upper)
-            // and we're baking that limit into MJCF — otherwise leave the
-            // value alone so velocity / floating-base joints aren't touched.
-            if bake_joint_position_limits && joint.lower < joint.upper {
+            if joint.lower < joint.upper {
                 let q = seeded_positions[ji].clamp(joint.lower, joint.upper);
                 if (q - seeded_positions[ji]).abs() > 1e-9 {
                     log::warn!(
