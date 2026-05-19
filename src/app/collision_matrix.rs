@@ -48,6 +48,55 @@ impl ArticaraApp {
         let mut toggles: Vec<(String, String)> = Vec::new();
         let mut clear_all = false;
         let mut disable_all = false;
+        let mut exclude_joint_connected = false;
+        let mut exclude_currently_colliding = false;
+
+        // Pre-compute the parent-child link pairs (from joints) so the
+        // "Exclude joint-connected" button can populate them, and so we
+        // can dim those rows in the matrix to flag them as already-
+        // excluded by the auto-exclude logic in `mjcf::write_mjcf_contact_excludes`.
+        let mut joint_pairs: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        if let Some(model) = self.model.as_ref() {
+            for j in &model.joints {
+                if j.parent_link == j.child_link {
+                    continue;
+                }
+                let (a, b) = if j.parent_link <= j.child_link {
+                    (j.parent_link.clone(), j.child_link.clone())
+                } else {
+                    (j.child_link.clone(), j.parent_link.clone())
+                };
+                joint_pairs.insert((a, b));
+            }
+        }
+
+        // Pre-compute the currently-colliding pairs from MuJoCo (if a sim
+        // is running). Sourced from the same `contacts()` API the overlay
+        // uses, filtered to drop ground contacts (where one body is empty
+        // = world) so the "exclude colliding" button only ever affects
+        // self-collision pairs.
+        #[cfg(feature = "mujoco")]
+        let currently_colliding: std::collections::HashSet<(String, String)> = self
+            .mujoco_sim
+            .as_ref()
+            .map(|sim| {
+                sim.contacts()
+                    .into_iter()
+                    .filter(|c| !c.body1.is_empty() && !c.body2.is_empty())
+                    .map(|c| {
+                        if c.body1 <= c.body2 {
+                            (c.body1.clone(), c.body2.clone())
+                        } else {
+                            (c.body2.clone(), c.body1.clone())
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        #[cfg(not(feature = "mujoco"))]
+        let currently_colliding: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
 
         egui::Window::new("🛡 Collision Pair Matrix")
             .open(&mut open)
@@ -64,7 +113,40 @@ impl ArticaraApp {
                     .small()
                     .weak(),
                 );
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .button("🔗 Exclude joint-connected")
+                        .on_hover_text(
+                            "URDF convention: links directly connected by a \
+                             joint should not collide with each other. \
+                             Adds an exclusion entry for every (parent, child) \
+                             pair listed in the model. Already-excluded pairs \
+                             are kept unchanged.",
+                        )
+                        .clicked()
+                    {
+                        exclude_joint_connected = true;
+                    }
+                    let n_colliding = currently_colliding.len();
+                    let label = if n_colliding > 0 {
+                        format!("⚠ Exclude currently colliding ({n_colliding})")
+                    } else {
+                        "⚠ Exclude currently colliding".to_string()
+                    };
+                    if ui
+                        .add_enabled(n_colliding > 0, egui::Button::new(&label))
+                        .on_hover_text(
+                            "Snapshot the link pairs MuJoCo is reporting \
+                             contacts for right now (self-collisions only — \
+                             ground contacts are skipped) and add them all \
+                             as excluded pairs. Useful after Play MuJoCo \
+                             reveals an unwanted overlap.",
+                        )
+                        .clicked()
+                    {
+                        exclude_currently_colliding = true;
+                    }
+                    ui.separator();
                     if ui
                         .button("Reset (all collide)")
                         .on_hover_text("Remove every explicit pair so the model falls back to default-collide behaviour.")
@@ -83,13 +165,15 @@ impl ArticaraApp {
                     {
                         disable_all = true;
                     }
+                });
+                ui.horizontal(|ui| {
                     let n_disabled = enabled_map.values().filter(|v| !**v).count();
                     let n_enabled_explicit =
                         enabled_map.values().filter(|v| **v).count();
                     ui.label(
                         egui::RichText::new(format!(
-                            "  {} excluded · {} explicit-enabled",
-                            n_disabled, n_enabled_explicit,
+                            "{} excluded · {} explicit-enabled · {} joint-connected (auto-excluded on export)",
+                            n_disabled, n_enabled_explicit, joint_pairs.len(),
                         ))
                         .small()
                         .weak(),
@@ -195,6 +279,44 @@ impl ArticaraApp {
                     }
                 }
                 model.collision_pairs = new_pairs;
+            }
+            // Bulk-exclude every (parent, child) link pair from the joint
+            // list. Existing user-defined entries for the same pair are
+            // replaced so the final state is unambiguous "excluded".
+            if exclude_joint_connected {
+                let pairs_to_add: Vec<(String, String)> =
+                    joint_pairs.iter().cloned().collect();
+                let mut added = 0usize;
+                for (a, b) in &pairs_to_add {
+                    model.collision_pairs.retain(|p| !p.matches(a, b));
+                    model
+                        .collision_pairs
+                        .push(CollisionPair::new(a.clone(), b.clone(), false));
+                    added += 1;
+                }
+                self.status_message = format!(
+                    "🔗 Marked {} joint-connected pair(s) as excluded",
+                    added
+                );
+            }
+            // Snapshot the currently-active self-collision pairs (taken
+            // before the closure ran above to keep the matrix grid borrow
+            // chain clean) and add them as excluded.
+            if exclude_currently_colliding {
+                let mut added = 0usize;
+                for (a, b) in &currently_colliding {
+                    model.collision_pairs.retain(|p| !p.matches(a, b));
+                    model
+                        .collision_pairs
+                        .push(CollisionPair::new(a.clone(), b.clone(), false));
+                    added += 1;
+                }
+                if added > 0 {
+                    self.status_message = format!(
+                        "⚠ Marked {} currently-colliding pair(s) as excluded",
+                        added,
+                    );
+                }
             }
         }
 

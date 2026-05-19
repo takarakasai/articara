@@ -109,6 +109,21 @@ impl ArticaraApp {
                     ui.close();
                 }
 
+                // --- Collision Pair editor ---
+                if ui
+                    .add_enabled(has_model, egui::Button::new("🛡 Collision Pairs…"))
+                    .on_hover_text(
+                        "Open the link × link collision-pair editor. \
+                         Pre-populate joint-connected exclusions, or import \
+                         the live MuJoCo contact set with one click.",
+                    )
+                    .clicked()
+                {
+                    self.show_collision_matrix = true;
+                    ui.close();
+                }
+                ui.separator();
+
                 // --- Auto-compute inertia for ALL links ---
                 if ui.add_enabled(has_model, egui::Button::new("⚡ Auto-compute All Inertia"))
                     .on_hover_text("Re-compute inertia tensors for every link from visual geometries (uniform density)")
