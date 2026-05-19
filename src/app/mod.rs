@@ -683,6 +683,8 @@ pub struct ArticaraApp {
     rename_joint_buf: String,
     /// Whether the collision-pair matrix dialog is open.
     show_collision_matrix: bool,
+    /// Whether the actuator-settings dialog is open.
+    show_actuator_dialog: bool,
     /// Pending `.misa` LoadReport surfaced as a dialog after load.
     /// `None` when nothing to show (or already dismissed). The dialog
     /// closes itself when the user clicks OK; we don't auto-clear so the
@@ -1023,6 +1025,7 @@ impl ArticaraApp {
             rename_link_buf: String::new(),
             rename_joint_buf: String::new(),
             show_collision_matrix: false,
+            show_actuator_dialog: false,
             pending_misa_report: None,
             #[cfg(feature = "mujoco")]
             pending_mujoco_warning: match crate::mujoco_version::cached() {
@@ -2203,6 +2206,7 @@ mod script_console;
 mod peaks_plot_window;
 #[cfg(feature = "mujoco")]
 mod sim_drag;
+mod actuator_dialog;
 mod collision_matrix;
 mod misa_report_dialog;
 #[cfg(feature = "mujoco")]
@@ -2356,6 +2360,7 @@ impl eframe::App for ArticaraApp {
 
         // --- Collision pair matrix dialog ---
         self.draw_collision_matrix_window(&ctx);
+        self.draw_actuator_dialog(&ctx);
         self.draw_misa_report_dialog(&ctx);
         #[cfg(feature = "mujoco")]
         self.draw_mujoco_warning_dialog(&ctx);
