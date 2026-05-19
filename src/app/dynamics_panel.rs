@@ -169,6 +169,11 @@ impl ArticaraApp {
                                 bake_joint_position_limits: bake,
                                 mesh_path_style:
                                     crate::mesh_paths::MeshPathStyle::default(),
+                                default_friction: [
+                                    self.sim_default_friction,
+                                    0.005,
+                                    0.0001,
+                                ],
                             };
                             match crate::mujoco_sim::MujocoSim::new(model, opts) {
                                 Ok(mut sim) => {
@@ -419,6 +424,38 @@ impl ArticaraApp {
                                     self.enforce_gravity_compensation,
                                 );
                             }
+                        }
+                    });
+                    // Default sliding-friction coefficient baked into MJCF
+                    // at MuJoCo init. Changes only take effect at the next
+                    // Stop → Play (MuJoCo compiles the value in once).
+                    ui.horizontal(|ui| {
+                        ui.label("🪨 Friction μ:");
+                        let resp = ui.add(
+                            egui::Slider::new(
+                                &mut self.sim_default_friction,
+                                0.0..=2.0,
+                            )
+                            .fixed_decimals(2),
+                        )
+                        .on_hover_text(
+                            "Default sliding-friction coefficient applied \
+                             to every emitted MJCF geom (ground plane, foot \
+                             collisions, link colliders). MuJoCo combines \
+                             contact pairs via per-axis max, so foot-on-ground \
+                             at this μ from both sides gives a contact μ \
+                             equal to the slider. Bake-time setting — changes \
+                             require Stop → Play to take effect on a \
+                             running sim.",
+                        );
+                        if ui.small_button("0.7").on_hover_text("Reset to default (0.7)").clicked() {
+                            self.sim_default_friction = 0.7;
+                        }
+                        if sim_active && resp.changed() {
+                            self.status_message = format!(
+                                "🪨 Friction μ = {:.2} — Stop → Play to apply",
+                                self.sim_default_friction,
+                            );
                         }
                     });
                     // Mouse-drag interaction during sim:

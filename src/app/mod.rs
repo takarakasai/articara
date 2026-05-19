@@ -685,6 +685,12 @@ pub struct ArticaraApp {
     show_collision_matrix: bool,
     /// Whether the actuator-settings dialog is open.
     show_actuator_dialog: bool,
+    /// Default sliding-friction coefficient (μ_slide) applied to every
+    /// emitted MJCF geom — see [`crate::mjcf::MjcfExportOptions::default_friction`].
+    /// Surfaced as a Sim-toggles slider so the user can sweep
+    /// foot-on-ground μ without editing the misa. Baked into MJCF at
+    /// MuJoCo init, so changes require Stop → Play to take effect.
+    sim_default_friction: f64,
     /// Persistent bulk-edit slot state for the actuator dialog. Kept here
     /// rather than as a closure-local so the user's "include in bulk write"
     /// toggles and values survive across UI ticks.
@@ -1031,6 +1037,10 @@ impl ArticaraApp {
             show_collision_matrix: false,
             show_actuator_dialog: false,
             actuator_bulk: actuator_dialog::BulkEdit::default(),
+            // Matches `MjcfExportOptions::default()` so the value the user
+            // sees on the slider equals what gets baked into MJCF if they
+            // never touch it.
+            sim_default_friction: 0.7,
             pending_misa_report: None,
             #[cfg(feature = "mujoco")]
             pending_mujoco_warning: match crate::mujoco_version::cached() {
