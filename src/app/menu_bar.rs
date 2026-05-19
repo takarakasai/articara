@@ -122,6 +122,21 @@ impl ArticaraApp {
                     self.show_collision_matrix = true;
                     ui.close();
                 }
+
+                // --- Actuator settings ---
+                if ui
+                    .add_enabled(has_model, egui::Button::new("⚙ Actuator Settings…"))
+                    .on_hover_text(
+                        "Edit per-joint actuator mode / Kp / Kv / armature / damping. \
+                         Includes a one-click 'namiashi preset' that puts every joint in \
+                         a numerically-stable Position-mode PD regime (Kp=100, Kv=1.2, \
+                         armature=0.0014).",
+                    )
+                    .clicked()
+                {
+                    self.show_actuator_dialog = true;
+                    ui.close();
+                }
                 ui.separator();
 
                 // --- Auto-compute inertia for ALL links ---
