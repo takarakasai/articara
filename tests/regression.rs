@@ -840,6 +840,83 @@ mod test_mjcf {
         assert_eq!(model.links.len(), model2.links.len());
         assert_eq!(model.joints.len(), model2.joints.len());
     }
+
+    /// Regression: when the MJCF auto-lifts the root (`base_pos = None`) it
+    /// must clear primitive shapes like foot spheres, not just joint origins.
+    /// Pre-fix, `compute_initial_z` walked only joint-origin Z values and
+    /// ignored sphere radii — so a foot with a collision sphere of radius
+    /// 0.022 m penetrated the ground at t=0 by ~0.022 m and MuJoCo bounced
+    /// the robot violently. Lift must place the lowest visual point at least
+    /// `clearance - epsilon` above the ground plane.
+    #[test]
+    fn mjcf_auto_lift_clears_foot_sphere() {
+        use articara::rbd::model::{CollisionData, VisualData, GeomData};
+        use articara::robot::RobotModel;
+        use articara::mjcf::{export_mjcf_with_options, MjcfExportOptions, GroundPlaneCfg};
+
+        // Build a tiny model: 1 link with a sphere visual (and matching
+        // collision) offset 0.5 m below the root, sphere radius 0.022 m.
+        // No URDF round-trip — we construct directly so the test stays
+        // self-contained.
+        let mut model = RobotModel::from_urdf(&fixture_urdf()).expect("fixture URDF");
+        // Add a foot-style sphere visual + collision under the first link,
+        // offset by -0.5 m in Z (joint-origin-only logic would only see the
+        // -0.5; our fix must additionally see the sphere radius).
+        let mut foot_origin = nalgebra::Isometry3::identity();
+        foot_origin.translation.z = -0.5;
+        model.links[0].visuals.push(VisualData {
+            origin: foot_origin,
+            geometry: GeomData::Sphere { radius: 0.022 },
+            color: [1.0; 4],
+        });
+        model.links[0].collisions.push(CollisionData {
+            origin: foot_origin,
+            geometry: GeomData::Sphere { radius: 0.022 },
+        });
+
+        let opts = MjcfExportOptions {
+            base_pos: None, // auto-lift
+            ground_plane: Some(GroundPlaneCfg {
+                z: 0.0,
+                half_size: 1.0,
+                roll: 0.0,
+                pitch: 0.0,
+            }),
+            add_actuators: false,
+            base_locked_axes: [false; 6],
+            bake_actuator_limits: false,
+            bake_joint_position_limits: false,
+            mesh_path_style: articara::mesh_paths::MeshPathStyle::Absolute,
+        };
+        let xml = export_mjcf_with_options(&model, opts);
+
+        // Extract the root <body name="base_link" pos="x y z"> Z component.
+        // Anchor on the root link name so we don't accidentally match the
+        // ground geom's `pos="0 0 0"`.
+        let needle = format!("<body name=\"{}\" pos=\"", model.root_link);
+        let i = xml.find(&needle).expect("root body header present");
+        let rest = &xml[i + needle.len()..];
+        let end = rest.find('"').expect("closing quote for root pos=");
+        let parts: Vec<f64> = rest[..end]
+            .split_whitespace()
+            .map(|s| s.parse().unwrap())
+            .collect();
+        assert_eq!(parts.len(), 3, "root pos= should have 3 components");
+        let root_z = parts[2];
+
+        // Required: root_z + (-0.5) - 0.022 >= 0.0 (foot sphere bottom
+        // ≥ ground), with a small clearance margin.
+        let foot_bottom = root_z - 0.5 - 0.022;
+        assert!(
+            foot_bottom >= 0.0,
+            "foot sphere bottom should clear ground; root_z={root_z}, foot_bottom={foot_bottom}"
+        );
+        // Sanity: clearance shouldn't be absurd (sub-cm range is the design).
+        assert!(
+            foot_bottom < 0.05,
+            "clearance should be small (~5 mm); got foot_bottom={foot_bottom}"
+        );
+    }
 }
 
 // ============================================================

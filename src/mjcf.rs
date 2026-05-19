@@ -672,8 +672,30 @@ pub fn export_mjcf_with_options(
     }
 
     // Either honour the user-supplied base position or auto-lift the root so
-    // the lowest link sits just above the ground plane.
-    let root_pos = base_pos.unwrap_or_else(|| [0.0, 0.0, compute_initial_z(model)]);
+    // the lowest visual geometry sits ~5 mm above the active ground plane.
+    // `compute_initial_z` walked only joint-origin Z and ignored geom shapes
+    // (sphere radius, capsule half-length, mesh extent) — for any robot with
+    // collision spheres / capsules on its feet that produced a t=0 contact
+    // penetration which MuJoCo's contact solver answered with a violent
+    // bounce. `RobotModel::compute_min_z` samples the actual visual primitives.
+    let root_pos = match base_pos {
+        Some(p) => p,
+        None => {
+            const CLEARANCE_M: f64 = 0.005;
+            // model_min_z is in world coords with the current base_transform
+            // applied; we want body-relative min_z so subtract the base's
+            // current Z out before re-applying the new root_z below.
+            let base_z = model.base_transform.translation.z as f64;
+            let local_min_z = model
+                .compute_min_z()
+                .map(|z| z as f64 - base_z)
+                .unwrap_or_else(|| compute_initial_z_legacy(model) * -1.0 + 0.01);
+            let ground_z = ground_plane.as_ref().map(|g| g.z).unwrap_or(0.0);
+            // Solve  root_z + local_min_z = ground_z + clearance  for root_z.
+            let root_z = ground_z + CLEARANCE_M - local_min_z;
+            [0.0, 0.0, root_z]
+        }
+    };
     let base_spec = BaseSpec { pos: root_pos, locked: base_locked_axes };
     write_mjcf_body(
         &mut s,
@@ -922,9 +944,11 @@ fn write_mjcf_actuators(s: &mut String, model: &RobotModel, bake_limits: bool) {
 }
 
 /// Computes the minimum cumulative z translation in the kinematic chain
-/// (all joints at zero). Returns how much to lift the root so the lowest
-/// link is just above z = 0.
-fn compute_initial_z(model: &RobotModel) -> f64 {
+/// Legacy joint-origin-only fallback. Used only when `compute_min_z` returns
+/// `None` (e.g. a model with no visual geometry at all). For models with
+/// visuals, the auto-lift path uses `RobotModel::compute_min_z` directly
+/// because it accounts for primitive shapes (sphere radius etc.).
+fn compute_initial_z_legacy(model: &RobotModel) -> f64 {
     fn min_z_recursive(model: &RobotModel, link: &str, z: f64) -> f64 {
         let mut min = z;
         if let Some(children) = model.children_joints.get(link) {
@@ -935,8 +959,7 @@ fn compute_initial_z(model: &RobotModel) -> f64 {
         }
         min
     }
-    let min_z = min_z_recursive(model, &model.root_link, 0.0);
-    if min_z < 0.0 { -min_z + 0.01 } else { 0.01 }
+    min_z_recursive(model, &model.root_link, 0.0)
 }
 
 /// World-frame placement + per-axis lock state for the root body.
