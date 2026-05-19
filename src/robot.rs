@@ -1625,7 +1625,23 @@ impl RobotModel {
     /// joint limits, joint origin, joint axis), and serializes.
     /// For models created from scratch (no source_path), generates URDF XML directly.
     pub fn export_urdf(&self) -> Result<String, String> {
-        if self.source_path.is_none() {
+        // The "re-read source, patch fields, re-serialise" path is only
+        // valid when the source actually IS a URDF — otherwise `urdf_rs`
+        // chokes on whatever it finds (`.misa` TOML, etc.) and the whole
+        // export aborts with a misleading "Re-read URDF error". For non-
+        // URDF sources (and for models built in memory) fall back to the
+        // from-scratch XML generator.
+        let is_urdf_source = self
+            .source_path
+            .as_ref()
+            .and_then(|p| p.extension())
+            .and_then(|e| e.to_str())
+            .map(|ext| {
+                let lc = ext.to_ascii_lowercase();
+                lc == "urdf" || lc == "xacro"
+            })
+            .unwrap_or(false);
+        if !is_urdf_source {
             return Ok(self.generate_urdf_xml());
         }
         let source = self

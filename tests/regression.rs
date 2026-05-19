@@ -957,6 +957,31 @@ mod test_mjcf {
         );
     }
 
+    /// Regression: `export_urdf` previously called `urdf_rs::read_file` on
+    /// the source path unconditionally — when the model was loaded from a
+    /// `.misa` file the TOML parser was handed to `urdf_rs` and the whole
+    /// export aborted with a misleading "Re-read URDF error". Non-URDF
+    /// sources must fall back to the from-scratch `generate_urdf_xml`
+    /// generator.
+    #[test]
+    fn export_urdf_from_misa_source_falls_back_to_scratch_generator() {
+        // Build a fresh model in memory (no source_path) so we exercise the
+        // "non-URDF source" path. Setting source_path to a fake `.misa`
+        // path forces the branch we want to test even without producing a
+        // real .misa file on disk.
+        let mut model = articara::robot::RobotModel::from_urdf(&fixture_urdf()).unwrap();
+        model.source_path = Some(std::path::PathBuf::from("/tmp/nonexistent.misa"));
+        let xml = model.export_urdf().expect(
+            "export_urdf should succeed for .misa source — the loader \
+             must NOT try to re-read a .misa as URDF",
+        );
+        assert!(xml.contains("<robot"), "exported XML should contain <robot>");
+        assert!(
+            xml.contains(&format!("<link name=\"{}\"", model.root_link)),
+            "exported URDF should contain the root link"
+        );
+    }
+
     /// Regression: mesh-reference scale must be forwarded into the MJCF
     /// `<mesh>` asset element. Pre-fix, `<mesh name="..." file="..."/>`
     /// dropped the scale, so a millimetre-unit OBJ tagged with
