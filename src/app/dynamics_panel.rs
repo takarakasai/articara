@@ -39,41 +39,9 @@ impl ArticaraApp {
                     return;
                 }
 
-                // --- End-effector link selector for payload ---
-                let link_names: Vec<String> = self
-                    .model
-                    .as_ref()
-                    .unwrap()
-                    .links
-                    .iter()
-                    .map(|l| l.name.clone())
-                    .collect();
-
-                ui.horizontal(|ui| {
-                    ui.label("EE link:");
-                    let current_label = self
-                        .dynamics_ee_link
-                        .as_deref()
-                        .unwrap_or("(select)")
-                        .to_string();
-                    egui::ComboBox::from_id_salt("dynamics_ee_link")
-                        .selected_text(&current_label)
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(self.dynamics_ee_link.is_none(), "(none)")
-                                .clicked()
-                            {
-                                self.dynamics_ee_link = None;
-                            }
-                            for name in &link_names {
-                                let sel =
-                                    self.dynamics_ee_link.as_deref() == Some(name.as_str());
-                                if ui.selectable_label(sel, name).clicked() {
-                                    self.dynamics_ee_link = Some(name.clone());
-                                }
-                            }
-                        });
-                });
+                // EE link selector lives in the "Payload simulation" group
+                // below — it only applies to Play Payload (and is an
+                // optional hint to Analyze). Play MuJoCo doesn't need it.
 
                 // --- Speed slider ---
                 ui.horizontal(|ui| {
@@ -155,9 +123,15 @@ impl ArticaraApp {
                 }
 
                 ui.horizontal(|ui| {
-                    // Static analysis
+                    // Static analysis — uses EE link if one is set, otherwise
+                    // reports whole-model torques.
                     if ui
                         .add_enabled(!sim_active, egui::Button::new("📊 Analyze"))
+                        .on_hover_text(
+                            "Static torque analysis at current pose. EE link is \
+                             optional — open the Payload simulation section below \
+                             to set one and include payload-side results.",
+                        )
                         .clicked()
                     {
                         if let Some(ref model) = self.model {
@@ -166,31 +140,6 @@ impl ArticaraApp {
                                 self.dynamics_ee_link.as_deref(),
                             );
                             self.dynamics_result = Some(result);
-                        }
-                    }
-
-                    // Payload simulation
-                    let can_payload = !sim_active && self.dynamics_ee_link.is_some();
-                    if ui
-                        .add_enabled(can_payload, egui::Button::new("🏋 Play Payload"))
-                        .on_hover_text(
-                            "Gradually load the end-effector and visualise joint torque utilisation",
-                        )
-                        .clicked()
-                    {
-                        if let Some(ref model) = self.model {
-                            let ee = self.dynamics_ee_link.as_deref().unwrap_or("");
-                            if let Some(sim) = dynamics::start_payload_sim(
-                                model,
-                                ee,
-                                self.dynamics_sim_speed as f64,
-                            ) {
-                                self.dynamics_sim = Some(DynSim::Payload(sim));
-                            } else {
-                                self.status_message =
-                                    "Cannot start payload sim (no effort limits or 0 capacity?)"
-                                        .into();
-                            }
                         }
                     }
 
@@ -263,6 +212,94 @@ impl ArticaraApp {
                         }
                     }
                 });
+
+                // --- Payload simulation (manipulator-style EE loading) ---
+                // Niche feature: gradually loads a chosen end-effector link to
+                // visualise joint-torque saturation. Useless for legged
+                // robots (gait sim), so wrap it in a collapsing header that
+                // stays closed by default — keeps it discoverable without
+                // cluttering the main controls or surfacing "0 capacity"
+                // errors during normal walk workflows.
+                ui.add_space(4.0);
+                egui::CollapsingHeader::new("🏋 Payload simulation (manipulator)")
+                    .default_open(false)
+                    .id_salt("dyn_payload_sim")
+                    .show(ui, |ui| {
+                        let link_names: Vec<String> = self
+                            .model
+                            .as_ref()
+                            .unwrap()
+                            .links
+                            .iter()
+                            .map(|l| l.name.clone())
+                            .collect();
+
+                        ui.horizontal(|ui| {
+                            ui.label("EE link:");
+                            let current_label = self
+                                .dynamics_ee_link
+                                .as_deref()
+                                .unwrap_or("(select)")
+                                .to_string();
+                            egui::ComboBox::from_id_salt("dynamics_ee_link")
+                                .selected_text(&current_label)
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(
+                                            self.dynamics_ee_link.is_none(),
+                                            "(none)",
+                                        )
+                                        .clicked()
+                                    {
+                                        self.dynamics_ee_link = None;
+                                    }
+                                    for name in &link_names {
+                                        let sel = self.dynamics_ee_link.as_deref()
+                                            == Some(name.as_str());
+                                        if ui.selectable_label(sel, name).clicked() {
+                                            self.dynamics_ee_link = Some(name.clone());
+                                        }
+                                    }
+                                });
+                        });
+
+                        let can_payload =
+                            !sim_active && self.dynamics_ee_link.is_some();
+                        let payload_hover: &str = if sim_active {
+                            "⚠ Another simulation is already running — stop it first."
+                        } else if self.dynamics_ee_link.is_none() {
+                            "⚠ Pick an EE link above first (the payload is applied to that link)."
+                        } else {
+                            "Gradually load the end-effector and visualise joint torque utilisation"
+                        };
+                        if ui
+                            .add_enabled(
+                                can_payload,
+                                egui::Button::new("🏋 Play Payload"),
+                            )
+                            .on_hover_text(payload_hover)
+                            .clicked()
+                        {
+                            if let Some(ref model) = self.model {
+                                let ee = self
+                                    .dynamics_ee_link
+                                    .as_deref()
+                                    .unwrap_or("");
+                                if let Some(sim) = dynamics::start_payload_sim(
+                                    model,
+                                    ee,
+                                    self.dynamics_sim_speed as f64,
+                                ) {
+                                    self.dynamics_sim =
+                                        Some(DynSim::Payload(sim));
+                                } else {
+                                    self.status_message =
+                                        "Cannot start payload sim (no effort limits or 0 capacity?)"
+                                            .into();
+                                }
+                            }
+                        }
+                    });
 
                 // --- MuJoCo floating-base initial position + lock ---
                 // Wrapped in a collapsing header so users who only need the
