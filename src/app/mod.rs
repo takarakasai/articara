@@ -685,6 +685,10 @@ pub struct ArticaraApp {
     show_collision_matrix: bool,
     /// Whether the actuator-settings dialog is open.
     show_actuator_dialog: bool,
+    /// Persistent bulk-edit slot state for the actuator dialog. Kept here
+    /// rather than as a closure-local so the user's "include in bulk write"
+    /// toggles and values survive across UI ticks.
+    actuator_bulk: actuator_dialog::BulkEdit,
     /// Pending `.misa` LoadReport surfaced as a dialog after load.
     /// `None` when nothing to show (or already dismissed). The dialog
     /// closes itself when the user clicks OK; we don't auto-clear so the
@@ -1026,6 +1030,7 @@ impl ArticaraApp {
             rename_joint_buf: String::new(),
             show_collision_matrix: false,
             show_actuator_dialog: false,
+            actuator_bulk: actuator_dialog::BulkEdit::default(),
             pending_misa_report: None,
             #[cfg(feature = "mujoco")]
             pending_mujoco_warning: match crate::mujoco_version::cached() {

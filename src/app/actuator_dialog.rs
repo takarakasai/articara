@@ -27,13 +27,18 @@ mod namiashi_preset {
     pub const JOINT_DAMPING: f64 = 0.1;
 }
 
+/// Bulk-apply field state for the actuator dialog. Held on `ArticaraApp`
+/// so the user's slot toggles + values survive across frames — the dialog
+/// closure runs every UI tick, so a stack-local would reset to `None` and
+/// the "Include in bulk write" checkboxes would appear to flip off the
+/// instant they are clicked.
 #[derive(Clone, Copy, Default)]
-struct BulkEdit {
-    mode: Option<ActuatorMode>,
-    kp: Option<f64>,
-    kv: Option<f64>,
-    armature: Option<f64>,
-    joint_damping: Option<f64>,
+pub(super) struct BulkEdit {
+    pub(super) mode: Option<ActuatorMode>,
+    pub(super) kp: Option<f64>,
+    pub(super) kv: Option<f64>,
+    pub(super) armature: Option<f64>,
+    pub(super) joint_damping: Option<f64>,
 }
 
 impl ArticaraApp {
@@ -49,10 +54,11 @@ impl ArticaraApp {
         let mut per_joint_edits: Vec<(usize, JointFieldEdit)> = Vec::new();
         let mut apply_namiashi_all = false;
         let mut bulk_apply: Option<BulkEdit> = None;
-        // Bulk edit field state (kept in `self`-style stack vars because the
-        // dialog doesn't have a persistent UI struct; values reset every
-        // frame the dialog is open).
-        let mut bulk = BulkEdit::default();
+        // Bulk-edit slot state lives on `self.actuator_bulk` so toggles and
+        // values persist across UI ticks (previously a stack-local that
+        // reset every frame, which made the slot checkboxes appear to
+        // deselect themselves the moment they were clicked).
+        let mut bulk = self.actuator_bulk;
 
         egui::Window::new("⚙ Actuator Settings")
             .open(&mut open)
@@ -231,6 +237,12 @@ impl ArticaraApp {
                             });
                     });
             });
+
+        // Persist the bulk-edit slot state so it survives the next frame's
+        // closure re-entry. Even if the user only flipped a checkbox (no
+        // Apply yet), this keeps the slot ON until they explicitly turn
+        // it back off.
+        self.actuator_bulk = bulk;
 
         // Apply queued edits with &mut self.
         if let Some(model) = self.model.as_mut() {
