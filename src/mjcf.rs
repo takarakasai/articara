@@ -522,6 +522,16 @@ pub struct MjcfExportOptions {
     /// [`MeshPathStyle::RelativeToDir`] and call
     /// [`crate::mesh_paths::copy_meshes_to`] afterwards.
     pub mesh_path_style: crate::mesh_paths::MeshPathStyle,
+    /// Default contact friction for every emitted geom, ordered
+    /// `[sliding, torsional, rolling]`. Emitted into MJCF's
+    /// `<default><geom friction="..."/></default>` so ground plane,
+    /// foot collisions, and every link collider inherit the same value.
+    /// MuJoCo combines contact pairs by per-axis `max`, so foot-on-ground
+    /// at this μ from both sides gives a contact μ equal to `sliding`.
+    /// Default `[0.7, 0.005, 0.0001]` — μ_slide=0.7 sits in the middle of
+    /// the realistic rubber-on-lab-floor range (0.4–1.0) and matches
+    /// MPC `friction_mu` defaults.
+    pub default_friction: [f64; 3],
 }
 
 impl Default for MjcfExportOptions {
@@ -534,6 +544,7 @@ impl Default for MjcfExportOptions {
             bake_actuator_limits: true,
             bake_joint_position_limits: true,
             mesh_path_style: crate::mesh_paths::MeshPathStyle::default(),
+            default_friction: [0.7, 0.005, 0.0001],
         }
     }
 }
@@ -591,6 +602,7 @@ pub fn export_mjcf_with_options(
         bake_actuator_limits,
         bake_joint_position_limits,
         mesh_path_style,
+        default_friction,
     } = opts;
     let mut s = String::new();
     s.push_str(&format!(
@@ -601,17 +613,18 @@ pub fn export_mjcf_with_options(
     s.push_str("  <compiler angle=\"radian\"/>\n\n");
 
     // Sim-side default contact friction. MuJoCo's built-in default
-    // (μ_sliding = 1.0) is artificially high — it overshoots typical
-    // real-robot rubber-on-lab-floor values (0.4 – 0.7) and creates a
-    // mismatch with the MPC's `friction_mu` (0.5 by design here).
-    // Setting `<default><geom friction="0.5 0.005 0.0001"/></default>`
-    // makes every emitted geom — ground plane, foot collisions, link
-    // colliders — start at μ_sliding = 0.5. Contact pairs combine via
-    // MuJoCo's default policy (per-axis `max` of the two geoms'
-    // friction values), so foot-on-ground at 0.5 both ends gives a
-    // contact μ of 0.5 — exactly what the MPC plans against.
+    // (μ_sliding = 1.0) overshoots typical rubber-on-lab-floor values.
+    // The host plumbs the desired value through `default_friction`
+    // (default 0.7) so every emitted geom — ground plane, foot collisions,
+    // link colliders — inherits the same μ. Contact pairs combine via
+    // MuJoCo's per-axis `max` policy, so foot-on-ground at this μ from
+    // both sides gives a contact μ equal to `default_friction[0]` —
+    // matching what the MPC and gait planner expect.
     s.push_str("  <default>\n");
-    s.push_str("    <geom friction=\"0.5 0.005 0.0001\"/>\n");
+    s.push_str(&format!(
+        "    <geom friction=\"{} {} {}\"/>\n",
+        default_friction[0], default_friction[1], default_friction[2],
+    ));
     s.push_str("  </default>\n\n");
 
     // Mesh path resolution: delegate to the shared helper so all three
