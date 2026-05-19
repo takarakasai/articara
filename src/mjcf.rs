@@ -1033,19 +1033,46 @@ fn write_mjcf_body(
         // else: all 6 locked → no joint emitted; body welds to world at `pos`.
     }
 
-    // Inertial
+    // Inertial.
+    //
+    // When the link reports non-zero products of inertia (`ixy / ixz / iyz`)
+    // the inertia tensor's principal axes are rotated relative to the link
+    // frame — emitting only `diaginertia` silently throws those rotations
+    // away and gives MuJoCo a different inertia than the source URDF / .misa
+    // describes. For a heavy trunk that effect alone is enough to make a
+    // passive sim look unstable / wobbly on contact even before the gait
+    // controller runs. Use MuJoCo's `fullinertia="Ixx Iyy Izz Ixy Ixz Iyz"`
+    // form whenever any off-diagonal is non-trivial; fall back to the
+    // cheaper `diaginertia` only for clean diagonal tensors.
     if link.inertial.mass > 1e-12 {
         let it = &link.inertial.origin.translation;
-        s.push_str(&format!(
-            "{pad}  <inertial mass=\"{}\" pos=\"{} {} {}\" diaginertia=\"{} {} {}\"/>\n",
-            link.inertial.mass,
-            it.x,
-            it.y,
-            it.z,
-            link.inertial.ixx,
-            link.inertial.iyy,
-            link.inertial.izz
-        ));
+        let off_diag_eps = 1e-12;
+        let has_off_diag = link.inertial.ixy.abs() > off_diag_eps
+            || link.inertial.ixz.abs() > off_diag_eps
+            || link.inertial.iyz.abs() > off_diag_eps;
+        if has_off_diag {
+            s.push_str(&format!(
+                "{pad}  <inertial mass=\"{}\" pos=\"{} {} {}\" \
+                 fullinertia=\"{} {} {} {} {} {}\"/>\n",
+                link.inertial.mass,
+                it.x, it.y, it.z,
+                link.inertial.ixx,
+                link.inertial.iyy,
+                link.inertial.izz,
+                link.inertial.ixy,
+                link.inertial.ixz,
+                link.inertial.iyz,
+            ));
+        } else {
+            s.push_str(&format!(
+                "{pad}  <inertial mass=\"{}\" pos=\"{} {} {}\" diaginertia=\"{} {} {}\"/>\n",
+                link.inertial.mass,
+                it.x, it.y, it.z,
+                link.inertial.ixx,
+                link.inertial.iyy,
+                link.inertial.izz
+            ));
+        }
     }
 
     // Joint
