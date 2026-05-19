@@ -578,7 +578,12 @@ pub struct JointData {
     /// external PD controller. Real motors and gearboxes always have non-zero
     /// armature; leaving it at 0 makes the simulator more prone to numerical
     /// oscillation than the physical system would be.
-    #[cfg_attr(feature = "serde", serde(default))]
+    ///
+    /// Default is `0.0014 kg·m²` — a small but realistic motor-rotor inertia
+    /// that keeps the (kp, kv) defaults (50, 5) inside the stability envelope
+    /// at MuJoCo's default 2 ms timestep. Models that explicitly want
+    /// `0` (ideal massless rotor) must set the field directly.
+    #[cfg_attr(feature = "serde", serde(default = "default_armature"))]
     pub armature: f64,
     /// Passive linear damping coefficient at the joint (N·m·s/rad for revolute,
     /// N·s/m for prismatic). Mapped to MuJoCo's `<joint damping="…"/>`. Models
@@ -592,6 +597,8 @@ pub struct JointData {
 fn default_kp() -> f64 { 50.0 }
 #[cfg(feature = "serde")]
 fn default_kv() -> f64 { 5.0 }
+#[cfg(feature = "serde")]
+fn default_armature() -> f64 { 0.0014 }
 
 
 // ========== Forward Kinematics & Tree Navigation ==========

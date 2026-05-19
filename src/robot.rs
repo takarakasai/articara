@@ -134,7 +134,10 @@ impl RobotModel {
                 actuator_mode: crate::rbd::model::ActuatorMode::default(),
                 actuator_kp: 50.0,
                 actuator_kv: 5.0,
-                armature: 0.0,
+                // URDF has no native armature field, but most real motors do —
+                // a small default (matches `default_armature()`) keeps the PD
+                // controller stable at MuJoCo's default 2 ms timestep.
+                armature: 0.0014,
                 joint_damping: 0.0,
             });
 
@@ -1349,7 +1352,9 @@ impl RobotModel {
             actuator_mode: crate::rbd::model::ActuatorMode::default(),
             actuator_kp: 50.0,
             actuator_kv: 5.0,
-                    armature: 0.0,
+                    // Match `default_armature()` — see comment on the URDF
+                    // loader path for the rationale.
+                    armature: 0.0014,
                     joint_damping: 0.0,
         });
         self.joint_positions.push(0.0);

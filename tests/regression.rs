@@ -891,6 +891,72 @@ mod test_mjcf {
         let _ = ji;
     }
 
+    /// Regression: when a link's inertia tensor has non-zero products of
+    /// inertia (`ixy / ixz / iyz`) — i.e. the principal axes are rotated
+    /// relative to the link frame — MJCF must emit `fullinertia` rather than
+    /// silently truncating to `diaginertia`. Pre-fix, the off-diagonals were
+    /// dropped, giving MuJoCo a different inertia tensor and producing
+    /// instability for heavy / off-centre links (notably the trunk).
+    #[test]
+    fn mjcf_emits_fullinertia_when_off_diagonals_present() {
+        use articara::rbd::model::{InertialData, LinkData};
+        use articara::robot::RobotModel;
+
+        let mut model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
+        // Inject non-zero products of inertia on the root link.
+        let li = *model
+            .link_map
+            .get(&model.root_link)
+            .expect("root link in map");
+        model.links[li].inertial = InertialData {
+            origin: nalgebra::Isometry3::identity(),
+            mass: 5.0,
+            ixx: 0.1,
+            iyy: 0.1,
+            izz: 0.05,
+            ixy: 0.0,
+            ixz: 0.02,
+            iyz: -0.01,
+        };
+
+        let xml = articara::mjcf::export_mjcf(&model);
+        assert!(
+            xml.contains("fullinertia="),
+            "off-diagonal inertia link must emit fullinertia, MJCF:\n{xml}"
+        );
+
+        // The clean diagonal links must still use diaginertia.
+        let clean_li = (0..model.links.len()).find(|&i| i != li).unwrap();
+        let _ = LinkData { ..model.links[clean_li].clone() }; // suppress unused warning if any
+        assert!(
+            xml.contains("diaginertia="),
+            "diagonal-only links should still emit diaginertia"
+        );
+    }
+
+    /// Regression: a joint loaded with no explicit armature value (the
+    /// `#[serde(default)]` path) must default to a small non-zero rotor
+    /// inertia. The default-zero case combined with default-stiff PD gains
+    /// (kp=50, kv=5) pushed MuJoCo's explicit integrator past its Nyquist
+    /// limit on the 2 ms default timestep and produced violent oscillation
+    /// before the first sim step finished.
+    #[test]
+    fn joint_default_armature_is_nonzero() {
+        let model = articara::robot::RobotModel::from_urdf(&fixture_urdf()).unwrap();
+        let any_movable = model
+            .joints
+            .iter()
+            .filter(|j| j.joint_type != "fixed")
+            .next()
+            .expect("fixture URDF should have a movable joint");
+        assert!(
+            any_movable.armature > 0.0,
+            "joint {:?} armature should default to a positive value, got {}",
+            any_movable.name,
+            any_movable.armature
+        );
+    }
+
     /// Regression: when the MJCF auto-lifts the root (`base_pos = None`) it
     /// must clear primitive shapes like foot spheres, not just joint origins.
     /// Pre-fix, `compute_initial_z` walked only joint-origin Z values and
@@ -3594,7 +3660,17 @@ mod test_sidecar {
     fn mjcf_omits_armature_and_damping_when_zero() {
         // Conversely, with zero values the attributes must NOT appear so the
         // MJCF stays minimal and matches MuJoCo's defaults.
-        let model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        //
+        // Note: the URDF loader now seeds a small default armature so the PD
+        // controller stays stable at MuJoCo's 2 ms default timestep
+        // ([model.rs] `default_armature` = 0.0014). To exercise the
+        // "omit-when-zero" emission path, zero those fields out explicitly
+        // before exporting.
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        for j in &mut model.joints {
+            j.armature = 0.0;
+            j.joint_damping = 0.0;
+        }
         let xml = articara::mjcf::export_mjcf(&model);
         assert!(
             !xml.contains("armature="),
