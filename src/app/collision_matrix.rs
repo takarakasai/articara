@@ -50,6 +50,35 @@ impl ArticaraApp {
         let mut disable_all = false;
         let mut exclude_joint_connected = false;
         let mut exclude_currently_colliding = false;
+        // Row / column bulk toggle: when the user clicks a link's row or
+        // column header, every pair involving that link flips state. The
+        // matrix is symmetric, so a row click and a column click for the
+        // same link do the same thing — we just record whichever fired
+        // last in `link_toggle` and apply once after the closure.
+        let mut link_toggle: Option<String> = None;
+
+        // Helper: is *every* pair involving `link` currently excluded?
+        // (Used to decide whether the bulk toggle should enable-all or
+        // disable-all, and to colour the header.)
+        let all_pairs_for_link_excluded = |link: &str, names: &[String], map: &std::collections::HashMap<(String, String), bool>| -> bool {
+            let mut saw_any = false;
+            for other in names {
+                if other == link {
+                    continue;
+                }
+                saw_any = true;
+                let (a, b) = if link <= other.as_str() {
+                    (link.to_string(), other.clone())
+                } else {
+                    (other.clone(), link.to_string())
+                };
+                let excluded = map.get(&(a, b)).map(|v| !v).unwrap_or(false);
+                if !excluded {
+                    return false;
+                }
+            }
+            saw_any
+        };
 
         // Pre-compute the parent-child link pairs (from joints) so the
         // "Exclude joint-connected" button can populate them, and so we
@@ -193,21 +222,55 @@ impl ArticaraApp {
                             .striped(true)
                             .spacing([4.0, 2.0])
                             .show(ui, |ui| {
-                                // Header row: blank corner cell, then column headers.
+                                // Helper closure: render a link name as a
+                                // clickable header that flips every pair
+                                // involving that link when clicked. The
+                                // background colour signals the current state
+                                // (red-tinted = all-excluded, neutral = mixed
+                                // or all-enabled).
+                                let header_button = |ui: &mut egui::Ui, name: &str, bold: bool| -> bool {
+                                    let all_excluded = all_pairs_for_link_excluded(
+                                        name,
+                                        &link_names,
+                                        &enabled_map,
+                                    );
+                                    let mut rt = egui::RichText::new(name).monospace().small();
+                                    if bold {
+                                        rt = rt.strong();
+                                    }
+                                    if all_excluded {
+                                        rt = rt.color(egui::Color32::from_rgb(220, 110, 110));
+                                    }
+                                    let hover = if all_excluded {
+                                        format!(
+                                            "{}: every pair excluded — click to re-enable all",
+                                            name
+                                        )
+                                    } else {
+                                        format!(
+                                            "{}: click to exclude every pair involving this link",
+                                            name
+                                        )
+                                    };
+                                    ui.add(egui::Button::new(rt).frame(false))
+                                        .on_hover_text(hover)
+                                        .clicked()
+                                };
+
+                                // Header row: blank corner cell, then column headers (clickable).
                                 ui.label("");
                                 for col_name in &link_names {
-                                    // Vertical-ish label so wide tables stay manageable.
-                                    ui.label(
-                                        egui::RichText::new(col_name).monospace().small(),
-                                    );
+                                    if header_button(ui, col_name, false) {
+                                        link_toggle = Some(col_name.clone());
+                                    }
                                 }
                                 ui.end_row();
 
                                 // Body rows
                                 for (i, row_name) in link_names.iter().enumerate() {
-                                    ui.label(
-                                        egui::RichText::new(row_name).monospace().small().strong(),
-                                    );
+                                    if header_button(ui, row_name, true) {
+                                        link_toggle = Some(row_name.clone());
+                                    }
                                     for (j, col_name) in link_names.iter().enumerate() {
                                         if j <= i {
                                             // Lower triangle + diagonal: skip (matrix is symmetric;
@@ -298,6 +361,35 @@ impl ArticaraApp {
                     "🔗 Marked {} joint-connected pair(s) as excluded",
                     added
                 );
+            }
+            // Row / column bulk toggle. If EVERY pair involving the
+            // clicked link is currently excluded, the user wants to bring
+            // them all back; otherwise they want to push them all out.
+            if let Some(link) = link_toggle.as_ref() {
+                let all_excluded =
+                    all_pairs_for_link_excluded(link, &link_names, &enabled_map);
+                let make_excluded = !all_excluded;
+                let mut affected = 0usize;
+                for other in &link_names {
+                    if other == link {
+                        continue;
+                    }
+                    let (a, b) = if link.as_str() <= other.as_str() {
+                        (link.clone(), other.clone())
+                    } else {
+                        (other.clone(), link.clone())
+                    };
+                    model.collision_pairs.retain(|p| !p.matches(&a, &b));
+                    if make_excluded {
+                        model.collision_pairs.push(CollisionPair::new(a, b, false));
+                    }
+                    affected += 1;
+                }
+                self.status_message = if make_excluded {
+                    format!("🛡 Excluded all {affected} pair(s) involving '{link}'")
+                } else {
+                    format!("✓ Re-enabled all {affected} pair(s) involving '{link}'")
+                };
             }
             // Snapshot the currently-active self-collision pairs (taken
             // before the closure ran above to keep the matrix grid borrow
