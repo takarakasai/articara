@@ -957,6 +957,38 @@ mod test_mjcf {
         );
     }
 
+    /// Regression: MJCF must auto-emit `<contact><exclude>` for every
+    /// parent-child link pair (URDF semantic), so a model that doesn't
+    /// enumerate self-collision exclusions by hand still simulates without
+    /// adjacent collision geoms colliding through their joint origins. Pre-
+    /// fix, only user-defined `collision_pairs` (`enabled=false`) were
+    /// emitted, so a freshly-converted URDF would launch with hundreds of
+    /// spurious self-contacts producing meganewton force vectors at t=0.
+    #[test]
+    fn mjcf_auto_excludes_parent_child_pairs() {
+        let model = articara::robot::RobotModel::from_urdf(&fixture_urdf()).unwrap();
+        let xml = articara::mjcf::export_mjcf(&model);
+        // The fixture URDF has at least one parent-child pair; their
+        // `<exclude>` line must appear in a `<contact>` block.
+        let any_joint = model
+            .joints
+            .iter()
+            .find(|j| j.parent_link != j.child_link)
+            .expect("fixture URDF should have at least one joint");
+        let (lo, hi) = if any_joint.parent_link <= any_joint.child_link {
+            (&any_joint.parent_link, &any_joint.child_link)
+        } else {
+            (&any_joint.child_link, &any_joint.parent_link)
+        };
+        let needle_a = format!("<exclude body1=\"{lo}\" body2=\"{hi}\"");
+        let needle_b = format!("<exclude body1=\"{hi}\" body2=\"{lo}\"");
+        assert!(
+            xml.contains("<contact>") && (xml.contains(&needle_a) || xml.contains(&needle_b)),
+            "MJCF must emit an <exclude> for parent={:?} child={:?}.\n{xml}",
+            any_joint.parent_link, any_joint.child_link
+        );
+    }
+
     /// Regression: when the MJCF auto-lifts the root (`base_pos = None`) it
     /// must clear primitive shapes like foot spheres, not just joint origins.
     /// Pre-fix, `compute_initial_z` walked only joint-origin Z values and
@@ -3567,10 +3599,21 @@ mod test_sidecar {
 
     #[test]
     fn mjcf_export_omits_contact_when_no_disabled_pairs() {
-        let model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        // After the URDF parent-child auto-exclude addition, a URDF-loaded
+        // model always emits an `<exclude>` per joint. To exercise the
+        // "no excludes at all" path, strip the joints (and the corresponding
+        // children-joints index) from a fixture model and confirm the
+        // exporter produces no `<exclude>` line.
+        let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
+        model.joints.clear();
+        model.joint_map.clear();
+        model.children_joints.clear();
+        model.collision_pairs.clear();
         let xml = articara::mjcf::export_mjcf(&model);
-        assert!(!xml.contains("<exclude"),
-            "no excludes should appear when collision_pairs is empty");
+        assert!(
+            !xml.contains("<exclude"),
+            "no excludes should appear when both joints and collision_pairs are empty:\n{xml}"
+        );
     }
 
     #[test]

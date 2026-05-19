@@ -877,29 +877,58 @@ fn write_mjcf_sensors(s: &mut String, model: &RobotModel) {
     s.push_str("  </sensor>\n");
 }
 
-/// Emit `<contact><exclude>` for every collision pair the user has marked
-/// as disabled. MuJoCo's default is "all geoms collide", so we only need to
-/// emit excludes — `enabled = true` pairs are implicit.
+/// Emit `<contact><exclude>` for parent-child link pairs (URDF semantics:
+/// links connected by a joint are NOT supposed to collide) and for every
+/// collision pair the user has marked as disabled. MuJoCo's default is
+/// "all geoms collide", so we only need to emit excludes — `enabled = true`
+/// pairs are implicit.
+///
+/// Pre-fix, articara only emitted user-defined excludes, so any model that
+/// didn't enumerate every parent-child pair by hand (notably models exported
+/// without per-pair tuning, e.g. a freshly converted URDF) would simulate
+/// with all adjacent collision geoms in mutual contact — generating
+/// ~hundreds of self-contacts and meganewton-scale force vectors at t=0.
+/// Mirroring URDF's "parent and child don't collide" rule fixes this for
+/// every model without requiring user input.
 fn write_mjcf_contact_excludes(s: &mut String, model: &RobotModel) {
-    let excluded: Vec<&crate::rbd::model::CollisionPair> = model
-        .collision_pairs
-        .iter()
-        .filter(|p| !p.enabled)
-        .filter(|p| {
-            // Only emit pairs where both links exist in the model — silently
-            // dropping orphans avoids confusing MuJoCo errors.
-            model.link_map.contains_key(&p.link_a)
-                && model.link_map.contains_key(&p.link_b)
-        })
-        .collect();
-    if excluded.is_empty() {
+    // 1. Parent-child pairs from every joint (URDF semantic).
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+    let mut record = |a: &str, b: &str, list: &mut Vec<(String, String)>, seen: &mut std::collections::HashSet<(String, String)>| {
+        // Canonical (sorted) key for dedup so (A,B) and (B,A) collapse.
+        let (k_a, k_b) = if a <= b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) };
+        if seen.insert((k_a.clone(), k_b.clone())) {
+            list.push((k_a, k_b));
+        }
+    };
+    for j in &model.joints {
+        if model.link_map.contains_key(&j.parent_link)
+            && model.link_map.contains_key(&j.child_link)
+            && j.parent_link != j.child_link
+        {
+            record(&j.parent_link, &j.child_link, &mut pairs, &mut seen);
+        }
+    }
+    // 2. User-marked disabled pairs (overrides + extras the URDF doesn't capture,
+    //    e.g. closed-kinematic-loop neighbours connected only via a loop closure).
+    for p in &model.collision_pairs {
+        if p.enabled {
+            continue;
+        }
+        if model.link_map.contains_key(&p.link_a)
+            && model.link_map.contains_key(&p.link_b)
+        {
+            record(&p.link_a, &p.link_b, &mut pairs, &mut seen);
+        }
+    }
+    if pairs.is_empty() {
         return;
     }
     s.push_str("\n  <contact>\n");
-    for p in excluded {
+    for (a, b) in &pairs {
         s.push_str(&format!(
-            "    <exclude body1=\"{}\" body2=\"{}\"/>\n",
-            p.link_a, p.link_b,
+            "    <exclude body1=\"{a}\" body2=\"{b}\"/>\n",
         ));
     }
     s.push_str("  </contact>\n");
