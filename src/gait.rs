@@ -87,6 +87,45 @@ fn joint_world_pos(
     world.translation.vector.cast::<f64>()
 }
 
+/// Resolve a joint's rotation axis into the **body root's frame**.
+///
+/// The URDF / .misa axis vector is expressed in the joint's own frame
+/// (which is the child link's frame at q = 0). A joint whose origin
+/// declares `rpy="0 0 π/2"` and `axis="1 0 0"` therefore rotates around
+/// the parent's **Y** axis, not X — and the auto-detect axis classifier
+/// needs to see the resolved body-frame direction, otherwise valid RPP
+/// URDFs that spell their pitch axes that way (keel does) get rejected.
+fn joint_axis_in_body(
+    model: &RobotModel,
+    joint_idx: usize,
+    transforms_rest: &HashMap<String, na::Isometry3<f32>>,
+) -> na::Vector3<f64> {
+    let joint = &model.joints[joint_idx];
+    let parent_rot = transforms_rest
+        .get(&joint.parent_link)
+        .map(|tf| tf.rotation)
+        .unwrap_or_else(na::UnitQuaternion::identity);
+    let joint_frame_rot = parent_rot * joint.origin.rotation;
+    (joint_frame_rot * joint.axis).cast::<f64>()
+}
+
+/// Compute every link's world transform with **all joint angles = 0**.
+///
+/// `RobotModel::compute_transforms()` honours `joint_positions`, so a
+/// model whose home pose is non-zero would feed rotated link frames into
+/// `joint_axis_in_body`. Auto-detect needs the rest-pose axes specifically
+/// (the URDF declares them at q = 0), so this helper temporarily zeroes
+/// the cache.
+fn compute_transforms_at_rest(
+    model: &RobotModel,
+) -> HashMap<String, na::Isometry3<f32>> {
+    let mut clone = model.clone();
+    for q in &mut clone.joint_positions {
+        *q = 0.0;
+    }
+    clone.compute_transforms()
+}
+
 /// Auto-detect [`LegKinematics`] for one leg from a foot link name.
 ///
 /// Walks up exactly three non-fixed joints (calf → thigh → hip) and
@@ -115,9 +154,17 @@ pub fn auto_detect_leg_kinematics(
     let thigh_idx = chain[1];
     let hip_idx = chain[2];
 
-    let calf_axis = model.joints[calf_idx].axis.cast::<f64>();
-    let thigh_axis = model.joints[thigh_idx].axis.cast::<f64>();
-    let hip_axis = model.joints[hip_idx].axis.cast::<f64>();
+    // Joint axes are stored in the joint's own frame (= child link's
+    // frame at q=0), so a thigh that lives behind a `<joint origin rpy="0
+    // 0 π/2">` and declares `axis="1 0 0"` actually rotates around the
+    // *parent's* Y axis. Resolve every axis into the body (root-link)
+    // frame before classifying, otherwise correctly-built URDFs that
+    // happen to spell their pitch axis via an origin rotation get
+    // rejected for "doesn't look like a Pitch (Y) axis".
+    let transforms_rest = compute_transforms_at_rest(model);
+    let hip_axis = joint_axis_in_body(model, hip_idx, &transforms_rest);
+    let thigh_axis = joint_axis_in_body(model, thigh_idx, &transforms_rest);
+    let calf_axis = joint_axis_in_body(model, calf_idx, &transforms_rest);
 
     // Sanity-check axes: hip should be predominantly along X (roll),
     // thigh and calf along Y (pitch). Reject other layouts so the
