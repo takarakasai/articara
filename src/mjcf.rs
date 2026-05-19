@@ -621,7 +621,13 @@ pub fn export_mjcf_with_options(
     // - `Absolute` (default): in-process MuJoCo via `from_xml_string`
     // - `RelativeToDir(dir)`: file export, paired with `copy_meshes_to`
     // - `Preserve`: keep URI verbatim
-    let mut mesh_names: Vec<(String, String)> = Vec::new();
+    // Each mesh asset carries (name, file, scale). The scale tuple matters
+    // because URDFs commonly carry meshes in millimetres and apply
+    // `scale="0.001 0.001 0.001"` at reference time — dropping the scale on
+    // MJCF emission means MuJoCo loads the mesh 1000× larger than the source
+    // model intended, producing catastrophic ground penetration at t=0
+    // (~MN-scale contact forces).
+    let mut mesh_names: Vec<(String, String, [f64; 3])> = Vec::new();
     let mut mesh_counter = 0usize;
     let mut geom_mesh_map: HashMap<*const GeomData, String> = HashMap::new();
 
@@ -631,20 +637,25 @@ pub fn export_mjcf_with_options(
             None => "mesh.stl".to_string(),
         }
     };
+    let scale_or_unit = |scale: &Option<[f32; 3]>| -> [f64; 3] {
+        scale
+            .map(|s| [s[0] as f64, s[1] as f64, s[2] as f64])
+            .unwrap_or([1.0, 1.0, 1.0])
+    };
 
     for link in &model.links {
         for vis in &link.visuals {
-            if let GeomData::Mesh { filename, .. } = &vis.geometry {
+            if let GeomData::Mesh { filename, scale, .. } = &vis.geometry {
                 let mesh_name = format!("mesh_{mesh_counter}");
-                mesh_names.push((mesh_name.clone(), resolve(filename)));
+                mesh_names.push((mesh_name.clone(), resolve(filename), scale_or_unit(scale)));
                 geom_mesh_map.insert(&vis.geometry as *const GeomData, mesh_name);
                 mesh_counter += 1;
             }
         }
         for col in &link.collisions {
-            if let GeomData::Mesh { filename, .. } = &col.geometry {
+            if let GeomData::Mesh { filename, scale, .. } = &col.geometry {
                 let mesh_name = format!("mesh_{mesh_counter}");
-                mesh_names.push((mesh_name.clone(), resolve(filename)));
+                mesh_names.push((mesh_name.clone(), resolve(filename), scale_or_unit(scale)));
                 geom_mesh_map.insert(&col.geometry as *const GeomData, mesh_name);
                 mesh_counter += 1;
             }
@@ -653,8 +664,18 @@ pub fn export_mjcf_with_options(
 
     if !mesh_names.is_empty() {
         s.push_str("  <asset>\n");
-        for (name, file) in &mesh_names {
-            s.push_str(&format!("    <mesh name=\"{name}\" file=\"{file}\"/>\n"));
+        for (name, file, scale) in &mesh_names {
+            let unit = (scale[0] - 1.0).abs() < 1e-12
+                && (scale[1] - 1.0).abs() < 1e-12
+                && (scale[2] - 1.0).abs() < 1e-12;
+            if unit {
+                s.push_str(&format!("    <mesh name=\"{name}\" file=\"{file}\"/>\n"));
+            } else {
+                s.push_str(&format!(
+                    "    <mesh name=\"{name}\" file=\"{file}\" scale=\"{} {} {}\"/>\n",
+                    scale[0], scale[1], scale[2],
+                ));
+            }
         }
         s.push_str("  </asset>\n\n");
     }

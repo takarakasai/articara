@@ -957,6 +957,68 @@ mod test_mjcf {
         );
     }
 
+    /// Regression: mesh-reference scale must be forwarded into the MJCF
+    /// `<mesh>` asset element. Pre-fix, `<mesh name="..." file="..."/>`
+    /// dropped the scale, so a millimetre-unit OBJ tagged with
+    /// `scale = [0.001, 0.001, 0.001]` in the source model loaded into
+    /// MuJoCo at 1000× its intended size, producing catastrophic
+    /// ground penetration at t=0 and meganewton contact forces.
+    #[test]
+    fn mjcf_emits_mesh_scale_attribute() {
+        use articara::rbd::model::{CollisionData, GeomData, VisualData};
+
+        let mut model = articara::robot::RobotModel::from_urdf(&fixture_urdf()).unwrap();
+        // Inject a scaled mesh visual on the root link.
+        model.links[0].visuals.push(VisualData {
+            origin: nalgebra::Isometry3::identity(),
+            geometry: GeomData::Mesh {
+                vertices: vec![
+                    0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                    1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                    0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                ],
+                filename: Some("/abs/path/example.obj".into()),
+                scale: Some([0.001, 0.001, 0.001]),
+            },
+            color: [1.0; 4],
+        });
+        model.links[0].collisions.push(CollisionData {
+            origin: nalgebra::Isometry3::identity(),
+            geometry: GeomData::Mesh {
+                vertices: vec![
+                    0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                    1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                    0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                ],
+                filename: Some("/abs/path/example.obj".into()),
+                scale: Some([0.001, 0.001, 0.001]),
+            },
+        });
+        let xml = articara::mjcf::export_mjcf(&model);
+        // f32 → f64 conversion gives e.g. "0.0010000000474974513"; we just
+        // need the attribute present with a value in the 1e-3 range.
+        assert!(
+            xml.contains("scale=\"0.001"),
+            "MJCF mesh asset must include scale attribute when non-unit:\n{xml}"
+        );
+        // Unit-scale meshes should still omit the attribute (cleaner output).
+        let mut model2 = articara::robot::RobotModel::from_urdf(&fixture_urdf()).unwrap();
+        model2.links[0].visuals.push(VisualData {
+            origin: nalgebra::Isometry3::identity(),
+            geometry: GeomData::Mesh {
+                vertices: vec![0.0; 18],
+                filename: Some("/abs/unit.obj".into()),
+                scale: None,
+            },
+            color: [1.0; 4],
+        });
+        let xml2 = articara::mjcf::export_mjcf(&model2);
+        assert!(
+            xml2.contains("<mesh name=") && !xml2.contains(" scale=\""),
+            "unit-scale meshes should omit scale attribute:\n{xml2}"
+        );
+    }
+
     /// Regression: MJCF must auto-emit `<contact><exclude>` for every
     /// parent-child link pair (URDF semantic), so a model that doesn't
     /// enumerate self-collision exclusions by hand still simulates without
