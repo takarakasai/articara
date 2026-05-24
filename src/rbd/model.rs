@@ -530,6 +530,13 @@ pub enum ActuatorMode {
     /// The PD only has to correct tracking error, so Kp / Kv can be much
     /// lower than in plain Position mode while delivering tighter tracking.
     ComputedTorque,
+    /// MJCF-export-only "fixed" mode: the joint is emitted as a welded
+    /// (no DoF) connection in the generated MJCF, and no actuator is
+    /// produced. The underlying `joint_type` in `JointData` is preserved,
+    /// so URDF / .misa export and articara's internal FK keep treating the
+    /// joint as movable. Use to disable wheel / passive joints for a
+    /// MuJoCo sim run without rewriting the URDF.
+    Fixed,
 }
 
 impl Default for ActuatorMode {
@@ -545,14 +552,22 @@ impl ActuatorMode {
             ActuatorMode::Velocity => "Velocity",
             ActuatorMode::Torque => "Torque",
             ActuatorMode::ComputedTorque => "Computed-τ",
+            ActuatorMode::Fixed => "🔒 Fixed",
         }
     }
-    pub const ALL: [ActuatorMode; 4] = [
+    pub const ALL: [ActuatorMode; 5] = [
         ActuatorMode::Position,
         ActuatorMode::Velocity,
         ActuatorMode::Torque,
         ActuatorMode::ComputedTorque,
+        ActuatorMode::Fixed,
     ];
+
+    /// Whether this mode causes MJCF export to treat the joint as
+    /// permanently welded (no `<joint>` element, no actuator).
+    pub fn is_fixed(self) -> bool {
+        matches!(self, ActuatorMode::Fixed)
+    }
 }
 
 #[derive(Clone)]
@@ -2957,6 +2972,7 @@ fn actuator_mode_to_config(m: ActuatorMode) -> misarta::config::ActuatorMode {
         ActuatorMode::Velocity => misarta::config::ActuatorMode::Velocity,
         ActuatorMode::Torque => misarta::config::ActuatorMode::Torque,
         ActuatorMode::ComputedTorque => misarta::config::ActuatorMode::ComputedTorque,
+        ActuatorMode::Fixed => misarta::config::ActuatorMode::Fixed,
     }
 }
 
@@ -2967,6 +2983,7 @@ fn actuator_mode_from_config(m: misarta::config::ActuatorMode) -> ActuatorMode {
         misarta::config::ActuatorMode::Velocity => ActuatorMode::Velocity,
         misarta::config::ActuatorMode::Torque => ActuatorMode::Torque,
         misarta::config::ActuatorMode::ComputedTorque => ActuatorMode::ComputedTorque,
+        misarta::config::ActuatorMode::Fixed => ActuatorMode::Fixed,
     }
 }
 

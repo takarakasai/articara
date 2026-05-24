@@ -692,6 +692,7 @@ mod misa_load {
             mn::ActuatorMode::Velocity => ActuatorMode::Velocity,
             mn::ActuatorMode::Torque => ActuatorMode::Torque,
             mn::ActuatorMode::ComputedTorque => ActuatorMode::ComputedTorque,
+            mn::ActuatorMode::Fixed => ActuatorMode::Fixed,
         }
     }
 
@@ -2849,6 +2850,7 @@ mod misa_save {
             ActuatorMode::Velocity => mn::ActuatorMode::Velocity,
             ActuatorMode::Torque => mn::ActuatorMode::Torque,
             ActuatorMode::ComputedTorque => mn::ActuatorMode::ComputedTorque,
+            ActuatorMode::Fixed => mn::ActuatorMode::Fixed,
         }
     }
 

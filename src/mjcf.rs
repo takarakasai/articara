@@ -981,10 +981,14 @@ fn write_mjcf_contact_excludes(s: &mut String, model: &RobotModel) {
 /// is always plain torque-mode so the same file can be used for any control
 /// strategy when re-imported elsewhere.
 fn write_mjcf_actuators(s: &mut String, model: &RobotModel, bake_limits: bool) {
+    // Skip both URDF-fixed joints and joints the user marked as
+    // `ActuatorMode::Fixed`. The body emitter already omits the <joint>
+    // element for the latter, so an actuator referencing it would be a
+    // dangling MJCF reference.
     let movable: Vec<&JointData> = model
         .joints
         .iter()
-        .filter(|j| j.joint_type != "fixed")
+        .filter(|j| j.joint_type != "fixed" && !j.actuator_mode.is_fixed())
         .collect();
     if movable.is_empty() {
         return;
@@ -1168,7 +1172,12 @@ fn write_mjcf_body(
 
     // Joint
     if let Some(joint) = joint_info {
-        if joint.joint_type != "fixed" {
+        // `actuator_mode == Fixed` is the "MJCF-only weld" shortcut: omit the
+        // <joint> element entirely so MuJoCo treats parent and child as a
+        // single rigid body. We deliberately don't touch `joint.joint_type`
+        // here — URDF / .misa export and the host's FK keep using the
+        // declared type. See `ActuatorMode::Fixed` doc comment.
+        if joint.joint_type != "fixed" && !joint.actuator_mode.is_fixed() {
             let mjcf_type = match joint.joint_type.as_str() {
                 "revolute" | "continuous" => "hinge",
                 "prismatic" => "slide",

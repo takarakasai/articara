@@ -942,6 +942,13 @@ impl MujocoSim {
             if joint.joint_type == "fixed" {
                 continue;
             }
+            // ActuatorMode::Fixed means the joint was emitted as a weld in
+            // MJCF — there's no actuator slot to write a torque into.
+            // Skip explicitly so we don't fall through to the (None →
+            // continue) path with a spurious warning candidate.
+            if joint.actuator_mode.is_fixed() {
+                continue;
+            }
 
             // Read current MuJoCo state for this joint.
             let (q, qd) = match self.data.joint(&joint.name) {
@@ -1045,6 +1052,14 @@ impl MujocoSim {
                         .unwrap_or(0.0);
                     pd + ff + tau_ff
                 }
+                // Fixed-mode joints were filtered out by the early
+                // `continue` above — we never reach the match arm. Keep
+                // exhaustive so future mode additions surface as
+                // compile errors here.
+                ActuatorMode::Fixed => unreachable!(
+                    "Fixed-mode joint reached the torque loop; \
+                     should have been skipped"
+                ),
             };
 
             if enforce_limits {
