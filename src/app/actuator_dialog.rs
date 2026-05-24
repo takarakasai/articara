@@ -70,7 +70,10 @@ impl ArticaraApp {
                         "Per-joint actuator parameters used by MJCF export and \
                          the in-process MuJoCo sim. Position-mode joints use \
                          Kp / Kv for the PD law; Velocity uses Kv only; \
-                         Torque expects user-supplied τ. Armature is the \
+                         Torque expects user-supplied τ. 🔒 Fixed welds the \
+                         joint in MJCF (no DoF, no actuator) without rewriting \
+                         the URDF / .misa joint_type — handy for disabling \
+                         wheels / passive joints in a sim run. Armature is \
                          reflected rotor inertia, joint_damping is passive.",
                     )
                     .small()
@@ -197,31 +200,49 @@ impl ArticaraApp {
                                         per_joint_edits.push((ji, JointFieldEdit::Mode(new_mode)));
                                     }
 
+                                    // Fixed-mode joints have neither an actuator nor a movable
+                                    // joint in the emitted MJCF, so Kp / Kv / armature / damping
+                                    // are meaningless. Grey them out so the user can see at a
+                                    // glance the row isn't producing any forces.
+                                    let actuated = !joint.actuator_mode.is_fixed();
+
                                     // Numeric fields. Use DragValue so the user can tweak quickly.
                                     let mut kp = joint.actuator_kp;
                                     if ui
-                                        .add(egui::DragValue::new(&mut kp).speed(1.0).range(0.0..=10000.0).max_decimals(3))
+                                        .add_enabled(
+                                            actuated,
+                                            egui::DragValue::new(&mut kp).speed(1.0).range(0.0..=10000.0).max_decimals(3),
+                                        )
                                         .changed()
                                     {
                                         per_joint_edits.push((ji, JointFieldEdit::Kp(kp)));
                                     }
                                     let mut kv = joint.actuator_kv;
                                     if ui
-                                        .add(egui::DragValue::new(&mut kv).speed(0.1).range(0.0..=1000.0).max_decimals(3))
+                                        .add_enabled(
+                                            actuated,
+                                            egui::DragValue::new(&mut kv).speed(0.1).range(0.0..=1000.0).max_decimals(3),
+                                        )
                                         .changed()
                                     {
                                         per_joint_edits.push((ji, JointFieldEdit::Kv(kv)));
                                     }
                                     let mut arm = joint.armature;
                                     if ui
-                                        .add(egui::DragValue::new(&mut arm).speed(0.0001).range(0.0..=10.0).max_decimals(5))
+                                        .add_enabled(
+                                            actuated,
+                                            egui::DragValue::new(&mut arm).speed(0.0001).range(0.0..=10.0).max_decimals(5),
+                                        )
                                         .changed()
                                     {
                                         per_joint_edits.push((ji, JointFieldEdit::Armature(arm)));
                                     }
                                     let mut d = joint.joint_damping;
                                     if ui
-                                        .add(egui::DragValue::new(&mut d).speed(0.01).range(0.0..=1000.0).max_decimals(4))
+                                        .add_enabled(
+                                            actuated,
+                                            egui::DragValue::new(&mut d).speed(0.01).range(0.0..=1000.0).max_decimals(4),
+                                        )
                                         .changed()
                                     {
                                         per_joint_edits.push((ji, JointFieldEdit::Damping(d)));
