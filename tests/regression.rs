@@ -1207,6 +1207,106 @@ mod test_mjcf {
         assert!(qs[2].abs() < 1e-4, "quat.y {} should be ~0", qs[2]);
         assert!((qs[3] - half_sqrt).abs() < 1e-4, "quat.z {} != {half_sqrt}", qs[3]);
     }
+
+    /// Regression: MJCF `<default class>` inheritance must be applied at
+    /// import time. Robots from MuJoCo Menagerie (Unitree Go2, ANYmal,
+    /// etc.) declare joint axis / range / damping / armature in nested
+    /// `<default>` blocks rather than inline on each `<joint>`, and the
+    /// importer used to drop all of them — every axis collapsed to MJCF's
+    /// hardcoded `0 0 1` default, making the loaded kinematic model
+    /// useless for dynamics or gait planning.
+    ///
+    /// Also exercise `<actuator>` import: `<motor>` should set
+    /// `ActuatorMode::Torque` on its target joint and copy `ctrlrange` /
+    /// `forcerange` into `effort`.
+    #[test]
+    fn mjcf_default_class_and_actuator_inheritance() {
+        use articara::rbd::model::ActuatorMode;
+
+        // Minimal MJCF that exercises a 2-level <default> hierarchy and an
+        // <actuator> block with class-inherited ctrlrange — same shape as
+        // Unitree Go2.
+        let xml = r#"<mujoco model="cls_test">
+  <compiler angle="radian"/>
+  <default>
+    <default class="robot">
+      <joint axis="0 1 0" damping="2" armature="0.01"/>
+      <motor ctrlrange="-25 25"/>
+      <default class="abduction">
+        <joint axis="1 0 0" range="-1.0 1.0"/>
+      </default>
+      <default class="knee">
+        <joint range="-2.7 -0.8"/>
+        <motor ctrlrange="-45 45"/>
+      </default>
+    </default>
+  </default>
+  <worldbody>
+    <body name="base" pos="0 0 0.3" childclass="robot">
+      <freejoint/>
+      <body name="hip" pos="0.1 0 0">
+        <joint name="hip_j" class="abduction"/>
+        <body name="thigh" pos="0 0 0">
+          <joint name="thigh_j"/>
+          <body name="calf" pos="0 0 -0.2">
+            <joint name="calf_j" class="knee"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor class="abduction" name="hip_m" joint="hip_j"/>
+    <motor class="robot"     name="thigh_m" joint="thigh_j"/>
+    <motor class="knee"      name="calf_m" joint="calf_j"/>
+  </actuator>
+</mujoco>"#;
+        let tmp = std::env::temp_dir().join("articara_mjcf_cls_inherit.xml");
+        std::fs::write(&tmp, xml).unwrap();
+        let model = mjcf::import_mjcf(&tmp).expect("class-inherit MJCF should import");
+
+        let by_name = |n: &str| {
+            model
+                .joints
+                .iter()
+                .find(|j| j.name == n)
+                .unwrap_or_else(|| panic!("joint {n} missing"))
+        };
+
+        let hip = by_name("hip_j");
+        let thigh = by_name("thigh_j");
+        let calf = by_name("calf_j");
+
+        // abduction inherits robot.joint then overrides axis + range.
+        assert!((hip.axis.x - 1.0).abs() < 1e-9, "hip.axis.x = {}", hip.axis.x);
+        assert!(hip.axis.y.abs() < 1e-9, "hip.axis.y = {}", hip.axis.y);
+        assert!((hip.lower - (-1.0)).abs() < 1e-9, "hip.lower = {}", hip.lower);
+        assert!((hip.upper - 1.0).abs() < 1e-9, "hip.upper = {}", hip.upper);
+        // Damping / armature stay inherited from `robot`.
+        assert!((hip.joint_damping - 2.0).abs() < 1e-9);
+        assert!((hip.armature - 0.01).abs() < 1e-9);
+
+        // No explicit class → inherits childclass="robot".
+        assert!((thigh.axis.y - 1.0).abs() < 1e-9, "thigh.axis.y = {}", thigh.axis.y);
+        assert!(thigh.axis.x.abs() < 1e-9);
+
+        // `knee` keeps robot's Y axis (no override) but overrides range.
+        assert!((calf.axis.y - 1.0).abs() < 1e-9);
+        assert!((calf.lower - (-2.7)).abs() < 1e-9, "calf.lower = {}", calf.lower);
+        assert!((calf.upper - (-0.8)).abs() < 1e-9, "calf.upper = {}", calf.upper);
+
+        // Actuators: all <motor> → Torque, effort from class-inherited ctrlrange.
+        assert_eq!(hip.actuator_mode, ActuatorMode::Torque);
+        assert_eq!(thigh.actuator_mode, ActuatorMode::Torque);
+        assert_eq!(calf.actuator_mode, ActuatorMode::Torque);
+        assert!((hip.effort - 25.0).abs() < 1e-9, "hip.effort = {}", hip.effort);
+        assert!((thigh.effort - 25.0).abs() < 1e-9);
+        assert!(
+            (calf.effort - 45.0).abs() < 1e-9,
+            "calf.effort = {} (knee class overrides ctrlrange)",
+            calf.effort
+        );
+    }
 }
 
 // ============================================================
