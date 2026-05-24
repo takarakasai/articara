@@ -1052,19 +1052,46 @@ fn write_mjcf_body(
     let link = &model.links[link_idx];
 
     // Find the joint connecting this link to its parent for pose
-    let (pos_str, joint_info) = if let Some(spec) = base_spec {
+    let (pos_str, quat_str, joint_info) = if let Some(spec) = base_spec {
         let [x, y, z] = spec.pos;
-        // Root body: place at user-specified or auto-lifted world position
-        (format!("{x} {y} {z}"), None)
+        // Root body: place at user-specified or auto-lifted world position.
+        // Identity orientation; the floating-base joints below carry the
+        // current trunk rotation.
+        (format!("{x} {y} {z}"), String::new(), None)
     } else if let Some(ji) = model.parent_joint_of_link(link_name) {
         let joint = &model.joints[ji];
         let t = &joint.origin.translation;
-        (format!("{} {} {}", t.x, t.y, t.z), Some(joint))
+        let pos = format!("{} {} {}", t.x, t.y, t.z);
+        // URDF joint origin's `rpy` rotates the *child link* relative to its
+        // parent (it's the orientation of the joint frame, which the child
+        // inherits at q=0). MuJoCo's `<body>` has no rpy attribute, so we
+        // express the same rotation as a `quat` (`w x y z`).
+        //
+        // Dropping this rotation here was the root cause of the gait /
+        // CHAMP "forward command produces lateral motion" bug on robots
+        // (keel, etc.) that spell their thigh pitch axis as
+        // `<origin rpy="0 0 π/2"/> <axis xyz="1 0 0"/>` — without the
+        // body quaternion, MuJoCo sees the joint axis in its local frame
+        // (= body X) and rotates the thigh about body X instead of body Y.
+        let q = joint.origin.rotation.quaternion();
+        let is_identity = (q.w - 1.0).abs() < 1e-9
+            && q.i.abs() < 1e-9
+            && q.j.abs() < 1e-9
+            && q.k.abs() < 1e-9;
+        let quat = if is_identity {
+            String::new()
+        } else {
+            // MuJoCo quat order is `w x y z`.
+            format!(" quat=\"{} {} {} {}\"", q.w, q.i, q.j, q.k)
+        };
+        (pos, quat, Some(joint))
     } else {
-        ("0 0 0".into(), None)
+        ("0 0 0".into(), String::new(), None)
     };
 
-    s.push_str(&format!("{pad}<body name=\"{link_name}\" pos=\"{pos_str}\">\n"));
+    s.push_str(&format!(
+        "{pad}<body name=\"{link_name}\" pos=\"{pos_str}\"{quat_str}>\n"
+    ));
 
     // Root body: emit floating-base joints based on the per-axis lock state.
     if let Some(spec) = base_spec {
