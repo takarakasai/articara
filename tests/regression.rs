@@ -1153,6 +1153,60 @@ mod test_mjcf {
             "clearance should be small (~5 mm); got foot_bottom={foot_bottom}"
         );
     }
+
+    /// Regression: MJCF `<body>` must emit URDF joint origin `rpy` as a
+    /// `quat` attribute. Dropping it silently rotates every joint axis to
+    /// the parent's frame in MuJoCo's view, which on keel-style RPP layouts
+    /// (`<joint origin rpy="0 0 π/2"/> <axis xyz="1 0 0"/>`) caused CHAMP
+    /// forward commands to drive the body sideways (the axis MuJoCo saw was
+    /// body +X, not the body +Y the IK assumed). Confirm a yawed joint
+    /// origin produces a non-trivial `quat` in the emitted MJCF.
+    #[test]
+    fn mjcf_body_preserves_joint_origin_rpy() {
+        use articara::robot::RobotModel;
+
+        let mut model = RobotModel::from_urdf(&fixture_urdf()).expect("fixture URDF");
+        // Replace the first non-fixed joint's origin with a yaw=π/2 rotation
+        // so we can assert the MJCF carries it through.
+        let ji = model
+            .joints
+            .iter()
+            .position(|j| j.joint_type != "fixed")
+            .expect("fixture URDF should have a movable joint");
+        let yaw = std::f32::consts::FRAC_PI_2;
+        let rot = nalgebra::UnitQuaternion::from_euler_angles(0.0, 0.0, yaw);
+        model.joints[ji].origin.rotation = rot;
+        let child_link = model.joints[ji].child_link.clone();
+
+        let xml = articara::mjcf::export_mjcf(&model);
+
+        // The child body should have a quat attribute close to
+        // (cos(π/4), 0, 0, sin(π/4)) ≈ (0.7071, 0, 0, 0.7071).
+        let body_tag = format!("<body name=\"{child_link}\"");
+        let start = xml
+            .find(&body_tag)
+            .unwrap_or_else(|| panic!("body tag for {child_link} missing in MJCF"));
+        let line_end = xml[start..].find('>').unwrap();
+        let body_line = &xml[start..start + line_end];
+        assert!(
+            body_line.contains("quat=\""),
+            "<body name={child_link:?}> should carry a quat attribute when its parent joint has \
+             non-identity rpy.\nLine: {body_line}"
+        );
+        // Spot-check the components: w ≈ 0.7071, k (z) ≈ 0.7071.
+        let q_start = body_line.find("quat=\"").unwrap() + "quat=\"".len();
+        let q_end = body_line[q_start..].find('"').unwrap();
+        let qs: Vec<f64> = body_line[q_start..q_start + q_end]
+            .split_whitespace()
+            .map(|s| s.parse().unwrap())
+            .collect();
+        assert_eq!(qs.len(), 4, "quat should have 4 components, got {qs:?}");
+        let half_sqrt = 0.5_f64.sqrt();
+        assert!((qs[0] - half_sqrt).abs() < 1e-4, "quat.w {} != {half_sqrt}", qs[0]);
+        assert!(qs[1].abs() < 1e-4, "quat.x {} should be ~0", qs[1]);
+        assert!(qs[2].abs() < 1e-4, "quat.y {} should be ~0", qs[2]);
+        assert!((qs[3] - half_sqrt).abs() < 1e-4, "quat.z {} != {half_sqrt}", qs[3]);
+    }
 }
 
 // ============================================================
