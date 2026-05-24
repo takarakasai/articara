@@ -23,6 +23,105 @@ use crate::robot::*;
 
 // ========== Import ==========
 
+/// Flattened `<default>` class table.
+///
+/// Outer key: class name (the unnamed top-level `<default>` becomes
+/// `"main"`). Inner: element tag (e.g. `joint`, `geom`, `motor`,
+/// `position`) → attribute name → value. Each class's map already has
+/// its parent class's defaults merged in, so a single lookup gives the
+/// fully resolved attribute.
+type MjcfClassTable = HashMap<String, HashMap<String, HashMap<String, String>>>;
+
+/// Resolve `attr` on `el`, falling back to the class system.
+///
+/// MuJoCo's resolution order is:
+/// 1. explicit attribute on the element
+/// 2. element's own `class="X"` defaults
+/// 3. the most-recent ancestor `<body>`'s `childclass`
+/// 4. the unnamed top-level `<default>` (`"main"`)
+fn mjcf_attr<'a>(
+    el: roxmltree::Node<'a, 'a>,
+    tag: &str,
+    attr: &str,
+    body_childclass: &str,
+    table: &MjcfClassTable,
+) -> Option<String> {
+    if let Some(v) = el.attribute(attr) {
+        return Some(v.to_string());
+    }
+    // Inheritance fallback: class on the element wins over the body's
+    // childclass; both fall back to "main".
+    let candidates = [el.attribute("class").unwrap_or(""), body_childclass, "main"];
+    for cls in candidates.iter().filter(|c| !c.is_empty()) {
+        if let Some(v) = table
+            .get(*cls)
+            .and_then(|tags| tags.get(tag))
+            .and_then(|attrs| attrs.get(attr))
+        {
+            return Some(v.clone());
+        }
+    }
+    None
+}
+
+/// Walk a `<default>` element, merging its declared element defaults
+/// onto `parent_class`'s already-flattened defaults, then recurse into
+/// any nested `<default class="X">`.
+fn walk_mjcf_default(
+    el: roxmltree::Node,
+    parent_class: Option<&str>,
+    table: &mut MjcfClassTable,
+) {
+    // The outermost <default> is unnamed and becomes "main"; named
+    // siblings/children carry their own class= attribute.
+    let this_class = el
+        .attribute("class")
+        .unwrap_or("main")
+        .to_string();
+
+    // Start from the parent class's flattened map (deep clone) so each
+    // class can be queried in one step.
+    let mut my_defaults: HashMap<String, HashMap<String, String>> = parent_class
+        .and_then(|pc| table.get(pc).cloned())
+        .unwrap_or_default();
+
+    for child in el.children().filter(|n| n.is_element()) {
+        let tag = child.tag_name().name();
+        if tag == "default" {
+            // Nested class — handled in the recursion below.
+            continue;
+        }
+        let entry = my_defaults.entry(tag.to_string()).or_default();
+        for attr in child.attributes() {
+            // Skip `class` itself — it's metadata, not a per-element default.
+            if attr.name() == "class" {
+                continue;
+            }
+            entry.insert(attr.name().to_string(), attr.value().to_string());
+        }
+    }
+
+    table.insert(this_class.clone(), my_defaults);
+
+    for child in el.children().filter(|n| n.tag_name().name() == "default") {
+        walk_mjcf_default(child, Some(&this_class), table);
+    }
+}
+
+/// Build the full class table for a `<mujoco>` element.
+fn parse_mjcf_class_table(mujoco_el: roxmltree::Node) -> MjcfClassTable {
+    let mut table: MjcfClassTable = HashMap::new();
+    // The root <default> is optional; if missing, "main" is just empty.
+    table.insert("main".to_string(), HashMap::new());
+    for top in mujoco_el
+        .children()
+        .filter(|n| n.tag_name().name() == "default")
+    {
+        walk_mjcf_default(top, None, &mut table);
+    }
+    table
+}
+
 /// Parse an MJCF file and return a RobotModel.
 pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
     let xml = std::fs::read_to_string(path).map_err(|e| format!("Read MJCF: {e}"))?;
@@ -69,6 +168,14 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
     let mut children_joints: HashMap<String, Vec<usize>> = HashMap::new();
     let mut child_links: HashSet<String> = HashSet::new();
 
+    // Build the <default> class table once before walking bodies so each
+    // `<joint>` / `<geom>` / `<motor>` etc. element can fall back to its
+    // class's (and inherited classes') attributes. Without this every
+    // joint axis / range / damping silently collapses to MJCF's hard-coded
+    // defaults — see the Unitree Go2 menagerie model, which declares all
+    // joint axes in `<default class="abduction|hip|knee">` blocks.
+    let class_table = parse_mjcf_class_table(mujoco_el);
+
     // Find <worldbody>
     let worldbody = mujoco_el
         .children()
@@ -79,6 +186,8 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
     parse_mjcf_bodies(
         worldbody,
         None, // no parent
+        "main", // starting childclass
+        &class_table,
         mjcf_dir,
         &mesh_assets,
         angle_in_degrees,
@@ -89,6 +198,11 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
         &mut children_joints,
         &mut child_links,
     );
+
+    // Parse <actuator> after bodies so joint refs exist. Motor / position /
+    // velocity / general elements set the corresponding `ActuatorMode` and
+    // pick up Kp / Kv / effort (force range) from the class chain.
+    parse_mjcf_actuators_import(mujoco_el, &class_table, &mut joints, &joint_map);
 
     let root_link = links
         .iter()
@@ -250,6 +364,8 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
 fn parse_mjcf_bodies(
     parent_node: roxmltree::Node,
     parent_link_name: Option<&str>,
+    parent_childclass: &str,
+    class_table: &MjcfClassTable,
     mjcf_dir: &Path,
     mesh_assets: &HashMap<String, String>,
     angle_deg: bool,
@@ -264,6 +380,14 @@ fn parse_mjcf_bodies(
         .children()
         .filter(|n| n.tag_name().name() == "body")
     {
+        // `childclass` propagates: a body's childclass becomes the default
+        // class for all elements inside it (and its descendants) until
+        // another body overrides it.
+        let body_childclass = body_el
+            .attribute("childclass")
+            .unwrap_or(parent_childclass)
+            .to_string();
+
         let body_name = body_el
             .attribute("name")
             .unwrap_or(&format!("body_{}", links.len()))
@@ -375,7 +499,12 @@ fn parse_mjcf_bodies(
                         .unwrap_or(&format!("joint_{ji}"))
                         .to_string();
 
-                    let jtype = match joint_el.attribute("type").unwrap_or("hinge") {
+                    // `type` itself can be set in <default><joint type="..."/>
+                    // so resolve through the class table too. Default is
+                    // "hinge" per MJCF.
+                    let jtype_raw = mjcf_attr(joint_el, "joint", "type", &body_childclass, class_table)
+                        .unwrap_or_else(|| "hinge".to_string());
+                    let jtype = match jtype_raw.as_str() {
                         "hinge" => "revolute",
                         "slide" => "prismatic",
                         "ball" => "ball",
@@ -384,12 +513,14 @@ fn parse_mjcf_bodies(
                     }
                     .to_string();
 
-                    let axis = joint_el
-                        .attribute("axis")
-                        .map(|s| parse_vec3_text(s))
+                    let axis = mjcf_attr(joint_el, "joint", "axis", &body_childclass, class_table)
+                        .as_deref()
+                        .map(parse_vec3_text)
                         .unwrap_or(na::Vector3::z());
 
-                    let (lower, upper) = if let Some(range_str) = joint_el.attribute("range") {
+                    let (lower, upper) = if let Some(range_str) =
+                        mjcf_attr(joint_el, "joint", "range", &body_childclass, class_table)
+                    {
                         let vals: Vec<f64> = range_str
                             .split_whitespace()
                             .filter_map(|s| s.parse().ok())
@@ -405,14 +536,14 @@ fn parse_mjcf_bodies(
                         (0.0, 0.0)
                     };
 
-                    let armature = joint_el
-                        .attribute("armature")
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .unwrap_or(0.0);
-                    let joint_damping = joint_el
-                        .attribute("damping")
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .unwrap_or(0.0);
+                    let armature =
+                        mjcf_attr(joint_el, "joint", "armature", &body_childclass, class_table)
+                            .and_then(|s| s.parse::<f64>().ok())
+                            .unwrap_or(0.0);
+                    let joint_damping =
+                        mjcf_attr(joint_el, "joint", "damping", &body_childclass, class_table)
+                            .and_then(|s| s.parse::<f64>().ok())
+                            .unwrap_or(0.0);
 
                     let origin = na::Isometry3::from_parts(
                         na::Translation3::from(body_pos),
@@ -447,10 +578,14 @@ fn parse_mjcf_bodies(
             }
         }
 
-        // Recurse into child bodies
+        // Recurse into child bodies — propagate this body's effective
+        // childclass so nested joints/geoms keep inheriting the right
+        // class chain.
         parse_mjcf_bodies(
             body_el,
             Some(&body_name),
+            &body_childclass,
+            class_table,
             mjcf_dir,
             mesh_assets,
             angle_deg,
@@ -461,6 +596,91 @@ fn parse_mjcf_bodies(
             children_joints,
             child_links,
         );
+    }
+}
+
+/// Parse the top-level `<actuator>` block and fold per-element settings
+/// (mode, Kp / Kv, effort range) onto the already-loaded `joints`.
+///
+/// MJCF maps actuator element tags to articara modes:
+/// - `<motor>`        → [`crate::rbd::model::ActuatorMode::Torque`]
+/// - `<position>`     → [`crate::rbd::model::ActuatorMode::Position`]
+/// - `<velocity>`     → [`crate::rbd::model::ActuatorMode::Velocity`]
+/// - `<general>`      → defaults to Torque unless `dyntype`/`gaintype` etc.
+///   force a different interpretation; the import is best-effort.
+///
+/// `ctrlrange` / `forcerange` populate `joint.effort` (taken as the
+/// symmetric max). Inheritance is via the `class` system (resolved
+/// against the top-level `<default>` table; bodies aren't involved
+/// for actuators).
+fn parse_mjcf_actuators_import(
+    mujoco_el: roxmltree::Node,
+    class_table: &MjcfClassTable,
+    joints: &mut [JointData],
+    joint_map: &HashMap<String, usize>,
+) {
+    let Some(actuator_el) = mujoco_el
+        .children()
+        .find(|n| n.tag_name().name() == "actuator")
+    else {
+        return;
+    };
+
+    use crate::rbd::model::ActuatorMode;
+
+    for el in actuator_el.children().filter(|n| n.is_element()) {
+        let tag = el.tag_name().name();
+        let (mode, default_kp, default_kv) = match tag {
+            "motor" => (ActuatorMode::Torque, None, None),
+            "position" => (ActuatorMode::Position, Some(50.0_f64), Some(0.0_f64)),
+            "velocity" => (ActuatorMode::Velocity, Some(0.0_f64), Some(5.0_f64)),
+            "general" => (ActuatorMode::Torque, None, None),
+            // intvelocity, adhesion, damper, cylinder, muscle, ... aren't
+            // mapped — leave the joint's default mode untouched.
+            _ => continue,
+        };
+
+        // Actuators look up via `<actuator>`-level class (no body context).
+        let Some(joint_name) = el.attribute("joint") else {
+            continue;
+        };
+        let Some(&ji) = joint_map.get(joint_name) else {
+            continue;
+        };
+
+        let j = &mut joints[ji];
+        j.actuator_mode = mode;
+
+        // Kp / Kv from <position>/<velocity> kp/kv attributes (or class).
+        if let Some(kp) =
+            mjcf_attr(el, tag, "kp", "", class_table).and_then(|s| s.parse::<f64>().ok())
+        {
+            j.actuator_kp = kp;
+        } else if let Some(def) = default_kp {
+            j.actuator_kp = def;
+        }
+        if let Some(kv) =
+            mjcf_attr(el, tag, "kv", "", class_table).and_then(|s| s.parse::<f64>().ok())
+        {
+            j.actuator_kv = kv;
+        } else if let Some(def) = default_kv {
+            j.actuator_kv = def;
+        }
+
+        // Effort: prefer forcerange (limit on output force), fall back
+        // to ctrlrange (limit on the control signal — same units for
+        // motor-class actuators when gear == 1).
+        if let Some(fr) = mjcf_attr(el, tag, "forcerange", "", class_table)
+            .or_else(|| mjcf_attr(el, tag, "ctrlrange", "", class_table))
+        {
+            let vals: Vec<f64> = fr.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+            if vals.len() == 2 {
+                let max_abs = vals[0].abs().max(vals[1].abs());
+                if max_abs > 0.0 {
+                    j.effort = max_abs;
+                }
+            }
+        }
     }
 }
 
