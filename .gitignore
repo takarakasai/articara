@@ -8,3 +8,9 @@
 # separate fork now). Local clones / experiments may leave a `sample/`
 # directory in the working tree — keep it out of `git status` noise.
 /sample
+
+# `models/` holds locally-downloaded robot assets (Menagerie sparse
+# checkouts, internal experiments, etc.). They are not versioned here
+# — the `examples/go2_*.rs` scripts expect `models/unitree_go2/` to be
+# fetched separately; see the comment at the top of each example.
+/models
