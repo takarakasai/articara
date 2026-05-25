@@ -1307,6 +1307,90 @@ mod test_mjcf {
             calf.effort
         );
     }
+
+    /// Regression: a Menagerie-style MJCF where the geom has no inline
+    /// `type=` attribute (it inherits `type="mesh"` from `<default
+    /// class="visual">`), the `<mesh file="..."/>` carries no `name=`
+    /// (so the asset name is the file's stem), the file is `.obj`, and
+    /// the meshes live in a `meshdir=` subdir. Hitting any of those four
+    /// before this regression dropped Unitree Go2 visuals to spheres or
+    /// to empty mesh vertices.
+    #[test]
+    fn mjcf_imports_class_typed_obj_mesh_via_meshdir() {
+        use articara::rbd::model::GeomData;
+
+        // Minimal OBJ — single triangle. tobj is happy with no normals
+        // and no mtllib reference.
+        let obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+        let tmp = std::env::temp_dir().join("articara_mjcf_mesh_test");
+        let assets = tmp.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("tri.obj"), obj).unwrap();
+
+        // MJCF layout: meshdir="assets", mesh asset has no name= (so the
+        // name defaults to "tri"), geom is `mesh="tri" class="visual"`
+        // with no explicit type= (it inherits type="mesh" from the
+        // visual class).
+        let xml = r#"<mujoco model="mesh_class_test">
+  <compiler angle="radian" meshdir="assets"/>
+  <default>
+    <default class="visual">
+      <geom type="mesh" contype="0" conaffinity="0"/>
+    </default>
+  </default>
+  <asset>
+    <mesh file="tri.obj"/>
+  </asset>
+  <worldbody>
+    <body name="root" pos="0 0 0">
+      <geom mesh="tri" class="visual"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        let mjcf_path = tmp.join("test.xml");
+        std::fs::write(&mjcf_path, xml).unwrap();
+
+        let model = mjcf::import_mjcf(&mjcf_path).expect("import MJCF");
+        let root = model
+            .links
+            .iter()
+            .find(|l| l.name == "root")
+            .expect("root link");
+        assert_eq!(
+            root.visuals.len(),
+            1,
+            "expected exactly one visual on the root body"
+        );
+        match &root.visuals[0].geometry {
+            GeomData::Mesh {
+                vertices,
+                filename,
+                ..
+            } => {
+                assert!(
+                    filename.as_deref() == Some("tri.obj"),
+                    "filename = {filename:?}"
+                );
+                assert!(
+                    !vertices.is_empty(),
+                    "OBJ vertex list should be non-empty (got {} floats)",
+                    vertices.len()
+                );
+                // 1 triangle × 3 vertices × 3 components = 9 floats.
+                // load_mesh_file may expand to (pos,normal) per vertex; allow
+                // any non-zero multiple of 9 since the upstream loader can
+                // emit either format.
+                assert!(
+                    vertices.len() % 9 == 0,
+                    "vertex buffer length {} not a multiple of 9",
+                    vertices.len()
+                );
+            }
+            _ => panic!(
+                "geom should be a Mesh (inherited type from class=\"visual\")"
+            ),
+        }
+    }
 }
 
 // ============================================================

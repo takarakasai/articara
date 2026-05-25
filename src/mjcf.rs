@@ -140,12 +140,23 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
         .to_string();
 
     // Check angle unit
-    let angle_in_degrees = mujoco_el
+    let compiler_el = mujoco_el
         .descendants()
-        .find(|n| n.tag_name().name() == "compiler")
+        .find(|n| n.tag_name().name() == "compiler");
+    let angle_in_degrees = compiler_el
         .and_then(|c| c.attribute("angle"))
         .map(|a| a == "degree")
         .unwrap_or(true); // MJCF default is degree
+
+    // `<compiler meshdir="…">` is the subdirectory (relative to the MJCF
+    // file) that mesh `file=` attributes resolve against. Menagerie sets
+    // `meshdir="assets"`; without honouring it, every `<mesh file="x.obj"/>`
+    // would be looked up next to the MJCF instead of in `assets/`, and
+    // every mesh would silently come back with zero vertices.
+    let mesh_base_dir: std::path::PathBuf = compiler_el
+        .and_then(|c| c.attribute("meshdir"))
+        .map(|d| mjcf_dir.join(d))
+        .unwrap_or_else(|| mjcf_dir.to_path_buf());
 
     // Collect mesh assets: name -> filename
     let mut mesh_assets: HashMap<String, String> = HashMap::new();
@@ -154,10 +165,22 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
         .find(|n| n.tag_name().name() == "asset")
     {
         for mesh_el in asset.children().filter(|n| n.tag_name().name() == "mesh") {
-            if let (Some(name), Some(file)) = (mesh_el.attribute("name"), mesh_el.attribute("file"))
-            {
-                mesh_assets.insert(name.to_string(), file.to_string());
-            }
+            // MJCF allows `<mesh file="foo.obj"/>` with no explicit `name=`;
+            // in that case the asset name is the file's basename without
+            // its extension. Menagerie (e.g. Unitree Go2) relies on this,
+            // so a strict `name && file` requirement silently drops every
+            // mesh in those files.
+            let Some(file) = mesh_el.attribute("file") else {
+                continue;
+            };
+            let name = mesh_el.attribute("name").map(str::to_string).unwrap_or_else(|| {
+                Path::new(file)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(file)
+                    .to_string()
+            });
+            mesh_assets.insert(name, file.to_string());
         }
     }
 
@@ -188,7 +211,7 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
         None, // no parent
         "main", // starting childclass
         &class_table,
-        mjcf_dir,
+        &mesh_base_dir,
         &mesh_assets,
         angle_in_degrees,
         &mut links,
@@ -366,7 +389,7 @@ fn parse_mjcf_bodies(
     parent_link_name: Option<&str>,
     parent_childclass: &str,
     class_table: &MjcfClassTable,
-    mjcf_dir: &Path,
+    mesh_base_dir: &Path,
     mesh_assets: &HashMap<String, String>,
     angle_deg: bool,
     links: &mut Vec<LinkData>,
@@ -405,7 +428,8 @@ fn parse_mjcf_bodies(
             .children()
             .filter(|n| n.tag_name().name() == "geom")
         {
-            let geom_data = parse_mjcf_geom(geom_el, mjcf_dir, mesh_assets);
+            let geom_data =
+                parse_mjcf_geom(geom_el, mesh_base_dir, mesh_assets, &body_childclass, class_table);
             let gpos = parse_pos_attr(geom_el);
             let gquat = parse_quat_attr(geom_el);
             let origin = na::Isometry3::from_parts(
@@ -586,7 +610,7 @@ fn parse_mjcf_bodies(
             Some(&body_name),
             &body_childclass,
             class_table,
-            mjcf_dir,
+            mesh_base_dir,
             mesh_assets,
             angle_deg,
             links,
@@ -1672,18 +1696,39 @@ fn parse_mjcf_inertial(body_el: roxmltree::Node) -> InertialData {
 
 fn parse_mjcf_geom(
     geom_el: roxmltree::Node,
-    mjcf_dir: &Path,
+    mesh_base_dir: &Path,
     mesh_assets: &HashMap<String, String>,
+    body_childclass: &str,
+    class_table: &MjcfClassTable,
 ) -> GeomData {
-    let geom_type = geom_el.attribute("type").unwrap_or("sphere");
-    let size: Vec<f32> = geom_el
-        .attribute("size")
-        .unwrap_or("")
+    // `type` and `mesh` must go through the <default> resolver. The
+    // Menagerie convention puts mesh visuals on a `class="visual"` that
+    // declares `<geom type="mesh"/>` in the class block, so the per-geom
+    // element has *only* `mesh="…" class="visual"` — no inline `type=`.
+    // Reading `type` inline-only made every such geom collapse to the
+    // hard-coded "sphere" default and the mesh visual to disappear.
+    let geom_type =
+        mjcf_attr(geom_el, "geom", "type", body_childclass, class_table)
+            .unwrap_or_else(|| {
+                // MJCF's true default for a `<geom>` referencing a mesh is
+                // `type="mesh"`, otherwise `type="sphere"`. We don't
+                // implement the full element-aware default fallback, but
+                // we can at least promote any geom with a `mesh` attribute
+                // (inline or class-inherited) to mesh-type so Menagerie's
+                // implicit-typed mesh geoms round-trip correctly.
+                if mjcf_attr(geom_el, "geom", "mesh", body_childclass, class_table).is_some() {
+                    "mesh".to_string()
+                } else {
+                    "sphere".to_string()
+                }
+            });
+    let size: Vec<f32> = mjcf_attr(geom_el, "geom", "size", body_childclass, class_table)
+        .unwrap_or_default()
         .split_whitespace()
         .filter_map(|s| s.parse().ok())
         .collect();
 
-    match geom_type {
+    match geom_type.as_str() {
         "box" => {
             let hx = size.first().copied().unwrap_or(0.05);
             let hy = size.get(1).copied().unwrap_or(hx);
@@ -1711,13 +1756,18 @@ fn parse_mjcf_geom(
             GeomData::Sphere { radius }
         }
         "mesh" => {
-            if let Some(mesh_name) = geom_el.attribute("mesh") {
+            if let Some(mesh_name) =
+                mjcf_attr(geom_el, "geom", "mesh", body_childclass, class_table)
+            {
                 let filename = mesh_assets
-                    .get(mesh_name)
+                    .get(&mesh_name)
                     .cloned()
                     .unwrap_or_else(|| format!("{mesh_name}.stl"));
-                let mesh_path = mjcf_dir.join(&filename);
-                let vertices = crate::robot::load_stl_mesh_public(&mesh_path);
+                let mesh_path = mesh_base_dir.join(&filename);
+                // Dispatch on extension so .obj (used by Menagerie's
+                // Unitree / Boston Dynamics / ANYmal models) loads
+                // through `tobj`, not the STL parser.
+                let vertices = crate::robot::load_mesh_file(&mesh_path);
                 GeomData::Mesh {
                     vertices,
                     filename: Some(filename),

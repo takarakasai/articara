@@ -54,12 +54,30 @@ fn main() {
             }
             println!("--- Links ---");
             for l in &model.links {
+                let mut mesh_n = 0;
+                let mut sphere_n = 0;
+                let mut box_n = 0;
+                let mut cyl_n = 0;
+                let mut cap_n = 0;
+                let mut mesh_verts_sum = 0;
+                for v in &l.visuals {
+                    match &v.geometry {
+                        articara::rbd::model::GeomData::Mesh { vertices, .. } => {
+                            mesh_n += 1;
+                            mesh_verts_sum += vertices.len();
+                        }
+                        articara::rbd::model::GeomData::Sphere { .. } => sphere_n += 1,
+                        articara::rbd::model::GeomData::Box { .. } => box_n += 1,
+                        articara::rbd::model::GeomData::Cylinder { .. } => cyl_n += 1,
+                        articara::rbd::model::GeomData::Capsule { .. } => cap_n += 1,
+                        _ => {}
+                    }
+                }
                 println!(
-                    "  {name:>14}  mass={mass:7.4}  visuals={vc}  collisions={cc}",
+                    "  {name:>14}  mass={mass:7.4}  visuals={vc}  (mesh={mesh_n} sphere={sphere_n} box={box_n} cyl={cyl_n} cap={cap_n})  mesh_verts={mesh_verts_sum}",
                     name = l.name,
                     mass = l.inertial.mass,
                     vc = l.visuals.len(),
-                    cc = l.collisions.len(),
                 );
             }
         }
