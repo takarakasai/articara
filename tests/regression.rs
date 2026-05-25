@@ -1367,9 +1367,15 @@ mod test_mjcf {
                 filename,
                 ..
             } => {
+                // meshdir prefix must be baked into the stored URI so the
+                // exporter (which joins this against `model.source_path`'s
+                // parent) recovers the same on-disk file. Without the
+                // prefix, in-process MuJoCo re-export looks beside the
+                // MJCF instead of in `assets/` and fails with
+                // "Error opening file '<...>/tri.obj'".
                 assert!(
-                    filename.as_deref() == Some("tri.obj"),
-                    "filename = {filename:?}"
+                    filename.as_deref() == Some("assets/tri.obj"),
+                    "filename = {filename:?} (expected meshdir prefix)"
                 );
                 assert!(
                     !vertices.is_empty(),
@@ -1390,6 +1396,23 @@ mod test_mjcf {
                 "geom should be a Mesh (inherited type from class=\"visual\")"
             ),
         }
+
+        // End-to-end: re-export the imported model through
+        // `crate::mesh_paths::resolve_source` (the exact path the in-
+        // process MuJoCo backend takes) and confirm the resolved URI
+        // points at a real file. This is the regression for the user-
+        // observed "Failed to load MuJoCo model" error.
+        let geom = &root.visuals[0].geometry;
+        let GeomData::Mesh { filename: Some(uri), .. } = geom else {
+            unreachable!("checked above");
+        };
+        let resolved = articara::mesh_paths::resolve_source(uri, &model)
+            .expect("resolve_source returned None — meshdir lost");
+        assert!(
+            resolved.exists(),
+            "resolved mesh path {resolved:?} doesn't exist — meshdir prefix dropped \
+             between import and re-export"
+        );
     }
 }
 
