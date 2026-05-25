@@ -148,22 +148,20 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
         .map(|a| a == "degree")
         .unwrap_or(true); // MJCF default is degree
 
-    // `<compiler meshdir="…">` is the subdirectory (relative to the MJCF
-    // file) that mesh `file=` attributes resolve against. Menagerie sets
-    // `meshdir="assets"`; without honouring it, every `<mesh file="x.obj"/>`
-    // would be looked up next to the MJCF instead of in `assets/`, and
-    // every mesh would silently come back with zero vertices.
-    let mesh_base_dir: std::path::PathBuf = compiler_el
-        .and_then(|c| c.attribute("meshdir"))
-        .map(|d| mjcf_dir.join(d))
-        .unwrap_or_else(|| mjcf_dir.to_path_buf());
-
     // Collect mesh assets: name -> filename
     let mut mesh_assets: HashMap<String, String> = HashMap::new();
     if let Some(asset) = mujoco_el
         .children()
         .find(|n| n.tag_name().name() == "asset")
     {
+        // Compose `meshdir` (read above) onto every asset path here so the
+        // resulting URI resolves correctly both at load time *and* later
+        // through `crate::mesh_paths::resolve_source` (= MJCF re-export
+        // for in-process MuJoCo). Storing just the bare `file=` value
+        // strips the meshdir and breaks the in-process sim with
+        // "Error opening file ..." because MuJoCo looks beside the MJCF,
+        // not in `assets/`.
+        let meshdir_rel = compiler_el.and_then(|c| c.attribute("meshdir"));
         for mesh_el in asset.children().filter(|n| n.tag_name().name() == "mesh") {
             // MJCF allows `<mesh file="foo.obj"/>` with no explicit `name=`;
             // in that case the asset name is the file's basename without
@@ -180,7 +178,19 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
                     .unwrap_or(file)
                     .to_string()
             });
-            mesh_assets.insert(name, file.to_string());
+            // Skip the meshdir prefix when the file= is already absolute
+            // or already includes the meshdir — keep the import idempotent
+            // against author MJCFs that write either form.
+            let file_path = Path::new(file);
+            let stored = if file_path.is_absolute() {
+                file.to_string()
+            } else if let Some(md) = meshdir_rel {
+                let combined = Path::new(md).join(file);
+                combined.to_string_lossy().into_owned()
+            } else {
+                file.to_string()
+            };
+            mesh_assets.insert(name, stored);
         }
     }
 
@@ -211,7 +221,7 @@ pub fn import_mjcf(path: &Path) -> Result<RobotModel, String> {
         None, // no parent
         "main", // starting childclass
         &class_table,
-        &mesh_base_dir,
+        mjcf_dir,
         &mesh_assets,
         angle_in_degrees,
         &mut links,
@@ -389,7 +399,7 @@ fn parse_mjcf_bodies(
     parent_link_name: Option<&str>,
     parent_childclass: &str,
     class_table: &MjcfClassTable,
-    mesh_base_dir: &Path,
+    mjcf_dir: &Path,
     mesh_assets: &HashMap<String, String>,
     angle_deg: bool,
     links: &mut Vec<LinkData>,
@@ -429,7 +439,7 @@ fn parse_mjcf_bodies(
             .filter(|n| n.tag_name().name() == "geom")
         {
             let geom_data =
-                parse_mjcf_geom(geom_el, mesh_base_dir, mesh_assets, &body_childclass, class_table);
+                parse_mjcf_geom(geom_el, mjcf_dir, mesh_assets, &body_childclass, class_table);
             let gpos = parse_pos_attr(geom_el);
             let gquat = parse_quat_attr(geom_el);
             let origin = na::Isometry3::from_parts(
@@ -610,7 +620,7 @@ fn parse_mjcf_bodies(
             Some(&body_name),
             &body_childclass,
             class_table,
-            mesh_base_dir,
+            mjcf_dir,
             mesh_assets,
             angle_deg,
             links,
@@ -1696,7 +1706,7 @@ fn parse_mjcf_inertial(body_el: roxmltree::Node) -> InertialData {
 
 fn parse_mjcf_geom(
     geom_el: roxmltree::Node,
-    mesh_base_dir: &Path,
+    mjcf_dir: &Path,
     mesh_assets: &HashMap<String, String>,
     body_childclass: &str,
     class_table: &MjcfClassTable,
@@ -1763,7 +1773,10 @@ fn parse_mjcf_geom(
                     .get(&mesh_name)
                     .cloned()
                     .unwrap_or_else(|| format!("{mesh_name}.stl"));
-                let mesh_path = mesh_base_dir.join(&filename);
+                // `filename` already carries the meshdir prefix from the
+                // asset table, so the on-disk path is simply
+                // `<mjcf_dir>/<filename>`.
+                let mesh_path = mjcf_dir.join(&filename);
                 // Dispatch on extension so .obj (used by Menagerie's
                 // Unitree / Boston Dynamics / ANYmal models) loads
                 // through `tobj`, not the STL parser.
