@@ -472,6 +472,8 @@ fn parse_mjcf_bodies(
             collisions.push(CollisionData {
                 origin,
                 geometry: geom_data,
+            
+                physics: None,
             });
         }
 
@@ -1534,32 +1536,54 @@ fn write_mjcf_body(
     for col in &link.collisions {
         let t = &col.origin.translation;
         let pos_attr = format!("{} {} {}", t.x, t.y, t.z);
+        // Build per-geom physics attribute suffix (friction / condim /
+        // priority / solimp / margin). Empty when `col.physics` is None
+        // or all sub-fields are None ⇒ MuJoCo falls back to <default>.
+        let mut phys_attrs = String::new();
+        if let Some(p) = &col.physics {
+            if let Some(f) = p.friction {
+                phys_attrs.push_str(&format!(" friction=\"{} {} {}\"", f[0], f[1], f[2]));
+            }
+            if let Some(c) = p.condim {
+                phys_attrs.push_str(&format!(" condim=\"{c}\""));
+            }
+            if let Some(pr) = p.priority {
+                phys_attrs.push_str(&format!(" priority=\"{pr}\""));
+            }
+            if let Some(si) = p.solimp {
+                phys_attrs.push_str(&format!(" solimp=\"{} {} {}\"", si[0], si[1], si[2]));
+            }
+            if let Some(m) = p.margin {
+                phys_attrs.push_str(&format!(" margin=\"{m}\""));
+            }
+        }
+        let phys_attrs = phys_attrs.as_str();
         match &col.geometry {
             GeomData::Box { hx, hy, hz } => {
                 s.push_str(&format!(
-                    "{pad}  <geom type=\"box\" pos=\"{pos_attr}\" size=\"{hx} {hy} {hz}\" rgba=\"{col_rgba}\"{collision_extra}/>\n",
+                    "{pad}  <geom type=\"box\" pos=\"{pos_attr}\" size=\"{hx} {hy} {hz}\" rgba=\"{col_rgba}\"{collision_extra}{phys_attrs}/>\n",
                 ));
             }
             GeomData::Cylinder { radius, half_length } => {
                 s.push_str(&format!(
-                    "{pad}  <geom type=\"cylinder\" pos=\"{pos_attr}\" size=\"{radius} {half_length}\" rgba=\"{col_rgba}\"{collision_extra}/>\n",
+                    "{pad}  <geom type=\"cylinder\" pos=\"{pos_attr}\" size=\"{radius} {half_length}\" rgba=\"{col_rgba}\"{collision_extra}{phys_attrs}/>\n",
                 ));
             }
             GeomData::Sphere { radius } => {
                 s.push_str(&format!(
-                    "{pad}  <geom type=\"sphere\" pos=\"{pos_attr}\" size=\"{radius}\" rgba=\"{col_rgba}\"{collision_extra}/>\n",
+                    "{pad}  <geom type=\"sphere\" pos=\"{pos_attr}\" size=\"{radius}\" rgba=\"{col_rgba}\"{collision_extra}{phys_attrs}/>\n",
                 ));
             }
             GeomData::Capsule { radius, half_length } => {
                 s.push_str(&format!(
-                    "{pad}  <geom type=\"capsule\" pos=\"{pos_attr}\" size=\"{radius} {half_length}\" rgba=\"{col_rgba}\"{collision_extra}/>\n",
+                    "{pad}  <geom type=\"capsule\" pos=\"{pos_attr}\" size=\"{radius} {half_length}\" rgba=\"{col_rgba}\"{collision_extra}{phys_attrs}/>\n",
                 ));
             }
             GeomData::Mesh { .. } => {
                 let ptr = &col.geometry as *const GeomData;
                 if let Some(mesh_name) = geom_mesh_map.get(&ptr) {
                     s.push_str(&format!(
-                        "{pad}  <geom type=\"mesh\" mesh=\"{mesh_name}\" pos=\"{pos_attr}\" rgba=\"{col_rgba}\"{collision_extra}/>\n",
+                        "{pad}  <geom type=\"mesh\" mesh=\"{mesh_name}\" pos=\"{pos_attr}\" rgba=\"{col_rgba}\"{collision_extra}{phys_attrs}/>\n",
                     ));
                 }
             }

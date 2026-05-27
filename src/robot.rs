@@ -73,6 +73,8 @@ impl RobotModel {
                 .map(|col| CollisionData {
                     origin: pose_to_isometry(&col.origin),
                     geometry: convert_geometry(&col.geometry, package_dir),
+                
+                    physics: None,
                 })
                 .collect();
 
@@ -333,6 +335,15 @@ mod misa_load {
                 .map(|c| CollisionData {
                     origin: misa_origin_to_isometry_f32(&c.origin),
                     geometry: convert_misa_geom(&c.geom, base_dir),
+                    physics: c.physics.as_ref().map(|p| {
+                        crate::rbd::model::MjcfPhysics {
+                            friction: p.friction,
+                            condim: p.condim,
+                            priority: p.priority,
+                            solimp: p.solimp,
+                            margin: p.margin,
+                        }
+                    }),
                 })
                 .collect();
 
@@ -2601,6 +2612,13 @@ mod misa_save {
                 .map(|c| mn::Collision {
                     origin: isometry_f32_to_origin(&c.origin),
                     geom: geom_data_to_geom(&c.geometry),
+                    physics: c.physics.as_ref().map(|p| mn::MjcfPhysics {
+                        friction: p.friction,
+                        condim: p.condim,
+                        priority: p.priority,
+                        solimp: p.solimp,
+                        margin: p.margin,
+                    }),
                 })
                 .collect();
 

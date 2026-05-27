@@ -384,6 +384,14 @@ pub struct ArticaraApp {
     chicken_head_dof: PinDof,
     /// Show center-of-mass markers and mass labels.
     show_com: bool,
+    /// Show the **whole-robot** centre-of-mass marker (= mass-weighted
+    /// centroid of every link). Independent from [`Self::show_com`]
+    /// which draws one sphere per link.
+    show_total_com: bool,
+    /// Show the support polygon — convex hull of the four foot world
+    /// positions, projected down to the ground plane. Useful for
+    /// visualising static-stability margin during LinearCrawl etc.
+    show_support_polygon: bool,
     /// Show joint axis arrows in viewport.
     show_joint_axes: bool,
     /// Show a semi-transparent ground plane in the viewport.
@@ -736,6 +744,23 @@ pub struct ArticaraApp {
     /// go (which would otherwise happen because the slider snapshot
     /// lingers on the controller).
     gait_dpad_was_active: bool,
+    /// LinearCrawl-only: the stride length (m) the user has "designed"
+    /// the gait around. Drives the **stride-primary** behaviour of the
+    /// D-pad — whenever the D-pad sets a new vx, the controller's
+    /// `cycle_period_s` is rescaled to `gait_design_stride_m / |vx|` so
+    /// the foot's per-swing stride stays at this value while the
+    /// commanded speed changes. Updated when the user drags the Stride
+    /// slider in the gait panel.
+    gait_design_stride_m: f64,
+    /// Whether the D-pad operates in **stride-primary** mode for
+    /// LinearCrawl. When `true`, D-pad button presses rescale
+    /// `cycle_period_s` (and thus the displayed `t3` / `t4`) so the
+    /// design stride is preserved as vx changes. When `false`, the
+    /// D-pad just sets vx and leaves `t3` / `t4` / `T` alone — stride
+    /// then varies with vx (vx-primary). Default `false` so the t3 /
+    /// t4 sliders behave like the other timing inputs (stable across
+    /// D-pad interaction).
+    gait_dpad_stride_primary: bool,
     /// MPC capture-point feedback gain shown in the gait panel slider.
     /// Default `0.0` (post-D3.3.7 C2: legged_control-style open-loop
     /// Raibert + MPC reference, no closed-form foot placement
@@ -897,6 +922,8 @@ impl ArticaraApp {
             chicken_head_links: Vec::new(),
             chicken_head_dof: PinDof::Position,
             show_com: false,
+            show_total_com: false,
+            show_support_polygon: false,
             show_joint_axes: false,
             show_ground_plane: false,
             ground_z: 0.0,
@@ -1072,6 +1099,8 @@ impl ArticaraApp {
             gait_exp_mpc_optimized_footstep: false,
             gait_exp_q_foot_xy_world: 500.0,
             gait_dpad_was_active: false,
+            gait_design_stride_m: 0.05,
+            gait_dpad_stride_primary: false,
             loop_closure_picking_b: false,
             loop_closure_link_b: None,
         }
@@ -1117,12 +1146,14 @@ impl ArticaraApp {
                 quadruped_gait::GaitType::Walk => misarta::config::GaitTypeConfig::Walk,
                 quadruped_gait::GaitType::Pace => misarta::config::GaitTypeConfig::Pace,
                 quadruped_gait::GaitType::Bound => misarta::config::GaitTypeConfig::Bound,
+                quadruped_gait::GaitType::Crawl => misarta::config::GaitTypeConfig::Crawl,
             };
             g.cycle_period_s = cfg.cycle_period_s;
             g.duty_factor = cfg.duty_factor;
             g.swing_height_m = cfg.swing_height_m;
             g.max_step_length_m = cfg.max_step_length_m;
             g.knee_forward = ctrl.knee_forward();
+            g.four_support_fraction = cfg.four_support_fraction;
         }
     }
 
@@ -2179,6 +2210,8 @@ impl ArticaraApp {
                                     link.collisions.push(crate::robot::CollisionData {
                                         origin: nalgebra::Isometry3::identity(),
                                         geometry: geom,
+                                    
+                                        physics: None,
                                     });
                                     self.status_message = format!(
                                         "Collision メッシュ追加 ({tri_count} tris) ← {fname}"

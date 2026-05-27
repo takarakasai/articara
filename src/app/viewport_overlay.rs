@@ -439,6 +439,168 @@ impl ArticaraApp {
         }
     }
 
+    /// Draw the whole-robot CoM marker (+ its ground projection) and
+    /// the support polygon outline on the ground. Controlled by
+    /// `View → Show Total CoM` / `View → Show Support Polygon`.
+    pub(super) fn draw_balance_overlay(
+        &self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        aspect: f32,
+    ) {
+        if !self.show_total_com && !self.show_support_polygon {
+            return;
+        }
+        let Some(model) = self.model.as_ref() else { return };
+        // Need an up-to-date forward-kinematics map. The model carries
+        // a misarta cache that's rebuilt whenever joints/positions
+        // change — call `compute_transforms` directly so we don't
+        // depend on the renderer's internal state.
+        let transforms = model.compute_transforms();
+        let painter = ui.painter();
+
+        // Ground Z for the projection. When the ground plane is
+        // enabled, use its Z; otherwise fall back to the lowest foot Z
+        // (close enough for the visual to sit at the contact surface).
+        let foot_world_xy_z: Vec<[f32; 3]> = self
+            .gait_foot_links
+            .iter()
+            .filter_map(|(_, name)| {
+                let tf = transforms.get(name)?;
+                let p = tf.translation.vector;
+                Some([p.x, p.y, p.z])
+            })
+            .collect();
+        let ground_z = if self.show_ground_plane {
+            self.ground_z
+        } else if let Some(min_z) = foot_world_xy_z
+            .iter()
+            .map(|p| p[2])
+            .fold(None, |acc: Option<f32>, z| Some(acc.map_or(z, |a| a.min(z))))
+        {
+            min_z
+        } else {
+            0.0
+        };
+
+        // ── Support polygon ───────────────────────────────────────
+        // Filter out feet that are above the ground (= currently in
+        // swing). Threshold = 2 mm above `ground_z` catches the entire
+        // swing arc for the default 5 mm swing height while staying
+        // robust to PD tracking noise at touchdown / lift-off. The
+        // polygon then dynamically shrinks from a quadrilateral
+        // (4-support) to a triangle (3-support) as each leg lifts.
+        let stance_threshold = 0.002_f32;
+        let stance_feet: Vec<[f32; 3]> = foot_world_xy_z
+            .iter()
+            .filter(|p| (p[2] - ground_z).abs() < stance_threshold)
+            .copied()
+            .collect();
+        if self.show_support_polygon && stance_feet.len() >= 3 {
+            // 2D centroid for ordering corners angle-wise.
+            let cx: f32 = stance_feet.iter().map(|p| p[0]).sum::<f32>()
+                / stance_feet.len() as f32;
+            let cy: f32 = stance_feet.iter().map(|p| p[1]).sum::<f32>()
+                / stance_feet.len() as f32;
+            let mut ordered: Vec<[f32; 3]> = stance_feet.clone();
+            ordered.sort_by(|a, b| {
+                let aa = (a[1] - cy).atan2(a[0] - cx);
+                let bb = (b[1] - cy).atan2(b[0] - cx);
+                aa.partial_cmp(&bb).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            // Project corners to screen (set Z = ground_z so the
+            // polygon sits flat on the floor).
+            let screen: Vec<Option<egui::Pos2>> = ordered
+                .iter()
+                .map(|p| {
+                    self.project_world(
+                        na::Point3::new(p[0], p[1], ground_z),
+                        rect,
+                        aspect,
+                    )
+                })
+                .collect();
+            let poly_color = egui::Color32::from_rgba_unmultiplied(80, 180, 255, 220);
+            let poly_fill = egui::Color32::from_rgba_unmultiplied(80, 180, 255, 35);
+            // Build a filled poly with the in-rect points (skip
+            // off-screen corners so the convex-fill stays correct).
+            let in_rect: Vec<egui::Pos2> = screen
+                .iter()
+                .filter_map(|s| s.filter(|p| rect.contains(*p)))
+                .collect();
+            if in_rect.len() >= 3 {
+                painter.add(egui::Shape::convex_polygon(
+                    in_rect.clone(),
+                    poly_fill,
+                    egui::Stroke::NONE,
+                ));
+            }
+            // Outline (handles partially-offscreen polygons gracefully
+            // by drawing each visible edge).
+            for i in 0..ordered.len() {
+                let j = (i + 1) % ordered.len();
+                if let (Some(a), Some(b)) = (screen[i], screen[j]) {
+                    painter.line_segment([a, b], egui::Stroke::new(1.5, poly_color));
+                }
+            }
+            // Foot corner dots.
+            for s in &screen {
+                if let Some(p) = s {
+                    if rect.contains(*p) {
+                        painter.circle_filled(*p, 3.0, poly_color);
+                    }
+                }
+            }
+        }
+
+        // ── Whole-robot CoM marker ────────────────────────────────
+        if self.show_total_com {
+            let mc = model.mc();
+            // `compute_com` returns the centroid in the **root link's**
+            // frame (misarta's FK doesn't carry the floating base). For
+            // a world-frame marker that follows the robot as it walks,
+            // apply the live `base_transform` here.
+            let com_root = crate::rbd::dynamics::compute_com(model, mc);
+            let com_world_pt = model.base_transform * com_root;
+            let com_f32 = na::Point3::new(
+                com_world_pt.x as f32,
+                com_world_pt.y as f32,
+                com_world_pt.z as f32,
+            );
+            // CoM ground projection (vertical drop).
+            let ground_proj = na::Point3::new(com_f32.x, com_f32.y, ground_z);
+            let com_color = egui::Color32::from_rgb(255, 200, 60);
+            let proj_color = egui::Color32::from_rgba_unmultiplied(255, 200, 60, 200);
+            if let (Some(sp), Some(gp)) = (
+                self.project_world(com_f32, rect, aspect),
+                self.project_world(ground_proj, rect, aspect),
+            ) {
+                // Vertical drop line.
+                painter.line_segment(
+                    [sp, gp],
+                    egui::Stroke::new(1.0, proj_color),
+                );
+                // Ground-projection ring (= where the CoM lands on the floor).
+                if rect.contains(gp) {
+                    painter.circle_stroke(gp, 6.0, egui::Stroke::new(1.5, com_color));
+                    painter.circle_filled(gp, 1.5, com_color);
+                }
+                // CoM marker itself.
+                if rect.contains(sp) {
+                    painter.circle_filled(sp, 5.0, com_color);
+                    painter.circle_stroke(sp, 5.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
+                    painter.text(
+                        sp + egui::vec2(8.0, -6.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        "CoM",
+                        egui::FontId::proportional(11.0),
+                        com_color,
+                    );
+                }
+            }
+        }
+    }
+
     /// Draw a crosshair at the IK target position during IK drag.
     pub(super) fn draw_ik_target_marker(
         &self,
@@ -1196,7 +1358,10 @@ impl ArticaraApp {
         let body_pose = self.model.as_ref().and_then(|m| {
             let yaw_rad = sim.body_world_yaw(&m.root_link)?;
             let pos = sim.body_world_position(&m.root_link)?;
-            Some((yaw_rad, pos))
+            let vel = sim
+                .body_world_linear_velocity(&m.root_link)
+                .unwrap_or([0.0; 3]);
+            Some((yaw_rad, pos, vel))
         });
 
         let painter = ui.painter();
@@ -1204,9 +1369,9 @@ impl ArticaraApp {
         let bar_h = 6.0_f32;
         let pad = 4.0_f32;
         let line_h = 14.0_f32;
-        // Total widget = bar + 3 lines (ratio, FPS, WBC) + 1 extra line for
-        // body pose if available.
-        let extra_lines = if body_pose.is_some() { 1.0 } else { 0.0 };
+        // Total widget = bar + 3 lines (ratio, FPS, WBC) + 2 extra lines
+        // (body pose + body velocity) if a model is loaded.
+        let extra_lines = if body_pose.is_some() { 2.0 } else { 0.0 };
         let total_h = bar_h + (3.0 + extra_lines) * line_h;
         let centre_x = rect.center().x;
         let top = rect.top() + 12.0;
@@ -1336,7 +1501,7 @@ impl ArticaraApp {
         // Arrow / GUI cmds are body-frame; this row exposes how rotated
         // the body currently is so the user can interpret cmd directions
         // correctly. Yaw colour-coded: green ≤ 5°, orange ≤ 30°, red beyond.
-        if let Some((yaw_rad, pos)) = body_pose {
+        if let Some((yaw_rad, pos, vel)) = body_pose {
             let yaw_deg = yaw_rad.to_degrees();
             let yaw_abs = yaw_deg.abs();
             let pose_color = if yaw_abs <= 5.0 {
@@ -1355,6 +1520,19 @@ impl ArticaraApp {
                 ),
                 egui::FontId::proportional(11.0),
                 pose_color,
+            );
+            // Row 5: world-frame linear velocity. Useful for verifying
+            // that LinearCrawl actually drives the trunk at the
+            // commanded vx and isn't drifting in vy / vz.
+            painter.text(
+                egui::pos2(centre_x, bar_rect.bottom() + 2.0 + 4.0 * line_h),
+                egui::Align2::CENTER_TOP,
+                format!(
+                    "v=({:+.2}, {:+.2}, {:+.2}) m/s",
+                    vel[0], vel[1], vel[2],
+                ),
+                egui::FontId::proportional(11.0),
+                egui::Color32::from_gray(220),
             );
         }
     }

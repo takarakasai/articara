@@ -4439,6 +4439,7 @@ mod test_sidecar {
             rl_foot: "RL_paw".into(),
             rr_foot: "RR_paw".into(),
             knee_forward: [true, true, false, false],
+            four_support_fraction: 0.5,
         });
 
         model.save_sidecar_config(&urdf_dst).unwrap();

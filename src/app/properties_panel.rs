@@ -664,6 +664,8 @@ impl ArticaraApp {
                             crate::robot::CollisionData {
                                 origin: v.origin,
                                 geometry: v.geometry.clone(),
+                            
+                                physics: None,
                             }
                         }).collect();
                         self.needs_upload = true;
@@ -818,6 +820,8 @@ impl ArticaraApp {
                                                                         filename: None,
                                                                         scale: None,
                                                                     },
+                                                                
+                                                                    physics: None,
                                                                 }
                                                             }).collect::<Vec<_>>()
                                                         }
@@ -834,6 +838,8 @@ impl ArticaraApp {
                                                                 crate::robot::CollisionData {
                                                                     origin: sphere_origin,
                                                                     geometry: GeomData::Sphere { radius: s.radius as f32 },
+                                                                
+                                                                    physics: None,
                                                                 }
                                                             }).collect::<Vec<_>>()
                                                         }
@@ -878,6 +884,8 @@ impl ArticaraApp {
                                                                 crate::robot::CollisionData {
                                                                     origin: prim_origin,
                                                                     geometry,
+                                                                
+                                                                    physics: None,
                                                                 }
                                                             }).collect::<Vec<_>>()
                                                         }
@@ -920,6 +928,8 @@ impl ArticaraApp {
                                                             vec![crate::robot::CollisionData {
                                                                 origin: prim_origin,
                                                                 geometry,
+                                                            
+                                                                physics: None,
                                                             }]
                                                         }
                                                     })
@@ -1004,6 +1014,8 @@ impl ArticaraApp {
                         link.collisions.push(crate::robot::CollisionData {
                             origin: na::Isometry3::identity(),
                             geometry: GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.05 },
+                        
+                            physics: None,
                         });
                         self.needs_upload = true;
                         props_edit_desc = Some(format!("Add collision to '{}'", link_name));
@@ -1013,6 +1025,8 @@ impl ArticaraApp {
                         link.collisions.push(crate::robot::CollisionData {
                             origin: na::Isometry3::identity(),
                             geometry: GeomData::Cylinder { radius: 0.02, half_length: 0.1 },
+                        
+                            physics: None,
                         });
                         self.needs_upload = true;
                         props_edit_desc = Some(format!("Add collision to '{}'", link_name));
@@ -1022,6 +1036,8 @@ impl ArticaraApp {
                         link.collisions.push(crate::robot::CollisionData {
                             origin: na::Isometry3::identity(),
                             geometry: GeomData::Sphere { radius: 0.05 },
+                        
+                            physics: None,
                         });
                         self.needs_upload = true;
                         props_edit_desc = Some(format!("Add collision to '{}'", link_name));
@@ -1031,6 +1047,8 @@ impl ArticaraApp {
                         link.collisions.push(crate::robot::CollisionData {
                             origin: na::Isometry3::identity(),
                             geometry: GeomData::Capsule { radius: 0.02, half_length: 0.1 },
+                        
+                            physics: None,
                         });
                         self.needs_upload = true;
                         props_edit_desc = Some(format!("Add collision to '{}'", link_name));
