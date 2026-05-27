@@ -161,6 +161,23 @@ impl ArticaraApp {
                     .fixed_decimals(2),
             );
         });
+        // LinearCrawl-only: choose whether the D-pad operates in
+        // vx-primary (default) or stride-primary mode. See the field
+        // docstring on `gait_dpad_stride_primary`.
+        ui.checkbox(
+            &mut self.gait_dpad_stride_primary,
+            "Stride-primary D-pad (LinearCrawl)",
+        )
+        .on_hover_text(
+            "When ON: pressing the D-pad rescales cycle_period (= 3/4-leg \
+             support times) to keep the foot stride per swing constant at the \
+             value of the `Stride length` slider. The displayed t3 / t4 will \
+             move as vx changes — that's the math of fixed-stride / fixed-T \
+             constraints being mutually exclusive. \n\n\
+             When OFF (default): the D-pad only sets vx; t3, t4 and cycle_period \
+             stay where you put them, and stride varies with vx. \n\n\
+             Affects LinearCrawl mode only.",
+        );
 
         // Drive the controller. While at least one button is held,
         // command the accumulated (vx, vy, wz). On the first frame
@@ -182,12 +199,45 @@ impl ArticaraApp {
         // user clicks 👣 but the status bar stays stale until they
         // hover somewhere else.
         let mut status_changed = false;
+        let design_stride = self.gait_design_stride_m;
+        let stride_primary = self.gait_dpad_stride_primary;
         if let Some(gc) = self.gait_controller.as_mut() {
+            // **Stride-primary D-pad mode** (only when the user has
+            // explicitly opted in via the checkbox above). The D-pad
+            // press sets vx as usual, but additionally rescales
+            // `cycle_period_s` so the foot stride per swing stays at
+            // `gait_design_stride_m`. The visible side-effect is that
+            // `t3` / `t4` sliders move whenever vx changes — that's
+            // the mathematical price of holding stride constant while
+            // varying vx with a fixed T-based timing.
+            //
+            // In **vx-primary** mode (default), the D-pad just sets vx
+            // and leaves cycle_period / t3 / t4 untouched; stride
+            // simply varies with vx.
+            let is_linear_crawl =
+                gc.mode() == quadruped_gait::GaitMode::LinearCrawl;
+            let apply_stride_primary =
+                stride_primary && is_linear_crawl && vx.abs() > 1e-6 && design_stride > 1e-6;
+            if any_held && apply_stride_primary {
+                let new_t = (design_stride / vx.abs()).clamp(0.05, 20.0);
+                if (gc.config().cycle_period_s - new_t).abs() > 1e-6 {
+                    let mut cfg2 = gc.config().clone();
+                    cfg2.cycle_period_s = new_t;
+                    gc.set_config(cfg2);
+                }
+            }
             if any_held {
                 gc.set_velocity_cmd(quadruped_gait::VelocityCmd { vx, vy, wz });
                 if !self.gait_dpad_was_active {
-                    self.status_message =
-                        format!("D-pad cmd vx={vx:+.2} vy={vy:+.2} wz={wz:+.2}");
+                    self.status_message = if apply_stride_primary {
+                        let new_t = (design_stride / vx.abs()).clamp(0.05, 20.0);
+                        format!(
+                            "D-pad cmd vx={vx:+.2} vy={vy:+.2} wz={wz:+.2}  \
+                             (stride-primary: T → {new_t:.3} s for stride = {design_stride:.3} m)"
+                        )
+                    } else {
+                        format!("D-pad cmd vx={vx:+.2} vy={vy:+.2} wz={wz:+.2}")
+                    };
                     status_changed = true;
                 }
             } else if march_held {
@@ -876,8 +926,18 @@ impl ArticaraApp {
                     }
                 });
             if g != cfg.gait_type {
+                // Pull the family preset's timing & sizing defaults so the
+                // GUI sliders reflect the new family at once. MPC-side
+                // knobs (transition_fraction / friction_cone_* / warm_start
+                // / mpc_optimized_footstep / q_foot_xy_world) are tuned
+                // independently of gait family and are intentionally NOT
+                // overwritten here.
+                let preset = GaitConfig::for_type(g);
                 cfg.gait_type = g;
-                cfg.duty_factor = g.default_duty_factor();
+                cfg.cycle_period_s = preset.cycle_period_s;
+                cfg.duty_factor = preset.duty_factor;
+                cfg.swing_height_m = preset.swing_height_m;
+                cfg.max_step_length_m = preset.max_step_length_m;
                 cfg_changed = true;
             }
         });
@@ -887,7 +947,7 @@ impl ArticaraApp {
                 .add(
                     egui::DragValue::new(&mut cfg.cycle_period_s)
                         .speed(0.01)
-                        .range(0.05..=2.0)
+                        .range(0.05..=20.0)
                         .fixed_decimals(3),
                 )
                 .changed();
@@ -914,16 +974,168 @@ impl ArticaraApp {
                 )
                 .changed();
         });
+        // `Max step length` is the Raibert footstep planner's stride
+        // clamp (CHAMP / MPC / Centroidal / FullCentroidal). LinearCrawl
+        // computes its own stride from `cycle_period × vx` and never
+        // consults this value — grey out so the user doesn't waste time
+        // tuning a no-op when LinearCrawl is the active mode.
+        let raibert_active =
+            gc.mode() != quadruped_gait::GaitMode::LinearCrawl;
         ui.horizontal(|ui| {
-            ui.label("Max step length (m):");
-            cfg_changed |= ui
-                .add(
-                    egui::DragValue::new(&mut cfg.max_step_length_m)
-                        .speed(0.005)
-                        .range(0.005..=0.5)
-                        .fixed_decimals(3),
-                )
-                .changed();
+            ui.add_enabled_ui(raibert_active, |ui| {
+                ui.label("Max step length (m):").on_hover_text(
+                    "Raibert footstep planner stride clamp. Caps the half-stride at \
+                     max_step_length_m / 2 so the swing leg stays inside the leg's \
+                     workspace even under aggressive vx. Used by CHAMP / MPC / \
+                     Centroidal / FullCentroidal modes. Has NO effect in LinearCrawl \
+                     mode (which derives stride from cycle_period × vx directly).",
+                );
+                cfg_changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut cfg.max_step_length_m)
+                            .speed(0.005)
+                            .range(0.005..=0.5)
+                            .fixed_decimals(3),
+                    )
+                    .changed();
+            });
+        });
+        // ── LinearCrawl primary timing inputs ─────────────────────
+        //
+        // The user-facing knobs for LinearCrawl are:
+        //   t3 = 3-leg support time per leg (= swing duration)
+        //   t4 = 4-leg support time per sub-cycle (= 4-support window)
+        //   Stride length (= |vx| · T)
+        //
+        // Internal storage stays as `cfg.cycle_period_s` (T) and
+        // `cfg.four_support_fraction` (α). We derive t3, t4 each frame
+        // for display and write back to T / α when the user edits.
+        //   T = 4 · (t3 + t4)
+        //   α = t4 / (t3 + t4)
+        // Stride is bidirectionally bound to VelocityCmd.vx via T:
+        //   stride = |vx| · T   (display)
+        //   vx = sign · stride / T   (writeback on stride edit)
+        let linear_crawl_active =
+            gc.mode() == quadruped_gait::GaitMode::LinearCrawl;
+        let t3_cur = cfg.cycle_period_s * (1.0 - cfg.four_support_fraction) / 4.0;
+        let t4_cur = cfg.cycle_period_s * cfg.four_support_fraction / 4.0;
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(linear_crawl_active, |ui| {
+                ui.label("3-leg support time (s):").on_hover_text(
+                    "LinearCrawl only. Time each leg spends in the swing (= 3-leg \
+                     support) phase. Together with the 4-leg support time below, sets \
+                     the cycle period: T = 4 × (t3 + t4). Has no effect in CHAMP / \
+                     MPC modes.",
+                );
+                let mut t3 = t3_cur;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut t3)
+                            .speed(0.005)
+                            .range(0.001..=5.0)
+                            .fixed_decimals(4),
+                    )
+                    .changed()
+                {
+                    let denom = (t3 + t4_cur).max(1e-6);
+                    cfg.cycle_period_s = (4.0 * denom).clamp(0.05, 20.0);
+                    cfg.four_support_fraction = (t4_cur / denom).clamp(0.05, 0.95);
+                    cfg_changed = true;
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(linear_crawl_active, |ui| {
+                ui.label("4-leg support time (s):").on_hover_text(
+                    "LinearCrawl only. Time spent in 4-leg support between each \
+                     swing. Together with the 3-leg support time above, sets the \
+                     cycle period: T = 4 × (t3 + t4). Has no effect in CHAMP / MPC \
+                     modes.",
+                );
+                let mut t4 = t4_cur;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut t4)
+                            .speed(0.005)
+                            .range(0.001..=5.0)
+                            .fixed_decimals(4),
+                    )
+                    .changed()
+                {
+                    let denom = (t3_cur + t4).max(1e-6);
+                    cfg.cycle_period_s = (4.0 * denom).clamp(0.05, 20.0);
+                    cfg.four_support_fraction = (t4 / denom).clamp(0.05, 0.95);
+                    cfg_changed = true;
+                }
+            });
+        });
+        // Stride length — represents the user's **design stride** (=
+        // intended foot stride per swing), stored persistently in
+        // `gait_design_stride_m`. The slider value is independent of
+        // the live velocity command, so releasing the D-pad (vx → 0)
+        // doesn't blank out the display.
+        //
+        // Editing the slider:
+        //   - always updates `gait_design_stride_m`
+        //   - if the robot is currently moving (|vx| > 1e-6), also
+        //     writes back `vx = sign(vx) · stride / cycle_period` so
+        //     the change takes immediate effect
+        //   - if stopped (vx ≈ 0), only the design value is stored —
+        //     the next D-pad press picks it up
+        let cur_vx = gc.velocity_cmd().vx;
+        let big_t = cfg.cycle_period_s.max(1e-6);
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(linear_crawl_active, |ui| {
+                ui.label("Stride length (m):").on_hover_text(
+                    "LinearCrawl only. **Design stride** — the foot stride per swing \
+                     the gait targets. Persists across D-pad press / release (the value \
+                     stays put even when vx = 0). Editing this slider always updates \
+                     the design value; if the robot is currently walking, it also \
+                     writes vx = stride / cycle_period back to the command so the \
+                     change takes effect immediately.",
+                );
+                let mut stride_m = self.gait_design_stride_m;
+                let max_s = 1.0 * big_t;
+                let stride_changed = ui
+                    .add(
+                        egui::DragValue::new(&mut stride_m)
+                            .speed(0.001)
+                            .range(0.0..=max_s)
+                            .fixed_decimals(4),
+                    )
+                    .changed();
+                if stride_changed && big_t > 0.0 {
+                    if stride_m > 1e-6 {
+                        self.gait_design_stride_m = stride_m;
+                    }
+                    // Only push vx back when the robot is actively
+                    // walking — editing the design stride while stopped
+                    // shouldn't accidentally start motion.
+                    if cur_vx.abs() > 1e-6 {
+                        let sign = cur_vx.signum();
+                        let new_vx = (sign * stride_m / big_t).clamp(-1.0, 1.0);
+                        let mut new_cmd = gc.velocity_cmd();
+                        new_cmd.vx = new_vx;
+                        gc.set_velocity_cmd(new_cmd);
+                    }
+                }
+            });
+        });
+        // Derived / read-only display so the user can still see the
+        // legacy quantities that the new sliders compute behind the
+        // scenes.
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(linear_crawl_active, |ui| {
+                ui.label(format!(
+                    "  ┄ derived: cycle_period = {:.3} s,  4-support fraction = {:.3}",
+                    cfg.cycle_period_s, cfg.four_support_fraction,
+                ))
+                .on_hover_text(
+                    "Live computed from 3-leg / 4-leg support times above. The legacy \
+                     `cycle_period_s` and `four_support_fraction` storage fields are \
+                     populated from these.",
+                );
+            });
         });
         if cfg_changed {
             gc.set_config(cfg);
@@ -1038,11 +1250,19 @@ impl ArticaraApp {
                     .and_then(|m| m.gaits.first())
                 {
                     Some(d) => {
-                        let cfg = GaitConfig::trot()
+                        let mut cfg = GaitConfig::trot()
                             .with_cycle_period(d.cycle_period_s)
                             .with_duty_factor(d.duty_factor)
                             .with_swing_height(d.swing_height_m)
-                            .with_max_step_length(d.max_step_length_m);
+                            .with_max_step_length(d.max_step_length_m)
+                            .with_four_support_fraction(d.four_support_fraction);
+                        cfg.gait_type = match d.gait_type {
+                            misarta::config::GaitTypeConfig::Trot => GaitType::Trot,
+                            misarta::config::GaitTypeConfig::Walk => GaitType::Walk,
+                            misarta::config::GaitTypeConfig::Pace => GaitType::Pace,
+                            misarta::config::GaitTypeConfig::Bound => GaitType::Bound,
+                            misarta::config::GaitTypeConfig::Crawl => GaitType::Crawl,
+                        };
                         (cfg, d.knee_forward)
                     }
                     None => (GaitConfig::trot(), [false; 4]),

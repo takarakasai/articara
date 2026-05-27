@@ -278,6 +278,9 @@ pub struct GaitDescriptor {
     pub rl_foot: String,
     pub rr_foot: String,
     pub knee_forward: [bool; 4],
+    /// LinearCrawl-only: 4-support fraction of each per-leg sub-cycle.
+    /// Ignored by every other [`quadruped_gait::GaitMode`].
+    pub four_support_fraction: f64,
 }
 
 impl GaitDescriptor {
@@ -295,6 +298,7 @@ impl GaitDescriptor {
             rl_foot: "RL_foot".into(),
             rr_foot: "RR_foot".into(),
             knee_forward: [false; 4],
+            four_support_fraction: 0.5,
         }
     }
 }
@@ -478,6 +482,47 @@ pub struct VisualData {
 pub struct CollisionData {
     pub origin: na::Isometry3<f32>,
     pub geometry: GeomData,
+    /// Optional MuJoCo-specific contact physics attributes. Carried
+    /// through MJCF import / export and `.misa` round-trip so that
+    /// per-geom tuning (high-friction foot sphere etc.) survives
+    /// articara's pipeline. `None` ⇒ inherit MuJoCo's compiler default
+    /// (typically `friction = 0.6 0.005 0.0001`, `condim = 3`,
+    /// `priority = 0`, `margin = 0`). All [`MjcfPhysics`] fields are
+    /// themselves optional and emit only when set.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub physics: Option<MjcfPhysics>,
+}
+
+/// Per-collision-geom MuJoCo physics tuning. Maps 1:1 onto MJCF
+/// `<geom>` attributes; absent fields fall back to MuJoCo's
+/// `<default>`-inherited values at sim time.
+#[derive(Clone, Default, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct MjcfPhysics {
+    /// `friction = "tangential torsional rolling"`. MuJoCo default
+    /// `[0.6, 0.005, 0.0001]`. Pure Coulomb only needs the first.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub friction: Option<[f64; 3]>,
+    /// `condim`. 1 = frictionless, 3 = sliding only (Coulomb),
+    /// 4 = sliding + rolling, 6 = full (sliding + torsional + rolling).
+    /// Foot spheres typically want 6 so the leg can't free-roll under
+    /// load.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub condim: Option<u32>,
+    /// `priority`. Higher-priority geom wins when two geoms with
+    /// different contact properties are involved in the same contact
+    /// pair. Default `0`.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub priority: Option<u32>,
+    /// `solimp = "d0 d_width width"`. Soft-contact impedance curve;
+    /// see MuJoCo docs. `Some([0.015, 1.0, 0.022])` matches Go2's
+    /// stock foot tuning.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub solimp: Option<[f64; 3]>,
+    /// `margin` — distance at which contacts start to be generated
+    /// (m). Default `0`.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub margin: Option<f64>,
 }
 
 #[derive(Clone)]
@@ -2626,6 +2671,7 @@ impl RobotModel {
                 rl_foot: g.rl_foot.clone(),
                 rr_foot: g.rr_foot.clone(),
                 knee_forward: g.knee_forward,
+                four_support_fraction: g.four_support_fraction,
             });
         }
         cfg
@@ -2763,6 +2809,7 @@ impl RobotModel {
                 rl_foot: g.rl_foot.clone(),
                 rr_foot: g.rr_foot.clone(),
                 knee_forward: g.knee_forward,
+                four_support_fraction: g.four_support_fraction,
             })
             .collect();
     }

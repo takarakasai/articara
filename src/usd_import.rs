@@ -643,6 +643,8 @@ pub fn import_usda_from_str(
                 collisions.push(CollisionData {
                     origin,
                     geometry: geom,
+                
+                    physics: None,
                 });
             }
         }

@@ -2181,6 +2181,8 @@ fn decompose_collision_impl(
                         filename: None,
                         scale: None,
                     },
+                
+                    physics: None,
                 }
             }).collect()
         }
@@ -2197,6 +2199,8 @@ fn decompose_collision_impl(
                 crate::robot::CollisionData {
                     origin: sphere_origin,
                     geometry: crate::robot::GeomData::Sphere { radius: s.radius as f32 },
+                
+                    physics: None,
                 }
             }).collect()
         }
@@ -2238,6 +2242,8 @@ fn decompose_collision_impl(
                 crate::robot::CollisionData {
                     origin: prim_origin,
                     geometry,
+                
+                    physics: None,
                 }
             }).collect()
         }
@@ -2277,6 +2283,8 @@ fn decompose_collision_impl(
             vec![crate::robot::CollisionData {
                 origin: prim_origin,
                 geometry,
+            
+                physics: None,
             }]
         }
     };

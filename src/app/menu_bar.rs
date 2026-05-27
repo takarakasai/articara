@@ -224,6 +224,20 @@ impl ArticaraApp {
                         );
                     });
                 }
+                ui.checkbox(&mut self.show_total_com, "Show Total CoM")
+                    .on_hover_text(
+                        "Draw a marker at the whole-robot centre of mass, projected \
+                         down to the ground. Independent from the per-link CoM \
+                         spheres above. Useful for checking static-stability margin \
+                         against the support polygon.",
+                    );
+                ui.checkbox(&mut self.show_support_polygon, "Show Support Polygon")
+                    .on_hover_text(
+                        "Draw the convex hull of the four foot positions (FL / FR / \
+                         RL / RR) projected to the ground plane. Combined with \
+                         \"Show Total CoM\" this immediately surfaces whether the \
+                         CoM stays inside the support polygon during the gait.",
+                    );
                 ui.checkbox(&mut self.show_joint_axes, "Show Joint Axes");
                 ui.checkbox(&mut self.show_gravity_arrow, "Show Gravity Arrow");
                 if self.show_gravity_arrow {

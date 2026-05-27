@@ -487,6 +487,8 @@ impl ArticaraApp {
                             crate::robot::CollisionData {
                                 origin: v.origin,
                                 geometry: v.geometry.clone(),
+                            
+                                physics: None,
                             }
                         }).collect();
                         if !new_cols.is_empty() {

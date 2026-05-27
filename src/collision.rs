@@ -85,6 +85,7 @@ mod tests {
         CollisionData {
             origin: na::Isometry3::identity(),
             geometry: GeomData::Sphere { radius },
+            physics: None,
         }
     }
 

@@ -71,6 +71,8 @@ pub fn import_sdf(path: &Path) -> Result<RobotModel, String> {
             .map(|c| CollisionData {
                 origin: parse_sdf_pose(c),
                 geometry: parse_sdf_geometry(c, sdf_dir),
+            
+                physics: None,
             })
             .collect();
 
