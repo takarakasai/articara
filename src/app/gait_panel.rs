@@ -179,6 +179,44 @@ impl ArticaraApp {
              Affects LinearCrawl mode only.",
         );
 
+        // Kinematic playback toggle — drive the model directly from
+        // the planner each frame, bypassing MuJoCo.
+        let was_kinematic = self.kinematic_playback_active;
+        ui.add_enabled_ui(self.gait_controller.is_some(), |ui| {
+            ui.checkbox(
+                &mut self.kinematic_playback_active,
+                "▶ Kinematic playback (planner only, no physics)",
+            )
+            .on_hover_text(
+                "Drive the model's joint angles and trunk pose directly from the \
+                 gait controller's plan each frame, ignoring MuJoCo. Lets you see \
+                 the planner's intended motion in isolation — no slip, no PD lag, \
+                 no contact dynamics, no trunk sway from inertia. \n\n\
+                 When toggled ON, the current trunk pose is snapshotted as the \
+                 playback anchor; the gait is reset so the body integrates from \
+                 there. Disable to freeze the robot at its current pose; the next \
+                 MuJoCo step (if running) will take over from that pose.",
+            );
+        });
+        if self.kinematic_playback_active && !was_kinematic {
+            // Just turned ON — snapshot the current base + reset gait
+            // so body_state integrates from world origin (= we compose
+            // `offset · body_state` to place the robot back where it
+            // was before the toggle).
+            if let Some(model) = self.model.as_ref() {
+                self.kinematic_playback_base_offset = model.base_transform;
+            }
+            if let Some(gc) = self.gait_controller.as_mut() {
+                // `disable()` calls `inner.reset()` which clears phase,
+                // body_state and velocity_cmd. We save & restore the
+                // cmd so the user's vx survives the toggle.
+                let saved_cmd = gc.velocity_cmd();
+                gc.disable();
+                gc.enable();
+                gc.set_velocity_cmd(saved_cmd);
+            }
+        }
+
         // Drive the controller. While at least one button is held,
         // command the accumulated (vx, vy, wz). On the first frame
         // after all buttons are released, send a single zero so the

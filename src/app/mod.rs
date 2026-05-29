@@ -761,6 +761,21 @@ pub struct ArticaraApp {
     /// t4 sliders behave like the other timing inputs (stable across
     /// D-pad interaction).
     gait_dpad_stride_primary: bool,
+    /// Kinematic playback: drive `model.joint_positions` and
+    /// `model.base_transform` directly from the gait controller's
+    /// `tick()` output every frame, bypassing MuJoCo. Lets the user
+    /// see the planner's intended gait pattern in isolation (no
+    /// physical slip, PD lag, contact dynamics, or trunk sway from
+    /// inertia). When toggled ON, the current `base_transform` is
+    /// snapshotted as the playback anchor and the gait is reset so
+    /// `body_state` integrates from world origin.
+    kinematic_playback_active: bool,
+    /// Snapshot of `model.base_transform` at the moment kinematic
+    /// playback was last enabled. The plotted trunk pose each frame
+    /// is `kinematic_playback_base_offset · body_state_iso(out)` so
+    /// the robot moves relative to wherever the user had placed it
+    /// before pressing the toggle. (`f64` to match `base_transform`.)
+    kinematic_playback_base_offset: na::Isometry3<f64>,
     /// MPC capture-point feedback gain shown in the gait panel slider.
     /// Default `0.0` (post-D3.3.7 C2: legged_control-style open-loop
     /// Raibert + MPC reference, no closed-form foot placement
@@ -1101,6 +1116,8 @@ impl ArticaraApp {
             gait_dpad_was_active: false,
             gait_design_stride_m: 0.05,
             gait_dpad_stride_primary: false,
+            kinematic_playback_active: false,
+            kinematic_playback_base_offset: na::Isometry3::identity(),
             loop_closure_picking_b: false,
             loop_closure_link_b: None,
         }
@@ -2421,6 +2438,47 @@ impl eframe::App for ArticaraApp {
 
         // --- Draw decomposition progress overlay ---
         self.draw_decompose_progress(&ctx);
+
+        // ── Kinematic playback ──────────────────────────────────
+        // Drive the model's joint angles and trunk pose directly from
+        // the gait planner each frame, with no MuJoCo round-trip. The
+        // planner's `body_state` integrator owns the trunk's world
+        // pose; we compose it with `kinematic_playback_base_offset`
+        // (= the trunk's pose at the moment playback was toggled on)
+        // so the robot animates from wherever the user placed it.
+        if self.kinematic_playback_active {
+            if let (Some(model), Some(gc)) =
+                (self.model.as_mut(), self.gait_controller.as_mut())
+            {
+                let dt = ctx.input(|i| i.stable_dt).max(1e-4) as f64;
+                let dt = dt.min(0.05); // cap so huge frame stalls don't fast-forward
+                let (out, targets, _ff) = gc.tick(dt);
+                for (idx, q) in targets {
+                    if let Some(slot) = model.joint_positions.get_mut(idx) {
+                        *slot = q;
+                    }
+                }
+                // Compose trunk pose: `offset · body_state_iso`. The
+                // body-state integrator only updates X/Y/yaw, so Z and
+                // roll/pitch of the offset survive untouched.
+                let body_iso = na::Isometry3::from_parts(
+                    na::Translation3::new(
+                        out.body_state.world_position.x,
+                        out.body_state.world_position.y,
+                        0.0,
+                    ),
+                    na::UnitQuaternion::from_euler_angles(
+                        0.0,
+                        0.0,
+                        out.body_state.world_yaw,
+                    ),
+                );
+                model.base_transform =
+                    self.kinematic_playback_base_offset * body_iso;
+                model.rebuild_misarta_model();
+                self.needs_upload = true;
+            }
+        }
 
         // Upload robot geometry to GPU when needed.
         if self.needs_upload {
