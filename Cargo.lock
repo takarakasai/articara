@@ -2126,6 +2126,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "go2-gait-runner"
+version = "0.1.0"
+dependencies = [
+ "misarta",
+ "nalgebra 0.34.2",
+ "quadruped-gait",
+]
+
+[[package]]
 name = "gpu-allocator"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2760,7 +2769,6 @@ dependencies = [
  "roxmltree",
  "serde",
  "stl_io",
- "tobj",
  "toml",
 ]
 
