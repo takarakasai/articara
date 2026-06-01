@@ -104,9 +104,11 @@ cargo run -p go2-gait-runner -- run eth0 \
     --ff --ff-scale 1.73 [--inplace 3] [--forward 5] [--misa PATH]
 ```
 - `--ff` は presence フラグ（重量 FF 有効）。省略で無効。
-- `diag` は同じモーションで commanded vs measured と胴体傾きを記録（ゲイン調整用）。
-  `--csv PATH` で全テレメトリ（IMU rpy/quat/gyro/accel/temp、power_v/a、foot_force[4]、
-  各関節 cmd/q/dq/tau_est）を 500Hz・1行/tick で CSV 保存（B+C フェーズ、70列）。
+- **`run` と `diag` は同一実装**（`run_hardware` 一本に統合）。どちらも毎tick で
+  rt/lowstate を読み戻し、終了時に commanded vs measured の追従誤差＋胴体傾きサマリを表示する。
+  `diag` は後方互換のエイリアス。
+- `--csv PATH` で全テレメトリ（IMU rpy/quat/gyro/accel/temp、power_v/a、foot_force[4]、
+  各関節 cmd/q/dq/tau_est）を 500Hz・1行/tick で CSV 保存（B+C フェーズ、先頭が単調な t_s、70列）。
 - `intent`（オフライン）は `--vx/--swing/--cycle/--four-support/--misa` を受ける。
 - 胴体傾きは Go2 IMU の `imu_state.rpy[0/1]`（ロール/ピッチ, rad）を実機から読んだ値。
 
