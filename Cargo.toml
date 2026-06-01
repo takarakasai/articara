@@ -39,7 +39,7 @@ approx = "0.5"
 serde_json = "1"
 
 [workspace]
-members = [".", "plugin-api", "jump-sim-wasm", "jump-sim-runner", "misarta", "misarta-py", "quadruped-gait", "xtask"]
+members = [".", "plugin-api", "jump-sim-wasm", "jump-sim-runner", "misarta", "misarta-py", "quadruped-gait", "go2-gait-runner", "xtask"]
 default-members = [".", "plugin-api", "jump-sim-wasm", "jump-sim-runner", "misarta", "quadruped-gait"]
 
 # Optimised profile for WASM builds:
