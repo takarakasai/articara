@@ -7,6 +7,26 @@ constraints, and editor metadata (poses, sequences, gaits, home pose) in a
 single TOML file. URDF / SDF / MJCF / USD are supported as derivative
 import / export targets.
 
+## Build
+
+`misarta` (the kinematics/dynamics core) is a **git submodule**, so clone
+with `--recursive`:
+
+```bash
+git clone --recursive git@github.com-takarakasai:takarakasai/articara.git
+cd articara
+cargo build            # GUI build (default features)
+```
+
+If you forgot `--recursive` (or pulled changes that bump the submodule):
+
+```bash
+git submodule update --init --recursive
+```
+
+To use the MuJoCo physics backend, see [MuJoCo setup](#mujoco-setup) for
+the extra runtime dependency and build command.
+
 ## Master format: `.misa`
 
 `.misa` is articara's canonical on-disk representation. A single file holds
