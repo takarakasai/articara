@@ -9,6 +9,19 @@ import / export targets.
 
 ## Build
 
+### Prerequisites
+
+- **Rust 1.85 or newer** (the workspace uses edition 2024). Install via
+  [rustup](https://rustup.rs/):
+  `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- **MuJoCo 3.8.0** — only needed for the `--features mujoco` physics
+  backend; see [MuJoCo setup](#mujoco-setup).
+
+The default `gui` build also needs the usual OpenGL / X11 / Wayland
+development libraries provided by your distro's desktop toolchain.
+
+### Clone & build
+
 `misarta` (the kinematics/dynamics core) is a **git submodule**, so clone
 with `--recursive`:
 
