@@ -2187,6 +2187,7 @@ dependencies = [
  "nalgebra 0.34.2",
  "quadruped-gait",
  "unitree-go2",
+ "unitree-rpc",
 ]
 
 [[package]]
@@ -2830,6 +2831,7 @@ dependencies = [
  "roxmltree",
  "serde",
  "stl_io",
+ "tobj",
  "toml",
 ]
 
@@ -5009,6 +5011,15 @@ dependencies = [
 name = "unitree-msgs"
 version = "0.1.0"
 dependencies = [
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "unitree-rpc"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "cyclonedds-sys",
  "thiserror 1.0.69",
 ]
 

@@ -23,11 +23,19 @@ articara の歩容生成（`quadruped-gait`）で確認した歩容を、articar
    ```
    （恒久化するなら NetworkManager で eth0 プロファイルに static IP を登録する。）
 3. **sport_mode を OFF にする**: 出荷時の高レベル運動制御（sport_mode）が動いていると
-   rt/lowcmd と競合する。低レベル制御の前に必ず解放する。
+   rt/lowcmd と競合し、関節が発振する。低レベル制御の前に必ず解放する。
+   `run`/`diag` は**起動時に自動で解放する**ので通常は手動操作は不要（`--no-release`
+   で抑止できる）。手動で操作したい場合は go2-gait-runner のサブコマンドを使う:
+   ```bash
+   ./target/release/go2-gait-runner release   eth0   # sport_mode OFF（脱力）
+   ./target/release/go2-gait-runner restore   eth0   # sport_mode ON（立位を取る）
+   ./target/release/go2-gait-runner checkmode eth0   # 現在のモードを確認（read-only）
+   ```
+   これは `motion_switcher` RPC を **純 Rust（`unitree-rpc` クレート）で直接叩く**実装で、
+   従来の C++ ヘルパ `go2_motion_ctrl` と等価。C++ 側も引き続き使用可:
    ```bash
    ~/work/keel/unitree_sdk2/build/bin/go2_motion_ctrl release eth0
    ```
-   - 終了後に高レベル制御へ戻すとき: `... go2_motion_ctrl restore eth0`
 
 詳細なブリングアップは [unitree-sdk-rs/doc/go2-bringup.md](../../unitree-sdk-rs/doc/go2-bringup.md) を参照。
 
@@ -47,6 +55,15 @@ cargo build -p go2-gait-runner            # デバッグ
   直接実行する場合は手動で設定**すること:
   ```bash
   export LD_LIBRARY_PATH=/home/takara/cyclonedds-install/lib
+  ```
+  設定し忘れると次のエラーで起動に失敗する:
+  ```text
+  error while loading shared libraries: libddsc.so.0: cannot open shared object file
+  ```
+  毎回打ちたくない場合は `~/.bashrc` に追記して恒久化しておく（以降のシェルで自動設定）:
+  ```bash
+  echo 'export LD_LIBRARY_PATH=/home/takara/cyclonedds-install/lib:$LD_LIBRARY_PATH' >> ~/.bashrc
+  source ~/.bashrc
   ```
 
 ---
