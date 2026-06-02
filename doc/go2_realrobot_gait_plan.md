@@ -101,9 +101,10 @@ M1〜M4（オフライン）を先に通し、M5（実機）の前に一度立�
 ```
 cargo run -p go2-gait-runner -- run eth0 \
     --vx 0.02 --kp 200 --kd 6 --swing 0.04 --cycle 2.5 --four-support 0.9 \
-    --ff --ff-scale 1.73 [--inplace 3] [--forward 5] [--misa PATH]
+    --ff [--ff-scale 1.0] [--inplace 3] [--forward 5] [--misa PATH]
 ```
-- `--ff` は presence フラグ（重量 FF 有効）。省略で無効。
+- `--ff` は presence フラグ（重量 FF 有効）。省略で無効。`--ff-scale` は支持する自重の
+  割合で既定 1.0（=全自重）。実機質量補正はベース重量に内包済みなので 1.73 を渡す必要はない。
 - **`run` と `diag` は同一実装**（`run_hardware` 一本に統合）。どちらも毎tick で
   rt/lowstate を読み戻し、終了時に commanded vs measured の追従誤差＋胴体傾きサマリを表示する。
   `diag` は後方互換のエイリアス。

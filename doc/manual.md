@@ -105,12 +105,12 @@ cargo run -p go2-gait-runner -- intent --vx 0.02 --cycle 2.5 --four-support 0.9 
 ~/work/keel/unitree_sdk2/build/bin/go2_motion_ctrl release eth0
 
 # 1) まずは在地のみ（vx=0）で送信パス全体を立位静止で検証
-cargo run -p go2-gait-runner -- run eth0 --kp 200 --kd 6 --ff --ff-scale 1.73
+cargo run -p go2-gait-runner -- run eth0 --kp 200 --kd 6 --ff
 
 # 2) 問題なければ微速前進（動作確認済みの推奨設定）
 cargo run -p go2-gait-runner -- run eth0 \
     --vx 0.02 --cycle 2.5 --four-support 0.9 --swing 0.04 \
-    --kp 200 --kd 6 --ff --ff-scale 1.73
+    --kp 200 --kd 6 --ff
 ```
 
 実行中は commanded vs measured のトレースが流れ、終了時に**追従誤差＋胴体傾きのサマリ**が出る。
@@ -119,7 +119,7 @@ cargo run -p go2-gait-runner -- run eth0 \
 ### 動作確認済みの推奨設定（滑りやすいフローリング）
 
 ```
---vx 0.02 --cycle 2.5 --four-support 0.9 --swing 0.04 --kp 200 --kd 6 --ff --ff-scale 1.73
+--vx 0.02 --cycle 2.5 --four-support 0.9 --swing 0.04 --kp 200 --kd 6 --ff
 ```
 - vx=0.02 m/s で滑る床でも素直に前進、胴体ロール最大 ~1.0°。
 - **滑る床では「遅いほど確実」**。vx を上げる/cycle を速くすると滑って前後にブレる。
@@ -132,7 +132,7 @@ cargo run -p go2-gait-runner -- run eth0 \
 
 ```bash
 cargo run -p go2-gait-runner -- run eth0 \
-    --vx 0.02 --cycle 2.5 --four-support 0.9 --kp 200 --kd 6 --ff --ff-scale 1.73 \
+    --vx 0.02 --cycle 2.5 --four-support 0.9 --kp 200 --kd 6 --ff \
     --csv /tmp/go2_telemetry.csv
 ```
 
@@ -189,7 +189,7 @@ FLAGS（すべて任意。run/diag は第1 positional が <iface>）:
 | `libddsc.so.0 not found`（直接実行時） | `export LD_LIBRARY_PATH=/home/takara/cyclonedds-install/lib`。`cargo run` なら自動。 |
 | `timeout waiting for LowState` | iface 名・`192.168.123.x` の IP・ケーブルを確認。`ping 192.168.123.161`。 |
 | ロボットが指令に反応しない / 競合 | sport_mode が ON のまま。`go2_motion_ctrl release eth0` を実行。 |
-| 脚が荷重で沈む（calf 追従誤差大） | `--ff --ff-scale 1.73` を付ける。足りなければ `--kp` を上げる。 |
+| 脚が荷重で沈む（calf 追従誤差大） | `--ff` を付ける。足りなければ `--kp` を上げる。 |
 | 前後にブレる/後退する | 床が滑っている。`--vx` を下げる（0.02 程度）、`--swing` を確保（引きずり防止）。 |
 | 胴体が揺れる | `--four-support` を上げ＋`--cycle` を伸ばす（例 0.9 / 2.5）。静的歩容の原理上ゼロにはできない。 |
 
