@@ -1180,6 +1180,77 @@ impl ArticaraApp {
                 );
             });
         });
+        // ── Swing-foot feasibility cap ────────────────────────────
+        // Raising the 4-leg support time shrinks the swing window, so the
+        // foot must cover the same stride faster; past the actuator limit
+        // the body shakes during swing. This cap auto-reduces forward speed
+        // to keep the peak swing-foot speed feasible (α is preserved). 0 =
+        // disabled (legacy unbounded behaviour).
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(linear_crawl_active, |ui| {
+                ui.label("Max swing-foot speed (m/s):").on_hover_text(
+                    "LinearCrawl only. Caps the peak swing-foot speed by auto-reducing \
+                     forward speed (the chosen 4-support fraction is kept). A high 4-leg \
+                     support time makes the swing window tiny, so the foot speed explodes \
+                     (≈ 8·v/(1−α)) and the body shakes during swing — this guard prevents \
+                     that. Note: slowing the cycle does NOT help (stride scales with it \
+                     too); only a lower forward speed or a lower 4-support fraction does. \
+                     0 = disabled (unbounded, legacy spec).",
+                );
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut cfg.max_swing_foot_speed_mps)
+                            .speed(0.1)
+                            .range(0.0..=20.0)
+                            .fixed_decimals(1),
+                    )
+                    .changed()
+                {
+                    cfg_changed = true;
+                }
+            });
+        });
+        // Live feasibility readout: peak swing-foot speed at the current
+        // design stride, and whether/where the cap is limiting it.
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(linear_crawl_active, |ui| {
+                let alpha = cfg.four_support_fraction.clamp(0.05, 0.95);
+                let s = (1.0 - alpha) * 0.25;
+                let gain = (2.0 - s) / s;
+                let v_design = (self.gait_design_stride_m / big_t).abs();
+                let peak_uncapped = v_design * gain;
+                let cap = cfg.max_swing_foot_speed_mps;
+                let default_color = ui.visuals().text_color();
+                let (txt, color) = if cap > 0.0 && peak_uncapped > cap {
+                    let v_eff = cap / gain;
+                    (
+                        format!(
+                            "  ┄ swing-foot peak {:.1} m/s > cap {:.1} → forward speed limited to {:.3} m/s",
+                            peak_uncapped, cap, v_eff
+                        ),
+                        egui::Color32::from_rgb(220, 160, 60),
+                    )
+                } else {
+                    (
+                        format!(
+                            "  ┄ swing-foot peak {:.1} m/s (cap {})",
+                            peak_uncapped,
+                            if cap > 0.0 {
+                                format!("{cap:.1}")
+                            } else {
+                                "off".to_string()
+                            }
+                        ),
+                        default_color,
+                    )
+                };
+                ui.colored_label(color, txt).on_hover_text(
+                    "Peak body-frame swing-foot speed at the current design stride. When \
+                     it exceeds the cap the controller walks slower (shown) so the swing \
+                     stays smooth. Go2-class legs track roughly up to ~4–6 m/s.",
+                );
+            });
+        });
         if cfg_changed {
             gc.set_config(cfg);
         }
