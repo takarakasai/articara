@@ -677,6 +677,15 @@ impl GaitController {
         self.inner.set_capture_point_gain(k);
     }
 
+    /// Enable/disable solving the MPC QP on a background thread. Off by
+    /// default (synchronous, deterministic) so headless examples / the
+    /// walk-stability tests keep their exact behaviour. The GUI turns it
+    /// on after `build` so a slow solve (full-centroidal ≈ 0.4 s) can't
+    /// stall the eframe update loop and freeze the window.
+    pub fn set_async_mpc(&mut self, enabled: bool) {
+        self.inner.set_async_mpc(enabled);
+    }
+
     /// Configure the FullCentroidal controller's nonlinear pulse
     /// branch of the capture-point feedback. `k_pulse` is the slope
     /// applied to `(|v_err| − v_db) · sign(v_err)`; `v_db` is the
