@@ -354,7 +354,7 @@ dependencies = [
  "log",
  "misarta",
  "mujoco-rs",
- "nalgebra 0.34.2",
+ "nalgebra",
  "parry3d",
  "quadruped-gait",
  "rhai",
@@ -3341,11 +3341,10 @@ dependencies = [
 [[package]]
 name = "misarta"
 version = "0.1.0"
+source = "git+https://github.com/takarakasai/misarta.git#2df0d5919c8efe171891beedff4ab67103c986f0"
 dependencies = [
- "approx",
  "clarabel",
- "nalgebra 0.34.2",
- "num-dual",
+ "nalgebra",
  "parry3d-f64",
  "roxmltree",
  "serde",
@@ -3359,7 +3358,7 @@ name = "misarta-py"
 version = "0.1.0"
 dependencies = [
  "misarta",
- "nalgebra 0.34.2",
+ "nalgebra",
  "numpy",
  "pyo3",
 ]
@@ -3413,22 +3412,6 @@ dependencies = [
 
 [[package]]
 name = "nalgebra"
-version = "0.33.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d43ddcacf343185dfd6de2ee786d9e8b1c2301622afab66b6c73baf9882abfd"
-dependencies = [
- "approx",
- "matrixmultiply",
- "nalgebra-macros 0.2.2",
- "num-complex",
- "num-rational",
- "num-traits",
- "simba",
- "typenum",
-]
-
-[[package]]
-name = "nalgebra"
 version = "0.34.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df76ea0ff5c7e6b88689085804d6132ded0ddb9de5ca5b8aeb9eeadc0508a70a"
@@ -3453,24 +3436,13 @@ dependencies = [
  "glam 0.31.1",
  "glam 0.32.1",
  "matrixmultiply",
- "nalgebra-macros 0.3.0",
+ "nalgebra-macros",
  "num-complex",
  "num-rational",
  "num-traits",
  "serde",
  "simba",
  "typenum",
-]
-
-[[package]]
-name = "nalgebra-macros"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "254a5372af8fc138e36684761d3c0cdb758a4410e938babcff1c860ce14ddbfc"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -3641,18 +3613,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "num-dual"
-version = "0.10.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97f451c1a8884f406fb95e9965aad9856370b05801a3c961e4922d68361644e3"
-dependencies = [
- "approx",
- "nalgebra 0.33.3",
- "num-traits",
- "simba",
 ]
 
 [[package]]
@@ -4191,7 +4151,7 @@ dependencies = [
  "foldhash 0.2.0",
  "hashbrown 0.16.1",
  "log",
- "nalgebra 0.34.2",
+ "nalgebra",
  "num-derive",
  "num-traits",
  "ordered-float",
@@ -4219,7 +4179,7 @@ dependencies = [
  "foldhash 0.2.0",
  "hashbrown 0.16.1",
  "log",
- "nalgebra 0.34.2",
+ "nalgebra",
  "num-derive",
  "num-traits",
  "ordered-float",
@@ -4697,7 +4657,7 @@ dependencies = [
  "clarabel",
  "log",
  "misarta",
- "nalgebra 0.34.2",
+ "nalgebra",
  "serde",
 ]
 
