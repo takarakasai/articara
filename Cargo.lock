@@ -1111,13 +1111,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
-name = "cyclonedds-sys"
-version = "0.1.0"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "darling"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2130,17 +2123,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c4ee00b289aba7a9e5306d57c2d05499b2e5dc427f84ac708bd2c090212cf3e"
 dependencies = [
  "gl_generator",
-]
-
-[[package]]
-name = "go2-gait-runner"
-version = "0.1.0"
-dependencies = [
- "misarta",
- "nalgebra 0.34.2",
- "quadruped-gait",
- "unitree-go2",
- "unitree-rpc",
 ]
 
 [[package]]
@@ -4921,44 +4903,6 @@ name = "unindent"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7264e107f553ccae879d21fbea1d6724ac785e8c3bfc762137959b5802826ef3"
-
-[[package]]
-name = "unitree-dds"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "cc",
- "cyclonedds-sys",
- "thiserror 1.0.69",
- "tracing",
- "unitree-msgs",
-]
-
-[[package]]
-name = "unitree-go2"
-version = "0.1.0"
-dependencies = [
- "thiserror 1.0.69",
- "tracing",
- "unitree-dds",
- "unitree-msgs",
-]
-
-[[package]]
-name = "unitree-msgs"
-version = "0.1.0"
-dependencies = [
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "unitree-rpc"
-version = "0.1.0"
-dependencies = [
- "cc",
- "cyclonedds-sys",
- "thiserror 1.0.69",
-]
 
 [[package]]
 name = "urdf-rs"
