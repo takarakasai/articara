@@ -11,7 +11,7 @@ name = "_misarta"
 crate-type = ["cdylib"]
 
 [dependencies]
-misarta  = { path = "../misarta" }
+misarta  = { git = "https://github.com/takarakasai/misarta.git" }
 nalgebra = "0.34.2"
 pyo3     = { version = "0.22", features = ["extension-module", "abi3-py39"] }
 numpy    = "0.22"

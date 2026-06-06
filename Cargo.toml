@@ -23,7 +23,7 @@ egui_plot = { version = "0.35", optional = true }
 env_logger = { version = "0.11.10", optional = true }
 glow = { version = "0.17.0", optional = true }
 log = "0.4.29"
-misarta = { path = "misarta" }
+misarta = { git = "https://github.com/takarakasai/misarta.git" }
 quadruped-gait = { path = "quadruped-gait" }
 # Live gait viewer transport (feature = "viz"): pure-Rust Zenoh pub/sub.
 zenoh = { version = "1.9", optional = true }
@@ -46,8 +46,8 @@ approx = "0.5"
 serde_json = "1"
 
 [workspace]
-members = [".", "plugin-api", "jump-sim-wasm", "jump-sim-runner", "misarta", "misarta-py", "quadruped-gait", "xtask"]
-default-members = [".", "plugin-api", "jump-sim-wasm", "jump-sim-runner", "misarta", "quadruped-gait"]
+members = [".", "plugin-api", "jump-sim-wasm", "jump-sim-runner", "misarta-py", "quadruped-gait", "xtask"]
+default-members = [".", "plugin-api", "jump-sim-wasm", "jump-sim-runner", "quadruped-gait"]
 
 # Optimised profile for WASM builds:
 #   cargo build -p jump-sim-wasm --target wasm32-unknown-unknown --profile wasm-release
