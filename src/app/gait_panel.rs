@@ -356,6 +356,11 @@ impl ArticaraApp {
                 self.gait_mode = new_mode;
                 if let Some(gc) = self.gait_controller.as_mut() {
                     gc.set_mode(new_mode);
+                    // `set_mode` rebuilds the inner controller from
+                    // scratch, which resets the async-solve flag — re-arm
+                    // it so MPC modes keep solving off the UI thread (else
+                    // the freeze returns on a live switch into a heavy MPC).
+                    gc.set_async_mpc(true);
                     self.status_message =
                         format!("Gait mode → {}", new_mode.label());
                 }
@@ -1317,6 +1322,14 @@ impl ArticaraApp {
                         // onto the freshly built controller (it has its
                         // own internal default otherwise).
                         gc.set_capture_point_gain(self.gait_capture_point_gain as f64);
+                        // Solve the MPC QP on a background thread in the
+                        // GUI. The solve runs synchronously inside `tick()`
+                        // by default, but here it would block the eframe
+                        // update loop — a full-centroidal solve (≈0.4 s)
+                        // then froze the whole window once the solve time
+                        // exceeded the re-solve window. Off-thread solving
+                        // keeps the UI responsive (ZOH on the last result).
+                        gc.set_async_mpc(true);
                         self.gait_controller = Some(gc);
                         self.status_message =
                             "Gait controller built (saved params restored)".into();
