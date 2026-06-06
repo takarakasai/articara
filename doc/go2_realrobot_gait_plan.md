@@ -50,9 +50,11 @@ unitree-sdk-rs (Go2 低レベル)         ← 使う。LowCmd を rt/lowcmd で 
 - パリティ確認: 同じ go2.misa に対し articara `auto_detect_kinematics_config` と数値一致を確認。
 
 ### M2. ランナークレート scaffold（ロボット不要）
-- 新クレート `articara/go2-gait-runner`（workspace member に追加）。
-- 依存: `quadruped-gait`・`misarta`（path）・`unitree-go2`（path = `../../unitree-sdk-rs/crates/unitree-go2`）。
-  **articara 本体に依存しない。**
+- ランナーは **独立リポジトリ `go2-gait-runner`**（2026-06 に articara monorepo から分離）。
+  実行手順は同リポジトリの `doc/manual.md` を参照。Go2 固有の HW SDK（cyclonedds-sys = C/DDS）
+  を articara 全体のビルドに強制しないための分離。
+- 依存: `quadruped-gait`・`misarta`（articara への sibling path）・`unitree-go2`/`unitree-rpc`
+  （`unitree-sdk-rs` への sibling path）。**articara 本体には依存しない。**
 - 注意: `unitree-go2` は `cyclonedds-sys` 経由で libddsc をビルド。直接実行時は
   `LD_LIBRARY_PATH=/home/takara/cyclonedds-install/lib`（`cargo run` は自動設定）。
 
