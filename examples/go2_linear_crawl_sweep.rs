@@ -68,7 +68,11 @@ fn main() {
         let gait_cfg = GaitConfig::crawl()
             .with_cycle_period(big_t)
             .with_four_support_fraction(alpha)
-            .with_swing_height(swing_h);
+            .with_swing_height(swing_h)
+            // Disable the swing-foot feasibility cap: this sweep measures the
+            // raw open-loop behaviour at each α, so the forward speed must
+            // stay fixed at `cmd_vx` rather than being auto-reduced.
+            .with_max_swing_foot_speed(0.0);
         let mut gc = GaitController::build(&model, kin, gait_cfg, GaitMode::LinearCrawl).unwrap();
 
         let opts = MjcfExportOptions {
