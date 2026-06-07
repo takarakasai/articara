@@ -24,6 +24,8 @@ mod usd;
 mod usd_import;
 #[cfg(feature = "mujoco")]
 mod wbc_pipeline;
+#[cfg(feature = "viz")]
+mod viz_feed;
 
 use std::path::PathBuf;
 

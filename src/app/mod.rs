@@ -776,6 +776,11 @@ pub struct ArticaraApp {
     /// the robot moves relative to wherever the user had placed it
     /// before pressing the toggle. (`f64` to match `base_transform`.)
     kinematic_playback_base_offset: na::Isometry3<f64>,
+    /// Live gait viewer: subscribe to a `go2-gait-runner --viz` Zenoh stream
+    /// and animate the loaded model from the received frames. See
+    /// [`crate::viz_feed`].
+    #[cfg(feature = "viz")]
+    viz: crate::viz_feed::VizFeedState,
     /// MPC capture-point feedback gain shown in the gait panel slider.
     /// Default `0.0` (post-D3.3.7 C2: legged_control-style open-loop
     /// Raibert + MPC reference, no closed-form foot placement
@@ -1118,6 +1123,8 @@ impl ArticaraApp {
             gait_dpad_stride_primary: false,
             kinematic_playback_active: false,
             kinematic_playback_base_offset: na::Isometry3::identity(),
+            #[cfg(feature = "viz")]
+            viz: crate::viz_feed::VizFeedState::default(),
             loop_closure_picking_b: false,
             loop_closure_link_b: None,
         }
@@ -2477,6 +2484,56 @@ impl eframe::App for ArticaraApp {
                     self.kinematic_playback_base_offset * body_iso;
                 model.rebuild_misarta_model();
                 self.needs_upload = true;
+            }
+        }
+
+        // ── Live gait feed (Zenoh) ──────────────────────────────
+        // A small window toggles a subscriber to a `go2-gait-runner --viz`
+        // stream; when running, each received GaitVizFrame drives the loaded
+        // model's joints + trunk pose (same path as kinematic playback).
+        #[cfg(feature = "viz")]
+        {
+            egui::Window::new("Live feed (Zenoh)")
+                .default_open(false)
+                .show(&ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        let mut on = self.viz.active();
+                        if ui.checkbox(&mut on, "Subscribe").changed() {
+                            self.viz.toggle();
+                        }
+                        ui.add_enabled(
+                            !self.viz.active(),
+                            egui::TextEdit::singleline(&mut self.viz.key)
+                                .hint_text("key")
+                                .desired_width(170.0),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("endpoint:");
+                        ui.add_enabled(
+                            !self.viz.active(),
+                            egui::TextEdit::singleline(&mut self.viz.endpoint)
+                                .hint_text("auto (tcp/127.0.0.1:7447 for same PC)")
+                                .desired_width(220.0),
+                        );
+                    });
+                    if self.viz.active() {
+                        match self.viz.last_seq {
+                            Some(s) => ui.label(format!("● receiving — frame #{s}")),
+                            None => ui.label("● subscribed — waiting for frames…"),
+                        };
+                    } else {
+                        ui.label("off — run: go2-gait-runner run eth0 --viz");
+                    }
+                });
+            if self.viz.active() {
+                if let Some(model) = self.model.as_mut() {
+                    if self.viz.apply(model) {
+                        self.needs_upload = true;
+                    }
+                }
+                // Keep repainting so newly arrived frames are applied promptly.
+                ctx.request_repaint();
             }
         }
 
