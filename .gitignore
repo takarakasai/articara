@@ -9,7 +9,8 @@
 /sample
 
 # `models/` holds locally-downloaded robot assets (Menagerie sparse
-# checkouts, internal experiments, etc.). They are not versioned here
-# — the `examples/go2_*.rs` scripts expect `models/unitree_go2/` to be
-# fetched separately; see the comment at the top of each example.
-/models
+# checkouts, internal experiments, etc.) that are NOT versioned here —
+# except `models/unitree_go2/`, which is the shared `go2-model` git
+# submodule (the `examples/go2_*.rs` scripts expect it at that path).
+/models/*
+!/models/unitree_go2
