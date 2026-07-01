@@ -61,7 +61,7 @@ tooling but are treated as **lossy derivatives** of the `.misa` master.
   via the [`misarta::native`](misarta/src/native/) module.
 - **Multi-format model loading** — `.misa` (native), URDF, MJCF (MuJoCo XML),
   USD, SDF. Legacy URDF + `.misarta.toml` sidecar workflows continue to work.
-- **Rigid body dynamics** — O(n) Featherstone algorithms via [`misarta`](misarta/) (kinematics, dynamics, autodiff-ready).
+- **Rigid body dynamics** — O(n) Featherstone algorithms via [`misarta`](https://github.com/takarakasai/misarta) (kinematics, dynamics, autodiff-ready).
 - **3D viewer & GUI** — `eframe` + `glow` renderer with `egui_plot` overlays (default `gui` feature).
 - **Physics backend** — optional MuJoCo integration (`--features mujoco`, requires `mujoco-rs`).
 - **Scripting** — Rhai-based scene/robot scripting (default `scripting` feature; see `examples/script_repl.rs`).
@@ -70,20 +70,14 @@ tooling but are treated as **lossy derivatives** of the `.misa` master.
   + Hierarchical WBC + 18-state Linear Kalman Filter via
   [`quadruped-gait`](quadruped-gait/). See
   [Gait & control modes](#gait--control-modes) below.
-- **Jump simulation** — native ([`jump-sim-runner`](jump-sim-runner/)) and WASM ([`jump-sim-wasm`](jump-sim-wasm/)) builds.
-- **Plugin API** — extension interface in [`plugin-api`](plugin-api/).
-
 ## Workspace layout
 
 | Crate                | Purpose                                              |
 | -------------------- | ---------------------------------------------------- |
 | `articara`           | Main editor / viewer application                     |
-| [`misarta`](misarta/)              | Rigid body kinematics & dynamics library |
+| [`misarta`](https://github.com/takarakasai/misarta) | Rigid body kinematics & dynamics library (git dependency) |
 | [`misarta-py`](misarta-py/)        | Python bindings for `misarta` (PyO3 + maturin) |
 | [`quadruped-gait`](quadruped-gait/)      | Quadruped gait planning                  |
-| [`plugin-api`](plugin-api/)              | Plugin / extension interface             |
-| [`jump-sim-runner`](jump-sim-runner/)    | Native jump-simulation harness           |
-| [`jump-sim-wasm`](jump-sim-wasm/)        | WASM build of jump simulation            |
 
 ## Gait & control modes
 

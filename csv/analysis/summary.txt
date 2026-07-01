@@ -1,0 +1,57 @@
+=== Go2 crawl steady-state summary (crawl phase, t >= start+1 cycle) ===
+
+[crawl_vx002_c25_sup08_swing_04_kp100_kd6_smooth_ff]  target vx = 0.020 m/s
+  vx  estimate : mean = +0.0049 m/s  std = 0.0055  RMSE vs target = 0.0161
+  vx  achieved : +24.5 %  (distance ratio over run = +24.4 %)
+  vy  estimate : mean = +0.0047  std = 0.0032  m/s
+  roll        : RMS = 1.11 deg, peak-peak = 1.91 deg
+  pitch       : RMS = 0.24 deg, peak-peak = 1.42 deg
+  yaw drift   : +0.056 deg/s
+
+[crawl_vx005_c25_sup08_swing_04_kp100_kd6_smooth_ff]  target vx = 0.050 m/s
+  vx  estimate : mean = +0.0159 m/s  std = 0.0057  RMSE vs target = 0.0345
+  vx  achieved : +31.9 %  (distance ratio over run = +29.2 %)
+  vy  estimate : mean = +0.0055  std = 0.0060  m/s
+  roll        : RMS = 1.08 deg, peak-peak = 2.33 deg
+  pitch       : RMS = 0.28 deg, peak-peak = 1.43 deg
+  yaw drift   : +0.034 deg/s
+
+=== Vibration / Y-Z oscillation summary (steady-state crawl) ===
+
+[crawl_vx002_c25_sup08_swing_04_kp100_kd6_smooth_ff]  target vx = 0.020 m/s
+  gyro_x (roll rate) : RMS = 9.00 deg/s, peak = 53.89 deg/s
+  gyro_y (pitch rate): RMS = 7.71 deg/s, peak = 34.91 deg/s
+  gyro_z (yaw rate)  : RMS = 4.46 deg/s
+  a_y (lateral) : RMS = 1.213 m/s², peak = 10.970
+  a_z (vertical): RMS = 1.625 m/s², peak = 8.063
+  p_y oscillation: RMS = 248.92 mm, p-p = 812.64 mm
+  p_z oscillation: RMS = 10.33 mm, p-p = 32.95 mm
+
+[crawl_vx005_c25_sup08_swing_04_kp100_kd6_smooth_ff]  target vx = 0.050 m/s
+  gyro_x (roll rate) : RMS = 9.71 deg/s, peak = 57.37 deg/s
+  gyro_y (pitch rate): RMS = 8.49 deg/s, peak = 41.02 deg/s
+  gyro_z (yaw rate)  : RMS = 4.34 deg/s
+  a_y (lateral) : RMS = 1.312 m/s², peak = 12.615
+  a_z (vertical): RMS = 1.584 m/s², peak = 11.121
+  p_y oscillation: RMS = 38.74 mm, p-p = 126.24 mm
+  p_z oscillation: RMS = 105.42 mm, p-p = 322.68 mm
+
+=== Vibration / Y-Z oscillation summary (steady-state crawl) ===
+
+[crawl_vx002_c25_sup08_swing_04_kp100_kd6_smooth_ff]  target vx = 0.020 m/s
+  gyro_x (roll rate) : RMS = 9.00 deg/s, peak = 53.89 deg/s
+  gyro_y (pitch rate): RMS = 7.71 deg/s, peak = 34.91 deg/s
+  gyro_z (yaw rate)  : RMS = 4.46 deg/s
+  a_y (lateral) : RMS = 1.213 m/s², peak = 10.970
+  a_z (vertical): RMS = 1.625 m/s², peak = 8.063
+  p_y oscillation: RMS = 2.62 mm, p-p = 13.22 mm
+  p_z oscillation: RMS = 1.26 mm, p-p = 8.23 mm
+
+[crawl_vx005_c25_sup08_swing_04_kp100_kd6_smooth_ff]  target vx = 0.050 m/s
+  gyro_x (roll rate) : RMS = 9.71 deg/s, peak = 57.37 deg/s
+  gyro_y (pitch rate): RMS = 8.49 deg/s, peak = 41.02 deg/s
+  gyro_z (yaw rate)  : RMS = 4.34 deg/s
+  a_y (lateral) : RMS = 1.312 m/s², peak = 12.615
+  a_z (vertical): RMS = 1.584 m/s², peak = 11.121
+  p_y oscillation: RMS = 3.70 mm, p-p = 21.54 mm
+  p_z oscillation: RMS = 2.66 mm, p-p = 11.76 mm

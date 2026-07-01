@@ -3073,7 +3073,6 @@ mod test_inertia_validation {
 #[cfg(feature = "serde")]
 mod test_serde {
     use super::*;
-    use articara::dynamics;
     use articara::robot::RobotModel;
     use std::collections::HashSet;
 
@@ -3094,111 +3093,6 @@ mod test_serde {
         }
     }
 
-    /// SimGraphData round-trips through JSON.
-    #[test]
-    fn sim_graph_data_json_roundtrip() {
-        let gd = dynamics::SimGraphData {
-            time: vec![0.0, 0.001, 0.002],
-            pos_x: vec![0.1, 0.2, 0.3],
-            pos_y: vec![0.0, 0.0, 0.0],
-            pos_z: vec![0.15, 0.20, 0.25],
-            vel_x: vec![1.0, 1.1, 1.2],
-            vel_y: vec![0.0, 0.0, 0.0],
-            vel_z: vec![0.5, 0.6, 0.7],
-            acc_x: vec![0.0, 0.0, 0.0],
-            acc_y: vec![0.0, 0.0, 0.0],
-            acc_z: vec![-9.8, -9.8, -9.8],
-            link_name: "trunk".into(),
-        };
-        let json = serde_json::to_string(&gd).unwrap();
-        let deser: dynamics::SimGraphData = serde_json::from_str(&json).unwrap();
-        assert_eq!(deser.time.len(), gd.time.len());
-        assert_eq!(deser.link_name, gd.link_name);
-    }
-
-    /// JumpSimResult round-trips through JSON.
-    #[test]
-    fn jump_result_json_roundtrip() {
-        let jr = dynamics::JumpSimResult {
-            max_height: 0.135,
-            extension_duration: 0.3,
-            joint_peaks: vec![dynamics::JointPeakInfo {
-                joint_idx: 0,
-                joint_name: "hip".into(),
-                peak_torque: 5.0,
-                peak_torque_angle: 0.3,
-                peak_velocity: 2.5,
-                peak_velocity_angle: 0.8,
-                contributes: true,
-            }],
-            graph_data: dynamics::SimGraphData::default(),
-        };
-        let json = serde_json::to_string(&jr).unwrap();
-        let deser: dynamics::JumpSimResult = serde_json::from_str(&json).unwrap();
-        assert!((deser.max_height - jr.max_height).abs() < 1e-6);
-        assert_eq!(deser.joint_peaks.len(), 1);
-        assert_eq!(deser.joint_peaks[0].joint_name, "hip");
-    }
-
-    /// Full jump simulation with serialised input/output (native, no WASM).
-    /// This validates the same code path used by the WASM plugin.
-    ///
-    /// **Ignored**: the underlying jump-simulation engine was removed in
-    /// commit 8ca7bbc ("reflesh dyn sim", 2026-04-27); `start_jump_sim`
-    /// is currently a stub that returns `None`. Re-enable this test once
-    /// the engine is reimplemented. Type-level serde round-trip is still
-    /// covered by `sim_graph_data_json_roundtrip` and
-    /// `jump_result_json_roundtrip` above, which exercise every field
-    /// the WASM ABI needs.
-    #[test]
-    #[ignore = "jump-sim engine removed in 8ca7bbc; awaiting reimplementation"]
-    fn native_jump_sim_serde_roundtrip() {
-        let model = RobotModel::from_urdf(&namiashi_urdf()).unwrap();
-
-        // Serialise the model → JSON → deserialise (simulates host→WASM transfer)
-        let json = serde_json::to_string(&model).expect("serialize model");
-        let mut deser_model: RobotModel = serde_json::from_str(&json).expect("deserialize model");
-
-        let ground_links: Vec<String> = vec![
-            "RL_foot".into(), "FL_foot".into(),
-            "RR_foot".into(), "FR_foot".into(),
-        ];
-        let locked = HashSet::new();
-        let sim = dynamics::start_jump_sim(
-            &mut deser_model,
-            &ground_links,
-            Some("trunk"),
-            1.0,
-            &locked,
-            [false, false, true],
-            None,
-            false,
-            true,
-            Some("trunk"),
-            500.0,
-            20.0,
-        );
-        assert!(sim.is_some(), "jump sim should initialise");
-        let mut sim = sim.unwrap();
-
-        let dt = 1.0 / 60.0_f32;
-        for _ in 0..600 {
-            if !dynamics::step_jump_sim(&mut sim, &mut deser_model, dt) {
-                break;
-            }
-        }
-
-        let result = dynamics::extract_jump_result(&sim, &deser_model);
-        assert!(result.max_height > 0.0, "should have positive jump height");
-
-        // Result round-trips through JSON
-        let result_json = serde_json::to_string(&result).expect("serialize result");
-        let deser_result: dynamics::JumpSimResult =
-            serde_json::from_str(&result_json).expect("deserialize result");
-        assert!((deser_result.max_height - result.max_height).abs() < 1e-6);
-        assert_eq!(deser_result.joint_peaks.len(), result.joint_peaks.len());
-        assert!(!deser_result.graph_data.time.is_empty(), "graph data should have samples");
-    }
 }
 
 // ============================================================
