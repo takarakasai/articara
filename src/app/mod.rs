@@ -4,12 +4,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::camera::OrbitCamera;
-use crate::dynamics;
-use crate::format::RobotFormat;
-use crate::history::History;
+use articara::camera::OrbitCamera;
+use articara::dynamics;
+use articara::format::RobotFormat;
+use articara::history::History;
 use crate::renderer::{DisplayMode, GlRenderer, MeshKind};
-use crate::robot::RobotModel;
+use articara::robot::RobotModel;
 
 /// How a left-mouse drag on a link is interpreted while a MuJoCo sim is running.
 #[cfg(feature = "mujoco")]
@@ -315,8 +315,8 @@ pub struct ArticaraApp {
     /// "main") so the wipe / picture-in-picture overlay can show the
     /// non-active perspective without a one-frame lag.
     tps_camera: OrbitCamera,
-    tps_settings: crate::camera::TpsSettings,
-    camera_mode: crate::camera::CameraMode,
+    tps_settings: articara::camera::TpsSettings,
+    camera_mode: articara::camera::CameraMode,
     /// When `true` the main viewport additionally renders the *other*
     /// camera (free or TPS, opposite of the active one) as a small
     /// picture-in-picture wipe in the upper-right corner.
@@ -326,7 +326,7 @@ pub struct ArticaraApp {
     pending_export_action: Option<PendingExportAction>,
     /// Compatibility issues raised by the latest pre-export analysis.
     /// Non-empty while the confirmation dialog is shown.
-    export_compat_issues: Vec<crate::format::ExportIssue>,
+    export_compat_issues: Vec<articara::format::ExportIssue>,
     gl: Arc<glow::Context>,
     gl_renderer: Arc<Mutex<GlRenderer>>,
     selected_link: Option<usize>,
@@ -359,9 +359,9 @@ pub struct ArticaraApp {
     /// IK damping factor (λ for DLS / λ_max for SR-Inverse).
     ik_damping: f32,
     /// IK solver method.
-    ik_solver: crate::robot::IkSolver,
+    ik_solver: articara::robot::IkSolver,
     /// IK constraint dimensionality (2D screen-plane or 3D world).
-    ik_dof: crate::robot::IkDof,
+    ik_dof: articara::robot::IkDof,
     /// IK joint weight gradient: 0 = uniform, larger = prefer EE-proximal joints.
     ik_weight_gradient: f32,
     /// IK root link name. None = use URDF root (full chain).
@@ -466,7 +466,7 @@ pub struct ArticaraApp {
     /// Show the inertia validation results window.
     show_validation_window: bool,
     /// Cached inertia validation results.
-    validation_results: Vec<crate::robot::InertiaValidation>,
+    validation_results: Vec<articara::robot::InertiaValidation>,
     // --- Dynamics analysis state ---
     /// Selected end-effector link for payload capacity analysis.
     dynamics_ee_link: Option<String>,
@@ -486,7 +486,7 @@ pub struct ArticaraApp {
     dynamics_last_instant: Option<std::time::Instant>,
     /// Active MuJoCo simulation instance.
     #[cfg(feature = "mujoco")]
-    mujoco_sim: Option<crate::mujoco_sim::MujocoSim>,
+    mujoco_sim: Option<articara::mujoco_sim::MujocoSim>,
     /// Madgwick attitude estimators keyed by IMU sensor name. Built on
     /// MuJoCo sim start (one per `[[sensor]]` of kind `Imu` in the
     /// loaded `RobotModel`); updated every physics tick from
@@ -495,7 +495,7 @@ pub struct ArticaraApp {
     /// `body_state.world_yaw` in `PoseSource::ImuFusion` mode.
     #[cfg(feature = "mujoco")]
     imu_estimators:
-        std::collections::HashMap<String, crate::attitude_estimator::MadgwickAhrs>,
+        std::collections::HashMap<String, articara::attitude_estimator::MadgwickAhrs>,
     /// Last sim time we fed an IMU sample, per sensor name. Used to
     /// derive `dt` for the estimator without re-querying MuJoCo's clock
     /// state (the estimator is sim-time-driven, not wall-clock).
@@ -506,14 +506,14 @@ pub struct ArticaraApp {
     /// the user can A/B compare the IMU-fusion path against MuJoCo's
     /// oracle while debugging the controller.
     #[cfg(feature = "mujoco")]
-    pose_source: crate::gait::PoseSource,
+    pose_source: articara::gait::PoseSource,
     /// Kinematics-based leg-odometry estimator. Maintains an integrated
     /// world-frame body position from stance-foot kinematics, used
-    /// when [`Self::pose_source`] is [`crate::gait::PoseSource::LegOdometry`].
+    /// when [`Self::pose_source`] is [`articara::gait::PoseSource::LegOdometry`].
     /// Reset on MuJoCo sim start so a previous run's drift doesn't
     /// bleed in.
     #[cfg(feature = "mujoco")]
-    leg_odometry: crate::leg_odometry::LegOdometry,
+    leg_odometry: articara::leg_odometry::LegOdometry,
     /// Stance flags `[FL, FR, RL, RR]` from the gait controller's
     /// previous tick output. The leg-odometry estimator runs *before*
     /// `gc.tick`, so it relies on this last-tick snapshot to know
@@ -533,7 +533,7 @@ pub struct ArticaraApp {
     /// gait controller is enabled in MPC mode so we don't pay the
     /// kinematic-cache lookup cost on robots that aren't quadrupeds.
     #[cfg(feature = "mujoco")]
-    wbc_pipeline: Option<crate::wbc_pipeline::WbcPipeline>,
+    wbc_pipeline: Option<articara::wbc_pipeline::WbcPipeline>,
     /// When true, the MuJoCo sim auto-lifts the floating base just above z=0.
     /// When false, [`Self::mujoco_base_pos`] is used as the initial world position.
     #[cfg(feature = "mujoco")]
@@ -666,7 +666,7 @@ pub struct ArticaraApp {
     show_script_console: bool,
     /// Rhai script engine for model manipulation.
     #[cfg(feature = "scripting")]
-    script_engine: Option<crate::scripting_model::ModelScriptEngine>,
+    script_engine: Option<articara::scripting_model::ModelScriptEngine>,
     /// Current script input text.
     script_input: String,
     /// Captured script output lines (with type tags for colouring).
@@ -694,7 +694,7 @@ pub struct ArticaraApp {
     /// Whether the actuator-settings dialog is open.
     show_actuator_dialog: bool,
     /// Default sliding-friction coefficient (μ_slide) applied to every
-    /// emitted MJCF geom — see [`crate::mjcf::MjcfExportOptions::default_friction`].
+    /// emitted MJCF geom — see [`articara::mjcf::MjcfExportOptions::default_friction`].
     /// Surfaced as a Sim-toggles slider so the user can sweep
     /// foot-on-ground μ without editing the misa. Baked into MJCF at
     /// MuJoCo init, so changes require Stop → Play to take effect.
@@ -710,24 +710,24 @@ pub struct ArticaraApp {
     pending_misa_report: Option<misarta::native::LoadReport>,
     /// Pending MuJoCo runtime version mismatch surfaced as a startup
     /// dialog. Populated in [`Self::new`] from the cached
-    /// [`crate::mujoco_version::CheckResult`]; cleared when the user
+    /// [`articara::mujoco_version::CheckResult`]; cleared when the user
     /// dismisses the dialog. Only set when the `mujoco` feature is
     /// active **and** the version check came back as `Mismatch`.
     #[cfg(feature = "mujoco")]
     pending_mujoco_warning:
-        Option<crate::mujoco_version::CheckResult>,
+        Option<articara::mujoco_version::CheckResult>,
     /// Optional quadruped gait controller. Built once on demand (via the
     /// gait panel's "Setup" button or the Rhai `gait_setup` function),
     /// then ticked from the MuJoCo sim loop while `is_enabled()` is true.
     /// Keeping it as `Option` so models without quadruped legs simply
     /// don't pay any cost.
-    gait_controller: Option<crate::gait::GaitController>,
+    gait_controller: Option<articara::gait::GaitController>,
     /// Active generator mode (CHAMP / MPC). Persisted on the app so
     /// the picker UI's selection survives Setup → Clear → Setup; on
     /// build / mode-change it's pushed into the controller.
     gait_mode: quadruped_gait::GaitMode,
     /// Per-leg foot link names the user wants the auto-detector to use.
-    /// Default mirror of [`crate::gait::DEFAULT_FOOT_LINKS`]; mutable so
+    /// Default mirror of [`articara::gait::DEFAULT_FOOT_LINKS`]; mutable so
     /// the UI panel can edit them per robot.
     gait_foot_links: [(quadruped_gait::LegId, String); 4],
     /// Linear-speed magnitude (m/s) commanded by the gait panel's
@@ -778,9 +778,9 @@ pub struct ArticaraApp {
     kinematic_playback_base_offset: na::Isometry3<f64>,
     /// Live gait viewer: subscribe to a `go2-gait-runner --viz` Zenoh stream
     /// and animate the loaded model from the received frames. See
-    /// [`crate::viz_feed`].
+    /// [`articara::viz_feed`].
     #[cfg(feature = "viz")]
-    viz: crate::viz_feed::VizFeedState,
+    viz: articara::viz_feed::VizFeedState,
     /// MPC capture-point feedback gain shown in the gait panel slider.
     /// Default `0.0` (post-D3.3.7 C2: legged_control-style open-loop
     /// Raibert + MPC reference, no closed-form foot placement
@@ -841,8 +841,8 @@ enum DecomposeTarget {
 
 /// The result produced by a background decomposition thread.
 enum DecomposeResult {
-    Visuals(Vec<crate::robot::VisualData>),
-    Collisions(Vec<crate::robot::CollisionData>),
+    Visuals(Vec<articara::robot::VisualData>),
+    Collisions(Vec<articara::robot::CollisionData>),
 }
 
 /// A running background decomposition task.
@@ -905,8 +905,8 @@ impl ArticaraApp {
             camera: OrbitCamera::new(),
             saved_free_camera: OrbitCamera::new(),
             tps_camera: OrbitCamera::new(),
-            tps_settings: crate::camera::TpsSettings::default(),
-            camera_mode: crate::camera::CameraMode::Free,
+            tps_settings: articara::camera::TpsSettings::default(),
+            camera_mode: articara::camera::CameraMode::Free,
             show_camera_wipe: false,
             pending_export_action: None,
             export_compat_issues: Vec::new(),
@@ -929,8 +929,8 @@ impl ArticaraApp {
             selected_visual: None,
             selected_collision: None,
             ik_damping: 0.05,
-            ik_solver: crate::robot::IkSolver::SrInverse,
-            ik_dof: crate::robot::IkDof::ScreenPlane2D,
+            ik_solver: articara::robot::IkSolver::SrInverse,
+            ik_dof: articara::robot::IkDof::ScreenPlane2D,
             ik_weight_gradient: 1.5,
             ik_root_link: None,
             ik_target_marker: None,
@@ -996,9 +996,9 @@ impl ArticaraApp {
             #[cfg(feature = "mujoco")]
             imu_last_sim_time: std::collections::HashMap::new(),
             #[cfg(feature = "mujoco")]
-            pose_source: crate::gait::PoseSource::default(),
+            pose_source: articara::gait::PoseSource::default(),
             #[cfg(feature = "mujoco")]
-            leg_odometry: crate::leg_odometry::LegOdometry::new(),
+            leg_odometry: articara::leg_odometry::LegOdometry::new(),
             #[cfg(feature = "mujoco")]
             leg_odometry_last_stance: [true; 4], // start in all-stance pose
             #[cfg(feature = "mujoco")]
@@ -1090,15 +1090,15 @@ impl ArticaraApp {
             sim_default_friction: 0.7,
             pending_misa_report: None,
             #[cfg(feature = "mujoco")]
-            pending_mujoco_warning: match crate::mujoco_version::cached() {
-                Some(r @ crate::mujoco_version::CheckResult::Mismatch { .. }) => {
+            pending_mujoco_warning: match articara::mujoco_version::cached() {
+                Some(r @ articara::mujoco_version::CheckResult::Mismatch { .. }) => {
                     Some(r.clone())
                 }
                 _ => None,
             },
             gait_controller: None,
             gait_mode: quadruped_gait::GaitMode::default(),
-            gait_foot_links: crate::gait::DEFAULT_FOOT_LINKS
+            gait_foot_links: articara::gait::DEFAULT_FOOT_LINKS
                 .map(|(id, name)| (id, name.to_string())),
             gait_dpad_speed: 0.3,
             gait_dpad_yaw_speed: 0.5,
@@ -1124,7 +1124,7 @@ impl ArticaraApp {
             kinematic_playback_active: false,
             kinematic_playback_base_offset: na::Isometry3::identity(),
             #[cfg(feature = "viz")]
-            viz: crate::viz_feed::VizFeedState::default(),
+            viz: articara::viz_feed::VizFeedState::default(),
             loop_closure_picking_b: false,
             loop_closure_link_b: None,
         }
@@ -1141,7 +1141,7 @@ impl ArticaraApp {
             .and_then(|m| m.gaits.first().cloned());
         let names = match descriptor {
             Some(d) => [d.fl_foot, d.fr_foot, d.rl_foot, d.rr_foot],
-            None => crate::gait::DEFAULT_FOOT_LINKS.map(|(_, s)| s.to_string()),
+            None => articara::gait::DEFAULT_FOOT_LINKS.map(|(_, s)| s.to_string()),
         };
         for (slot, name) in names.into_iter().enumerate() {
             self.gait_foot_links[slot].1 = name;
@@ -1156,7 +1156,7 @@ impl ArticaraApp {
             return;
         };
         if model.gaits.is_empty() {
-            model.gaits.push(crate::rbd::model::GaitDescriptor::default_trot());
+            model.gaits.push(articara::rbd::model::GaitDescriptor::default_trot());
         }
         let g = &mut model.gaits[0];
         g.fl_foot = self.gait_foot_links[0].1.clone();
@@ -1318,8 +1318,8 @@ impl ArticaraApp {
     /// Switch the active camera mode, preserving the user's free-camera
     /// state across the transition so toggling Free → TPS → Free
     /// returns to the same orbit pose.
-    pub(crate) fn set_camera_mode(&mut self, mode: crate::camera::CameraMode) {
-        use crate::camera::CameraMode;
+    pub(crate) fn set_camera_mode(&mut self, mode: articara::camera::CameraMode) {
+        use articara::camera::CameraMode;
         if self.camera_mode == mode {
             return;
         }
@@ -1343,7 +1343,7 @@ impl ArticaraApp {
     /// pitch / scroll into `tps_settings` (panning is no-op in TPS
     /// since the look-at follows the body).
     pub(crate) fn handle_camera_input(&mut self, response: &eframe::egui::Response) {
-        use crate::camera::CameraMode;
+        use articara::camera::CameraMode;
         match self.camera_mode {
             CameraMode::Free => {
                 self.camera.handle_orbit_pan_zoom(response);
@@ -1390,10 +1390,10 @@ impl ArticaraApp {
             return;
         };
         for sensor in &model.sensors {
-            if matches!(sensor.kind, crate::rbd::model::SensorKind::Imu { .. }) {
+            if matches!(sensor.kind, articara::rbd::model::SensorKind::Imu { .. }) {
                 self.imu_estimators.insert(
                     sensor.name.clone(),
-                    crate::attitude_estimator::MadgwickAhrs::default(),
+                    articara::attitude_estimator::MadgwickAhrs::default(),
                 );
             }
         }
@@ -1441,14 +1441,14 @@ impl ArticaraApp {
             .sensors
             .iter()
             .find(|s| {
-                matches!(s.kind, crate::rbd::model::SensorKind::Imu { .. })
+                matches!(s.kind, articara::rbd::model::SensorKind::Imu { .. })
                     && &s.link == trunk
             })
             .or_else(|| {
                 model
                     .sensors
                     .iter()
-                    .find(|s| matches!(s.kind, crate::rbd::model::SensorKind::Imu { .. }))
+                    .find(|s| matches!(s.kind, articara::rbd::model::SensorKind::Imu { .. }))
             })?;
         let est = self.imu_estimators.get(&primary.name)?;
         let (_roll, _pitch, yaw) = est.euler_zyx();
@@ -1474,7 +1474,7 @@ impl ArticaraApp {
             .mujoco_sim
             .as_ref()
             .and_then(|s| match s.async_peek() {
-                Some(crate::mujoco_sim::AsyncSimOp::StepFrames(n)) => Some(*n),
+                Some(articara::mujoco_sim::AsyncSimOp::StepFrames(n)) => Some(*n),
                 _ => None,
             });
 
@@ -1567,8 +1567,8 @@ impl ArticaraApp {
                             // PoseSource.
                             let trunk = &model.root_link;
                             let yaw_observed = match self.pose_source {
-                                crate::gait::PoseSource::ImuFusion
-                                | crate::gait::PoseSource::LegOdometry => {
+                                articara::gait::PoseSource::ImuFusion
+                                | articara::gait::PoseSource::LegOdometry => {
                                     // Primary IMU = first one mounted on the
                                     // trunk; fallback to any IMU; fallback to
                                     // MuJoCo's xquat when no IMU is wired.
@@ -1578,14 +1578,14 @@ impl ArticaraApp {
                                         .find(|s| {
                                             matches!(
                                                 s.kind,
-                                                crate::rbd::model::SensorKind::Imu { .. }
+                                                articara::rbd::model::SensorKind::Imu { .. }
                                             ) && &s.link == trunk
                                         })
                                         .or_else(|| {
                                             model.sensors.iter().find(|s| {
                                                 matches!(
                                                     s.kind,
-                                                    crate::rbd::model::SensorKind::Imu {
+                                                    articara::rbd::model::SensorKind::Imu {
                                                         ..
                                                     }
                                                 )
@@ -1597,7 +1597,7 @@ impl ArticaraApp {
                                         .or_else(|| mj_sim.body_world_yaw(trunk))
                                         .unwrap_or(0.0)
                                 }
-                                crate::gait::PoseSource::GroundTruth => mj_sim
+                                articara::gait::PoseSource::GroundTruth => mj_sim
                                     .body_world_yaw(trunk)
                                     .unwrap_or(0.0),
                             };
@@ -1610,7 +1610,7 @@ impl ArticaraApp {
                             // position; we read it back below.
                             if matches!(
                                 self.pose_source,
-                                crate::gait::PoseSource::LegOdometry
+                                articara::gait::PoseSource::LegOdometry
                             ) {
                                 if let Some(gc) = self.gait_controller.as_ref() {
                                     let kin = gc.kinematics().clone();
@@ -1672,7 +1672,7 @@ impl ArticaraApp {
                             }
 
                             let pos_observed = match self.pose_source {
-                                crate::gait::PoseSource::LegOdometry => {
+                                articara::gait::PoseSource::LegOdometry => {
                                     let p = self.leg_odometry.position_world();
                                     [p.x, p.y, p.z]
                                 }
@@ -1758,7 +1758,7 @@ impl ArticaraApp {
                                                 self.gait_foot_links[3].1.clone(),
                                             ];
                                             let mut new_pipe =
-                                                crate::wbc_pipeline::WbcPipeline::new(
+                                                articara::wbc_pipeline::WbcPipeline::new(
                                                     model, foot_links,
                                                 );
                                             // Sync mass / inertia from the auto-detected
@@ -1981,7 +1981,7 @@ impl ArticaraApp {
     /// remaining count caps how many physics frames that path advances.
     #[cfg(feature = "mujoco")]
     fn drain_instantaneous_async_ops(&mut self) {
-        use crate::mujoco_sim::AsyncSimOp;
+        use articara::mujoco_sim::AsyncSimOp;
         loop {
             let head_kind = match self.mujoco_sim.as_ref().and_then(|s| s.async_peek()) {
                 Some(AsyncSimOp::StepFrames(_)) => return,
@@ -2035,7 +2035,7 @@ impl ArticaraApp {
                 let result = if let (Some(model), Some(sim)) =
                     (self.model.as_ref(), self.mujoco_sim.as_ref())
                 {
-                    crate::mujoco_sim::save_peaks_csv(model, sim, &path)
+                    articara::mujoco_sim::save_peaks_csv(model, sim, &path)
                 } else {
                     Err("simulation not active".to_string())
                 };
@@ -2202,7 +2202,7 @@ impl ArticaraApp {
         // --- Add Mesh (STL/DAE) dialog ---
         match self.dlg_add_mesh.show(ctx) {
             FileDialogResult::Confirmed(path) => {
-                let vertices = crate::robot::load_mesh_file(&path);
+                let vertices = articara::robot::load_mesh_file(&path);
                 if vertices.is_empty() {
                     self.status_message = format!(
                         "メッシュ読み込み失敗: {}",
@@ -2214,14 +2214,14 @@ impl ArticaraApp {
                     if let Some(ref mut model) = self.model {
                         if target.link_index < model.links.len() {
                             let link = &mut model.links[target.link_index];
-                            let geom = crate::robot::GeomData::Mesh {
+                            let geom = articara::robot::GeomData::Mesh {
                                 vertices,
                                 filename: Some(fname.clone()),
                                 scale: None,
                             };
                             match target.kind {
                                 MeshAddKind::Visual => {
-                                    link.visuals.push(crate::robot::VisualData {
+                                    link.visuals.push(articara::robot::VisualData {
                                         origin: nalgebra::Isometry3::identity(),
                                         geometry: geom,
                                         color: [0.7, 0.7, 0.7, 1.0],
@@ -2231,7 +2231,7 @@ impl ArticaraApp {
                                     );
                                 }
                                 MeshAddKind::Collision => {
-                                    link.collisions.push(crate::robot::CollisionData {
+                                    link.collisions.push(articara::robot::CollisionData {
                                         origin: nalgebra::Isometry3::identity(),
                                         geometry: geom,
                                     
@@ -2358,7 +2358,7 @@ impl eframe::App for ArticaraApp {
         // When TPS is the active mode, mirror the live tps_camera into
         // the main self.camera so screen-space projections, picking, and
         // overlays all use the TPS view.
-        if matches!(self.camera_mode, crate::camera::CameraMode::Tps) {
+        if matches!(self.camera_mode, articara::camera::CameraMode::Tps) {
             self.camera = self.tps_camera.clone();
         }
 
@@ -2585,7 +2585,7 @@ impl ArticaraApp {
         self.pending_script_run = Some(path);
     }
 
-    /// Apply pending [`crate::scripting_model::ScriptOverrides`] from
+    /// Apply pending [`articara::scripting_model::ScriptOverrides`] from
     /// the most recent script run. Called once after the engine eval
     /// finishes — each `Some(_)` field maps to the corresponding
     /// [`ArticaraApp`] field, and the override struct's contents are
@@ -2593,7 +2593,7 @@ impl ArticaraApp {
     #[cfg(feature = "scripting")]
     fn apply_script_overrides(
         &mut self,
-        ov: crate::scripting_model::ScriptOverrides,
+        ov: articara::scripting_model::ScriptOverrides,
     ) {
         if let Some(mode) = ov.gait_mode {
             self.gait_mode = mode;

@@ -54,9 +54,9 @@ impl ArticaraApp {
                             .show(ui, |ui| {
                                 for issue in &v.issues {
                                     let (icon, color) = match issue.severity {
-                                        crate::robot::ValidationSeverity::Error =>
+                                        articara::robot::ValidationSeverity::Error =>
                                             ("❌", egui::Color32::from_rgb(220, 60, 60)),
-                                        crate::robot::ValidationSeverity::Warning =>
+                                        articara::robot::ValidationSeverity::Warning =>
                                             ("⚠", egui::Color32::from_rgb(220, 180, 40)),
                                     };
                                     ui.label(egui::RichText::new(format!("  {icon} {}", issue.message))

@@ -560,7 +560,7 @@ impl ArticaraApp {
             // frame (misarta's FK doesn't carry the floating base). For
             // a world-frame marker that follows the robot as it walks,
             // apply the live `base_transform` here.
-            let com_root = crate::rbd::dynamics::compute_com(model, mc);
+            let com_root = articara::rbd::dynamics::compute_com(model, mc);
             let com_world_pt = model.base_transform * com_root;
             let com_f32 = na::Point3::new(
                 com_world_pt.x as f32,

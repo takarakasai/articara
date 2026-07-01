@@ -3,7 +3,7 @@
 use eframe::egui;
 
 #[cfg(feature = "scripting")]
-use crate::scripting_model::ModelScriptEngine;
+use articara::scripting_model::ModelScriptEngine;
 
 use super::{ArticaraApp, ScriptLine};
 
@@ -167,7 +167,7 @@ impl ArticaraApp {
                             #[cfg(feature = "scripting")]
                             #[allow(unused_assignments)]
                             let mut script_overrides_pending: Option<
-                                crate::scripting_model::ScriptOverrides,
+                                articara::scripting_model::ScriptOverrides,
                             > = None;
                             #[cfg(feature = "scripting")]
                             if let Some(eng) = &mut self.script_engine {

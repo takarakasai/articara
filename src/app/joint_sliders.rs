@@ -21,7 +21,7 @@ impl ArticaraApp {
                             egui::ComboBox::from_id_salt("ik_solver")
                                 .selected_text(self.ik_solver.label())
                                 .show_ui(ui, |ui| {
-                                    for &s in &crate::robot::IkSolver::ALL {
+                                    for &s in &articara::robot::IkSolver::ALL {
                                         ui.selectable_value(&mut self.ik_solver, s, s.label());
                                     }
                                 });
@@ -32,16 +32,16 @@ impl ArticaraApp {
                             egui::ComboBox::from_id_salt("ik_dof")
                                 .selected_text(self.ik_dof.label())
                                 .show_ui(ui, |ui| {
-                                    for &d in &crate::robot::IkDof::ALL {
+                                    for &d in &articara::robot::IkDof::ALL {
                                         ui.selectable_value(&mut self.ik_dof, d, d.label());
                                     }
                                 });
                         });
                         // Damping slider (not shown for JT which doesn't use it)
-                        if self.ik_solver != crate::robot::IkSolver::JacobianTranspose {
+                        if self.ik_solver != articara::robot::IkSolver::JacobianTranspose {
                             ui.horizontal(|ui| {
                                 let label = match self.ik_solver {
-                                    crate::robot::IkSolver::SrInverse => "λ_max:",
+                                    articara::robot::IkSolver::SrInverse => "λ_max:",
                                     _ => "Damping (λ):",
                                 };
                                 ui.label(label);
@@ -461,7 +461,7 @@ impl ArticaraApp {
                                         q_b,
                                     );
                                     model.loop_closures.push(
-                                        crate::robot::LoopClosure::pose(
+                                        articara::robot::LoopClosure::pose(
                                             format!("{}↔{}", &sel_link_name, &lbn),
                                             sel_link_name.clone(),
                                             off_a,
@@ -471,7 +471,7 @@ impl ArticaraApp {
                                     );
                                 } else {
                                     model.loop_closures.push(
-                                        crate::robot::LoopClosure::position(
+                                        articara::robot::LoopClosure::position(
                                             format!("{}↔{}", &sel_link_name, &lbn),
                                             sel_link_name.clone(),
                                             na::Vector3::new(oa_x, oa_y, oa_z),

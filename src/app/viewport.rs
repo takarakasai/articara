@@ -5,7 +5,7 @@ use std::sync::Arc;
 use super::{
     ArticaraApp, DragMode, DragState, GizmoOp, InteractionMode, OffsetDragState, OffsetTarget,
 };
-use crate::robot;
+use articara::robot;
 
 impl ArticaraApp {
     pub(super) fn draw_viewport(&mut self, ui: &mut egui::Ui) {
@@ -286,7 +286,7 @@ impl ArticaraApp {
         // viewport calls keep its draws inside the sub-rect, so the
         // main viewport's content underneath is preserved.
         if self.show_camera_wipe {
-            use crate::camera::CameraMode;
+            use articara::camera::CameraMode;
             let alt_camera = match self.camera_mode {
                 CameraMode::Free => self.tps_camera.clone(),
                 CameraMode::Tps => self.saved_free_camera.clone(),
@@ -1057,7 +1057,7 @@ impl ArticaraApp {
                                     // as "wrong direction" for non-tip
                                     // links because their click points sit
                                     // off the joint origin).
-                                    let screen_axes = if self.ik_dof == crate::robot::IkDof::ScreenPlane2D {
+                                    let screen_axes = if self.ik_dof == articara::robot::IkDof::ScreenPlane2D {
                                         let cam_right = self.camera.world_right().cast::<f64>();
                                         let cam_up = self.camera.world_up_screen().cast::<f64>();
                                         Some((cam_right, cam_up))
@@ -1087,9 +1087,9 @@ impl ArticaraApp {
 
                                     // Use constrained IK when pins or loop closures exist
                                     if !self.pinned_links.is_empty() || has_loops {
-                                        let pins: Vec<crate::robot::PinSpec> = self.pinned_links
+                                        let pins: Vec<articara::robot::PinSpec> = self.pinned_links
                                             .iter()
-                                            .map(|p| crate::robot::PinSpec {
+                                            .map(|p| articara::robot::PinSpec {
                                                 link_name: p.link_name.clone(),
                                                 target_pos: p.target_pos,
                                                 target_rot: p.target_rot,
@@ -1124,7 +1124,7 @@ impl ArticaraApp {
                                                 let zero = na::Vector3::zeros();
 
                                                 let misarta_damping = match self.ik_solver {
-                                                    crate::robot::IkSolver::SrInverse => {
+                                                    articara::robot::IkSolver::SrInverse => {
                                                         misarta::ik::Damping::AdaptiveManipulability {
                                                             lambda_min: 0.0,
                                                             lambda_max: damping,
@@ -1134,7 +1134,7 @@ impl ArticaraApp {
                                                     _ => misarta::ik::Damping::Fixed(damping),
                                                 };
                                                 let misarta_method = match self.ik_solver {
-                                                    crate::robot::IkSolver::JacobianTranspose => {
+                                                    articara::robot::IkSolver::JacobianTranspose => {
                                                         misarta::ik::SolverMethod::JacobianTranspose
                                                     }
                                                     _ => {

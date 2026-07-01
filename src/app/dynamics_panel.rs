@@ -1,7 +1,7 @@
 #[cfg(feature = "mujoco")]
 impl ArticaraApp {
     /// MuJoCo用のbase_posとground_plane設定をUI状態から取得
-    pub fn collect_mujoco_setup(&self) -> (Option<[f64; 3]>, Option<crate::mjcf::GroundPlaneCfg>) {
+    pub fn collect_mujoco_setup(&self) -> (Option<[f64; 3]>, Option<articara::mjcf::GroundPlaneCfg>) {
         let base_pos = if self.mujoco_base_pos.iter().any(|&v| v != 0.0) {
             Some([
                 self.mujoco_base_pos[0] as f64,
@@ -12,7 +12,7 @@ impl ArticaraApp {
             None
         };
         let ground = if self.show_ground_plane {
-            Some(crate::mjcf::GroundPlaneCfg {
+            Some(articara::mjcf::GroundPlaneCfg {
                 z: self.ground_z as f64,
                 half_size: self.ground_size as f64,
                 roll: self.ground_plane_roll as f64,
@@ -27,7 +27,7 @@ impl ArticaraApp {
 use eframe::egui;
 
 use super::ArticaraApp;
-use crate::dynamics::{self, StaticAnalysis, DynSim, PayloadPhase};
+use articara::dynamics::{self, StaticAnalysis, DynSim, PayloadPhase};
 
 impl ArticaraApp {
     pub fn draw_dynamics_panel(&mut self, ui: &mut egui::Ui) {
@@ -160,7 +160,7 @@ impl ArticaraApp {
                             // to ±τmax baked into the MJCF, and the user
                             // would see "no change" when toggling limits.
                             let bake = self.enforce_actuator_limits;
-                            let opts = crate::mjcf::MjcfExportOptions {
+                            let opts = articara::mjcf::MjcfExportOptions {
                                 base_pos,
                                 ground_plane: ground,
                                 add_actuators: false,
@@ -168,14 +168,14 @@ impl ArticaraApp {
                                 bake_actuator_limits: bake,
                                 bake_joint_position_limits: bake,
                                 mesh_path_style:
-                                    crate::mesh_paths::MeshPathStyle::default(),
+                                    articara::mesh_paths::MeshPathStyle::default(),
                                 default_friction: [
                                     self.sim_default_friction,
                                     0.005,
                                     0.0001,
                                 ],
                             };
-                            match crate::mujoco_sim::MujocoSim::new(model, opts) {
+                            match articara::mujoco_sim::MujocoSim::new(model, opts) {
                                 Ok(mut sim) => {
                                     // Carry the user's grav-comp toggle into
                                     // the freshly-built sim so Stop → Play

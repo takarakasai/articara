@@ -21,7 +21,7 @@ use std::io::{BufRead, Write};
 use std::path::Path;
 
 use super::ArticaraApp;
-use crate::robot::RobotModel;
+use articara::robot::RobotModel;
 
 // ───────── Save ─────────
 

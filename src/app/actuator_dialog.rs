@@ -14,7 +14,7 @@
 use eframe::egui;
 
 use super::ArticaraApp;
-use crate::rbd::model::ActuatorMode;
+use articara::rbd::model::ActuatorMode;
 
 /// Default values from `tests/fixtures/namiashi/namiashi.misa`. Copied here as
 /// constants so the preset survives even if the fixture file moves.
