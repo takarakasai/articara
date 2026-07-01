@@ -17,6 +17,35 @@ scripting = ["dep:rhai"]
 # this adds no DDS/C toolchain dependency.
 viz = ["dep:zenoh", "dep:serde_json", "quadruped-gait/viz"]
 
+# The GUI binary and several examples only build with specific features.
+# Declaring required-features lets `cargo build/test` with other feature
+# sets (e.g. --no-default-features --features serde) skip them instead of
+# failing to compile.
+[[bin]]
+name = "articara"
+path = "src/main.rs"
+required-features = ["gui"]
+
+[[example]]
+name = "go2_sim"
+required-features = ["mujoco"]
+
+[[example]]
+name = "go2_crawl"
+required-features = ["mujoco"]
+
+[[example]]
+name = "go2_linear_crawl"
+required-features = ["mujoco"]
+
+[[example]]
+name = "go2_linear_crawl_sweep"
+required-features = ["mujoco"]
+
+[[example]]
+name = "script_repl"
+required-features = ["scripting"]
+
 [dependencies]
 eframe = { version = "0.34.1", features = ["glow"], optional = true }
 egui_plot = { version = "0.35", optional = true }
