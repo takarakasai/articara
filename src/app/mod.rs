@@ -300,6 +300,68 @@ struct OffsetDragState {
     initial_geom_params: [f32; 3],
 }
 
+/// Interactive-IK state: solver configuration, the transient drag markers,
+/// pinned links, loop-closure solve weights and chicken-head stabilisation.
+/// Grouped so [`ArticaraApp`] carries one `ik` field instead of fifteen.
+pub struct IkState {
+    /// IK damping factor (λ for DLS / λ_max for SR-Inverse).
+    pub damping: f32,
+    /// IK solver method.
+    pub solver: articara::robot::IkSolver,
+    /// IK constraint dimensionality (2D screen-plane or 3D world).
+    pub dof: articara::robot::IkDof,
+    /// IK joint weight gradient: 0 = uniform, larger = prefer EE-proximal joints.
+    pub weight_gradient: f32,
+    /// IK root link name. None = use URDF root (full chain).
+    pub root_link: Option<String>,
+    /// IK target position in world space (debug overlay). None = no active IK.
+    pub target_marker: Option<na::Point3<f32>>,
+    /// Current end-effector position in world space (debug overlay).
+    pub ee_marker: Option<na::Point3<f32>>,
+    /// IK residual error (distance between EE and target) for debug overlay.
+    pub error: Option<f32>,
+    /// Links pinned to their world positions for multi-constraint IK.
+    pub pinned_links: Vec<PinnedLink>,
+    /// Weight for pin constraints (higher = harder constraint).
+    pub pin_weight: f32,
+    /// Weight for loop-closure constraints (higher = harder).
+    pub loop_closure_weight: f32,
+    /// Links to auto-pin at IK drag start (chicken-head stabilization).
+    pub chicken_head_links: Vec<String>,
+    /// Default DoF mode for chicken-head pins.
+    pub chicken_head_dof: PinDof,
+    /// When `true`, the next viewport left-click sets
+    /// [`Self::loop_closure_link_b`] instead of doing the usual JointDrive
+    /// selection. Toggled by the "👆 Pick B from viewport" button and
+    /// cleared when a click lands or the user cancels.
+    pub loop_closure_picking_b: bool,
+    /// Index into `model.links` of the selected loop-closure link B.
+    /// `None` when nothing has been chosen yet.
+    pub loop_closure_link_b: Option<usize>,
+}
+
+impl Default for IkState {
+    fn default() -> Self {
+        Self {
+            damping: 0.05,
+            solver: articara::robot::IkSolver::SrInverse,
+            dof: articara::robot::IkDof::ScreenPlane2D,
+            weight_gradient: 1.5,
+            root_link: None,
+            target_marker: None,
+            ee_marker: None,
+            error: None,
+            pinned_links: Vec::new(),
+            pin_weight: 10.0,
+            loop_closure_weight: 50.0,
+            chicken_head_links: Vec::new(),
+            chicken_head_dof: PinDof::Position,
+            loop_closure_picking_b: false,
+            loop_closure_link_b: None,
+        }
+    }
+}
+
 pub struct ArticaraApp {
     model: Option<RobotModel>,
     /// Active camera used for the main viewport render and all
@@ -356,32 +418,9 @@ pub struct ArticaraApp {
     selected_visual: Option<usize>,
     /// Selected collision index within the currently selected link.
     selected_collision: Option<usize>,
-    /// IK damping factor (λ for DLS / λ_max for SR-Inverse).
-    ik_damping: f32,
-    /// IK solver method.
-    ik_solver: articara::robot::IkSolver,
-    /// IK constraint dimensionality (2D screen-plane or 3D world).
-    ik_dof: articara::robot::IkDof,
-    /// IK joint weight gradient: 0 = uniform, larger = prefer EE-proximal joints.
-    ik_weight_gradient: f32,
-    /// IK root link name. None = use URDF root (full chain).
-    ik_root_link: Option<String>,
-    /// IK target position in world space (for debug overlay). None = no active IK.
-    ik_target_marker: Option<na::Point3<f32>>,
-    /// Current end-effector position in world space (for debug overlay).
-    ik_ee_marker: Option<na::Point3<f32>>,
-    /// IK residual error (distance between EE and target) for debug overlay.
-    ik_error: Option<f32>,
-    /// Links pinned to their world positions for multi-constraint IK.
-    pinned_links: Vec<PinnedLink>,
-    /// Weight for pin constraints (higher = harder constraint).
-    ik_pin_weight: f32,
-    /// Weight for loop-closure constraints (higher = harder).
-    loop_closure_weight: f32,
-    /// Links to auto-pin at IK drag start (chicken-head stabilization).
-    chicken_head_links: Vec<String>,
-    /// Default DoF mode for chicken-head pins.
-    chicken_head_dof: PinDof,
+    /// Interactive-IK state: solver settings, drag markers, pins,
+    /// loop-closure weights and chicken-head stabilisation. See [`IkState`].
+    ik: IkState,
     /// Show center-of-mass markers and mass labels.
     show_com: bool,
     /// Show the **whole-robot** centre-of-mass marker (= mass-weighted
@@ -704,15 +743,6 @@ pub struct ArticaraApp {
     /// [`articara::viz_feed`].
     #[cfg(feature = "viz")]
     viz: articara::viz_feed::VizFeedState,
-    /// When `true`, the next viewport left-click sets [`Self::loop_closure_link_b`]
-    /// instead of doing the usual JointDrive selection. Toggled on by the
-    /// "👆 Pick B from viewport" button in the Loop Closures panel and
-    /// cleared when a click lands or the user cancels.
-    loop_closure_picking_b: bool,
-    /// Index into `model.links` of the selected loop-closure link B (set
-    /// either via the picker above or — historically — the dropdown).
-    /// `None` when nothing has been chosen yet.
-    loop_closure_link_b: Option<usize>,
 }
 
 /// Whether a decompose task targets a visual or collision slot.
@@ -811,19 +841,7 @@ impl ArticaraApp {
             gizmo_op: GizmoOp::Translate,
             selected_visual: None,
             selected_collision: None,
-            ik_damping: 0.05,
-            ik_solver: articara::robot::IkSolver::SrInverse,
-            ik_dof: articara::robot::IkDof::ScreenPlane2D,
-            ik_weight_gradient: 1.5,
-            ik_root_link: None,
-            ik_target_marker: None,
-            ik_ee_marker: None,
-            ik_error: None,
-            pinned_links: Vec::new(),
-            ik_pin_weight: 10.0,
-            loop_closure_weight: 50.0,
-            chicken_head_links: Vec::new(),
-            chicken_head_dof: PinDof::Position,
+            ik: IkState::default(),
             show_com: false,
             show_total_com: false,
             show_support_polygon: false,
@@ -965,8 +983,6 @@ impl ArticaraApp {
             kinematic_playback_base_offset: na::Isometry3::identity(),
             #[cfg(feature = "viz")]
             viz: articara::viz_feed::VizFeedState::default(),
-            loop_closure_picking_b: false,
-            loop_closure_link_b: None,
         }
     }
 
@@ -1084,7 +1100,7 @@ impl ArticaraApp {
                 self.selected_link = None;
                 self.selected_joint = None;
                 self.needs_upload = true;
-                self.ik_root_link = None; // reset IK root on new model
+                self.ik.root_link = None; // reset IK root on new model
                 self.history.clear();
                 // Pull saved gait foot link names out of the sidecar (if
                 // any) so the UI panel reflects the user's last setup.

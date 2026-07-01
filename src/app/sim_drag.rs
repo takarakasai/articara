@@ -88,7 +88,7 @@ impl ArticaraApp {
 
         let chain = match self.sim_drag_mode {
             SimDragMode::Posture => {
-                model.chain_joints_between(&link_name, self.ik_root_link.as_deref())
+                model.chain_joints_between(&link_name, self.ik.root_link.as_deref())
             }
             SimDragMode::Force => Vec::new(),
         };
@@ -107,7 +107,7 @@ impl ArticaraApp {
             ee_local_offset,
             drag_depth,
             chain,
-            ik_root_link: self.ik_root_link.clone(),
+            ik_root_link: self.ik.root_link.clone(),
         });
         self.selected_link = Some(li);
         self.selected_joint = model.parent_joint_of_link(&link_name);
@@ -219,11 +219,11 @@ impl ArticaraApp {
                     state.ik_root_link.as_deref(),
                     &ee_world,
                     &target,
-                    self.ik_damping as f64,
+                    self.ik.damping as f64,
                     0.5,
                     0.1,
                     Some(&ref_positions),
-                    self.ik_solver,
+                    self.ik.solver,
                     None,
                     None,
                     None,
