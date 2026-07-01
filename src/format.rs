@@ -53,7 +53,6 @@ impl RobotFormat {
     }
 
     /// File extension.
-    #[allow(dead_code)]
     pub fn extension(self) -> &'static str {
         match self {
             RobotFormat::Urdf => "urdf",
@@ -307,12 +306,14 @@ pub trait FormatHandler: Send + Sync {
     fn capabilities(&self) -> FormatCapabilities;
     /// Read a file into a `RobotModel`.
     fn import(&self, path: &Path) -> Result<crate::robot::RobotModel, String>;
-    /// Write the model to a file in this format.
+    /// Write the model to a file in this format. Returns the path actually
+    /// written, which may differ from `path` for directory-oriented
+    /// formats (USD derives its own file name inside `path`'s directory).
     fn export(
         &self,
         model: &crate::robot::RobotModel,
         path: &Path,
-    ) -> Result<(), String>;
+    ) -> Result<std::path::PathBuf, String>;
     /// Should `detect()` use file contents to disambiguate? Override for
     /// formats that share an extension (e.g. `.xml`).
     fn matches_content(&self, _content: &str) -> bool {
@@ -350,6 +351,17 @@ impl FormatRegistry {
 
     pub fn handlers(&self) -> &[Box<dyn FormatHandler>] {
         &self.handlers
+    }
+
+    /// Look up the handler for a [`RobotFormat`] via its canonical
+    /// extension. This is the bridge between the UI's format enum and the
+    /// handler table — use it instead of matching on handler names.
+    pub fn handler_for_format(&self, fmt: RobotFormat) -> Option<&dyn FormatHandler> {
+        let ext = fmt.extension();
+        self.handlers
+            .iter()
+            .find(|h| h.extensions().contains(&ext))
+            .map(|h| h.as_ref())
     }
 
     /// Pick a handler by file path. Uses extension first, then content
@@ -397,7 +409,7 @@ impl FormatRegistry {
         &self,
         model: &crate::robot::RobotModel,
         path: &Path,
-    ) -> Result<(), String> {
+    ) -> Result<std::path::PathBuf, String> {
         let h = self
             .handler_for(path)
             .ok_or_else(|| format!("No handler for {:?}", path))?;
@@ -439,8 +451,9 @@ mod handlers {
             &self,
             model: &crate::robot::RobotModel,
             path: &Path,
-        ) -> Result<(), String> {
-            model.export_urdf_to_file(path)
+        ) -> Result<std::path::PathBuf, String> {
+            model.export_urdf_to_file(path)?;
+            Ok(path.to_path_buf())
         }
     }
 
@@ -468,8 +481,9 @@ mod handlers {
             &self,
             model: &crate::robot::RobotModel,
             path: &Path,
-        ) -> Result<(), String> {
-            crate::sdf::export_sdf_to_file(model, path)
+        ) -> Result<std::path::PathBuf, String> {
+            crate::sdf::export_sdf_to_file(model, path)?;
+            Ok(path.to_path_buf())
         }
     }
 
@@ -498,9 +512,10 @@ mod handlers {
             &self,
             model: &crate::robot::RobotModel,
             path: &Path,
-        ) -> Result<(), String> {
+        ) -> Result<std::path::PathBuf, String> {
             let xml = crate::mjcf::export_mjcf(model);
-            std::fs::write(path, xml).map_err(|e| format!("Write MJCF: {e}"))
+            std::fs::write(path, xml).map_err(|e| format!("Write MJCF: {e}"))?;
+            Ok(path.to_path_buf())
         }
     }
 
@@ -526,12 +541,11 @@ mod handlers {
         }
         fn export(
             &self,
-            _model: &crate::robot::RobotModel,
-            _path: &Path,
-        ) -> Result<(), String> {
-            // Export path is not yet implemented; tracked in
-            // doc/refactor_20260502.md ToDo (RobotModel::to_misa).
-            Err("Misa export (RobotModel::to_misa) is not yet implemented".into())
+            model: &crate::robot::RobotModel,
+            path: &Path,
+        ) -> Result<std::path::PathBuf, String> {
+            model.save_as_misa(path)?;
+            Ok(path.to_path_buf())
         }
     }
 
@@ -557,9 +571,9 @@ mod handlers {
             &self,
             model: &crate::robot::RobotModel,
             path: &Path,
-        ) -> Result<(), String> {
+        ) -> Result<std::path::PathBuf, String> {
             let dir = path.parent().ok_or("USD export: invalid path")?;
-            crate::usd::export_usda_to_dir(model, dir).map(|_| ())
+            crate::usd::export_usda_to_dir(model, dir)
         }
     }
 }

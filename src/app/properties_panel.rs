@@ -2636,16 +2636,10 @@ impl ArticaraApp {
         // Save always targets URDF (the model's source). Run the
         // compatibility analysis against the URDF handler.
         let registry = crate::format::FormatRegistry::default_registry();
-        let urdf_handler = registry
-            .handlers()
-            .iter()
-            .find(|h| h.name() == "URDF")
-            .map(|h| h.as_ref());
-        let issues = if let Some(h) = urdf_handler {
-            crate::format::analyze_export_compatibility(model, h)
-        } else {
-            Vec::new()
-        };
+        let issues = registry
+            .handler_for_format(crate::format::RobotFormat::Urdf)
+            .map(|h| crate::format::analyze_export_compatibility(model, h))
+            .unwrap_or_default();
         if issues.is_empty() {
             self.save_now();
         } else {
@@ -2713,18 +2707,10 @@ impl ArticaraApp {
         };
         // Match the user's selected target format against the registry.
         let registry = crate::format::FormatRegistry::default_registry();
-        let target_name = self.export_format.label().split_whitespace().next().unwrap_or("");
-        let handler = registry
-            .handlers()
-            .iter()
-            .find(|h| h.name().eq_ignore_ascii_case(target_name)
-                || h.name().contains(target_name))
-            .map(|h| h.as_ref());
-        let issues = if let Some(h) = handler {
-            crate::format::analyze_export_compatibility(model, h)
-        } else {
-            Vec::new()
-        };
+        let issues = registry
+            .handler_for_format(self.export_format)
+            .map(|h| crate::format::analyze_export_compatibility(model, h))
+            .unwrap_or_default();
         if issues.is_empty() {
             self.export_now();
         } else {
@@ -2756,72 +2742,27 @@ impl ArticaraApp {
             .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
             .unwrap_or_else(|| model.name.clone());
 
-        match fmt {
-            RobotFormat::Urdf => {
-                let filename = format!("{base_name}.urdf");
-                let output_path = dir.join(&filename);
-                match model.export_urdf_to_file(&output_path) {
-                    Ok(()) => {
-                        self.export_message =
-                            format!("✔ Exported URDF to {} (with meshes)", output_path.display());
-                    }
-                    Err(e) => {
-                        self.export_message = format!("⚠ URDF export failed: {e}");
-                    }
-                }
+        // Dispatch through the format registry — the handler owns the
+        // format-specific mechanics (mesh copying, directory-oriented
+        // output, …) and reports the path it actually wrote.
+        let registry = crate::format::FormatRegistry::default_registry();
+        let Some(handler) = registry.handler_for_format(fmt) else {
+            self.export_message = format!("⚠ No handler registered for {}", fmt.label());
+            return;
+        };
+        let output_path = dir.join(format!("{base_name}.{}", fmt.extension()));
+        match handler.export(model, &output_path) {
+            Ok(written) => {
+                let suffix = match fmt {
+                    RobotFormat::Urdf | RobotFormat::Sdf => " (with meshes)",
+                    RobotFormat::Misa => " (full state preserved — no sidecar needed)",
+                    _ => "",
+                };
+                self.export_message =
+                    format!("✔ Exported {} to {}{suffix}", fmt.label(), written.display());
             }
-            RobotFormat::Sdf => {
-                let filename = format!("{base_name}.sdf");
-                let output_path = dir.join(&filename);
-                match crate::sdf::export_sdf_to_file(model, &output_path) {
-                    Ok(()) => {
-                        self.export_message =
-                            format!("✔ Exported SDF to {} (with meshes)", output_path.display());
-                    }
-                    Err(e) => {
-                        self.export_message = format!("⚠ SDF export failed: {e}");
-                    }
-                }
-            }
-            RobotFormat::Mjcf => {
-                let filename = format!("{base_name}.xml");
-                let output_path = dir.join(&filename);
-                let xml = crate::mjcf::export_mjcf(model);
-                match std::fs::write(&output_path, &xml) {
-                    Ok(()) => {
-                        self.export_message =
-                            format!("✔ Exported MJCF to {}", output_path.display());
-                    }
-                    Err(e) => {
-                        self.export_message = format!("⚠ MJCF export failed: {e}");
-                    }
-                }
-            }
-            RobotFormat::IsaacUsd => {
-                match crate::usd::export_usda_to_dir(model, &dir) {
-                    Ok(path) => {
-                        self.export_message =
-                            format!("✔ Exported USD ASCII to {}", path.display());
-                    }
-                    Err(e) => {
-                        self.export_message = format!("⚠ USD export failed: {e}");
-                    }
-                }
-            }
-            RobotFormat::Misa => {
-                let filename = format!("{base_name}.misa");
-                let output_path = dir.join(&filename);
-                match model.save_as_misa(&output_path) {
-                    Ok(()) => {
-                        self.export_message = format!(
-                            "✔ Exported Misa to {} (full state preserved — no sidecar needed)",
-                            output_path.display(),
-                        );
-                    }
-                    Err(e) => {
-                        self.export_message = format!("⚠ Misa export failed: {e}");
-                    }
-                }
+            Err(e) => {
+                self.export_message = format!("⚠ {} export failed: {e}", fmt.label());
             }
         }
 
