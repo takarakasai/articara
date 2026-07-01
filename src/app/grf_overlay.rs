@@ -42,7 +42,7 @@ impl ArticaraApp {
         rect: egui::Rect,
         aspect: f32,
     ) {
-        let Some(gc) = self.gait_controller.as_ref() else {
+        let Some(gc) = self.gait.controller.as_ref() else {
             return;
         };
         let Some(model) = self.model.as_ref() else {

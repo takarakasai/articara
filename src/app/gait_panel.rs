@@ -8,6 +8,114 @@ use eframe::egui;
 use super::ArticaraApp;
 use quadruped_gait::{GaitConfig, GaitType, LegId, VelocityCmd};
 
+/// Quadruped-gait state owned by the gait panel: the controller itself
+/// plus every tuning knob the panel renders. Grouped so [`ArticaraApp`]
+/// carries one `gait` field instead of two dozen loose `gait_*` ones.
+pub(super) struct GaitPanelState {
+    /// Optional quadruped gait controller. Built once on demand (via the
+    /// panel's "Setup" button or the Rhai `gait_setup` function), then
+    /// ticked from the MuJoCo sim loop while `is_enabled()` is true.
+    /// `Option` so models without quadruped legs don't pay any cost.
+    pub controller: Option<articara::gait::GaitController>,
+    /// Active generator mode (CHAMP / MPC). Persisted here so the picker
+    /// UI's selection survives Setup → Clear → Setup; on build /
+    /// mode-change it's pushed into the controller.
+    pub mode: quadruped_gait::GaitMode,
+    /// Per-leg foot link names the user wants the auto-detector to use.
+    /// Default mirror of [`articara::gait::DEFAULT_FOOT_LINKS`]; mutable
+    /// so the UI panel can edit them per robot.
+    pub foot_links: [(quadruped_gait::LegId, String); 4],
+    /// Linear-speed magnitude (m/s) commanded by the hold-to-drive D-pad.
+    /// The four direction buttons map to ±vx / ±vy at this magnitude;
+    /// release zeroes the command.
+    pub dpad_speed: f32,
+    /// Yaw-rate magnitude (rad/s) commanded by the D-pad's ↺/↻ buttons.
+    /// Independent from `dpad_speed` so a slow walk can still dial in a
+    /// snappy turn.
+    pub dpad_yaw_speed: f32,
+    /// True while at least one D-pad button was held last frame. Used to
+    /// emit a single `VelocityCmd::zero()` on the rising edge of "all
+    /// released" so the robot doesn't keep coasting after the user lets
+    /// go.
+    pub dpad_was_active: bool,
+    /// LinearCrawl-only: the stride length (m) the user has "designed"
+    /// the gait around. Drives the **stride-primary** D-pad behaviour —
+    /// whenever the D-pad sets a new vx, `cycle_period_s` is rescaled to
+    /// `design_stride_m / |vx|` so the per-swing stride stays at this
+    /// value while the commanded speed changes.
+    pub design_stride_m: f64,
+    /// Whether the D-pad operates in **stride-primary** mode for
+    /// LinearCrawl (see [`Self::design_stride_m`]). When `false`, the
+    /// D-pad just sets vx and stride varies with vx (vx-primary).
+    pub dpad_stride_primary: bool,
+    /// MPC capture-point feedback gain shown in the panel slider.
+    /// Default `0.0`; the slider's `[legacy]` button sets
+    /// `LEGACY_CAPTURE_POINT_GAIN_S` (= 0.175) to A/B-compare against the
+    /// pre-fix capture-point behaviour. Synced into the active controller
+    /// via `set_capture_point_gain`.
+    pub capture_point_gain: f32,
+    /// Goal-pose UI state: target (x, y, yaw) in the world frame plus
+    /// per-axis speed limits. Held even when goal mode is inactive so the
+    /// user can edit values, then click "Set goal" to activate.
+    pub goal_x_m: f32,
+    pub goal_y_m: f32,
+    pub goal_yaw_rad: f32,
+    pub goal_max_v_m_s: f32,
+    pub goal_max_wz_rad_s: f32,
+    /// Whether the controller currently has a goal pose set.
+    pub goal_pose_active: bool,
+    /// Experimental research flags ("Experimental flags" sub-section).
+    /// Each holds the desired **panel** state; on edit the panel pushes
+    /// the value into the active controller. When no controller is active
+    /// the state is held until the next build.
+    pub exp_transition_fraction: f32,
+    pub exp_transition_enforce_constraint: bool,
+    pub exp_use_mpc_predicted_footstep: bool,
+    pub exp_legged_control_parity: bool,
+    /// A3: friction cone soft + slack (FullCentroidal MPC).
+    pub exp_friction_cone_soft: bool,
+    /// A3: per-slack quadratic penalty.
+    pub exp_friction_cone_slack_penalty: f32,
+    /// B3: MPC warm-start.
+    pub exp_warm_start: bool,
+    /// A1: MPC-optimised footstep XY.
+    pub exp_mpc_optimized_footstep: bool,
+    /// A1: foot-XY cost weight.
+    pub exp_q_foot_xy_world: f32,
+}
+
+impl Default for GaitPanelState {
+    fn default() -> Self {
+        Self {
+            controller: None,
+            mode: quadruped_gait::GaitMode::default(),
+            foot_links: articara::gait::DEFAULT_FOOT_LINKS
+                .map(|(id, name)| (id, name.to_string())),
+            dpad_speed: 0.3,
+            dpad_yaw_speed: 0.5,
+            dpad_was_active: false,
+            design_stride_m: 0.05,
+            dpad_stride_primary: false,
+            capture_point_gain: 0.0,
+            goal_x_m: 1.0,
+            goal_y_m: 0.0,
+            goal_yaw_rad: 0.0,
+            goal_max_v_m_s: 0.15,
+            goal_max_wz_rad_s: 0.5,
+            goal_pose_active: false,
+            exp_transition_fraction: 0.0,
+            exp_transition_enforce_constraint: false,
+            exp_use_mpc_predicted_footstep: false,
+            exp_legged_control_parity: false,
+            exp_friction_cone_soft: false,
+            exp_friction_cone_slack_penalty: 1000.0,
+            exp_warm_start: false,
+            exp_mpc_optimized_footstep: false,
+            exp_q_foot_xy_world: 500.0,
+        }
+    }
+}
+
 impl ArticaraApp {
     pub(super) fn draw_gait_panel(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("🐕 Quadruped gait")
@@ -32,7 +140,7 @@ impl ArticaraApp {
     /// the moment the user lets go. The conventional numeric sliders
     /// below remain live for "set a static value" use cases.
     fn draw_gait_dpad(&mut self, ui: &mut egui::Ui) {
-        if self.gait_controller.is_none() {
+        if self.gait.controller.is_none() {
             return;
         }
 
@@ -68,8 +176,8 @@ impl ArticaraApp {
             r.is_pointer_button_down_on() || r.dragged()
         };
 
-        let speed = self.gait_dpad_speed as f64;
-        let yaw_speed = self.gait_dpad_yaw_speed as f64;
+        let speed = self.gait.dpad_speed as f64;
+        let yaw_speed = self.gait.dpad_yaw_speed as f64;
         let btn_size = egui::vec2(40.0, 40.0);
         let mut vx = 0.0_f64;
         let mut vy = 0.0_f64;
@@ -150,14 +258,14 @@ impl ArticaraApp {
         ui.horizontal(|ui| {
             ui.label("Linear (m/s):");
             ui.add(
-                egui::Slider::new(&mut self.gait_dpad_speed, 0.0..=1.0)
+                egui::Slider::new(&mut self.gait.dpad_speed, 0.0..=1.0)
                     .fixed_decimals(2),
             );
         });
         ui.horizontal(|ui| {
             ui.label("Yaw (rad/s):");
             ui.add(
-                egui::Slider::new(&mut self.gait_dpad_yaw_speed, 0.0..=2.0)
+                egui::Slider::new(&mut self.gait.dpad_yaw_speed, 0.0..=2.0)
                     .fixed_decimals(2),
             );
         });
@@ -165,7 +273,7 @@ impl ArticaraApp {
         // vx-primary (default) or stride-primary mode. See the field
         // docstring on `gait_dpad_stride_primary`.
         ui.checkbox(
-            &mut self.gait_dpad_stride_primary,
+            &mut self.gait.dpad_stride_primary,
             "Stride-primary D-pad (LinearCrawl)",
         )
         .on_hover_text(
@@ -182,7 +290,7 @@ impl ArticaraApp {
         // Kinematic playback toggle — drive the model directly from
         // the planner each frame, bypassing MuJoCo.
         let was_kinematic = self.kinematic_playback_active;
-        ui.add_enabled_ui(self.gait_controller.is_some(), |ui| {
+        ui.add_enabled_ui(self.gait.controller.is_some(), |ui| {
             ui.checkbox(
                 &mut self.kinematic_playback_active,
                 "▶ Kinematic playback (planner only, no physics)",
@@ -206,7 +314,7 @@ impl ArticaraApp {
             if let Some(model) = self.model.as_ref() {
                 self.kinematic_playback_base_offset = model.base_transform;
             }
-            if let Some(gc) = self.gait_controller.as_mut() {
+            if let Some(gc) = self.gait.controller.as_mut() {
                 // `disable()` calls `inner.reset()` which clears phase,
                 // body_state and velocity_cmd. We save & restore the
                 // cmd so the user's vx survives the toggle.
@@ -237,9 +345,9 @@ impl ArticaraApp {
         // user clicks 👣 but the status bar stays stale until they
         // hover somewhere else.
         let mut status_changed = false;
-        let design_stride = self.gait_design_stride_m;
-        let stride_primary = self.gait_dpad_stride_primary;
-        if let Some(gc) = self.gait_controller.as_mut() {
+        let design_stride = self.gait.design_stride_m;
+        let stride_primary = self.gait.dpad_stride_primary;
+        if let Some(gc) = self.gait.controller.as_mut() {
             // **Stride-primary D-pad mode** (only when the user has
             // explicitly opted in via the checkbox above). The D-pad
             // press sets vx as usual, but additionally rescales
@@ -266,7 +374,7 @@ impl ArticaraApp {
             }
             if any_held {
                 gc.set_velocity_cmd(quadruped_gait::VelocityCmd { vx, vy, wz });
-                if !self.gait_dpad_was_active {
+                if !self.gait.dpad_was_active {
                     self.status_message = if apply_stride_primary {
                         let new_t = (design_stride / vx.abs()).clamp(0.05, 20.0);
                         format!(
@@ -284,12 +392,12 @@ impl ArticaraApp {
                     vy: 0.0,
                     wz: 0.0,
                 });
-                if !self.gait_dpad_was_active {
+                if !self.gait.dpad_was_active {
                     self.status_message =
                         "March in place (hold 👣) — feet cycle every 0.4 s, body stays put".into();
                     status_changed = true;
                 }
-            } else if self.gait_dpad_was_active {
+            } else if self.gait.dpad_was_active {
                 gc.set_velocity_cmd(quadruped_gait::VelocityCmd::zero());
                 self.status_message = "D-pad released → cmd=0".into();
                 status_changed = true;
@@ -305,7 +413,7 @@ impl ArticaraApp {
         if status_changed {
             ui.ctx().request_repaint();
         }
-        self.gait_dpad_was_active = any_held || march_held;
+        self.gait.dpad_was_active = any_held || march_held;
     }
 
     /// Foot-link configuration + auto-detect button. Always visible so the
@@ -330,7 +438,7 @@ impl ArticaraApp {
         egui::Grid::new("gait_foot_links_grid")
             .num_columns(2)
             .show(ui, |ui| {
-                for (idx, (leg, name)) in self.gait_foot_links.iter_mut().enumerate() {
+                for (idx, (leg, name)) in self.gait.foot_links.iter_mut().enumerate() {
                     ui.label(format!("{}: ", leg.label()));
                     ui.text_edit_singleline(name);
                     if idx % 2 == 1 {
@@ -344,17 +452,17 @@ impl ArticaraApp {
         // switch is also offered (apply to existing gc).
         ui.horizontal(|ui| {
             ui.label("Generator:");
-            let mut new_mode = self.gait_mode;
+            let mut new_mode = self.gait.mode;
             egui::ComboBox::from_id_salt("gait_mode_combo")
-                .selected_text(self.gait_mode.label())
+                .selected_text(self.gait.mode.label())
                 .show_ui(ui, |ui| {
                     for m in quadruped_gait::GaitMode::ALL {
                         ui.selectable_value(&mut new_mode, m, m.label());
                     }
                 });
-            if new_mode != self.gait_mode {
-                self.gait_mode = new_mode;
-                if let Some(gc) = self.gait_controller.as_mut() {
+            if new_mode != self.gait.mode {
+                self.gait.mode = new_mode;
+                if let Some(gc) = self.gait.controller.as_mut() {
                     gc.set_mode(new_mode);
                     // `set_mode` rebuilds the inner controller from
                     // scratch, which resets the async-solve flag — re-arm
@@ -400,7 +508,7 @@ impl ArticaraApp {
         #[cfg(feature = "mujoco")]
         ui.horizontal(|ui| {
             let enabled =
-                self.gait_mode == quadruped_gait::GaitMode::Mpc;
+                self.gait.mode == quadruped_gait::GaitMode::Mpc;
             let resp = ui.add_enabled(
                 enabled,
                 egui::Checkbox::new(
@@ -436,7 +544,7 @@ impl ArticaraApp {
         // namiashi (stiff PD via .misa) to get full forward tracking.
         ui.horizontal(|ui| {
             let is_mpc = matches!(
-                self.gait_mode,
+                self.gait.mode,
                 quadruped_gait::GaitMode::Mpc
                     | quadruped_gait::GaitMode::CentroidalSrbd
                     | quadruped_gait::GaitMode::FullCentroidal
@@ -444,19 +552,19 @@ impl ArticaraApp {
             ui.add_enabled_ui(is_mpc, |ui| {
                 ui.label("Capture-point gain:");
                 let resp = ui.add(
-                    egui::Slider::new(&mut self.gait_capture_point_gain, 0.0..=0.5)
+                    egui::Slider::new(&mut self.gait.capture_point_gain, 0.0..=0.5)
                         .fixed_decimals(3),
                 );
                 if resp.changed() {
-                    if let Some(gc) = self.gait_controller.as_mut() {
-                        gc.set_capture_point_gain(self.gait_capture_point_gain as f64);
+                    if let Some(gc) = self.gait.controller.as_mut() {
+                        gc.set_capture_point_gain(self.gait.capture_point_gain as f64);
                     }
-                    if self.gait_capture_point_gain == 0.0 {
+                    if self.gait.capture_point_gain == 0.0 {
                         self.status_message =
                             "Capture-point disabled (k=0) — stiff-PD safe mode".into();
                     } else {
                         self.status_message = format!(
-                            "Capture-point gain → {:.3}", self.gait_capture_point_gain,
+                            "Capture-point gain → {:.3}", self.gait.capture_point_gain,
                         );
                     }
                 }
@@ -464,8 +572,8 @@ impl ArticaraApp {
                     "Set capture-point gain to 0 (= current controller default, \
                      legged_control-style open-loop Raibert).",
                 ).clicked() {
-                    self.gait_capture_point_gain = 0.0;
-                    if let Some(gc) = self.gait_controller.as_mut() {
+                    self.gait.capture_point_gain = 0.0;
+                    if let Some(gc) = self.gait.controller.as_mut() {
                         gc.set_capture_point_gain(0.0);
                     }
                     self.status_message =
@@ -478,8 +586,8 @@ impl ArticaraApp {
                      feedback loop and degrades tracking — keep at 0 for \
                      production.",
                 ).clicked() {
-                    self.gait_capture_point_gain = 0.175;
-                    if let Some(gc) = self.gait_controller.as_mut() {
+                    self.gait.capture_point_gain = 0.175;
+                    if let Some(gc) = self.gait.controller.as_mut() {
                         gc.set_capture_point_gain(0.175);
                     }
                     self.status_message =
@@ -505,7 +613,7 @@ impl ArticaraApp {
         // pulls the body back to the goal instead of leaving it offset
         // — the legged_control `goalToTargetTrajectories` equivalent.
         ui.separator();
-        let is_fullc = matches!(self.gait_mode, quadruped_gait::GaitMode::FullCentroidal);
+        let is_fullc = matches!(self.gait.mode, quadruped_gait::GaitMode::FullCentroidal);
         ui.add_enabled_ui(is_fullc, |ui| {
             ui.label(
                 egui::RichText::new("Goal-pose mode (FullCentroidal only)")
@@ -523,12 +631,12 @@ impl ArticaraApp {
             );
             ui.horizontal(|ui| {
                 ui.label("x:");
-                ui.add(egui::DragValue::new(&mut self.gait_goal_x_m).speed(0.05).suffix(" m"));
+                ui.add(egui::DragValue::new(&mut self.gait.goal_x_m).speed(0.05).suffix(" m"));
                 ui.label("y:");
-                ui.add(egui::DragValue::new(&mut self.gait_goal_y_m).speed(0.05).suffix(" m"));
+                ui.add(egui::DragValue::new(&mut self.gait.goal_y_m).speed(0.05).suffix(" m"));
                 ui.label("yaw:");
                 ui.add(
-                    egui::DragValue::new(&mut self.gait_goal_yaw_rad)
+                    egui::DragValue::new(&mut self.gait.goal_yaw_rad)
                         .speed(0.05)
                         .suffix(" rad"),
                 );
@@ -536,14 +644,14 @@ impl ArticaraApp {
             ui.horizontal(|ui| {
                 ui.label("max v:");
                 ui.add(
-                    egui::DragValue::new(&mut self.gait_goal_max_v_m_s)
+                    egui::DragValue::new(&mut self.gait.goal_max_v_m_s)
                         .speed(0.01)
                         .range(0.01..=1.0)
                         .suffix(" m/s"),
                 );
                 ui.label("max wz:");
                 ui.add(
-                    egui::DragValue::new(&mut self.gait_goal_max_wz_rad_s)
+                    egui::DragValue::new(&mut self.gait.goal_max_wz_rad_s)
                         .speed(0.05)
                         .range(0.05..=3.0)
                         .suffix(" rad/s"),
@@ -561,7 +669,7 @@ impl ArticaraApp {
                     )
                     .clicked();
                 let clear = ui
-                    .add_enabled(self.gait_goal_pose_active, egui::Button::new("✕ Clear"))
+                    .add_enabled(self.gait.goal_pose_active, egui::Button::new("✕ Clear"))
                     .on_hover_text(
                         "Stop tracking the goal and return to velocity \
                          (cmd_vel) mode. The last velocity command is \
@@ -570,30 +678,30 @@ impl ArticaraApp {
                     )
                     .clicked();
                 if activate {
-                    if let Some(gc) = self.gait_controller.as_mut() {
+                    if let Some(gc) = self.gait.controller.as_mut() {
                         gc.set_goal_pose_world(quadruped_gait::GoalPoseWorld {
-                            x_m: self.gait_goal_x_m as f64,
-                            y_m: self.gait_goal_y_m as f64,
-                            yaw_rad: self.gait_goal_yaw_rad as f64,
-                            max_v_m_s: self.gait_goal_max_v_m_s as f64,
-                            max_wz_rad_s: self.gait_goal_max_wz_rad_s as f64,
+                            x_m: self.gait.goal_x_m as f64,
+                            y_m: self.gait.goal_y_m as f64,
+                            yaw_rad: self.gait.goal_yaw_rad as f64,
+                            max_v_m_s: self.gait.goal_max_v_m_s as f64,
+                            max_wz_rad_s: self.gait.goal_max_wz_rad_s as f64,
                             position_tolerance_m: 0.02,
                             yaw_tolerance_rad: 0.05,
                         });
-                        self.gait_goal_pose_active = true;
+                        self.gait.goal_pose_active = true;
                         self.status_message = format!(
                             "Goal-pose mode → ({:+.2}, {:+.2}, {:+.2}) max_v={:.2}",
-                            self.gait_goal_x_m,
-                            self.gait_goal_y_m,
-                            self.gait_goal_yaw_rad,
-                            self.gait_goal_max_v_m_s,
+                            self.gait.goal_x_m,
+                            self.gait.goal_y_m,
+                            self.gait.goal_yaw_rad,
+                            self.gait.goal_max_v_m_s,
                         );
                     }
                 }
                 if clear {
-                    if let Some(gc) = self.gait_controller.as_mut() {
+                    if let Some(gc) = self.gait.controller.as_mut() {
                         gc.clear_goal_pose();
-                        self.gait_goal_pose_active = false;
+                        self.gait.goal_pose_active = false;
                         self.status_message =
                             "Goal-pose mode cleared → cmd_vel mode".into();
                     }
@@ -602,11 +710,12 @@ impl ArticaraApp {
                 // each frame so a script clearing the goal via
                 // `gait_clear_goal_pose` reflects here.
                 let live_active = self
-                    .gait_controller
+                    .gait
+                    .controller
                     .as_ref()
                     .and_then(|gc| gc.goal_pose_world())
                     .is_some();
-                self.gait_goal_pose_active = live_active;
+                self.gait.goal_pose_active = live_active;
                 if live_active {
                     ui.colored_label(
                         egui::Color32::from_rgb(120, 200, 120),
@@ -644,28 +753,28 @@ impl ArticaraApp {
             // Poll live state so the panel reflects whatever the
             // controller currently holds (script / test code may have
             // toggled them out-of-band).
-            if let Some(gc) = self.gait_controller.as_ref() {
+            if let Some(gc) = self.gait.controller.as_ref() {
                 if let Some(p) = gc.legged_control_parity() {
-                    self.gait_exp_legged_control_parity = p;
+                    self.gait.exp_legged_control_parity = p;
                 }
                 if let Some(p) = gc.use_mpc_predicted_footstep() {
-                    self.gait_exp_use_mpc_predicted_footstep = p;
+                    self.gait.exp_use_mpc_predicted_footstep = p;
                 }
                 let cfg = gc.config();
-                self.gait_exp_transition_fraction = cfg.transition_fraction as f32;
-                self.gait_exp_transition_enforce_constraint = cfg.transition_enforce_constraint;
-                self.gait_exp_friction_cone_soft = cfg.friction_cone_soft;
-                self.gait_exp_friction_cone_slack_penalty =
+                self.gait.exp_transition_fraction = cfg.transition_fraction as f32;
+                self.gait.exp_transition_enforce_constraint = cfg.transition_enforce_constraint;
+                self.gait.exp_friction_cone_soft = cfg.friction_cone_soft;
+                self.gait.exp_friction_cone_slack_penalty =
                     cfg.friction_cone_slack_penalty as f32;
-                self.gait_exp_warm_start = cfg.warm_start;
-                self.gait_exp_mpc_optimized_footstep = cfg.mpc_optimized_footstep;
-                self.gait_exp_q_foot_xy_world = cfg.q_foot_xy_world as f32;
+                self.gait.exp_warm_start = cfg.warm_start;
+                self.gait.exp_mpc_optimized_footstep = cfg.mpc_optimized_footstep;
+                self.gait.exp_q_foot_xy_world = cfg.q_foot_xy_world as f32;
             }
 
             // legged_control parity (per-step phase + swing v_z constraint).
             let parity_resp = ui
                 .checkbox(
-                    &mut self.gait_exp_legged_control_parity,
+                    &mut self.gait.exp_legged_control_parity,
                     "legged_control parity",
                 )
                 .on_hover_text(
@@ -676,8 +785,8 @@ impl ArticaraApp {
                      for transition_fraction below.",
                 );
             if parity_resp.changed() {
-                if let Some(gc) = self.gait_controller.as_mut() {
-                    gc.set_legged_control_parity(self.gait_exp_legged_control_parity);
+                if let Some(gc) = self.gait.controller.as_mut() {
+                    gc.set_legged_control_parity(self.gait.exp_legged_control_parity);
                 }
             }
 
@@ -685,13 +794,13 @@ impl ArticaraApp {
             ui.horizontal(|ui| {
                 ui.label("transition_fraction:");
                 let resp = ui.add(
-                    egui::Slider::new(&mut self.gait_exp_transition_fraction, 0.0..=0.30)
+                    egui::Slider::new(&mut self.gait.exp_transition_fraction, 0.0..=0.30)
                         .fixed_decimals(2),
                 );
                 if resp.changed() {
-                    if let Some(gc) = self.gait_controller.as_mut() {
+                    if let Some(gc) = self.gait.controller.as_mut() {
                         let mut new_cfg = gc.config().clone();
-                        new_cfg.transition_fraction = self.gait_exp_transition_fraction as f64;
+                        new_cfg.transition_fraction = self.gait.exp_transition_fraction as f64;
                         gc.set_config(new_cfg);
                     }
                 }
@@ -705,7 +814,7 @@ impl ArticaraApp {
             // transition_enforce_constraint (C1-2, constraint-side hard f_max).
             let enforce_resp = ui
                 .checkbox(
-                    &mut self.gait_exp_transition_enforce_constraint,
+                    &mut self.gait.exp_transition_enforce_constraint,
                     "transition: enforce as hard constraint (C1-2)",
                 )
                 .on_hover_text(
@@ -715,10 +824,10 @@ impl ArticaraApp {
                      at trans_fraction = 0.05. Off when transition_fraction = 0.",
                 );
             if enforce_resp.changed() {
-                if let Some(gc) = self.gait_controller.as_mut() {
+                if let Some(gc) = self.gait.controller.as_mut() {
                     let mut new_cfg = gc.config().clone();
                     new_cfg.transition_enforce_constraint =
-                        self.gait_exp_transition_enforce_constraint;
+                        self.gait.exp_transition_enforce_constraint;
                     gc.set_config(new_cfg);
                 }
             }
@@ -727,7 +836,7 @@ impl ArticaraApp {
             // with slack-relaxed form + quadratic penalty.
             let soft_resp = ui
                 .checkbox(
-                    &mut self.gait_exp_friction_cone_soft,
+                    &mut self.gait.exp_friction_cone_soft,
                     "friction cone soft + slack (A3)",
                 )
                 .on_hover_text(
@@ -740,9 +849,9 @@ impl ArticaraApp {
                      RelaxedBarrierPenalty.",
                 );
             if soft_resp.changed() {
-                if let Some(gc) = self.gait_controller.as_mut() {
+                if let Some(gc) = self.gait.controller.as_mut() {
                     let mut new_cfg = gc.config().clone();
-                    new_cfg.friction_cone_soft = self.gait_exp_friction_cone_soft;
+                    new_cfg.friction_cone_soft = self.gait.exp_friction_cone_soft;
                     gc.set_config(new_cfg);
                 }
             }
@@ -751,17 +860,17 @@ impl ArticaraApp {
                 ui.label("slack penalty:");
                 let resp = ui.add(
                     egui::Slider::new(
-                        &mut self.gait_exp_friction_cone_slack_penalty,
+                        &mut self.gait.exp_friction_cone_slack_penalty,
                         10.0..=10000.0,
                     )
                     .logarithmic(true)
                     .fixed_decimals(0),
                 );
                 if resp.changed() {
-                    if let Some(gc) = self.gait_controller.as_mut() {
+                    if let Some(gc) = self.gait.controller.as_mut() {
                         let mut new_cfg = gc.config().clone();
                         new_cfg.friction_cone_slack_penalty =
-                            self.gait_exp_friction_cone_slack_penalty as f64;
+                            self.gait.exp_friction_cone_slack_penalty as f64;
                         gc.set_config(new_cfg);
                     }
                 }
@@ -775,7 +884,7 @@ impl ArticaraApp {
 
             // warm-start (B3).
             let warm_resp = ui
-                .checkbox(&mut self.gait_exp_warm_start, "MPC warm-start (B3)")
+                .checkbox(&mut self.gait.exp_warm_start, "MPC warm-start (B3)")
                 .on_hover_text(
                     "B3: seed each MPC tick's SQP iter 0 from the previous \
                      tick's solved trajectory (shifted by one step) instead \
@@ -786,9 +895,9 @@ impl ArticaraApp {
                      warm-start.",
                 );
             if warm_resp.changed() {
-                if let Some(gc) = self.gait_controller.as_mut() {
+                if let Some(gc) = self.gait.controller.as_mut() {
                     let mut new_cfg = gc.config().clone();
-                    new_cfg.warm_start = self.gait_exp_warm_start;
+                    new_cfg.warm_start = self.gait.exp_warm_start;
                     gc.set_config(new_cfg);
                 }
             }
@@ -796,7 +905,7 @@ impl ArticaraApp {
             // mpc_optimized_footstep (A1).
             let a1_resp = ui
                 .checkbox(
-                    &mut self.gait_exp_mpc_optimized_footstep,
+                    &mut self.gait.exp_mpc_optimized_footstep,
                     "MPC-optimised footstep XY (A1)",
                 )
                 .on_hover_text(
@@ -807,9 +916,9 @@ impl ArticaraApp {
                      motion. Closes the loop that P2 (above) couldn't.",
                 );
             if a1_resp.changed() {
-                if let Some(gc) = self.gait_controller.as_mut() {
+                if let Some(gc) = self.gait.controller.as_mut() {
                     let mut new_cfg = gc.config().clone();
-                    new_cfg.mpc_optimized_footstep = self.gait_exp_mpc_optimized_footstep;
+                    new_cfg.mpc_optimized_footstep = self.gait.exp_mpc_optimized_footstep;
                     gc.set_config(new_cfg);
                 }
             }
@@ -817,14 +926,14 @@ impl ArticaraApp {
             ui.horizontal(|ui| {
                 ui.label("q_foot_xy_world:");
                 let resp = ui.add(
-                    egui::Slider::new(&mut self.gait_exp_q_foot_xy_world, 10.0..=5000.0)
+                    egui::Slider::new(&mut self.gait.exp_q_foot_xy_world, 10.0..=5000.0)
                         .logarithmic(true)
                         .fixed_decimals(0),
                 );
                 if resp.changed() {
-                    if let Some(gc) = self.gait_controller.as_mut() {
+                    if let Some(gc) = self.gait.controller.as_mut() {
                         let mut new_cfg = gc.config().clone();
-                        new_cfg.q_foot_xy_world = self.gait_exp_q_foot_xy_world as f64;
+                        new_cfg.q_foot_xy_world = self.gait.exp_q_foot_xy_world as f64;
                         gc.set_config(new_cfg);
                     }
                 }
@@ -839,7 +948,7 @@ impl ArticaraApp {
             // use_mpc_predicted_footstep (P2).
             let pred_resp = ui
                 .checkbox(
-                    &mut self.gait_exp_use_mpc_predicted_footstep,
+                    &mut self.gait.exp_use_mpc_predicted_footstep,
                     "MPC-predicted footstep (P2)",
                 )
                 .on_hover_text(
@@ -852,9 +961,9 @@ impl ArticaraApp {
                      result; the real fix is A1 (MPC state expansion).",
                 );
             if pred_resp.changed() {
-                if let Some(gc) = self.gait_controller.as_mut() {
+                if let Some(gc) = self.gait.controller.as_mut() {
                     gc.set_use_mpc_predicted_footstep(
-                        self.gait_exp_use_mpc_predicted_footstep,
+                        self.gait.exp_use_mpc_predicted_footstep,
                     );
                 }
             }
@@ -873,19 +982,19 @@ impl ArticaraApp {
             {
                 self.gait_run_autodetect();
             }
-            if self.gait_controller.is_some() {
+            if self.gait.controller.is_some() {
                 if ui
                     .button("✕ Clear")
                     .on_hover_text("Discard the current gait controller.")
                     .clicked()
                 {
-                    self.gait_controller = None;
+                    self.gait.controller = None;
                 }
             }
         });
 
         // Status / error display.
-        match self.gait_controller.as_ref() {
+        match self.gait.controller.as_ref() {
             Some(_) => {
                 ui.colored_label(
                     egui::Color32::from_rgb(120, 200, 120),
@@ -905,7 +1014,7 @@ impl ArticaraApp {
     /// a controller has been built and the MuJoCo sim is alive (gait
     /// otherwise has nowhere to write its joint targets).
     fn draw_gait_runtime_section(&mut self, ui: &mut egui::Ui) {
-        let Some(gc) = self.gait_controller.as_mut() else {
+        let Some(gc) = self.gait.controller.as_mut() else {
             ui.label("(build a controller first to enable gait playback)");
             return;
         };
@@ -1137,7 +1246,7 @@ impl ArticaraApp {
                      writes vx = stride / cycle_period back to the command so the \
                      change takes effect immediately.",
                 );
-                let mut stride_m = self.gait_design_stride_m;
+                let mut stride_m = self.gait.design_stride_m;
                 let max_s = 1.0 * big_t;
                 let stride_changed = ui
                     .add(
@@ -1149,7 +1258,7 @@ impl ArticaraApp {
                     .changed();
                 if stride_changed && big_t > 0.0 {
                     if stride_m > 1e-6 {
-                        self.gait_design_stride_m = stride_m;
+                        self.gait.design_stride_m = stride_m;
                     }
                     // Only push vx back when the robot is actively
                     // walking — editing the design stride while stopped
@@ -1217,7 +1326,7 @@ impl ArticaraApp {
                 let alpha = cfg.four_support_fraction.clamp(0.05, 0.95);
                 let s = (1.0 - alpha) * 0.25;
                 let gain = (2.0 - s) / s;
-                let v_design = (self.gait_design_stride_m / big_t).abs();
+                let v_design = (self.gait.design_stride_m / big_t).abs();
                 let peak_uncapped = v_design * gain;
                 let cap = cfg.max_swing_foot_speed_mps;
                 let default_color = ui.visuals().text_color();
@@ -1348,10 +1457,10 @@ impl ArticaraApp {
             return;
         };
         let foot_links: [(LegId, &str); 4] = [
-            (self.gait_foot_links[0].0, self.gait_foot_links[0].1.as_str()),
-            (self.gait_foot_links[1].0, self.gait_foot_links[1].1.as_str()),
-            (self.gait_foot_links[2].0, self.gait_foot_links[2].1.as_str()),
-            (self.gait_foot_links[3].0, self.gait_foot_links[3].1.as_str()),
+            (self.gait.foot_links[0].0, self.gait.foot_links[0].1.as_str()),
+            (self.gait.foot_links[1].0, self.gait.foot_links[1].1.as_str()),
+            (self.gait.foot_links[2].0, self.gait.foot_links[2].1.as_str()),
+            (self.gait.foot_links[3].0, self.gait.foot_links[3].1.as_str()),
         ];
         match articara::gait::auto_detect_kinematics_config(model, &foot_links) {
             Ok(kin) => {
@@ -1381,7 +1490,7 @@ impl ArticaraApp {
                     }
                     None => (GaitConfig::trot(), [false; 4]),
                 };
-                match articara::gait::GaitController::build(model, kin, cfg, self.gait_mode) {
+                match articara::gait::GaitController::build(model, kin, cfg, self.gait.mode) {
                     Ok(mut gc) => {
                         for (slot, leg) in [LegId::FL, LegId::FR, LegId::RL, LegId::RR]
                             .iter()
@@ -1392,7 +1501,7 @@ impl ArticaraApp {
                         // Carry the slider's current capture-point gain
                         // onto the freshly built controller (it has its
                         // own internal default otherwise).
-                        gc.set_capture_point_gain(self.gait_capture_point_gain as f64);
+                        gc.set_capture_point_gain(self.gait.capture_point_gain as f64);
                         // Solve the MPC QP on a background thread in the
                         // GUI. The solve runs synchronously inside `tick()`
                         // by default, but here it would block the eframe
@@ -1401,7 +1510,7 @@ impl ArticaraApp {
                         // exceeded the re-solve window. Off-thread solving
                         // keeps the UI responsive (ZOH on the last result).
                         gc.set_async_mpc(true);
-                        self.gait_controller = Some(gc);
+                        self.gait.controller = Some(gc);
                         self.status_message =
                             "Gait controller built (saved params restored)".into();
                     }
