@@ -109,12 +109,14 @@ mod tests {
                 visuals: vec![],
                 collisions: vec![sphere_collision(0.5)],
                 inertial: inertial(),
+                collision_enabled: true,
             },
             LinkData {
                 name: "link1".to_string(),
                 visuals: vec![],
                 collisions: vec![sphere_collision(0.5)],
                 inertial: inertial(),
+                collision_enabled: true,
             },
         ];
 

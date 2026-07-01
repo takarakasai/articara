@@ -1018,6 +1018,7 @@ mod test_mjcf {
                 filename: Some("/abs/path/example.obj".into()),
                 scale: Some([0.001, 0.001, 0.001]),
             },
+            physics: None,
         });
         let xml = articara::mjcf::export_mjcf(&model);
         // f32 → f64 conversion gives e.g. "0.0010000000474974513"; we just
@@ -1107,6 +1108,7 @@ mod test_mjcf {
         model.links[0].collisions.push(CollisionData {
             origin: foot_origin,
             geometry: GeomData::Sphere { radius: 0.022 },
+            physics: None,
         });
 
         let opts = MjcfExportOptions {
@@ -3522,6 +3524,7 @@ mod test_sidecar {
                 radius: 0.05,
                 half_length: 0.20,
             },
+            physics: None,
         });
 
         let xml = model.export_urdf().unwrap();
@@ -3912,6 +3915,7 @@ mod test_sidecar {
                 geometry: articara::robot::GeomData::Box {
                     hx: 0.05, hy: 0.05, hz: 0.05,
                 },
+                physics: None,
             });
         }
         let xml = articara::mjcf::export_mjcf(&model);
@@ -4536,6 +4540,7 @@ mod test_misa {
                 geom: mn::Geom::Box {
                     size: [0.30, 0.20, 0.10],
                 },
+                physics: None,
             }],
             collision_enabled: true,
         });
@@ -5566,6 +5571,7 @@ f 1 3 4
                 filename: None,
                 scale: None,
             },
+            physics: None,
         });
         let link_name = model.links[0].name.clone();
         let col_idx = model.links[0].collisions.len() - 1;
@@ -5618,6 +5624,7 @@ f 1 3 4
                 filename: None,
                 scale: None,
             },
+            physics: None,
         });
         let link_name = model.links[0].name.clone();
         let col_idx = model.links[0].collisions.len() - 1;
