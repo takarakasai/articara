@@ -463,7 +463,8 @@ impl ArticaraApp {
         // enabled, use its Z; otherwise fall back to the lowest foot Z
         // (close enough for the visual to sit at the contact surface).
         let foot_world_xy_z: Vec<[f32; 3]> = self
-            .gait_foot_links
+            .gait
+            .foot_links
             .iter()
             .filter_map(|(_, name)| {
                 let tf = transforms.get(name)?;
@@ -1443,7 +1444,8 @@ impl ArticaraApp {
         // WBC needs); reflect that with a "—" label so the click is
         // a no-op without seeming broken.
         let in_mpc_mode = self
-            .gait_controller
+            .gait
+            .controller
             .as_ref()
             .map(|gc| gc.mode() == quadruped_gait::GaitMode::Mpc)
             .unwrap_or(false);

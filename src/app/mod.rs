@@ -681,51 +681,9 @@ pub struct ArticaraApp {
     #[cfg(feature = "mujoco")]
     pending_mujoco_warning:
         Option<articara::mujoco_version::CheckResult>,
-    /// Optional quadruped gait controller. Built once on demand (via the
-    /// gait panel's "Setup" button or the Rhai `gait_setup` function),
-    /// then ticked from the MuJoCo sim loop while `is_enabled()` is true.
-    /// Keeping it as `Option` so models without quadruped legs simply
-    /// don't pay any cost.
-    gait_controller: Option<articara::gait::GaitController>,
-    /// Active generator mode (CHAMP / MPC). Persisted on the app so
-    /// the picker UI's selection survives Setup → Clear → Setup; on
-    /// build / mode-change it's pushed into the controller.
-    gait_mode: quadruped_gait::GaitMode,
-    /// Per-leg foot link names the user wants the auto-detector to use.
-    /// Default mirror of [`articara::gait::DEFAULT_FOOT_LINKS`]; mutable so
-    /// the UI panel can edit them per robot.
-    gait_foot_links: [(quadruped_gait::LegId, String); 4],
-    /// Linear-speed magnitude (m/s) commanded by the gait panel's
-    /// hold-to-drive D-pad. The four direction buttons map to ±vx / ±vy
-    /// at this magnitude; release zeroes the command.
-    gait_dpad_speed: f32,
-    /// Yaw-rate magnitude (rad/s) commanded by the D-pad's ↺/↻ buttons.
-    /// Independent from `gait_dpad_speed` so a slow walk can still
-    /// dial in a snappy turn.
-    gait_dpad_yaw_speed: f32,
-    /// True while at least one D-pad button was held last frame. Used to
-    /// emit a single `VelocityCmd::zero()` on the rising edge of "all
-    /// released" so the robot doesn't keep coasting after the user lets
-    /// go (which would otherwise happen because the slider snapshot
-    /// lingers on the controller).
-    gait_dpad_was_active: bool,
-    /// LinearCrawl-only: the stride length (m) the user has "designed"
-    /// the gait around. Drives the **stride-primary** behaviour of the
-    /// D-pad — whenever the D-pad sets a new vx, the controller's
-    /// `cycle_period_s` is rescaled to `gait_design_stride_m / |vx|` so
-    /// the foot's per-swing stride stays at this value while the
-    /// commanded speed changes. Updated when the user drags the Stride
-    /// slider in the gait panel.
-    gait_design_stride_m: f64,
-    /// Whether the D-pad operates in **stride-primary** mode for
-    /// LinearCrawl. When `true`, D-pad button presses rescale
-    /// `cycle_period_s` (and thus the displayed `t3` / `t4`) so the
-    /// design stride is preserved as vx changes. When `false`, the
-    /// D-pad just sets vx and leaves `t3` / `t4` / `T` alone — stride
-    /// then varies with vx (vx-primary). Default `false` so the t3 /
-    /// t4 sliders behave like the other timing inputs (stable across
-    /// D-pad interaction).
-    gait_dpad_stride_primary: bool,
+    /// Quadruped gait controller + panel tuning state. See
+    /// [`gait_panel::GaitPanelState`].
+    gait: gait_panel::GaitPanelState,
     /// Kinematic playback: drive `model.joint_positions` and
     /// `model.base_transform` directly from the gait controller's
     /// `tick()` output every frame, bypassing MuJoCo. Lets the user
@@ -746,46 +704,6 @@ pub struct ArticaraApp {
     /// [`articara::viz_feed`].
     #[cfg(feature = "viz")]
     viz: articara::viz_feed::VizFeedState,
-    /// MPC capture-point feedback gain shown in the gait panel slider.
-    /// Default `0.0` (post-D3.3.7 C2: legged_control-style open-loop
-    /// Raibert + MPC reference, no closed-form foot placement
-    /// heuristic). Set to `LEGACY_CAPTURE_POINT_GAIN_S` (= 0.175) via
-    /// the slider's `[legacy]` button to A/B-compare against the
-    /// pre-fix capture-point behaviour. Synced into the active gait
-    /// controller via `set_capture_point_gain` whenever the slider
-    /// changes or a controller is rebuilt.
-    gait_capture_point_gain: f32,
-    /// Goal-pose UI state: target (x, y, yaw) in the world frame plus
-    /// per-axis speed limits. Held in the panel even when goal mode is
-    /// inactive so the user can edit values, then click "Set goal" to
-    /// activate. `gait_goal_pose_active` reflects whether the
-    /// controller currently has a goal set.
-    gait_goal_x_m: f32,
-    gait_goal_y_m: f32,
-    gait_goal_yaw_rad: f32,
-    gait_goal_max_v_m_s: f32,
-    gait_goal_max_wz_rad_s: f32,
-    gait_goal_pose_active: bool,
-    /// Experimental research flags exposed via the gait panel's
-    /// "Experimental flags" sub-section. Each holds the desired
-    /// **panel** state; on edit the panel pushes the value into the
-    /// active gait controller (and, for GaitConfig fields, into the
-    /// controller's config + phase generator). When no controller is
-    /// active the panel state is just held until the next build.
-    gait_exp_transition_fraction: f32,
-    gait_exp_transition_enforce_constraint: bool,
-    gait_exp_use_mpc_predicted_footstep: bool,
-    gait_exp_legged_control_parity: bool,
-    /// A3: friction cone soft + slack (FullCentroidal MPC).
-    gait_exp_friction_cone_soft: bool,
-    /// A3: per-slack quadratic penalty.
-    gait_exp_friction_cone_slack_penalty: f32,
-    /// B3: MPC warm-start.
-    gait_exp_warm_start: bool,
-    /// A1: MPC-optimised footstep XY.
-    gait_exp_mpc_optimized_footstep: bool,
-    /// A1: foot-XY cost weight.
-    gait_exp_q_foot_xy_world: f32,
     /// When `true`, the next viewport left-click sets [`Self::loop_closure_link_b`]
     /// instead of doing the usual JointDrive selection. Toggled on by the
     /// "👆 Pick B from viewport" button in the Loop Closures panel and
@@ -1042,31 +960,7 @@ impl ArticaraApp {
                 }
                 _ => None,
             },
-            gait_controller: None,
-            gait_mode: quadruped_gait::GaitMode::default(),
-            gait_foot_links: articara::gait::DEFAULT_FOOT_LINKS
-                .map(|(id, name)| (id, name.to_string())),
-            gait_dpad_speed: 0.3,
-            gait_dpad_yaw_speed: 0.5,
-            gait_capture_point_gain: 0.0,
-            gait_goal_x_m: 1.0,
-            gait_goal_y_m: 0.0,
-            gait_goal_yaw_rad: 0.0,
-            gait_goal_max_v_m_s: 0.15,
-            gait_goal_max_wz_rad_s: 0.5,
-            gait_goal_pose_active: false,
-            gait_exp_transition_fraction: 0.0,
-            gait_exp_transition_enforce_constraint: false,
-            gait_exp_use_mpc_predicted_footstep: false,
-            gait_exp_legged_control_parity: false,
-            gait_exp_friction_cone_soft: false,
-            gait_exp_friction_cone_slack_penalty: 1000.0,
-            gait_exp_warm_start: false,
-            gait_exp_mpc_optimized_footstep: false,
-            gait_exp_q_foot_xy_world: 500.0,
-            gait_dpad_was_active: false,
-            gait_design_stride_m: 0.05,
-            gait_dpad_stride_primary: false,
+            gait: gait_panel::GaitPanelState::default(),
             kinematic_playback_active: false,
             kinematic_playback_base_offset: na::Isometry3::identity(),
             #[cfg(feature = "viz")]
@@ -1090,7 +984,7 @@ impl ArticaraApp {
             None => articara::gait::DEFAULT_FOOT_LINKS.map(|(_, s)| s.to_string()),
         };
         for (slot, name) in names.into_iter().enumerate() {
-            self.gait_foot_links[slot].1 = name;
+            self.gait.foot_links[slot].1 = name;
         }
     }
 
@@ -1105,11 +999,11 @@ impl ArticaraApp {
             model.gaits.push(articara::rbd::model::GaitDescriptor::default_trot());
         }
         let g = &mut model.gaits[0];
-        g.fl_foot = self.gait_foot_links[0].1.clone();
-        g.fr_foot = self.gait_foot_links[1].1.clone();
-        g.rl_foot = self.gait_foot_links[2].1.clone();
-        g.rr_foot = self.gait_foot_links[3].1.clone();
-        if let Some(ctrl) = self.gait_controller.as_ref() {
+        g.fl_foot = self.gait.foot_links[0].1.clone();
+        g.fr_foot = self.gait.foot_links[1].1.clone();
+        g.rl_foot = self.gait.foot_links[2].1.clone();
+        g.rr_foot = self.gait.foot_links[3].1.clone();
+        if let Some(ctrl) = self.gait.controller.as_ref() {
             let cfg = ctrl.config();
             g.gait_type = match cfg.gait_type {
                 quadruped_gait::GaitType::Trot => misarta::config::GaitTypeConfig::Trot,
@@ -1196,7 +1090,7 @@ impl ArticaraApp {
                 // any) so the UI panel reflects the user's last setup.
                 // Drop any stale gait controller — its kinematics belong
                 // to the previous model.
-                self.gait_controller = None;
+                self.gait.controller = None;
                 self.sync_gait_panel_from_model();
                 // Default posture path: <model_dir>/<robot_name>.toml
                 if let Some(parent) = path.parent() {
@@ -1558,7 +1452,7 @@ impl ArticaraApp {
                                 self.pose_source,
                                 articara::gait::PoseSource::LegOdometry
                             ) {
-                                if let Some(gc) = self.gait_controller.as_ref() {
+                                if let Some(gc) = self.gait.controller.as_ref() {
                                     let kin = gc.kinematics().clone();
                                     let joint_indices = gc.joint_indices();
                                     let joint_signs = gc.joint_signs();
@@ -1627,7 +1521,7 @@ impl ArticaraApp {
                                     .unwrap_or([0.0, 0.0, 0.0]),
                             };
 
-                            if let Some(gc) = self.gait_controller.as_mut() {
+                            if let Some(gc) = self.gait.controller.as_mut() {
                                 if gc.is_enabled() {
                                     // Feed observed body linear + angular
                                     // velocity (world frame) so the MPC's
@@ -1698,10 +1592,10 @@ impl ArticaraApp {
                                         // Lazy-initialise the pipeline on first use.
                                         if self.wbc_pipeline.is_none() {
                                             let foot_links: [String; 4] = [
-                                                self.gait_foot_links[0].1.clone(),
-                                                self.gait_foot_links[1].1.clone(),
-                                                self.gait_foot_links[2].1.clone(),
-                                                self.gait_foot_links[3].1.clone(),
+                                                self.gait.foot_links[0].1.clone(),
+                                                self.gait.foot_links[1].1.clone(),
+                                                self.gait.foot_links[2].1.clone(),
+                                                self.gait.foot_links[3].1.clone(),
                                             ];
                                             let mut new_pipe =
                                                 articara::wbc_pipeline::WbcPipeline::new(
@@ -1944,7 +1838,7 @@ impl ArticaraApp {
                     if let Some(sim) = self.mujoco_sim.as_mut() {
                         sim.async_pop();
                     }
-                    if let Some(gc) = self.gait_controller.as_mut() {
+                    if let Some(gc) = self.gait.controller.as_mut() {
                         gc.set_velocity_cmd(quadruped_gait::VelocityCmd {
                             vx,
                             vy,
@@ -2401,7 +2295,7 @@ impl eframe::App for ArticaraApp {
         // so the robot animates from wherever the user placed it.
         if self.kinematic_playback_active {
             if let (Some(model), Some(gc)) =
-                (self.model.as_mut(), self.gait_controller.as_mut())
+                (self.model.as_mut(), self.gait.controller.as_mut())
             {
                 let dt = ctx.input(|i| i.stable_dt).max(1e-4) as f64;
                 let dt = dt.min(0.05); // cap so huge frame stalls don't fast-forward
@@ -2542,16 +2436,16 @@ impl ArticaraApp {
         ov: articara::scripting_model::ScriptOverrides,
     ) {
         if let Some(mode) = ov.gait_mode {
-            self.gait_mode = mode;
+            self.gait.mode = mode;
             // Re-build the gait controller in the new mode if one is
             // already active (so the change isn't quietly deferred to
             // the next mj_start).
-            if let Some(gc) = self.gait_controller.as_mut() {
+            if let Some(gc) = self.gait.controller.as_mut() {
                 gc.set_mode(mode);
             }
         }
         if let Some(k) = ov.capture_point_gain {
-            if let Some(gc) = self.gait_controller.as_mut() {
+            if let Some(gc) = self.gait.controller.as_mut() {
                 gc.set_capture_point_gain(k);
             }
         }
