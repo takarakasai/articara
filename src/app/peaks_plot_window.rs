@@ -17,28 +17,76 @@ use super::{
     ArticaraApp, PeaksPlotMetric, PeaksXAxisMode, PEAKS_PLOT_UNLIMITED_CAP,
 };
 
+/// UI state of the Joint Peaks plot window, grouped so [`ArticaraApp`]
+/// carries one field instead of eleven loose `peaks_plot_*` ones.
+pub(super) struct PeaksPlotState {
+    /// Whether the window is open.
+    pub open: bool,
+    /// Joint selected for the plot. `None` = plot all movable joints.
+    pub joint: Option<String>,
+    /// Which signal to display.
+    pub metric: PeaksPlotMetric,
+    /// One-shot flag: when set, the next plot draw resets zoom + pan to
+    /// the data's auto-bounds, then clears itself.
+    pub reset_view: bool,
+    /// Auto-fit x-axis vs fixed-length sliding window.
+    pub xaxis_mode: PeaksXAxisMode,
+    /// In Auto mode, seconds of history to retain (sizes the MuJoCo trace
+    /// ring buffer).
+    pub auto_seconds: f32,
+    /// In Auto mode, uncapped buffer (subject to
+    /// [`PEAKS_PLOT_UNLIMITED_CAP`]).
+    pub auto_unlimited: bool,
+    /// In Fixed mode, length of the sliding x-axis window in seconds.
+    pub fixed_seconds: f32,
+    /// Joint names hidden in "all" mode; single-joint focus bypasses this.
+    pub hidden_joints: std::collections::HashSet<String>,
+    /// File path used for the most recent CSV export.
+    pub csv_path: String,
+    /// File dialog for saving the trace as CSV.
+    pub dlg_save_csv: super::file_dialog::FileDialog,
+}
+
+impl Default for PeaksPlotState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            joint: None,
+            metric: PeaksPlotMetric::Torque,
+            reset_view: false,
+            xaxis_mode: PeaksXAxisMode::Auto,
+            auto_seconds: 10.0,
+            auto_unlimited: false,
+            fixed_seconds: 5.0,
+            hidden_joints: std::collections::HashSet::new(),
+            csv_path: String::new(),
+            dlg_save_csv: super::file_dialog::FileDialog::new("dlg_save_peaks_csv"),
+        }
+    }
+}
+
 impl ArticaraApp {
     pub(super) fn draw_peaks_plot_window(&mut self, ctx: &egui::Context) {
-        if !self.show_peaks_plot {
+        if !self.peaks_plot.open {
             return;
         }
 
         let mut open = true;
-        let mut metric = self.peaks_plot_metric;
-        let mut selected_joint = self.peaks_plot_joint.clone();
+        let mut metric = self.peaks_plot.metric;
+        let mut selected_joint = self.peaks_plot.joint.clone();
         // Capture the reset flag locally so the inner UI closure can clear
         // it after triggering Plot::reset(); we flush back to self at the
         // end of the function.
-        let mut reset_view = self.peaks_plot_reset_view;
+        let mut reset_view = self.peaks_plot.reset_view;
         let mut reset_clicked = false;
 
         // Local copies of x-axis state so the closure can mutate without
         // overlapping borrow on `self`.
-        let mut xaxis_mode = self.peaks_plot_xaxis_mode;
-        let mut auto_seconds = self.peaks_plot_auto_seconds;
-        let mut auto_unlimited = self.peaks_plot_auto_unlimited;
-        let mut fixed_seconds = self.peaks_plot_fixed_seconds;
-        let mut hidden_joints = self.peaks_plot_hidden_joints.clone();
+        let mut xaxis_mode = self.peaks_plot.xaxis_mode;
+        let mut auto_seconds = self.peaks_plot.auto_seconds;
+        let mut auto_unlimited = self.peaks_plot.auto_unlimited;
+        let mut fixed_seconds = self.peaks_plot.fixed_seconds;
+        let mut hidden_joints = self.peaks_plot.hidden_joints.clone();
         let mut save_csv_clicked = false;
 
         // Snapshot trace + joint metadata up-front so the closure doesn't
@@ -53,7 +101,7 @@ impl ArticaraApp {
             let model = match self.model.as_ref() {
                 Some(m) => m,
                 None => {
-                    self.show_peaks_plot = false;
+                    self.peaks_plot.open = false;
                     return;
                 }
             };
@@ -68,7 +116,7 @@ impl ArticaraApp {
                             ui.label("Start MuJoCo to record samples.");
                         });
                     if !open {
-                        self.show_peaks_plot = false;
+                        self.peaks_plot.open = false;
                     }
                     return;
                 }
@@ -372,12 +420,12 @@ impl ArticaraApp {
 
         // ── CSV save dialog trigger ──
         if save_csv_clicked {
-            let start = if self.peaks_plot_csv_path.is_empty() {
+            let start = if self.peaks_plot.csv_path.is_empty() {
                 None
             } else {
-                Some(std::path::PathBuf::from(&self.peaks_plot_csv_path))
+                Some(std::path::PathBuf::from(&self.peaks_plot.csv_path))
             };
-            self.dlg_save_peaks_csv.open(
+            self.peaks_plot.dlg_save_csv.open(
                 "Save Peaks Trace CSV",
                 FileDialogMode::Save,
                 start.as_deref(),
@@ -385,16 +433,16 @@ impl ArticaraApp {
             );
         }
 
-        self.peaks_plot_metric = metric;
-        self.peaks_plot_joint = selected_joint;
-        self.peaks_plot_reset_view = reset_view;
-        self.peaks_plot_xaxis_mode = xaxis_mode;
-        self.peaks_plot_auto_seconds = auto_seconds;
-        self.peaks_plot_auto_unlimited = auto_unlimited;
-        self.peaks_plot_fixed_seconds = fixed_seconds;
-        self.peaks_plot_hidden_joints = hidden_joints;
+        self.peaks_plot.metric = metric;
+        self.peaks_plot.joint = selected_joint;
+        self.peaks_plot.reset_view = reset_view;
+        self.peaks_plot.xaxis_mode = xaxis_mode;
+        self.peaks_plot.auto_seconds = auto_seconds;
+        self.peaks_plot.auto_unlimited = auto_unlimited;
+        self.peaks_plot.fixed_seconds = fixed_seconds;
+        self.peaks_plot.hidden_joints = hidden_joints;
         if !open {
-            self.show_peaks_plot = false;
+            self.peaks_plot.open = false;
         }
     }
 }
