@@ -50,7 +50,7 @@ impl ArticaraApp {
         let painter = ui.painter_at(rect);
 
         for sensor in &model.sensors {
-            if !matches!(sensor.kind, crate::rbd::model::SensorKind::Imu { .. }) {
+            if !matches!(sensor.kind, articara::rbd::model::SensorKind::Imu { .. }) {
                 continue;
             }
 

@@ -1,7 +1,7 @@
 //! Joint Peaks time-series plot window.
 //!
 //! Opens from the right-panel "📊 Joint Peaks" section's "📈 Plot" button.
-//! Renders the (q, q̇, τ) ring buffer recorded by [`crate::mujoco_sim::MujocoSim`]
+//! Renders the (q, q̇, τ) ring buffer recorded by [`articara::mujoco_sim::MujocoSim`]
 //! using `egui_plot`. The buffer is reset on every ▶ Play / pulse so the plot
 //! shows just the response to the latest command — useful for tuning gains
 //! or reading peak load timing without scrubbing through long histories.
@@ -403,4 +403,4 @@ impl ArticaraApp {
 /// keep working. The implementation now lives on `MujocoSim` so scripts in
 /// the (lib-only) scripting layer can call it without depending on the GUI
 /// `app` module.
-pub use crate::mujoco_sim::save_peaks_csv;
+pub use articara::mujoco_sim::save_peaks_csv;

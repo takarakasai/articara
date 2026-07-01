@@ -2,9 +2,9 @@ use glow::HasContext;
 use nalgebra as na;
 use std::collections::HashMap;
 
-use crate::camera::OrbitCamera;
-use crate::primitives;
-use crate::robot::{GeomData, RobotModel};
+use articara::camera::OrbitCamera;
+use articara::primitives;
+use articara::robot::{GeomData, RobotModel};
 
 // ========== Shaders ==========
 

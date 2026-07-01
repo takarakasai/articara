@@ -3,9 +3,9 @@ use nalgebra as na;
 use std::path::PathBuf;
 
 use super::{ArticaraApp, InteractionMode, OffsetTarget};
-use crate::format::RobotFormat;
+use articara::format::RobotFormat;
 use crate::renderer::{DisplayMode, MeshKind};
-use crate::robot::GeomData;
+use articara::robot::GeomData;
 
 impl ArticaraApp {
     pub(super) fn draw_properties_panel(&mut self, ui: &mut egui::Ui) {
@@ -165,7 +165,7 @@ impl ArticaraApp {
                                 .on_hover_text("Compute inertia tensor assuming uniform density, based on visual geometries and current mass")
                                 .clicked()
                             {
-                                let computed = crate::robot::compute_link_inertia(
+                                let computed = articara::robot::compute_link_inertia(
                                     &link.visuals,
                                     link.inertial.mass,
                                 );
@@ -196,7 +196,7 @@ impl ArticaraApp {
                             });
                             // Show computed volume and resulting mass
                             let total_vol: f64 = link.visuals.iter()
-                                .map(|v| crate::robot::compute_geometry_volume(&v.geometry))
+                                .map(|v| articara::robot::compute_geometry_volume(&v.geometry))
                                 .sum();
                             let new_mass = self.density_value * total_vol;
                             ui.label(egui::RichText::new(
@@ -205,7 +205,7 @@ impl ArticaraApp {
                             ui.horizontal(|ui| {
                                 if ui.button("✔ Apply").clicked() {
                                     link.inertial.mass = new_mass;
-                                    let computed = crate::robot::compute_link_inertia(
+                                    let computed = articara::robot::compute_link_inertia(
                                         &link.visuals,
                                         new_mass,
                                     );
@@ -231,16 +231,16 @@ impl ArticaraApp {
 
                         // --- Inertia validation ---
                         ui.add_space(4.0);
-                        let validation = crate::robot::validate_inertia(link);
+                        let validation = articara::robot::validate_inertia(link);
                         if validation.is_ok() {
                             ui.label(egui::RichText::new("✅ Inertia OK")
                                 .small().color(egui::Color32::from_rgb(80, 200, 80)));
                         } else {
                             for issue in &validation.issues {
                                 let (icon, color) = match issue.severity {
-                                    crate::robot::ValidationSeverity::Error =>
+                                    articara::robot::ValidationSeverity::Error =>
                                         ("❌", egui::Color32::from_rgb(220, 60, 60)),
-                                    crate::robot::ValidationSeverity::Warning =>
+                                    articara::robot::ValidationSeverity::Warning =>
                                         ("⚠", egui::Color32::from_rgb(220, 180, 40)),
                                 };
                                 ui.label(egui::RichText::new(format!("{icon} {}", issue.message))
@@ -393,11 +393,11 @@ impl ArticaraApp {
                                                 let prog_clone = std::sync::Arc::clone(&progress);
                                                 let sub_clone = std::sync::Arc::clone(&sub_progress);
                                                 let handle = std::thread::spawn(move || {
-                                                    let parts = crate::mesh_ops::decompose_mesh(
+                                                    let parts = articara::mesh_ops::decompose_mesh(
                                                         &verts,
                                                         origin,
                                                         method,
-                                                        crate::mesh_ops::DecomposeOptions {
+                                                        articara::mesh_ops::DecomposeOptions {
                                                             max_count: None,
                                                             progress: Some(&prog_clone),
                                                             sub_progress: Some(&sub_clone),
@@ -406,7 +406,7 @@ impl ArticaraApp {
                                                     super::DecomposeResult::Visuals(
                                                         parts
                                                             .into_iter()
-                                                            .map(|(origin, geometry)| crate::robot::VisualData {
+                                                            .map(|(origin, geometry)| articara::robot::VisualData {
                                                                 origin,
                                                                 geometry,
                                                                 color,
@@ -496,7 +496,7 @@ impl ArticaraApp {
                 // Right-click on Visuals header to add new visual
                 vis_header.header_response.context_menu(|ui: &mut egui::Ui| {
                     if ui.button("➕ Add Box").clicked() {
-                        link.visuals.push(crate::robot::VisualData {
+                        link.visuals.push(articara::robot::VisualData {
                             origin: na::Isometry3::identity(),
                             geometry: GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.05 },
                             color: [0.7, 0.7, 0.7, 1.0],
@@ -506,7 +506,7 @@ impl ArticaraApp {
                         ui.close();
                     }
                     if ui.button("➕ Add Cylinder").clicked() {
-                        link.visuals.push(crate::robot::VisualData {
+                        link.visuals.push(articara::robot::VisualData {
                             origin: na::Isometry3::identity(),
                             geometry: GeomData::Cylinder { radius: 0.02, half_length: 0.1 },
                             color: [0.7, 0.7, 0.7, 1.0],
@@ -516,7 +516,7 @@ impl ArticaraApp {
                         ui.close();
                     }
                     if ui.button("➕ Add Sphere").clicked() {
-                        link.visuals.push(crate::robot::VisualData {
+                        link.visuals.push(articara::robot::VisualData {
                             origin: na::Isometry3::identity(),
                             geometry: GeomData::Sphere { radius: 0.05 },
                             color: [0.7, 0.7, 0.7, 1.0],
@@ -526,7 +526,7 @@ impl ArticaraApp {
                         ui.close();
                     }
                     if ui.button("➕ Add Capsule").clicked() {
-                        link.visuals.push(crate::robot::VisualData {
+                        link.visuals.push(articara::robot::VisualData {
                             origin: na::Isometry3::identity(),
                             geometry: GeomData::Capsule { radius: 0.02, half_length: 0.1 },
                             color: [0.7, 0.7, 0.7, 1.0],
@@ -556,7 +556,7 @@ impl ArticaraApp {
                         "Replace all collision shapes with copies of the visual shapes"
                     ).clicked() {
                         link.collisions = link.visuals.iter().map(|v| {
-                            crate::robot::CollisionData {
+                            articara::robot::CollisionData {
                                 origin: v.origin,
                                 geometry: v.geometry.clone(),
                             
@@ -577,7 +577,7 @@ impl ArticaraApp {
                     let mut col_to_remove: Option<usize> = None;
                     let mut col_to_duplicate: Option<usize> = None;
                     // Deferred decomposition: (index, replacement CollisionData list)
-                    let col_decompose: Option<(usize, Vec<crate::robot::CollisionData>)> = None;
+                    let col_decompose: Option<(usize, Vec<articara::robot::CollisionData>)> = None;
                     for ci in 0..link.collisions.len() {
                         let col = &mut link.collisions[ci];
                         ui.push_id(format!("col_{ci}"), |ui| {
@@ -699,11 +699,11 @@ impl ArticaraApp {
                                                 let prog_clone = std::sync::Arc::clone(&progress);
                                                 let sub_clone = std::sync::Arc::clone(&sub_progress);
                                                 let handle = std::thread::spawn(move || {
-                                                    let parts = crate::mesh_ops::decompose_mesh(
+                                                    let parts = articara::mesh_ops::decompose_mesh(
                                                         &verts,
                                                         origin,
                                                         method,
-                                                        crate::mesh_ops::DecomposeOptions {
+                                                        articara::mesh_ops::DecomposeOptions {
                                                             max_count: None,
                                                             progress: Some(&prog_clone),
                                                             sub_progress: Some(&sub_clone),
@@ -712,7 +712,7 @@ impl ArticaraApp {
                                                     super::DecomposeResult::Collisions(
                                                         parts
                                                             .into_iter()
-                                                            .map(|(origin, geometry)| crate::robot::CollisionData {
+                                                            .map(|(origin, geometry)| articara::robot::CollisionData {
                                                                 origin,
                                                                 geometry,
                                                                 physics: None,
@@ -797,7 +797,7 @@ impl ArticaraApp {
                 // Right-click on Collisions header to add new collision
                 col_header.header_response.context_menu(|ui: &mut egui::Ui| {
                     if ui.button("➕ Add Box").clicked() {
-                        link.collisions.push(crate::robot::CollisionData {
+                        link.collisions.push(articara::robot::CollisionData {
                             origin: na::Isometry3::identity(),
                             geometry: GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.05 },
                         
@@ -808,7 +808,7 @@ impl ArticaraApp {
                         ui.close();
                     }
                     if ui.button("➕ Add Cylinder").clicked() {
-                        link.collisions.push(crate::robot::CollisionData {
+                        link.collisions.push(articara::robot::CollisionData {
                             origin: na::Isometry3::identity(),
                             geometry: GeomData::Cylinder { radius: 0.02, half_length: 0.1 },
                         
@@ -819,7 +819,7 @@ impl ArticaraApp {
                         ui.close();
                     }
                     if ui.button("➕ Add Sphere").clicked() {
-                        link.collisions.push(crate::robot::CollisionData {
+                        link.collisions.push(articara::robot::CollisionData {
                             origin: na::Isometry3::identity(),
                             geometry: GeomData::Sphere { radius: 0.05 },
                         
@@ -830,7 +830,7 @@ impl ArticaraApp {
                         ui.close();
                     }
                     if ui.button("➕ Add Capsule").clicked() {
-                        link.collisions.push(crate::robot::CollisionData {
+                        link.collisions.push(articara::robot::CollisionData {
                             origin: na::Isometry3::identity(),
                             geometry: GeomData::Capsule { radius: 0.02, half_length: 0.1 },
                         
@@ -972,7 +972,7 @@ impl ArticaraApp {
                                     egui::ComboBox::from_id_salt(format!("actmode_{ji}"))
                                         .selected_text(mode.label())
                                         .show_ui(ui, |ui| {
-                                            for m in crate::rbd::model::ActuatorMode::ALL {
+                                            for m in articara::rbd::model::ActuatorMode::ALL {
                                                 ui.selectable_value(&mut mode, m, m.label());
                                             }
                                         });
@@ -984,14 +984,14 @@ impl ArticaraApp {
 
                                     let kp_enabled = matches!(
                                         joint.actuator_mode,
-                                        crate::rbd::model::ActuatorMode::Position
-                                            | crate::rbd::model::ActuatorMode::ComputedTorque
+                                        articara::rbd::model::ActuatorMode::Position
+                                            | articara::rbd::model::ActuatorMode::ComputedTorque
                                     );
                                     let kv_enabled = matches!(
                                         joint.actuator_mode,
-                                        crate::rbd::model::ActuatorMode::Position
-                                            | crate::rbd::model::ActuatorMode::Velocity
-                                            | crate::rbd::model::ActuatorMode::ComputedTorque
+                                        articara::rbd::model::ActuatorMode::Position
+                                            | articara::rbd::model::ActuatorMode::Velocity
+                                            | articara::rbd::model::ActuatorMode::ComputedTorque
                                     );
 
                                     ui.label("Kp (N·m/rad):");
@@ -1144,7 +1144,7 @@ impl ArticaraApp {
                                         .width(72.0)
                                         .show_ui(ui, |ui| {
                                             for m in
-                                                crate::rbd::model::ActuatorMode::ALL
+                                                articara::rbd::model::ActuatorMode::ALL
                                             {
                                                 ui.selectable_value(
                                                     &mut mode, m, m.label(),
@@ -1158,12 +1158,12 @@ impl ArticaraApp {
 
                                         let kp_enabled = matches!(
                                             joint.actuator_mode,
-                                            crate::rbd::model::ActuatorMode::Position
+                                            articara::rbd::model::ActuatorMode::Position
                                         );
                                         let kv_enabled = matches!(
                                             joint.actuator_mode,
-                                            crate::rbd::model::ActuatorMode::Position
-                                                | crate::rbd::model::ActuatorMode::Velocity
+                                            articara::rbd::model::ActuatorMode::Position
+                                                | articara::rbd::model::ActuatorMode::Velocity
                                         );
                                         ui.add_enabled_ui(kp_enabled, |ui| {
                                             actuators_changed |= ui
@@ -1288,7 +1288,7 @@ impl ArticaraApp {
     fn draw_poses_panel_with(
         &mut self,
         ui: &mut egui::Ui,
-        model: &mut crate::robot::RobotModel,
+        model: &mut articara::robot::RobotModel,
     ) -> Option<String> {
         let mut edit_desc: Option<String> = None;
 
@@ -1319,7 +1319,7 @@ impl ArticaraApp {
                         .clicked()
                     {
                         let name = self.pose_save_name.trim().to_string();
-                        let snap = crate::rbd::model::NamedPose::snapshot(
+                        let snap = articara::rbd::model::NamedPose::snapshot(
                             &name,
                             model,
                             self.pose_transition_duration as f64,
@@ -1526,7 +1526,7 @@ impl ArticaraApp {
     /// Draw the named-sequence registry section. A sequence is an ordered
     /// list of pose targets with per-step durations / interpolation kinds;
     /// playing one chains the transitions back-to-back via
-    /// [`crate::mujoco_sim::MujocoSim::start_sequence`].
+    /// [`articara::mujoco_sim::MujocoSim::start_sequence`].
     ///
     /// Returns an undo description if the model was edited.
     fn draw_sequences_panel(&mut self, ui: &mut egui::Ui) -> Option<String> {
@@ -1540,7 +1540,7 @@ impl ArticaraApp {
     fn draw_sequences_panel_with(
         &mut self,
         ui: &mut egui::Ui,
-        model: &mut crate::robot::RobotModel,
+        model: &mut articara::robot::RobotModel,
     ) -> Option<String> {
         let mut edit_desc: Option<String> = None;
 
@@ -1566,7 +1566,7 @@ impl ArticaraApp {
                         )
                         .clicked()
                     {
-                        model.sequences.push(crate::rbd::model::Sequence {
+                        model.sequences.push(articara::rbd::model::Sequence {
                             name: name.clone(),
                             steps: Vec::new(),
                         });
@@ -1761,7 +1761,7 @@ impl ArticaraApp {
                 }
                 if let Some((si, pose_name)) = to_add_step {
                     if let Some(seq) = model.sequences.get_mut(si) {
-                        seq.steps.push(crate::rbd::model::SequenceStep {
+                        seq.steps.push(articara::rbd::model::SequenceStep {
                             pose_name: pose_name.clone(),
                             duration: 1.0,
                             kind: misarta::trajectory::InterpolationKind::QuinticSmooth,
@@ -1810,7 +1810,7 @@ impl ArticaraApp {
 
     /// Draw the "apply external force/torque to a link for N seconds" panel.
     ///
-    /// The pulse goes through [`crate::mujoco_sim::MujocoSim::apply_external_force`],
+    /// The pulse goes through [`articara::mujoco_sim::MujocoSim::apply_external_force`],
     /// which writes `xfrc_applied` each tick until the timer expires. Force /
     /// torque are interpreted in the world frame.
     #[cfg(feature = "mujoco")]
@@ -2246,7 +2246,7 @@ impl ArticaraApp {
                 model.collision_pairs.retain(|p| !p.matches(&a, &b));
                 model
                     .collision_pairs
-                    .push(crate::rbd::model::CollisionPair::new(a, b, false));
+                    .push(articara::rbd::model::CollisionPair::new(a, b, false));
                 self.status_message = "Excluded self-collision pair (saved to model)".into();
             }
         }
@@ -2288,10 +2288,10 @@ impl ArticaraApp {
             for issue in &self.export_compat_issues {
                 ui.horizontal(|ui| {
                     let color = match issue.severity {
-                        crate::format::ExportSeverity::Drop => {
+                        articara::format::ExportSeverity::Drop => {
                             egui::Color32::from_rgb(230, 120, 80)
                         }
-                        crate::format::ExportSeverity::Approximate => {
+                        articara::format::ExportSeverity::Approximate => {
                             egui::Color32::from_rgb(220, 200, 80)
                         }
                     };
@@ -2421,10 +2421,10 @@ impl ArticaraApp {
         }
         // Save always targets URDF (the model's source). Run the
         // compatibility analysis against the URDF handler.
-        let registry = crate::format::FormatRegistry::default_registry();
+        let registry = articara::format::FormatRegistry::default_registry();
         let issues = registry
-            .handler_for_format(crate::format::RobotFormat::Urdf)
-            .map(|h| crate::format::analyze_export_compatibility(model, h))
+            .handler_for_format(articara::format::RobotFormat::Urdf)
+            .map(|h| articara::format::analyze_export_compatibility(model, h))
             .unwrap_or_default();
         if issues.is_empty() {
             self.save_now();
@@ -2451,9 +2451,9 @@ impl ArticaraApp {
         // round-trips losslessly via save_as_misa; URDF (and other legacy
         // sources) keep the URDF + `.misarta.toml` sidecar pair so users
         // who haven't migrated yet don't silently lose state.
-        let fmt = crate::format::RobotFormat::detect(&source);
+        let fmt = articara::format::RobotFormat::detect(&source);
         match fmt {
-            Some(crate::format::RobotFormat::Misa) => match model.save_as_misa(&source) {
+            Some(articara::format::RobotFormat::Misa) => match model.save_as_misa(&source) {
                 Ok(()) => {
                     self.export_message = format!("✔ Saved Misa to {}", source.display());
                 }
@@ -2492,10 +2492,10 @@ impl ArticaraApp {
             return;
         };
         // Match the user's selected target format against the registry.
-        let registry = crate::format::FormatRegistry::default_registry();
+        let registry = articara::format::FormatRegistry::default_registry();
         let issues = registry
             .handler_for_format(self.export_format)
-            .map(|h| crate::format::analyze_export_compatibility(model, h))
+            .map(|h| articara::format::analyze_export_compatibility(model, h))
             .unwrap_or_default();
         if issues.is_empty() {
             self.export_now();
@@ -2531,7 +2531,7 @@ impl ArticaraApp {
         // Dispatch through the format registry — the handler owns the
         // format-specific mechanics (mesh copying, directory-oriented
         // output, …) and reports the path it actually wrote.
-        let registry = crate::format::FormatRegistry::default_registry();
+        let registry = articara::format::FormatRegistry::default_registry();
         let Some(handler) = registry.handler_for_format(fmt) else {
             self.export_message = format!("⚠ No handler registered for {}", fmt.label());
             return;

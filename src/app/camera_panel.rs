@@ -5,7 +5,7 @@
 use eframe::egui;
 
 use super::ArticaraApp;
-use crate::camera::CameraMode;
+use articara::camera::CameraMode;
 
 impl ArticaraApp {
     pub(super) fn draw_camera_panel(&mut self, ui: &mut egui::Ui) {
@@ -105,7 +105,7 @@ impl ArticaraApp {
                 });
 
                 if ui.button("⟲ Reset TPS").clicked() {
-                    self.tps_settings = crate::camera::TpsSettings::default();
+                    self.tps_settings = articara::camera::TpsSettings::default();
                 }
             });
     }

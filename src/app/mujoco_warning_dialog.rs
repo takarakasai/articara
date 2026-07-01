@@ -1,6 +1,6 @@
 //! Startup dialog that surfaces a MuJoCo runtime version mismatch.
 //!
-//! When [`crate::mujoco_version::init`] (called from `main`) detects
+//! When [`articara::mujoco_version::init`] (called from `main`) detects
 //! that the linked `libmujoco` doesn't match the version `mujoco-rs`'s
 //! FFI bindings were generated against, the editor stashes the result
 //! in `pending_mujoco_warning` and this module renders it as a modal-ish
@@ -17,7 +17,7 @@
 use eframe::egui;
 
 use super::ArticaraApp;
-use crate::mujoco_version::CheckResult;
+use articara::mujoco_version::CheckResult;
 
 impl ArticaraApp {
     pub(super) fn draw_mujoco_warning_dialog(&mut self, ctx: &egui::Context) {

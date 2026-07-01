@@ -3,19 +3,19 @@
 //! A modal-ish window that shows every link × link pair as a checkable cell.
 //! Default behaviour is "all pairs collide" (matching MuJoCo's collide-by-default
 //! and physics engines' usual default). Unchecking a cell stores a
-//! [`CollisionPair { enabled: false }`](crate::rbd::model::CollisionPair) in
+//! [`CollisionPair { enabled: false }`](articara::rbd::model::CollisionPair) in
 //! the model so it gets persisted with the model — to `.misa` natively, or
 //! to a legacy `.misarta.toml` sidecar for URDF-based workflows — and emitted
 //! as MJCF `<contact><exclude>` / USD `physics:filteredPairs` on export.
 //!
 //! The matrix is symmetric, so we only render the upper triangle (j > i).
 //! Selecting either `(A, B)` or `(B, A)` flips the same stored pair —
-//! [`crate::rbd::model::CollisionPair::new`] normalises the order.
+//! [`articara::rbd::model::CollisionPair::new`] normalises the order.
 
 use eframe::egui;
 
 use super::ArticaraApp;
-use crate::rbd::model::CollisionPair;
+use articara::rbd::model::CollisionPair;
 
 impl ArticaraApp {
     pub(super) fn draw_collision_matrix_window(&mut self, ctx: &egui::Context) {

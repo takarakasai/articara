@@ -2,7 +2,7 @@ use eframe::egui;
 use nalgebra as na;
 
 use super::ArticaraApp;
-use crate::robot::{GeomData, RobotModel};
+use articara::robot::{GeomData, RobotModel};
 
 impl ArticaraApp {
     pub(super) fn draw_tree_panel(&mut self, ui: &mut egui::Ui) {
@@ -484,7 +484,7 @@ impl ArticaraApp {
                 if let Some(model) = &mut self.model {
                     if let Some(&li) = model.link_map.get(link_name) {
                         let new_cols: Vec<_> = model.links[li].visuals.iter().map(|v| {
-                            crate::robot::CollisionData {
+                            articara::robot::CollisionData {
                                 origin: v.origin,
                                 geometry: v.geometry.clone(),
                             

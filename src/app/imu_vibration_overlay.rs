@@ -47,7 +47,7 @@ impl ArticaraApp {
         let mut imus: Vec<&str> = model
             .sensors
             .iter()
-            .filter(|s| matches!(s.kind, crate::rbd::model::SensorKind::Imu { .. }))
+            .filter(|s| matches!(s.kind, articara::rbd::model::SensorKind::Imu { .. }))
             .map(|s| s.name.as_str())
             .filter(|n| {
                 self.imu_vibration_history

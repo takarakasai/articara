@@ -1,7 +1,7 @@
 //! UI panel for the quadruped gait controller.
 //!
 //! Lives under "🐕 Quadruped gait" in the right-side Dynamics column.
-//! Drives [`crate::gait::GaitController`] via [`super::ArticaraApp`].
+//! Drives [`articara::gait::GaitController`] via [`super::ArticaraApp`].
 
 use eframe::egui;
 
@@ -378,7 +378,7 @@ impl ArticaraApp {
             egui::ComboBox::from_id_salt("pose_source_combo")
                 .selected_text(self.pose_source.label())
                 .show_ui(ui, |ui| {
-                    for s in crate::gait::PoseSource::ALL {
+                    for s in articara::gait::PoseSource::ALL {
                         ui.selectable_value(&mut new_src, s, s.label());
                     }
                 });
@@ -1353,7 +1353,7 @@ impl ArticaraApp {
             (self.gait_foot_links[2].0, self.gait_foot_links[2].1.as_str()),
             (self.gait_foot_links[3].0, self.gait_foot_links[3].1.as_str()),
         ];
-        match crate::gait::auto_detect_kinematics_config(model, &foot_links) {
+        match articara::gait::auto_detect_kinematics_config(model, &foot_links) {
             Ok(kin) => {
                 // Seed the controller from the saved gait descriptor (if
                 // any) so re-running auto-detect doesn't reset the user's
@@ -1381,7 +1381,7 @@ impl ArticaraApp {
                     }
                     None => (GaitConfig::trot(), [false; 4]),
                 };
-                match crate::gait::GaitController::build(model, kin, cfg, self.gait_mode) {
+                match articara::gait::GaitController::build(model, kin, cfg, self.gait_mode) {
                     Ok(mut gc) => {
                         for (slot, leg) in [LegId::FL, LegId::FR, LegId::RL, LegId::RR]
                             .iter()

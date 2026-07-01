@@ -2,7 +2,7 @@ use eframe::egui;
 
 use super::{ArticaraApp, DragMode, GizmoOp, InteractionMode, OffsetTarget};
 use crate::renderer::DisplayMode;
-use crate::robot::RobotModel;
+use articara::robot::RobotModel;
 
 impl ArticaraApp {
     pub(super) fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
@@ -103,7 +103,7 @@ impl ArticaraApp {
                     .clicked()
                 {
                     if let Some(ref model) = self.model {
-                        self.validation_results = crate::robot::validate_all_inertia(model);
+                        self.validation_results = articara::robot::validate_all_inertia(model);
                         self.show_validation_window = true;
                     }
                     ui.close();
@@ -152,7 +152,7 @@ impl ArticaraApp {
                             if link.visuals.is_empty() || link.inertial.mass <= 0.0 {
                                 continue;
                             }
-                            let computed = crate::robot::compute_link_inertia(
+                            let computed = articara::robot::compute_link_inertia(
                                 &link.visuals,
                                 link.inertial.mass,
                             );

@@ -1,32 +1,8 @@
+// The binary is a thin GUI shell over the `articara` library crate: only
+// the egui/glow-dependent modules (app, renderer) are compiled here; all
+// core functionality comes from the library via `articara::...` paths.
 mod app;
-mod attitude_estimator;
-mod camera;
-mod dynamics;
-mod format;
-mod gait;
-mod history;
-mod isaac;
-mod leg_odometry;
-mod mesh_ops;
-mod mesh_paths;
-mod mjcf;
-#[cfg(feature = "mujoco")]
-mod mujoco_sim;
-#[cfg(feature = "mujoco")]
-mod mujoco_version;
-mod primitives;
-mod rbd;
 mod renderer;
-mod robot;
-mod sdf;
-#[cfg(feature = "scripting")]
-mod scripting_model;
-mod usd;
-mod usd_import;
-#[cfg(feature = "mujoco")]
-mod wbc_pipeline;
-#[cfg(feature = "viz")]
-mod viz_feed;
 
 use std::path::PathBuf;
 
@@ -43,12 +19,12 @@ fn main() -> eframe::Result {
     // backtrace later. See `src/mujoco_version.rs`.
     #[cfg(feature = "mujoco")]
     {
-        let r = mujoco_version::init();
+        let r = articara::mujoco_version::init();
         match r {
-            mujoco_version::CheckResult::Compatible(v) => {
+            articara::mujoco_version::CheckResult::Compatible(v) => {
                 log::info!("MuJoCo runtime {v} matches expected version — OK");
             }
-            mujoco_version::CheckResult::Mismatch { .. } => {
+            articara::mujoco_version::CheckResult::Mismatch { .. } => {
                 log::error!("{}", r.diagnostic());
                 eprintln!("⚠ {}", r.diagnostic());
                 eprintln!(
@@ -97,10 +73,10 @@ fn main() -> eframe::Result {
                     std::process::exit(1);
                 });
 
-            let mut engine = scripting_model::ModelScriptEngine::new();
+            let mut engine = articara::scripting_model::ModelScriptEngine::new();
 
             if let Some(mp) = model_path {
-                let robot = robot::RobotModel::from_file(std::path::Path::new(mp))
+                let robot = articara::robot::RobotModel::from_file(std::path::Path::new(mp))
                     .unwrap_or_else(|e| {
                         eprintln!("Error loading {mp}: {e}");
                         std::process::exit(1);
