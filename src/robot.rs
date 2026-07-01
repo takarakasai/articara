@@ -199,18 +199,12 @@ impl RobotModel {
         Ok(model)
     }
 
-    /// Load a robot model from any supported format (auto-detected by extension).
+    /// Load a robot model from any supported format (auto-detected by
+    /// extension, with content sniffing for ambiguous `.xml`). Dispatches
+    /// through the [`crate::format::FormatRegistry`], so a newly
+    /// registered format is picked up here without further wiring.
     pub fn from_file(path: &Path) -> Result<Self, String> {
-        use crate::format::RobotFormat;
-        let fmt = RobotFormat::detect(path)
-            .ok_or_else(|| format!("Unknown file format: {:?}", path.extension()))?;
-        match fmt {
-            RobotFormat::Urdf => Self::from_urdf(path),
-            RobotFormat::Sdf => crate::sdf::import_sdf(path),
-            RobotFormat::Mjcf => crate::mjcf::import_mjcf(path),
-            RobotFormat::IsaacUsd => crate::usd_import::import_usda(path),
-            RobotFormat::Misa => Self::from_misa(path),
-        }
+        crate::format::FormatRegistry::default_registry().import(path)
     }
 
     /// Load a `.misa` master-format file. Convenience wrapper that
