@@ -609,7 +609,7 @@ impl ArticaraApp {
         rect: egui::Rect,
         aspect: f32,
     ) {
-        let Some(target_world) = self.ik_target_marker else { return };
+        let Some(target_world) = self.ik.target_marker else { return };
         let Some(ndc) = self.camera.project(&target_world, aspect) else { return };
 
         let screen_pos = egui::pos2(
@@ -642,7 +642,7 @@ impl ArticaraApp {
         );
 
         // Numeric position label + IK error
-        let error_str = match self.ik_error {
+        let error_str = match self.ik.error {
             Some(e) => format!("  err={:.4}", e),
             None => String::new(),
         };
@@ -670,7 +670,7 @@ impl ArticaraApp {
         rect: egui::Rect,
         aspect: f32,
     ) {
-        let Some(ee_world) = self.ik_ee_marker else { return };
+        let Some(ee_world) = self.ik.ee_marker else { return };
         let Some(ndc) = self.camera.project(&ee_world, aspect) else { return };
 
         let screen_pos = egui::pos2(
@@ -729,7 +729,7 @@ impl ArticaraApp {
         {
             return;
         }
-        let Some(ref root_name) = self.ik_root_link else { return };
+        let Some(ref root_name) = self.ik.root_link else { return };
         let Some(ref model) = self.model else { return };
 
         let transforms = model.compute_transforms();
@@ -809,7 +809,7 @@ impl ArticaraApp {
         rect: egui::Rect,
         aspect: f32,
     ) {
-        if self.pinned_links.is_empty() {
+        if self.ik.pinned_links.is_empty() {
             return;
         }
         let Some(ref model) = self.model else { return };
@@ -818,7 +818,7 @@ impl ArticaraApp {
         let pin_color = egui::Color32::from_rgb(255, 160, 0);
         let pin_bg = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140);
 
-        for pin in &self.pinned_links {
+        for pin in &self.ik.pinned_links {
             let Some(&li) = model.link_map.get(&pin.link_name) else { continue };
             let world_pos = model.ee_world_pos(li, &transforms);
             let Some(ndc) = self.camera.project(&world_pos, aspect) else { continue };

@@ -19,10 +19,10 @@ impl ArticaraApp {
                         ui.horizontal(|ui| {
                             ui.label("Solver:");
                             egui::ComboBox::from_id_salt("ik_solver")
-                                .selected_text(self.ik_solver.label())
+                                .selected_text(self.ik.solver.label())
                                 .show_ui(ui, |ui| {
                                     for &s in &articara::robot::IkSolver::ALL {
-                                        ui.selectable_value(&mut self.ik_solver, s, s.label());
+                                        ui.selectable_value(&mut self.ik.solver, s, s.label());
                                     }
                                 });
                         });
@@ -30,23 +30,23 @@ impl ArticaraApp {
                         ui.horizontal(|ui| {
                             ui.label("DoF:");
                             egui::ComboBox::from_id_salt("ik_dof")
-                                .selected_text(self.ik_dof.label())
+                                .selected_text(self.ik.dof.label())
                                 .show_ui(ui, |ui| {
                                     for &d in &articara::robot::IkDof::ALL {
-                                        ui.selectable_value(&mut self.ik_dof, d, d.label());
+                                        ui.selectable_value(&mut self.ik.dof, d, d.label());
                                     }
                                 });
                         });
                         // Damping slider (not shown for JT which doesn't use it)
-                        if self.ik_solver != articara::robot::IkSolver::JacobianTranspose {
+                        if self.ik.solver != articara::robot::IkSolver::JacobianTranspose {
                             ui.horizontal(|ui| {
-                                let label = match self.ik_solver {
+                                let label = match self.ik.solver {
                                     articara::robot::IkSolver::SrInverse => "λ_max:",
                                     _ => "Damping (λ):",
                                 };
                                 ui.label(label);
                                 ui.add(
-                                    egui::Slider::new(&mut self.ik_damping, 0.001..=0.5)
+                                    egui::Slider::new(&mut self.ik.damping, 0.001..=0.5)
                                         .logarithmic(true)
                                         .text("λ"),
                                 );
@@ -56,7 +56,7 @@ impl ArticaraApp {
                         ui.horizontal(|ui| {
                             ui.label("Weight:");
                             ui.add(
-                                egui::Slider::new(&mut self.ik_weight_gradient, 0.0..=5.0)
+                                egui::Slider::new(&mut self.ik.weight_gradient, 0.0..=5.0)
                                     .text("EE-proximal")
                             );
                         })
@@ -65,10 +65,10 @@ impl ArticaraApp {
                         // IK root link selector
                         let link_names: Vec<String> =
                             model.links.iter().map(|l| l.name.clone()).collect();
-                        let prev_ik_root = self.ik_root_link.clone();
+                        let prev_ik_root = self.ik.root_link.clone();
                         ui.horizontal(|ui| {
                             ui.label("Root:");
-                            let current_label = match &self.ik_root_link {
+                            let current_label = match &self.ik.root_link {
                                 None => "Auto (URDF Root)".to_string(),
                                 Some(name) => name.clone(),
                             };
@@ -77,23 +77,23 @@ impl ArticaraApp {
                                 .show_ui(ui, |ui| {
                                     if ui
                                         .selectable_label(
-                                            self.ik_root_link.is_none(),
+                                            self.ik.root_link.is_none(),
                                             "Auto (URDF Root)",
                                         )
                                         .clicked()
                                     {
-                                        self.ik_root_link = None;
+                                        self.ik.root_link = None;
                                     }
                                     for name in &link_names {
                                         let selected =
-                                            self.ik_root_link.as_deref() == Some(name.as_str());
+                                            self.ik.root_link.as_deref() == Some(name.as_str());
                                         if ui.selectable_label(selected, name).clicked() {
-                                            self.ik_root_link = Some(name.clone());
+                                            self.ik.root_link = Some(name.clone());
                                         }
                                     }
                                 });
                         });
-                        if self.ik_root_link != prev_ik_root {
+                        if self.ik.root_link != prev_ik_root {
                             model.base_transform = na::Isometry3::identity();
                         }
                     });
@@ -106,7 +106,7 @@ impl ArticaraApp {
                         ui.horizontal(|ui| {
                             ui.label("Pin weight:");
                             ui.add(
-                                egui::Slider::new(&mut self.ik_pin_weight, 1.0..=100.0)
+                                egui::Slider::new(&mut self.ik.pin_weight, 1.0..=100.0)
                                     .logarithmic(true)
                                     .text("w"),
                             );
@@ -117,13 +117,13 @@ impl ArticaraApp {
                         // Pin current selected link button
                         if let Some(li) = self.selected_link {
                             let link_name = model.links[li].name.clone();
-                            let already_pinned = self.pinned_links.iter().any(|p| p.link_name == link_name);
+                            let already_pinned = self.ik.pinned_links.iter().any(|p| p.link_name == link_name);
                             if !already_pinned {
                                 if ui.button(format!("📌 Pin \"{}\"", &link_name)).clicked() {
                                     let transforms = model.compute_transforms();
                                     let world_pos = model.ee_world_pos(li, &transforms);
                                     let world_rot = model.link_world_orientation(li, &transforms);
-                                    self.pinned_links.push(super::PinnedLink {
+                                    self.ik.pinned_links.push(super::PinnedLink {
                                         link_name: link_name.clone(),
                                         target_pos: world_pos.cast::<f64>(),
                                         target_rot: world_rot.cast::<f64>(),
@@ -135,7 +135,7 @@ impl ArticaraApp {
 
                         // List pinned links with remove buttons
                         let mut remove_idx = None;
-                        for (i, pin) in self.pinned_links.iter().enumerate() {
+                        for (i, pin) in self.ik.pinned_links.iter().enumerate() {
                             ui.horizontal(|ui| {
                                 ui.label(format!("📌 {}", &pin.link_name));
                                 ui.label(format!(
@@ -148,16 +148,16 @@ impl ArticaraApp {
                             });
                         }
                         if let Some(idx) = remove_idx {
-                            self.pinned_links.remove(idx);
+                            self.ik.pinned_links.remove(idx);
                         }
 
-                        if !self.pinned_links.is_empty() {
+                        if !self.ik.pinned_links.is_empty() {
                             // Update pin targets to current positions button
                             if ui.button("🔄 Re-pin all to current").on_hover_text(
                                 "Update all pinned link targets to their current world positions"
                             ).clicked() {
                                 let transforms = model.compute_transforms();
-                                for pin in &mut self.pinned_links {
+                                for pin in &mut self.ik.pinned_links {
                                     if let Some(&li) = model.link_map.get(&pin.link_name) {
                                         let pos = model.ee_world_pos(li, &transforms);
                                         pin.target_pos = pos.cast::<f64>();
@@ -166,11 +166,11 @@ impl ArticaraApp {
                                 }
                             }
                             if ui.button("🗑 Clear all pins").clicked() {
-                                self.pinned_links.clear();
+                                self.ik.pinned_links.clear();
                             }
                         }
 
-                        if self.pinned_links.is_empty() {
+                        if self.ik.pinned_links.is_empty() {
                             ui.label("No links pinned. Select a link and click Pin.");
                         }
                     });
@@ -183,7 +183,7 @@ impl ArticaraApp {
                         ui.horizontal(|ui| {
                             ui.label("Weight:");
                             ui.add(
-                                egui::Slider::new(&mut self.loop_closure_weight, 1.0..=200.0)
+                                egui::Slider::new(&mut self.ik.loop_closure_weight, 1.0..=200.0)
                                     .logarithmic(true)
                                     .text("w"),
                             );
@@ -285,6 +285,7 @@ impl ArticaraApp {
                             ui.horizontal(|ui| {
                                 ui.label("Link B:");
                                 let cur_b_label = self
+                                    .ik
                                     .loop_closure_link_b
                                     .and_then(|i| model.links.get(i).map(|l| l.name.as_str()))
                                     .unwrap_or("(not set)")
@@ -294,7 +295,7 @@ impl ArticaraApp {
                                 );
                             });
                             ui.horizontal(|ui| {
-                                let pick_label = if self.loop_closure_picking_b {
+                                let pick_label = if self.ik.loop_closure_picking_b {
                                     "🎯 Click a link in viewport…  (Esc to cancel)"
                                 } else {
                                     "👆 Pick B from viewport"
@@ -307,18 +308,19 @@ impl ArticaraApp {
                                     )
                                     .clicked()
                                 {
-                                    self.loop_closure_picking_b =
-                                        !self.loop_closure_picking_b;
+                                    self.ik.loop_closure_picking_b =
+                                        !self.ik.loop_closure_picking_b;
                                 }
                                 // Allow Esc to cancel the pick mode.
-                                if self.loop_closure_picking_b
+                                if self.ik.loop_closure_picking_b
                                     && ui.input(|i| i.key_pressed(egui::Key::Escape))
                                 {
-                                    self.loop_closure_picking_b = false;
+                                    self.ik.loop_closure_picking_b = false;
                                 }
                                 // Compact fallback dropdown for users who'd
                                 // rather pick by name.
                                 let mut dropdown_idx = self
+                                    .ik
                                     .loop_closure_link_b
                                     .unwrap_or(0)
                                     .min(model.links.len().saturating_sub(1));
@@ -336,7 +338,7 @@ impl ArticaraApp {
                                         }
                                     });
                                 if dropdown_idx != prev_dropdown_idx {
-                                    self.loop_closure_link_b = Some(dropdown_idx);
+                                    self.ik.loop_closure_link_b = Some(dropdown_idx);
                                 }
                             });
 
@@ -372,6 +374,7 @@ impl ArticaraApp {
                             // has been chosen yet, the Add / Capture buttons
                             // below stay disabled.
                             let link_b_name = self
+                                .ik
                                 .loop_closure_link_b
                                 .and_then(|i| model.links.get(i).map(|l| l.name.clone()));
                             let has_b = link_b_name.is_some();
@@ -516,7 +519,7 @@ impl ArticaraApp {
                             ui.label("DoF:");
                             for dof in super::PinDof::ALL {
                                 ui.selectable_value(
-                                    &mut self.chicken_head_dof,
+                                    &mut self.ik.chicken_head_dof,
                                     dof,
                                     dof.label(),
                                 );
@@ -526,17 +529,17 @@ impl ArticaraApp {
                         // Add selected link button
                         if let Some(li) = self.selected_link {
                             let link_name = &model.links[li].name;
-                            let already = self.chicken_head_links.iter().any(|n| n == link_name);
+                            let already = self.ik.chicken_head_links.iter().any(|n| n == link_name);
                             if !already {
                                 if ui.button(format!("🐔 Add \"{}\"", link_name)).clicked() {
-                                    self.chicken_head_links.push(link_name.clone());
+                                    self.ik.chicken_head_links.push(link_name.clone());
                                 }
                             }
                         }
 
                         // List with remove buttons
                         let mut ch_remove = None;
-                        for (i, name) in self.chicken_head_links.iter().enumerate() {
+                        for (i, name) in self.ik.chicken_head_links.iter().enumerate() {
                             ui.horizontal(|ui| {
                                 ui.label(format!("🐔 {}", name));
                                 if ui.small_button("✕").clicked() {
@@ -545,16 +548,16 @@ impl ArticaraApp {
                             });
                         }
                         if let Some(idx) = ch_remove {
-                            self.chicken_head_links.remove(idx);
+                            self.ik.chicken_head_links.remove(idx);
                         }
 
-                        if !self.chicken_head_links.is_empty() {
+                        if !self.ik.chicken_head_links.is_empty() {
                             if ui.button("🗑 Clear all").clicked() {
-                                self.chicken_head_links.clear();
+                                self.ik.chicken_head_links.clear();
                             }
                         }
 
-                        if self.chicken_head_links.is_empty() {
+                        if self.ik.chicken_head_links.is_empty() {
                             ui.label("Select a link and click Add.");
                         }
                     });

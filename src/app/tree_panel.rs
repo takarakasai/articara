@@ -95,8 +95,8 @@ impl ArticaraApp {
     /// - `⚓` (U+2693) for IK root link  (blue)
     /// - `◆` (U+25C6) for IK-pinned link (orange)
     fn link_tree_label(&self, link_name: &str, visuals: &egui::Visuals) -> egui::text::LayoutJob {
-        let is_ik_root = self.ik_root_link.as_deref() == Some(link_name);
-        let is_pinned = self.pinned_links.iter().any(|p| p.link_name == link_name);
+        let is_ik_root = self.ik.root_link.as_deref() == Some(link_name);
+        let is_pinned = self.ik.pinned_links.iter().any(|p| p.link_name == link_name);
 
         let base_color = visuals.text_color();
         let font_id = egui::FontId::proportional(13.0);

@@ -105,8 +105,8 @@ impl ArticaraApp {
         // handlers below for the entire frame, so the press half of a
         // press-release pair doesn't accidentally start a JointDrive drag
         // before the release lands and resolves the pick.
-        let pick_b_active_this_frame = self.loop_closure_picking_b;
-        if self.loop_closure_picking_b {
+        let pick_b_active_this_frame = self.ik.loop_closure_picking_b;
+        if self.ik.loop_closure_picking_b {
             let pressed = response.drag_started_by(egui::PointerButton::Primary);
             let clicked = response.clicked();
             if pressed || clicked {
@@ -200,22 +200,23 @@ impl ArticaraApp {
         if response.drag_stopped_by(egui::PointerButton::Primary) {
             // Remove chicken-head auto-pins (those whose link name
             // appears in chicken_head_links but not manually pinned).
-            if !self.chicken_head_links.is_empty() {
+            if !self.ik.chicken_head_links.is_empty() {
                 let ch_set: std::collections::HashSet<&str> = self
+                    .ik
                     .chicken_head_links
                     .iter()
                     .map(|s| s.as_str())
                     .collect();
-                self.pinned_links
+                self.ik.pinned_links
                     .retain(|p| !ch_set.contains(p.link_name.as_str()));
             }
             self.drag_state = None;
             self.offset_drag_state = None;
             #[cfg(feature = "mujoco")]
             self.handle_sim_drag_end();
-            self.ik_target_marker = None;
-            self.ik_ee_marker = None;
-            self.ik_error = None;
+            self.ik.target_marker = None;
+            self.ik.ee_marker = None;
+            self.ik.error = None;
             self.history.finalize();
         }
 
@@ -651,19 +652,19 @@ impl ArticaraApp {
                             DragMode::InverseKinematics => {
                                 let chain = model.chain_joints_between(
                                     link_name,
-                                    self.ik_root_link.as_deref(),
+                                    self.ik.root_link.as_deref(),
                                 );
                                 // Allow drag even with empty chain when pins,
                                 // chicken-head links, or loop closures exist,
                                 // because the constrained solver works in full
                                 // joint space.
-                                let has_constraints = !self.pinned_links.is_empty()
-                                    || !self.chicken_head_links.is_empty()
+                                let has_constraints = !self.ik.pinned_links.is_empty()
+                                    || !self.ik.chicken_head_links.is_empty()
                                     || !model.loop_closures.is_empty();
                                 if !chain.is_empty() || has_constraints {
                                     let ji =
                                         *chain.last().unwrap_or(&0);
-                                    let ik_root_tf = self.ik_root_link.as_ref().and_then(|name| {
+                                    let ik_root_tf = self.ik.root_link.as_ref().and_then(|name| {
                                         transforms.get(name).copied()
                                     });
                                     // Capture reference posture for null-space stabilization
@@ -688,9 +689,9 @@ impl ArticaraApp {
                                     let drag_depth = (hit_world - self.camera.eye()).dot(&cam_fwd);
 
                                     // Chicken-head: auto-pin designated links at their current poses
-                                    for ch_link in &self.chicken_head_links {
+                                    for ch_link in &self.ik.chicken_head_links {
                                         // Skip if already manually pinned
-                                        if self.pinned_links.iter().any(|p| p.link_name == *ch_link) {
+                                        if self.ik.pinned_links.iter().any(|p| p.link_name == *ch_link) {
                                             continue;
                                         }
                                         // Skip if this is the link being dragged
@@ -700,11 +701,11 @@ impl ArticaraApp {
                                         if let Some(&ch_li) = model.link_map.get(ch_link.as_str()) {
                                             let pos = model.ee_world_pos(ch_li, transforms).cast::<f64>();
                                             let rot = model.link_world_orientation(ch_li, transforms).cast::<f64>();
-                                            self.pinned_links.push(super::PinnedLink {
+                                            self.ik.pinned_links.push(super::PinnedLink {
                                                 link_name: ch_link.clone(),
                                                 target_pos: pos,
                                                 target_rot: rot,
-                                                dof: self.chicken_head_dof,
+                                                dof: self.ik.chicken_head_dof,
                                             });
                                         }
                                     }
@@ -717,7 +718,7 @@ impl ArticaraApp {
                                         pivot_world: na::Point3::origin(),
                                         chain,
                                         ee_link: link_name.to_string(),
-                                        ik_root_link: self.ik_root_link.clone(),
+                                        ik_root_link: self.ik.root_link.clone(),
                                         ik_root_initial_tf: ik_root_tf,
                                         ik_root_initial_pos,
                                         ref_positions,
@@ -750,7 +751,7 @@ impl ArticaraApp {
         };
         let (ro, rd) = self.camera.screen_ray(ndc, aspect);
         if let Some((li, _)) = model.pick_link(&ro, &rd, transforms) {
-            self.loop_closure_link_b = Some(li);
+            self.ik.loop_closure_link_b = Some(li);
             self.status_message = format!(
                 "Loop-closure link B = '{}'",
                 model.links[li].name,
@@ -758,7 +759,7 @@ impl ArticaraApp {
         } else if let Some(hov_li) = self.hovered_link {
             // Fallback when the precise mesh test misses but the hover
             // pick succeeded.
-            self.loop_closure_link_b = Some(hov_li);
+            self.ik.loop_closure_link_b = Some(hov_li);
             self.status_message = format!(
                 "Loop-closure link B = '{}'",
                 model.links[hov_li].name,
@@ -768,7 +769,7 @@ impl ArticaraApp {
                 "Loop-closure pick: no link under cursor".into();
         }
         // One-shot: turn off picking mode after a successful or failed click.
-        self.loop_closure_picking_b = false;
+        self.ik.loop_closure_picking_b = false;
     }
 
     fn handle_click(
@@ -1019,10 +1020,10 @@ impl ArticaraApp {
                                     let target_f64 = target.cast::<f64>();
 
                                     // Store target for debug overlay
-                                    self.ik_target_marker = Some(target);
+                                    self.ik.target_marker = Some(target);
                                     // Will compute IK error after solve loop
 
-                                    let damping = self.ik_damping as f64;
+                                    let damping = self.ik.damping as f64;
 
                                     // Differential IK: apply one small velocity-level
                                     // update per frame with proportional gain.
@@ -1057,7 +1058,7 @@ impl ArticaraApp {
                                     // as "wrong direction" for non-tip
                                     // links because their click points sit
                                     // off the joint origin).
-                                    let screen_axes = if self.ik_dof == articara::robot::IkDof::ScreenPlane2D {
+                                    let screen_axes = if self.ik.dof == articara::robot::IkDof::ScreenPlane2D {
                                         let cam_right = self.camera.world_right().cast::<f64>();
                                         let cam_up = self.camera.world_up_screen().cast::<f64>();
                                         Some((cam_right, cam_up))
@@ -1068,9 +1069,9 @@ impl ArticaraApp {
                                     // Compute per-joint cost weights: joints far from EE
                                     // are more expensive to move.
                                     // w_i = α^(n-1-i), i=n-1 (EE joint) → 1, i=0 (root) → α^(n-1)
-                                    let weights = if self.ik_weight_gradient > 0.01 {
+                                    let weights = if self.ik.weight_gradient > 0.01 {
                                         let n = drag.chain.len();
-                                        let alpha = (1.0 + self.ik_weight_gradient as f64).max(1.0);
+                                        let alpha = (1.0 + self.ik.weight_gradient as f64).max(1.0);
                                         let w: Vec<f64> = (0..n)
                                             .map(|i| alpha.powi((n - 1 - i) as i32))
                                             .collect();
@@ -1081,13 +1082,13 @@ impl ArticaraApp {
 
                                     // Build loop-closure constraints (empty if none defined)
                                     let loop_constraints = model.build_loop_diff_constraints(
-                                        self.loop_closure_weight as f64,
+                                        self.ik.loop_closure_weight as f64,
                                     );
                                     let has_loops = !loop_constraints.is_empty();
 
                                     // Use constrained IK when pins or loop closures exist
-                                    if !self.pinned_links.is_empty() || has_loops {
-                                        let pins: Vec<articara::robot::PinSpec> = self.pinned_links
+                                    if !self.ik.pinned_links.is_empty() || has_loops {
+                                        let pins: Vec<articara::robot::PinSpec> = self.ik.pinned_links
                                             .iter()
                                             .map(|p| articara::robot::PinSpec {
                                                 link_name: p.link_name.clone(),
@@ -1098,7 +1099,7 @@ impl ArticaraApp {
                                             .collect();
 
                                         let is_root_drag = drag.chain.is_empty();
-                                        if is_root_drag && !self.pinned_links.is_empty() {
+                                        if is_root_drag && !self.ik.pinned_links.is_empty() {
                                             // Dragged link is at or near the root: move
                                             // base_transform directly, then solve pin
                                             // + loop constraints via joints.
@@ -1123,7 +1124,7 @@ impl ArticaraApp {
                                                     na::DMatrix::<f64>::zeros(3, nv);
                                                 let zero = na::Vector3::zeros();
 
-                                                let misarta_damping = match self.ik_solver {
+                                                let misarta_damping = match self.ik.solver {
                                                     articara::robot::IkSolver::SrInverse => {
                                                         misarta::ik::Damping::AdaptiveManipulability {
                                                             lambda_min: 0.0,
@@ -1133,7 +1134,7 @@ impl ArticaraApp {
                                                     }
                                                     _ => misarta::ik::Damping::Fixed(damping),
                                                 };
-                                                let misarta_method = match self.ik_solver {
+                                                let misarta_method = match self.ik.solver {
                                                     articara::robot::IkSolver::JacobianTranspose => {
                                                         misarta::ik::SolverMethod::JacobianTranspose
                                                     }
@@ -1173,7 +1174,7 @@ impl ArticaraApp {
                                                                             pos_err.y, pos_err.z,
                                                                         ],
                                                                     ),
-                                                                    weight: self.ik_pin_weight as f64,
+                                                                    weight: self.ik.pin_weight as f64,
                                                                 },
                                                             );
                                                         } else {
@@ -1192,7 +1193,7 @@ impl ArticaraApp {
                                                                     error: na::DVector::from_column_slice(
                                                                         &[err.x, err.y, err.z],
                                                                     ),
-                                                                    weight: self.ik_pin_weight as f64,
+                                                                    weight: self.ik.pin_weight as f64,
                                                                 },
                                                             );
                                                         }
@@ -1201,7 +1202,7 @@ impl ArticaraApp {
 
                                                 // Add loop-closure constraints (recomputed after base move)
                                                 let loop_cs_post = model.build_loop_diff_constraints(
-                                                    self.loop_closure_weight as f64,
+                                                    self.ik.loop_closure_weight as f64,
                                                 );
                                                 constraints.extend(loop_cs_post);
 
@@ -1238,8 +1239,8 @@ impl ArticaraApp {
                                             // Non-root drag with pins/loops: augmented Jacobian
                                             let mc = model.mc();
                                             let nv = mc.model.nv;
-                                            let full_weights = if self.ik_weight_gradient > 0.01 {
-                                                let alpha = (1.0 + self.ik_weight_gradient as f64).max(1.0);
+                                            let full_weights = if self.ik.weight_gradient > 0.01 {
+                                                let alpha = (1.0 + self.ik.weight_gradient as f64).max(1.0);
                                                 let mut w = vec![alpha.powi(drag.chain.len().max(1) as i32 - 1); nv];
                                                 for (i, &ji) in drag.chain.iter().enumerate() {
                                                     if let Some(&Some(mi)) = mc.a2m.get(ji) {
@@ -1262,10 +1263,10 @@ impl ArticaraApp {
                                                 damping,
                                                 ik_gain,
                                                 max_joint_step,
-                                                self.ik_solver,
+                                                self.ik.solver,
                                                 screen_axes,
                                                 full_weights.as_deref(),
-                                                self.ik_pin_weight as f64,
+                                                self.ik.pin_weight as f64,
                                                 &loop_constraints,
                                                 Some(&ee_offset_world),
                                             );
@@ -1282,7 +1283,7 @@ impl ArticaraApp {
                                             ik_gain,
                                             max_joint_step,
                                             None,
-                                            self.ik_solver,
+                                            self.ik.solver,
                                             screen_axes,
                                             weights.as_deref(),
                                             Some(&ee_offset_world),
@@ -1293,7 +1294,7 @@ impl ArticaraApp {
                                     // Base correction: pin the IK root to its initial pose.
                                     // Skip when using pinned-link mode with root drag
                                     // (base_transform was moved intentionally).
-                                    let skip_base_correction = !self.pinned_links.is_empty()
+                                    let skip_base_correction = !self.ik.pinned_links.is_empty()
                                         && drag.chain.is_empty();
                                     if !skip_base_correction {
                                         if let Some(desired_tf) = drag.ik_root_initial_tf {
@@ -1315,8 +1316,8 @@ impl ArticaraApp {
                                         drag.link_idx, &final_tf,
                                         &drag.ee_local_offset,
                                     );
-                                    self.ik_ee_marker = Some(ee_final);
-                                    self.ik_error = Some(
+                                    self.ik.ee_marker = Some(ee_final);
+                                    self.ik.error = Some(
                                         (ee_final.cast::<f32>() - target).norm()
                                     );
                                 }
@@ -1355,7 +1356,7 @@ impl ArticaraApp {
                                 .map(|s| s.as_str()),
                             DragMode::InverseKinematics => {
                                 let chain = m.chain_joints(link_name);
-                                if chain.is_empty() && self.pinned_links.is_empty() {
+                                if chain.is_empty() && self.ik.pinned_links.is_empty() {
                                     None
                                 } else if chain.is_empty() {
                                     // Pinned mode: allow drag even on root

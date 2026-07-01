@@ -2568,7 +2568,7 @@ impl ArticaraApp {
     /// Update all app-level references when a link is renamed.
     fn update_link_name_refs(&mut self, old: &str, new: &str) {
         // Pinned links
-        for pin in &mut self.pinned_links {
+        for pin in &mut self.ik.pinned_links {
             if pin.link_name == old {
                 pin.link_name = new.to_string();
             }
@@ -2586,8 +2586,8 @@ impl ArticaraApp {
             }
         }
         // IK root link
-        if self.ik_root_link.as_deref() == Some(old) {
-            self.ik_root_link = Some(new.to_string());
+        if self.ik.root_link.as_deref() == Some(old) {
+            self.ik.root_link = Some(new.to_string());
         }
         // Dynamics EE link
         if self.dynamics_ee_link.as_deref() == Some(old) {
