@@ -382,7 +382,7 @@ impl ArticaraApp {
                                                 }
                                             );
                                             if btn.clicked() {
-                                                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
+                                                let verts = vertices.clone();
                                                 let origin = vis.origin;
                                                 let color = vis.color;
                                                 let method = self.decomposition_method;
@@ -393,131 +393,26 @@ impl ArticaraApp {
                                                 let prog_clone = std::sync::Arc::clone(&progress);
                                                 let sub_clone = std::sync::Arc::clone(&sub_progress);
                                                 let handle = std::thread::spawn(move || {
-                                                    super::DecomposeResult::Visuals(match method {
-                                                        misarta::decompose::DecompositionMethod::Vhacd => {
-                                                            let hulls = misarta::decompose::vhacd_with_progress(
-                                                                &mesh_data,
-                                                                &misarta::decompose::VhacdParams::default(),
-                                                                Some(&prog_clone),
-                                                                Some(&sub_clone),
-                                                            );
-                                                            hulls.iter().map(|h| {
-                                                                crate::robot::VisualData {
-                                                                    origin,
-                                                                    geometry: GeomData::Mesh {
-                                                                        vertices: h.to_flat_vertices_f32(),
-                                                                        filename: None,
-                                                                        scale: None,
-                                                                    },
-                                                                    color,
-                                                                }
-                                                            }).collect::<Vec<_>>()
-                                                        }
-                                                        misarta::decompose::DecompositionMethod::SphereTree => {
-                                                            let spheres = misarta::decompose::sphere_tree_with_progress(
-                                                                &mesh_data,
-                                                                &misarta::decompose::SphereTreeParams::default(),
-                                                                Some(&prog_clone),
-                                                                Some(&sub_clone),
-                                                            );
-                                                            spheres.iter().map(|s| {
-                                                                let t = na::Translation3::new(s.center.x as f32, s.center.y as f32, s.center.z as f32);
-                                                                let sphere_origin = origin * na::Isometry3::from_parts(t, na::UnitQuaternion::identity());
-                                                                crate::robot::VisualData {
-                                                                    origin: sphere_origin,
-                                                                    geometry: GeomData::Sphere { radius: s.radius as f32 },
-                                                                    color,
-                                                                }
-                                                            }).collect::<Vec<_>>()
-                                                        }
-                                                        misarta::decompose::DecompositionMethod::PrimitiveFit => {
-                                                            let prims = misarta::decompose::primitive_fit_with_progress(
-                                                                &mesh_data,
-                                                                &misarta::decompose::VhacdParams::default(),
-                                                                Some(&prog_clone),
-                                                                Some(&sub_clone),
-                                                            );
-                                                            prims.iter().map(|p| {
-                                                                let t = na::Translation3::new(
-                                                                    p.center.x as f32,
-                                                                    p.center.y as f32,
-                                                                    p.center.z as f32,
-                                                                );
-                                                                let r = na::UnitQuaternion::new_normalize(na::Quaternion::new(
-                                                                    p.rotation.w as f32,
-                                                                    p.rotation.i as f32,
-                                                                    p.rotation.j as f32,
-                                                                    p.rotation.k as f32,
-                                                                ));
-                                                                let prim_origin = origin * na::Isometry3::from_parts(t, r);
-                                                                let geometry = match p.kind {
-                                                                    misarta::decompose::PrimitiveKind::Box { hx, hy, hz } => {
-                                                                        GeomData::Box {
-                                                                            hx: hx as f32,
-                                                                            hy: hy as f32,
-                                                                            hz: hz as f32,
-                                                                        }
-                                                                    }
-                                                                    misarta::decompose::PrimitiveKind::Cylinder { radius, half_length } => {
-                                                                        GeomData::Cylinder {
-                                                                            radius: radius as f32,
-                                                                            half_length: half_length as f32,
-                                                                        }
-                                                                    }
-                                                                    misarta::decompose::PrimitiveKind::Sphere { radius } => {
-                                                                        GeomData::Sphere { radius: radius as f32 }
-                                                                    }
-                                                                };
-                                                                crate::robot::VisualData {
-                                                                    origin: prim_origin,
-                                                                    geometry,
-                                                                    color,
-                                                                }
-                                                            }).collect::<Vec<_>>()
-                                                        }
-                                                        misarta::decompose::DecompositionMethod::PrimitiveFitDirect => {
-                                                            let p = misarta::decompose::primitive_fit_direct_with_progress(
-                                                                &mesh_data,
-                                                                Some(&prog_clone),
-                                                                Some(&sub_clone),
-                                                            );
-                                                            let t = na::Translation3::new(
-                                                                p.center.x as f32,
-                                                                p.center.y as f32,
-                                                                p.center.z as f32,
-                                                            );
-                                                            let r = na::UnitQuaternion::new_normalize(na::Quaternion::new(
-                                                                p.rotation.w as f32,
-                                                                p.rotation.i as f32,
-                                                                p.rotation.j as f32,
-                                                                p.rotation.k as f32,
-                                                            ));
-                                                            let prim_origin = origin * na::Isometry3::from_parts(t, r);
-                                                            let geometry = match p.kind {
-                                                                misarta::decompose::PrimitiveKind::Box { hx, hy, hz } => {
-                                                                    GeomData::Box {
-                                                                        hx: hx as f32,
-                                                                        hy: hy as f32,
-                                                                        hz: hz as f32,
-                                                                    }
-                                                                }
-                                                                misarta::decompose::PrimitiveKind::Cylinder { radius, half_length } => {
-                                                                    GeomData::Cylinder {
-                                                                        radius: radius as f32,
-                                                                        half_length: half_length as f32,
-                                                                    }
-                                                                }
-                                                                misarta::decompose::PrimitiveKind::Sphere { radius } => {
-                                                                    GeomData::Sphere { radius: radius as f32 }
-                                                                }
-                                                            };
-                                                            vec![crate::robot::VisualData {
-                                                                origin: prim_origin,
+                                                    let parts = crate::mesh_ops::decompose_mesh(
+                                                        &verts,
+                                                        origin,
+                                                        method,
+                                                        crate::mesh_ops::DecomposeOptions {
+                                                            max_count: None,
+                                                            progress: Some(&prog_clone),
+                                                            sub_progress: Some(&sub_clone),
+                                                        },
+                                                    );
+                                                    super::DecomposeResult::Visuals(
+                                                        parts
+                                                            .into_iter()
+                                                            .map(|(origin, geometry)| crate::robot::VisualData {
+                                                                origin,
                                                                 geometry,
                                                                 color,
-                                                            }]
-                                                        }
-                                                    })
+                                                            })
+                                                            .collect(),
+                                                    )
                                                 });
                                                 self.decompose_task = Some(super::DecomposeTask {
                                                     link_index: li,
@@ -794,7 +689,7 @@ impl ArticaraApp {
                                                 }
                                             );
                                             if btn.clicked() {
-                                                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
+                                                let verts = vertices.clone();
                                                 let origin = col.origin;
                                                 let method = self.decomposition_method;
                                                 let progress = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
@@ -804,135 +699,26 @@ impl ArticaraApp {
                                                 let prog_clone = std::sync::Arc::clone(&progress);
                                                 let sub_clone = std::sync::Arc::clone(&sub_progress);
                                                 let handle = std::thread::spawn(move || {
-                                                    super::DecomposeResult::Collisions(match method {
-                                                        misarta::decompose::DecompositionMethod::Vhacd => {
-                                                            let hulls = misarta::decompose::vhacd_with_progress(
-                                                                &mesh_data,
-                                                                &misarta::decompose::VhacdParams::default(),
-                                                                Some(&prog_clone),
-                                                                Some(&sub_clone),
-                                                            );
-                                                            hulls.iter().map(|h| {
-                                                                crate::robot::CollisionData {
-                                                                    origin,
-                                                                    geometry: GeomData::Mesh {
-                                                                        vertices: h.to_flat_vertices_f32(),
-                                                                        filename: None,
-                                                                        scale: None,
-                                                                    },
-                                                                
-                                                                    physics: None,
-                                                                }
-                                                            }).collect::<Vec<_>>()
-                                                        }
-                                                        misarta::decompose::DecompositionMethod::SphereTree => {
-                                                            let spheres = misarta::decompose::sphere_tree_with_progress(
-                                                                &mesh_data,
-                                                                &misarta::decompose::SphereTreeParams::default(),
-                                                                Some(&prog_clone),
-                                                                Some(&sub_clone),
-                                                            );
-                                                            spheres.iter().map(|s| {
-                                                                let t = na::Translation3::new(s.center.x as f32, s.center.y as f32, s.center.z as f32);
-                                                                let sphere_origin = origin * na::Isometry3::from_parts(t, na::UnitQuaternion::identity());
-                                                                crate::robot::CollisionData {
-                                                                    origin: sphere_origin,
-                                                                    geometry: GeomData::Sphere { radius: s.radius as f32 },
-                                                                
-                                                                    physics: None,
-                                                                }
-                                                            }).collect::<Vec<_>>()
-                                                        }
-                                                        misarta::decompose::DecompositionMethod::PrimitiveFit => {
-                                                            let prims = misarta::decompose::primitive_fit_with_progress(
-                                                                &mesh_data,
-                                                                &misarta::decompose::VhacdParams::default(),
-                                                                Some(&prog_clone),
-                                                                Some(&sub_clone),
-                                                            );
-                                                            prims.iter().map(|p| {
-                                                                let t = na::Translation3::new(
-                                                                    p.center.x as f32,
-                                                                    p.center.y as f32,
-                                                                    p.center.z as f32,
-                                                                );
-                                                                let r = na::UnitQuaternion::new_normalize(na::Quaternion::new(
-                                                                    p.rotation.w as f32,
-                                                                    p.rotation.i as f32,
-                                                                    p.rotation.j as f32,
-                                                                    p.rotation.k as f32,
-                                                                ));
-                                                                let prim_origin = origin * na::Isometry3::from_parts(t, r);
-                                                                let geometry = match p.kind {
-                                                                    misarta::decompose::PrimitiveKind::Box { hx, hy, hz } => {
-                                                                        GeomData::Box {
-                                                                            hx: hx as f32,
-                                                                            hy: hy as f32,
-                                                                            hz: hz as f32,
-                                                                        }
-                                                                    }
-                                                                    misarta::decompose::PrimitiveKind::Cylinder { radius, half_length } => {
-                                                                        GeomData::Cylinder {
-                                                                            radius: radius as f32,
-                                                                            half_length: half_length as f32,
-                                                                        }
-                                                                    }
-                                                                    misarta::decompose::PrimitiveKind::Sphere { radius } => {
-                                                                        GeomData::Sphere { radius: radius as f32 }
-                                                                    }
-                                                                };
-                                                                crate::robot::CollisionData {
-                                                                    origin: prim_origin,
-                                                                    geometry,
-                                                                
-                                                                    physics: None,
-                                                                }
-                                                            }).collect::<Vec<_>>()
-                                                        }
-                                                        misarta::decompose::DecompositionMethod::PrimitiveFitDirect => {
-                                                            let p = misarta::decompose::primitive_fit_direct_with_progress(
-                                                                &mesh_data,
-                                                                Some(&prog_clone),
-                                                                Some(&sub_clone),
-                                                            );
-                                                            let t = na::Translation3::new(
-                                                                p.center.x as f32,
-                                                                p.center.y as f32,
-                                                                p.center.z as f32,
-                                                            );
-                                                            let r = na::UnitQuaternion::new_normalize(na::Quaternion::new(
-                                                                p.rotation.w as f32,
-                                                                p.rotation.i as f32,
-                                                                p.rotation.j as f32,
-                                                                p.rotation.k as f32,
-                                                            ));
-                                                            let prim_origin = origin * na::Isometry3::from_parts(t, r);
-                                                            let geometry = match p.kind {
-                                                                misarta::decompose::PrimitiveKind::Box { hx, hy, hz } => {
-                                                                    GeomData::Box {
-                                                                        hx: hx as f32,
-                                                                        hy: hy as f32,
-                                                                        hz: hz as f32,
-                                                                    }
-                                                                }
-                                                                misarta::decompose::PrimitiveKind::Cylinder { radius, half_length } => {
-                                                                    GeomData::Cylinder {
-                                                                        radius: radius as f32,
-                                                                        half_length: half_length as f32,
-                                                                    }
-                                                                }
-                                                                misarta::decompose::PrimitiveKind::Sphere { radius } => {
-                                                                    GeomData::Sphere { radius: radius as f32 }
-                                                                }
-                                                            };
-                                                            vec![crate::robot::CollisionData {
-                                                                origin: prim_origin,
+                                                    let parts = crate::mesh_ops::decompose_mesh(
+                                                        &verts,
+                                                        origin,
+                                                        method,
+                                                        crate::mesh_ops::DecomposeOptions {
+                                                            max_count: None,
+                                                            progress: Some(&prog_clone),
+                                                            sub_progress: Some(&sub_clone),
+                                                        },
+                                                    );
+                                                    super::DecomposeResult::Collisions(
+                                                        parts
+                                                            .into_iter()
+                                                            .map(|(origin, geometry)| crate::robot::CollisionData {
+                                                                origin,
                                                                 geometry,
-                                                            
                                                                 physics: None,
-                                                            }]
-                                                        }
-                                                    })
+                                                            })
+                                                            .collect(),
+                                                    )
                                                 });
                                                 self.decompose_task = Some(super::DecomposeTask {
                                                     link_index: li,

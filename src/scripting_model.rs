@@ -2118,24 +2118,16 @@ fn reduce_all_meshes_impl(
 ) -> i64 {
     let mut removed = 0i64;
     for link in &mut robot.links {
-        for vis in &mut link.visuals {
-            if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = vis.geometry {
-                let before = vertices.len() as i64 / 18;
-                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
-                let reduced = mesh_data.decimate_with(ratio, method);
-                *vertices = reduced.to_flat_vertices_f32();
-                let after = reduced.num_triangles() as i64;
-                removed += before - after;
-            }
-        }
-        for col in &mut link.collisions {
-            if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = col.geometry {
-                let before = vertices.len() as i64 / 18;
-                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
-                let reduced = mesh_data.decimate_with(ratio, method);
-                *vertices = reduced.to_flat_vertices_f32();
-                let after = reduced.num_triangles() as i64;
-                removed += before - after;
+        let geoms = link
+            .visuals
+            .iter_mut()
+            .map(|v| &mut v.geometry)
+            .chain(link.collisions.iter_mut().map(|c| &mut c.geometry));
+        for geom in geoms {
+            if let crate::robot::GeomData::Mesh { vertices, .. } = geom {
+                let (before, after) =
+                    crate::mesh_ops::decimate_flat_vertices(vertices, ratio, method);
+                removed += before as i64 - after as i64;
             }
         }
     }
@@ -2164,130 +2156,22 @@ fn decompose_collision_impl(
         _ => return -1,
     };
 
-    let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(&vertices);
-
-    let new_collisions: Vec<crate::robot::CollisionData> = match method {
-        misarta::decompose::DecompositionMethod::Vhacd => {
-            let params = misarta::decompose::VhacdParams {
-                max_hulls: max_count.unwrap_or(16) as u32,
-                ..Default::default()
-            };
-            let hulls = misarta::decompose::vhacd(&mesh_data, &params);
-            hulls.iter().map(|h| {
-                crate::robot::CollisionData {
-                    origin,
-                    geometry: crate::robot::GeomData::Mesh {
-                        vertices: h.to_flat_vertices_f32(),
-                        filename: None,
-                        scale: None,
-                    },
-                
-                    physics: None,
-                }
-            }).collect()
-        }
-        misarta::decompose::DecompositionMethod::SphereTree => {
-            let params = misarta::decompose::SphereTreeParams {
-                max_spheres: max_count.unwrap_or(16),
-                ..Default::default()
-            };
-            let spheres = misarta::decompose::sphere_tree(&mesh_data, &params);
-            spheres.iter().map(|s| {
-                use nalgebra as na;
-                let t = na::Translation3::new(s.center.x as f32, s.center.y as f32, s.center.z as f32);
-                let sphere_origin = origin * na::Isometry3::from_parts(t, na::UnitQuaternion::identity());
-                crate::robot::CollisionData {
-                    origin: sphere_origin,
-                    geometry: crate::robot::GeomData::Sphere { radius: s.radius as f32 },
-                
-                    physics: None,
-                }
-            }).collect()
-        }
-        misarta::decompose::DecompositionMethod::PrimitiveFit => {
-            use nalgebra as na;
-            let params = misarta::decompose::VhacdParams::default();
-            let prims = misarta::decompose::primitive_fit(&mesh_data, &params);
-            prims.iter().map(|p| {
-                let t = na::Translation3::new(
-                    p.center.x as f32,
-                    p.center.y as f32,
-                    p.center.z as f32,
-                );
-                let r = na::UnitQuaternion::new_normalize(na::Quaternion::new(
-                    p.rotation.w as f32,
-                    p.rotation.i as f32,
-                    p.rotation.j as f32,
-                    p.rotation.k as f32,
-                ));
-                let prim_origin = origin * na::Isometry3::from_parts(t, r);
-                let geometry = match p.kind {
-                    misarta::decompose::PrimitiveKind::Box { hx, hy, hz } => {
-                        crate::robot::GeomData::Box {
-                            hx: hx as f32,
-                            hy: hy as f32,
-                            hz: hz as f32,
-                        }
-                    }
-                    misarta::decompose::PrimitiveKind::Cylinder { radius, half_length } => {
-                        crate::robot::GeomData::Cylinder {
-                            radius: radius as f32,
-                            half_length: half_length as f32,
-                        }
-                    }
-                    misarta::decompose::PrimitiveKind::Sphere { radius } => {
-                        crate::robot::GeomData::Sphere { radius: radius as f32 }
-                    }
-                };
-                crate::robot::CollisionData {
-                    origin: prim_origin,
-                    geometry,
-                
-                    physics: None,
-                }
-            }).collect()
-        }
-        misarta::decompose::DecompositionMethod::PrimitiveFitDirect => {
-            use nalgebra as na;
-            let p = misarta::decompose::primitive_fit_direct(&mesh_data);
-            let t = na::Translation3::new(
-                p.center.x as f32,
-                p.center.y as f32,
-                p.center.z as f32,
-            );
-            let r = na::UnitQuaternion::new_normalize(na::Quaternion::new(
-                p.rotation.w as f32,
-                p.rotation.i as f32,
-                p.rotation.j as f32,
-                p.rotation.k as f32,
-            ));
-            let prim_origin = origin * na::Isometry3::from_parts(t, r);
-            let geometry = match p.kind {
-                misarta::decompose::PrimitiveKind::Box { hx, hy, hz } => {
-                    crate::robot::GeomData::Box {
-                        hx: hx as f32,
-                        hy: hy as f32,
-                        hz: hz as f32,
-                    }
-                }
-                misarta::decompose::PrimitiveKind::Cylinder { radius, half_length } => {
-                    crate::robot::GeomData::Cylinder {
-                        radius: radius as f32,
-                        half_length: half_length as f32,
-                    }
-                }
-                misarta::decompose::PrimitiveKind::Sphere { radius } => {
-                    crate::robot::GeomData::Sphere { radius: radius as f32 }
-                }
-            };
-            vec![crate::robot::CollisionData {
-                origin: prim_origin,
-                geometry,
-            
-                physics: None,
-            }]
-        }
-    };
+    let new_collisions: Vec<crate::robot::CollisionData> = crate::mesh_ops::decompose_mesh(
+        &vertices,
+        origin,
+        method,
+        crate::mesh_ops::DecomposeOptions {
+            max_count: Some(max_count.unwrap_or(16)),
+            ..Default::default()
+        },
+    )
+    .into_iter()
+    .map(|(origin, geometry)| crate::robot::CollisionData {
+        origin,
+        geometry,
+        physics: None,
+    })
+    .collect();
 
     if new_collisions.is_empty() {
         return 0;
