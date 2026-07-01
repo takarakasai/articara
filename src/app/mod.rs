@@ -592,45 +592,10 @@ pub struct ArticaraApp {
     /// so the toggle survives Stop → Play (we re-apply it on `mj_start`).
     #[cfg(feature = "mujoco")]
     enforce_gravity_compensation: bool,
-    /// Whether the Joint Peaks time-series plot window is open.
+    /// Joint Peaks plot window state (open flag, selection, axis and
+    /// CSV-export dialog). See [`peaks_plot_window::PeaksPlotState`].
     #[cfg(feature = "mujoco")]
-    show_peaks_plot: bool,
-    /// Joint selected for the Joint Peaks plot. `None` = plot all movable joints.
-    #[cfg(feature = "mujoco")]
-    peaks_plot_joint: Option<String>,
-    /// Which signal to display on the Joint Peaks plot.
-    #[cfg(feature = "mujoco")]
-    peaks_plot_metric: PeaksPlotMetric,
-    /// One-shot flag: when set, the next plot draw resets the zoom + pan
-    /// view to the data's auto-bounds. Cleared after the call so subsequent
-    /// frames retain the user's manipulated view.
-    #[cfg(feature = "mujoco")]
-    peaks_plot_reset_view: bool,
-    /// Whether the X-axis auto-fits to all stored samples or shows a fixed-
-    /// length sliding window anchored to the latest sample.
-    #[cfg(feature = "mujoco")]
-    peaks_plot_xaxis_mode: PeaksXAxisMode,
-    /// In Auto mode, how many seconds of history to retain (used to size the
-    /// MuJoCo trace ring buffer).
-    #[cfg(feature = "mujoco")]
-    peaks_plot_auto_seconds: f32,
-    /// In Auto mode, if `true` the buffer is uncapped (subject to a hard cap
-    /// of [`PEAKS_PLOT_UNLIMITED_CAP`] samples to prevent OOM).
-    #[cfg(feature = "mujoco")]
-    peaks_plot_auto_unlimited: bool,
-    /// In Fixed mode, length of the sliding x-axis window in seconds.
-    #[cfg(feature = "mujoco")]
-    peaks_plot_fixed_seconds: f32,
-    /// Joint names whose trace is hidden when rendering "all" mode. Single-
-    /// joint focus mode (`peaks_plot_joint = Some(_)`) bypasses this set.
-    #[cfg(feature = "mujoco")]
-    peaks_plot_hidden_joints: HashSet<String>,
-    /// File path used for the most recent CSV export.
-    #[cfg(feature = "mujoco")]
-    peaks_plot_csv_path: String,
-    /// File dialog for saving the trace as CSV.
-    #[cfg(feature = "mujoco")]
-    dlg_save_peaks_csv: file_dialog::FileDialog,
+    peaks_plot: peaks_plot_window::PeaksPlotState,
     /// File dialog for loading a Rhai script to run in the console.
     dlg_open_script: file_dialog::FileDialog,
     /// Most-recently-loaded script path (used to pre-fill the file dialog).
@@ -1033,27 +998,8 @@ impl ArticaraApp {
             #[cfg(feature = "mujoco")]
             enforce_gravity_compensation: false,
             #[cfg(feature = "mujoco")]
-            show_peaks_plot: false,
             #[cfg(feature = "mujoco")]
-            peaks_plot_joint: None,
-            #[cfg(feature = "mujoco")]
-            peaks_plot_metric: PeaksPlotMetric::Torque,
-            #[cfg(feature = "mujoco")]
-            peaks_plot_reset_view: false,
-            #[cfg(feature = "mujoco")]
-            peaks_plot_xaxis_mode: PeaksXAxisMode::Auto,
-            #[cfg(feature = "mujoco")]
-            peaks_plot_auto_seconds: 10.0,
-            #[cfg(feature = "mujoco")]
-            peaks_plot_auto_unlimited: false,
-            #[cfg(feature = "mujoco")]
-            peaks_plot_fixed_seconds: 5.0,
-            #[cfg(feature = "mujoco")]
-            peaks_plot_hidden_joints: HashSet::new(),
-            #[cfg(feature = "mujoco")]
-            peaks_plot_csv_path: String::new(),
-            #[cfg(feature = "mujoco")]
-            dlg_save_peaks_csv: file_dialog::FileDialog::new("dlg_save_peaks_csv"),
+            peaks_plot: peaks_plot_window::PeaksPlotState::default(),
             dlg_open_script: file_dialog::FileDialog::new("dlg_open_script"),
             script_path: String::new(),
             pending_script_run: None,
@@ -2157,9 +2103,9 @@ impl ArticaraApp {
 
         // --- Save Peaks Plot CSV dialog ---
         #[cfg(feature = "mujoco")]
-        match self.dlg_save_peaks_csv.show(ctx) {
+        match self.peaks_plot.dlg_save_csv.show(ctx) {
             FileDialogResult::Confirmed(path) => {
-                self.peaks_plot_csv_path = path.display().to_string();
+                self.peaks_plot.csv_path = path.display().to_string();
                 let result = if let (Some(model), Some(sim)) =
                     (self.model.as_ref(), self.mujoco_sim.as_ref())
                 {

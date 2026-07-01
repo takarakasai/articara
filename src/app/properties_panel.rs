@@ -2058,7 +2058,7 @@ impl ArticaraApp {
                     }
                 });
                 if plot_clicked {
-                    self.show_peaks_plot = true;
+                    self.peaks_plot.open = true;
                 }
                 egui::ScrollArea::vertical()
                     .max_height(280.0)
