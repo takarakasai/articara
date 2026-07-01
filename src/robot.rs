@@ -1758,6 +1758,26 @@ impl RobotModel {
             Some(s) => s,
             None => return Ok(()), // No source path — no meshes to copy
         };
+
+        // Non-URDF sources (`.misa` etc.) can't be re-read with `urdf_rs`
+        // below. Their generated XML references the model's own relative
+        // mesh paths (`meshes/<file>`), so copy those next to the output
+        // URDF the same way a `.misa` save does — mirrors the source-type
+        // branch introduced for `export_urdf` itself.
+        let is_urdf_source = source
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|ext| {
+                let lc = ext.to_ascii_lowercase();
+                lc == "urdf" || lc == "xacro"
+            })
+            .unwrap_or(false);
+        if !is_urdf_source {
+            let output_dir = output_path.parent().unwrap_or(Path::new("."));
+            copy_referenced_meshes_to_misa_dir(self, Some(source), output_dir)?;
+            return Ok(());
+        }
+
         let urdf_dir = source.parent().unwrap_or(Path::new("."));
         let package_dir = urdf_dir.parent().unwrap_or(urdf_dir);
         let output_dir = output_path.parent().unwrap_or(Path::new("."));
