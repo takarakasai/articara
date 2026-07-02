@@ -2999,7 +2999,7 @@ dependencies = [
 [[package]]
 name = "misarta"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misarta.git#ae1271dd6487bcebade92bd57cf4060694a25e8a"
+source = "git+https://github.com/takarakasai/misarta.git#43a0d0f3a83a6880013ee7e920804d5f6207cb71"
 dependencies = [
  "clarabel",
  "nalgebra",
