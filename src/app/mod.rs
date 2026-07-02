@@ -2058,20 +2058,20 @@ impl ArticaraApp {
         // --- Add Mesh (STL/DAE) dialog ---
         match self.dlg_add_mesh.show(ctx) {
             FileDialogResult::Confirmed(path) => {
-                let vertices = articara::robot::load_mesh_file(&path);
-                if vertices.is_empty() {
+                let mesh = articara::robot::load_mesh(&path, None);
+                if mesh.num_triangles() == 0 {
                     self.status_message = format!(
                         "メッシュ読み込み失敗: {}",
                         path.display()
                     );
                 } else if let Some(target) = self.add_mesh_target.take() {
-                    let tri_count = vertices.len() / 18;
+                    let tri_count = mesh.num_triangles();
                     let fname = path.display().to_string();
                     if let Some(ref mut model) = self.model {
                         if target.link_index < model.links.len() {
                             let link = &mut model.links[target.link_index];
                             let geom = articara::robot::GeomData::Mesh {
-                                vertices,
+                                mesh,
                                 filename: Some(fname.clone()),
                                 scale: None,
                             };

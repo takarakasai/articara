@@ -580,7 +580,7 @@ mod misa_load {
                 let path = base_dir.join(file);
                 let scale_arr = [scale[0] as f32, scale[1] as f32, scale[2] as f32];
                 GeomData::Mesh {
-                    vertices: super::load_mesh_flat(&path, Some(&scale_arr)),
+                    mesh: super::load_mesh(&path, Some(&scale_arr)),
                     filename: Some(file.clone()),
                     scale: Some(scale_arr),
                 }
@@ -765,7 +765,9 @@ pub fn precise_geometry_intersect(
             let t_bot = ray_sphere_intersect(&local_origin, &local_dir, &bot_center, *radius);
             [t_cyl, t_top, t_bot].iter().filter_map(|t| *t).reduce(f32::min)
         }
-        GeomData::Mesh { vertices, .. } => ray_mesh_intersect(&local_origin, &local_dir, vertices),
+        GeomData::Mesh { mesh, .. } => {
+            ray_mesh_intersect(&local_origin, &local_dir, &mesh.to_flat_vertices_f32())
+        }
     }
 }
 
@@ -1813,7 +1815,7 @@ fn convert_geometry(geom: &urdf_rs::Geometry, package_dir: &Path) -> GeomData {
                 .as_ref()
                 .map(|s| [s.0[0] as f32, s.0[1] as f32, s.0[2] as f32]);
             GeomData::Mesh {
-                vertices: load_mesh_flat(&mesh_path, sf.as_ref()),
+                mesh: load_mesh(&mesh_path, sf.as_ref()),
                 filename: Some(filename.clone()),
                 scale: sf,
             }
@@ -1921,15 +1923,15 @@ where
     for link in &mut model.links {
         let link_name = sanitize_filename(&link.name);
         for (vi, vis) in link.visuals.iter_mut().enumerate() {
-            if let GeomData::Mesh { vertices, filename, .. } = &mut vis.geometry {
-                if filename.is_none() && !vertices.is_empty() {
+            if let GeomData::Mesh { mesh, filename, .. } = &mut vis.geometry {
+                if filename.is_none() && mesh.num_triangles() > 0 {
                     if need_dir {
                         std::fs::create_dir_all(&abs_dir)
                             .map_err(|e| format!("create {abs_dir:?}: {e}"))?;
                         need_dir = false;
                     }
                     let fname = format!("{link_name}_vis_{vi}.stl");
-                    write_stl_binary(&abs_dir.join(&fname), vertices)
+                    write_stl_binary(&abs_dir.join(&fname), &mesh.to_flat_vertices_f32())
                         .map_err(|e| format!("write {fname}: {e}"))?;
                     *filename = Some(make_ref(&fname));
                     written += 1;
@@ -1937,15 +1939,15 @@ where
             }
         }
         for (ci, col) in link.collisions.iter_mut().enumerate() {
-            if let GeomData::Mesh { vertices, filename, .. } = &mut col.geometry {
-                if filename.is_none() && !vertices.is_empty() {
+            if let GeomData::Mesh { mesh, filename, .. } = &mut col.geometry {
+                if filename.is_none() && mesh.num_triangles() > 0 {
                     if need_dir {
                         std::fs::create_dir_all(&abs_dir)
                             .map_err(|e| format!("create {abs_dir:?}: {e}"))?;
                         need_dir = false;
                     }
                     let fname = format!("{link_name}_col_{ci}.stl");
-                    write_stl_binary(&abs_dir.join(&fname), vertices)
+                    write_stl_binary(&abs_dir.join(&fname), &mesh.to_flat_vertices_f32())
                         .map_err(|e| format!("write {fname}: {e}"))?;
                     *filename = Some(make_ref(&fname));
                     written += 1;
@@ -2089,11 +2091,13 @@ fn sanitize_filename(s: &str) -> String {
 }
 
 
-/// Load a mesh file (STL / OBJ / DAE by extension) via [`misarta::mesh::MeshData`],
-/// returning flat `[x, y, z, nx, ny, nz]` vertex data (face normals — flat
-/// shading, matching what the renderer expects). I/O errors, parse errors
-/// and unsupported formats log a warning and return an empty Vec.
-pub fn load_mesh_flat(path: &std::path::Path, scale: Option<&[f32; 3]>) -> Vec<f32> {
+/// Load a mesh file (STL / OBJ / DAE by extension) via [`misarta::mesh::MeshData`].
+/// I/O errors, parse errors and unsupported formats log a warning and
+/// return an empty mesh (0 triangles). `scale` is baked into the vertices.
+pub fn load_mesh(
+    path: &std::path::Path,
+    scale: Option<&[f32; 3]>,
+) -> std::sync::Arc<misarta::mesh::MeshData> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -2111,7 +2115,7 @@ pub fn load_mesh_flat(path: &std::path::Path, scale: Option<&[f32; 3]>) -> Vec<f
         Ok(m) => m,
         Err(e) => {
             log::warn!("Failed to load mesh {:?}: {}", path, e);
-            return Vec::new();
+            return std::sync::Arc::new(misarta::mesh::MeshData::from_flat_vertices_f32(&[]));
         }
     };
     let mesh = match scale {
@@ -2125,12 +2129,7 @@ pub fn load_mesh_flat(path: &std::path::Path, scale: Option<&[f32; 3]>) -> Vec<f
         path.file_name().unwrap_or_default(),
         mesh.num_triangles()
     );
-    mesh.to_flat_vertices_f32()
-}
-
-/// Load a mesh file (STL / OBJ / DAE) by extension without scaling.
-pub fn load_mesh_file(path: &std::path::Path) -> Vec<f32> {
-    load_mesh_flat(path, None)
+    std::sync::Arc::new(mesh)
 }
 
 // Inertia computation (InertiaTensor, compute_geometry_inertia, compute_link_inertia,

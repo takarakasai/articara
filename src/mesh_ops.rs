@@ -23,32 +23,31 @@ pub struct DecomposeOptions<'a> {
     pub sub_progress: Option<&'a Arc<AtomicU8>>,
 }
 
-/// Decompose a mesh (flat `[x y z nx ny nz]` vertices) into simpler shapes.
+/// Decompose a mesh into simpler shapes.
 ///
 /// Returns one `(origin, geometry)` pair per produced shape, with `origin`
 /// already composed onto `base_origin` (the source visual / collision
 /// origin). The caller wraps the pairs into `VisualData` / `CollisionData`.
 pub fn decompose_mesh(
-    vertices: &[f32],
+    mesh: &misarta::mesh::MeshData,
     base_origin: na::Isometry3<f32>,
     method: misarta::decompose::DecompositionMethod,
     opts: DecomposeOptions<'_>,
 ) -> Vec<(na::Isometry3<f32>, GeomData)> {
     use misarta::decompose as dec;
-    let mesh = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
     match method {
         dec::DecompositionMethod::Vhacd => {
             let mut params = dec::VhacdParams::default();
             if let Some(c) = opts.max_count {
                 params.max_hulls = c as u32;
             }
-            dec::vhacd_with_progress(&mesh, &params, opts.progress, opts.sub_progress)
-                .iter()
+            dec::vhacd_with_progress(mesh, &params, opts.progress, opts.sub_progress)
+                .into_iter()
                 .map(|h| {
                     (
                         base_origin,
                         GeomData::Mesh {
-                            vertices: h.to_flat_vertices_f32(),
+                            mesh: Arc::new(h),
                             filename: None,
                             scale: None,
                         },
@@ -61,7 +60,7 @@ pub fn decompose_mesh(
             if let Some(c) = opts.max_count {
                 params.max_spheres = c;
             }
-            dec::sphere_tree_with_progress(&mesh, &params, opts.progress, opts.sub_progress)
+            dec::sphere_tree_with_progress(mesh, &params, opts.progress, opts.sub_progress)
                 .iter()
                 .map(|s| {
                     let t = na::Translation3::new(
@@ -80,14 +79,14 @@ pub fn decompose_mesh(
         }
         dec::DecompositionMethod::PrimitiveFit => {
             let params = dec::VhacdParams::default();
-            dec::primitive_fit_with_progress(&mesh, &params, opts.progress, opts.sub_progress)
+            dec::primitive_fit_with_progress(mesh, &params, opts.progress, opts.sub_progress)
                 .iter()
                 .map(|p| primitive_to_part(p, &base_origin))
                 .collect()
         }
         dec::DecompositionMethod::PrimitiveFitDirect => {
             let p =
-                dec::primitive_fit_direct_with_progress(&mesh, opts.progress, opts.sub_progress);
+                dec::primitive_fit_direct_with_progress(mesh, opts.progress, opts.sub_progress);
             vec![primitive_to_part(&p, &base_origin)]
         }
     }
@@ -125,16 +124,16 @@ fn primitive_to_part(
     (base_origin * na::Isometry3::from_parts(t, r), geometry)
 }
 
-/// Decimate flat `[x y z nx ny nz]` vertices in place.
+/// Decimate a shared mesh in place (replaces the `Arc`).
 /// Returns `(triangles_before, triangles_after)`.
-pub fn decimate_flat_vertices(
-    vertices: &mut Vec<f32>,
+pub fn decimate_mesh(
+    mesh: &mut Arc<misarta::mesh::MeshData>,
     ratio: f64,
     method: misarta::decimate::DecimationMethod,
 ) -> (usize, usize) {
-    let before = vertices.len() / 18;
-    let mesh = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
+    let before = mesh.num_triangles();
     let reduced = mesh.decimate_with(ratio, method);
-    *vertices = reduced.to_flat_vertices_f32();
-    (before, reduced.num_triangles())
+    let after = reduced.num_triangles();
+    *mesh = Arc::new(reduced);
+    (before, after)
 }

@@ -531,10 +531,45 @@ pub enum GeomData {
     /// `half_length` is the half-length of the **cylindrical** portion only (total = 2*half_length + 2*radius).
     Capsule { radius: f32, half_length: f32 },
     Mesh {
-        vertices: Vec<f32>,          // flat [x, y, z, nx, ny, nz, ...]
+        /// Loaded mesh geometry. The [`misarta::mesh::MeshData`] is the
+        /// source of truth (indexed triangles, face normals, materials);
+        /// flat `[x, y, z, nx, ny, nz]` arrays for GL upload etc. are
+        /// derived on demand via `to_flat_vertices_f32()`. `Arc` makes
+        /// model clones (undo snapshots!) share the mesh instead of
+        /// deep-copying every vertex. Serialized as the legacy flat
+        /// `vertices` array so the wire format is unchanged.
+        #[cfg_attr(
+            feature = "serde",
+            serde(rename = "vertices", with = "mesh_as_flat_vertices")
+        )]
+        mesh: std::sync::Arc<misarta::mesh::MeshData>,
         filename: Option<String>,    // original URI e.g. "package://..."
         scale: Option<[f32; 3]>,
     },
+}
+
+/// Serialize the shared [`misarta::mesh::MeshData`] as the legacy flat
+/// `[x, y, z, nx, ny, nz]` vertex array (and back).
+#[cfg(feature = "serde")]
+mod mesh_as_flat_vertices {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::sync::Arc;
+
+    pub fn serialize<S: Serializer>(
+        mesh: &Arc<misarta::mesh::MeshData>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        mesh.to_flat_vertices_f32().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Arc<misarta::mesh::MeshData>, D::Error> {
+        let flat = Vec::<f32>::deserialize(d)?;
+        Ok(Arc::new(misarta::mesh::MeshData::from_flat_vertices_f32(
+            &flat,
+        )))
+    }
 }
 
 #[derive(Clone)]
@@ -756,12 +791,10 @@ impl RobotModel {
                         points.push(vis.origin * na::Point3::new(radius * c, radius * s, -total_h));
                     }
                 }
-                GeomData::Mesh { vertices, .. } => {
-                    let step = if vertices.len() > 6000 { 6 * 10 } else { 6 };
-                    for chunk in vertices.chunks(step) {
-                        if chunk.len() >= 3 {
-                            points.push(vis.origin * na::Point3::new(chunk[0], chunk[1], chunk[2]));
-                        }
+                GeomData::Mesh { mesh, .. } => {
+                    let step = if mesh.vertices.len() > 1000 { 10 } else { 1 };
+                    for v in mesh.vertices.iter().step_by(step) {
+                        points.push(vis.origin * na::Point3::new(v.x as f32, v.y as f32, v.z as f32));
                     }
                 }
             }
@@ -849,12 +882,10 @@ impl RobotModel {
                     pts.push(na::Point3::new(radius * c, radius * s, -total_h));
                 }
             }
-            GeomData::Mesh { vertices, .. } => {
-                let step = if vertices.len() > 6000 { 6 * 10 } else { 6 };
-                for chunk in vertices.chunks(step) {
-                    if chunk.len() >= 3 {
-                        pts.push(na::Point3::new(chunk[0], chunk[1], chunk[2]));
-                    }
+            GeomData::Mesh { mesh, .. } => {
+                let step = if mesh.vertices.len() > 1000 { 10 } else { 1 };
+                for v in mesh.vertices.iter().step_by(step) {
+                    pts.push(na::Point3::new(v.x as f32, v.y as f32, v.z as f32));
                 }
             }
         }
@@ -1099,8 +1130,8 @@ pub fn compute_geometry_inertia(geom: &GeomData, mass: f64) -> InertiaTensor {
                 izz: i_cyl_zz + i_sph_zz,
             }
         }
-        GeomData::Mesh { vertices, .. } => {
-            compute_mesh_inertia(vertices, mass)
+        GeomData::Mesh { mesh, .. } => {
+            compute_mesh_inertia(&mesh.to_flat_vertices_f32(), mass)
         }
     }
 }
@@ -1227,8 +1258,8 @@ pub fn compute_geometry_volume(geom: &GeomData) -> f64 {
             // cylinder + sphere
             std::f64::consts::PI * r * r * h + 4.0 / 3.0 * std::f64::consts::PI * r * r * r
         }
-        GeomData::Mesh { vertices, .. } => {
-            compute_mesh_volume(vertices)
+        GeomData::Mesh { mesh, .. } => {
+            compute_mesh_volume(&mesh.to_flat_vertices_f32())
         }
     }
 }

@@ -1804,9 +1804,8 @@ fn parse_mjcf_geom(
                 // Dispatch on extension so .obj (used by Menagerie's
                 // Unitree / Boston Dynamics / ANYmal models) loads
                 // through the OBJ parser, not the STL one.
-                let vertices = crate::robot::load_mesh_file(&mesh_path);
                 GeomData::Mesh {
-                    vertices,
+                    mesh: crate::robot::load_mesh(&mesh_path, None),
                     filename: Some(filename),
                     scale: None,
                 }

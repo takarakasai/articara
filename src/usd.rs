@@ -287,7 +287,8 @@ fn write_geom_prim(
             b.push_str(&format!("{}    token axis = \"Z\"\n", indent));
             ("Capsule", b)
         }
-        GeomData::Mesh { vertices, .. } => {
+        GeomData::Mesh { mesh, .. } => {
+            let vertices = &mesh.to_flat_vertices_f32();
             let mut b = String::new();
             write_geom_xform_ops(&mut b, origin, None, &format!("{indent}    "));
             write_mesh_data(&mut b, vertices, &format!("{indent}    "));
