@@ -1803,7 +1803,7 @@ fn parse_mjcf_geom(
                 let mesh_path = mjcf_dir.join(&filename);
                 // Dispatch on extension so .obj (used by Menagerie's
                 // Unitree / Boston Dynamics / ANYmal models) loads
-                // through `tobj`, not the STL parser.
+                // through the OBJ parser, not the STL one.
                 let vertices = crate::robot::load_mesh_file(&mesh_path);
                 GeomData::Mesh {
                     vertices,
