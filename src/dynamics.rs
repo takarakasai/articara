@@ -55,45 +55,62 @@ pub struct StaticAnalysis {
     pub payload: Option<PayloadResult>,
 }
 
-// ========== Gravity constant ==========
-const G: f64 = 9.80665;
-
 // ========== Core Algorithms ==========
+//
+// The static analysis itself lives in `misarta::analysis` (see articara
+// doc/refactor_20260702.md §4, item A1); this module adapts between
+// articara joint indices / names and misarta's model via `MisartaCache`.
 
-/// For joints in a grounded leg, compute the "body-side" gravity torque.
-///
-/// In a grounded configuration (feet on the floor), each leg joint must support
-/// the weight of links on the **body side** (ancestor side), not the foot side.
-/// This is the opposite of the free-hanging serial-arm convention used by
-/// `compute_gravity_torques` (which sums descendants only).
-///
+/// Build misarta [`misarta::limits::JointLimits`] with `tau_max` taken
+/// from the articara joints' effort limits. `effort <= 0` means "no limit
+/// defined" and stays unbounded.
+fn joint_limits(model: &RobotModel) -> misarta::limits::JointLimits {
+    let mc = model.mc();
+    let mut limits = misarta::limits::JointLimits::unbounded(&mc.model);
+    for (ji, joint) in model.joints.iter().enumerate() {
+        if joint.effort <= 0.0 {
+            continue;
+        }
+        if let Some(mi) = mc.a2m.get(ji).and_then(|&m| m) {
+            if mc.model.joints[mi].joint_type.nv() == 1 {
+                limits.tau_max[mc.model.v_idx[mi]] = joint.effort;
+            }
+        }
+    }
+    limits
+}
+
+/// misarta joint index whose child link is `ee_link`.
+fn ee_misarta_joint(model: &RobotModel, ee_link: &str) -> Option<usize> {
+    let ji = model.joints.iter().position(|j| j.child_link == ee_link)?;
+    model.mc().a2m.get(ji).and_then(|&m| m)
+}
+
 /// Compute static gravity torque at every movable joint.
 ///
-/// Delegates to `misarta::rnea::compute_gravity` and wraps results in
+/// Delegates to [`misarta::analysis::gravity_loads`] and wraps results in
 /// `JointTorqueInfo` with effort limits and margins from the `RobotModel`.
 pub fn compute_gravity_torques(model: &RobotModel) -> Vec<JointTorqueInfo> {
-    let adapter = model.mc();
+    let mc = model.mc();
     let q = model.build_q();
-    let g_full = misarta::rnea::compute_gravity(&adapter.model, &q);
+    let limits = joint_limits(model);
+    let loads = misarta::analysis::gravity_loads(&mc.model, &q, &limits);
+    let tau_by_mi: HashMap<usize, f64> = loads
+        .iter()
+        .map(|l| (l.joint_idx, l.gravity_torque))
+        .collect();
 
     let mut result = Vec::new();
     for (ji, joint) in model.joints.iter().enumerate() {
-        let jt = joint.joint_type.as_str();
-        if jt == "fixed" {
+        if joint.joint_type.as_str() == "fixed" {
             continue;
         }
-
-        let tau = if let Some(mi) = adapter.a2m.get(ji).and_then(|&m| m) {
-            let nv = adapter.model.joints[mi].joint_type.nv();
-            if nv == 1 {
-                g_full[adapter.model.v_idx[mi]]
-            } else {
-                0.0
-            }
-        } else {
-            0.0
-        };
-
+        let tau = mc
+            .a2m
+            .get(ji)
+            .and_then(|&m| m)
+            .and_then(|mi| tau_by_mi.get(&mi).copied())
+            .unwrap_or(0.0);
         result.push(JointTorqueInfo {
             joint_name: joint.name.clone(),
             joint_idx: ji,
@@ -103,116 +120,49 @@ pub fn compute_gravity_torques(model: &RobotModel) -> Vec<JointTorqueInfo> {
             payload_torque_per_kg: 0.0,
         });
     }
-
     result
 }
 
 /// Compute the maximum static payload at `ee_link`.
 ///
-/// Uses the positional Jacobian (3 × N) to map a unit downward force at the
-/// end-effector to joint torques, then finds the tightest bottleneck.
+/// Delegates to [`misarta::analysis::payload_capacity`]. Per-kg torques
+/// are in the **actuator** convention (they add directly onto the gravity
+/// torque; same sign as `gravity_torque`).
 pub fn compute_payload_capacity(
     model: &RobotModel,
     ee_link: &str,
     joint_torques: &mut [JointTorqueInfo],
 ) -> Option<PayloadResult> {
-    let transforms = model.compute_transforms();
+    let mc = model.mc();
+    let q = model.build_q();
+    let limits = joint_limits(model);
+    let mi_ee = ee_misarta_joint(model, ee_link)?;
 
-    // Build chain from root to ee_link
-    let chain = model.chain_joints(ee_link);
-    if chain.is_empty() {
-        return None;
+    let cap = misarta::analysis::payload_capacity(&mc.model, &q, mi_ee, &limits)?;
+
+    // Fill payload_torque_per_kg for the UI table.
+    for info in joint_torques.iter_mut() {
+        if let Some(mi) = mc.a2m.get(info.joint_idx).and_then(|&m| m) {
+            if mc.model.joints[mi].joint_type.nv() == 1 {
+                info.payload_torque_per_kg = cap.tau_per_kg[mc.model.v_idx[mi]];
+            }
+        }
     }
 
-    // EE world position
+    let limiting = mc
+        .m2a
+        .get(cap.limiting_joint)
+        .and_then(|&a| a)
+        .map(|ji| model.joints[ji].name.clone())
+        .unwrap_or_default();
+
+    // EE world position for the viewport marker.
+    let transforms = model.compute_transforms();
     let ee_li = *model.link_map.get(ee_link)?;
     let ee_pos = model.ee_world_pos(ee_li, &transforms);
 
-    // Compute positional Jacobian (3 × N) via misarta
-    let jac = model.chain_positional_jacobian(&chain, ee_link, None, None);
-
-    // Unit payload force: F = [0, 0, -g] (force per 1 kg)
-    let f_unit = na::DVector::from_column_slice(&[0.0_f64, 0.0, -G]);
-
-    // τ_payload_per_kg = J^T * F_unit  →  (N×1)
-    let tau_payload = jac.transpose() * f_unit;
-
-    // Map chain joint indices back to our torque info
-    // Build lookup: joint_idx → position in joint_torques
-    let idx_map: HashMap<usize, usize> = joint_torques
-        .iter()
-        .enumerate()
-        .map(|(pos, jt)| (jt.joint_idx, pos))
-        .collect();
-
-    // Fill payload_torque_per_kg
-    for (col, &ji) in chain.iter().enumerate() {
-        if let Some(&pos) = idx_map.get(&ji) {
-            joint_torques[pos].payload_torque_per_kg = tau_payload[col];
-        }
-    }
-
-    // Find maximum payload mass
-    let mut max_mass = f64::INFINITY;
-    let mut limiting = String::new();
-
-    for (col, &ji) in chain.iter().enumerate() {
-        if let Some(&pos) = idx_map.get(&ji) {
-            let info = &joint_torques[pos];
-            let tau_p = tau_payload[col]; // torque per 1 kg
-            if tau_p.abs() < 1e-12 {
-                continue; // this joint is not affected by the payload
-            }
-            let effort = info.effort_limit;
-            if effort <= 0.0 {
-                continue; // no effort limit defined
-            }
-
-            // We need: |gravity_torque + m * tau_p| ≤ effort
-            // Two cases depending on the sign alignment:
-            let g_tau = info.gravity_torque;
-
-            // Solve for largest m ≥ 0 such that  |g_tau + m * tau_p| ≤ effort
-            // Equivalent to:  -effort ≤ g_tau + m * tau_p ≤ effort
-            //   → m ≤ (effort - g_tau) / tau_p   (if tau_p > 0)
-            //   → m ≤ (-effort - g_tau) / tau_p  (if tau_p < 0)
-            //   and similarly for the lower bound.
-            let _m_candidates = [
-                (effort - g_tau) / tau_p,
-                (-effort - g_tau) / tau_p,
-            ];
-
-            // We want the largest m ≥ 0 such that BOTH constraints hold.
-            // The constraint is:  -effort ≤ g_tau + m * tau_p ≤ effort
-            // m must satisfy both:
-            //   m * tau_p ≤  effort - g_tau
-            //   m * tau_p ≥ -effort - g_tau
-            let (_lo, hi) = if tau_p > 0.0 {
-                ((-effort - g_tau) / tau_p, (effort - g_tau) / tau_p)
-            } else {
-                ((effort - g_tau) / tau_p, (-effort - g_tau) / tau_p)
-            };
-
-            // m must be in [max(0, lo), hi]
-            let m_max = hi;
-            if m_max < max_mass {
-                max_mass = m_max;
-                limiting = info.joint_name.clone();
-            }
-        }
-    }
-
-    if max_mass < 0.0 {
-        max_mass = 0.0; // already overloaded by gravity alone
-    }
-
-    if max_mass.is_infinite() {
-        // No joint limits defined; can't estimate
-        return None;
-    }
-
     Some(PayloadResult {
-        max_mass_kg: max_mass,
+        max_mass_kg: cap.max_mass_kg,
         limiting_joint: limiting,
         ee_position: na::Point3::new(
             ee_pos.x as f64,
@@ -370,39 +320,27 @@ fn update_utilisation(
     model: &RobotModel,
     ee_link: &str,
 ) {
-    let transforms = model.compute_transforms();
-    let chain = model.chain_joints(ee_link);
-    if chain.is_empty() {
+    let mc = model.mc();
+    let q = model.build_q();
+    let limits = joint_limits(model);
+    let Some(mi_ee) = ee_misarta_joint(model, ee_link) else {
         return;
-    }
-    let ee_li = match model.link_map.get(ee_link) {
-        Some(&li) => li,
-        None => return,
     };
-    let _ee_pos = model.ee_world_pos(ee_li, &transforms);
-    let jac = model.chain_positional_jacobian(&chain, ee_link, None, None);
 
-    // Force per current mass
-    let f = na::DVector::from_column_slice(&[0.0_f64, 0.0, -G * sim.current_mass]);
-    let tau_payload = jac.transpose() * f;
-
-    // Gravity torques
-    let gravity_torques = compute_gravity_torques(model);
-    let grav_map: HashMap<usize, f64> = gravity_torques
-        .iter()
-        .map(|t| (t.joint_idx, t.gravity_torque))
-        .collect();
+    let util =
+        misarta::analysis::payload_utilisation(&mc.model, &q, mi_ee, sim.current_mass, &limits);
+    // Keep the display scoped to the loaded chain, as before: joints the
+    // payload doesn't touch keep their idle colour.
+    let tau_per_kg = misarta::analysis::payload_tau_per_kg(&mc.model, &q, mi_ee);
 
     sim.joint_utilisation.clear();
-    for (col, &ji) in chain.iter().enumerate() {
-        let joint = &model.joints[ji];
-        if joint.effort <= 0.0 {
+    for (mi, u) in util {
+        if tau_per_kg[mc.model.v_idx[mi]].abs() < 1e-12 {
             continue;
         }
-        let g_tau = grav_map.get(&ji).copied().unwrap_or(0.0);
-        let total_tau = (g_tau + tau_payload[col]).abs();
-        let util = total_tau / joint.effort;
-        sim.joint_utilisation.push((ji, util));
+        if let Some(ji) = mc.m2a.get(mi).and_then(|&a| a) {
+            sim.joint_utilisation.push((ji, u));
+        }
     }
 }
 
