@@ -1,5 +1,5 @@
 // Re-export modules for integration tests.
-pub mod attitude_estimator;
+pub use legged_estimation::attitude_estimator;
 pub mod camera;
 pub mod collision;
 pub mod dynamics;
@@ -8,7 +8,7 @@ pub mod format;
 pub mod gait;
 pub mod history;
 pub mod isaac;
-pub mod leg_odometry;
+pub use legged_estimation::leg_odometry;
 pub mod mesh_ops;
 pub mod mesh_paths;
 pub mod mjcf;

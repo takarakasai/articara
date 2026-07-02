@@ -16,7 +16,7 @@
 //! # Conventions
 //!
 //! - All vectors are expressed in the IMU body frame (matches what
-//!   [`crate::mujoco_sim::ImuReading`] reports).
+//!   the host's IMU reading reports).
 //! - The estimator's output quaternion `q` is the rotation **from
 //!   sensor frame to world (gravity-aligned) frame**, in `(w, x, y, z)`
 //!   order.
