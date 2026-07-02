@@ -320,8 +320,8 @@ impl ArticaraApp {
                                         geom_changed |= ui.add(egui::DragValue::new(half_length).speed(0.005).prefix("hl:").range(0.001..=10.0)).changed();
                                     });
                                 }
-                                GeomData::Mesh { vertices, filename, .. } => {
-                                    let tri_count = vertices.len() / 18;
+                                GeomData::Mesh { mesh, filename, .. } => {
+                                    let tri_count = mesh.num_triangles();
                                     let fname = filename.as_deref().unwrap_or("(inline)");
                                     ui.label(format!("Mesh: {tri_count} tris — {fname}"));
                                     if tri_count > 4 {
@@ -345,9 +345,7 @@ impl ArticaraApp {
                                                 if ui.small_button(label).on_hover_text(
                                                     format!("Reduce to ~{} tris ({})", (tri_count as f64 * ratio).ceil() as usize, self.decimation_method.label())
                                                 ).clicked() {
-                                                    let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
-                                                    let reduced = mesh_data.decimate_with(ratio, self.decimation_method);
-                                                    *vertices = reduced.to_flat_vertices_f32();
+                                                    articara::mesh_ops::decimate_mesh(mesh, ratio, self.decimation_method);
                                                     geom_changed = true;
                                                     props_edit_desc = Some(format!("Reduce visual mesh of '{}' to {} ({})", link_name, label, self.decimation_method.label()));
                                                 }
@@ -382,7 +380,7 @@ impl ArticaraApp {
                                                 }
                                             );
                                             if btn.clicked() {
-                                                let verts = vertices.clone();
+                                                let mesh_arc = std::sync::Arc::clone(mesh);
                                                 let origin = vis.origin;
                                                 let color = vis.color;
                                                 let method = self.decomposition_method;
@@ -394,7 +392,7 @@ impl ArticaraApp {
                                                 let sub_clone = std::sync::Arc::clone(&sub_progress);
                                                 let handle = std::thread::spawn(move || {
                                                     let parts = articara::mesh_ops::decompose_mesh(
-                                                        &verts,
+                                                        &mesh_arc,
                                                         origin,
                                                         method,
                                                         articara::mesh_ops::DecomposeOptions {
@@ -628,8 +626,8 @@ impl ArticaraApp {
                                         col_changed |= ui.add(egui::DragValue::new(half_length).speed(0.005).prefix("hl:").range(0.001..=10.0)).changed();
                                     });
                                 }
-                                GeomData::Mesh { vertices, .. } => {
-                                    let tri_count = vertices.len() / 18;
+                                GeomData::Mesh { mesh, .. } => {
+                                    let tri_count = mesh.num_triangles();
                                     ui.label(format!("Mesh ({tri_count} tris)"));
                                     if tri_count > 4 {
                                         ui.horizontal(|ui| {
@@ -652,9 +650,7 @@ impl ArticaraApp {
                                                 if ui.small_button(label).on_hover_text(
                                                     format!("Reduce to ~{} tris ({})", (tri_count as f64 * ratio).ceil() as usize, self.decimation_method.label())
                                                 ).clicked() {
-                                                    let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
-                                                    let reduced = mesh_data.decimate_with(ratio, self.decimation_method);
-                                                    *vertices = reduced.to_flat_vertices_f32();
+                                                    articara::mesh_ops::decimate_mesh(mesh, ratio, self.decimation_method);
                                                     col_changed = true;
                                                     props_edit_desc = Some(format!("Reduce collision mesh of '{}' to {} ({})", link_name, label, self.decimation_method.label()));
                                                 }
@@ -689,7 +685,7 @@ impl ArticaraApp {
                                                 }
                                             );
                                             if btn.clicked() {
-                                                let verts = vertices.clone();
+                                                let mesh_arc = std::sync::Arc::clone(mesh);
                                                 let origin = col.origin;
                                                 let method = self.decomposition_method;
                                                 let progress = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
@@ -700,7 +696,7 @@ impl ArticaraApp {
                                                 let sub_clone = std::sync::Arc::clone(&sub_progress);
                                                 let handle = std::thread::spawn(move || {
                                                     let parts = articara::mesh_ops::decompose_mesh(
-                                                        &verts,
+                                                        &mesh_arc,
                                                         origin,
                                                         method,
                                                         articara::mesh_ops::DecomposeOptions {

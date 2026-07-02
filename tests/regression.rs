@@ -414,8 +414,8 @@ mod test_robot {
         // Verify meshes were loaded (trunk should have non-empty visual vertices)
         let trunk_inertia = model.links.iter().find(|l| l.name == "trunk_interia").unwrap();
         assert!(!trunk_inertia.visuals.is_empty());
-        if let GeomData::Mesh { vertices, filename, .. } = &trunk_inertia.visuals[0].geometry {
-            assert!(!vertices.is_empty(), "trunk mesh vertices should not be empty");
+        if let GeomData::Mesh { mesh, filename, .. } = &trunk_inertia.visuals[0].geometry {
+            assert!(mesh.num_triangles() > 0, "trunk mesh vertices should not be empty");
             assert!(filename.as_ref().unwrap().contains("trunk.stl"));
         } else {
             panic!("Expected trunk_interia to have mesh geometry");
@@ -997,11 +997,13 @@ mod test_mjcf {
         model.links[0].visuals.push(VisualData {
             origin: nalgebra::Isometry3::identity(),
             geometry: GeomData::Mesh {
-                vertices: vec![
+                mesh: std::sync::Arc::new(
+                    misarta::mesh::MeshData::from_flat_vertices_f32(&[
                     0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
                     1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
                     0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
-                ],
+                ]),
+                ),
                 filename: Some("/abs/path/example.obj".into()),
                 scale: Some([0.001, 0.001, 0.001]),
             },
@@ -1010,11 +1012,13 @@ mod test_mjcf {
         model.links[0].collisions.push(CollisionData {
             origin: nalgebra::Isometry3::identity(),
             geometry: GeomData::Mesh {
-                vertices: vec![
+                mesh: std::sync::Arc::new(
+                    misarta::mesh::MeshData::from_flat_vertices_f32(&[
                     0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
                     1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
                     0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
-                ],
+                ]),
+                ),
                 filename: Some("/abs/path/example.obj".into()),
                 scale: Some([0.001, 0.001, 0.001]),
             },
@@ -1032,7 +1036,9 @@ mod test_mjcf {
         model2.links[0].visuals.push(VisualData {
             origin: nalgebra::Isometry3::identity(),
             geometry: GeomData::Mesh {
-                vertices: vec![0.0; 18],
+                mesh: std::sync::Arc::new(
+                    misarta::mesh::MeshData::from_flat_vertices_f32(&vec![0.0; 18]),
+                ),
                 filename: Some("/abs/unit.obj".into()),
                 scale: None,
             },
@@ -1365,10 +1371,11 @@ mod test_mjcf {
         );
         match &root.visuals[0].geometry {
             GeomData::Mesh {
-                vertices,
+                mesh,
                 filename,
                 ..
             } => {
+                let vertices = mesh.to_flat_vertices_f32();
                 // meshdir prefix must be baked into the stored URI so the
                 // exporter (which joins this against `model.source_path`'s
                 // parent) recovers the same on-disk file. Without the
@@ -5401,7 +5408,8 @@ f 1 3 4
         let mut obj_meshes = 0;
         for link in &model.links {
             for v in &link.visuals {
-                if let GeomData::Mesh { vertices, filename, .. } = &v.geometry {
+                if let GeomData::Mesh { mesh, filename, .. } = &v.geometry {
+                    let vertices = mesh.to_flat_vertices_f32();
                     if filename.as_deref().map(|s| s.ends_with(".obj")).unwrap_or(false) {
                         assert!(
                             !vertices.is_empty(),
@@ -5461,7 +5469,9 @@ f 1 3 4
         model.links[0].collisions.push(CollisionData {
             origin: nalgebra::Isometry3::identity(),
             geometry: GeomData::Mesh {
-                vertices: fake_verts.clone(),
+                mesh: std::sync::Arc::new(
+                    misarta::mesh::MeshData::from_flat_vertices_f32(&fake_verts),
+                ),
                 filename: None,
                 scale: None,
             },
@@ -5492,8 +5502,8 @@ f 1 3 4
         let any_decomposed_loaded = target_link.collisions.iter().any(|c| {
             matches!(
                 &c.geometry,
-                GeomData::Mesh { filename: Some(f), vertices, .. }
-                    if f.contains("meshes/decomposed") && !vertices.is_empty()
+                GeomData::Mesh { filename: Some(f), mesh, .. }
+                    if f.contains("meshes/decomposed") && mesh.num_triangles() > 0
             )
         });
         assert!(
@@ -5514,7 +5524,9 @@ f 1 3 4
         model.links[0].collisions.push(CollisionData {
             origin: nalgebra::Isometry3::identity(),
             geometry: GeomData::Mesh {
-                vertices: one_tri_flat_verts(),
+                mesh: std::sync::Arc::new(
+                    misarta::mesh::MeshData::from_flat_vertices_f32(&one_tri_flat_verts()),
+                ),
                 filename: None,
                 scale: None,
             },
@@ -5598,8 +5610,8 @@ f 1 3 4
         let mut obj_meshes_with_verts = 0;
         for link in &loaded.links {
             for v in &link.visuals {
-                if let GeomData::Mesh { filename: Some(f), vertices, .. } = &v.geometry {
-                    if f.to_lowercase().ends_with(".obj") && !vertices.is_empty() {
+                if let GeomData::Mesh { filename: Some(f), mesh, .. } = &v.geometry {
+                    if f.to_lowercase().ends_with(".obj") && mesh.num_triangles() > 0 {
                         obj_meshes_with_verts += 1;
                     }
                 }

@@ -352,7 +352,7 @@ impl GlRenderer {
                     } => primitives::generate_cylinder(*radius, *half_length, 16),
                     GeomData::Sphere { radius } => primitives::generate_sphere(*radius, 16, 8),
                     GeomData::Capsule { radius, half_length } => primitives::generate_capsule(*radius, *half_length, 16, 8),
-                    GeomData::Mesh { vertices, .. } => vertices.clone(),
+                    GeomData::Mesh { mesh, .. } => mesh.to_flat_vertices_f32(),
                 };
 
                 if vertex_data.is_empty() {
@@ -382,7 +382,7 @@ impl GlRenderer {
                     }
                     GeomData::Sphere { radius } => primitives::generate_sphere(*radius, 16, 8),
                     GeomData::Capsule { radius, half_length } => primitives::generate_capsule(*radius, *half_length, 16, 8),
-                    GeomData::Mesh { vertices, .. } => vertices.clone(),
+                    GeomData::Mesh { mesh, .. } => mesh.to_flat_vertices_f32(),
                 };
                 if vertex_data.is_empty() {
                     continue;

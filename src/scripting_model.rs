@@ -733,11 +733,11 @@ impl ModelScriptEngine {
             let Some(&li) = robot.link_map.get(link) else { return -1 };
             let vi = vi as usize;
             if vi >= robot.links[li].visuals.len() { return -1; }
-            if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = robot.links[li].visuals[vi].geometry {
-                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
-                let reduced = mesh_data.decimate(ratio);
-                *vertices = reduced.to_flat_vertices_f32();
-                reduced.num_triangles() as i64
+            if let crate::robot::GeomData::Mesh { mesh, .. } = &mut robot.links[li].visuals[vi].geometry {
+                let reduced = mesh.decimate(ratio);
+                let n = reduced.num_triangles() as i64;
+                *mesh = std::sync::Arc::new(reduced);
+                n
             } else {
                 -1
             }
@@ -751,11 +751,10 @@ impl ModelScriptEngine {
             let Some(&li) = robot.link_map.get(link) else { return -1 };
             let vi = vi as usize;
             if vi >= robot.links[li].visuals.len() { return -1; }
-            if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = robot.links[li].visuals[vi].geometry {
-                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
-                let reduced = mesh_data.decimate_with(ratio, parse_method(method));
-                *vertices = reduced.to_flat_vertices_f32();
-                reduced.num_triangles() as i64
+            if let crate::robot::GeomData::Mesh { mesh, .. } = &mut robot.links[li].visuals[vi].geometry {
+                let (_, after) =
+                    crate::mesh_ops::decimate_mesh(mesh, ratio, parse_method(method));
+                after as i64
             } else {
                 -1
             }
@@ -769,11 +768,11 @@ impl ModelScriptEngine {
             let Some(&li) = robot.link_map.get(link) else { return -1 };
             let ci = ci as usize;
             if ci >= robot.links[li].collisions.len() { return -1; }
-            if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = robot.links[li].collisions[ci].geometry {
-                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
-                let reduced = mesh_data.decimate(ratio);
-                *vertices = reduced.to_flat_vertices_f32();
-                reduced.num_triangles() as i64
+            if let crate::robot::GeomData::Mesh { mesh, .. } = &mut robot.links[li].collisions[ci].geometry {
+                let reduced = mesh.decimate(ratio);
+                let n = reduced.num_triangles() as i64;
+                *mesh = std::sync::Arc::new(reduced);
+                n
             } else {
                 -1
             }
@@ -787,11 +786,10 @@ impl ModelScriptEngine {
             let Some(&li) = robot.link_map.get(link) else { return -1 };
             let ci = ci as usize;
             if ci >= robot.links[li].collisions.len() { return -1; }
-            if let crate::robot::GeomData::Mesh { ref mut vertices, .. } = robot.links[li].collisions[ci].geometry {
-                let mesh_data = misarta::mesh::MeshData::from_flat_vertices_f32(vertices);
-                let reduced = mesh_data.decimate_with(ratio, parse_method(method));
-                *vertices = reduced.to_flat_vertices_f32();
-                reduced.num_triangles() as i64
+            if let crate::robot::GeomData::Mesh { mesh, .. } = &mut robot.links[li].collisions[ci].geometry {
+                let (_, after) =
+                    crate::mesh_ops::decimate_mesh(mesh, ratio, parse_method(method));
+                after as i64
             } else {
                 -1
             }
@@ -2124,9 +2122,8 @@ fn reduce_all_meshes_impl(
             .map(|v| &mut v.geometry)
             .chain(link.collisions.iter_mut().map(|c| &mut c.geometry));
         for geom in geoms {
-            if let crate::robot::GeomData::Mesh { vertices, .. } = geom {
-                let (before, after) =
-                    crate::mesh_ops::decimate_flat_vertices(vertices, ratio, method);
+            if let crate::robot::GeomData::Mesh { mesh, .. } = geom {
+                let (before, after) = crate::mesh_ops::decimate_mesh(mesh, ratio, method);
                 removed += before as i64 - after as i64;
             }
         }
@@ -2151,13 +2148,13 @@ fn decompose_collision_impl(
     let col = &robot.links[li].collisions[ci];
     let origin = col.origin;
 
-    let vertices = match &col.geometry {
-        crate::robot::GeomData::Mesh { vertices, .. } => vertices.clone(),
+    let mesh = match &col.geometry {
+        crate::robot::GeomData::Mesh { mesh, .. } => std::sync::Arc::clone(mesh),
         _ => return -1,
     };
 
     let new_collisions: Vec<crate::robot::CollisionData> = crate::mesh_ops::decompose_mesh(
-        &vertices,
+        &mesh,
         origin,
         method,
         crate::mesh_ops::DecomposeOptions {

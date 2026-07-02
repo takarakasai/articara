@@ -662,7 +662,7 @@ fn parse_sdf_geometry(node: roxmltree::Node, sdf_dir: &Path) -> GeomData {
                                 if v.len() >= 3 { Some([v[0], v[1], v[2]]) } else { None }
                             });
                         return GeomData::Mesh {
-                            vertices: crate::robot::load_mesh_flat(&mesh_path, scale.as_ref()),
+                            mesh: crate::robot::load_mesh(&mesh_path, scale.as_ref()),
                             filename: Some(filename),
                             scale,
                         };

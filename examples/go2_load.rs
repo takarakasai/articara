@@ -62,9 +62,9 @@ fn main() {
                 let mut mesh_verts_sum = 0;
                 for v in &l.visuals {
                     match &v.geometry {
-                        articara::rbd::model::GeomData::Mesh { vertices, .. } => {
+                        articara::rbd::model::GeomData::Mesh { mesh, .. } => {
                             mesh_n += 1;
-                            mesh_verts_sum += vertices.len();
+                            mesh_verts_sum += mesh.num_triangles() * 3 * 6;
                         }
                         articara::rbd::model::GeomData::Sphere { .. } => sphere_n += 1,
                         articara::rbd::model::GeomData::Box { .. } => box_n += 1,

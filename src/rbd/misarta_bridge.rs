@@ -1601,57 +1601,16 @@ pub fn convert_geom_to_shape_with_mesh(
                 length: *half_length as f64 * 2.0,
             }, None))
         }
-        GeomData::Mesh { vertices, scale, .. } => {
+        GeomData::Mesh { mesh, scale, .. } => {
+            if mesh.num_triangles() == 0 {
+                return None;
+            }
             let s = scale.unwrap_or([1.0, 1.0, 1.0]);
-            let n_verts = vertices.len() / 6;
-            if n_verts < 3 {
-                return None;
-            }
-
-            let mut points = Vec::with_capacity(n_verts);
-            for i in 0..n_verts {
-                let base = i * 6;
-                points.push(na::Point3::new(
-                    vertices[base] as f64 * s[0] as f64,
-                    vertices[base + 1] as f64 * s[1] as f64,
-                    vertices[base + 2] as f64 * s[2] as f64,
-                ));
-            }
-
-            let mut indices = Vec::new();
-            let mut face_normals = Vec::new();
-            for i in (0..n_verts).step_by(3) {
-                if i + 2 >= n_verts {
-                    break;
-                }
-                indices.push([i as u32, (i + 1) as u32, (i + 2) as u32]);
-                let v0 = &points[i];
-                let v1 = &points[i + 1];
-                let v2 = &points[i + 2];
-                let e1 = v1 - v0;
-                let e2 = v2 - v0;
-                let n = e1.cross(&e2);
-                let len = n.norm();
-                if len > 1e-12 {
-                    face_normals.push(n / len);
-                } else {
-                    face_normals.push(na::Vector3::z());
-                }
-            }
-            if indices.is_empty() {
-                return None;
-            }
-
-            let md = MeshData {
-                vertices: points,
-                indices,
-                face_normals,
-                vertex_normals: Vec::new(),
-                texcoords: Vec::new(),
-                materials: Vec::new(),
-                submeshes: Vec::new(),
+            let md = if s == [1.0, 1.0, 1.0] {
+                (**mesh).clone()
+            } else {
+                mesh.scaled(&na::Vector3::new(s[0] as f64, s[1] as f64, s[2] as f64))
             };
-
             Some((GeometryShape::Mesh {
                 scale: na::Vector3::new(1.0, 1.0, 1.0),
                 filename: String::new(),

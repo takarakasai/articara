@@ -438,7 +438,9 @@ fn parse_geom_prim(prim: &UsdPrim) -> (GeomData, na::Isometry3<f32>) {
                 vertices.push(nz);
             }
             GeomData::Mesh {
-                vertices,
+                mesh: std::sync::Arc::new(
+                    misarta::mesh::MeshData::from_flat_vertices_f32(&vertices),
+                ),
                 filename: None,
                 scale: None,
             }
