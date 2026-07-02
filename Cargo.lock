@@ -337,8 +337,6 @@ dependencies = [
  "roxmltree",
  "serde",
  "serde_json",
- "stl_io",
- "tobj",
  "urdf-rs",
  "zenoh",
 ]

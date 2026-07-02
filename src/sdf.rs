@@ -649,8 +649,8 @@ fn parse_sdf_geometry(node: roxmltree::Node, sdf_dir: &Path) -> GeomData {
                     if let Some(uri) = child.children().find(|n| n.tag_name().name() == "uri") {
                         let filename = uri.text().unwrap_or("").to_string();
                         let mesh_path = resolve_sdf_uri(&filename, sdf_dir);
-                        let vertices = crate::robot::load_stl_mesh_public(&mesh_path);
-                        // Read optional <scale>
+                        // Read optional <scale> first so it is baked into
+                        // the vertices, matching the URDF / .misa loaders.
                         let scale = child
                             .children()
                             .find(|n| n.tag_name().name() == "scale")
@@ -662,7 +662,7 @@ fn parse_sdf_geometry(node: roxmltree::Node, sdf_dir: &Path) -> GeomData {
                                 if v.len() >= 3 { Some([v[0], v[1], v[2]]) } else { None }
                             });
                         return GeomData::Mesh {
-                            vertices,
+                            vertices: crate::robot::load_mesh_flat(&mesh_path, scale.as_ref()),
                             filename: Some(filename),
                             scale,
                         };

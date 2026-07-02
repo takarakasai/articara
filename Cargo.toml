@@ -66,8 +66,6 @@ parry3d = "0.25"
 rhai = { version = "1", optional = true }
 roxmltree = "0.20"
 serde = { version = "1", features = ["derive"], optional = true }
-stl_io = "0.11.0"
-tobj = "4"
 urdf-rs = "0.9.0"
 
 [dev-dependencies]

@@ -1,6 +1,5 @@
 use nalgebra as na;
 use std::collections::{HashMap, HashSet};
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 // Re-export all core types from rbd::model so that `crate::robot::RobotModel`
@@ -580,25 +579,8 @@ mod misa_load {
             mn::Geom::Mesh { file, scale } => {
                 let path = base_dir.join(file);
                 let scale_arr = [scale[0] as f32, scale[1] as f32, scale[2] as f32];
-                let ext = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                let vertices = match ext.as_str() {
-                    "stl" => load_stl_mesh_with_scale(&path, scale_arr),
-                    "obj" => super::load_obj_mesh(&path, Some(&scale_arr)),
-                    "dae" => super::load_dae_mesh(&path, Some(&scale_arr)),
-                    _ => {
-                        log::warn!(
-                            ".misa references unsupported mesh format {:?}: {:?}",
-                            ext, path
-                        );
-                        Vec::new()
-                    }
-                };
                 GeomData::Mesh {
-                    vertices,
+                    vertices: super::load_mesh_flat(&path, Some(&scale_arr)),
                     filename: Some(file.clone()),
                     scale: Some(scale_arr),
                 }
@@ -606,44 +588,6 @@ mod misa_load {
         }
     }
 
-    /// STL loader that takes a plain `[f32; 3]` scale (parallel to the
-    /// URDF-side `load_stl_mesh` which takes a `urdf_rs::Vec3`). Kept
-    /// separate to avoid touching the URDF code path while .misa lands;
-    /// can be unified in a follow-up refactor.
-    fn load_stl_mesh_with_scale(path: &PathBuf, scale: [f32; 3]) -> Vec<f32> {
-        let file = match std::fs::File::open(path) {
-            Ok(f) => f,
-            Err(e) => {
-                log::warn!("Failed to open STL file {:?}: {}", path, e);
-                return Vec::new();
-            }
-        };
-        let mut reader = BufReader::new(file);
-        let mesh = match stl_io::read_stl(&mut reader) {
-            Ok(m) => m,
-            Err(e) => {
-                log::warn!("Failed to read STL {:?}: {}", path, e);
-                return Vec::new();
-            }
-        };
-
-        let mut vertices = Vec::with_capacity(mesh.faces.len() * 3 * 6);
-        for face in &mesh.faces {
-            let nx = face.normal[0];
-            let ny = face.normal[1];
-            let nz = face.normal[2];
-            for &vi in &face.vertices {
-                let vtx = &mesh.vertices[vi];
-                vertices.push(vtx[0] * scale[0]);
-                vertices.push(vtx[1] * scale[1]);
-                vertices.push(vtx[2] * scale[2]);
-                vertices.push(nx);
-                vertices.push(ny);
-                vertices.push(nz);
-            }
-        }
-        vertices
-    }
 
     pub(super) fn color_spec_to_rgba(c: &mn::ColorSpec) -> [f32; 4] {
         match c {
@@ -1868,26 +1812,8 @@ fn convert_geometry(geom: &urdf_rs::Geometry, package_dir: &Path) -> GeomData {
             let sf = scale
                 .as_ref()
                 .map(|s| [s.0[0] as f32, s.0[1] as f32, s.0[2] as f32]);
-            let ext = mesh_path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            let vertices = match ext.as_str() {
-                "stl" => load_stl_mesh(&mesh_path, scale.as_ref()),
-                "obj" => load_obj_mesh(&mesh_path, sf.as_ref()),
-                "dae" => load_dae_mesh(&mesh_path, sf.as_ref()),
-                _ => {
-                    log::warn!(
-                        "Unsupported mesh format {:?}: {:?}",
-                        ext,
-                        mesh_path
-                    );
-                    Vec::new()
-                }
-            };
             GeomData::Mesh {
-                vertices,
+                vertices: load_mesh_flat(&mesh_path, sf.as_ref()),
                 filename: Some(filename.clone()),
                 scale: sf,
             }
@@ -1928,122 +1854,8 @@ pub fn resolve_package_path(filename: &str, package_dir: &Path) -> PathBuf {
     }
 }
 
-fn load_stl_mesh(path: &PathBuf, scale: Option<&urdf_rs::Vec3>) -> Vec<f32> {
-    let sf = scale
-        .map(|s| [s.0[0] as f32, s.0[1] as f32, s.0[2] as f32])
-        .unwrap_or([1.0, 1.0, 1.0]);
 
-    let file = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(e) => {
-            log::warn!("Failed to open STL file {:?}: {}", path, e);
-            return Vec::new();
-        }
-    };
-    let mut reader = BufReader::new(file);
-    let mesh = match stl_io::read_stl(&mut reader) {
-        Ok(m) => m,
-        Err(e) => {
-            log::warn!("Failed to read STL {:?}: {}", path, e);
-            return Vec::new();
-        }
-    };
 
-    let mut vertices = Vec::with_capacity(mesh.faces.len() * 3 * 6);
-    for face in &mesh.faces {
-        let nx = face.normal[0];
-        let ny = face.normal[1];
-        let nz = face.normal[2];
-        for &vi in &face.vertices {
-            let vtx = &mesh.vertices[vi];
-            vertices.push(vtx[0] * sf[0]);
-            vertices.push(vtx[1] * sf[1]);
-            vertices.push(vtx[2] * sf[2]);
-            vertices.push(nx);
-            vertices.push(ny);
-            vertices.push(nz);
-        }
-    }
-
-    log::info!(
-        "Loaded STL {:?}: {} triangles",
-        path.file_name().unwrap_or_default(),
-        mesh.faces.len()
-    );
-    vertices
-}
-
-/// Public wrapper for loading an STL mesh from an absolute path (no scale).
-pub fn load_stl_mesh_public(path: &PathBuf) -> Vec<f32> {
-    load_stl_mesh(path, None)
-}
-
-/// Load a Wavefront OBJ mesh, returning flat `[x, y, z, nx, ny, nz]` per vertex
-/// (same format as `load_stl_mesh`). Normals are recomputed per-triangle
-/// (flat shading) — the file's own normals are ignored so output matches STL.
-pub fn load_obj_mesh(path: &PathBuf, scale: Option<&[f32; 3]>) -> Vec<f32> {
-    let sf = scale.copied().unwrap_or([1.0, 1.0, 1.0]);
-
-    let (models, _materials) = match tobj::load_obj(
-        path,
-        &tobj::LoadOptions {
-            triangulate: true,
-            single_index: true,
-            ..Default::default()
-        },
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            log::warn!("Failed to load OBJ {:?}: {}", path, e);
-            return Vec::new();
-        }
-    };
-
-    let mut vertices: Vec<f32> = Vec::new();
-    let mut tri_count: usize = 0;
-    for model in &models {
-        let mesh = &model.mesh;
-        let pos = &mesh.positions;
-        for tri in mesh.indices.chunks_exact(3) {
-            let i0 = tri[0] as usize * 3;
-            let i1 = tri[1] as usize * 3;
-            let i2 = tri[2] as usize * 3;
-            if i0 + 2 >= pos.len() || i1 + 2 >= pos.len() || i2 + 2 >= pos.len() {
-                continue;
-            }
-            let v0 = [pos[i0], pos[i0 + 1], pos[i0 + 2]];
-            let v1 = [pos[i1], pos[i1 + 1], pos[i1 + 2]];
-            let v2 = [pos[i2], pos[i2 + 1], pos[i2 + 2]];
-            let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
-            let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
-            let mut nx = e1[1] * e2[2] - e1[2] * e2[1];
-            let mut ny = e1[2] * e2[0] - e1[0] * e2[2];
-            let mut nz = e1[0] * e2[1] - e1[1] * e2[0];
-            let nlen = (nx * nx + ny * ny + nz * nz).sqrt();
-            if nlen > 1e-20 {
-                nx /= nlen;
-                ny /= nlen;
-                nz /= nlen;
-            }
-            for v in [v0, v1, v2] {
-                vertices.push(v[0] * sf[0]);
-                vertices.push(v[1] * sf[1]);
-                vertices.push(v[2] * sf[2]);
-                vertices.push(nx);
-                vertices.push(ny);
-                vertices.push(nz);
-            }
-            tri_count += 1;
-        }
-    }
-
-    log::info!(
-        "Loaded OBJ {:?}: {} triangles",
-        path.file_name().unwrap_or_default(),
-        tri_count
-    );
-    vertices
-}
 
 /// Write a flat `[x, y, z, nx, ny, nz]` vertex array (3 verts per tri, no indexing —
 /// same shape produced by `load_stl_mesh` / `load_obj_mesh`) as a **binary STL** file.
@@ -2276,307 +2088,49 @@ fn sanitize_filename(s: &str) -> String {
         .collect()
 }
 
-/// Load a Collada (.dae) mesh file, returning flat vertex data
-/// `[x, y, z, nx, ny, nz]` per vertex (same format as STL loader).
-///
-/// Handles `<triangles>` and `<polylist>` (triangles-only) elements.
-/// Applies an optional uniform scale.
-pub fn load_dae_mesh(path: &PathBuf, scale: Option<&[f32; 3]>) -> Vec<f32> {
-    let sf = scale.copied().unwrap_or([1.0, 1.0, 1.0]);
 
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) => {
-            log::warn!("Failed to read DAE file {:?}: {}", path, e);
-            return Vec::new();
-        }
-    };
-    let doc = match roxmltree::Document::parse(&text) {
-        Ok(d) => d,
-        Err(e) => {
-            log::warn!("Failed to parse DAE XML {:?}: {}", path, e);
-            return Vec::new();
-        }
-    };
-
-    // Detect up-axis to build a correction matrix.
-    // Collada default is Y_UP; many robot meshes use Z_UP.
-    let up_axis = doc
-        .descendants()
-        .find(|n| n.has_tag_name("up_axis"))
-        .and_then(|n| n.text())
-        .unwrap_or("Y_UP");
-
-    // We want Z-up output (robotics convention).
-    // Y_UP → rotate -90° around X  (y→z, z→-y)
-    // X_UP → rotate  90° around Z  (x→y, y→-x)  then same as Y_UP
-    let apply_up = |x: f32, y: f32, z: f32| -> [f32; 3] {
-        match up_axis {
-            "Z_UP" => [x, y, z],
-            "X_UP" => [y, z, x],
-            _ /* Y_UP */ => [x, z, -y],
-        }
-    };
-
-    let mut all_vertices: Vec<f32> = Vec::new();
-
-    // Helper: parse a whitespace-separated float array from text content.
-    fn parse_floats(text: &str) -> Vec<f32> {
-        text.split_whitespace()
-            .filter_map(|s| s.parse::<f32>().ok())
-            .collect()
-    }
-
-    fn parse_ints(text: &str) -> Vec<usize> {
-        text.split_whitespace()
-            .filter_map(|s| s.parse::<usize>().ok())
-            .collect()
-    }
-
-    // Iterate over all <geometry> → <mesh> elements.
-    for mesh_node in doc
-        .descendants()
-        .filter(|n| n.has_tag_name("mesh"))
-    {
-        // Collect <source> elements by their id.
-        let mut sources: std::collections::HashMap<String, Vec<f32>> =
-            std::collections::HashMap::new();
-        for source in mesh_node.children().filter(|n| n.has_tag_name("source")) {
-            if let Some(id) = source.attribute("id") {
-                if let Some(fa) = source.children().find(|n| n.has_tag_name("float_array")) {
-                    if let Some(text) = fa.text() {
-                        sources.insert(id.to_string(), parse_floats(text));
-                    }
-                }
-            }
-        }
-
-        // <vertices> maps a semantic to a source.
-        let mut vertex_source_id: Option<String> = None;
-        if let Some(verts_node) = mesh_node.children().find(|n| n.has_tag_name("vertices")) {
-            for input in verts_node.children().filter(|n| n.has_tag_name("input")) {
-                if input.attribute("semantic") == Some("POSITION") {
-                    if let Some(src) = input.attribute("source") {
-                        vertex_source_id = Some(src.trim_start_matches('#').to_string());
-                    }
-                }
-            }
-        }
-
-        // Process <triangles> and <polylist> elements.
-        let tri_elements: Vec<_> = mesh_node
-            .children()
-            .filter(|n| n.has_tag_name("triangles") || n.has_tag_name("polylist"))
-            .collect();
-
-        for tri_elem in tri_elements {
-            // Gather <input> semantics, offsets, sources.
-            let mut pos_offset: Option<usize> = None;
-            let mut norm_offset: Option<usize> = None;
-            let mut pos_source: Option<String> = None;
-            let mut norm_source: Option<String> = None;
-            let mut max_offset: usize = 0;
-
-            for input in tri_elem.children().filter(|n| n.has_tag_name("input")) {
-                let semantic = input.attribute("semantic").unwrap_or("");
-                let offset: usize = input
-                    .attribute("offset")
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0);
-                let src = input
-                    .attribute("source")
-                    .unwrap_or("")
-                    .trim_start_matches('#')
-                    .to_string();
-                if offset > max_offset {
-                    max_offset = offset;
-                }
-                match semantic {
-                    "VERTEX" => {
-                        pos_offset = Some(offset);
-                        // VERTEX refers to <vertices>, which in turn refers to the position source.
-                        pos_source = vertex_source_id.clone();
-                    }
-                    "NORMAL" => {
-                        norm_offset = Some(offset);
-                        norm_source = Some(src);
-                    }
-                    _ => {}
-                }
-            }
-
-            let stride = max_offset + 1;
-
-            let positions = pos_source
-                .as_ref()
-                .and_then(|id| sources.get(id));
-            let normals = norm_source
-                .as_ref()
-                .and_then(|id| sources.get(id));
-
-            // For <polylist>, check <vcount> — we only handle triangles (all 3s).
-            let is_polylist = tri_elem.has_tag_name("polylist");
-            let vcounts: Vec<usize> = if is_polylist {
-                tri_elem
-                    .children()
-                    .find(|n| n.has_tag_name("vcount"))
-                    .and_then(|n| n.text())
-                    .map(|t| parse_ints(t))
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-
-            // Parse <p> index data.
-            let indices: Vec<usize> = tri_elem
-                .children()
-                .find(|n| n.has_tag_name("p"))
-                .and_then(|n| n.text())
-                .map(|t| parse_ints(t))
-                .unwrap_or_default();
-
-            if let Some(positions) = positions {
-                if is_polylist {
-                    // Walk vcounts
-                    let mut idx_cursor = 0usize;
-                    for &vc in &vcounts {
-                        if vc < 3 {
-                            idx_cursor += vc * stride;
-                            continue;
-                        }
-                        // Fan triangulate: vertex 0, i, i+1
-                        for t in 0..(vc - 2) {
-                            let fan_indices = [0, t + 1, t + 2];
-                            for &fi in &fan_indices {
-                                let base = idx_cursor + fi * stride;
-                                let pi = pos_offset.map(|o| indices[base + o]).unwrap_or(0);
-                                let ni = norm_offset.map(|o| indices[base + o]);
-
-                                let px = positions.get(pi * 3).copied().unwrap_or(0.0);
-                                let py = positions.get(pi * 3 + 1).copied().unwrap_or(0.0);
-                                let pz = positions.get(pi * 3 + 2).copied().unwrap_or(0.0);
-                                let [ox, oy, oz] = apply_up(px * sf[0], py * sf[1], pz * sf[2]);
-                                all_vertices.push(ox);
-                                all_vertices.push(oy);
-                                all_vertices.push(oz);
-
-                                if let (Some(ni_val), Some(norms)) = (ni, normals) {
-                                    let nx = norms.get(ni_val * 3).copied().unwrap_or(0.0);
-                                    let ny = norms.get(ni_val * 3 + 1).copied().unwrap_or(0.0);
-                                    let nz = norms.get(ni_val * 3 + 2).copied().unwrap_or(0.0);
-                                    let [onx, ony, onz] = apply_up(nx, ny, nz);
-                                    all_vertices.push(onx);
-                                    all_vertices.push(ony);
-                                    all_vertices.push(onz);
-                                } else {
-                                    all_vertices.push(0.0);
-                                    all_vertices.push(0.0);
-                                    all_vertices.push(1.0);
-                                }
-                            }
-                        }
-                        idx_cursor += vc * stride;
-                    }
-                } else {
-                    // <triangles>: every 3 * stride indices form one triangle.
-                    let num_verts = indices.len() / stride;
-                    for v in 0..num_verts {
-                        let base = v * stride;
-                        let pi = pos_offset.map(|o| indices[base + o]).unwrap_or(0);
-                        let ni = norm_offset.map(|o| indices[base + o]);
-
-                        let px = positions.get(pi * 3).copied().unwrap_or(0.0);
-                        let py = positions.get(pi * 3 + 1).copied().unwrap_or(0.0);
-                        let pz = positions.get(pi * 3 + 2).copied().unwrap_or(0.0);
-                        let [ox, oy, oz] = apply_up(px * sf[0], py * sf[1], pz * sf[2]);
-                        all_vertices.push(ox);
-                        all_vertices.push(oy);
-                        all_vertices.push(oz);
-
-                        if let (Some(ni_val), Some(norms)) = (ni, normals) {
-                            let nx = norms.get(ni_val * 3).copied().unwrap_or(0.0);
-                            let ny = norms.get(ni_val * 3 + 1).copied().unwrap_or(0.0);
-                            let nz = norms.get(ni_val * 3 + 2).copied().unwrap_or(0.0);
-                            let [onx, ony, onz] = apply_up(nx, ny, nz);
-                            all_vertices.push(onx);
-                            all_vertices.push(ony);
-                            all_vertices.push(onz);
-                        } else {
-                            all_vertices.push(0.0);
-                            all_vertices.push(0.0);
-                            all_vertices.push(1.0);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // If no normals were provided at all, compute face normals.
-    // (Check if every 6th float from index 3 is 0,0,1 default.)
-    let tri_count = all_vertices.len() / 18;
-    if tri_count > 0 {
-        let all_default = (0..tri_count).all(|i| {
-            let b = i * 18;
-            all_vertices[b + 3] == 0.0
-                && all_vertices[b + 4] == 0.0
-                && all_vertices[b + 5] == 1.0
-                && all_vertices[b + 9] == 0.0
-                && all_vertices[b + 10] == 0.0
-                && all_vertices[b + 11] == 1.0
-                && all_vertices[b + 15] == 0.0
-                && all_vertices[b + 16] == 0.0
-                && all_vertices[b + 17] == 1.0
-        });
-        if all_default {
-            // Recompute face normals from vertex positions.
-            for i in 0..tri_count {
-                let b = i * 18;
-                let v0 = [all_vertices[b], all_vertices[b + 1], all_vertices[b + 2]];
-                let v1 = [all_vertices[b + 6], all_vertices[b + 7], all_vertices[b + 8]];
-                let v2 = [all_vertices[b + 12], all_vertices[b + 13], all_vertices[b + 14]];
-                let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
-                let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
-                let nx = e1[1] * e2[2] - e1[2] * e2[1];
-                let ny = e1[2] * e2[0] - e1[0] * e2[2];
-                let nz = e1[0] * e2[1] - e1[1] * e2[0];
-                let len = (nx * nx + ny * ny + nz * nz).sqrt().max(1e-12);
-                let nn = [nx / len, ny / len, nz / len];
-                for j in 0..3 {
-                    let nb = b + j * 6 + 3;
-                    all_vertices[nb] = nn[0];
-                    all_vertices[nb + 1] = nn[1];
-                    all_vertices[nb + 2] = nn[2];
-                }
-            }
-        }
-    }
-
-    log::info!(
-        "Loaded DAE {:?}: {} triangles",
-        path.file_name().unwrap_or_default(),
-        tri_count
-    );
-    all_vertices
-}
-
-/// Load a mesh file (STL or DAE) by extension, returning flat `[x,y,z,nx,ny,nz]` vertex data.
-pub fn load_mesh_file(path: &std::path::Path) -> Vec<f32> {
+/// Load a mesh file (STL / OBJ / DAE by extension) via [`misarta::mesh::MeshData`],
+/// returning flat `[x, y, z, nx, ny, nz]` vertex data (face normals — flat
+/// shading, matching what the renderer expects). I/O errors, parse errors
+/// and unsupported formats log a warning and return an empty Vec.
+pub fn load_mesh_flat(path: &std::path::Path, scale: Option<&[f32; 3]>) -> Vec<f32> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-    let pb = path.to_path_buf();
-    match ext.as_str() {
-        "stl" => load_stl_mesh(&pb, None),
-        "obj" => load_obj_mesh(&pb, None),
-        "dae" => load_dae_mesh(&pb, None),
-        _ => {
-            log::warn!("Unsupported mesh format: {:?}", path);
-            Vec::new()
+    let mesh = match ext.as_str() {
+        "stl" => misarta::mesh::MeshData::from_stl(path),
+        "obj" => std::fs::read(path)
+            .map_err(|e| format!("read error: {e}"))
+            .and_then(|bytes| misarta::mesh::MeshData::from_obj_bytes(&bytes)),
+        "dae" => misarta::collada::load_dae(path),
+        other => Err(format!("unsupported mesh format '.{other}'")),
+    };
+    let mesh = match mesh {
+        Ok(m) => m,
+        Err(e) => {
+            log::warn!("Failed to load mesh {:?}: {}", path, e);
+            return Vec::new();
         }
-    }
+    };
+    let mesh = match scale {
+        Some(&[sx, sy, sz]) if [sx, sy, sz] != [1.0, 1.0, 1.0] => {
+            mesh.scaled(&na::Vector3::new(sx as f64, sy as f64, sz as f64))
+        }
+        _ => mesh,
+    };
+    log::info!(
+        "Loaded mesh {:?}: {} triangles",
+        path.file_name().unwrap_or_default(),
+        mesh.num_triangles()
+    );
+    mesh.to_flat_vertices_f32()
+}
+
+/// Load a mesh file (STL / OBJ / DAE) by extension without scaling.
+pub fn load_mesh_file(path: &std::path::Path) -> Vec<f32> {
+    load_mesh_flat(path, None)
 }
 
 // Inertia computation (InertiaTensor, compute_geometry_inertia, compute_link_inertia,
