@@ -51,6 +51,7 @@ eframe = { version = "0.34.1", features = ["glow"], optional = true }
 egui_plot = { version = "0.35", optional = true }
 env_logger = { version = "0.11.10", optional = true }
 glow = { version = "0.17.0", optional = true }
+legged-estimation = { path = "legged-estimation" }
 log = "0.4.29"
 misarta = { git = "https://github.com/takarakasai/misarta.git" }
 quadruped-gait = { path = "quadruped-gait" }
@@ -73,5 +74,5 @@ approx = "0.5"
 serde_json = "1"
 
 [workspace]
-members = [".", "misarta-py", "quadruped-gait", "xtask"]
-default-members = [".", "quadruped-gait"]
+members = [".", "legged-estimation", "misarta-py", "quadruped-gait", "xtask"]
+default-members = [".", "legged-estimation", "quadruped-gait"]

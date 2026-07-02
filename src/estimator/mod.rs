@@ -13,7 +13,7 @@
 //! See [`doc/mpc_wbc_gait_control.md`](../../../doc/mpc_wbc_gait_control.md)
 //! Phase B for design context.
 
-pub mod linear_kalman;
+pub use legged_estimation::linear_kalman;
 // Pipeline depends on `wbc_pipeline::build_floating_base_model`,
 // which is gated behind the `mujoco` feature; mirror the gate here so
 // non-mujoco builds (e.g. WASM, CI without MuJoCo) still compile.
