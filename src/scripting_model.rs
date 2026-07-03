@@ -2269,11 +2269,6 @@ mod tests {
             .join("tests/fixtures/urdf/test_robot.urdf")
     }
 
-    fn fixture_sdf() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/sdf/test_robot.sdf")
-    }
-
     fn fixture_five_bar() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/sdf/five_bar_parallel.sdf")

@@ -44,6 +44,7 @@ pub(super) struct SimState {
     /// When `Some(n)`, advance the active MuJoCo sim by exactly `n` physics
     /// frames (negative = step backward through the snapshot history) then
     /// re-pause. Ignored when the active sim is not MuJoCo.
+    #[cfg(feature = "mujoco")]
     pub dynamics_step_frames: Option<i32>,
     /// Last frame instant for delta-time calculation.
     pub dynamics_last_instant: Option<std::time::Instant>,
@@ -111,12 +112,16 @@ pub(super) struct SimState {
     #[cfg(feature = "mujoco")]
     pub mujoco_base_locked: [bool; 6],
     /// Currently selected target link for the external-force panel.
+    #[cfg(feature = "mujoco")]
     pub ext_force_link: Option<String>,
     /// Force vector (N) for the external-force panel.
+    #[cfg(feature = "mujoco")]
     pub ext_force_value: [f32; 3],
     /// Torque vector (N·m) for the external-force panel.
+    #[cfg(feature = "mujoco")]
     pub ext_torque_value: [f32; 3],
     /// Duration (s) of the next external-force application.
+    #[cfg(feature = "mujoco")]
     pub ext_force_duration: f32,
     /// Whether contact-point markers + force vectors are drawn over the viewport.
     #[cfg(feature = "mujoco")]
@@ -137,6 +142,13 @@ pub(super) struct SimState {
     /// and the velocity-mode reference / commanded torque are gated by ωmax.
     #[cfg(feature = "mujoco")]
     pub enforce_actuator_limits: bool,
+    /// Default sliding-friction coefficient (μ_slide) applied to every
+    /// emitted MJCF geom — see [`articara::mjcf::MjcfExportOptions::default_friction`].
+    /// Surfaced as a Sim-toggles slider so the user can sweep
+    /// foot-on-ground μ without editing the misa. Baked into MJCF at
+    /// MuJoCo init, so changes require Stop → Play to take effect.
+    #[cfg(feature = "mujoco")]
+    pub sim_default_friction: f64,
     /// Whether to enable gravity-compensation feedforward in the MuJoCo
     /// controller. The flag mirrors `MujocoSim::set_gravity_compensation`
     /// so the toggle survives Stop → Play (we re-apply it on `mj_start`).
@@ -150,6 +162,7 @@ impl Default for SimState {
             dynamics_sim: None,
             dynamics_sim_speed: 1.0,
             dynamics_sim_paused: false,
+            #[cfg(feature = "mujoco")]
             dynamics_step_frames: None,
             dynamics_last_instant: None,
             #[cfg(feature = "mujoco")]
@@ -174,9 +187,13 @@ impl Default for SimState {
             mujoco_base_pos: [0.0, 0.0, 0.0],
             #[cfg(feature = "mujoco")]
             mujoco_base_locked: [false; 6],
+            #[cfg(feature = "mujoco")]
             ext_force_link: None,
+            #[cfg(feature = "mujoco")]
             ext_force_value: [0.0, 0.0, 0.0],
+            #[cfg(feature = "mujoco")]
             ext_torque_value: [0.0, 0.0, 0.0],
+            #[cfg(feature = "mujoco")]
             ext_force_duration: 0.5,
             #[cfg(feature = "mujoco")]
             show_contacts: true,
@@ -188,6 +205,11 @@ impl Default for SimState {
             sim_drag_force_gain: 500.0,
             #[cfg(feature = "mujoco")]
             enforce_actuator_limits: false,
+            // Matches `MjcfExportOptions::default()` so the value the user
+            // sees on the slider equals what gets baked into MJCF if they
+            // never touch it.
+            #[cfg(feature = "mujoco")]
+            sim_default_friction: 0.7,
             #[cfg(feature = "mujoco")]
             enforce_gravity_compensation: false,
         }
@@ -282,11 +304,9 @@ impl ArticaraApp {
                 ui.separator();
 
                 // --- Simulation controls ---
-                let mut sim_active = self.sim.dynamics_sim.is_some();
+                let sim_active = self.sim.dynamics_sim.is_some();
                 #[cfg(feature = "mujoco")]
-                {
-                    sim_active = sim_active || self.sim.mujoco_sim.is_some();
-                }
+                let sim_active = sim_active || self.sim.mujoco_sim.is_some();
 
                 ui.horizontal(|ui| {
                     // Static analysis — uses EE link if one is set, otherwise
@@ -336,7 +356,7 @@ impl ArticaraApp {
                                 mesh_path_style:
                                     articara::mesh_paths::MeshPathStyle::default(),
                                 default_friction: [
-                                    self.sim_default_friction,
+                                    self.sim.sim_default_friction,
                                     0.005,
                                     0.0001,
                                 ],
@@ -599,7 +619,7 @@ impl ArticaraApp {
                         ui.label("🪨 Friction μ:");
                         let resp = ui.add(
                             egui::Slider::new(
-                                &mut self.sim_default_friction,
+                                &mut self.sim.sim_default_friction,
                                 0.0..=2.0,
                             )
                             .fixed_decimals(2),
@@ -615,12 +635,12 @@ impl ArticaraApp {
                              running sim.",
                         );
                         if ui.small_button("0.7").on_hover_text("Reset to default (0.7)").clicked() {
-                            self.sim_default_friction = 0.7;
+                            self.sim.sim_default_friction = 0.7;
                         }
                         if sim_active && resp.changed() {
                             self.status_message = format!(
                                 "🪨 Friction μ = {:.2} — Stop → Play to apply",
-                                self.sim_default_friction,
+                                self.sim.sim_default_friction,
                             );
                         }
                     });

@@ -20,6 +20,12 @@
 //! plumbing the call sites all share.
 
 
+
+// Each integration-test binary compiles this module in full but
+// only calls the helpers it needs — per-binary dead_code noise
+// is expected, not a defect.
+#![allow(dead_code)]
+
 #[allow(unused_imports)] // some tests don't use every helper
 use std::path::PathBuf;
 

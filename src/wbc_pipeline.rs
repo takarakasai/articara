@@ -37,7 +37,7 @@ use misarta::model::{LinkInertia, Model, ModelBuilder};
 use quadruped_gait::wbc::{
     self, WbcDims, WbcInputs, WbcSolution, WbcWarmStart, WbcWeights,
 };
-use quadruped_gait::{ControllerOutput, KinematicsConfig, foot_jacobian_body, forward_leg_kinematics};
+use quadruped_gait::{ControllerOutput, KinematicsConfig, forward_leg_kinematics};
 
 use crate::mujoco_sim::MujocoSim;
 use crate::rbd::model::RobotModel;

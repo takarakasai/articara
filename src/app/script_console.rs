@@ -449,7 +449,7 @@ impl ArticaraApp {
                             }
                             // End the `eng` borrow before mutating other
                             // ArticaraApp fields via apply_script_overrides.
-                            drop(eng);
+                            let _ = eng;
                             self.apply_script_overrides(pending_ov);
                         }
 

@@ -1,6 +1,6 @@
 use eframe::egui;
 use nalgebra as na;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -593,12 +593,6 @@ pub struct ArticaraApp {
     show_collision_matrix: bool,
     /// Whether the actuator-settings dialog is open.
     show_actuator_dialog: bool,
-    /// Default sliding-friction coefficient (μ_slide) applied to every
-    /// emitted MJCF geom — see [`articara::mjcf::MjcfExportOptions::default_friction`].
-    /// Surfaced as a Sim-toggles slider so the user can sweep
-    /// foot-on-ground μ without editing the misa. Baked into MJCF at
-    /// MuJoCo init, so changes require Stop → Play to take effect.
-    sim_default_friction: f64,
     /// Persistent bulk-edit slot state for the actuator dialog. Kept here
     /// rather than as a closure-local so the user's "include in bulk write"
     /// toggles and values survive across UI ticks.
@@ -820,10 +814,6 @@ impl ArticaraApp {
             show_collision_matrix: false,
             show_actuator_dialog: false,
             actuator_bulk: actuator_dialog::BulkEdit::default(),
-            // Matches `MjcfExportOptions::default()` so the value the user
-            // sees on the slider equals what gets baked into MJCF if they
-            // never touch it.
-            sim_default_friction: 0.7,
             pending_misa_report: None,
             #[cfg(feature = "mujoco")]
             pending_mujoco_warning: match articara::mujoco_version::cached() {
@@ -1109,62 +1099,6 @@ impl ArticaraApp {
         }
     }
 
-    /// Pull fresh accel + gyro from MuJoCo and integrate each
-    /// estimator one step. Call after every physics step. Uses
-    /// sim-time `dt` so the estimator stays synchronous with the
-    /// simulation regardless of wall-clock pacing.
-    #[cfg(feature = "mujoco")]
-    pub(super) fn update_imu_estimators(&mut self) {
-        let Some(ref mj) = self.sim.mujoco_sim else {
-            return;
-        };
-        let Some(ref model) = self.model else {
-            return;
-        };
-        for reading in mj.imu_readings(model) {
-            let dt = match self.sim.imu_last_sim_time.get(&reading.name) {
-                Some(prev) if reading.sim_time > *prev => reading.sim_time - *prev,
-                _ => {
-                    self.sim.imu_last_sim_time
-                        .insert(reading.name.clone(), reading.sim_time);
-                    continue;
-                }
-            };
-            self.sim.imu_last_sim_time
-                .insert(reading.name.clone(), reading.sim_time);
-            if let Some(est) = self.sim.imu_estimators.get_mut(&reading.name) {
-                est.update_imu(reading.gyro, reading.accel, dt);
-            }
-        }
-    }
-
-    /// Yaw (rad) from the *primary* IMU's Madgwick quaternion. The
-    /// "primary" IMU is the first one whose `link` matches the
-    /// kinematic root (i.e., the one mounted on the trunk). Falls
-    /// back to any estimator that exists, then to `None` when no IMU
-    /// is instrumented.
-    #[cfg(feature = "mujoco")]
-    pub(super) fn primary_imu_yaw(&self) -> Option<f64> {
-        let model = self.model.as_ref()?;
-        let trunk = &model.root_link;
-        let primary = model
-            .sensors
-            .iter()
-            .find(|s| {
-                matches!(s.kind, articara::rbd::model::SensorKind::Imu { .. })
-                    && &s.link == trunk
-            })
-            .or_else(|| {
-                model
-                    .sensors
-                    .iter()
-                    .find(|s| matches!(s.kind, articara::rbd::model::SensorKind::Imu { .. }))
-            })?;
-        let est = self.sim.imu_estimators.get(&primary.name)?;
-        let (_roll, _pitch, yaw) = est.euler_zyx();
-        Some(yaw)
-    }
-
     /// Advance the dynamics simulation by one frame, modifying model state.
     fn step_dynamics_sim(&mut self) {
         // Async queue integration: instantaneous ops (Print, SaveCsv,
@@ -1202,9 +1136,9 @@ impl ArticaraApp {
             None => {
                 // mujoco_sim is active but dynamics_sim is not — fall through to MuJoCo step
                 // Use a dummy reference; the MuJoCo branch returns before using `sim`.
-                let now = std::time::Instant::now();
                 #[cfg(feature = "mujoco")]
                 {
+                    let now = std::time::Instant::now();
                     let frame_request = self.sim.dynamics_step_frames.take();
                     let enforce_limits = self.sim.enforce_actuator_limits;
                     if let Some(mj_sim) = self.sim.mujoco_sim.as_mut() {

@@ -467,7 +467,7 @@ impl ArticaraApp {
                         self.rename_link_buf = link_name.to_string();
                     }
                 }
-                ui.close_menu();
+                ui.close();
             }
 
             if ui.button("➕ Add Child…").clicked() {
@@ -477,7 +477,7 @@ impl ArticaraApp {
                     self.new_link_name = model.generate_link_name("new_link");
                     self.new_joint_name = model.generate_joint_name("new_joint");
                 }
-                ui.close_menu();
+                ui.close();
             }
 
             if ui.button("📋 Copy Visuals → Collisions").clicked() {
@@ -498,7 +498,7 @@ impl ArticaraApp {
                         }
                     }
                 }
-                ui.close_menu();
+                ui.close();
             }
 
             ui.separator();
@@ -520,7 +520,7 @@ impl ArticaraApp {
                         }
                     }
                 }
-                ui.close_menu();
+                ui.close();
             }
         });
     }
@@ -538,7 +538,7 @@ impl ArticaraApp {
                 self.selected_joint = Some(ji);
                 self.selected_link = None;
                 self.rename_joint_buf = joint_name.to_string();
-                ui.close_menu();
+                ui.close();
             }
 
             let mut type_change_msg: Option<String> = None;
@@ -552,7 +552,7 @@ impl ArticaraApp {
                             model.joints[ji].joint_type = jt.to_string();
                             model.rebuild_misarta_model();
                             type_change_msg = Some(format!("Change joint '{}' type to {}", joint_name, jt));
-                            ui.close_menu();
+                            ui.close();
                             break;
                         }
                     }

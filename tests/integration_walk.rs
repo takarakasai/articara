@@ -1623,9 +1623,9 @@ fn diag_walk_champ_forward_gui_replica_full_misa() {
 #[ignore = "external-force robustness benchmark — run with --ignored"]
 fn diag_external_force_robustness() {
     let common::StandFixture {
-        mut robot,
+        robot,
         kin: _,
-        mut sim,
+        sim,
     } = match common::build_namiashi_stand_fixture_misa() {
         Some(f) => f,
         None => return,
@@ -3814,9 +3814,9 @@ fn diag_a3_friction_cone_soft_vs_hard() {
 #[ignore = "A1/A3/B3 external-force bench — run with --ignored"]
 fn diag_a1_a3_b3_external_force_bench() {
     let common::StandFixture {
-        mut robot,
+        robot,
         kin: _,
-        mut sim,
+        sim,
     } = match common::build_namiashi_stand_fixture_misa() {
         Some(f) => f,
         None => return,
