@@ -281,7 +281,35 @@ impl RobotModel {
                 lc.link_b = new_name.to_string();
             }
         }
-        // 5. Rebuild all derived maps
+        // 5. Sensor mounts, collision pairs and gait foot links reference
+        //    links by name too (same invariant set as
+        //    `misarta::native::edit::rename_link`).
+        for s in &mut self.sensors {
+            if s.link == old_name {
+                s.link = new_name.to_string();
+            }
+        }
+        for cp in &mut self.collision_pairs {
+            if cp.link_a == old_name {
+                cp.link_a = new_name.to_string();
+            }
+            if cp.link_b == old_name {
+                cp.link_b = new_name.to_string();
+            }
+        }
+        for g in &mut self.gaits {
+            for foot in [
+                &mut g.fl_foot,
+                &mut g.fr_foot,
+                &mut g.rl_foot,
+                &mut g.rr_foot,
+            ] {
+                if foot == old_name {
+                    *foot = new_name.to_string();
+                }
+            }
+        }
+        // 6. Rebuild all derived maps
         self.rebuild_indices();
         true
     }
@@ -300,6 +328,21 @@ impl RobotModel {
             return false;
         };
         self.joints[ji].name = new_name.to_string();
+        // Mimics and pose angle maps reference joints by name (same
+        // invariant set as `misarta::native::edit::rename_joint`).
+        for m in &mut self.mimics {
+            if m.joint == old_name {
+                m.joint = new_name.to_string();
+            }
+            if m.source == old_name {
+                m.source = new_name.to_string();
+            }
+        }
+        for p in &mut self.poses {
+            if let Some(v) = p.angles.remove(old_name) {
+                p.angles.insert(new_name.to_string(), v);
+            }
+        }
         self.rebuild_indices();
         true
     }
