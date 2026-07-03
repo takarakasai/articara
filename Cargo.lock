@@ -330,6 +330,7 @@ dependencies = [
  "legged-estimation",
  "log",
  "misarta",
+ "misarta-formats",
  "mujoco-rs",
  "nalgebra",
  "parry3d",
@@ -3007,7 +3008,7 @@ dependencies = [
 [[package]]
 name = "misarta"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misarta.git#12a7700245766464bf210ebaea51485a8271c5bd"
+source = "git+https://github.com/takarakasai/misarta.git#fca26d90d38e6c6fbbb3c9fa04a8fc7304865ba1"
 dependencies = [
  "clarabel",
  "nalgebra",
@@ -3017,6 +3018,16 @@ dependencies = [
  "stl_io",
  "tobj",
  "toml",
+]
+
+[[package]]
+name = "misarta-formats"
+version = "0.1.0"
+source = "git+https://github.com/takarakasai/misarta.git#fca26d90d38e6c6fbbb3c9fa04a8fc7304865ba1"
+dependencies = [
+ "misarta",
+ "nalgebra",
+ "roxmltree",
 ]
 
 [[package]]

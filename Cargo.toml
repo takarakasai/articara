@@ -54,6 +54,7 @@ glow = { version = "0.17.0", optional = true }
 legged-estimation = { path = "legged-estimation" }
 log = "0.4.29"
 misarta = { git = "https://github.com/takarakasai/misarta.git" }
+misarta-formats = { git = "https://github.com/takarakasai/misarta.git" }
 quadruped-gait = { path = "quadruped-gait" }
 # MuJoCo auto-download is disabled on macOS because mujoco-rs does not support
 # automatic download on this platform. Set MUJOCO_DYNAMIC_LINK_DIR or
