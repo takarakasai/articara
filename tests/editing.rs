@@ -1138,7 +1138,6 @@ mod test_closed_loop_ik {
         // Run several IK steps with loop constraint to restore closure
         // Using the coupler link as "EE" target, moving it toward a position
         // while maintaining the loop.
-        let loop_cs = model.build_loop_diff_constraints(50.0);
         let transforms = model.compute_transforms();
         let ee_pos = model.ee_world_pos(
             *model.link_map.get("coupler").unwrap(),

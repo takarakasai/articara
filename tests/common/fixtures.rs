@@ -1,5 +1,11 @@
 //! Shared fixture paths for the format / editor regression suites.
 
+
+// Each integration-test binary compiles this module in full but
+// only calls the helpers it needs — per-binary dead_code noise
+// is expected, not a defect.
+#![allow(dead_code)]
+
 use std::path::PathBuf;
 
 /// Return the absolute path of the `tests/fixtures` directory.

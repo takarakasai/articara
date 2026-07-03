@@ -6,7 +6,7 @@
 //! - **Ground truth** (solid) — the IMU mount frame's actual world
 //!   orientation, taken from MuJoCo's forward-kinematics output.
 //! - **Estimate** (dashed) — the Madgwick filter's reconstruction,
-//!   computed in `ArticaraApp::update_imu_estimators`.
+//!   integrated inline in the MuJoCo step loop (`step_dynamics_sim`).
 //!
 //! Without a magnetometer, the Madgwick filter has no absolute heading
 //! reference: roll & pitch lock to gravity, but yaw integrates from

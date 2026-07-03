@@ -688,7 +688,8 @@ impl ArticaraApp {
                             position_tolerance_m: 0.02,
                             yaw_tolerance_rad: 0.05,
                         });
-                        self.gait.goal_pose_active = true;
+                        // (goal_pose_active is refreshed from the live
+                        // controller state below, every frame.)
                         self.status_message = format!(
                             "Goal-pose mode → ({:+.2}, {:+.2}, {:+.2}) max_v={:.2}",
                             self.gait.goal_x_m,
@@ -701,7 +702,6 @@ impl ArticaraApp {
                 if clear {
                     if let Some(gc) = self.gait.controller.as_mut() {
                         gc.clear_goal_pose();
-                        self.gait.goal_pose_active = false;
                         self.status_message =
                             "Goal-pose mode cleared → cmd_vel mode".into();
                     }

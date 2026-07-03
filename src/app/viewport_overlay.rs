@@ -1687,6 +1687,7 @@ impl ArticaraApp {
     /// arrowhead at the tip. Used by the contact-force / external-force
     /// overlays which both end up projecting a 3D vector onto the screen
     /// before drawing.
+    #[cfg(feature = "mujoco")]
     pub(super) fn draw_screen_arrow(
         painter: &egui::Painter,
         from: egui::Pos2,
