@@ -1335,7 +1335,7 @@ impl ArticaraApp {
         ui: &mut egui::Ui,
         rect: egui::Rect,
     ) {
-        let Some(sim) = self.mujoco_sim.as_ref() else {
+        let Some(sim) = self.sim.mujoco_sim.as_ref() else {
             return;
         };
         let ratio = sim.realtime_ratio();
@@ -1451,14 +1451,14 @@ impl ArticaraApp {
             .unwrap_or(false);
         let wbc_label = if !in_mpc_mode {
             "WBC: — (CHAMP)".to_string()
-        } else if self.wbc_enabled {
+        } else if self.sim.wbc_enabled {
             "WBC: ON".to_string()
         } else {
             "WBC: OFF".to_string()
         };
         let wbc_color = if !in_mpc_mode {
             egui::Color32::from_gray(120)
-        } else if self.wbc_enabled {
+        } else if self.sim.wbc_enabled {
             egui::Color32::from_rgb(80, 200, 100)
         } else {
             egui::Color32::from_gray(180)
@@ -1481,8 +1481,8 @@ impl ArticaraApp {
             egui::Sense::click(),
         );
         if resp.clicked() && in_mpc_mode {
-            self.wbc_enabled = !self.wbc_enabled;
-            self.status_message = if self.wbc_enabled {
+            self.sim.wbc_enabled = !self.sim.wbc_enabled;
+            self.status_message = if self.sim.wbc_enabled {
                 "WBC ON — torques solved by 3-priority HoQp".into()
             } else {
                 "WBC OFF — Position-PD + τ_ff path (proven baseline)".into()
@@ -1725,10 +1725,10 @@ impl ArticaraApp {
         rect: egui::Rect,
         aspect: f32,
     ) {
-        if !self.show_contacts {
+        if !self.sim.show_contacts {
             return;
         }
-        let Some(sim) = self.mujoco_sim.as_ref() else {
+        let Some(sim) = self.sim.mujoco_sim.as_ref() else {
             return;
         };
         let contacts = sim.contacts();
@@ -1882,7 +1882,7 @@ impl ArticaraApp {
         rect: egui::Rect,
         aspect: f32,
     ) {
-        let Some(sim) = self.mujoco_sim.as_ref() else {
+        let Some(sim) = self.sim.mujoco_sim.as_ref() else {
             return;
         };
         let pulses = sim.external_force_pulses();

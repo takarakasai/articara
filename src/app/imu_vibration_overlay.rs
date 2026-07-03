@@ -36,7 +36,7 @@ impl ArticaraApp {
         ui: &mut egui::Ui,
         rect: egui::Rect,
     ) {
-        if self.mujoco_sim.is_none() {
+        if self.sim.mujoco_sim.is_none() {
             return;
         }
         let Some(ref model) = self.model else {

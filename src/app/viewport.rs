@@ -166,7 +166,7 @@ impl ArticaraApp {
         // existing JointDrive update doesn't compete for the same button.
         if response.dragged_by(egui::PointerButton::Primary) {
             #[cfg(feature = "mujoco")]
-            let sim_drag_active = self.sim_drag_state.is_some();
+            let sim_drag_active = self.sim.sim_drag_state.is_some();
             #[cfg(not(feature = "mujoco"))]
             let sim_drag_active = false;
             if sim_drag_active {

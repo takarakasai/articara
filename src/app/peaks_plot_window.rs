@@ -105,7 +105,7 @@ impl ArticaraApp {
                     return;
                 }
             };
-            let sim = match self.mujoco_sim.as_ref() {
+            let sim = match self.sim.mujoco_sim.as_ref() {
                 Some(s) => s,
                 None => {
                     // Render a placeholder window and bail.
@@ -404,7 +404,7 @@ impl ArticaraApp {
             });
 
         // ── Apply trace_max according to current x-axis settings ──
-        if let Some(sim) = self.mujoco_sim.as_mut() {
+        if let Some(sim) = self.sim.mujoco_sim.as_mut() {
             let dt = sim_dt.max(1e-6);
             let target = match xaxis_mode {
                 PeaksXAxisMode::Auto if auto_unlimited => PEAKS_PLOT_UNLIMITED_CAP,

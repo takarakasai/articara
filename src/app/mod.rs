@@ -511,81 +511,9 @@ pub struct ArticaraApp {
     dynamics_ee_link: Option<String>,
     /// Cached dynamics analysis result.
     dynamics_result: Option<dynamics::StaticAnalysis>,
-    /// Active dynamics simulation (payload).
-    dynamics_sim: Option<dynamics::DynSim>,
-    /// Simulation playback speed.
-    dynamics_sim_speed: f32,
-    /// Whether the simulation is paused.
-    dynamics_sim_paused: bool,
-    /// When `Some(n)`, advance the active MuJoCo sim by exactly `n` physics
-    /// frames (negative = step backward through the snapshot history) then
-    /// re-pause. Ignored when the active sim is not MuJoCo.
-    dynamics_step_frames: Option<i32>,
-    /// Last frame instant for delta-time calculation.
-    dynamics_last_instant: Option<std::time::Instant>,
-    /// Active MuJoCo simulation instance.
-    #[cfg(feature = "mujoco")]
-    mujoco_sim: Option<articara::mujoco_sim::MujocoSim>,
-    /// Madgwick attitude estimators keyed by IMU sensor name. Built on
-    /// MuJoCo sim start (one per `[[sensor]]` of kind `Imu` in the
-    /// loaded `RobotModel`); updated every physics tick from
-    /// `MujocoSim::imu_readings()`. The gait controller's pose-source
-    /// selector reads the primary IMU's quaternion to drive the MPC's
-    /// `body_state.world_yaw` in `PoseSource::ImuFusion` mode.
-    #[cfg(feature = "mujoco")]
-    imu_estimators:
-        std::collections::HashMap<String, articara::attitude_estimator::MadgwickAhrs>,
-    /// Last sim time we fed an IMU sample, per sensor name. Used to
-    /// derive `dt` for the estimator without re-querying MuJoCo's clock
-    /// state (the estimator is sim-time-driven, not wall-clock).
-    #[cfg(feature = "mujoco")]
-    imu_last_sim_time: std::collections::HashMap<String, f64>,
-    /// Source for the body pose (yaw + position) that's fed to the gait
-    /// controller's MPC each tick. Switchable from the gait panel so
-    /// the user can A/B compare the IMU-fusion path against MuJoCo's
-    /// oracle while debugging the controller.
-    #[cfg(feature = "mujoco")]
-    pose_source: articara::gait::PoseSource,
-    /// Kinematics-based leg-odometry estimator. Maintains an integrated
-    /// world-frame body position from stance-foot kinematics, used
-    /// when [`Self::pose_source`] is [`articara::gait::PoseSource::LegOdometry`].
-    /// Reset on MuJoCo sim start so a previous run's drift doesn't
-    /// bleed in.
-    #[cfg(feature = "mujoco")]
-    leg_odometry: articara::leg_odometry::LegOdometry,
-    /// Stance flags `[FL, FR, RL, RR]` from the gait controller's
-    /// previous tick output. The leg-odometry estimator runs *before*
-    /// `gc.tick`, so it relies on this last-tick snapshot to know
-    /// which legs are pinned to the ground. One-tick lag is harmless
-    /// at typical 2 ms physics ticks.
-    #[cfg(feature = "mujoco")]
-    leg_odometry_last_stance: [bool; 4],
-    /// When true, the gait integration loop runs the Hierarchical WBC
-    /// (`wbc_pipeline::WbcPipeline`) and writes its solved torques
-    /// directly to `MujocoSim` via `set_wbc_torques`, bypassing
-    /// per-joint Position-PD. Off by default; toggled from the gait
-    /// panel. Active only in MPC gait mode (CHAMP doesn't produce
-    /// the GRF / contact references the WBC needs).
-    #[cfg(feature = "mujoco")]
-    wbc_enabled: bool,
-    /// Lazy-initialised WBC pipeline. Built on the first tick the
-    /// gait controller is enabled in MPC mode so we don't pay the
-    /// kinematic-cache lookup cost on robots that aren't quadrupeds.
-    #[cfg(feature = "mujoco")]
-    wbc_pipeline: Option<articara::wbc_pipeline::WbcPipeline>,
-    /// When true, the MuJoCo sim auto-lifts the floating base just above z=0.
-    /// When false, [`Self::mujoco_base_pos`] is used as the initial world position.
-    #[cfg(feature = "mujoco")]
-    mujoco_auto_base: bool,
-    /// Manual initial world position for the floating base (used when
-    /// [`Self::mujoco_auto_base`] is false).
-    #[cfg(feature = "mujoco")]
-    mujoco_base_pos: [f32; 3],
-    /// Per-axis lock state for the trunk before MuJoCo sim start, ordered
-    /// `[TX, TY, TZ, RX, RY, RZ]`. `true` = locked. All `false` = full
-    /// floating base (default), all `true` = welded to world.
-    #[cfg(feature = "mujoco")]
-    mujoco_base_locked: [bool; 6],
+    /// Simulation-execution state (payload / MuJoCo sims, estimators,
+    /// WBC, external forces, drag). See [`dynamics_panel::SimState`].
+    sim: dynamics_panel::SimState,
     /// Name buffer for the next "Save current pose as…" entry.
     pose_save_name: String,
     /// Name buffer for creating a new (empty) sequence.
@@ -599,38 +527,6 @@ pub struct ArticaraApp {
     pose_transition_kind: misarta::trajectory::InterpolationKind,
     /// Default transition duration (s) seeded into newly-saved poses.
     pose_transition_duration: f32,
-    /// Currently selected target link for the external-force panel.
-    ext_force_link: Option<String>,
-    /// Force vector (N) for the external-force panel.
-    ext_force_value: [f32; 3],
-    /// Torque vector (N·m) for the external-force panel.
-    ext_torque_value: [f32; 3],
-    /// Duration (s) of the next external-force application.
-    ext_force_duration: f32,
-    /// Whether contact-point markers + force vectors are drawn over the viewport.
-    #[cfg(feature = "mujoco")]
-    show_contacts: bool,
-    /// How a sim-time link drag is interpreted (force vs posture).
-    #[cfg(feature = "mujoco")]
-    sim_drag_mode: SimDragMode,
-    /// Active sim-drag state while the user is holding the mouse button.
-    #[cfg(feature = "mujoco")]
-    sim_drag_state: Option<SimDragState>,
-    /// Force gain (N per metre of drag) for Force mode. Tuned so a typical
-    /// 30 cm drag exerts ~150 N out of the box, enough to push a kg-scale
-    /// link around without flinging lighter ones.
-    #[cfg(feature = "mujoco")]
-    sim_drag_force_gain: f32,
-    /// Whether to enforce per-joint torque/velocity limits during MuJoCo
-    /// simulation. When `true`, the controller torque is clamped to ±τmax
-    /// and the velocity-mode reference / commanded torque are gated by ωmax.
-    #[cfg(feature = "mujoco")]
-    enforce_actuator_limits: bool,
-    /// Whether to enable gravity-compensation feedforward in the MuJoCo
-    /// controller. The flag mirrors `MujocoSim::set_gravity_compensation`
-    /// so the toggle survives Stop → Play (we re-apply it on `mj_start`).
-    #[cfg(feature = "mujoco")]
-    enforce_gravity_compensation: bool,
     /// Joint Peaks plot window state (open flag, selection, axis and
     /// CSV-export dialog). See [`peaks_plot_window::PeaksPlotState`].
     #[cfg(feature = "mujoco")]
@@ -885,54 +781,12 @@ impl ArticaraApp {
             validation_results: Vec::new(),
             dynamics_ee_link: None,
             dynamics_result: None,
-            dynamics_sim: None,
-            dynamics_sim_speed: 1.0,
-            dynamics_sim_paused: false,
-            dynamics_step_frames: None,
-            dynamics_last_instant: None,
-            #[cfg(feature = "mujoco")]
-            mujoco_sim: None,
-            #[cfg(feature = "mujoco")]
-            imu_estimators: std::collections::HashMap::new(),
-            #[cfg(feature = "mujoco")]
-            imu_last_sim_time: std::collections::HashMap::new(),
-            #[cfg(feature = "mujoco")]
-            pose_source: articara::gait::PoseSource::default(),
-            #[cfg(feature = "mujoco")]
-            leg_odometry: articara::leg_odometry::LegOdometry::new(),
-            #[cfg(feature = "mujoco")]
-            leg_odometry_last_stance: [true; 4], // start in all-stance pose
-            #[cfg(feature = "mujoco")]
-            wbc_enabled: false,
-            #[cfg(feature = "mujoco")]
-            wbc_pipeline: None,
-            #[cfg(feature = "mujoco")]
-            mujoco_auto_base: true,
-            #[cfg(feature = "mujoco")]
-            mujoco_base_pos: [0.0, 0.0, 0.0],
-            #[cfg(feature = "mujoco")]
-            mujoco_base_locked: [false; 6],
+            sim: dynamics_panel::SimState::default(),
             pose_save_name: String::new(),
             sequence_save_name: String::new(),
             sequence_step_pose_buf: std::collections::HashMap::new(),
             pose_transition_kind: misarta::trajectory::InterpolationKind::QuinticSmooth,
             pose_transition_duration: 1.0,
-            ext_force_link: None,
-            ext_force_value: [0.0, 0.0, 0.0],
-            ext_torque_value: [0.0, 0.0, 0.0],
-            ext_force_duration: 0.5,
-            #[cfg(feature = "mujoco")]
-            show_contacts: true,
-            #[cfg(feature = "mujoco")]
-            sim_drag_mode: SimDragMode::Force,
-            #[cfg(feature = "mujoco")]
-            sim_drag_state: None,
-            #[cfg(feature = "mujoco")]
-            sim_drag_force_gain: 500.0,
-            #[cfg(feature = "mujoco")]
-            enforce_actuator_limits: false,
-            #[cfg(feature = "mujoco")]
-            enforce_gravity_compensation: false,
             #[cfg(feature = "mujoco")]
             #[cfg(feature = "mujoco")]
             peaks_plot: peaks_plot_window::PeaksPlotState::default(),
@@ -1240,14 +1094,14 @@ impl ArticaraApp {
     /// run.
     #[cfg(feature = "mujoco")]
     pub(super) fn rebuild_imu_estimators(&mut self) {
-        self.imu_estimators.clear();
-        self.imu_last_sim_time.clear();
+        self.sim.imu_estimators.clear();
+        self.sim.imu_last_sim_time.clear();
         let Some(ref model) = self.model else {
             return;
         };
         for sensor in &model.sensors {
             if matches!(sensor.kind, articara::rbd::model::SensorKind::Imu { .. }) {
-                self.imu_estimators.insert(
+                self.sim.imu_estimators.insert(
                     sensor.name.clone(),
                     articara::attitude_estimator::MadgwickAhrs::default(),
                 );
@@ -1261,24 +1115,24 @@ impl ArticaraApp {
     /// simulation regardless of wall-clock pacing.
     #[cfg(feature = "mujoco")]
     pub(super) fn update_imu_estimators(&mut self) {
-        let Some(ref mj) = self.mujoco_sim else {
+        let Some(ref mj) = self.sim.mujoco_sim else {
             return;
         };
         let Some(ref model) = self.model else {
             return;
         };
         for reading in mj.imu_readings(model) {
-            let dt = match self.imu_last_sim_time.get(&reading.name) {
+            let dt = match self.sim.imu_last_sim_time.get(&reading.name) {
                 Some(prev) if reading.sim_time > *prev => reading.sim_time - *prev,
                 _ => {
-                    self.imu_last_sim_time
+                    self.sim.imu_last_sim_time
                         .insert(reading.name.clone(), reading.sim_time);
                     continue;
                 }
             };
-            self.imu_last_sim_time
+            self.sim.imu_last_sim_time
                 .insert(reading.name.clone(), reading.sim_time);
-            if let Some(est) = self.imu_estimators.get_mut(&reading.name) {
+            if let Some(est) = self.sim.imu_estimators.get_mut(&reading.name) {
                 est.update_imu(reading.gyro, reading.accel, dt);
             }
         }
@@ -1306,7 +1160,7 @@ impl ArticaraApp {
                     .iter()
                     .find(|s| matches!(s.kind, articara::rbd::model::SensorKind::Imu { .. }))
             })?;
-        let est = self.imu_estimators.get(&primary.name)?;
+        let est = self.sim.imu_estimators.get(&primary.name)?;
         let (_roll, _pitch, yaw) = est.euler_zyx();
         Some(yaw)
     }
@@ -1327,7 +1181,7 @@ impl ArticaraApp {
         self.drain_instantaneous_async_ops();
         #[cfg(feature = "mujoco")]
         let async_step_remaining: Option<u32> = self
-            .mujoco_sim
+            .sim.mujoco_sim
             .as_ref()
             .and_then(|s| match s.async_peek() {
                 Some(articara::mujoco_sim::AsyncSimOp::StepFrames(n)) => Some(*n),
@@ -1335,14 +1189,14 @@ impl ArticaraApp {
             });
 
         #[cfg(feature = "mujoco")]
-        let has_mujoco = self.mujoco_sim.is_some();
+        let has_mujoco = self.sim.mujoco_sim.is_some();
         #[cfg(not(feature = "mujoco"))]
         let has_mujoco = false;
 
-        let sim = match self.dynamics_sim.as_mut() {
+        let sim = match self.sim.dynamics_sim.as_mut() {
             Some(s) => s,
             None if !has_mujoco => {
-                self.dynamics_last_instant = None;
+                self.sim.dynamics_last_instant = None;
                 return;
             }
             None => {
@@ -1351,13 +1205,13 @@ impl ArticaraApp {
                 let now = std::time::Instant::now();
                 #[cfg(feature = "mujoco")]
                 {
-                    let frame_request = self.dynamics_step_frames.take();
-                    let enforce_limits = self.enforce_actuator_limits;
-                    if let Some(mj_sim) = self.mujoco_sim.as_mut() {
+                    let frame_request = self.sim.dynamics_step_frames.take();
+                    let enforce_limits = self.sim.enforce_actuator_limits;
+                    if let Some(mj_sim) = self.sim.mujoco_sim.as_mut() {
                         if let Some(ref mut model) = self.model {
                             if let Some(n) = frame_request {
-                                self.dynamics_sim_paused = true;
-                                self.dynamics_last_instant = Some(now);
+                                self.sim.dynamics_sim_paused = true;
+                                self.sim.dynamics_last_instant = Some(now);
                                 if n > 0 {
                                     mj_sim.step_n_frames(model, n as u32, enforce_limits);
                                 } else if n < 0 {
@@ -1365,22 +1219,22 @@ impl ArticaraApp {
                                 }
                                 return;
                             }
-                            if self.dynamics_sim_paused {
-                                self.dynamics_last_instant = Some(now);
+                            if self.sim.dynamics_sim_paused {
+                                self.sim.dynamics_last_instant = Some(now);
                                 return;
                             }
-                            let wall_dt = match self.dynamics_last_instant {
+                            let wall_dt = match self.sim.dynamics_last_instant {
                                 Some(prev) => now.duration_since(prev).as_secs_f32().min(0.05),
                                 None => 0.016,
                             };
-                            self.dynamics_last_instant = Some(now);
+                            self.sim.dynamics_last_instant = Some(now);
                             // Apply the user's Speed multiplier so the
                             // sim can be slowed down for inspection or
                             // sped up for quick rollouts. Clamp the
                             // multiplier to a sane range to avoid
                             // pathological huge dt values when the
                             // slider is pushed up.
-                            let speed = self.dynamics_sim_speed.clamp(0.05, 5.0);
+                            let speed = self.sim.dynamics_sim_speed.clamp(0.05, 5.0);
                             let dt = wall_dt * speed;
                             // If the gait controller is enabled, advance
                             // it by the same `dt` as the physics step and
@@ -1397,22 +1251,22 @@ impl ArticaraApp {
                             // through a `&mut self` method would double-borrow.
                             for reading in mj_sim.imu_readings(model) {
                                 let dt_imu = match self
-                                    .imu_last_sim_time
+                                    .sim.imu_last_sim_time
                                     .get(&reading.name)
                                 {
                                     Some(prev) if reading.sim_time > *prev => {
                                         reading.sim_time - *prev
                                     }
                                     _ => {
-                                        self.imu_last_sim_time
+                                        self.sim.imu_last_sim_time
                                             .insert(reading.name.clone(), reading.sim_time);
                                         continue;
                                     }
                                 };
-                                self.imu_last_sim_time
+                                self.sim.imu_last_sim_time
                                     .insert(reading.name.clone(), reading.sim_time);
                                 if let Some(est) =
-                                    self.imu_estimators.get_mut(&reading.name)
+                                    self.sim.imu_estimators.get_mut(&reading.name)
                                 {
                                     est.update_imu(reading.gyro, reading.accel, dt_imu);
                                 }
@@ -1422,7 +1276,7 @@ impl ArticaraApp {
                             // MPC's `body_state` based on the user's selected
                             // PoseSource.
                             let trunk = &model.root_link;
-                            let yaw_observed = match self.pose_source {
+                            let yaw_observed = match self.sim.pose_source {
                                 articara::gait::PoseSource::ImuFusion
                                 | articara::gait::PoseSource::LegOdometry => {
                                     // Primary IMU = first one mounted on the
@@ -1448,7 +1302,7 @@ impl ArticaraApp {
                                             })
                                         });
                                     primary_imu
-                                        .and_then(|s| self.imu_estimators.get(&s.name))
+                                        .and_then(|s| self.sim.imu_estimators.get(&s.name))
                                         .map(|est| est.euler_zyx().2)
                                         .or_else(|| mj_sim.body_world_yaw(trunk))
                                         .unwrap_or(0.0)
@@ -1465,7 +1319,7 @@ impl ArticaraApp {
                             // The estimator maintains its own integrated
                             // position; we read it back below.
                             if matches!(
-                                self.pose_source,
+                                self.sim.pose_source,
                                 articara::gait::PoseSource::LegOdometry
                             ) {
                                 if let Some(gc) = self.gait.controller.as_ref() {
@@ -1507,7 +1361,7 @@ impl ArticaraApp {
                                                 }
                                             }
                                         }
-                                        legs[slot].6 = self.leg_odometry_last_stance[slot];
+                                        legs[slot].6 = self.sim.leg_odometry_last_stance[slot];
                                     }
                                     // Body angular velocity from MuJoCo cvel
                                     // (= gyro on hardware). Pre-feedback to
@@ -1515,7 +1369,7 @@ impl ArticaraApp {
                                     let omega_w = mj_sim
                                         .body_world_angular_velocity(trunk)
                                         .unwrap_or([0.0, 0.0, 0.0]);
-                                    self.leg_odometry.update(
+                                    self.sim.leg_odometry.update(
                                         &kin,
                                         legs,
                                         nalgebra::Vector3::new(
@@ -1527,9 +1381,9 @@ impl ArticaraApp {
                                 }
                             }
 
-                            let pos_observed = match self.pose_source {
+                            let pos_observed = match self.sim.pose_source {
                                 articara::gait::PoseSource::LegOdometry => {
-                                    let p = self.leg_odometry.position_world();
+                                    let p = self.sim.leg_odometry.position_world();
                                     [p.x, p.y, p.z]
                                 }
                                 _ => mj_sim
@@ -1585,7 +1439,7 @@ impl ArticaraApp {
                                     // so it needs the previous tick's
                                     // schedule.
                                     for slot in 0..4 {
-                                        self.leg_odometry_last_stance[slot] =
+                                        self.sim.leg_odometry_last_stance[slot] =
                                             out.legs[slot].phase.is_stance;
                                     }
 
@@ -1597,7 +1451,7 @@ impl ArticaraApp {
                                     // predicted GRFs as references. Only
                                     // active in MPC mode (CHAMP doesn't
                                     // produce GRFs).
-                                    let wbc_active = self.wbc_enabled
+                                    let wbc_active = self.sim.wbc_enabled
                                         && matches!(
                                             gc.mode(),
                                             quadruped_gait::GaitMode::Mpc
@@ -1606,7 +1460,7 @@ impl ArticaraApp {
                                         );
                                     if wbc_active {
                                         // Lazy-initialise the pipeline on first use.
-                                        if self.wbc_pipeline.is_none() {
+                                        if self.sim.wbc_pipeline.is_none() {
                                             let foot_links: [String; 4] = [
                                                 self.gait.foot_links[0].1.clone(),
                                                 self.gait.foot_links[1].1.clone(),
@@ -1659,7 +1513,7 @@ impl ArticaraApp {
                                                     srbd_cfg.inertia_diag_body;
                                                 new_pipe.centroidal_inertia_body = None;
                                             }
-                                            self.wbc_pipeline = Some(new_pipe);
+                                            self.sim.wbc_pipeline = Some(new_pipe);
                                         }
                                         // Pull MPC predicted GRFs (if any)
                                         // for the contact-force regulariser.
@@ -1687,7 +1541,7 @@ impl ArticaraApp {
                                             out.legs[2].phase.is_stance,
                                             out.legs[3].phase.is_stance,
                                         ];
-                                        let pipeline = self.wbc_pipeline.as_mut().unwrap();
+                                        let pipeline = self.sim.wbc_pipeline.as_mut().unwrap();
                                         // P5b: per-cmd-direction weight scheduling.
                                         // For lateral / yaw commands the joint-space
                                         // swing_leg PD reaction-torques the body in
@@ -1791,19 +1645,19 @@ impl ArticaraApp {
         };
 
         // Handle pause / step-once (payload sim path; frame stepping is MuJoCo-only)
-        if self.dynamics_sim_paused {
-            self.dynamics_last_instant = Some(std::time::Instant::now());
+        if self.sim.dynamics_sim_paused {
+            self.sim.dynamics_last_instant = Some(std::time::Instant::now());
             return;
         }
 
         // Compute delta-time
         let now = std::time::Instant::now();
         let dt = {
-            let d = match self.dynamics_last_instant {
+            let d = match self.sim.dynamics_last_instant {
                 Some(prev) => now.duration_since(prev).as_secs_f32().min(0.05),
                 None => 0.016,
             };
-            self.dynamics_last_instant = Some(now);
+            self.sim.dynamics_last_instant = Some(now);
             d
         };
 
@@ -1825,8 +1679,8 @@ impl ArticaraApp {
                 self.show_ground_plane = false;
                 self.ground_plane_auto = false;
             }
-            self.dynamics_sim = None;
-            self.dynamics_last_instant = None;
+            self.sim.dynamics_sim = None;
+            self.sim.dynamics_last_instant = None;
         }
     }
 
@@ -1839,11 +1693,11 @@ impl ArticaraApp {
     fn drain_instantaneous_async_ops(&mut self) {
         use articara::mujoco_sim::AsyncSimOp;
         loop {
-            let head_kind = match self.mujoco_sim.as_ref().and_then(|s| s.async_peek()) {
+            let head_kind = match self.sim.mujoco_sim.as_ref().and_then(|s| s.async_peek()) {
                 Some(AsyncSimOp::StepFrames(_)) => return,
                 Some(AsyncSimOp::SetPositionTarget(idx, q)) => {
                     let (idx, q) = (*idx, *q);
-                    if let Some(sim) = self.mujoco_sim.as_mut() {
+                    if let Some(sim) = self.sim.mujoco_sim.as_mut() {
                         sim.async_pop();
                         sim.set_position_target(idx, q);
                     }
@@ -1851,7 +1705,7 @@ impl ArticaraApp {
                 }
                 Some(AsyncSimOp::SetGaitVelocity(vx, vy, wz)) => {
                     let (vx, vy, wz) = (*vx, *vy, *wz);
-                    if let Some(sim) = self.mujoco_sim.as_mut() {
+                    if let Some(sim) = self.sim.mujoco_sim.as_mut() {
                         sim.async_pop();
                     }
                     if let Some(gc) = self.gait.controller.as_mut() {
@@ -1868,7 +1722,7 @@ impl ArticaraApp {
                 None => return,
             };
             if head_kind == "print" {
-                let msg = if let Some(sim) = self.mujoco_sim.as_mut() {
+                let msg = if let Some(sim) = self.sim.mujoco_sim.as_mut() {
                     if let Some(AsyncSimOp::Print(s)) = sim.async_pop() {
                         s
                     } else {
@@ -1879,7 +1733,7 @@ impl ArticaraApp {
                 };
                 self.script_output.push(ScriptLine::System(msg));
             } else if head_kind == "save" {
-                let path = if let Some(sim) = self.mujoco_sim.as_mut() {
+                let path = if let Some(sim) = self.sim.mujoco_sim.as_mut() {
                     if let Some(AsyncSimOp::SaveCsv(p)) = sim.async_pop() {
                         p
                     } else {
@@ -1889,7 +1743,7 @@ impl ArticaraApp {
                     return;
                 };
                 let result = if let (Some(model), Some(sim)) =
-                    (self.model.as_ref(), self.mujoco_sim.as_ref())
+                    (self.model.as_ref(), self.sim.mujoco_sim.as_ref())
                 {
                     articara::mujoco_sim::save_peaks_csv(model, sim, &path)
                 } else {
@@ -2017,7 +1871,7 @@ impl ArticaraApp {
             FileDialogResult::Confirmed(path) => {
                 self.peaks_plot.csv_path = path.display().to_string();
                 let result = if let (Some(model), Some(sim)) =
-                    (self.model.as_ref(), self.mujoco_sim.as_ref())
+                    (self.model.as_ref(), self.sim.mujoco_sim.as_ref())
                 {
                     peaks_plot_window::save_peaks_csv(model, sim, &path)
                 } else {
@@ -2468,10 +2322,10 @@ impl ArticaraApp {
         #[cfg(feature = "mujoco")]
         {
             if let Some(src) = ov.pose_source {
-                self.pose_source = src;
+                self.sim.pose_source = src;
             }
             if let Some(on) = ov.wbc_enabled {
-                self.wbc_enabled = on;
+                self.sim.wbc_enabled = on;
             }
         }
         #[cfg(not(feature = "mujoco"))]

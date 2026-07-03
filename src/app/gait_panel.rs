@@ -482,16 +482,16 @@ impl ArticaraApp {
         #[cfg(feature = "mujoco")]
         ui.horizontal(|ui| {
             ui.label("Pose source:");
-            let mut new_src = self.pose_source;
+            let mut new_src = self.sim.pose_source;
             egui::ComboBox::from_id_salt("pose_source_combo")
-                .selected_text(self.pose_source.label())
+                .selected_text(self.sim.pose_source.label())
                 .show_ui(ui, |ui| {
                     for s in articara::gait::PoseSource::ALL {
                         ui.selectable_value(&mut new_src, s, s.label());
                     }
                 });
-            if new_src != self.pose_source {
-                self.pose_source = new_src;
+            if new_src != self.sim.pose_source {
+                self.sim.pose_source = new_src;
                 self.status_message = format!("Pose source → {}", new_src.label());
             }
         })
@@ -512,15 +512,15 @@ impl ArticaraApp {
             let resp = ui.add_enabled(
                 enabled,
                 egui::Checkbox::new(
-                    &mut self.wbc_enabled,
+                    &mut self.sim.wbc_enabled,
                     "Hierarchical WBC",
                 ),
             );
             if !enabled {
-                self.wbc_enabled = false;
+                self.sim.wbc_enabled = false;
             }
             if resp.changed() {
-                if self.wbc_enabled {
+                if self.sim.wbc_enabled {
                     self.status_message =
                         "WBC enabled — torques solved by 3-priority HoQp".into();
                 } else {
@@ -1406,7 +1406,7 @@ impl ArticaraApp {
         // Start / stop. Disabled when no MuJoCo sim — the controller
         // writes into MujocoSim::position_targets, no sim no point.
         #[cfg(feature = "mujoco")]
-        let sim_alive = self.mujoco_sim.is_some();
+        let sim_alive = self.sim.mujoco_sim.is_some();
         #[cfg(not(feature = "mujoco"))]
         let sim_alive = false;
 
