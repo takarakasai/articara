@@ -339,7 +339,6 @@ dependencies = [
  "serde",
  "serde_json",
  "urdf-rs",
- "zenoh",
 ]
 
 [[package]]
@@ -4272,6 +4271,8 @@ dependencies = [
  "misarta",
  "nalgebra",
  "serde",
+ "serde_json",
+ "zenoh",
 ]
 
 [[package]]

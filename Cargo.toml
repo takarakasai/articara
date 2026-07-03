@@ -15,7 +15,7 @@ scripting = ["dep:rhai"]
 # Live gait viewer (see `viz_feed`): subscribe to a `go2-gait-runner --viz`
 # Zenoh stream and animate the loaded model. Pure-Rust transport (Zenoh), so
 # this adds no DDS/C toolchain dependency.
-viz = ["dep:zenoh", "dep:serde_json", "quadruped-gait/viz"]
+viz = ["quadruped-gait/viz-sub"]
 
 # The GUI binary and several examples only build with specific features.
 # Declaring required-features lets `cargo build/test` with other feature
@@ -55,9 +55,6 @@ legged-estimation = { path = "legged-estimation" }
 log = "0.4.29"
 misarta = { git = "https://github.com/takarakasai/misarta.git" }
 quadruped-gait = { path = "quadruped-gait" }
-# Live gait viewer transport (feature = "viz"): pure-Rust Zenoh pub/sub.
-zenoh = { version = "1.9", optional = true }
-serde_json = { version = "1", optional = true }
 # MuJoCo auto-download is disabled on macOS because mujoco-rs does not support
 # automatic download on this platform. Set MUJOCO_DYNAMIC_LINK_DIR or
 # MUJOCO_STATIC_LINK_DIR to the MuJoCo lib directory before building.
