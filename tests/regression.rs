@@ -4402,6 +4402,60 @@ mod test_sidecar {
 }
 
 mod test_misa {
+
+    /// A2 parity: the same structural edit applied (a) on `RobotModel`
+    /// (via its `EditTables` impl + wrappers) and (b) on the exported
+    /// `MisaFile` (via `misarta::native::edit`) must serialise to the
+    /// identical `.misa` text. Guards the two `EditTables`
+    /// implementations against slot-enumeration drift.
+    #[test]
+    fn edit_parity_with_native_edit() {
+        let Some(model) = load_namiashi_misa() else {
+            eprintln!("[skip] namiashi.misa not present");
+            return;
+        };
+
+        // Pick a non-root leaf link and any joint at runtime so the test
+        // survives fixture changes.
+        let leaf = model
+            .links
+            .iter()
+            .map(|l| l.name.clone())
+            .find(|n| *n != model.root_link && !model.joints.iter().any(|j| j.parent_link == *n))
+            .expect("fixture has a leaf link");
+        let joint = model.joints.last().expect("fixture has joints").name.clone();
+
+        // (a) edits on RobotModel, then export.
+        let mut via_model = model.clone();
+        assert!(via_model.rename_link(&leaf, "parity_link"));
+        assert!(via_model.rename_joint(&joint, "parity_joint"));
+        let doc_a = via_model.to_misa().expect("to_misa after model edits");
+
+        // (b) the same edits on the exported MisaFile.
+        let mut doc_b = model.to_misa().expect("to_misa base");
+        misarta::native::edit::rename_link(&mut doc_b, &leaf, "parity_link").unwrap();
+        misarta::native::edit::rename_joint(&mut doc_b, &joint, "parity_joint").unwrap();
+
+        assert_eq!(
+            misarta::native::write_str(&doc_a).unwrap(),
+            misarta::native::write_str(&doc_b).unwrap(),
+            "rename parity: RobotModel path vs native::edit path diverged"
+        );
+
+        // Removal parity on the renamed model.
+        let mut via_model_rm = via_model.clone();
+        via_model_rm.remove_link("parity_link").expect("remove via model");
+        let doc_a = via_model_rm.to_misa().expect("to_misa after remove");
+
+        let mut doc_b_rm = doc_b.clone();
+        misarta::native::edit::remove_link(&mut doc_b_rm, "parity_link").unwrap();
+
+        assert_eq!(
+            misarta::native::write_str(&doc_a).unwrap(),
+            misarta::native::write_str(&doc_b_rm).unwrap(),
+            "remove parity: RobotModel path vs native::edit path diverged"
+        );
+    }
     use super::*;
     use articara::format::RobotFormat;
     use articara::robot::{ActuatorMode, RobotModel};
