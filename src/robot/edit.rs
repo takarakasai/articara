@@ -6,7 +6,7 @@
 //! `doc/refactor_20260702.md` §4.1) once that lands.
 
 use nalgebra as na;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::rbd::model::*;
 
@@ -182,43 +182,16 @@ impl RobotModel {
 
     /// Remove a link and all joints that reference it (parent or child).
     /// Also removes child links recursively. Returns the names of removed links.
+    /// Remove a link and its entire subtree. Returns the removed link
+    /// names. Delegates to [`misarta::native::edit::remove_link_in`],
+    /// which also cleans up dangling references (sensors on removed
+    /// links, collision pairs / loop closures touching them, mimics of
+    /// removed joints, pose angle entries) — previously those went stale.
     pub fn remove_link(&mut self, link_name: &str) -> Result<Vec<String>, String> {
-        if link_name == self.root_link {
-            return Err("Cannot remove the root link".to_string());
-        }
-        if !self.link_map.contains_key(link_name) {
-            return Err(format!("Link '{}' not found", link_name));
-        }
-
-        // Collect all links to remove (this link + all descendants)
-        let mut to_remove = Vec::new();
-        self.collect_descendants(link_name, &mut to_remove);
-
-        // Remove joints that reference any of the removed links
-        let remove_set: HashSet<String> = to_remove.iter().cloned().collect();
-        self.joints.retain(|j| {
-            !remove_set.contains(&j.parent_link) || !remove_set.contains(&j.child_link)
-        });
-        // Also remove the joint whose child is link_name
-        self.joints.retain(|j| !remove_set.contains(&j.child_link));
-
-        // Remove the links themselves
-        self.links.retain(|l| !remove_set.contains(&l.name));
-
-        // Rebuild indices
+        let removed = misarta::native::edit::remove_link_in(self, link_name)
+            .map_err(|e| e.to_string())?;
         self.rebuild_indices();
-        Ok(to_remove)
-    }
-
-    /// Collect a link and all its descendants.
-    fn collect_descendants(&self, link_name: &str, result: &mut Vec<String>) {
-        result.push(link_name.to_string());
-        if let Some(child_joints) = self.children_joints.get(link_name) {
-            for &ji in child_joints {
-                let child = &self.joints[ji].child_link;
-                self.collect_descendants(child, result);
-            }
-        }
+        Ok(removed)
     }
 
     /// Rebuild all index maps after structural changes (add/remove).
@@ -241,114 +214,145 @@ impl RobotModel {
         self.rebuild_misarta_model();
     }
 
-    /// Rename a link.  Updates the canonical name, all joint parent/child
-    /// references, loop-closure references, and rebuilds derived indices.
-    /// Returns `true` on success, `false` if `new_name` is empty or already taken.
+    /// Rename a link. Delegates the reference fixups (joint parent/child,
+    /// loop closures, sensor mounts, collision pairs, gait foot links,
+    /// root) to [`misarta::native::edit::rename_link_in`] via the
+    /// [`misarta::native::edit::EditTables`] impl below, then rebuilds the
+    /// derived indices. Returns `true` on success.
     pub fn rename_link(&mut self, old_name: &str, new_name: &str) -> bool {
-        let new_name = new_name.trim();
-        if new_name.is_empty() || new_name == old_name {
+        if new_name.trim() == old_name {
             return false;
         }
-        // Reject duplicates
-        if self.link_map.contains_key(new_name) {
-            return false;
+        match misarta::native::edit::rename_link_in(self, old_name, new_name) {
+            Ok(()) => {
+                self.rebuild_indices();
+                true
+            }
+            Err(_) => false,
         }
-        // Find link index
-        let Some(&li) = self.link_map.get(old_name) else {
-            return false;
-        };
-        // 1. Rename the link itself
-        self.links[li].name = new_name.to_string();
-        // 2. Update root_link
-        if self.root_link == old_name {
-            self.root_link = new_name.to_string();
-        }
-        // 3. Update all joints referencing this link
-        for joint in &mut self.joints {
-            if joint.parent_link == old_name {
-                joint.parent_link = new_name.to_string();
-            }
-            if joint.child_link == old_name {
-                joint.child_link = new_name.to_string();
-            }
-        }
-        // 4. Update loop-closure references
-        for lc in &mut self.loop_closures {
-            if lc.link_a == old_name {
-                lc.link_a = new_name.to_string();
-            }
-            if lc.link_b == old_name {
-                lc.link_b = new_name.to_string();
-            }
-        }
-        // 5. Sensor mounts, collision pairs and gait foot links reference
-        //    links by name too (same invariant set as
-        //    `misarta::native::edit::rename_link`).
-        for s in &mut self.sensors {
-            if s.link == old_name {
-                s.link = new_name.to_string();
-            }
-        }
-        for cp in &mut self.collision_pairs {
-            if cp.link_a == old_name {
-                cp.link_a = new_name.to_string();
-            }
-            if cp.link_b == old_name {
-                cp.link_b = new_name.to_string();
-            }
-        }
-        for g in &mut self.gaits {
-            for foot in [
-                &mut g.fl_foot,
-                &mut g.fr_foot,
-                &mut g.rl_foot,
-                &mut g.rr_foot,
-            ] {
-                if foot == old_name {
-                    *foot = new_name.to_string();
-                }
-            }
-        }
-        // 6. Rebuild all derived maps
-        self.rebuild_indices();
-        true
     }
 
-    /// Rename a joint.  Updates the canonical name and rebuilds derived indices.
-    /// Returns `true` on success, `false` if `new_name` is empty or already taken.
+    /// Rename a joint. Delegates the reference fixups (mimic follower /
+    /// source, pose angle keys) to
+    /// [`misarta::native::edit::rename_joint_in`], then rebuilds indices.
     pub fn rename_joint(&mut self, old_name: &str, new_name: &str) -> bool {
-        let new_name = new_name.trim();
-        if new_name.is_empty() || new_name == old_name {
+        if new_name.trim() == old_name {
             return false;
         }
-        if self.joint_map.contains_key(new_name) {
-            return false;
-        }
-        let Some(&ji) = self.joint_map.get(old_name) else {
-            return false;
-        };
-        self.joints[ji].name = new_name.to_string();
-        // Mimics and pose angle maps reference joints by name (same
-        // invariant set as `misarta::native::edit::rename_joint`).
-        for m in &mut self.mimics {
-            if m.joint == old_name {
-                m.joint = new_name.to_string();
+        match misarta::native::edit::rename_joint_in(self, old_name, new_name) {
+            Ok(()) => {
+                self.rebuild_indices();
+                true
             }
-            if m.source == old_name {
-                m.source = new_name.to_string();
-            }
+            Err(_) => false,
         }
-        for p in &mut self.poses {
-            if let Some(v) = p.angles.remove(old_name) {
-                p.angles.insert(new_name.to_string(), v);
-            }
-        }
-        self.rebuild_indices();
-        true
     }
 
     /// Return a list of all link names (for UI combo boxes).
     pub fn link_names(&self) -> Vec<String> {
         self.links.iter().map(|l| l.name.clone()).collect()
+    }
+}
+
+// ─── misarta EditTables: the generic edit core runs on RobotModel ──────────
+//
+// The invariant-preserving edit logic (validation order, reference fixups,
+// dangling-row cleanup) lives once in `misarta::native::edit`; this impl
+// just enumerates where RobotModel keeps its name-reference slots. Derived
+// indices (`link_map` / `joint_map` / `children_joints` / misarta cache)
+// are rebuilt by the calling wrappers via `rebuild_indices()`, per the
+// trait contract.
+impl misarta::native::edit::EditTables for RobotModel {
+    fn root_link(&self) -> String {
+        self.root_link.clone()
+    }
+
+    fn has_link(&self, name: &str) -> bool {
+        self.link_map.contains_key(name)
+    }
+
+    fn has_joint(&self, name: &str) -> bool {
+        self.joint_map.contains_key(name)
+    }
+
+    fn joints_topology(&self) -> Vec<(String, String, String)> {
+        self.joints
+            .iter()
+            .map(|j| (j.name.clone(), j.parent_link.clone(), j.child_link.clone()))
+            .collect()
+    }
+
+    fn visit_link_name_slots(&mut self, f: &mut dyn FnMut(&mut String)) {
+        for l in &mut self.links {
+            f(&mut l.name);
+        }
+        f(&mut self.root_link);
+        for j in &mut self.joints {
+            f(&mut j.parent_link);
+            f(&mut j.child_link);
+        }
+        for s in &mut self.sensors {
+            f(&mut s.link);
+        }
+        for cp in &mut self.collision_pairs {
+            f(&mut cp.link_a);
+            f(&mut cp.link_b);
+        }
+        for lc in &mut self.loop_closures {
+            f(&mut lc.link_a);
+            f(&mut lc.link_b);
+        }
+        for g in &mut self.gaits {
+            f(&mut g.fl_foot);
+            f(&mut g.fr_foot);
+            f(&mut g.rl_foot);
+            f(&mut g.rr_foot);
+        }
+    }
+
+    fn visit_joint_name_slots(&mut self, f: &mut dyn FnMut(&mut String)) {
+        for j in &mut self.joints {
+            f(&mut j.name);
+        }
+        for m in &mut self.mimics {
+            f(&mut m.joint);
+            f(&mut m.source);
+        }
+        // Actuator settings are per-joint fields in `JointData`, so there
+        // is no separate actuator-reference table here.
+    }
+
+    fn rekey_joint_maps(&mut self, old: &str, new: &str) {
+        for p in &mut self.poses {
+            if let Some(v) = p.angles.remove(old) {
+                p.angles.insert(new.to_string(), v);
+            }
+        }
+        // No home table on RobotModel — the home entry is generated from
+        // live joint state at `.misa` save time.
+    }
+
+    fn remove_link_entities(&mut self, names: &[String]) {
+        self.links.retain(|l| !names.contains(&l.name));
+    }
+
+    fn remove_joint_entities(&mut self, names: &[String]) {
+        self.joints.retain(|j| !names.contains(&j.name));
+    }
+
+    fn retain_rows_by_link(&mut self, keep: &dyn Fn(&str) -> bool) {
+        self.sensors.retain(|s| keep(&s.link));
+        self.collision_pairs
+            .retain(|cp| keep(&cp.link_a) && keep(&cp.link_b));
+        self.loop_closures
+            .retain(|lc| keep(&lc.link_a) && keep(&lc.link_b));
+    }
+
+    fn retain_rows_by_joint(&mut self, keep: &dyn Fn(&str) -> bool) {
+        self.mimics
+            .retain(|m| keep(&m.joint) && keep(&m.source));
+        for p in &mut self.poses {
+            p.angles.retain(|k, _| keep(k));
+        }
     }
 }
