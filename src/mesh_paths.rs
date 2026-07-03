@@ -176,6 +176,42 @@ pub fn copy_meshes_to(model: &RobotModel, dest_dir: &Path) -> Result<usize, Stri
     Ok(count)
 }
 
+/// Rewrite every `Geom::Mesh.file` in a `MisaFile` with the string the
+/// format exporters should emit verbatim, resolved from the *original*
+/// `RobotModel` mesh URI (which may still be a `package://` reference —
+/// `to_misa` normalises those away, but path resolution needs the raw
+/// form plus `model.source_path`).
+///
+/// `to_misa` maps links / visuals / collisions 1:1 in order, so a
+/// parallel zip walk pairs each schema geom with its source geom.
+pub fn rewrite_mesh_refs(
+    file: &mut misarta::native::MisaFile,
+    model: &RobotModel,
+    style: &MeshPathStyle,
+) {
+    let rewrite = |geometry: &GeomData, geom: &mut misarta::native::Geom| {
+        let (GeomData::Mesh { filename, .. }, misarta::native::Geom::Mesh { file, .. }) =
+            (geometry, geom)
+        else {
+            return;
+        };
+        *file = match filename {
+            Some(uri) => emit_path(uri, model, style),
+            // In-memory decomposed mesh that was never materialised —
+            // keep the legacy placeholder.
+            None => "mesh.stl".to_string(),
+        };
+    };
+    for (l_model, l_file) in model.links.iter().zip(file.link.iter_mut()) {
+        for (v_model, v_file) in l_model.visuals.iter().zip(l_file.visual.iter_mut()) {
+            rewrite(&v_model.geometry, &mut v_file.geom);
+        }
+        for (c_model, c_file) in l_model.collisions.iter().zip(l_file.collision.iter_mut()) {
+            rewrite(&c_model.geometry, &mut c_file.geom);
+        }
+    }
+}
+
 /// Make a path absolute without requiring the target to exist
 /// (`canonicalize` is too strict for procedural-mesh placeholders or
 /// still-broken references). Relative paths are joined with the current

@@ -2837,6 +2837,7 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 name = "legged-estimation"
 version = "0.1.0"
 dependencies = [
+ "approx",
  "nalgebra",
  "quadruped-gait",
 ]
@@ -3008,7 +3009,7 @@ dependencies = [
 [[package]]
 name = "misarta"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misarta.git#fca26d90d38e6c6fbbb3c9fa04a8fc7304865ba1"
+source = "git+https://github.com/takarakasai/misarta.git#4fd4ad8f71f98d60c945fb48aa591f6122352e52"
 dependencies = [
  "clarabel",
  "nalgebra",
@@ -3023,7 +3024,7 @@ dependencies = [
 [[package]]
 name = "misarta-formats"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misarta.git#fca26d90d38e6c6fbbb3c9fa04a8fc7304865ba1"
+source = "git+https://github.com/takarakasai/misarta.git#4fd4ad8f71f98d60c945fb48aa591f6122352e52"
 dependencies = [
  "misarta",
  "nalgebra",
@@ -3035,6 +3036,7 @@ name = "misarta-py"
 version = "0.1.0"
 dependencies = [
  "misarta",
+ "misarta-formats",
  "nalgebra",
  "numpy",
  "pyo3",

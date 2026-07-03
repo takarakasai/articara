@@ -163,7 +163,7 @@ pub fn export_mjcf_with_options(
             return String::new();
         }
     };
-    rewrite_mesh_refs(&mut file, model, &opts.mesh_path_style);
+    crate::mesh_paths::rewrite_mesh_refs(&mut file, model, &opts.mesh_path_style);
 
     // Either honour the user-supplied base position or auto-lift the root so
     // the lowest visual geometry sits ~5 mm above the active ground plane.
@@ -198,42 +198,6 @@ pub fn export_mjcf_with_options(
         default_friction: opts.default_friction,
     };
     misarta_formats::mjcf::export(&file, &fopts)
-}
-
-/// Rewrite every `Geom::Mesh.file` in the `MisaFile` with the string the
-/// exporter should emit verbatim, resolved from the *original*
-/// `RobotModel` mesh URI (which may still be a `package://` reference —
-/// `to_misa` normalises those away, but path resolution needs the raw
-/// form plus `model.source_path`).
-///
-/// `to_misa` maps links / visuals / collisions 1:1 in order, so a
-/// parallel zip walk pairs each schema geom with its source geom.
-fn rewrite_mesh_refs(
-    file: &mut misarta::native::MisaFile,
-    model: &RobotModel,
-    style: &crate::mesh_paths::MeshPathStyle,
-) {
-    let rewrite = |geometry: &GeomData, geom: &mut misarta::native::Geom| {
-        let (GeomData::Mesh { filename, .. }, misarta::native::Geom::Mesh { file, .. }) =
-            (geometry, geom)
-        else {
-            return;
-        };
-        *file = match filename {
-            Some(uri) => crate::mesh_paths::emit_path(uri, model, style),
-            // In-memory decomposed mesh that was never materialised —
-            // keep the legacy placeholder.
-            None => "mesh.stl".to_string(),
-        };
-    };
-    for (l_model, l_file) in model.links.iter().zip(file.link.iter_mut()) {
-        for (v_model, v_file) in l_model.visuals.iter().zip(l_file.visual.iter_mut()) {
-            rewrite(&v_model.geometry, &mut v_file.geom);
-        }
-        for (c_model, c_file) in l_model.collisions.iter().zip(l_file.collision.iter_mut()) {
-            rewrite(&c_model.geometry, &mut c_file.geom);
-        }
-    }
 }
 
 /// Computes the minimum cumulative z translation in the kinematic chain.
