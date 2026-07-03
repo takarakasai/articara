@@ -36,7 +36,7 @@ impl ArticaraApp {
         rect: egui::Rect,
         aspect: f32,
     ) {
-        if self.mujoco_sim.is_none() {
+        if self.sim.mujoco_sim.is_none() {
             return;
         }
         let Some(ref model) = self.model else {
@@ -87,7 +87,7 @@ impl ArticaraApp {
             );
 
             // ── Estimated triad (dashed, slightly transparent) ──────
-            if let Some(est) = self.imu_estimators.get(&sensor.name) {
+            if let Some(est) = self.sim.imu_estimators.get(&sensor.name) {
                 let q = est.quaternion();
                 // The estimator output is sensor-frame → world rotation
                 // (gravity-aligned). Convert nalgebra UnitQuaternion<f64>

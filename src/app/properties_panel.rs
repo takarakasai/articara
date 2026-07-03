@@ -1375,7 +1375,7 @@ impl ArticaraApp {
 
                 ui.separator();
                 #[cfg(feature = "mujoco")]
-                let mj_active = self.mujoco_sim.is_some();
+                let mj_active = self.sim.mujoco_sim.is_some();
                 #[cfg(not(feature = "mujoco"))]
                 let mj_active = false;
 
@@ -1491,10 +1491,10 @@ impl ArticaraApp {
                     let dur = pose.duration;
                     let kind = pose.kind;
                     let pose_name = pose.name.clone();
-                    if let Some(ref mut sim) = self.mujoco_sim {
+                    if let Some(ref mut sim) = self.sim.mujoco_sim {
                         sim.start_transition(q, dur, kind);
                         // Auto-resume playback so the user sees motion.
-                        self.dynamics_sim_paused = false;
+                        self.sim.dynamics_sim_paused = false;
                         self.status_message = format!(
                             "Playing pose '{}' over {:.2}s ({})",
                             pose_name,
@@ -1506,7 +1506,7 @@ impl ArticaraApp {
 
                 // --- Live transition status (visible during playback) ---
                 #[cfg(feature = "mujoco")]
-                if let Some(ref sim) = self.mujoco_sim {
+                if let Some(ref sim) = self.sim.mujoco_sim {
                     if let Some(p) = sim.transition_progress() {
                         ui.add(
                             egui::ProgressBar::new(p)
@@ -1583,7 +1583,7 @@ impl ArticaraApp {
                 }
 
                 #[cfg(feature = "mujoco")]
-                let mj_active = self.mujoco_sim.is_some();
+                let mj_active = self.sim.mujoco_sim.is_some();
                 #[cfg(not(feature = "mujoco"))]
                 let mj_active = false;
 
@@ -1773,9 +1773,9 @@ impl ArticaraApp {
                 if let Some(si) = to_play_seq {
                     let seq_name = model.sequences[si].name.clone();
                     if let Some(anim) = model.build_sequence_animation(&seq_name) {
-                        if let Some(ref mut sim) = self.mujoco_sim {
+                        if let Some(ref mut sim) = self.sim.mujoco_sim {
                             sim.start_sequence(anim, seq_name.clone());
-                            self.dynamics_sim_paused = false;
+                            self.sim.dynamics_sim_paused = false;
                             self.status_message =
                                 format!("Playing sequence '{}'", seq_name);
                         }
@@ -1789,7 +1789,7 @@ impl ArticaraApp {
 
                 // Live progress (only one sequence at a time).
                 #[cfg(feature = "mujoco")]
-                if let Some(ref sim) = self.mujoco_sim {
+                if let Some(ref sim) = self.sim.mujoco_sim {
                     if let Some(p) = sim.sequence_progress() {
                         let name = sim.current_sequence_name().unwrap_or("").to_string();
                         ui.add(egui::ProgressBar::new(p).text(format!(
@@ -1816,11 +1816,11 @@ impl ArticaraApp {
             Some(m) => m.links.iter().map(|l| l.name.clone()).collect(),
             None => return,
         };
-        let mj_active = self.mujoco_sim.is_some();
+        let mj_active = self.sim.mujoco_sim.is_some();
         // Snapshot the active pulses for the status display so we don't
-        // borrow `self.mujoco_sim` while UI closures hold `&mut self`.
+        // borrow `self.sim.mujoco_sim` while UI closures hold `&mut self`.
         let active_pulses: Vec<(String, f64, f64)> = self
-            .mujoco_sim
+            .sim.mujoco_sim
             .as_ref()
             .map(|s| {
                 s.external_force_pulses()
@@ -1836,7 +1836,7 @@ impl ArticaraApp {
                 ui.horizontal(|ui| {
                     ui.label("Link:");
                     let label = self
-                        .ext_force_link
+                        .sim.ext_force_link
                         .as_deref()
                         .unwrap_or("(select)")
                         .to_string();
@@ -1845,9 +1845,9 @@ impl ArticaraApp {
                         .show_ui(ui, |ui| {
                             for name in &link_names {
                                 let sel =
-                                    self.ext_force_link.as_deref() == Some(name.as_str());
+                                    self.sim.ext_force_link.as_deref() == Some(name.as_str());
                                 if ui.selectable_label(sel, name).clicked() {
-                                    self.ext_force_link = Some(name.clone());
+                                    self.sim.ext_force_link = Some(name.clone());
                                 }
                             }
                         });
@@ -1855,37 +1855,37 @@ impl ArticaraApp {
                 ui.horizontal(|ui| {
                     ui.label("Force (N):");
                     ui.add(
-                        egui::DragValue::new(&mut self.ext_force_value[0])
+                        egui::DragValue::new(&mut self.sim.ext_force_value[0])
                             .speed(0.1).fixed_decimals(2).prefix("x:"),
                     );
                     ui.add(
-                        egui::DragValue::new(&mut self.ext_force_value[1])
+                        egui::DragValue::new(&mut self.sim.ext_force_value[1])
                             .speed(0.1).fixed_decimals(2).prefix("y:"),
                     );
                     ui.add(
-                        egui::DragValue::new(&mut self.ext_force_value[2])
+                        egui::DragValue::new(&mut self.sim.ext_force_value[2])
                             .speed(0.1).fixed_decimals(2).prefix("z:"),
                     );
                 });
                 ui.horizontal(|ui| {
                     ui.label("Torque (N·m):");
                     ui.add(
-                        egui::DragValue::new(&mut self.ext_torque_value[0])
+                        egui::DragValue::new(&mut self.sim.ext_torque_value[0])
                             .speed(0.05).fixed_decimals(2).prefix("x:"),
                     );
                     ui.add(
-                        egui::DragValue::new(&mut self.ext_torque_value[1])
+                        egui::DragValue::new(&mut self.sim.ext_torque_value[1])
                             .speed(0.05).fixed_decimals(2).prefix("y:"),
                     );
                     ui.add(
-                        egui::DragValue::new(&mut self.ext_torque_value[2])
+                        egui::DragValue::new(&mut self.sim.ext_torque_value[2])
                             .speed(0.05).fixed_decimals(2).prefix("z:"),
                     );
                 });
                 ui.horizontal(|ui| {
                     ui.label("Duration:");
                     ui.add(
-                        egui::DragValue::new(&mut self.ext_force_duration)
+                        egui::DragValue::new(&mut self.sim.ext_force_duration)
                             .speed(0.05)
                             .range(0.01..=30.0)
                             .fixed_decimals(2)
@@ -1894,9 +1894,9 @@ impl ArticaraApp {
                 });
                 ui.horizontal(|ui| {
                     let can_apply = mj_active
-                        && self.ext_force_link.is_some()
-                        && (self.ext_force_value.iter().any(|&v| v != 0.0)
-                            || self.ext_torque_value.iter().any(|&v| v != 0.0));
+                        && self.sim.ext_force_link.is_some()
+                        && (self.sim.ext_force_value.iter().any(|&v| v != 0.0)
+                            || self.sim.ext_torque_value.iter().any(|&v| v != 0.0));
                     if ui
                         .add_enabled(
                             can_apply,
@@ -1911,38 +1911,38 @@ impl ArticaraApp {
                         .clicked()
                     {
                         if let (Some(link), Some(ref mut sim)) =
-                            (self.ext_force_link.clone(), self.mujoco_sim.as_mut())
+                            (self.sim.ext_force_link.clone(), self.sim.mujoco_sim.as_mut())
                         {
                             let f = [
-                                self.ext_force_value[0] as f64,
-                                self.ext_force_value[1] as f64,
-                                self.ext_force_value[2] as f64,
+                                self.sim.ext_force_value[0] as f64,
+                                self.sim.ext_force_value[1] as f64,
+                                self.sim.ext_force_value[2] as f64,
                             ];
                             let t = [
-                                self.ext_torque_value[0] as f64,
-                                self.ext_torque_value[1] as f64,
-                                self.ext_torque_value[2] as f64,
+                                self.sim.ext_torque_value[0] as f64,
+                                self.sim.ext_torque_value[1] as f64,
+                                self.sim.ext_torque_value[2] as f64,
                             ];
                             sim.apply_external_force(
-                                &link, f, t, self.ext_force_duration as f64,
+                                &link, f, t, self.sim.ext_force_duration as f64,
                             );
-                            self.dynamics_sim_paused = false;
+                            self.sim.dynamics_sim_paused = false;
                             self.status_message = format!(
                                 "Applying [{:.1},{:.1},{:.1}]N to '{}' for {:.2}s",
-                                f[0], f[1], f[2], link, self.ext_force_duration,
+                                f[0], f[1], f[2], link, self.sim.ext_force_duration,
                             );
                         }
                     }
                     if ui
                         .add_enabled(
-                            mj_active && self.ext_force_link.is_some(),
+                            mj_active && self.sim.ext_force_link.is_some(),
                             egui::Button::new("⏹ Cancel"),
                         )
                         .on_hover_text("Stop any pulse currently on this link.")
                         .clicked()
                     {
                         if let (Some(link), Some(ref mut sim)) =
-                            (self.ext_force_link.clone(), self.mujoco_sim.as_mut())
+                            (self.sim.ext_force_link.clone(), self.sim.mujoco_sim.as_mut())
                         {
                             sim.cancel_external_force(&link);
                         }
@@ -1982,10 +1982,10 @@ impl ArticaraApp {
         ui.separator();
         let mut reset_clicked = false;
         // Snapshot peaks + joint metadata up-front so we don't borrow
-        // self.mujoco_sim while building the UI.
+        // self.sim.mujoco_sim while building the UI.
         let peaks_snapshot: Vec<(String, String, f64, f64, f64, f64)> = match (
             self.model.as_ref(),
-            self.mujoco_sim.as_ref(),
+            self.sim.mujoco_sim.as_ref(),
         ) {
             (Some(model), Some(sim)) => {
                 let peaks = sim.peaks();
@@ -2013,7 +2013,7 @@ impl ArticaraApp {
         egui::CollapsingHeader::new("📊 Joint Peaks")
             .default_open(false)
             .show(ui, |ui| {
-                if self.mujoco_sim.is_none() {
+                if self.sim.mujoco_sim.is_none() {
                     ui.label(
                         egui::RichText::new(
                             "(start MuJoCo to record τ / q̇ peaks)",
@@ -2102,7 +2102,7 @@ impl ArticaraApp {
             });
 
         if reset_clicked {
-            if let Some(ref mut sim) = self.mujoco_sim {
+            if let Some(ref mut sim) = self.sim.mujoco_sim {
                 sim.reset_peaks();
             }
         }
@@ -2120,7 +2120,7 @@ impl ArticaraApp {
     #[cfg(feature = "mujoco")]
     fn draw_contacts_panel(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        // Snapshot rows up-front so we don't keep `self.mujoco_sim` borrowed
+        // Snapshot rows up-front so we don't keep `self.sim.mujoco_sim` borrowed
         // while egui's grid runs.
         struct Row {
             mag: f64,
@@ -2128,7 +2128,7 @@ impl ArticaraApp {
             body2: String,
             is_self: bool,
         }
-        let rows: Vec<Row> = match self.mujoco_sim.as_ref() {
+        let rows: Vec<Row> = match self.sim.mujoco_sim.as_ref() {
             Some(sim) => {
                 let mut v: Vec<Row> = sim
                     .contacts()
@@ -2159,7 +2159,7 @@ impl ArticaraApp {
         ))
         .default_open(false)
         .show(ui, |ui| {
-            if self.mujoco_sim.is_none() {
+            if self.sim.mujoco_sim.is_none() {
                 ui.label(
                     egui::RichText::new("(start MuJoCo to see contacts)")
                         .small()

@@ -2,11 +2,11 @@
 impl ArticaraApp {
     /// MuJoCo用のbase_posとground_plane設定をUI状態から取得
     pub fn collect_mujoco_setup(&self) -> (Option<[f64; 3]>, Option<articara::mjcf::GroundPlaneCfg>) {
-        let base_pos = if self.mujoco_base_pos.iter().any(|&v| v != 0.0) {
+        let base_pos = if self.sim.mujoco_base_pos.iter().any(|&v| v != 0.0) {
             Some([
-                self.mujoco_base_pos[0] as f64,
-                self.mujoco_base_pos[1] as f64,
-                self.mujoco_base_pos[2] as f64,
+                self.sim.mujoco_base_pos[0] as f64,
+                self.sim.mujoco_base_pos[1] as f64,
+                self.sim.mujoco_base_pos[2] as f64,
             ])
         } else {
             None
@@ -29,6 +29,172 @@ use eframe::egui;
 use super::ArticaraApp;
 use articara::dynamics::{self, StaticAnalysis, DynSim, PayloadPhase};
 
+/// Simulation-execution state owned by the dynamics panel: the active
+/// payload / MuJoCo sims, sim-time estimators, WBC pipeline, external
+/// force + drag interaction and the per-run toggles. Grouped so
+/// [`ArticaraApp`] carries one `sim` field instead of ~26 loose ones,
+/// and the `mujoco` feature gates stay contained here.
+pub(super) struct SimState {
+    /// Active dynamics simulation (payload).
+    pub dynamics_sim: Option<DynSim>,
+    /// Simulation playback speed.
+    pub dynamics_sim_speed: f32,
+    /// Whether the simulation is paused.
+    pub dynamics_sim_paused: bool,
+    /// When `Some(n)`, advance the active MuJoCo sim by exactly `n` physics
+    /// frames (negative = step backward through the snapshot history) then
+    /// re-pause. Ignored when the active sim is not MuJoCo.
+    pub dynamics_step_frames: Option<i32>,
+    /// Last frame instant for delta-time calculation.
+    pub dynamics_last_instant: Option<std::time::Instant>,
+    /// Active MuJoCo simulation instance.
+    #[cfg(feature = "mujoco")]
+    pub mujoco_sim: Option<articara::mujoco_sim::MujocoSim>,
+    /// Madgwick attitude estimators keyed by IMU sensor name. Built on
+    /// MuJoCo sim start (one per `[[sensor]]` of kind `Imu` in the
+    /// loaded `RobotModel`); updated every physics tick from
+    /// `MujocoSim::imu_readings()`. The gait controller's pose-source
+    /// selector reads the primary IMU's quaternion to drive the MPC's
+    /// `body_state.world_yaw` in `PoseSource::ImuFusion` mode.
+    #[cfg(feature = "mujoco")]
+    pub imu_estimators:
+        std::collections::HashMap<String, articara::attitude_estimator::MadgwickAhrs>,
+    /// Last sim time we fed an IMU sample, per sensor name. Used to
+    /// derive `dt` for the estimator without re-querying MuJoCo's clock
+    /// state (the estimator is sim-time-driven, not wall-clock).
+    #[cfg(feature = "mujoco")]
+    pub imu_last_sim_time: std::collections::HashMap<String, f64>,
+    /// Source for the body pose (yaw + position) that's fed to the gait
+    /// controller's MPC each tick. Switchable from the gait panel so
+    /// the user can A/B compare the IMU-fusion path against MuJoCo's
+    /// oracle while debugging the controller.
+    #[cfg(feature = "mujoco")]
+    pub pose_source: articara::gait::PoseSource,
+    /// Kinematics-based leg-odometry estimator. Maintains an integrated
+    /// world-frame body position from stance-foot kinematics, used
+    /// when [`Self::pose_source`] is [`articara::gait::PoseSource::LegOdometry`].
+    /// Reset on MuJoCo sim start so a previous run's drift doesn't
+    /// bleed in.
+    #[cfg(feature = "mujoco")]
+    pub leg_odometry: articara::leg_odometry::LegOdometry,
+    /// Stance flags `[FL, FR, RL, RR]` from the gait controller's
+    /// previous tick output. The leg-odometry estimator runs *before*
+    /// `gc.tick`, so it relies on this last-tick snapshot to know
+    /// which legs are pinned to the ground. One-tick lag is harmless
+    /// at typical 2 ms physics ticks.
+    #[cfg(feature = "mujoco")]
+    pub leg_odometry_last_stance: [bool; 4],
+    /// When true, the gait integration loop runs the Hierarchical WBC
+    /// (`wbc_pipeline::WbcPipeline`) and writes its solved torques
+    /// directly to `MujocoSim` via `set_wbc_torques`, bypassing
+    /// per-joint Position-PD. Off by default; toggled from the gait
+    /// panel. Active only in MPC gait mode (CHAMP doesn't produce
+    /// the GRF / contact references the WBC needs).
+    #[cfg(feature = "mujoco")]
+    pub wbc_enabled: bool,
+    /// Lazy-initialised WBC pipeline. Built on the first tick the
+    /// gait controller is enabled in MPC mode so we don't pay the
+    /// kinematic-cache lookup cost on robots that aren't quadrupeds.
+    #[cfg(feature = "mujoco")]
+    pub wbc_pipeline: Option<articara::wbc_pipeline::WbcPipeline>,
+    /// When true, the MuJoCo sim auto-lifts the floating base just above z=0.
+    /// When false, [`Self::mujoco_base_pos`] is used as the initial world position.
+    #[cfg(feature = "mujoco")]
+    pub mujoco_auto_base: bool,
+    /// Manual initial world position for the floating base (used when
+    /// [`Self::mujoco_auto_base`] is false).
+    #[cfg(feature = "mujoco")]
+    pub mujoco_base_pos: [f32; 3],
+    /// Per-axis lock state for the trunk before MuJoCo sim start, ordered
+    /// `[TX, TY, TZ, RX, RY, RZ]`. `true` = locked. All `false` = full
+    /// floating base (default), all `true` = welded to world.
+    #[cfg(feature = "mujoco")]
+    pub mujoco_base_locked: [bool; 6],
+    /// Currently selected target link for the external-force panel.
+    pub ext_force_link: Option<String>,
+    /// Force vector (N) for the external-force panel.
+    pub ext_force_value: [f32; 3],
+    /// Torque vector (N·m) for the external-force panel.
+    pub ext_torque_value: [f32; 3],
+    /// Duration (s) of the next external-force application.
+    pub ext_force_duration: f32,
+    /// Whether contact-point markers + force vectors are drawn over the viewport.
+    #[cfg(feature = "mujoco")]
+    pub show_contacts: bool,
+    /// How a sim-time link drag is interpreted (force vs posture).
+    #[cfg(feature = "mujoco")]
+    pub sim_drag_mode: super::SimDragMode,
+    /// Active sim-drag state while the user is holding the mouse button.
+    #[cfg(feature = "mujoco")]
+    pub sim_drag_state: Option<super::SimDragState>,
+    /// Force gain (N per metre of drag) for Force mode. Tuned so a typical
+    /// 30 cm drag exerts ~150 N out of the box, enough to push a kg-scale
+    /// link around without flinging lighter ones.
+    #[cfg(feature = "mujoco")]
+    pub sim_drag_force_gain: f32,
+    /// Whether to enforce per-joint torque/velocity limits during MuJoCo
+    /// simulation. When `true`, the controller torque is clamped to ±τmax
+    /// and the velocity-mode reference / commanded torque are gated by ωmax.
+    #[cfg(feature = "mujoco")]
+    pub enforce_actuator_limits: bool,
+    /// Whether to enable gravity-compensation feedforward in the MuJoCo
+    /// controller. The flag mirrors `MujocoSim::set_gravity_compensation`
+    /// so the toggle survives Stop → Play (we re-apply it on `mj_start`).
+    #[cfg(feature = "mujoco")]
+    pub enforce_gravity_compensation: bool,
+}
+
+impl Default for SimState {
+    fn default() -> Self {
+        Self {
+            dynamics_sim: None,
+            dynamics_sim_speed: 1.0,
+            dynamics_sim_paused: false,
+            dynamics_step_frames: None,
+            dynamics_last_instant: None,
+            #[cfg(feature = "mujoco")]
+            mujoco_sim: None,
+            #[cfg(feature = "mujoco")]
+            imu_estimators: std::collections::HashMap::new(),
+            #[cfg(feature = "mujoco")]
+            imu_last_sim_time: std::collections::HashMap::new(),
+            #[cfg(feature = "mujoco")]
+            pose_source: articara::gait::PoseSource::default(),
+            #[cfg(feature = "mujoco")]
+            leg_odometry: articara::leg_odometry::LegOdometry::new(),
+            #[cfg(feature = "mujoco")]
+            leg_odometry_last_stance: [true; 4], // start in all-stance pose
+            #[cfg(feature = "mujoco")]
+            wbc_enabled: false,
+            #[cfg(feature = "mujoco")]
+            wbc_pipeline: None,
+            #[cfg(feature = "mujoco")]
+            mujoco_auto_base: true,
+            #[cfg(feature = "mujoco")]
+            mujoco_base_pos: [0.0, 0.0, 0.0],
+            #[cfg(feature = "mujoco")]
+            mujoco_base_locked: [false; 6],
+            ext_force_link: None,
+            ext_force_value: [0.0, 0.0, 0.0],
+            ext_torque_value: [0.0, 0.0, 0.0],
+            ext_force_duration: 0.5,
+            #[cfg(feature = "mujoco")]
+            show_contacts: true,
+            #[cfg(feature = "mujoco")]
+            sim_drag_mode: super::SimDragMode::Force,
+            #[cfg(feature = "mujoco")]
+            sim_drag_state: None,
+            #[cfg(feature = "mujoco")]
+            sim_drag_force_gain: 500.0,
+            #[cfg(feature = "mujoco")]
+            enforce_actuator_limits: false,
+            #[cfg(feature = "mujoco")]
+            enforce_gravity_compensation: false,
+        }
+    }
+}
+
+
 impl ArticaraApp {
     pub fn draw_dynamics_panel(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("⚡ Dynamics Analysis")
@@ -47,7 +213,7 @@ impl ArticaraApp {
                 ui.horizontal(|ui| {
                     ui.label("Speed:");
                     ui.add(
-                        egui::Slider::new(&mut self.dynamics_sim_speed, 0.1..=5.0)
+                        egui::Slider::new(&mut self.sim.dynamics_sim_speed, 0.1..=5.0)
                             .logarithmic(true)
                             .text("×"),
                     );
@@ -116,10 +282,10 @@ impl ArticaraApp {
                 ui.separator();
 
                 // --- Simulation controls ---
-                let mut sim_active = self.dynamics_sim.is_some();
+                let mut sim_active = self.sim.dynamics_sim.is_some();
                 #[cfg(feature = "mujoco")]
                 {
-                    sim_active = sim_active || self.mujoco_sim.is_some();
+                    sim_active = sim_active || self.sim.mujoco_sim.is_some();
                 }
 
                 ui.horizontal(|ui| {
@@ -159,12 +325,12 @@ impl ArticaraApp {
                             // command 100 N·m but MuJoCo would silently clip
                             // to ±τmax baked into the MJCF, and the user
                             // would see "no change" when toggling limits.
-                            let bake = self.enforce_actuator_limits;
+                            let bake = self.sim.enforce_actuator_limits;
                             let opts = articara::mjcf::MjcfExportOptions {
                                 base_pos,
                                 ground_plane: ground,
                                 add_actuators: false,
-                                base_locked_axes: self.mujoco_base_locked,
+                                base_locked_axes: self.sim.mujoco_base_locked,
                                 bake_actuator_limits: bake,
                                 bake_joint_position_limits: bake,
                                 mesh_path_style:
@@ -181,9 +347,9 @@ impl ArticaraApp {
                                     // the freshly-built sim so Stop → Play
                                     // doesn't silently reset it to off.
                                     sim.set_gravity_compensation(
-                                        self.enforce_gravity_compensation,
+                                        self.sim.enforce_gravity_compensation,
                                     );
-                                    self.mujoco_sim = Some(sim);
+                                    self.sim.mujoco_sim = Some(sim);
                                     // Build a fresh Madgwick estimator per IMU
                                     // for this run so a previous Play→Stop
                                     // cycle's quaternion doesn't bleed in.
@@ -192,23 +358,23 @@ impl ArticaraApp {
                                     // seed its position with the body's
                                     // current world position so the integrated
                                     // estimate doesn't start from origin.
-                                    self.leg_odometry.reset();
+                                    self.sim.leg_odometry.reset();
                                     if let (Some(ref mj_sim), Some(ref m)) =
-                                        (self.mujoco_sim.as_ref(), self.model.as_ref())
+                                        (self.sim.mujoco_sim.as_ref(), self.model.as_ref())
                                     {
                                         if let Some(p) =
                                             mj_sim.body_world_position(&m.root_link)
                                         {
-                                            self.leg_odometry.set_position(
+                                            self.sim.leg_odometry.set_position(
                                                 nalgebra::Vector3::new(p[0], p[1], p[2]),
                                             );
                                         }
                                     }
-                                    self.leg_odometry_last_stance = [true; 4];
+                                    self.sim.leg_odometry_last_stance = [true; 4];
                                     // Start paused so the user can choose between
                                     // frame stepping or ▶ Play before any time
                                     // advances.
-                                    self.dynamics_sim_paused = true;
+                                    self.sim.dynamics_sim_paused = true;
                                     self.status_message =
                                         "MuJoCo paused at t=0 — press ▶ Play or ⏩ +N to advance".into();
                                 }
@@ -293,9 +459,9 @@ impl ArticaraApp {
                                 if let Some(sim) = dynamics::start_payload_sim(
                                     model,
                                     ee,
-                                    self.dynamics_sim_speed as f64,
+                                    self.sim.dynamics_sim_speed as f64,
                                 ) {
-                                    self.dynamics_sim =
+                                    self.sim.dynamics_sim =
                                         Some(DynSim::Payload(sim));
                                 } else {
                                     self.status_message =
@@ -317,7 +483,7 @@ impl ArticaraApp {
                     .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Base pos:");
-                        ui.checkbox(&mut self.mujoco_auto_base, "Auto")
+                        ui.checkbox(&mut self.sim.mujoco_auto_base, "Auto")
                             .on_hover_text(
                                 "When checked, the root link is auto-lifted just \
                                  above the ground plane. When unchecked, the values \
@@ -325,25 +491,25 @@ impl ArticaraApp {
                                  world-frame position.",
                             );
                     });
-                    ui.add_enabled_ui(!self.mujoco_auto_base, |ui| {
+                    ui.add_enabled_ui(!self.sim.mujoco_auto_base, |ui| {
                         ui.horizontal(|ui| {
                             ui.label("X:");
                             ui.add(
-                                egui::DragValue::new(&mut self.mujoco_base_pos[0])
+                                egui::DragValue::new(&mut self.sim.mujoco_base_pos[0])
                                     .speed(0.01)
                                     .fixed_decimals(3)
                                     .suffix(" m"),
                             );
                             ui.label("Y:");
                             ui.add(
-                                egui::DragValue::new(&mut self.mujoco_base_pos[1])
+                                egui::DragValue::new(&mut self.sim.mujoco_base_pos[1])
                                     .speed(0.01)
                                     .fixed_decimals(3)
                                     .suffix(" m"),
                             );
                             ui.label("Z:");
                             ui.add(
-                                egui::DragValue::new(&mut self.mujoco_base_pos[2])
+                                egui::DragValue::new(&mut self.sim.mujoco_base_pos[2])
                                     .speed(0.01)
                                     .fixed_decimals(3)
                                     .suffix(" m"),
@@ -361,16 +527,16 @@ impl ArticaraApp {
                     // mixed = only the unlocked axes get individual joints.
                     ui.label("Base lock:");
                     ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.mujoco_base_locked[0], "TX");
-                        ui.checkbox(&mut self.mujoco_base_locked[1], "TY");
-                        ui.checkbox(&mut self.mujoco_base_locked[2], "TZ");
+                        ui.checkbox(&mut self.sim.mujoco_base_locked[0], "TX");
+                        ui.checkbox(&mut self.sim.mujoco_base_locked[1], "TY");
+                        ui.checkbox(&mut self.sim.mujoco_base_locked[2], "TZ");
                     })
                     .response
                     .on_hover_text("Lock translation along world X / Y / Z");
                     ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.mujoco_base_locked[3], "RX");
-                        ui.checkbox(&mut self.mujoco_base_locked[4], "RY");
-                        ui.checkbox(&mut self.mujoco_base_locked[5], "RZ");
+                        ui.checkbox(&mut self.sim.mujoco_base_locked[3], "RX");
+                        ui.checkbox(&mut self.sim.mujoco_base_locked[4], "RY");
+                        ui.checkbox(&mut self.sim.mujoco_base_locked[5], "RZ");
                     })
                     .response
                     .on_hover_text("Lock rotation about world X / Y / Z");
@@ -385,13 +551,13 @@ impl ArticaraApp {
                     .id_salt("dyn_sim_toggles")
                     .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.show_contacts, "👣 Contacts")
+                        ui.checkbox(&mut self.sim.show_contacts, "👣 Contacts")
                             .on_hover_text(
                                 "Draw contact points and contact-force \
                                  vectors over the viewport.",
                             );
                         ui.checkbox(
-                            &mut self.enforce_actuator_limits,
+                            &mut self.sim.enforce_actuator_limits,
                             "⛔ Limits",
                         )
                         .on_hover_text(
@@ -406,7 +572,7 @@ impl ArticaraApp {
                         );
                         if ui
                             .checkbox(
-                                &mut self.enforce_gravity_compensation,
+                                &mut self.sim.enforce_gravity_compensation,
                                 "🌍 Grav comp",
                             )
                             .on_hover_text(
@@ -419,9 +585,9 @@ impl ArticaraApp {
                             )
                             .changed()
                         {
-                            if let Some(sim) = self.mujoco_sim.as_mut() {
+                            if let Some(sim) = self.sim.mujoco_sim.as_mut() {
                                 sim.set_gravity_compensation(
-                                    self.enforce_gravity_compensation,
+                                    self.sim.enforce_gravity_compensation,
                                 );
                             }
                         }
@@ -463,7 +629,7 @@ impl ArticaraApp {
                     // tune the force gain for Force mode.
                     ui.horizontal(|ui| {
                         ui.label("🖱 Drag:");
-                        let mut mode = self.sim_drag_mode;
+                        let mut mode = self.sim.sim_drag_mode;
                         egui::ComboBox::from_id_salt("sim_drag_mode")
                             .selected_text(mode.label())
                             .show_ui(ui, |ui| {
@@ -471,15 +637,15 @@ impl ArticaraApp {
                                     ui.selectable_value(&mut mode, m, m.label());
                                 }
                             });
-                        if mode != self.sim_drag_mode {
-                            self.sim_drag_mode = mode;
+                        if mode != self.sim.sim_drag_mode {
+                            self.sim.sim_drag_mode = mode;
                         }
                     });
-                    if matches!(self.sim_drag_mode, super::SimDragMode::Force) {
+                    if matches!(self.sim.sim_drag_mode, super::SimDragMode::Force) {
                         ui.horizontal(|ui| {
                             ui.label("    Force gain:");
                             ui.add(
-                                egui::DragValue::new(&mut self.sim_drag_force_gain)
+                                egui::DragValue::new(&mut self.sim.sim_drag_force_gain)
                                     .speed(10.0)
                                     .range(1.0..=10000.0)
                                     .fixed_decimals(0)
@@ -493,16 +659,16 @@ impl ArticaraApp {
                 if sim_active {
                     ui.horizontal(|ui| {
                         if ui.button("⏹ Stop").clicked() {
-                            self.dynamics_sim_paused = false;
+                            self.sim.dynamics_sim_paused = false;
                             self.stop_dynamics_sim();
                         }
-                        if self.dynamics_sim_paused {
+                        if self.sim.dynamics_sim_paused {
                             if ui.button("▶ Play").clicked() {
-                                self.dynamics_sim_paused = false;
+                                self.sim.dynamics_sim_paused = false;
                             }
                         } else {
                             if ui.button("⏸ Pause").clicked() {
-                                self.dynamics_sim_paused = true;
+                                self.sim.dynamics_sim_paused = true;
                             }
                         }
                     });
@@ -510,14 +676,14 @@ impl ArticaraApp {
                     // history). Visible whenever MuJoCo is running; clicking a
                     // step button while playing also pauses the sim.
                     #[cfg(feature = "mujoco")]
-                    if self.mujoco_sim.is_some() {
+                    if self.sim.mujoco_sim.is_some() {
                         let history_len = self
-                            .mujoco_sim
+                            .sim.mujoco_sim
                             .as_ref()
                             .map(|s| s.history_len())
                             .unwrap_or(0);
                         let mj_dt_ms = self
-                            .mujoco_sim
+                            .sim.mujoco_sim
                             .as_ref()
                             .map(|s| s.timestep() * 1000.0)
                             .unwrap_or(0.0);
@@ -541,8 +707,8 @@ impl ArticaraApp {
                                     ))
                                     .clicked()
                                 {
-                                    self.dynamics_sim_paused = true;
-                                    self.dynamics_step_frames = Some(-(n as i32));
+                                    self.sim.dynamics_sim_paused = true;
+                                    self.sim.dynamics_step_frames = Some(-(n as i32));
                                 }
                             }
                         });
@@ -556,8 +722,8 @@ impl ArticaraApp {
                                     ))
                                     .clicked()
                                 {
-                                    self.dynamics_sim_paused = true;
-                                    self.dynamics_step_frames = Some(n as i32);
+                                    self.sim.dynamics_sim_paused = true;
+                                    self.sim.dynamics_step_frames = Some(n as i32);
                                 }
                             }
                         });
@@ -578,7 +744,7 @@ impl ArticaraApp {
 
     /// Draw live simulation status readout.
     fn draw_sim_status(&self, ui: &mut egui::Ui) {
-        match &self.dynamics_sim {
+        match &self.sim.dynamics_sim {
             Some(DynSim::Payload(sim)) => {
                 ui.separator();
                 let phase_str = match sim.phase {
@@ -674,7 +840,7 @@ impl ArticaraApp {
 
     /// Stop any running dynamics simulation and restore the model.
     pub(super) fn stop_dynamics_sim(&mut self) {
-        if let Some(sim) = self.dynamics_sim.take() {
+        if let Some(sim) = self.sim.dynamics_sim.take() {
             if let Some(ref mut model) = self.model {
                 match sim {
                     DynSim::Payload(ps) => {
@@ -685,14 +851,14 @@ impl ArticaraApp {
             }
         }
         #[cfg(feature = "mujoco")]
-        if let Some(mj_sim) = self.mujoco_sim.take() {
+        if let Some(mj_sim) = self.sim.mujoco_sim.take() {
             if let Some(ref mut model) = self.model {
                 mj_sim.restore(model);
             }
         }
         #[cfg(not(feature = "mujoco"))]
         let _ = ();
-        self.dynamics_last_instant = None;
+        self.sim.dynamics_last_instant = None;
         // Auto-disable ground plane if we enabled it
         if self.ground_plane_auto {
             self.show_ground_plane = false;
@@ -925,7 +1091,7 @@ pub(super) fn save_sim_config(app: &ArticaraApp, path: &Path) -> Result<(), Stri
     writeln!(f).map_err(|e| format!("{e}"))?;
 
     writeln!(f, "[payload]").map_err(|e| format!("{e}"))?;
-    writeln!(f, "speed = {}", app.dynamics_sim_speed).map_err(|e| format!("{e}"))?;
+    writeln!(f, "speed = {}", app.sim.dynamics_sim_speed).map_err(|e| format!("{e}"))?;
     if let Some(ref ee) = app.dynamics_ee_link {
         writeln!(f, "ee_link = \"{}\"", ee).map_err(|e| format!("{e}"))?;
     }
@@ -1008,7 +1174,7 @@ pub(super) fn load_sim_config(path: &Path) -> Result<SimConfig, String> {
 
 /// Apply a loaded sim config to the app state.
 pub(super) fn apply_sim_config(app: &mut ArticaraApp, cfg: SimConfig) {
-    app.dynamics_sim_speed = cfg.speed;
+    app.sim.dynamics_sim_speed = cfg.speed;
     app.dynamics_ee_link = cfg.ee_link;
 
     // Apply saved joint positions (start pose) to the model

@@ -172,12 +172,12 @@ impl ArticaraApp {
                             #[cfg(feature = "scripting")]
                             if let Some(eng) = &mut self.script_engine {
                                 #[cfg(feature = "mujoco")]
-                                eng.set_mujoco_sim(self.mujoco_sim.take());
+                                eng.set_mujoco_sim(self.sim.mujoco_sim.take());
                                 eng.set_gait_controller(self.gait.controller.take());
                                 let result = eng.eval(&source);
                                 #[cfg(feature = "mujoco")]
                                 {
-                                    self.mujoco_sim = eng.take_mujoco_sim();
+                                    self.sim.mujoco_sim = eng.take_mujoco_sim();
                                 }
                                 self.gait.controller = eng.take_gait_controller();
                                 script_overrides_pending = Some(eng.drain_overrides());
@@ -420,14 +420,14 @@ impl ArticaraApp {
                             // directly. Cleared on the way out, regardless
                             // of script success.
                             #[cfg(feature = "mujoco")]
-                            eng.set_mujoco_sim(self.mujoco_sim.take());
+                            eng.set_mujoco_sim(self.sim.mujoco_sim.take());
                             eng.set_gait_controller(self.gait.controller.take());
 
                             let eval_result = eng.eval(&src);
 
                             #[cfg(feature = "mujoco")]
                             {
-                                self.mujoco_sim = eng.take_mujoco_sim();
+                                self.sim.mujoco_sim = eng.take_mujoco_sim();
                             }
                             self.gait.controller = eng.take_gait_controller();
                             let pending_ov = eng.drain_overrides();

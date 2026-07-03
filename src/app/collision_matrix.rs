@@ -107,7 +107,7 @@ impl ArticaraApp {
         // self-collision pairs.
         #[cfg(feature = "mujoco")]
         let currently_colliding: std::collections::HashSet<(String, String)> = self
-            .mujoco_sim
+            .sim.mujoco_sim
             .as_ref()
             .map(|sim| {
                 sim.contacts()

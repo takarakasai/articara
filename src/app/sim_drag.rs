@@ -35,7 +35,7 @@ impl ArticaraApp {
     pub(super) fn sim_drag_active_target(&self) -> bool {
         // Sim drag only takes precedence when MuJoCo is running.
         // Offset Adjust mode keeps its gizmo-driven flow.
-        self.mujoco_sim.is_some()
+        self.sim.mujoco_sim.is_some()
             && matches!(self.interaction_mode, super::InteractionMode::JointDrive)
     }
 
@@ -86,7 +86,7 @@ impl ArticaraApp {
             (self.camera.target - na::Point3::from(self.camera.eye().coords)).normalize();
         let drag_depth = (hit_world - self.camera.eye()).dot(&cam_fwd);
 
-        let chain = match self.sim_drag_mode {
+        let chain = match self.sim.sim_drag_mode {
             SimDragMode::Posture => {
                 model.chain_joints_between(&link_name, self.ik.root_link.as_deref())
             }
@@ -95,14 +95,14 @@ impl ArticaraApp {
 
         // Posture mode without a chain has nothing to update — bail and let
         // the user know via status.
-        if matches!(self.sim_drag_mode, SimDragMode::Posture) && chain.is_empty() {
+        if matches!(self.sim.sim_drag_mode, SimDragMode::Posture) && chain.is_empty() {
             self.status_message =
                 format!("(no IK chain to '{}', cannot run posture drag)", link_name);
             return false;
         }
 
-        self.sim_drag_state = Some(SimDragState {
-            mode: self.sim_drag_mode,
+        self.sim.sim_drag_state = Some(SimDragState {
+            mode: self.sim.sim_drag_mode,
             link_name: link_name.clone(),
             ee_local_offset,
             drag_depth,
@@ -123,7 +123,7 @@ impl ArticaraApp {
         aspect: f32,
         transforms: &HashMap<String, na::Isometry3<f32>>,
     ) {
-        let Some(state) = self.sim_drag_state.clone() else {
+        let Some(state) = self.sim.sim_drag_state.clone() else {
             return;
         };
         let Some(ndc) = mouse_ndc else { return };
@@ -151,7 +151,7 @@ impl ArticaraApp {
                     .unwrap_or(na::Isometry3::identity());
                 let cur_world = link_world_tf * state.ee_local_offset;
                 let delta = target_world - cur_world;
-                let f = delta * self.sim_drag_force_gain;
+                let f = delta * self.sim.sim_drag_force_gain;
                 // MuJoCo's `xfrc_applied` always acts at the body's COM, so
                 // a pure linear force applied there only translates the
                 // link and never rotates it. The user expects the click
@@ -172,7 +172,7 @@ impl ArticaraApp {
                     * na::Point3::from(com_local);
                 let r = cur_world - com_world; // f32
                 let torque = r.cross(&f);
-                if let Some(ref mut sim) = self.mujoco_sim {
+                if let Some(ref mut sim) = self.sim.mujoco_sim {
                     // Continuously refresh — short duration so the pulse
                     // dies the instant we stop calling apply, even if the
                     // user releases the mouse outside the viewport.
@@ -235,7 +235,7 @@ impl ArticaraApp {
                 // position targets are sticky on the sim side.
                 let target_q = model_owned.joint_positions.clone();
                 self.model = Some(model_owned);
-                if let Some(ref mut sim) = self.mujoco_sim {
+                if let Some(ref mut sim) = self.sim.mujoco_sim {
                     for (ji, q) in target_q.iter().enumerate() {
                         sim.set_position_target(ji, *q);
                     }
@@ -243,17 +243,17 @@ impl ArticaraApp {
             }
         }
         // Make sure the sim is actually running so the drag has an effect.
-        self.dynamics_sim_paused = false;
+        self.sim.dynamics_sim_paused = false;
     }
 
     /// Clean up at the end of a sim drag. Cancels any active force pulse
     /// from Force mode so the link doesn't keep moving on its own.
     pub(super) fn handle_sim_drag_end(&mut self) {
-        let Some(state) = self.sim_drag_state.take() else {
+        let Some(state) = self.sim.sim_drag_state.take() else {
             return;
         };
         if matches!(state.mode, SimDragMode::Force) {
-            if let Some(ref mut sim) = self.mujoco_sim {
+            if let Some(ref mut sim) = self.sim.mujoco_sim {
                 sim.cancel_external_force(&state.link_name);
             }
         }
@@ -269,7 +269,7 @@ impl ArticaraApp {
         rect: egui::Rect,
         aspect: f32,
     ) {
-        let Some(state) = self.sim_drag_state.as_ref() else {
+        let Some(state) = self.sim.sim_drag_state.as_ref() else {
             return;
         };
         let Some(model) = self.model.as_ref() else {
