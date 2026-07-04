@@ -1,3 +1,3 @@
 [submodule "models/unitree_go2"]
 	path = models/unitree_go2
-	url = ssh://git@github.com/takarakasai/go2-model.git
+	url = https://github.com/takarakasai/go2-model.git
