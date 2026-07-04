@@ -72,5 +72,5 @@ approx = "0.5"
 serde_json = "1"
 
 [workspace]
-members = [".", "legged-estimation", "misarta-py", "quadruped-gait", "xtask"]
+members = [".", "legged-estimation", "quadruped-gait", "xtask"]
 default-members = [".", "legged-estimation", "quadruped-gait"]
