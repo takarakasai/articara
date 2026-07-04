@@ -70,7 +70,6 @@ fn main() {
         //    class="foot" は半径 0.022 + 足首付近 (z ≈ -0.213) の sphere。
         //    calf の他の collision (太腿付近の box / cylinder, z > -0.2) と
         //    は z 位置で簡単に区別できる。
-        let calf_li = model.link_map[calf];
         // Go2 MJCF はインポート時に
         //   - class="foot" の sphere (r=0.022) — class-inherited pos が
         //     articara::mjcf::import に反映されないため origin (0,0,0) で

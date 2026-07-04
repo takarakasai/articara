@@ -133,7 +133,7 @@ fn main() {
     let mut max_abs_y = 0.0_f64;
     let mut t_clock = 0.5_f64; // continues from Phase 1's 0.5 s settle
 
-    let mut run_segment = |label: &str, duration: f64, vx: f64,
+    let run_segment = |label: &str, duration: f64, vx: f64,
         sim: &mut MujocoSim, gc: &mut GaitController,
         model: &mut articara::robot::RobotModel,
         t_clock: &mut f64, max_roll: &mut f64, max_pitch: &mut f64, max_yaw: &mut f64,
@@ -195,7 +195,7 @@ fn main() {
         &mut t_clock, &mut max_roll, &mut max_pitch, &mut max_yaw,
         &mut min_z, &mut max_z, &mut max_abs_y);
 
-    let total_phase2 = walk_s * 2.0 + stop_s * 2.0;
+    let _total_phase2 = walk_s * 2.0 + stop_s * 2.0;
 
     let (pf, _) = trunk(&sim);
     println!("\n=== Result ===");
