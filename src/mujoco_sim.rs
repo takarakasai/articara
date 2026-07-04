@@ -1255,7 +1255,7 @@ impl MujocoSim {
     /// where neither body is the world (= self-collisions) are
     /// ignored — only ground contacts contribute.
     ///
-    /// Used by [`quadruped_gait::phase::ContactDrivenPhase`] to detect
+    /// Used by [`quadruped_gait::ContactDrivenPhase`] to detect
     /// **early touchdown** (foot loaded while the nominal schedule
     /// still says swing) and **late liftoff** (foot still loaded
     /// after the nominal stance window ended). Both are common when

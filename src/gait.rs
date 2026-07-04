@@ -691,7 +691,7 @@ impl GaitController {
     /// applied to `(|v_err| − v_db) · sign(v_err)`; `v_db` is the
     /// deadband below which the pulse contributes 0. No-op outside
     /// FullCentroidal mode. See
-    /// [`quadruped_gait::mpc_controller::capture_point_step`].
+    /// [`quadruped_gait::capture_point_step`].
     pub fn set_capture_point_pulse(&mut self, k_pulse: f64, v_db: f64) {
         self.inner.set_capture_point_pulse(k_pulse, v_db);
     }
@@ -913,7 +913,7 @@ impl GaitController {
             // the same sign mapping that converts q from IK to URDF
             // applies to τ as well, since q_urdf = sign·q_ik implies
             // τ_urdf[k] = sign[k]·τ_ik[k] (see derivation in
-            // `quadruped_gait::ik::foot_jacobian_body`'s callers).
+            // `quadruped_gait::foot_jacobian_body`'s callers).
             let taus_ik = stance_ff[slot].unwrap_or([0.0, 0.0, 0.0]);
             for j in 0..3 {
                 let ji = self.joint_indices[slot][j];
