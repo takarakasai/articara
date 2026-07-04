@@ -544,7 +544,7 @@ impl ArticaraApp {
                         let link_name = &model.links[li].name;
                         let changed_link = self.selected_link != Some(li);
                         self.selected_link = Some(li);
-                        self.tree_reveal_ancestors = model.ancestor_links(link_name);
+                        self.editor.tree_reveal_ancestors = model.ancestor_links(link_name);
                         if changed_link {
                             self.selected_visual = if model.links[li].visuals.is_empty() {
                                 None
@@ -598,7 +598,7 @@ impl ArticaraApp {
                         let link_name = &model.links[li].name;
                         self.selected_link = Some(li);
                         self.selected_joint = model.parent_joint_of_link(link_name);
-                        self.tree_reveal_ancestors = model.ancestor_links(link_name);
+                        self.editor.tree_reveal_ancestors = model.ancestor_links(link_name);
                         match self.drag_mode {
                             DragMode::SingleJoint => {
                                 // Walk up the kinematic tree from the clicked
@@ -784,7 +784,7 @@ impl ArticaraApp {
                 let link_name = &model.links[li].name;
                 let changed_link = self.selected_link != Some(li);
                 self.selected_link = Some(li);
-                self.tree_reveal_ancestors = model.ancestor_links(link_name);
+                self.editor.tree_reveal_ancestors = model.ancestor_links(link_name);
                 if changed_link {
                     self.selected_visual = if model.links[li].visuals.is_empty() {
                         None

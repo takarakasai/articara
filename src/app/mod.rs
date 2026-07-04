@@ -431,41 +431,16 @@ pub struct ArticaraApp {
     export_message: String,
     /// Whether to show the export dialog window.
     show_export_dialog: bool,
-    // --- Add link/joint dialog state ---
-    /// Whether the "Add Child" section is open.
-    show_add_child: bool,
-    /// New link name input.
-    new_link_name: String,
-    /// New joint name input.
-    new_joint_name: String,
-    /// Selected parent link name for the new child.
-    new_parent_link: String,
-    /// New joint type (revolute, prismatic, fixed, continuous).
-    new_joint_type_idx: usize,
-    /// New geometry type (box, cylinder, sphere).
-    new_geom_type_idx: usize,
-    /// Geometry size parameters [x, y, z] (reused for different shapes).
-    new_geom_size: [f32; 3],
-    /// New joint origin XYZ.
-    new_joint_origin: [f32; 3],
-    /// New joint axis.
-    new_joint_axis: [f32; 3],
-    /// New link color (RGBA).
-    new_link_color: [f32; 3],
-    /// Joint limits [lower, upper].
-    new_joint_limits: [f32; 2],
-    /// When set, these ancestor link names should be auto-expanded in the tree.
-    tree_reveal_ancestors: Vec<String>,
+    // --- Structural-edit UI state ---
+    /// The "Add Child" dialog inputs, rename buffers, density-input
+    /// dialog and tree-reveal request. See [`tree_panel::EditorState`].
+    editor: tree_panel::EditorState,
     /// Undo/redo history.
     history: History,
     /// Model snapshot taken at the start of each frame (before any edits).
     pre_frame_snapshot: Option<RobotModel>,
     /// Whether any model edit occurred this frame.
     any_edit_this_frame: bool,
-    /// Show density input dialog for mass-from-density calculation.
-    show_density_input: bool,
-    /// Density value (kg/m³) for mass-from-density calculation.
-    density_value: f64,
     /// Show the inertia validation results window.
     show_validation_window: bool,
     /// Cached inertia validation results.
@@ -515,10 +490,6 @@ pub struct ArticaraApp {
     decomposition_method: misarta::decompose::DecompositionMethod,
     /// Background decomposition task (V-HACD is slow, so we run it off-thread).
     decompose_task: Option<DecomposeTask>,
-    /// Edit buffer for renaming the currently selected link.
-    rename_link_buf: String,
-    /// Edit buffer for renaming the currently selected joint.
-    rename_joint_buf: String,
     /// Whether the collision-pair matrix dialog is open.
     show_collision_matrix: bool,
     /// Whether the actuator-settings dialog is open.
@@ -655,23 +626,10 @@ impl ArticaraApp {
             export_message: String::new(),
             show_export_dialog: false,
             // Add child dialog defaults
-            show_add_child: false,
-            new_link_name: String::new(),
-            new_joint_name: String::new(),
-            new_parent_link: String::new(),
-            new_joint_type_idx: 0,
-            new_geom_type_idx: 0,
-            new_geom_size: [0.05, 0.05, 0.05],
-            new_joint_origin: [0.0, 0.0, 0.1],
-            new_joint_axis: [0.0, 0.0, 1.0],
-            new_link_color: [0.5, 0.7, 1.0],
-            new_joint_limits: [-1.57, 1.57],
-            tree_reveal_ancestors: Vec::new(),
+            editor: tree_panel::EditorState::default(),
             history: History::new(50),
             pre_frame_snapshot: None,
             any_edit_this_frame: false,
-            show_density_input: false,
-            density_value: 1000.0, // default: water (1000 kg/m³)
             show_validation_window: false,
             validation_results: Vec::new(),
             dynamics_ee_link: None,
@@ -692,8 +650,6 @@ impl ArticaraApp {
             decimation_method: misarta::decimate::DecimationMethod::Qem,
             decomposition_method: misarta::decompose::DecompositionMethod::Vhacd,
             decompose_task: None,
-            rename_link_buf: String::new(),
-            rename_joint_buf: String::new(),
             show_collision_matrix: false,
             show_actuator_dialog: false,
             actuator_bulk: actuator_dialog::BulkEdit::default(),
