@@ -1,0 +1,68 @@
+name: CI
+
+on: [push, pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Warning-zero policy: any rustc warning in this repo is a regression.
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive # models/unitree_go2 (go2.misa + meshes)
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+      - name: Cache MuJoCo
+        id: cache-mujoco
+        uses: actions/cache@v4
+        with:
+          path: ~/.mujoco
+          key: mujoco-3.8.0-linux-x86_64
+      # xtask's detect_linux() picks up ~/.mujoco/mujoco-*.
+      - name: Install MuJoCo
+        if: steps.cache-mujoco.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.mujoco
+          curl -sL https://github.com/google-deepmind/mujoco/releases/download/3.8.0/mujoco-3.8.0-linux-x86_64.tar.gz \
+            | tar -xz -C ~/.mujoco
+      - name: Build (default features)
+        run: cargo build
+      - name: Check (mujoco, all test targets)
+        run: cargo xtask check --features mujoco --tests
+      - name: Test (default features)
+        run: cargo test
+
+  # The mujoco-gated integration suites (wbc_walk, gait_walk_stability,
+  # integration_walk, ...) don't run under a default `cargo test`; this
+  # job is their only automated execution. Physics only — no GL needed.
+  # ~4 min locally.
+  test-mujoco:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+      - name: Cache MuJoCo
+        id: cache-mujoco
+        uses: actions/cache@v4
+        with:
+          path: ~/.mujoco
+          key: mujoco-3.8.0-linux-x86_64
+      - name: Install MuJoCo
+        if: steps.cache-mujoco.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.mujoco
+          curl -sL https://github.com/google-deepmind/mujoco/releases/download/3.8.0/mujoco-3.8.0-linux-x86_64.tar.gz \
+            | tar -xz -C ~/.mujoco
+      - name: Test (mujoco)
+        run: cargo xtask test --features mujoco --tests
