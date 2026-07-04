@@ -29,7 +29,7 @@ impl ArticaraApp {
                     } else {
                         Some(std::path::Path::new(&self.urdf_path_input).to_path_buf())
                     };
-                    self.dlg_open_model.open(
+                    self.dialogs.open_model.open(
                         "Open Robot Model",
                         super::file_dialog::FileDialogMode::Open,
                         start.as_deref(),

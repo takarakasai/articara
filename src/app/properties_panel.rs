@@ -534,11 +534,11 @@ impl ArticaraApp {
                         ui.close();
                     }
                     if ui.button("📦 Add Mesh (STL/DAE)…").clicked() {
-                        self.add_mesh_target = Some(super::AddMeshTarget {
+                        self.dialogs.add_mesh_target = Some(super::AddMeshTarget {
                             link_index: li,
                             kind: super::MeshAddKind::Visual,
                         });
-                        self.dlg_add_mesh.open(
+                        self.dialogs.add_mesh.open(
                             "メッシュファイルを開く (Visual)",
                             super::file_dialog::FileDialogMode::Open,
                             None,
@@ -837,11 +837,11 @@ impl ArticaraApp {
                         ui.close();
                     }
                     if ui.button("📦 Add Mesh (STL/DAE)…").clicked() {
-                        self.add_mesh_target = Some(super::AddMeshTarget {
+                        self.dialogs.add_mesh_target = Some(super::AddMeshTarget {
                             link_index: li,
                             kind: super::MeshAddKind::Collision,
                         });
-                        self.dlg_add_mesh.open(
+                        self.dialogs.add_mesh.open(
                             "メッシュファイルを開く (Collision)",
                             super::file_dialog::FileDialogMode::Open,
                             None,
@@ -2368,7 +2368,7 @@ impl ArticaraApp {
                         } else {
                             Some(std::path::Path::new(&self.export_dir).to_path_buf())
                         };
-                        self.dlg_export_dir.open(
+                        self.dialogs.export_dir.open(
                             "Select Export Directory",
                             super::file_dialog::FileDialogMode::ChooseDir,
                             start.as_deref(),

@@ -276,3 +276,41 @@ impl FileDialog {
         self.cached_entries.extend(files);
     }
 }
+
+/// The app-wide file dialogs (model / posture / export / sim-config /
+/// mesh), grouped so [`super::ArticaraApp`] carries one `dialogs` field
+/// instead of seven loose `dlg_*` ones. The script-loading dialog lives
+/// with the script console, not here.
+pub(super) struct DialogState {
+    /// Dialog for loading a robot model file.
+    pub open_model: FileDialog,
+    /// Dialog for loading a posture file.
+    pub open_posture: FileDialog,
+    /// Dialog for saving a posture file.
+    pub save_posture: FileDialog,
+    /// Dialog for choosing the export directory.
+    pub export_dir: FileDialog,
+    /// Dialog for loading a sim config file.
+    pub open_sim_config: FileDialog,
+    /// Dialog for saving a sim config file.
+    pub save_sim_config: FileDialog,
+    /// Dialog for loading a mesh file (STL/DAE) to add as visual or collision.
+    pub add_mesh: FileDialog,
+    /// Target for the mesh file dialog: which link index and whether visual or collision.
+    pub add_mesh_target: Option<super::AddMeshTarget>,
+}
+
+impl Default for DialogState {
+    fn default() -> Self {
+        Self {
+            open_model: FileDialog::new("dlg_open_model"),
+            open_posture: FileDialog::new("dlg_open_posture"),
+            save_posture: FileDialog::new("dlg_save_posture"),
+            export_dir: FileDialog::new("dlg_export_dir"),
+            open_sim_config: FileDialog::new("dlg_open_sim_config"),
+            save_sim_config: FileDialog::new("dlg_save_sim_config"),
+            add_mesh: FileDialog::new("dlg_add_mesh"),
+            add_mesh_target: None,
+        }
+    }
+}
