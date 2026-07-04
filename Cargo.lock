@@ -2827,8 +2827,8 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 [[package]]
 name = "legged-estimation"
 version = "0.1.0"
+source = "git+https://github.com/takarakasai/quadruped-gait.git#d391c7ea17219c9ec73103553fcf50824c11530f"
 dependencies = [
- "approx",
  "nalgebra",
  "quadruped-gait",
 ]
@@ -4164,8 +4164,8 @@ checksum = "b5a041e753da8b807c9255f28de81879c78c876392ff2469cde94799b2896b9d"
 [[package]]
 name = "quadruped-gait"
 version = "0.1.0"
+source = "git+https://github.com/takarakasai/quadruped-gait.git#d391c7ea17219c9ec73103553fcf50824c11530f"
 dependencies = [
- "approx",
  "clarabel",
  "log",
  "misarta",
