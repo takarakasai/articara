@@ -69,10 +69,10 @@ impl ArticaraApp {
                     ui.label("Visual:");
                     let key_v = (link_name.clone(), MeshKind::Visual);
                     let mut cur_v = self
-                        .link_display_modes
+                        .view.link_display_modes
                         .get(&key_v)
                         .copied()
-                        .unwrap_or(self.visual_mode);
+                        .unwrap_or(self.view.visual_mode);
                     let prev_v = cur_v;
                     egui::ComboBox::from_id_salt(format!("link_vis_{li}"))
                         .width(80.0)
@@ -83,10 +83,10 @@ impl ArticaraApp {
                             }
                         });
                     if cur_v != prev_v {
-                        if cur_v == self.visual_mode {
-                            self.link_display_modes.remove(&key_v);
+                        if cur_v == self.view.visual_mode {
+                            self.view.link_display_modes.remove(&key_v);
                         } else {
-                            self.link_display_modes.insert(key_v, cur_v);
+                            self.view.link_display_modes.insert(key_v, cur_v);
                         }
                     }
                 });
@@ -94,10 +94,10 @@ impl ArticaraApp {
                     ui.label("Collision:");
                     let key_c = (link_name.clone(), MeshKind::Collision);
                     let mut cur_c = self
-                        .link_display_modes
+                        .view.link_display_modes
                         .get(&key_c)
                         .copied()
-                        .unwrap_or(self.collision_mode);
+                        .unwrap_or(self.view.collision_mode);
                     let prev_c = cur_c;
                     egui::ComboBox::from_id_salt(format!("link_col_{li}"))
                         .width(80.0)
@@ -108,10 +108,10 @@ impl ArticaraApp {
                             }
                         });
                     if cur_c != prev_c {
-                        if cur_c == self.collision_mode {
-                            self.link_display_modes.remove(&key_c);
+                        if cur_c == self.view.collision_mode {
+                            self.view.link_display_modes.remove(&key_c);
                         } else {
-                            self.link_display_modes.insert(key_c, cur_c);
+                            self.view.link_display_modes.insert(key_c, cur_c);
                         }
                     }
                 });
@@ -2571,14 +2571,14 @@ impl ArticaraApp {
         }
         // Display mode overrides
         let keys_to_update: Vec<_> = self
-            .link_display_modes
+            .view.link_display_modes
             .keys()
             .filter(|(name, _)| name == old)
             .cloned()
             .collect();
         for key in keys_to_update {
-            if let Some(mode) = self.link_display_modes.remove(&key) {
-                self.link_display_modes.insert((new.to_string(), key.1), mode);
+            if let Some(mode) = self.view.link_display_modes.remove(&key) {
+                self.view.link_display_modes.insert((new.to_string(), key.1), mode);
             }
         }
         // IK root link

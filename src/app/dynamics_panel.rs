@@ -11,12 +11,12 @@ impl ArticaraApp {
         } else {
             None
         };
-        let ground = if self.show_ground_plane {
+        let ground = if self.view.show_ground_plane {
             Some(articara::mjcf::GroundPlaneCfg {
-                z: self.ground_z as f64,
-                half_size: self.ground_size as f64,
-                roll: self.ground_plane_roll as f64,
-                pitch: self.ground_plane_pitch as f64,
+                z: self.view.ground_z as f64,
+                half_size: self.view.ground_size as f64,
+                roll: self.view.ground_plane_roll as f64,
+                pitch: self.view.ground_plane_pitch as f64,
             })
         } else {
             None
@@ -880,9 +880,9 @@ impl ArticaraApp {
         let _ = ();
         self.sim.dynamics_last_instant = None;
         // Auto-disable ground plane if we enabled it
-        if self.ground_plane_auto {
-            self.show_ground_plane = false;
-            self.ground_plane_auto = false;
+        if self.view.ground_plane_auto {
+            self.view.show_ground_plane = false;
+            self.view.ground_plane_auto = false;
         }
     }
 

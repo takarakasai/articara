@@ -198,97 +198,97 @@ impl ArticaraApp {
 
             // ===== View menu =====
             ui.menu_button("View", |ui| {
-                ui.menu_button(format!("Visual: {}", self.visual_mode.label()), |ui| {
+                ui.menu_button(format!("Visual: {}", self.view.visual_mode.label()), |ui| {
                     for m in DisplayMode::ALL {
-                        if ui.selectable_value(&mut self.visual_mode, m, m.label()).clicked() {
+                        if ui.selectable_value(&mut self.view.visual_mode, m, m.label()).clicked() {
                             ui.close();
                         }
                     }
                 });
-                ui.menu_button(format!("Collision: {}", self.collision_mode.label()), |ui| {
+                ui.menu_button(format!("Collision: {}", self.view.collision_mode.label()), |ui| {
                     for m in DisplayMode::ALL {
-                        if ui.selectable_value(&mut self.collision_mode, m, m.label()).clicked() {
+                        if ui.selectable_value(&mut self.view.collision_mode, m, m.label()).clicked() {
                             ui.close();
                         }
                     }
                 });
                 ui.separator();
-                ui.checkbox(&mut self.show_com, "Show CoM & Mass");
-                if self.show_com {
+                ui.checkbox(&mut self.view.show_com, "Show CoM & Mass");
+                if self.view.show_com {
                     ui.horizontal(|ui| {
                         ui.label("CoM scale:");
                         ui.add(
-                            egui::Slider::new(&mut self.com_scale, 0.001..=0.1)
+                            egui::Slider::new(&mut self.view.com_scale, 0.001..=0.1)
                                 .logarithmic(true)
                                 .text("m/kg"),
                         );
                     });
                 }
-                ui.checkbox(&mut self.show_total_com, "Show Total CoM")
+                ui.checkbox(&mut self.view.show_total_com, "Show Total CoM")
                     .on_hover_text(
                         "Draw a marker at the whole-robot centre of mass, projected \
                          down to the ground. Independent from the per-link CoM \
                          spheres above. Useful for checking static-stability margin \
                          against the support polygon.",
                     );
-                ui.checkbox(&mut self.show_support_polygon, "Show Support Polygon")
+                ui.checkbox(&mut self.view.show_support_polygon, "Show Support Polygon")
                     .on_hover_text(
                         "Draw the convex hull of the four foot positions (FL / FR / \
                          RL / RR) projected to the ground plane. Combined with \
                          \"Show Total CoM\" this immediately surfaces whether the \
                          CoM stays inside the support polygon during the gait.",
                     );
-                ui.checkbox(&mut self.show_joint_axes, "Show Joint Axes");
-                ui.checkbox(&mut self.show_gravity_arrow, "Show Gravity Arrow");
-                if self.show_gravity_arrow {
+                ui.checkbox(&mut self.view.show_joint_axes, "Show Joint Axes");
+                ui.checkbox(&mut self.view.show_gravity_arrow, "Show Gravity Arrow");
+                if self.view.show_gravity_arrow {
                     ui.horizontal(|ui| {
                         ui.label("Dir:");
                         ui.add(
-                            egui::DragValue::new(&mut self.gravity_dir[0])
+                            egui::DragValue::new(&mut self.view.gravity_dir[0])
                                 .speed(0.01)
                                 .prefix("X:")
                                 .range(-1.0..=1.0),
                         );
                         ui.add(
-                            egui::DragValue::new(&mut self.gravity_dir[1])
+                            egui::DragValue::new(&mut self.view.gravity_dir[1])
                                 .speed(0.01)
                                 .prefix("Y:")
                                 .range(-1.0..=1.0),
                         );
                         ui.add(
-                            egui::DragValue::new(&mut self.gravity_dir[2])
+                            egui::DragValue::new(&mut self.view.gravity_dir[2])
                                 .speed(0.01)
                                 .prefix("Z:")
                                 .range(-1.0..=1.0),
                         );
                         if ui.small_button("Reset").clicked() {
-                            self.gravity_dir = [0.0, 0.0, -1.0];
+                            self.view.gravity_dir = [0.0, 0.0, -1.0];
                         }
                     });
                 }
                 ui.separator();
-                let was_showing = self.show_ground_plane;
-                ui.checkbox(&mut self.show_ground_plane, "Show Ground Plane");
+                let was_showing = self.view.show_ground_plane;
+                ui.checkbox(&mut self.view.show_ground_plane, "Show Ground Plane");
                 // Auto-position at robot's lowest Z when toggled on
-                if self.show_ground_plane && !was_showing {
+                if self.view.show_ground_plane && !was_showing {
                     if let Some(ref model) = self.model {
                         if let Some(min_z) = model.compute_min_z() {
-                            self.ground_z = min_z;
+                            self.view.ground_z = min_z;
                         }
                     }
                 }
-                if self.show_ground_plane {
+                if self.view.show_ground_plane {
                     ui.horizontal(|ui| {
                         ui.label("Ground Z:");
                         ui.add(
-                            egui::DragValue::new(&mut self.ground_z)
+                            egui::DragValue::new(&mut self.view.ground_z)
                                 .speed(0.01)
                                 .suffix(" m"),
                         );
                         if ui.small_button("Auto").on_hover_text("Set to robot's lowest Z").clicked() {
                             if let Some(ref model) = self.model {
                                 if let Some(min_z) = model.compute_min_z() {
-                                    self.ground_z = min_z;
+                                    self.view.ground_z = min_z;
                                 }
                             }
                         }
@@ -296,7 +296,7 @@ impl ArticaraApp {
                     ui.horizontal(|ui| {
                         ui.label("Ground size:");
                         ui.add(
-                            egui::DragValue::new(&mut self.ground_size)
+                            egui::DragValue::new(&mut self.view.ground_size)
                                 .speed(0.1)
                                 .range(0.1..=50.0)
                                 .suffix(" m"),
@@ -305,19 +305,19 @@ impl ArticaraApp {
                     ui.horizontal(|ui| {
                         ui.label("Roll (X):");
                         ui.add(
-                            egui::DragValue::new(&mut self.ground_plane_roll)
+                            egui::DragValue::new(&mut self.view.ground_plane_roll)
                                 .speed(0.01)
                                 .suffix(" rad"),
                         );
                         ui.label("Pitch (Y):");
                         ui.add(
-                            egui::DragValue::new(&mut self.ground_plane_pitch)
+                            egui::DragValue::new(&mut self.view.ground_plane_pitch)
                                 .speed(0.01)
                                 .suffix(" rad"),
                         );
                         if ui.small_button("Reset").on_hover_text("Reset tilt to 0").clicked() {
-                            self.ground_plane_roll = 0.0;
-                            self.ground_plane_pitch = 0.0;
+                            self.view.ground_plane_roll = 0.0;
+                            self.view.ground_plane_pitch = 0.0;
                         }
                     });
                 }
