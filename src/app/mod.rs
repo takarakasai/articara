@@ -545,22 +545,10 @@ pub struct ArticaraApp {
     /// File path for posture save/load (.toml).
     posture_path: String,
     // --- File dialogs ---
-    /// Dialog for loading a robot model file.
-    dlg_open_model: file_dialog::FileDialog,
-    /// Dialog for loading a posture file.
-    dlg_open_posture: file_dialog::FileDialog,
-    /// Dialog for saving a posture file.
-    dlg_save_posture: file_dialog::FileDialog,
-    /// Dialog for choosing the export directory.
-    dlg_export_dir: file_dialog::FileDialog,
-    /// Dialog for loading a sim config file.
-    dlg_open_sim_config: file_dialog::FileDialog,
-    /// Dialog for saving a sim config file.
-    dlg_save_sim_config: file_dialog::FileDialog,
-    /// Dialog for loading a mesh file (STL/DAE) to add as visual or collision.
-    dlg_add_mesh: file_dialog::FileDialog,
-    /// Target for the mesh file dialog: which link index and whether visual or collision.
-    add_mesh_target: Option<AddMeshTarget>,
+    /// The app-wide file dialogs (model / posture / export / sim-config /
+    /// mesh) and the pending mesh-add target. See
+    /// [`file_dialog::DialogState`].
+    dialogs: file_dialog::DialogState,
     // --- Script console ---
     /// Whether the script console window is visible.
     show_script_console: bool,
@@ -789,14 +777,7 @@ impl ArticaraApp {
             pending_script_run: None,
             sim_config_path: String::new(),
             posture_path: String::new(),
-            dlg_open_model: file_dialog::FileDialog::new("dlg_open_model"),
-            dlg_open_posture: file_dialog::FileDialog::new("dlg_open_posture"),
-            dlg_save_posture: file_dialog::FileDialog::new("dlg_save_posture"),
-            dlg_export_dir: file_dialog::FileDialog::new("dlg_export_dir"),
-            dlg_open_sim_config: file_dialog::FileDialog::new("dlg_open_sim_config"),
-            dlg_save_sim_config: file_dialog::FileDialog::new("dlg_save_sim_config"),
-            dlg_add_mesh: file_dialog::FileDialog::new("dlg_add_mesh"),
-            add_mesh_target: None,
+            dialogs: file_dialog::DialogState::default(),
             show_script_console: false,
             #[cfg(feature = "scripting")]
             script_engine: None,
@@ -1704,7 +1685,7 @@ impl ArticaraApp {
         use file_dialog::FileDialogResult;
 
         // --- Open Model dialog ---
-        match self.dlg_open_model.show(ctx) {
+        match self.dialogs.open_model.show(ctx) {
             FileDialogResult::Confirmed(path) => {
                 self.urdf_path_input = path.display().to_string();
                 self.load_model(path);
@@ -1713,7 +1694,7 @@ impl ArticaraApp {
         }
 
         // --- Open Posture dialog ---
-        match self.dlg_open_posture.show(ctx) {
+        match self.dialogs.open_posture.show(ctx) {
             FileDialogResult::Confirmed(path) => {
                 self.posture_path = path.display().to_string();
                 if let Some(ref mut model) = self.model {
@@ -1735,7 +1716,7 @@ impl ArticaraApp {
         }
 
         // --- Save Posture dialog ---
-        match self.dlg_save_posture.show(ctx) {
+        match self.dialogs.save_posture.show(ctx) {
             FileDialogResult::Confirmed(path) => {
                 self.posture_path = path.display().to_string();
                 if let Some(ref model) = self.model {
@@ -1754,7 +1735,7 @@ impl ArticaraApp {
         }
 
         // --- Export Directory dialog ---
-        match self.dlg_export_dir.show(ctx) {
+        match self.dialogs.export_dir.show(ctx) {
             FileDialogResult::Confirmed(path) => {
                 self.export_dir = path.display().to_string();
             }
@@ -1769,7 +1750,7 @@ impl ArticaraApp {
         self.draw_export_compat_dialog(ctx);
 
         // --- Open Sim Config dialog ---
-        match self.dlg_open_sim_config.show(ctx) {
+        match self.dialogs.open_sim_config.show(ctx) {
             FileDialogResult::Confirmed(path) => {
                 self.sim_config_path = path.display().to_string();
                 match dynamics_panel::load_sim_config(&path) {
@@ -1827,7 +1808,7 @@ impl ArticaraApp {
         }
 
         // --- Save Sim Config dialog ---
-        match self.dlg_save_sim_config.show(ctx) {
+        match self.dialogs.save_sim_config.show(ctx) {
             FileDialogResult::Confirmed(path) => {
                 self.sim_config_path = path.display().to_string();
                 match dynamics_panel::save_sim_config(self, &path) {
@@ -1844,7 +1825,7 @@ impl ArticaraApp {
         }
 
         // --- Add Mesh (STL/DAE) dialog ---
-        match self.dlg_add_mesh.show(ctx) {
+        match self.dialogs.add_mesh.show(ctx) {
             FileDialogResult::Confirmed(path) => {
                 let mesh = articara::robot::load_mesh(&path, None);
                 if mesh.num_triangles() == 0 {
@@ -1852,7 +1833,7 @@ impl ArticaraApp {
                         "メッシュ読み込み失敗: {}",
                         path.display()
                     );
-                } else if let Some(target) = self.add_mesh_target.take() {
+                } else if let Some(target) = self.dialogs.add_mesh_target.take() {
                     let tri_count = mesh.num_triangles();
                     let fname = path.display().to_string();
                     if let Some(ref mut model) = self.model {
@@ -1893,7 +1874,7 @@ impl ArticaraApp {
                 }
             }
             FileDialogResult::Cancelled => {
-                self.add_mesh_target = None;
+                self.dialogs.add_mesh_target = None;
             }
             _ => {}
         }

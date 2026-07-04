@@ -245,7 +245,7 @@ impl ArticaraApp {
                 } else {
                     Some(std::path::Path::new(&self.posture_path).to_path_buf())
                 };
-                self.dlg_save_posture.open(
+                self.dialogs.save_posture.open(
                     "Save Posture",
                     super::file_dialog::FileDialogMode::Save,
                     start.as_deref(),
@@ -292,7 +292,7 @@ impl ArticaraApp {
                 } else {
                     Some(std::path::Path::new(&self.posture_path).to_path_buf())
                 };
-                self.dlg_open_posture.open(
+                self.dialogs.open_posture.open(
                     "Load Posture",
                     super::file_dialog::FileDialogMode::Open,
                     start.as_deref(),

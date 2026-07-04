@@ -292,7 +292,7 @@ impl ArticaraApp {
                                     .to_path_buf(),
                             )
                         };
-                        self.dlg_open_sim_config.open(
+                        self.dialogs.open_sim_config.open(
                             "Load Sim Config",
                             super::file_dialog::FileDialogMode::Open,
                             start.as_deref(),
