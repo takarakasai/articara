@@ -4,6 +4,68 @@ use nalgebra as na;
 use super::ArticaraApp;
 use articara::robot::{GeomData, RobotModel};
 
+/// Structural-edit UI state: the "Add Child" link/joint dialog inputs,
+/// the rename buffers, the density-input dialog and the tree-reveal
+/// request. Grouped so [`ArticaraApp`] carries one `editor` field
+/// instead of sixteen loose ones.
+pub(super) struct EditorState {
+    /// Whether the "Add Child" section is open.
+    pub show_add_child: bool,
+    /// New link name input.
+    pub new_link_name: String,
+    /// New joint name input.
+    pub new_joint_name: String,
+    /// Selected parent link name for the new child.
+    pub new_parent_link: String,
+    /// New joint type (revolute, prismatic, fixed, continuous).
+    pub new_joint_type_idx: usize,
+    /// New geometry type (box, cylinder, sphere).
+    pub new_geom_type_idx: usize,
+    /// Geometry size parameters [x, y, z] (reused for different shapes).
+    pub new_geom_size: [f32; 3],
+    /// New joint origin XYZ.
+    pub new_joint_origin: [f32; 3],
+    /// New joint axis.
+    pub new_joint_axis: [f32; 3],
+    /// New link color (RGBA).
+    pub new_link_color: [f32; 3],
+    /// Joint limits [lower, upper].
+    pub new_joint_limits: [f32; 2],
+    /// When set, these ancestor link names should be auto-expanded in the tree.
+    pub tree_reveal_ancestors: Vec<String>,
+    /// Edit buffer for renaming the currently selected link.
+    pub rename_link_buf: String,
+    /// Edit buffer for renaming the currently selected joint.
+    pub rename_joint_buf: String,
+    /// Show density input dialog for mass-from-density calculation.
+    pub show_density_input: bool,
+    /// Density value (kg/m³) for mass-from-density calculation.
+    pub density_value: f64,
+}
+
+impl Default for EditorState {
+    fn default() -> Self {
+        Self {
+            show_add_child: false,
+            new_link_name: String::new(),
+            new_joint_name: String::new(),
+            new_parent_link: String::new(),
+            new_joint_type_idx: 0,
+            new_geom_type_idx: 0,
+            new_geom_size: [0.05, 0.05, 0.05],
+            new_joint_origin: [0.0, 0.0, 0.1],
+            new_joint_axis: [0.0, 0.0, 1.0],
+            new_link_color: [0.5, 0.7, 1.0],
+            new_joint_limits: [-1.57, 1.57],
+            tree_reveal_ancestors: Vec::new(),
+            rename_link_buf: String::new(),
+            rename_joint_buf: String::new(),
+            show_density_input: false,
+            density_value: 1000.0, // default: water (1000 kg/m³)
+        }
+    }
+}
+
 impl ArticaraApp {
     pub(super) fn draw_tree_panel(&mut self, ui: &mut egui::Ui) {
         if self.model.is_none() {
@@ -31,7 +93,7 @@ impl ArticaraApp {
             self.draw_link_tree(ui, &root_link);
         });
         // Clear auto-expand after drawing
-        self.tree_reveal_ancestors.clear();
+        self.editor.tree_reveal_ancestors.clear();
 
         ui.separator();
 
@@ -159,7 +221,7 @@ impl ArticaraApp {
                 ui.ctx(), id, true,
             );
             // Auto-expand if this link is an ancestor of the viewport-selected link
-            if self.tree_reveal_ancestors.iter().any(|a| a == link_name) {
+            if self.editor.tree_reveal_ancestors.iter().any(|a| a == link_name) {
                 state.set_open(true);
             }
             state
@@ -184,29 +246,29 @@ impl ArticaraApp {
         const GEOM_TYPES: &[&str] = &["Box", "Cylinder", "Sphere", "Capsule"];
 
         // Toggle button
-        let toggle_label = if self.show_add_child {
+        let toggle_label = if self.editor.show_add_child {
             "▼ Add Child Link+Joint"
         } else {
             "➕ Add Child Link+Joint"
         };
         if ui.button(toggle_label).clicked() {
-            self.show_add_child = !self.show_add_child;
+            self.editor.show_add_child = !self.editor.show_add_child;
             // Auto-fill parent from selected link
-            if self.show_add_child {
+            if self.editor.show_add_child {
                 if let (Some(li), Some(model)) = (self.selected_link, self.model.as_ref()) {
-                    self.new_parent_link = model.links[li].name.clone();
+                    self.editor.new_parent_link = model.links[li].name.clone();
                 } else if let Some(model) = self.model.as_ref() {
-                    self.new_parent_link = model.root_link.clone();
+                    self.editor.new_parent_link = model.root_link.clone();
                 }
                 // Auto-generate names
                 if let Some(model) = self.model.as_ref() {
-                    self.new_link_name = model.generate_link_name("new_link");
-                    self.new_joint_name = model.generate_joint_name("new_joint");
+                    self.editor.new_link_name = model.generate_link_name("new_link");
+                    self.editor.new_joint_name = model.generate_joint_name("new_joint");
                 }
             }
         }
 
-        if !self.show_add_child {
+        if !self.editor.show_add_child {
             return;
         }
 
@@ -222,10 +284,10 @@ impl ArticaraApp {
             ui.horizontal(|ui| {
                 ui.label("Parent:");
                 egui::ComboBox::from_id_salt("add_parent_combo")
-                    .selected_text(&self.new_parent_link)
+                    .selected_text(&self.editor.new_parent_link)
                     .show_ui(ui, |ui| {
                         for name in &link_names {
-                            ui.selectable_value(&mut self.new_parent_link, name.clone(), name);
+                            ui.selectable_value(&mut self.editor.new_parent_link, name.clone(), name);
                         }
                     });
             });
@@ -233,23 +295,23 @@ impl ArticaraApp {
             // Link name
             ui.horizontal(|ui| {
                 ui.label("Link name:");
-                ui.text_edit_singleline(&mut self.new_link_name);
+                ui.text_edit_singleline(&mut self.editor.new_link_name);
             });
 
             // Joint name
             ui.horizontal(|ui| {
                 ui.label("Joint name:");
-                ui.text_edit_singleline(&mut self.new_joint_name);
+                ui.text_edit_singleline(&mut self.editor.new_joint_name);
             });
 
             // Joint type
             ui.horizontal(|ui| {
                 ui.label("Joint type:");
                 egui::ComboBox::from_id_salt("add_joint_type")
-                    .selected_text(JOINT_TYPES[self.new_joint_type_idx])
+                    .selected_text(JOINT_TYPES[self.editor.new_joint_type_idx])
                     .show_ui(ui, |ui| {
                         for (i, &jt) in JOINT_TYPES.iter().enumerate() {
-                            ui.selectable_value(&mut self.new_joint_type_idx, i, jt);
+                            ui.selectable_value(&mut self.editor.new_joint_type_idx, i, jt);
                         }
                     });
             });
@@ -258,46 +320,46 @@ impl ArticaraApp {
             ui.horizontal(|ui| {
                 ui.label("Geometry:");
                 egui::ComboBox::from_id_salt("add_geom_type")
-                    .selected_text(GEOM_TYPES[self.new_geom_type_idx])
+                    .selected_text(GEOM_TYPES[self.editor.new_geom_type_idx])
                     .show_ui(ui, |ui| {
                         for (i, &gt) in GEOM_TYPES.iter().enumerate() {
-                            ui.selectable_value(&mut self.new_geom_type_idx, i, gt);
+                            ui.selectable_value(&mut self.editor.new_geom_type_idx, i, gt);
                         }
                     });
             });
 
             // Geometry size
-            match self.new_geom_type_idx {
+            match self.editor.new_geom_type_idx {
                 0 => {
                     // Box: hx, hy, hz
                     ui.horizontal(|ui| {
                         ui.label("Size XYZ:");
-                        ui.add(egui::DragValue::new(&mut self.new_geom_size[0]).speed(0.005).prefix("x:"));
-                        ui.add(egui::DragValue::new(&mut self.new_geom_size[1]).speed(0.005).prefix("y:"));
-                        ui.add(egui::DragValue::new(&mut self.new_geom_size[2]).speed(0.005).prefix("z:"));
+                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[0]).speed(0.005).prefix("x:"));
+                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[1]).speed(0.005).prefix("y:"));
+                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[2]).speed(0.005).prefix("z:"));
                     });
                 }
                 1 => {
                     // Cylinder: radius, length
                     ui.horizontal(|ui| {
                         ui.label("Cyl:");
-                        ui.add(egui::DragValue::new(&mut self.new_geom_size[0]).speed(0.005).prefix("r:"));
-                        ui.add(egui::DragValue::new(&mut self.new_geom_size[1]).speed(0.005).prefix("l:"));
+                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[0]).speed(0.005).prefix("r:"));
+                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[1]).speed(0.005).prefix("l:"));
                     });
                 }
                 2 => {
                     // Sphere: radius
                     ui.horizontal(|ui| {
                         ui.label("Radius:");
-                        ui.add(egui::DragValue::new(&mut self.new_geom_size[0]).speed(0.005));
+                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[0]).speed(0.005));
                     });
                 }
                 3 => {
                     // Capsule: radius, half_length
                     ui.horizontal(|ui| {
                         ui.label("Cap:");
-                        ui.add(egui::DragValue::new(&mut self.new_geom_size[0]).speed(0.005).prefix("r:"));
-                        ui.add(egui::DragValue::new(&mut self.new_geom_size[1]).speed(0.005).prefix("l:"));
+                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[0]).speed(0.005).prefix("r:"));
+                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[1]).speed(0.005).prefix("l:"));
                     });
                 }
                 _ => {}
@@ -306,30 +368,30 @@ impl ArticaraApp {
             // Joint origin
             ui.horizontal(|ui| {
                 ui.label("Origin XYZ:");
-                ui.add(egui::DragValue::new(&mut self.new_joint_origin[0]).speed(0.005).prefix("x:"));
-                ui.add(egui::DragValue::new(&mut self.new_joint_origin[1]).speed(0.005).prefix("y:"));
-                ui.add(egui::DragValue::new(&mut self.new_joint_origin[2]).speed(0.005).prefix("z:"));
+                ui.add(egui::DragValue::new(&mut self.editor.new_joint_origin[0]).speed(0.005).prefix("x:"));
+                ui.add(egui::DragValue::new(&mut self.editor.new_joint_origin[1]).speed(0.005).prefix("y:"));
+                ui.add(egui::DragValue::new(&mut self.editor.new_joint_origin[2]).speed(0.005).prefix("z:"));
             });
 
             // Joint axis
             ui.horizontal(|ui| {
                 ui.label("Axis:");
-                ui.add(egui::DragValue::new(&mut self.new_joint_axis[0]).speed(0.01).prefix("x:"));
-                ui.add(egui::DragValue::new(&mut self.new_joint_axis[1]).speed(0.01).prefix("y:"));
-                ui.add(egui::DragValue::new(&mut self.new_joint_axis[2]).speed(0.01).prefix("z:"));
+                ui.add(egui::DragValue::new(&mut self.editor.new_joint_axis[0]).speed(0.01).prefix("x:"));
+                ui.add(egui::DragValue::new(&mut self.editor.new_joint_axis[1]).speed(0.01).prefix("y:"));
+                ui.add(egui::DragValue::new(&mut self.editor.new_joint_axis[2]).speed(0.01).prefix("z:"));
             });
 
             // Joint limits (only for revolute / prismatic)
-            if self.new_joint_type_idx < 2 {
+            if self.editor.new_joint_type_idx < 2 {
                 ui.horizontal(|ui| {
                     ui.label("Limits:");
                     ui.add(
-                        egui::DragValue::new(&mut self.new_joint_limits[0])
+                        egui::DragValue::new(&mut self.editor.new_joint_limits[0])
                             .speed(0.01)
                             .prefix("lo:"),
                     );
                     ui.add(
-                        egui::DragValue::new(&mut self.new_joint_limits[1])
+                        egui::DragValue::new(&mut self.editor.new_joint_limits[1])
                             .speed(0.01)
                             .prefix("hi:"),
                     );
@@ -339,13 +401,13 @@ impl ArticaraApp {
             // Color
             ui.horizontal(|ui| {
                 ui.label("Color:");
-                ui.color_edit_button_rgb(&mut self.new_link_color);
+                ui.color_edit_button_rgb(&mut self.editor.new_link_color);
             });
 
             // "Add" button
-            let can_add = !self.new_link_name.is_empty()
-                && !self.new_joint_name.is_empty()
-                && !self.new_parent_link.is_empty();
+            let can_add = !self.editor.new_link_name.is_empty()
+                && !self.editor.new_joint_name.is_empty()
+                && !self.editor.new_parent_link.is_empty();
             ui.add_enabled_ui(can_add, |ui| {
                 if ui.button("✔ Add").clicked() {
                     self.execute_add_child();
@@ -358,22 +420,22 @@ impl ArticaraApp {
     pub(super) fn execute_add_child(&mut self) {
         const JOINT_TYPES: &[&str] = &["revolute", "prismatic", "fixed", "continuous"];
 
-        let geom = match self.new_geom_type_idx {
+        let geom = match self.editor.new_geom_type_idx {
             0 => GeomData::Box {
-                hx: self.new_geom_size[0],
-                hy: self.new_geom_size[1],
-                hz: self.new_geom_size[2],
+                hx: self.editor.new_geom_size[0],
+                hy: self.editor.new_geom_size[1],
+                hz: self.editor.new_geom_size[2],
             },
             1 => GeomData::Cylinder {
-                radius: self.new_geom_size[0],
-                half_length: self.new_geom_size[1] * 0.5,
+                radius: self.editor.new_geom_size[0],
+                half_length: self.editor.new_geom_size[1] * 0.5,
             },
             2 => GeomData::Sphere {
-                radius: self.new_geom_size[0],
+                radius: self.editor.new_geom_size[0],
             },
             3 => GeomData::Capsule {
-                radius: self.new_geom_size[0],
-                half_length: self.new_geom_size[1] * 0.5,
+                radius: self.editor.new_geom_size[0],
+                half_length: self.editor.new_geom_size[1] * 0.5,
             },
             _ => GeomData::Box {
                 hx: 0.05,
@@ -383,40 +445,40 @@ impl ArticaraApp {
         };
 
         let color = [
-            self.new_link_color[0],
-            self.new_link_color[1],
-            self.new_link_color[2],
+            self.editor.new_link_color[0],
+            self.editor.new_link_color[1],
+            self.editor.new_link_color[2],
             1.0,
         ];
 
         let origin = na::Isometry3::new(
             na::Vector3::new(
-                self.new_joint_origin[0],
-                self.new_joint_origin[1],
-                self.new_joint_origin[2],
+                self.editor.new_joint_origin[0],
+                self.editor.new_joint_origin[1],
+                self.editor.new_joint_origin[2],
             ),
             na::Vector3::zeros(),
         );
 
         let axis = na::Vector3::new(
-            self.new_joint_axis[0],
-            self.new_joint_axis[1],
-            self.new_joint_axis[2],
+            self.editor.new_joint_axis[0],
+            self.editor.new_joint_axis[1],
+            self.editor.new_joint_axis[2],
         );
 
-        let jtype = JOINT_TYPES[self.new_joint_type_idx];
-        let (lower, upper) = if self.new_joint_type_idx < 2 {
-            (self.new_joint_limits[0] as f64, self.new_joint_limits[1] as f64)
+        let jtype = JOINT_TYPES[self.editor.new_joint_type_idx];
+        let (lower, upper) = if self.editor.new_joint_type_idx < 2 {
+            (self.editor.new_joint_limits[0] as f64, self.editor.new_joint_limits[1] as f64)
         } else {
             (0.0, 0.0)
         };
 
-        self.mark_edit(&format!("Add child '{}'", self.new_link_name));
+        self.mark_edit(&format!("Add child '{}'", self.editor.new_link_name));
         if let Some(model) = &mut self.model {
             match model.add_child(
-                &self.new_parent_link,
-                &self.new_link_name,
-                &self.new_joint_name,
+                &self.editor.new_parent_link,
+                &self.editor.new_link_name,
+                &self.editor.new_joint_name,
                 jtype,
                 origin,
                 axis,
@@ -428,15 +490,15 @@ impl ArticaraApp {
                 Ok((li, _ji)) => {
                     self.status_message = format!(
                         "Added link '{}' + joint '{}'",
-                        self.new_link_name, self.new_joint_name
+                        self.editor.new_link_name, self.editor.new_joint_name
                     );
                     self.selected_link = Some(li);
                     self.selected_joint = None;
                     self.needs_upload = true;
-                    self.show_add_child = false;
+                    self.editor.show_add_child = false;
                     // Prepare next auto-names
-                    self.new_link_name = model.generate_link_name("new_link");
-                    self.new_joint_name = model.generate_joint_name("new_joint");
+                    self.editor.new_link_name = model.generate_link_name("new_link");
+                    self.editor.new_joint_name = model.generate_joint_name("new_joint");
                 }
                 Err(e) => {
                     self.status_message = format!("Add error: {e}");
@@ -464,18 +526,18 @@ impl ArticaraApp {
                     if let Some(&li) = model.link_map.get(link_name) {
                         self.selected_link = Some(li);
                         self.selected_joint = None;
-                        self.rename_link_buf = link_name.to_string();
+                        self.editor.rename_link_buf = link_name.to_string();
                     }
                 }
                 ui.close();
             }
 
             if ui.button("➕ Add Child…").clicked() {
-                self.show_add_child = true;
-                self.new_parent_link = link_name.to_string();
+                self.editor.show_add_child = true;
+                self.editor.new_parent_link = link_name.to_string();
                 if let Some(model) = &self.model {
-                    self.new_link_name = model.generate_link_name("new_link");
-                    self.new_joint_name = model.generate_joint_name("new_joint");
+                    self.editor.new_link_name = model.generate_link_name("new_link");
+                    self.editor.new_joint_name = model.generate_joint_name("new_joint");
                 }
                 ui.close();
             }
@@ -537,7 +599,7 @@ impl ArticaraApp {
             if ui.button("✏ Rename…").clicked() {
                 self.selected_joint = Some(ji);
                 self.selected_link = None;
-                self.rename_joint_buf = joint_name.to_string();
+                self.editor.rename_joint_buf = joint_name.to_string();
                 ui.close();
             }
 

@@ -35,20 +35,20 @@ impl ArticaraApp {
                 let link_name = model.links[li].name.clone();
 
                 // Sync rename buffer when selection changes
-                if self.rename_link_buf.is_empty() || !model.link_map.contains_key(&self.rename_link_buf) {
-                    self.rename_link_buf = link_name.clone();
+                if self.editor.rename_link_buf.is_empty() || !model.link_map.contains_key(&self.editor.rename_link_buf) {
+                    self.editor.rename_link_buf = link_name.clone();
                 }
                 // Editable link name (before taking &mut link)
                 let mut rename_result: Option<(String, String)> = None;
                 ui.horizontal(|ui| {
                     ui.label("Link:");
                     let resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.rename_link_buf)
+                        egui::TextEdit::singleline(&mut self.editor.rename_link_buf)
                             .desired_width(160.0)
                             .font(egui::TextStyle::Heading),
                     );
-                    if resp.lost_focus() && self.rename_link_buf != link_name {
-                        rename_result = Some((link_name.clone(), self.rename_link_buf.clone()));
+                    if resp.lost_focus() && self.editor.rename_link_buf != link_name {
+                        rename_result = Some((link_name.clone(), self.editor.rename_link_buf.clone()));
                     }
                 });
                 if let Some((ref old_name, ref new_name)) = rename_result {
@@ -56,7 +56,7 @@ impl ArticaraApp {
                         link_renamed = Some((old_name.clone(), new_name.clone()));
                         props_edit_desc = Some(format!("Rename link '{}' → '{}'", old_name, new_name));
                     } else {
-                        self.rename_link_buf = model.links[li].name.clone();
+                        self.editor.rename_link_buf = model.links[li].name.clone();
                     }
                 }
                 // Re-read link_name after potential rename
@@ -186,19 +186,19 @@ impl ArticaraApp {
                                 .on_hover_text("Set mass = density × total volume, then recompute inertia tensor")
                                 .clicked()
                             {
-                                self.show_density_input = !self.show_density_input;
+                                self.editor.show_density_input = !self.editor.show_density_input;
                             }
                         });
-                        if self.show_density_input {
+                        if self.editor.show_density_input {
                             ui.horizontal(|ui| {
                                 ui.label("Density (kg/m³):");
-                                ui.add(egui::DragValue::new(&mut self.density_value).speed(1.0).range(0.1..=50000.0));
+                                ui.add(egui::DragValue::new(&mut self.editor.density_value).speed(1.0).range(0.1..=50000.0));
                             });
                             // Show computed volume and resulting mass
                             let total_vol: f64 = link.visuals.iter()
                                 .map(|v| articara::robot::compute_geometry_volume(&v.geometry))
                                 .sum();
-                            let new_mass = self.density_value * total_vol;
+                            let new_mass = self.editor.density_value * total_vol;
                             ui.label(egui::RichText::new(
                                 format!("Volume: {:.6} m³ → Mass: {:.4} kg", total_vol, new_mass)
                             ).small());
@@ -217,10 +217,10 @@ impl ArticaraApp {
                                     link.inertial.iyz = computed.iyz;
                                     link.inertial.izz = computed.izz;
                                     inertial_changed = true;
-                                    self.show_density_input = false;
+                                    self.editor.show_density_input = false;
                                 }
                                 if ui.button("✖ Cancel").clicked() {
-                                    self.show_density_input = false;
+                                    self.editor.show_density_input = false;
                                 }
                             });
                             // Show common material reference
@@ -866,27 +866,27 @@ impl ArticaraApp {
                 .default_open(true)
                 .show(ui, |ui| {
                 // Sync rename buffer when selection changes
-                if self.rename_joint_buf.is_empty() || !model.joint_map.contains_key(&self.rename_joint_buf) {
-                    self.rename_joint_buf = joint_name.clone();
+                if self.editor.rename_joint_buf.is_empty() || !model.joint_map.contains_key(&self.editor.rename_joint_buf) {
+                    self.editor.rename_joint_buf = joint_name.clone();
                 }
                 // Editable joint name (before taking &mut joint)
                 let mut jrename_result: Option<(String, String)> = None;
                 ui.horizontal(|ui| {
                     ui.label("Joint:");
                     let resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.rename_joint_buf)
+                        egui::TextEdit::singleline(&mut self.editor.rename_joint_buf)
                             .desired_width(160.0)
                             .font(egui::TextStyle::Heading),
                     );
-                    if resp.lost_focus() && self.rename_joint_buf != joint_name {
-                        jrename_result = Some((joint_name.clone(), self.rename_joint_buf.clone()));
+                    if resp.lost_focus() && self.editor.rename_joint_buf != joint_name {
+                        jrename_result = Some((joint_name.clone(), self.editor.rename_joint_buf.clone()));
                     }
                 });
                 if let Some((old_name, new_name)) = jrename_result {
                     if model.rename_joint(&old_name, &new_name) {
                         props_edit_desc = Some(format!("Rename joint '{}' → '{}'", old_name, new_name));
                     } else {
-                        self.rename_joint_buf = model.joints[ji].name.clone();
+                        self.editor.rename_joint_buf = model.joints[ji].name.clone();
                     }
                 }
                 let joint = &mut model.joints[ji];
