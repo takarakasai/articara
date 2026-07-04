@@ -64,24 +64,6 @@ pub(super) struct GaitPanelState {
     pub goal_max_wz_rad_s: f32,
     /// Whether the controller currently has a goal pose set.
     pub goal_pose_active: bool,
-    /// Experimental research flags ("Experimental flags" sub-section).
-    /// Each holds the desired **panel** state; on edit the panel pushes
-    /// the value into the active controller. When no controller is active
-    /// the state is held until the next build.
-    pub exp_transition_fraction: f32,
-    pub exp_transition_enforce_constraint: bool,
-    pub exp_use_mpc_predicted_footstep: bool,
-    pub exp_legged_control_parity: bool,
-    /// A3: friction cone soft + slack (FullCentroidal MPC).
-    pub exp_friction_cone_soft: bool,
-    /// A3: per-slack quadratic penalty.
-    pub exp_friction_cone_slack_penalty: f32,
-    /// B3: MPC warm-start.
-    pub exp_warm_start: bool,
-    /// A1: MPC-optimised footstep XY.
-    pub exp_mpc_optimized_footstep: bool,
-    /// A1: foot-XY cost weight.
-    pub exp_q_foot_xy_world: f32,
 }
 
 impl Default for GaitPanelState {
@@ -103,15 +85,6 @@ impl Default for GaitPanelState {
             goal_max_v_m_s: 0.15,
             goal_max_wz_rad_s: 0.5,
             goal_pose_active: false,
-            exp_transition_fraction: 0.0,
-            exp_transition_enforce_constraint: false,
-            exp_use_mpc_predicted_footstep: false,
-            exp_legged_control_parity: false,
-            exp_friction_cone_soft: false,
-            exp_friction_cone_slack_penalty: 1000.0,
-            exp_warm_start: false,
-            exp_mpc_optimized_footstep: false,
-            exp_q_foot_xy_world: 500.0,
         }
     }
 }
@@ -728,11 +701,9 @@ impl ArticaraApp {
         });
 
         // ── Experimental flags ────────────────────────────────────────────
-        // Research toggles that landed during the 2026-05 session.
-        // Default values are tuned so the panel matches the
-        // controller's behaviour at construction time; toggling here
-        // pushes the change into the live controller. Hover each row
-        // for the "what / why" summary.
+        // Rendered from quadruped_gait's knob metadata (`exp::ExpKey`):
+        // the crate declares key / widget kind / bench summary, so a new
+        // experiment lands here with zero GUI changes.
         ui.separator();
         ui.add_enabled_ui(is_fullc, |ui| {
             ui.label(
@@ -749,222 +720,47 @@ impl ArticaraApp {
                 .small()
                 .weak(),
             );
-
-            // Poll live state so the panel reflects whatever the
-            // controller currently holds (script / test code may have
-            // toggled them out-of-band).
-            if let Some(gc) = self.gait.controller.as_ref() {
-                if let Some(p) = gc.legged_control_parity() {
-                    self.gait.exp_legged_control_parity = p;
-                }
-                if let Some(p) = gc.use_mpc_predicted_footstep() {
-                    self.gait.exp_use_mpc_predicted_footstep = p;
-                }
-                let cfg = gc.config();
-                self.gait.exp_transition_fraction = cfg.transition_fraction as f32;
-                self.gait.exp_transition_enforce_constraint = cfg.transition_enforce_constraint;
-                self.gait.exp_friction_cone_soft = cfg.friction_cone_soft;
-                self.gait.exp_friction_cone_slack_penalty =
-                    cfg.friction_cone_slack_penalty as f32;
-                self.gait.exp_warm_start = cfg.warm_start;
-                self.gait.exp_mpc_optimized_footstep = cfg.mpc_optimized_footstep;
-                self.gait.exp_q_foot_xy_world = cfg.q_foot_xy_world as f32;
-            }
-
-            // legged_control parity (per-step phase + swing v_z constraint).
-            let parity_resp = ui
-                .checkbox(
-                    &mut self.gait.exp_legged_control_parity,
-                    "legged_control parity",
-                )
-                .on_hover_text(
-                    "Per-step phase projection + NormalVelocityConstraintCppAd \
-                     analogue (swing leg vertical foot velocity equality). \
-                     Bench note: didn't fix lateral 4N+ fall on its own \
-                     (cap-pt 0.05 did). Kept for A/B and as the prerequisite \
-                     for transition_fraction below.",
+            let Some(gc) = self.gait.controller.as_mut() else {
+                ui.label(
+                    egui::RichText::new("Set up the controller to edit.")
+                        .small()
+                        .weak(),
                 );
-            if parity_resp.changed() {
-                if let Some(gc) = self.gait.controller.as_mut() {
-                    gc.set_legged_control_parity(self.gait.exp_legged_control_parity);
-                }
-            }
-
-            // transition_fraction slider (C1, cost-side GRF ramp).
-            ui.horizontal(|ui| {
-                ui.label("transition_fraction:");
-                let resp = ui.add(
-                    egui::Slider::new(&mut self.gait.exp_transition_fraction, 0.0..=0.30)
-                        .fixed_decimals(2),
-                );
-                if resp.changed() {
-                    if let Some(gc) = self.gait.controller.as_mut() {
-                        let mut new_cfg = gc.config().clone();
-                        new_cfg.transition_fraction = self.gait.exp_transition_fraction as f64;
-                        gc.set_config(new_cfg);
+                return;
+            };
+            for k in gc.experimental_keys() {
+                let Some(cur) = gc.get_experimental(k.key) else {
+                    continue;
+                };
+                match (k.kind, cur) {
+                    (quadruped_gait::ExpKind::Bool, quadruped_gait::ExpValue::Bool(mut b)) => {
+                        let resp = ui.checkbox(&mut b, k.label).on_hover_text(k.help);
+                        if resp.changed() {
+                            let _ = gc.set_experimental(k.key, quadruped_gait::ExpValue::Bool(b));
+                        }
                     }
-                }
-            }).response.on_hover_text(
-                "C1 experiment: ramps the per-leg GRF reference at touchdown / \
-                 lift-off. By itself (cost-side) bench was bit-exact identical \
-                 to off — `r_diag[GRF]` is too small to make the MPC track the \
-                 ramp. Pair with the next checkbox for the real effect.",
-            );
-
-            // transition_enforce_constraint (C1-2, constraint-side hard f_max).
-            let enforce_resp = ui
-                .checkbox(
-                    &mut self.gait.exp_transition_enforce_constraint,
-                    "transition: enforce as hard constraint (C1-2)",
-                )
-                .on_hover_text(
-                    "C1-2: ramps the per-leg `max_normal_force` upper bound at \
-                     touchdown / lift-off as a HARD QP inequality. Bench: \
-                     lateral 6N peak roll −30 %, forward 6N peak |dy| −42 % \
-                     at trans_fraction = 0.05. Off when transition_fraction = 0.",
-                );
-            if enforce_resp.changed() {
-                if let Some(gc) = self.gait.controller.as_mut() {
-                    let mut new_cfg = gc.config().clone();
-                    new_cfg.transition_enforce_constraint =
-                        self.gait.exp_transition_enforce_constraint;
-                    gc.set_config(new_cfg);
-                }
-            }
-
-            // friction_cone_soft (A3): replace pyramid hard constraint
-            // with slack-relaxed form + quadratic penalty.
-            let soft_resp = ui
-                .checkbox(
-                    &mut self.gait.exp_friction_cone_soft,
-                    "friction cone soft + slack (A3)",
-                )
-                .on_hover_text(
-                    "A3: relaxes the friction pyramid via per-(leg, step) \
-                     slack variables `s_x, s_y ≥ 0` with quadratic penalty \
-                     `λ · s²`. Useful at the pyramid corner (μ=0.5 lateral \
-                     4-6N regime) where the hard form returns AlmostSolved \
-                     or falls back to the reference. f_z bounds stay hard. \
-                     legged_control analogue: FrictionConeConstraint + \
-                     RelaxedBarrierPenalty.",
-                );
-            if soft_resp.changed() {
-                if let Some(gc) = self.gait.controller.as_mut() {
-                    let mut new_cfg = gc.config().clone();
-                    new_cfg.friction_cone_soft = self.gait.exp_friction_cone_soft;
-                    gc.set_config(new_cfg);
-                }
-            }
-            // A3 slack penalty slider.
-            ui.horizontal(|ui| {
-                ui.label("slack penalty:");
-                let resp = ui.add(
-                    egui::Slider::new(
-                        &mut self.gait.exp_friction_cone_slack_penalty,
-                        10.0..=10000.0,
-                    )
-                    .logarithmic(true)
-                    .fixed_decimals(0),
-                );
-                if resp.changed() {
-                    if let Some(gc) = self.gait.controller.as_mut() {
-                        let mut new_cfg = gc.config().clone();
-                        new_cfg.friction_cone_slack_penalty =
-                            self.gait.exp_friction_cone_slack_penalty as f64;
-                        gc.set_config(new_cfg);
+                    (
+                        quadruped_gait::ExpKind::F64 { min, max, logarithmic, decimals },
+                        quadruped_gait::ExpValue::F64(mut v),
+                    ) => {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{}:", k.label));
+                            let resp = ui.add(
+                                egui::Slider::new(&mut v, min..=max)
+                                    .logarithmic(logarithmic)
+                                    .fixed_decimals(decimals as usize),
+                            );
+                            if resp.changed() {
+                                let _ = gc
+                                    .set_experimental(k.key, quadruped_gait::ExpValue::F64(v));
+                            }
+                        })
+                        .response
+                        .on_hover_text(k.help);
                     }
-                }
-            })
-            .response
-            .on_hover_text(
-                "Quadratic cost on each `s_i`. Larger → cone stays closer to \
-                 hard. Smaller → more slack budget under disturbance. Only \
-                 effective when A3 is on.",
-            );
-
-            // warm-start (B3).
-            let warm_resp = ui
-                .checkbox(&mut self.gait.exp_warm_start, "MPC warm-start (B3)")
-                .on_hover_text(
-                    "B3: seed each MPC tick's SQP iter 0 from the previous \
-                     tick's solved trajectory (shifted by one step) instead \
-                     of the gravity-balanced cmd reference. Same convergence \
-                     point at steady state, but fewer iterations to get \
-                     there — typical 2× speed-up on cmd-held workloads. \
-                     legged_control analogue: OCS2's solverObservation \
-                     warm-start.",
-                );
-            if warm_resp.changed() {
-                if let Some(gc) = self.gait.controller.as_mut() {
-                    let mut new_cfg = gc.config().clone();
-                    new_cfg.warm_start = self.gait.exp_warm_start;
-                    gc.set_config(new_cfg);
-                }
-            }
-
-            // mpc_optimized_footstep (A1).
-            let a1_resp = ui
-                .checkbox(
-                    &mut self.gait.exp_mpc_optimized_footstep,
-                    "MPC-optimised footstep XY (A1)",
-                )
-                .on_hover_text(
-                    "A1: adds a soft cost penalising the predicted foot-XY \
-                     vs the planner-supplied touchdown target. The MPC \
-                     deviates the swing-leg joint trajectory to land at \
-                     the target, self-consistently with its predicted base \
-                     motion. Closes the loop that P2 (above) couldn't.",
-                );
-            if a1_resp.changed() {
-                if let Some(gc) = self.gait.controller.as_mut() {
-                    let mut new_cfg = gc.config().clone();
-                    new_cfg.mpc_optimized_footstep = self.gait.exp_mpc_optimized_footstep;
-                    gc.set_config(new_cfg);
-                }
-            }
-            // A1 weight slider.
-            ui.horizontal(|ui| {
-                ui.label("q_foot_xy_world:");
-                let resp = ui.add(
-                    egui::Slider::new(&mut self.gait.exp_q_foot_xy_world, 10.0..=5000.0)
-                        .logarithmic(true)
-                        .fixed_decimals(0),
-                );
-                if resp.changed() {
-                    if let Some(gc) = self.gait.controller.as_mut() {
-                        let mut new_cfg = gc.config().clone();
-                        new_cfg.q_foot_xy_world = self.gait.exp_q_foot_xy_world as f64;
-                        gc.set_config(new_cfg);
-                    }
-                }
-            })
-            .response
-            .on_hover_text(
-                "Weight on the foot-XY tracking residual. Only active when \
-                 A1 is on. Higher → more aggressive footstep tracking, \
-                 may overshoot on jumpy planner targets.",
-            );
-
-            // use_mpc_predicted_footstep (P2).
-            let pred_resp = ui
-                .checkbox(
-                    &mut self.gait.exp_use_mpc_predicted_footstep,
-                    "MPC-predicted footstep (P2)",
-                )
-                .on_hover_text(
-                    "Replaces cap-pt feedback with a footstep correction \
-                     derived from the MPC's predicted base trajectory \
-                     (legged_control SwingTrajectoryPlanner analogue). Bench: \
-                     **made lateral push worse** because articara's MPC \
-                     doesn't optimise foot XY — the predicted base reflects \
-                     sliding, not restoring. Kept as a documented negative \
-                     result; the real fix is A1 (MPC state expansion).",
-                );
-            if pred_resp.changed() {
-                if let Some(gc) = self.gait.controller.as_mut() {
-                    gc.set_use_mpc_predicted_footstep(
-                        self.gait.exp_use_mpc_predicted_footstep,
-                    );
+                    // Declared kind and stored value always agree; a
+                    // mismatch would be a quadruped-gait bug.
+                    _ => {}
                 }
             }
         });

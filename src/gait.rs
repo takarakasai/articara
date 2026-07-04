@@ -731,6 +731,28 @@ impl GaitController {
         self.inner.use_mpc_predicted_footstep()
     }
 
+    /// The experimental research knobs of the active controller, as
+    /// declared by [`quadruped_gait::exp`]. The GUI renders its
+    /// "Experimental flags" section from this metadata, so knobs added
+    /// in quadruped-gait appear without host-side changes.
+    pub fn experimental_keys(&self) -> &'static [quadruped_gait::ExpKey] {
+        self.inner.experimental_keys()
+    }
+
+    /// Read an experimental knob (see [`Self::experimental_keys`]).
+    pub fn get_experimental(&self, key: &str) -> Option<quadruped_gait::ExpValue> {
+        self.inner.get_experimental(key)
+    }
+
+    /// Write an experimental knob (see [`Self::experimental_keys`]).
+    pub fn set_experimental(
+        &mut self,
+        key: &str,
+        value: quadruped_gait::ExpValue,
+    ) -> Result<(), quadruped_gait::ExpError> {
+        self.inner.set_experimental(key, value)
+    }
+
     /// Read the active SRBD MPC config. `None` when running CHAMP.
     pub fn srbd_mpc_config(
         &self,
