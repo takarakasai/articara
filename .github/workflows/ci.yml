@@ -66,3 +66,42 @@ jobs:
             | tar -xz -C ~/.mujoco
       - name: Test (mujoco)
         run: cargo xtask test --features mujoco --tests
+
+  # Coverage over the full test set (mujoco feature on, so the gated
+  # integration suites run too; xtask injects the MuJoCo env). Only
+  # this repo's crates are instrumented — quadruped-gait / misarta are
+  # git dependencies and report coverage in their own repos.
+  coverage:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+      - name: Cache MuJoCo
+        id: cache-mujoco
+        uses: actions/cache@v4
+        with:
+          path: ~/.mujoco
+          key: mujoco-3.8.0-linux-x86_64
+      - name: Install MuJoCo
+        if: steps.cache-mujoco.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.mujoco
+          curl -sL https://github.com/google-deepmind/mujoco/releases/download/3.8.0/mujoco-3.8.0-linux-x86_64.tar.gz \
+            | tar -xz -C ~/.mujoco
+      - name: Measure coverage
+        run: cargo xtask llvm-cov --features mujoco --lcov --output-path lcov.info
+      - uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          use_oidc: true
