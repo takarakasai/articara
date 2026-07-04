@@ -25,7 +25,7 @@ use misarta::centroidal::{
 use misarta::coriolis::compute_coriolis_matrix;
 use misarta::crba::crba;
 use misarta::rnea::{compute_gravity, rnea};
-use misarta::urdf::load_urdf;
+use misarta_formats::urdf::load_urdf;
 
 const ITERS: usize = 200;
 

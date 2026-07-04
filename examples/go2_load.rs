@@ -70,7 +70,6 @@ fn main() {
                         articara::rbd::model::GeomData::Box { .. } => box_n += 1,
                         articara::rbd::model::GeomData::Cylinder { .. } => cyl_n += 1,
                         articara::rbd::model::GeomData::Capsule { .. } => cap_n += 1,
-                        _ => {}
                     }
                 }
                 println!(
