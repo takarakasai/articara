@@ -3009,7 +3009,7 @@ dependencies = [
 [[package]]
 name = "misarta"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misarta.git#4fd4ad8f71f98d60c945fb48aa591f6122352e52"
+source = "git+https://github.com/takarakasai/misarta.git#4a6859abe8a8d6668ff8c3032736604efd90481a"
 dependencies = [
  "clarabel",
  "nalgebra",
@@ -3024,7 +3024,7 @@ dependencies = [
 [[package]]
 name = "misarta-formats"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misarta.git#4fd4ad8f71f98d60c945fb48aa591f6122352e52"
+source = "git+https://github.com/takarakasai/misarta.git#4a6859abe8a8d6668ff8c3032736604efd90481a"
 dependencies = [
  "misarta",
  "nalgebra",
