@@ -5,7 +5,71 @@ use eframe::egui;
 #[cfg(feature = "scripting")]
 use articara::scripting_model::ModelScriptEngine;
 
-use super::{ArticaraApp, ScriptLine};
+use super::ArticaraApp;
+
+/// A tagged line in the script console output.
+#[derive(Clone)]
+pub(super) enum ScriptLine {
+    /// User input (echoed with prompt).
+    Input(String),
+    /// Normal output from `print()`.
+    Output(String),
+    /// Error message.
+    Error(String),
+    /// System/info message (help, greeting).
+    System(String),
+}
+
+/// Script-console state owned by this panel: the embedded Rhai REPL's
+/// engine, transcript and input-line state plus the script-file dialog.
+/// Grouped so [`ArticaraApp`] carries one `script` field instead of a
+/// dozen loose `script_*` ones.
+pub(super) struct ScriptConsoleState {
+    /// Whether the script console window is visible.
+    pub show_console: bool,
+    /// Rhai script engine for model manipulation.
+    #[cfg(feature = "scripting")]
+    pub engine: Option<ModelScriptEngine>,
+    /// Current script input text.
+    pub input: String,
+    /// Captured script output lines (with type tags for colouring).
+    pub output: Vec<ScriptLine>,
+    /// Input history (up/down arrow navigation).
+    pub history: Vec<String>,
+    /// Current position in input history (0 = newest).
+    pub history_idx: usize,
+    /// Whether to auto-scroll to bottom next frame.
+    pub scroll_to_bottom: bool,
+    /// Pending tab-completion candidates (shown after Tab press).
+    pub tab_candidates: Vec<String>,
+    /// File dialog for loading a Rhai script to run in the console.
+    pub dlg_open: super::file_dialog::FileDialog,
+    /// Most-recently-loaded script path (used to pre-fill the file dialog).
+    pub path: String,
+    /// One-shot: when `Some`, the next console-update tick reads + runs this
+    /// path and clears the field. Set by the "📂 Run file…" button after the
+    /// file dialog confirms.
+    pub pending_run: Option<std::path::PathBuf>,
+}
+
+impl Default for ScriptConsoleState {
+    fn default() -> Self {
+        Self {
+            show_console: false,
+            #[cfg(feature = "scripting")]
+            engine: None,
+            input: String::new(),
+            output: Vec::new(),
+            history: Vec::new(),
+            history_idx: 0,
+            scroll_to_bottom: false,
+            tab_candidates: Vec::new(),
+            dlg_open: super::file_dialog::FileDialog::new("dlg_open_script"),
+            path: String::new(),
+            pending_run: None,
+        }
+    }
+}
 
 // ── Terminal colour palette (VSCode Dark+ inspired) ─────────────────────
 const BG: egui::Color32 = egui::Color32::from_rgb(30, 30, 30);       // #1e1e1e
@@ -21,7 +85,7 @@ impl ArticaraApp {
     /// Draw the script console as a docked bottom panel (VSCode-terminal style).
     #[cfg(feature = "scripting")]
     pub(super) fn draw_script_console(&mut self, ui: &mut egui::Ui) {
-        if !self.show_script_console {
+        if !self.script.show_console {
             return;
         }
 
@@ -46,18 +110,18 @@ impl ArticaraApp {
                 ui.set_min_height(ui.max_rect().height());
                 // Lazy-init engine
                 #[cfg(feature = "scripting")]
-                if self.script_engine.is_none() {
-                    self.script_engine = Some(ModelScriptEngine::new());
+                if self.script.engine.is_none() {
+                    self.script.engine = Some(ModelScriptEngine::new());
                     // Welcome message
-                    self.script_output.push(ScriptLine::System(
+                    self.script.output.push(ScriptLine::System(
                         "Articara Script Console (Rhai)  — type help() for commands".into(),
                     ));
-                    self.script_scroll_to_bottom = true;
+                    self.script.scroll_to_bottom = true;
                 }
 
                 // Sync model into engine
                 #[cfg(feature = "scripting")]
-                if let Some(eng) = &mut self.script_engine {
+                if let Some(eng) = &mut self.script.engine {
                     if let Some(model) = &self.model {
                         eng.set_model(model.clone());
                     }
@@ -104,7 +168,7 @@ impl ArticaraApp {
                             .on_hover_text("Close")
                             .clicked()
                         {
-                            self.show_script_console = false;
+                            self.script.show_console = false;
                         }
 
                         // Clear button (🗑)
@@ -115,7 +179,7 @@ impl ArticaraApp {
                             .on_hover_text("Clear")
                             .clicked()
                         {
-                            self.script_output.clear();
+                            self.script.output.clear();
                         }
 
                         // Run script file (📂) — opens a file dialog. The
@@ -130,12 +194,12 @@ impl ArticaraApp {
                             .on_hover_text("Run script from file (.rhai)")
                             .clicked()
                         {
-                            let start = if self.script_path.is_empty() {
+                            let start = if self.script.path.is_empty() {
                                 Some(std::path::PathBuf::from("scripts"))
                             } else {
-                                Some(std::path::PathBuf::from(&self.script_path))
+                                Some(std::path::PathBuf::from(&self.script.path))
                             };
-                            self.dlg_open_script.open(
+                            self.script.dlg_open.open(
                                 "Run Rhai Script",
                                 super::file_dialog::FileDialogMode::Open,
                                 start.as_deref(),
@@ -151,8 +215,8 @@ impl ArticaraApp {
                 // Read the file off disk and eval it as a single block. We
                 // echo the path and the source under it so users can scroll
                 // back to see exactly what was run.
-                if let Some(path) = self.pending_script_run.take() {
-                    self.script_output.push(ScriptLine::System(format!(
+                if let Some(path) = self.script.pending_run.take() {
+                    self.script.output.push(ScriptLine::System(format!(
                         "── Running script: {} ──",
                         path.display(),
                     )));
@@ -162,7 +226,7 @@ impl ArticaraApp {
                             // history alone — users often re-tune by copying
                             // a previous block out of the console.
                             for line in source.lines() {
-                                self.script_output.push(ScriptLine::Input(line.to_string()));
+                                self.script.output.push(ScriptLine::Input(line.to_string()));
                             }
                             #[cfg(feature = "scripting")]
                             #[allow(unused_assignments)]
@@ -170,7 +234,7 @@ impl ArticaraApp {
                                 articara::scripting_model::ScriptOverrides,
                             > = None;
                             #[cfg(feature = "scripting")]
-                            if let Some(eng) = &mut self.script_engine {
+                            if let Some(eng) = &mut self.script.engine {
                                 #[cfg(feature = "mujoco")]
                                 eng.set_mujoco_sim(self.sim.mujoco_sim.take());
                                 eng.set_gait_controller(self.gait.controller.take());
@@ -184,7 +248,7 @@ impl ArticaraApp {
                                 match result {
                                     Ok(lines) => {
                                         for line in lines {
-                                            self.script_output.push(ScriptLine::Output(line));
+                                            self.script.output.push(ScriptLine::Output(line));
                                         }
                                         if let Some(model) = eng.model() {
                                             self.model = Some(model.clone());
@@ -192,7 +256,7 @@ impl ArticaraApp {
                                         }
                                     }
                                     Err(e) => {
-                                        self.script_output.push(ScriptLine::Error(e));
+                                        self.script.output.push(ScriptLine::Error(e));
                                     }
                                 }
                             }
@@ -202,13 +266,13 @@ impl ArticaraApp {
                             }
                         }
                         Err(e) => {
-                            self.script_output.push(ScriptLine::Error(format!(
+                            self.script.output.push(ScriptLine::Error(format!(
                                 "Failed to read {}: {e}",
                                 path.display(),
                             )));
                         }
                     }
-                    self.script_scroll_to_bottom = true;
+                    self.script.scroll_to_bottom = true;
                 }
 
                 // ── Output area (scrollable) ──
@@ -225,7 +289,7 @@ impl ArticaraApp {
                     let rect = ui.available_rect_before_wrap();
                     ui.painter().rect_filled(rect, 0.0, BG);
 
-                    for line in &self.script_output {
+                    for line in &self.script.output {
                         match line {
                             ScriptLine::Input(s) => {
                                 ui.horizontal_wrapped(|ui| {
@@ -266,9 +330,9 @@ impl ArticaraApp {
                     }
 
                     // Scroll anchor
-                    if self.script_scroll_to_bottom {
+                    if self.script.scroll_to_bottom {
                         ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
-                        self.script_scroll_to_bottom = false;
+                        self.script.scroll_to_bottom = false;
                     }
                 });
 
@@ -290,7 +354,7 @@ impl ArticaraApp {
 
                         let input_id = ui.id().with("term_input");
                         let re = ui.add(
-                            egui::TextEdit::singleline(&mut self.script_input)
+                            egui::TextEdit::singleline(&mut self.script.input)
                                 .desired_width(ui.available_width())
                                 .font(mono.clone())
                                 .text_color(FG_INPUT)
@@ -304,7 +368,7 @@ impl ArticaraApp {
                         );
 
                         // Auto-focus when console is first shown
-                        if self.show_script_console && !re.has_focus() {
+                        if self.script.show_console && !re.has_focus() {
                             ui.memory_mut(|m| m.request_focus(input_id));
                         }
 
@@ -320,8 +384,8 @@ impl ArticaraApp {
                             && ui.input(|i| i.key_pressed(egui::Key::Tab))
                         {
                             #[cfg(feature = "scripting")]
-                            if let Some(eng) = &self.script_engine {
-                                let input = &self.script_input;
+                            if let Some(eng) = &self.script.engine {
+                                let input = &self.script.input;
                                 // Extract the token being typed (last word-like fragment)
                                 let token_start = input.rfind(|c: char| !c.is_alphanumeric() && c != '_')
                                     .map(|i| i + 1)
@@ -340,24 +404,24 @@ impl ArticaraApp {
                                         // Single match → auto-complete
                                         let completed = &matches[0];
                                         let suffix = &completed[prefix.len()..];
-                                        self.script_input.push_str(suffix);
-                                        self.script_tab_candidates.clear();
+                                        self.script.input.push_str(suffix);
+                                        self.script.tab_candidates.clear();
                                     } else if matches.len() > 1 {
                                         // Multiple matches → complete common prefix, show candidates
                                         let common = Self::longest_common_prefix(&matches);
                                         if common.len() > prefix.len() {
                                             let suffix = &common[prefix.len()..];
-                                            self.script_input.push_str(suffix);
+                                            self.script.input.push_str(suffix);
                                         }
-                                        self.script_tab_candidates = matches;
+                                        self.script.tab_candidates = matches;
                                         // Show candidates in output
-                                        let display = self.script_tab_candidates
+                                        let display = self.script.tab_candidates
                                             .chunks(6)
                                             .map(|row| row.join("  "))
                                             .collect::<Vec<_>>()
                                             .join("\n");
-                                        self.script_output.push(ScriptLine::System(display));
-                                        self.script_scroll_to_bottom = true;
+                                        self.script.output.push(ScriptLine::System(display));
+                                        self.script.scroll_to_bottom = true;
                                     }
                                 }
                             }
@@ -367,54 +431,54 @@ impl ArticaraApp {
                         if re.has_focus() {
                             let up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
                             let down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
-                            if up && !self.script_history.is_empty() {
-                                if self.script_history_idx < self.script_history.len() {
-                                    self.script_history_idx += 1;
+                            if up && !self.script.history.is_empty() {
+                                if self.script.history_idx < self.script.history.len() {
+                                    self.script.history_idx += 1;
                                 }
-                                let i = self.script_history.len() - self.script_history_idx;
-                                self.script_input = self.script_history[i].clone();
+                                let i = self.script.history.len() - self.script.history_idx;
+                                self.script.input = self.script.history[i].clone();
                             }
                             if down {
-                                if self.script_history_idx > 1 {
-                                    self.script_history_idx -= 1;
-                                    let i = self.script_history.len() - self.script_history_idx;
-                                    self.script_input = self.script_history[i].clone();
+                                if self.script.history_idx > 1 {
+                                    self.script.history_idx -= 1;
+                                    let i = self.script.history.len() - self.script.history_idx;
+                                    self.script.input = self.script.history[i].clone();
                                 } else {
-                                    self.script_history_idx = 0;
-                                    self.script_input.clear();
+                                    self.script.history_idx = 0;
+                                    self.script.input.clear();
                                 }
                             }
                         }
                     });
 
-                    if submit && !self.script_input.is_empty() {
-                        let src = self.script_input.clone();
-                        self.script_input.clear();
-                        self.script_history_idx = 0;
+                    if submit && !self.script.input.is_empty() {
+                        let src = self.script.input.clone();
+                        self.script.input.clear();
+                        self.script.history_idx = 0;
 
                         // Add to history (avoid duplicating consecutive)
-                        if self.script_history.last().map_or(true, |last| last != &src) {
-                            self.script_history.push(src.clone());
+                        if self.script.history.last().map_or(true, |last| last != &src) {
+                            self.script.history.push(src.clone());
                         }
 
                         // Handle built-in commands
                         let trimmed = src.trim();
                         if trimmed == "clear" || trimmed == "clear()" {
-                            self.script_output.clear();
-                            self.script_scroll_to_bottom = true;
+                            self.script.output.clear();
+                            self.script.scroll_to_bottom = true;
                             return;
                         }
                         if trimmed == "help" || trimmed == "help()" {
                             self.emit_help();
-                            self.script_scroll_to_bottom = true;
+                            self.script.scroll_to_bottom = true;
                             return;
                         }
 
                         // Echo input
-                        self.script_output.push(ScriptLine::Input(src.clone()));
+                        self.script.output.push(ScriptLine::Input(src.clone()));
 
                         #[cfg(feature = "scripting")]
-                        if let Some(eng) = &mut self.script_engine {
+                        if let Some(eng) = &mut self.script.engine {
                             // Hand the live MuJoCo sim to the engine for the
                             // duration of the eval so scripts can drive it
                             // directly. Cleared on the way out, regardless
@@ -435,7 +499,7 @@ impl ArticaraApp {
                             match eval_result {
                                 Ok(lines) => {
                                     for line in lines {
-                                        self.script_output.push(ScriptLine::Output(line));
+                                        self.script.output.push(ScriptLine::Output(line));
                                     }
                                     // Sync model back from engine → app
                                     if let Some(model) = eng.model() {
@@ -444,7 +508,7 @@ impl ArticaraApp {
                                     }
                                 }
                                 Err(e) => {
-                                    self.script_output.push(ScriptLine::Error(e));
+                                    self.script.output.push(ScriptLine::Error(e));
                                 }
                             }
                             // End the `eng` borrow before mutating other
@@ -454,11 +518,11 @@ impl ArticaraApp {
                         }
 
                         // Bound log size
-                        while self.script_output.len() > 1000 {
-                            self.script_output.remove(0);
+                        while self.script.output.len() > 1000 {
+                            self.script.output.remove(0);
                         }
 
-                        self.script_scroll_to_bottom = true;
+                        self.script.scroll_to_bottom = true;
                     }
                 });
             });
@@ -590,7 +654,7 @@ impl ArticaraApp {
             "──────────────────────────────────────────────────",
         ];
         for l in lines {
-            self.script_output.push(ScriptLine::System(l.into()));
+            self.script.output.push(ScriptLine::System(l.into()));
         }
     }
 

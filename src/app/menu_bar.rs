@@ -322,7 +322,7 @@ impl ArticaraApp {
                     });
                 }
                 ui.separator();
-                ui.checkbox(&mut self.show_script_console, "📜 Script Console");
+                ui.checkbox(&mut self.script.show_console, "📜 Script Console");
             });
 
             ui.separator();

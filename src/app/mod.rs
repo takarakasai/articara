@@ -531,14 +531,6 @@ pub struct ArticaraApp {
     /// CSV-export dialog). See [`peaks_plot_window::PeaksPlotState`].
     #[cfg(feature = "mujoco")]
     peaks_plot: peaks_plot_window::PeaksPlotState,
-    /// File dialog for loading a Rhai script to run in the console.
-    dlg_open_script: file_dialog::FileDialog,
-    /// Most-recently-loaded script path (used to pre-fill the file dialog).
-    script_path: String,
-    /// One-shot: when `Some`, the next console-update tick reads + runs this
-    /// path and clears the field. Set by the "📂 Run file…" button after the
-    /// file dialog confirms.
-    pending_script_run: Option<std::path::PathBuf>,
     /// File path for sim config save/load.
     sim_config_path: String,
     // --- Posture save/load ---
@@ -550,23 +542,9 @@ pub struct ArticaraApp {
     /// [`file_dialog::DialogState`].
     dialogs: file_dialog::DialogState,
     // --- Script console ---
-    /// Whether the script console window is visible.
-    show_script_console: bool,
-    /// Rhai script engine for model manipulation.
-    #[cfg(feature = "scripting")]
-    script_engine: Option<articara::scripting_model::ModelScriptEngine>,
-    /// Current script input text.
-    script_input: String,
-    /// Captured script output lines (with type tags for colouring).
-    script_output: Vec<ScriptLine>,
-    /// Input history (up/down arrow navigation).
-    script_history: Vec<String>,
-    /// Current position in input history (0 = newest).
-    script_history_idx: usize,
-    /// Whether to auto-scroll to bottom next frame.
-    script_scroll_to_bottom: bool,
-    /// Pending tab-completion candidates (shown after Tab press).
-    script_tab_candidates: Vec<String>,
+    /// The embedded Rhai REPL (engine, transcript, input line, script
+    /// file dialog). See [`script_console::ScriptConsoleState`].
+    script: script_console::ScriptConsoleState,
     /// Selected mesh decimation algorithm.
     decimation_method: misarta::decimate::DecimationMethod,
     /// Selected mesh decomposition method (V-HACD / Sphere Tree).
@@ -654,19 +632,6 @@ struct DecomposeTask {
     handle: Option<std::thread::JoinHandle<DecomposeResult>>,
     /// Instant the task was started (for elapsed time display).
     started: std::time::Instant,
-}
-
-/// A tagged line in the script console output.
-#[derive(Clone)]
-enum ScriptLine {
-    /// User input (echoed with prompt).
-    Input(String),
-    /// Normal output from `print()`.
-    Output(String),
-    /// Error message.
-    Error(String),
-    /// System/info message (help, greeting).
-    System(String),
 }
 
 /// Tracks which link and slot (visual / collision) a pending mesh-add dialog is for.
@@ -772,21 +737,10 @@ impl ArticaraApp {
             #[cfg(feature = "mujoco")]
             #[cfg(feature = "mujoco")]
             peaks_plot: peaks_plot_window::PeaksPlotState::default(),
-            dlg_open_script: file_dialog::FileDialog::new("dlg_open_script"),
-            script_path: String::new(),
-            pending_script_run: None,
             sim_config_path: String::new(),
             posture_path: String::new(),
             dialogs: file_dialog::DialogState::default(),
-            show_script_console: false,
-            #[cfg(feature = "scripting")]
-            script_engine: None,
-            script_input: String::new(),
-            script_output: Vec::new(),
-            script_history: Vec::new(),
-            script_history_idx: 0,
-            script_scroll_to_bottom: false,
-            script_tab_candidates: Vec::new(),
+            script: script_console::ScriptConsoleState::default(),
             decimation_method: misarta::decimate::DecimationMethod::Qem,
             decomposition_method: misarta::decompose::DecompositionMethod::Vhacd,
             decompose_task: None,
@@ -1646,7 +1600,7 @@ impl ArticaraApp {
                 } else {
                     return;
                 };
-                self.script_output.push(ScriptLine::System(msg));
+                self.script.output.push(script_console::ScriptLine::System(msg));
             } else if head_kind == "save" {
                 let path = if let Some(sim) = self.sim.mujoco_sim.as_mut() {
                     if let Some(AsyncSimOp::SaveCsv(p)) = sim.async_pop() {
@@ -1665,17 +1619,17 @@ impl ArticaraApp {
                     Err("simulation not active".to_string())
                 };
                 let line = match result {
-                    Ok(n) => ScriptLine::System(format!(
+                    Ok(n) => script_console::ScriptLine::System(format!(
                         "[async] saved {n} samples → {}",
                         path.display(),
                     )),
-                    Err(e) => ScriptLine::Error(format!(
+                    Err(e) => script_console::ScriptLine::Error(format!(
                         "[async] save_csv {}: {e}",
                         path.display(),
                     )),
                 };
-                self.script_output.push(line);
-                self.script_scroll_to_bottom = true;
+                self.script.output.push(line);
+                self.script.scroll_to_bottom = true;
             }
         }
     }
@@ -1772,10 +1726,10 @@ impl ArticaraApp {
         // console (drawn elsewhere this frame) is what actually reads + runs
         // it, since that's the only place with access to the live engine
         // and the input/output buffers.
-        match self.dlg_open_script.show(ctx) {
+        match self.script.dlg_open.show(ctx) {
             FileDialogResult::Confirmed(path) => {
-                self.script_path = path.display().to_string();
-                self.pending_script_run = Some(path);
+                self.script.path = path.display().to_string();
+                self.script.pending_run = Some(path);
             }
             _ => {}
         }
@@ -2206,8 +2160,8 @@ impl ArticaraApp {
     /// applies as if the user had clicked the button.
     #[cfg(feature = "scripting")]
     pub fn queue_initial_script(&mut self, path: std::path::PathBuf) {
-        self.show_script_console = true;
-        self.pending_script_run = Some(path);
+        self.script.show_console = true;
+        self.script.pending_run = Some(path);
     }
 
     /// Apply pending [`articara::scripting_model::ScriptOverrides`] from
