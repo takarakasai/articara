@@ -33,8 +33,10 @@ jobs:
             | tar -xz -C ~/.mujoco
       - name: Build (default features)
         run: cargo build
-      - name: Check (mujoco, all test targets)
-        run: cargo xtask check --features mujoco --tests
+      # --all-targets so the mujoco-gated examples (incl. the policy
+      # sim-deploy) can't rot unnoticed; policy-sim pulls policy-runtime.
+      - name: Check (mujoco + policy-sim, all targets)
+        run: cargo xtask check --features mujoco,policy-sim --all-targets
       - name: Test (default features)
         run: cargo test
 

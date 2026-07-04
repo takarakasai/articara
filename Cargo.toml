@@ -16,6 +16,7 @@ scripting = ["dep:rhai"]
 # Zenoh stream and animate the loaded model. Pure-Rust transport (Zenoh), so
 # this adds no DDS/C toolchain dependency.
 viz = ["quadruped-gait/viz-sub"]
+policy-sim = ["dep:policy-runtime"]
 
 # The GUI binary and several examples only build with specific features.
 # Declaring required-features lets `cargo build/test` with other feature
@@ -43,6 +44,10 @@ name = "go2_linear_crawl_sweep"
 required-features = ["mujoco"]
 
 [[example]]
+name = "go2_policy_sim"
+required-features = ["mujoco", "policy-sim"]
+
+[[example]]
 name = "script_repl"
 required-features = ["scripting"]
 
@@ -56,6 +61,10 @@ log = "0.4.29"
 misarta = { git = "https://github.com/takarakasai/misarta.git" }
 misarta-formats = { git = "https://github.com/takarakasai/misarta.git" }
 quadruped-gait = { git = "https://github.com/takarakasai/quadruped-gait.git" }
+# Sim-deploy for the Go2 RL policy (`go2_policy_sim` example): the same
+# deploy-side ONNX runtime the hardware runner uses. Optional so the GUI
+# builds don't pull tract-onnx.
+policy-runtime = { git = "https://github.com/takarakasai/quadruped-gait.git", optional = true }
 # MuJoCo auto-download is disabled on macOS because mujoco-rs does not support
 # automatic download on this platform. Set MUJOCO_DYNAMIC_LINK_DIR or
 # MUJOCO_STATIC_LINK_DIR to the MuJoCo lib directory before building.
