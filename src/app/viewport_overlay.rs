@@ -1,9 +1,78 @@
 use eframe::egui;
 use nalgebra as na;
 
-use crate::renderer::DisplayMode;
+use crate::renderer::{DisplayMode, MeshKind};
 
 use super::{ArticaraApp, DragMode, GizmoOp, InteractionMode, OffsetTarget};
+
+/// Viewport display options: the overlay / helper-geometry toggles
+/// (CoM, support polygon, joint axes, ground plane, gravity arrow) and
+/// the global mesh display modes. Grouped so [`ArticaraApp`] carries
+/// one `view` field instead of seventeen loose toggles.
+pub(super) struct ViewState {
+    /// Show center-of-mass markers and mass labels.
+    pub show_com: bool,
+    /// Show the **whole-robot** centre-of-mass marker (= mass-weighted
+    /// centroid of every link). Independent from [`Self::show_com`]
+    /// which draws one sphere per link.
+    pub show_total_com: bool,
+    /// Show the support polygon — convex hull of the four foot world
+    /// positions, projected down to the ground plane. Useful for
+    /// visualising static-stability margin during LinearCrawl etc.
+    pub show_support_polygon: bool,
+    /// Show joint axis arrows in viewport.
+    pub show_joint_axes: bool,
+    /// Show a semi-transparent ground plane in the viewport.
+    pub show_ground_plane: bool,
+    /// Z height of the ground plane.
+    pub ground_z: f32,
+    /// Half-extent size of the ground plane.
+    pub ground_size: f32,
+    /// Ground plane rotation about X axis (rad).
+    pub ground_plane_roll: f32,
+    /// Ground plane rotation about Y axis (rad).
+    pub ground_plane_pitch: f32,
+    /// Whether the ground plane was auto-enabled by a running simulation.
+    pub ground_plane_auto: bool,
+    /// Show gravity/bias direction arrow in viewport.
+    pub show_gravity_arrow: bool,
+    /// Gravity (bias) direction vector (unit). Default: [0, 0, -1].
+    pub gravity_dir: [f32; 3],
+    /// Scale factor for CoM sphere size (sphere radius = mass × com_scale).
+    pub com_scale: f32,
+    /// Show robot links in wireframe mode (legacy, kept for compat).
+    pub wireframe: bool,
+    /// Global visual display mode.
+    pub visual_mode: DisplayMode,
+    /// Global collision display mode.
+    pub collision_mode: DisplayMode,
+    /// Per-link display mode overrides. Key=(link_name, MeshKind).
+    pub link_display_modes: std::collections::HashMap<(String, MeshKind), DisplayMode>,
+}
+
+impl Default for ViewState {
+    fn default() -> Self {
+        Self {
+            show_com: false,
+            show_total_com: false,
+            show_support_polygon: false,
+            show_joint_axes: false,
+            show_ground_plane: false,
+            ground_z: 0.0,
+            ground_plane_roll: 0.0,
+            ground_plane_pitch: 0.0,
+            ground_plane_auto: false,
+            show_gravity_arrow: true,
+            gravity_dir: [0.0, 0.0, -1.0],
+            ground_size: 2.0,
+            com_scale: 0.01,
+            wireframe: false,
+            visual_mode: DisplayMode::Solid,
+            collision_mode: DisplayMode::Off,
+            link_display_modes: std::collections::HashMap::new(),
+        }
+    }
+}
 
 impl ArticaraApp {
     /// Draw the mode toolbar overlay on the viewport.
@@ -414,7 +483,7 @@ impl ArticaraApp {
         rect: egui::Rect,
         aspect: f32,
     ) {
-        if !self.show_com {
+        if !self.view.show_com {
             return;
         }
         let com_positions = self.gl_renderer.lock().unwrap().com_world_positions();
@@ -448,7 +517,7 @@ impl ArticaraApp {
         rect: egui::Rect,
         aspect: f32,
     ) {
-        if !self.show_total_com && !self.show_support_polygon {
+        if !self.view.show_total_com && !self.view.show_support_polygon {
             return;
         }
         let Some(model) = self.model.as_ref() else { return };
@@ -472,8 +541,8 @@ impl ArticaraApp {
                 Some([p.x, p.y, p.z])
             })
             .collect();
-        let ground_z = if self.show_ground_plane {
-            self.ground_z
+        let ground_z = if self.view.show_ground_plane {
+            self.view.ground_z
         } else if let Some(min_z) = foot_world_xy_z
             .iter()
             .map(|p| p[2])
@@ -497,7 +566,7 @@ impl ArticaraApp {
             .filter(|p| (p[2] - ground_z).abs() < stance_threshold)
             .copied()
             .collect();
-        if self.show_support_polygon && stance_feet.len() >= 3 {
+        if self.view.show_support_polygon && stance_feet.len() >= 3 {
             // 2D centroid for ordering corners angle-wise.
             let cx: f32 = stance_feet.iter().map(|p| p[0]).sum::<f32>()
                 / stance_feet.len() as f32;
@@ -555,7 +624,7 @@ impl ArticaraApp {
         }
 
         // ── Whole-robot CoM marker ────────────────────────────────
-        if self.show_total_com {
+        if self.view.show_total_com {
             let mc = model.mc();
             // `compute_com` returns the centroid in the **root link's**
             // frame (misarta's FK doesn't carry the floating base). For
@@ -925,7 +994,7 @@ impl ArticaraApp {
     ///  - Dashed horizontal-plane projection of gravity
     ///  - Tilt angle from −Z displayed as text
     pub(super) fn draw_gravity_indicator(&self, ui: &mut egui::Ui, rect: egui::Rect) {
-        if !self.show_gravity_arrow {
+        if !self.view.show_gravity_arrow {
             return;
         }
 
@@ -991,9 +1060,9 @@ impl ArticaraApp {
 
         // ── 2. Gravity vector ──
         let gd = na::Vector3::new(
-            self.gravity_dir[0],
-            self.gravity_dir[1],
-            self.gravity_dir[2],
+            self.view.gravity_dir[0],
+            self.view.gravity_dir[1],
+            self.view.gravity_dir[2],
         );
         let len = gd.norm();
         if len < 1e-6 {
@@ -1194,7 +1263,7 @@ impl ArticaraApp {
         let start_y = rect.top() + margin;
 
         // --- Visual toggle ---
-        let vis_on = self.visual_mode != DisplayMode::Off;
+        let vis_on = self.view.visual_mode != DisplayMode::Off;
         let vis_rect = egui::Rect::from_min_size(
             egui::pos2(start_x, start_y),
             btn_size,
@@ -1215,7 +1284,7 @@ impl ArticaraApp {
         painter.rect_filled(vis_rect, egui::CornerRadius::same(4), vis_bg);
 
         // Eye icon for visual
-        let vis_icon = match self.visual_mode {
+        let vis_icon = match self.view.visual_mode {
             DisplayMode::Off => "ⓥ",
             DisplayMode::Solid => "👁",
             DisplayMode::Wireframe => "◫",
@@ -1236,10 +1305,10 @@ impl ArticaraApp {
         );
 
         if vis_resp.clicked() {
-            self.visual_mode = self.visual_mode.next();
+            self.view.visual_mode = self.view.visual_mode.next();
         }
         if vis_resp.hovered() {
-            let label = format!("Visual: {}", self.visual_mode.label());
+            let label = format!("Visual: {}", self.view.visual_mode.label());
             painter.text(
                 egui::pos2(vis_rect.left(), vis_rect.bottom() + 4.0),
                 egui::Align2::LEFT_TOP,
@@ -1250,7 +1319,7 @@ impl ArticaraApp {
         }
 
         // --- Collision toggle ---
-        let col_on = self.collision_mode != DisplayMode::Off;
+        let col_on = self.view.collision_mode != DisplayMode::Off;
         let col_rect = egui::Rect::from_min_size(
             egui::pos2(start_x + btn_size.x + gap, start_y),
             btn_size,
@@ -1271,7 +1340,7 @@ impl ArticaraApp {
         painter.rect_filled(col_rect, egui::CornerRadius::same(4), col_bg);
 
         // Shield icon for collision
-        let col_icon = match self.collision_mode {
+        let col_icon = match self.view.collision_mode {
             DisplayMode::Off => "ⓒ",
             DisplayMode::Solid => "🛡",
             DisplayMode::Wireframe => "◫",
@@ -1292,10 +1361,10 @@ impl ArticaraApp {
         );
 
         if col_resp.clicked() {
-            self.collision_mode = self.collision_mode.next_collision();
+            self.view.collision_mode = self.view.collision_mode.next_collision();
         }
         if col_resp.hovered() {
-            let label = format!("Collision: {}", self.collision_mode.label());
+            let label = format!("Collision: {}", self.view.collision_mode.label());
             painter.text(
                 egui::pos2(col_rect.left(), col_rect.bottom() + 4.0),
                 egui::Align2::LEFT_TOP,

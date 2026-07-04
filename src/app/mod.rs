@@ -1,6 +1,5 @@
 use eframe::egui;
 use nalgebra as na;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -8,7 +7,7 @@ use articara::camera::OrbitCamera;
 use articara::dynamics;
 use articara::format::RobotFormat;
 use articara::history::History;
-use crate::renderer::{DisplayMode, GlRenderer, MeshKind};
+use crate::renderer::GlRenderer;
 use articara::robot::RobotModel;
 
 /// How a left-mouse drag on a link is interpreted while a MuJoCo sim is running.
@@ -421,44 +420,9 @@ pub struct ArticaraApp {
     /// Interactive-IK state: solver settings, drag markers, pins,
     /// loop-closure weights and chicken-head stabilisation. See [`IkState`].
     ik: IkState,
-    /// Show center-of-mass markers and mass labels.
-    show_com: bool,
-    /// Show the **whole-robot** centre-of-mass marker (= mass-weighted
-    /// centroid of every link). Independent from [`Self::show_com`]
-    /// which draws one sphere per link.
-    show_total_com: bool,
-    /// Show the support polygon — convex hull of the four foot world
-    /// positions, projected down to the ground plane. Useful for
-    /// visualising static-stability margin during LinearCrawl etc.
-    show_support_polygon: bool,
-    /// Show joint axis arrows in viewport.
-    show_joint_axes: bool,
-    /// Show a semi-transparent ground plane in the viewport.
-    show_ground_plane: bool,
-    /// Z height of the ground plane.
-    ground_z: f32,
-    /// Half-extent size of the ground plane.
-    ground_size: f32,
-    /// Ground plane rotation about X axis (rad).
-    ground_plane_roll: f32,
-    /// Ground plane rotation about Y axis (rad).
-    ground_plane_pitch: f32,
-    /// Whether the ground plane was auto-enabled by a running simulation.
-    ground_plane_auto: bool,
-    /// Show gravity/bias direction arrow in viewport.
-    show_gravity_arrow: bool,
-    /// Gravity (bias) direction vector (unit). Default: [0, 0, -1].
-    gravity_dir: [f32; 3],
-    /// Scale factor for CoM sphere size (sphere radius = mass × com_scale).
-    com_scale: f32,
-    /// Show robot links in wireframe mode (legacy, kept for compat).
-    wireframe: bool,
-    /// Global visual display mode.
-    visual_mode: DisplayMode,
-    /// Global collision display mode.
-    collision_mode: DisplayMode,
-    /// Per-link display mode overrides. Key=(link_name, MeshKind).
-    link_display_modes: HashMap<(String, MeshKind), DisplayMode>,
+    /// Viewport display options (overlay toggles, ground plane, mesh
+    /// display modes). See [`viewport_overlay::ViewState`].
+    view: viewport_overlay::ViewState,
     /// Export output directory path.
     export_dir: String,
     /// Selected format for export.
@@ -685,23 +649,7 @@ impl ArticaraApp {
             selected_visual: None,
             selected_collision: None,
             ik: IkState::default(),
-            show_com: false,
-            show_total_com: false,
-            show_support_polygon: false,
-            show_joint_axes: false,
-            show_ground_plane: false,
-            ground_z: 0.0,
-            ground_plane_roll: 0.0,
-            ground_plane_pitch: 0.0,
-            ground_plane_auto: false,
-            show_gravity_arrow: true,
-            gravity_dir: [0.0, 0.0, -1.0],
-            ground_size: 2.0,
-            com_scale: 0.01,
-            wireframe: false,
-            visual_mode: DisplayMode::Solid,
-            collision_mode: DisplayMode::Off,
-            link_display_modes: HashMap::new(),
+            view: viewport_overlay::ViewState::default(),
             export_dir: String::new(),
             export_format: RobotFormat::Urdf,
             export_message: String::new(),
@@ -1544,9 +1492,9 @@ impl ArticaraApp {
 
         if !still_running {
             // Auto-disable ground plane if we enabled it
-            if self.ground_plane_auto {
-                self.show_ground_plane = false;
-                self.ground_plane_auto = false;
+            if self.view.ground_plane_auto {
+                self.view.show_ground_plane = false;
+                self.view.ground_plane_auto = false;
             }
             self.sim.dynamics_sim = None;
             self.sim.dynamics_last_instant = None;
@@ -1910,20 +1858,20 @@ impl eframe::App for ArticaraApp {
             let transforms = model.compute_transforms();
             let mut r = self.gl_renderer.lock().unwrap();
             r.update_transforms(transforms);
-            r.show_com = self.show_com;
-            r.show_joint_axes = self.show_joint_axes;
-            r.show_ground_plane = self.show_ground_plane;
-            r.ground_z = self.ground_z;
-            r.ground_size = self.ground_size;
-            r.ground_plane_roll = self.ground_plane_roll;
-            r.ground_plane_pitch = self.ground_plane_pitch;
-            r.show_gravity_arrow = self.show_gravity_arrow;
-            r.gravity_dir = self.gravity_dir;
-            r.com_scale = self.com_scale;
-            r.wireframe = self.wireframe;
-            r.visual_mode = self.visual_mode;
-            r.collision_mode = self.collision_mode;
-            r.link_display_modes = self.link_display_modes.clone();
+            r.show_com = self.view.show_com;
+            r.show_joint_axes = self.view.show_joint_axes;
+            r.show_ground_plane = self.view.show_ground_plane;
+            r.ground_z = self.view.ground_z;
+            r.ground_size = self.view.ground_size;
+            r.ground_plane_roll = self.view.ground_plane_roll;
+            r.ground_plane_pitch = self.view.ground_plane_pitch;
+            r.show_gravity_arrow = self.view.show_gravity_arrow;
+            r.gravity_dir = self.view.gravity_dir;
+            r.com_scale = self.view.com_scale;
+            r.wireframe = self.view.wireframe;
+            r.visual_mode = self.view.visual_mode;
+            r.collision_mode = self.view.collision_mode;
+            r.link_display_modes = self.view.link_display_modes.clone();
         }
 
         // --- Step dynamics simulation (if active) ---
@@ -2202,16 +2150,16 @@ impl ArticaraApp {
             let _ = (ov.pose_source, ov.wbc_enabled);
         }
         if let Some(on) = ov.ground_plane_enabled {
-            self.show_ground_plane = on;
+            self.view.show_ground_plane = on;
         }
         if let Some(z) = ov.ground_plane_z {
-            self.ground_z = z;
+            self.view.ground_z = z;
         }
         if let Some(p) = ov.ground_plane_pitch {
-            self.ground_plane_pitch = p;
+            self.view.ground_plane_pitch = p;
         }
         if let Some(r) = ov.ground_plane_roll {
-            self.ground_plane_roll = r;
+            self.view.ground_plane_roll = r;
         }
     }
 
