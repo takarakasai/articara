@@ -1,5 +1,7 @@
 # articara
 
+[![CI](https://github.com/takarakasai/articara/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/takarakasai/articara/actions/workflows/ci.yml)
+
 A high-performance robot model editor built in Rust. articara is built around
 **`.misa`** — its own native master format that captures the full kinematic
 tree, geometry, materials, sensors, actuators, mimic / loop-closure
