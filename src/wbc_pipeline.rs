@@ -461,7 +461,7 @@ impl WbcPipeline {
         // jump that updating during stance would produce).
         //
         // The `JointReference` helper in
-        // [`quadruped_gait::mpc_reference`] documents the equivalent
+        // `quadruped_gait`'s joint-reference builder documents the equivalent
         // legged_control mapping; we keep this loop inline because
         // its swing-only update behaviour is critical for stable
         // q̇* finite-diff and isn't easily expressed in a stateless
