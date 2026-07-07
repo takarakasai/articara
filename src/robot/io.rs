@@ -584,388 +584,29 @@ mod misa_load {
 // are now defined in crate::rbd::model (re-exported via pub use above).
 
 
-// ========== Helper Functions ==========
-
-/// Convert an Isometry3 back to a urdf_rs Pose (xyz + rpy).
-pub fn isometry_to_pose(iso: &na::Isometry3<f32>) -> urdf_rs::Pose {
-    let t = iso.translation;
-    let (roll, pitch, yaw) = iso.rotation.euler_angles();
-    urdf_rs::Pose {
-        xyz: urdf_rs::Vec3([t.x as f64, t.y as f64, t.z as f64]),
-        rpy: urdf_rs::Vec3([roll as f64, pitch as f64, yaw as f64]),
-    }
-}
-
-/// Extract Euler angles (roll, pitch, yaw) from an isometry.
-fn euler_from_isometry(iso: &na::Isometry3<f32>) -> (f32, f32, f32) {
-    iso.rotation.euler_angles()
-}
-
-/// Convert a `GeomData` to a `urdf_rs::Geometry`.
-fn geom_to_urdf_geom(geom: &GeomData) -> urdf_rs::Geometry {
-    match geom {
-        GeomData::Box { hx, hy, hz } => urdf_rs::Geometry::Box {
-            size: urdf_rs::Vec3([*hx as f64 * 2.0, *hy as f64 * 2.0, *hz as f64 * 2.0]),
-        },
-        GeomData::Cylinder { radius, half_length } => urdf_rs::Geometry::Cylinder {
-            radius: *radius as f64,
-            length: *half_length as f64 * 2.0,
-        },
-        GeomData::Sphere { radius } => urdf_rs::Geometry::Sphere {
-            radius: *radius as f64,
-        },
-        GeomData::Mesh { filename, scale, .. } => urdf_rs::Geometry::Mesh {
-            filename: filename.clone().unwrap_or_else(|| "mesh.stl".into()),
-            scale: scale.map(|s| urdf_rs::Vec3([s[0] as f64, s[1] as f64, s[2] as f64])),
-        },
-        // Capsule is not supported by URDF — approximate as cylinder (caps ignored)
-        GeomData::Capsule { radius, half_length } => urdf_rs::Geometry::Cylinder {
-            radius: *radius as f64,
-            length: (*half_length * 2.0 + *radius * 2.0) as f64,
-        },
-    }
-}
-
-/// Convert a `VisualData` to one or more `urdf_rs::Visual` elements.
-/// Capsules are decomposed into a cylinder + 2 sphere visuals.
-fn visuals_to_urdf(vis: &VisualData) -> Vec<urdf_rs::Visual> {
-    let make_visual = |origin_iso: &na::Isometry3<f32>, geom: urdf_rs::Geometry| -> urdf_rs::Visual {
-        urdf_rs::Visual {
-            name: None,
-            origin: isometry_to_pose(origin_iso),
-            geometry: geom,
-            material: Some(urdf_rs::Material {
-                name: String::new(),
-                color: Some(urdf_rs::Color {
-                    rgba: urdf_rs::Vec4([
-                        vis.color[0] as f64,
-                        vis.color[1] as f64,
-                        vis.color[2] as f64,
-                        vis.color[3] as f64,
-                    ]),
-                }),
-                texture: None,
-            }),
-        }
-    };
-
-    match &vis.geometry {
-        GeomData::Capsule { radius, half_length } => {
-            let r = *radius;
-            let hl = *half_length;
-            let cyl = make_visual(&vis.origin, urdf_rs::Geometry::Cylinder {
-                radius: r as f64,
-                length: (hl * 2.0) as f64,
-            });
-            let top_origin = vis.origin * na::Translation3::new(0.0, 0.0, hl);
-            let top = make_visual(&na::Isometry3::from_parts(
-                top_origin.translation,
-                vis.origin.rotation,
-            ), urdf_rs::Geometry::Sphere { radius: r as f64 });
-            let bot_origin = vis.origin * na::Translation3::new(0.0, 0.0, -hl);
-            let bot = make_visual(&na::Isometry3::from_parts(
-                bot_origin.translation,
-                vis.origin.rotation,
-            ), urdf_rs::Geometry::Sphere { radius: r as f64 });
-            vec![cyl, top, bot]
-        }
-        _ => vec![urdf_rs::Visual {
-            name: None,
-            origin: isometry_to_pose(&vis.origin),
-            geometry: geom_to_urdf_geom(&vis.geometry),
-            material: Some(urdf_rs::Material {
-                name: String::new(),
-                color: Some(urdf_rs::Color {
-                    rgba: urdf_rs::Vec4([
-                        vis.color[0] as f64,
-                        vis.color[1] as f64,
-                        vis.color[2] as f64,
-                        vis.color[3] as f64,
-                    ]),
-                }),
-                texture: None,
-            }),
-        }],
-    }
-}
-
-/// Convert a `CollisionData` to one or more `urdf_rs::Collision` elements.
-/// Capsules are decomposed into a cylinder + 2 sphere collisions.
-fn collisions_to_urdf(col: &CollisionData) -> Vec<urdf_rs::Collision> {
-    match &col.geometry {
-        GeomData::Capsule { radius, half_length } => {
-            let r = *radius;
-            let hl = *half_length;
-            let cyl = urdf_rs::Collision {
-                name: None,
-                origin: isometry_to_pose(&col.origin),
-                geometry: urdf_rs::Geometry::Cylinder {
-                    radius: r as f64,
-                    length: (hl * 2.0) as f64,
-                },
-            };
-            let top_origin = col.origin * na::Translation3::new(0.0, 0.0, hl);
-            let top = urdf_rs::Collision {
-                name: None,
-                origin: isometry_to_pose(&na::Isometry3::from_parts(
-                    top_origin.translation,
-                    col.origin.rotation,
-                )),
-                geometry: urdf_rs::Geometry::Sphere { radius: r as f64 },
-            };
-            let bot_origin = col.origin * na::Translation3::new(0.0, 0.0, -hl);
-            let bot = urdf_rs::Collision {
-                name: None,
-                origin: isometry_to_pose(&na::Isometry3::from_parts(
-                    bot_origin.translation,
-                    col.origin.rotation,
-                )),
-                geometry: urdf_rs::Geometry::Sphere { radius: r as f64 },
-            };
-            vec![cyl, top, bot]
-        }
-        _ => vec![urdf_rs::Collision {
-            name: None,
-            origin: isometry_to_pose(&col.origin),
-            geometry: geom_to_urdf_geom(&col.geometry),
-        }],
-    }
-}
-
-/// Convert a GeomData to URDF XML geometry element.
-fn geom_to_urdf_xml(geom: &GeomData) -> String {
-    match geom {
-        GeomData::Box { hx, hy, hz } => {
-            let sx = hx * 2.0;
-            let sy = hy * 2.0;
-            let sz = hz * 2.0;
-            format!("      <geometry>\n        <box size=\"{sx} {sy} {sz}\"/>\n      </geometry>\n")
-        }
-        GeomData::Cylinder {
-            radius,
-            half_length,
-        } => {
-            let length = half_length * 2.0;
-            format!("      <geometry>\n        <cylinder radius=\"{radius}\" length=\"{length}\"/>\n      </geometry>\n")
-        }
-        GeomData::Sphere { radius } => {
-            format!("      <geometry>\n        <sphere radius=\"{radius}\"/>\n      </geometry>\n")
-        }
-        GeomData::Mesh { filename, scale, .. } => {
-            let fname = filename.as_deref().unwrap_or("mesh.stl");
-            if let Some(s) = scale {
-                format!("      <geometry>\n        <mesh filename=\"{fname}\" scale=\"{} {} {}\"/>\n      </geometry>\n", s[0], s[1], s[2])
-            } else {
-                format!("      <geometry>\n        <mesh filename=\"{fname}\"/>\n      </geometry>\n")
-            }
-        }
-        GeomData::Capsule { radius, half_length } => {
-            // URDF: decompose capsule into cylinder + 2 spheres
-            let cyl_len = half_length * 2.0;
-            let out = format!("      <geometry>\n        <cylinder radius=\"{radius}\" length=\"{cyl_len}\"/>\n      </geometry>\n");
-            // Note: multi-geometry per visual/collision is not standard URDF.
-            // For full fidelity, the caller should emit separate <visual>/<collision> elements.
-            // Here we output the cylinder portion; spheres must be added separately.
-            out
-        }
-    }
-}
-
-
 impl RobotModel {
     /// Export the current model as a URDF XML string.
-    /// Generate URDF XML from scratch (for models built programmatically).
-    pub fn generate_urdf_xml(&self) -> String {
-        let mut xml = format!("<?xml version=\"1.0\"?>\n<robot name=\"{}\">\n", self.name);
-
-        for link in &self.links {
-            xml.push_str(&format!("  <link name=\"{}\">\n", link.name));
-
-            // Inertial
-            let inp = &link.inertial;
-            let (ix, iy, iz) = (
-                inp.origin.translation.x,
-                inp.origin.translation.y,
-                inp.origin.translation.z,
-            );
-            let (ir, ip, iya) = euler_from_isometry(&inp.origin);
-            xml.push_str(&format!(
-                "    <inertial>\n      <origin xyz=\"{ix} {iy} {iz}\" rpy=\"{ir} {ip} {iya}\"/>\n      <mass value=\"{}\"/>\n      <inertia ixx=\"{}\" ixy=\"{}\" ixz=\"{}\" iyy=\"{}\" iyz=\"{}\" izz=\"{}\"/>\n    </inertial>\n",
-                inp.mass, inp.ixx, inp.ixy, inp.ixz, inp.iyy, inp.iyz, inp.izz
-            ));
-
-            // Visuals
-            for vis in &link.visuals {
-                let emit_visual = |xml: &mut String, origin: &na::Isometry3<f32>, geom: &GeomData, color: &[f32; 4]| {
-                    let (vx, vy, vz) = (origin.translation.x, origin.translation.y, origin.translation.z);
-                    let (vr, vp, vya) = euler_from_isometry(origin);
-                    xml.push_str(&format!(
-                        "    <visual>\n      <origin xyz=\"{vx} {vy} {vz}\" rpy=\"{vr} {vp} {vya}\"/>\n"
-                    ));
-                    xml.push_str(&geom_to_urdf_xml(geom));
-                    xml.push_str(&format!(
-                        "      <material name=\"\">\n        <color rgba=\"{} {} {} {}\"/>\n      </material>\n",
-                        color[0], color[1], color[2], color[3]
-                    ));
-                    xml.push_str("    </visual>\n");
-                };
-
-                match &vis.geometry {
-                    GeomData::Capsule { radius, half_length } => {
-                        // Decompose into cylinder + 2 spheres
-                        let cyl_geom = GeomData::Cylinder { radius: *radius, half_length: *half_length };
-                        emit_visual(&mut xml, &vis.origin, &cyl_geom, &vis.color);
-                        let top = vis.origin * na::Translation3::new(0.0, 0.0, *half_length);
-                        let top_iso = na::Isometry3::from_parts(top.translation, vis.origin.rotation);
-                        let sph_geom = GeomData::Sphere { radius: *radius };
-                        emit_visual(&mut xml, &top_iso, &sph_geom, &vis.color);
-                        let bot = vis.origin * na::Translation3::new(0.0, 0.0, -*half_length);
-                        let bot_iso = na::Isometry3::from_parts(bot.translation, vis.origin.rotation);
-                        emit_visual(&mut xml, &bot_iso, &sph_geom, &vis.color);
-                    }
-                    _ => {
-                        emit_visual(&mut xml, &vis.origin, &vis.geometry, &vis.color);
-                    }
-                }
-            }
-
-            // Collisions
-            for col in &link.collisions {
-                let emit_collision = |xml: &mut String, origin: &na::Isometry3<f32>, geom: &GeomData| {
-                    let (cx, cy, cz) = (origin.translation.x, origin.translation.y, origin.translation.z);
-                    let (cr, cp, cya) = euler_from_isometry(origin);
-                    xml.push_str(&format!(
-                        "    <collision>\n      <origin xyz=\"{cx} {cy} {cz}\" rpy=\"{cr} {cp} {cya}\"/>\n"
-                    ));
-                    xml.push_str(&geom_to_urdf_xml(geom));
-                    xml.push_str("    </collision>\n");
-                };
-
-                match &col.geometry {
-                    GeomData::Capsule { radius, half_length } => {
-                        let cyl_geom = GeomData::Cylinder { radius: *radius, half_length: *half_length };
-                        emit_collision(&mut xml, &col.origin, &cyl_geom);
-                        let top = col.origin * na::Translation3::new(0.0, 0.0, *half_length);
-                        let top_iso = na::Isometry3::from_parts(top.translation, col.origin.rotation);
-                        let sph_geom = GeomData::Sphere { radius: *radius };
-                        emit_collision(&mut xml, &top_iso, &sph_geom);
-                        let bot = col.origin * na::Translation3::new(0.0, 0.0, -*half_length);
-                        let bot_iso = na::Isometry3::from_parts(bot.translation, col.origin.rotation);
-                        emit_collision(&mut xml, &bot_iso, &sph_geom);
-                    }
-                    _ => {
-                        emit_collision(&mut xml, &col.origin, &col.geometry);
-                    }
-                }
-            }
-
-            xml.push_str("  </link>\n");
-        }
-
-        for joint in &self.joints {
-            let (jx, jy, jz) = (
-                joint.origin.translation.x,
-                joint.origin.translation.y,
-                joint.origin.translation.z,
-            );
-            let (jr, jp, jya) = euler_from_isometry(&joint.origin);
-            xml.push_str(&format!(
-                "  <joint name=\"{}\" type=\"{}\">\n    <origin xyz=\"{jx} {jy} {jz}\" rpy=\"{jr} {jp} {jya}\"/>\n    <parent link=\"{}\"/>\n    <child link=\"{}\"/>\n    <axis xyz=\"{} {} {}\"/>\n    <limit lower=\"{}\" upper=\"{}\" effort=\"{}\" velocity=\"{}\"/>\n  </joint>\n",
-                joint.name, joint.joint_type,
-                joint.parent_link, joint.child_link,
-                joint.axis.x, joint.axis.y, joint.axis.z,
-                joint.lower, joint.upper, joint.effort, joint.velocity
-            ));
-        }
-
-        xml.push_str("</robot>\n");
-        xml
-    }
-
-    /// Re-reads the original URDF, patches editable fields (mass, inertia,
-    /// joint limits, joint origin, joint axis), and serializes.
-    /// For models created from scratch (no source_path), generates URDF XML directly.
+    ///
+    /// Built from the in-memory model via the `.misa` master schema and
+    /// `misarta_formats::urdf::export` — the same regenerate-from-model
+    /// shape as the MJCF / SDF exporters. Mesh references keep the
+    /// model's own URIs verbatim (`package://…` for URDF-sourced
+    /// models, `meshes/…` relative for `.misa`-sourced ones).
+    ///
+    /// This replaces the legacy re-read-the-source-and-patch flow: with
+    /// `.misa` as the master format a URDF file is an export target,
+    /// and the patch flow preserved nothing in practice (urdf-rs
+    /// re-serialisation normalised the XML and dropped unknown
+    /// extensions anyway; none of the models in the tree carry
+    /// gazebo / transmission / safety tags).
     pub fn export_urdf(&self) -> Result<String, String> {
-        // The "re-read source, patch fields, re-serialise" path is only
-        // valid when the source actually IS a URDF — otherwise `urdf_rs`
-        // chokes on whatever it finds (`.misa` TOML, etc.) and the whole
-        // export aborts with a misleading "Re-read URDF error". For non-
-        // URDF sources (and for models built in memory) fall back to the
-        // from-scratch XML generator.
-        let is_urdf_source = self
-            .source_path
-            .as_ref()
-            .and_then(|p| p.extension())
-            .and_then(|e| e.to_str())
-            .map(|ext| {
-                let lc = ext.to_ascii_lowercase();
-                lc == "urdf" || lc == "xacro"
-            })
-            .unwrap_or(false);
-        if !is_urdf_source {
-            return Ok(self.generate_urdf_xml());
-        }
-        let source = self
-            .source_path
-            .as_ref()
-            .ok_or("No source URDF path stored")?;
-        let mut robot =
-            urdf_rs::read_file(source).map_err(|e| format!("Re-read URDF error: {e}"))?;
-
-        // Patch link inertial data
-        for our_link in &self.links {
-            if let Some(urdf_link) = robot.links.iter_mut().find(|l| l.name == our_link.name) {
-                urdf_link.inertial.mass.value = our_link.inertial.mass;
-                urdf_link.inertial.inertia.ixx = our_link.inertial.ixx;
-                urdf_link.inertial.inertia.ixy = our_link.inertial.ixy;
-                urdf_link.inertial.inertia.ixz = our_link.inertial.ixz;
-                urdf_link.inertial.inertia.iyy = our_link.inertial.iyy;
-                urdf_link.inertial.inertia.iyz = our_link.inertial.iyz;
-                urdf_link.inertial.inertia.izz = our_link.inertial.izz;
-                urdf_link.inertial.origin = isometry_to_pose(&our_link.inertial.origin);
-            }
-        }
-
-        // Patch visual and collision data
-        for our_link in &self.links {
-            if let Some(urdf_link) = robot.links.iter_mut().find(|l| l.name == our_link.name) {
-                urdf_link.visual = our_link.visuals.iter().flat_map(visuals_to_urdf).collect();
-                urdf_link.collision = our_link.collisions.iter().flat_map(collisions_to_urdf).collect();
-            }
-        }
-
-        // Patch joint data
-        for our_joint in &self.joints {
-            if let Some(urdf_joint) = robot.joints.iter_mut().find(|j| j.name == our_joint.name) {
-                urdf_joint.origin = isometry_to_pose(&our_joint.origin);
-                urdf_joint.axis.xyz = urdf_rs::Vec3([
-                    our_joint.axis.x as f64,
-                    our_joint.axis.y as f64,
-                    our_joint.axis.z as f64,
-                ]);
-                urdf_joint.limit.lower = our_joint.lower;
-                urdf_joint.limit.upper = our_joint.upper;
-                urdf_joint.limit.effort = our_joint.effort;
-                urdf_joint.limit.velocity = our_joint.velocity;
-            }
-        }
-
-        // Patch / inject mimic entries from the master format. URDF uses
-        // a single linear `<mimic>` per joint; we set / clear it based on
-        // whether the joint appears in `self.mimics`.
-        for urdf_joint in robot.joints.iter_mut() {
-            urdf_joint.mimic = self
-                .mimics
-                .iter()
-                .find(|m| m.joint == urdf_joint.name)
-                .map(|m| urdf_rs::Mimic {
-                    joint: m.source.clone(),
-                    multiplier: Some(m.multiplier),
-                    offset: Some(m.offset),
-                });
-        }
-
-        urdf_rs::write_to_string(&robot).map_err(|e| format!("URDF serialize error: {e}"))
+        let mut file = self.to_misa()?;
+        crate::mesh_paths::rewrite_mesh_refs(
+            &mut file,
+            self,
+            &crate::mesh_paths::MeshPathStyle::Preserve,
+        );
+        Ok(misarta_formats::urdf::export(&file))
     }
 
     /// Save (overwrite) the original URDF file with current edits.
@@ -987,8 +628,10 @@ impl RobotModel {
     }
 
     /// Export the current model to a URDF file at the given path.
-    /// Also copies all referenced mesh files to the output directory,
-    /// preserving the relative directory structure from the package root.
+    /// Also copies all referenced mesh files to the output directory:
+    /// `package://` URIs mirror the package layout under the output
+    /// tree (the same probing rule the loader uses), plain relative
+    /// URIs land at the same relative path next to the output URDF.
     pub fn export_urdf_to_file(&self, output_path: &Path) -> Result<(), String> {
         // Materialise in-memory decomposed meshes to STL files next to
         // the *output* URDF (so the exported tree is self-contained).
@@ -998,87 +641,51 @@ impl RobotModel {
         let xml = working.export_urdf()?;
         std::fs::write(output_path, &xml).map_err(|e| format!("Write error: {e}"))?;
 
-        // Copy mesh files (only if loaded from an existing file)
-        let source = match self.source_path.as_ref() {
-            Some(s) => s,
-            None => return Ok(()), // No source path — no meshes to copy
-        };
-
-        // Non-URDF sources (`.misa` etc.) can't be re-read with `urdf_rs`
-        // below. Their generated XML references the model's own relative
-        // mesh paths (`meshes/<file>`), so copy those next to the output
-        // URDF the same way a `.misa` save does — mirrors the source-type
-        // branch introduced for `export_urdf` itself.
-        let is_urdf_source = source
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|ext| {
-                let lc = ext.to_ascii_lowercase();
-                lc == "urdf" || lc == "xacro"
-            })
-            .unwrap_or(false);
-        if !is_urdf_source {
-            let output_dir = output_path.parent().unwrap_or(Path::new("."));
-            copy_referenced_meshes_to_misa_dir(self, Some(source), output_dir)?;
-            return Ok(());
-        }
-
-        let urdf_dir = source.parent().unwrap_or(Path::new("."));
-        let package_dir = urdf_dir.parent().unwrap_or(urdf_dir);
         let output_dir = output_path.parent().unwrap_or(Path::new("."));
-        // The output "package dir" is the parent of the output URDF dir,
-        // mirroring the original structure: <package_dir>/<urdf_subdir>/file.urdf
         let output_package_dir = output_dir.parent().unwrap_or(output_dir);
-
-        // Re-read original URDF to get mesh filenames
-        let robot =
-            urdf_rs::read_file(source).map_err(|e| format!("Re-read URDF for meshes: {e}"))?;
 
         let mut copied: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         let mut copy_count = 0u32;
-
-        for link in &robot.links {
-            // Collect mesh geometries from both visual and collision
-            let geom_iter = link
-                .visual
+        for link in &working.links {
+            let uris = link
+                .visuals
                 .iter()
                 .map(|v| &v.geometry)
-                .chain(link.collision.iter().map(|c| &c.geometry));
-
-            for geom in geom_iter {
-                if let urdf_rs::Geometry::Mesh { filename, .. } = geom {
-                    let src_abs = resolve_package_path(filename, package_dir);
-                    if copied.contains(&src_abs) {
-                        continue;
-                    }
-                    copied.insert(src_abs.clone());
-
-                    if !src_abs.exists() {
-                        log::warn!("Mesh file not found, skipping: {:?}", src_abs);
-                        continue;
-                    }
-
-                    // Determine matched destination path
-                    let dst_abs = resolve_package_path(filename, output_package_dir);
-
-                    // Create parent directory for destination
-                    if let Some(dst_parent) = dst_abs.parent() {
-                        std::fs::create_dir_all(dst_parent)
-                            .map_err(|e| format!("Create mesh dir {:?}: {e}", dst_parent))?;
-                    }
-
-                    // Copy (skip if src == dst)
-                    if src_abs != dst_abs {
-                        std::fs::copy(&src_abs, &dst_abs).map_err(|e| {
-                            format!(
-                                "Copy mesh {:?} -> {:?}: {e}",
-                                src_abs.file_name().unwrap_or_default(),
-                                dst_abs
-                            )
-                        })?;
-                        copy_count += 1;
-                    }
+                .chain(link.collisions.iter().map(|c| &c.geometry))
+                .filter_map(|g| match g {
+                    GeomData::Mesh { filename: Some(uri), .. } => Some(uri),
+                    _ => None,
+                });
+            for uri in uris {
+                let dst = if uri.starts_with("package://") {
+                    resolve_package_path(uri, output_package_dir)
+                } else {
+                    output_dir.join(misa_save::normalise_mesh_path_for_misa(uri))
+                };
+                if !copied.insert(dst.clone()) {
+                    continue;
                 }
+                // Resolve the source against the *original* model layout;
+                // meshes materialised straight into the output tree (the
+                // decomposed set) resolve to their destination and are
+                // skipped by the src == dst check below.
+                let src = crate::mesh_paths::resolve_source(uri, self)
+                    .filter(|p| p.exists())
+                    .or_else(|| dst.exists().then(|| dst.clone()));
+                let Some(src) = src else {
+                    log::warn!("Mesh source not found, skipping: {uri:?}");
+                    continue;
+                };
+                if src == dst {
+                    continue;
+                }
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("Create mesh dir {:?}: {e}", parent))?;
+                }
+                std::fs::copy(&src, &dst)
+                    .map_err(|e| format!("Copy mesh {:?} -> {:?}: {e}", src, dst))?;
+                copy_count += 1;
             }
         }
 
