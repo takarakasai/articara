@@ -6,7 +6,7 @@
 //! [`super::pick`].
 
 use nalgebra as na;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::rbd::model::*;
@@ -14,192 +14,88 @@ use crate::rbd::model::*;
 // ========== URDF Loading ==========
 
 impl RobotModel {
+    /// Parse a URDF file and return a RobotModel.
+    ///
+    /// The structural parse happens in `misarta_formats::urdf::import`
+    /// (returning a [`misarta::native::MisaFile`]); meshes are then
+    /// loaded through the standard `.misa` path with the URDF's own
+    /// directory as the asset base — mesh references arrive normalised
+    /// to URDF-dir-relative paths (`package://pkg/rel` → `../rel` for
+    /// the conventional `<pkg>/urdf/robot.urdf` layout), so the
+    /// resolution lands on the same files the legacy `package://`
+    /// resolver found. `<limit>`, `<dynamics damping>`, `<mimic>` and
+    /// materials flow in through the schema (the legacy parser dropped
+    /// URDF damping entirely).
     pub fn from_urdf(path: &Path) -> Result<Self, String> {
-        let robot = urdf_rs::read_file(path).map_err(|e| format!("URDF parse error: {e}"))?;
+        let mut out = misarta_formats::urdf::import(path)?;
+        for w in &out.warnings {
+            log::warn!("URDF import {path:?}: {w}");
+        }
 
+        // `package://` anchoring depends on the on-disk layout (ROS
+        // `<pkg>/urdf/x.urdf` vs direct `<pkg>/x.urdf`), so the schema
+        // carries the URI verbatim and we resolve it here with the
+        // filesystem-probing resolver. Swap in the resolved absolute
+        // path for the mesh-loading build, remember the original so the
+        // built model keeps the verbatim URI (exports and
+        // `mesh_paths::resolve_source` expect the `package://` form).
         let urdf_dir = path.parent().unwrap_or(Path::new("."));
         let package_dir = urdf_dir.parent().unwrap_or(urdf_dir);
-
-        // Materials
-        let mut materials: HashMap<String, [f32; 4]> = HashMap::new();
-        for mat in &robot.materials {
-            if let Some(ref color) = mat.color {
-                materials.insert(
-                    mat.name.clone(),
-                    [
-                        color.rgba.0[0] as f32,
-                        color.rgba.0[1] as f32,
-                        color.rgba.0[2] as f32,
-                        color.rgba.0[3] as f32,
-                    ],
-                );
-            }
-        }
-
-        // Links
-        let mut links = Vec::new();
-        let mut link_map = HashMap::new();
-        for (i, link) in robot.links.iter().enumerate() {
-            let visuals = link
-                .visual
-                .iter()
-                .map(|vis| {
-                    let origin = pose_to_isometry(&vis.origin);
-                    let color = vis
-                        .material
-                        .as_ref()
-                        .and_then(|m| {
-                            m.color
-                                .as_ref()
-                                .map(|c| {
-                                    [
-                                        c.rgba.0[0] as f32,
-                                        c.rgba.0[1] as f32,
-                                        c.rgba.0[2] as f32,
-                                        c.rgba.0[3] as f32,
-                                    ]
-                                })
-                                .or_else(|| materials.get(&m.name).copied())
-                        })
-                        .unwrap_or([0.8, 0.8, 0.8, 1.0]);
-                    let geometry = convert_geometry(&vis.geometry, package_dir);
-                    VisualData {
-                        origin,
-                        geometry,
-                        color,
-                    }
-                })
-                .collect();
-
-            let collisions = link
-                .collision
-                .iter()
-                .map(|col| CollisionData {
-                    origin: pose_to_isometry(&col.origin),
-                    geometry: convert_geometry(&col.geometry, package_dir),
-                
-                    physics: None,
-                })
-                .collect();
-
-            let inertial = InertialData {
-                origin: pose_to_isometry(&link.inertial.origin),
-                mass: link.inertial.mass.value,
-                ixx: link.inertial.inertia.ixx,
-                ixy: link.inertial.inertia.ixy,
-                ixz: link.inertial.inertia.ixz,
-                iyy: link.inertial.inertia.iyy,
-                iyz: link.inertial.inertia.iyz,
-                izz: link.inertial.inertia.izz,
+        // (link idx, is_collision, geom idx) → original URI.
+        let mut verbatim: Vec<(usize, bool, usize, String)> = Vec::new();
+        {
+            let mut visit = |li: usize, is_col: bool, gi: usize, file: &mut String| {
+                if file.starts_with("package://") || file.starts_with("file://") {
+                    verbatim.push((li, is_col, gi, file.clone()));
+                    *file = resolve_package_path(file, package_dir)
+                        .to_string_lossy()
+                        .into_owned();
+                }
             };
-
-            link_map.insert(link.name.clone(), i);
-            links.push(LinkData {
-                name: link.name.clone(),
-                visuals,
-                collisions,
-                inertial,
-                collision_enabled: true,
-            });
-        }
-
-        // Joints
-        let mut joints = Vec::new();
-        let mut joint_map = HashMap::new();
-        let mut children_joints: HashMap<String, Vec<usize>> = HashMap::new();
-        let mut child_links: HashSet<String> = HashSet::new();
-        // Collect URDF <mimic> entries as the master format's `mimics` list.
-        let mut mimics: Vec<crate::rbd::model::Mimic> = Vec::new();
-
-        for (i, joint) in robot.joints.iter().enumerate() {
-            let jtype = format!("{:?}", joint.joint_type).to_lowercase();
-            let origin = pose_to_isometry(&joint.origin);
-            let axis = na::Vector3::new(
-                joint.axis.xyz.0[0] as f32,
-                joint.axis.xyz.0[1] as f32,
-                joint.axis.xyz.0[2] as f32,
-            );
-
-            joint_map.insert(joint.name.clone(), i);
-            children_joints
-                .entry(joint.parent.link.clone())
-                .or_default()
-                .push(i);
-            child_links.insert(joint.child.link.clone());
-
-            joints.push(JointData {
-                name: joint.name.clone(),
-                joint_type: jtype,
-                parent_link: joint.parent.link.clone(),
-                child_link: joint.child.link.clone(),
-                origin,
-                axis,
-                lower: joint.limit.lower,
-                upper: joint.limit.upper,
-                effort: joint.limit.effort,
-                velocity: joint.limit.velocity,
-                actuator_mode: crate::rbd::model::ActuatorMode::default(),
-                actuator_kp: 50.0,
-                actuator_kv: 5.0,
-                // URDF has no native armature field, but most real motors do —
-                // a small default (matches `default_armature()`) keeps the PD
-                // controller stable at MuJoCo's default 2 ms timestep.
-                armature: 0.0014,
-                joint_damping: 0.0,
-            });
-
-            // Capture <mimic> if present. URDF uses linear coupling; we
-            // store it as a master-format Mimic that other exporters can
-            // translate into their native form.
-            if let Some(ref m) = joint.mimic {
-                mimics.push(crate::rbd::model::Mimic {
-                    joint: joint.name.clone(),
-                    source: m.joint.clone(),
-                    multiplier: m.multiplier.unwrap_or(1.0),
-                    offset: m.offset.unwrap_or(0.0),
-                });
+            for (li, link) in out.file.link.iter_mut().enumerate() {
+                for (gi, v) in link.visual.iter_mut().enumerate() {
+                    if let misarta::native::Geom::Mesh { file, .. } = &mut v.geom {
+                        visit(li, false, gi, file);
+                    }
+                }
+                for (gi, c) in link.collision.iter_mut().enumerate() {
+                    if let misarta::native::Geom::Mesh { file, .. } = &mut c.geom {
+                        visit(li, true, gi, file);
+                    }
+                }
             }
         }
 
-        // Root link = not a child of any joint
-        let root_link = links
-            .iter()
-            .find(|l| !child_links.contains(&l.name))
-            .map(|l| l.name.clone())
-            .unwrap_or_default();
+        let mut model = Self::from_misa_file(&out.file, path)?;
 
-        let joint_positions = vec![0.0_f64; joints.len()];
+        for (li, is_col, gi, uri) in verbatim {
+            let geometry = if is_col {
+                &mut model.links[li].collisions[gi].geometry
+            } else {
+                &mut model.links[li].visuals[gi].geometry
+            };
+            if let GeomData::Mesh { filename, .. } = geometry {
+                *filename = Some(uri);
+            }
+        }
 
-        log::info!(
-            "Loaded robot '{}': {} links, {} joints, root='{}'",
-            robot.name,
-            links.len(),
-            joints.len(),
-            root_link
-        );
-
-        let mut model = Self {
-            name: robot.name.clone(),
-            links,
-            joints,
-            link_map,
-            joint_map,
-            root_link,
-            children_joints,
-            materials,
-            joint_positions,
-            source_path: Some(path.to_path_buf()),
-            base_transform: na::Isometry3::identity(),
-            misarta_cache: None,
-            loop_closures: Vec::new(),
-            poses: Vec::new(),
-            collision_pairs: Vec::new(),
-            sequences: Vec::new(),
-            mimics,
-            sensors: Vec::new(),
-            gaits: Vec::new(),
-        };
-        model.rebuild_misarta_model();
+        // URDF has no native armature field, but most real motors do —
+        // a small default (matches `default_armature()`) keeps the PD
+        // controller stable at MuJoCo's default 2 ms timestep. The
+        // legacy parser stamped this on every joint; keep that for
+        // joints the schema left at 0.
+        let mut touched = false;
+        for j in &mut model.joints {
+            if j.armature == 0.0 {
+                j.armature = 0.0014;
+                touched = true;
+            }
+        }
+        if touched {
+            // armature feeds the misarta conversion cache — rebuild so
+            // the cached model sees the defaults.
+            model.rebuild_misarta_model();
+        }
         Ok(model)
     }
 
@@ -1195,48 +1091,6 @@ impl RobotModel {
     }
 }
 
-
-pub fn pose_to_isometry(pose: &urdf_rs::Pose) -> na::Isometry3<f32> {
-    let xyz = &pose.xyz.0;
-    let rpy = &pose.rpy.0;
-    let translation = na::Translation3::new(xyz[0] as f32, xyz[1] as f32, xyz[2] as f32);
-    let rotation =
-        na::UnitQuaternion::from_euler_angles(rpy[0] as f32, rpy[1] as f32, rpy[2] as f32);
-    na::Isometry3::from_parts(translation, rotation)
-}
-
-fn convert_geometry(geom: &urdf_rs::Geometry, package_dir: &Path) -> GeomData {
-    match geom {
-        urdf_rs::Geometry::Box { size } => GeomData::Box {
-            hx: size.0[0] as f32 / 2.0,
-            hy: size.0[1] as f32 / 2.0,
-            hz: size.0[2] as f32 / 2.0,
-        },
-        urdf_rs::Geometry::Cylinder { radius, length } => GeomData::Cylinder {
-            radius: *radius as f32,
-            half_length: *length as f32 / 2.0,
-        },
-        urdf_rs::Geometry::Sphere { radius } => GeomData::Sphere {
-            radius: *radius as f32,
-        },
-        urdf_rs::Geometry::Mesh { filename, scale } => {
-            let mesh_path = resolve_package_path(filename, package_dir);
-            let sf = scale
-                .as_ref()
-                .map(|s| [s.0[0] as f32, s.0[1] as f32, s.0[2] as f32]);
-            GeomData::Mesh {
-                mesh: load_mesh(&mesh_path, sf.as_ref()),
-                filename: Some(filename.clone()),
-                scale: sf,
-            }
-        }
-        _ => GeomData::Box {
-            hx: 0.01,
-            hy: 0.01,
-            hz: 0.01,
-        },
-    }
-}
 
 pub fn resolve_package_path(filename: &str, package_dir: &Path) -> PathBuf {
     if let Some(rest) = filename.strip_prefix("package://") {
