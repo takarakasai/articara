@@ -3,12 +3,6 @@
 version = 4
 
 [[package]]
-name = "RustyXML"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b5ace29ee3216de37c0546865ad08edef58b0f9e76838ed8959a84a990e58c5"
-
-[[package]]
 name = "ab_glyph"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -352,7 +346,6 @@ dependencies = [
  "roxmltree",
  "serde",
  "serde_json",
- "urdf-rs",
 ]
 
 [[package]]
@@ -3161,7 +3154,7 @@ dependencies = [
 [[package]]
 name = "misarta"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misarta.git#bc7e0f5517d1d642310bfa08f0089b3c4acef976"
+source = "git+https://github.com/takarakasai/misarta.git#9a13ab0db1258bb443caee8c2488deec69777adc"
 dependencies = [
  "clarabel",
  "nalgebra",
@@ -3176,7 +3169,7 @@ dependencies = [
 [[package]]
 name = "misarta-formats"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misarta.git#bc7e0f5517d1d642310bfa08f0089b3c4acef976"
+source = "git+https://github.com/takarakasai/misarta.git#9a13ab0db1258bb443caee8c2488deec69777adc"
 dependencies = [
  "misarta",
  "nalgebra",
@@ -4399,16 +4392,6 @@ checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
 
 [[package]]
 name = "quick-xml"
-version = "0.36.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7649a7b4df05aed9ea7ec6f628c67c9953a43869b8bc50929569b2999d443fe"
-dependencies = [
- "memchr",
- "serde",
-]
-
-[[package]]
-name = "quick-xml"
 version = "0.38.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
@@ -5176,18 +5159,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "serde-xml-rs"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb3aa78ecda1ebc9ec9847d5d3aba7d618823446a049ba2491940506da6e2782"
-dependencies = [
- "log",
- "serde",
- "thiserror 1.0.69",
- "xml-rs",
 ]
 
 [[package]]
@@ -6449,20 +6420,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "urdf-rs"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "074515a3e6dc230bbbdcf35830fd71b67b55ae2ac22bc4ff69d89412fc84b830"
-dependencies = [
- "RustyXML",
- "quick-xml 0.36.2",
- "regex",
- "serde",
- "serde-xml-rs",
- "thiserror 1.0.69",
 ]
 
 [[package]]
