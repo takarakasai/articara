@@ -12,6 +12,8 @@ use quadruped_gait::{GaitConfig, GaitType, LegId, VelocityCmd};
 /// plus every tuning knob the panel renders. Grouped so [`ArticaraApp`]
 /// carries one `gait` field instead of two dozen loose `gait_*` ones.
 pub(super) struct GaitPanelState {
+    /// Name buffer for the experimental-preset save / load row.
+    pub exp_preset_name: String,
     /// Optional quadruped gait controller. Built once on demand (via the
     /// panel's "Setup" button or the Rhai `gait_setup` function), then
     /// ticked from the MuJoCo sim loop while `is_enabled()` is true.
@@ -69,6 +71,7 @@ pub(super) struct GaitPanelState {
 impl Default for GaitPanelState {
     fn default() -> Self {
         Self {
+            exp_preset_name: String::new(),
             controller: None,
             mode: quadruped_gait::GaitMode::default(),
             foot_links: articara::gait::DEFAULT_FOOT_LINKS
@@ -762,6 +765,100 @@ impl ArticaraApp {
                     // mismatch would be a quadruped-gait bug.
                     _ => {}
                 }
+            }
+
+            // ── Presets: persist / recall a whole knob combination ──
+            // Stored next to the loaded model (travels with the robot);
+            // falls back to the working directory for unsaved models.
+            if !gc.experimental_keys().is_empty() {
+                ui.separator();
+                let preset_path = self
+                    .model
+                    .as_ref()
+                    .and_then(|m| m.source_path.as_ref())
+                    .and_then(|p| p.parent())
+                    .map(|d| d.join("exp_presets.toml"))
+                    .unwrap_or_else(|| std::path::PathBuf::from("exp_presets.toml"));
+                ui.horizontal(|ui| {
+                    ui.label("Preset:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.gait.exp_preset_name)
+                            .desired_width(110.0)
+                            .hint_text("name"),
+                    );
+                    if ui
+                        .button("💾 Save")
+                        .on_hover_text(format!(
+                            "Snapshot the knobs above under this name into\n{}",
+                            preset_path.display(),
+                        ))
+                        .clicked()
+                    {
+                        let name = self.gait.exp_preset_name.trim().to_string();
+                        if name.is_empty() {
+                            self.status_message =
+                                "exp preset: enter a name first".into();
+                        } else {
+                            let preset = gc.snapshot_experimental(&name);
+                            let saved = quadruped_gait::load_presets(&preset_path)
+                                .and_then(|mut ps| {
+                                    quadruped_gait::upsert_preset(&mut ps, preset);
+                                    quadruped_gait::save_presets(&preset_path, &ps)
+                                });
+                            self.status_message = match saved {
+                                Ok(()) => format!(
+                                    "💾 exp preset '{name}' → {}",
+                                    preset_path.display(),
+                                ),
+                                Err(e) => format!("exp preset save failed: {e}"),
+                            };
+                        }
+                    }
+                    egui::ComboBox::from_id_salt("exp_preset_load")
+                        .selected_text("Load…")
+                        .width(80.0)
+                        .show_ui(ui, |ui| {
+                            match quadruped_gait::load_presets(&preset_path) {
+                                Ok(presets) if presets.is_empty() => {
+                                    ui.label(
+                                        egui::RichText::new("(no presets saved)")
+                                            .small()
+                                            .weak(),
+                                    );
+                                }
+                                Ok(presets) => {
+                                    for p in presets {
+                                        if ui.selectable_label(false, &p.name).clicked() {
+                                            let (applied, skipped) =
+                                                gc.apply_experimental(&p);
+                                            self.gait.exp_preset_name = p.name.clone();
+                                            self.status_message = if skipped.is_empty() {
+                                                format!(
+                                                    "exp preset '{}' applied ({applied} knobs)",
+                                                    p.name,
+                                                )
+                                            } else {
+                                                format!(
+                                                    "exp preset '{}' applied ({applied} knobs, skipped: {})",
+                                                    p.name,
+                                                    skipped.join(", "),
+                                                )
+                                            };
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    ui.label(
+                                        egui::RichText::new(format!("load failed: {e}"))
+                                            .small()
+                                            .weak(),
+                                    );
+                                }
+                            }
+                        });
+                })
+                .response
+                .on_hover_text(format!("Preset file: {}", preset_path.display()));
             }
         });
 
