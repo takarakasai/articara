@@ -753,6 +753,21 @@ impl GaitController {
         self.inner.set_experimental(key, value)
     }
 
+    /// Snapshot the current experimental knobs as a named preset
+    /// (see [`quadruped_gait::ExpPreset`]).
+    pub fn snapshot_experimental(&self, name: &str) -> quadruped_gait::ExpPreset {
+        self.inner.snapshot_experimental(name)
+    }
+
+    /// Apply a saved preset. Returns the number of knobs applied and
+    /// the keys skipped (unknown to this mode / controller version).
+    pub fn apply_experimental(
+        &mut self,
+        preset: &quadruped_gait::ExpPreset,
+    ) -> (usize, Vec<String>) {
+        self.inner.apply_experimental(preset)
+    }
+
     /// Read the active SRBD MPC config. `None` when running CHAMP.
     pub fn srbd_mpc_config(
         &self,

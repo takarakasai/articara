@@ -48,6 +48,10 @@ name = "go2_policy_sim"
 required-features = ["mujoco", "policy-sim"]
 
 [[example]]
+name = "exp_sweep"
+required-features = ["mujoco"]
+
+[[example]]
 name = "script_repl"
 required-features = ["scripting"]
 
