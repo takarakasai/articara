@@ -37,6 +37,8 @@ use misarta::model::{LinkInertia, Model, ModelBuilder};
 use quadruped_gait::wbc::{
     self, WbcDims, WbcInputs, WbcSolution, WbcWarmStart, WbcWeights,
 };
+#[allow(unused_imports)] // re-exported for host use of `with_wbc_solver`
+pub use quadruped_gait::wbc::{Formulation, HqpStrategy, QpSolver, SolveConfig};
 use quadruped_gait::{ControllerOutput, KinematicsConfig, forward_leg_kinematics};
 
 use crate::mujoco_sim::MujocoSim;
@@ -141,6 +143,16 @@ pub struct WbcPipeline {
     /// the task residual untouched, large enough to anchor an optimum
     /// to within ~mm/N units across ticks.
     pub qp_prox_weight: f64,
+    /// Opt-in alternate solve path: when `Some`, [`Self::solve`] routes
+    /// through `quadruped_gait::wbc::WbcSolver` (misa-wbc's `Dynamics`
+    /// context) instead of the legacy `wbc::solve_warm_with_weights`
+    /// call, so the decision-variable formulation / hierarchy strategy
+    /// / QP backend become a runtime choice (see
+    /// `ref/wbc_comparison.md` in the repo root for the comparison
+    /// study this supports). `None` (the default) is the original,
+    /// walk-validated path — every existing test and host is
+    /// unaffected. Set via [`Self::with_wbc_solver`].
+    wbc_solver: Option<wbc::WbcSolver>,
 }
 
 impl WbcPipeline {
@@ -198,7 +210,16 @@ impl WbcPipeline {
             qp_prox_weight: 1e-4,
             weights: WbcWeights::default(),
             last_solution: None,
+            wbc_solver: None,
         }
+    }
+
+    /// Opt into the misa-wbc `Dynamics`-backed solve path (see
+    /// [`Self::wbc_solver`]) with the given formulation / strategy /
+    /// backend. Builder-style; call right after [`Self::new`].
+    pub fn with_wbc_solver(mut self, formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
+        self.wbc_solver = Some(wbc::WbcSolver::new(formulation, cfg));
+        self
     }
 
     /// One tick of the WBC pipeline.
@@ -608,7 +629,10 @@ impl WbcPipeline {
             x_prev: self.qp_x_prev.as_ref(),
             prox_weight: self.qp_prox_weight,
         };
-        let sol = wbc::solve_warm_with_weights(&inputs, &warm, &self.weights);
+        let sol = match &mut self.wbc_solver {
+            Some(solver) => solver.solve(&inputs, &warm, &self.weights),
+            None => wbc::solve_warm_with_weights(&inputs, &warm, &self.weights),
+        };
         // Persist for the next tick.
         self.qp_x_prev = Some(sol.x_full.clone());
         // Cache for diagnostic inspection (test rigs read q_ddot /
