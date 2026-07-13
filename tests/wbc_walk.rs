@@ -39,6 +39,7 @@ use articara::mujoco_sim::MujocoSim;
 use articara::robot::RobotModel;
 use articara::wbc_pipeline::WbcPipeline;
 use nalgebra::Vector3;
+use quadruped_gait::wbc;
 use quadruped_gait::{
     solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, KinematicsConfig,
     LegIkSolution, VelocityCmd,
@@ -107,6 +108,12 @@ struct WbcParams {
     burn_in_s: f64,
     cmd_vx: f64,
     dt: f64,
+    /// `None` = the legacy `wbc::solve_warm_with_weights` path
+    /// (walk-validated default). `Some` opts the pipeline into the
+    /// misa-wbc `Dynamics`-backed [`WbcSolver`] with the given
+    /// formulation/strategy/backend — the equivalence-study switch
+    /// documented in `ref/wbc_comparison.md`.
+    misa_wbc_mode: Option<(wbc::Formulation, wbc::SolveConfig)>,
 }
 
 impl WbcParams {
@@ -116,6 +123,7 @@ impl WbcParams {
             burn_in_s: 0.5,
             cmd_vx: 0.0,
             dt: 0.002,
+            misa_wbc_mode: None,
         }
     }
     fn forward_walk() -> Self {
@@ -124,7 +132,20 @@ impl WbcParams {
             burn_in_s: 0.5,
             cmd_vx: 0.15,
             dt: 0.002,
+            misa_wbc_mode: None,
         }
+    }
+
+    /// Same schedule as [`Self::static_stand`], routed through
+    /// `WbcSolver` with the given formulation/strategy/backend.
+    fn static_stand_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
+        Self { misa_wbc_mode: Some((formulation, cfg)), ..Self::static_stand() }
+    }
+
+    /// Same schedule as [`Self::forward_walk`], routed through
+    /// `WbcSolver` with the given formulation/strategy/backend.
+    fn forward_walk_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
+        Self { misa_wbc_mode: Some((formulation, cfg)), ..Self::forward_walk() }
     }
 }
 
@@ -184,6 +205,9 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         DEFAULT_FOOT_LINKS[3].1.to_string(),
     ];
     let mut wbc_pipeline = WbcPipeline::new(&robot, foot_links);
+    if let Some((formulation, cfg)) = params.misa_wbc_mode.clone() {
+        wbc_pipeline = wbc_pipeline.with_wbc_solver(formulation, cfg);
+    }
 
     let n_steps = (params.total_time_s / params.dt).round() as usize;
     let burn_in_steps = (params.burn_in_s / params.dt).round() as usize;
@@ -474,7 +498,28 @@ fn wbc_static_stand_balances_gravity() {
     let Some(samples) = run_wbc_sim(WbcParams::static_stand()) else {
         return;
     };
+    assert_static_stand_balances_gravity(&samples);
+}
 
+/// Same invariants as [`wbc_static_stand_balances_gravity`], but
+/// routed through the misa-wbc `Dynamics` path in the `ForceSpace`
+/// formulation (GID's decision-variable layout, `x = [τ; f]`) with
+/// the `ActiveSet` backend — the fastest combination per the
+/// `misa-wbc` formulation benchmarks (see `ref/wbc_comparison.md`).
+/// Confirms the equivalence holds under real MuJoCo contact dynamics,
+/// not just on synthetic matrices.
+#[test]
+fn wbc_static_stand_balances_gravity_force_space_active_set() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let Some(samples) =
+        run_wbc_sim(WbcParams::static_stand_misa_wbc(wbc::Formulation::ForceSpace, cfg))
+    else {
+        return;
+    };
+    assert_static_stand_balances_gravity(&samples);
+}
+
+fn assert_static_stand_balances_gravity(samples: &[WbcSample]) {
     // No fall.
     let min_z = samples.iter().map(|s| s.body_z).fold(f64::INFINITY, f64::min);
     assert!(
@@ -545,7 +590,25 @@ fn wbc_forward_command_advances_body() {
     let Some(samples) = run_wbc_sim(WbcParams::forward_walk()) else {
         return;
     };
+    assert_forward_command_advances_body(&samples);
+}
 
+/// Same invariants as [`wbc_forward_command_advances_body`], routed
+/// through misa-wbc's `ForceSpace` + `ActiveSet` — see
+/// [`wbc_static_stand_balances_gravity_force_space_active_set`] for
+/// the rationale.
+#[test]
+fn wbc_forward_command_advances_body_force_space_active_set() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let Some(samples) =
+        run_wbc_sim(WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg))
+    else {
+        return;
+    };
+    assert_forward_command_advances_body(&samples);
+}
+
+fn assert_forward_command_advances_body(samples: &[WbcSample]) {
     // Skip burn-in for tilt + displacement metrics.
     let dt: f64 = 0.002;
     let burn_in_steps = (0.5 / dt).round() as usize;

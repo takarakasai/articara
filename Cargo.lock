@@ -2918,7 +2918,7 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 [[package]]
 name = "legged-estimation"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/quadruped-gait.git#15b8be654db7f1b1407e8eadf538cdd15d870373"
+source = "git+https://github.com/takarakasai/quadruped-gait.git#27de3fe2c413c2ecfab4f49f7e7ae5791bf6f1ad"
 dependencies = [
  "nalgebra",
  "quadruped-gait",
@@ -3154,7 +3154,7 @@ dependencies = [
 [[package]]
 name = "misa-wbc"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misa-wbc.git#3e6247c549435440d0e8650f7e8a2420867f45a9"
+source = "git+https://github.com/takarakasai/misa-wbc.git#006cb575730cc747ce8e9d19b719aabd00959cc9"
 dependencies = [
  "clarabel",
  "nalgebra",
@@ -3163,7 +3163,7 @@ dependencies = [
 [[package]]
 name = "misarta"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misarta.git#9a13ab0db1258bb443caee8c2488deec69777adc"
+source = "git+https://github.com/takarakasai/misarta.git#426de8fc1aaa9339e0630e2d84e0825afc9aabf4"
 dependencies = [
  "clarabel",
  "nalgebra",
@@ -3178,7 +3178,7 @@ dependencies = [
 [[package]]
 name = "misarta-formats"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misarta.git#9a13ab0db1258bb443caee8c2488deec69777adc"
+source = "git+https://github.com/takarakasai/misarta.git#426de8fc1aaa9339e0630e2d84e0825afc9aabf4"
 dependencies = [
  "misarta",
  "nalgebra",
@@ -4237,7 +4237,7 @@ dependencies = [
 [[package]]
 name = "policy-runtime"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/quadruped-gait.git#15b8be654db7f1b1407e8eadf538cdd15d870373"
+source = "git+https://github.com/takarakasai/quadruped-gait.git#27de3fe2c413c2ecfab4f49f7e7ae5791bf6f1ad"
 dependencies = [
  "tract-onnx",
 ]
@@ -4382,7 +4382,7 @@ checksum = "b5a041e753da8b807c9255f28de81879c78c876392ff2469cde94799b2896b9d"
 [[package]]
 name = "quadruped-gait"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/quadruped-gait.git#15b8be654db7f1b1407e8eadf538cdd15d870373"
+source = "git+https://github.com/takarakasai/quadruped-gait.git#27de3fe2c413c2ecfab4f49f7e7ae5791bf6f1ad"
 dependencies = [
  "clarabel",
  "log",
