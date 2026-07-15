@@ -101,20 +101,53 @@ struct WbcParams {
     cmd_vx: f64,
     dt: f64,
     misa_wbc_mode: Option<(wbc::Formulation, wbc::SolveConfig)>,
+    /// When set, `cmd_vx` is ignored and the commanded forward
+    /// velocity instead steps through `0.0, 0.5, 1.0, … 5.0 m/s`
+    /// (`STAIRCASE_STEP_MPS`), holding each level for this many
+    /// seconds — a stress test to find where Trot+WBC+MPC stops
+    /// tracking cleanly, not a pass/fail regression check.
+    staircase_step_s: Option<f64>,
 }
+
+/// Velocity increment per staircase level (m/s) — see `staircase_step_s`.
+const STAIRCASE_STEP_MPS: f64 = 0.5;
+/// Top commanded speed (m/s); `STAIRCASE_STEP_MPS` apart gives 11 levels
+/// (0.0..=5.0).
+const STAIRCASE_MAX_MPS: f64 = 5.0;
 
 impl WbcParams {
     fn static_stand() -> Self {
-        Self { total_time_s: 1.5, burn_in_s: 0.5, cmd_vx: 0.0, dt: 0.002, misa_wbc_mode: None }
+        Self {
+            total_time_s: 1.5, burn_in_s: 0.5, cmd_vx: 0.0, dt: 0.002,
+            misa_wbc_mode: None, staircase_step_s: None,
+        }
     }
     fn forward_walk() -> Self {
-        Self { total_time_s: 3.0, burn_in_s: 0.5, cmd_vx: 0.15, dt: 0.002, misa_wbc_mode: None }
+        Self {
+            total_time_s: 3.0, burn_in_s: 0.5, cmd_vx: 0.15, dt: 0.002,
+            misa_wbc_mode: None, staircase_step_s: None,
+        }
     }
     fn static_stand_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
         Self { misa_wbc_mode: Some((formulation, cfg)), ..Self::static_stand() }
     }
     fn forward_walk_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
         Self { misa_wbc_mode: Some((formulation, cfg)), ..Self::forward_walk() }
+    }
+
+    /// 30s staircase, 0 to 5 m/s in 0.5 m/s steps (11 levels, ~2.73s
+    /// each), routed through misa-wbc's ForceSpace+ActiveSet.
+    fn velocity_staircase_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
+        let total_time_s = 30.0;
+        let n_levels = (STAIRCASE_MAX_MPS / STAIRCASE_STEP_MPS).round() as usize + 1;
+        Self {
+            total_time_s,
+            burn_in_s: 0.0, // level 0 (vx=0) already acts as the settle window
+            cmd_vx: 0.0,    // unused; staircase_step_s drives the command instead
+            dt: 0.002,
+            misa_wbc_mode: Some((formulation, cfg)),
+            staircase_step_s: Some(total_time_s / n_levels as f64),
+        }
     }
 }
 
@@ -190,13 +223,23 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let burn_in_steps = (params.burn_in_s / params.dt).round() as usize;
     let mut samples: Vec<WbcSample> = Vec::with_capacity(n_steps);
 
+    let mut last_staircase_level: Option<usize> = None;
     for k in 0..n_steps {
         let t = k as f64 * params.dt;
 
         if k == 0 {
             gc.enable();
         }
-        if k == burn_in_steps {
+        if let Some(step_s) = params.staircase_step_s {
+            let n_levels = (STAIRCASE_MAX_MPS / STAIRCASE_STEP_MPS).round() as usize + 1;
+            let level = ((t / step_s) as usize).min(n_levels - 1);
+            if last_staircase_level != Some(level) {
+                let vx = level as f64 * STAIRCASE_STEP_MPS;
+                gc.set_velocity_cmd(VelocityCmd { vx, vy: 0.0, wz: 0.0 });
+                eprintln!("[staircase] t={t:6.2}s level={level:2} cmd_vx={vx:.1} m/s");
+                last_staircase_level = Some(level);
+            }
+        } else if k == burn_in_steps {
             gc.set_velocity_cmd(VelocityCmd { vx: params.cmd_vx, vy: 0.0, wz: 0.0 });
         }
 
@@ -373,6 +416,59 @@ fn go2_wbc_forward_command_advances_body_force_space_active_set() {
         return;
     };
     assert_forward_command_advances_body(&samples);
+}
+
+/// Stress test, not a regression check: command a 0 -> 5 m/s staircase
+/// (0.5 m/s per level, ~2.73 s each) over 30 s and report per-level
+/// tracking quality -- where does Trot+WBC+SRBD-MPC stop keeping up?
+/// No hard pass/fail assertion (a fall at high commanded speed is an
+/// expected, informative outcome, not a bug); `#[ignore]`d like the
+/// other exploratory benchmarks in this session, run manually with
+/// `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco \
+///  --test wbc_walk_go2 -- --ignored --nocapture go2_wbc_velocity_staircase`.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let Some(samples) =
+        run_wbc_sim(WbcParams::velocity_staircase_misa_wbc(wbc::Formulation::ForceSpace, cfg))
+    else {
+        return;
+    };
+
+    let n_levels = (STAIRCASE_MAX_MPS / STAIRCASE_STEP_MPS).round() as usize + 1;
+    let total_time_s = 30.0_f64;
+    let step_s = total_time_s / n_levels as f64;
+
+    eprintln!(
+        "\n{:>6} {:>8} {:>9} {:>9} {:>9} {:>9}",
+        "level", "cmd_vx", "meas_vx", "min_z", "peak_roll", "peak_pitch"
+    );
+    for level in 0..n_levels {
+        let t0 = level as f64 * step_s;
+        let t1 = (level as f64 + 1.0) * step_s;
+        let window: Vec<&WbcSample> =
+            samples.iter().filter(|s| s.t >= t0 && s.t < t1).collect();
+        if window.is_empty() {
+            continue;
+        }
+        let cmd_vx = level as f64 * STAIRCASE_STEP_MPS;
+        let x0 = window.first().unwrap().body_x;
+        let x1 = window.last().unwrap().body_x;
+        let meas_vx = (x1 - x0) / (t1 - t0).min(window.last().unwrap().t - t0);
+        let min_z = window.iter().map(|s| s.body_z).fold(f64::INFINITY, f64::min);
+        let peak_roll = window.iter().map(|s| s.roll.abs()).fold(0.0_f64, f64::max);
+        let peak_pitch = window.iter().map(|s| s.pitch.abs()).fold(0.0_f64, f64::max);
+        eprintln!(
+            "{level:6} {cmd_vx:8.1} {meas_vx:9.2} {min_z:9.3} {peak_roll:9.2} {peak_pitch:9.2}",
+        );
+    }
+
+    let min_z_overall = samples.iter().map(|s| s.body_z).fold(f64::INFINITY, f64::min);
+    eprintln!(
+        "\n[wbc:go2] velocity_staircase: min_z over full run = {min_z_overall:.3} m \
+         (fall threshold {TRUNK_Z_FALL_THRESHOLD_M:.2} m)"
+    );
 }
 
 fn assert_forward_command_advances_body(samples: &[WbcSample]) {
