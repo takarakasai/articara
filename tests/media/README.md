@@ -18,13 +18,31 @@
   low top speed reflects this Trot config's tuning (footstep
   planner / MPC horizon), not a hard WBC ceiling — see
   `ref/wbc_comparison.md` Sec.5r.
-- `render_go2_walk.py` — regenerates either video. Needs:
+- `go2_velocity_staircase_fine.mp4` / `staircase_fine_tracking.png` —
+  `wbc_walk_go2.rs`'s `go2_wbc_velocity_staircase_fine` resweep:
+  0 to 1.0 m/s in 0.05 m/s steps over 60s (21 levels, ~2.86s each) —
+  finer resolution around the ceiling the coarse sweep above found.
+  Peak measured speed (~0.34 m/s) lands almost exactly at the
+  calculated footstep-clamp threshold (0.5 m/s commanded, where the
+  Raibert step `cmd_vx * 0.5 * stance_duration` first hits
+  `0.5 * max_step_length_m` in `mpc_controller.rs::compute_mpc_footstep`),
+  then declines gently with no reversal (the milder command range
+  never drives the capture-point feedback term as far out as the 5 m/s
+  sweep did). Body stays stable throughout (min z 0.229-0.240m). See
+  `ref/wbc_comparison.md` Sec.5s.
+- `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
      --test wbc_walk_go2 <test-name> -- [--ignored] --nocapture`
-     (remember to `source ./setup-mujoco.sh` first). Pass
-     `--staircase-step-s 2.7273` when rendering the staircase trace
-     so the on-screen commanded-speed readout tracks correctly.
+     (remember to `source ./setup-mujoco.sh` first). For a staircase
+     trace, also pass `--staircase-step-s <total_time_s / n_levels>`
+     plus `--staircase-step-mps`/`--staircase-max-mps` matching
+     whichever staircase constructor produced it, so the on-screen
+     commanded-speed readout tracks correctly (a first pass at the
+     fine sweep's video shipped with these still defaulted to the
+     coarse sweep's 0.5/5.0 — caught and fixed before committing;
+     the underlying motion data was never affected, only the on-
+     screen text).
   2. `go2_mesh_manifest.csv` + `go2_topology.csv` — written by the
      *misa-wbc* repo's `go2_leg_singularity_demo` example (see
      `misa-wbc/examples/models/README.md`). This script joins the two
