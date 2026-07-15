@@ -38,6 +38,7 @@ use quadruped_gait::{
     solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, KinematicsConfig,
     LegIkSolution, VelocityCmd,
 };
+use quadruped_gait::FullCentroidalMpcConfig;
 
 fn go2_misa() -> PathBuf {
     // Sibling to articara/tests/ -- the model lives at the repo root,
@@ -158,11 +159,19 @@ struct WbcParams {
 /// becomes a real per-horizon-step trajectory (sampled from the same
 /// open-loop swing/stance foot curve `tick()` uses) instead of a flat
 /// hold — the D3.3.5a reversal, requires `legged_control_parity`.
+/// `mpc_override`: override `(horizon_steps, dt_per_step, sqp_iterations)`
+/// after `GaitController::build` — legged_control/OCS2's `ocs2_legged_robot`
+/// example runs a real-time-iteration style `sqp_iterations=1` at a much
+/// higher re-solve rate than our `sqp_iterations=3 @ dt_per_step=0.030`
+/// default; this tests whether that "fewer iterations, more frequent
+/// solves" tradeoff point is better for our (non-realtime-constrained,
+/// wall-clock-agnostic) sim too, not just cheaper on real hardware.
 #[derive(Clone, Copy)]
 struct FullCentroidalOpts {
     legged_control_parity: bool,
     use_mpc_predicted_footstep: bool,
     dynamic_joint_q_reference: bool,
+    mpc_override: Option<(usize, f64, usize)>,
 }
 
 impl WbcParams {
@@ -328,9 +337,30 @@ impl WbcParams {
         Self {
             full_centroidal: Some(FullCentroidalOpts {
                 legged_control_parity, use_mpc_predicted_footstep, dynamic_joint_q_reference,
+                mpc_override: None,
             }),
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
         }
+    }
+
+    /// Same as [`Self::velocity_staircase_fine_full_centroidal_dynamic_q_misa_wbc`],
+    /// also overriding the FullCentroidal MPC's `(horizon_steps,
+    /// dt_per_step, sqp_iterations)` — see `mpc_override`'s doc comment.
+    fn velocity_staircase_fine_full_centroidal_mpc_override_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        legged_control_parity: bool,
+        dynamic_joint_q_reference: bool,
+        horizon_steps: usize,
+        dt_per_step: f64,
+        sqp_iterations: usize,
+    ) -> Self {
+        let mut params = Self::velocity_staircase_fine_full_centroidal_dynamic_q_misa_wbc(
+            formulation, cfg, legged_control_parity, false, dynamic_joint_q_reference,
+        );
+        let opts = params.full_centroidal.as_mut().expect("full_centroidal always Some here");
+        opts.mpc_override = Some((horizon_steps, dt_per_step, sqp_iterations));
+        params
     }
 }
 
@@ -400,6 +430,19 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         gc.set_legged_control_parity(opts.legged_control_parity);
         gc.set_use_mpc_predicted_footstep(opts.use_mpc_predicted_footstep);
         gc.set_dynamic_joint_q_reference(opts.dynamic_joint_q_reference);
+        if let Some((horizon_steps, dt_per_step, sqp_iterations)) = opts.mpc_override {
+            let mut mpc_cfg: FullCentroidalMpcConfig =
+                gc.full_centroidal_mpc_config().expect("FullCentroidal mode has a config").clone();
+            eprintln!(
+                "[full-centroidal-mpc] overriding {}x{:.3}s sqp={} -> {}x{:.3}s sqp={}",
+                mpc_cfg.horizon_steps, mpc_cfg.dt_per_step, mpc_cfg.sqp_iterations,
+                horizon_steps, dt_per_step, sqp_iterations,
+            );
+            mpc_cfg.horizon_steps = horizon_steps;
+            mpc_cfg.dt_per_step = dt_per_step;
+            mpc_cfg.sqp_iterations = sqp_iterations;
+            gc.set_full_centroidal_mpc_config(mpc_cfg);
+        }
     }
 
     let foot_links: [String; 4] = [
@@ -964,6 +1007,55 @@ fn go2_wbc_velocity_staircase_fine_full_centroidal_dynamic_q() {
             true,
             false,
             dynamic_q,
+        );
+        let Some(samples) = run_wbc_sim(params) else { continue };
+        eprintln!("\n=== {label} ===");
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
+}
+
+/// Desk-research (`ref/ocs2` verified) found legged_control/OCS2's
+/// `ocs2_legged_robot` example runs `sqp_iterations=1` at a much higher
+/// re-solve rate (100 Hz, dt=0.015s) than what this test originally
+/// assumed was our default (`sqp_iterations=3 @ dt_per_step=0.030s`,
+/// read off `FullCentroidalMpcConfig::default_with_kin`'s own literal
+/// defaults) -- an RTI-style few-iterations/high-frequency tradeoff
+/// instead of our presumed few-solves/thorough-iteration one.
+///
+/// **Correction**: `default_with_kin`'s literal
+/// `(horizon_steps=20, dt_per_step=0.030, sqp_iterations=3)` is NOT
+/// what Sec.5w/5x actually ran with -- `auto_detect_full_centroidal_
+/// mpc_config` (`gait.rs`) overwrites exactly those three fields from
+/// `auto_detect_centroidal_mpc_config`'s (12-state) result, which in
+/// turn is just `CentroidalMpcConfig::default()`:
+/// `(horizon_steps=10, dt_per_step=0.030, sqp_iterations=1)` --
+/// i.e. the REAL baseline every prior FullCentroidal test in this file
+/// actually ran at is a 0.3s horizon with a single SQP iteration, not
+/// the 0.6s/3-iteration config this test originally (wrongly) used as
+/// its "baseline" label. That mislabeled first attempt is itself an
+/// interesting data point (going 20x0.030 sqp=3 -> sqp=1 flipped a
+/// sustained-reversal failure into a stable plateau -- more SQP
+/// iterations at that horizon made tracking *worse*, not better), but
+/// it wasn't a comparison against Sec.5w at all. This corrected version
+/// compares against the REAL default (10x0.030 sqp=1).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_full_centroidal_sqp_tuning() {
+    let trials = [
+        ("true baseline: 10x0.030s sqp=1 (Sec.5w/5x actual default)", 10, 0.030, 1),
+        ("more iterations, same horizon: 10x0.030s sqp=3", 10, 0.030, 3),
+        ("RTI-style, same 0.3s horizon: 20x0.015s sqp=1 (legged_control dt)", 20, 0.015, 1),
+    ];
+    for (label, horizon_steps, dt_per_step, sqp_iterations) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams::velocity_staircase_fine_full_centroidal_mpc_override_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            true,
+            false,
+            horizon_steps,
+            dt_per_step,
+            sqp_iterations,
         );
         let Some(samples) = run_wbc_sim(params) else { continue };
         eprintln!("\n=== {label} ===");

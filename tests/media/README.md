@@ -90,6 +90,18 @@
   light to avoid fighting the stance no-slip constraint) is too weak
   for the now-dynamic reference to visibly change behavior either way.
   See `ref/wbc_comparison.md` Sec.5x.
+- `sqp_tuning_comparison.png` — sweeps `FullCentroidalMpcConfig`'s
+  `sqp_iterations` at two horizon lengths
+  (`go2_wbc_velocity_staircase_fine_full_centroidal_sqp_tuning`),
+  motivated by `ref/ocs2` desk research into legged_control's
+  real-time-iteration-style `sqp_iterations=1`. At the true
+  auto-detected default horizon (0.3s), more iterations (1→3) tracks
+  clearly better; at 0.6s, more iterations instead flips into
+  sustained backward walking, where fewer iterations is what's needed
+  for a stable plateau — the same "sign flips with horizon length"
+  pattern Sec.5v found for height×horizon. See `ref/wbc_comparison.md`
+  Sec.5y (also documents a mislabeled-baseline mistake caught and
+  corrected mid-experiment).
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
