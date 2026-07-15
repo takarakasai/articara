@@ -138,6 +138,26 @@ struct WbcParams {
     /// proxy), so sweeping this sweeps standing height. `None` keeps
     /// the existing `0.08` default.
     body_height_bias_frac: Option<f64>,
+    /// Use `GaitMode::FullCentroidal` (24-state, joint_q folded into
+    /// the MPC state so the per-leg moment arm updates within the
+    /// horizon) instead of the default `GaitMode::Mpc` (12-state SRBD,
+    /// fixed foot position — Sec.5t/5u/5v's subject). `None` keeps the
+    /// existing `GaitMode::Mpc` default.
+    full_centroidal: Option<FullCentroidalOpts>,
+}
+
+/// `legged_control_parity`: per-leg phase contact schedule + swing
+/// vertical-velocity tracking, matching OCS2's `centroidalModelType=0`
+/// setup (see `full_centroidal_controller.rs` module docs).
+/// `use_mpc_predicted_footstep`: replace capture-point feedback with a
+/// foothold correction derived from the MPC's own predicted recovery
+/// trajectory (closed loop between the MPC's optimized trunk response
+/// and the footstep target) — the closest existing analogue to
+/// jointly optimizing contact force / trunk / swing-leg trajectory.
+#[derive(Clone, Copy)]
+struct FullCentroidalOpts {
+    legged_control_parity: bool,
+    use_mpc_predicted_footstep: bool,
 }
 
 impl WbcParams {
@@ -147,7 +167,7 @@ impl WbcParams {
             misa_wbc_mode: None, staircase_step_s: None,
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
             mpc_horizon_override: None, gait_cycle_period_override: None,
-            body_height_bias_frac: None,
+            body_height_bias_frac: None, full_centroidal: None,
         }
     }
     fn forward_walk() -> Self {
@@ -156,7 +176,7 @@ impl WbcParams {
             misa_wbc_mode: None, staircase_step_s: None,
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
             mpc_horizon_override: None, gait_cycle_period_override: None,
-            body_height_bias_frac: None,
+            body_height_bias_frac: None, full_centroidal: None,
         }
     }
     fn static_stand_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
@@ -189,6 +209,7 @@ impl WbcParams {
             mpc_horizon_override: None,
             gait_cycle_period_override: None,
             body_height_bias_frac: None,
+            full_centroidal: None,
         }
     }
 
@@ -271,6 +292,24 @@ impl WbcParams {
             ..Self::velocity_staircase_fine_with_horizon_misa_wbc(formulation, cfg, horizon_steps, dt_per_step)
         }
     }
+
+    /// Same fine 0-1.0 m/s staircase, on `GaitMode::FullCentroidal`
+    /// instead of the default `GaitMode::Mpc` — see `full_centroidal`'s
+    /// doc comment. `horizon_steps`/`dt_per_step`/`body_height_bias_frac`
+    /// stay at their `GaitMode::Mpc` defaults (irrelevant here; the
+    /// FullCentroidal controller has its own separately auto-detected
+    /// `FullCentroidalMpcConfig`).
+    fn velocity_staircase_fine_full_centroidal_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        legged_control_parity: bool,
+        use_mpc_predicted_footstep: bool,
+    ) -> Self {
+        Self {
+            full_centroidal: Some(FullCentroidalOpts { legged_control_parity, use_mpc_predicted_footstep }),
+            ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
+        }
+    }
 }
 
 fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
@@ -316,8 +355,9 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         );
         cfg.cycle_period_s = cycle_period_s;
     }
-    let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::Mpc)
-        .expect("GaitController::build (Mpc mode)");
+    let gait_mode = if params.full_centroidal.is_some() { GaitMode::FullCentroidal } else { GaitMode::Mpc };
+    let mut gc = GaitController::build(&robot, kin.clone(), cfg, gait_mode)
+        .expect("GaitController::build");
     if let Some((horizon_steps, dt_per_step)) = params.mpc_horizon_override {
         let mut mpc_cfg = gc.srbd_mpc_config().expect("Mpc mode has a config").clone();
         eprintln!(
@@ -329,6 +369,14 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         mpc_cfg.horizon_steps = horizon_steps;
         mpc_cfg.dt_per_step = dt_per_step;
         gc.set_srbd_mpc_config(mpc_cfg);
+    }
+    if let Some(opts) = params.full_centroidal {
+        eprintln!(
+            "[full-centroidal] legged_control_parity={} use_mpc_predicted_footstep={}",
+            opts.legged_control_parity, opts.use_mpc_predicted_footstep,
+        );
+        gc.set_legged_control_parity(opts.legged_control_parity);
+        gc.set_use_mpc_predicted_footstep(opts.use_mpc_predicted_footstep);
     }
 
     let foot_links: [String; 4] = [
@@ -826,6 +874,42 @@ fn go2_wbc_velocity_staircase_fine_horizon_and_height_combo() {
         ),
     ];
     for (label, params) in trials {
+        let Some(samples) = run_wbc_sim(params) else { continue };
+        eprintln!("\n=== {label} ===");
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
+}
+
+/// First look at `GaitMode::FullCentroidal` (joint_q folded into the
+/// MPC state, so the per-leg moment arm updates within the horizon —
+/// architecturally the closest existing thing to legged_control's
+/// jointly-optimized contact-force/trunk/swing-leg formulation) against
+/// the `GaitMode::Mpc` (SRBD) baseline Sec.5s-5v all used, on the same
+/// fine 0-1.0 m/s staircase, at FullCentroidal's own auto-detected
+/// defaults (no height/horizon tuning — that's a separate follow-up
+/// once we know whether this architecture is worth tuning at all).
+/// Three FullCentroidal configurations, each opt-in on top of the last:
+/// legacy (D3.3.5a), `legged_control_parity` (OCS2-matched contact
+/// schedule + swing normal-velocity tracking), and adding
+/// `use_mpc_predicted_footstep` (closes the loop: footstep target
+/// comes from the MPC's own predicted recovery trajectory instead of
+/// capture-point feedback).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_full_centroidal() {
+    let trials = [
+        ("FullCentroidal legacy (parity off)", false, false),
+        ("FullCentroidal + legged_control_parity", true, false),
+        ("FullCentroidal + parity + mpc_predicted_footstep", true, true),
+    ];
+    for (label, parity, predicted_footstep) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams::velocity_staircase_fine_full_centroidal_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            parity,
+            predicted_footstep,
+        );
         let Some(samples) = run_wbc_sim(params) else { continue };
         eprintln!("\n=== {label} ===");
         report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
