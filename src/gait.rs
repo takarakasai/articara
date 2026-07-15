@@ -731,6 +731,18 @@ impl GaitController {
         self.inner.use_mpc_predicted_footstep()
     }
 
+    /// Toggle the FullCentroidal controller's per-horizon-step dynamic
+    /// joint_q reference (samples the open-loop swing/stance foot curve
+    /// at each horizon step's projected phase instead of holding
+    /// joint_q flat). No-op outside FullCentroidal mode; requires
+    /// `legged_control_parity` to have an effect.
+    pub fn set_dynamic_joint_q_reference(&mut self, enable: bool) {
+        self.inner.set_dynamic_joint_q_reference(enable);
+    }
+    pub fn dynamic_joint_q_reference(&self) -> Option<bool> {
+        self.inner.dynamic_joint_q_reference()
+    }
+
     /// The experimental research knobs of the active controller, as
     /// declared by [`quadruped_gait::exp`]. The GUI renders its
     /// "Experimental flags" section from this metadata, so knobs added
