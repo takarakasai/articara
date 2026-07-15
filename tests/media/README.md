@@ -30,6 +30,24 @@
   never drives the capture-point feedback term as far out as the 5 m/s
   sweep did). Body stays stable throughout (min z 0.229-0.240m). See
   `ref/wbc_comparison.md` Sec.5s.
+- `horizon_comparison_tracking.png` — same fine 0-1.0 m/s staircase
+  re-run with the SRBD MPC's `horizon_steps x dt_per_step` overridden
+  after `GaitController::build` (`go2_wbc_velocity_staircase_fine_long_horizon`
+  / `_full_horizon` tests): 0.3s (default) vs 0.6s vs 1.0s
+  (`ref/legged_control`'s OCS2 `mpc.timeHorizon`-matched). 0.6s tracks
+  near-ideal up to ~0.5 m/s with no reversal; 1.0s diverges into
+  sustained *backward* walking at high commanded speed instead of
+  saturating. See `ref/wbc_comparison.md` Sec.5t.
+- `horizon_sweet_spot.png` — sweeps `dt_per_step` finely between the
+  known-good 0.6s and known-bad 1.0s (`go2_wbc_velocity_staircase_fine_horizon_sweep`
+  / `_horizon_zoom` tests), plotting tracking at the cmd_vx=0.5 m/s
+  staircase level against horizon length: good tracking exists only
+  in a narrow ~0.60-0.65s band, not a broad plateau — just past either
+  edge (0.58s or 0.70s) the behavior reverses into backward walking.
+  A `cycle_period_s` resonance hypothesis was tested and not confirmed
+  (`go2_wbc_velocity_staircase_fine_cycle_resonance`); see
+  `ref/wbc_comparison.md` Sec.5t for the full writeup and open
+  questions.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
