@@ -743,6 +743,18 @@ impl GaitController {
         self.inner.dynamic_joint_q_reference()
     }
 
+    /// Toggle the FullCentroidal controller's task-space→joint-space
+    /// `R` weight mapping for `joint_v` (legged_control/OCS2's own
+    /// technique — see the quadruped-gait doc comment). No-op outside
+    /// FullCentroidal mode. `None` reverts to the flat per-joint
+    /// diagonal `r_diag`.
+    pub fn set_task_space_joint_vel_weight(&mut self, r_taskspace: Option<[f64; 3]>) {
+        self.inner.set_task_space_joint_vel_weight(r_taskspace);
+    }
+    pub fn task_space_joint_vel_weight(&self) -> Option<[f64; 3]> {
+        self.inner.task_space_joint_vel_weight()
+    }
+
     /// The experimental research knobs of the active controller, as
     /// declared by [`quadruped_gait::exp`]. The GUI renders its
     /// "Experimental flags" section from this metadata, so knobs added

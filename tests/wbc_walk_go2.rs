@@ -166,12 +166,19 @@ struct WbcParams {
 /// default; this tests whether that "fewer iterations, more frequent
 /// solves" tradeoff point is better for our (non-realtime-constrained,
 /// wall-clock-agnostic) sim too, not just cheaper on real hardware.
+/// `task_space_joint_vel_weight`: replace the flat per-joint `joint_v`
+/// cost with a task-space (foot-velocity) weight mapped through each
+/// leg's fixed-nominal-pose Jacobian — legged_control/OCS2's own
+/// technique (`ocs2_legged_robot`'s `initializeInputCostWeight`,
+/// confirmed against `ref/ocs2`), point ② from the desk-research gap
+/// analysis (Sec.5v-era discussion).
 #[derive(Clone, Copy)]
 struct FullCentroidalOpts {
     legged_control_parity: bool,
     use_mpc_predicted_footstep: bool,
     dynamic_joint_q_reference: bool,
     mpc_override: Option<(usize, f64, usize)>,
+    task_space_joint_vel_weight: Option<[f64; 3]>,
 }
 
 impl WbcParams {
@@ -337,10 +344,28 @@ impl WbcParams {
         Self {
             full_centroidal: Some(FullCentroidalOpts {
                 legged_control_parity, use_mpc_predicted_footstep, dynamic_joint_q_reference,
-                mpc_override: None,
+                mpc_override: None, task_space_joint_vel_weight: None,
             }),
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
         }
+    }
+
+    /// Same as [`Self::velocity_staircase_fine_full_centroidal_dynamic_q_misa_wbc`],
+    /// also setting the task-space→joint-space `joint_v` weight
+    /// mapping — see `FullCentroidalOpts::task_space_joint_vel_weight`'s
+    /// doc comment.
+    fn velocity_staircase_fine_full_centroidal_taskspace_weight_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        legged_control_parity: bool,
+        r_taskspace: [f64; 3],
+    ) -> Self {
+        let mut params = Self::velocity_staircase_fine_full_centroidal_dynamic_q_misa_wbc(
+            formulation, cfg, legged_control_parity, false, false,
+        );
+        let opts = params.full_centroidal.as_mut().expect("full_centroidal always Some here");
+        opts.task_space_joint_vel_weight = Some(r_taskspace);
+        params
     }
 
     /// Same as [`Self::velocity_staircase_fine_full_centroidal_dynamic_q_misa_wbc`],
@@ -442,6 +467,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             mpc_cfg.dt_per_step = dt_per_step;
             mpc_cfg.sqp_iterations = sqp_iterations;
             gc.set_full_centroidal_mpc_config(mpc_cfg);
+        }
+        if let Some(r_taskspace) = opts.task_space_joint_vel_weight {
+            eprintln!("[full-centroidal] task_space_joint_vel_weight={r_taskspace:?}");
+            gc.set_task_space_joint_vel_weight(Some(r_taskspace));
         }
     }
 
@@ -1061,6 +1090,30 @@ fn go2_wbc_velocity_staircase_fine_full_centroidal_sqp_tuning() {
         eprintln!("\n=== {label} ===");
         report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
     }
+}
+
+/// Desk-research gap ② (`ref/ocs2` verified): legged_control/OCS2's
+/// `ocs2_legged_robot` example maps its `joint_v` cost through each
+/// leg's fixed-nominal-pose Jacobian (`R_jointspace = J_nom^T *
+/// R_taskspace * J_nom`) instead of a flat per-joint diagonal. Tests
+/// this against the Sec.5w/5y true default (`legged_control_parity`,
+/// horizon 10x0.030s sqp=1) with `r_taskspace = [1,1,1]` — the same
+/// overall scale as the existing flat `r_diag[12..24] = 1.0` default,
+/// isolating the Jacobian *shape* effect from any weight-magnitude
+/// change.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_full_centroidal_taskspace_weight() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams::velocity_staircase_fine_full_centroidal_taskspace_weight_misa_wbc(
+        wbc::Formulation::ForceSpace,
+        cfg,
+        true,
+        [1.0, 1.0, 1.0],
+    );
+    let Some(samples) = run_wbc_sim(params) else { return };
+    eprintln!("\n=== FullCentroidal + parity + task_space_joint_vel_weight([1,1,1]) ===");
+    report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
 }
 
 fn assert_forward_command_advances_body(samples: &[WbcSample]) {
