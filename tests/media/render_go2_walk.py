@@ -26,7 +26,11 @@ ap.add_argument("--title", default="misa-wbc + quadruped-gait -- Go2 Trot walk (
 ap.add_argument("--stride", type=int, default=4, help="sample every Nth tick")
 ap.add_argument("--fps", type=int, default=50)
 ap.add_argument("--staircase-step-s", type=float, default=None,
-                 help="if set, show commanded vx = floor(t/step)*0.5 m/s (capped at 5.0) in the title")
+                 help="if set, show the commanded-speed readout in the title")
+ap.add_argument("--staircase-step-mps", type=float, default=0.5,
+                 help="velocity increment per staircase level (m/s)")
+ap.add_argument("--staircase-max-mps", type=float, default=5.0,
+                 help="top commanded speed (m/s); with --staircase-step-mps sets the level count")
 args = ap.parse_args()
 
 LINK_NAMES = (
@@ -244,9 +248,10 @@ for fi, tick in enumerate(frame_indices):
         update_trail(tick, leg)
 
     if args.staircase_step_s:
-        level = min(int(row[IDX_T] / args.staircase_step_s), 10)
-        cmd_vx = level * 0.5
-        text_actor.SetInput(f"{args.title}   t = {row[IDX_T]:5.2f}s   cmd_vx = {cmd_vx:.1f} m/s")
+        n_levels = round(args.staircase_max_mps / args.staircase_step_mps) + 1
+        level = min(int(row[IDX_T] / args.staircase_step_s), n_levels - 1)
+        cmd_vx = level * args.staircase_step_mps
+        text_actor.SetInput(f"{args.title}   t = {row[IDX_T]:5.2f}s   cmd_vx = {cmd_vx:.2f} m/s")
     else:
         text_actor.SetInput(f"{args.title}   t = {row[IDX_T]:5.2f}s")
 
