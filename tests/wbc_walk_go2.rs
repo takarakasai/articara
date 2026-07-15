@@ -102,30 +102,29 @@ struct WbcParams {
     dt: f64,
     misa_wbc_mode: Option<(wbc::Formulation, wbc::SolveConfig)>,
     /// When set, `cmd_vx` is ignored and the commanded forward
-    /// velocity instead steps through `0.0, 0.5, 1.0, … 5.0 m/s`
-    /// (`STAIRCASE_STEP_MPS`), holding each level for this many
-    /// seconds — a stress test to find where Trot+WBC+MPC stops
-    /// tracking cleanly, not a pass/fail regression check.
+    /// velocity instead steps through `0.0, step, 2*step, … max`
+    /// (`staircase_step_mps` / `staircase_max_mps`), holding each
+    /// level for this many seconds — a stress test to find where
+    /// Trot+WBC+MPC stops tracking cleanly, not a pass/fail
+    /// regression check.
     staircase_step_s: Option<f64>,
+    staircase_step_mps: f64,
+    staircase_max_mps: f64,
 }
-
-/// Velocity increment per staircase level (m/s) — see `staircase_step_s`.
-const STAIRCASE_STEP_MPS: f64 = 0.5;
-/// Top commanded speed (m/s); `STAIRCASE_STEP_MPS` apart gives 11 levels
-/// (0.0..=5.0).
-const STAIRCASE_MAX_MPS: f64 = 5.0;
 
 impl WbcParams {
     fn static_stand() -> Self {
         Self {
             total_time_s: 1.5, burn_in_s: 0.5, cmd_vx: 0.0, dt: 0.002,
             misa_wbc_mode: None, staircase_step_s: None,
+            staircase_step_mps: 0.0, staircase_max_mps: 0.0,
         }
     }
     fn forward_walk() -> Self {
         Self {
             total_time_s: 3.0, burn_in_s: 0.5, cmd_vx: 0.15, dt: 0.002,
             misa_wbc_mode: None, staircase_step_s: None,
+            staircase_step_mps: 0.0, staircase_max_mps: 0.0,
         }
     }
     fn static_stand_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
@@ -135,11 +134,17 @@ impl WbcParams {
         Self { misa_wbc_mode: Some((formulation, cfg)), ..Self::forward_walk() }
     }
 
-    /// 30s staircase, 0 to 5 m/s in 0.5 m/s steps (11 levels, ~2.73s
-    /// each), routed through misa-wbc's ForceSpace+ActiveSet.
-    fn velocity_staircase_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
-        let total_time_s = 30.0;
-        let n_levels = (STAIRCASE_MAX_MPS / STAIRCASE_STEP_MPS).round() as usize + 1;
+    /// General staircase: `0.0` to `max_mps` in `step_mps` increments,
+    /// evenly dividing `total_time_s` across all levels, routed
+    /// through misa-wbc's ForceSpace+ActiveSet.
+    fn velocity_staircase_custom_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        step_mps: f64,
+        max_mps: f64,
+        total_time_s: f64,
+    ) -> Self {
+        let n_levels = (max_mps / step_mps).round() as usize + 1;
         Self {
             total_time_s,
             burn_in_s: 0.0, // level 0 (vx=0) already acts as the settle window
@@ -147,7 +152,25 @@ impl WbcParams {
             dt: 0.002,
             misa_wbc_mode: Some((formulation, cfg)),
             staircase_step_s: Some(total_time_s / n_levels as f64),
+            staircase_step_mps: step_mps,
+            staircase_max_mps: max_mps,
         }
+    }
+
+    /// 30s staircase, 0 to 5 m/s in 0.5 m/s steps (11 levels, ~2.73s
+    /// each) — the original coarse sweep that found the footstep-
+    /// planner's speed ceiling (`ref/wbc_comparison.md` Sec.5r).
+    fn velocity_staircase_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
+        Self::velocity_staircase_custom_misa_wbc(formulation, cfg, 0.5, 5.0, 30.0)
+    }
+
+    /// 60s staircase, 0 to 1.0 m/s in 0.05 m/s steps (21 levels,
+    /// ~2.86s each) — fine-grained resweep around the ~0.46 m/s
+    /// ceiling Sec.5r found, without the >1.5 m/s region that just
+    /// produces the (already-explained) footstep-clamp saturation and
+    /// capture-point-driven reversal.
+    fn velocity_staircase_fine_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
+        Self::velocity_staircase_custom_misa_wbc(formulation, cfg, 0.05, 1.0, 60.0)
     }
 }
 
@@ -231,12 +254,13 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             gc.enable();
         }
         if let Some(step_s) = params.staircase_step_s {
-            let n_levels = (STAIRCASE_MAX_MPS / STAIRCASE_STEP_MPS).round() as usize + 1;
+            let n_levels =
+                (params.staircase_max_mps / params.staircase_step_mps).round() as usize + 1;
             let level = ((t / step_s) as usize).min(n_levels - 1);
             if last_staircase_level != Some(level) {
-                let vx = level as f64 * STAIRCASE_STEP_MPS;
+                let vx = level as f64 * params.staircase_step_mps;
                 gc.set_velocity_cmd(VelocityCmd { vx, vy: 0.0, wz: 0.0 });
-                eprintln!("[staircase] t={t:6.2}s level={level:2} cmd_vx={vx:.1} m/s");
+                eprintln!("[staircase] t={t:6.2}s level={level:2} cmd_vx={vx:.2} m/s");
                 last_staircase_level = Some(level);
             }
         } else if k == burn_in_steps {
@@ -418,26 +442,13 @@ fn go2_wbc_forward_command_advances_body_force_space_active_set() {
     assert_forward_command_advances_body(&samples);
 }
 
-/// Stress test, not a regression check: command a 0 -> 5 m/s staircase
-/// (0.5 m/s per level, ~2.73 s each) over 30 s and report per-level
-/// tracking quality -- where does Trot+WBC+SRBD-MPC stop keeping up?
-/// No hard pass/fail assertion (a fall at high commanded speed is an
-/// expected, informative outcome, not a bug); `#[ignore]`d like the
-/// other exploratory benchmarks in this session, run manually with
-/// `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco \
-///  --test wbc_walk_go2 -- --ignored --nocapture go2_wbc_velocity_staircase`.
-#[test]
-#[ignore = "exploratory stress test — run with --ignored"]
-fn go2_wbc_velocity_staircase() {
-    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
-    let Some(samples) =
-        run_wbc_sim(WbcParams::velocity_staircase_misa_wbc(wbc::Formulation::ForceSpace, cfg))
-    else {
-        return;
-    };
-
-    let n_levels = (STAIRCASE_MAX_MPS / STAIRCASE_STEP_MPS).round() as usize + 1;
-    let total_time_s = 30.0_f64;
+/// Stress test, not a regression check: command a `0 -> max_mps`
+/// staircase (`step_mps` per level) over `total_time_s` and report
+/// per-level tracking quality -- where does Trot+WBC+SRBD-MPC stop
+/// keeping up? No hard pass/fail assertion (a fall or a tracking
+/// plateau is an expected, informative outcome, not a bug).
+fn report_velocity_staircase(samples: &[WbcSample], step_mps: f64, max_mps: f64, total_time_s: f64) {
+    let n_levels = (max_mps / step_mps).round() as usize + 1;
     let step_s = total_time_s / n_levels as f64;
 
     eprintln!(
@@ -452,7 +463,7 @@ fn go2_wbc_velocity_staircase() {
         if window.is_empty() {
             continue;
         }
-        let cmd_vx = level as f64 * STAIRCASE_STEP_MPS;
+        let cmd_vx = level as f64 * step_mps;
         let x0 = window.first().unwrap().body_x;
         let x1 = window.last().unwrap().body_x;
         let meas_vx = (x1 - x0) / (t1 - t0).min(window.last().unwrap().t - t0);
@@ -460,7 +471,7 @@ fn go2_wbc_velocity_staircase() {
         let peak_roll = window.iter().map(|s| s.roll.abs()).fold(0.0_f64, f64::max);
         let peak_pitch = window.iter().map(|s| s.pitch.abs()).fold(0.0_f64, f64::max);
         eprintln!(
-            "{level:6} {cmd_vx:8.1} {meas_vx:9.2} {min_z:9.3} {peak_roll:9.2} {peak_pitch:9.2}",
+            "{level:6} {cmd_vx:8.2} {meas_vx:9.3} {min_z:9.3} {peak_roll:9.2} {peak_pitch:9.2}",
         );
     }
 
@@ -469,6 +480,42 @@ fn go2_wbc_velocity_staircase() {
         "\n[wbc:go2] velocity_staircase: min_z over full run = {min_z_overall:.3} m \
          (fall threshold {TRUNK_Z_FALL_THRESHOLD_M:.2} m)"
     );
+}
+
+/// Coarse sweep, 0 to 5 m/s in 0.5 m/s steps over 30s -- found the
+/// footstep-planner speed ceiling (`ref/wbc_comparison.md` Sec.5r).
+/// `#[ignore]`d like the other exploratory benchmarks in this
+/// session; run manually with `WBC_WALK_CSV_OUT=<path> cargo test
+/// --release --features mujoco --test wbc_walk_go2 -- --ignored
+/// --nocapture go2_wbc_velocity_staircase`.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let Some(samples) =
+        run_wbc_sim(WbcParams::velocity_staircase_misa_wbc(wbc::Formulation::ForceSpace, cfg))
+    else {
+        return;
+    };
+    report_velocity_staircase(&samples, 0.5, 5.0, 30.0);
+}
+
+/// Fine resweep, 0 to 1.0 m/s in 0.05 m/s steps over 60s -- higher
+/// resolution around the ~0.46 m/s ceiling Sec.5r found, without the
+/// >1.5 m/s region whose saturation/reversal is already explained by
+/// the footstep planner's `max_step_length_m` clamp
+/// (`mpc_controller.rs::compute_mpc_footstep`).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let Some(samples) = run_wbc_sim(WbcParams::velocity_staircase_fine_misa_wbc(
+        wbc::Formulation::ForceSpace,
+        cfg,
+    )) else {
+        return;
+    };
+    report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
 }
 
 fn assert_forward_command_advances_body(samples: &[WbcSample]) {
