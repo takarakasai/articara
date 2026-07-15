@@ -48,6 +48,17 @@
   (`go2_wbc_velocity_staircase_fine_cycle_resonance`); see
   `ref/wbc_comparison.md` Sec.5t for the full writeup and open
   questions.
+- `body_height_sweep.png` — same fine 0-1.0 m/s staircase, MPC horizon
+  and gait cycle held at their defaults, sweeping the standing-height
+  bias fraction instead (`go2_wbc_velocity_staircase_fine_body_height_sweep`,
+  standing height 0.13-0.30 m). Crouching generally raises peak
+  tracking, but one height (~0.20 m) is qualitatively different from
+  the rest: instead of peaking then rolling off (or, at the most
+  crouched setting, reversing), it holds a near-flat plateau all the
+  way to the top of the commanded range — the same "reversal-free
+  plateau" signature Sec.5t found from a *longer MPC horizon*, this
+  time produced by a completely independent parameter left at its
+  default horizon. See `ref/wbc_comparison.md` Sec.5u.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
