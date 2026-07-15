@@ -102,6 +102,19 @@
   pattern Sec.5v found for height×horizon. See `ref/wbc_comparison.md`
   Sec.5y (also documents a mislabeled-baseline mistake caught and
   corrected mid-experiment).
+- `taskspace_weight_comparison.png` — implements and tests
+  `FullCentroidalMpcConfig::joint_vel_nominal_jacobian` (new, opt-in,
+  in quadruped-gait): maps the flat per-joint `joint_v` cost through
+  each leg's fixed-nominal-pose Jacobian
+  (`R_jointspace = J_nom^T · diag(r_taskspace) · J_nom`),
+  legged_control/OCS2's own technique (confirmed against `ref/ocs2`),
+  against the Sec.5y true default
+  (`go2_wbc_velocity_staircase_fine_full_centroidal_taskspace_weight`).
+  At the same overall weight scale (`r_taskspace=[1,1,1]`), the
+  Jacobian mapping alone makes mid-to-high-speed tracking clearly
+  worse (briefly reversing around cmd_vx=0.75-0.80) — a third instance
+  of a legged_control design choice not transferring cleanly to our
+  formulation. See `ref/wbc_comparison.md` Sec.5z.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
