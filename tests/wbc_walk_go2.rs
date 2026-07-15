@@ -158,6 +158,34 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         wbc_pipeline = wbc_pipeline.with_wbc_solver(formulation, cfg);
     }
 
+    // Optional per-tick link-pose CSV export for external video
+    // rendering (visualization side-channel only, no effect on the
+    // pass/fail assertions below). Every body MuJoCo actually
+    // simulates -- base + all 4 legs' hip/thigh/calf/foot -- queried
+    // by name directly from MuJoCo (sidesteps needing to know
+    // misarta's floating-base joint indexing at all).
+    const LINK_NAMES: [&str; 17] = [
+        "base",
+        "FL_hip", "FL_thigh", "FL_calf", "FL_foot",
+        "FR_hip", "FR_thigh", "FR_calf", "FR_foot",
+        "RL_hip", "RL_thigh", "RL_calf", "RL_foot",
+        "RR_hip", "RR_thigh", "RR_calf", "RR_foot",
+    ];
+    let csv_out = std::env::var("WBC_WALK_CSV_OUT").ok();
+    let mut csv_buf = String::new();
+    if csv_out.is_some() {
+        csv_buf.push_str("tick,t");
+        for name in LINK_NAMES {
+            csv_buf.push_str(&format!(
+                ",{name}_tx,{name}_ty,{name}_tz,\
+                 {name}_r00,{name}_r01,{name}_r02,\
+                 {name}_r10,{name}_r11,{name}_r12,\
+                 {name}_r20,{name}_r21,{name}_r22"
+            ));
+        }
+        csv_buf.push('\n');
+    }
+
     let n_steps = (params.total_time_s / params.dt).round() as usize;
     let burn_in_steps = (params.burn_in_s / params.dt).round() as usize;
     let mut samples: Vec<WbcSample> = Vec::with_capacity(n_steps);
@@ -254,6 +282,28 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         let (roll, pitch, _yaw) = robot.base_transform.rotation.euler_angles();
         let total_fz_world: f64 = sim.contacts().iter().map(|c| c.force_world[2]).sum();
         samples.push(WbcSample { t, body_x: tx.x, body_z: tx.z, roll, pitch, total_fz_world });
+
+        if csv_out.is_some() {
+            csv_buf.push_str(&format!("{k},{t:.4}"));
+            for name in LINK_NAMES {
+                let p = sim.body_world_position(name).unwrap_or([0.0, 0.0, 0.0]);
+                let r = sim
+                    .body_world_orientation(name)
+                    .map(|q| *q.to_rotation_matrix().matrix())
+                    .unwrap_or_else(nalgebra::Matrix3::identity);
+                csv_buf.push_str(&format!(",{:.5},{:.5},{:.5}", p[0], p[1], p[2]));
+                for row in 0..3 {
+                    for col in 0..3 {
+                        csv_buf.push_str(&format!(",{:.6}", r[(row, col)]));
+                    }
+                }
+            }
+            csv_buf.push('\n');
+        }
+    }
+    if let Some(path) = csv_out {
+        std::fs::write(&path, csv_buf).expect("write WBC_WALK_CSV_OUT");
+        eprintln!("wrote {path}");
     }
     Some(samples)
 }
