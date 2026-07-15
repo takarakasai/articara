@@ -110,6 +110,24 @@ struct WbcParams {
     staircase_step_s: Option<f64>,
     staircase_step_mps: f64,
     staircase_max_mps: f64,
+    /// Override the auto-detected `SrbdMpcConfig`'s `(horizon_steps,
+    /// dt_per_step)` after `GaitController::build` — an experiment
+    /// prompted by `ref/legged_control`'s OCS2 NMPC using a 1.0s
+    /// horizon (`task.info`'s `mpc.timeHorizon`) against our SRBD
+    /// MPC's default 0.3s (10 steps x 30ms): does a longer horizon
+    /// narrow the steady-state velocity-tracking gap Sec.5s found
+    /// (no integral action anywhere in either codebase, so the two
+    /// codebases' *horizon length* is the concrete, borrowable
+    /// difference, not "integral gain").
+    mpc_horizon_override: Option<(usize, f64)>,
+    /// Override `GaitConfig::trot()`'s `cycle_period_s` (default 0.4s)
+    /// after construction — used to test whether Sec.5t's narrow
+    /// good-tracking horizon band (0.60-0.65s) is a resonance with the
+    /// Trot gait cycle period rather than an absolute-time effect: if
+    /// the band shifts proportionally when the cycle period changes,
+    /// that confirms a ratio (horizon/cycle_period_s), not a fixed
+    /// horizon in seconds.
+    gait_cycle_period_override: Option<f64>,
 }
 
 impl WbcParams {
@@ -118,6 +136,7 @@ impl WbcParams {
             total_time_s: 1.5, burn_in_s: 0.5, cmd_vx: 0.0, dt: 0.002,
             misa_wbc_mode: None, staircase_step_s: None,
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
+            mpc_horizon_override: None, gait_cycle_period_override: None,
         }
     }
     fn forward_walk() -> Self {
@@ -125,6 +144,7 @@ impl WbcParams {
             total_time_s: 3.0, burn_in_s: 0.5, cmd_vx: 0.15, dt: 0.002,
             misa_wbc_mode: None, staircase_step_s: None,
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
+            mpc_horizon_override: None, gait_cycle_period_override: None,
         }
     }
     fn static_stand_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
@@ -154,6 +174,8 @@ impl WbcParams {
             staircase_step_s: Some(total_time_s / n_levels as f64),
             staircase_step_mps: step_mps,
             staircase_max_mps: max_mps,
+            mpc_horizon_override: None,
+            gait_cycle_period_override: None,
         }
     }
 
@@ -171,6 +193,38 @@ impl WbcParams {
     /// capture-point-driven reversal.
     fn velocity_staircase_fine_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
         Self::velocity_staircase_custom_misa_wbc(formulation, cfg, 0.05, 1.0, 60.0)
+    }
+
+    /// Same as [`Self::velocity_staircase_fine_misa_wbc`], with the
+    /// SRBD MPC's horizon overridden to `(horizon_steps, dt_per_step)`
+    /// after `GaitController::build` -- see `mpc_horizon_override`'s
+    /// doc comment for why this is the experiment worth running.
+    fn velocity_staircase_fine_with_horizon_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        horizon_steps: usize,
+        dt_per_step: f64,
+    ) -> Self {
+        Self {
+            mpc_horizon_override: Some((horizon_steps, dt_per_step)),
+            ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
+        }
+    }
+
+    /// Same as [`Self::velocity_staircase_fine_with_horizon_misa_wbc`],
+    /// also overriding `GaitConfig::trot()`'s `cycle_period_s` — see
+    /// `gait_cycle_period_override`'s doc comment.
+    fn velocity_staircase_fine_with_horizon_and_cycle_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        horizon_steps: usize,
+        dt_per_step: f64,
+        cycle_period_s: f64,
+    ) -> Self {
+        Self {
+            gait_cycle_period_override: Some(cycle_period_s),
+            ..Self::velocity_staircase_fine_with_horizon_misa_wbc(formulation, cfg, horizon_steps, dt_per_step)
+        }
     }
 }
 
@@ -199,9 +253,28 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
     sim.set_gravity_compensation(true);
 
-    let cfg = GaitConfig::trot();
+    let mut cfg = GaitConfig::trot();
+    if let Some(cycle_period_s) = params.gait_cycle_period_override {
+        eprintln!(
+            "[gait-cycle] overriding cycle_period_s {:.3}s -> {:.3}s",
+            cfg.cycle_period_s, cycle_period_s
+        );
+        cfg.cycle_period_s = cycle_period_s;
+    }
     let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::Mpc)
         .expect("GaitController::build (Mpc mode)");
+    if let Some((horizon_steps, dt_per_step)) = params.mpc_horizon_override {
+        let mut mpc_cfg = gc.srbd_mpc_config().expect("Mpc mode has a config").clone();
+        eprintln!(
+            "[mpc-horizon] overriding {}x{:.3}s={:.2}s -> {}x{:.3}s={:.2}s",
+            mpc_cfg.horizon_steps, mpc_cfg.dt_per_step,
+            mpc_cfg.horizon_steps as f64 * mpc_cfg.dt_per_step,
+            horizon_steps, dt_per_step, horizon_steps as f64 * dt_per_step,
+        );
+        mpc_cfg.horizon_steps = horizon_steps;
+        mpc_cfg.dt_per_step = dt_per_step;
+        gc.set_srbd_mpc_config(mpc_cfg);
+    }
 
     let foot_links: [String; 4] = [
         DEFAULT_FOOT_LINKS[0].1.to_string(),
@@ -516,6 +589,129 @@ fn go2_wbc_velocity_staircase_fine() {
         return;
     };
     report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+}
+
+/// Same fine sweep, MPC horizon doubled (10 steps x 60ms = 0.6s,
+/// vs the 0.3s default) -- same QP size (n=120, no extra per-solve
+/// cost), testing whether a longer horizon narrows the steady-state
+/// tracking gap Sec.5s found, the way `ref/legged_control`'s OCS2
+/// NMPC (1.0s horizon) might benefit from versus our 0.3s default.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_long_horizon() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let Some(samples) = run_wbc_sim(WbcParams::velocity_staircase_fine_with_horizon_misa_wbc(
+        wbc::Formulation::ForceSpace,
+        cfg,
+        10,
+        0.06,
+    )) else {
+        return;
+    };
+    report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+}
+
+/// Same fine sweep again, MPC horizon stretched to match
+/// `ref/legged_control`'s OCS2 NMPC `mpc.timeHorizon 1.0` exactly
+/// (10 steps x 100ms = 1.0s, still n=120 -- only the per-step
+/// discretization gets coarser, not the QP size). Sec.5t found the
+/// 0.6s trial fixed the high-speed reversal and pushed mid-range
+/// tracking to ~100%, at the cost of a small low-speed regression;
+/// this checks whether 1.0s keeps improving or starts to degrade from
+/// discretization error.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_full_horizon() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let Some(samples) = run_wbc_sim(WbcParams::velocity_staircase_fine_with_horizon_misa_wbc(
+        wbc::Formulation::ForceSpace,
+        cfg,
+        10,
+        0.10,
+    )) else {
+        return;
+    };
+    report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+}
+
+/// Sec.5t found a non-monotonic dependence on MPC horizon: 0.3s
+/// (default) saturates-then-reverses gently, 0.6s tracks near-100% up
+/// to ~0.5 m/s with no reversal, but 1.0s (legged_control-matched)
+/// diverges into sustained backward walking at high commanded speed.
+/// Sweeps the gap between the known-good 0.6s and known-bad 1.0s to
+/// locate where the collapse actually begins.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_horizon_sweep() {
+    for dt_per_step in [0.07, 0.08, 0.09] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let Some(samples) = run_wbc_sim(WbcParams::velocity_staircase_fine_with_horizon_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            10,
+            dt_per_step,
+        )) else {
+            continue;
+        };
+        eprintln!("\n=== horizon = 10 x {dt_per_step:.2}s = {:.2}s ===", dt_per_step * 10.0);
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
+}
+
+/// Sec.5t's coarse sweep found 0.6s tracking near-ideal but 0.7s
+/// already reversed -- a cliff, not a gentle rolloff, suggesting 0.6s
+/// might be an isolated spike rather than a stable operating point.
+/// Zooms into 0.55/0.58/0.62/0.65s to find the spike's actual width.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_horizon_zoom() {
+    for dt_per_step in [0.055, 0.058, 0.062, 0.065] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let Some(samples) = run_wbc_sim(WbcParams::velocity_staircase_fine_with_horizon_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            10,
+            dt_per_step,
+        )) else {
+            continue;
+        };
+        eprintln!("\n=== horizon = 10 x {dt_per_step:.3}s = {:.2}s ===", dt_per_step * 10.0);
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
+}
+
+/// Sec.5t found good tracking only in a narrow horizon band
+/// (0.60-0.65s) around the Trot default `cycle_period_s=0.4s` — i.e.
+/// 1.5-1.625 gait cycles. Tests whether that's a resonance with the
+/// gait cycle (band should shift proportionally when `cycle_period_s`
+/// changes) or a fixed absolute-time effect (band should stay put).
+/// For each `cycle_period_s`, tries both the ORIGINAL absolute horizon
+/// (0.6s) and the PROPORTIONAL horizon (1.5x the new cycle period) —
+/// resonance hypothesis predicts proportional wins, absolute-time
+/// hypothesis predicts the original 0.6s keeps winning regardless.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_cycle_resonance() {
+    let trials: [(f64, &str, f64); 4] = [
+        (0.3, "0.3s cycle, absolute 0.6s horizon", 0.060),
+        (0.3, "0.3s cycle, proportional 1.5x = 0.45s horizon", 0.045),
+        (0.5, "0.5s cycle, absolute 0.6s horizon", 0.060),
+        (0.5, "0.5s cycle, proportional 1.5x = 0.75s horizon", 0.075),
+    ];
+    for (cycle_period_s, label, dt_per_step) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let Some(samples) = run_wbc_sim(WbcParams::velocity_staircase_fine_with_horizon_and_cycle_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            10,
+            dt_per_step,
+            cycle_period_s,
+        )) else {
+            continue;
+        };
+        eprintln!("\n=== {label} ===");
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
 }
 
 fn assert_forward_command_advances_body(samples: &[WbcSample]) {
