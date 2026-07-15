@@ -67,6 +67,17 @@
   solo runs hold ~0.35-0.5 m/s there) before partially recovering by
   cmd_vx=1.0. The two fixes interact rather than add — see
   `ref/wbc_comparison.md` Sec.5v.
+- `full_centroidal_comparison.png` — first look at
+  `GaitMode::FullCentroidal` (24-state, `joint_q` folded into the MPC
+  state so the per-leg moment arm updates within the horizon, plus a
+  real multi-iteration SQP loop) against the `GaitMode::Mpc` (SRBD)
+  baseline, same fine 0-1.0 m/s staircase, no height/horizon tuning
+  (`go2_wbc_velocity_staircase_fine_full_centroidal`). Enabling
+  `legged_control_parity` alone reproduces the reversal-free plateau
+  Sec.5t's 0.6s-horizon search had to hunt for, with zero extra
+  tuning; layering `use_mpc_predicted_footstep` on top instead
+  destabilizes it (sustained backward walking, roll up to ~15°). See
+  `ref/wbc_comparison.md` Sec.5w.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
