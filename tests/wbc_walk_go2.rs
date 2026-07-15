@@ -128,6 +128,16 @@ struct WbcParams {
     /// that confirms a ratio (horizon/cycle_period_s), not a fixed
     /// horizon in seconds.
     gait_cycle_period_override: Option<f64>,
+    /// Override the per-leg standing-height bias fraction applied on
+    /// top of the auto-detected `nominal_foot_body.z` (as
+    /// `nominal_foot_body.z += bias_frac * (upper_leg_m +
+    /// lower_leg_m)`, same formula `run_wbc_sim` always applies with
+    /// the hardcoded default `0.08`). This is what the SRBD MPC
+    /// regulates body z to (`mpc_controller.rs::build_srbd_inputs`
+    /// uses `-kin.legs()[0].nominal_foot_body.z` as its target height
+    /// proxy), so sweeping this sweeps standing height. `None` keeps
+    /// the existing `0.08` default.
+    body_height_bias_frac: Option<f64>,
 }
 
 impl WbcParams {
@@ -137,6 +147,7 @@ impl WbcParams {
             misa_wbc_mode: None, staircase_step_s: None,
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
             mpc_horizon_override: None, gait_cycle_period_override: None,
+            body_height_bias_frac: None,
         }
     }
     fn forward_walk() -> Self {
@@ -145,6 +156,7 @@ impl WbcParams {
             misa_wbc_mode: None, staircase_step_s: None,
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
             mpc_horizon_override: None, gait_cycle_period_override: None,
+            body_height_bias_frac: None,
         }
     }
     fn static_stand_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
@@ -176,6 +188,7 @@ impl WbcParams {
             staircase_max_mps: max_mps,
             mpc_horizon_override: None,
             gait_cycle_period_override: None,
+            body_height_bias_frac: None,
         }
     }
 
@@ -226,6 +239,21 @@ impl WbcParams {
             ..Self::velocity_staircase_fine_with_horizon_misa_wbc(formulation, cfg, horizon_steps, dt_per_step)
         }
     }
+
+    /// Same fine 0-1.0 m/s staircase, with the standing-height bias
+    /// fraction overridden — see `body_height_bias_frac`'s doc comment.
+    /// Horizon and cycle period stay at their defaults so height is the
+    /// sole independent variable.
+    fn velocity_staircase_fine_with_height_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        body_height_bias_frac: f64,
+    ) -> Self {
+        Self {
+            body_height_bias_frac: Some(body_height_bias_frac),
+            ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
+        }
+    }
 }
 
 fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
@@ -238,9 +266,19 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
 
     let mut kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS)
         .expect("auto-detect kinematics");
+    let height_bias_frac = params.body_height_bias_frac.unwrap_or(0.08);
+    let raw_z = kin.fl.nominal_foot_body.z;
+    let total_leg = kin.fl.upper_leg_m + kin.fl.lower_leg_m;
     for leg_kin in [&mut kin.fl, &mut kin.fr, &mut kin.rl, &mut kin.rr] {
         let total_leg = leg_kin.upper_leg_m + leg_kin.lower_leg_m;
-        leg_kin.nominal_foot_body.z += 0.08 * total_leg;
+        leg_kin.nominal_foot_body.z += height_bias_frac * total_leg;
+    }
+    if params.body_height_bias_frac.is_some() {
+        eprintln!(
+            "[body-height] bias_frac={height_bias_frac:.3} (leg_len={total_leg:.3}m, raw_z={raw_z:.3}m) \
+             -> nominal_foot_body.z={:.3}m (standing height ~{:.3}m)",
+            kin.fl.nominal_foot_body.z, -kin.fl.nominal_foot_body.z,
+        );
     }
     seed_joint_positions_from_kinematics(&mut robot, &kin);
 
@@ -710,6 +748,31 @@ fn go2_wbc_velocity_staircase_fine_cycle_resonance() {
             continue;
         };
         eprintln!("\n=== {label} ===");
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
+}
+
+/// Sweeps standing height (via `body_height_bias_frac`, applied on top
+/// of the auto-detected `nominal_foot_body.z` — see that field's doc
+/// comment) across the same fine 0-1.0 m/s staircase, holding MPC
+/// horizon and gait cycle at their defaults so height is the sole
+/// independent variable: does a taller/crouchier stance change
+/// velocity-tracking quality or stability, and where does it fail
+/// (leg near-full-extension singularity at the tall end, insufficient
+/// swing clearance at the crouched end)?
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_body_height_sweep() {
+    for bias_frac in [-0.08, -0.04, 0.0, 0.08, 0.16, 0.24, 0.32] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let Some(samples) = run_wbc_sim(WbcParams::velocity_staircase_fine_with_height_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            bias_frac,
+        )) else {
+            continue;
+        };
+        eprintln!("\n=== body_height_bias_frac = {bias_frac:.2} ===");
         report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
     }
 }
