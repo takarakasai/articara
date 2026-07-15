@@ -4382,7 +4382,6 @@ checksum = "b5a041e753da8b807c9255f28de81879c78c876392ff2469cde94799b2896b9d"
 [[package]]
 name = "quadruped-gait"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/quadruped-gait.git#27de3fe2c413c2ecfab4f49f7e7ae5791bf6f1ad"
 dependencies = [
  "clarabel",
  "log",
