@@ -154,10 +154,15 @@ struct WbcParams {
 /// trajectory (closed loop between the MPC's optimized trunk response
 /// and the footstep target) — the closest existing analogue to
 /// jointly optimizing contact force / trunk / swing-leg trajectory.
+/// `dynamic_joint_q_reference`: the MPC's joint_q tracking reference
+/// becomes a real per-horizon-step trajectory (sampled from the same
+/// open-loop swing/stance foot curve `tick()` uses) instead of a flat
+/// hold — the D3.3.5a reversal, requires `legged_control_parity`.
 #[derive(Clone, Copy)]
 struct FullCentroidalOpts {
     legged_control_parity: bool,
     use_mpc_predicted_footstep: bool,
+    dynamic_joint_q_reference: bool,
 }
 
 impl WbcParams {
@@ -305,8 +310,25 @@ impl WbcParams {
         legged_control_parity: bool,
         use_mpc_predicted_footstep: bool,
     ) -> Self {
+        Self::velocity_staircase_fine_full_centroidal_dynamic_q_misa_wbc(
+            formulation, cfg, legged_control_parity, use_mpc_predicted_footstep, false,
+        )
+    }
+
+    /// Same as [`Self::velocity_staircase_fine_full_centroidal_misa_wbc`],
+    /// also toggling `dynamic_joint_q_reference` — see
+    /// `FullCentroidalOpts`'s doc comment.
+    fn velocity_staircase_fine_full_centroidal_dynamic_q_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        legged_control_parity: bool,
+        use_mpc_predicted_footstep: bool,
+        dynamic_joint_q_reference: bool,
+    ) -> Self {
         Self {
-            full_centroidal: Some(FullCentroidalOpts { legged_control_parity, use_mpc_predicted_footstep }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity, use_mpc_predicted_footstep, dynamic_joint_q_reference,
+            }),
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
         }
     }
@@ -372,11 +394,12 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     }
     if let Some(opts) = params.full_centroidal {
         eprintln!(
-            "[full-centroidal] legged_control_parity={} use_mpc_predicted_footstep={}",
-            opts.legged_control_parity, opts.use_mpc_predicted_footstep,
+            "[full-centroidal] legged_control_parity={} use_mpc_predicted_footstep={} dynamic_joint_q_reference={}",
+            opts.legged_control_parity, opts.use_mpc_predicted_footstep, opts.dynamic_joint_q_reference,
         );
         gc.set_legged_control_parity(opts.legged_control_parity);
         gc.set_use_mpc_predicted_footstep(opts.use_mpc_predicted_footstep);
+        gc.set_dynamic_joint_q_reference(opts.dynamic_joint_q_reference);
     }
 
     let foot_links: [String; 4] = [
@@ -909,6 +932,38 @@ fn go2_wbc_velocity_staircase_fine_full_centroidal() {
             cfg,
             parity,
             predicted_footstep,
+        );
+        let Some(samples) = run_wbc_sim(params) else { continue };
+        eprintln!("\n=== {label} ===");
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
+}
+
+/// Sec.5w found `legged_control_parity` alone matched the hand-found
+/// SRBD 0.6s-horizon plateau with zero tuning. This is the next
+/// increment the user asked for: does actually closing the joint-space
+/// loop -- `dynamic_joint_q_reference`, the D3.3.5a reversal where the
+/// MPC's joint_q cost tracks a real per-horizon-step swing/stance
+/// trajectory instead of a flat hold, the most literal reading of
+/// "jointly optimize contact force / trunk / swing-leg trajectory" --
+/// improve on `legged_control_parity` alone, or (like Sec.5v's
+/// height+horizon combo, and Sec.5w's own use_mpc_predicted_footstep)
+/// interact badly instead.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_full_centroidal_dynamic_q() {
+    let trials = [
+        ("FullCentroidal + parity (Sec.5w baseline)", false),
+        ("FullCentroidal + parity + dynamic_joint_q_reference", true),
+    ];
+    for (label, dynamic_q) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams::velocity_staircase_fine_full_centroidal_dynamic_q_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            true,
+            false,
+            dynamic_q,
         );
         let Some(samples) = run_wbc_sim(params) else { continue };
         eprintln!("\n=== {label} ===");

@@ -85,3 +85,12 @@ serde_json = "1"
 
 [workspace]
 members = [".", "xtask"]
+
+# TEMPORARY (dev-only, not pushed): pin quadruped-gait to the local
+# sibling checkout so tests/wbc_walk_go2.rs can exercise the not-yet-
+# pushed dynamic_joint_q_reference (D3.3.5a reversal) work before it
+# lands on the git rev this Cargo.toml is pinned to. Revert (or push
+# quadruped-gait + bump the git rev) once that comparison no longer
+# needs to track local-only commits.
+[patch."https://github.com/takarakasai/quadruped-gait.git"]
+quadruped-gait = { path = "../quadruped-gait/quadruped-gait" }
