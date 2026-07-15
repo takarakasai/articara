@@ -254,6 +254,23 @@ impl WbcParams {
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
         }
     }
+
+    /// Combines the Sec.5t horizon override and the Sec.5u height
+    /// override in one run — tests whether their independently-found
+    /// reversal-free-plateau effects stack, cancel, or are redundant
+    /// (the same underlying mechanism seen twice).
+    fn velocity_staircase_fine_with_horizon_and_height_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        horizon_steps: usize,
+        dt_per_step: f64,
+        body_height_bias_frac: f64,
+    ) -> Self {
+        Self {
+            body_height_bias_frac: Some(body_height_bias_frac),
+            ..Self::velocity_staircase_fine_with_horizon_misa_wbc(formulation, cfg, horizon_steps, dt_per_step)
+        }
+    }
 }
 
 fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
@@ -773,6 +790,44 @@ fn go2_wbc_velocity_staircase_fine_body_height_sweep() {
             continue;
         };
         eprintln!("\n=== body_height_bias_frac = {bias_frac:.2} ===");
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
+}
+
+/// Sec.5t (0.6s horizon) and Sec.5u (h=0.20m, bias_frac=0.16) each
+/// independently produced a reversal-free plateau from the default
+/// (0.3s horizon, h=0.23m) baseline's peak-then-rolloff shape. Tests
+/// whether combining both pushes further (stacking), makes no further
+/// difference (same underlying mechanism, already saturated), or
+/// interacts badly (cancels/destabilizes) — run alongside the two
+/// solo configurations for direct three-way comparison in one table.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_horizon_and_height_combo() {
+    let solver_cfg = || wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let trials: [(&str, WbcParams); 3] = [
+        (
+            "height only (h=0.20m)",
+            WbcParams::velocity_staircase_fine_with_height_misa_wbc(
+                wbc::Formulation::ForceSpace, solver_cfg(), 0.16,
+            ),
+        ),
+        (
+            "horizon only (0.6s)",
+            WbcParams::velocity_staircase_fine_with_horizon_misa_wbc(
+                wbc::Formulation::ForceSpace, solver_cfg(), 10, 0.06,
+            ),
+        ),
+        (
+            "combined: height 0.20m + horizon 0.6s",
+            WbcParams::velocity_staircase_fine_with_horizon_and_height_misa_wbc(
+                wbc::Formulation::ForceSpace, solver_cfg(), 10, 0.06, 0.16,
+            ),
+        ),
+    ];
+    for (label, params) in trials {
+        let Some(samples) = run_wbc_sim(params) else { continue };
+        eprintln!("\n=== {label} ===");
         report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
     }
 }

@@ -59,6 +59,14 @@
   plateau" signature Sec.5t found from a *longer MPC horizon*, this
   time produced by a completely independent parameter left at its
   default horizon. See `ref/wbc_comparison.md` Sec.5u.
+- `height_horizon_combo.png` — tests whether Sec.5t's (0.6s horizon)
+  and Sec.5u's (h=0.20m) independently-found reversal-free plateaus
+  stack when combined (`go2_wbc_velocity_staircase_fine_horizon_and_height_combo`).
+  They don't: the combined run tracks *worse* than either solo
+  configuration, dipping to ~0.035 m/s around cmd_vx=0.6-0.65 (both
+  solo runs hold ~0.35-0.5 m/s there) before partially recovering by
+  cmd_vx=1.0. The two fixes interact rather than add — see
+  `ref/wbc_comparison.md` Sec.5v.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
