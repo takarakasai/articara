@@ -78,6 +78,18 @@
   tuning; layering `use_mpc_predicted_footstep` on top instead
   destabilizes it (sustained backward walking, roll up to ~15°). See
   `ref/wbc_comparison.md` Sec.5w.
+- `dynamic_joint_q_comparison.png` — implements and tests the D3.3.5a
+  reversal: `FullCentroidalMpcGaitController::dynamic_joint_q_reference`
+  (new, opt-in, in quadruped-gait) makes the MPC's joint_q tracking
+  reference a real per-horizon-step trajectory (sampled from the same
+  open-loop swing/stance foot curve `tick()` uses) instead of a flat
+  hold, against the Sec.5w `legged_control_parity` baseline
+  (`go2_wbc_velocity_staircase_fine_full_centroidal_dynamic_q`). The
+  two curves are nearly identical — the wiring works but
+  `FullCentroidalMpcConfig::q_diag`'s joint_q weight (0.1, deliberately
+  light to avoid fighting the stance no-slip constraint) is too weak
+  for the now-dynamic reference to visibly change behavior either way.
+  See `ref/wbc_comparison.md` Sec.5x.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
