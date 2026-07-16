@@ -423,6 +423,24 @@ impl WbcParams {
         params
     }
 
+    /// Same as [`Self::velocity_staircase_fine_full_centroidal_taskspace_weight_misa_wbc`],
+    /// also overriding `k_capture` — the Sec.5ab confounder-check
+    /// extended to ②, since it shared the same un-retuned gain.
+    fn velocity_staircase_fine_full_centroidal_taskspace_weight_kcap_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        legged_control_parity: bool,
+        r_taskspace: [f64; 3],
+        k_capture: f64,
+    ) -> Self {
+        let mut params = Self::velocity_staircase_fine_full_centroidal_taskspace_weight_misa_wbc(
+            formulation, cfg, legged_control_parity, r_taskspace,
+        );
+        let opts = params.full_centroidal.as_mut().expect("full_centroidal always Some here");
+        opts.capture_point_gain_override = Some(k_capture);
+        params
+    }
+
     /// Same as [`Self::velocity_staircase_fine_full_centroidal_dynamic_q_misa_wbc`],
     /// also overriding the FullCentroidal MPC's `(horizon_steps,
     /// dt_per_step, sqp_iterations)` — see `mpc_override`'s doc comment.
@@ -1235,6 +1253,54 @@ fn go2_wbc_velocity_staircase_fine_full_centroidal_true_coupling_kcap_zero() {
         let Some(samples) = run_wbc_sim(params) else { continue };
         eprintln!("\n=== {label} ===");
         report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
+}
+
+/// Extends the Sec.5ab confounder check to ② and ③: both experiments
+/// also ran with the un-retuned `k_capture=0.05` leftover from the
+/// unrelated 2026-05-15 disturbance-recovery tuning, and neither ever
+/// touched the gain. `k_capture=0` fully fixed ①'s reversal; this
+/// checks whether it does the same for ②'s task-space joint_v weight
+/// reversal (Sec.5z, cmd=0.80: -0.024) and ③'s worst SQP-tuning
+/// reversal (Sec.5y, 20x0.030s sqp=3, cmd=1.0: -0.356).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_kcap_zero_recheck_2_3() {
+    let cfg_ = || wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+
+    // ② recheck.
+    {
+        let params = WbcParams::velocity_staircase_fine_full_centroidal_taskspace_weight_kcap_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg_(),
+            true,
+            [1.0, 1.0, 1.0],
+            0.0,
+        );
+        if let Some(samples) = run_wbc_sim(params) {
+            eprintln!("\n=== ② recheck: task_space_joint_vel_weight([1,1,1]) + k_capture=0.0 ===");
+            report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+        }
+    }
+
+    // ③ recheck: the worst Sec.5y case (20x0.030s sqp=3, the "more
+    // iterations at 0.6s horizon" reversal), now at k_capture=0.
+    {
+        let mut params = WbcParams::velocity_staircase_fine_full_centroidal_mpc_override_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg_(),
+            true,
+            false,
+            20,
+            0.030,
+            3,
+        );
+        let opts = params.full_centroidal.as_mut().expect("full_centroidal always Some here");
+        opts.capture_point_gain_override = Some(0.0);
+        if let Some(samples) = run_wbc_sim(params) {
+            eprintln!("\n=== ③ recheck: 20x0.030s sqp=3 (Sec.5y worst case) + k_capture=0.0 ===");
+            report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+        }
     }
 }
 
