@@ -125,11 +125,26 @@
   (`go2_wbc_velocity_staircase_fine_full_centroidal_true_coupling`).
   Same pattern as ②/③: tracks the Sec.5w/5y baseline closely up to
   cmd_vx≈0.45, then degrades sharply and fully reverses past
-  cmd_vx≈0.70. With all three (①②③) individually confirmed against
-  `ref/ocs2` and all three showing the identical failure signature, the
-  likely root cause is upstream of any of these physics refinements —
-  see `ref/wbc_comparison.md` Sec.5aa for the full write-up and ①②③
-  synthesis.
+  cmd_vx≈0.70. **Superseded by `kcap_confound_comparison.png` below —
+  the reversal turned out to be a confound, not a property of ①
+  itself.** See `ref/wbc_comparison.md` Sec.5aa for the (now-corrected)
+  original write-up.
+- `kcap_confound_comparison.png` — the correction: `k_capture` (the
+  capture-point footstep-feedback gain, default `0.05`) was tuned in an
+  unrelated 2026-05-15 disturbance-recovery experiment against the
+  pre-FullCentroidal SRBD plant, and legged_control's own code uses
+  `k_capture=0` (its reference-tracking loop closes differently — see
+  `DEFAULT_CAPTURE_POINT_GAIN_S`'s doc comment). None of ①②③ ever
+  touched this gain
+  (`go2_wbc_velocity_staircase_fine_full_centroidal_true_coupling_kcap_zero`).
+  Re-running ① with `k_capture=0` **fully eliminates the reversal** —
+  tracking matches or slightly exceeds the healthy baseline across the
+  whole 0-1.0 m/s range, and `k_capture=0` alone (no coupling) is
+  *also* healthy (slightly better than the old default even without
+  ①). So the Sec.5aa "①②③ all fail the same way" conclusion was wrong
+  — all three shared this one un-retuned leftover gain as a confound.
+  ②/③ haven't been re-checked with `k_capture=0` yet. See
+  `ref/wbc_comparison.md` Sec.5ab for the full correction.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
