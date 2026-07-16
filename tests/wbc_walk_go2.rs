@@ -172,6 +172,13 @@ struct WbcParams {
 /// technique (`ocs2_legged_robot`'s `initializeInputCostWeight`,
 /// confirmed against `ref/ocs2`), point ② from the desk-research gap
 /// analysis (Sec.5v-era discussion).
+/// `true_centroidal_coupling`: desk-research gap ① — an additive bias
+/// term (from `misarta`'s CRBA-based centroidal momentum matrix) that
+/// couples joint velocity/acceleration into the base's predicted
+/// motion, matching OCS2's `centroidalModelType=FullCentroidalDynamics`
+/// coupling without changing our own state representation (see
+/// `FullCentroidalMpcConfig`'s doc comment, confirmed against
+/// `ref/ocs2`).
 #[derive(Clone, Copy)]
 struct FullCentroidalOpts {
     legged_control_parity: bool,
@@ -179,6 +186,7 @@ struct FullCentroidalOpts {
     dynamic_joint_q_reference: bool,
     mpc_override: Option<(usize, f64, usize)>,
     task_space_joint_vel_weight: Option<[f64; 3]>,
+    true_centroidal_coupling: bool,
 }
 
 impl WbcParams {
@@ -345,9 +353,27 @@ impl WbcParams {
             full_centroidal: Some(FullCentroidalOpts {
                 legged_control_parity, use_mpc_predicted_footstep, dynamic_joint_q_reference,
                 mpc_override: None, task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
             }),
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
         }
+    }
+
+    /// Same as [`Self::velocity_staircase_fine_full_centroidal_dynamic_q_misa_wbc`],
+    /// also toggling `true_centroidal_coupling` — see
+    /// `FullCentroidalOpts`'s doc comment.
+    fn velocity_staircase_fine_full_centroidal_true_coupling_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        legged_control_parity: bool,
+        true_centroidal_coupling: bool,
+    ) -> Self {
+        let mut params = Self::velocity_staircase_fine_full_centroidal_dynamic_q_misa_wbc(
+            formulation, cfg, legged_control_parity, false, false,
+        );
+        let opts = params.full_centroidal.as_mut().expect("full_centroidal always Some here");
+        opts.true_centroidal_coupling = true_centroidal_coupling;
+        params
     }
 
     /// Same as [`Self::velocity_staircase_fine_full_centroidal_dynamic_q_misa_wbc`],
@@ -471,6 +497,15 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         if let Some(r_taskspace) = opts.task_space_joint_vel_weight {
             eprintln!("[full-centroidal] task_space_joint_vel_weight={r_taskspace:?}");
             gc.set_task_space_joint_vel_weight(Some(r_taskspace));
+        }
+        if opts.true_centroidal_coupling {
+            gc.set_true_centroidal_coupling(true);
+            eprintln!(
+                "[full-centroidal] true_centroidal_coupling enabled (data available: {})",
+                gc.full_centroidal_mpc_config()
+                    .map(|c| c.true_centroidal_coupling_data.is_some())
+                    .unwrap_or(false),
+            );
         }
     }
 
@@ -1113,6 +1148,29 @@ fn go2_wbc_velocity_staircase_fine_full_centroidal_taskspace_weight() {
     );
     let Some(samples) = run_wbc_sim(params) else { return };
     eprintln!("\n=== FullCentroidal + parity + task_space_joint_vel_weight([1,1,1]) ===");
+    report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+}
+
+/// Desk-research gap ① (`ref/ocs2` verified): OCS2's
+/// `centroidalModelType=FullCentroidalDynamics` couples joint velocity
+/// into the base's predicted motion via the centroidal momentum
+/// matrix. Implemented as an additive bias term (not a state-
+/// representation change — see `FullCentroidalMpcConfig`'s doc
+/// comment) gated by `true_centroidal_coupling`. Tests it against the
+/// Sec.5w/5y true default (`legged_control_parity`, horizon 10x0.030s,
+/// sqp=1) — the same baseline ②③ were compared against.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_full_centroidal_true_coupling() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams::velocity_staircase_fine_full_centroidal_true_coupling_misa_wbc(
+        wbc::Formulation::ForceSpace,
+        cfg,
+        true,
+        true,
+    );
+    let Some(samples) = run_wbc_sim(params) else { return };
+    eprintln!("\n=== FullCentroidal + parity + true_centroidal_coupling ===");
     report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
 }
 

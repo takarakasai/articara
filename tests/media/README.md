@@ -115,6 +115,21 @@
   worse (briefly reversing around cmd_vx=0.75-0.80) — a third instance
   of a legged_control design choice not transferring cleanly to our
   formulation. See `ref/wbc_comparison.md` Sec.5z.
+- `true_coupling_comparison.png` — implements and tests desk-research
+  gap ①: `FullCentroidalMpcConfig::enable_true_centroidal_coupling`
+  (new, opt-in, in quadruped-gait) adds an additive bias term (from
+  `misarta`'s real CRBA-based centroidal momentum matrix, not a state-
+  representation change) coupling joint velocity/acceleration into the
+  base's predicted motion, matching OCS2's `FullCentroidalDynamics`
+  physics
+  (`go2_wbc_velocity_staircase_fine_full_centroidal_true_coupling`).
+  Same pattern as ②/③: tracks the Sec.5w/5y baseline closely up to
+  cmd_vx≈0.45, then degrades sharply and fully reverses past
+  cmd_vx≈0.70. With all three (①②③) individually confirmed against
+  `ref/ocs2` and all three showing the identical failure signature, the
+  likely root cause is upstream of any of these physics refinements —
+  see `ref/wbc_comparison.md` Sec.5aa for the full write-up and ①②③
+  synthesis.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
