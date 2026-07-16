@@ -450,6 +450,19 @@ pub fn auto_detect_full_centroidal_mpc_config(
     cfg.sqp_iterations = cent.sqp_iterations;
     // q_diag, r_diag, kinematics retained from default_with_kin —
     // they have no analogue in the 12-state cfg (12 vs 24 entries).
+
+    // True-centroidal-coupling data (desk-research gap ①): prepared
+    // whenever a misarta model is available so the controller can flip
+    // `enable_true_centroidal_coupling` on cheaply later; `None` (and
+    // the flag defaulting `false`) leaves today's dynamics untouched.
+    if let Some(mc) = model.misarta_cache.as_ref() {
+        match quadruped_gait::auto_detect_true_centroidal_coupling(&mc.model, kin) {
+            Ok(data) => cfg.true_centroidal_coupling_data = Some(data),
+            Err(e) => {
+                eprintln!("auto_detect_true_centroidal_coupling: {e} — coupling stays disabled");
+            }
+        }
+    }
     cfg
 }
 
@@ -753,6 +766,19 @@ impl GaitController {
     }
     pub fn task_space_joint_vel_weight(&self) -> Option<[f64; 3]> {
         self.inner.task_space_joint_vel_weight()
+    }
+
+    /// Toggle the FullCentroidal controller's true-centroidal-coupling
+    /// bias term (desk-research gap ① — see
+    /// `quadruped_gait::FullCentroidalMpcConfig`'s doc comment). No-op
+    /// outside FullCentroidal mode, and a no-op even in FullCentroidal
+    /// mode if no `misarta` model was available at auto-detect time
+    /// (`true_centroidal_coupling_data` stayed `None`).
+    pub fn set_true_centroidal_coupling(&mut self, enable: bool) {
+        self.inner.set_true_centroidal_coupling(enable);
+    }
+    pub fn true_centroidal_coupling(&self) -> Option<bool> {
+        self.inner.true_centroidal_coupling()
     }
 
     /// The experimental research knobs of the active controller, as
