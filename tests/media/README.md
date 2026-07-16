@@ -143,8 +143,18 @@
   *also* healthy (slightly better than the old default even without
   ①). So the Sec.5aa "①②③ all fail the same way" conclusion was wrong
   — all three shared this one un-retuned leftover gain as a confound.
-  ②/③ haven't been re-checked with `k_capture=0` yet. See
-  `ref/wbc_comparison.md` Sec.5ab for the full correction.
+  See `ref/wbc_comparison.md` Sec.5ab for the full correction.
+- `kcap_recheck_23_comparison.png` — extends the Sec.5ab check to ②
+  and ③
+  (`go2_wbc_velocity_staircase_fine_kcap_zero_recheck_2_3`): both
+  reversals **also fully resolve** at `k_capture=0` — ③'s worst case
+  (20x0.030s sqp=3, which reversed to -0.356 at cmd_vx=1.0 in Sec.5y)
+  becomes the best tracking result in this entire test series (a flat
+  ~0.46-0.48 plateau across cmd_vx=0.5-1.0) once the gain is fixed. All
+  three (①②③) confirmed independently to share the same confound —
+  none of the borrowed legged_control/OCS2 physics was actually at
+  fault. See `ref/wbc_comparison.md` Sec.5ac for the conclusive
+  write-up.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
