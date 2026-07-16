@@ -187,6 +187,15 @@ struct FullCentroidalOpts {
     mpc_override: Option<(usize, f64, usize)>,
     task_space_joint_vel_weight: Option<[f64; 3]>,
     true_centroidal_coupling: bool,
+    /// Override `k_capture` (default `0.05`) after `GaitController::build`.
+    /// Confounder check: `0.05` was tuned in the unrelated "η experiment"
+    /// (2026-05-15, lateral-push disturbance recovery on the pre-
+    /// FullCentroidal SRBD path) and has never been re-tuned against
+    /// any of the ①②③ plants it's since been reused on unchanged. The
+    /// code's own doc comment on `DEFAULT_CAPTURE_POINT_GAIN_S` notes
+    /// legged_control itself uses `0.0` — its reference tracking closes
+    /// the loop differently. `None` keeps the existing 0.05 default.
+    capture_point_gain_override: Option<f64>,
 }
 
 impl WbcParams {
@@ -353,7 +362,7 @@ impl WbcParams {
             full_centroidal: Some(FullCentroidalOpts {
                 legged_control_parity, use_mpc_predicted_footstep, dynamic_joint_q_reference,
                 mpc_override: None, task_space_joint_vel_weight: None,
-                true_centroidal_coupling: false,
+                true_centroidal_coupling: false, capture_point_gain_override: None,
             }),
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
         }
@@ -373,6 +382,26 @@ impl WbcParams {
         );
         let opts = params.full_centroidal.as_mut().expect("full_centroidal always Some here");
         opts.true_centroidal_coupling = true_centroidal_coupling;
+        params
+    }
+
+    /// Same as [`Self::velocity_staircase_fine_full_centroidal_true_coupling_misa_wbc`],
+    /// also overriding `k_capture` — see
+    /// `FullCentroidalOpts::capture_point_gain_override`'s doc comment.
+    /// The confounder-check experiment: does the reversal Sec.5aa found
+    /// persist once the gain isn't a leftover from an unrelated plant?
+    fn velocity_staircase_fine_full_centroidal_true_coupling_kcap_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        legged_control_parity: bool,
+        true_centroidal_coupling: bool,
+        k_capture: f64,
+    ) -> Self {
+        let mut params = Self::velocity_staircase_fine_full_centroidal_true_coupling_misa_wbc(
+            formulation, cfg, legged_control_parity, true_centroidal_coupling,
+        );
+        let opts = params.full_centroidal.as_mut().expect("full_centroidal always Some here");
+        opts.capture_point_gain_override = Some(k_capture);
         params
     }
 
@@ -506,6 +535,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     .map(|c| c.true_centroidal_coupling_data.is_some())
                     .unwrap_or(false),
             );
+        }
+        if let Some(k) = opts.capture_point_gain_override {
+            eprintln!("[full-centroidal] k_capture override -> {k:.3}");
+            gc.set_capture_point_gain(k);
         }
     }
 
@@ -1172,6 +1205,37 @@ fn go2_wbc_velocity_staircase_fine_full_centroidal_true_coupling() {
     let Some(samples) = run_wbc_sim(params) else { return };
     eprintln!("\n=== FullCentroidal + parity + true_centroidal_coupling ===");
     report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+}
+
+/// Confounder check on Sec.5aa's reversal: `k_capture=0.05` (the
+/// default `set_capture_point_gain` never overrides in any ①②③ test)
+/// was tuned in an unrelated 2026-05-15 disturbance-recovery experiment
+/// against the pre-FullCentroidal SRBD plant, and legged_control itself
+/// uses `k_capture=0` (its own reference-tracking loop closes
+/// differently — see `DEFAULT_CAPTURE_POINT_GAIN_S`'s doc comment).
+/// Tests whether Sec.5aa's high-speed reversal survives once that
+/// mismatched gain is removed, and whether removing it changes the
+/// already-healthy baseline on its own.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_full_centroidal_true_coupling_kcap_zero() {
+    let trials = [
+        ("true_centroidal_coupling + k_capture=0.0 (confounder removed)", true, 0.0),
+        ("baseline (no coupling) + k_capture=0.0 (isolate gain-alone effect)", false, 0.0),
+    ];
+    for (label, true_centroidal_coupling, k_capture) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams::velocity_staircase_fine_full_centroidal_true_coupling_kcap_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            true,
+            true_centroidal_coupling,
+            k_capture,
+        );
+        let Some(samples) = run_wbc_sim(params) else { continue };
+        eprintln!("\n=== {label} ===");
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
 }
 
 fn assert_forward_command_advances_body(samples: &[WbcSample]) {
