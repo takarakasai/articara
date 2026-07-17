@@ -165,6 +165,19 @@
   horizon, sqp=3) is mildly *better* than baseline and the smoothest,
   most stable plateau in this entire test series. See
   `ref/wbc_comparison.md` Sec.5ae.
+- `base_pos_weight_sweep.png` — a broad legged_control/OCS2 survey
+  (beyond ①②③) found legged_control weights base **position**
+  tracking at 1000/1000/1500 (x/y/z) against the same velocity-ramp
+  reference we already build, vs our own `q_diag[6]=0`/`q_diag[7]=5`
+  (`q_diag[8]`, z, is already 50). Sweeping `q_diag[6..8]` on the
+  healthy `k_capture=0` baseline
+  (`go2_wbc_velocity_staircase_fine_base_pos_weight`) found a
+  non-monotonic dip, not a clean win: `(25,25)` degrades noticeably at
+  high speed (cmd_vx=1.0: 0.189 vs the default's 0.460), while `(50,50)`
+  (matching the z weight) recovers to ≈baseline — no configuration
+  tried beat the current default. See `ref/wbc_comparison.md` Sec.5af
+  for the full write-up and the broader legged_control survey it came
+  from.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
