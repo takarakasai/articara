@@ -196,6 +196,19 @@ struct FullCentroidalOpts {
     /// legged_control itself uses `0.0` — its reference tracking closes
     /// the loop differently. `None` keeps the existing 0.05 default.
     capture_point_gain_override: Option<f64>,
+    /// Override `q_diag[6]`/`q_diag[7]` (base position x/y tracking
+    /// weight) after `GaitController::build`. Desk-research finding
+    /// (broad legged_control survey, 2026-07-18): legged_control
+    /// weights base **position** tracking at 1000/1000/1500 (x/y/z,
+    /// `task.info`'s `Q` block) — roughly 50-67x its own v_com weight
+    /// (15) — against the *same* velocity-ramp position reference our
+    /// own controller already builds
+    /// (`full_centroidal_controller.rs`'s `sk.base_pos_world = s_now...
+    /// + v_world_cmd*t`). Our own `q_diag[6]` (x) is literally `0.0`
+    /// and `q_diag[7]` (y) is `5.0` (`default_with_kin`) — `q_diag[8]`
+    /// (z) is already `50.0`, a value never questioned before this
+    /// survey. `None` keeps the existing (0.0, 5.0) default.
+    base_pos_xy_weight_override: Option<(f64, f64)>,
 }
 
 impl WbcParams {
@@ -363,6 +376,7 @@ impl WbcParams {
                 legged_control_parity, use_mpc_predicted_footstep, dynamic_joint_q_reference,
                 mpc_override: None, task_space_joint_vel_weight: None,
                 true_centroidal_coupling: false, capture_point_gain_override: None,
+                base_pos_xy_weight_override: None,
             }),
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
         }
@@ -402,6 +416,26 @@ impl WbcParams {
         );
         let opts = params.full_centroidal.as_mut().expect("full_centroidal always Some here");
         opts.capture_point_gain_override = Some(k_capture);
+        params
+    }
+
+    /// Desk-research gap ④ (broad legged_control survey, 2026-07-18):
+    /// override `q_diag[6]`/`q_diag[7]` (base position x/y tracking
+    /// weight) on top of the now-healthy `k_capture=0` baseline — see
+    /// `FullCentroidalOpts::base_pos_xy_weight_override`'s doc comment.
+    fn velocity_staircase_fine_full_centroidal_base_pos_weight_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        legged_control_parity: bool,
+        k_capture: f64,
+        q_pos_x: f64,
+        q_pos_y: f64,
+    ) -> Self {
+        let mut params = Self::velocity_staircase_fine_full_centroidal_true_coupling_kcap_misa_wbc(
+            formulation, cfg, legged_control_parity, false, k_capture,
+        );
+        let opts = params.full_centroidal.as_mut().expect("full_centroidal always Some here");
+        opts.base_pos_xy_weight_override = Some((q_pos_x, q_pos_y));
         params
     }
 
@@ -557,6 +591,17 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         if let Some(k) = opts.capture_point_gain_override {
             eprintln!("[full-centroidal] k_capture override -> {k:.3}");
             gc.set_capture_point_gain(k);
+        }
+        if let Some((q_x, q_y)) = opts.base_pos_xy_weight_override {
+            let mut mpc_cfg: FullCentroidalMpcConfig =
+                gc.full_centroidal_mpc_config().expect("FullCentroidal mode has a config").clone();
+            eprintln!(
+                "[full-centroidal] q_diag[6..8] (base pos x/y) {:.1}/{:.1} -> {:.1}/{:.1}",
+                mpc_cfg.q_diag[6], mpc_cfg.q_diag[7], q_x, q_y,
+            );
+            mpc_cfg.q_diag[6] = q_x;
+            mpc_cfg.q_diag[7] = q_y;
+            gc.set_full_centroidal_mpc_config(mpc_cfg);
         }
     }
 
@@ -1301,6 +1346,41 @@ fn go2_wbc_velocity_staircase_fine_kcap_zero_recheck_2_3() {
             eprintln!("\n=== ③ recheck: 20x0.030s sqp=3 (Sec.5y worst case) + k_capture=0.0 ===");
             report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
         }
+    }
+}
+
+/// Desk-research gap ④ (broad legged_control survey, 2026-07-18):
+/// legged_control weights base **position** tracking at 1000/1000/1500
+/// (x/y/z) against the same velocity-ramp reference our own controller
+/// already builds — ~50-67x its own v_com weight (15). Our own
+/// `q_diag[6]` (base pos x) is literally `0.0` and `q_diag[7]` (y) is
+/// `5.0`; `q_diag[8]` (z) is already `50.0` and was never questioned by
+/// this survey. Sweeps `q_diag[6]=q_diag[7]` on top of the healthy
+/// `k_capture=0` baseline (matching `q_diag[8]`'s existing value as the
+/// simplest hypothesis: comparable priority on all three position
+/// axes) to see whether closing this gap helps, following the same
+/// "test on the confound-free baseline" discipline as Sec.5ae.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_base_pos_weight() {
+    let trials = [
+        ("q_diag[6..8]=(0,5,50) (current default)", 0.0, 5.0),
+        ("q_diag[6..8]=(25,25,50)", 25.0, 25.0),
+        ("q_diag[6..8]=(50,50,50) (match z)", 50.0, 50.0),
+    ];
+    for (label, q_x, q_y) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams::velocity_staircase_fine_full_centroidal_base_pos_weight_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            true,
+            0.0,
+            q_x,
+            q_y,
+        );
+        let Some(samples) = run_wbc_sim(params) else { continue };
+        eprintln!("\n=== {label} ===");
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
     }
 }
 
