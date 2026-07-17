@@ -155,6 +155,16 @@
   none of the borrowed legged_control/OCS2 physics was actually at
   fault. See `ref/wbc_comparison.md` Sec.5ac for the conclusive
   write-up.
+- `123_reeval_k0.png` — the natural follow-up: confound removed, do
+  ①②③ actually *help* on top of the now-healthy `k_capture=0`
+  baseline, or just no-longer-hurt? Reuses already-collected Sec.5ab/
+  5ac data (no new runs). Answer differs per term: ① tracks the
+  baseline almost exactly (neutral), ② still drifts down at high speed
+  even without the confound (~24% below baseline at cmd_vx=1.0 — a
+  genuine standalone downside, not just the old reversal), ③ (0.6s
+  horizon, sqp=3) is mildly *better* than baseline and the smoothest,
+  most stable plateau in this entire test series. See
+  `ref/wbc_comparison.md` Sec.5ae.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
