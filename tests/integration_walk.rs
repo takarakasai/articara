@@ -1712,7 +1712,7 @@ fn diag_external_force_robustness() {
     // cone block to honour the ramp as a HARD constraint. This is
     // where C1 (cost-side, bit-exact identical to parity baseline)
     // graduates to a real intervention.
-    let modes: [(&str, GaitMode, bool, Option<(usize, usize)>, bool, bool, Option<f64>, bool, Option<(f64, f64)>, f64, bool); 19] = [
+    let modes: [(&str, GaitMode, bool, Option<(usize, usize)>, bool, bool, Option<f64>, bool, Option<(f64, f64)>, f64, bool); 20] = [
         ("CHAMP open-loop",                 GaitMode::Champ, false, None, false, false, None, false, None, 0.0, false),
         ("SRBD MPC + WBC",                  GaitMode::Mpc, true,    None, false, false, None, false, None, 0.0, false),
         ("FullC default",                   GaitMode::FullCentroidal, true, None, false, false, None, false, None, 0.0, false),
@@ -1725,6 +1725,14 @@ fn diag_external_force_robustness() {
         ("FullC + db 0.05 / k_p 0.30",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.30, 0.05)), 0.0, false),
         ("FullC + db 0.10 / k_p 0.30",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.30, 0.10)), 0.0, false),
         ("FullC legged-parity",             GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.0, false),
+        // Sec.5ac confounder check: does k_capture=0 (legged_control's
+        // own value, and what fixed the Go2 velocity-tracking reversal
+        // in ①②③) hurt the lateral-push recovery that
+        // DEFAULT_CAPTURE_POINT_GAIN_S=0.05 was originally tuned for
+        // (η experiment, 2026-05-15)? Placed right next to the
+        // unmodified "FullC legged-parity" row (which inherits the
+        // 0.05 default) for a direct comparison.
+        ("FullC legged-parity + cap-pt 0.0", GaitMode::FullCentroidal, true, None, false, true, Some(0.0), false, None, 0.0, false),
         ("FullC parity + cap-pt 0.175",     GaitMode::FullCentroidal, true, None, false, true, Some(0.175), false, None, 0.0, false),
         ("FullC parity + nominal q_ref",    GaitMode::FullCentroidal, true, None, false, true, None, true, None, 0.0, false),
         ("FullC parity + cap-pt + nom-q",   GaitMode::FullCentroidal, true, None, false, true, Some(0.175), true, None, 0.0, false),
