@@ -35,7 +35,7 @@ use articara::wbc_pipeline::WbcPipeline;
 use nalgebra::Vector3;
 use quadruped_gait::wbc;
 use quadruped_gait::{
-    solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, KinematicsConfig,
+    foot_jacobian_body, solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, KinematicsConfig,
     LegIkSolution, VelocityCmd,
 };
 use quadruped_gait::FullCentroidalMpcConfig;
@@ -71,6 +71,58 @@ fn seed_joint_positions_from_kinematics(robot: &mut RobotModel, kin: &Kinematics
             };
             robot.joint_positions[ji] = q_ik * sign;
         }
+    }
+}
+
+/// Diagnostic (no MuJoCo needed): computes Go2's actual FL-leg
+/// Jacobian at its nominal stance pose, to properly convert
+/// legged_control's Cartesian-space swing-task PD gains
+/// (`swingLegTask.kp=350, kd=37`, units 1/s^2 and 1/s on a *metre*
+/// position/velocity error) into the joint-space equivalent our own
+/// `WbcPipeline::{swing_kp, swing_kd}` uses (same units, but on a
+/// *radian* error) — see Sec.5ag/5ai's finding that a naive same-
+/// number import (350/37) degrades tracking, and the hypothesis that
+/// this is partly a missing unit conversion (metres vs radians),
+/// not purely an A1-vs-Go2 mass/torque mismatch.
+///
+/// Small-angle: `Δp_cartesian ≈ J · Δq_joint`, so
+/// `kp_cart · Δp ≈ (kp_cart · ‖J‖) · Δq` — i.e. the correctly
+/// converted joint-space gain is legged_control's Cartesian gain
+/// scaled by the leg Jacobian's magnitude (metres of foot travel per
+/// radian of joint rotation) at the nominal pose.
+#[test]
+#[ignore = "one-off diagnostic — prints the Jacobian-derived swing PD gain conversion"]
+fn go2_diag_swing_pd_gain_jacobian_conversion() {
+    let path = go2_misa();
+    if !path.exists() {
+        eprintln!("go2.misa missing at {} — skipping", path.display());
+        return;
+    }
+    let robot = RobotModel::from_misa(&path).expect("load go2.misa");
+    let kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS)
+        .expect("auto-detect kinematics");
+    let leg_kin = &kin.fl;
+    let target = leg_kin.nominal_foot_body;
+    let sol = solve_leg_ik(leg_kin, target, false);
+    let LegIkSolution::Reached { hip, thigh, calf } = sol else {
+        panic!("FL: nominal_foot_body unreachable");
+    };
+    let j = foot_jacobian_body(leg_kin, hip, thigh, calf);
+    eprintln!("[jacobian] FL foot_jacobian_body at nominal pose (hip={hip:.3}, thigh={thigh:.3}, calf={calf:.3}):");
+    eprintln!("{j:.4}");
+    let svd = j.svd(true, true);
+    eprintln!("[jacobian] singular values: {:.4}", svd.singular_values);
+    let sigma_max = svd.singular_values.max();
+    let sigma_min = svd.singular_values.min();
+    let frobenius = j.norm();
+    eprintln!(
+        "[jacobian] sigma_max={sigma_max:.4} m/rad, sigma_min={sigma_min:.4} m/rad, frobenius={frobenius:.4}"
+    );
+    for (label, scale) in [("sigma_max", sigma_max), ("sigma_min", sigma_min), ("frobenius", frobenius)] {
+        eprintln!(
+            "[jacobian] using {label}={scale:.4}: kp_joint_equiv = 350*{scale:.4} = {:.2}, kd_joint_equiv = 37*{scale:.4} = {:.2}",
+            350.0 * scale, 37.0 * scale,
+        );
     }
 }
 
@@ -1475,6 +1527,43 @@ fn go2_wbc_velocity_staircase_fine_swing_pd_gain() {
         ("swing_kp/kd=175/18.5 (halfway to legged_control)", 175.0, 18.5,
         ),
         ("swing_kp/kd=350/37 (legged_control's value)", 350.0, 37.0),
+    ];
+    for (label, kp, kd) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams::velocity_staircase_fine_full_centroidal_swing_pd_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            true,
+            0.0,
+            kp,
+            kd,
+        );
+        let Some(samples) = run_wbc_sim(params) else { continue };
+        eprintln!("\n=== {label} ===");
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
+}
+
+/// Follow-up to Sec.5ag/5ai: the raw `swing_kp/kd=350/37` import
+/// degraded tracking, but that number is a *Cartesian-space* gain
+/// (legged_control's WBC swing task is a foot-position/velocity PD,
+/// units 1/s^2 and 1/s on a *metre* error) while our own
+/// `WbcPipeline::{swing_kp, swing_kd}` is a *joint-space* PD (same
+/// units, but on a *radian* error) — comparing "350" to "80" directly
+/// was never a like-for-like comparison. `go2_diag_swing_pd_gain_
+/// jacobian_conversion` computed Go2's actual FL-leg Jacobian at its
+/// nominal stance pose: singular values 0.317/0.280/0.133 m/rad,
+/// Frobenius norm 0.443. Using those as the "metres of foot travel
+/// per radian" conversion factor gives properly-dimensioned joint-
+/// space equivalents of roughly 111-155 (kp) / 12-16 (kd) — much
+/// closer to (moderately above) our own default than to the raw 350.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_swing_pd_gain_jacobian_converted() {
+    let trials = [
+        ("swing_kp/kd=80/8 (current default)", 80.0, 8.0),
+        ("swing_kp/kd=111/12 (sigma_max-converted 350/37)", 111.0, 12.0),
+        ("swing_kp/kd=155/16 (frobenius-converted 350/37)", 155.0, 16.0),
     ];
     for (label, kp, kd) in trials {
         let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };

@@ -192,6 +192,24 @@
   win; the rest are neutral-to-harmful when pushed toward
   legged_control's literal values. See `ref/wbc_comparison.md` Sec.5ag
   for the full write-up and the ①-⑥ summary.
+- `swing_pd_jacobian_converted.png` — the ⑤ story's resolution.
+  legged_control's `swingLegTask.kp=350, kd=37` is a **Cartesian-space**
+  (foot position/velocity, metre-error) gain; our own `WbcPipeline`'s
+  `swing_kp`/`swing_kd` is **joint-space** (radian-error) — comparing
+  "350" to "80" directly was never dimensionally valid.
+  `go2_diag_swing_pd_gain_jacobian_conversion` computes Go2's actual FL
+  leg Jacobian at its nominal stance pose (singular values
+  0.317/0.280/0.133 m/rad, Frobenius norm 0.443) and uses it to convert
+  legged_control's gain into the joint-space equivalent (≈111/12 or
+  ≈155/16, depending on which norm). Tested on the healthy
+  `k_capture=0` baseline
+  (`go2_wbc_velocity_staircase_fine_swing_pd_gain_jacobian_converted`):
+  both converted values track almost identically to the default
+  (80/8) — the degradation the raw 350/37 import caused (Sec.5ag)
+  disappears entirely once the units are converted correctly. See
+  `ref/wbc_comparison.md` Sec.5ai for the full write-up, including a
+  correction to Sec.5ah's over-broad claim that ②④⑤ were all A1-number
+  imports — only ⑤ actually was.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
