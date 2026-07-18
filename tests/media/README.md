@@ -210,6 +210,22 @@
   `ref/wbc_comparison.md` Sec.5ai for the full write-up, including a
   correction to Sec.5ah's over-broad claim that ②④⑤ were all A1-number
   imports — only ⑤ actually was.
+- `max_step_length_sweep.png` — the biggest single win in this test
+  series. The observed ~0.46-0.48 m/s velocity-tracking plateau
+  matches almost exactly the Raibert footstep planner's own
+  theoretical kinematic ceiling, `v_max = max_step_length_m /
+  (cycle_period_s * duty_factor) = 0.10 / 0.2 = 0.5 m/s` — i.e. it's
+  this specific `GaitConfig::trot()` setting's own limit (Go2's leg
+  reach is ~0.426m, so 0.10m is only ~23% of it), not an algorithmic
+  bug or a property of Trot as a gait. Sweeping `max_step_length_m`
+  on the healthy `k_capture=0` baseline
+  (`go2_wbc_velocity_staircase_fine_max_step_length`) confirms this
+  directly: all three curves overlap exactly below their respective
+  theoretical thresholds (0.5/0.75/1.0 m/s), then each one alone peels
+  off upward right at its own threshold. At `0.20m`, tracking reaches
+  0.852 at cmd_vx=1.0 (0.881 at cmd_vx=0.95) — up from 0.460 (46%) at
+  the 0.10m default. See `ref/wbc_comparison.md` Sec.5ak for the full
+  write-up.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
