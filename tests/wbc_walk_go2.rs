@@ -181,6 +181,18 @@ struct WbcParams {
     /// that confirms a ratio (horizon/cycle_period_s), not a fixed
     /// horizon in seconds.
     gait_cycle_period_override: Option<f64>,
+    /// Override `GaitConfig::trot()`'s `max_step_length_m` (default
+    /// 0.10m) after construction. Sec.5aj found the observed velocity-
+    /// tracking plateau (~0.46-0.48 m/s) matches almost exactly the
+    /// Raibert footstep planner's own theoretical kinematic ceiling
+    /// `v_max = max_step_length_m / (cycle_period_s * duty_factor)
+    /// = 0.10 / (0.4 * 0.5) = 0.5 m/s` — i.e. this specific Trot
+    /// configuration's own limit, not an algorithmic bug. Raising
+    /// `max_step_length_m` (Go2's leg reach is ~0.426m, so 0.10m is
+    /// only ~23% of it — real quadruped trots often use 30-50%) should
+    /// raise this theoretical ceiling proportionally if the prediction
+    /// is right. `None` keeps the existing 0.10m default.
+    max_step_length_override: Option<f64>,
     /// Override the per-leg standing-height bias fraction applied on
     /// top of the auto-detected `nominal_foot_body.z` (as
     /// `nominal_foot_body.z += bias_frac * (upper_leg_m +
@@ -288,7 +300,7 @@ impl WbcParams {
             total_time_s: 1.5, burn_in_s: 0.5, cmd_vx: 0.0, dt: 0.002,
             misa_wbc_mode: None, staircase_step_s: None,
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
-            mpc_horizon_override: None, gait_cycle_period_override: None,
+            mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             body_height_bias_frac: None, full_centroidal: None,
             swing_pd_gain_override: None,
         }
@@ -298,7 +310,7 @@ impl WbcParams {
             total_time_s: 3.0, burn_in_s: 0.5, cmd_vx: 0.15, dt: 0.002,
             misa_wbc_mode: None, staircase_step_s: None,
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
-            mpc_horizon_override: None, gait_cycle_period_override: None,
+            mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             body_height_bias_frac: None, full_centroidal: None,
             swing_pd_gain_override: None,
         }
@@ -332,6 +344,7 @@ impl WbcParams {
             staircase_max_mps: max_mps,
             mpc_horizon_override: None,
             gait_cycle_period_override: None,
+            max_step_length_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
             swing_pd_gain_override: None,
@@ -551,6 +564,24 @@ impl WbcParams {
         params
     }
 
+    /// Sec.5aj follow-up: override `GaitConfig::trot()`'s
+    /// `max_step_length_m` on top of the healthy `k_capture=0`
+    /// baseline — see `WbcParams::max_step_length_override`'s doc
+    /// comment.
+    fn velocity_staircase_fine_full_centroidal_max_step_length_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        legged_control_parity: bool,
+        k_capture: f64,
+        max_step_length_m: f64,
+    ) -> Self {
+        let mut params = Self::velocity_staircase_fine_full_centroidal_true_coupling_kcap_misa_wbc(
+            formulation, cfg, legged_control_parity, false, k_capture,
+        );
+        params.max_step_length_override = Some(max_step_length_m);
+        params
+    }
+
     /// Same as [`Self::velocity_staircase_fine_full_centroidal_dynamic_q_misa_wbc`],
     /// also setting the task-space→joint-space `joint_v` weight
     /// mapping — see `FullCentroidalOpts::task_space_joint_vel_weight`'s
@@ -650,6 +681,15 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             cfg.cycle_period_s, cycle_period_s
         );
         cfg.cycle_period_s = cycle_period_s;
+    }
+    if let Some(max_step_length_m) = params.max_step_length_override {
+        eprintln!(
+            "[gait] overriding max_step_length_m {:.3}m -> {:.3}m (theoretical v_max {:.3} -> {:.3} m/s)",
+            cfg.max_step_length_m, max_step_length_m,
+            cfg.max_step_length_m / (cfg.cycle_period_s * cfg.duty_factor),
+            max_step_length_m / (cfg.cycle_period_s * cfg.duty_factor),
+        );
+        cfg.max_step_length_m = max_step_length_m;
     }
     let gait_mode = if params.full_centroidal.is_some() { GaitMode::FullCentroidal } else { GaitMode::Mpc };
     let mut gc = GaitController::build(&robot, kin.clone(), cfg, gait_mode)
@@ -1600,6 +1640,37 @@ fn go2_wbc_velocity_staircase_fine_max_normal_force() {
             true,
             0.0,
             f_max,
+        );
+        let Some(samples) = run_wbc_sim(params) else { continue };
+        eprintln!("\n=== {label} ===");
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
+}
+
+/// Sec.5aj's kinematic-ceiling hypothesis, tested directly: the
+/// observed ~0.46-0.48 m/s plateau matches
+/// `v_max = max_step_length_m / (cycle_period_s * duty_factor)
+/// = 0.10 / 0.2 = 0.5 m/s` almost exactly. If this is really the
+/// binding constraint (not some other tuning artifact), raising
+/// `max_step_length_m` should raise the plateau proportionally:
+/// `0.15m -> 0.75 m/s`, `0.20m -> 1.0 m/s` (Go2's total leg reach is
+/// ~0.426m, so 0.20m is still under half that).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_max_step_length() {
+    let trials = [
+        ("max_step_length_m=0.10 (current default, v_max=0.5)", 0.10),
+        ("max_step_length_m=0.15 (v_max=0.75)", 0.15),
+        ("max_step_length_m=0.20 (v_max=1.0)", 0.20),
+    ];
+    for (label, step_m) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams::velocity_staircase_fine_full_centroidal_max_step_length_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            true,
+            0.0,
+            step_m,
         );
         let Some(samples) = run_wbc_sim(params) else { continue };
         eprintln!("\n=== {label} ===");
