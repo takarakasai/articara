@@ -292,6 +292,13 @@ struct FullCentroidalOpts {
     /// `None` keeps the existing 200.0 N cap; `Some(f64::INFINITY)`
     /// removes it entirely, matching legged_control.
     max_normal_force_override: Option<f64>,
+    /// Override `q_diag[9]`/`q_diag[10]` (base roll/pitch attitude
+    /// tracking weight, default 25.0/25.0) after `GaitController::build`.
+    /// Sec.5al found peak body roll roughly doubles (0.06→0.10 rad) as
+    /// `max_step_length_m` rises 0.10→0.20, plausibly eating into the
+    /// tracking budget available for forward velocity. `None` keeps
+    /// the existing (25.0, 25.0) default.
+    roll_pitch_weight_override: Option<(f64, f64)>,
 }
 
 impl WbcParams {
@@ -464,6 +471,7 @@ impl WbcParams {
                 mpc_override: None, task_space_joint_vel_weight: None,
                 true_centroidal_coupling: false, capture_point_gain_override: None,
                 base_pos_xy_weight_override: None, max_normal_force_override: None,
+                roll_pitch_weight_override: None,
             }),
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
         }
@@ -579,6 +587,26 @@ impl WbcParams {
             formulation, cfg, legged_control_parity, false, k_capture,
         );
         params.max_step_length_override = Some(max_step_length_m);
+        params
+    }
+
+    /// Sec.5al follow-up: override `q_diag[9]`/`q_diag[10]` (roll/pitch
+    /// attitude weight) on top of the `max_step_length_m=0.20` baseline
+    /// — see `FullCentroidalOpts::roll_pitch_weight_override`'s doc
+    /// comment.
+    fn velocity_staircase_fine_full_centroidal_roll_pitch_weight_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        legged_control_parity: bool,
+        max_step_length_m: f64,
+        q_roll: f64,
+        q_pitch: f64,
+    ) -> Self {
+        let mut params = Self::velocity_staircase_fine_full_centroidal_max_step_length_misa_wbc(
+            formulation, cfg, legged_control_parity, 0.0, max_step_length_m,
+        );
+        let opts = params.full_centroidal.as_mut().expect("full_centroidal always Some here");
+        opts.roll_pitch_weight_override = Some((q_roll, q_pitch));
         params
     }
 
@@ -763,6 +791,17 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 mpc_cfg.max_normal_force, f_max,
             );
             mpc_cfg.max_normal_force = f_max;
+            gc.set_full_centroidal_mpc_config(mpc_cfg);
+        }
+        if let Some((q_roll, q_pitch)) = opts.roll_pitch_weight_override {
+            let mut mpc_cfg: FullCentroidalMpcConfig =
+                gc.full_centroidal_mpc_config().expect("FullCentroidal mode has a config").clone();
+            eprintln!(
+                "[full-centroidal] q_diag[9..11] (roll/pitch) {:.1}/{:.1} -> {:.1}/{:.1}",
+                mpc_cfg.q_diag[9], mpc_cfg.q_diag[10], q_roll, q_pitch,
+            );
+            mpc_cfg.q_diag[9] = q_roll;
+            mpc_cfg.q_diag[10] = q_pitch;
             gc.set_full_centroidal_mpc_config(mpc_cfg);
         }
     }
@@ -1702,6 +1741,37 @@ fn go2_wbc_velocity_staircase_fine_max_step_length_true_coupling() {
             0.0,
         );
         params.max_step_length_override = Some(0.20);
+        let Some(samples) = run_wbc_sim(params) else { continue };
+        eprintln!("\n=== {label} ===");
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
+}
+
+/// Sec.5al's theory-vs-measured gap analysis: peak body roll roughly
+/// doubles (0.06→0.10 rad) as `max_step_length_m` rises 0.10→0.20,
+/// plausibly eating into the tracking budget available for forward
+/// velocity. Tests whether raising `q_diag[9]`/`q_diag[10]` (roll/pitch
+/// attitude weight, default 25/25) on top of the `max_step_length_m
+/// =0.20` baseline reduces that disturbance and narrows the gap to
+/// the theoretical ceiling (1.0 m/s).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_roll_pitch_weight() {
+    let trials = [
+        ("q_diag[9,10]=25/25 (current default)", 25.0, 25.0),
+        ("q_diag[9,10]=50/50", 50.0, 50.0),
+        ("q_diag[9,10]=100/100", 100.0, 100.0),
+    ];
+    for (label, q_roll, q_pitch) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams::velocity_staircase_fine_full_centroidal_roll_pitch_weight_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            true,
+            0.20,
+            q_roll,
+            q_pitch,
+        );
         let Some(samples) = run_wbc_sim(params) else { continue };
         eprintln!("\n=== {label} ===");
         report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
