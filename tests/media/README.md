@@ -178,6 +178,20 @@
   tried beat the current default. See `ref/wbc_comparison.md` Sec.5af
   for the full write-up and the broader legged_control survey it came
   from.
+- `swing_pd_maxforce.png` — the last two survey items. ⑤: `legged_wbc`'s
+  `swingLegTask.kp=350, kd=37` vs our `WbcPipeline`'s `swing_kp=80,
+  swing_kd=8` (`go2_wbc_velocity_staircase_fine_swing_pd_gain`) —
+  raising toward legged_control's actual value makes high-speed
+  tracking monotonically *worse* (cmd_vx=1.0: 0.275 vs the default's
+  0.460 at the full 350/37 value; halfway at 175/18.5 is ≈neutral). ⑥:
+  removing our `max_normal_force=200N` cap entirely
+  (`go2_wbc_velocity_staircase_fine_max_normal_force`) has essentially
+  no effect — the cap was never binding in this speed range (200N×4
+  legs ≫ the robot's ~153N weight). Across all six items (①-⑥) tested
+  this session, only ③ (MPC horizon + SQP iterations) was a genuine
+  win; the rest are neutral-to-harmful when pushed toward
+  legged_control's literal values. See `ref/wbc_comparison.md` Sec.5ag
+  for the full write-up and the ①-⑥ summary.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
