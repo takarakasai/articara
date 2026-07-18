@@ -1678,6 +1678,36 @@ fn go2_wbc_velocity_staircase_fine_max_step_length() {
     }
 }
 
+/// Sec.5ak follow-up: ① (true_centroidal_coupling) was characterized
+/// as "neutral" in Sec.5ae, but that test never actually reached
+/// speeds much above ~0.48 m/s (the old max_step_length_m=0.10
+/// ceiling) -- so the swing-leg momentum reactive coupling ① models
+/// was only ever exercised at fairly gentle swing speeds. Re-tests ①
+/// on top of the new max_step_length_m=0.20 baseline (which genuinely
+/// reaches ~0.85 m/s), where swing-leg momentum should matter more.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_max_step_length_true_coupling() {
+    let trials = [
+        ("max_step_length=0.20, no coupling (Sec.5ak baseline)", false),
+        ("max_step_length=0.20, + true_centroidal_coupling", true),
+    ];
+    for (label, true_centroidal_coupling) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let mut params = WbcParams::velocity_staircase_fine_full_centroidal_true_coupling_kcap_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            true,
+            true_centroidal_coupling,
+            0.0,
+        );
+        params.max_step_length_override = Some(0.20);
+        let Some(samples) = run_wbc_sim(params) else { continue };
+        eprintln!("\n=== {label} ===");
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
+}
+
 fn assert_forward_command_advances_body(samples: &[WbcSample]) {
     let dt: f64 = 0.002;
     let burn_in_steps = (0.5 / dt).round() as usize;
