@@ -243,6 +243,22 @@
   `max_step_length_m` rises, plausibly from the no-integral-term
   structural gap plus increasing body roll disturbance at longer
   strides) that motivated re-testing ① here.
+- `roll_pitch_weight_sweep.png` — tests the natural follow-up to
+  Sec.5al's rising-peak-roll observation: does raising
+  `q_diag[9]`/`q_diag[10]` (roll/pitch attitude weight, default 25/25)
+  reduce that disturbance and narrow the theory-vs-measured gap?
+  (`go2_wbc_velocity_staircase_fine_roll_pitch_weight`, on the
+  `max_step_length_m=0.20` baseline). Counter-intuitively, no: both
+  50/50 and 100/100 make tracking *and* stability worse — peak roll
+  itself rises further (0.10-0.11 → 0.13-0.15) rather than shrinking,
+  and high-speed tracking reverses into backward walking
+  (cmd_vx=1.0: -0.183 at 50/50 vs the default's +0.852). Plausible
+  mechanism (unconfirmed): the reference trajectory holds roll/pitch
+  at a constant near-zero target, and Trot naturally involves cyclic
+  body sway — over-weighting deviation from that flat reference may
+  fight the gait's natural motion and provoke the correction it was
+  meant to prevent. Default (25/25) stays best; see
+  `ref/wbc_comparison.md` Sec.5am for the full write-up.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
