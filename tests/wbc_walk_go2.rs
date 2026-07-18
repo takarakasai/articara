@@ -145,6 +145,16 @@ struct WbcParams {
     /// fixed foot position — Sec.5t/5u/5v's subject). `None` keeps the
     /// existing `GaitMode::Mpc` default.
     full_centroidal: Option<FullCentroidalOpts>,
+    /// Override `WbcPipeline::{swing_kp, swing_kd}` (default 80.0/8.0)
+    /// after construction. Desk-research gap ⑤ (broad legged_control
+    /// survey, 2026-07-18): `legged_wbc`'s `task.info` uses
+    /// `swingLegTask.kp=350, kd=37` — same ~10:1 ratio we already use,
+    /// but ~4.4x stiffer in absolute terms. This is the WBC's own
+    /// Cartesian-tracking-equivalent joint-space stiffness (downstream
+    /// of the MPC entirely — orthogonal to the already-tested
+    /// task-space `joint_v` MPC-cost remap, gap ②). `None` keeps the
+    /// existing (80.0, 8.0) default.
+    swing_pd_gain_override: Option<(f64, f64)>,
 }
 
 /// `legged_control_parity`: per-leg phase contact schedule + swing
@@ -209,6 +219,15 @@ struct FullCentroidalOpts {
     /// (z) is already `50.0`, a value never questioned before this
     /// survey. `None` keeps the existing (0.0, 5.0) default.
     base_pos_xy_weight_override: Option<(f64, f64)>,
+    /// Override `FullCentroidalMpcConfig::max_normal_force` (default
+    /// 200.0 N) after `GaitController::build`. Desk-research gap ⑥
+    /// (broad legged_control survey, 2026-07-18): legged_control's
+    /// `FrictionConeConstraint` has no upper bound on `f_z` anywhere —
+    /// only `frictionCoefficient`/`regularization`/`gripperForce`
+    /// (`task.info`, `ocs2_legged_robot`'s `FrictionConeConstraint.h`).
+    /// `None` keeps the existing 200.0 N cap; `Some(f64::INFINITY)`
+    /// removes it entirely, matching legged_control.
+    max_normal_force_override: Option<f64>,
 }
 
 impl WbcParams {
@@ -219,6 +238,7 @@ impl WbcParams {
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
             mpc_horizon_override: None, gait_cycle_period_override: None,
             body_height_bias_frac: None, full_centroidal: None,
+            swing_pd_gain_override: None,
         }
     }
     fn forward_walk() -> Self {
@@ -228,6 +248,7 @@ impl WbcParams {
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
             mpc_horizon_override: None, gait_cycle_period_override: None,
             body_height_bias_frac: None, full_centroidal: None,
+            swing_pd_gain_override: None,
         }
     }
     fn static_stand_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
@@ -261,6 +282,7 @@ impl WbcParams {
             gait_cycle_period_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
+            swing_pd_gain_override: None,
         }
     }
 
@@ -376,7 +398,7 @@ impl WbcParams {
                 legged_control_parity, use_mpc_predicted_footstep, dynamic_joint_q_reference,
                 mpc_override: None, task_space_joint_vel_weight: None,
                 true_centroidal_coupling: false, capture_point_gain_override: None,
-                base_pos_xy_weight_override: None,
+                base_pos_xy_weight_override: None, max_normal_force_override: None,
             }),
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
         }
@@ -436,6 +458,44 @@ impl WbcParams {
         );
         let opts = params.full_centroidal.as_mut().expect("full_centroidal always Some here");
         opts.base_pos_xy_weight_override = Some((q_pos_x, q_pos_y));
+        params
+    }
+
+    /// Desk-research gap ⑤ (broad legged_control survey, 2026-07-18):
+    /// override `WbcPipeline::{swing_kp, swing_kd}` on top of the
+    /// healthy `k_capture=0` baseline — see
+    /// `WbcParams::swing_pd_gain_override`'s doc comment.
+    fn velocity_staircase_fine_full_centroidal_swing_pd_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        legged_control_parity: bool,
+        k_capture: f64,
+        swing_kp: f64,
+        swing_kd: f64,
+    ) -> Self {
+        let mut params = Self::velocity_staircase_fine_full_centroidal_true_coupling_kcap_misa_wbc(
+            formulation, cfg, legged_control_parity, false, k_capture,
+        );
+        params.swing_pd_gain_override = Some((swing_kp, swing_kd));
+        params
+    }
+
+    /// Desk-research gap ⑥ (broad legged_control survey, 2026-07-18):
+    /// override `FullCentroidalMpcConfig::max_normal_force` on top of
+    /// the healthy `k_capture=0` baseline — see
+    /// `FullCentroidalOpts::max_normal_force_override`'s doc comment.
+    fn velocity_staircase_fine_full_centroidal_max_normal_force_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        legged_control_parity: bool,
+        k_capture: f64,
+        max_normal_force: f64,
+    ) -> Self {
+        let mut params = Self::velocity_staircase_fine_full_centroidal_true_coupling_kcap_misa_wbc(
+            formulation, cfg, legged_control_parity, false, k_capture,
+        );
+        let opts = params.full_centroidal.as_mut().expect("full_centroidal always Some here");
+        opts.max_normal_force_override = Some(max_normal_force);
         params
     }
 
@@ -603,6 +663,16 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             mpc_cfg.q_diag[7] = q_y;
             gc.set_full_centroidal_mpc_config(mpc_cfg);
         }
+        if let Some(f_max) = opts.max_normal_force_override {
+            let mut mpc_cfg: FullCentroidalMpcConfig =
+                gc.full_centroidal_mpc_config().expect("FullCentroidal mode has a config").clone();
+            eprintln!(
+                "[full-centroidal] max_normal_force {:.1} -> {:.1}",
+                mpc_cfg.max_normal_force, f_max,
+            );
+            mpc_cfg.max_normal_force = f_max;
+            gc.set_full_centroidal_mpc_config(mpc_cfg);
+        }
     }
 
     let foot_links: [String; 4] = [
@@ -614,6 +684,14 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut wbc_pipeline = WbcPipeline::new(&robot, foot_links);
     if let Some((formulation, cfg)) = params.misa_wbc_mode.clone() {
         wbc_pipeline = wbc_pipeline.with_wbc_solver(formulation, cfg);
+    }
+    if let Some((kp, kd)) = params.swing_pd_gain_override {
+        eprintln!(
+            "[wbc] swing_kp/kd {:.1}/{:.1} -> {:.1}/{:.1}",
+            wbc_pipeline.swing_kp, wbc_pipeline.swing_kd, kp, kd,
+        );
+        wbc_pipeline.swing_kp = kp;
+        wbc_pipeline.swing_kd = kd;
     }
 
     // Optional per-tick link-pose CSV export for external video
@@ -1377,6 +1455,62 @@ fn go2_wbc_velocity_staircase_fine_base_pos_weight() {
             0.0,
             q_x,
             q_y,
+        );
+        let Some(samples) = run_wbc_sim(params) else { continue };
+        eprintln!("\n=== {label} ===");
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
+}
+
+/// Desk-research gap ⑤ (broad legged_control survey, 2026-07-18):
+/// `legged_wbc`'s `swingLegTask.kp=350, kd=37` vs our own
+/// `WbcPipeline::{swing_kp: 80.0, swing_kd: 8.0}` — same ~10:1 ratio,
+/// ~4.4x stiffer in absolute terms. Sweeps toward legged_control's
+/// actual values on top of the healthy `k_capture=0` baseline.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_swing_pd_gain() {
+    let trials = [
+        ("swing_kp/kd=80/8 (current default)", 80.0, 8.0),
+        ("swing_kp/kd=175/18.5 (halfway to legged_control)", 175.0, 18.5,
+        ),
+        ("swing_kp/kd=350/37 (legged_control's value)", 350.0, 37.0),
+    ];
+    for (label, kp, kd) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams::velocity_staircase_fine_full_centroidal_swing_pd_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            true,
+            0.0,
+            kp,
+            kd,
+        );
+        let Some(samples) = run_wbc_sim(params) else { continue };
+        eprintln!("\n=== {label} ===");
+        report_velocity_staircase(&samples, 0.05, 1.0, 60.0);
+    }
+}
+
+/// Desk-research gap ⑥ (broad legged_control survey, 2026-07-18):
+/// legged_control's `FrictionConeConstraint` has no upper bound on
+/// `f_z` anywhere; ours caps `max_normal_force` at 200N. Tests removing
+/// the cap on top of the healthy `k_capture=0` baseline.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_fine_max_normal_force() {
+    let trials = [
+        ("max_normal_force=200N (current default)", 200.0),
+        ("max_normal_force=inf (legged_control has no cap)", f64::INFINITY),
+    ];
+    for (label, f_max) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams::velocity_staircase_fine_full_centroidal_max_normal_force_misa_wbc(
+            wbc::Formulation::ForceSpace,
+            cfg,
+            true,
+            0.0,
+            f_max,
         );
         let Some(samples) = run_wbc_sim(params) else { continue };
         eprintln!("\n=== {label} ===");
