@@ -226,6 +226,23 @@
   0.852 at cmd_vx=1.0 (0.881 at cmd_vx=0.95) — up from 0.460 (46%) at
   the 0.10m default. See `ref/wbc_comparison.md` Sec.5ak for the full
   write-up.
+- `true_coupling_at_new_speed.png` — re-evaluates ① on top of the new
+  `max_step_length_m=0.20` baseline
+  (`go2_wbc_velocity_staircase_fine_max_step_length_true_coupling`).
+  Sec.5ae characterized ① as "neutral," but that test never actually
+  reached much past ~0.48 m/s (the old footstep-clamp ceiling), so the
+  swing-leg momentum coupling ① models was barely exercised. Once
+  actually reaching ~0.85 m/s (Sec.5ak's higher ceiling), ① degrades
+  clearly: the two curves track identically up to cmd_vx≈0.6-0.65,
+  then diverge — with ① declining to 0.276 at cmd_vx=1.0 vs the
+  baseline's 0.852. A parameter's "neutral" verdict can depend on
+  whether the test ever actually reaches the speed range where its
+  effect becomes physically significant. See `ref/wbc_comparison.md`
+  Sec.5al for the full write-up, including the theory-vs-measured gap
+  analysis (Sec.5ak's plateau ratio: 96%→87%→88% as
+  `max_step_length_m` rises, plausibly from the no-integral-term
+  structural gap plus increasing body roll disturbance at longer
+  strides) that motivated re-testing ① here.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
