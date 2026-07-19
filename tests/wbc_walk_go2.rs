@@ -1951,25 +1951,139 @@ fn go2_wbc_bound_flight_phase_duty_sweep() {
         let params =
             WbcParams::bound_flight_phase_full_centroidal_misa_wbc(wbc::Formulation::ForceSpace, cfg, 0.3, duty);
         let Some(samples) = run_wbc_sim(params) else { continue };
-        let burn_in_steps = (0.5 / 0.002_f64).round() as usize;
-        let walk = &samples[burn_in_steps.min(samples.len())..];
-        let min_z = samples.iter().map(|s| s.body_z).fold(f64::INFINITY, f64::min);
-        let peak_roll = walk.iter().map(|s| s.roll.abs()).fold(0.0_f64, f64::max);
-        let peak_pitch = walk.iter().map(|s| s.pitch.abs()).fold(0.0_f64, f64::max);
-        let x0 = walk.first().map(|s| s.body_x).unwrap_or(0.0);
-        let x1 = walk.last().map(|s| s.body_x).unwrap_or(0.0);
-        let t0 = walk.first().map(|s| s.t).unwrap_or(0.0);
-        let t1 = walk.last().map(|s| s.t).unwrap_or(0.0);
-        let meas_vx = (x1 - x0) / (t1 - t0).max(1e-6);
-        let has_nan = samples.iter().any(|s| {
-            !s.body_x.is_finite() || !s.body_z.is_finite() || !s.roll.is_finite() || !s.pitch.is_finite()
-        });
-        eprintln!(
-            "\n=== bound flight-phase, {label} ===\n\
-             min_z={min_z:.3}m, peak_roll={peak_roll:.3}rad, peak_pitch={peak_pitch:.3}rad, \
-             dx={:.3}m over {:.2}s (meas_vx≈{meas_vx:.3}), finite={}",
-            x1 - x0, t1 - t0, !has_nan,
-        );
+        report_walk_summary(label, &samples, 0.3);
+    }
+}
+
+/// Single-speed forward-walk summary (min_z / peak roll+pitch / net
+/// Δx / measured vx / finiteness), same metrics `go2_wbc_bound_
+/// flight_phase_duty_sweep` used, factored out so the baseline-
+/// isolation survey below can reuse it across many trials.
+fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
+    let burn_in_steps = (0.5 / 0.002_f64).round() as usize;
+    let walk = &samples[burn_in_steps.min(samples.len())..];
+    let min_z = samples.iter().map(|s| s.body_z).fold(f64::INFINITY, f64::min);
+    let peak_roll = walk.iter().map(|s| s.roll.abs()).fold(0.0_f64, f64::max);
+    let peak_pitch = walk.iter().map(|s| s.pitch.abs()).fold(0.0_f64, f64::max);
+    let x0 = walk.first().map(|s| s.body_x).unwrap_or(0.0);
+    let x1 = walk.last().map(|s| s.body_x).unwrap_or(0.0);
+    let t0 = walk.first().map(|s| s.t).unwrap_or(0.0);
+    let t1 = walk.last().map(|s| s.t).unwrap_or(0.0);
+    let meas_vx = (x1 - x0) / (t1 - t0).max(1e-6);
+    let has_nan = samples
+        .iter()
+        .any(|s| !s.body_x.is_finite() || !s.body_z.is_finite() || !s.roll.is_finite() || !s.pitch.is_finite());
+    eprintln!(
+        "\n=== {label} (cmd_vx={cmd_vx:.2}) ===\n\
+         min_z={min_z:.3}m, peak_roll={peak_roll:.3}rad, peak_pitch={peak_pitch:.3}rad, \
+         dx={:.3}m over {:.2}s (meas_vx≈{meas_vx:.3}), finite={}",
+        x1 - x0, t1 - t0, !has_nan,
+    );
+}
+
+/// Isolates *why* Bound reverses (§5ao): is it Bound itself, or the
+/// Trot-tuned overrides (`legged_control_parity`, `k_capture=0`,
+/// …) fighting Bound's very different footfall pattern? Sweeps the
+/// same low speed (cmd_vx=0.15, `WbcParams::forward_walk`'s own
+/// default) across four configurations of increasing sophistication,
+/// each layered on `GaitConfig::bound()`'s own untouched defaults
+/// (duty=0.5, cycle=0.3s, max_step_length_m=0.12 — no Trot-derived
+/// overrides at all):
+/// 1. `GaitMode::Mpc` (legacy 12-state SRBD) — the oldest, simplest
+///    controller, never tuned for anything but Trot either, but at
+///    least not carrying any of this session's Trot-specific
+///    FullCentroidal changes.
+/// 2. `GaitMode::FullCentroidal`, `legged_control_parity=false`
+///    (D3.3.5a legacy contact schedule) — FullCentroidal's own
+///    pre-parity behavior.
+/// 3. `GaitMode::FullCentroidal` + `legged_control_parity=true`,
+///    `k_capture` left at its default 0.05 (i.e. *before* the Sec.5ab
+///    confounder fix — parity on, but not yet the Trot-specific
+///    k_capture retune).
+/// 4. `GaitMode::FullCentroidal` + `legged_control_parity=true` +
+///    `k_capture=0` — the exact "healthy Trot baseline" combination
+///    Sec.5ao's flight-phase check used, now at Bound's own native
+///    speed/step-length instead of a 0.3 m/s command with Trot-scale
+///    max_step_length_m.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_baseline_survey() {
+    let cmd_vx = 0.15;
+
+    let cfg1 = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let p1 = WbcParams {
+        cmd_vx,
+        gait_type_override: Some(GaitType::Bound),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg1)
+    };
+    if let Some(samples) = run_wbc_sim(p1) {
+        report_walk_summary("1. GaitMode::Mpc (legacy SRBD), Bound defaults", &samples, cmd_vx);
+    }
+
+    let cfg2 = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let p2 = WbcParams {
+        cmd_vx,
+        gait_type_override: Some(GaitType::Bound),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: false,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: None,
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg2)
+    };
+    if let Some(samples) = run_wbc_sim(p2) {
+        report_walk_summary("2. FullCentroidal, parity=false (legacy), Bound defaults", &samples, cmd_vx);
+    }
+
+    let cfg3 = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let p3 = WbcParams {
+        cmd_vx,
+        gait_type_override: Some(GaitType::Bound),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: None, // default 0.05, NOT yet the Trot k_capture=0 fix
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg3)
+    };
+    if let Some(samples) = run_wbc_sim(p3) {
+        report_walk_summary("3. FullCentroidal + parity, k_capture=0.05 (default), Bound defaults", &samples, cmd_vx);
+    }
+
+    let cfg4 = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let p4 = WbcParams {
+        cmd_vx,
+        gait_type_override: Some(GaitType::Bound),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg4)
+    };
+    if let Some(samples) = run_wbc_sim(p4) {
+        report_walk_summary("4. FullCentroidal + parity + k_capture=0, Bound defaults", &samples, cmd_vx);
     }
 }
 

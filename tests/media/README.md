@@ -300,6 +300,21 @@
   solver also logged frequent `Infeasible`/`MaxIterations` warnings in
   both trials, suggesting the task formulation itself doesn't fit
   Bound's faster cycle well. See `ref/wbc_comparison.md` Sec.5ao.
+- `bound_baseline_survey.png` — isolates *why* Bound reverses:
+  is it the Trot-specific tuning (`legged_control_parity`,
+  `k_capture=0`, …) fighting Bound's very different footfall pattern,
+  or something more basic? `go2_wbc_bound_baseline_survey` runs four
+  increasingly-sophisticated configurations — plain legacy
+  `GaitMode::Mpc`, `FullCentroidal` with parity off, `FullCentroidal`
+  + parity at the *default* `k_capture=0.05` (pre-Sec.5ab fix), and
+  the full Sec.5ao "healthy Trot baseline" — all on `GaitConfig::
+  bound()`'s own untouched defaults, at a modest cmd_vx=0.15. All four
+  reverse similarly (-0.114 to -0.140 m/s) — the Trot-specific tuning
+  is cleared; even the oldest, simplest SRBD path (never touched by
+  any of this session's Trot work) reverses just as badly. Every
+  config also shows a large sustained pitch oscillation (0.27-0.34
+  rad, ~15-20°), the suspected real culprit — flagged for follow-up,
+  not yet confirmed. See `ref/wbc_comparison.md` Sec.5ap.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
