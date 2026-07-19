@@ -259,6 +259,26 @@
   fight the gait's natural motion and provoke the correction it was
   meant to prevent. Default (25/25) stays best; see
   `ref/wbc_comparison.md` Sec.5am for the full write-up.
+- `ceiling_coarse_vs_fine.png` — finds the actual ceiling of the
+  current best config (`legged_control_parity=true, k_capture=0,
+  max_step_length_m=0.20`) by widening the staircase to 0-2.0 m/s at
+  0.10 m/s steps
+  (`go2_wbc_velocity_staircase_coarse_max_step_length_ceiling`), since
+  Sec.5ak's 0-1.0 m/s fine sweep hadn't clearly plateaued by its top
+  command. Found a real discrepancy: at the same cmd_vx=1.0, the
+  coarse (0.10-step) sweep measures 0.567 vs the fine (0.05-step)
+  sweep's 0.852 — the two curves overlap almost exactly up to
+  cmd_vx≈0.6, then diverge. The coarse sweep reveals the *actual*
+  behavior: a peak of 0.605 at cmd_vx=0.7 (86% ratio), a gentle
+  decline, then a clear reversal starting around cmd_vx≈1.4, settling
+  near -0.86 by cmd_vx=1.8-2.0 — the same qualitative
+  peak-then-decline-then-reversal shape Sec.5r/5s found for the old
+  `max_step_length_m=0.10` setting, just shifted to a higher speed
+  range. Sec.5ak's "still climbing at cmd_vx=1.0" result likely
+  reflects some not-yet-understood effect of the fine staircase's
+  smaller steps letting the system "sneak past" the reversal that a
+  larger, more abrupt step change triggers — flagged as an open
+  question, not resolved. See `ref/wbc_comparison.md` Sec.5an.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
