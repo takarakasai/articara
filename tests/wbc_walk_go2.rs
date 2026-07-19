@@ -1778,6 +1778,39 @@ fn go2_wbc_velocity_staircase_fine_roll_pitch_weight() {
     }
 }
 
+/// Finds the *actual* ceiling of the current best configuration
+/// (`legged_control_parity=true, k_capture=0, max_step_length_m=0.20`)
+/// by widening the staircase past the 0-1.0 m/s range every prior
+/// `max_step_length` test used — at cmd_vx=1.0 tracking (0.852) hadn't
+/// clearly plateaued yet (theoretical ceiling for this step length is
+/// 1.0 m/s), so the true saturation/reversal point, if any, is still
+/// unknown. Mirrors Sec.5r's original coarse 0-5 m/s sweep that found
+/// the old (0.10m) ceiling, but re-run against this session's current
+/// best config.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_velocity_staircase_coarse_max_step_length_ceiling() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let mut params = WbcParams::velocity_staircase_fine_full_centroidal_max_step_length_misa_wbc(
+        wbc::Formulation::ForceSpace,
+        cfg,
+        true,
+        0.0,
+        0.20,
+    );
+    // Widen from the fine sweep's 0-1.0 m/s (0.05 steps) to 0-2.0 m/s
+    // (0.10 steps) -- same 21 levels, same ~2.86s/level, same 60s
+    // total, so the per-level dynamics stay comparable to every other
+    // fine-staircase result this session.
+    params.staircase_step_mps = 0.10;
+    params.staircase_max_mps = 2.0;
+    let n_levels = (params.staircase_max_mps / params.staircase_step_mps).round() as usize + 1;
+    params.staircase_step_s = Some(params.total_time_s / n_levels as f64);
+    let Some(samples) = run_wbc_sim(params) else { return };
+    eprintln!("\n=== max_step_length=0.20 ceiling search, 0-2.0 m/s coarse ===");
+    report_velocity_staircase(&samples, 0.10, 2.0, 60.0);
+}
+
 fn assert_forward_command_advances_body(samples: &[WbcSample]) {
     let dt: f64 = 0.002;
     let burn_in_steps = (0.5 / dt).round() as usize;
