@@ -279,6 +279,27 @@
   smaller steps letting the system "sneak past" the reversal that a
   larger, more abrupt step change triggers — flagged as an open
   question, not resolved. See `ref/wbc_comparison.md` Sec.5an.
+- `bound_flight_phase_check.png` — Canter/Gallop scoping: does a
+  genuine flight phase (0 legs in stance) survive real MuJoCo dynamics
+  at all? `GaitConfig::bound()`'s duty factor lowered from its 0.5
+  default to 0.35 (30% of each cycle airborne, twice per cycle, per
+  `go2_diag_bound_duty_factor_flight_phase_sweep`'s schedule-level
+  confirmation), run through `GaitMode::FullCentroidal` +
+  `legged_control_parity` + `k_capture=0` (the established healthy
+  Trot baseline) at cmd_vx=0.3
+  (`go2_wbc_bound_flight_phase_duty_sweep`). Good news: the flight
+  phase itself doesn't crash or diverge — both duty=0.50 (no flight)
+  and duty=0.35 (30% flight) stay finite and well above the fall
+  threshold (min_z 0.216-0.219m vs 0.15m). Bad news, more fundamental:
+  **even the no-flight duty=0.50 baseline reverses hard** against the
+  +0.3 m/s command (meas_vx=-0.166) — the Trot-tuned configuration
+  (`legged_control_parity`, `k_capture=0`, `max_step_length_m`, …)
+  doesn't transfer to Bound at all, flight phase or not. Oddly, adding
+  the flight phase *reduces* the reversal (-0.021 at duty=0.35) rather
+  than worsening it — unexplained, flagged for follow-up. WBC's HoQp
+  solver also logged frequent `Infeasible`/`MaxIterations` warnings in
+  both trials, suggesting the task formulation itself doesn't fit
+  Bound's faster cycle well. See `ref/wbc_comparison.md` Sec.5ao.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
