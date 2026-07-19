@@ -35,8 +35,8 @@ use articara::wbc_pipeline::WbcPipeline;
 use nalgebra::Vector3;
 use quadruped_gait::wbc;
 use quadruped_gait::{
-    foot_jacobian_body, solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, KinematicsConfig,
-    LegIkSolution, VelocityCmd,
+    foot_jacobian_body, solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, GaitType,
+    KinematicsConfig, LegIkSolution, VelocityCmd,
 };
 use quadruped_gait::FullCentroidalMpcConfig;
 
@@ -122,6 +122,55 @@ fn go2_diag_swing_pd_gain_jacobian_conversion() {
         eprintln!(
             "[jacobian] using {label}={scale:.4}: kp_joint_equiv = 350*{scale:.4} = {:.2}, kd_joint_equiv = 37*{scale:.4} = {:.2}",
             350.0 * scale, 37.0 * scale,
+        );
+    }
+}
+
+/// Diagnostic (no MuJoCo needed): sweeps `GaitConfig::bound()`'s
+/// `duty_factor` down from its 0.5 default and samples
+/// `ContactDrivenPhase::nominal_legs()` at fine time resolution across
+/// one full cycle, counting how many legs are in stance at each
+/// sample.
+///
+/// Bound's phase offsets (`FL=FR=0.0, RL=RR=0.5`) exactly tile two
+/// legs in stance at `duty=0.5` with zero gap — the front pair lifts
+/// off exactly as the rear pair lands. Reducing duty below 0.5 should
+/// open a genuine flight phase (0 legs in stance) twice per cycle —
+/// the aerial phase real bounding/galloping gaits have, which neither
+/// the SRBD MPC's `continuous_dynamics` nor the WBC's
+/// `friction_cone`/`no_contact_motion` tasks have ever actually been
+/// exercised against (both degrade gracefully to `n_stance=0` on
+/// paper, per the code, but untested in practice). This is the cheap
+/// sanity check before investing in a dedicated Canter/Gallop
+/// `GaitType` (which would need asymmetric per-leg duty factors,
+/// unsupported today): confirms the flight-phase *schedule* itself
+/// behaves as expected before testing whether the *dynamics* handle
+/// it.
+#[test]
+fn go2_diag_bound_duty_factor_flight_phase_sweep() {
+    const N_SAMPLES: usize = 2000;
+    for duty in [0.5, 0.45, 0.40, 0.35, 0.30, 0.25] {
+        let cfg = GaitConfig::bound().with_duty_factor(duty);
+        let dt = cfg.cycle_period_s / N_SAMPLES as f64;
+        let mut phase = ContactDrivenPhase::new(cfg);
+        let vel = VelocityCmd { vx: 0.3, vy: 0.0, wz: 0.0 };
+        // Prime past the zero-velocity "holding" state before sampling.
+        phase.advance(dt, &vel);
+        let mut min_stance = 4usize;
+        let mut zero_stance_samples = 0usize;
+        for _ in 0..N_SAMPLES {
+            let legs = phase.nominal_legs();
+            let n_stance = legs.iter().filter(|p| p.is_stance).count();
+            min_stance = min_stance.min(n_stance);
+            if n_stance == 0 {
+                zero_stance_samples += 1;
+            }
+            phase.advance(dt, &vel);
+        }
+        let flight_frac = zero_stance_samples as f64 / N_SAMPLES as f64;
+        eprintln!(
+            "[bound-duty-sweep] duty={duty:.2}: min_stance={min_stance}, flight_phase_fraction={flight_frac:.3} ({:.1}% of cycle)",
+            flight_frac * 100.0,
         );
     }
 }
@@ -219,6 +268,22 @@ struct WbcParams {
     /// task-space `joint_v` MPC-cost remap, gap ②). `None` keeps the
     /// existing (80.0, 8.0) default.
     swing_pd_gain_override: Option<(f64, f64)>,
+    /// Override the base gait family (`GaitConfig::for_type(ty)`)
+    /// instead of the hardcoded `GaitConfig::trot()`. Applied before
+    /// `duty_factor_override`/`gait_cycle_period_override`/
+    /// `max_step_length_override` so those still compose on top.
+    /// `None` keeps `GaitConfig::trot()`.
+    gait_type_override: Option<GaitType>,
+    /// Override `GaitConfig::duty_factor` (default depends on
+    /// `gait_type_override`, e.g. `0.5` for Bound) after construction.
+    /// 2026-07-19 flight-phase validation: Bound's phase offsets
+    /// (`FL=FR=0.0, RL=RR=0.5`) exactly tile two legs in stance at
+    /// `duty=0.5`; reducing duty opens a genuine flight phase (0 legs
+    /// in stance) twice per cycle, per `go2_diag_bound_duty_factor_
+    /// flight_phase_sweep`'s schedule-level confirmation
+    /// (`flight_fraction = 1 - 2*duty`). `None` keeps the gait
+    /// family's own default duty factor.
+    duty_factor_override: Option<f64>,
 }
 
 /// `legged_control_parity`: per-leg phase contact schedule + swing
@@ -310,6 +375,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             body_height_bias_frac: None, full_centroidal: None,
             swing_pd_gain_override: None,
+            gait_type_override: None, duty_factor_override: None,
         }
     }
     fn forward_walk() -> Self {
@@ -320,6 +386,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             body_height_bias_frac: None, full_centroidal: None,
             swing_pd_gain_override: None,
+            gait_type_override: None, duty_factor_override: None,
         }
     }
     fn static_stand_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
@@ -355,6 +422,8 @@ impl WbcParams {
             body_height_bias_frac: None,
             full_centroidal: None,
             swing_pd_gain_override: None,
+            gait_type_override: None,
+            duty_factor_override: None,
         }
     }
 
@@ -665,6 +734,44 @@ impl WbcParams {
         opts.mpc_override = Some((horizon_steps, dt_per_step, sqp_iterations));
         params
     }
+
+    /// 2026-07-19 flight-phase validation (Canter/Gallop scoping):
+    /// `GaitMode::FullCentroidal` + `legged_control_parity` +
+    /// `k_capture=0` (the established healthy baseline) on
+    /// `GaitType::Bound` with `duty_factor` reduced below its 0.5
+    /// default, opening a genuine flight phase (0 legs in stance)
+    /// twice per cycle — see `WbcParams::duty_factor_override`'s doc
+    /// comment and `go2_diag_bound_duty_factor_flight_phase_sweep`'s
+    /// schedule-level confirmation. Single fixed-speed forward walk
+    /// (not a staircase): the question here is "does the dynamics
+    /// survive an aerial phase at all", not a tracking-ceiling sweep.
+    fn bound_flight_phase_full_centroidal_misa_wbc(
+        formulation: wbc::Formulation,
+        cfg: wbc::SolveConfig,
+        cmd_vx: f64,
+        duty_factor: f64,
+    ) -> Self {
+        Self {
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(duty_factor),
+            cmd_vx,
+            total_time_s: 5.0,
+            burn_in_s: 0.5,
+            ..Self::forward_walk_misa_wbc(formulation, cfg)
+        }
+    }
 }
 
 fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
@@ -702,7 +809,19 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
     sim.set_gravity_compensation(true);
 
-    let mut cfg = GaitConfig::trot();
+    let mut cfg = match params.gait_type_override {
+        Some(ty) => GaitConfig::for_type(ty),
+        None => GaitConfig::trot(),
+    };
+    if let Some(duty_factor) = params.duty_factor_override {
+        eprintln!(
+            "[gait] overriding duty_factor {:.3} -> {:.3} (flight_phase_fraction {:.3} -> {:.3})",
+            cfg.duty_factor, duty_factor,
+            (1.0 - 2.0 * cfg.duty_factor).max(0.0),
+            (1.0 - 2.0 * duty_factor).max(0.0),
+        );
+        cfg = cfg.with_duty_factor(duty_factor);
+    }
     if let Some(cycle_period_s) = params.gait_cycle_period_override {
         eprintln!(
             "[gait-cycle] overriding cycle_period_s {:.3}s -> {:.3}s",
@@ -1809,6 +1928,49 @@ fn go2_wbc_velocity_staircase_coarse_max_step_length_ceiling() {
     let Some(samples) = run_wbc_sim(params) else { return };
     eprintln!("\n=== max_step_length=0.20 ceiling search, 0-2.0 m/s coarse ===");
     report_velocity_staircase(&samples, 0.10, 2.0, 60.0);
+}
+
+/// 2026-07-19 flight-phase validation (Canter/Gallop scoping): does
+/// the SRBD/FullCentroidal MPC dynamics and WBC actually survive a
+/// genuine aerial phase (0 legs in stance), or does the `n_stance=0`
+/// code path that's only ever been reasoned about on paper (per the
+/// quadruped-gait Explore survey) blow up in practice? Runs
+/// `GaitType::Bound` at its stock `duty_factor=0.5` (baseline, no
+/// gap — front/rear pairs tile exactly, matching every prior Bound
+/// assumption) against `duty_factor=0.35` (30% of each cycle airborne,
+/// twice per cycle, per `go2_diag_bound_duty_factor_flight_phase_
+/// sweep`'s schedule-level confirmation). Single fixed speed
+/// (cmd_vx=0.3), not a staircase — the question is survival, not a
+/// tracking ceiling.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty_sweep() {
+    let trials = [("duty=0.50 (no flight, baseline)", 0.5), ("duty=0.35 (30% flight/cycle)", 0.35)];
+    for (label, duty) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params =
+            WbcParams::bound_flight_phase_full_centroidal_misa_wbc(wbc::Formulation::ForceSpace, cfg, 0.3, duty);
+        let Some(samples) = run_wbc_sim(params) else { continue };
+        let burn_in_steps = (0.5 / 0.002_f64).round() as usize;
+        let walk = &samples[burn_in_steps.min(samples.len())..];
+        let min_z = samples.iter().map(|s| s.body_z).fold(f64::INFINITY, f64::min);
+        let peak_roll = walk.iter().map(|s| s.roll.abs()).fold(0.0_f64, f64::max);
+        let peak_pitch = walk.iter().map(|s| s.pitch.abs()).fold(0.0_f64, f64::max);
+        let x0 = walk.first().map(|s| s.body_x).unwrap_or(0.0);
+        let x1 = walk.last().map(|s| s.body_x).unwrap_or(0.0);
+        let t0 = walk.first().map(|s| s.t).unwrap_or(0.0);
+        let t1 = walk.last().map(|s| s.t).unwrap_or(0.0);
+        let meas_vx = (x1 - x0) / (t1 - t0).max(1e-6);
+        let has_nan = samples.iter().any(|s| {
+            !s.body_x.is_finite() || !s.body_z.is_finite() || !s.roll.is_finite() || !s.pitch.is_finite()
+        });
+        eprintln!(
+            "\n=== bound flight-phase, {label} ===\n\
+             min_z={min_z:.3}m, peak_roll={peak_roll:.3}rad, peak_pitch={peak_pitch:.3}rad, \
+             dx={:.3}m over {:.2}s (meas_vx≈{meas_vx:.3}), finite={}",
+            x1 - x0, t1 - t0, !has_nan,
+        );
+    }
 }
 
 fn assert_forward_command_advances_body(samples: &[WbcSample]) {
