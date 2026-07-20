@@ -296,6 +296,19 @@ struct WbcParams {
     /// friction to be physically deployable. `None` keeps the
     /// existing 0.5 default.
     friction_mu_override: Option<f64>,
+    /// Override `WbcPipeline::pitch_pd_gain` (default (0.0, 0.0)) after
+    /// construction. Sec.5au/5av: real model-based bounding controllers
+    /// (Raibert's hopping-machine 3-way decomposition; MIT Cheetah 2/3)
+    /// treat attitude control as an explicit, closed-loop feedback
+    /// channel — not something inferred purely from the MPC's GRF
+    /// allocation, which for Bound's front/rear-only stance is
+    /// friction-cone-limited (Sec.5as/5at). `WbcPipeline::solve`'s
+    /// `a_base_des` angular component was, until this change, pure
+    /// feedforward from the MPC's optimised GRF via Newton-Euler, with
+    /// no direct feedback on measured pitch error at all. `(kp, kd)`
+    /// adds `kp*(0 - pitch) - kd*pitch_rate` directly on top of that
+    /// feedforward. `None` keeps the existing (0.0, 0.0) no-op default.
+    pitch_pd_gain_override: Option<(f64, f64)>,
     /// Override the base gait family (`GaitConfig::for_type(ty)`)
     /// instead of the hardcoded `GaitConfig::trot()`. Applied before
     /// `duty_factor_override`/`gait_cycle_period_override`/
@@ -403,7 +416,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -415,7 +428,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -452,7 +465,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None,
             gait_type_override: None,
             duty_factor_override: None,
         }
@@ -991,6 +1004,13 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if let Some(mu) = params.friction_mu_override {
         eprintln!("[wbc] friction_mu {:.2} -> {:.2}", wbc_pipeline.friction_mu, mu);
         wbc_pipeline.friction_mu = mu;
+    }
+    if let Some((kp, kd)) = params.pitch_pd_gain_override {
+        eprintln!(
+            "[wbc] pitch_pd_gain {:?} -> ({:.1}, {:.1})",
+            wbc_pipeline.pitch_pd_gain, kp, kd,
+        );
+        wbc_pipeline.pitch_pd_gain = (kp, kd);
     }
 
     // Optional per-tick link-pose CSV export for external video
@@ -2455,6 +2475,52 @@ fn go2_wbc_bound_true_coupling_sweep() {
                 mpc_override: None,
                 task_space_joint_vel_weight: None,
                 true_centroidal_coupling: coupling,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(label, &samples, 0.15);
+        }
+    }
+}
+
+/// Sec.5au found `true_centroidal_coupling` (a passive linearization-
+/// accuracy correction) doesn't deliver the independent pitch-
+/// authority channel real bounding controllers (Raibert; MIT Cheetah
+/// 2/3) rely on. This tests the more literal reproduction: an
+/// explicit closed-loop pitch PD (`WbcPipeline::pitch_pd_gain`,
+/// Sec.5av) added directly on top of the MPC-GRF-derived feedforward
+/// that `a_base_des`'s angular component was previously pure
+/// feedforward-only for. Same Bound reversal case as every other
+/// sweep in this investigation: stock `swing_height_m=0.05`,
+/// cmd_vx=0.15, `legged_control_parity=true, k_capture=0`.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_pitch_pd_sweep() {
+    let trials = [
+        ("A. baseline (pitch PD off)", (0.0, 0.0)),
+        ("B. pitch_pd_gain=(50,5)", (50.0, 5.0)),
+        ("C. pitch_pd_gain=(100,10)", (100.0, 10.0)),
+        ("D. pitch_pd_gain=(200,20)", (200.0, 20.0)),
+        ("E. pitch_pd_gain=(400,40)", (400.0, 40.0)),
+    ];
+    for (label, (kp, kd)) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 0.15,
+            gait_type_override: Some(GaitType::Bound),
+            pitch_pd_gain_override: Some((kp, kd)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
