@@ -433,6 +433,39 @@
   `true_centroidal_coupling`, and explicit pitch PD are all cleared or
   only partially effective; `friction_mu` remains the sole real (but
   insufficient) lever found. See `ref/wbc_comparison.md` Sec.5av.
+- Sec.5aw (no new chart): re-analyzing Sec.5as's already-collected
+  dense diagnostic logs (not a new sim run) surfaced a `max|τ|` data
+  point not previously highlighted: Bound demands joint torque up to
+  44.71 N·m — ~1.9x Go2's real 23.7 N·m hip/thigh limit — in 12.5% of
+  sampled ticks (Trot: 0%, never exceeding 17.29 N·m). Since MuJoCo's
+  `bake_actuator_limits` silently clips torque commands at the real
+  effort limit, the WBC's own returned solution and what the robot
+  physically receives diverge whenever this happens — directly tying
+  to the HoQP `Infeasible`/`MaxIterations` pattern (a solver that
+  fails to converge can return a solution violating its own hard
+  torque-limit constraint). Answers the user's "is it friction or
+  torque?" question: both are *symptoms* of the same root cause
+  (Bound's collinear stance ill-conditioning the QP), not independent
+  causes.
+- `bound_effort_ground_friction.png` — tests both factors directly in
+  the simulation model (not just the solver's internal belief).
+  `go2_wbc_bound_actuator_effort_scale_sweep` scales every joint's real
+  `effort` (N·m) by 1.0/2.0/5.0 (relaxing MuJoCo's own actuator clamp
+  *and* the WBC's `torque_max`, not a solver-internal trick): 2x gives
+  a real, substantial improvement (-0.124→-0.056), but 5x is worse
+  again (-0.090) with a new roll instability appearing (peak
+  |roll|=0.018 rad, previously always ~0). `go2_wbc_bound_matched_
+  friction_sweep` tests whether Sec.5at's `friction_mu` improvement was
+  really about physical grip: matching the *real* MJCF ground friction
+  to the WBC's `friction_mu` belief (0.7→1.5, or 3.0/3.0) changes
+  **nothing at all** — identical results to the mismatched case. The
+  feet never actually approach the real 0.7 friction's slip limit in
+  this scenario; `friction_mu`'s partial benefit (Sec.5at) is a pure
+  QP-internal numerical effect (reshaping the friction-cone task
+  changes which solution the solver converges to), not a physical
+  traction effect. Actuator torque is a real, if partial and non-
+  monotonic, lever; ground friction was a red herring all along. See
+  `ref/wbc_comparison.md` Sec.5aw/5ax.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
