@@ -109,6 +109,15 @@ pub struct WbcPipeline {
     /// preserving every existing gait's behaviour exactly.
     pub roll_pd_gain: (f64, f64),
     pub pitch_pd_gain: (f64, f64),
+    /// Time-varying attitude targets the PD gains above chase, instead
+    /// of the fixed level (`0.0`) reference every gait implicitly used
+    /// before this field existed. Set per-tick by the host (e.g. from
+    /// [`quadruped_gait::BoundTrimConfig::sample`]'s `pitch` for
+    /// Bound's closed-form trim reference, Sec.5bb/5bc) before calling
+    /// [`Self::solve`]. `0.0` (the default) reproduces the original
+    /// level-attitude behaviour exactly.
+    pub roll_ref: f64,
+    pub pitch_ref: f64,
 
     /// Previous tick's joint q* in URDF sign convention, indexed by
     /// articara joint index. Updated **only for swing legs** so that
@@ -227,6 +236,8 @@ impl WbcPipeline {
             com_offset_body: na::Vector3::zeros(),
             roll_pd_gain: (0.0, 0.0),
             pitch_pd_gain: (0.0, 0.0),
+            roll_ref: 0.0,
+            pitch_ref: 0.0,
             last_q_target_urdf,
             smoothed_f_grf: [na::Vector3::zeros(); 4],
             grf_smoothing_seeded: false,
@@ -484,17 +495,20 @@ impl WbcPipeline {
         // velocity / yaw commands now flow into the MPC layer instead.
         let _ = (v_cmd_body, wz_cmd, omega_obs_world);
 
-        // ── Explicit roll/pitch attitude feedback (Sec.5au/5av) ──
+        // ── Explicit roll/pitch attitude feedback (Sec.5au/5av/5bc) ──
         // Added on top of the pure MPC-GRF-derived feedforward above.
-        // Target is level (roll=pitch=0), matching every gait's own
-        // walking reference. `(0.0, 0.0)` gains (the default) make
-        // this an exact no-op.
+        // Target defaults to level (`roll_ref=pitch_ref=0.0`), matching
+        // every gait's own walking reference, but the host can set
+        // `roll_ref`/`pitch_ref` to a time-varying value per tick (e.g.
+        // Bound's closed-form trim pitch, Sec.5bc) before calling
+        // `solve()`. `(0.0, 0.0)` gains (the default) make this an
+        // exact no-op regardless of the ref values.
         if self.roll_pd_gain != (0.0, 0.0) || self.pitch_pd_gain != (0.0, 0.0) {
             let (roll_meas, pitch_meas, _yaw_meas) = body_quat.euler_angles();
             let (roll_kp, roll_kd) = self.roll_pd_gain;
             let (pitch_kp, pitch_kd) = self.pitch_pd_gain;
-            a_ang_body.x += roll_kp * (0.0 - roll_meas) - roll_kd * omega_obs_body.x;
-            a_ang_body.y += pitch_kp * (0.0 - pitch_meas) - pitch_kd * omega_obs_body.y;
+            a_ang_body.x += roll_kp * (self.roll_ref - roll_meas) - roll_kd * omega_obs_body.x;
+            a_ang_body.y += pitch_kp * (self.pitch_ref - pitch_meas) - pitch_kd * omega_obs_body.y;
         }
         let a_base_des = na::DVector::from_iterator(
             6,
