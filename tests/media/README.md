@@ -356,6 +356,22 @@
   the robot effectively shuffling in place rather than genuinely
   walking. A working forward-tracking Bound gait is still unsolved.
   See `ref/wbc_comparison.md` Sec.5ar.
+- Sec.5as (no new chart): two Explore-agent code audits cleared the
+  footstep planner (`compute_mpc_footstep`, all four variants) and the
+  `legged_control_parity` k≥1 contact-schedule projection of any
+  Bound-specific bug — both are provably leg/gait-agnostic. A new
+  dense `Σmpc_f_x` diagnostic (added to `run_wbc_sim`'s existing
+  `Σmpc_f_z` printout) then found Bound's MPC-predicted GRF swinging
+  wildly (-173 to +200N horizontal, vs Trot's tame -3.91 to +4.66N)
+  and repeatedly saturating at `max_normal_force * 2` (400N — Sec.5ag
+  found this cap *never* binds for Trot). `go2_wbc_bound_max_normal_
+  force_sweep` (200/400/800/∞) ruled this out as the actual cause,
+  though: raising or removing the cap doesn't reduce the reversal
+  (-0.124 to -0.165 across all four). Footstep planner, contact
+  schedule, and force cap are all cleared; the WBC's frequent HoQP
+  `Infeasible`/`MaxIterations` warnings (seen since Sec.5ao, never
+  directly investigated) remain the most promising unexamined lead.
+  See `ref/wbc_comparison.md` Sec.5as.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
