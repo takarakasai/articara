@@ -315,6 +315,31 @@
   config also shows a large sustained pitch oscillation (0.27-0.34
   rad, ~15-20°), the suspected real culprit — flagged for follow-up,
   not yet confirmed. See `ref/wbc_comparison.md` Sec.5ap.
+- `go2_bound_reversal.mp4` — real-mesh MuJoCo video of the Sec.5ap
+  reversal case (`go2_wbc_bound_forward_walk_video_source`: Bound's
+  own defaults, `legged_control_parity=true, k_capture=0`,
+  cmd_vx=0.15) requested so the large pitch oscillation and net
+  backward drift could be inspected visually, not just from the
+  summary numbers.
+- `bound_gentler_sweep.png` / `go2_bound_low_swing.mp4` — Sec.5ap
+  follow-up: does softening `GaitConfig::bound()`'s own timing/sizing
+  (`cycle_period_s=0.30s`, faster than Trot's 0.4s; `swing_height_m=
+  0.05`, higher than Trot's 0.04m) reduce the pitch oscillation and
+  reversal? `go2_wbc_bound_gentler_parameters_sweep` tries four
+  combinations at cmd_vx=0.15. Lowering `swing_height_m` alone
+  (0.05→0.02) cuts peak |pitch| ~4x (0.291→0.067 rad) and *eliminates
+  the reversal entirely* (meas_vx -0.124→+0.007) — though the robot is
+  now merely not-reversing, not actually progressing forward yet.
+  Slowing the cycle alone (0.30s→0.40s) makes both metrics *worse*
+  (0.291→0.448 rad, -0.124→-0.157) — longer airborne time at the same
+  swing height apparently increases landing impact/moment, not
+  reduces it. Combining both is worse than lowering swing height
+  alone. `swing_height_m` is the dominant lever, and Bound's stock
+  0.05m default is simply too aggressive for the current tuning —
+  unrelated to any of the Trot-specific work. The video
+  (`go2_wbc_bound_low_swing_video_source`'s trace, same cmd_vx/
+  duration as `go2_bound_reversal.mp4` for direct comparison) shows
+  the visibly calmer trunk. See `ref/wbc_comparison.md` Sec.5aq.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
