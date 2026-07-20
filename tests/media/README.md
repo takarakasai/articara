@@ -527,6 +527,34 @@
   cause of Bound's reversal — reinforces Sec.5az's geometric-cause
   conclusion rather than overturning it. See `ref/wbc_comparison.md`
   Sec.5ba.
+- `bound_template_reference_validation.png` — the user proposed a
+  first-principles redesign (point-mass model of Bound's ideal
+  periodic behavior -> required momentum/GRF time series -> torque/
+  friction feasibility check -> feed the result into the WBC as an
+  actual reference). Sec.5bb derived a closed-form single-rigid-body
+  periodic "trim" solution (exploiting front/rear mirror symmetry to
+  solve a half-cycle boundary-value problem) and found it feasible
+  with margin at Go2's real friction/torque limits (theta_peak=0.025
+  rad predicted, vs the current chaotic ~0.29 rad — an 11x
+  reduction). Sec.5bc implements it (new `quadruped-gait::
+  BoundTrimConfig`/`BoundTrimSample`, wired into both the FullCentroidal
+  MPC's own per-step reference and the WBC's pitch-PD) and validates
+  in MuJoCo: the first attempt made things *worse* and introduced a
+  brand-new roll instability (0.075-0.173 rad, never seen before in
+  this whole investigation) -- a dense phase-check diagnostic
+  (`pitch_ref` vs measured pitch) revealed the reference and the real
+  system were running near-antiphase, i.e. a genuine sign-convention
+  bug, not just a tracking lag. Fixing the sign (`BoundTrimConfig::
+  sign=-1.0`) resolved the spurious roll instability almost completely
+  (0.173->0.009), confirming the diagnosis -- but `meas_vx` and
+  `peak_pitch` still don't meaningfully improve over baseline even
+  after the fix. Session conclusion: the theoretical ideal reference
+  is sound (Phase 0's go/no-go was correct), but getting the real
+  closed loop to actually track it turned out to be a separate,
+  unsolved problem -- possibly a bandwidth/phase-lag limitation given
+  Bound's fast 0.3s cycle, possibly under-weighted MPC cost terms,
+  possibly another undiscovered bug. See `ref/wbc_comparison.md`
+  Sec.5bc.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
