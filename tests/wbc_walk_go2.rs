@@ -242,6 +242,14 @@ struct WbcParams {
     /// raise this theoretical ceiling proportionally if the prediction
     /// is right. `None` keeps the existing 0.10m default.
     max_step_length_override: Option<f64>,
+    /// Override `GaitConfig::swing_height_m` (0.04 for Trot, 0.05 for
+    /// Bound) after construction. Sec.5ap follow-up: Bound's baseline-
+    /// isolation survey found a large sustained pitch oscillation
+    /// (0.27-0.34 rad) in every configuration tested, alongside a
+    /// consistent forward-command reversal — swing height is the most
+    /// direct lever on how hard each stance-to-swing transition kicks
+    /// the trunk. `None` keeps the gait family's own default.
+    swing_height_override: Option<f64>,
     /// Override the per-leg standing-height bias fraction applied on
     /// top of the auto-detected `nominal_foot_body.z` (as
     /// `nominal_foot_body.z += bias_frac * (upper_leg_m +
@@ -373,6 +381,7 @@ impl WbcParams {
             misa_wbc_mode: None, staircase_step_s: None,
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
+            swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
             swing_pd_gain_override: None,
             gait_type_override: None, duty_factor_override: None,
@@ -384,6 +393,7 @@ impl WbcParams {
             misa_wbc_mode: None, staircase_step_s: None,
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
+            swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
             swing_pd_gain_override: None,
             gait_type_override: None, duty_factor_override: None,
@@ -419,6 +429,7 @@ impl WbcParams {
             mpc_horizon_override: None,
             gait_cycle_period_override: None,
             max_step_length_override: None,
+            swing_height_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
             swing_pd_gain_override: None,
@@ -837,6 +848,13 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             max_step_length_m / (cfg.cycle_period_s * cfg.duty_factor),
         );
         cfg.max_step_length_m = max_step_length_m;
+    }
+    if let Some(swing_height_m) = params.swing_height_override {
+        eprintln!(
+            "[gait] overriding swing_height_m {:.3}m -> {:.3}m",
+            cfg.swing_height_m, swing_height_m,
+        );
+        cfg.swing_height_m = swing_height_m;
     }
     let gait_mode = if params.full_centroidal.is_some() { GaitMode::FullCentroidal } else { GaitMode::Mpc };
     let mut gc = GaitController::build(&robot, kin.clone(), cfg, gait_mode)
@@ -2085,6 +2103,121 @@ fn go2_wbc_bound_baseline_survey() {
     if let Some(samples) = run_wbc_sim(p4) {
         report_walk_summary("4. FullCentroidal + parity + k_capture=0, Bound defaults", &samples, cmd_vx);
     }
+}
+
+/// Single-trial, video-friendly rerun of `go2_wbc_bound_baseline_
+/// survey`'s config #4 (`FullCentroidal` + `legged_control_parity` +
+/// `k_capture=0`, `GaitConfig::bound()`'s own untouched defaults) —
+/// same configuration and speed (cmd_vx=0.15), just alone in the
+/// process and run long enough (4.5s) to produce a legible `WBC_WALK_
+/// CSV_OUT` trace for `render_go2_walk.py`. See Sec.5ap: this is the
+/// case with the large sustained pitch oscillation (peak ~0.29 rad)
+/// and net backward drift the survey found.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; also the WBC_WALK_CSV_OUT video-capture source for Sec.5ap"]
+fn go2_wbc_bound_forward_walk_video_source() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 0.15,
+        total_time_s: 4.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_walk_summary("bound video-capture source (config #4, cmd_vx=0.15)", &samples, 0.15);
+}
+
+/// Sec.5ap follow-up: does softening `GaitConfig::bound()`'s own
+/// timing/sizing (its `cycle_period_s=0.3s` is faster than Trot's
+/// 0.4s, its `swing_height_m=0.05` is higher than Trot's 0.04) reduce
+/// the large sustained pitch oscillation (0.27-0.34 rad) the baseline
+/// survey found in every configuration, and does that in turn shrink
+/// the forward-command reversal? All four trials keep the "healthy
+/// Trot baseline" (`legged_control_parity=true, k_capture=0`) and
+/// cmd_vx=0.15 fixed — only `cycle_period_s`/`swing_height_m` vary.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_gentler_parameters_sweep() {
+    let trials = [
+        ("A. Bound defaults (cycle=0.30s, swing=0.05m)", None, None),
+        ("B. slower cycle (cycle=0.40s, swing=0.05m)", Some(0.40), None),
+        ("C. lower swing (cycle=0.30s, swing=0.02m)", None, Some(0.02)),
+        ("D. both (cycle=0.40s, swing=0.02m)", Some(0.40), Some(0.02)),
+    ];
+    for (label, cycle_period_s, swing_height_m) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 0.15,
+            gait_type_override: Some(GaitType::Bound),
+            gait_cycle_period_override: cycle_period_s,
+            swing_height_override: swing_height_m,
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(label, &samples, 0.15);
+        }
+    }
+}
+
+/// Single-trial, video-friendly rerun of `go2_wbc_bound_gentler_
+/// parameters_sweep`'s trial C (`swing_height_m=0.02`, `cycle_period_s`
+/// left at Bound's own 0.30s default) — the config that cut the peak
+/// pitch oscillation ~4x (0.291 -> 0.067 rad) and eliminated the
+/// reversal entirely (meas_vx -0.124 -> +0.007) relative to Bound's
+/// stock defaults. Same duration/speed as `go2_wbc_bound_forward_
+/// walk_video_source` so the two videos are a direct before/after
+/// comparison.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; also the WBC_WALK_CSV_OUT video-capture source for Sec.5aq"]
+fn go2_wbc_bound_low_swing_video_source() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 0.15,
+        total_time_s: 4.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        swing_height_override: Some(0.02),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_walk_summary("bound low-swing video-capture source (swing_height_m=0.02, cmd_vx=0.15)", &samples, 0.15);
 }
 
 fn assert_forward_command_advances_body(samples: &[WbcSample]) {
