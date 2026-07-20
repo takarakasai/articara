@@ -27,7 +27,7 @@
 
 use std::path::PathBuf;
 
-use articara::gait::{auto_detect_kinematics_config, GaitController, DEFAULT_FOOT_LINKS};
+use articara::gait::{auto_detect_kinematics_config, auto_detect_srbd_mpc_config, GaitController, DEFAULT_FOOT_LINKS};
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
 use articara::robot::RobotModel;
@@ -124,6 +124,41 @@ fn go2_diag_swing_pd_gain_jacobian_conversion() {
             350.0 * scale, 37.0 * scale,
         );
     }
+}
+
+/// Diagnostic (no MuJoCo needed): prompted by the user asking whether
+/// the required momentum/impulse budget for Bound has ever actually
+/// been checked against Go2's real physical parameters. Answering that
+/// properly requires knowing what mass/inertia the WBC *thinks* it's
+/// working with — and this surfaced a real discrepancy: `WbcPipeline::
+/// new`'s `mass_kg`/`inertia_diag_body` defaults (9.0 kg,
+/// (0.07, 0.26, 0.242) — a leftover "Cheetah-class" placeholder, per
+/// the field doc comment) are used to derive `a_base_des` (the WBC's
+/// dominant weight-200 task) via Newton-Euler from the MPC's GRF, but
+/// are **never overridden** anywhere in this test file — unlike the
+/// MPC's own `auto_detect_srbd_mpc_config`, which correctly detects
+/// Go2's real mass/inertia from the model. Prints both so the gap can
+/// be quantified before deciding whether it's worth fixing.
+#[test]
+fn go2_diag_wbc_mass_inertia_mismatch() {
+    let path = go2_misa();
+    if !path.exists() {
+        eprintln!("go2.misa missing at {} — skipping", path.display());
+        return;
+    }
+    let robot = RobotModel::from_misa(&path).expect("load go2.misa");
+    let real = auto_detect_srbd_mpc_config(&robot);
+    eprintln!(
+        "[mass-inertia] WbcPipeline::new() default: mass_kg=9.00, inertia_diag_body=(0.070, 0.260, 0.242)"
+    );
+    eprintln!(
+        "[mass-inertia] auto_detect_srbd_mpc_config (real Go2): mass_kg={:.3}, inertia_diag_body=({:.4}, {:.4}, {:.4})",
+        real.mass_kg, real.inertia_diag_body.x, real.inertia_diag_body.y, real.inertia_diag_body.z,
+    );
+    eprintln!(
+        "[mass-inertia] mass ratio (real/placeholder) = {:.3}x, pitch-inertia ratio = {:.3}x",
+        real.mass_kg / 9.0, real.inertia_diag_body.y / 0.26,
+    );
 }
 
 /// Diagnostic (no MuJoCo needed): sweeps `GaitConfig::bound()`'s
@@ -363,6 +398,24 @@ struct WbcParams {
     /// ill-conditioning rather than causing it outright. `(alpha,
     /// prox_weight)`; `None` keeps the existing (1.0, 1e-4) defaults.
     grf_smoothing_and_prox_override: Option<(f64, f64)>,
+    /// When `true`, syncs `WbcPipeline::{mass_kg, inertia_diag_body}`
+    /// to `articara::gait::auto_detect_srbd_mpc_config`'s real,
+    /// model-derived values instead of leaving them at `WbcPipeline::
+    /// new`'s hardcoded "Cheetah-class" placeholder (`mass_kg=9.0`,
+    /// `inertia_diag_body=(0.07, 0.26, 0.242)`). `go2_diag_wbc_mass_
+    /// inertia_mismatch` found this placeholder is never overridden
+    /// anywhere in this file, despite this file's own module doc
+    /// claiming "real ~15.6 kg mass" throughout — real Go2 is 15.606
+    /// kg (1.73x the placeholder) with pitch inertia 0.098 (0.38x the
+    /// placeholder — the placeholder is ~2.65x too LARGE). Since these
+    /// fields feed `a_base_des`'s Newton-Euler derivation (the WBC's
+    /// dominant weight-200 task) — `a_lin = Σf/m + g`, `a_ang =
+    /// I⁻¹·(Σr×f − ω×Iω)` — using a mass 42% too small and a pitch
+    /// inertia 165% too large would make every `a_base_des` reference
+    /// this session has ever computed for FullCentroidal+WBC wrong,
+    /// for both Trot and Bound. `false` (default) preserves this
+    /// file's existing behaviour exactly.
+    sync_real_mass_inertia: bool,
     /// Override the base gait family (`GaitConfig::for_type(ty)`)
     /// instead of the hardcoded `GaitConfig::trot()`. Applied before
     /// `duty_factor_override`/`gait_cycle_period_override`/
@@ -470,7 +523,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -482,7 +535,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -519,7 +572,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false,
             gait_type_override: None,
             duty_factor_override: None,
         }
@@ -1062,6 +1115,17 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut wbc_pipeline = WbcPipeline::new(&robot, foot_links);
     if let Some((formulation, cfg)) = params.misa_wbc_mode.clone() {
         wbc_pipeline = wbc_pipeline.with_wbc_solver(formulation, cfg);
+    }
+    if params.sync_real_mass_inertia {
+        let real = auto_detect_srbd_mpc_config(&robot);
+        eprintln!(
+            "[wbc] mass_kg {:.2} -> {:.2}, inertia_diag_body ({:.3},{:.3},{:.3}) -> ({:.3},{:.3},{:.3})",
+            wbc_pipeline.mass_kg, real.mass_kg,
+            wbc_pipeline.inertia_diag_body.x, wbc_pipeline.inertia_diag_body.y, wbc_pipeline.inertia_diag_body.z,
+            real.inertia_diag_body.x, real.inertia_diag_body.y, real.inertia_diag_body.z,
+        );
+        wbc_pipeline.mass_kg = real.mass_kg;
+        wbc_pipeline.inertia_diag_body = real.inertia_diag_body;
     }
     if let Some((kp, kd)) = params.swing_pd_gain_override {
         eprintln!(
@@ -2802,6 +2866,70 @@ fn go2_wbc_bound_grf_smoothing_and_prox_sweep() {
             cmd_vx: 0.15,
             gait_type_override: Some(GaitType::Bound),
             grf_smoothing_and_prox_override: Some((alpha, prox_weight)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(label, &samples, 0.15);
+        }
+    }
+}
+
+/// `go2_diag_wbc_mass_inertia_mismatch` found `WbcPipeline`'s
+/// `mass_kg`/`inertia_diag_body` (feeding `a_base_des`'s dominant
+/// weight-200 Newton-Euler reference) are never synced to Go2's real,
+/// auto-detected values anywhere in this file — stuck at a "Cheetah-
+/// class" placeholder that's 42% too light and has pitch inertia 165%
+/// too large. Tests whether correcting this (a plausible latent bug
+/// affecting every FullCentroidal+WBC test this session, not a Bound-
+/// specific tuning knob) changes Bound's reversal case, and confirms
+/// it doesn't regress Trot.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_mass_inertia_fix_sweep() {
+    // Bound reversal case, with vs without the fix.
+    for (label, sync) in [("A. Bound, placeholder mass/inertia (baseline)", false), ("B. Bound, real mass/inertia", true)] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 0.15,
+            gait_type_override: Some(GaitType::Bound),
+            sync_real_mass_inertia: sync,
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(label, &samples, 0.15);
+        }
+    }
+    // Trot sanity check: same fix, Trot's own healthy-baseline config
+    // (legged_control_parity + k_capture=0), to confirm no regression.
+    for (label, sync) in [("C. Trot, placeholder mass/inertia (baseline)", false), ("D. Trot, real mass/inertia", true)] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 0.15,
+            sync_real_mass_inertia: sync,
             full_centroidal: Some(FullCentroidalOpts {
                 legged_control_parity: true,
                 use_mpc_predicted_footstep: false,
