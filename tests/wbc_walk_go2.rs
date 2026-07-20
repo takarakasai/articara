@@ -2415,6 +2415,59 @@ fn go2_wbc_bound_friction_mu_sweep() {
     }
 }
 
+/// Sec.5at's `friction_mu` sweep confirmed the "pitch authority is
+/// friction-limited" mechanism (real, monotonic improvement 0.5-1.5)
+/// but never reached genuine forward tracking alone. Real-world
+/// model-based bounding controllers (Raibert's hopping-machine
+/// three-part decomposition; MIT Cheetah 2/3) treat attitude/pitch
+/// control as an independent channel — typically direct hip-joint
+/// torque exploiting the leg's own mass/inertia during stance —
+/// rather than relying solely on ground-reaction-force allocation
+/// bounded by the friction cone. `true_centroidal_coupling` (desk-
+/// research gap ①, Sec.5aa-5ae: an additive bias term from misarta's
+/// CRBA-based centroidal momentum matrix, coupling joint acceleration
+/// into the base's predicted motion) is architecturally exactly this
+/// leg-mass-reaction-torque channel — it was found "neutral" for Trot
+/// (Sec.5ae), plausibly because Trot's diagonal pair barely needs it
+/// (pitch torque already comes cheaply from `Δf_z·Δr_x`). Bound is
+/// exactly the regime where it should matter. Tests ① alone, and ①
+/// combined with Sec.5at's best `friction_mu=1.5`, against the plain
+/// reversal-case baseline, at Bound's stock `swing_height_m=0.05`,
+/// cmd_vx=0.15.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_true_coupling_sweep() {
+    let trials = [
+        ("A. baseline (coupling off, mu=0.5)", false, 0.5),
+        ("B. true_centroidal_coupling on, mu=0.5", true, 0.5),
+        ("C. true_centroidal_coupling on, mu=1.5 (combined)", true, 1.5),
+    ];
+    for (label, coupling, friction_mu) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 0.15,
+            gait_type_override: Some(GaitType::Bound),
+            friction_mu_override: Some(friction_mu),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: coupling,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(label, &samples, 0.15);
+        }
+    }
+}
+
 fn assert_forward_command_advances_body(samples: &[WbcSample]) {
     let dt: f64 = 0.002;
     let burn_in_steps = (0.5 / dt).round() as usize;
