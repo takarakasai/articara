@@ -340,6 +340,22 @@
   (`go2_wbc_bound_low_swing_video_source`'s trace, same cmd_vx/
   duration as `go2_bound_reversal.mp4` for direct comparison) shows
   the visibly calmer trunk. See `ref/wbc_comparison.md` Sec.5aq.
+- `bound_low_swing_cmdvx_flat.png` — Sec.5aq follow-up, and a
+  correction to its optimistic framing: with `swing_height_m=0.02`
+  fixed, sweeping `max_step_length_m` (0.08/0.12/0.16/0.20,
+  `go2_wbc_bound_low_swing_max_step_length_sweep`) produces *exactly*
+  the same result every time (dx=0.018m to the millimetre) — the
+  footstep planner's stride clamp isn't the binding constraint at all.
+  Sweeping `cmd_vx` itself instead (0.05 to 0.30 m/s,
+  `go2_wbc_bound_low_swing_cmd_vx_sweep`) shows measured vx staying at
+  noise level (-0.066 to +0.028) with **no relationship to the
+  command**, and peak |pitch| staying flat too (0.067-0.072 rad)
+  regardless of speed. Reinterpretation: `swing_height_m=0.02` didn't
+  fix Bound into a working gait — it suppressed the swing motion
+  enough to kill translation (and thus the reversal) entirely, leaving
+  the robot effectively shuffling in place rather than genuinely
+  walking. A working forward-tracking Bound gait is still unsolved.
+  See `ref/wbc_comparison.md` Sec.5ar.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
