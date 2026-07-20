@@ -309,6 +309,30 @@ struct WbcParams {
     /// adds `kp*(0 - pitch) - kd*pitch_rate` directly on top of that
     /// feedforward. `None` keeps the existing (0.0, 0.0) no-op default.
     pitch_pd_gain_override: Option<(f64, f64)>,
+    /// Scale every joint's `effort` (N·m torque limit) by this factor,
+    /// applied to `robot.joints[*].effort` right after loading —
+    /// before *both* the MJCF export (so MuJoCo's own actuator
+    /// `forcerange` clamp relaxes too, not just the WBC's belief) and
+    /// `WbcPipeline::new` (whose `torque_max` reads straight from
+    /// `robot.joints[ji].effort`). Sec.5aw: measured Bound demanding
+    /// torque up to 44.71 N·m — ~1.9x Go2's real 23.7 N·m hip/thigh
+    /// limit — in 12.5% of sampled ticks (Trot: 0%), while MuJoCo
+    /// silently clips the excess. Tests whether genuinely relaxing
+    /// the actuator envelope (not just the WBC's internal belief)
+    /// resolves the reversal. `None` keeps the real Go2 catalogue
+    /// values (scale 1.0).
+    actuator_effort_scale_override: Option<f64>,
+    /// Override `MjcfExportOptions::default_friction`'s sliding
+    /// component (default 0.7) — the REAL ground-foot friction MuJoCo
+    /// simulates, as opposed to `friction_mu_override` (the WBC/MPC's
+    /// own *belief* about available friction). Sec.5at raised
+    /// `friction_mu` up to 5.0 while the ground stayed fixed at 0.7 —
+    /// i.e. the WBC was often assuming *more* grip than physically
+    /// existed, which would show up as slip. `None` keeps the 0.7
+    /// default; `Some(mu)` typically wants to match whatever
+    /// `friction_mu_override` is set to, for a physically consistent
+    /// (not just solver-internal) comparison.
+    ground_friction_override: Option<f64>,
     /// Override the base gait family (`GaitConfig::for_type(ty)`)
     /// instead of the hardcoded `GaitConfig::trot()`. Applied before
     /// `duty_factor_override`/`gait_cycle_period_override`/
@@ -416,7 +440,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -428,7 +452,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -465,7 +489,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None,
             gait_type_override: None,
             duty_factor_override: None,
         }
@@ -825,6 +849,15 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         return None;
     }
     let mut robot = RobotModel::from_misa(&path).expect("load go2.misa");
+    if let Some(scale) = params.actuator_effort_scale_override {
+        for joint in &mut robot.joints {
+            let before = joint.effort;
+            joint.effort *= scale;
+            if before > 0.0 {
+                eprintln!("[actuator] {} effort {:.2} -> {:.2} N·m", joint.name, before, joint.effort);
+            }
+        }
+    }
 
     let mut kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS)
         .expect("auto-detect kinematics");
@@ -844,12 +877,19 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     }
     seed_joint_positions_from_kinematics(&mut robot, &kin);
 
-    let opts = MjcfExportOptions {
+    let mut opts = MjcfExportOptions {
         base_pos: Some([0.0, 0.0, 0.30]),
         ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0 }),
         add_actuators: true,
         ..Default::default()
     };
+    if let Some(mu_ground) = params.ground_friction_override {
+        eprintln!(
+            "[ground] default_friction[0] (sliding) {:.2} -> {:.2}",
+            opts.default_friction[0], mu_ground,
+        );
+        opts.default_friction[0] = mu_ground;
+    }
     let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
     sim.set_gravity_compensation(true);
 
@@ -2514,6 +2554,93 @@ fn go2_wbc_bound_pitch_pd_sweep() {
             cmd_vx: 0.15,
             gait_type_override: Some(GaitType::Bound),
             pitch_pd_gain_override: Some((kp, kd)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(label, &samples, 0.15);
+        }
+    }
+}
+
+/// User follow-up to Sec.5aw's torque-saturation finding: does
+/// genuinely relaxing the actuator envelope (not just the WBC's
+/// internal belief) resolve the reversal? Scales every joint's
+/// `effort` (N·m) by `1.0/2.0/5.0` before *both* the MJCF export
+/// (MuJoCo's own `forcerange` clamp) and `WbcPipeline::new`'s
+/// `torque_max` — a genuinely stronger simulated motor, not a solver-
+/// internal relaxation like `friction_mu`/`pitch_pd_gain`. Same Bound
+/// reversal case as every other sweep: stock `swing_height_m=0.05`,
+/// cmd_vx=0.15, `legged_control_parity=true, k_capture=0`.
+///
+/// Note: joint *velocity* limits (`JointData::velocity`) were also
+/// considered, but a code check found they aren't actually enforced
+/// anywhere in the MJCF export / MuJoCo sim path today (no `.velocity`
+/// reference in `src/mjcf.rs`) — relaxing that field would be a no-op
+/// at this stage, so it's not included in this sweep.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_actuator_effort_scale_sweep() {
+    for scale in [1.0, 2.0, 5.0] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 0.15,
+            gait_type_override: Some(GaitType::Bound),
+            actuator_effort_scale_override: Some(scale),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(&format!("effort_scale={scale:.1}"), &samples, 0.15);
+        }
+    }
+}
+
+/// User follow-up to Sec.5at: that sweep raised the WBC/MPC's
+/// *belief* about friction (`friction_mu`) up to 5.0 while the real
+/// MuJoCo ground stayed fixed at its 0.7 default — a mismatch where
+/// the solver could ask for more grip than physically existed. This
+/// tests the *matched* case: raise the real ground friction
+/// (`ground_friction_override`) alongside `friction_mu` to the same
+/// value, so the WBC's belief and the physical world agree, at
+/// Sec.5at's best point (1.5) and beyond.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_matched_friction_sweep() {
+    let trials = [
+        ("A. mu=1.5, ground=0.7 (Sec.5at mismatched)", 1.5, 0.7),
+        ("B. mu=1.5, ground=1.5 (matched)", 1.5, 1.5),
+        ("C. mu=3.0, ground=3.0 (matched)", 3.0, 3.0),
+    ];
+    for (label, mu, ground_mu) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 0.15,
+            gait_type_override: Some(GaitType::Bound),
+            friction_mu_override: Some(mu),
+            ground_friction_override: Some(ground_mu),
             full_centroidal: Some(FullCentroidalOpts {
                 legged_control_parity: true,
                 use_mpc_predicted_footstep: false,
