@@ -512,6 +512,20 @@ struct WbcParams {
     /// for both Trot and Bound. `false` (default) preserves this
     /// file's existing behaviour exactly.
     sync_real_mass_inertia: bool,
+    /// Enable Bound's closed-form periodic trim reference (Sec.5bb/
+    /// 5bc, local doc): both the FullCentroidal MPC's own per-horizon-
+    /// step pitch/fore-aft-GRF reference
+    /// (`GaitController::set_bound_trim_reference`) and the WBC's
+    /// explicit pitch-PD (`WbcPipeline::{pitch_pd_gain, pitch_ref}`)
+    /// track the same time-varying trim pitch, computed fresh every
+    /// tick from the real, auto-detected mass/inertia/geometry (never
+    /// hand-typed). `Some((pitch_kp, pitch_kd))` sets the WBC-level PD
+    /// gain; `None` keeps every gait's original flat/zero reference.
+    /// Implicitly also enables `sync_real_mass_inertia` (the trim
+    /// formulas are only correct with real physical parameters — see
+    /// that field's own doc comment for the mass/inertia mismatch this
+    /// depends on being fixed).
+    bound_trim_reference: Option<(f64, f64)>,
     /// Override the base gait family (`GaitConfig::for_type(ty)`)
     /// instead of the hardcoded `GaitConfig::trot()`. Applied before
     /// `duty_factor_override`/`gait_cycle_period_override`/
@@ -619,7 +633,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -631,7 +645,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -668,7 +682,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None,
             gait_type_override: None,
             duty_factor_override: None,
         }
@@ -1212,7 +1226,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if let Some((formulation, cfg)) = params.misa_wbc_mode.clone() {
         wbc_pipeline = wbc_pipeline.with_wbc_solver(formulation, cfg);
     }
-    if params.sync_real_mass_inertia {
+    if params.sync_real_mass_inertia || params.bound_trim_reference.is_some() {
         let real = auto_detect_srbd_mpc_config(&robot);
         eprintln!(
             "[wbc] mass_kg {:.2} -> {:.2}, inertia_diag_body ({:.3},{:.3},{:.3}) -> ({:.3},{:.3},{:.3})",
@@ -1223,6 +1237,34 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         wbc_pipeline.mass_kg = real.mass_kg;
         wbc_pipeline.inertia_diag_body = real.inertia_diag_body;
     }
+    let bound_trim_cfg: Option<quadruped_gait::BoundTrimConfig> =
+        params.bound_trim_reference.map(|(kp, kd)| {
+            gc.set_bound_trim_reference(true);
+            wbc_pipeline.pitch_pd_gain = (kp, kd);
+            let fl_kin = &kin.fl;
+            let rl_kin = &kin.rl;
+            let r_x_front = fl_kin.nominal_foot_body.x;
+            let r_x_rear = -rl_kin.nominal_foot_body.x;
+            let h0 = -fl_kin.nominal_foot_body.z;
+            let trim_cfg = quadruped_gait::BoundTrimConfig {
+                mass_kg: wbc_pipeline.mass_kg,
+                inertia_yy: wbc_pipeline.inertia_diag_body.y,
+                r_x: 0.5 * (r_x_front + r_x_rear),
+                h0,
+                cycle_period_s: gc.config().cycle_period_s,
+                duty_factor: gc.config().duty_factor,
+                friction_mu: wbc_pipeline.friction_mu,
+                // Sec.5bc: empirically-corrected sign (see the same
+                // constructor's comment in
+                // full_centroidal_controller.rs) -- must match.
+                sign: -1.0,
+            };
+            eprintln!(
+                "[bound-trim] enabled: F_x*={:.2}N, mu_needed={:.3}, theta_peak(clipped)={:.4}rad (pitch_pd_gain=({kp:.1},{kd:.1}))",
+                trim_cfg.f_x_trim(), trim_cfg.mu_needed(), trim_cfg.theta_peak(trim_cfg.f_x_clipped()),
+            );
+            trim_cfg
+        });
     if let Some((kp, kd)) = params.swing_pd_gain_override {
         eprintln!(
             "[wbc] swing_kp/kd {:.1}/{:.1} -> {:.1}/{:.1}",
@@ -1327,6 +1369,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 sim.set_position_target(idx, q);
             }
             if k >= burn_in_steps {
+                if let Some(trim_cfg) = &bound_trim_cfg {
+                    let cycle_phase = out.legs[0].phase.cycle_position;
+                    wbc_pipeline.pitch_ref = trim_cfg.sample(cycle_phase).pitch;
+                }
                 let f_grf_world =
                     gc.predicted_grfs().map(|sol| sol.grfs_first_step).unwrap_or([Vector3::zeros(); 4]);
                 let cmd = gc.velocity_cmd();
@@ -1373,9 +1419,12 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     let mpc_fz_sum: f64 = f_grf_world.iter().map(|v| v.z).sum();
                     let mpc_fx_sum: f64 = f_grf_world.iter().map(|v| v.x).sum();
                     let stance_count = contact_flag.iter().filter(|b| **b).count();
+                    let (_r, pitch_now, _y) = robot.base_transform.rotation.euler_angles();
                     eprintln!(
-                        "[diag k={k:5} t={:.3}s] z={:.3} m  Σmpc_f_z={:.2} N  Σmpc_f_x={:.2} N  max|τ|={:.2} N·m  stance={}/4",
+                        "[diag k={k:5} t={:.3}s] z={:.3} m  Σmpc_f_z={:.2} N  Σmpc_f_x={:.2} N  max|τ|={:.2} N·m  stance={}/4  \
+                         pitch_ref={:.4} pitch_meas={:.4}",
                         k as f64 * params.dt, body_pos[2], mpc_fz_sum, mpc_fx_sum, tau_max, stance_count,
+                        wbc_pipeline.pitch_ref, pitch_now,
                     );
                 }
                 let _ = torque_ff;
@@ -3026,6 +3075,54 @@ fn go2_wbc_mass_inertia_fix_sweep() {
         let params = WbcParams {
             cmd_vx: 0.15,
             sync_real_mass_inertia: sync,
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(label, &samples, 0.15);
+        }
+    }
+}
+
+/// Phase c (plan `splendid-chasing-lollipop.md`): validates the
+/// closed-form Bound trim reference (Sec.5bb/5bc) end-to-end in
+/// MuJoCo. Both the FullCentroidal MPC's own per-step reference
+/// (`grfs[leg].x`, `base_euler_zyx.y`) and the WBC's explicit
+/// pitch-PD now track the same time-varying periodic pitch/thrust
+/// profile, instead of the flat zero-pitch/zero-Fx hold Bound (and
+/// every gait) used before. Same Bound reversal case as every prior
+/// sweep in this investigation: stock `swing_height_m=0.05`,
+/// `legged_control_parity=true, k_capture=0`, cmd_vx=0.15. Success
+/// criteria (Sec.5bb's predictions): `meas_vx` should cross from
+/// negative toward +0.15, and `peak_pitch` should drop from the
+/// current chaotic ~0.29 rad toward the theoretical ~0.025 rad
+/// (mu=0.7-clipped trim).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_template_reference_forward_walk() {
+    let trials = [
+        ("A. baseline (no trim reference)", None),
+        ("B. trim reference, pitch_pd_gain=(0,0) (MPC x_ref only)", Some((0.0, 0.0))),
+        ("C. trim reference, pitch_pd_gain=(100,10)", Some((100.0, 10.0))),
+        ("D. trim reference, pitch_pd_gain=(200,20)", Some((200.0, 20.0))),
+    ];
+    for (label, bound_trim) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 0.15,
+            gait_type_override: Some(GaitType::Bound),
+            bound_trim_reference: bound_trim,
             full_centroidal: Some(FullCentroidalOpts {
                 legged_control_parity: true,
                 use_mpc_predicted_footstep: false,
