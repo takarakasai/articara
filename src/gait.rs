@@ -781,6 +781,18 @@ impl GaitController {
         self.inner.true_centroidal_coupling()
     }
 
+    /// Toggle the FullCentroidal controller's closed-form Bound trim
+    /// reference (see `ref/wbc_comparison.md` Sec.5bb/5bc, local doc).
+    /// No-op outside FullCentroidal mode, and a no-op even in
+    /// FullCentroidal mode unless the active `GaitConfig::gait_type`
+    /// is `GaitType::Bound`.
+    pub fn set_bound_trim_reference(&mut self, enable: bool) {
+        self.inner.set_bound_trim_reference(enable);
+    }
+    pub fn bound_trim_reference(&self) -> Option<bool> {
+        self.inner.bound_trim_reference()
+    }
+
     /// The experimental research knobs of the active controller, as
     /// declared by [`quadruped_gait::exp`]. The GUI renders its
     /// "Experimental flags" section from this metadata, so knobs added
