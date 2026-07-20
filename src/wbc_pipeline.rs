@@ -87,6 +87,29 @@ pub struct WbcPipeline {
     pub centroidal_inertia_body: Option<na::Matrix3<f64>>,
     pub com_offset_body: na::Vector3<f64>,
 
+    /// Explicit roll/pitch attitude feedback gains (units 1/s² and
+    /// 1/s, applied to a measured attitude / body-frame angular-rate
+    /// error), added directly on top of the MPC-GRF-derived `a_ang_
+    /// body` before it becomes `a_base_des`'s angular component.
+    ///
+    /// `a_base_des`'s angular part is otherwise **pure feedforward**
+    /// from the MPC's optimised GRF via Newton-Euler (`α = I⁻¹·(Σr×f
+    /// − ω×Iω)`) — there is no direct closed-loop correction on
+    /// measured attitude error anywhere in this pipeline (a prior
+    /// hand-tuned PD was removed in favour of this MPC-consistent
+    /// feedforward; see the `solve()` module comment). This is fine
+    /// when the upstream GRF solution is well-behaved, but real
+    /// model-based bounding-gait controllers (Raibert's hopping-
+    /// machine 3-way decomposition; MIT Cheetah 2/3) treat attitude
+    /// control as an *independent*, explicitly closed-loop channel —
+    /// not something inferred solely from force allocation, which for
+    /// front/rear-only stances is friction-cone-limited (see
+    /// `articara/ref/wbc_comparison.md` Sec.5as/5at, local doc).
+    /// `(0.0, 0.0)` (the default) makes this a complete no-op,
+    /// preserving every existing gait's behaviour exactly.
+    pub roll_pd_gain: (f64, f64),
+    pub pitch_pd_gain: (f64, f64),
+
     /// Previous tick's joint q* in URDF sign convention, indexed by
     /// articara joint index. Updated **only for swing legs** so that
     /// during the stance phase the slot retains the swing-period
@@ -202,6 +225,8 @@ impl WbcPipeline {
             inertia_diag_body: na::Vector3::new(0.07, 0.26, 0.242),
             centroidal_inertia_body: None,
             com_offset_body: na::Vector3::zeros(),
+            roll_pd_gain: (0.0, 0.0),
+            pitch_pd_gain: (0.0, 0.0),
             last_q_target_urdf,
             smoothed_f_grf: [na::Vector3::zeros(); 4],
             grf_smoothing_seeded: false,
@@ -454,10 +479,23 @@ impl WbcPipeline {
         // q̈[0..6] is body-frame for a FreeFlyer joint, so rotate the
         // world-frame predicted accels in. Layout: [angular; linear].
         let a_lin_body = r_bw * a_lin_world;
-        let a_ang_body = r_bw * a_ang_world;
+        let mut a_ang_body = r_bw * a_ang_world;
         // suppress unused-arg warnings during the PD-removal transition;
         // velocity / yaw commands now flow into the MPC layer instead.
         let _ = (v_cmd_body, wz_cmd, omega_obs_world);
+
+        // ── Explicit roll/pitch attitude feedback (Sec.5au/5av) ──
+        // Added on top of the pure MPC-GRF-derived feedforward above.
+        // Target is level (roll=pitch=0), matching every gait's own
+        // walking reference. `(0.0, 0.0)` gains (the default) make
+        // this an exact no-op.
+        if self.roll_pd_gain != (0.0, 0.0) || self.pitch_pd_gain != (0.0, 0.0) {
+            let (roll_meas, pitch_meas, _yaw_meas) = body_quat.euler_angles();
+            let (roll_kp, roll_kd) = self.roll_pd_gain;
+            let (pitch_kp, pitch_kd) = self.pitch_pd_gain;
+            a_ang_body.x += roll_kp * (0.0 - roll_meas) - roll_kd * omega_obs_body.x;
+            a_ang_body.y += pitch_kp * (0.0 - pitch_meas) - pitch_kd * omega_obs_body.y;
+        }
         let a_base_des = na::DVector::from_iterator(
             6,
             [
