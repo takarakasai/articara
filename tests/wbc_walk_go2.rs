@@ -1072,10 +1072,11 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0, 0.0, 0.0]);
                     let tau_max = taus.iter().cloned().fold(0.0_f64, |a, b| a.max(b.abs()));
                     let mpc_fz_sum: f64 = f_grf_world.iter().map(|v| v.z).sum();
+                    let mpc_fx_sum: f64 = f_grf_world.iter().map(|v| v.x).sum();
                     let stance_count = contact_flag.iter().filter(|b| **b).count();
                     eprintln!(
-                        "[diag k={k:5} t={:.3}s] z={:.3} m  Σmpc_f_z={:.2} N  max|τ|={:.2} N·m  stance={}/4",
-                        k as f64 * params.dt, body_pos[2], mpc_fz_sum, tau_max, stance_count,
+                        "[diag k={k:5} t={:.3}s] z={:.3} m  Σmpc_f_z={:.2} N  Σmpc_f_x={:.2} N  max|τ|={:.2} N·m  stance={}/4",
+                        k as f64 * params.dt, body_pos[2], mpc_fz_sum, mpc_fx_sum, tau_max, stance_count,
                     );
                 }
                 let _ = torque_ff;
@@ -2295,6 +2296,46 @@ fn go2_wbc_bound_low_swing_cmd_vx_sweep() {
         };
         if let Some(samples) = run_wbc_sim(params) {
             report_walk_summary(&format!("cmd_vx={cmd_vx:.2}"), &samples, cmd_vx);
+        }
+    }
+}
+
+/// Sec.5ar's dense `Σmpc_f_x`/`Σmpc_f_z` diagnostic found Bound's MPC
+/// GRF solution repeatedly saturating at exactly `max_normal_force *
+/// 2` (400N, i.e. both stance legs pinned at the 200N/leg default cap
+/// — the same cap Sec.5ag found *never binds* for Trot) alongside
+/// wild swings in `Σmpc_f_x` (-173 to +200N, vs Trot's tame -3.91 to
+/// +4.66N). Hypothesis: 200N/leg, sized for Trot's diagonal-pair
+/// support, may be too tight for Bound's front/rear-only support
+/// pattern (which must carry the full body weight *and* counter a
+/// much larger pitch moment using only 2 collinear legs). Tests
+/// whether raising the cap resolves the force chaos and, in turn, the
+/// reversal — at Bound's stock `swing_height_m=0.05` (the actual
+/// reversal case, not the low-swing "shuffle" config), cmd_vx=0.15.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_max_normal_force_sweep() {
+    for max_normal_force in [200.0, 400.0, 800.0, f64::INFINITY] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 0.15,
+            gait_type_override: Some(GaitType::Bound),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: Some(max_normal_force),
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(&format!("max_normal_force={max_normal_force:.0}"), &samples, 0.15);
         }
     }
 }
