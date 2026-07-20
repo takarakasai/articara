@@ -411,6 +411,28 @@
   similar in name, different in kind, which is the likely reason it
   didn't deliver the hoped-for independent pitch-authority channel.
   See `ref/wbc_comparison.md` Sec.5au.
+- `bound_pitch_pd_sweep.png` — the more literal reproduction of the
+  literature's mechanism: `WbcPipeline` gets a new `pitch_pd_gain:
+  (f64, f64)` field (default `(0.0, 0.0)`, a complete no-op) adding an
+  *explicit closed-loop* pitch correction (`kp*(0-pitch) - kd*pitch_
+  rate`) directly on top of `a_base_des`'s previously pure-feedforward
+  angular component — the actual missing piece Sec.5au identified.
+  `go2_wbc_bound_pitch_pd_sweep` tests gains from (50,5) to (400,40)
+  on Bound's reversal case: **no meaningful effect at any gain**
+  (-0.113 to -0.135, indistinguishable from the -0.124 baseline; peak
+  pitch also unaffected). Even the most literal reproduction of the
+  literature's control law didn't help. Interpretation: `a_base_des`
+  is a *soft* priority-1 task, only realizable within whatever
+  hard-constraint (`friction_cone`, `floating_base_eom`, `no_contact_
+  motion`) feasible region priority 0 allows — asking harder for a
+  pitch correction the friction cone can't physically deliver doesn't
+  conjure the force budget to do it. `friction_mu` (Sec.5at) helped
+  partially because it relaxed an actual hard constraint; `pitch_pd_
+  gain` only retargets an already-constrained soft task. Session
+  conclusion: footstep planner, contact schedule, `max_normal_force`,
+  `true_centroidal_coupling`, and explicit pitch PD are all cleared or
+  only partially effective; `friction_mu` remains the sole real (but
+  insufficient) lever found. See `ref/wbc_comparison.md` Sec.5av.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
