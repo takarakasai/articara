@@ -161,6 +161,102 @@ fn go2_diag_wbc_mass_inertia_mismatch() {
     );
 }
 
+/// Plan Phase 0 (2026-07-21): a closed-form, single-rigid-body (SRBD)
+/// periodic-trim model for Bound's front-pair/rear-pair stance,
+/// derived by exploiting front/rear mirror symmetry to solve only a
+/// half-cycle boundary-value problem (see `ref/wbc_comparison.md`
+/// Sec.5bb for the full derivation). With piecewise-constant GRF per
+/// phase:
+///   - height closure forces `F_z ≡ m·g` (flat trunk height — Bound
+///     at duty_factor=0.5 has no aerial phase, so no bounce is
+///     kinematically possible or required),
+///   - the "trim" horizontal force that zeroes net pitch torque is
+///     `F_x* = -r_x·m·g/h0` (pitch-torque relation `τ = -h0·F_x -
+///     r_x·F_z`, since both feet of a stance pair share the same
+///     body-frame `r_x` -- Sec.5at's geometric root cause),
+///   - `θ_peak = |α_p|·T_st²/8`, `α_p = (-h0·F_x - r_x·m·g)/I_yy`,
+///   - the friction-feasibility threshold is `μ_needed = |F_x*|/(m·g)
+///     = r_x/h0`.
+/// This test evaluates these formulas with Go2's real, auto-detected
+/// mass/inertia/geometry (no hand-typed numbers) and the real leg
+/// Jacobian (`foot_jacobian_body`, reused from Sec.5ai), as the
+/// go/no-go feasibility gate before writing any pipeline code.
+#[test]
+fn go2_diag_bound_trim_model_feasibility() {
+    let path = go2_misa();
+    if !path.exists() {
+        eprintln!("go2.misa missing at {} — skipping", path.display());
+        return;
+    }
+    let robot = RobotModel::from_misa(&path).expect("load go2.misa");
+    let srbd = auto_detect_srbd_mpc_config(&robot);
+    let kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS).expect("auto-detect kinematics");
+
+    let m = srbd.mass_kg;
+    let i_yy = srbd.inertia_diag_body.y;
+    let g = 9.81;
+    let r_x_front = kin.fl.nominal_foot_body.x;
+    let r_x_rear = -kin.rl.nominal_foot_body.x; // rear foot's own body-frame x is negative; use magnitude
+    let h0 = -kin.fl.nominal_foot_body.z;
+    let cycle_period_s = 0.30_f64;
+    let duty_factor = 0.5_f64;
+    let t_st = cycle_period_s * duty_factor;
+
+    eprintln!(
+        "[bound-trim] real params: m={m:.3}kg, I_yy={i_yy:.4}kg*m^2, r_x_front={r_x_front:.4}m, \
+         r_x_rear={r_x_rear:.4}m, h0={h0:.4}m, T_st={t_st:.3}s"
+    );
+
+    let f_z_total = m * g;
+    let f_x_trim = -r_x_front * m * g / h0;
+    let mu_needed = f_x_trim.abs() / f_z_total;
+    eprintln!(
+        "[bound-trim] F_z (total, both stance legs) = {f_z_total:.2} N, F_x* (trim) = {f_x_trim:.2} N, \
+         mu_needed = |F_x*|/(m*g) = {mu_needed:.3}"
+    );
+
+    let theta_peak = |f_x: f64| -> f64 {
+        let alpha_p = (-h0 * f_x - r_x_front * f_z_total) / i_yy;
+        (alpha_p.abs() * t_st * t_st) / 8.0
+    };
+    for (label, f_x) in [
+        ("F_x=0 (no thrust)", 0.0),
+        ("F_x=F_x* (full trim)", f_x_trim),
+        ("F_x=clip(F_x*, mu=0.5)", f_x_trim.clamp(-0.5 * f_z_total, 0.5 * f_z_total)),
+        ("F_x=clip(F_x*, mu=0.7, real ground)", f_x_trim.clamp(-0.7 * f_z_total, 0.7 * f_z_total)),
+        ("F_x=clip(F_x*, mu=1.5)", f_x_trim.clamp(-1.5 * f_z_total, 1.5 * f_z_total)),
+    ] {
+        eprintln!(
+            "[bound-trim] {label}: F_x={f_x:.2}N -> theta_peak={:.4} rad ({:.2} deg)",
+            theta_peak(f_x), theta_peak(f_x).to_degrees(),
+        );
+    }
+
+    // Required joint torque at nominal front-leg stance pose, for the
+    // trim force split evenly across the 2 front-pair legs.
+    let leg_kin = &kin.fl;
+    let target = leg_kin.nominal_foot_body;
+    let sol = solve_leg_ik(leg_kin, target, false);
+    let LegIkSolution::Reached { hip, thigh, calf } = sol else {
+        panic!("FL: nominal_foot_body unreachable");
+    };
+    let j = foot_jacobian_body(leg_kin, hip, thigh, calf);
+    for (label, f_x_total) in [
+        ("clip(mu=0.5)", f_x_trim.clamp(-0.5 * f_z_total, 0.5 * f_z_total)),
+        ("clip(mu=0.7, real ground)", f_x_trim.clamp(-0.7 * f_z_total, 0.7 * f_z_total)),
+        ("F_x* (unclipped)", f_x_trim),
+    ] {
+        let f_per_leg = Vector3::new(f_x_total / 2.0, 0.0, f_z_total / 2.0);
+        let tau = -(j.transpose() * f_per_leg);
+        let tau_max = tau.iter().cloned().fold(0.0_f64, |a, b: f64| a.max(b.abs()));
+        eprintln!(
+            "[bound-trim] required per-leg torque at {label}: tau=({:.2},{:.2},{:.2}) N*m, max|tau|={tau_max:.2} N*m \
+             (real limits: hip/thigh=23.7, calf=45.43)",
+            tau.x, tau.y, tau.z,
+        );
+    }
+}
+
 /// Diagnostic (no MuJoCo needed): sweeps `GaitConfig::bound()`'s
 /// `duty_factor` down from its 0.5 default and samples
 /// `ContactDrivenPhase::nominal_legs()` at fine time resolution across
