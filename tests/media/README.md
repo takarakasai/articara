@@ -510,6 +510,23 @@
   within each front/rear pair slightly — avoiding the degenerate
   collinear-support geometry from the start. See `ref/wbc_comparison.md`
   Sec.5az.
+- `bound_mass_inertia_fix.png` — a user question ("do we know the
+  momentum budget Bound actually needs?") led to checking `WbcPipeline`'s
+  `mass_kg`/`inertia_diag_body` (feeding `a_base_des`'s dominant
+  weight-200 Newton-Euler reference), since answering the momentum
+  question properly requires knowing what physical parameters the WBC
+  believes it has. `go2_diag_wbc_mass_inertia_mismatch` found these are
+  a "Cheetah-class" placeholder (`mass_kg=9.0`, pitch inertia 0.26)
+  **never synced to Go2's real, auto-detected values anywhere in this
+  file** — real Go2 is 15.606 kg (1.73x heavier) with pitch inertia
+  0.098 (the placeholder is 2.65x too large). `go2_wbc_mass_inertia_
+  fix_sweep` tests correcting this (`sync_real_mass_inertia`, new):
+  Bound's reversal barely changes (-0.124→-0.129), and Trot gets a tiny
+  tracking improvement but its roll instability more than doubles
+  (0.026→0.061 rad). A real, worth-fixing-eventually bug, but not the
+  cause of Bound's reversal — reinforces Sec.5az's geometric-cause
+  conclusion rather than overturning it. See `ref/wbc_comparison.md`
+  Sec.5ba.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
