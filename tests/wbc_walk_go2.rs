@@ -333,6 +333,22 @@ struct WbcParams {
     /// `friction_mu_override` is set to, for a physically consistent
     /// (not just solver-internal) comparison.
     ground_friction_override: Option<f64>,
+    /// Instead of stepping `cmd_vx` instantaneously at `burn_in_s`
+    /// (every prior test in this file's behaviour), linearly ramp the
+    /// commanded forward velocity from `0` to `cmd_vx` over this many
+    /// seconds. Motivated by a user observation: real animals never
+    /// enter a steady bounding gait from a dead stop — gait transitions
+    /// go through a preparatory/transient phase (a crouch-and-launch
+    /// "wind-up", anticipatory postural adjustments in the motor-
+    /// control literature), never an instantaneous jump onto the
+    /// steady-state limit cycle. Every Bound test so far commands the
+    /// full step target from a static stance in one tick — precisely
+    /// the "cold start" transition animals avoid — right as the WBC's
+    /// `a_base_des` has to reconcile a large state mismatch, plausibly
+    /// the worst moment for the HoQP's numerical conditioning
+    /// (Sec.5at/5aw). `None` keeps the existing instantaneous-step
+    /// behaviour.
+    cmd_vx_ramp_s: Option<f64>,
     /// Override the base gait family (`GaitConfig::for_type(ty)`)
     /// instead of the hardcoded `GaitConfig::trot()`. Applied before
     /// `duty_factor_override`/`gait_cycle_period_override`/
@@ -440,7 +456,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -452,7 +468,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -489,7 +505,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None,
             gait_type_override: None,
             duty_factor_override: None,
         }
@@ -1101,6 +1117,16 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 gc.set_velocity_cmd(VelocityCmd { vx, vy: 0.0, wz: 0.0 });
                 eprintln!("[staircase] t={t:6.2}s level={level:2} cmd_vx={vx:.2} m/s");
                 last_staircase_level = Some(level);
+            }
+        } else if let Some(ramp_s) = params.cmd_vx_ramp_s {
+            if k >= burn_in_steps {
+                let elapsed = (k - burn_in_steps) as f64 * params.dt;
+                let frac = (elapsed / ramp_s.max(1e-6)).min(1.0);
+                let vx = frac * params.cmd_vx;
+                gc.set_velocity_cmd(VelocityCmd { vx, vy: 0.0, wz: 0.0 });
+                if k == burn_in_steps {
+                    eprintln!("[cmd-ramp] ramping cmd_vx 0 -> {:.3} over {:.2}s", params.cmd_vx, ramp_s);
+                }
             }
         } else if k == burn_in_steps {
             gc.set_velocity_cmd(VelocityCmd { vx: params.cmd_vx, vy: 0.0, wz: 0.0 });
@@ -2658,6 +2684,73 @@ fn go2_wbc_bound_matched_friction_sweep() {
         if let Some(samples) = run_wbc_sim(params) {
             report_walk_summary(label, &samples, 0.15);
         }
+    }
+}
+
+/// User observation: real animals never enter a steady bounding gait
+/// from a dead stop — gait transitions go through a preparatory/
+/// transient phase (crouch-and-launch "wind-up", anticipatory
+/// postural adjustments), never an instantaneous jump onto the
+/// steady-state limit cycle. Every Bound test so far commands the
+/// full `cmd_vx` step from a static stance in a single tick — exactly
+/// the "cold start" animals avoid — right when `a_base_des` has to
+/// reconcile the largest state mismatch, plausibly the worst moment
+/// for the HoQP's numerical conditioning (Sec.5at/5aw/5ax all point
+/// to Bound's collinear-stance QP ill-conditioning as the actual root
+/// cause). Tests whether ramping `cmd_vx` in linearly (instead of
+/// stepping it) avoids triggering the worst of the transient and
+/// yields a better steady-state outcome, at Bound's stock reversal-
+/// case config (`swing_height_m=0.05`, `legged_control_parity=true,
+/// k_capture=0`), target cmd_vx=0.15.
+///
+/// Uses a bespoke (not `report_walk_summary`) measurement window —
+/// `[burn_in_s + ramp_s, total_time_s]`, i.e. *after* the ramp
+/// completes — so different ramp durations are compared on their
+/// actual steady-state behaviour, not diluted by the ramp's own
+/// necessarily-slower average speed.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_cmd_vx_ramp_sweep() {
+    let burn_in_s = 0.5;
+    let total_time_s = 5.0;
+    for ramp_s in [0.0, 0.5, 1.0, 2.0] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 0.15,
+            total_time_s,
+            burn_in_s,
+            cmd_vx_ramp_s: if ramp_s > 0.0 { Some(ramp_s) } else { None },
+            gait_type_override: Some(GaitType::Bound),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        let Some(samples) = run_wbc_sim(params) else { continue };
+        let t0 = burn_in_s + ramp_s;
+        let steady: Vec<&WbcSample> = samples.iter().filter(|s| s.t >= t0).collect();
+        let min_z = samples.iter().map(|s| s.body_z).fold(f64::INFINITY, f64::min);
+        let peak_pitch = steady.iter().map(|s| s.pitch.abs()).fold(0.0_f64, f64::max);
+        let x0 = steady.first().map(|s| s.body_x).unwrap_or(0.0);
+        let x1 = steady.last().map(|s| s.body_x).unwrap_or(0.0);
+        let ts0 = steady.first().map(|s| s.t).unwrap_or(0.0);
+        let ts1 = steady.last().map(|s| s.t).unwrap_or(0.0);
+        let meas_vx = (x1 - x0) / (ts1 - ts0).max(1e-6);
+        eprintln!(
+            "\n=== ramp_s={ramp_s:.1} (steady window t=[{t0:.2}, {total_time_s:.2}]) ===\n\
+             min_z={min_z:.3}m, peak_pitch(steady)={peak_pitch:.3}rad, \
+             steady_meas_vx≈{meas_vx:.3} (dx={:.3}m over {:.2}s)",
+            x1 - x0, ts1 - ts0,
+        );
     }
 }
 
