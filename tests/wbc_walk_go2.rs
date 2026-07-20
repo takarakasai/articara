@@ -349,6 +349,20 @@ struct WbcParams {
     /// (Sec.5at/5aw). `None` keeps the existing instantaneous-step
     /// behaviour.
     cmd_vx_ramp_s: Option<f64>,
+    /// Override `WbcPipeline::grf_smoothing_alpha` (default 1.0 = raw,
+    /// no smoothing) and `WbcPipeline::qp_prox_weight` (default 1e-4)
+    /// after construction. The `misa-wbc` `ho_qp.rs` audit (Sec.5at)
+    /// flagged both as "directly available, code-supported levers
+    /// worth testing before touching solver internals": Bound's
+    /// upstream MPC GRF swings wildly tick-to-tick (Sec.5as), so the
+    /// `contact_force` task's raw (unsmoothed) target, combined with a
+    /// warm-start anchor (`qp_prox_weight`) pulling toward the
+    /// *previous* tick's very different solution, could be feeding the
+    /// HoQP a moving target *and* a stale, mismatched working-set seed
+    /// every single tick — plausibly compounding the numerical
+    /// ill-conditioning rather than causing it outright. `(alpha,
+    /// prox_weight)`; `None` keeps the existing (1.0, 1e-4) defaults.
+    grf_smoothing_and_prox_override: Option<(f64, f64)>,
     /// Override the base gait family (`GaitConfig::for_type(ty)`)
     /// instead of the hardcoded `GaitConfig::trot()`. Applied before
     /// `duty_factor_override`/`gait_cycle_period_override`/
@@ -456,7 +470,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -468,7 +482,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -505,7 +519,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None,
             gait_type_override: None,
             duty_factor_override: None,
         }
@@ -1067,6 +1081,14 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             wbc_pipeline.pitch_pd_gain, kp, kd,
         );
         wbc_pipeline.pitch_pd_gain = (kp, kd);
+    }
+    if let Some((alpha, prox_weight)) = params.grf_smoothing_and_prox_override {
+        eprintln!(
+            "[wbc] grf_smoothing_alpha {:.2} -> {:.2}, qp_prox_weight {:.1e} -> {:.1e}",
+            wbc_pipeline.grf_smoothing_alpha, alpha, wbc_pipeline.qp_prox_weight, prox_weight,
+        );
+        wbc_pipeline.grf_smoothing_alpha = alpha;
+        wbc_pipeline.qp_prox_weight = prox_weight;
     }
 
     // Optional per-tick link-pose CSV export for external video
@@ -2751,6 +2773,52 @@ fn go2_wbc_bound_cmd_vx_ramp_sweep() {
              steady_meas_vx≈{meas_vx:.3} (dx={:.3}m over {:.2}s)",
             x1 - x0, ts1 - ts0,
         );
+    }
+}
+
+/// Sec.5ay ruled out transient onset; the root cause remains Bound's
+/// collinear-stance QP ill-conditioning (Sec.5at/5aw/5ax). Before
+/// touching `misa-wbc`'s `ho_qp.rs` internals, this tests two already-
+/// implemented, zero-new-code levers the external audit flagged as
+/// worth trying first: `grf_smoothing_alpha` (EMA-smooths the
+/// `contact_force` task's target instead of feeding it Bound's raw,
+/// wildly-swinging MPC GRF) and `qp_prox_weight` (0.0 disables the
+/// warm-start anchor entirely — a cold solve every tick, avoiding a
+/// stale working-set seed from the *previous* tick's very different
+/// solution). Same Bound reversal case as every other sweep in this
+/// investigation: stock `swing_height_m=0.05`, cmd_vx=0.15.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_grf_smoothing_and_prox_sweep() {
+    let trials = [
+        ("A. baseline (alpha=1.0, prox=1e-4)", 1.0, 1e-4),
+        ("B. smoothed GRF (alpha=0.3, prox=1e-4)", 0.3, 1e-4),
+        ("C. cold solve (alpha=1.0, prox=0.0)", 1.0, 0.0),
+        ("D. combined (alpha=0.3, prox=0.0)", 0.3, 0.0),
+    ];
+    for (label, alpha, prox_weight) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 0.15,
+            gait_type_override: Some(GaitType::Bound),
+            grf_smoothing_and_prox_override: Some((alpha, prox_weight)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(label, &samples, 0.15);
+        }
     }
 }
 

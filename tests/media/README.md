@@ -485,6 +485,31 @@
   with every other finding pointing at the collinear-stance QP
   ill-conditioning as the real, structural cause. See `ref/wbc_
   comparison.md` Sec.5ay.
+- `bound_smoothing_prox_sweep.png` — before any invasive `ho_qp.rs`
+  surgery, tests two already-implemented, zero-new-code levers the
+  external audit flagged as worth trying first: `WbcPipeline::
+  grf_smoothing_alpha` (EMA-smooths the `contact_force` task's target
+  instead of Bound's raw, wildly-swinging MPC GRF) and `qp_prox_weight`
+  (0.0 disables the warm-start anchor — cold solve every tick, instead
+  of anchoring toward the *previous* tick's very different solution).
+  `go2_wbc_bound_grf_smoothing_and_prox_sweep` counts HoQP `Infeasible`/
+  `MaxIterations` warnings alongside the usual tracking metrics.
+  Disabling the warm-start (`prox=0.0`) cuts solver non-convergence by
+  ~85-88% (642→74 warnings over 2.5s) — strong confirmation of the
+  audit's "stale warm-start seed" hypothesis. **But `meas_vx` barely
+  moves** (-0.124→-0.120) — the reversal doesn't meaningfully improve
+  even with dramatically better solver convergence. This is the
+  session's key clarifying result: the HoQP's numerical ill-
+  conditioning is real and fixable, but it isn't the actual cause of
+  the reversal — the deeper cause is a *geometric* one (Bound's
+  front/rear-pair stance structurally lacks a cheap pitch-torque path
+  like Trot's diagonal `Δf_z·Δr_x`, forcing reliance on friction-
+  limited `Σf_x` regardless of how cleanly the solver converges).
+  Suggests the more promising redesign path may not be Bound-specific
+  WBC surgery at all, but a gait like Canter that staggers the two legs
+  within each front/rear pair slightly — avoiding the degenerate
+  collinear-support geometry from the start. See `ref/wbc_comparison.md`
+  Sec.5az.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
