@@ -276,6 +276,26 @@ struct WbcParams {
     /// task-space `joint_v` MPC-cost remap, gap ②). `None` keeps the
     /// existing (80.0, 8.0) default.
     swing_pd_gain_override: Option<(f64, f64)>,
+    /// Override `WbcPipeline::friction_mu` (default 0.5) after
+    /// construction. Sec.5as follow-up (external Explore-agent audit
+    /// of `misa-wbc`'s `ho_qp.rs`, 2026-07-21): Bound's front-pair/
+    /// rear-pair stance shares the same body-frame `r_x` moment arm
+    /// between its two simultaneously-stance feet, so — unlike Trot's
+    /// diagonal pair, which gets pitch torque nearly for free from
+    /// `Δf_z · Δr_x` — Bound's pitch authority must come almost
+    /// entirely from `Σf_x`, which is friction-cone-limited
+    /// (`|f_x| ≤ μ·f_z`). This is the leading hypothesis for the
+    /// `Σf_x` chaos and `f_z` saturation Sec.5as measured (raising
+    /// `max_normal_force` didn't help because the real bottleneck is
+    /// friction-limited `f_x`, not the normal-force cap itself). The
+    /// sim's actual MJCF ground friction defaults to 0.7
+    /// (`MjcfExportOptions::default_friction`'s sliding component) —
+    /// higher than the WBC's conservative 0.5, so raising this up to
+    /// 0.7 is a "free" real-world-consistent increase; higher values
+    /// test the hypothesis further but would need matching ground
+    /// friction to be physically deployable. `None` keeps the
+    /// existing 0.5 default.
+    friction_mu_override: Option<f64>,
     /// Override the base gait family (`GaitConfig::for_type(ty)`)
     /// instead of the hardcoded `GaitConfig::trot()`. Applied before
     /// `duty_factor_override`/`gait_cycle_period_override`/
@@ -383,7 +403,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -395,7 +415,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -432,7 +452,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
-            swing_pd_gain_override: None,
+            swing_pd_gain_override: None, friction_mu_override: None,
             gait_type_override: None,
             duty_factor_override: None,
         }
@@ -941,6 +961,13 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             mpc_cfg.q_diag[10] = q_pitch;
             gc.set_full_centroidal_mpc_config(mpc_cfg);
         }
+        if let Some(mu) = params.friction_mu_override {
+            let mut mpc_cfg: FullCentroidalMpcConfig =
+                gc.full_centroidal_mpc_config().expect("FullCentroidal mode has a config").clone();
+            eprintln!("[full-centroidal] friction_mu {:.2} -> {:.2}", mpc_cfg.friction_mu, mu);
+            mpc_cfg.friction_mu = mu;
+            gc.set_full_centroidal_mpc_config(mpc_cfg);
+        }
     }
 
     let foot_links: [String; 4] = [
@@ -960,6 +987,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         );
         wbc_pipeline.swing_kp = kp;
         wbc_pipeline.swing_kd = kd;
+    }
+    if let Some(mu) = params.friction_mu_override {
+        eprintln!("[wbc] friction_mu {:.2} -> {:.2}", wbc_pipeline.friction_mu, mu);
+        wbc_pipeline.friction_mu = mu;
     }
 
     // Optional per-tick link-pose CSV export for external video
@@ -2336,6 +2367,50 @@ fn go2_wbc_bound_max_normal_force_sweep() {
         };
         if let Some(samples) = run_wbc_sim(params) {
             report_walk_summary(&format!("max_normal_force={max_normal_force:.0}"), &samples, 0.15);
+        }
+    }
+}
+
+/// Sec.5as's external Explore-agent audit of `misa-wbc`'s `ho_qp.rs`
+/// derived a concrete mechanism: Bound's front-pair/rear-pair stance
+/// shares the same body-frame `r_x` moment arm between its two
+/// simultaneously-stance feet, so pitch torque (unlike Trot's, which
+/// comes nearly free from `Δf_z · Δr_x` between a genuinely front and
+/// rear foot) must come almost entirely from `Σf_x`, friction-limited
+/// by `|f_x| ≤ μ·f_z`. This raises `friction_mu` (WBC's task AND the
+/// FullCentroidal MPC's own friction cone, kept in sync — see
+/// `WbcParams::friction_mu_override`'s doc comment) at Bound's stock
+/// `swing_height_m=0.05` (the actual reversal case), cmd_vx=0.15, to
+/// test whether relaxing the friction limit resolves the reversal.
+/// 0.5 is the default; 0.7 matches the sim's actual MJCF ground
+/// friction (a "free" real-world-consistent increase); 1.0/1.5 test
+/// the hypothesis further (would need matching ground friction to be
+/// physically deployable).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_friction_mu_sweep() {
+    for friction_mu in [0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 0.15,
+            gait_type_override: Some(GaitType::Bound),
+            friction_mu_override: Some(friction_mu),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(&format!("friction_mu={friction_mu:.2}"), &samples, 0.15);
         }
     }
 }
