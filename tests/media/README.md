@@ -394,6 +394,23 @@
   (pitch-authority starvation, QP conditioning for collinear stances),
   but no simple parameter tuning reached a genuinely working forward-
   walking Bound gait. See `ref/wbc_comparison.md` Sec.5at.
+- `bound_true_coupling_sweep.png` — real model-based bounding
+  controllers (Raibert's hopping-machine decomposition; MIT Cheetah
+  2/3) treat pitch/attitude control as an independent channel — direct
+  hip-joint torque exploiting the leg's own mass/inertia — rather than
+  relying solely on friction-limited ground-reaction force. `true_
+  centroidal_coupling` (desk-research gap ①, Sec.5aa-5ae — "neutral"
+  for Trot) is architecturally the closest thing this codebase has to
+  that channel, so `go2_wbc_bound_true_coupling_sweep` retests it for
+  Bound: alone (-0.124→-0.116, barely moves) and combined with
+  Sec.5at's best `friction_mu=1.5` (-0.061 — *worse* than `friction_mu
+  =1.5` alone at -0.040). The literature's mechanism is an explicit
+  feedback control law computing hip torque from pitch error; `true_
+  centroidal_coupling` as implemented here is instead a passive
+  linearization-accuracy correction to the MPC's own dynamics model —
+  similar in name, different in kind, which is the likely reason it
+  didn't deliver the hoped-for independent pitch-authority channel.
+  See `ref/wbc_comparison.md` Sec.5au.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
