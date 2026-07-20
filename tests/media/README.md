@@ -466,6 +466,25 @@
   traction effect. Actuator torque is a real, if partial and non-
   monotonic, lever; ground friction was a red herring all along. See
   `ref/wbc_comparison.md` Sec.5aw/5ax.
+- `bound_cmd_vx_ramp_sweep.png` — a user observation: real animals
+  never enter a steady bounding gait from a dead stop (a crouch/wind-
+  up transient, anticipatory postural adjustments) — every Bound test
+  so far stepped `cmd_vx` instantaneously in one tick, exactly the
+  "cold start" animals avoid. `WbcParams::cmd_vx_ramp_s` (new) linearly
+  ramps the command in instead; `go2_wbc_bound_cmd_vx_ramp_sweep`
+  compares ramp durations 0.0 (instant, baseline) / 0.5 / 1.0 / 2.0s,
+  measuring only the **post-ramp steady-state window** so different
+  ramp lengths are compared fairly. Result: ramping doesn't help —
+  moderate ramps (0.5-1.0s) are actually worse (-0.147, -0.164 vs the
+  -0.116 baseline), and only the longest ramp (2.0s) returns to about
+  the baseline. Peak pitch stays flat (0.265-0.291 rad) regardless of
+  ramp duration. This clearly disconfirms the transient-onset
+  hypothesis: the pitch oscillation and reversal aren't triggered by
+  the moment of command change — they're an intrinsic, continuously-
+  present property of Bound's own steady-state dynamics, consistent
+  with every other finding pointing at the collinear-stance QP
+  ill-conditioning as the real, structural cause. See `ref/wbc_
+  comparison.md` Sec.5ay.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
