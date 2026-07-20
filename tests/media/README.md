@@ -372,6 +372,28 @@
   `Infeasible`/`MaxIterations` warnings (seen since Sec.5ao, never
   directly investigated) remain the most promising unexamined lead.
   See `ref/wbc_comparison.md` Sec.5as.
+- `bound_friction_mu_sweep.png` — a dedicated Explore agent read
+  `misa-wbc`'s `ho_qp.rs` directly and derived a concrete mechanism:
+  Bound's front-pair/rear-pair stance shares the same body-frame `r_x`
+  moment arm between its two simultaneously-stance feet, so (unlike
+  Trot's diagonal pair, which gets pitch torque nearly free from
+  `Δf_z·Δr_x`) pitch authority must come almost entirely from `Σf_x`,
+  which is friction-cone-limited (`|f_x|≤μ·f_z`) — the physical "why"
+  behind Sec.5as's `Σf_x` chaos and `f_z` saturation. `go2_wbc_bound_
+  friction_mu_sweep` raises `friction_mu` (WBC task + FullCentroidal
+  MPC, kept in sync) from 0.5 to 5.0 at Bound's stock `swing_height_m
+  =0.05` (the actual reversal case), cmd_vx=0.15. 0.5→1.5 shows the
+  first genuinely *monotonic* improvement found anywhere in this
+  Bound investigation (-0.124→-0.040), supporting the hypothesis —
+  but it never crosses zero into real forward tracking, and beyond
+  1.5 it degrades non-monotonically again (2.0: -0.111, 5.0: -0.150,
+  worse than default). peak |pitch| stays flat throughout (0.257-0.310
+  rad) — friction_mu doesn't reduce the oscillation itself, only
+  (partially) the forward-force starvation it causes. Session
+  conclusion: several real physical/numerical difficulties were found
+  (pitch-authority starvation, QP conditioning for collinear stances),
+  but no simple parameter tuning reached a genuinely working forward-
+  walking Bound gait. See `ref/wbc_comparison.md` Sec.5at.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
