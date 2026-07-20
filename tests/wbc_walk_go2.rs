@@ -2220,6 +2220,85 @@ fn go2_wbc_bound_low_swing_video_source() {
     report_walk_summary("bound low-swing video-capture source (swing_height_m=0.02, cmd_vx=0.15)", &samples, 0.15);
 }
 
+/// Sec.5aq found `swing_height_m=0.02` (down from Bound's 0.05
+/// default) eliminates the reversal but leaves the robot barely
+/// progressing (meas_vx≈0.007 at cmd_vx=0.15) — reversal-free but not
+/// yet actually walking. Sweeps `max_step_length_m` (Bound's own
+/// default 0.12m, vs. the values this session found useful for Trot:
+/// 0.08/0.16/0.20) on top of the now-healthy `swing_height_m=0.02`
+/// baseline, same cmd_vx=0.15, to see whether the footstep planner's
+/// own stride-length clamp — not the swing dynamics — is now the
+/// binding constraint on forward progress.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_low_swing_max_step_length_sweep() {
+    let trials = [
+        ("max_step_length_m=0.08", 0.08),
+        ("max_step_length_m=0.12 (Bound default)", 0.12),
+        ("max_step_length_m=0.16", 0.16),
+        ("max_step_length_m=0.20", 0.20),
+    ];
+    for (label, max_step_length_m) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 0.15,
+            gait_type_override: Some(GaitType::Bound),
+            swing_height_override: Some(0.02),
+            max_step_length_override: Some(max_step_length_m),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(label, &samples, 0.15);
+        }
+    }
+}
+
+/// Sec.5aq/5ar follow-up: with `swing_height_m=0.02` fixed (the lever
+/// that killed the reversal), does the robot's forward progress scale
+/// with the commanded speed at all, or is it stuck near zero
+/// regardless? Sweeps `cmd_vx` itself instead of `max_step_length_m` —
+/// orthogonal axis, same healthy-baseline configuration.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_low_swing_cmd_vx_sweep() {
+    for cmd_vx in [0.05, 0.10, 0.15, 0.20, 0.30] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx,
+            gait_type_override: Some(GaitType::Bound),
+            swing_height_override: Some(0.02),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(&format!("cmd_vx={cmd_vx:.2}"), &samples, cmd_vx);
+        }
+    }
+}
+
 fn assert_forward_command_advances_body(samples: &[WbcSample]) {
     let dt: f64 = 0.002;
     let burn_in_steps = (0.5 / dt).round() as usize;
