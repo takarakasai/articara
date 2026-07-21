@@ -555,6 +555,14 @@
   Bound's fast 0.3s cycle, possibly under-weighted MPC cost terms,
   possibly another undiscovered bug. See `ref/wbc_comparison.md`
   Sec.5bc.
+- `go2_bound_template_reference.mp4` — real-mesh MuJoCo video of the
+  sign-corrected Bound trim reference in action
+  (`go2_wbc_bound_template_reference_video_source`: the 2D (sagittal-
+  plane, `[x,z,pitch]`) SRBD trim model from Sec.5bb/5bc,
+  `pitch_pd_gain=(100,10)`, cmd_vx=0.15), for direct visual comparison
+  against `go2_bound_reversal.mp4` (no reference) and `go2_bound_low_
+  swing.mp4` (the swing-height workaround). Same cmd_vx/duration as
+  both.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
