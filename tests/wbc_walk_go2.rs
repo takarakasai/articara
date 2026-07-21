@@ -3143,6 +3143,42 @@ fn go2_wbc_bound_template_reference_forward_walk() {
     }
 }
 
+/// Video-capture source for the current (sign-corrected, Sec.5bc)
+/// Bound trim-reference state: config C from `go2_wbc_bound_template_
+/// reference_forward_walk` (`pitch_pd_gain=(100,10)`), the point where
+/// the spurious roll instability the sign bug caused is essentially
+/// resolved (peak|roll| 0.173 -> 0.006) but the core reversal still
+/// isn't. Same cmd_vx/duration as the other Bound videos this session
+/// (`go2_bound_reversal.mp4`, `go2_bound_low_swing.mp4`) for direct
+/// comparison.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; also the WBC_WALK_CSV_OUT video-capture source for Sec.5bc"]
+fn go2_wbc_bound_template_reference_video_source() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 0.15,
+        total_time_s: 4.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        bound_trim_reference: Some((100.0, 10.0)),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_walk_summary("bound trim-reference video-capture source (sign-fixed, pitch_pd_gain=(100,10))", &samples, 0.15);
+}
+
 fn assert_forward_command_advances_body(samples: &[WbcSample]) {
     let dt: f64 = 0.002;
     let burn_in_steps = (0.5 / dt).round() as usize;
