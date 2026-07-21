@@ -793,6 +793,37 @@ impl GaitController {
         self.inner.bound_trim_reference()
     }
 
+    /// Set the Bound trim reference's partial-thrust fraction (see
+    /// `quadruped_gait::FullCentroidalMpcGaitController::
+    /// set_bound_trim_thrust_scale`'s doc comment). No-op outside
+    /// FullCentroidal mode.
+    pub fn set_bound_trim_thrust_scale(&mut self, thrust_scale: f64) {
+        self.inner.set_bound_trim_thrust_scale(thrust_scale);
+    }
+    pub fn bound_trim_thrust_scale(&self) -> Option<f64> {
+        self.inner.bound_trim_thrust_scale()
+    }
+
+    /// Set the Bound trim reference's "impulse scaling" velocity-
+    /// ripple fraction (see `quadruped_gait::
+    /// FullCentroidalMpcGaitController::
+    /// set_bound_trim_velocity_ripple_fraction`'s doc comment). No-op
+    /// outside FullCentroidal mode.
+    pub fn set_bound_trim_velocity_ripple_fraction(&mut self, fraction: Option<f64>) {
+        self.inner.set_bound_trim_velocity_ripple_fraction(fraction);
+    }
+    pub fn bound_trim_velocity_ripple_fraction(&self) -> Option<f64> {
+        self.inner.bound_trim_velocity_ripple_fraction()
+    }
+
+    /// Update `cycle_period_s` in place without resetting the phase
+    /// clock (see `quadruped_gait::FullCentroidalMpcGaitController::
+    /// set_cycle_period_s`'s doc comment). No-op outside FullCentroidal
+    /// mode.
+    pub fn set_cycle_period_s(&mut self, period_s: f64) {
+        self.inner.set_cycle_period_s(period_s);
+    }
+
     /// The experimental research knobs of the active controller, as
     /// declared by [`quadruped_gait::exp`]. The GUI renders its
     /// "Experimental flags" section from this metadata, so knobs added
