@@ -563,6 +563,23 @@
   against `go2_bound_reversal.mp4` (no reference) and `go2_bound_low_
   swing.mp4` (the swing-height workaround). Same cmd_vx/duration as
   both.
+- `point_mass_bound_simulation.png` — a user request: set the real
+  controller/MuJoCo aside and reproduce Bound's body motion from a
+  pure single-rigid-body (point-mass + pitch) simulation of Sec.5bb's
+  own force schedule (`ref/scripts/simulate_point_mass_bound.py`, no
+  WBC/MPC/MuJoCo at all — plain Newton-Euler integration with Go2's
+  real mass/inertia/geometry). Height and pitch match theory exactly
+  (flat height; pitch ~0 at the unclipped trim, small bounded
+  oscillation when friction-clipped). But forward velocity swings
+  ~1.03-1.06 m/s peak-to-peak — ~7x the 0.15 m/s command — meaning
+  even in a perfect, delay-free, numerically-exact simulation the body
+  genuinely moves backward for a large fraction of every cycle. This
+  is not a control-tracking failure: it's an inherent property of the
+  "cancel pitch torque via alternating fore-aft force" trim strategy
+  itself, given Go2's real geometry and this gait's timing — directly
+  explaining both the video's visible backward foot motion and why
+  fixing the sign bug (Sec.5bc) didn't fix the core tracking metrics.
+  See `ref/wbc_comparison.md` Sec.5bd.
 - `render_go2_walk.py` — regenerates any of the three videos. Needs:
   1. A trace CSV, written by `wbc_walk_go2.rs` when run with
      `WBC_WALK_CSV_OUT=<path> cargo test --release --features mujoco
