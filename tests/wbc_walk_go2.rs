@@ -8325,3 +8325,170 @@ fn go2_wbc_bound_p3b_forward_feetfwd_confirm() {
             &samples, 1.0);
     }
 }
+
+/// Sec.5f13 (P3-b front-foot): push the FRONT foothold forward past the
+/// solver's friction-limited value, since the whole-body attitude control
+/// now carries the pitch (so the front foot no longer needs to sit back to
+/// null pitch torque). Prescribe the front foothold directly (sweep toward
+/// Raibert-neutral = front hip 0.192 + v*T_st/2 ≈ 0.246), keep the orbit's
+/// rear foothold + pitch reference + whole-body attitude PD. Does the
+/// front foot come UNDER/AHEAD of the hip while staying forward + stable?
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3b_front_forward() {
+    let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.36);
+    params.raibert_weight = 1.0;
+    params.pitch_reg_weight = 0.08;
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+
+    // front foothold rel CoM (front hip = +0.19216); sweep to Raibert-neutral.
+    for front in [0.161_f64, 0.200, 0.230, 0.246] {
+        eprintln!("[P3bF] front_foothold={front:.3} (rel front hip {:+.3})", front - 0.19216);
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.0, total_time_s: 12.0, burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.36),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            pitch_pd_gain_override: Some((200.0, 20.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((40.0, 5.0)),
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((front, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3bF front={front:.3}(rel hip {:+.3}), vx=1.0, 12s", front - 0.19216),
+                &samples, 1.0);
+        }
+    }
+}
+
+/// Sec.5f13 (P3-b front-forward confirm): front foot at Raibert-neutral
+/// (+0.054 AHEAD of the hip) is stable -- addresses "front foot too far
+/// back". Confirm 25s + video. front=0.246 rel CoM (front hip 0.192).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; WBC_WALK_CSV_OUT video source"]
+fn go2_wbc_bound_p3b_front_raibert_confirm() {
+    let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.36);
+    params.raibert_weight = 1.0;
+    params.pitch_reg_weight = 0.08;
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    let front = 0.246_f64;  // front hip 0.192 + v*T_st/2 ≈ Raibert-neutral, AHEAD of hip
+    eprintln!("[P3bF] confirm front={front:.3} (rel front hip {:+.3}) rear={:.3}",
+        front - 0.19216, orbit.rear_foothold);
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let p = WbcParams {
+        cmd_vx: 1.0, total_time_s: 25.0, burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.36),
+        gait_cycle_period_override: Some(0.30),
+        max_step_length_override: Some(0.22),
+        swing_height_override: Some(0.10),
+        bound_trim_reference: None, sync_real_mass_inertia: true,
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        pitch_pd_gain_override: Some((200.0, 20.0)),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true, use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false, mpc_override: None,
+            task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: Some((40.0, 5.0)),
+            max_normal_force_override: None,
+            roll_pitch_weight_override: Some((4.0, 4.0)),
+            bound_fore_aft_placement_gain_override: None,
+            roll_rate_weight_override: Some((100.0, 100.0)),
+            bound_pitch_placement_gain_override: None,
+            bound_pitch_placement_dc_tau_override: None,
+            bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+            bound_prescribed_footholds_override: Some((front, orbit.rear_foothold)),
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    if let Some(samples) = run_wbc_sim(p) {
+        report_time_windowed_summary(
+            "P3b front-Raibert confirm (front foot AHEAD of hip), vx=1.0, 25s", &samples, 1.0);
+    }
+}
+
+/// Sec.5f13 (P3-b robust front-forward): at LOWER speed (more friction
+/// margin) the front foot AHEAD of the hip should be ROBUSTLY stable, not
+/// just marginal. vx=0.7, duty=0.40, front foot at Raibert-neutral
+/// (0.192 + 0.7*0.12/2 = 0.234, +0.042 ahead of hip). 25s + video.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; WBC_WALK_CSV_OUT video source"]
+fn go2_wbc_bound_p3b_robust_front_fwd() {
+    let mut params = quadruped_gait::PeriodicBoundParams::go2(0.7, 0.30, 0.40);
+    params.raibert_weight = 1.0;
+    params.pitch_reg_weight = 0.08;
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    let front = 0.234_f64;  // Raibert-neutral ahead of the front hip at 0.7 m/s
+    eprintln!("[P3bR] front={front:.3}(rel hip {:+.3}) rear={:.3} orbit_friction={:.3}",
+        front - 0.19216, orbit.rear_foothold, orbit.friction_margin);
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let p = WbcParams {
+        cmd_vx: 0.7, total_time_s: 25.0, burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.40),
+        gait_cycle_period_override: Some(0.30),
+        max_step_length_override: Some(0.22),
+        swing_height_override: Some(0.10),
+        bound_trim_reference: None, sync_real_mass_inertia: true,
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        pitch_pd_gain_override: Some((200.0, 20.0)),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true, use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false, mpc_override: None,
+            task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: Some((40.0, 5.0)),
+            max_normal_force_override: None,
+            roll_pitch_weight_override: Some((4.0, 4.0)),
+            bound_fore_aft_placement_gain_override: None,
+            roll_rate_weight_override: Some((100.0, 100.0)),
+            bound_pitch_placement_gain_override: None,
+            bound_pitch_placement_dc_tau_override: None,
+            bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+            bound_prescribed_footholds_override: Some((front, orbit.rear_foothold)),
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    if let Some(samples) = run_wbc_sim(p) {
+        report_time_windowed_summary(
+            "P3b ROBUST front-forward (front ahead of hip, 0.7 m/s), 25s", &samples, 1.0);
+    }
+}
