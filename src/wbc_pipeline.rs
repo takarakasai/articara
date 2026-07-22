@@ -118,6 +118,23 @@ pub struct WbcPipeline {
     /// level-attitude behaviour exactly.
     pub roll_ref: f64,
     pub pitch_ref: f64,
+    /// Same idea as `roll_pd_gain`/`pitch_pd_gain`, for yaw. Unlike
+    /// roll/pitch, no gait has ever had ANY yaw-holding feedback --
+    /// `_yaw_meas` was explicitly discarded below. Found missing after
+    /// a `cmd_vx_ramp_s` startup (Sec.5bo, local doc) drifted the body
+    /// ~90-180° in yaw with `cmd.wz=0` the whole time and nothing to
+    /// correct it (what looked like "walking backward"/"stalling" in
+    /// world-x was actually a full turn-around, still walking forward
+    /// in the body frame). `(0.0, 0.0)` (the default) is a no-op,
+    /// same as the roll/pitch gains.
+    pub yaw_pd_gain: (f64, f64),
+    /// Target world-frame yaw (rad) the gain above chases. Set per-tick
+    /// by the host from the gait controller's own `world_yaw()` (the
+    /// open-loop integral of `cmd.wz`, `quadruped_gait::BodyState::
+    /// integrate`) so this naturally reproduces "hold straight" when
+    /// `cmd.wz=0` and tracks an actual turn otherwise. `0.0` (the
+    /// default) is a no-op when `yaw_pd_gain=(0.0,0.0)`.
+    pub yaw_ref: f64,
 
     /// Previous tick's joint q* in URDF sign convention, indexed by
     /// articara joint index. Updated **only for swing legs** so that
@@ -238,6 +255,8 @@ impl WbcPipeline {
             pitch_pd_gain: (0.0, 0.0),
             roll_ref: 0.0,
             pitch_ref: 0.0,
+            yaw_pd_gain: (0.0, 0.0),
+            yaw_ref: 0.0,
             last_q_target_urdf,
             smoothed_f_grf: [na::Vector3::zeros(); 4],
             grf_smoothing_seeded: false,
@@ -503,12 +522,29 @@ impl WbcPipeline {
         // Bound's closed-form trim pitch, Sec.5bc) before calling
         // `solve()`. `(0.0, 0.0)` gains (the default) make this an
         // exact no-op regardless of the ref values.
-        if self.roll_pd_gain != (0.0, 0.0) || self.pitch_pd_gain != (0.0, 0.0) {
-            let (roll_meas, pitch_meas, _yaw_meas) = body_quat.euler_angles();
+        //
+        // Yaw (Sec.5bo/5bp): same shape as roll/pitch, but the error
+        // must be wrapped to (-pi, pi] -- unlike roll/pitch (which
+        // never approach the +-pi singularity in normal walking), yaw
+        // is exactly what drifted a full 90-180 degrees in the
+        // motivating bug, so a naive subtraction would pick the long
+        // way around once ref and measured straddle the wrap point.
+        // Reuses the same wrap formula `full_centroidal_controller.rs`'s
+        // `velocity_cmd_for_goal` already uses for its own yaw error.
+        if self.roll_pd_gain != (0.0, 0.0)
+            || self.pitch_pd_gain != (0.0, 0.0)
+            || self.yaw_pd_gain != (0.0, 0.0)
+        {
+            let (roll_meas, pitch_meas, yaw_meas) = body_quat.euler_angles();
             let (roll_kp, roll_kd) = self.roll_pd_gain;
             let (pitch_kp, pitch_kd) = self.pitch_pd_gain;
+            let (yaw_kp, yaw_kd) = self.yaw_pd_gain;
             a_ang_body.x += roll_kp * (self.roll_ref - roll_meas) - roll_kd * omega_obs_body.x;
             a_ang_body.y += pitch_kp * (self.pitch_ref - pitch_meas) - pitch_kd * omega_obs_body.y;
+            let yaw_err = (self.yaw_ref - yaw_meas + std::f64::consts::PI)
+                .rem_euclid(2.0 * std::f64::consts::PI)
+                - std::f64::consts::PI;
+            a_ang_body.z += yaw_kp * yaw_err - yaw_kd * omega_obs_body.z;
         }
         let a_base_des = na::DVector::from_iterator(
             6,

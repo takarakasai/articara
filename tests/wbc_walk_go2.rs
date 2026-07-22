@@ -310,9 +310,18 @@ fn go2_diag_bound_duty_factor_flight_phase_sweep() {
 struct WbcSample {
     t: f64,
     body_x: f64,
+    body_y: f64,
     body_z: f64,
     roll: f64,
     pitch: f64,
+    /// World-frame yaw (rad). Sec.5bo (local doc): a ramp-up + PLL run
+    /// that looked like it was "walking backward" in `body_x` turned
+    /// out to be an uncorrected ~180° yaw rotation instead (still
+    /// walking FORWARD in the body frame, just facing the other way)
+    /// -- tracked from here on so that class of misdiagnosis doesn't
+    /// recur; `body_x`/`body_y` alone can't distinguish "reversed"
+    /// from "turned around".
+    yaw: f64,
     total_fz_world: f64,
     /// True if any leg's contact-driven-corrected `is_stance`
     /// (`ContactDrivenPhase::apply_correction`, from real measured
@@ -476,6 +485,12 @@ struct WbcParams {
     /// adds `kp*(0 - pitch) - kd*pitch_rate` directly on top of that
     /// feedforward. `None` keeps the existing (0.0, 0.0) no-op default.
     pitch_pd_gain_override: Option<(f64, f64)>,
+    /// Same idea as `pitch_pd_gain_override`, for `WbcPipeline::
+    /// yaw_pd_gain` (Sec.5bp, local doc) -- the explicit yaw-holding
+    /// feedback added after a `cmd_vx_ramp_s` startup was found to
+    /// drift the body's heading 90-180 degrees uncorrected (Sec.5bo).
+    /// `None` keeps the existing `(0.0, 0.0)` no-op default.
+    yaw_pd_gain_override: Option<(f64, f64)>,
     /// Scale every joint's `effort` (N·m torque limit) by this factor,
     /// applied to `robot.joints[*].effort` right after loading —
     /// before *both* the MJCF export (so MuJoCo's own actuator
@@ -691,7 +706,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -703,7 +718,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -740,7 +755,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None,
             duty_factor_override: None,
         }
@@ -1349,6 +1364,13 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         );
         wbc_pipeline.pitch_pd_gain = (kp, kd);
     }
+    if let Some((kp, kd)) = params.yaw_pd_gain_override {
+        eprintln!(
+            "[wbc] yaw_pd_gain {:?} -> ({:.1}, {:.1})",
+            wbc_pipeline.yaw_pd_gain, kp, kd,
+        );
+        wbc_pipeline.yaw_pd_gain = (kp, kd);
+    }
     if let Some((alpha, prox_weight)) = params.grf_smoothing_and_prox_override {
         eprintln!(
             "[wbc] grf_smoothing_alpha {:.2} -> {:.2}, qp_prox_weight {:.1e} -> {:.1e}",
@@ -1440,6 +1462,12 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 sim.set_position_target(idx, q);
             }
             if k >= burn_in_steps {
+                // Sec.5bp: yaw-holding target is gait-independent (unlike
+                // pitch_ref, which only Bound's trim reference sets) --
+                // `world_yaw()` is `cmd.wz` integrated open-loop, so this
+                // is `0.0` (hold straight) whenever wz=0, and tracks an
+                // actual turn command otherwise.
+                wbc_pipeline.yaw_ref = gc.world_yaw();
                 if let Some(trim_cfg) = &bound_trim_cfg {
                     let cycle_phase = out.legs[0].phase.cycle_position;
                     wbc_pipeline.pitch_ref = trim_cfg.sample(cycle_phase).pitch;
@@ -1480,7 +1508,23 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     gc.config().duty_factor,
                 );
                 phase_error_sum_s = phase_errors.iter().filter_map(|e| *e).sum();
-                if let Some(pll) = &params.adaptive_cycle_period {
+                // While cmd_vx is still ramping, the real contact timing is
+                // shifting for a reason that has nothing to do with the
+                // clock being wrong -- accumulating those samples poisons
+                // the very next post-ramp update with stale, transient-
+                // laden error (found empirically: it pushed cycle_period_s
+                // the wrong way right at the ramp/cruise boundary and sent
+                // the robot walking backward for the rest of the run, see
+                // wbc_comparison.md Sec.5bo). Skip accumulation during the
+                // ramp and restart the window clean the instant it ends.
+                let ramp_in_progress = params
+                    .cmd_vx_ramp_s
+                    .is_some_and(|ramp_s| t < params.burn_in_s + ramp_s);
+                if ramp_in_progress {
+                    pll_error_sum = 0.0;
+                    pll_error_count = 0;
+                    pll_last_update_t = t;
+                } else if let Some(pll) = &params.adaptive_cycle_period {
                     for e in phase_errors.iter().filter_map(|e| *e) {
                         pll_error_sum += e;
                         pll_error_count += 1;
@@ -1545,10 +1589,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         sim.step(&mut robot, params.dt, true);
 
         let tx = robot.base_transform.translation;
-        let (roll, pitch, _yaw) = robot.base_transform.rotation.euler_angles();
+        let (roll, pitch, yaw) = robot.base_transform.rotation.euler_angles();
         let total_fz_world: f64 = sim.contacts().iter().map(|c| c.force_world[2]).sum();
         samples.push(WbcSample {
-            t, body_x: tx.x, body_z: tx.z, roll, pitch, total_fz_world,
+            t, body_x: tx.x, body_y: tx.y, body_z: tx.z, roll, pitch, yaw, total_fz_world,
             contact_phase_mismatch, phase_error_sum_s,
             cycle_period_s: gc.config().cycle_period_s,
         });
@@ -2440,9 +2484,18 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
     let peak_pitch = walk.iter().map(|s| s.pitch.abs()).fold(0.0_f64, f64::max);
     let x0 = walk.first().map(|s| s.body_x).unwrap_or(0.0);
     let x1 = walk.last().map(|s| s.body_x).unwrap_or(0.0);
+    let y0 = walk.first().map(|s| s.body_y).unwrap_or(0.0);
+    let y1 = walk.last().map(|s| s.body_y).unwrap_or(0.0);
+    let yaw0 = walk.first().map(|s| s.yaw).unwrap_or(0.0);
+    let yaw1 = walk.last().map(|s| s.yaw).unwrap_or(0.0);
     let t0 = walk.first().map(|s| s.t).unwrap_or(0.0);
     let t1 = walk.last().map(|s| s.t).unwrap_or(0.0);
     let meas_vx = (x1 - x0) / (t1 - t0).max(1e-6);
+    // Sec.5bo: world-x displacement alone can't tell "walked backward"
+    // apart from "turned around and kept walking forward" -- planar
+    // speed (direction-agnostic) and yaw drift disambiguate the two.
+    let planar_speed = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt() / (t1 - t0).max(1e-6);
+    let yaw_drift_deg = (yaw1 - yaw0).to_degrees();
     let has_nan = samples
         .iter()
         .any(|s| !s.body_x.is_finite() || !s.body_z.is_finite() || !s.roll.is_finite() || !s.pitch.is_finite());
@@ -2465,7 +2518,7 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
          min_z={min_z:.3}m, peak_roll={peak_roll:.3}rad, peak_pitch={peak_pitch:.3}rad, \
          dx={:.3}m over {:.2}s (meas_vx≈{meas_vx:.3}), finite={}, contact_phase_mismatch={:.1}%, \
          phase_err: n_fast={n_fast} n_slow={n_slow} mean_signed={mean_signed_err_ms:.2}ms, \
-         final_cycle_period_s={final_period_s:.4}",
+         final_cycle_period_s={final_period_s:.4}, planar_speed={planar_speed:.3}m/s, yaw_drift={yaw_drift_deg:.1}deg",
         x1 - x0, t1 - t0, !has_nan, mismatch_frac * 100.0,
     );
 }
@@ -3797,6 +3850,144 @@ fn go2_wbc_bound_adaptive_cycle_period_video_source() {
     report_walk_summary("bound adaptive cycle_period video-capture source (cmd_vx=1.33, gain=0.10)", &samples, 1.33);
 }
 
+/// Companion to `go2_wbc_bound_adaptive_cycle_period_video_source`
+/// (which captures the hardest point, cmd_vx=1.33=v_max): same
+/// current-default config, but at cmd_vx=1.30 -- one of the best-
+/// performing points in Sec.5bm's grid (88.1% tracking, peak_pitch
+/// 0.100 rad), for a side-by-side "good case" reference alongside the
+/// "hard case" video.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; also the WBC_WALK_CSV_OUT video-capture source"]
+fn go2_wbc_bound_adaptive_cycle_period_good_point_video_source() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 1.30,
+        total_time_s: 8.0,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        gait_cycle_period_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(0.4),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 1.0,
+            min_period_s: 0.14,
+            max_period_s: 0.26,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_walk_summary("bound adaptive cycle_period video-capture source (cmd_vx=1.30, GOOD point)", &samples, 1.30);
+}
+
+/// Sec.5bp: does the new explicit yaw-holding feedback
+/// (`WbcPipeline::yaw_pd_gain`/`yaw_ref`) fix the yaw drift Sec.5bo
+/// found in the HARDER 3s ramp case (yaw drifted ~176 degrees,
+/// misdiagnosed as "walking backward" before `yaw`/`body_y` were
+/// tracked)? Sweeps `yaw_pd_gain` at fixed cmd_vx_ramp_s=3.0,
+/// cmd_vx=1.30, everything else matching the Sec.5bo repro.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_yaw_pd_gain_ramp_fix_sweep() {
+    for (kp, kd) in [(0.0, 0.0), (5.0, 0.5), (10.0, 1.0), (20.0, 2.0), (50.0, 5.0)] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 1.30,
+            cmd_vx_ramp_s: Some(3.0),
+            total_time_s: 10.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            gait_cycle_period_override: Some(0.18),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(0.4),
+            yaw_pd_gain_override: Some((kp, kd)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s: 1.0,
+                min_period_s: 0.14,
+                max_period_s: 0.26,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(&format!("yaw_pd_gain=({kp:.0},{kd:.1}) (3s ramp, cmd_vx=1.30)"), &samples, 1.30);
+        }
+    }
+}
+
+/// Does a smooth `cmd_vx_ramp_s` startup (stride grows with cmd_vx via
+/// the existing Raibert-heuristic footstep planner, no new machinery
+/// needed) coexist with the PLL? The PLL was only ever validated at
+/// STEADY cmd_vx (Sec.5bl-5bn) -- during a ramp, both the commanded
+/// speed and the real contact timing are changing simultaneously.
+/// FIXED (Sec.5bp, local doc): a 3s ramp to cmd_vx=1.30 (the "GOOD
+/// point" video's target) drifted yaw ~176 degrees uncorrected
+/// (Sec.5bo -- misdiagnosed as "walking backward" before `yaw`/
+/// `body_y` were tracked); the new explicit yaw-holding feedback
+/// (`yaw_pd_gain_override`, tuned in `go2_wbc_bound_yaw_pd_gain_
+/// ramp_fix_sweep`) resolves it.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; also the WBC_WALK_CSV_OUT video-capture source"]
+fn go2_wbc_bound_adaptive_cycle_period_ramp_up_video_source() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 1.30,
+        cmd_vx_ramp_s: Some(3.0),
+        total_time_s: 10.0,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        gait_cycle_period_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(0.4),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 1.0,
+            min_period_s: 0.14,
+            max_period_s: 0.26,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_walk_summary("bound ramp-up video-capture source (0 -> cmd_vx=1.30 over 3s, yaw_pd_gain=(10,1) -- FIXED)", &samples, 1.30);
+}
+
 /// Sec.5bl found the PLL (gain=0.15, update_interval_s=2.0) barely moved `peak_pitch` at
 /// cmd_vx=1.33 (0.261 rad fixed-period -> 0.251 rad with PLL, <4%
 /// change) despite a large `meas_vx` improvement (34.0% -> 54.6%) --
@@ -3934,6 +4125,110 @@ fn go2_wbc_bound_pll_gain_interval_grid_sweep() {
                     1.33,
                 );
             }
+        }
+    }
+}
+
+/// Literature re-check (Cheng/Alqaham/Gan 2024 "Harnessing Natural
+/// Oscillations", Poulakakis/Buehler's Scout II): both explicitly
+/// reject servoing pitch to a target, letting it rotate passively as
+/// part of the limit cycle instead. `wbc_pipeline.pitch_pd_gain`
+/// actively tracks the trim reference's pitch target every tick --
+/// exactly the thing that literature says fights the natural
+/// dynamics. Sweeps it toward (0,0) at cmd_vx=1.33 (PLL gain=0.10/
+/// interval=1.0, thrust_scale=0.4 -- Sec.5bm's baseline, so this test
+/// isolates pitch_pd_gain's own effect) to see whether backing off
+/// the correction lets peak_pitch settle into a SMALLER natural
+/// oscillation rather than the current ~0.22 rad.
+/// `pitch_pd_gain_override` takes effect after `bound_trim_reference`
+/// sets `wbc_pipeline.pitch_pd_gain` from its own tuple (both write
+/// the same field; the override applies later in `run_wbc_sim`), so
+/// `bound_trim_reference`'s `(100,10)` here only enables the trim
+/// machinery -- the actual gain used is whatever this override says.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_pitch_pd_gain_toward_zero_sweep() {
+    for (kp, kd) in [(100.0, 10.0), (50.0, 5.0), (20.0, 2.0), (10.0, 1.0), (5.0, 0.5), (0.0, 0.0)] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 1.33,
+            total_time_s: 8.0,
+            gait_type_override: Some(GaitType::Bound),
+            gait_cycle_period_override: Some(0.18),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(0.4),
+            pitch_pd_gain_override: Some((kp, kd)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s: 1.0,
+                min_period_s: 0.14,
+                max_period_s: 0.26,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(&format!("pitch_pd_gain=({kp:.0},{kd:.1}) (cmd_vx=1.33)"), &samples, 1.33);
+        }
+    }
+}
+
+/// Does `pitch_pd_gain=(0,0)` (the literature-backed finding from
+/// `go2_wbc_bound_pitch_pd_gain_toward_zero_sweep`: at cmd_vx=1.33 it
+/// improved tracking 84.1%->88.7% AND halved peak_pitch 0.222->0.103)
+/// generalize across the cmd_vx grid, or was 1.33 a lucky fit? Same
+/// grid as `go2_wbc_bound_cmd_vx_boundary_fine_sweep`/`go2_wbc_bound_
+/// thrust_scale_0_5_with_pll_generalization_sweep`, PLL(gain=0.10,
+/// interval=1.0)+thrust_scale=0.4 held fixed, `pitch_pd_gain_
+/// override=(0,0)` throughout -- i.e. Bound's WBC never explicitly
+/// servos pitch at all, relying solely on the trim reference's
+/// periodic Fx/GRF schedule and the PLL's timing correction.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_pitch_pd_gain_zero_generalization_sweep() {
+    for cmd_vx in [1.00, 1.20, 1.25, 1.30, 1.33, 1.36, 1.40, 1.45, 1.80, 1.90, 2.20] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx,
+            total_time_s: 8.0,
+            gait_type_override: Some(GaitType::Bound),
+            gait_cycle_period_override: Some(0.18),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(0.4),
+            pitch_pd_gain_override: Some((0.0, 0.0)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s: 1.0,
+                min_period_s: 0.14,
+                max_period_s: 0.26,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(&format!("cmd_vx={cmd_vx:.2} (pitch_pd_gain=(0,0), PLL+thrust_scale=0.4)"), &samples, cmd_vx);
         }
     }
 }

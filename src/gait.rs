@@ -671,6 +671,14 @@ impl GaitController {
         self.inner.predicted_grfs()
     }
 
+    /// Open-loop world-frame yaw, integrated from `cmd.wz` (see
+    /// `quadruped_gait::AnyGaitController::world_yaw`'s doc comment).
+    /// The natural `yaw_ref` for `WbcPipeline`'s explicit yaw-holding
+    /// feedback (Sec.5bp, local doc).
+    pub fn world_yaw(&self) -> f64 {
+        self.inner.world_yaw()
+    }
+
     /// Override the SRBD MPC's body-mass / inertia / weight matrices.
     /// No-op when the active mode is CHAMP. Hosts that know their
     /// robot's actual mass should call this once after `build` — the
