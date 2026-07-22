@@ -8492,3 +8492,63 @@ fn go2_wbc_bound_p3b_robust_front_fwd() {
             "P3b ROBUST front-forward (front ahead of hip, 0.7 m/s), 25s", &samples, 1.0);
     }
 }
+
+/// Sec.5f13 (P3-b larger stride): a LONGER cycle T spreads the support
+/// impulse over more stance time -> lower peak forces -> more friction
+/// margin -> the front foot can sit forward (Raibert-neutral v*T_st/2, which
+/// also grows) without saturating the cone. Also a bigger fore-aft sweep
+/// (foot lands ahead of, sweeps behind, the hip). Tests larger T with the
+/// whole-body attitude control; reports the orbit's front foothold +
+/// friction and the MuJoCo stability/forward.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3b_larger_stride() {
+    for (t_cyc, duty, max_step) in [(0.40_f64, 0.40_f64, 0.30_f64), (0.45, 0.40, 0.34), (0.45, 0.44, 0.34)] {
+        let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, t_cyc, duty);
+        params.raibert_weight = 1.0;
+        params.pitch_reg_weight = 0.08;
+        let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+        let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+        for r in &orbit.table {
+            csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+                r[0], r[1], r[2], r[3], r[4], r[5]));
+        }
+        std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+        let t_st = duty * t_cyc;
+        eprintln!("[P3bS] T={t_cyc} duty={duty} T_st={t_st:.3} stride={:.2}m Raibert={:.3} | front={:.3}(rel hip {:+.3}) rear={:.3} friction={:.3}",
+            1.0 * t_cyc, 1.0 * t_st / 2.0,
+            orbit.front_foothold, orbit.front_foothold - 0.19216, orbit.rear_foothold, orbit.friction_margin);
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.0, total_time_s: 15.0, burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(duty),
+            gait_cycle_period_override: Some(t_cyc),
+            max_step_length_override: Some(max_step),
+            swing_height_override: Some(0.12),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            pitch_pd_gain_override: Some((200.0, 20.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((40.0, 5.0)),
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3bS larger stride T={t_cyc} duty={duty}, vx=1.0, 15s"), &samples, 1.0);
+        }
+    }
+}
