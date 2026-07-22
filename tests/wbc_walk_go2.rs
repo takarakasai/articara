@@ -8552,3 +8552,64 @@ fn go2_wbc_bound_p3b_larger_stride() {
         }
     }
 }
+
+/// Sec.5f13 (P3-b Raibert + whole-body attitude): the cleanest front-forward
+/// route. The controller's OWN Raibert footstep already places each foot at
+/// v*T_st/2 AHEAD of its hip (the neutral) -- exactly where the front foot
+/// should be. We abandoned it only because the pitch DEADBEAT added on top
+/// drifted backward. So: NO prescribed footholds, NO deadbeat, just Raibert
+/// footstep (feet forward) + whole-body attitude PD tracking the orbit pitch
+/// (stabilizes pitch WITHOUT foot placement). Startup via cmd_vx ramp +
+/// stride/step ramp so the larger strides establish gently.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3b_raibert_wholebody() {
+    for (t_cyc, duty) in [(0.30_f64, 0.36_f64), (0.40, 0.40)] {
+        let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, t_cyc, duty);
+        params.raibert_weight = 1.0;
+        params.pitch_reg_weight = 0.08;
+        let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+        let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+        for r in &orbit.table {
+            csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+                r[0], r[1], r[2], r[3], r[4], r[5]));
+        }
+        std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+        eprintln!("[P3bW] T={t_cyc} duty={duty} Raibert-neutral(front, ahead of hip)={:.3}", 1.0 * duty * t_cyc / 2.0);
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.0, total_time_s: 15.0, burn_in_s: 0.5,
+            cmd_vx_ramp_s: Some(2.5),
+            cycle_period_ramp_start_s: Some(0.24),
+            max_step_length_ramp_start_m: Some(0.12),
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(duty),
+            gait_cycle_period_override: Some(t_cyc),
+            max_step_length_override: Some(0.30),
+            swing_height_override: Some(0.12),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            pitch_pd_gain_override: Some((200.0, 20.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((40.0, 5.0)),
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: None,   // <-- use Raibert (feet forward)
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3bW Raibert+wholebody T={t_cyc} duty={duty}, vx=1.0 (ramp), 15s"), &samples, 1.0);
+        }
+    }
+}
