@@ -873,6 +873,12 @@ impl GaitController {
         self.inner.set_bound_tabulated_reference(table);
     }
 
+    /// Set the P3-a prescribed `(front, rear)` footholds from the trajopt
+    /// orbit. No-op outside FullCentroidal mode.
+    pub fn set_bound_prescribed_footholds(&mut self, footholds: Option<(f64, f64)>) {
+        self.inner.set_bound_prescribed_footholds(footholds);
+    }
+
     /// The experimental research knobs of the active controller, as
     /// declared by [`quadruped_gait::exp`]. The GUI renders its
     /// "Experimental flags" section from this metadata, so knobs added

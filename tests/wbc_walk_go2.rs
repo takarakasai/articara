@@ -858,6 +858,11 @@ struct FullCentroidalOpts {
     /// `GaitController::set_bound_tabulated_reference`, so the MPC tracks
     /// a CONSISTENT feasible forward orbit. `None` keeps the flat/trim ref.
     bound_tabulated_reference_csv: Option<&'static str>,
+    /// P3-a: prescribed `(front, rear)` footholds from the trajopt orbit
+    /// (`GaitController::set_bound_prescribed_footholds`). When set, the
+    /// footstep planner follows the orbit's own footholds instead of
+    /// Raibert+deadbeat. `None` keeps the normal footstep.
+    bound_prescribed_footholds_override: Option<(f64, f64)>,
 }
 
 impl WbcParams {
@@ -1037,7 +1042,7 @@ impl WbcParams {
                 mpc_override: None, task_space_joint_vel_weight: None,
                 true_centroidal_coupling: false, capture_point_gain_override: None,
                 base_pos_xy_weight_override: None, max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
         }
@@ -1259,7 +1264,7 @@ impl WbcParams {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             gait_type_override: Some(GaitType::Bound),
             duty_factor_override: Some(duty_factor),
@@ -1468,6 +1473,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             }
             eprintln!("[full-centroidal] tabulated reference: {} rows from {path}", table.len());
             gc.set_bound_tabulated_reference(Some(table));
+        }
+        if let Some((front, rear)) = opts.bound_prescribed_footholds_override {
+            eprintln!("[full-centroidal] prescribed footholds front={front:.3} rear={rear:.3}");
+            gc.set_bound_prescribed_footholds(Some((front, rear)));
         }
         if let Some(k) = opts.bound_fore_aft_placement_gain_override {
             eprintln!("[full-centroidal] bound_fore_aft_placement_gain -> {k:.3}");
@@ -2860,7 +2869,7 @@ fn go2_wbc_bound_baseline_survey() {
             capture_point_gain_override: None,
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg2)
     };
@@ -2882,7 +2891,7 @@ fn go2_wbc_bound_baseline_survey() {
             capture_point_gain_override: None, // default 0.05, NOT yet the Trot k_capture=0 fix
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg3)
     };
@@ -2904,7 +2913,7 @@ fn go2_wbc_bound_baseline_survey() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg4)
     };
@@ -2940,7 +2949,7 @@ fn go2_wbc_bound_forward_walk_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -2982,7 +2991,7 @@ fn go2_wbc_bound_gentler_parameters_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3020,7 +3029,7 @@ fn go2_wbc_bound_low_swing_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -3063,7 +3072,7 @@ fn go2_wbc_bound_low_swing_max_step_length_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3097,7 +3106,7 @@ fn go2_wbc_bound_low_swing_cmd_vx_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3137,7 +3146,7 @@ fn go2_wbc_bound_max_normal_force_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: Some(max_normal_force),
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3181,7 +3190,7 @@ fn go2_wbc_bound_friction_mu_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3234,7 +3243,7 @@ fn go2_wbc_bound_true_coupling_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3280,7 +3289,7 @@ fn go2_wbc_bound_pitch_pd_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3324,7 +3333,7 @@ fn go2_wbc_bound_actuator_effort_scale_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3367,7 +3376,7 @@ fn go2_wbc_bound_matched_friction_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3421,7 +3430,7 @@ fn go2_wbc_bound_cmd_vx_ramp_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3480,7 +3489,7 @@ fn go2_wbc_bound_grf_smoothing_and_prox_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3519,7 +3528,7 @@ fn go2_wbc_mass_inertia_fix_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3544,7 +3553,7 @@ fn go2_wbc_mass_inertia_fix_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3592,7 +3601,7 @@ fn go2_wbc_bound_template_reference_forward_walk() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3630,7 +3639,7 @@ fn go2_wbc_bound_template_reference_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -3693,7 +3702,7 @@ fn go2_wbc_bound_period_cmd_vx_screening() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3737,7 +3746,7 @@ fn go2_wbc_bound_cmd_vx_alone_curve() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3799,7 +3808,7 @@ fn go2_wbc_bound_pitch_pd_gain_at_shortened_period_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3845,7 +3854,7 @@ fn go2_wbc_bound_thrust_scale_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3889,7 +3898,7 @@ fn go2_wbc_bound_velocity_ripple_fraction_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3931,7 +3940,7 @@ fn go2_wbc_bound_faster_cmd_vx_at_best_config_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3984,7 +3993,7 @@ fn go2_wbc_bound_flight_phase_at_best_config_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4043,7 +4052,7 @@ fn go2_wbc_bound_flight_phase_cmd_vx_ceiling_sweep() {
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
                     max_normal_force_override: None,
-                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -4090,7 +4099,7 @@ fn go2_wbc_bound_faster_cmd_vx_at_ripple_fraction_config_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4137,7 +4146,7 @@ fn go2_wbc_bound_cmd_vx_boundary_fine_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4193,7 +4202,7 @@ fn go2_wbc_bound_adaptive_cycle_period_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4242,7 +4251,7 @@ fn go2_wbc_bound_adaptive_cycle_period_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4284,7 +4293,7 @@ fn go2_wbc_bound_adaptive_cycle_period_good_point_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4329,7 +4338,7 @@ fn go2_wbc_bound_yaw_pd_gain_ramp_fix_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4380,7 +4389,7 @@ fn go2_wbc_bound_adaptive_cycle_period_ramp_up_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4425,7 +4434,7 @@ fn go2_wbc_bound_thrust_scale_with_pll_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4468,7 +4477,7 @@ fn go2_wbc_bound_thrust_scale_0_5_with_pll_generalization_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4514,7 +4523,7 @@ fn go2_wbc_bound_pll_gain_interval_grid_sweep() {
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
                     max_normal_force_override: None,
-                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -4574,7 +4583,7 @@ fn go2_wbc_bound_pitch_pd_gain_toward_zero_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4623,7 +4632,7 @@ fn go2_wbc_bound_pitch_pd_gain_zero_generalization_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4659,7 +4668,7 @@ fn go2_wbc_bound_cmd_vx_extreme_ceiling_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4697,7 +4706,7 @@ fn go2_wbc_bound_thrust_scale_best_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4734,7 +4743,7 @@ fn go2_wbc_bound_thrust_scale_worst_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4814,7 +4823,7 @@ fn go2_wbc_bound_flight_phase_duty_035_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4870,7 +4879,7 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4921,7 +4930,7 @@ fn go2_wbc_bound_flight_phase_duty035_cycle_period_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4974,7 +4983,7 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_ceiling_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -5029,7 +5038,7 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5124,7 +5133,7 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_long_duration_stability() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5173,7 +5182,7 @@ fn go2_wbc_bound_duty050_baseline_long_duration_stability() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5232,7 +5241,7 @@ fn go2_wbc_bound_flight_phase_duty035_capture_point_reenabled_stability() {
             capture_point_gain_override: Some(0.05),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5283,7 +5292,7 @@ fn go2_wbc_bound_flight_phase_duty035_pll_interval_stability_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -5333,7 +5342,7 @@ fn go2_wbc_bound_flight_phase_duty035_pll_interval_fine_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -5406,7 +5415,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5467,7 +5476,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_stride_length_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -5522,7 +5531,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_tight_pll_clamp_stability() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5582,7 +5591,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_smooth_startup() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5631,7 +5640,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_cmd_vx_ramp_only() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5684,7 +5693,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_cmd_vx_ramp_10s() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5742,7 +5751,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_thrust_scale_ramp() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5794,7 +5803,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_pll_settle_buffer() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5843,7 +5852,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_longer_ramp() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5896,7 +5905,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_longer_ramp_tighter_clamp() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5949,7 +5958,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_longer_ramp_pll_warm() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -6002,7 +6011,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_warm_centered_clamp() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -6061,6 +6070,7 @@ fn go2_wbc_bound_flight_phase_duty035_foot_placement_sweep() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6125,6 +6135,7 @@ fn go2_wbc_bound_flight_phase_duty035_mpc_footstep() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6187,6 +6198,7 @@ fn go2_wbc_bound_flight_phase_duty035_mpc_footstep_isolation() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6247,6 +6259,7 @@ fn go2_wbc_bound_flight_phase_duty035_q_foot_sweep() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6317,6 +6330,7 @@ fn go2_wbc_bound_flight_phase_duty035_footstep_body_frame() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6387,6 +6401,7 @@ fn go2_wbc_bound_flight_phase_duty035_symmetric_foothold() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6447,6 +6462,7 @@ fn go2_wbc_bound_flight_phase_duty035_vertical_reference_ab() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6509,6 +6525,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_emergent_pitch() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6561,6 +6578,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_video_source() {
             bound_pitch_placement_gain_override: None,
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -6612,6 +6630,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_weight_fine() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6673,6 +6692,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_ramp_pll() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6722,6 +6742,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_cmd_vx_ceiling() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6775,6 +6796,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_highspeed_weight() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6827,6 +6849,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_fx_bias() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6888,6 +6911,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_startup() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6953,6 +6977,7 @@ fn go2_wbc_bound_flight_phase_duty035_trim_startup() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7013,6 +7038,7 @@ fn go2_wbc_bound_energetic_sweep() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7065,6 +7091,7 @@ fn go2_wbc_bound_energetic_weight() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7127,6 +7154,7 @@ fn go2_wbc_bound_energetic_trim() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7182,6 +7210,7 @@ fn go2_wbc_bound_energetic_roll_rate_deadbeat() {
             bound_pitch_placement_gain_override: None,
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7234,6 +7263,7 @@ fn go2_wbc_bound_energetic_stable_edge() {
             bound_pitch_placement_gain_override: None,
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7285,6 +7315,7 @@ fn go2_wbc_bound_energetic_stable_window() {
             bound_pitch_placement_gain_override: None,
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7341,6 +7372,7 @@ fn go2_wbc_bound_energetic_pitch_deadbeat_placement() {
                 bound_pitch_placement_gain_override: Some((0.0, k_rate)),
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7393,6 +7425,7 @@ fn go2_wbc_bound_energetic_stable_video_source() {
             bound_pitch_placement_gain_override: Some((0.0, 0.045)),
         bound_pitch_placement_dc_tau_override: None,
         bound_tabulated_reference_csv: None,
+        bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -7451,6 +7484,7 @@ fn go2_wbc_bound_energetic_forward() {
                 bound_pitch_placement_gain_override: Some((0.0, k_rate)),
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7508,6 +7542,7 @@ fn go2_wbc_bound_energetic_forward_thrust() {
                 bound_pitch_placement_gain_override: Some((0.0, 0.045)),
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7570,6 +7605,7 @@ fn go2_wbc_bound_energetic_hzd_forward() {
                 bound_pitch_placement_gain_override: Some((0.0, k_rate)),
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7631,6 +7667,7 @@ fn go2_wbc_bound_energetic_hzd_dcblock() {
                 bound_pitch_placement_gain_override: Some((0.0, 0.045)),
                 bound_pitch_placement_dc_tau_override: Some(tau),
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7691,6 +7728,7 @@ fn go2_wbc_bound_trajopt_forward() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: Some("ref/scripts/bound_p0_orbit.csv"),
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7764,6 +7802,7 @@ fn go2_wbc_bound_p1_orbit_forward() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7773,5 +7812,133 @@ fn go2_wbc_bound_p1_orbit_forward() {
                 &samples, 1.0,
             );
         }
+    }
+}
+
+/// Sec.5f9 (P3-a): FOLLOW THE ORBIT'S FOOTHOLDS. The core hypothesis: the
+/// trajopt orbit's own footholds are the placement that is forward-moving
+/// AND pitch-balanced by construction, so following them directly should
+/// give forward + stable where Raibert+deadbeat could not (§5f10: the two
+/// fought). Generates the P1 orbit, installs its base-state reference AND
+/// its prescribed (front,rear) footholds, no placement deadbeat. Rate
+/// state-weight kept modest for perturbation damping. cmd_vx = orbit speed.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3a_orbit_footholds() {
+    let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.34);
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("P3a orbit");
+    let path = "ref/scripts/bound_p1_orbit.csv";
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write(path, csv).expect("write orbit csv");
+    eprintln!("[P3a] footholds front={:.3} rear={:.3} friction={:.3}",
+        orbit.front_foothold, orbit.rear_foothold, orbit.friction_margin);
+
+    // P3-b: orbit foothold NEUTRAL + landing-reflex deadbeat correction.
+    // Pure open-loop foothold following (k_place=0) collapses immediately;
+    // the reflex (pitch-rate deadbeat around the forward orbit foothold)
+    // supplies the missing feedback. Sweep the reflex gain.
+    for k_place in [0.0_f64, 0.02, 0.045, 0.08] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.00,
+            total_time_s: 12.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.34),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: Some((0.0, k_place)),
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3b orbit-foothold+reflex, k_place={k_place}, cmd_vx=1.0, duty=0.34, 12s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
+
+/// Sec.5f9 (P3 confirm): the forward + stable Bound. P3-a found that
+/// following the trajopt orbit's own (reachability-clamped) footholds --
+/// with NO placement deadbeat (k_place=0) -- gives forward + stable, where
+/// every §5f bolt-on failed (the deadbeat itself was the backward-drag
+/// culprit). This confirms it over a longer 25s horizon and dumps a CSV
+/// for video. Guards against the §5f4-style premature "stable" claim.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; WBC_WALK_CSV_OUT video source for P3"]
+fn go2_wbc_bound_p3_forward_stable_confirm() {
+    let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.34);
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let p = WbcParams {
+        cmd_vx: 1.00,
+        total_time_s: 25.0,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.34),
+        gait_cycle_period_override: Some(0.30),
+        max_step_length_override: Some(0.22),
+        swing_height_override: Some(0.10),
+        bound_trim_reference: None,
+        sync_real_mass_inertia: true,
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: Some((20.0, 5.0)),
+            max_normal_force_override: None,
+            roll_pitch_weight_override: Some((4.0, 25.0)),
+            bound_fore_aft_placement_gain_override: None,
+            roll_rate_weight_override: Some((100.0, 100.0)),
+            bound_pitch_placement_gain_override: None,
+            bound_pitch_placement_dc_tau_override: None,
+            bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+            bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    if let Some(samples) = run_wbc_sim(p) {
+        report_time_windowed_summary(
+            "P3 FORWARD+STABLE confirm (orbit footholds, no deadbeat), cmd_vx=1.0, 25s",
+            &samples, 1.0,
+        );
     }
 }
