@@ -3657,6 +3657,122 @@ fn go2_wbc_bound_faster_cmd_vx_at_best_config_sweep() {
     }
 }
 
+/// Phase C of the flight-phase plan (local doc Sec.5bq): now that
+/// `bound_reference.rs`'s trim model is generalized to `duty_factor
+/// <0.5` (closed-form aerial-phase pitch/`F_z`, Phase 0/B of the plan),
+/// re-run `go2_wbc_bound_flight_phase_duty_sweep`'s bare `n_stance=0`
+/// survival check -- but layered on the actually-established best
+/// config (T=0.18, `bound_trim_reference`=(100,10), thrust_scale=0.4,
+/// `yaw_pd_gain`=(10,1), PLL gain=0.10/interval=1.0 -- the same combo
+/// `go2_wbc_bound_adaptive_cycle_period_ramp_up_video_source` used)
+/// instead of bare `forward_walk` defaults, at a previously-good
+/// cmd_vx=1.30. Sweeps `duty_factor` down from 0.50 (baseline, no
+/// flight) to see whether opening a genuine aerial phase raises the
+/// achievable speed ceiling (Sec.5bi's ~1.0-1.2 m/s cap under the old
+/// duty=0.5-only model) or breaks tracking/stability first.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_at_best_config_sweep() {
+    let cmd_vx = 1.30;
+    for duty_factor in [0.50, 0.45, 0.40, 0.35, 0.30, 0.25] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(duty_factor),
+            gait_cycle_period_override: Some(0.18),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(0.4),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s: 1.0,
+                min_period_s: 0.14,
+                max_period_s: 0.26,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(
+                &format!(
+                    "duty_factor={duty_factor:.2} (T=0.18, thrust_scale=0.4, bound_trim=(100,10), yaw_pd=(10,1), PLL)"
+                ),
+                &samples, cmd_vx,
+            );
+        }
+    }
+}
+
+/// Companion to `go2_wbc_bound_flight_phase_at_best_config_sweep`:
+/// that fixed-cmd_vx sweep found tracking monotonically WORSE as
+/// `duty_factor` shrinks (contact_phase_mismatch growing 5.8%->27.2%),
+/// the opposite of the hoped-for result -- but a fixed-cmd_vx sweep
+/// can't distinguish "the achievable ceiling didn't move" from "the
+/// ceiling moved but cmd_vx=1.30 is now past it in the other
+/// direction". This sweeps `cmd_vx` at both `duty_factor=0.50`
+/// (baseline, no flight) and `duty_factor=0.35` (30% flight/cycle),
+/// with every other knob held byte-for-byte identical (T=0.18,
+/// bound_trim=(100,10), thrust_scale=0.4, yaw_pd_gain=(10,1),
+/// PLL gain=0.10/interval=1.0) -- a true apples-to-apples ceiling
+/// comparison, unlike `go2_wbc_bound_faster_cmd_vx_at_best_config_
+/// sweep` (an older sweep predating the yaw_pd_gain fix, so its
+/// duty=0.5 numbers aren't directly comparable here).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_cmd_vx_ceiling_sweep() {
+    for duty_factor in [0.50, 0.35] {
+        for cmd_vx in [0.40, 0.50, 0.60, 0.70, 0.80, 1.00, 1.20, 1.33, 1.50, 1.80, 2.20] {
+            let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+            let params = WbcParams {
+                cmd_vx,
+                gait_type_override: Some(GaitType::Bound),
+                duty_factor_override: Some(duty_factor),
+                gait_cycle_period_override: Some(0.18),
+                bound_trim_reference: Some((100.0, 10.0)),
+                bound_trim_thrust_scale_override: Some(0.4),
+                yaw_pd_gain_override: Some((10.0, 1.0)),
+                adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                    gain: 0.10,
+                    update_interval_s: 1.0,
+                    min_period_s: 0.14,
+                    max_period_s: 0.26,
+                }),
+                full_centroidal: Some(FullCentroidalOpts {
+                    legged_control_parity: true,
+                    use_mpc_predicted_footstep: false,
+                    dynamic_joint_q_reference: false,
+                    mpc_override: None,
+                    task_space_joint_vel_weight: None,
+                    true_centroidal_coupling: false,
+                    capture_point_gain_override: Some(0.0),
+                    base_pos_xy_weight_override: None,
+                    max_normal_force_override: None,
+                    roll_pitch_weight_override: None,
+                }),
+                ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+            };
+            if let Some(samples) = run_wbc_sim(params) {
+                report_walk_summary(
+                    &format!("cmd_vx={cmd_vx:.2} (duty_factor={duty_factor:.2}, T=0.18, thrust_scale=0.4, bound_trim=(100,10), yaw_pd=(10,1), PLL)"),
+                    &samples, cmd_vx,
+                );
+            }
+        }
+    }
+}
+
 /// Sec.5bj companion to `go2_wbc_bound_faster_cmd_vx_at_best_config_
 /// sweep`: same `cmd_vx` grid, same T=0.18/pitch_pd_gain=(100,10), but
 /// `velocity_ripple_fraction=0.4` (best point from `go2_wbc_bound_
@@ -4369,4 +4485,694 @@ fn assert_forward_command_advances_body(samples: &[WbcSample]) {
     eprintln!("[wbc:go2] forward_command: peak |roll| = {peak_roll:.2} rad, peak |pitch| = {peak_pitch:.2} rad");
     assert!(peak_roll < 0.5, "forward walk: |roll| peak {peak_roll:.2} rad too large");
     assert!(peak_pitch < 0.5, "forward walk: |pitch| peak {peak_pitch:.2} rad too large");
+}
+
+/// Video-capture source for Sec.5bq's `duty_factor=0.35` flight-phase
+/// result: the *slower* of the two ceilings found (`go2_wbc_bound_
+/// flight_phase_cmd_vx_ceiling_sweep` -- ~0.82 m/s vs duty=0.50's
+/// ~0.99 m/s), but the point the user explicitly asked to see despite
+/// the negative tracking result -- confirming visually that all 4
+/// legs really do leave the ground together (the original "any true
+/// flight phase?" question that started this investigation), not just
+/// that the schedule-level diagnostic (`go2_diag_bound_duty_factor_
+/// flight_phase_sweep`) says so. `cmd_vx=1.20` sits inside
+/// this duty's own tracked-speed plateau (0.821 m/s, Sec.5bq's table).
+/// Run with `WBC_WALK_CSV_OUT=<path> cargo test --release --features
+/// mujoco --test wbc_walk_go2 go2_wbc_bound_flight_phase_duty_035_video_source
+/// -- --ignored --nocapture`.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; also the WBC_WALK_CSV_OUT video-capture source for Sec.5bq (duty=0.35 flight phase)"]
+fn go2_wbc_bound_flight_phase_duty_035_video_source() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 1.20,
+        total_time_s: 4.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(0.4),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 1.0,
+            min_period_s: 0.14,
+            max_period_s: 0.26,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_walk_summary(
+        "bound duty_factor=0.35 flight-phase video-capture source (T=0.18, thrust_scale=0.4, bound_trim=(100,10), yaw_pd=(10,1), PLL, vx=1.20)",
+        &samples, 1.20,
+    );
+}
+
+/// Sec.5bq found `duty_factor<0.5` doesn't raise the tracked-speed
+/// ceiling under `thrust_scale=0.4` (established for `duty=0.5`) --
+/// but `f_z_total()`'s duty-aware growth (`m·g/(2·duty)`, Sec.5bq)
+/// means the *absolute* friction budget (`mu·F_z_total`) is objectively
+/// larger at `duty=0.35` than `duty=0.50`, even though `thrust_scale`'s
+/// fraction of it is unchanged -- `thrust_scale=0.4` was chosen at
+/// `duty=0.5` specifically to leave headroom below the pitch-canceling
+/// trim's own friction-cone saturation (Sec.5bf/5bg), and might be
+/// needlessly conservative once a genuine flight phase is already
+/// absorbing some of the pitch disturbance (Phase 0's `theta_peak`
+/// only grows mildly, 0.00904->0.01175 rad, duty 0.50->0.35). Sweeps
+/// `thrust_scale` upward at `duty_factor=0.35`, fixed cmd_vx=1.33 (near
+/// Sec.5bq's duty=0.35 ceiling), to see whether more of that headroom
+/// can be spent before instability (rising `contact_phase_mismatch`,
+/// `peak_pitch`, or an outright fall) sets in.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_thrust_scale_sweep() {
+    let cmd_vx = 1.33;
+    for thrust_scale in [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(thrust_scale),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s: 1.0,
+                min_period_s: 0.14,
+                max_period_s: 0.26,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(
+                &format!("thrust_scale={thrust_scale:.1} (duty_factor=0.35, T=0.18, cmd_vx=1.33)"),
+                &samples, cmd_vx,
+            );
+        }
+    }
+}
+
+/// Companion to `go2_wbc_bound_flight_phase_duty035_thrust_scale_
+/// sweep`: `cycle_period_s=0.18` was tuned for `duty_factor=0.5`
+/// (Sec.5bg-on) -- with a genuine flight phase now in the picture, the
+/// stance/flight time split changes character at a fixed `duty`, so
+/// the period that best balances stride frequency against per-stance
+/// impulse may no longer be 0.18s. Sweeps `cycle_period_s` at
+/// `duty_factor=0.35`, `thrust_scale=0.4` (baseline, isolating the
+/// period's own effect first), fixed cmd_vx=1.33.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_cycle_period_sweep() {
+    let cmd_vx = 1.33;
+    for cycle_period_s in [0.14, 0.16, 0.18, 0.20, 0.22, 0.24, 0.26] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(cycle_period_s),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(0.4),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s: 1.0,
+                min_period_s: (cycle_period_s - 0.04).max(0.05),
+                max_period_s: cycle_period_s + 0.08,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(
+                &format!("cycle_period_s={cycle_period_s:.2} (duty_factor=0.35, thrust_scale=0.4, cmd_vx=1.33)"),
+                &samples, cmd_vx,
+            );
+        }
+    }
+}
+
+/// `go2_wbc_bound_flight_phase_duty035_thrust_scale_sweep` found
+/// `thrust_scale=1.0` at `duty_factor=0.35` (with the non-monotonic
+/// 0.6-0.8 instability pocket avoided) tracks a fixed cmd_vx=1.33
+/// better than the `duty=0.5`-tuned `thrust_scale=0.4` baseline
+/// (0.875 vs 0.805 m/s, +8.7%) -- `cycle_period_s=0.18` remained
+/// the best period at this duty (`..._cycle_period_sweep`, no gain
+/// there). This re-runs the full `cmd_vx` ceiling sweep (same grid as
+/// `go2_wbc_bound_flight_phase_cmd_vx_ceiling_sweep`) at
+/// `duty_factor=0.35`+`thrust_scale=1.0` to see whether that
+/// modest fixed-point gain also raises the actual tracking ceiling
+/// close to (or past) `duty=0.50`'s ~0.99 m/s (Sec.5bq).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_ceiling_sweep() {
+    for cmd_vx in [0.40, 0.50, 0.60, 0.70, 0.80, 1.00, 1.20, 1.33, 1.50, 1.80, 2.20] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(1.0),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s: 1.0,
+                min_period_s: 0.14,
+                max_period_s: 0.26,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_walk_summary(
+                &format!("cmd_vx={cmd_vx:.2} (duty_factor=0.35, thrust_scale=1.0, T=0.18)"),
+                &samples, cmd_vx,
+            );
+        }
+    }
+}
+
+/// Video-capture source for Sec.5br's positive result: `duty_factor=
+/// 0.35` (genuine flight phase) with `thrust_scale=1.0` (raised from
+/// `duty=0.50`'s conservative 0.4, per `go2_wbc_bound_flight_phase_
+/// duty035_thrust_scale_sweep`'s finding that the friction-cone
+/// headroom `thrust_scale=0.4` was protecting no longer needs
+/// protecting at this duty) tracks `cmd_vx=1.50` at `meas_vx≈0.985` --
+/// essentially matching `duty=0.50`'s own ~0.99 m/s ceiling (Sec.5bq)
+/// while keeping the aerial phase. This is the "leap AND keep the
+/// speed" configuration the user asked for. Run with `WBC_WALK_
+/// CSV_OUT=<path> cargo test --release --features mujoco --test
+/// wbc_walk_go2 go2_wbc_bound_flight_phase_duty035_thrust_scale_1_
+/// video_source -- --ignored --nocapture`.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; also the WBC_WALK_CSV_OUT video-capture source for Sec.5br (duty=0.35, thrust_scale=1.0, ceiling-matching)"]
+fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_video_source() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 1.50,
+        total_time_s: 3.0,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(1.0),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 1.0,
+            min_period_s: 0.14,
+            max_period_s: 0.26,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_walk_summary(
+        "bound duty_factor=0.35, thrust_scale=1.0 video-capture source (T=0.18, bound_trim=(100,10), yaw_pd=(10,1), PLL, vx=1.50 -- ceiling-matching)",
+        &samples, 1.50,
+    );
+}
+
+/// Per-`window_s`-second breakdown (vx / planar_speed / peak_pitch /
+/// peak_roll / min_z / contact_phase_mismatch), for spotting WHEN
+/// within one long run a configuration destabilizes -- `report_walk_
+/// summary`'s single aggregate over the whole post-burn-in window
+/// can't distinguish "stable throughout" from "fine at first, then
+/// drifts apart partway through" (exactly what Sec.5br's `duty=0.35,
+/// thrust_scale=1.0, cmd_vx=1.50` video-capture probe found: stable
+/// over a 3.0s run, degraded when extended to 4.5s).
+fn report_time_windowed_summary(label: &str, samples: &[WbcSample], window_s: f64) {
+    let t_max = samples.last().map(|s| s.t).unwrap_or(0.0);
+    eprintln!("\n=== {label} (time-windowed, {window_s:.1}s buckets) ===");
+    let mut window_start = 0.0;
+    while window_start < t_max {
+        let window_end = window_start + window_s;
+        let window: Vec<&WbcSample> =
+            samples.iter().filter(|s| s.t >= window_start && s.t < window_end).collect();
+        if window.is_empty() {
+            window_start += window_s;
+            continue;
+        }
+        let peak_pitch = window.iter().map(|s| s.pitch.abs()).fold(0.0_f64, f64::max);
+        let peak_roll = window.iter().map(|s| s.roll.abs()).fold(0.0_f64, f64::max);
+        let min_z = window.iter().map(|s| s.body_z).fold(f64::INFINITY, f64::min);
+        let x0 = window.first().unwrap().body_x;
+        let x1 = window.last().unwrap().body_x;
+        let y0 = window.first().unwrap().body_y;
+        let y1 = window.last().unwrap().body_y;
+        let t0 = window.first().unwrap().t;
+        let t1 = window.last().unwrap().t;
+        let vx = (x1 - x0) / (t1 - t0).max(1e-6);
+        let planar = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt() / (t1 - t0).max(1e-6);
+        let mismatch_pct =
+            100.0 * window.iter().filter(|s| s.contact_phase_mismatch).count() as f64 / window.len() as f64;
+        let has_nan = window.iter().any(|s| !s.body_x.is_finite() || !s.pitch.is_finite());
+        eprintln!(
+            "[{window_start:>4.1}-{window_end:<4.1}s] vx={vx:>6.3} planar={planar:>6.3} \
+             peak_pitch={peak_pitch:>6.3}rad peak_roll={peak_roll:>6.3}rad min_z={min_z:>5.3}m \
+             mismatch={mismatch_pct:>5.1}% finite={}",
+            !has_nan,
+        );
+        window_start += window_s;
+    }
+}
+
+/// Sec.5br's `duty=0.35, thrust_scale=1.0, cmd_vx=1.50` config matched
+/// `duty=0.50`'s ~0.99 m/s ceiling over a 3.0s run, but one probe
+/// extended to 4.5s came back degraded (`meas_vx` 0.985 -> 0.787,
+/// `peak_pitch` 0.112 -> 0.349 rad) -- unclear if that's a slow drift
+/// toward instability or a one-off. Runs this exact config for 10s
+/// (well past both probes) with `report_time_windowed_summary` to see
+/// WHEN (if ever) it destabilizes, not just whether the whole-run
+/// aggregate looks bad.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_long_duration_stability() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 1.50,
+        total_time_s: 10.0,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(1.0),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 1.0,
+            min_period_s: 0.14,
+            max_period_s: 0.26,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_time_windowed_summary(
+        "duty=0.35, thrust_scale=1.0, cmd_vx=1.50, 10s long-duration stability probe",
+        &samples, 1.0,
+    );
+}
+
+/// Sec.5bs found `duty=0.35`+`thrust_scale=1.0`+`cmd_vx=1.50`
+/// collapses after ~3s despite every prior sweep (all `total_time_s=
+/// 3.0`) reading it as matching `duty=0.50`'s ceiling -- raising the
+/// general question of whether this session's whole short-window
+/// sweep methodology has been misreading transients as steady state.
+/// Runs `duty=0.50`'s OWN established best config (Sec.5bp,
+/// `thrust_scale=0.4`) for 10s at the same `cmd_vx=1.50` to check
+/// whether the baseline itself holds up, or whether it too was only
+/// ever validated over a lucky short window.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_duty050_baseline_long_duration_stability() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 1.50,
+        total_time_s: 10.0,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        gait_cycle_period_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(0.4),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 1.0,
+            min_period_s: 0.14,
+            max_period_s: 0.26,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_time_windowed_summary(
+        "duty=0.50 (baseline), thrust_scale=0.4, cmd_vx=1.50, 10s long-duration stability probe",
+        &samples, 1.0,
+    );
+}
+
+/// Sec.5bs's collapse hypothesis: every established Bound config this
+/// session (Sec.5ao on) sets `capture_point_gain_override: Some(0.0)`
+/// -- disabling foot-placement-based velocity feedback entirely, to
+/// isolate Bound-specific tuning from Trot-derived confounders. That
+/// leaves velocity regulation to the periodic `F_x` trim (designed
+/// purely to cancel pitch torque, not to track velocity) plus the
+/// timing-only PLL -- neither of which corrects foot placement itself.
+/// Classic bounding/galloping literature (Raibert 1986's three-part
+/// hopping control; Di Carlo et al. 2018's convex-MPC Cheetah 3
+/// bounding; Park/Wensing/Kim 2017's impulse scaling) all rely on a
+/// real-time foot-placement correction (`x_foot ~ v̄·T_st/2 +
+/// k·(v-v_des)`) as the primary velocity-error corrector, precisely
+/// because during flight there's no ground force to lean on -- landing
+/// spot is the only lever before touchdown. Re-enables the WBC's own
+/// default capture-point gain (`DEFAULT_CAPTURE_POINT_GAIN_S=0.05`,
+/// quadruped-gait's `mpc_controller.rs`) for exactly the config that
+/// collapsed at t=3-4s (`duty=0.35`, `thrust_scale=1.0`, cmd_vx=1.50)
+/// to see whether restoring foot-placement feedback prevents it.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_capture_point_reenabled_stability() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 1.50,
+        total_time_s: 10.0,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(1.0),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 1.0,
+            min_period_s: 0.14,
+            max_period_s: 0.26,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.05),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_time_windowed_summary(
+        "duty=0.35, thrust_scale=1.0, cmd_vx=1.50, capture_point_gain=0.05 (re-enabled), 10s stability probe",
+        &samples, 1.0,
+    );
+}
+
+/// Sec.5bu's diagnosis: the collapse (`duty=0.35`, `thrust_scale=1.0`,
+/// cmd_vx=1.50) is a phase-timing divergence that runs away in
+/// ~0.6s (t=3.04-3.68s, pitch_meas +0.087->-0.239rad), faster than
+/// the PLL's `update_interval_s=1.0` (tuned for `duty=0.50`, Sec.5bl)
+/// can correct -- it only re-averages `cycle_period_s` once per
+/// second. Sweeps `update_interval_s` down (1.0/0.5/0.3/0.2) at the
+/// exact collapsing config, 10s each, with `report_time_windowed_
+/// summary` to see whether a faster PLL response prevents the runaway
+/// instead of merely reacting to it after the fact.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_pll_interval_stability_sweep() {
+    for update_interval_s in [1.0, 0.5, 0.3, 0.2] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 1.50,
+            total_time_s: 10.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(1.0),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s,
+                min_period_s: 0.14,
+                max_period_s: 0.26,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("duty=0.35, thrust_scale=1.0, cmd_vx=1.50, PLL update_interval_s={update_interval_s:.1}, 10s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
+
+/// Sec.5bv found `update_interval_s` shortening monotonically improves
+/// stability down to `0.2` (9-window avg vx 1.092 m/s, never negative)
+/// -- this pushes further (0.15/0.10/0.05) to find where the trend
+/// stops helping (diminishing returns, or a new instability from an
+/// overly twitchy PLL overreacting to noisy per-cycle phase-error
+/// samples).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_pll_interval_fine_sweep() {
+    for update_interval_s in [0.20, 0.15, 0.10, 0.05] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 1.50,
+            total_time_s: 10.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(1.0),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s,
+                min_period_s: 0.14,
+                max_period_s: 0.26,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("duty=0.35, thrust_scale=1.0, cmd_vx=1.50, PLL update_interval_s={update_interval_s:.2}, 10s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
+
+/// Video-capture source for Sec.5bw's winning "leap AND keep the
+/// speed" configuration: `duty_factor=0.35` (genuine flight phase),
+/// `thrust_scale=1.0` (Sec.5br), `PLL update_interval_s=0.2` (Sec.5bv/
+/// 5bw -- the local-optimum PLL response speed, fast enough to
+/// recover from the phase-timing divergence Sec.5bu diagnosed, but not
+/// so fast it resonates with the gait's own ~0.18s cycle like `0.15s`
+/// did). 8s run (vs the 10s stability probes) to keep the render
+/// short while still showing both the sustained ~1.0-1.35 m/s stretch
+/// AND the brief self-recovering dip around t=6-7s (honest depiction,
+/// not a cherry-picked clean window). Run with `WBC_WALK_CSV_OUT=
+/// <path> cargo test --release --features mujoco --test wbc_walk_go2
+/// go2_wbc_bound_flight_phase_duty035_best_pattern_video_source --
+/// --ignored --nocapture`.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; also the WBC_WALK_CSV_OUT video-capture source for Sec.5bw (duty=0.35, thrust_scale=1.0, PLL interval=0.2 -- best pattern)"]
+fn go2_wbc_bound_flight_phase_duty035_best_pattern_video_source() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 1.50,
+        total_time_s: 8.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(1.0),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 0.2,
+            min_period_s: 0.14,
+            max_period_s: 0.26,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_walk_summary(
+        "bound duty=0.35, thrust_scale=1.0, PLL interval=0.2 video-capture source (T=0.18, bound_trim=(100,10), yaw_pd=(10,1), vx=1.50 -- best leap+speed pattern)",
+        &samples, 1.50,
+    );
+    report_time_windowed_summary(
+        "bound duty=0.35, thrust_scale=1.0, PLL interval=0.2, vx=1.50 (video source, time-windowed)",
+        &samples, 1.0,
+    );
+}
+
+/// Every knob swept this session (`cmd_vx`, `duty_factor`, `thrust_
+/// scale`, `cycle_period_s`, PLL `update_interval_s`) left
+/// `max_step_length_m` untouched at Bound's stock 0.12m. The
+/// footstep-planner ceiling `v_max = max_step_length_m / (cycle_
+/// period_s·duty_factor)` (this file's own recurring formula, e.g.
+/// Sec.2327/3620) gives 0.12/(0.18·0.35)≈1.9 m/s at Sec.5bw's best
+/// pattern -- comfortably above the ~1.3 m/s actually achieved, so
+/// stride length wasn't the suspected bottleneck. Untested until now,
+/// though: this sweeps `max_step_length_m` at Sec.5bw's best pattern
+/// (`duty=0.35`, `thrust_scale=1.0`, PLL `update_interval_s=0.2`), at
+/// an aggressive `cmd_vx=2.20` (previously untracked well at any
+/// config), 10s each via `report_time_windowed_summary` to catch
+/// collapse dynamics, not just a short favorable window.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_best_pattern_stride_length_sweep() {
+    let cmd_vx = 2.20;
+    for max_step_length_m in [0.12, 0.15, 0.18, 0.22, 0.26] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx,
+            total_time_s: 10.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(max_step_length_m),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(1.0),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s: 0.2,
+                min_period_s: 0.14,
+                max_period_s: 0.26,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("max_step_length_m={max_step_length_m:.2} (duty=0.35, thrust_scale=1.0, PLL=0.2, cmd_vx=2.20)"),
+                &samples, 1.0,
+            );
+        }
+    }
 }
