@@ -6314,3 +6314,111 @@ fn go2_wbc_bound_flight_phase_duty035_vertical_reference_ab() {
         }
     }
 }
+
+/// Sec.5d5: the MIT-faithful Bound experiment. Per the Sec.5d4 paper
+/// verification, MIT's convex-MPC bounders use (a) a FLAT reference
+/// (pitch=0, z-vel=0), (b) a LOW orientation/pitch weight so the bound
+/// pitch oscillation EMERGES rather than being tracked/fought, and (c)
+/// Raibert footsteps outside the MPC. Our best pattern instead injects
+/// a bespoke closed-form PITCH TRIM (non-flat pitch reference) -- the
+/// biggest divergence from MIT. This drops the trim entirely
+/// (`bound_trim_reference: None`, so no MPC pitch/F_x/F_z injection and
+/// no WBC pitch PD, which defaults off) and sweeps the MPC's base
+/// roll/pitch attitude weight DOWN from the 25.0 default toward MIT's
+/// ~1.0, letting the emergent pitch bounce happen. Fixed timing (no
+/// PLL), open-loop Raibert footstep, duty=0.35, cmd_vx=1.5. Keeps the
+/// real mass/inertia sync (normally piggy-backed on the trim path) and
+/// the yaw-hold PD (a straight-line stabilizer). Historically the
+/// trim-less MPC Bound "reversed", but low pitch weight was never tried
+/// and predates the yaw-PD / contact-schedule fixes.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_mit_emergent_pitch() {
+    for pitch_w in [25.0, 10.0, 5.0, 1.0, 0.5] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 1.50,
+            total_time_s: 10.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            // MIT-faithful: NO bespoke trim (flat pitch reference), NO
+            // PLL (fixed timing). Keep real mass/inertia + yaw hold.
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((pitch_w, pitch_w)),
+                bound_fore_aft_placement_gain_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("duty=0.35, cmd_vx=1.50, MIT-faithful (no trim, roll/pitch weight={pitch_w:.1}), 10s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
+
+/// Video-capture source for Sec.5d5's MIT-faithful stable Bound: NO
+/// bespoke trim, flat pitch reference, low MPC roll/pitch weight (5.0,
+/// the sweet spot) so the bound pitch oscillation emerges rather than
+/// being fought, open-loop Raibert footstep, fixed timing, duty=0.35,
+/// cmd_vx=1.5. This is the second, MIT-aligned line -- much simpler
+/// than the trim+PLL+thrust_scale stack -- stable ~1.2 m/s with a real
+/// flight phase. Run with `WBC_WALK_CSV_OUT=<path> cargo test --release
+/// --features mujoco --test wbc_walk_go2 go2_wbc_bound_flight_phase_
+/// duty035_mit_video_source -- --ignored --nocapture`.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; also the WBC_WALK_CSV_OUT video-capture source for Sec.5d5 (MIT-faithful trimless Bound)"]
+fn go2_wbc_bound_flight_phase_duty035_mit_video_source() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 1.50,
+        total_time_s: 8.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        max_step_length_override: Some(0.18),
+        bound_trim_reference: None,
+        sync_real_mass_inertia: true,
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: Some((5.0, 5.0)),
+            bound_fore_aft_placement_gain_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_walk_summary(
+        "bound MIT-faithful (no trim, roll/pitch weight=5, Raibert footstep) video source (duty=0.35, cmd_vx=1.5)",
+        &samples, 1.50,
+    );
+    report_time_windowed_summary(
+        "bound MIT-faithful (no trim, weight=5), cmd_vx=1.5 (video source, time-windowed)",
+        &samples, 1.0,
+    );
+}
