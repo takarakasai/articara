@@ -715,6 +715,11 @@ struct WbcParams {
     /// MIT design -- kept as a measurable A/B. `None` = gait default
     /// (false = flat, MIT-aligned).
     bound_trim_vertical_reference_override: Option<bool>,
+    /// Set `GaitConfig::bound_fx_thrust_bias` (N, total forward GRF on
+    /// stance feet) before build (Sec.5d7): a constant forward thrust
+    /// feedforward to raise the trimless MIT line's ~1.3 m/s ceiling.
+    /// `None` = gait default (0.0 = no-op).
+    bound_fx_thrust_bias_override: Option<f64>,
 }
 
 /// `legged_control_parity`: per-leg phase contact schedule + swing
@@ -817,7 +822,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
-            gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None,
+            gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
     }
     fn forward_walk() -> Self {
@@ -829,7 +834,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
-            gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None,
+            gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
     }
     fn static_stand_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
@@ -867,7 +872,7 @@ impl WbcParams {
             full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None,
-            duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None,
+            duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
     }
 
@@ -1320,6 +1325,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if let Some(vr) = params.bound_trim_vertical_reference_override {
         eprintln!("[gait] overriding bound_trim_vertical_reference -> {vr}");
         cfg.bound_trim_vertical_reference = vr;
+    }
+    if let Some(bias) = params.bound_fx_thrust_bias_override {
+        eprintln!("[gait] overriding bound_fx_thrust_bias -> {bias:.1} N");
+        cfg.bound_fx_thrust_bias = bias;
     }
     if let Some(swing_height_m) = params.swing_height_override {
         eprintln!(
@@ -6564,6 +6573,103 @@ fn go2_wbc_bound_flight_phase_duty035_mit_cmd_vx_ceiling() {
         if let Some(samples) = run_wbc_sim(params) {
             report_time_windowed_summary(
                 &format!("duty=0.35, MIT weight=4, cmd_vx={cmd_vx:.2}, 12s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
+
+/// Sec.5d7 (hybrid): the MIT line caps at ~1.3 m/s because at cmd_vx=2.0
+/// the low pitch weight (4) can't hold the larger pitch disturbance
+/// (pitch ran to 0.49). Before reaching for an explicit F_x thrust
+/// bias, test whether the ceiling is simply WEIGHT-limited: at the
+/// failing cmd_vx=2.0, sweep the MPC roll/pitch weight UP (4/8/12/16/25)
+/// -- higher weight = more pitch authority = maybe it tracks. If a
+/// higher weight rescues cmd_vx=2.0, the fix is a speed-adaptive weight
+/// (still MIT-structured, no trim), simpler than an F_x hybrid. Still
+/// trimless, no PLL, duty=0.35, 12s.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_mit_highspeed_weight() {
+    for w in [4.0, 8.0, 12.0, 16.0, 25.0] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 2.00,
+            total_time_s: 12.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((w, w)),
+                bound_fore_aft_placement_gain_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("duty=0.35, MIT cmd_vx=2.00, roll/pitch weight={w:.0}, 12s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
+
+/// Sec.5d7 (hybrid): MIT structure (trimless, weight=4) + a constant
+/// forward F_x thrust bias to break the ~1.3 m/s ceiling. Sec.5d7's
+/// weight sweep showed higher pitch weight can't rescue cmd_vx=2.0
+/// (thrust-limited, not weight-limited), so this adds the missing
+/// forward force directly. Sweeps the bias (0/20/40/60 N total) at
+/// cmd_vx=2.0, duty=0.35, 12s. If a bias lets cmd_vx=2.0 track stably,
+/// the hybrid raises the MIT line's ceiling with one extra scalar.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_mit_fx_bias() {
+    for bias in [0.0, 20.0, 40.0, 60.0] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 2.00,
+            total_time_s: 12.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            bound_fx_thrust_bias_override: Some(bias),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("duty=0.35, MIT weight=4, cmd_vx=2.00, fx_thrust_bias={bias:.0}N, 12s"),
                 &samples, 1.0,
             );
         }
