@@ -672,6 +672,25 @@ struct WbcParams {
     /// (`flight_fraction = 1 - 2*duty`). `None` keeps the gait
     /// family's own default duty factor.
     duty_factor_override: Option<f64>,
+    /// Enable `GaitConfig::mpc_optimized_footstep` before build (Sec.5c8,
+    /// local doc): the FullCentroidal MPC adds a quadratic foot-XY
+    /// landing cost (`q_foot_xy_world`) so it actively chooses the
+    /// footstep JOINTLY with the GRF, instead of tracking the open-loop
+    /// Raibert target. This is option (B) from the Sec.5c5 review -- the
+    /// principled alternative to the reactive foot-placement bolt-on
+    /// that failed in Sec.5c6/5c7 (which conflicted with the directly-
+    /// commanded F_x). Pair with `FullCentroidalOpts::
+    /// use_mpc_predicted_footstep=true` so the controller actually uses
+    /// the MPC's chosen foothold. `None` keeps the gait default (off).
+    mpc_optimized_footstep_override: Option<bool>,
+    /// Override `GaitConfig::q_foot_xy_world` (the foot-XY landing cost
+    /// weight, default 500.0) before build. Sec.5c9 found the default
+    /// 500 destabilizes the flight-phase Bound's pitch-critical GRF
+    /// balance; Sec.5d0 sweeps it down to find a weight where the MPC
+    /// gently shapes the footstep without wrecking pitch. `None` keeps
+    /// the gait default. Only meaningful with
+    /// `mpc_optimized_footstep_override: Some(true)`.
+    q_foot_xy_world_override: Option<f64>,
 }
 
 /// `legged_control_parity`: per-leg phase contact schedule + swing
@@ -774,7 +793,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
-            gait_type_override: None, duty_factor_override: None,
+            gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None,
         }
     }
     fn forward_walk() -> Self {
@@ -786,7 +805,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
-            gait_type_override: None, duty_factor_override: None,
+            gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None,
         }
     }
     fn static_stand_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
@@ -824,7 +843,7 @@ impl WbcParams {
             full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None,
-            duty_factor_override: None,
+            duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None,
         }
     }
 
@@ -1254,6 +1273,17 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             max_step_length_m / (cfg.cycle_period_s * cfg.duty_factor),
         );
         cfg.max_step_length_m = max_step_length_m;
+    }
+    if let Some(enable) = params.mpc_optimized_footstep_override {
+        eprintln!(
+            "[gait] overriding mpc_optimized_footstep {} -> {enable} (q_foot_xy_world={:.1})",
+            cfg.mpc_optimized_footstep, cfg.q_foot_xy_world,
+        );
+        cfg.mpc_optimized_footstep = enable;
+    }
+    if let Some(q) = params.q_foot_xy_world_override {
+        eprintln!("[gait] overriding q_foot_xy_world {:.1} -> {q:.1}", cfg.q_foot_xy_world);
+        cfg.q_foot_xy_world = q;
     }
     if let Some(swing_height_m) = params.swing_height_override {
         eprintln!(
@@ -5881,6 +5911,180 @@ fn go2_wbc_bound_flight_phase_duty035_foot_placement_sweep() {
         if let Some(samples) = run_wbc_sim(params) {
             report_time_windowed_summary(
                 &format!("duty=0.35, cmd_vx=2.20 (constant), bound_fore_aft_placement_gain={gain:.2}, 15s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
+
+/// Option (B) from the Sec.5c5 review (Sec.5c8, local doc): instead of
+/// a reactive foot-placement bolt-on (Sec.5c6/5c7, which conflicted
+/// with the directly-commanded F_x), let the FullCentroidal MPC choose
+/// the footstep JOINTLY with the GRF -- `mpc_optimized_footstep=true`
+/// (MPC adds a foot-XY landing cost, actively deviating the swing-leg
+/// plan to place the foot) + `use_mpc_predicted_footstep=true`
+/// (controller uses the MPC's chosen foothold instead of open-loop
+/// Raibert). The MPC's contact schedule already projects the flight
+/// phase forward (`legged_control_parity`), so in principle it plans
+/// footholds and forces consistently across the aerial phase. Runs the
+/// constant-cmd=2.20 best pattern (Sec.5c6's stable-cruise baseline)
+/// 15s, comparing the footstep source OFF (baseline) vs ON.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_mpc_footstep() {
+    for (label, mpc_fs) in [("baseline (open-loop Raibert footstep)", false),
+                            ("MPC-optimized footstep (B)", true)] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 2.20,
+            total_time_s: 15.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            mpc_optimized_footstep_override: Some(mpc_fs),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(1.0),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s: 0.2,
+                min_period_s: 0.16,
+                max_period_s: 0.20,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: mpc_fs,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+                bound_fore_aft_placement_gain_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("duty=0.35, cmd_vx=2.20 (constant), {label}, 15s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
+
+/// Sec.5c8 isolation: the full (B) (both flags on) faceplanted with
+/// roll=π by t=1-2s. Which half breaks? `mpc_optimized_footstep`
+/// (add the foot-XY COST to the MPC, keep the open-loop Raibert swing
+/// target) vs `use_mpc_predicted_footstep` (take the swing IK target
+/// from the MPC's predicted joint_q FK, but no foot-XY cost so the MPC
+/// isn't even optimizing the footstep -- the documented "P2" case).
+/// 3s each (the faceplant is fast), 0.5s windows, to localize the
+/// destabilizing half before designing the flight-phase fix.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_mpc_footstep_isolation() {
+    for (label, opt_fs, use_fs) in [
+        ("cost-only (mpc_optimized_footstep, Raibert swing target)", true, false),
+        ("predict-only (use_mpc_predicted_footstep, no foot-XY cost)", false, true),
+    ] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 2.20,
+            total_time_s: 3.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            mpc_optimized_footstep_override: Some(opt_fs),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(1.0),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s: 0.2,
+                min_period_s: 0.16,
+                max_period_s: 0.20,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: use_fs,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+                bound_fore_aft_placement_gain_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("duty=0.35, cmd_vx=2.20, {label}, 3s"),
+                &samples, 0.5,
+            );
+        }
+    }
+}
+
+/// Sec.5d0: Sec.5c9 localized (B)'s instability to the foot-XY COST
+/// (`q_foot_xy_world=500`) fighting the pitch-critical GRF solution.
+/// Sweeps that weight DOWN (500/100/20/5/1) with both footstep flags
+/// on, constant cmd=2.20, 8s each, to find a weight where the MPC can
+/// gently shape the footstep (jointly with GRF -- the real option B)
+/// without wrecking the delicate Bound pitch balance. gain=0-equivalent
+/// baseline (Sec.5c6) held ~1.7 m/s stable for 15s; the target is a
+/// low q_foot that stays stable while letting the MPC own the foothold.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_q_foot_sweep() {
+    for q_foot in [500.0, 100.0, 20.0, 5.0, 1.0] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 2.20,
+            total_time_s: 8.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            mpc_optimized_footstep_override: Some(true),
+            q_foot_xy_world_override: Some(q_foot),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(1.0),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s: 0.2,
+                min_period_s: 0.16,
+                max_period_s: 0.20,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: true,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+                bound_fore_aft_placement_gain_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("duty=0.35, cmd_vx=2.20, MPC footstep both-on, q_foot_xy_world={q_foot:.0}, 8s"),
                 &samples, 1.0,
             );
         }
