@@ -662,6 +662,13 @@ impl GaitController {
         self.inner.set_body_pose_observed(world_yaw, world_position);
     }
 
+    /// Feed the observed base roll/pitch (rad) to the Poincaré/deadbeat
+    /// pitch foot-placement (Sec.5f6). Only used in FullCentroidal mode
+    /// when a pitch-placement gain is set; ignored otherwise.
+    pub fn set_body_attitude_observed(&mut self, roll: f64, pitch: f64) {
+        self.inner.set_body_attitude_observed(roll, pitch);
+    }
+
     /// Latest SRBD-MPC predicted ground reaction forces (world
     /// frame, per foot, in canonical FL/FR/RL/RR slot order). Returns
     /// `None` when the active mode is CHAMP or the MPC hasn't ticked
@@ -844,6 +851,26 @@ impl GaitController {
     /// mode.
     pub fn set_bound_fore_aft_placement_gain(&mut self, k: f64) {
         self.inner.set_bound_fore_aft_placement_gain(k);
+    }
+
+    /// Set the Poincaré/deadbeat pitch foot-placement gains
+    /// `(k_angle, k_rate)` (see `quadruped_gait::
+    /// FullCentroidalMpcGaitController::set_bound_pitch_placement_gain`).
+    /// No-op outside FullCentroidal mode.
+    pub fn set_bound_pitch_placement_gain(&mut self, k_angle: f64, k_rate: f64) {
+        self.inner.set_bound_pitch_placement_gain(k_angle, k_rate);
+    }
+
+    /// Set the Sec.5f8 pitch foot-placement DC-blocker time constant (s).
+    /// No-op outside FullCentroidal mode.
+    pub fn set_bound_pitch_placement_dc_tau(&mut self, tau: f64) {
+        self.inner.set_bound_pitch_placement_dc_tau(tau);
+    }
+
+    /// Set the Sec.5f9 (P2) tabulated forward-Bound reference orbit
+    /// (`[phase, z, pitch, vx, vz, w]` rows). No-op outside FullCentroidal.
+    pub fn set_bound_tabulated_reference(&mut self, table: Option<Vec<[f64; 6]>>) {
+        self.inner.set_bound_tabulated_reference(table);
     }
 
     /// The experimental research knobs of the active controller, as
