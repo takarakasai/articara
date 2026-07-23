@@ -832,6 +832,20 @@ impl GaitController {
         self.inner.set_cycle_period_s(period_s);
     }
 
+    /// Update `max_step_length_m` in place. No-op outside FullCentroidal
+    /// mode.
+    pub fn set_max_step_length_m(&mut self, m: f64) {
+        self.inner.set_max_step_length_m(m);
+    }
+
+    /// Set the Bound-specific fore-aft foot-placement feedback gain
+    /// (see `quadruped_gait::FullCentroidalMpcGaitController::
+    /// set_bound_fore_aft_placement_gain`). No-op outside FullCentroidal
+    /// mode.
+    pub fn set_bound_fore_aft_placement_gain(&mut self, k: f64) {
+        self.inner.set_bound_fore_aft_placement_gain(k);
+    }
+
     /// The experimental research knobs of the active controller, as
     /// declared by [`quadruped_gait::exp`]. The GUI renders its
     /// "Experimental flags" section from this metadata, so knobs added

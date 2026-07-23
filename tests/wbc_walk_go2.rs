@@ -531,6 +531,63 @@ struct WbcParams {
     /// (Sec.5at/5aw). `None` keeps the existing instantaneous-step
     /// behaviour.
     cmd_vx_ramp_s: Option<f64>,
+    /// If `Some(start_m)` AND `cmd_vx_ramp_s` is also `Some(ramp_s)`,
+    /// linearly ramps `max_step_length_m` from `start_m` up to its
+    /// final (post-`max_step_length_override`) target value over the
+    /// same `ramp_s` duration, in lockstep with the `cmd_vx` ramp --
+    /// so stride grows smoothly with commanded speed instead of
+    /// snapping to its full value at t=0 while the body is still near
+    /// a dead stop (the startup transient Sec.5c0 found rough at
+    /// duty<0.5). No-op if `cmd_vx_ramp_s` is `None`. `None` (default)
+    /// preserves prior behaviour exactly.
+    max_step_length_ramp_start_m: Option<f64>,
+    /// Same idea as `max_step_length_ramp_start_m`, for `cycle_
+    /// period_s`: ramps from `start_s` to the final (post-`gait_cycle_
+    /// period_override`, or the gait's own default) target over the
+    /// same `cmd_vx_ramp_s` duration. Real quadrupeds slow their
+    /// stride frequency at low speed and quicken it as they accelerate
+    /// (trot-to-gallop cadence increases with speed) -- this lets the
+    /// startup transient mimic that instead of running at the
+    /// steady-state cadence from a dead stop. No-op if `cmd_vx_ramp_s`
+    /// is `None`. `None` (default) preserves prior behaviour exactly.
+    cycle_period_ramp_start_s: Option<f64>,
+    /// Same idea as `max_step_length_ramp_start_m`/`cycle_period_
+    /// ramp_start_s`, for `bound_trim_thrust_scale` (Sec.5c1, local
+    /// doc): ramps from `start_scale` up to its final (post-`bound_
+    /// trim_thrust_scale_override`) target over the same `cmd_vx_
+    /// ramp_s` duration. Motivated by Sec.5c0's diagnosis of why
+    /// ramping `cmd_vx`/stride/period alone made the startup transient
+    /// WORSE (one config fell over outright): the trim's periodic
+    /// pitch/`F_x` schedule is sized by `thrust_scale` alone, entirely
+    /// independent of `cmd_vx` -- so it fires at full strength from
+    /// t=0 regardless of how slowly the commanded velocity is still
+    /// ramping, creating exactly the mismatch those experiments hit.
+    /// Ramping trim intensity itself in lockstep with `cmd_vx` is the
+    /// one lever that was still untried. No-op if `cmd_vx_ramp_s` is
+    /// `None`. `None` (default) preserves prior behaviour exactly.
+    thrust_scale_ramp_start: Option<f64>,
+    /// Extra seconds (beyond `cmd_vx_ramp_s` itself) to keep the PLL's
+    /// phase-error accumulation gated off after the ramp otherwise
+    /// ends, letting the gait settle before the PLL starts reacting to
+    /// (possibly still-transient) contact timing. Sec.5c1 (local doc)
+    /// found the PLL resuming exactly at the ramp/cruise boundary
+    /// coincided with a new bout of instability -- this tests whether
+    /// a settle buffer avoids that. No-op if `cmd_vx_ramp_s` is `None`.
+    /// `None` (default, `0.0` effectively) preserves prior behaviour.
+    post_ramp_settle_s: Option<f64>,
+    /// When `true`, the PLL accumulates phase-error samples DURING the
+    /// `cmd_vx_ramp_s` window too, instead of resetting to zero every
+    /// tick (Sec.5bo's original reasoning for the reset: ramp-induced
+    /// contact-timing shifts aren't real clock error and poison the
+    /// very next post-ramp update). Sec.5c3 (local doc) found the
+    /// t=6s+ collapse in the 4.0s-ramp best pattern persists unchanged
+    /// even with a much tighter PLL clamp -- this tests whether
+    /// letting the PLL "warm up" during the ramp (arriving at cruise
+    /// with an already-primed `cycle_period_s` instead of a cold
+    /// blank-slate accumulator) avoids the fresh-start windup instead.
+    /// No-op if `cmd_vx_ramp_s` is `None`. `false` (default) preserves
+    /// prior behaviour exactly.
+    pll_accumulate_during_ramp: bool,
     /// Override `WbcPipeline::grf_smoothing_alpha` (default 1.0 = raw,
     /// no smoothing) and `WbcPipeline::qp_prox_weight` (default 1e-4)
     /// after construction. The `misa-wbc` `ho_qp.rs` audit (Sec.5at)
@@ -695,6 +752,16 @@ struct FullCentroidalOpts {
     /// tracking budget available for forward velocity. `None` keeps
     /// the existing (25.0, 25.0) default.
     roll_pitch_weight_override: Option<(f64, f64)>,
+    /// Bound-specific fore-aft (x-only) foot-placement feedback gain
+    /// (`GaitController::set_bound_fore_aft_placement_gain`, Sec.5c6):
+    /// the Raibert running-speed regulator `x_foot += k·(v_x−v_x_des)`
+    /// applied to the fore-aft foothold only. This is option (A) from
+    /// the Sec.5c5 holistic review -- the literature-standard velocity
+    /// stabilizer that the current architecture lacked (the generic
+    /// `k_capture` was gated off at 0 for Bound because its x+y form
+    /// rolled the body over, Sec.5bt). `None`/`0.0` (default) leaves
+    /// the cmd-based Raibert `half` untouched.
+    bound_fore_aft_placement_gain_override: Option<f64>,
 }
 
 impl WbcParams {
@@ -706,7 +773,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -718,7 +785,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None, duty_factor_override: None,
         }
     }
@@ -755,7 +822,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None,
             duty_factor_override: None,
         }
@@ -874,7 +941,7 @@ impl WbcParams {
                 mpc_override: None, task_space_joint_vel_weight: None,
                 true_centroidal_coupling: false, capture_point_gain_override: None,
                 base_pos_xy_weight_override: None, max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
         }
@@ -1096,7 +1163,7 @@ impl WbcParams {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             gait_type_override: Some(GaitType::Bound),
             duty_factor_override: Some(duty_factor),
@@ -1195,6 +1262,12 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         );
         cfg.swing_height_m = swing_height_m;
     }
+    // Captured before `cfg` moves into `GaitController::build` -- these
+    // are the post-override steady-state targets the startup ramp (if
+    // any) interpolates toward, per `max_step_length_ramp_start_m`/
+    // `cycle_period_ramp_start_s`'s doc comments.
+    let target_max_step_length_m = cfg.max_step_length_m;
+    let target_cycle_period_s = cfg.cycle_period_s;
     let gait_mode = if params.full_centroidal.is_some() { GaitMode::FullCentroidal } else { GaitMode::Mpc };
     let mut gc = GaitController::build(&robot, kin.clone(), cfg, gait_mode)
         .expect("GaitController::build");
@@ -1247,6 +1320,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         if let Some(k) = opts.capture_point_gain_override {
             eprintln!("[full-centroidal] k_capture override -> {k:.3}");
             gc.set_capture_point_gain(k);
+        }
+        if let Some(k) = opts.bound_fore_aft_placement_gain_override {
+            eprintln!("[full-centroidal] bound_fore_aft_placement_gain -> {k:.3}");
+            gc.set_bound_fore_aft_placement_gain(k);
         }
         if let Some((q_x, q_y)) = opts.base_pos_xy_weight_override {
             let mut mpc_cfg: FullCentroidalMpcConfig =
@@ -1441,8 +1518,35 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 let frac = (elapsed / ramp_s.max(1e-6)).min(1.0);
                 let vx = frac * params.cmd_vx;
                 gc.set_velocity_cmd(VelocityCmd { vx, vy: 0.0, wz: 0.0 });
+                if let Some(start_m) = params.max_step_length_ramp_start_m {
+                    gc.set_max_step_length_m(start_m + frac * (target_max_step_length_m - start_m));
+                }
+                if let Some(start_s) = params.cycle_period_ramp_start_s {
+                    gc.set_cycle_period_s(start_s + frac * (target_cycle_period_s - start_s));
+                }
+                if let Some(start_scale) = params.thrust_scale_ramp_start {
+                    gc.set_bound_trim_thrust_scale(start_scale + frac * (bound_trim_thrust_scale - start_scale));
+                }
                 if k == burn_in_steps {
                     eprintln!("[cmd-ramp] ramping cmd_vx 0 -> {:.3} over {:.2}s", params.cmd_vx, ramp_s);
+                    if let Some(start_m) = params.max_step_length_ramp_start_m {
+                        eprintln!(
+                            "[cmd-ramp] ramping max_step_length_m {:.3} -> {:.3}m in lockstep",
+                            start_m, target_max_step_length_m,
+                        );
+                    }
+                    if let Some(start_s) = params.cycle_period_ramp_start_s {
+                        eprintln!(
+                            "[cmd-ramp] ramping cycle_period_s {:.3} -> {:.3}s in lockstep",
+                            start_s, target_cycle_period_s,
+                        );
+                    }
+                    if let Some(start_scale) = params.thrust_scale_ramp_start {
+                        eprintln!(
+                            "[cmd-ramp] ramping bound_trim_thrust_scale {:.3} -> {:.3} in lockstep",
+                            start_scale, bound_trim_thrust_scale,
+                        );
+                    }
                 }
             }
         } else if k == burn_in_steps {
@@ -1517,10 +1621,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 // the robot walking backward for the rest of the run, see
                 // wbc_comparison.md Sec.5bo). Skip accumulation during the
                 // ramp and restart the window clean the instant it ends.
-                let ramp_in_progress = params
-                    .cmd_vx_ramp_s
-                    .is_some_and(|ramp_s| t < params.burn_in_s + ramp_s);
-                if ramp_in_progress {
+                let ramp_in_progress = params.cmd_vx_ramp_s.is_some_and(|ramp_s| {
+                    t < params.burn_in_s + ramp_s + params.post_ramp_settle_s.unwrap_or(0.0)
+                });
+                if ramp_in_progress && !params.pll_accumulate_during_ramp {
                     pll_error_sum = 0.0;
                     pll_error_count = 0;
                     pll_last_update_t = t;
@@ -2576,7 +2680,7 @@ fn go2_wbc_bound_baseline_survey() {
             capture_point_gain_override: None,
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg2)
     };
@@ -2598,7 +2702,7 @@ fn go2_wbc_bound_baseline_survey() {
             capture_point_gain_override: None, // default 0.05, NOT yet the Trot k_capture=0 fix
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg3)
     };
@@ -2620,7 +2724,7 @@ fn go2_wbc_bound_baseline_survey() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg4)
     };
@@ -2656,7 +2760,7 @@ fn go2_wbc_bound_forward_walk_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -2698,7 +2802,7 @@ fn go2_wbc_bound_gentler_parameters_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -2736,7 +2840,7 @@ fn go2_wbc_bound_low_swing_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -2779,7 +2883,7 @@ fn go2_wbc_bound_low_swing_max_step_length_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -2813,7 +2917,7 @@ fn go2_wbc_bound_low_swing_cmd_vx_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -2853,7 +2957,7 @@ fn go2_wbc_bound_max_normal_force_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: Some(max_normal_force),
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -2897,7 +3001,7 @@ fn go2_wbc_bound_friction_mu_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -2950,7 +3054,7 @@ fn go2_wbc_bound_true_coupling_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -2996,7 +3100,7 @@ fn go2_wbc_bound_pitch_pd_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3040,7 +3144,7 @@ fn go2_wbc_bound_actuator_effort_scale_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3083,7 +3187,7 @@ fn go2_wbc_bound_matched_friction_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3137,7 +3241,7 @@ fn go2_wbc_bound_cmd_vx_ramp_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3196,7 +3300,7 @@ fn go2_wbc_bound_grf_smoothing_and_prox_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3235,7 +3339,7 @@ fn go2_wbc_mass_inertia_fix_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3260,7 +3364,7 @@ fn go2_wbc_mass_inertia_fix_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3308,7 +3412,7 @@ fn go2_wbc_bound_template_reference_forward_walk() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3346,7 +3450,7 @@ fn go2_wbc_bound_template_reference_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -3409,7 +3513,7 @@ fn go2_wbc_bound_period_cmd_vx_screening() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3453,7 +3557,7 @@ fn go2_wbc_bound_cmd_vx_alone_curve() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3515,7 +3619,7 @@ fn go2_wbc_bound_pitch_pd_gain_at_shortened_period_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3561,7 +3665,7 @@ fn go2_wbc_bound_thrust_scale_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3605,7 +3709,7 @@ fn go2_wbc_bound_velocity_ripple_fraction_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3647,7 +3751,7 @@ fn go2_wbc_bound_faster_cmd_vx_at_best_config_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3700,7 +3804,7 @@ fn go2_wbc_bound_flight_phase_at_best_config_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3759,7 +3863,7 @@ fn go2_wbc_bound_flight_phase_cmd_vx_ceiling_sweep() {
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
                     max_normal_force_override: None,
-                    roll_pitch_weight_override: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -3806,7 +3910,7 @@ fn go2_wbc_bound_faster_cmd_vx_at_ripple_fraction_config_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3853,7 +3957,7 @@ fn go2_wbc_bound_cmd_vx_boundary_fine_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3909,7 +4013,7 @@ fn go2_wbc_bound_adaptive_cycle_period_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3958,7 +4062,7 @@ fn go2_wbc_bound_adaptive_cycle_period_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4000,7 +4104,7 @@ fn go2_wbc_bound_adaptive_cycle_period_good_point_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4045,7 +4149,7 @@ fn go2_wbc_bound_yaw_pd_gain_ramp_fix_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4096,7 +4200,7 @@ fn go2_wbc_bound_adaptive_cycle_period_ramp_up_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4141,7 +4245,7 @@ fn go2_wbc_bound_thrust_scale_with_pll_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4184,7 +4288,7 @@ fn go2_wbc_bound_thrust_scale_0_5_with_pll_generalization_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4230,7 +4334,7 @@ fn go2_wbc_bound_pll_gain_interval_grid_sweep() {
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
                     max_normal_force_override: None,
-                    roll_pitch_weight_override: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -4290,7 +4394,7 @@ fn go2_wbc_bound_pitch_pd_gain_toward_zero_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4339,7 +4443,7 @@ fn go2_wbc_bound_pitch_pd_gain_zero_generalization_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4375,7 +4479,7 @@ fn go2_wbc_bound_cmd_vx_extreme_ceiling_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4413,7 +4517,7 @@ fn go2_wbc_bound_thrust_scale_best_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4450,7 +4554,7 @@ fn go2_wbc_bound_thrust_scale_worst_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4530,7 +4634,7 @@ fn go2_wbc_bound_flight_phase_duty_035_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4586,7 +4690,7 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4637,7 +4741,7 @@ fn go2_wbc_bound_flight_phase_duty035_cycle_period_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4690,7 +4794,7 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_ceiling_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4745,7 +4849,7 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4838,7 +4942,7 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_long_duration_stability() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4887,7 +4991,7 @@ fn go2_wbc_bound_duty050_baseline_long_duration_stability() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4946,7 +5050,7 @@ fn go2_wbc_bound_flight_phase_duty035_capture_point_reenabled_stability() {
             capture_point_gain_override: Some(0.05),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4997,7 +5101,7 @@ fn go2_wbc_bound_flight_phase_duty035_pll_interval_stability_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -5047,7 +5151,7 @@ fn go2_wbc_bound_flight_phase_duty035_pll_interval_fine_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -5069,26 +5173,33 @@ fn go2_wbc_bound_flight_phase_duty035_pll_interval_fine_sweep() {
 /// did), `max_step_length_m=0.18` (Sec.5bx -- raised from Bound's
 /// stock 0.12m per the user's own observation that stride length
 /// hadn't been tried; the footstep planner's own ceiling at this
-/// duty/cmd_vx), and NOW a tightened PLL clamp `min_period_s=0.16`/
-/// `max_period_s=0.20` (Sec.5by/5bz -- the original 0.14/0.26 clamp
-/// let `cycle_period_s` integrator-windup drift from 0.198 to 0.215+
-/// over 8+ seconds of one-signed `mean_error`, walking the gait out of
-/// its ~0.18 sweet spot until it collapsed; tightening the clamp to
-/// the known-good range fixed it completely -- a clean 15s probe with
-/// zero collapse, avg vx=1.7 m/s from t=3s on). 12.5s run (vs the 15s
-/// stability probe) to keep the render reasonably short while still
-/// showing sustained, genuinely stable high-speed bounding with a real
-/// flight phase. Run with `WBC_WALK_CSV_OUT=<path> cargo test
-/// --release --features mujoco --test wbc_walk_go2 go2_wbc_bound_
-/// flight_phase_duty035_best_pattern_video_source -- --ignored
-/// --nocapture`.
+/// duty/cmd_vx), a tightened PLL clamp `min_period_s=0.16`/
+/// `max_period_s=0.20` (Sec.5by/5bz), and NOW a smooth startup
+/// transient (Sec.5c0-5c3, local doc): `cmd_vx`+`thrust_scale` ramp
+/// together over 4.0s (0->2.20, 0.2->1.0) so forward speed climbs
+/// near-monotonically from rest instead of snapping to full strength
+/// at t=0 (the user's original complaint), plus `pll_accumulate_
+/// during_ramp` so the PLL arrives at cruise already adapted instead
+/// of windup-diverging from a cold start right at the ramp/cruise
+/// boundary (Sec.5c3 -- without this, the ramped version collapsed at
+/// t=6-7s and never recovered). Even with the full fix there's a
+/// brief, shallow dip around t=4.5-6.5s (min vx=-0.023, no fall) before
+/// it recovers into a sustained ~1.5 m/s cruise from t=7.5s on --
+/// captured honestly, not cropped out. 14.5s run (matches the
+/// `..._pll_warm` stability probe) to show the full startup, dip, and
+/// recovery. Run with `WBC_WALK_CSV_OUT=<path> cargo test --release
+/// --features mujoco --test wbc_walk_go2 go2_wbc_bound_flight_phase_
+/// duty035_best_pattern_video_source -- --ignored --nocapture`.
 #[test]
-#[ignore = "exploratory stress test — run with --ignored; also the WBC_WALK_CSV_OUT video-capture source for Sec.5bz (duty=0.35, thrust_scale=1.0, PLL interval=0.2 w/ tightened clamp, max_step_length_m=0.18 -- best pattern, stable)"]
+#[ignore = "exploratory stress test — run with --ignored; also the WBC_WALK_CSV_OUT video-capture source for Sec.5c3 (duty=0.35, thrust_scale=1.0 ramped w/ cmd_vx over 4.0s, PLL warm-start during ramp, max_step_length_m=0.18 -- best pattern, smooth start + recovers to stable cruise)"]
 fn go2_wbc_bound_flight_phase_duty035_best_pattern_video_source() {
     let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
     let params = WbcParams {
         cmd_vx: 2.20,
-        total_time_s: 12.5,
+        cmd_vx_ramp_s: Some(4.0),
+        thrust_scale_ramp_start: Some(0.2),
+        pll_accumulate_during_ramp: true,
+        total_time_s: 14.5,
         burn_in_s: 0.5,
         gait_type_override: Some(GaitType::Bound),
         duty_factor_override: Some(0.35),
@@ -5113,17 +5224,17 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_video_source() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
     let Some(samples) = run_wbc_sim(params) else { return };
     report_walk_summary(
-        "bound duty=0.35, thrust_scale=1.0, PLL interval=0.2, max_step_length_m=0.18 video-capture source (T=0.18, bound_trim=(100,10), yaw_pd=(10,1), vx=2.20 -- best leap+speed pattern)",
+        "bound duty=0.35, thrust_scale=1.0, PLL interval=0.2, max_step_length_m=0.18, smooth 4.0s startup ramp video-capture source (T=0.18, bound_trim=(100,10), yaw_pd=(10,1), vx=2.20 -- best leap+speed pattern)",
         &samples, 2.20,
     );
     report_time_windowed_summary(
-        "bound duty=0.35, thrust_scale=1.0, PLL interval=0.2, max_step_length_m=0.18, vx=2.20 (video source, time-windowed)",
+        "bound duty=0.35, thrust_scale=1.0, PLL interval=0.2, max_step_length_m=0.18, smooth startup, vx=2.20 (video source, time-windowed)",
         &samples, 1.0,
     );
 }
@@ -5174,7 +5285,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_stride_length_sweep() {
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -5229,7 +5340,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_tight_pll_clamp_stability() {
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5238,4 +5349,540 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_tight_pll_clamp_stability() {
         "duty=0.35, thrust_scale=1.0, max_step_length_m=0.18, cmd_vx=2.20, PLL clamp tightened to 0.16-0.20, 15s",
         &samples, 1.0,
     );
+}
+
+/// User observation: the best pattern's startup (t=0-2s of Sec.5bz's
+/// video -- vx=0.026/0.455, peak_pitch=0.207/0.216rad, both far off
+/// the ~1.7 m/s / ~0.1rad steady state) looks rough because `cmd_vx`,
+/// `max_step_length_m`, and `cycle_period_s` all snap to their full
+/// target values at `burn_in_s` while the body is still near a dead
+/// stop. Ramps all three in lockstep over the same `cmd_vx_ramp_s`
+/// window (2.0s) via the new `max_step_length_ramp_start_m`/`cycle_
+/// period_ramp_start_s` knobs: stride grows 0.06->0.18m, cadence
+/// quickens 0.24->0.18s, alongside cmd_vx's existing 0->2.20 ramp --
+/// mimicking how real quadrupeds quicken cadence as they accelerate
+/// (trot-to-gallop transitions raise stride frequency with speed).
+/// 0.5s windows (finer
+/// than the 1.0s stability probes) to inspect the startup transient
+/// closely -- forward position/velocity should now climb smoothly
+/// instead of the sharp jump Sec.5bz's abrupt start showed.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_best_pattern_smooth_startup() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 2.20,
+        cmd_vx_ramp_s: Some(2.0),
+        max_step_length_ramp_start_m: Some(0.06),
+        cycle_period_ramp_start_s: Some(0.24),
+        total_time_s: 12.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        max_step_length_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(1.0),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 0.2,
+            min_period_s: 0.16,
+            max_period_s: 0.20,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_time_windowed_summary(
+        "duty=0.35, thrust_scale=1.0, max_step_length_m=0.18, cmd_vx=2.20, smooth startup ramp (cmd_vx/stride/period, 2.0s)",
+        &samples, 0.5,
+    );
+}
+
+/// Isolation check: `go2_wbc_bound_flight_phase_duty035_best_pattern_
+/// smooth_startup` (ramping cmd_vx+stride+period together over 2.0s)
+/// made the WHOLE 12.5s run worse, not just the startup -- never
+/// reaching Sec.5bz's abrupt-start ~1.7 m/s steady state at all.
+/// Isolates which knob is responsible: `cmd_vx_ramp_s` alone (no
+/// stride/period ramp), same 2.0s duration, same 0.5s windowed report.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_best_pattern_cmd_vx_ramp_only() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 2.20,
+        cmd_vx_ramp_s: Some(2.0),
+        total_time_s: 12.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        max_step_length_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(1.0),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 0.2,
+            min_period_s: 0.16,
+            max_period_s: 0.20,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_time_windowed_summary(
+        "duty=0.35, thrust_scale=1.0, max_step_length_m=0.18, cmd_vx=2.20, cmd_vx-only ramp (2.0s, no stride/period ramp)",
+        &samples, 0.5,
+    );
+}
+
+/// User question, after confirming the best-pattern video source
+/// commands `cmd_vx` as a step function (no ramp): what happens with
+/// a much gentler `cmd_vx_ramp_s=10.0` (vs the 2.0s ramp that caused
+/// an outright fall in `..._cmd_vx_ramp_only`)? Same stride/period
+/// held fixed at target from t=0 (isolating the cmd_vx-ramp effect
+/// alone, per that same test's finding that partial ramps mismatch
+/// against the cmd_vx-independent `thrust_scale`-based trim). 20s
+/// total (10s ramp + 10s post-ramp cruise) to see both the ramp itself
+/// and whether it settles into Sec.5bz's stable ~1.7 m/s cruise
+/// afterward.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_best_pattern_cmd_vx_ramp_10s() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 2.20,
+        cmd_vx_ramp_s: Some(10.0),
+        total_time_s: 20.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        max_step_length_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(1.0),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 0.2,
+            min_period_s: 0.16,
+            max_period_s: 0.20,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_time_windowed_summary(
+        "duty=0.35, thrust_scale=1.0, max_step_length_m=0.18, cmd_vx=2.20, cmd_vx-only ramp (10.0s, no stride/period ramp)",
+        &samples, 1.0,
+    );
+}
+
+/// Sec.5c0's diagnosis: ramping `cmd_vx`/stride/period while
+/// `thrust_scale` stays pinned at its full target from t=0 fails
+/// because the trim's periodic `F_x`/pitch schedule is `thrust_scale`-
+/// sized alone, entirely independent of `cmd_vx` -- it "kicks" a
+/// near-stationary body with the same force magnitude it would use at
+/// cruising speed. This ramps `thrust_scale` itself (0.2->1.0) in
+/// lockstep with `cmd_vx` (0->2.20) via the new `thrust_scale_ramp_
+/// start`, holding stride/period fixed at target throughout (isolating
+/// this one lever, since combining it with the stride/period ramps
+/// already failed twice). A low `thrust_scale` DOES raise `theta_peak`
+/// (the trim's own math: less cancellation -> more reference pitch to
+/// track), but that's a PD-tracked reference, not a raw force kick --
+/// the hypothesis is that gentling the force (not the reference) is
+/// what actually matters for a body starting near rest.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_best_pattern_thrust_scale_ramp() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 2.20,
+        cmd_vx_ramp_s: Some(2.0),
+        thrust_scale_ramp_start: Some(0.2),
+        total_time_s: 12.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        max_step_length_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(1.0),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 0.2,
+            min_period_s: 0.16,
+            max_period_s: 0.20,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_time_windowed_summary(
+        "duty=0.35, max_step_length_m=0.18, cmd_vx=2.20, cmd_vx+thrust_scale ramp together (2.0s, stride/period fixed)",
+        &samples, 0.5,
+    );
+}
+
+/// (a) of the 3-option follow-up to Sec.5c1: the new instability
+/// started right at t=2.5s, exactly where the PLL resumes phase-error
+/// accumulation (`ramp_in_progress` ends at `burn_in_s+cmd_vx_ramp_s`).
+/// Adds a `post_ramp_settle_s=1.0` buffer (via the new field) so the
+/// PLL stays gated off an extra second after the ramp itself ends,
+/// giving the gait time to settle onto its own limit cycle before the
+/// PLL starts reacting to (possibly still-transient) contact timing.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_best_pattern_pll_settle_buffer() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 2.20,
+        cmd_vx_ramp_s: Some(2.0),
+        thrust_scale_ramp_start: Some(0.2),
+        post_ramp_settle_s: Some(1.0),
+        total_time_s: 12.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        max_step_length_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(1.0),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 0.2,
+            min_period_s: 0.16,
+            max_period_s: 0.20,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_time_windowed_summary(
+        "duty=0.35, cmd_vx=2.20, cmd_vx+thrust_scale ramp (2.0s) + 1.0s post-ramp PLL settle buffer",
+        &samples, 0.5,
+    );
+}
+
+/// (b) of the 3-option follow-up to Sec.5c1: (a) (delaying PLL resume)
+/// made things worse (Sec.5c2). Tries the other direction instead --
+/// stretching the `cmd_vx`+`thrust_scale` ramp itself from 2.0s to
+/// 4.0s, so the transition is gentler throughout rather than ending
+/// abruptly at a fixed 2.0s mark.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_best_pattern_longer_ramp() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 2.20,
+        cmd_vx_ramp_s: Some(4.0),
+        thrust_scale_ramp_start: Some(0.2),
+        total_time_s: 14.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        max_step_length_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(1.0),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 0.2,
+            min_period_s: 0.16,
+            max_period_s: 0.20,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_time_windowed_summary(
+        "duty=0.35, cmd_vx=2.20, cmd_vx+thrust_scale ramp stretched to 4.0s",
+        &samples, 0.5,
+    );
+}
+
+/// Fine-grained trace on `..._longer_ramp`'s t=6-8s collapse found the
+/// SAME mechanism as Sec.5by: `cycle_period_s` drifts monotonically
+/// (0.179->0.198) once the PLL resumes accumulating at the ramp's end
+/// (t=4.5s here), just delayed relative to Sec.5by's t=0.5s-start
+/// collapse because the ramp postpones when PLL activity begins. The
+/// existing 0.16/0.20 clamp (Sec.5bz's fix for the no-ramp case)
+/// isn't tight enough here -- narrows it further to 0.17/0.19 to see
+/// if a tighter band prevents the drift from ever reaching the
+/// runaway zone.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_best_pattern_longer_ramp_tighter_clamp() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 2.20,
+        cmd_vx_ramp_s: Some(4.0),
+        thrust_scale_ramp_start: Some(0.2),
+        total_time_s: 14.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        max_step_length_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(1.0),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 0.2,
+            min_period_s: 0.17,
+            max_period_s: 0.19,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_time_windowed_summary(
+        "duty=0.35, cmd_vx=2.20, 4.0s ramp, PLL clamp tightened further to 0.17-0.19",
+        &samples, 0.5,
+    );
+}
+
+/// Sec.5c3's finding: narrowing the PLL clamp further (0.17-0.19)
+/// left the 4.0s-ramp best pattern's t=6-8s collapse completely
+/// unchanged -- ruling out clamp width as the mechanism here (unlike
+/// Sec.5by/5bz's no-ramp case). Tries `pll_accumulate_during_ramp`
+/// instead: let the PLL accumulate throughout the 4.0s ramp so
+/// `cycle_period_s` arrives at cruise already adapted to the settling
+/// gait, rather than starting a blank-slate accumulator right at the
+/// ramp/cruise boundary.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_best_pattern_longer_ramp_pll_warm() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 2.20,
+        cmd_vx_ramp_s: Some(4.0),
+        thrust_scale_ramp_start: Some(0.2),
+        pll_accumulate_during_ramp: true,
+        total_time_s: 14.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        max_step_length_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(1.0),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 0.2,
+            min_period_s: 0.16,
+            max_period_s: 0.20,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_time_windowed_summary(
+        "duty=0.35, cmd_vx=2.20, 4.0s ramp, PLL accumulates during ramp (warm start)",
+        &samples, 0.5,
+    );
+}
+
+/// Sec.5c4's fix: `pll_accumulate_during_ramp` (Sec.5c3) left T
+/// converged to ~0.167 during the ramp (too short for cruise),
+/// forcing a slow 0.167->0.20 re-climb across the full 0.16/0.20
+/// clamp that WAS the residual t=4.5-6.5s dip. Keeps warm-start but
+/// tightens+centers the clamp on the tuned 0.18 (`min_period_s=0.175`/
+/// `max_period_s=0.185`) so the PLL physically can't wander to 0.167
+/// -- T stays pinned near 0.18 through the ramp/cruise transition,
+/// ideally shrinking the re-climb distance (and the dip) to nothing.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_best_pattern_warm_centered_clamp() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 2.20,
+        cmd_vx_ramp_s: Some(4.0),
+        thrust_scale_ramp_start: Some(0.2),
+        pll_accumulate_during_ramp: true,
+        total_time_s: 14.5,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.35),
+        gait_cycle_period_override: Some(0.18),
+        max_step_length_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(1.0),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        adaptive_cycle_period: Some(AdaptivePeriodConfig {
+            gain: 0.10,
+            update_interval_s: 0.2,
+            min_period_s: 0.175,
+            max_period_s: 0.185,
+        }),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_time_windowed_summary(
+        "duty=0.35, cmd_vx=2.20, 4.0s ramp, PLL warm-start + centered clamp 0.175-0.185",
+        &samples, 0.5,
+    );
+}
+
+/// Option (A) from the Sec.5c5 holistic review: a Bound-specific
+/// fore-aft foot-placement feedback (Raibert running-speed regulator,
+/// `x_foot += k·(v_x−v_x_des)`, x-ONLY). Sec.5c4 established that the
+/// residual cruise collapse is NOT a PLL-clamp problem (it persists
+/// with T frozen at 0.18) -- it's the missing velocity-error foot
+/// placement the literature says is the primary bounding stabilizer.
+/// Sweeps the new gain at the CONSTANT-cmd_vx=2.20 best pattern (no
+/// startup ramp -- isolating the cruise-stability effect from the
+/// startup transient), 15s each, to see whether closing the fore-aft
+/// foot-placement loop keeps the cruise from collapsing.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_foot_placement_sweep() {
+    for gain in [0.0, 0.02, 0.05, 0.10, 0.15] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 2.20,
+            total_time_s: 15.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(1.0),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s: 0.2,
+                min_period_s: 0.16,
+                max_period_s: 0.20,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+                bound_fore_aft_placement_gain_override: Some(gain),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("duty=0.35, cmd_vx=2.20 (constant), bound_fore_aft_placement_gain={gain:.2}, 15s"),
+                &samples, 1.0,
+            );
+        }
+    }
 }
