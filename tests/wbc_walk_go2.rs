@@ -7702,3 +7702,76 @@ fn go2_wbc_bound_trajopt_forward() {
         }
     }
 }
+
+/// Sec.5f9 (P1->P2): track the RUST-generated periodic orbit. The stage-1
+/// solver (quadruped_gait::solve_bound_orbit) produces a clean low-pitch
+/// forward orbit (pitch~0.02, vx=1.0, friction margin +0.31) -- a much
+/// EASIER reference to track than the higher-pitch P0 orbit. A low-pitch
+/// forward orbit needs little attitude authority in flight, so it may
+/// sidestep the §5f10 stabilize-vs-forward dilemma (which was driven by the
+/// pitch tumble + the backward-dragging pitch deadbeat). This test
+/// generates the orbit in-process, writes it to CSV, and tracks it with
+/// base_pos.x weight (pursue forward) + rate state-weight (stabilize),
+/// NO placement deadbeat (no backward drag).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p1_orbit_forward() {
+    // stage 1: generate the orbit in Rust and dump it to a CSV the harness
+    // can load (FullCentroidalOpts is Copy, so it can't carry the Vec).
+    let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.34);
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("P1 orbit");
+    let path = "ref/scripts/bound_p1_orbit.csv";
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!(
+            "{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]
+        ));
+    }
+    std::fs::write(path, csv).expect("write P1 orbit csv");
+    eprintln!(
+        "[P1] orbit periodicity={:.2e} friction={:.3} rows={}",
+        orbit.periodicity_residual, orbit.friction_margin, orbit.table.len()
+    );
+
+    for (q_px, q_rate) in [(30.0_f64, 150.0_f64), (30.0, 400.0)] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.00,
+            total_time_s: 12.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.34),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.18),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((q_px, 5.0)),
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, q_rate)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P1-ORBIT track, q_px={q_px} q_rate={q_rate}, cmd_vx=1.0, duty=0.34, 12s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
