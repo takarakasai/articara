@@ -6422,3 +6422,150 @@ fn go2_wbc_bound_flight_phase_duty035_mit_video_source() {
         &samples, 1.0,
     );
 }
+
+/// Sec.5d6 (b): fine pitch-weight sweep for the MIT-faithful Bound.
+/// Sec.5d5 found weight=5 the coarse sweet spot (25/10 too stiff, 0.5
+/// drifts); this refines 3..7 at cmd_vx=1.5, duty=0.35, no trim, to
+/// pick the optimum before layering ramp/PLL (c) and the cmd_vx
+/// ceiling (a).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_mit_weight_fine() {
+    for w in [3.0, 4.0, 5.0, 6.0, 7.0] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 1.50,
+            total_time_s: 12.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((w, w)),
+                bound_fore_aft_placement_gain_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("duty=0.35, cmd_vx=1.50, MIT-faithful weight={w:.1}, 12s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
+
+/// Sec.5d6 (c): layer a smooth startup ramp + PLL onto the MIT-faithful
+/// Bound (weight=4, Sec.5d6 b's pick). NOTE the trim-version ramp
+/// failed (Sec.5c0-5c2) because ramping cmd_vx desynced the cmd-
+/// independent F_x trim -- but the MIT version has NO trim, so the ramp
+/// should compose cleanly. Compares plain vs (cmd_vx ramp 2s + PLL) at
+/// cmd_vx=1.5, 12s.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_mit_ramp_pll() {
+    let trials: [(&str, Option<f64>, bool); 2] = [
+        ("plain (no ramp, no PLL)", None, false),
+        ("ramp 2s + PLL", Some(2.0), true),
+    ];
+    for (label, ramp, pll) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 1.50,
+            cmd_vx_ramp_s: ramp,
+            pll_accumulate_during_ramp: pll && ramp.is_some(),
+            total_time_s: 12.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            adaptive_cycle_period: if pll {
+                Some(AdaptivePeriodConfig { gain: 0.10, update_interval_s: 0.2, min_period_s: 0.16, max_period_s: 0.20 })
+            } else {
+                None
+            },
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("duty=0.35, cmd_vx=1.50, MIT weight=4, {label}, 12s"),
+                &samples, 0.5,
+            );
+        }
+    }
+}
+
+/// Sec.5d6 (a): cmd_vx ceiling for the MIT-faithful Bound. Sec.5d6 (c)
+/// found plain weight=4 (no ramp, no PLL) the best config -- the MIT
+/// fixed-timing structure needs neither. Sweeps cmd_vx up (1.5/2.0/
+/// 2.5/3.0) to find how fast this trimless line can actually track,
+/// 12s each, duty=0.35.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_mit_cmd_vx_ceiling() {
+    for cmd_vx in [1.50, 2.00, 2.50, 3.00] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx,
+            total_time_s: 12.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("duty=0.35, MIT weight=4, cmd_vx={cmd_vx:.2}, 12s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
