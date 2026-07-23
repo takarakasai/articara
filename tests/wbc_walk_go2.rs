@@ -7942,3 +7942,117 @@ fn go2_wbc_bound_p3_forward_stable_confirm() {
         );
     }
 }
+
+/// Sec.5f13: sweep the Raibert-neutral foothold weight to find the
+/// LEAST-tucked front foot that stays stable. The reviewer flagged the
+/// front feet tucked behind the hip; the multi-model analysis said push
+/// them forward to Raibert-neutral -- but that drops friction margin
+/// (feet ahead of hip => more tangential propulsion force) and can
+/// destabilize. This maps front_foothold + friction_margin vs stability.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3_raibert_sweep() {
+    for w_rb in [0.0_f64, 0.15, 0.30, 0.45] {
+        let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.34);
+        params.raibert_weight = w_rb;
+        let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+        let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+        for r in &orbit.table {
+            csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+                r[0], r[1], r[2], r[3], r[4], r[5]));
+        }
+        std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+        let front_rel_hip = orbit.front_foothold - 0.19216;
+        eprintln!("[P3fix] w_rb={w_rb} front_foothold={:.3} (rel front hip {:+.3}) rear_foothold={:.3} friction={:.3} peak_pitch(orbit)={:.3}",
+            orbit.front_foothold, front_rel_hip, orbit.rear_foothold, orbit.friction_margin,
+            orbit.samples.iter().map(|s| s.pitch.abs()).fold(0.0_f64, f64::max));
+
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.00, total_time_s: 12.0, burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.34),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3fix Raibert sweep w_rb={w_rb}, cmd_vx=1.0, 12s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
+
+/// Sec.5f13: can a FEET-FORWARD orbit be stabilized by giving more friction
+/// headroom? Higher duty = more stance time = lower peak force = more
+/// friction margin + less flight (easier attitude). Lower speed = less
+/// propulsion. Tests the feet-forward orbit (w_rb=0.3, hip-reachability) at
+/// higher duty / lower speed to find a feet-forward + STABLE combination.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3_feetfwd_stable() {
+    for (duty, vx) in [(0.40_f64, 1.0_f64), (0.42, 1.0), (0.40, 0.7)] {
+        let mut params = quadruped_gait::PeriodicBoundParams::go2(vx, 0.30, duty);
+        params.raibert_weight = 0.3;
+        let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+        let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+        for r in &orbit.table {
+            csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+                r[0], r[1], r[2], r[3], r[4], r[5]));
+        }
+        std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+        eprintln!("[P3fix] duty={duty} vx={vx} front_foothold={:.3} (rel hip {:+.3}) rear={:.3} friction={:.3}",
+            orbit.front_foothold, orbit.front_foothold - 0.19216, orbit.rear_foothold, orbit.friction_margin);
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: vx, total_time_s: 15.0, burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(duty),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3fix feet-fwd duty={duty} vx={vx}, 15s"), &samples, 1.0);
+        }
+    }
+}
