@@ -35,7 +35,7 @@ use articara::wbc_pipeline::WbcPipeline;
 use nalgebra::Vector3;
 use quadruped_gait::wbc;
 use quadruped_gait::{
-    foot_jacobian_body, solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, GaitType,
+    foot_jacobian_body, forward_leg_kinematics, solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, GaitType,
     KinematicsConfig, LegIkSolution, PhaseErrorTracker, VelocityCmd,
 };
 use quadruped_gait::FullCentroidalMpcConfig;
@@ -346,6 +346,15 @@ struct WbcSample {
     /// `WbcParams::adaptive_cycle_period` is enabled (Sec.5bl), in
     /// which case this traces the PLL's convergence.
     cycle_period_s: f64,
+    /// Sec.5f16: max |commanded torque| over the 12 actuated joints this
+    /// tick (N·m), after the leg-spring add + HW effort clamp. A landing-
+    /// shock / actuator-stress proxy.
+    max_abs_tau: f64,
+    /// Sec.5f16: instantaneous mechanical (joint) power this tick, Σ|τ_j·q̇_j|
+    /// over the actuated joints (W). Integrated over the run and divided by
+    /// m·g·distance it gives the mechanical cost of transport -- the
+    /// efficiency figure the leg-spring is meant to improve.
+    mech_power_w: f64,
 }
 
 /// Go2's real standing height is ~0.30 m; a collapse/faceplant drops
@@ -511,6 +520,20 @@ struct WbcParams {
     /// soft leg landing ahead of the hip absorbs/redirects the impact
     /// instead of the rigid catch-and-tumble. `None` keeps the misa Kp.
     leg_kp_scale: Option<f64>,
+    /// Sec.5f15: virtual axial leg-spring (SLIP). When `Some((k, b))`, each
+    /// STANCE leg gets an extra torque feed-forward realising an axial
+    /// spring-damper along the foot→hip line: `F_axial = k·(L0 − L) − b·L̇`,
+    /// clamped to ≥0 (a leg spring only pushes). `L0` is the nominal
+    /// foot-to-hip distance, so at the nominal leg length the spring force is
+    /// zero — it adds only a *deviation* around the WBC's operating point and
+    /// does NOT double-count the WBC's nominal stance GRF. The force is mapped
+    /// to joint torque via the analytic foot Jacobian and added on top of the
+    /// WBC `taus`. Pair with `leg_kp_scale < 1` so the soft position-PD lets
+    /// the spring, not the rigid position servo, govern stance compliance.
+    /// The intent: on a front-foot-forward landing the compressed spring
+    /// stores the braking energy and returns it as a vault (SLIP), instead of
+    /// the rigid catch-and-tumble that the friction cone forbids at μ=0.7.
+    leg_spring: Option<(f64, f64)>,
     /// Override `MjcfExportOptions::default_friction`'s sliding
     /// component (default 0.7) — the REAL ground-foot friction MuJoCo
     /// simulates, as opposed to `friction_mu_override` (the WBC/MPC's
@@ -881,7 +904,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, leg_kp_scale: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, leg_kp_scale: None, leg_spring: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
     }
@@ -893,7 +916,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, leg_kp_scale: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, leg_kp_scale: None, leg_spring: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
     }
@@ -930,7 +953,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, leg_kp_scale: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, leg_kp_scale: None, leg_spring: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None,
             duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
@@ -1701,10 +1724,13 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut pll_last_update_t = 0.0;
 
     let mut last_staircase_level: Option<usize> = None;
+    let mut tau_saturation_ticks: u64 = 0;
     for k in 0..n_steps {
         let t = k as f64 * params.dt;
         let mut contact_phase_mismatch = false;
         let mut phase_error_sum_s = 0.0;
+        let mut max_abs_tau = 0.0_f64;
+        let mut mech_power_w = 0.0_f64;
 
         if k == 0 {
             gc.enable();
@@ -1898,7 +1924,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         pll_last_update_t = t;
                     }
                 }
-                let taus = wbc_pipeline.solve(
+                let mut taus = wbc_pipeline.solve(
                     &robot,
                     &sim,
                     &out,
@@ -1927,7 +1953,80 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         wbc_pipeline.pitch_ref, pitch_now,
                     );
                 }
+                // Sec.5f15: virtual axial leg-spring (SLIP). Add a compression
+                // spring-damper along each stance leg's foot→hip axis on top of
+                // the WBC torques. Zero at the nominal leg length, so it only
+                // adds a compliant deviation around the WBC operating point.
+                if let Some((k_spring, b_damp)) = params.leg_spring {
+                    let kin = gc.kinematics();
+                    let joint_indices = gc.joint_indices();
+                    let joint_signs = gc.joint_signs();
+                    for slot in 0..4 {
+                        if !contact_flag[slot] {
+                            continue;
+                        }
+                        let leg_kin = kin.legs()[slot];
+                        let mut q = [0.0_f64; 3];
+                        let mut qd = [0.0_f64; 3];
+                        for k in 0..3 {
+                            let ji = joint_indices[slot][k];
+                            let sign = joint_signs[slot][k];
+                            if let Some((q_urdf, qd_urdf)) =
+                                sim.joint_q_qd(&robot.joints[ji].name)
+                            {
+                                q[k] = sign * q_urdf;
+                                qd[k] = sign * qd_urdf;
+                            }
+                        }
+                        let foot_body = forward_leg_kinematics(leg_kin, q[0], q[1], q[2]);
+                        let hip = leg_kin.hip_offset;
+                        let leg_vec = foot_body - hip; // hip → foot
+                        let len = leg_vec.norm();
+                        if len < 1e-6 {
+                            continue;
+                        }
+                        let u = -leg_vec / len; // foot → hip (support / push-up direction)
+                        let l0 = (leg_kin.nominal_foot_body - hip).norm();
+                        let compression = l0 - len; // >0 when compressed below nominal
+                        let j = foot_jacobian_body(leg_kin, q[0], q[1], q[2]);
+                        let foot_vel_body = j * Vector3::new(qd[0], qd[1], qd[2]);
+                        let comp_rate = u.dot(&foot_vel_body); // ċ = û · ṗ_foot
+                        let mut f_axial = k_spring * compression + b_damp * comp_rate;
+                        if f_axial < 0.0 {
+                            f_axial = 0.0; // a leg spring only pushes
+                        }
+                        let f_grf_body = u * f_axial; // GRF on foot, foot → hip
+                        let tau_ik = -(j.transpose() * f_grf_body);
+                        for k in 0..3 {
+                            let ji = joint_indices[slot][k];
+                            let sign = joint_signs[slot][k];
+                            taus[ji] += sign * tau_ik[k];
+                        }
+                    }
+                    // HW constraint: Go2's geared motors saturate at the
+                    // per-joint effort limit. Clamp the spring-augmented
+                    // command so the sim can't demand a torque the real
+                    // actuator could never deliver (and count saturations so
+                    // an over-stiff spring shows up as clipped ticks).
+                    for ji in 0..taus.len() {
+                        let lim = robot.joints[ji].effort;
+                        if lim > 0.0 && taus[ji].abs() > lim {
+                            taus[ji] = taus[ji].clamp(-lim, lim);
+                            tau_saturation_ticks += 1;
+                        }
+                    }
+                }
                 let _ = torque_ff;
+                // Sec.5f16: landing-shock (max |τ|) + mechanical-power
+                // (Σ|τ·q̇|) proxies from the final commanded torques.
+                for (ji, &tau) in taus.iter().enumerate() {
+                    if robot.joints[ji].effort > 0.0 {
+                        max_abs_tau = max_abs_tau.max(tau.abs());
+                        if let Some((_, qd)) = sim.joint_q_qd(&robot.joints[ji].name) {
+                            mech_power_w += (tau * qd).abs();
+                        }
+                    }
+                }
                 for (ji, &tau) in taus.iter().enumerate() {
                     sim.set_torque_feedforward(ji, tau);
                 }
@@ -1949,6 +2048,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             t, body_x: tx.x, body_y: tx.y, body_z: tx.z, roll, pitch, yaw, total_fz_world,
             contact_phase_mismatch, phase_error_sum_s,
             cycle_period_s: gc.config().cycle_period_s,
+            max_abs_tau, mech_power_w,
         });
 
         if csv_out.is_some() {
@@ -1972,6 +2072,11 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if let Some(path) = csv_out {
         std::fs::write(&path, csv_buf).expect("write WBC_WALK_CSV_OUT");
         eprintln!("wrote {path}");
+    }
+    if tau_saturation_ticks > 0 {
+        eprintln!(
+            "[hw] leg-spring torque saturated the Go2 effort limit on {tau_saturation_ticks} joint·ticks",
+        );
     }
     Some(samples)
 }
@@ -5156,6 +5261,36 @@ fn report_time_windowed_summary(label: &str, samples: &[WbcSample], window_s: f6
     }
 }
 
+/// Sec.5f16: landing-shock + efficiency summary for the leg-spring work.
+/// Reports, over the post-burn-in window: peak vertical GRF (landing shock),
+/// peak commanded joint torque (actuator stress), mean joint mechanical power,
+/// and the mechanical cost of transport `CoT = ∫Σ|τ·q̇|dt / (m·g·Δx)`. The
+/// leg-spring should lower the GRF/torque peaks (softer landings) and, if it
+/// recycles impact energy, the CoT too -- without regressing the forward speed.
+fn report_shock_efficiency(label: &str, samples: &[WbcSample], dt: f64, mass_kg: f64, burn_in_s: f64) {
+    let w: Vec<&WbcSample> = samples.iter().filter(|s| s.t >= burn_in_s).collect();
+    if w.len() < 2 {
+        eprintln!("[shock/eff {label}] too few samples");
+        return;
+    }
+    let peak_grf = w.iter().map(|s| s.total_fz_world).fold(0.0_f64, f64::max);
+    let peak_tau = w.iter().map(|s| s.max_abs_tau).fold(0.0_f64, f64::max);
+    let energy_j: f64 = w.iter().map(|s| s.mech_power_w * dt).sum();
+    let duration = (w.last().unwrap().t - w.first().unwrap().t).max(1e-6);
+    let mean_power = energy_j / duration;
+    let dx = w.last().unwrap().body_x - w.first().unwrap().body_x;
+    let cot = if dx.abs() > 1e-3 {
+        energy_j / (mass_kg * 9.81 * dx.abs())
+    } else {
+        f64::INFINITY
+    };
+    let vx = dx / duration;
+    eprintln!(
+        "[shock/eff {label}] peak_GRF={peak_grf:>7.1}N peak_|tau|={peak_tau:>6.2}N·m \
+         mean_power={mean_power:>6.1}W CoT={cot:>6.3} (vx={vx:+.3} m/s, Δx={dx:+.2} m over {duration:.1}s)",
+    );
+}
+
 /// Sec.5br's `duty=0.35, thrust_scale=1.0, cmd_vx=1.50` config matched
 /// `duty=0.50`'s ~0.99 m/s ceiling over a 3.0s run, but one probe
 /// extended to 4.5s came back degraded (`meas_vx` 0.985 -> 0.787,
@@ -8004,6 +8139,88 @@ fn go2_wbc_bound_p3_forward_stable_confirm() {
     }
 }
 
+/// Sec.5f16: apply the virtual axial leg-spring (§5f15) to the ROBUST,
+/// forward-stable P3-a config (foot slightly behind the hip -- the config
+/// that already walks forward 25s) instead of the doomed front-foot-forward
+/// one. Goal: soften the landing (lower peak GRF / joint torque) and improve
+/// the mechanical cost of transport, WITHOUT regressing the 25s forward
+/// stability, while respecting the Go2 HW effort limit (the spring torque is
+/// clamped to `robot.joints[*].effort` and saturation ticks are counted).
+/// Sweeps a small (k, b) grid against the `None` baseline; `report_shock_
+/// efficiency` prints peak_GRF / peak_|tau| / mean_power / CoT for each.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3a_leg_spring_landing() {
+    let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.34);
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+
+    // baseline (no spring) + a small stiffness/damping grid, moderate leg
+    // compliance so the spring (not the rigid servo) governs the deflection.
+    // §5f16 sweep-1 showed a global kp softening kills forward drive. Here we
+    // ISOLATE the two levers: mild compliance alone (no spring) vs a gentle
+    // axial spring with the rigid servo intact, to find what softens the
+    // landing without regressing vx.
+    let configs: [(Option<(f64, f64)>, Option<f64>); 5] = [
+        (None, None),                        // P3-a baseline, as committed
+        (None, Some(0.85)),                  // mild compliance only
+        (None, Some(0.7)),                   // more compliance only
+        (Some((1500.0, 50.0)), None),        // gentle spring, rigid servo
+        (Some((1000.0, 40.0)), Some(0.8)),   // gentle spring + mild compliance
+    ];
+    for (leg_spring, kp_scale) in configs {
+        let tag = match leg_spring {
+            None => "baseline (no spring)".to_string(),
+            Some((k, b)) => format!("spring k={k} b={b} kp_scale={}", kp_scale.unwrap_or(1.0)),
+        };
+        eprintln!("\n[P3aLS] {tag}");
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.00,
+            total_time_s: 25.0,
+            burn_in_s: 0.5,
+            leg_spring,
+            leg_kp_scale: kp_scale,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.34),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(&format!("P3aLS {tag}, cmd_vx=1.0, 25s"), &samples, 5.0);
+            report_shock_efficiency(&tag, &samples, 0.002, 15.606, 0.5);
+        }
+    }
+}
+
 /// Sec.5f13: sweep the Raibert-neutral foothold weight to find the
 /// LEAST-tucked front foot that stays stable. The reviewer flagged the
 /// front feet tucked behind the hip; the multi-model analysis said push
@@ -8690,6 +8907,72 @@ fn go2_wbc_bound_p3b_leg_compliance() {
         if let Some(samples) = run_wbc_sim(p) {
             report_time_windowed_summary(
                 &format!("P3bC leg-compliance kp_scale={kp_scale}, front-fwd, vx=1.0, 15s"), &samples, 1.0);
+        }
+    }
+}
+
+/// Sec.5f15 (virtual axial leg-spring / SLIP): §5f14 showed a uniform Kp drop
+/// alone is not enough — an isotropic soft servo deflects in every direction,
+/// not specifically along the leg axis, so it neither stores the braking
+/// energy nor returns it as thrust. Here we add an explicit *axial* spring-
+/// damper (`leg_spring = (k, b)`) along each stance leg's foot→hip line, on top
+/// of a moderately soft position servo (`leg_kp_scale = 0.4`). The compressed
+/// spring on a front-foot-forward landing should store the impact and vault
+/// the body forward (SLIP), rather than the rigid catch-and-tumble the μ=0.7
+/// friction cone forbids. Sweeps stiffness with the front foot at
+/// Raibert-neutral (ahead of the hip).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3b_leg_spring_slip() {
+    let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.36);
+    params.raibert_weight = 1.0;
+    params.pitch_reg_weight = 0.08;
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    let front = 0.246_f64; // Raibert-neutral, AHEAD of the front hip
+    // §5f15: k=5000 stabilised front-forward for 15s (roll never flipped) but
+    // the damping killed forward drive. Confirm 25s durability and probe
+    // whether lower damping returns the stored energy as a forward vault.
+    for (k_spring, b_damp) in [(5000.0_f64, 150.0_f64), (5000.0, 80.0), (5000.0, 40.0)] {
+        eprintln!("[P3bSLIP] leg_spring k={k_spring} b={b_damp} kp_scale=0.4 front={front:.3}(rel hip +0.054)");
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.0, total_time_s: 25.0, burn_in_s: 0.5,
+            leg_kp_scale: Some(0.4),
+            leg_spring: Some((k_spring, b_damp)),
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.36),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            pitch_pd_gain_override: Some((200.0, 20.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((40.0, 5.0)),
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((front, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3bSLIP axial-spring k={k_spring} b={b_damp}, front-fwd, vx=1.0, 15s"), &samples, 1.0);
         }
     }
 }
