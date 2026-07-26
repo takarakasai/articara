@@ -531,6 +531,18 @@ struct WbcParams {
     /// (Sec.5at/5aw). `None` keeps the existing instantaneous-step
     /// behaviour.
     cmd_vx_ramp_s: Option<f64>,
+    /// STEP-synchronized cmd_vx ramp (Sec.5d8, the MIT Cheetah 2 startup
+    /// recipe). `Some(increment)` raises the commanded speed as a
+    /// STAIRCASE, jumping by `increment` m/s once per gait step
+    /// (half-cycle = the front/rear pair alternation period), capped at
+    /// `cmd_vx`, instead of the continuous-time `cmd_vx_ramp_s`. Park/
+    /// Wensing/Kim (IJRR 2017) start bounding with "v_d = 0 and the
+    /// desired speed increased FROM STEP TO STEP" -- discrete, synced to
+    /// contact events, not continuous in time. Our time-based ramp
+    /// desynced from the gait phase (Sec.5c0-5c2); this fixes that. Takes
+    /// priority over `cmd_vx_ramp_s`. `None` (default) keeps prior
+    /// behaviour.
+    cmd_vx_step_increment: Option<f64>,
     /// If `Some(start_m)` AND `cmd_vx_ramp_s` is also `Some(ramp_s)`,
     /// linearly ramps `max_step_length_m` from `start_m` up to its
     /// final (post-`max_step_length_override`) target value over the
@@ -821,7 +833,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
     }
@@ -833,7 +845,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
     }
@@ -870,7 +882,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None,
             duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
@@ -1586,6 +1598,23 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 gc.set_velocity_cmd(VelocityCmd { vx, vy: 0.0, wz: 0.0 });
                 eprintln!("[staircase] t={t:6.2}s level={level:2} cmd_vx={vx:.2} m/s");
                 last_staircase_level = Some(level);
+            }
+        } else if let Some(increment) = params.cmd_vx_step_increment {
+            // Sec.5d8 MIT Cheetah 2 startup: staircase cmd_vx, one jump
+            // per gait step (half-cycle = pair alternation period),
+            // synced to contact events rather than continuous time.
+            if k >= burn_in_steps {
+                let elapsed = (k - burn_in_steps) as f64 * params.dt;
+                let step_period = 0.5 * gc.config().cycle_period_s;
+                let n_steps = (elapsed / step_period.max(1e-6)).floor() + 1.0;
+                let vx = (n_steps * increment).min(params.cmd_vx);
+                gc.set_velocity_cmd(VelocityCmd { vx, vy: 0.0, wz: 0.0 });
+                if k == burn_in_steps {
+                    eprintln!(
+                        "[step-ramp] MIT-style step ramp: +{increment:.3} m/s per {step_period:.3}s step, target {:.3}",
+                        params.cmd_vx,
+                    );
+                }
             }
         } else if let Some(ramp_s) = params.cmd_vx_ramp_s {
             if k >= burn_in_steps {
@@ -6671,6 +6700,63 @@ fn go2_wbc_bound_flight_phase_duty035_mit_fx_bias() {
             report_time_windowed_summary(
                 &format!("duty=0.35, MIT weight=4, cmd_vx=2.00, fx_thrust_bias={bias:.0}N, 12s"),
                 &samples, 1.0,
+            );
+        }
+    }
+}
+
+/// Sec.5d8 (推奨1): the MIT Cheetah 2 startup recipe on the MIT-faithful
+/// Bound (trimless, weight=4). Park/Wensing/Kim (IJRR 2017) start
+/// bounding with the desired speed increased "from step to step" --
+/// discrete, contact-synced -- not the continuous-time ramp that
+/// desynced from the gait phase for us (Sec.5c0-5c2). Compares three
+/// startups to cmd_vx=1.5, duty=0.35, 10s, in 0.5s windows to inspect
+/// the transient:
+///   1. abrupt (cmd steps to 1.5 at t=0);
+///   2. time ramp (2.0s continuous);
+///   3. step ramp (+0.15 m/s per half-cycle, MIT-style).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_mit_startup() {
+    let trials: [(&str, Option<f64>, Option<f64>); 3] = [
+        ("1. abrupt", None, None),
+        ("2. time ramp 2.0s", Some(2.0), None),
+        ("3. step ramp +0.15/step (MIT)", None, Some(0.15)),
+    ];
+    for (label, time_ramp, step_inc) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 1.50,
+            cmd_vx_ramp_s: time_ramp,
+            cmd_vx_step_increment: step_inc,
+            total_time_s: 10.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("duty=0.35, MIT weight=4, startup {label}, cmd_vx=1.5, 10s"),
+                &samples, 0.5,
             );
         }
     }
