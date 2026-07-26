@@ -534,6 +534,15 @@ struct WbcParams {
     /// stores the braking energy and returns it as a vault (SLIP), instead of
     /// the rigid catch-and-tumble that the friction cone forbids at μ=0.7.
     leg_spring: Option<(f64, f64)>,
+    /// Sec.5f18: swing-leg retraction. Sets `GaitConfig::swing_touchdown_vz`
+    /// (world-frame vertical foot velocity, m/s, the swing NormalVelocity
+    /// reference targets at touchdown). `None`/`0.0` = land with zero
+    /// vertical velocity (unchanged). Positive = foot still rising at
+    /// touchdown so it settles instead of slamming — landing-shock
+    /// mitigation that, unlike the leg-spring, works WITH the WBC's swing
+    /// reference rather than fighting its stance-force solution. Only active
+    /// on the `legged_control_parity` full-centroidal path.
+    swing_touchdown_vz_override: Option<f64>,
     /// Override `MjcfExportOptions::default_friction`'s sliding
     /// component (default 0.7) — the REAL ground-foot friction MuJoCo
     /// simulates, as opposed to `friction_mu_override` (the WBC/MPC's
@@ -904,7 +913,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, leg_kp_scale: None, leg_spring: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, leg_kp_scale: None, leg_spring: None, swing_touchdown_vz_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
     }
@@ -916,7 +925,7 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, leg_kp_scale: None, leg_spring: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, leg_kp_scale: None, leg_spring: None, swing_touchdown_vz_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
     }
@@ -953,7 +962,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, leg_kp_scale: None, leg_spring: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, leg_kp_scale: None, leg_spring: None, swing_touchdown_vz_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None,
             gait_type_override: None,
             duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
@@ -1444,6 +1453,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if let Some(bias) = params.bound_fx_thrust_bias_override {
         eprintln!("[gait] overriding bound_fx_thrust_bias -> {bias:.1} N");
         cfg.bound_fx_thrust_bias = bias;
+    }
+    if let Some(vz) = params.swing_touchdown_vz_override {
+        eprintln!("[gait] overriding swing_touchdown_vz (retraction) 0.0 -> {vz:+.3} m/s");
+        cfg.swing_touchdown_vz = vz;
     }
     if let Some(swing_height_m) = params.swing_height_override {
         eprintln!(
@@ -8368,6 +8381,71 @@ fn go2_wbc_bound_duty045_forward_confirm() {
     if let Some(samples) = run_wbc_sim(p) {
         report_time_windowed_summary("Sec.5f17 duty=0.45 FORWARD confirm, cmd_vx=1.0, 25s", &samples, 5.0);
         report_shock_efficiency("duty=0.45", &samples, 0.002, 15.606, 0.5);
+    }
+}
+
+/// Sec.5f18 (本命の着地緩和 / swing-leg retraction): §5f17 established the
+/// landing shock (peak GRF ~1.2 kN, calf saturated) is a floor that duty
+/// tuning can't lower. Retraction is the right lever: give the swing foot a
+/// small positive world-frame vertical velocity at touchdown so it SETTLES
+/// onto the ground instead of slamming, WITHOUT touching the WBC's stance-
+/// force solution (unlike the counterproductive leg-spring of §5f16). Sweeps
+/// `swing_touchdown_vz` on the duty=0.45 operating point and measures whether
+/// peak GRF / over-limit calf ticks drop while the 25s forward stability and
+/// speed hold.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_swing_retraction_sweep() {
+    let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.45);
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    // 0.0 = baseline (land at zero vertical velocity); positive = retract
+    // (foot still rising at touchdown -> settle, not slam).
+    for vz in [0.0_f64, 0.10, 0.20, 0.35] {
+        eprintln!("\n[P3ret] swing_touchdown_vz={vz:+.2} m/s (duty=0.45)");
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.00,
+            total_time_s: 25.0,
+            burn_in_s: 0.5,
+            swing_touchdown_vz_override: Some(vz),
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.45),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(&format!("P3ret vz={vz:+.2}, duty=0.45, 25s"), &samples, 5.0);
+            report_shock_efficiency(&format!("vz={vz:+.2}"), &samples, 0.002, 15.606, 0.5);
+        }
     }
 }
 
