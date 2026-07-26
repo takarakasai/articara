@@ -1725,6 +1725,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
 
     let mut last_staircase_level: Option<usize> = None;
     let mut tau_saturation_ticks: u64 = 0;
+    let mut tau_over_limit_ticks: u64 = 0;
     for k in 0..n_steps {
         let t = k as f64 * params.dt;
         let mut contact_phase_mismatch = false;
@@ -2018,10 +2019,17 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 }
                 let _ = torque_ff;
                 // Sec.5f16: landing-shock (max |τ|) + mechanical-power
-                // (Σ|τ·q̇|) proxies from the final commanded torques.
+                // (Σ|τ·q̇|) proxies from the final commanded torques. Also
+                // count, report-only (no clamp here), how often the WBC
+                // *demands* past a Go2 effort limit -- the torque-limited
+                // symptom the duty sweep (§5f17) tracks.
                 for (ji, &tau) in taus.iter().enumerate() {
-                    if robot.joints[ji].effort > 0.0 {
+                    let lim = robot.joints[ji].effort;
+                    if lim > 0.0 {
                         max_abs_tau = max_abs_tau.max(tau.abs());
+                        if tau.abs() >= lim - 1e-6 {
+                            tau_over_limit_ticks += 1;
+                        }
                         if let Some((_, qd)) = sim.joint_q_qd(&robot.joints[ji].name) {
                             mech_power_w += (tau * qd).abs();
                         }
@@ -2076,6 +2084,11 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if tau_saturation_ticks > 0 {
         eprintln!(
             "[hw] leg-spring torque saturated the Go2 effort limit on {tau_saturation_ticks} joint·ticks",
+        );
+    }
+    if tau_over_limit_ticks > 0 {
+        eprintln!(
+            "[hw] WBC demanded past a Go2 effort limit on {tau_over_limit_ticks} joint·ticks (report-only)",
         );
     }
     Some(samples)
@@ -5285,9 +5298,15 @@ fn report_shock_efficiency(label: &str, samples: &[WbcSample], dt: f64, mass_kg:
         f64::INFINITY
     };
     let vx = dx / duration;
+    // Realized flight fraction: ticks with essentially no vertical GRF (all
+    // feet off the ground), i.e. total_fz_world < 5% of body weight.
+    let mg = mass_kg * 9.81;
+    let flight_frac =
+        100.0 * w.iter().filter(|s| s.total_fz_world < 0.05 * mg).count() as f64 / w.len() as f64;
     eprintln!(
         "[shock/eff {label}] peak_GRF={peak_grf:>7.1}N peak_|tau|={peak_tau:>6.2}N·m \
-         mean_power={mean_power:>6.1}W CoT={cot:>6.3} (vx={vx:+.3} m/s, Δx={dx:+.2} m over {duration:.1}s)",
+         mean_power={mean_power:>6.1}W CoT={cot:>6.3} flight={flight_frac:>4.1}% \
+         (vx={vx:+.3} m/s, Δx={dx:+.2} m over {duration:.1}s)",
     );
 }
 
@@ -8218,6 +8237,137 @@ fn go2_wbc_bound_p3a_leg_spring_landing() {
             report_time_windowed_summary(&format!("P3aLS {tag}, cmd_vx=1.0, 25s"), &samples, 5.0);
             report_shock_efficiency(&tag, &samples, 0.002, 15.606, 0.5);
         }
+    }
+}
+
+/// Sec.5f17 (本筋 / true flight phase): the P1 orbit already integrates a
+/// real flight phase (front stance | flight | rear stance | flight, solver
+/// requires duty < 0.5), and the committed P3-a runs duty=0.34. This sweeps
+/// the stance duty to map how the flight fraction trades against the landing
+/// shock the HW cares about: shorter stance (lower duty) packs the vertical
+/// impulse into less time -> higher peak GRF / calf torque; longer stance
+/// spreads it -> softer landing but less air. We measure realized flight %,
+/// peak GRF, peak |tau|, over-limit ticks (calf 45.43 N·m), CoT and vx to
+/// find the HW-friendly operating point. No leg-spring; the effort clamp is
+/// off so we see the true demanded torque (over-limit counted, report-only).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_duty_flight_landing_sweep() {
+    // duty=0.30 tumbles (~7s, too-short stance -> highest GRF); 0.34 is the
+    // committed 25s-stable point; 0.40 climbs to ~1.0 m/s then tumbles ~17s;
+    // 0.45 is a stable island -- durable 25s at ~0.87 m/s (peaks 1.02),
+    // cleanest attitude. Landing shock (peak GRF ~1.2 kN, calf saturated) is
+    // ~flat across the stable band: duty is NOT the landing-mitigation lever.
+    for duty in [0.30_f64, 0.34, 0.40, 0.45] {
+        let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, duty);
+        let orbit = match quadruped_gait::solve_bound_orbit(&params) {
+            Some(o) => o,
+            None => {
+                eprintln!("[P3dS] duty={duty}: orbit solve failed, skipping");
+                continue;
+            }
+        };
+        let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+        for r in &orbit.table {
+            csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+                r[0], r[1], r[2], r[3], r[4], r[5]));
+        }
+        std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+        let t_st = duty * 0.30;
+        let t_fl = 0.5 * 0.30 - t_st;
+        eprintln!("\n[P3dS] duty={duty} T_st={t_st:.3}s T_flight={t_fl:.3}s front={:.3} rear={:.3} friction={:.3}",
+            orbit.front_foothold, orbit.rear_foothold, orbit.friction_margin);
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.00,
+            total_time_s: 25.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(duty),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(&format!("P3dS duty={duty}, cmd_vx=1.0, 15s"), &samples, 5.0);
+            report_shock_efficiency(&format!("duty={duty}"), &samples, 0.002, 15.606, 0.5);
+        }
+    }
+}
+
+/// Sec.5f17: confirm the duty=0.45 operating point the sweep singled out --
+/// durably 25s-stable at ~0.87 m/s (peaks 1.02), ~30% faster than the
+/// committed duty=0.34 (~0.67) with cleaner attitude and the same landing
+/// shock. Also the `WBC_WALK_CSV_OUT` video-capture source for Sec.5f17.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; also the WBC_WALK_CSV_OUT video-capture source for Sec.5f17"]
+fn go2_wbc_bound_duty045_forward_confirm() {
+    let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.45);
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let p = WbcParams {
+        cmd_vx: 1.00,
+        total_time_s: 25.0,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.45),
+        gait_cycle_period_override: Some(0.30),
+        max_step_length_override: Some(0.22),
+        swing_height_override: Some(0.10),
+        bound_trim_reference: None,
+        sync_real_mass_inertia: true,
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: Some((20.0, 5.0)),
+            max_normal_force_override: None,
+            roll_pitch_weight_override: Some((4.0, 25.0)),
+            bound_fore_aft_placement_gain_override: None,
+            roll_rate_weight_override: Some((100.0, 100.0)),
+            bound_pitch_placement_gain_override: None,
+            bound_pitch_placement_dc_tau_override: None,
+            bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+            bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    if let Some(samples) = run_wbc_sim(p) {
+        report_time_windowed_summary("Sec.5f17 duty=0.45 FORWARD confirm, cmd_vx=1.0, 25s", &samples, 5.0);
+        report_shock_efficiency("duty=0.45", &samples, 0.002, 15.606, 0.5);
     }
 }
 
