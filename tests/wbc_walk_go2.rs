@@ -6761,3 +6761,64 @@ fn go2_wbc_bound_flight_phase_duty035_mit_startup() {
         }
     }
 }
+
+/// Sec.5d9: the MIT Cheetah 2 step-ramp on the TRIM line -- its proper
+/// home. The trim carries a feedforward F_x (like Cheetah 2's impulse-
+/// scaling), so ramping the command step-by-step (so the feedforward
+/// starts small and grows) should fit here where the time ramp failed
+/// (Sec.5c0-5c2). Compares abrupt / time ramp 2s / step ramp +0.2/step
+/// on the trim best pattern (duty=0.35, thrust_scale=1.0, PLL, clamp
+/// 0.16-0.20, weight left at default), cmd_vx=1.5, 12s, 0.5s windows.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_flight_phase_duty035_trim_startup() {
+    let trials: [(&str, Option<f64>, Option<f64>); 3] = [
+        ("1. abrupt", None, None),
+        ("2. time ramp 2.0s", Some(2.0), None),
+        ("3. step ramp +0.2/step (MIT)", None, Some(0.2)),
+    ];
+    for (label, time_ramp, step_inc) in trials {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 1.50,
+            cmd_vx_ramp_s: time_ramp,
+            cmd_vx_step_increment: step_inc,
+            pll_accumulate_during_ramp: time_ramp.is_some(),
+            total_time_s: 12.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.35),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(1.0),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            adaptive_cycle_period: Some(AdaptivePeriodConfig {
+                gain: 0.10,
+                update_interval_s: 0.2,
+                min_period_s: 0.16,
+                max_period_s: 0.20,
+            }),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+                bound_fore_aft_placement_gain_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(params) {
+            report_time_windowed_summary(
+                &format!("duty=0.35, TRIM, startup {label}, cmd_vx=1.5, 12s"),
+                &samples, 0.5,
+            );
+        }
+    }
+}
