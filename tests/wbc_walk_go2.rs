@@ -323,6 +323,11 @@ struct WbcSample {
     /// from "turned around".
     yaw: f64,
     total_fz_world: f64,
+    /// Sec.5f19: total fore-aft (world x) contact force this tick, summed
+    /// over all feet. Paired with `total_fz_world` to measure the GRF
+    /// vector's inclination — i.e. how much of the ground reaction is
+    /// propulsive (horizontal) vs vertical (bounce/support).
+    total_fx_world: f64,
     /// True if any leg's contact-driven-corrected `is_stance`
     /// (`ContactDrivenPhase::apply_correction`, from real measured
     /// GRF) disagreed with the nominal open-loop schedule's
@@ -2065,8 +2070,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         let tx = robot.base_transform.translation;
         let (roll, pitch, yaw) = robot.base_transform.rotation.euler_angles();
         let total_fz_world: f64 = sim.contacts().iter().map(|c| c.force_world[2]).sum();
+        let total_fx_world: f64 = sim.contacts().iter().map(|c| c.force_world[0]).sum();
         samples.push(WbcSample {
             t, body_x: tx.x, body_y: tx.y, body_z: tx.z, roll, pitch, yaw, total_fz_world,
+            total_fx_world,
             contact_phase_mismatch, phase_error_sum_s,
             cycle_period_s: gc.config().cycle_period_s,
             max_abs_tau, mech_power_w,
@@ -5323,6 +5330,90 @@ fn report_shock_efficiency(label: &str, samples: &[WbcSample], dt: f64, mass_kg:
     );
 }
 
+/// Sec.5f19: propulsion-direction analysis. Answers "is the ground reaction
+/// vertically biased (bouncing) rather than propulsive (forward)?" over the
+/// post-burn-in window:
+///  - vertical vs |horizontal| GRF impulse (N·s), and the mean stance GRF
+///    inclination from vertical (deg) — how tilted the push is;
+///  - the split of GRF→CoM mechanical work into vertical (f_z·v_z, the
+///    bounce/support channel) vs horizontal (f_x·v_x, the propulsion
+///    channel), reported as the vertical work fraction;
+///  - the vertical CoM oscillation (RMS) vs the forward travel per cycle
+///    (bounce-to-stride ratio). CoM velocity is finite-differenced from the
+///    body trajectory.
+fn report_propulsion_direction(
+    label: &str,
+    samples: &[WbcSample],
+    dt: f64,
+    mass_kg: f64,
+    cycle_period_s: f64,
+    burn_in_s: f64,
+) {
+    let w: Vec<&WbcSample> = samples.iter().filter(|s| s.t >= burn_in_s).collect();
+    if w.len() < 3 {
+        eprintln!("[propulsion {label}] too few samples");
+        return;
+    }
+    let mut j_z = 0.0; // ∫ f_z dt
+    let mut j_x_net = 0.0; // ∫ f_x dt
+    let mut j_x_abs = 0.0; // ∫ |f_x| dt
+    let mg = mass_kg * 9.81;
+    // Stance-only GRF inclination + CoM work split (finite-difference vel).
+    let mut sum_fz_stance = 0.0;
+    let mut sum_fx_abs_stance = 0.0;
+    let mut n_stance = 0usize;
+    let mut work_vert = 0.0; // ∫ |f_z·v_z| dt
+    let mut work_horiz = 0.0; // ∫ |f_x·v_x| dt
+    let mut z_sum = 0.0;
+    let mut z_sq = 0.0;
+    for i in 0..w.len() {
+        let fz = w[i].total_fz_world;
+        let fx = w[i].total_fx_world;
+        j_z += fz * dt;
+        j_x_net += fx * dt;
+        j_x_abs += fx.abs() * dt;
+        z_sum += w[i].body_z;
+        z_sq += w[i].body_z * w[i].body_z;
+        // Stance = meaningful vertical support (> 20% body weight).
+        if fz > 0.2 * mg {
+            sum_fz_stance += fz;
+            sum_fx_abs_stance += fx.abs();
+            n_stance += 1;
+        }
+        if i > 0 {
+            let vz = (w[i].body_z - w[i - 1].body_z) / dt;
+            let vx = (w[i].body_x - w[i - 1].body_x) / dt;
+            work_vert += (fz * vz).abs() * dt;
+            work_horiz += (fx * vx).abs() * dt;
+        }
+    }
+    let dur = (w.last().unwrap().t - w.first().unwrap().t).max(1e-6);
+    let n = w.len() as f64;
+    let z_mean = z_sum / n;
+    let z_rms = (z_sq / n - z_mean * z_mean).max(0.0).sqrt(); // vertical oscillation RMS
+    let grf_incline_deg = if n_stance > 0 {
+        (sum_fx_abs_stance / n_stance as f64 / (sum_fz_stance / n_stance as f64).max(1e-6))
+            .atan()
+            .to_degrees()
+    } else {
+        0.0
+    };
+    let vert_work_frac = 100.0 * work_vert / (work_vert + work_horiz).max(1e-9);
+    let dx = w.last().unwrap().body_x - w.first().unwrap().body_x;
+    let stride = dx / (dur / cycle_period_s).max(1e-6); // forward travel per cycle
+    let bounce_to_stride = if stride.abs() > 1e-4 {
+        (2.0 * std::f64::consts::SQRT_2 * z_rms) / stride.abs() // ~peak-to-peak / stride
+    } else {
+        f64::INFINITY
+    };
+    eprintln!(
+        "[propulsion {label}] J_z={j_z:>6.1} (m·g·t={mgt:.1}) J_x|net|={j_x_net:>4.1} J_x|abs|={j_x_abs:>5.1} N·s | \
+         GRF_incline={grf_incline_deg:>4.1}° from vert | vert_work={vert_work_frac:>4.1}% | \
+         z_osc_rms={z_rms:>5.3}m stride={stride:>5.3}m bounce/stride={bounce_to_stride:>4.2}",
+        mgt = mg * dur,
+    );
+}
+
 /// Sec.5br's `duty=0.35, thrust_scale=1.0, cmd_vx=1.50` config matched
 /// `duty=0.50`'s ~0.99 m/s ceiling over a 3.0s run, but one probe
 /// extended to 4.5s came back degraded (`meas_vx` 0.985 -> 0.787,
@@ -8326,6 +8417,7 @@ fn go2_wbc_bound_duty_flight_landing_sweep() {
         if let Some(samples) = run_wbc_sim(p) {
             report_time_windowed_summary(&format!("P3dS duty={duty}, cmd_vx=1.0, 15s"), &samples, 5.0);
             report_shock_efficiency(&format!("duty={duty}"), &samples, 0.002, 15.606, 0.5);
+            report_propulsion_direction(&format!("duty={duty}"), &samples, 0.002, 15.606, 0.30, 0.5);
         }
     }
 }
@@ -8445,6 +8537,7 @@ fn go2_wbc_bound_swing_retraction_sweep() {
         if let Some(samples) = run_wbc_sim(p) {
             report_time_windowed_summary(&format!("P3ret vz={vz:+.2}, duty=0.45, 25s"), &samples, 5.0);
             report_shock_efficiency(&format!("vz={vz:+.2}"), &samples, 0.002, 15.606, 0.5);
+            report_propulsion_direction(&format!("vz={vz:+.2}"), &samples, 0.002, 15.606, 0.30, 0.5);
         }
     }
 }
