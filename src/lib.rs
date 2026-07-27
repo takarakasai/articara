@@ -1,5 +1,6 @@
 // Re-export modules for integration tests.
 pub use legged_estimation::attitude_estimator;
+pub mod biped;
 pub mod camera;
 pub mod chicken_head;
 pub mod collision;

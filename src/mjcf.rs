@@ -83,6 +83,18 @@ pub struct MjcfExportOptions {
     /// [`MeshPathStyle::Absolute`]: crate::mesh_paths::MeshPathStyle::Absolute
     /// [`MeshPathStyle::RelativeToDir`]: crate::mesh_paths::MeshPathStyle::RelativeToDir
     pub mesh_path_style: crate::mesh_paths::MeshPathStyle,
+    /// Override MuJoCo's physics timestep (s). `None` keeps MuJoCo's own
+    /// default (2 ms).
+    ///
+    /// Worth reaching for on light robots, because
+    /// [`crate::mujoco_sim::MujocoSim`]'s per-joint PD is an **explicit**
+    /// velocity feedback: it is stable only while
+    /// `actuator_kv < 2·I/dt`, where `I` is the joint's own inertia
+    /// (link inertia + `armature`). A distal joint with `I ~ 1e-4 kg·m²`
+    /// caps `kv` below 1 at the default 2 ms step — under any `kv` a
+    /// position hold actually wants, so the joint buzzes instead of
+    /// holding. Halving `dt` doubles the usable `kv`.
+    pub timestep: Option<f64>,
     /// Default contact friction for every emitted geom, ordered
     /// `[sliding, torsional, rolling]`. Emitted into MJCF's
     /// `<default><geom friction="..."/></default>` so ground plane,
@@ -93,6 +105,21 @@ pub struct MjcfExportOptions {
     /// the realistic rubber-on-lab-floor range (0.4–1.0) and matches
     /// MPC `friction_mu` defaults.
     pub default_friction: [f64; 3],
+    /// Replace the emitted `<motor>` actuators with MuJoCo's own
+    /// `<velocity kv="…">` servos, and switch the integrator to
+    /// `implicitfast` so their damping is integrated implicitly.
+    ///
+    /// This matters because articara's own Position/Velocity modes compute
+    /// their PD in Rust and push the result through a `motor`, which makes it
+    /// an EXPLICIT feedback term bounded by `kv < 2·I/dt` — about 20 for a
+    /// 1 ms step and a 0.01 kg·m² rotor. That is a limitation of doing the
+    /// servo outside the integrator, not of MuJoCo: a native velocity
+    /// actuator under an implicit integrator has no such ceiling, which is
+    /// how velocity-controlled robots are normally simulated.
+    pub native_velocity_servo: Option<f64>,
+    /// Integrator name for `<option integrator="…">`. `None` leaves MuJoCo's
+    /// default (semi-implicit Euler).
+    pub integrator: Option<&'static str>,
 }
 
 impl Default for MjcfExportOptions {
@@ -106,6 +133,9 @@ impl Default for MjcfExportOptions {
             bake_joint_position_limits: true,
             mesh_path_style: crate::mesh_paths::MeshPathStyle::default(),
             default_friction: [0.7, 0.005, 0.0001],
+            native_velocity_servo: None,
+            integrator: None,
+            timestep: None,
         }
     }
 }
@@ -197,7 +227,49 @@ pub fn export_mjcf_with_options(
         bake_joint_position_limits: opts.bake_joint_position_limits,
         default_friction: opts.default_friction,
     };
-    misarta_formats::mjcf::export(&file, &fopts)
+    let xml = misarta_formats::mjcf::export(&file, &fopts);
+
+    // `misarta_formats::mjcf::export` emits no `<option>` element, so
+    // splice one in rather than fork the exporter. MuJoCo accepts
+    // `<option>` anywhere among `<mujoco>`'s children.
+    let integrator = opts
+        .integrator
+        .or(opts.native_velocity_servo.map(|_| "implicitfast"));
+    let xml = match (opts.timestep, integrator) {
+        (None, None) => xml,
+        (dt, ig) => {
+            let mut attrs = String::new();
+            if let Some(dt) = dt {
+                attrs.push_str(&format!(" timestep=\"{dt}\""));
+            }
+            if let Some(ig) = ig {
+                attrs.push_str(&format!(" integrator=\"{ig}\""));
+            }
+            match xml.find('\n') {
+                Some(nl) => format!("{}\n  <option{attrs}/>{}", &xml[..nl], &xml[nl..]),
+                None => xml,
+            }
+        }
+    };
+
+    // Swap `<motor …/>` for `<velocity kv="…" …/>`, keeping name, joint and
+    // force limits so the rest of the pipeline (which looks actuators up by
+    // `motor_<joint>`) does not notice.
+    match opts.native_velocity_servo {
+        None => xml,
+        Some(kv) => xml
+            .lines()
+            .map(|l| {
+                let t = l.trim_start();
+                if !t.starts_with("<motor ") {
+                    return l.to_string();
+                }
+                let indent = &l[..l.len() - t.len()];
+                format!("{indent}<velocity kv=\"{kv}\"{}", &t["<motor".len()..])
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
 }
 
 /// Computes the minimum cumulative z translation in the kinematic chain.
