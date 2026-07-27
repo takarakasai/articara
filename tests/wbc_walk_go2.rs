@@ -8672,6 +8672,58 @@ fn go2_wbc_bound_orbit_speed_sweep() {
     }
 }
 
+/// Sec.5f22: Trot vs Bound propulsion-direction comparison. §5f19-5f21
+/// established the Bound is stuck at ~75% vertical GRF-work / ~8° GRF
+/// inclination because its fore-aft GRF is pitch-locked. A Trot has
+/// continuous diagonal support and no flight-phase pitch somersault, so its
+/// F_x is NOT pitch-locked — the prediction is a much lower vertical-work
+/// fraction (more of the ground reaction is propulsive). Runs a forward Trot
+/// on the SAME full-centroidal WBC at cmd_vx=1.0 and reports the identical
+/// shock / propulsion metrics for a like-for-like comparison.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_trot_propulsion_comparison() {
+    for cmd_vx in [0.6_f64, 1.0] {
+        eprintln!("\n[Trot] cmd_vx={cmd_vx} (full-centroidal, duty=0.5 default)");
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx,
+            total_time_s: 20.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Trot),
+            gait_cycle_period_override: Some(0.40),
+            max_step_length_override: Some(0.20),
+            swing_height_override: Some(0.08),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.05),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: None,
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(&format!("Trot cmd_vx={cmd_vx}, 20s"), &samples, 5.0);
+            report_shock_efficiency(&format!("trot vx={cmd_vx}"), &samples, 0.002, 15.606, 0.5);
+            report_propulsion_direction(&format!("trot vx={cmd_vx}"), &samples, 0.002, 15.606, 0.40, 0.5);
+        }
+    }
+}
+
 /// Sec.5f13: sweep the Raibert-neutral foothold weight to find the
 /// LEAST-tucked front foot that stays stable. The reviewer flagged the
 /// front feet tucked behind the hip; the multi-model analysis said push
