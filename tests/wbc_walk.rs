@@ -32,7 +32,8 @@
 use std::path::PathBuf;
 
 use articara::gait::{
-    auto_detect_kinematics_config, GaitController, DEFAULT_FOOT_LINKS,
+    auto_detect_centroidal_mpc_config, auto_detect_kinematics_config,
+    GaitController, DEFAULT_FOOT_LINKS,
 };
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
@@ -41,16 +42,41 @@ use articara::wbc_pipeline::WbcPipeline;
 use nalgebra::Vector3;
 use quadruped_gait::wbc;
 use quadruped_gait::{
-    solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, KinematicsConfig,
-    LegIkSolution, VelocityCmd,
+    solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, GaitType,
+    KinematicsConfig, LegIkSolution, VelocityCmd,
 };
 
 fn namiashi_misa() -> PathBuf {
+    namiashi_misa_named("namiashi.misa")
+}
+
+/// The model every test runs on unless it says otherwise.
+///
+/// Both 3.3 kg variants also carry the knee's 9:14 reduction referred through
+/// properly (see `rescale_mass.py`); `namiashi.misa` does not, so any
+/// comparison against it mixes the mass change with the gearing change. The
+/// comparison that matters -- `hip` vs `prop` -- is unaffected, since both
+/// have it.
+///
+/// `prop` rather than `hip` on purpose. Both are 3.3 kg with 600 g legs; they
+/// differ only in how far down the leg the added mass sits, and the spec does
+/// not say. `prop` keeps the CAD's own proportions, so it is the variant that
+/// assumes nothing, and it is the pessimistic one -- it is the model on which
+/// Walk showed a failure band. Tuning against it means the tuning still holds
+/// if the real robot turns out to be closer to `hip`; the reverse is not true.
+const DEFAULT_MISA: &str = "namiashi_3p3_prop.misa";
+
+/// The shipped `namiashi.misa` came from a CAD export totalling 2.400 kg with
+/// 36% of that in the legs. The built robot is 3.3 kg with 600 g per leg --
+/// 73% in the legs. `rescale_mass.py` in the same directory regenerates the
+/// corrected models; `_hip` puts the extra mass at the hip where the motors
+/// are, `_prop` spreads it along the leg as the CAD distribution implies.
+fn namiashi_misa_named(file: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
         .join("namiashi")
-        .join("namiashi.misa")
+        .join(file)
 }
 
 /// Same seeding logic as `gait_walk_stability`. Keeps the legs out of
@@ -92,6 +118,26 @@ struct WbcSample {
     roll: f64,
     pitch: f64,
     total_fz_world: f64,
+    /// Per-foot normal force (N), FL/FR/RL/RR. Contact state is what
+    /// distinguishes a gait that is walking from one that is shuffling, and
+    /// the original four tests could not see the difference -- they checked
+    /// trunk height and net displacement only.
+    foot_fz: [f64; 4],
+    body_y: f64,
+    yaw: f64,
+    /// Carried per-sample only so `report_walk_cmd` can size its averaging
+    /// window in whole gait cycles without every call site threading it.
+    cycle_period_s: f64,
+    /// |applied torque| / that joint's `effort` limit, per joint. A joint at
+    /// 1.0 is clamped: the commanded torque is not the torque being produced,
+    /// and the modelled controller is not the controller running.
+    tau_frac: [f64; 12],
+    /// |joint velocity| / that joint's rated `velocity`. The knee's rating
+    /// drops to 21.5 rad/s once its 9:14 reduction is referred properly, and
+    /// `mujoco_sim` brakes overspeed with a torque added *before* the effort
+    /// clamp -- so a joint that is too fast shows up as a joint that is out
+    /// of torque, which is a different problem with a different fix.
+    qd_frac: [f64; 12],
 }
 
 /// Threshold for "trunk has fallen". Below this z, the body has either
@@ -99,14 +145,87 @@ struct WbcSample {
 /// `gait_walk_stability`.
 const TRUNK_Z_FALL_THRESHOLD_M: f64 = 0.18;
 
+/// How far below the harness's original nominal stance every run now sits.
+///
+/// The file spent its whole history at one height, ~0.295 m, and
+/// `namiashi_trunk_height_sweep` shows that was not a neutral choice. All
+/// three gaits walk at 0, 2, 4 and 6 cm of crouch -- tracking stays 98-103%
+/// and trunk z lands within a millimetre or two of target -- but crouching
+/// rotates the leg Jacobian, so the same foot force gets split differently
+/// between thigh and knee:
+///
+///     Trot   thigh 26.7 -> 10.7 %    calf  6.0 -> 17.0 %
+///     Walk   thigh  6.3 ->  5.3 %    calf 11.3 ->  1.9 %
+///     Crawl  thigh  3.4 ->  2.1 %    calf  9.8 ->  0.5 %
+///
+/// 6 cm is the baseline because the thigh is the joint that actually binds --
+/// it was clamped at its 1.5 N*m limit for a quarter of every Trot run, and
+/// `mujoco_sim.rs:1121` does that silently -- and crouching more than halves
+/// it. Walk and Crawl get it nearly free; their knee saturation all but
+/// disappears and nothing else moves.
+///
+/// Trot pays for it. Its knee saturation nearly triples, and peak roll goes
+/// from 2.8 deg to 5.3. That is a deliberate trade, not an oversight: 17% on
+/// a 2.3 N*m knee is a better place to be than 27% on a 1.5 N*m thigh.
+const NAMIASHI_STANCE_DROP_M: f64 = 0.06;
+
 /// Minimum forward displacement during the walking window — the same
 /// 4 cm threshold the gait stability test uses.
 const MIN_DISPLACEMENT_M: f64 = 0.04;
+
+/// How much of the tail of a static-stand run the gravity-balance average
+/// covers.
+const STATIC_AVG_WINDOW_S: f64 = 0.5;
 
 struct WbcParams {
     total_time_s: f64,
     burn_in_s: f64,
     cmd_vx: f64,
+    cmd_vy: f64,
+    cmd_wz: f64,
+    /// Model file under `tests/fixtures/namiashi/`.
+    misa_file: &'static str,
+    /// Early-touchdown force at which `ContactDrivenPhase` overrides the
+    /// nominal phase, newtons. The harness has always used 5.0. Heavier legs
+    /// hit harder, so on the 3.3 kg models this threshold fires on contacts
+    /// the 2.4 kg model never produced.
+    early_contact_n: f64,
+    /// Diagnostic: drop the WBC's torque and the MPC's GRF reference, leaving
+    /// only the joint position-PD tracking the IK targets. If the measured
+    /// gait does not change, the dynamic layers are not contributing.
+    kinematic_only: bool,
+    /// Give the WBC the robot it is actually driving. `WbcPipeline::new`
+    /// hardcodes `mass_kg: 9.0` and a 9 kg inertia diagonal; namiashi is
+    /// 3.3 kg. Off by default so the effect can be measured against the
+    /// state every earlier result in this file was produced under.
+    wbc_real_inertia: bool,
+    /// Decomposition of `wbc_real_inertia`, which bundles three changes:
+    /// the mass (9.0 -> 3.3, a 2.7x amplification of `a_base_des`), the CoM
+    /// offset, and the composite inertia (which also switches the pipeline
+    /// onto the CoM-moment-arm accel prediction). Each can be applied alone.
+    wbc_real_mass_only: bool,
+    wbc_real_com_only: bool,
+    wbc_real_inertia_only: bool,
+    /// Minimum normal force on commanded-stance feet, as a fraction of the
+    /// static per-foot share `m*g/4`. Expressed as a fraction rather than
+    /// newtons so it means the same thing on the 2.4 and 3.3 kg models.
+    f_min_stance_frac: f64,
+    /// Override for `WbcWeights::base_accel` (default 200.0). This is the
+    /// largest soft weight in the QP and the one that carries the MPC's
+    /// predicted base acceleration into the torque.
+    base_accel_weight: Option<f64>,
+    /// Override for `WbcWeights::contact_force` (default 5.0) -- how hard the
+    /// WBC pulls its own GRF solution toward the MPC's prediction.
+    contact_force_weight: Option<f64>,
+    /// Write the exact MJCF the sim runs plus a per-tick root-pose and joint
+    /// trace here, for `render_namiashi.py` to replay. Purely a side channel;
+    /// nothing in the harness reads it back.
+    replay_dir: Option<String>,
+    /// Lower the nominal stance by this much, metres. Applied to every leg's
+    /// `nominal_foot_body.z`, which is what both the IK seed and the MPC's
+    /// body-z reference are taken from, so the whole stack follows.
+    /// Defaults to [`NAMIASHI_STANCE_DROP_M`].
+    trunk_drop_m: f64,
     dt: f64,
     /// `None` = the legacy `wbc::solve_warm_with_weights` path
     /// (walk-validated default). `Some` opts the pipeline into the
@@ -114,6 +233,26 @@ struct WbcParams {
     /// formulation/strategy/backend — the equivalence-study switch
     /// documented in `ref/wbc_comparison.md`.
     misa_wbc_mode: Option<(wbc::Formulation, wbc::SolveConfig)>,
+    /// Gait family. `None` keeps `GaitConfig::trot()`, which is what the
+    /// original four tests ran and the only thing this file had ever
+    /// exercised.
+    gait_type: Option<GaitType>,
+    /// Overrides applied after the family's own defaults. namiashi is 2.400 kg
+    /// against Go2's 15.606 with a 0.306 m leg against 0.426, so the numbers
+    /// tuned on Go2 do not carry over directly -- under Froude similarity
+    /// (T proportional to sqrt(L/g), stride to L) Go2's 0.18 s / 0.20 m
+    /// become 0.152 s / 0.143 m here. `None` keeps the family default.
+    cycle_period_s: Option<f64>,
+    duty_factor: Option<f64>,
+    max_step_length_m: Option<f64>,
+    /// Swing-foot apex clearance. Crawl's library default is 0.005 m, which
+    /// is fine over a 0.06 m step and almost certainly scuffing over a
+    /// 0.145 m one.
+    swing_height_m: Option<f64>,
+    /// Capture-point feedback gain, seconds. The library default is 0.05 s
+    /// for every robot; the LIP value it is meant to approximate is
+    /// sqrt(h/g), which for namiashi's 0.30 m trunk is 0.175 s.
+    k_capture_s: Option<f64>,
 }
 
 impl WbcParams {
@@ -124,6 +263,22 @@ impl WbcParams {
             cmd_vx: 0.0,
             dt: 0.002,
             misa_wbc_mode: None,
+            gait_type: None, cycle_period_s: None,
+            duty_factor: None, max_step_length_m: None,
+            swing_height_m: None, k_capture_s: None,
+            cmd_vy: 0.0, cmd_wz: 0.0,
+            misa_file: DEFAULT_MISA,
+            early_contact_n: 5.0,
+            kinematic_only: false,
+            wbc_real_inertia: false,
+            wbc_real_mass_only: false,
+            wbc_real_com_only: false,
+            wbc_real_inertia_only: false,
+            f_min_stance_frac: 0.0,
+            base_accel_weight: None,
+            contact_force_weight: None,
+            replay_dir: None,
+            trunk_drop_m: NAMIASHI_STANCE_DROP_M,
         }
     }
     fn forward_walk() -> Self {
@@ -133,6 +288,22 @@ impl WbcParams {
             cmd_vx: 0.15,
             dt: 0.002,
             misa_wbc_mode: None,
+            gait_type: None, cycle_period_s: None,
+            duty_factor: None, max_step_length_m: None,
+            swing_height_m: None, k_capture_s: None,
+            cmd_vy: 0.0, cmd_wz: 0.0,
+            misa_file: DEFAULT_MISA,
+            early_contact_n: 5.0,
+            kinematic_only: false,
+            wbc_real_inertia: false,
+            wbc_real_mass_only: false,
+            wbc_real_com_only: false,
+            wbc_real_inertia_only: false,
+            f_min_stance_frac: 0.0,
+            base_accel_weight: None,
+            contact_force_weight: None,
+            replay_dir: None,
+            trunk_drop_m: NAMIASHI_STANCE_DROP_M,
         }
     }
 
@@ -152,7 +323,7 @@ impl WbcParams {
 /// Run a WBC sim, sampling per-tick. Returns `None` if the namiashi
 /// fixture is missing (skip cleanly).
 fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
-    let path = namiashi_misa();
+    let path = namiashi_misa_named(params.misa_file);
     if !path.exists() {
         eprintln!(
             "namiashi fixture missing at {} — skipping WBC test",
@@ -171,6 +342,8 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     for leg_kin in [&mut kin.fl, &mut kin.fr, &mut kin.rl, &mut kin.rr] {
         let total_leg = leg_kin.upper_leg_m + leg_kin.lower_leg_m;
         leg_kin.nominal_foot_body.z += 0.08 * total_leg;
+        // Positive z moves the nominal foot toward the body, i.e. crouches.
+        leg_kin.nominal_foot_body.z += params.trunk_drop_m;
     }
     seed_joint_positions_from_kinematics(&mut robot, &kin);
 
@@ -184,6 +357,19 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         add_actuators: true,
         ..Default::default()
     };
+    // Optional replay export for video rendering. Writes the exact MJCF the
+    // sim is running plus a per-tick root-pose + joint trace, so a renderer
+    // can replay the run kinematically without re-deriving any of it. Purely
+    // a side channel -- nothing below reads it.
+    let replay_out = params.replay_dir.clone();
+    if let Some(dir) = replay_out.as_deref() {
+        std::fs::create_dir_all(dir).expect("create replay dir");
+        std::fs::write(
+            format!("{dir}/model.xml"),
+            articara::mjcf::export_mjcf_with_options(&robot, opts.clone()),
+        )
+        .expect("write replay model.xml");
+    }
     let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
     // We don't want gravity-comp to compete with the WBC during the
     // walking window — the WBC's floating-base EoM task already
@@ -193,9 +379,39 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     // when active.
     sim.set_gravity_compensation(true);
 
-    let cfg = GaitConfig::trot();
+    let mut cfg = match params.gait_type {
+        Some(GaitType::Trot) | None => GaitConfig::trot(),
+        Some(GaitType::Walk) => GaitConfig::walk(),
+        Some(GaitType::Pace) => GaitConfig::pace(),
+        Some(GaitType::Bound) => GaitConfig::bound(),
+        Some(GaitType::Crawl) => GaitConfig::crawl(),
+    };
+    if let Some(v) = params.cycle_period_s {
+        cfg.cycle_period_s = v;
+    }
+    if let Some(v) = params.duty_factor {
+        cfg.duty_factor = v;
+    }
+    if let Some(v) = params.swing_height_m {
+        cfg.swing_height_m = v;
+    }
+    if let Some(v) = params.max_step_length_m {
+        cfg.max_step_length_m = v;
+    }
+    eprintln!(
+        "[gait] {:?}  T={:.3}s duty={:.3} max_step={:.3}m  cmd_vx={:.3}  \
+         model={} m={:.3}kg",
+        cfg.gait_type, cfg.cycle_period_s, cfg.duty_factor,
+        cfg.max_step_length_m, params.cmd_vx,
+        params.misa_file,
+        robot.links.iter().map(|l| l.inertial.mass).sum::<f64>(),
+    );
+    let cycle_period_s = cfg.cycle_period_s;
     let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::Mpc)
         .expect("GaitController::build (Mpc mode)");
+    if let Some(k) = params.k_capture_s {
+        gc.set_capture_point_gain(k);
+    }
 
     // Foot link names for the WBC pipeline.
     let foot_links: [String; 4] = [
@@ -207,6 +423,78 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut wbc_pipeline = WbcPipeline::new(&robot, foot_links);
     if let Some((formulation, cfg)) = params.misa_wbc_mode.clone() {
         wbc_pipeline = wbc_pipeline.with_wbc_solver(formulation, cfg);
+    }
+    if let Some(w) = params.contact_force_weight {
+        wbc_pipeline.weights.contact_force = w;
+        eprintln!("[wbc] contact_force weight = {w} (default 5.0)");
+    }
+    if let Some(w) = params.base_accel_weight {
+        wbc_pipeline.weights.base_accel = w;
+        eprintln!("[wbc] base_accel weight = {w} (default 200.0)");
+    }
+    if params.f_min_stance_frac > 0.0 {
+        let mg: f64 = robot.links.iter().map(|l| l.inertial.mass).sum::<f64>() * 9.81;
+        wbc_pipeline.f_min_stance_n = params.f_min_stance_frac * mg / 4.0;
+        eprintln!(
+            "[wbc] f_min_stance = {:.2} N ({:.0}% of m*g/4 = {:.2} N)",
+            wbc_pipeline.f_min_stance_n,
+            100.0 * params.f_min_stance_frac,
+            mg / 4.0,
+        );
+    }
+    if params.wbc_real_mass_only || params.wbc_real_com_only || params.wbc_real_inertia_only {
+        let c = auto_detect_centroidal_mpc_config(&robot);
+        if params.wbc_real_mass_only {
+            wbc_pipeline.mass_kg = c.mass_kg;
+        }
+        if params.wbc_real_com_only {
+            wbc_pipeline.com_offset_body = c.com_offset_body;
+        }
+        if params.wbc_real_inertia_only {
+            wbc_pipeline.centroidal_inertia_body = Some(c.centroidal_inertia_body);
+        }
+        eprintln!(
+            "[wbc] partial: mass={} com={} inertia={}",
+            params.wbc_real_mass_only,
+            params.wbc_real_com_only,
+            params.wbc_real_inertia_only,
+        );
+    }
+    if params.wbc_real_inertia {
+        // Same source the centroidal MPC config already uses: total mass,
+        // aggregate CoM relative to the body root, and the angular block of
+        // the composite-rigid-body inertia. Setting `centroidal_inertia_body`
+        // also switches the pipeline onto the centroidal accel prediction,
+        // which takes moment arms from the CoM instead of the root.
+        let c = auto_detect_centroidal_mpc_config(&robot);
+        wbc_pipeline.mass_kg = c.mass_kg;
+        wbc_pipeline.com_offset_body = c.com_offset_body;
+        wbc_pipeline.centroidal_inertia_body = Some(c.centroidal_inertia_body);
+        let i = c.centroidal_inertia_body;
+        eprintln!(
+            "[wbc] real inertia: m={:.3}kg (was 9.000)  com_off=({:+.4},{:+.4},{:+.4})m  \
+             I_diag=({:.5},{:.5},{:.5}) (was 0.07000,0.26000,0.24200)",
+            c.mass_kg,
+            c.com_offset_body.x, c.com_offset_body.y, c.com_offset_body.z,
+            i[(0, 0)], i[(1, 1)], i[(2, 2)],
+        );
+    }
+
+    // Joint names in the order `gc.joint_indices()` reports them, so the
+    // replay CSV and the model agree without either side guessing.
+    let replay_joint_names: Vec<String> = gc
+        .joint_indices()
+        .iter()
+        .flatten()
+        .map(|&ji| robot.joints[ji].name.clone())
+        .collect();
+    let mut replay_buf = String::new();
+    if replay_out.is_some() {
+        replay_buf.push_str("t,root_x,root_y,root_z,root_qw,root_qx,root_qy,root_qz");
+        for n in &replay_joint_names {
+            replay_buf.push_str(&format!(",{n}"));
+        }
+        replay_buf.push('\n');
     }
 
     let n_steps = (params.total_time_s / params.dt).round() as usize;
@@ -222,8 +510,8 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         if k == burn_in_steps {
             gc.set_velocity_cmd(VelocityCmd {
                 vx: params.cmd_vx,
-                vy: 0.0,
-                wz: 0.0,
+                vy: params.cmd_vy,
+                wz: params.cmd_wz,
             });
         }
 
@@ -281,7 +569,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 let corrected = ContactDrivenPhase::apply_correction(
                     &nominal_phases,
                     force_z,
-                    /* early_contact_threshold_n = */ 5.0,
+                    params.early_contact_n,
                     // late_liftoff disabled (= 0 N): if every foot is
                     // momentarily unloaded during a transient body fall,
                     // a non-zero threshold would flip ALL legs to swing
@@ -435,7 +723,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 // depends on `W_CONTACT_FORCE` in `quadruped_gait::wbc`.
                 let _ = torque_ff; // discard MPC ff — WBC owns the τ stream
                 for (ji, &tau) in taus.iter().enumerate() {
-                    sim.set_torque_feedforward(ji, tau);
+                    sim.set_torque_feedforward(
+                        ji,
+                        if params.kinematic_only { 0.0 } else { tau },
+                    );
                 }
                 sim.clear_wbc_torques();
             } else {
@@ -454,9 +745,59 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         // synchronised. `base_transform` was just refreshed by
         // `sim.step → sync_back`.
         let tx = robot.base_transform.translation;
-        let (roll, pitch, _yaw) = robot.base_transform.rotation.euler_angles();
+        let (roll, pitch, yaw) = robot.base_transform.rotation.euler_angles();
+        if replay_out.is_some() {
+            let p = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+            let q = robot.base_transform.rotation;
+            replay_buf.push_str(&format!(
+                "{:.5},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}",
+                t, p[0], p[1], p[2], q.w, q.i, q.j, q.k
+            ));
+            for name in &replay_joint_names {
+                let qj = sim.joint_q_qd(name).map(|(q, _)| q).unwrap_or(0.0);
+                replay_buf.push_str(&format!(",{qj:.6}"));
+            }
+            replay_buf.push('\n');
+        }
         let total_fz_world: f64 =
             sim.contacts().iter().map(|c| c.force_world[2]).sum();
+        // Applied joint torque against its own effort limit. `mujoco_sim`
+        // clamps to `joint.effort` silently, so without this a saturated
+        // actuator is invisible: the harness would report a gait that the
+        // hardware cannot produce and nothing would say so.
+        let qfrc = sim.qfrc_actuator();
+        let mut tau_frac = [0.0f64; 12];
+        let mut qd_frac = [0.0f64; 12];
+        for (leg, tri) in gc.joint_indices().iter().enumerate() {
+            for (j, &ji) in tri.iter().enumerate() {
+                let joint = &robot.joints[ji];
+                if joint.effort > 0.0 {
+                    if let Some(adr) = sim.joint_dof_adr(&joint.name) {
+                        if let Some(&t) = qfrc.get(adr) {
+                            tau_frac[leg * 3 + j] = (t / joint.effort).abs();
+                        }
+                    }
+                }
+                if joint.velocity > 0.0 {
+                    if let Some((_, qd)) = sim.joint_q_qd(&joint.name) {
+                        qd_frac[leg * 3 + j] = (qd / joint.velocity).abs();
+                    }
+                }
+            }
+        }
+        let mut foot_fz = [0.0f64; 4];
+        for (fi, (_, link)) in DEFAULT_FOOT_LINKS.iter().enumerate() {
+            let lname = link.to_lowercase();
+            foot_fz[fi] = sim
+                .contacts()
+                .iter()
+                .filter(|c| {
+                    c.body1.to_lowercase() == lname || c.body2.to_lowercase() == lname
+                })
+                .map(|c| c.force_world[2].abs())
+                .sum();
+        }
+
         samples.push(WbcSample {
             t,
             body_x: tx.x,
@@ -464,7 +805,18 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             roll,
             pitch,
             total_fz_world,
+            foot_fz,
+            body_y: tx.y,
+            yaw,
+            cycle_period_s,
+            tau_frac,
+            qd_frac,
         });
+    }
+    if let Some(dir) = replay_out.as_deref() {
+        std::fs::write(format!("{dir}/trace.csv"), &replay_buf)
+            .expect("write replay trace.csv");
+        eprintln!("[replay] wrote {dir}/model.xml and trace.csv");
     }
     Some(samples)
 }
@@ -495,10 +847,12 @@ fn robot_mass(robot: &RobotModel) -> f64 {
 /// check catches the real failure mode (body slumping below 0.18 m).
 #[test]
 fn wbc_static_stand_balances_gravity() {
-    let Some(samples) = run_wbc_sim(WbcParams::static_stand()) else {
+    let params = WbcParams::static_stand();
+    let misa = params.misa_file;
+    let Some(samples) = run_wbc_sim(params) else {
         return;
     };
-    assert_static_stand_balances_gravity(&samples);
+    assert_static_stand_balances_gravity(&samples, misa);
 }
 
 /// Same invariants as [`wbc_static_stand_balances_gravity`], but
@@ -511,15 +865,21 @@ fn wbc_static_stand_balances_gravity() {
 #[test]
 fn wbc_static_stand_balances_gravity_force_space_active_set() {
     let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
-    let Some(samples) =
-        run_wbc_sim(WbcParams::static_stand_misa_wbc(wbc::Formulation::ForceSpace, cfg))
-    else {
+    let params = WbcParams::static_stand_misa_wbc(wbc::Formulation::ForceSpace, cfg);
+    let misa = params.misa_file;
+    let Some(samples) = run_wbc_sim(params) else {
         return;
     };
-    assert_static_stand_balances_gravity(&samples);
+    assert_static_stand_balances_gravity(&samples, misa);
 }
 
-fn assert_static_stand_balances_gravity(samples: &[WbcSample]) {
+/// NOTE: takes the model path because the m*g reference has to come from the
+/// same robot the samples came from. Before `WbcParams::misa_file` existed
+/// there was only one model and this read a hardcoded `namiashi.misa`; once a
+/// 3.3 kg variant could be passed in, that silently compared 32.4 N of
+/// measured contact force against a 23.5 N reference -- a 38% error sitting
+/// inside a +/-60% tolerance, so it would have passed while being wrong.
+fn assert_static_stand_balances_gravity(samples: &[WbcSample], misa_file: &str) {
     // No fall.
     let min_z = samples.iter().map(|s| s.body_z).fold(f64::INFINITY, f64::min);
     assert!(
@@ -529,12 +889,15 @@ fn assert_static_stand_balances_gravity(samples: &[WbcSample]) {
     );
 
     // Burn-in window done; sample the last 0.5 s for the f_z average.
-    let dt: f64 = 0.002;
-    let total_time = 1.5;
-    let burn_in = 0.5;
-    let total_n = (total_time / dt).round() as usize;
-    let window_n = (0.5 / dt).round() as usize;
-    let start = total_n.saturating_sub(window_n);
+    // Window derived from the samples, not from hardcoded run lengths: these
+    // used to be literal 1.5/0.5 s constants that happened to match
+    // `WbcParams::static_stand()` and would have silently sliced the wrong
+    // window the moment anyone changed it.
+    let t_end = samples[samples.len() - 1].t;
+    let start = samples
+        .iter()
+        .position(|s| s.t >= t_end - STATIC_AVG_WINDOW_S)
+        .unwrap_or(0);
     let avg_fz: f64 = samples[start..]
         .iter()
         .map(|s| s.total_fz_world)
@@ -542,7 +905,7 @@ fn assert_static_stand_balances_gravity(samples: &[WbcSample]) {
         / (samples.len() - start) as f64;
 
     // Reference m·g. Recompute by reloading the .misa (cheap).
-    let path = namiashi_misa();
+    let path = namiashi_misa_named(misa_file);
     let robot = RobotModel::from_misa(&path).unwrap();
     let mg = robot_mass(&robot) * 9.81;
 
@@ -572,7 +935,6 @@ fn assert_static_stand_balances_gravity(samples: &[WbcSample]) {
          by {:.1}% — friction cone + EoM may be inconsistent",
         pct_err * 100.0,
     );
-    let _ = burn_in;
 }
 
 /// Forward walk under WBC + Position-PD hybrid joint command.
@@ -606,6 +968,1555 @@ fn wbc_forward_command_advances_body_force_space_active_set() {
         return;
     };
     assert_forward_command_advances_body(&samples);
+}
+
+/// One line per run: speed, attitude, support pattern.
+///
+/// The original assertions here checked trunk height and net displacement.
+/// Neither can tell a gait that is walking from one that is shuffling in
+/// place, or a robot standing on three legs from one standing on four --
+/// both of which turned out to be happening on the Go2 side and were only
+/// found by measuring contact directly.
+/// What a run is judged on. Body-frame throughout -- see the note in
+/// `report_walk_cmd` for why the run-start frame is not trustworthy.
+#[derive(Debug, Default, Clone, Copy)]
+struct WalkMetrics {
+    /// Forward speed in the instantaneous heading frame, m/s.
+    body_vx: f64,
+    /// Sideways speed in the instantaneous heading frame, m/s.
+    body_vy: f64,
+    /// deg/s, unwrapped.
+    yaw_rate_deg_s: f64,
+    z_min: f64,
+}
+
+fn report_walk_cmd(
+    label: &str,
+    samples: &[WbcSample],
+    cmd_vx: f64,
+    cmd_vy: f64,
+    cmd_wz: f64,
+    burn_in_s: f64,
+) -> WalkMetrics {
+    let t0 = samples[0].t + burn_in_s;
+    let walk: Vec<&WbcSample> = samples.iter().filter(|s| s.t >= t0).collect();
+    if walk.len() < 10 {
+        eprintln!("=== {label}: too few samples ===");
+        return WalkMetrics::default();
+    }
+    let n = walk.len() as f64;
+    let (a, b) = (walk[0], walk[walk.len() - 1]);
+    let span = b.t - a.t;
+
+    // Displacement projected on the heading the robot had when the command
+    // arrived, and its normal. Reported for the path shape only -- do NOT
+    // read `lat` as sideways motion. If the robot yaws while walking
+    // straight ahead, forward travel leaks into this frame's lateral axis:
+    // at Trot's -15 deg of yaw drift, 0.89 m/s forward shows up here as
+    // 0.89*sin(15 deg) = 0.23 m/s of "crab" that is not happening. Body-frame
+    // vx/vy below is the honest measure.
+    let (c0, s0) = ((-a.yaw).cos(), (-a.yaw).sin());
+    let (dx, dy) = (b.body_x - a.body_x, b.body_y - a.body_y);
+    let fwd = c0 * dx - s0 * dy;
+    let lat = s0 * dx + c0 * dy;
+    // Accumulate wrapped per-sample increments rather than differencing the
+    // endpoints. Endpoint differencing wraps at +/-180 deg, so it cannot see
+    // more than half a turn: a clean 0.76-gain response to wz=0.90 rad/s over
+    // 10 s is 392 deg of real rotation and reads back as +32 deg, which looks
+    // like the turn collapsing to 7% when nothing collapsed.
+    let mut dyaw = 0.0;
+    for w in walk.windows(2) {
+        let mut d = w[1].yaw - w[0].yaw;
+        while d > std::f64::consts::PI {
+            d -= 2.0 * std::f64::consts::PI;
+        }
+        while d < -std::f64::consts::PI {
+            d += 2.0 * std::f64::consts::PI;
+        }
+        dyaw += d;
+    }
+
+    let z_mean = walk.iter().map(|s| s.body_z).sum::<f64>() / n;
+    let z_min = walk.iter().map(|s| s.body_z).fold(f64::INFINITY, f64::min);
+    let pitch_pk = walk.iter().map(|s| s.pitch.abs()).fold(0.0_f64, f64::max);
+    let roll_pk = walk.iter().map(|s| s.roll.abs()).fold(0.0_f64, f64::max);
+
+    // Support census at a 1 N threshold -- namiashi is 2.4 kg, so its
+    // per-foot loads are roughly a sixth of Go2's and the 5 N threshold used
+    // there would read a loaded foot as airborne.
+    let mut hist = [0usize; 5];
+    let mut duty = [0usize; 4];
+    for s in walk.iter() {
+        let mut n_down = 0;
+        for fi in 0..4 {
+            if s.foot_fz[fi] > 1.0 {
+                n_down += 1;
+                duty[fi] += 1;
+            }
+        }
+        hist[n_down] += 1;
+    }
+    let f = |k: usize| hist[k] as f64 / n;
+
+    eprintln!(
+        "=== {label} (cmd_vx={cmd_vx:.3}) ===\n\
+         fwd={fwd:+.3}m lat={lat:+.3}m over {span:.1}s  speed={:+.3} m/s  \
+         track={:.0}%  yaw_drift={:+.1}deg\n\
+         trunk z: mean={z_mean:.3} min={z_min:.3}m   peak roll={:.1}deg pitch={:.1}deg\n\
+         support@1N: n_down 0/1/2/3/4 = {:.3}/{:.3}/{:.3}/{:.3}/{:.3}   \
+         duty per foot = {:.2} {:.2} {:.2} {:.2}",
+        fwd / span,
+        if cmd_vx.abs() > 1e-9 { 100.0 * (fwd / span) / cmd_vx } else { 0.0 },
+        dyaw.to_degrees(),
+        roll_pk.to_degrees(), pitch_pk.to_degrees(),
+        f(0), f(1), f(2), f(3), f(4),
+        duty[0] as f64 / n, duty[1] as f64 / n,
+        duty[2] as f64 / n, duty[3] as f64 / n,
+    );
+
+    // Per-second velocity in each window's OWN heading frame, plus that
+    // window's yaw rate. Rotating by the yaw at the start of the window
+    // instead of the start of the run is the whole point: it separates "the
+    // robot is sliding sideways" from "the robot is pointing somewhere else
+    // by now", which the run-start frame silently mixes together.
+    // Round the averaging window up to a whole number of gait cycles. A fixed
+    // 1.0 s window beats against the gait: 1.0/0.400 = 2.5 and 1.0/0.800 =
+    // 1.25, so every Walk window boundary lands on one of two gait phases and
+    // every Crawl boundary on one of four. Averaging many such windows does
+    // not average the phase out, it averages two or four clusters.
+    let period = walk[0].cycle_period_s;
+    let win_s = period * (1.0 / period).ceil();
+    // Torque headroom. `mujoco_sim` clamps to `joint.effort` without a word,
+    // so a gait can look fine here while asking the hardware for torque it
+    // does not have. Reported per joint role because the roles have different
+    // limits (hip and thigh 1.5 N*m, calf 2.205) and very different jobs.
+    const ROLE: [&str; 3] = ["hip", "thigh", "calf"];
+    let mut role_line = String::from("  tau/limit:");
+    for j in 0..3 {
+        let mut peak = 0.0f64;
+        let mut sat = 0usize;
+        for s in walk.iter() {
+            for leg in 0..4 {
+                let f = s.tau_frac[leg * 3 + j];
+                peak = peak.max(f);
+                if f > 0.99 {
+                    sat += 1;
+                }
+            }
+        }
+        let mut qd_peak = 0.0f64;
+        let mut qd_over = 0usize;
+        for s in walk.iter() {
+            for leg in 0..4 {
+                let f = s.qd_frac[leg * 3 + j];
+                qd_peak = qd_peak.max(f);
+                if f > 1.0 {
+                    qd_over += 1;
+                }
+            }
+        }
+        role_line += &format!(
+            "  {}: tau pk={peak:.2} sat={:.1}% | qd pk={qd_peak:.2} over={:.1}%",
+            ROLE[j],
+            100.0 * sat as f64 / (4.0 * n),
+            100.0 * qd_over as f64 / (4.0 * n),
+        );
+    }
+    eprintln!("{role_line}");
+
+    let mut line = format!("  per-{win_s:.2}s vx/vy/wz:");
+    let (mut vx_sum, mut vy_sum, mut nw) = (0.0, 0.0, 0usize);
+    let mut w0 = 0usize;
+    while w0 < walk.len() {
+        let w1 = walk
+            .iter()
+            .position(|s| s.t >= walk[w0].t + win_s)
+            .unwrap_or(walk.len() - 1);
+        if w1 <= w0 {
+            break;
+        }
+        let (p, q) = (walk[w0], walk[w1]);
+        let dt = q.t - p.t;
+        let (cw, sw) = ((-p.yaw).cos(), (-p.yaw).sin());
+        let (ddx, ddy) = (q.body_x - p.body_x, q.body_y - p.body_y);
+        let (fx, fy) = ((cw * ddx - sw * ddy) / dt, (sw * ddx + cw * ddy) / dt);
+        let mut dy = q.yaw - p.yaw;
+        while dy > std::f64::consts::PI {
+            dy -= 2.0 * std::f64::consts::PI;
+        }
+        while dy < -std::f64::consts::PI {
+            dy += 2.0 * std::f64::consts::PI;
+        }
+        line += &format!("  {fx:+.2}/{fy:+.2}/{:+.1}", dy.to_degrees() / dt);
+        vx_sum += fx;
+        vy_sum += fy;
+        nw += 1;
+        w0 = w1;
+    }
+    eprintln!("{line}");
+    let mut metrics = WalkMetrics {
+        z_min,
+        yaw_rate_deg_s: dyaw.to_degrees() / span,
+        ..WalkMetrics::default()
+    };
+    if nw > 0 {
+        let (bvx, bvy) = (vx_sum / nw as f64, vy_sum / nw as f64);
+        metrics.body_vx = bvx;
+        metrics.body_vy = bvy;
+        eprintln!(
+            "  body-frame: vx={bvx:+.3} m/s ({:.0}% of cmd)  vy={bvy:+.3} m/s  \
+             yaw rate={:+.2} deg/s",
+            if cmd_vx.abs() > 1e-9 { 100.0 * bvx / cmd_vx } else { 0.0 },
+            dyaw.to_degrees() / span,
+        );
+        if cmd_vy.abs() > 1e-9 || cmd_wz.abs() > 1e-9 {
+            eprintln!(
+                "  cmd vy={cmd_vy:+.2} -> {bvy:+.3} m/s ({:.0}%)   \
+                 cmd wz={:+.1} -> {:+.1} deg/s ({:.0}%)",
+                if cmd_vy.abs() > 1e-9 { 100.0 * bvy / cmd_vy } else { 0.0 },
+                cmd_wz.to_degrees(),
+                dyaw.to_degrees() / span,
+                if cmd_wz.abs() > 1e-9 {
+                    100.0 * (dyaw / span) / cmd_wz
+                } else {
+                    0.0
+                },
+            );
+        }
+    }
+    metrics
+}
+
+fn report_walk(
+    label: &str,
+    samples: &[WbcSample],
+    cmd_vx: f64,
+    burn_in_s: f64,
+) -> WalkMetrics {
+    report_walk_cmd(label, samples, cmd_vx, 0.0, 0.0, burn_in_s)
+}
+
+/// WHERE namiashi ACTUALLY IS (2026-08-02).
+///
+/// This file had four tests, all on Trot, all asking only "did the trunk stay
+/// up and did x increase" over 3 s at 0.15 m/s. Nothing here had ever run
+/// Walk, Crawl or Pace, and nothing measured speed, heading or contact.
+///
+/// This is the baseline sweep before any tuning: each gait at its own default
+/// period and duty, over a range of commands, reporting what actually
+/// happens. Failures are expected and are the point -- they say which gait
+/// needs what.
+///
+/// SCALE. namiashi is 2.400 kg with a 0.306 m leg; Go2 is 15.606 kg with
+/// 0.426 m. Under Froude similarity (T ~ sqrt(L/g), stride ~ L) Go2's tuned
+/// 0.18 s / 0.20 m map to 0.152 s / 0.143 m here, and its 1.63 m/s to
+/// 1.38 m/s. The commands below bracket that, but the gait defaults are left
+/// alone in this first pass so the starting point is the library's own.
+#[test]
+#[ignore = "exploratory sweep -- run with --ignored"]
+fn namiashi_gait_baseline_sweep() {
+    for gait in [GaitType::Trot, GaitType::Walk, GaitType::Crawl] {
+        for cmd_vx in [0.15, 0.30, 0.50] {
+            let params = WbcParams {
+                total_time_s: 6.0,
+                burn_in_s: 1.0,
+                cmd_vx,
+                gait_type: Some(gait),
+                ..WbcParams::forward_walk()
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} default"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// SCALING THE THREE GAITS TO namiashi'S GEOMETRY.
+///
+/// The baseline sweep says all three gaits are step-length starved, not
+/// broken. Each one sits at (or below) its own geometric ceiling
+///
+///     v_max = max_step / (T * duty)
+///
+/// and those ceilings are 0.50 / 0.18 / 0.04 m/s for the library defaults --
+/// so Walk saturating at 0.17 m/s under a 0.50 m/s command is arithmetic, not
+/// a controller failure.
+///
+/// Normalised by leg length (0.306 m) the default steps are 33% / 26% / 20%.
+/// The Go2 Bound work settled on 0.20 m over a 0.426 m leg = 47%, and that
+/// robot walks. So the defaults here are conservative by roughly a factor of
+/// two across the board.
+///
+/// This sweep raises max_step toward that ratio and shortens the period
+/// (Froude: T ~ sqrt(L/g), so namiashi's equivalent of Go2's 0.18 s is
+/// 0.152 s), asking each gait for a speed its geometry can actually deliver.
+/// Two settings per gait: "reach" moves the ceiling up mostly via step
+/// length, "quick" mostly via period. Which one holds tells us whether the
+/// limit is swing reach or swing time.
+#[test]
+#[ignore = "exploratory sweep -- run with --ignored"]
+fn namiashi_gait_scaled_sweep() {
+    // (gait, label, T, duty, max_step, cmd)
+    // cmd is set to ~80% of that row's ceiling so the command is inside what
+    // the geometry allows -- commanding past the ceiling only measures the
+    // ceiling again.
+    let rows: &[(GaitType, &str, f64, f64, f64, f64)] = &[
+        // Trot: default already reaches 0.5. Push on both axes.
+        (GaitType::Trot, "reach", 0.400, 0.50, 0.145, 0.58),
+        (GaitType::Trot, "quick", 0.260, 0.50, 0.100, 0.61),
+        (GaitType::Trot, "both", 0.260, 0.50, 0.145, 0.89),
+        // Walk: duty 0.75 costs a lot of ceiling, so it needs the most step.
+        (GaitType::Walk, "reach", 0.600, 0.75, 0.145, 0.25),
+        (GaitType::Walk, "quick", 0.400, 0.75, 0.100, 0.26),
+        (GaitType::Walk, "both", 0.400, 0.75, 0.145, 0.38),
+        // Crawl: duty 0.85 and a 1.67 s period leave almost nothing.
+        (GaitType::Crawl, "reach", 1.667, 0.85, 0.145, 0.08),
+        (GaitType::Crawl, "quick", 0.800, 0.85, 0.060, 0.07),
+        (GaitType::Crawl, "both", 0.800, 0.85, 0.145, 0.17),
+    ];
+    for &(gait, tag, t, duty, step, cmd_vx) in rows {
+        let params = WbcParams {
+            total_time_s: 6.0,
+            burn_in_s: 1.0,
+            cmd_vx,
+            gait_type: Some(gait),
+            cycle_period_s: Some(t),
+            duty_factor: Some(duty),
+            max_step_length_m: Some(step),
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
+    }
+}
+
+/// TWO CANDIDATE CAUSES FOR WHAT THE SCALED SWEEP LEFT BROKEN.
+///
+/// After scaling, Trot and Walk overshoot their command by 3-16% and Trot
+/// crabs sideways (+0.89 m in 5 s at one setting, -0.70 m at another -- the
+/// sign flips, so it is not a fixed bias). Crawl instead *under*shoots, at
+/// 66-74%.
+///
+/// H1 (both symptoms): `DEFAULT_CAPTURE_POINT_GAIN_S = 0.05`. That gain is
+/// meant to be the LIP model's sqrt(h/g); for a 0.30 m trunk that is
+/// 0.175 s, so the library ships a value 3.5x too small, for every robot.
+/// The footstep feedback is pure proportional (`k_capture_pulse` and
+/// `v_capture_deadband` both default to 0), and proportional feedback that
+/// weak leaves exactly this: a standing error in x, and a lateral velocity
+/// nothing pulls back to zero.
+///
+/// H2 (Crawl only): `GaitConfig::crawl()` sets `swing_height_m = 0.005`.
+/// Five millimetres of clearance is defensible over the default 0.06 m step;
+/// over the 0.145 m step the scaled sweep uses, the swing foot is dragging.
+///
+/// H1 predicts the sweep over k moves both the overshoot and the drift. H2
+/// predicts swing height moves Crawl and nothing else.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_capture_gain_and_swing_height() {
+    // H1: gain sweep on the two gaits that overshoot.
+    for (gait, t, duty, step, cmd_vx) in [
+        (GaitType::Trot, 0.260, 0.50, 0.145, 0.89),
+        (GaitType::Walk, 0.400, 0.75, 0.145, 0.38),
+    ] {
+        for k in [0.05, 0.10, 0.175, 0.25] {
+            let params = WbcParams {
+                total_time_s: 6.0,
+                burn_in_s: 1.0,
+                cmd_vx,
+                gait_type: Some(gait),
+                cycle_period_s: Some(t),
+                duty_factor: Some(duty),
+                max_step_length_m: Some(step),
+                k_capture_s: Some(k),
+                ..WbcParams::forward_walk()
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} k={k:.3}"), &samples, cmd_vx, 1.0);
+        }
+    }
+
+    // H2: swing clearance on Crawl, at both the old and the LIP gain, so a
+    // clearance effect cannot be confused with a gain effect.
+    for k in [0.05, 0.175] {
+        for h in [0.005, 0.020, 0.040] {
+            let params = WbcParams {
+                total_time_s: 6.0,
+                burn_in_s: 1.0,
+                cmd_vx: 0.17,
+                gait_type: Some(GaitType::Crawl),
+                cycle_period_s: Some(0.800),
+                duty_factor: Some(0.85),
+                max_step_length_m: Some(0.145),
+                swing_height_m: Some(h),
+                k_capture_s: Some(k),
+                ..WbcParams::forward_walk()
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("Crawl k={k:.3} h={h:.3}"), &samples, 0.17, 1.0);
+        }
+    }
+}
+
+/// H1 WAS BACKWARDS: THE FOOTSTEP FEEDBACK IS ALREADY AT ITS LIMIT.
+///
+/// The prediction was that `k_capture = 0.05` is too weak (LIP sqrt(h/g) is
+/// 0.175 for this trunk) and that raising it would pull in both the 16%
+/// speed overshoot and the lateral crab. Raising it did the opposite: Trot
+/// at k=0.175 makes 2% of its command and yaws 43 deg; Walk at k=0.175
+/// drifts 2.07 m sideways. Every increase made both symptoms worse, and the
+/// drift *flipped sign* between k=0.05 and k=0.10.
+///
+/// A sign flip under a gain change is a closed-loop property, not a plant
+/// bias -- so the lateral drift is the footstep feedback going unstable, and
+/// 0.05 is already near the edge rather than 3.5x below where it belongs.
+/// (The sqrt(h/g) reasoning assumes the foothold takes effect within one
+/// step; here it is filtered through the MPC's own horizon, which adds lag
+/// the LIP formula does not know about.)
+///
+/// So sweep the other way, down to and including k=0 -- pure open-loop
+/// Raibert. If the drift is feedback-driven, k=0 has the least of it.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_capture_gain_low_side() {
+    for (gait, t, duty, step, cmd_vx) in [
+        (GaitType::Trot, 0.260, 0.50, 0.145, 0.89),
+        (GaitType::Walk, 0.400, 0.75, 0.145, 0.38),
+    ] {
+        for k in [0.0, 0.015, 0.030, 0.050] {
+            let params = WbcParams {
+                total_time_s: 8.0,
+                burn_in_s: 1.0,
+                cmd_vx,
+                gait_type: Some(gait),
+                cycle_period_s: Some(t),
+                duty_factor: Some(duty),
+                max_step_length_m: Some(step),
+                k_capture_s: Some(k),
+                ..WbcParams::forward_walk()
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} k={k:.3}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// DOES THE LATERAL MODE SATURATE, OR DOES IT DIVERGE?
+///
+/// The low-side sweep settled two things. Speed tracking is best with the
+/// capture-point feedback OFF (98-100% at k=0, 120% at k=0.05) -- the
+/// overshoot was the feedback, not the plan. And Trot's lateral velocity
+/// grows monotonically (0.00 -> -0.13 m/s over 7 s) *even at k=0*, so the
+/// crab is not a feedback artefact either; it is in the gait.
+///
+/// -0.02 m/s^2 over seven seconds is far too slow to call from a 6 s run.
+/// A mode that saturates at some small lateral rate is a robot that walks
+/// slightly sideways -- annoying, correctable later by a heading loop. A
+/// mode that keeps growing is a robot that eventually falls over, and that
+/// has to be fixed before any of this goes on hardware.
+///
+/// So: 25 s, the same duration the Go2 Bound runs were judged on, on each of
+/// the three gaits at its best-so-far setting. This is also the first real
+/// endurance test any of them has had -- the four original tests ran 3 s.
+#[test]
+#[ignore = "long run -- run with --ignored"]
+fn namiashi_gait_endurance() {
+    let rows: &[(GaitType, &str, f64, f64, f64, f64, f64, f64)] = &[
+        // gait, tag, T, duty, step, swing_h, k, cmd
+        (GaitType::Trot, "k0", 0.260, 0.50, 0.145, 0.040, 0.0, 0.89),
+        (GaitType::Trot, "k.03", 0.260, 0.50, 0.145, 0.040, 0.030, 0.89),
+        (GaitType::Walk, "k0", 0.400, 0.75, 0.145, 0.035, 0.0, 0.38),
+        (GaitType::Crawl, "h.04", 0.800, 0.85, 0.145, 0.040, 0.050, 0.17),
+    ];
+    for &(gait, tag, t, duty, step, h, k, cmd_vx) in rows {
+        let params = WbcParams {
+            total_time_s: 26.0,
+            burn_in_s: 1.0,
+            cmd_vx,
+            gait_type: Some(gait),
+            cycle_period_s: Some(t),
+            duty_factor: Some(duty),
+            max_step_length_m: Some(step),
+            swing_height_m: Some(h),
+            k_capture_s: Some(k),
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("{gait:?} {tag} 25s"), &samples, cmd_vx, 1.0);
+    }
+}
+
+/// CRAWL'S YAW DRIFT IS THE ONE REAL DEFECT LEFT.
+///
+/// Measured in each window's own heading frame, all three gaits track
+/// forward speed to 101-103% and slide sideways by 2-19 mm/s. What looked
+/// like a lateral instability was the run-start reporting frame; what looked
+/// like Crawl decaying was Crawl turning.
+///
+/// What survives that correction is yaw: -0.60 deg/s on Trot, +0.41 on Walk,
+/// and +2.34 on Crawl -- four to six times the others, 58 deg over 25 s.
+/// Nothing commands a turn, so this is the wz=0 reference not being held.
+///
+/// Trot's real lateral drift went away at k=0 (-0.145 m/s at k=0.03 -> +0.002
+/// at k=0), so the same question is worth asking of Crawl's yaw.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_crawl_yaw_drift() {
+    for k in [0.0, 0.025, 0.050] {
+        let params = WbcParams {
+            total_time_s: 26.0,
+            burn_in_s: 1.0,
+            cmd_vx: 0.17,
+            gait_type: Some(GaitType::Crawl),
+            cycle_period_s: Some(0.800),
+            duty_factor: Some(0.85),
+            max_step_length_m: Some(0.145),
+            swing_height_m: Some(0.040),
+            k_capture_s: Some(k),
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Crawl k={k:.3}"), &samples, 0.17, 1.0);
+    }
+}
+
+/// CAN THESE GAITS DO ANYTHING BUT WALK FORWARD?
+///
+/// Every run so far has commanded (vx>0, 0, 0). That is the one case the
+/// four original tests covered too, so nothing in this file has ever asked
+/// namiashi to back up, strafe or turn -- and a gait that only goes forward
+/// is not a controller.
+///
+/// Each gait is asked for all four at ~half its geometric ceiling
+/// `max_step/(T*duty)`, since a reversing or strafing foothold is drawn from
+/// the same step-length budget as a forward one.
+#[test]
+#[ignore = "coverage sweep -- run with --ignored"]
+fn namiashi_command_coverage() {
+    // gait, T, duty, step, swing_h, k, ceiling
+    let gaits: &[(GaitType, f64, f64, f64, f64, f64, f64)] = &[
+        (GaitType::Trot, 0.260, 0.50, 0.145, 0.040, 0.0, 1.115),
+        (GaitType::Walk, 0.400, 0.75, 0.145, 0.035, 0.0, 0.483),
+        (GaitType::Crawl, 0.800, 0.85, 0.145, 0.040, 0.0, 0.213),
+    ];
+    for &(gait, t, duty, step, h, k, ceil) in gaits {
+        let v = 0.5 * ceil;
+        let cases: [(&str, f64, f64, f64); 4] = [
+            ("fwd", v, 0.0, 0.0),
+            ("back", -v, 0.0, 0.0),
+            ("strafe", 0.0, v, 0.0),
+            ("turn", 0.0, 0.0, 0.35),
+        ];
+        for (tag, vx, vy, wz) in cases {
+            let params = WbcParams {
+                total_time_s: 11.0,
+                burn_in_s: 1.0,
+                cmd_vx: vx,
+                cmd_vy: vy,
+                cmd_wz: wz,
+                gait_type: Some(gait),
+                cycle_period_s: Some(t),
+                duty_factor: Some(duty),
+                max_step_length_m: Some(step),
+                swing_height_m: Some(h),
+                k_capture_s: Some(k),
+                ..WbcParams::forward_walk()
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk_cmd(&format!("{gait:?} {tag}"), &samples, vx, vy, wz, 1.0);
+        }
+    }
+}
+
+/// TURN RATE IS THE ONE THING THAT DOES NOT TRACK.
+///
+/// Command coverage came back clean on translation -- forward, backward and
+/// sideways all land within 98-104% on all three gaits, and all twelve runs
+/// keep the trunk between 0.293 and 0.296 m. Turning does not: 0.35 rad/s
+/// (20.1 deg/s) commanded produces 15.2 / 16.3 / 15.7 deg/s on
+/// Trot / Walk / Crawl -- 76-81%, and near enough the same deficit on three
+/// gaits whose duty factors are 0.50, 0.75 and 0.85.
+///
+/// A shortfall that ignores duty that completely is not in the footstep
+/// plan. (The rotational part of the plan is tiny anyway: at 0.35 rad/s and
+/// a ~0.10 m hip offset the yaw contribution to the half-stride is ~2 mm,
+/// two orders below the 0.145 m clamp, so nothing is being truncated.)
+///
+/// Which of two things it is decides whether it matters:
+///   - a constant gain (~0.78) -- an outer heading loop absorbs it, and any
+///     real robot has one;
+///   - saturation -- the ratio falls as wz rises, and there is a turn rate
+///     above which namiashi simply cannot comply.
+/// Only a sweep over wz separates them.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_turn_rate_linearity() {
+    for wz in [0.10, 0.20, 0.35, 0.60, 0.90] {
+        let params = WbcParams {
+            total_time_s: 11.0,
+            burn_in_s: 1.0,
+            cmd_vx: 0.0,
+            cmd_wz: wz,
+            gait_type: Some(GaitType::Trot),
+            cycle_period_s: Some(0.260),
+            duty_factor: Some(0.50),
+            max_step_length_m: Some(0.145),
+            swing_height_m: Some(0.040),
+            k_capture_s: Some(0.0),
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk_cmd(&format!("Trot wz={wz:.2}"), &samples, 0.0, 0.0, wz, 1.0);
+    }
+}
+
+/// The settings each gait was tuned to, and the numbers they have to hold.
+///
+/// `k_capture = 0.0` is not an oversight -- see `namiashi_tuned_gaits_hold`.
+const NAMIASHI_TUNED: [(GaitType, f64, f64, f64, f64, f64); 3] = [
+    // gait, cycle_period_s, duty, max_step_m, swing_height_m, cmd_vx
+    //
+    // Retuned for the corrected 3.3 kg mass. Two rows moved:
+    //   Trot 0.260 -> 0.320 s. At 0.260 the corrected model was airborne
+    //     2.0-2.8% of the time with 4.5 deg of roll; 0.320 cuts that to
+    //     0.5-1.3%. The 2.4 kg model was never airborne at either.
+    //   Walk 0.400 -> 0.500 s, command 0.380 -> 0.330. T=0.400 has a failure
+    //     band from ~0.37 to ~0.43 m/s that only exists with mass out at the
+    //     thigh and calf; T=0.500 has none. Its ceiling is
+    //     0.145/(0.500*0.75) = 0.387, so 0.330 keeps 15% of margin.
+    // Crawl was 101-102% at every speed tried on every model and is unchanged.
+    (GaitType::Trot, 0.320, 0.50, 0.145, 0.040, 0.800),
+    (GaitType::Walk, 0.500, 0.75, 0.145, 0.035, 0.330),
+    (GaitType::Crawl, 0.800, 0.85, 0.145, 0.040, 0.170),
+];
+
+fn namiashi_tuned_params(i: usize) -> WbcParams {
+    let (gait, t, duty, step, h, cmd_vx) = NAMIASHI_TUNED[i];
+    WbcParams {
+        total_time_s: 26.0,
+        burn_in_s: 1.0,
+        cmd_vx,
+        gait_type: Some(gait),
+        cycle_period_s: Some(t),
+        duty_factor: Some(duty),
+        max_step_length_m: Some(step),
+        swing_height_m: Some(h),
+        // Deliberately zero. The library default is 0.05 s and it is what was
+        // producing every symptom this file started with.
+        k_capture_s: Some(0.0),
+        ..WbcParams::forward_walk()
+    }
+}
+
+/// REGRESSION: Trot, Walk and Crawl each hold for 25 s.
+///
+/// What the tuning came down to, in order of how much it mattered:
+///
+/// 1. **The step lengths were half what the geometry allows.** Every gait
+///    was pinned to its own ceiling `v_max = max_step/(T*duty)` -- 0.50,
+///    0.18 and 0.04 m/s for the library defaults. Walk answering a 0.50 m/s
+///    command with 0.17 m/s was arithmetic, not a controller failure.
+///    Normalised by the 0.306 m leg the defaults are 33/26/20%; 0.145 m
+///    (47%) is the ratio the Go2 work settled on, and it holds here.
+///
+/// 2. **`k_capture` had to go to zero.** The library default of 0.05 s was
+///    the single cause of three separate symptoms: forward speed overshooting
+///    by up to 20%, Trot sliding sideways at 0.145 m/s, and Crawl yawing at
+///    2.34 deg/s. All three vanish at k=0, where the open-loop Raibert plan
+///    alone tracks to 101-103%. The initial guess was the opposite -- that
+///    0.05 was 3.5x *below* the LIP value sqrt(h/g)=0.175 -- and raising it
+///    made everything worse (Trot at k=0.175 makes 2% of its command and
+///    yaws 43 deg). The sqrt(h/g) formula assumes the foothold acts within
+///    one step; here it is filtered through the MPC horizon, which adds lag
+///    the formula does not model.
+///
+/// 3. **Crawl's swing clearance was 5 mm.** Fine over its default 0.06 m
+///    step, a scuff over 0.145 m: at fixed gain, 0.005 -> 0.020 m took Crawl
+///    from 74% to 94% of command, and 0.040 m to 104%.
+///
+/// Not fixed, and deliberately so: turning tracks at a flat 76-77% of
+/// command from 0.10 to 0.90 rad/s (see `namiashi_turn_rate_linearity`).
+/// It is a constant gain with no saturation in range, which any outer
+/// heading loop absorbs -- unlike the three items above, it does not stop
+/// the gait from working.
+#[test]
+#[ignore = "25 s per gait -- run with --ignored"]
+fn namiashi_tuned_gaits_hold() {
+    for i in 0..NAMIASHI_TUNED.len() {
+        let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+        let Some(samples) = run_wbc_sim(namiashi_tuned_params(i)) else {
+            return;
+        };
+        let m = report_walk(&format!("{gait:?} tuned"), &samples, cmd_vx, 1.0);
+
+        assert!(
+            m.z_min > TRUNK_Z_FALL_THRESHOLD_M,
+            "{gait:?}: trunk fell to {:.3} m",
+            m.z_min
+        );
+        let track = m.body_vx / cmd_vx;
+        assert!(
+            (0.90..=1.10).contains(&track),
+            "{gait:?}: tracked {:.0}% of {cmd_vx:.2} m/s (got {:.3})",
+            100.0 * track,
+            m.body_vx
+        );
+        // Body frame, so this is real sideways sliding and not the robot
+        // having turned -- the run-start frame reported 0.23 m/s of "crab"
+        // for Trot that was entirely -15 deg of yaw drift leaking in.
+        assert!(
+            m.body_vy.abs() < 0.05,
+            "{gait:?}: slid sideways at {:.3} m/s",
+            m.body_vy
+        );
+        // Nothing commands a turn. 1.5 deg/s is loose enough for the
+        // 0.29-0.66 deg/s these settings produce and tight enough to catch
+        // the 2.34 deg/s that k_capture=0.05 caused on Crawl.
+        assert!(
+            m.yaw_rate_deg_s.abs() < 1.5,
+            "{gait:?}: yawed at {:.2} deg/s with wz=0",
+            m.yaw_rate_deg_s
+        );
+    }
+}
+
+/// THE TUNING WAS DONE ON A ROBOT THAT WEIGHS 0.9 kg LESS THAN THE REAL ONE.
+///
+/// `namiashi.misa` came from a CAD export totalling 2.400 kg, 36% of it in
+/// the legs. The built robot is 3.3 kg with 600 g per leg, so the legs are
+/// 2.4 kg and the body is 0.9 kg: 73% of the machine is leg. That is not a
+/// scale factor, it is an inversion of where the mass lives, and it lands on
+/// the two assumptions this controller rests on.
+///
+/// The SRBD MPC treats the legs as massless -- all mass in one rigid trunk,
+/// contact forces the only thing acting on it. At 36% leg that is a stretch;
+/// at 73% the swinging legs carry more momentum than the body they are
+/// supposed to be steering, and every swing reacts on the trunk directly.
+/// The Raibert foothold plan has the same blind spot: `v * stance/2` says
+/// where to put a massless foot, and says nothing about the impulse of
+/// throwing 600 g forward and stopping it.
+///
+/// Three models, same tuned settings, so the comparison is only about mass:
+///   - `namiashi.misa`      2.400 kg, 36% leg -- what the tuning was done on
+///   - `namiashi_3p3_hip`   3.300 kg, 73% leg, added mass at the hip
+///   - `namiashi_3p3_prop`  3.300 kg, 73% leg, added mass spread down the leg
+///
+/// hip-vs-prop is the same total and the same leg fraction, differing only in
+/// how far out the mass sits. If the controller cares about mass at all, it
+/// cares through leg inertia, and those two bracket it.
+#[test]
+#[ignore = "9 x 25 s runs -- run with --ignored"]
+fn namiashi_mass_variants() {
+    for model in [
+        "namiashi.misa",
+        "namiashi_3p3_hip.misa",
+        "namiashi_3p3_prop.misa",
+    ] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                misa_file: model,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            let tag = model.trim_end_matches(".misa");
+            report_walk(&format!("{gait:?} @{tag}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// WHY prop BREAKS WALK, AND WHETHER SWING TIME BUYS IT BACK.
+///
+/// Correcting the mass to 3.3 kg costs nothing on its own: with the extra
+/// mass at the hip, all three gaits track 100-101% and the yaw drift
+/// actually halves. Spreading the same extra mass down the leg is what
+/// hurts, and the two models differ by only 74 g per leg (thigh 20.7 -> 57.3
+/// g, calf 21.3 -> 58.9 g). Walk falls to 82% of command and its three-foot
+/// support collapses from 70.7% to 14.2% -- it stops being a walk and starts
+/// running on two supports at an effective duty of 0.53 against a commanded
+/// 0.75.
+///
+/// The ranking points at swing time. Required swing speed at each gait's
+/// tuned command -- ground travel per stance, over the swing window -- is
+/// Walk 1.14 m/s, Crawl 0.97, Trot 0.89, and they broke in exactly that
+/// order. Walk has the shortest swing window of the three (0.400 s * 0.25 =
+/// 0.100 s) despite being the slowest of the two fast gaits, because duty
+/// 0.75 spends the cycle on the ground. A leg with three times the distal
+/// mass has to be accelerated and stopped inside that window, and if it
+/// arrives late the foot touches down late, which is exactly the low
+/// measured duty.
+///
+/// If that is the mechanism, buying swing time fixes it, and the two ways to
+/// buy it are a longer period and a lower duty. Both cost something: the
+/// ceiling `max_step/(T*duty)` moves with each, so each row is checked
+/// against its own ceiling rather than a fixed command.
+#[test]
+#[ignore = "re-tune sweep -- run with --ignored"]
+fn namiashi_prop_walk_swing_time() {
+    // T, duty -- swing window is T*(1-duty)
+    let rows: &[(f64, f64)] = &[
+        (0.400, 0.75), // the current tuning: 0.100 s of swing
+        (0.500, 0.75), // 0.125 s, via period
+        (0.600, 0.75), // 0.150 s, via period
+        (0.400, 0.65), // 0.140 s, via duty
+        (0.400, 0.55), // 0.180 s, via duty -- close to a trot
+        (0.500, 0.65), // 0.175 s, both
+    ];
+    for &(t, duty) in rows {
+        let step = 0.145;
+        let ceil = step / (t * duty);
+        let cmd_vx = 0.80 * ceil;
+        let params = WbcParams {
+            misa_file: "namiashi_3p3_prop.misa",
+            total_time_s: 16.0,
+            burn_in_s: 1.0,
+            cmd_vx,
+            gait_type: Some(GaitType::Walk),
+            cycle_period_s: Some(t),
+            duty_factor: Some(duty),
+            max_step_length_m: Some(step),
+            swing_height_m: Some(0.035),
+            k_capture_s: Some(0.0),
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(
+            &format!("Walk T={t:.3} d={duty:.2} swing={:.3}s", t * (1.0 - duty)),
+            &samples,
+            cmd_vx,
+            1.0,
+        );
+    }
+}
+
+/// SWING TIME WAS THE WRONG VARIABLE, AND THE SWEEP THAT SAID SO WAS RIGGED.
+///
+/// `namiashi_prop_walk_swing_time` set each row's command to 80% of that
+/// row's ceiling, so the command moved with the parameters. The two rows
+/// that worked were the two slowest commands (0.309 and 0.258 m/s); every
+/// row at 0.357 m/s or above failed, whatever its swing window. The row with
+/// the most swing time of all (T=0.400, duty 0.55, 0.180 s) failed at
+/// 0.527 m/s while a row with less (T=0.500, duty 0.75, 0.125 s) succeeded
+/// at 0.309. That is a speed threshold wearing a parameter's clothes.
+///
+/// Two sweeps that do not confound:
+///   A. hold T and duty at the tuning, walk the command up -- where does the
+///      three-foot support actually go away?
+///   B. hold the command at 0.38 m/s, vary T and duty among settings whose
+///      ceiling clears it -- does any of them survive a speed that the
+///      tuned setting cannot?
+#[test]
+#[ignore = "re-tune sweep -- run with --ignored"]
+fn namiashi_prop_walk_speed_vs_shape() {
+    let base = |t: f64, duty: f64, cmd_vx: f64| WbcParams {
+        misa_file: "namiashi_3p3_prop.misa",
+        total_time_s: 16.0,
+        burn_in_s: 1.0,
+        cmd_vx,
+        gait_type: Some(GaitType::Walk),
+        cycle_period_s: Some(t),
+        duty_factor: Some(duty),
+        max_step_length_m: Some(0.145),
+        swing_height_m: Some(0.035),
+        k_capture_s: Some(0.0),
+        ..WbcParams::forward_walk()
+    };
+
+    eprintln!("---- A: speed sweep at the tuned shape (T=0.400, duty=0.75) ----");
+    for cmd_vx in [0.20, 0.26, 0.31, 0.34, 0.38, 0.44] {
+        let Some(samples) = run_wbc_sim(base(0.400, 0.75, cmd_vx)) else { return };
+        report_walk(&format!("Walk v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
+    }
+
+    eprintln!("---- B: shape sweep at a fixed 0.38 m/s ----");
+    // Every row's ceiling 0.145/(T*duty) clears 0.38.
+    for &(t, duty) in &[
+        (0.400, 0.75),
+        (0.500, 0.75),
+        (0.400, 0.65),
+        (0.500, 0.65),
+        (0.400, 0.55),
+        (0.300, 0.75),
+    ] {
+        let Some(samples) = run_wbc_sim(base(t, duty, 0.38)) else { return };
+        report_walk(&format!("Walk T={t:.3} d={duty:.2}"), &samples, 0.38, 1.0);
+    }
+}
+
+/// IS THE BAD BAND REAL, AND IS THE PHASE OVERRIDE WHAT DIGS IT?
+///
+/// The speed sweep found a hole, not a limit: on the prop model at T=0.400 /
+/// duty 0.75, Walk tracks 103/101/97/96% at 0.20-0.34 m/s, drops to 82% at
+/// 0.38, and is back to 94% at 0.44. Every setting that failed anywhere
+/// failed into the same state -- effective duty ~0.53 with 81-87% of the
+/// time on two feet. Duty 0.53 on two supports is a trot. Walk is not
+/// degrading, it is being captured by a different gait.
+///
+/// The only thing in this loop that can rewrite the gait pattern at runtime
+/// is `ContactDrivenPhase`, which flips a leg to stance the moment its foot
+/// reads above 5 N. That threshold was chosen for a 2.4 kg robot whose whole
+/// leg weighed 217 g. A 600 g leg with 74 g more of it out at the thigh and
+/// calf lands harder, so contacts that never reached 5 N now do -- and each
+/// spurious flip shortens that leg's stance, which is the low measured duty.
+///
+/// Two questions, one sweep: is the band narrow (fine speed steps), and does
+/// raising the override threshold out of reach close it (5 N vs 15 N vs off)?
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_prop_walk_contact_override() {
+    for thr in [5.0, 15.0, 1.0e9] {
+        let label = if thr > 1.0e6 {
+            "off".to_string()
+        } else {
+            format!("{thr:.0}N")
+        };
+        eprintln!("---- early-contact override = {label} ----");
+        for cmd_vx in [0.34, 0.36, 0.38, 0.40, 0.42, 0.44] {
+            let params = WbcParams {
+                misa_file: "namiashi_3p3_prop.misa",
+                total_time_s: 16.0,
+                burn_in_s: 1.0,
+                cmd_vx,
+                gait_type: Some(GaitType::Walk),
+                cycle_period_s: Some(0.400),
+                duty_factor: Some(0.75),
+                max_step_length_m: Some(0.145),
+                swing_height_m: Some(0.035),
+                k_capture_s: Some(0.0),
+                early_contact_n: thr,
+                ..WbcParams::forward_walk()
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("Walk v={cmd_vx:.2} thr={label}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// NOT THE PHASE OVERRIDE EITHER -- AND IT IS A BAND, NOT A HOLE.
+///
+/// `ContactDrivenPhase` was the only thing in the loop that can rewrite the
+/// gait pattern at runtime, so the guess was that heavier legs trip its 5 N
+/// early-touchdown threshold spuriously. Disabling it entirely changes
+/// nothing: at 0.38 m/s the prop model tracks 82% with the override at 5 N,
+/// 83% at 15 N and 83% with it off. Every speed matches to within 1-3 points
+/// across all three settings. The override is not involved.
+///
+/// The finer sweep also corrected the shape of the failure. It is not a hole
+/// at 0.38 -- it is a band: 96% at 0.34, 95/88/89% at 0.36 (the edge),
+/// 79-83% from 0.38 to 0.42, and back to 94-95% at 0.44. Roughly 0.37 to
+/// 0.43 m/s, about 0.06 m/s wide, with clean walking on both sides.
+///
+/// Which leaves the question that actually matters for the design, since two
+/// readings of the evidence so far are still alive:
+///   - distal leg mass CREATES a band that the light model does not have; or
+///   - a band is always there and the parameters only move it, and the 2.4 kg
+///     tuning happened to sit beside it.
+/// Those imply opposite fixes -- redistribute mass in hardware, versus pick a
+/// period. Sweeping the same speeds on the hip model (same total mass, same
+/// leg fraction, mass held proximal) and on prop at the period that escaped
+/// (T=0.500) separates them.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_walk_band_is_mass_or_tuning() {
+    let cases: &[(&str, &str, f64)] = &[
+        ("namiashi_3p3_hip.misa", "hip T=0.400", 0.400),
+        ("namiashi_3p3_prop.misa", "prop T=0.500", 0.500),
+        ("namiashi.misa", "2.4kg T=0.400", 0.400),
+    ];
+    for &(model, label, t) in cases {
+        eprintln!("---- {label} ----");
+        for cmd_vx in [0.34, 0.36, 0.38, 0.40, 0.42, 0.44] {
+            let params = WbcParams {
+                misa_file: model,
+                total_time_s: 16.0,
+                burn_in_s: 1.0,
+                cmd_vx,
+                gait_type: Some(GaitType::Walk),
+                cycle_period_s: Some(t),
+                duty_factor: Some(0.75),
+                max_step_length_m: Some(0.145),
+                swing_height_m: Some(0.035),
+                k_capture_s: Some(0.0),
+                ..WbcParams::forward_walk()
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{label} v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// RE-TUNE TROT AND CRAWL ON THE CORRECTED MASS.
+///
+/// The band belongs to distal leg mass: at T=0.400 the 2.4 kg model tracks
+/// 101% flat from 0.34 to 0.44 m/s and the hip model 99-100%, while prop
+/// drops to 79-82% across 0.38-0.42. Moving prop to T=0.500 removes it --
+/// what looks like decay there (99 -> 87% as speed rises) is just the
+/// ceiling: 0.145/(0.500*0.75) = 0.387 m/s, and 0.387/0.44 = 88% against 87%
+/// measured, with three-foot support holding at 0.67.
+///
+/// So Walk moves to T=0.500 and a command safely under 0.387. Trot needs
+/// checking too: on prop at the old tuning it overshot to 111% and was
+/// airborne 2.6% of the time with 4.5 deg of roll, which the 2.4 kg model
+/// never did. Crawl was 102% and untouched, but gets swept anyway rather
+/// than assumed.
+#[test]
+#[ignore = "re-tune sweep -- run with --ignored"]
+fn namiashi_prop_retune_trot_crawl() {
+    eprintln!("---- Trot on prop: speed at T=0.260, and a longer period ----");
+    for &(t, cmd_vx) in &[
+        (0.260, 0.70),
+        (0.260, 0.80),
+        (0.260, 0.89),
+        (0.320, 0.70),
+        (0.320, 0.80),
+        (0.320, 0.89),
+    ] {
+        let params = WbcParams {
+            misa_file: "namiashi_3p3_prop.misa",
+            total_time_s: 16.0,
+            burn_in_s: 1.0,
+            cmd_vx,
+            gait_type: Some(GaitType::Trot),
+            cycle_period_s: Some(t),
+            duty_factor: Some(0.50),
+            max_step_length_m: Some(0.145),
+            swing_height_m: Some(0.040),
+            k_capture_s: Some(0.0),
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Trot T={t:.3} v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
+    }
+
+    eprintln!("---- Crawl on prop ----");
+    for cmd_vx in [0.13, 0.17, 0.20] {
+        let params = WbcParams {
+            misa_file: "namiashi_3p3_prop.misa",
+            total_time_s: 16.0,
+            burn_in_s: 1.0,
+            cmd_vx,
+            gait_type: Some(GaitType::Crawl),
+            cycle_period_s: Some(0.800),
+            duty_factor: Some(0.85),
+            max_step_length_m: Some(0.145),
+            swing_height_m: Some(0.040),
+            k_capture_s: Some(0.0),
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Crawl v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
+    }
+}
+
+/// IS THE DYNAMIC LAYER DOING ANYTHING?
+///
+/// An architecture review of this stack argued that the measured locomotion
+/// is produced by the joint position-PD tracking IK targets, and that the MPC
+/// and WBC contribute almost nothing. Its evidence is checkable and checks
+/// out:
+///
+///   - `WbcPipeline::new` hardcodes `mass_kg: 9.0` and an inertia diagonal
+///     for a 9 kg machine (`articara/src/wbc_pipeline.rs:250`), and this
+///     harness never overrides either. namiashi is 3.3 kg. The `base_accel`
+///     task carries the largest soft weight in the QP.
+///   - The MPC's horizon contact schedule is `self.cfg.duty_factor > 0.5`
+///     for every node past the first (`mpc_controller.rs:600`). Trot's duty
+///     is exactly 0.50, so that is false, and the MPC plans all four legs
+///     airborne for nine of its ten nodes. Walk and Crawl plan all four in
+///     stance for all nine. Neither resembles the gait being walked.
+///   - `wbc_pipeline.rs:515` is `let _ = (v_cmd_body, wz_cmd, omega_obs_world);`
+///     and every attitude PD gain defaults to (0.0, 0.0).
+///   - During stance `Footstep::stance_at` sweeps the foot from
+///     `nominal + half` to `nominal - half` over the stance window, so under
+///     no-slip `v_body = 2*half/T_st` identically. With open-loop Raibert
+///     that is `v_cmd` exactly -- which is what 101-103% tracking and an
+///     exactly-obeyed geometric ceiling look like.
+///
+/// The claim is falsifiable in one run: zero the WBC's torque feedforward and
+/// leave the position-PD alone. If the gait is unchanged, every number in
+/// this file describes the PD and IK layer, and the tuning conclusions are
+/// statements about kinematics.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_is_the_dynamic_layer_load_bearing() {
+    for kinematic_only in [false, true] {
+        let tag = if kinematic_only { "PD only" } else { "WBC on" };
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                kinematic_only,
+                total_time_s: 16.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// THE BAND WAS AN ARTEFACT OF AN UNDER-MODELLED KNEE.
+///
+/// This test was written before the knee's 9:14 reduction was referred
+/// through the model. The source URDF raised the calf's `effort` to 2.205
+/// against the others' 1.5 -- a ratio of 1.470 where 14/9 is 1.5556 -- and
+/// left `velocity` and `armature` at the same values as every other joint.
+/// A reduction does all three: torque x14/9, speed x9/14, and reflected
+/// rotor inertia x(14/9)^2. So the knee was carrying 2.4x too little
+/// inertia.
+///
+/// With that corrected the speed dependence disappears. Walk on prop at
+/// T=0.400 now holds three-foot support of only 0.16-0.21 at *every* speed
+/// from 0.30 to 0.48 m/s, where before it held 0.61-0.64 below the band and
+/// 0.65 above it. There is no band because there is no good region: T=0.400
+/// simply cannot walk this leg. The tuned setting had already moved to
+/// T=0.500, which holds 0.79.
+///
+/// The speed limit is not what binds, either -- knee velocity peaks at
+/// 0.63-0.70 of its (now correct) 21.5 rad/s rating and never exceeds it.
+/// The knee is torque-limited, and referring the inertia properly is what
+/// made that visible: calf saturation went from 0-1% to 9-11% on every gait
+/// despite the torque limit going *up* by 5.8%.
+///
+/// Original question, kept because the answer still stands:
+///
+/// DOES TORQUE SATURATION EXPLAIN THE WALK BAND?
+///
+/// `mujoco_sim` clamps every joint to its `effort` limit silently
+/// (`src/mujoco_sim.rs:1121`), so a saturated actuator has been invisible in
+/// every run in this file. Measuring it changes the picture: on the tuned
+/// settings the thigh joint is clamped 22.5% of the time on Trot with the
+/// corrected mass, 11.1% even on the original 2.4 kg model, and every joint
+/// role reaches its limit at some point on every gait. namiashi's hip and
+/// thigh are rated 1.5 N*m and its calf 2.205.
+///
+/// That is a candidate mechanism for the Walk band that neither swing time
+/// nor the contact override could account for. If it is the cause, the
+/// saturation fraction should spike inside 0.38-0.42 and fall away on both
+/// sides, tracking the failure rather than rising monotonically with speed.
+/// If it rises smoothly through the band, saturation is a separate (and
+/// separately serious) problem and the band is still unexplained.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_walk_band_torque_saturation() {
+    for cmd_vx in [0.30, 0.34, 0.38, 0.40, 0.42, 0.44, 0.48] {
+        let params = WbcParams {
+            misa_file: "namiashi_3p3_prop.misa",
+            total_time_s: 16.0,
+            burn_in_s: 1.0,
+            cmd_vx,
+            gait_type: Some(GaitType::Walk),
+            cycle_period_s: Some(0.400),
+            duty_factor: Some(0.75),
+            max_step_length_m: Some(0.145),
+            swing_height_m: Some(0.035),
+            k_capture_s: Some(0.0),
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Walk v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
+    }
+}
+
+/// STEP 1 OF MAKING THE DYNAMIC LAYER REAL: GIVE THE WBC THE RIGHT ROBOT.
+///
+/// `namiashi_is_the_dynamic_layer_load_bearing` established that zeroing the
+/// WBC's torque feedforward changes nothing -- Trot 106 -> 102%, Walk
+/// 100 -> 101%, Crawl 101 -> 100%, and Walk's three-foot support actually
+/// improves. That is a controller that is not controlling.
+///
+/// The most likely reason is that it is solving for the wrong machine.
+/// `WbcPipeline::new` hardcodes `mass_kg: 9.0` and `inertia_diag_body:
+/// (0.07, 0.26, 0.242)` -- a 9 kg robot -- and this harness has never
+/// overridden either. namiashi is 3.3 kg. The `base_accel` task those feed
+/// carries the largest soft weight in the QP, so at a static stand where the
+/// MPC hands over roughly m*g, the WBC reads that as 32.4/9.0 - 9.81 =
+/// -6.2 m/s^2 and spends its largest weight asking the trunk to accelerate
+/// downward at 0.63 g, continuously.
+///
+/// One variable at a time: mass, CoM offset and composite inertia from the
+/// same source the centroidal MPC config already uses, nothing else touched.
+/// Then the same falsification test, to see whether the dynamic layer has
+/// become load-bearing or merely better informed.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_wbc_real_inertia() {
+    for real in [false, true] {
+        for kinematic_only in [false, true] {
+            let tag = match (real, kinematic_only) {
+                (false, false) => "9kg WBC on",
+                (false, true) => "9kg PD only",
+                (true, false) => "real WBC on",
+                (true, true) => "real PD only",
+            };
+            for i in 0..NAMIASHI_TUNED.len() {
+                let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+                let params = WbcParams {
+                    wbc_real_inertia: real,
+                    kinematic_only,
+                    total_time_s: 16.0,
+                    ..namiashi_tuned_params(i)
+                };
+                let Some(samples) = run_wbc_sim(params) else { return };
+                report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
+            }
+        }
+    }
+}
+
+/// STEP 3: STOP THE QP ANSWERING A THREE-CONTACT PLAN WITH TWO CONTACTS.
+///
+/// With the horizon schedule and the WBC's inertia both corrected, the
+/// dynamic layer finally helps Trot -- peak roll 3.8 deg with its torque
+/// zeroed against 2.0 deg with it on. Walk went the other way: three-foot
+/// support 0.842 zeroed against 0.608 applied, and thigh saturation doubled.
+/// Walk is duty 0.75, so three feet are down by construction; a controller
+/// that costs three-foot support on that gait is doing something specific.
+///
+/// The friction pyramid constrains stance feet to push and not pull, and
+/// nothing more. With three or four contacts the GRF allocation is redundant
+/// and a two-contact solution satisfies every constraint in the QP -- the
+/// only thing arguing against it is a low-weight regulariser toward the
+/// MPC's plan. 0.608 is what choosing that vertex looks like from outside.
+///
+/// So demand a floor. Expressed as a fraction of the static per-foot share
+/// `m*g/4` so it means the same on every model. It is a hard constraint at
+/// priority 0: too large and the touchdown transient, where the commanded
+/// contact set and the physical one disagree for a tick, becomes infeasible
+/// rather than merely wrong. The sweep is there to find where that starts.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_min_stance_force() {
+    for frac in [0.0, 0.05, 0.10, 0.20, 0.35] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                wbc_real_inertia: true,
+                f_min_stance_frac: frac,
+                total_time_s: 16.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} fmin={frac:.2}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// STEP 4: IS THE BASE-ACCEL REFERENCE WHAT COSTS WALK ITS SUPPORT?
+///
+/// The minimum-normal-force floor did nothing. Walk's three-foot support sits
+/// at 0.606-0.610 whether the floor is 0% or 35% of the static per-foot
+/// share, so the QP was never picking a two-contact vertex -- it was already
+/// loading every stance foot, and the constraint never binds. The support is
+/// being lost in the physics, not in the solution.
+///
+/// Which moves the suspicion up one level, to what the torque is being asked
+/// to achieve. `base_accel` carries the MPC's predicted base acceleration and
+/// is the largest soft weight in the QP at 200, against 1 for swing-leg and 5
+/// for contact-force and tau-gravity. If that reference is wrong for Walk,
+/// the WBC spends most of its authority chasing it and unloads a foot doing
+/// so.
+///
+/// Sweeping the weight to zero turns the WBC into gravity compensation plus
+/// the low-weight terms, without disabling it the way `kinematic_only` does.
+/// If Walk's support climbs back toward the 0.842 it reaches with the torque
+/// zeroed, the reference is the problem. If it stays at 0.61, the reference
+/// is innocent and something in the priority-0 block is responsible.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_base_accel_weight() {
+    for w in [200.0, 50.0, 10.0, 0.0] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                wbc_real_inertia: true,
+                base_accel_weight: Some(w),
+                total_time_s: 16.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} w={w:.0}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// STEP 5: THE FLAGS THE WBC IS GIVEN DISAGREE WITH EACH OTHER.
+///
+/// Two suspects down. A minimum normal force on stance feet moves Walk's
+/// three-foot support from 0.608 to 0.610 across 0-35% of the static share,
+/// so the QP was never picking a two-contact vertex. Dropping `base_accel`
+/// from its default weight of 200 to zero moves it to 0.626, so the MPC's
+/// predicted base acceleration is not what the torque is being spent on
+/// either. Neither comes near the 0.842 the same gait reaches with the WBC's
+/// torque zeroed outright.
+///
+/// That leaves priority 0, and there is a specific inconsistency there.
+/// `ContactDrivenPhase::apply_correction` is called with a late-liftoff
+/// threshold of 0, so it is monotone: it can add stance legs, never remove
+/// them. When a foot touches down early, `contact_flag[i]` flips to true
+/// while `gait_out.legs[i].phase.is_stance` stays false. That leg then gets,
+/// simultaneously:
+///
+///   - `no_contact_motion`, a priority-0 hard equality gated on
+///     `contact_flag`, nailing the foot in place;
+///   - the swing-tracking cost, gated on the *nominal* phase, still asking
+///     it to follow an advancing swing arc;
+///   - the joint position-PD at kp=100, still driving q* along that arc.
+///
+/// Priority 0 wins. The foot is pinned while two other terms drag it, which
+/// unloads it -- and an unloaded foot is exactly what a support census reads
+/// as airborne.
+///
+/// This needs no code change to test: raising the early-touchdown threshold
+/// out of reach removes the correction, and with it the disagreement.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_contact_flag_consistency() {
+    for (thr, tag) in [(5.0, "5N"), (1.0e9, "off")] {
+        for kinematic_only in [false, true] {
+            let k = if kinematic_only { "PD only" } else { "WBC on" };
+            for i in 0..NAMIASHI_TUNED.len() {
+                let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+                let params = WbcParams {
+                    wbc_real_inertia: true,
+                    early_contact_n: thr,
+                    kinematic_only,
+                    total_time_s: 16.0,
+                    ..namiashi_tuned_params(i)
+                };
+                let Some(samples) = run_wbc_sim(params) else { return };
+                report_walk(&format!("{gait:?} {tag} {k}"), &samples, cmd_vx, 1.0);
+            }
+        }
+    }
+}
+
+/// STEP 6: THE WBC IS UNLOADING THE FRONT FEET SPECIFICALLY.
+///
+/// Removing `ContactDrivenPhase` moved Walk's three-foot support from 0.608
+/// to 0.585 -- the wrong direction, so the flag disagreement is not it
+/// either. But the per-foot duty in that run says what is happening:
+///
+///     Walk, WBC torque on   0.54 0.53 | 0.79 0.78
+///     Walk, WBC torque off  0.68 0.66 | 0.79 0.79
+///
+/// The rear pair is identical to two decimal places. Only the front pair
+/// drops. The WBC is not degrading the gait, it is shifting load rearward.
+///
+/// Of the terms that can distribute force front-to-rear, `base_accel` is
+/// already ruled out (weight 200 -> 0 moved support by 0.018). `contact_force`
+/// is the other one: at weight 5 it pulls the QP's own GRF solution toward
+/// the MPC's prediction, and the MPC computes its moment arms from the body
+/// root while the WBC -- now that `centroidal_inertia_body` is set -- computes
+/// its predicted acceleration from the CoM, 15.9 mm below the root on this
+/// model. If the MPC's allocation is front-light, the WBC is faithfully
+/// reproducing it.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_contact_force_weight() {
+    for w in [5.0, 1.0, 0.0] {
+        let params = WbcParams {
+            wbc_real_inertia: true,
+            contact_force_weight: Some(w),
+            total_time_s: 16.0,
+            ..namiashi_tuned_params(1)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Walk cf={w:.0}"), &samples, NAMIASHI_TUNED[1].5, 1.0);
+    }
+    // Both off: what is left is gravity comp plus the swing-leg term.
+    let params = WbcParams {
+        wbc_real_inertia: true,
+        contact_force_weight: Some(0.0),
+        base_accel_weight: Some(0.0),
+        total_time_s: 16.0,
+        ..namiashi_tuned_params(1)
+    };
+    if let Some(samples) = run_wbc_sim(params) {
+        report_walk("Walk cf=0 ba=0", &samples, NAMIASHI_TUNED[1].5, 1.0);
+    }
+}
+
+/// STEP 7: WHICH THIRD OF THE "REAL INERTIA" CHANGE COSTS WALK ITS FRONT FEET?
+///
+/// Correcting the MPC's own inertia -- it was using the heaviest link's
+/// tensor, 12 to 24 times under the composite -- moved Walk's three-foot
+/// support from 0.725 to 0.745 with the WBC still on its 9 kg placeholder,
+/// and its front duty from 0.54/0.53 back to 0.63/0.59. But with the WBC
+/// corrected too it sits at 0.592. Something in the WBC-side correction is
+/// undoing it.
+///
+/// `wbc_real_inertia` is three changes at once, and they are not equivalent:
+///   - mass 9.0 -> 3.3 kg scales `a_base_des` by 2.7 across the board;
+///   - the CoM offset moves where moments are taken about;
+///   - setting `centroidal_inertia_body` also switches the pipeline from
+///     `predicted_base_accel_world` to its centroidal variant, which is a
+///     different function, not just a different constant.
+///
+/// Bundling them is how the earlier one-at-a-time sweeps kept missing:
+/// `base_accel` and `contact_force` turned out to be jointly responsible
+/// (0.608 with both on, 0.655 and 0.626 with either alone, 0.819 with both
+/// off) because they carry the same MPC prediction down two paths. Same
+/// discipline applies here.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_wbc_inertia_decomposition() {
+    let cases: &[(&str, bool, bool, bool)] = &[
+        ("none", false, false, false),
+        ("mass", true, false, false),
+        ("com", false, true, false),
+        ("inertia", false, false, true),
+        ("all", true, true, true),
+    ];
+    for &(tag, m, c, i) in cases {
+        let params = WbcParams {
+            wbc_real_mass_only: m,
+            wbc_real_com_only: c,
+            wbc_real_inertia_only: i,
+            total_time_s: 16.0,
+            ..namiashi_tuned_params(1)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Walk {tag}"), &samples, NAMIASHI_TUNED[1].5, 1.0);
+    }
+}
+
+/// VIDEO SOURCE: the three tuned gaits, and the four commands.
+///
+/// Writes a replay trace per run under `NAMIASHI_REPLAY_OUT/<label>/`, which
+/// `render_namiashi.py` turns into an MP4. Nothing here asserts -- the
+/// assertions live in `namiashi_tuned_gaits_hold`; this exists so the video
+/// and the regression are demonstrably the same configuration, taken from
+/// `NAMIASHI_TUNED` rather than restated.
+///
+/// Run as:
+///   NAMIASHI_REPLAY_OUT=/tmp/namiashi_replay cargo test --release \
+///     --no-default-features --features mujoco --test wbc_walk \
+///     namiashi_video_source -- --ignored --nocapture
+#[test]
+#[ignore = "video source -- needs NAMIASHI_REPLAY_OUT"]
+fn namiashi_video_source() {
+    let Ok(root) = std::env::var("NAMIASHI_REPLAY_OUT") else {
+        eprintln!("NAMIASHI_REPLAY_OUT unset -- nothing to record");
+        return;
+    };
+
+    // Part 1: each tuned gait walking forward.
+    for i in 0..NAMIASHI_TUNED.len() {
+        let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+        let label = format!("{gait:?}").to_lowercase();
+        let params = WbcParams {
+            total_time_s: 13.0,
+            replay_dir: Some(format!("{root}/{label}")),
+            ..namiashi_tuned_params(i)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("{gait:?} video"), &samples, cmd_vx, 1.0);
+    }
+
+    // Part 2: Trot answering all four commands, so the turn is visible. The
+    // yaw moment arm fix took turning from 76% of command to 100%, and that
+    // is the one result a still number does not convey.
+    let (_, t, duty, step, h, fwd) = NAMIASHI_TUNED[0];
+    for (tag, vx, vy, wz) in [
+        ("cmd_fwd", fwd, 0.0, 0.0),
+        ("cmd_back", -fwd, 0.0, 0.0),
+        ("cmd_strafe", 0.0, 0.45, 0.0),
+        ("cmd_turn", 0.0, 0.0, 0.60),
+    ] {
+        let params = WbcParams {
+            replay_dir: Some(format!("{root}/{tag}")),
+            total_time_s: 11.0,
+            burn_in_s: 1.0,
+            cmd_vx: vx,
+            cmd_vy: vy,
+            cmd_wz: wz,
+            gait_type: Some(GaitType::Trot),
+            cycle_period_s: Some(t),
+            duty_factor: Some(duty),
+            max_step_length_m: Some(step),
+            swing_height_m: Some(h),
+            k_capture_s: Some(0.0),
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk_cmd(&format!("Trot {tag}"), &samples, vx, vy, wz, 1.0);
+    }
+}
+
+/// HOW LOW CAN namiashi STAND AND STILL WALK?
+///
+/// Every result so far is at one stance height, the 0.295 m the harness has
+/// always used. Crouching is not a free parameter: it rotates the leg
+/// Jacobian, and the same foot force then needs a different split between
+/// thigh and knee. On this robot that matters more than usual, because the
+/// thigh is already the joint that saturates -- 24% of the time on Trot
+/// against a 1.5 N*m limit.
+///
+/// It also eats the step-length budget from the other end. `max_step_length_m`
+/// is 0.145 m against a 0.306 m leg, and a crouched leg has less horizontal
+/// reach before it runs out of extension, so a drop that leaves the gait
+/// geometrically fine can still leave it kinematically infeasible.
+///
+/// Four heights, three gaits, tuned settings otherwise unchanged. `drop` here
+/// is absolute, measured from the harness's original ~0.295 m stance -- it
+/// overrides `NAMIASHI_STANCE_DROP_M` rather than adding to it, so the 0 cm
+/// row is the old baseline and the 6 cm row is the current one.
+#[test]
+#[ignore = "12 runs -- run with --ignored"]
+fn namiashi_trunk_height_sweep() {
+    for drop in [0.0, 0.02, 0.04, 0.06] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                trunk_drop_m: drop,
+                total_time_s: 16.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(
+                &format!("{gait:?} drop={:.0}cm", drop * 100.0),
+                &samples,
+                cmd_vx,
+                1.0,
+            );
+        }
+    }
+}
+
+/// VIDEO SOURCE: the same gait at four stance heights.
+///
+/// Records Trot and Walk at 0 / 2 / 4 / 6 cm of crouch for
+/// `render_namiashi_height.py` to show as a 2x2 grid. Same settings as
+/// `NAMIASHI_TUNED` otherwise, so the comparison is only about height.
+///
+/// Run as:
+///   NAMIASHI_REPLAY_OUT=/tmp/namiashi_height cargo test --release \
+///     --no-default-features --features mujoco --test wbc_walk \
+///     namiashi_height_video_source -- --ignored --nocapture
+#[test]
+#[ignore = "video source -- needs NAMIASHI_REPLAY_OUT"]
+fn namiashi_height_video_source() {
+    let Ok(root) = std::env::var("NAMIASHI_REPLAY_OUT") else {
+        eprintln!("NAMIASHI_REPLAY_OUT unset -- nothing to record");
+        return;
+    };
+    for i in [0usize, 1] {
+        let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+        for drop in [0.0, 0.02, 0.04, 0.06] {
+            let tag = format!(
+                "{}_{:.0}cm",
+                format!("{gait:?}").to_lowercase(),
+                drop * 100.0
+            );
+            let params = WbcParams {
+                trunk_drop_m: drop,
+                total_time_s: 12.0,
+                replay_dir: Some(format!("{root}/{tag}")),
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
+        }
+    }
 }
 
 fn assert_forward_command_advances_body(samples: &[WbcSample]) {

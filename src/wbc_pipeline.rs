@@ -68,6 +68,13 @@ pub struct WbcPipeline {
     pub swing_kd: f64,
     /// Friction coefficient for the contact pyramid (per foot).
     pub friction_mu: f64,
+    /// Minimum normal force demanded of a commanded-stance foot, newtons.
+    /// Zero (the default) leaves the pyramid push-only, which lets the QP
+    /// answer a three- or four-contact plan with a two-contact solution --
+    /// every constraint is satisfied and only a low-weight regulariser
+    /// argues otherwise. Hard constraint at priority 0, so keep it well
+    /// under the real per-foot share or touchdown transients go infeasible.
+    pub f_min_stance_n: f64,
     /// SRBD physical parameters used by [`predicted_base_accel_world`]
     /// to derive the WBC's `a_base_des` from the MPC's GRF prediction.
     /// Mirror these to the host's [`SrbdMpcConfig`] so the WBC
@@ -255,6 +262,7 @@ impl WbcPipeline {
             // Match the sim's ground geom friction (= 0.5) so WBC and
             // MPC agree on the friction limit.
             friction_mu: 0.5,
+            f_min_stance_n: 0.0,
             mass_kg: 9.0,
             inertia_diag_body: na::Vector3::new(0.07, 0.26, 0.242),
             centroidal_inertia_body: None,
@@ -741,6 +749,7 @@ impl WbcPipeline {
             dj_v: &dj_v,
             contact_flag,
             friction_mu: self.friction_mu,
+            f_min_stance_n: self.f_min_stance_n,
             torque_max: &torque_max,
             a_base_des: &a_base_des,
             swing_q_ddot_des: &swing_q_ddot_des,
