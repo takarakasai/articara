@@ -39,9 +39,8 @@ use quadruped_gait::wbc::{
 };
 #[allow(unused_imports)] // re-exported for host use of `with_wbc_solver`
 pub use quadruped_gait::wbc::{Formulation, HqpStrategy, QpSolver, SolveConfig};
-use quadruped_gait::{ControllerOutput, KinematicsConfig, forward_leg_kinematics};
+use quadruped_gait::{ControllerOutput, KinematicsConfig, RobotStateSource, forward_leg_kinematics};
 
-use crate::mujoco_sim::MujocoSim;
 use crate::rbd::model::RobotModel;
 
 /// Stateful wrapper around a single sim-tick WBC solve. Carries the
@@ -281,13 +280,13 @@ impl WbcPipeline {
     ///
     /// Returns a per-`robot.joints` torque vector. Entries for fixed
     /// joints stay at 0; entries for movable joints carry the WBC
-    /// solution. Call [`MujocoSim::set_wbc_torques`] with this result
+    /// solution. Call [`crate::mujoco_sim::MujocoSim::set_wbc_torques`] with this result
     /// (or `clear_wbc_torques` when the pipeline is disabled).
     #[allow(clippy::too_many_arguments)]
-    pub fn solve(
+    pub fn solve<S: RobotStateSource>(
         &mut self,
         robot: &RobotModel,
-        mj_sim: &MujocoSim,
+        mj_sim: &S,
         gait_out: &ControllerOutput,
         kin: &KinematicsConfig,
         joint_indices: [[usize; 3]; 4],
