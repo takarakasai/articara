@@ -8734,24 +8734,33 @@ fn go2_wbc_trot_propulsion_comparison() {
 #[test]
 #[ignore = "exploratory stress test — run with --ignored"]
 fn go2_wbc_trot_speed_tune() {
-    // (cmd_vx, cycle_period, max_step) aimed at ~0.8-1.3 m/s (v_max ≈ step/cycle).
+    // Root cause of the 0.53 m/s cap (§5f23): the footstep neutral uses the
+    // COMMANDED velocity, so when cmd exceeds the actual speed the foot is
+    // over-placed forward and brakes. Fix = the measured-speed Raibert
+    // neutral + command-tracking feedback (`bound_fore_aft_placement_gain`,
+    // not gait-gated). Sweep that gain on a fixed fast cadence (cyc=0.30,
+    // step=0.30) at cmd_vx=1.2.
+    // The cmd-based neutral only MILDLY over-places, so a gentle ramp that
+    // keeps v_err small (no fore-aft regulator, which launches the trot) plus
+    // stronger position tracking to follow the advancing reference. Sweep the
+    // ramp time and base-position weight; target a modest 1.0 m/s.
     let configs = [
-        (1.2_f64, 0.30_f64, 0.28_f64),
-        (1.2, 0.25, 0.28),
-        (1.4, 0.25, 0.34),
-        (1.4, 0.22, 0.30),
+        (1.0_f64, 8.0_f64, (20.0_f64, 5.0_f64)),
+        (1.0, 8.0, (60.0, 8.0)),
+        (1.0, 14.0, (60.0, 8.0)),
+        (1.2, 14.0, (100.0, 10.0)),
     ];
-    for (cmd_vx, cyc, step) in configs {
-        eprintln!("\n[TrotT] cmd_vx={cmd_vx} cycle={cyc} max_step={step} (v_max≈{:.2})", step / cyc);
+    for (cmd_vx, ramp, (qx, qy)) in configs {
+        eprintln!("\n[TrotT] cmd_vx={cmd_vx} ramp={ramp}s base_pos_w=({qx},{qy}) cyc=0.30 step=0.30");
         let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
         let p = WbcParams {
             cmd_vx,
-            total_time_s: 20.0,
+            total_time_s: 25.0,
             burn_in_s: 0.5,
-            cmd_vx_ramp_s: Some(3.0),
+            cmd_vx_ramp_s: Some(ramp),
             gait_type_override: Some(GaitType::Trot),
-            gait_cycle_period_override: Some(cyc),
-            max_step_length_override: Some(step),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.30),
             swing_height_override: Some(0.07),
             bound_trim_reference: None,
             sync_real_mass_inertia: true,
@@ -8763,7 +8772,7 @@ fn go2_wbc_trot_speed_tune() {
                 task_space_joint_vel_weight: None,
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.05),
-                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                base_pos_xy_weight_override: Some((qx, qy)),
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None,
                 bound_fore_aft_placement_gain_override: None,
@@ -8776,9 +8785,9 @@ fn go2_wbc_trot_speed_tune() {
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
         if let Some(samples) = run_wbc_sim(p) {
-            report_time_windowed_summary(&format!("TrotT vx={cmd_vx} cyc={cyc} step={step}, 20s"), &samples, 5.0);
-            report_shock_efficiency(&format!("trot c{cyc} s{step}"), &samples, 0.002, 15.606, 0.5);
-            report_propulsion_direction(&format!("trot c{cyc} s{step}"), &samples, 0.002, 15.606, cyc, 0.5);
+            report_time_windowed_summary(&format!("TrotT vx={cmd_vx} ramp={ramp} qxy=({qx},{qy}), 25s"), &samples, 5.0);
+            report_shock_efficiency(&format!("trot r{ramp} q{qx}"), &samples, 0.002, 15.606, 0.5);
+            report_propulsion_direction(&format!("trot r{ramp} q{qx}"), &samples, 0.002, 15.606, 0.30, 0.5);
         }
     }
 }
