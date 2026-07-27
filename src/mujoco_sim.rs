@@ -1716,6 +1716,24 @@ impl MujocoSim {
     }
 }
 
+/// The WBC runtime's read-side platform boundary
+/// ([`quadruped_gait::RobotStateSource`]), implemented against MuJoCo ground
+/// truth. Each method delegates to the identically-named inherent method
+/// above (inherent methods take resolution priority, so this is not
+/// recursive). This is what lets the same `WbcPipeline` drive both the
+/// simulator (here) and, on hardware, a `LowState`-backed adapter.
+impl quadruped_gait::RobotStateSource for MujocoSim {
+    fn body_world_position(&self, link: &str) -> Option<[f64; 3]> {
+        MujocoSim::body_world_position(self, link)
+    }
+    fn body_world_orientation(&self, link: &str) -> Option<nalgebra::UnitQuaternion<f64>> {
+        MujocoSim::body_world_orientation(self, link)
+    }
+    fn joint_q_qd(&self, joint: &str) -> Option<(f64, f64)> {
+        MujocoSim::joint_q_qd(self, joint)
+    }
+}
+
 /// Write the captured trace to a CSV file. Each row is one recorded frame;
 /// columns are `time_s` followed by `q[name],qvel[name],tau[name]` triplets
 /// for every non-fixed joint, in model order. Returns the number of data
