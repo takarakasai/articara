@@ -46,6 +46,8 @@ pub struct MujocoSim {
     /// fight any deliberate motion (`Kv·(0 − q̇)` brakes against the target),
     /// causing high-amplitude torque oscillation during fast moves like jumps.
     position_target_velocities: Vec<f64>,
+    /// Per-joint raw `ctrl` override (see `set_actuator_ctrl`).
+    raw_ctrl: Vec<Option<f64>>,
     /// Per-joint trajectory acceleration feedforward q̈* used by the
     /// `ComputedTorque` mode. Updated each step from the trajectory's
     /// second derivative; zero when no trajectory is running. Multiplied by
@@ -448,6 +450,7 @@ impl MujocoSim {
         // range limiter — see the clamp block above for the failure mode.
         let position_targets = seeded_positions.clone();
         let position_target_velocities = vec![0.0; robot.joints.len()];
+        let raw_ctrl = vec![None; robot.joints.len()];
         let position_target_accelerations = vec![0.0; robot.joints.len()];
         let velocity_targets = vec![0.0; robot.joints.len()];
         let torque_targets = vec![0.0; robot.joints.len()];
@@ -465,6 +468,7 @@ impl MujocoSim {
             history_max: 5000,
             position_targets,
             position_target_velocities,
+            raw_ctrl,
             position_target_accelerations,
             velocity_targets,
             torque_targets,
@@ -723,6 +727,26 @@ impl MujocoSim {
         }
     }
 
+    /// Write a raw value straight into an actuator's `ctrl` slot, bypassing
+    /// every mode's control law.
+    ///
+    /// Needed when the actuator is not a `<motor>`: MuJoCo's `<velocity>` and
+    /// `<position>` servos interpret `ctrl` as the TARGET, not as a force, so
+    /// the usual path -- compute a PD in Rust, write the resulting torque --
+    /// would be feeding a velocity actuator a torque. Values are not clamped
+    /// against `effort`, because for those actuator types `ctrl` is not a
+    /// force and the joint's N·m limit is meaningless as a bound on it.
+    pub fn set_actuator_ctrl(&mut self, joint_idx: usize, value: f64) {
+        if let Some(slot) = self.raw_ctrl.get_mut(joint_idx) {
+            *slot = Some(value);
+        }
+    }
+
+    /// Set the velocity that Position mode's PD tracks alongside its
+    /// position target, i.e. the `q̇_des` in
+    /// `τ = kp·(q_des − q) + kv·(q̇_des − q̇) + τ_ff`.
+    ///
+    /// Distinct from [`Self::set_velocity_target`], which drives the separate
     /// Set the velocity target (rad/s / m/s) for a joint by index.
     pub fn set_velocity_target(&mut self, joint_idx: usize, target: f64) {
         if let Some(slot) = self.velocity_targets.get_mut(joint_idx) {
@@ -1101,6 +1125,10 @@ impl MujocoSim {
                 }
             }
 
+            // A raw override wins over whatever the mode computed.
+            if let Some(Some(raw)) = self.raw_ctrl.get(ji).copied() {
+                tau = raw;
+            }
             // Write to the motor actuator's ctrl slot.
             let actuator_name = format!("motor_{}", joint.name);
             if let Some(act_info) = self.data.actuator(&actuator_name) {
@@ -1302,6 +1330,66 @@ impl MujocoSim {
         self.model.ffi().opt.timestep as f64
     }
 
+
+    /// MuJoCo's generalised constraint force `qfrc_constraint` (length
+    /// `nv`) — contacts, joint limits, equality constraints.
+    pub fn qfrc_constraint(&self) -> Vec<f64> {
+        self.data.qfrc_constraint().to_vec()
+    }
+
+    /// MuJoCo's generalised passive force `qfrc_passive` (length `nv`) —
+    /// joint damping, springs, fluid drag.
+    pub fn qfrc_passive(&self) -> Vec<f64> {
+        self.data.qfrc_passive().to_vec()
+    }
+
+    /// MuJoCo's generalised actuator force `qfrc_actuator` (length `nv`).
+    ///
+    /// What the actuators actually delivered into the equation of
+    /// motion, after gearing and any `forcerange` clamp — as opposed to
+    /// the `ctrl` value that was requested.
+    pub fn qfrc_actuator(&self) -> Vec<f64> {
+        self.data.qfrc_actuator().to_vec()
+    }
+
+    /// MuJoCo's generalised accelerations `qacc` (length `nv`).
+    ///
+    /// The solver's own answer for `q̈`, so comparing another engine's
+    /// prediction against this is exact — no finite differencing, which
+    /// at a 1 ms step is far too coarse when accelerations reach the
+    /// hundreds of rad/s² a light limb easily produces.
+    ///
+    /// Free-joint rows follow MuJoCo's convention: `[linear(3) world;
+    /// angular(3) body]`, i.e. the opposite block order to a Featherstone
+    /// `[angular; linear]` engine such as misarta.
+    pub fn qacc(&self) -> Vec<f64> {
+        self.data.qacc().to_vec()
+    }
+
+    /// MuJoCo's joint-space inertia matrix `M(q)`, densified to a
+    /// row-major `nv × nv` vector.
+    ///
+    /// MuJoCo stores `M` sparsely in `qM`; this expands it via
+    /// `mj_fullM`. Pairs with [`Self::qfrc_bias`] so a second dynamics
+    /// engine can be validated term by term against MuJoCo — `M` and
+    /// `h` together are the entire equation of motion, so if both match
+    /// then any residual disagreement in predicted `q̈` has to come from
+    /// the caller's own state sync or applied forces, not the model.
+    pub fn mass_matrix(&self) -> Vec<f64> {
+        let nv = self.model.ffi().nv as usize;
+        let mut dst = vec![0.0_f64; nv * nv];
+        // SAFETY: `dst` is exactly nv*nv long, which is what `mj_fullM`
+        // writes for this model, and `qM` is MuJoCo's own live buffer.
+        unsafe {
+            mujoco::mujoco_c::mj_fullM(
+                self.model.ffi(),
+                dst.as_mut_ptr(),
+                self.data.ffi().qM,
+            );
+        }
+        dst
+    }
+
     /// MuJoCo's `qfrc_bias` = `C(q, q̇)·q̇ + g(q)`. With `q̇ = 0`
     /// this collapses to the pure gravity-comp generalised force at
     /// the current `q`. Used by the misarta vs MuJoCo dynamics
@@ -1309,6 +1397,18 @@ impl MujocoSim {
     /// returns the same value the real simulator uses.
     pub fn qfrc_bias(&self) -> Vec<f64> {
         self.data.qfrc_bias().to_vec()
+    }
+
+    /// `qvel`/`qfrc_bias` row index for a named joint's first (only,
+    /// for a 1-dof hinge) degree of freedom. `None` if the joint
+    /// isn't present in the compiled MJCF. Lets a caller line up
+    /// MuJoCo's `qfrc_bias()` entries against a per-joint-name value
+    /// from another dynamics engine (e.g. misarta's `compute_gravity`).
+    pub fn joint_dof_adr(&self, joint_name: &str) -> Option<usize> {
+        let id = self
+            .model
+            .name_to_id(mujoco::prelude::MjtObj::mjOBJ_JOINT, joint_name)?;
+        Some(self.model.jnt_dofadr()[id] as usize)
     }
 
     /// Realtime achievement ratio of the physics integration:
@@ -1351,7 +1451,37 @@ impl MujocoSim {
             .name_to_id(mujoco::prelude::MjtObj::mjOBJ_BODY, body_link)?;
         let cvel = self.data.cvel();
         let row = &cvel[id];
-        Some([row[3], row[4], row[5]])
+        // `cvel` is MuJoCo's **com-based** velocity: world-aligned axes,
+        // but the reference point is `subtree_com[body_rootid[id]]`, NOT
+        // the body origin that `body_world_position` reports. Returning
+        // `row[3..6]` raw therefore pairs a position at one point with a
+        // velocity at another, and the two differ by `ω × (xpos − com)`.
+        //
+        // Measured on kyo46rs (torso origin sits ~0.16 m above the
+        // whole-body CoM, so the lever is mostly vertical and the error
+        // lands almost entirely in x/y):
+        //
+        //   d(xpos)/dt = (+0.155, −0.015, −0.253)
+        //   cvel[3..6] = (+0.538, +0.123, −0.248)
+        //
+        // Shift it back to the body origin so this really is "the
+        // velocity of `body_link`", matching the docstring and usable
+        // directly as a floating-base `v` for a rigid-body model.
+        let com = {
+            let rootid = self.model.body_rootid();
+            let r = *rootid.get(id).unwrap_or(&0) as usize;
+            let subtree = self.data.subtree_com();
+            *subtree.get(r)?
+        };
+        let xpos = self.data.xpos();
+        let p = &xpos[id];
+        let lever = [p[0] - com[0], p[1] - com[1], p[2] - com[2]];
+        let w = [row[0], row[1], row[2]];
+        Some([
+            row[3] + w[1] * lever[2] - w[2] * lever[1],
+            row[4] + w[2] * lever[0] - w[0] * lever[2],
+            row[5] + w[0] * lever[1] - w[1] * lever[0],
+        ])
     }
 
     /// Observed world-frame angular velocity of `body_link` (rad/s).
@@ -1670,6 +1800,21 @@ impl MujocoSim {
         self.update_step_rate_ema(n, wall_start.elapsed().as_secs_f64());
         // Drop any partial-frame accumulator so explicit frame stepping is exact.
         self.time_accumulator = 0.0;
+        // `mj_step` is "evaluate at the current state, then integrate", so
+        // on return `qpos`/`qvel` are the NEW state while every derived
+        // quantity — `xpos`, `xquat`, `cvel`, `qfrc_bias`, … — still
+        // describes the state before integration. Readers that mix the
+        // two therefore see an inconsistent robot: [`Self::joint_q_qd`]
+        // and [`Self::sync_back`] read `qpos`/`qvel` (fresh) while
+        // [`Self::body_world_position`] / [`Self::body_world_orientation`]
+        // / [`Self::body_world_linear_velocity`] read the derived arrays
+        // (one step stale). A floating-base WBC assembling `q`/`v` from
+        // both gets a base lagging its own joints by a full step, which
+        // shows up as a dynamics model that simply does not predict the
+        // simulator. Refresh so everything describes the same instant —
+        // same reason `step_back_frames` calls `forward()` after
+        // restoring `qpos`/`qvel`.
+        self.data.forward();
         self.sync_back(robot);
     }
 

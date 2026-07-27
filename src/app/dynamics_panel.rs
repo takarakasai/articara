@@ -355,11 +355,15 @@ impl ArticaraApp {
                                 bake_joint_position_limits: bake,
                                 mesh_path_style:
                                     articara::mesh_paths::MeshPathStyle::default(),
+                                timestep: None, // keep MuJoCo's default
                                 default_friction: [
                                     self.sim.sim_default_friction,
                                     0.005,
                                     0.0001,
                                 ],
+                                // GUI sims stay on the hand-rolled PD path.
+                                native_velocity_servo: None,
+                                integrator: None,
                             };
                             match articara::mujoco_sim::MujocoSim::new(model, opts) {
                                 Ok(mut sim) => {
