@@ -8724,6 +8724,65 @@ fn go2_wbc_trot_propulsion_comparison() {
     }
 }
 
+/// Sec.5f23: tune the Trot to speed to settle the F_x-propulsion hypothesis.
+/// §5f22's Trot topped out at 0.53 m/s because forward speed is stride-limited
+/// (v ≈ max_step / cycle_period ≈ 0.20/0.40). Raising cadence (shorter cycle)
+/// and stride (larger max_step) should lift the speed; the hypothesis is that
+/// as the Trot goes faster its GRF tilts forward (inclination rises well past
+/// the Bound's pitch-locked ~8°), demonstrating that in a continuous-support
+/// gait F_x IS a free propulsion channel. Reports the same metrics.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_trot_speed_tune() {
+    // (cmd_vx, cycle_period, max_step) aimed at ~0.8-1.3 m/s (v_max ≈ step/cycle).
+    let configs = [
+        (1.2_f64, 0.30_f64, 0.28_f64),
+        (1.2, 0.25, 0.28),
+        (1.4, 0.25, 0.34),
+        (1.4, 0.22, 0.30),
+    ];
+    for (cmd_vx, cyc, step) in configs {
+        eprintln!("\n[TrotT] cmd_vx={cmd_vx} cycle={cyc} max_step={step} (v_max≈{:.2})", step / cyc);
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx,
+            total_time_s: 20.0,
+            burn_in_s: 0.5,
+            cmd_vx_ramp_s: Some(3.0),
+            gait_type_override: Some(GaitType::Trot),
+            gait_cycle_period_override: Some(cyc),
+            max_step_length_override: Some(step),
+            swing_height_override: Some(0.07),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.05),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: None,
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(&format!("TrotT vx={cmd_vx} cyc={cyc} step={step}, 20s"), &samples, 5.0);
+            report_shock_efficiency(&format!("trot c{cyc} s{step}"), &samples, 0.002, 15.606, 0.5);
+            report_propulsion_direction(&format!("trot c{cyc} s{step}"), &samples, 0.002, 15.606, cyc, 0.5);
+        }
+    }
+}
+
 /// Sec.5f13: sweep the Raibert-neutral foothold weight to find the
 /// LEAST-tucked front foot that stays stable. The reviewer flagged the
 /// front feet tucked behind the hip; the multi-model analysis said push
