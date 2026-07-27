@@ -373,7 +373,10 @@ mod test_mjcf {
             bake_actuator_limits: false,
             bake_joint_position_limits: false,
             mesh_path_style: articara::mesh_paths::MeshPathStyle::Absolute,
+            timestep: None,
             default_friction: [0.7, 0.005, 0.0001],
+            native_velocity_servo: None,
+            integrator: None,
         };
         let xml = export_mjcf_with_options(&model, opts);
 

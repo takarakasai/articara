@@ -14,3 +14,10 @@
 # submodule (the `examples/go2_*.rs` scripts expect it at that path).
 /models/*
 !/models/unitree_go2
+
+# Rendered videos: large binaries, regenerate with tools/render_namiashi.py
+videos/
+
+
+# Python bytecode from the render/analysis scripts.
+__pycache__/
