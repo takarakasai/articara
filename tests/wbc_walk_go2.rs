@@ -1632,7 +1632,21 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 h0,
                 cycle_period_s: gc.config().cycle_period_s,
                 duty_factor: gc.config().duty_factor,
-                friction_mu: wbc_pipeline.friction_mu,
+                // ORDERING FIX (go2_rl session, 2026-07-30): read the
+                // OVERRIDE, not the pipeline's current value. This block runs
+                // at line ~1628 while `wbc_pipeline.friction_mu = mu` does not
+                // happen until ~1660, so the trim reference was always built
+                // with the default 0.5 no matter what friction_mu_override
+                // asked for. Consequence, from the logs of the mu=0.80 best
+                // config: the trim clipped F_x at 0.5*F_z = 76.5 N and applied
+                // 53.58 N (thrust 0.7), giving theta_peak 0.1772 rad -- where
+                // mu=0.80 would have allowed 85.75 N and theta_peak 0.1004 rad,
+                // i.e. 43% less commanded pitch excursion. So every friction
+                // sweep this session gave the QP more cone while leaving the
+                // orbit it tracks pinned to the tight one. The measured gains
+                // stand (they were real), but the mechanism was only half
+                // applied.
+                friction_mu: params.friction_mu_override.unwrap_or(wbc_pipeline.friction_mu),
                 // Sec.5bc: empirically-corrected sign (see the same
                 // constructor's comment in
                 // full_centroidal_controller.rs) -- must match.
