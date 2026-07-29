@@ -355,6 +355,7 @@ impl ArticaraApp {
                                 bake_joint_position_limits: bake,
                                 mesh_path_style:
                                     articara::mesh_paths::MeshPathStyle::default(),
+                                timestep: None, // keep MuJoCo's default
                                 default_friction: [
                                     self.sim.sim_default_friction,
                                     0.005,
