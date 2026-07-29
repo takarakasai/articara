@@ -335,6 +335,7 @@ dependencies = [
  "glow",
  "legged-estimation",
  "log",
+ "misa-wbc",
  "misarta",
  "misarta-formats",
  "mujoco-rs",
@@ -3163,7 +3164,6 @@ dependencies = [
 [[package]]
 name = "misarta"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misarta.git#426de8fc1aaa9339e0630e2d84e0825afc9aabf4"
 dependencies = [
  "clarabel",
  "nalgebra",
@@ -3178,7 +3178,6 @@ dependencies = [
 [[package]]
 name = "misarta-formats"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misarta.git#426de8fc1aaa9339e0630e2d84e0825afc9aabf4"
 dependencies = [
  "misarta",
  "nalgebra",

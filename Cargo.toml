@@ -32,6 +32,66 @@ name = "go2_sim"
 required-features = ["mujoco"]
 
 [[example]]
+name = "kyo46rs_squat"
+required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_gravity_check"
+required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_weld_balance_check"
+required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_arm_gravity_check"
+required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_fullbody_gravity_check"
+required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_hanging_squat"
+required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_single_joint_check"
+required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_njoint_check"
+required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_single_leg_stance"
+required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_double_support_check"
+required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_hanging_contact_check"
+required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_stand_check"
+required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_com_squat"
+required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_convention_check"
+required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_swing_torque"
+required-features = ["mujoco"]
+
+[[example]]
 name = "go2_crawl"
 required-features = ["mujoco"]
 
@@ -64,6 +124,11 @@ legged-estimation = { git = "https://github.com/takarakasai/quadruped-gait.git" 
 log = "0.4.29"
 misarta = { git = "https://github.com/takarakasai/misarta.git" }
 misarta-formats = { git = "https://github.com/takarakasai/misarta.git" }
+# Direct dependency (previously only transitive via quadruped-gait) so
+# hosts driving a robot not shaped like quadruped-gait's 4-leg model
+# (e.g. a biped) can call the generic task catalogue / Dynamics context
+# directly. See examples/kyo46rs_squat.rs.
+misa-wbc = { git = "https://github.com/takarakasai/misa-wbc.git" }
 quadruped-gait = { git = "https://github.com/takarakasai/quadruped-gait.git" }
 # Sim-deploy for the Go2 RL policy (`go2_policy_sim` example): the same
 # deploy-side ONNX runtime the hardware runner uses. Optional so the GUI
@@ -94,3 +159,11 @@ members = [".", "xtask"]
 # needs to track local-only commits.
 [patch."https://github.com/takarakasai/quadruped-gait.git"]
 quadruped-gait = { path = "../quadruped-gait/quadruped-gait" }
+
+# TEMPORARY (dev-only, mirrors the quadruped-gait patch above): point at
+# the local misarta checkout so the crba floating-base fix can be
+# validated against MuJoCo before it is pushed. Drop once the fix lands
+# on the pinned git rev.
+[patch."https://github.com/takarakasai/misarta.git"]
+misarta = { path = "../misarta" }
+misarta-formats = { path = "../misarta/misarta-formats" }
