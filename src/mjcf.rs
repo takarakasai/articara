@@ -83,6 +83,18 @@ pub struct MjcfExportOptions {
     /// [`MeshPathStyle::Absolute`]: crate::mesh_paths::MeshPathStyle::Absolute
     /// [`MeshPathStyle::RelativeToDir`]: crate::mesh_paths::MeshPathStyle::RelativeToDir
     pub mesh_path_style: crate::mesh_paths::MeshPathStyle,
+    /// Override MuJoCo's physics timestep (s). `None` keeps MuJoCo's own
+    /// default (2 ms).
+    ///
+    /// Worth reaching for on light robots, because
+    /// [`crate::mujoco_sim::MujocoSim`]'s per-joint PD is an **explicit**
+    /// velocity feedback: it is stable only while
+    /// `actuator_kv < 2·I/dt`, where `I` is the joint's own inertia
+    /// (link inertia + `armature`). A distal joint with `I ~ 1e-4 kg·m²`
+    /// caps `kv` below 1 at the default 2 ms step — under any `kv` a
+    /// position hold actually wants, so the joint buzzes instead of
+    /// holding. Halving `dt` doubles the usable `kv`.
+    pub timestep: Option<f64>,
     /// Default contact friction for every emitted geom, ordered
     /// `[sliding, torsional, rolling]`. Emitted into MJCF's
     /// `<default><geom friction="..."/></default>` so ground plane,
@@ -106,6 +118,7 @@ impl Default for MjcfExportOptions {
             bake_joint_position_limits: true,
             mesh_path_style: crate::mesh_paths::MeshPathStyle::default(),
             default_friction: [0.7, 0.005, 0.0001],
+            timestep: None,
         }
     }
 }
@@ -197,7 +210,22 @@ pub fn export_mjcf_with_options(
         bake_joint_position_limits: opts.bake_joint_position_limits,
         default_friction: opts.default_friction,
     };
-    misarta_formats::mjcf::export(&file, &fopts)
+    let xml = misarta_formats::mjcf::export(&file, &fopts);
+
+    // `misarta_formats::mjcf::export` emits no `<option>` element, so
+    // splice one in rather than fork the exporter. MuJoCo accepts
+    // `<option>` anywhere among `<mujoco>`'s children.
+    match opts.timestep {
+        Some(dt) => match xml.find('\n') {
+            Some(nl) => format!(
+                "{}\n  <option timestep=\"{dt}\"/>{}",
+                &xml[..nl],
+                &xml[nl..]
+            ),
+            None => xml,
+        },
+        None => xml,
+    }
 }
 
 /// Computes the minimum cumulative z translation in the kinematic chain.
