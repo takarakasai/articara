@@ -926,6 +926,28 @@ struct FullCentroidalOpts {
     /// (z) is already `50.0`, a value never questioned before this
     /// survey. `None` keeps the existing (0.0, 5.0) default.
     base_pos_xy_weight_override: Option<(f64, f64)>,
+    /// Override `q_diag[8]` (base position Z tracking weight, default
+    /// 50.0) after `GaitController::build` (2026-07-31).
+    ///
+    /// The default asks the trunk to hold a FLAT height, and asks it
+    /// hard: 50.0 against 0.0 for fore-aft position and 5.0 for lateral.
+    /// The controller does not care where the body is along x, and cares
+    /// a great deal how high it is.
+    ///
+    /// That is a defensible choice at walking speed and a questionable
+    /// one at running speed. A fast bound is a spring-mass gait -- the
+    /// CoM is supposed to rise and fall, and the excursion grows with
+    /// speed. Measured here, trunk z range is 17 mm at the 2.013 m/s
+    /// baseline and 88-107 mm in every configuration that collapses, and
+    /// the previous reading of that was backwards: it was treated as
+    /// evidence of breakdown, when it may be the natural dynamics of the
+    /// faster gait with the MPC spending force fighting it every cycle.
+    ///
+    /// Lowering this is the direct test of "let the body bounce". The
+    /// complementary knob is `bound_trim_vertical_reference_override`,
+    /// which instead COMMANDS the ballistic bounce rather than merely
+    /// tolerating it; the two are independent and can be combined.
+    base_pos_z_weight_override: Option<f64>,
     /// Override `FullCentroidalMpcConfig::max_normal_force` (default
     /// 200.0 N) after `GaitController::build`. Desk-research gap ⑥
     /// (broad legged_control survey, 2026-07-18): legged_control's
@@ -1175,7 +1197,8 @@ impl WbcParams {
                 legged_control_parity, use_mpc_predicted_footstep, dynamic_joint_q_reference,
                 mpc_override: None, task_space_joint_vel_weight: None,
                 true_centroidal_coupling: false, capture_point_gain_override: None,
-                base_pos_xy_weight_override: None, max_normal_force_override: None,
+                base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None, max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
@@ -1397,6 +1420,7 @@ impl WbcParams {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -1667,6 +1691,16 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             );
             mpc_cfg.q_diag[6] = q_x;
             mpc_cfg.q_diag[7] = q_y;
+            gc.set_full_centroidal_mpc_config(mpc_cfg);
+        }
+        if let Some(q_z) = opts.base_pos_z_weight_override {
+            let mut mpc_cfg: FullCentroidalMpcConfig =
+                gc.full_centroidal_mpc_config().expect("FullCentroidal mode has a config").clone();
+            eprintln!(
+                "[full-centroidal] q_diag[8] (base pos z, 'hold a flat trunk') {:.1} -> {q_z:.1}",
+                mpc_cfg.q_diag[8],
+            );
+            mpc_cfg.q_diag[8] = q_z;
             gc.set_full_centroidal_mpc_config(mpc_cfg);
         }
         if let Some(f_max) = opts.max_normal_force_override {
@@ -3557,6 +3591,7 @@ fn go2_wbc_bound_baseline_survey() {
             true_centroidal_coupling: false,
             capture_point_gain_override: None,
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -3579,6 +3614,7 @@ fn go2_wbc_bound_baseline_survey() {
             true_centroidal_coupling: false,
             capture_point_gain_override: None, // default 0.05, NOT yet the Trot k_capture=0 fix
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -3601,6 +3637,7 @@ fn go2_wbc_bound_baseline_survey() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -3637,6 +3674,7 @@ fn go2_wbc_bound_forward_walk_video_source() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -3679,6 +3717,7 @@ fn go2_wbc_bound_gentler_parameters_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -3717,6 +3756,7 @@ fn go2_wbc_bound_low_swing_video_source() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -3760,6 +3800,7 @@ fn go2_wbc_bound_low_swing_max_step_length_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -3794,6 +3835,7 @@ fn go2_wbc_bound_low_swing_cmd_vx_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -3834,6 +3876,7 @@ fn go2_wbc_bound_max_normal_force_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: Some(max_normal_force),
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -3878,6 +3921,7 @@ fn go2_wbc_bound_friction_mu_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -3931,6 +3975,7 @@ fn go2_wbc_bound_true_coupling_sweep() {
                 true_centroidal_coupling: coupling,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -3977,6 +4022,7 @@ fn go2_wbc_bound_pitch_pd_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4021,6 +4067,7 @@ fn go2_wbc_bound_actuator_effort_scale_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4064,6 +4111,7 @@ fn go2_wbc_bound_matched_friction_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4118,6 +4166,7 @@ fn go2_wbc_bound_cmd_vx_ramp_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4177,6 +4226,7 @@ fn go2_wbc_bound_grf_smoothing_and_prox_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4216,6 +4266,7 @@ fn go2_wbc_mass_inertia_fix_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4241,6 +4292,7 @@ fn go2_wbc_mass_inertia_fix_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4289,6 +4341,7 @@ fn go2_wbc_bound_template_reference_forward_walk() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4327,6 +4380,7 @@ fn go2_wbc_bound_template_reference_video_source() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -4390,6 +4444,7 @@ fn go2_wbc_bound_period_cmd_vx_screening() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4434,6 +4489,7 @@ fn go2_wbc_bound_cmd_vx_alone_curve() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4496,6 +4552,7 @@ fn go2_wbc_bound_pitch_pd_gain_at_shortened_period_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4542,6 +4599,7 @@ fn go2_wbc_bound_thrust_scale_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4586,6 +4644,7 @@ fn go2_wbc_bound_velocity_ripple_fraction_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4628,6 +4687,7 @@ fn go2_wbc_bound_faster_cmd_vx_at_best_config_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4681,6 +4741,7 @@ fn go2_wbc_bound_flight_phase_at_best_config_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4740,6 +4801,7 @@ fn go2_wbc_bound_flight_phase_cmd_vx_ceiling_sweep() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
                 }),
@@ -4809,6 +4871,7 @@ fn go2_wbc_bound_thrust_scale_sweep_at_peak_speed() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
                 }),
@@ -4859,6 +4922,7 @@ fn go2_wbc_bound_period_sweep_at_peak_speed() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -4907,6 +4971,7 @@ fn go2_wbc_bound_period_x_cmd_vx_grid() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
                 }),
@@ -5000,6 +5065,7 @@ fn go2_wbc_bound_max_step_length_sweep_from_rl_feedback() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
                 }),
@@ -5287,6 +5353,7 @@ fn go2_wbc_bound_cmaes_mode_h() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                 roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
@@ -5377,6 +5444,180 @@ fn go2_wbc_bound_cmaes_mode_h() {
     }
 }
 
+/// COMMAND THE BOUNCE -- duty below 0.5 with a vertical reference that is
+/// not flat (2026-07-31).
+///
+/// `go2_wbc_bound_let_the_trunk_bounce` found that merely relaxing the height
+/// weight does not help, non-monotonically (q_diag[8] 50 -> 2.013, 5 -> 1.307,
+/// 0.5 -> 2.017). Freedom to bounce without a bounce to aim at just leaves
+/// the trunk unmanaged.
+///
+/// It also found why `bound_trim_vertical_reference` did nothing: it is not
+/// broken, it is empty at duty 0.5. `BoundTrimConfig::sample` computes
+/// `com_z_velocity` only when `t_flight = (1 - 2d)*T > 0`, so at d = 0.50
+/// there is no aerial phase in the model and therefore no ballistic bounce to
+/// command. The trim's vertical reference is flat BY DERIVATION at the duty
+/// this whole line has been running at.
+///
+/// So the controller is asking for a flat trunk with a weight of 50 while the
+/// real robot bounces 17 mm and spends 4.4% of the time airborne (D-1: the
+/// model says 0%). Every duty < 0.5 sweep in this repo -- including the D-2
+/// result that duty 0.35 is SLOWER than 0.50 -- was run with that same flat
+/// reference, which the library's own comment describes as fighting the
+/// bounce force.
+///
+/// This is the untested combination: open a real aerial phase AND tell the
+/// MPC to ride it.
+///
+///   duty  t_flight  v_liftoff = g*t_flight/2   v_max = max_step/(T*d)
+///   0.50    0 ms        0.000 m/s                 2.00 m/s
+///   0.45   18 ms        0.088 m/s                 2.22 m/s
+///   0.40   36 ms        0.177 m/s                 2.50 m/s
+///   0.35   54 ms        0.265 m/s                 2.86 m/s
+///
+/// Note lowering duty independently raises the geometric ceiling, so the
+/// vert_ref OFF column is the control that separates "lower duty helps" from
+/// "commanding the bounce helps". D-2 predicts the OFF column gets worse; the
+/// claim under test is that the ON column does not.
+///
+/// WHAT WOULD CONFIRM IT: the ON column beating the OFF column at the same
+/// duty, by a margin that grows as duty falls and the commanded bounce gets
+/// larger. That ordering is the signature -- a uniform offset would just be
+/// the reference being different, not the bounce being right.
+///
+/// Also read trunk_z range against v_liftoff. A reference that is being
+/// tracked should show the excursion growing with the commanded bounce.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored"]
+fn go2_wbc_bound_command_the_bounce() {
+    for duty in [0.50, 0.45, 0.40, 0.35] {
+        for vert_ref in [false, true] {
+            let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+            let params = WbcParams {
+                cmd_vx: 2.50,
+                total_time_s: 8.0,
+                burn_in_s: 0.5,
+                gait_type_override: Some(GaitType::Bound),
+                duty_factor_override: Some(duty),
+                gait_cycle_period_override: Some(0.18),
+                max_step_length_override: Some(0.18),
+                bound_trim_vertical_reference_override: Some(vert_ref),
+                bound_trim_reference: Some((100.0, 10.0)),
+                bound_trim_thrust_scale_override: Some(0.7),
+                friction_mu_override: Some(0.70),
+                yaw_pd_gain_override: Some((10.0, 1.0)),
+                full_centroidal: Some(FullCentroidalOpts {
+                    legged_control_parity: true,
+                    use_mpc_predicted_footstep: false,
+                    dynamic_joint_q_reference: false,
+                    mpc_override: None,
+                    task_space_joint_vel_weight: None,
+                    true_centroidal_coupling: false,
+                    capture_point_gain_override: Some(0.0),
+                    base_pos_xy_weight_override: None,
+                    base_pos_z_weight_override: None,
+                    max_normal_force_override: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                    roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                    bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                }),
+                ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            let t_flight = ((1.0 - 2.0 * duty) * 0.18).max(0.0);
+            report_walk_summary(
+                &format!("BOUNCE duty={duty:.2} vert_ref={vert_ref} (t_fl={:.0}ms v_lo={:.3})",
+                    t_flight * 1e3, 0.5 * 9.81 * t_flight),
+                &samples, 2.50);
+        }
+    }
+}
+
+/// LET THE TRUNK BOUNCE -- is the vertical motion the problem or the gait?
+/// (2026-07-31)
+///
+/// Every reading in this line so far has treated trunk vertical motion as
+/// damage: 17 mm at the 2.013 m/s baseline, 88-107 mm in every configuration
+/// that collapses. But a fast bound is a spring-mass gait, and a CoM that
+/// rises and falls more as speed grows is what running animals do. The
+/// controller does not allow for that. `q_diag[8]`, the base-height tracking
+/// weight, is 50.0 -- against 0.0 for fore-aft position and 5.0 for lateral.
+/// It does not care where the body is along x and cares intensely how high
+/// it is, and it holds that opinion identically at 0.5 m/s and 2.5 m/s.
+///
+/// So the 88 mm may not be the gait breaking. It may be the gait trying to
+/// run while the MPC spends force flattening it every cycle.
+///
+/// Two independent knobs, because tolerating the motion and commanding it
+/// are different things:
+///   q_diag[8] down          -- stop penalising the excursion
+///   bound_trim_vertical_reference -- feed the ballistic bounce (F_z surplus
+///                              + CoM vertical velocity) into the reference,
+///                              so the MPC aims for it rather than merely
+///                              permitting it
+///
+/// Run at BOTH strides. The 0.18 rows ask whether the baseline is being held
+/// back by the same flattening (does the ceiling move?); the 0.26 rows ask
+/// whether the long stride becomes viable once the trunk is free.
+///
+/// WHAT WOULD CONFIRM IT: a 0.26 row recovering toward 2.0 m/s WITH a trunk
+/// z range that stays large. Recovery accompanied by the excursion collapsing
+/// back to ~17 mm would mean something else fixed it and the vertical freedom
+/// was incidental.
+///
+/// WHAT WOULD REFUTE IT: freeing the trunk changes little, or makes things
+/// worse -- which would say the 88 mm really is a symptom and the MPC's
+/// flattening was load-bearing.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored"]
+fn go2_wbc_bound_let_the_trunk_bounce() {
+    for (label, max_step, q_z, vert_ref) in [
+        ("base-0.18 asis", 0.18, None, None),
+        ("base-0.18 qz5", 0.18, Some(5.0), None),
+        ("base-0.18 qz0.5", 0.18, Some(0.5), None),
+        ("base-0.18 vertref", 0.18, None, Some(true)),
+        ("long-0.26 asis", 0.26, None, None),
+        ("long-0.26 qz5", 0.26, Some(5.0), None),
+        ("long-0.26 qz0.5", 0.26, Some(0.5), None),
+        ("long-0.26 vertref", 0.26, None, Some(true)),
+        ("long-0.26 qz5+vertref", 0.26, Some(5.0), Some(true)),
+    ] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 2.50,
+            total_time_s: 8.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.50),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(max_step),
+            bound_trim_vertical_reference_override: vert_ref,
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(0.7),
+            friction_mu_override: Some(0.70),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                base_pos_z_weight_override: q_z,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk_summary(&format!("TRUNKBOUNCE {label}"), &samples, 2.50);
+    }
+}
+
 /// SOFTEN THE LANDING -- can a longer stride survive if it lands gently?
 /// (2026-07-31)
 ///
@@ -5444,6 +5685,7 @@ fn go2_wbc_bound_soft_landing() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                 roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
@@ -5538,6 +5780,7 @@ fn go2_wbc_bound_asymmetric_duty() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
@@ -5622,6 +5865,7 @@ fn go2_wbc_bound_asymmetric_stride() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
@@ -5691,6 +5935,7 @@ fn go2_wbc_bound_stride_ceiling_probe() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
@@ -5768,6 +6013,7 @@ fn go2_wbc_bound_rear_thrust() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
@@ -5846,6 +6092,7 @@ fn go2_wbc_bound_rear_gather() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
@@ -5896,6 +6143,7 @@ fn go2_wbc_bound_duty_video_source() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
@@ -5971,6 +6219,7 @@ fn go2_wbc_bound_duty_above_half() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
@@ -6084,6 +6333,7 @@ fn go2_wbc_bound_lateral_impulse_ladder() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                 roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
@@ -6232,6 +6482,7 @@ fn go2_wbc_bound_honest_corner() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
@@ -6368,6 +6619,7 @@ fn go2_wbc_bound_friction_belief_vs_plant_audit() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
                 }),
@@ -6427,6 +6679,7 @@ fn go2_wbc_bound_best_video_source_mu080() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -6463,6 +6716,7 @@ fn go2_wbc_bound_max_step_length_at_mu_080() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
                 }),
@@ -6510,6 +6764,7 @@ fn go2_wbc_bound_friction_mu_x_thrust_scale_from_rl_feedback() {
                         true_centroidal_coupling: false,
                         capture_point_gain_override: Some(0.0),
                         base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                         max_normal_force_override: None,
                         roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
                     }),
@@ -6570,6 +6825,7 @@ fn go2_wbc_bound_faster_cmd_vx_at_ripple_fraction_config_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -6617,6 +6873,7 @@ fn go2_wbc_bound_cmd_vx_boundary_fine_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -6673,6 +6930,7 @@ fn go2_wbc_bound_adaptive_cycle_period_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -6722,6 +6980,7 @@ fn go2_wbc_bound_adaptive_cycle_period_video_source() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -6764,6 +7023,7 @@ fn go2_wbc_bound_adaptive_cycle_period_good_point_video_source() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -6809,6 +7069,7 @@ fn go2_wbc_bound_yaw_pd_gain_ramp_fix_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -6860,6 +7121,7 @@ fn go2_wbc_bound_adaptive_cycle_period_ramp_up_video_source() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -6905,6 +7167,7 @@ fn go2_wbc_bound_thrust_scale_with_pll_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -6948,6 +7211,7 @@ fn go2_wbc_bound_thrust_scale_0_5_with_pll_generalization_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -6994,6 +7258,7 @@ fn go2_wbc_bound_pll_gain_interval_grid_sweep() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
                 }),
@@ -7054,6 +7319,7 @@ fn go2_wbc_bound_pitch_pd_gain_toward_zero_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -7103,6 +7369,7 @@ fn go2_wbc_bound_pitch_pd_gain_zero_generalization_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -7139,6 +7406,7 @@ fn go2_wbc_bound_cmd_vx_extreme_ceiling_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -7177,6 +7445,7 @@ fn go2_wbc_bound_thrust_scale_best_video_source() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -7221,6 +7490,7 @@ fn go2_wbc_bound_thrust_scale_best_video_source_long() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -7258,6 +7528,7 @@ fn go2_wbc_bound_thrust_scale_worst_video_source() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -7338,6 +7609,7 @@ fn go2_wbc_bound_flight_phase_duty_035_video_source() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -7394,6 +7666,7 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -7445,6 +7718,7 @@ fn go2_wbc_bound_flight_phase_duty035_cycle_period_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -7498,6 +7772,7 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_ceiling_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -7553,6 +7828,7 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_video_source() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -7648,6 +7924,7 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_long_duration_stability() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -7697,6 +7974,7 @@ fn go2_wbc_bound_duty050_baseline_long_duration_stability() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -7756,6 +8034,7 @@ fn go2_wbc_bound_flight_phase_duty035_capture_point_reenabled_stability() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.05),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -7807,6 +8086,7 @@ fn go2_wbc_bound_flight_phase_duty035_pll_interval_stability_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -7857,6 +8137,7 @@ fn go2_wbc_bound_flight_phase_duty035_pll_interval_fine_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -7930,6 +8211,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_video_source() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -7991,6 +8273,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_stride_length_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
             }),
@@ -8046,6 +8329,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_tight_pll_clamp_stability() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -8106,6 +8390,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_smooth_startup() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -8155,6 +8440,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_cmd_vx_ramp_only() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -8208,6 +8494,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_cmd_vx_ramp_10s() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -8266,6 +8553,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_thrust_scale_ramp() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -8318,6 +8606,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_pll_settle_buffer() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -8367,6 +8656,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_longer_ramp() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -8420,6 +8710,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_longer_ramp_tighter_clamp() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -8473,6 +8764,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_longer_ramp_pll_warm() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -8526,6 +8818,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_warm_centered_clamp() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
         }),
@@ -8579,6 +8872,7 @@ fn go2_wbc_bound_flight_phase_duty035_foot_placement_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None,
                 bound_fore_aft_placement_gain_override: Some(gain),
@@ -8643,6 +8937,7 @@ fn go2_wbc_bound_flight_phase_duty035_mpc_footstep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None,
                 bound_fore_aft_placement_gain_override: None,
@@ -8705,6 +9000,7 @@ fn go2_wbc_bound_flight_phase_duty035_mpc_footstep_isolation() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None,
                 bound_fore_aft_placement_gain_override: None,
@@ -8765,6 +9061,7 @@ fn go2_wbc_bound_flight_phase_duty035_q_foot_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None,
                 bound_fore_aft_placement_gain_override: None,
@@ -8835,6 +9132,7 @@ fn go2_wbc_bound_flight_phase_duty035_footstep_body_frame() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None,
                 bound_fore_aft_placement_gain_override: None,
@@ -8905,6 +9203,7 @@ fn go2_wbc_bound_flight_phase_duty035_symmetric_foothold() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None,
                 bound_fore_aft_placement_gain_override: None,
@@ -8965,6 +9264,7 @@ fn go2_wbc_bound_flight_phase_duty035_vertical_reference_ab() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None,
                 bound_fore_aft_placement_gain_override: None,
@@ -9027,6 +9327,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_emergent_pitch() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((pitch_w, pitch_w)),
                 bound_fore_aft_placement_gain_override: None,
@@ -9079,6 +9380,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_video_source() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: Some((5.0, 5.0)),
             bound_fore_aft_placement_gain_override: None,
@@ -9130,6 +9432,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_weight_fine() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((w, w)),
                 bound_fore_aft_placement_gain_override: None,
@@ -9191,6 +9494,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_ramp_pll() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((4.0, 4.0)),
                 bound_fore_aft_placement_gain_override: None,
@@ -9240,6 +9544,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_cmd_vx_ceiling() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((4.0, 4.0)),
                 bound_fore_aft_placement_gain_override: None,
@@ -9293,6 +9598,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_highspeed_weight() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((w, w)),
                 bound_fore_aft_placement_gain_override: None,
@@ -9345,6 +9651,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_fx_bias() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((4.0, 4.0)),
                 bound_fore_aft_placement_gain_override: None,
@@ -9406,6 +9713,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_startup() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((4.0, 4.0)),
                 bound_fore_aft_placement_gain_override: None,
@@ -9471,6 +9779,7 @@ fn go2_wbc_bound_flight_phase_duty035_trim_startup() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None,
                 bound_fore_aft_placement_gain_override: None,
@@ -9531,6 +9840,7 @@ fn go2_wbc_bound_energetic_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((4.0, 4.0)),
                 bound_fore_aft_placement_gain_override: None,
@@ -9583,6 +9893,7 @@ fn go2_wbc_bound_energetic_weight() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((w, w)),
                 bound_fore_aft_placement_gain_override: None,
@@ -9645,6 +9956,7 @@ fn go2_wbc_bound_energetic_trim() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None,
                 bound_fore_aft_placement_gain_override: None,
@@ -9700,6 +10012,7 @@ fn go2_wbc_bound_energetic_roll_rate_deadbeat() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((4.0, 4.0)),
                 bound_fore_aft_placement_gain_override: None,
@@ -9752,6 +10065,7 @@ fn go2_wbc_bound_energetic_stable_edge() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((4.0, 4.0)),
                 bound_fore_aft_placement_gain_override: None,
@@ -9803,6 +10117,7 @@ fn go2_wbc_bound_energetic_stable_window() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((4.0, 4.0)),
                 bound_fore_aft_placement_gain_override: None,
@@ -9859,6 +10174,7 @@ fn go2_wbc_bound_energetic_pitch_deadbeat_placement() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((4.0, 4.0)),
                 bound_fore_aft_placement_gain_override: None,
@@ -9911,6 +10227,7 @@ fn go2_wbc_bound_energetic_stable_video_source() {
             true_centroidal_coupling: false,
             capture_point_gain_override: Some(0.0),
             base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: Some((4.0, 4.0)),
             bound_fore_aft_placement_gain_override: None,
@@ -9969,6 +10286,7 @@ fn go2_wbc_bound_energetic_forward() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((4.0, 4.0)),
                 bound_fore_aft_placement_gain_override: speed_override,
@@ -10026,6 +10344,7 @@ fn go2_wbc_bound_energetic_forward_thrust() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((4.0, 4.0)),
                 bound_fore_aft_placement_gain_override: None,
@@ -10088,6 +10407,7 @@ fn go2_wbc_bound_energetic_hzd_forward() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((4.0, 4.0)),
                 bound_fore_aft_placement_gain_override: None,
@@ -10149,6 +10469,7 @@ fn go2_wbc_bound_energetic_hzd_dcblock() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((4.0, 4.0)),
                 bound_fore_aft_placement_gain_override: None,
@@ -10209,6 +10530,7 @@ fn go2_wbc_bound_trajopt_forward() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: Some((q_px, 5.0)),
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: Some((4.0, 25.0)),
                 bound_fore_aft_placement_gain_override: None,
