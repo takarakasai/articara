@@ -832,6 +832,18 @@ struct WbcParams {
     /// (`rear_gather_x` is the postural half). Only meaningful when
     /// `bound_fx_thrust_bias_override` is non-zero. `None` = 0.5.
     bound_fx_thrust_rear_frac_override: Option<f64>,
+    /// Set `GaitConfig::max_step_length_rear_scale` (2026-07-31): the REAR
+    /// pair's stride cap as a multiple of `max_step_length_override`, front
+    /// pair unchanged. `None` = 1.0 = symmetric.
+    ///
+    /// The stride half of a gathered gallop, and the only one of the three
+    /// with a structural argument behind it. `go2_wbc_bound_stride_ceiling_probe`
+    /// showed the speed ceiling is exactly `v_max = max_step/(T*duty)` and is
+    /// geometric rather than force-limited, and that raising max_step
+    /// uniformly collapses the gait on swing kinematics. Because the pairs
+    /// tile the cycle, `v_max = (stride_front + stride_rear)/T`, so this
+    /// raises the ceiling while the FRONT pair's swing speed is untouched.
+    max_step_length_rear_scale_override: Option<f64>,
 }
 
 /// `legged_control_parity`: per-leg phase contact schedule + swing
@@ -969,7 +981,8 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None,
-            rear_gather_x: None, bound_fx_thrust_rear_frac_override: None, full_centroidal: None,
+            rear_gather_x: None, bound_fx_thrust_rear_frac_override: None,
+            max_step_length_rear_scale_override: None, full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
@@ -982,7 +995,8 @@ impl WbcParams {
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None,
-            rear_gather_x: None, bound_fx_thrust_rear_frac_override: None, full_centroidal: None,
+            rear_gather_x: None, bound_fx_thrust_rear_frac_override: None,
+            max_step_length_rear_scale_override: None, full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
@@ -1020,6 +1034,7 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             rear_gather_x: None, bound_fx_thrust_rear_frac_override: None,
+            max_step_length_rear_scale_override: None,
             full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
             gait_type_override: None,
@@ -1501,6 +1516,16 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             cfg.bound_fx_thrust_rear_frac, 2.0 * (1.0 - frac), 2.0 * frac,
         );
         cfg.bound_fx_thrust_rear_frac = frac;
+    }
+    if let Some(scale) = params.max_step_length_rear_scale_override {
+        eprintln!(
+            "[gait] max_step_length_rear_scale -> {scale:.2} (front {:.3}m, rear {:.3}m; \
+             v_max = (front+rear)/T = {:.3} m/s at T={:.3})",
+            cfg.max_step_length_m, cfg.max_step_length_m * scale,
+            cfg.max_step_length_m * (1.0 + scale) / cfg.cycle_period_s,
+            cfg.cycle_period_s,
+        );
+        cfg.max_step_length_rear_scale = scale;
     }
     if let Some(swing_height_m) = params.swing_height_override {
         eprintln!(
@@ -5124,6 +5149,91 @@ fn go2_wbc_bound_cmaes_mode_h() {
                   swing_speed(&best.1, c));
         if let Some(samples) = run_wbc_sim(build(&best.1, c, 10.5)) {
             report_walk_summary(&format!("CEM Mode H winner cmd_vx={c:.2}"), &samples, c);
+        }
+    }
+}
+
+/// ASYMMETRIC STRIDE -- the rear pair takes a longer step (2026-07-31).
+///
+/// The third and last piece of the gathered-gallop idea, and the only one
+/// with a structural argument rather than an analogy behind it. The other two
+/// are already measured negatives: `go2_wbc_bound_rear_gather` (postural) and
+/// `go2_wbc_bound_rear_thrust` (propulsive).
+///
+/// The argument. `go2_wbc_bound_stride_ceiling_probe` established that the
+/// speed ceiling is geometric -- achieved speed pins at
+/// `v_max = max_step/(T*duty)` to within 1% for commands up to 50% above it,
+/// with 98% torque headroom left -- and that raising `max_step` uniformly
+/// does NOT lift it, because the swing speed then exceeds the knee's ~6.4 m/s
+/// envelope and the gait falls over (0.045 m/s, peak pitch 1.564 rad at cmd
+/// 3.0). At duty 0.5 the pairs tile the cycle, so travel per cycle is the sum
+/// of the two stance sweeps:
+///
+///     v_max = (stride_front + stride_rear) / T
+///
+/// Scaling only the rear therefore raises the ceiling while the FRONT pair's
+/// swing speed is untouched -- localising to one pair the failure that a
+/// uniform increase caused in both.
+///
+/// PRE-DECLARED PREDICTION, so this cannot be read after the fact:
+///
+///     rear_scale  rear stride  predicted v_max
+///        1.00       0.180 m       2.00 m/s   (control -- measured 2.013)
+///        1.22       0.220 m       2.22 m/s
+///        1.44       0.260 m       2.44 m/s
+///
+/// Commands are 2.5 and 3.0, both ABOVE the symmetric ceiling, so any
+/// increase is the ceiling moving and not the command being tracked better.
+/// The claim is falsified if the 1.44 rows stay near 2.0.
+///
+/// WHAT WOULD ALSO FALSIFY IT, and is the likelier failure. The rear's own
+/// swing speed rises with its stride -- `~(stride + v*t_sw + 2*h)/t_sw`, so
+/// roughly 6.5 m/s for the 0.26 rear at cmd 2.5, right at the knee limit.
+/// If the 1.44 rows collapse the same way the uniform 0.26 sweep did, then
+/// halving the number of legs in trouble was not enough and the honest
+/// conclusion is that Go2's knee, not the gait schedule, sets this ceiling.
+/// Check `peak_pitch`: the uniform-0.26 failure showed up as 0.398 and then
+/// 1.564 rad, not as a gentle rolloff.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored"]
+fn go2_wbc_bound_asymmetric_stride() {
+    for rear_scale in [1.00, 1.22, 1.44] {
+        for cmd_vx in [2.50, 3.00] {
+            let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+            let params = WbcParams {
+                cmd_vx,
+                total_time_s: 8.0,
+                burn_in_s: 0.5,
+                gait_type_override: Some(GaitType::Bound),
+                duty_factor_override: Some(0.50),
+                gait_cycle_period_override: Some(0.18),
+                max_step_length_override: Some(0.18),
+                max_step_length_rear_scale_override: Some(rear_scale),
+                bound_trim_reference: Some((100.0, 10.0)),
+                bound_trim_thrust_scale_override: Some(0.7),
+                friction_mu_override: Some(0.70),
+                yaw_pd_gain_override: Some((10.0, 1.0)),
+                full_centroidal: Some(FullCentroidalOpts {
+                    legged_control_parity: true,
+                    use_mpc_predicted_footstep: false,
+                    dynamic_joint_q_reference: false,
+                    mpc_override: None,
+                    task_space_joint_vel_weight: None,
+                    true_centroidal_coupling: false,
+                    capture_point_gain_override: Some(0.0),
+                    base_pos_xy_weight_override: None,
+                    max_normal_force_override: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                    roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                    bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                }),
+                ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            let v_max_pred = 0.18 * (1.0 + rear_scale) / 0.18;
+            report_walk_summary(
+                &format!("ASYM rear_scale={rear_scale:.2} (v_max_pred={v_max_pred:.2}) cmd={cmd_vx:.1}"),
+                &samples, cmd_vx);
         }
     }
 }
