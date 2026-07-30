@@ -394,6 +394,7 @@ fn main() {
     let mut com_ref0: Option<na::Vector3<f64>> = None;
     let mut swing_home_cell: Option<na::Vector3<f64>> = None;
     let mut last_good: Option<Vec<f64>> = None;
+    let mut consec_degraded: u32 = 0;
     // touchdown pose per foot: (position, rotation) the contact should hold
     let mut anchor: [Option<(na::Vector3<f64>, na::Matrix3<f64>)>; 2] = [None, None];
     let mut prev_com: Option<na::Vector3<f64>> = None;
@@ -612,6 +613,40 @@ fn main() {
             }
         }
 
+        // Level 0's equality block, assembled explicitly so its conditioning
+        // can be watched. x = [qddot(nv); f(6nc); tau(na)].
+        //   EoM      : [ M | -Jc^T | -S^T ]
+        //   contact  : [ Jc |  0    |  0   ]
+        // A Clarabel NumericalFailure at level 0 is a conditioning failure,
+        // so this is the matrix to look at when one appears.
+        if flag("CONDCHK", false) && tick % 5 == 0 {
+            let nx = nv + 6 * nc + na_count;
+            let mut a0 = na::DMatrix::zeros(nv + 6 * nc, nx);
+            for r in 0..nv {
+                for c in 0..nv {
+                    a0[(r, c)] = mass[(r, c)];
+                }
+                for c in 0..6 * nc {
+                    a0[(r, nv + c)] = -j_contact[(c, r)];
+                }
+            }
+            for i in 0..na_count {
+                a0[(6 + i, nv + 6 * nc + i)] = -1.0;
+            }
+            for r in 0..6 * nc {
+                for c in 0..nv {
+                    a0[(nv + r, c)] = j_contact[(r, c)];
+                }
+            }
+            let sv = a0.singular_values();
+            let (mx, mn) = (sv.max(), sv.min());
+            let jsv = j_contact.clone().singular_values();
+            println!(
+                "  [cond] t={t:6.3} nc={nc}  A0 cond={:10.1} (sigma_min {:.3e})   Jc cond={:8.1}   status={:?}",
+                mx / mn, mn, jsv.max() / jsv.min(), "pending"
+            );
+        }
+
         let dyn_ctx = Dynamics::new(Formulation::Explicit, &mass, &h, &j_contact, na_count);
         let forces = dyn_ctx.forces();
 
@@ -635,6 +670,7 @@ fn main() {
             .dynamics_task()
             .expect("Explicit keeps the EoM task")
             + tasks::box_bound(dyn_ctx.tau(), &torque_max);
+        let _ = &sole_patch;
         for (slot, foot_mi) in stance.iter().copied().enumerate() {
             let js = j_contact.rows(6 * slot, 6).into_owned();
             let djvs = dj_v.rows(6 * slot, 6).into_owned();
@@ -674,9 +710,10 @@ fn main() {
                 }
             }
             let w_sole = &sel * &forces.as_affine();
-            p0 = p0
-                + tasks::cartesian_acceleration(dyn_ctx.qddot(), &js, &djvs, &acc_ref)
-                + tasks::patch_contact(&w_sole, &sole_patch);
+            p0 = p0 + tasks::cartesian_acceleration(dyn_ctx.qddot(), &js, &djvs, &acc_ref);
+            if !flag("NO_PATCH", false) {
+                p0 = p0 + tasks::patch_contact(&w_sole, &sole_patch);
+            }
         }
 
         // ---- P1: the CoM task = balance (x,y) AND squat (z) ------------
@@ -852,8 +889,30 @@ fn main() {
         match last_good.as_ref() {
             Some(prev) if !matches!(sol.status, misa_wbc::SolveStatus::Optimal) => {
                 robot_taus.copy_from_slice(prev);
+                consec_degraded += 1;
+                // Holding the last good torque bridges an occasional failed
+                // solve. It must not quietly become the controller: a long
+                // run of failures means the robot is open-loop on a stale
+                // command, which reads in the logs as a smooth mechanical
+                // collapse rather than as a control fault. (Measured: 540 ms
+                // of frozen torque while the stance knee folded 48 -> 11 deg,
+                // with the torque columns byte-identical throughout.)
+                if consec_degraded == 10 {
+                    println!(
+                        "  [OPEN LOOP] t={t:6.3} nc={nc}: {} consecutive degraded solves, \
+                         still commanding the torque from t={:.3}",
+                        consec_degraded,
+                        t - consec_degraded as f64 * dt
+                    );
+                }
             }
-            _ => last_good = Some(robot_taus.clone()),
+            _ => {
+                if consec_degraded >= 10 {
+                    println!("  [recovered] t={t:6.3} after {consec_degraded} degraded ticks");
+                }
+                consec_degraded = 0;
+                last_good = Some(robot_taus.clone());
+            }
         }
         sim.set_wbc_torques(&robot_taus);
         sim.step_n_frames(&mut robot, mj_substeps, true);
