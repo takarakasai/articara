@@ -730,6 +730,19 @@ impl MujocoSim {
         }
     }
 
+    /// Set the **position-mode velocity feed-forward** `q̇*` for a joint (the
+    /// `kv·(q̇* − q̇)` term in the Position / ComputedTorque PD). Distinct from
+    /// [`Self::set_velocity_target`], which drives the standalone Velocity
+    /// actuator mode. Use this to cancel a Position-mode joint's phase lag when
+    /// tracking a moving reference (e.g. the ChickenHead head-hold's
+    /// `q̇* = -sign·ω_body`). Normally maintained by the pose-transition player;
+    /// this exposes it for controllers that command a moving target directly.
+    pub fn set_position_target_velocity(&mut self, joint_idx: usize, qd: f64) {
+        if let Some(slot) = self.position_target_velocities.get_mut(joint_idx) {
+            *slot = qd;
+        }
+    }
+
     /// Set the direct torque command for a joint by index.
     pub fn set_torque_target(&mut self, joint_idx: usize, target: f64) {
         if let Some(slot) = self.torque_targets.get_mut(joint_idx) {
