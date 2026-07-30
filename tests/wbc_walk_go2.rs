@@ -5377,6 +5377,85 @@ fn go2_wbc_bound_cmaes_mode_h() {
     }
 }
 
+/// SOFTEN THE LANDING -- can a longer stride survive if it lands gently?
+/// (2026-07-31)
+///
+/// The touchdown instrumentation traced the long-stride collapse to impact,
+/// not timing: at max_step 0.26 / cmd 2.5 the foot lands 55% faster
+/// (-1.27 vs -0.82 m/s), peaks at 2.0x body weight instead of 1.2x, rebounds
+/// 16 mm instead of 4, unloads at 44 ms into a 90 ms stance, and the front
+/// pair misses a third of its touchdowns. Speed collapses to 0.070 m/s.
+///
+/// If that chain is causal, then reducing the landing velocity WITHOUT
+/// shortening the stride should rescue it. Two levers reach the landing
+/// velocity and neither has been touched in this line:
+///
+///   swing_height_m (0.05 default) -- lower apex, less height to fall from
+///   swing PD (80/8 default)       -- how hard the swing tracks its
+///                                    trajectory, so how well it decelerates
+///                                    into the ground rather than dropping
+///
+/// Run at max_step 0.26 / cmd 2.5, the exact failing point, so the only
+/// question is whether the landing can be softened enough to hold the stance.
+/// The 0.18 baseline row is carried along as the number to beat (2.013 m/s).
+///
+/// READ v_impact AND foot lift FIRST, then speed. A row whose speed improves
+/// without v_impact falling is improving for some other reason and does not
+/// support the impact hypothesis. A row where v_impact falls but speed does
+/// not follow refutes it outright -- that is the outcome that would say the
+/// bounce is a symptom rather than the cause.
+///
+/// A lower swing apex has an obvious independent cost: less ground clearance,
+/// so the foot can catch on the way through. Watch for touchdown counts
+/// ABOVE one per foot per cycle (66 over this window), which is what
+/// clipping the ground early would look like.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored"]
+fn go2_wbc_bound_soft_landing() {
+    for (label, max_step, swing_h, swing_pd) in [
+        ("baseline-0.18", 0.18, None, None),
+        ("long-asis", 0.26, None, None),
+        ("long-lowswing", 0.26, Some(0.03), None),
+        ("long-stiffpd", 0.26, None, Some((240.0, 24.0))),
+        ("long-both", 0.26, Some(0.03), Some((240.0, 24.0))),
+        ("long-softpd", 0.26, None, Some((40.0, 12.0))),
+    ] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 2.50,
+            total_time_s: 8.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.50),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(max_step),
+            swing_height_override: swing_h,
+            swing_pd_gain_override: swing_pd,
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(0.7),
+            friction_mu_override: Some(0.70),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk_summary(&format!("SOFTLAND {label}"), &samples, 2.50);
+    }
+}
+
 /// ASYMMETRIC DUTY -- buy the rear pair swing time, then spend it (2026-07-31).
 ///
 /// The last structurally-motivated lever, and the only one aimed at the
