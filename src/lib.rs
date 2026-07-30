@@ -1,6 +1,7 @@
 // Re-export modules for integration tests.
 pub use legged_estimation::attitude_estimator;
 pub mod camera;
+pub mod chicken_head;
 pub mod collision;
 pub mod dynamics;
 pub mod estimator;
@@ -20,6 +21,7 @@ pub mod primitives;
 pub mod rbd;
 pub mod robot;
 pub mod sdf;
+pub mod standing_gesture;
 #[cfg(feature = "scripting")]
 pub mod scripting;
 #[cfg(feature = "scripting")]
