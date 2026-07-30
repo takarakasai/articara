@@ -371,6 +371,10 @@ struct WbcSample {
     /// method). Measured duty at 5 N is 0.451 with a genuine 6.7% flight
     /// fraction, i.e. it IS a bound with air time, not a shuffle.
     foot_xy: [[f64; 2]; 4],
+    /// Per-foot world z (m). Distinguishes a genuine bounce (the foot leaves
+    /// the ground and `foot_z` rises) from a force dip with the foot still
+    /// planted -- the two have completely different fixes.
+    foot_z: [f64; 4],
     /// Per-foot contact normal force (N), summed over all contact pairs
     /// involving that foot body. Used with an explicit threshold so the slip
     /// integral counts only genuinely loaded ticks (and so the threshold can
@@ -2141,10 +2145,12 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
         ];
         let mut foot_xy = [[0.0_f64; 2]; 4];
+        let mut foot_z = [0.0_f64; 4];
         let mut foot_fz = [0.0_f64; 4];
         for (fi, fname) in AUDIT_FEET.iter().enumerate() {
             if let Some(p) = sim.body_world_position(fname) {
                 foot_xy[fi] = [p[0], p[1]];
+                foot_z[fi] = p[2];
             }
             // MJCF body names are lowercased in ContactInfo (see its doc), so
             // match case-insensitively against both contact bodies.
@@ -2167,7 +2173,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             t, body_x: tx.x, body_y: tx.y, body_z: tx.z, roll, pitch, yaw, total_fz_world,
             contact_phase_mismatch, phase_error_sum_s,
             cycle_period_s: gc.config().cycle_period_s,
-            foot_xy, foot_fz, max_abs_tau, mech_power_w,
+            foot_xy, foot_z, foot_fz, max_abs_tau, mech_power_w,
         });
 
         if csv_out.is_some() {
@@ -3311,6 +3317,93 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
     } else {
         f64::NAN
     };
+    // TOUCHDOWN ANATOMY. The contact census showed ~1.5 contact episodes per
+    // foot per cycle where there should be one, so a stance is being broken up
+    // mid-way. Two very different things produce that and they need different
+    // fixes: the foot genuinely rebounds off the ground (an impact problem --
+    // landing too fast, or the swing not decelerating), or the normal force
+    // dips below the 5 N threshold while the foot stays planted (a threshold
+    // and load-sharing problem, not a mechanical one). `foot_z` separates
+    // them.
+    //
+    // Touchdowns are counted only after a real swing (>= 30 ms unloaded), so
+    // the re-contacts this is trying to characterise are not themselves
+    // counted as touchdowns.
+    let dt_tick = (walk[1].t - walk[0].t).max(1e-9);
+    let swing_min = ((0.030 / dt_tick).round() as usize).max(1);
+    let post = ((0.100 / dt_tick).round() as usize).max(2);
+    let pre = ((0.010 / dt_tick).round() as usize).max(1);
+    let mut td_n = [0usize; 4];
+    let mut v_impact_sum = [0.0_f64; 4];
+    let mut fz_peak_sum = [0.0_f64; 4];
+    let mut t_peak_sum = [0.0_f64; 4];
+    let mut reunload_n = [0usize; 4];
+    let mut reunload_t_sum = [0.0_f64; 4];
+    let mut reunload_lift_sum = [0.0_f64; 4];
+    for fi in 0..4 {
+        let mut unloaded_run = 0usize;
+        for i in 0..walk.len() {
+            let down = walk[i].foot_fz[fi] > 5.0;
+            if !down {
+                unloaded_run += 1;
+                continue;
+            }
+            let is_touchdown = unloaded_run >= swing_min;
+            unloaded_run = 0;
+            if !is_touchdown || i < pre || i + post >= walk.len() {
+                continue;
+            }
+            td_n[fi] += 1;
+            v_impact_sum[fi] += (walk[i].foot_z[fi] - walk[i - pre].foot_z[fi]) / (pre as f64 * dt_tick);
+            let mut peak = 0.0_f64;
+            let mut t_peak = 0.0_f64;
+            for k in 0..post {
+                let f = walk[i + k].foot_fz[fi];
+                if f > peak {
+                    peak = f;
+                    t_peak = k as f64 * dt_tick;
+                }
+            }
+            fz_peak_sum[fi] += peak;
+            t_peak_sum[fi] += t_peak;
+            // First re-unload after the load has genuinely established
+            // (skip the first 10 ms so the rising edge itself is not counted).
+            let skip = pre;
+            let z_td = walk[i].foot_z[fi];
+            for k in skip..post {
+                if walk[i + k].foot_fz[fi] <= 5.0 {
+                    reunload_n[fi] += 1;
+                    reunload_t_sum[fi] += k as f64 * dt_tick;
+                    let mut lift = 0.0_f64;
+                    for j in k..post {
+                        if walk[i + j].foot_fz[fi] > 5.0 {
+                            break;
+                        }
+                        lift = lift.max(walk[i + j].foot_z[fi] - z_td);
+                    }
+                    reunload_lift_sum[fi] += lift;
+                    break;
+                }
+            }
+        }
+    }
+    let pair = |a: [f64; 4], n: [usize; 4], front: bool| -> f64 {
+        let (i, j) = if front { (0, 1) } else { (2, 3) };
+        let d = (n[i] + n[j]) as f64;
+        if d > 0.0 { (a[i] + a[j]) / d } else { f64::NAN }
+    };
+    let reunload_frac = |front: bool| -> f64 {
+        let (i, j) = if front { (0, 1) } else { (2, 3) };
+        let d = (td_n[i] + td_n[j]) as f64;
+        if d > 0.0 { (reunload_n[i] + reunload_n[j]) as f64 / d } else { f64::NAN }
+    };
+    let (vimp_f, vimp_r) = (pair(v_impact_sum, td_n, true), pair(v_impact_sum, td_n, false));
+    let (peak_f, peak_r) = (pair(fz_peak_sum, td_n, true), pair(fz_peak_sum, td_n, false));
+    let (tpk_f, tpk_r) = (pair(t_peak_sum, td_n, true), pair(t_peak_sum, td_n, false));
+    let (ru_f, ru_r) = (reunload_frac(true), reunload_frac(false));
+    let (rut_f, rut_r) = (pair(reunload_t_sum, reunload_n, true), pair(reunload_t_sum, reunload_n, false));
+    let (rul_f, rul_r) = (pair(reunload_lift_sum, reunload_n, true), pair(reunload_lift_sum, reunload_n, false));
+
     eprintln!(
         "\n=== {label} (cmd_vx={cmd_vx:.2}) ===\n\
          min_z={min_z:.3}m, peak_roll={peak_roll:.3}rad, peak_pitch={peak_pitch:.3}rad, \
@@ -3333,7 +3426,10 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
          | n_stance F={} {} R={} {}\n\
          AUDIT stride2: body-frame p2p front={p2p_front:.4}m rear={p2p_rear:.4}m \
          (= 2*half; cap is max_step) | planned half=v_cmd*d*T/2={:.4}m (before the max_step clamp) \
-         | contact episodes/cycle F={frag_front:.2} R={frag_rear:.2}",
+         | contact episodes/cycle F={frag_front:.2} R={frag_rear:.2}\n\
+         AUDIT touchdown: n F={} R={} | v_impact F={vimp_f:+.3} R={vimp_r:+.3} m/s \
+         | fz_peak F={peak_f:.0} R={peak_r:.0} N @ F={:.1} R={:.1} ms \
+         | re-unload<100ms F={:.0}% R={:.0}% @ F={:.1} R={:.1} ms, foot lift F={:.2} R={:.2} mm",
         x1 - x0, t1 - t0, !has_nan, mismatch_frac * 100.0,
         if cmd_vx.abs() > 1e-6 { 100.0 * meas_vx / cmd_vx } else { 0.0 },
         duty5[0], duty5[1], duty5[2], duty5[3],
@@ -3346,6 +3442,9 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
         sweep_front + sweep_rear, (sweep_front + sweep_rear) / final_period_s,
         sweep_n[0], sweep_n[1], sweep_n[2], sweep_n[3],
         cmd_vx * 0.5 * 0.5 * final_period_s,
+        td_n[0] + td_n[1], td_n[2] + td_n[3],
+        tpk_f * 1e3, tpk_r * 1e3,
+        ru_f * 100.0, ru_r * 100.0, rut_f * 1e3, rut_r * 1e3, rul_f * 1e3, rul_r * 1e3,
     );
 }
 
