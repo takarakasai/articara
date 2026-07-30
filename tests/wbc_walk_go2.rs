@@ -844,6 +844,20 @@ struct WbcParams {
     /// tile the cycle, `v_max = (stride_front + stride_rear)/T`, so this
     /// raises the ceiling while the FRONT pair's swing speed is untouched.
     max_step_length_rear_scale_override: Option<f64>,
+    /// Set `GaitConfig::duty_factor_rear_scale` (2026-07-31): the REAR pair's
+    /// duty as a multiple of `duty_factor_override`, front pair unchanged.
+    /// `None` = 1.0 = symmetric.
+    ///
+    /// Buys the rear pair swing time, which
+    /// `go2_wbc_bound_asymmetric_stride` identified as the budget that
+    /// actually binds -- touchdowns run late, not short. Lowering duty
+    /// globally also buys swing time but pays for it in stance force
+    /// (`F_z = mg/(2d)`); doing it on the rear only concentrates that cost
+    /// in one pair and leaves the front's budget alone.
+    ///
+    /// Note total stance coverage is `d_front + d_rear`: below 1.0 opens a
+    /// flight phase, above 1.0 opens a 4-support overlap.
+    duty_factor_rear_scale_override: Option<f64>,
 }
 
 /// `legged_control_parity`: per-leg phase contact schedule + swing
@@ -982,7 +996,8 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             rear_gather_x: None, bound_fx_thrust_rear_frac_override: None,
-            max_step_length_rear_scale_override: None, full_centroidal: None,
+            max_step_length_rear_scale_override: None,
+            duty_factor_rear_scale_override: None, full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
@@ -996,7 +1011,8 @@ impl WbcParams {
             swing_height_override: None,
             body_height_bias_frac: None,
             rear_gather_x: None, bound_fx_thrust_rear_frac_override: None,
-            max_step_length_rear_scale_override: None, full_centroidal: None,
+            max_step_length_rear_scale_override: None,
+            duty_factor_rear_scale_override: None, full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
@@ -1035,6 +1051,7 @@ impl WbcParams {
             body_height_bias_frac: None,
             rear_gather_x: None, bound_fx_thrust_rear_frac_override: None,
             max_step_length_rear_scale_override: None,
+            duty_factor_rear_scale_override: None,
             full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
             gait_type_override: None,
@@ -1527,6 +1544,21 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         );
         cfg.max_step_length_rear_scale = scale;
     }
+    if let Some(scale) = params.duty_factor_rear_scale_override {
+        let d_f = cfg.duty_factor;
+        let d_r = d_f * scale;
+        let t = cfg.cycle_period_s;
+        eprintln!(
+            "[gait] duty_factor_rear_scale -> {scale:.2} (front d={d_f:.3} stance={:.1}ms \
+             swing={:.1}ms | rear d={d_r:.3} stance={:.1}ms swing={:.1}ms | \
+             coverage d_f+d_r={:.3} -> {})",
+            d_f * t * 1e3, (1.0 - d_f) * t * 1e3,
+            d_r * t * 1e3, (1.0 - d_r) * t * 1e3,
+            d_f + d_r,
+            if d_f + d_r < 1.0 { "flight" } else if d_f + d_r > 1.0 { "overlap" } else { "tiled" },
+        );
+        cfg.duty_factor_rear_scale = scale;
+    }
     if let Some(swing_height_m) = params.swing_height_override {
         eprintln!(
             "[gait] overriding swing_height_m {:.3}m -> {:.3}m",
@@ -1986,7 +2018,11 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     5.0,
                     0.0,
                     gc.config().cycle_period_s,
-                    gc.config().duty_factor,
+                    // Per-leg: with duty_factor_rear_scale != 1.0 the rear
+                    // pair's stance/swing windows differ from the front's,
+                    // and a single scalar here would misreport exactly the
+                    // touchdown lateness this diagnostic exists to catch.
+                    gc.config().duty_factors(),
                 );
                 phase_error_sum_s = phase_errors.iter().filter_map(|e| *e).sum();
                 // While cmd_vx is still ramping, the real contact timing is
@@ -5149,6 +5185,103 @@ fn go2_wbc_bound_cmaes_mode_h() {
                   swing_speed(&best.1, c));
         if let Some(samples) = run_wbc_sim(build(&best.1, c, 10.5)) {
             report_walk_summary(&format!("CEM Mode H winner cmd_vx={c:.2}"), &samples, c);
+        }
+    }
+}
+
+/// ASYMMETRIC DUTY -- buy the rear pair swing time, then spend it (2026-07-31).
+///
+/// The last structurally-motivated lever, and the only one aimed at the
+/// constraint that measurement actually implicated.
+/// `go2_wbc_bound_asymmetric_stride` showed the ceiling is not force (99%
+/// tracking at 2.2% torque saturation) and not liftable by stride, because
+/// touchdowns arrive LATE -- 13 ms at the baseline, 42 ms with a longer rear
+/// stride, against a 90 ms swing window.
+///
+/// So give the rear more swing time. Lowering `duty_factor` globally does
+/// that too, but pays for it in stance force (`F_z = mg/(2d)`) and is already
+/// a measured loss (D-2: duty 0.35 is slower than 0.50). Lowering it on the
+/// REAR only concentrates that cost in one pair.
+///
+/// A lower rear duty ALONE is expected to be slower, not faster: a shorter
+/// rear stance means a shorter rear stride, so the ceiling
+/// `v_max = (stride_front + stride_rear)/T` falls. The swing time only pays
+/// off if it is SPENT, i.e. combined with a longer rear stride. That is the
+/// arithmetic the whole hypothesis rests on, at cmd 2.44 with a 0.26 m rear
+/// stride and swing height 0.05:
+///
+///   duty_rear 0.50 -> t_sw 90 ms  -> (0.26 + 2.44*0.090 + 0.10)/0.090 = 6.44 m/s
+///   duty_rear 0.40 -> t_sw 108 ms -> (0.26 + 2.44*0.108 + 0.10)/0.108 = 5.78 m/s
+///
+/// against a ~6.4 m/s knee envelope. The first is exactly at the limit --
+/// which is why the symmetric-duty version of this stride failed -- and the
+/// second has 10% of margin. If that margin is what matters, arm C beats
+/// arm B by a lot.
+///
+/// ARMS, chosen so each comparison isolates one thing:
+///   A  duty 1.00 stride 1.00  control; the 2.013 m/s baseline
+///   B  duty 1.00 stride 1.44  known failure (0.030 m/s) -- long stride, no time
+///   C  duty 0.80 stride 1.44  the hypothesis -- long stride WITH the time
+///   D  duty 0.80 stride 1.00  the time without the stride; should be SLOWER
+///                             than A, and if it is not, C's gain (if any) is
+///                             not coming from where this argument says
+///   E  duty 0.90 stride 1.22  a milder version of C
+///
+/// D is the one that makes this falsifiable rather than a fishing trip.
+///
+/// READ `mean_signed` FIRST. The claim is specifically about touchdown
+/// lateness. If C is faster than B but its lateness is unchanged, the
+/// mechanism proposed here is wrong even though the number improved.
+///
+/// Note coverage `d_front + d_rear` is 0.90 for C and D, so they run a 10%
+/// flight phase by construction -- flight fraction rising is expected and is
+/// not by itself evidence of anything.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored"]
+fn go2_wbc_bound_asymmetric_duty() {
+    for (arm, duty_scale, stride_scale) in [
+        ("A", 1.00, 1.00),
+        ("B", 1.00, 1.44),
+        ("C", 0.80, 1.44),
+        ("D", 0.80, 1.00),
+        ("E", 0.90, 1.22),
+    ] {
+        for cmd_vx in [2.50, 3.00] {
+            let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+            let params = WbcParams {
+                cmd_vx,
+                total_time_s: 8.0,
+                burn_in_s: 0.5,
+                gait_type_override: Some(GaitType::Bound),
+                duty_factor_override: Some(0.50),
+                duty_factor_rear_scale_override: Some(duty_scale),
+                gait_cycle_period_override: Some(0.18),
+                max_step_length_override: Some(0.18),
+                max_step_length_rear_scale_override: Some(stride_scale),
+                bound_trim_reference: Some((100.0, 10.0)),
+                bound_trim_thrust_scale_override: Some(0.7),
+                friction_mu_override: Some(0.70),
+                yaw_pd_gain_override: Some((10.0, 1.0)),
+                full_centroidal: Some(FullCentroidalOpts {
+                    legged_control_parity: true,
+                    use_mpc_predicted_footstep: false,
+                    dynamic_joint_q_reference: false,
+                    mpc_override: None,
+                    task_space_joint_vel_weight: None,
+                    true_centroidal_coupling: false,
+                    capture_point_gain_override: Some(0.0),
+                    base_pos_xy_weight_override: None,
+                    max_normal_force_override: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                    roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                    bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                }),
+                ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk_summary(
+                &format!("DUTYSPLIT {arm} duty_rs={duty_scale:.2} stride_rs={stride_scale:.2} cmd={cmd_vx:.1}"),
+                &samples, cmd_vx);
         }
     }
 }
