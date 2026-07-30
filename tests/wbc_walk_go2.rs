@@ -487,6 +487,32 @@ struct WbcParams {
     /// proxy), so sweeping this sweeps standing height. `None` keeps
     /// the existing `0.08` default.
     body_height_bias_frac: Option<f64>,
+    /// Shift the REAR pair's `nominal_foot_body.x` forward by this many
+    /// metres (the front pair is untouched), making the Bound gait
+    /// front/rear asymmetric — the "gathered" posture of a cheetah's
+    /// gallop, where the rear feet land close under or ahead of the
+    /// front feet rather than a body-length behind them.
+    ///
+    /// This is the only front/rear-asymmetric lever that needs no
+    /// library change: `nominal_foot_body` is already per-leg
+    /// (`config.rs::LegKinematics`), and it is the anchor the footstep
+    /// planner perturbs by its Raibert offsets
+    /// (`full_centroidal_controller.rs::compute_mpc_footstep`:
+    /// `lift_off = nominal - half`, `touch_down = nominal + half`), so
+    /// shifting it moves the whole rear stride window forward.
+    ///
+    /// TWO SIDE EFFECTS TO KEEP IN MIND when reading results:
+    ///   - the trim's `r_x` is built as `0.5*(r_x_front + r_x_rear)`
+    ///     from these same fields, and `BoundTrimConfig`'s doc states
+    ///     front/rear are ASSUMED SYMMETRIC. A gather breaks that
+    ///     assumption, so the trim reference is no longer exactly the
+    ///     pitch-cancelling solution for the real geometry.
+    ///   - it shifts lift-off as well as touchdown. A true gathered
+    ///     gallop swings the rear foot forward and then sweeps it back,
+    ///     which would need a touchdown-only shift (the pattern
+    ///     `pitch_placement_shift` already uses).
+    /// `None` leaves the auto-detected geometry alone.
+    rear_gather_x: Option<f64>,
     /// Use `GaitMode::FullCentroidal` (24-state, joint_q folded into
     /// the MPC state so the per-leg moment arm updates within the
     /// horizon) instead of the default `GaitMode::Mpc` (12-state SRBD,
@@ -798,6 +824,14 @@ struct WbcParams {
     /// feedforward to raise the trimless MIT line's ~1.3 m/s ceiling.
     /// `None` = gait default (0.0 = no-op).
     bound_fx_thrust_bias_override: Option<f64>,
+    /// Set `GaitConfig::bound_fx_thrust_rear_frac` (2026-07-31): what
+    /// fraction of `bound_fx_thrust_bias_override`'s forward push comes
+    /// from the REAR pair. `0.5` is symmetric and bit-identical to the
+    /// old behaviour; `1.0` puts the whole push on the rear at double
+    /// magnitude, which is the propulsive half of a gathered gallop
+    /// (`rear_gather_x` is the postural half). Only meaningful when
+    /// `bound_fx_thrust_bias_override` is non-zero. `None` = 0.5.
+    bound_fx_thrust_rear_frac_override: Option<f64>,
 }
 
 /// `legged_control_parity`: per-leg phase contact schedule + swing
@@ -934,7 +968,8 @@ impl WbcParams {
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
-            body_height_bias_frac: None, full_centroidal: None,
+            body_height_bias_frac: None,
+            rear_gather_x: None, bound_fx_thrust_rear_frac_override: None, full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
@@ -946,7 +981,8 @@ impl WbcParams {
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
             mpc_horizon_override: None, gait_cycle_period_override: None, max_step_length_override: None,
             swing_height_override: None,
-            body_height_bias_frac: None, full_centroidal: None,
+            body_height_bias_frac: None,
+            rear_gather_x: None, bound_fx_thrust_rear_frac_override: None, full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
@@ -983,6 +1019,7 @@ impl WbcParams {
             max_step_length_override: None,
             swing_height_override: None,
             body_height_bias_frac: None,
+            rear_gather_x: None, bound_fx_thrust_rear_frac_override: None,
             full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
             gait_type_override: None,
@@ -1363,6 +1400,19 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         let total_leg = leg_kin.upper_leg_m + leg_kin.lower_leg_m;
         leg_kin.nominal_foot_body.z += height_bias_frac * total_leg;
     }
+    if let Some(gather) = params.rear_gather_x {
+        let before = kin.rl.nominal_foot_body.x;
+        for leg_kin in [&mut kin.rl, &mut kin.rr] {
+            leg_kin.nominal_foot_body.x += gather;
+        }
+        eprintln!(
+            "[rear-gather] rear nominal_foot_body.x {:.4} -> {:.4} m (gather +{:.3}); \
+             front stays {:.4}; front-rear span {:.4} -> {:.4} m",
+            before, kin.rl.nominal_foot_body.x, gather, kin.fl.nominal_foot_body.x,
+            kin.fl.nominal_foot_body.x - before,
+            kin.fl.nominal_foot_body.x - kin.rl.nominal_foot_body.x,
+        );
+    }
     if params.body_height_bias_frac.is_some() {
         eprintln!(
             "[body-height] bias_frac={height_bias_frac:.3} (leg_len={total_leg:.3}m, raw_z={raw_z:.3}m) \
@@ -1443,6 +1493,14 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if let Some(bias) = params.bound_fx_thrust_bias_override {
         eprintln!("[gait] overriding bound_fx_thrust_bias -> {bias:.1} N");
         cfg.bound_fx_thrust_bias = bias;
+    }
+    if let Some(frac) = params.bound_fx_thrust_rear_frac_override {
+        eprintln!(
+            "[gait] bound_fx_thrust_rear_frac {:.2} -> {frac:.2} \
+             (pair gains: front x{:.2}, rear x{:.2})",
+            cfg.bound_fx_thrust_rear_frac, 2.0 * (1.0 - frac), 2.0 * frac,
+        );
+        cfg.bound_fx_thrust_rear_frac = frac;
     }
     if let Some(swing_height_m) = params.swing_height_override {
         eprintln!(
@@ -3061,6 +3119,13 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
     // loaded at each instant can. Feet are FL,FR,RL,RR in that order.
     let mut n_down_hist = [0usize; 5];
     let (mut both_pairs, mut front_only, mut rear_only, mut neither) = (0usize, 0usize, 0usize, 0usize);
+    // Fore-aft span between the pairs' contact points, world x, mean front minus
+    // mean rear. Measured over ALL ticks and again over the both-pairs-down
+    // ticks only: `rear_gather_x` is meant to close the span at the moment of
+    // overlap specifically, and the all-tick mean would hide that if the gather
+    // only shows up in swing.
+    let (mut span_sum, mut span_n) = (0.0_f64, 0usize);
+    let (mut span_ov_sum, mut span_ov_n) = (0.0_f64, 0usize);
     for s in walk.iter() {
         let down: Vec<bool> = s.foot_fz.iter().map(|f| *f > 5.0).collect();
         n_down_hist[down.iter().filter(|d| **d).count()] += 1;
@@ -3072,7 +3137,16 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
             (false, true) => rear_only += 1,
             (false, false) => neither += 1,
         }
+        let span = 0.5 * (s.foot_xy[0][0] + s.foot_xy[1][0]) - 0.5 * (s.foot_xy[2][0] + s.foot_xy[3][0]);
+        span_sum += span;
+        span_n += 1;
+        if f && r {
+            span_ov_sum += span;
+            span_ov_n += 1;
+        }
     }
+    let span_mean = if span_n > 0 { span_sum / span_n as f64 } else { f64::NAN };
+    let span_overlap = if span_ov_n > 0 { span_ov_sum / span_ov_n as f64 } else { f64::NAN };
     let (slip5_mean, slip5_max, slip5_n) = slip_at(5.0);
     let (slip20_mean, _slip20_max, slip20_n) = slip_at(20.0);
     // measured duty at an explicit 5 N threshold, for like-for-like comparison
@@ -3111,7 +3185,8 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
          AUDIT tau: max={tau_max_all:.1} mean_of_max={tau_mean:.1} N.m, frac_ticks_over_23.5={:.1}% \
          | CoT={cot:.2} (mech_power={mean_power:.0}W)\n\
          AUDIT support@5N: n_down 0/1/2/3/4 = {:.3}/{:.3}/{:.3}/{:.3}/{:.3} | \
-         both_pairs={:.3} front_only={:.3} rear_only={:.3} flight={:.3}",
+         both_pairs={:.3} front_only={:.3} rear_only={:.3} flight={:.3} | \
+         span_mean={span_mean:.4}m span_at_overlap={span_overlap:.4}m (n={span_ov_n})",
         x1 - x0, t1 - t0, !has_nan, mismatch_frac * 100.0,
         if cmd_vx.abs() > 1e-6 { 100.0 * meas_vx / cmd_vx } else { 0.0 },
         duty5[0], duty5[1], duty5[2], duty5[3],
@@ -5049,6 +5124,228 @@ fn go2_wbc_bound_cmaes_mode_h() {
                   swing_speed(&best.1, c));
         if let Some(samples) = run_wbc_sim(build(&best.1, c, 10.5)) {
             report_walk_summary(&format!("CEM Mode H winner cmd_vx={c:.2}"), &samples, c);
+        }
+    }
+}
+
+/// IS THE CEILING GEOMETRIC OR FORCE-LIMITED? (2026-07-31)
+///
+/// `go2_wbc_bound_rear_thrust` found that adding forward thrust -- symmetric
+/// or rear-biased -- only ever makes things worse, and the baseline row says
+/// why: at cmd 2.0 the controller hits 99.1% tracking while spending only
+/// 2.2% of ticks above 23.5 N.m. Nothing is force-starved, so no amount of
+/// extra force can help. That points the finger at the planner's stride
+/// geometry, `v_max = max_step_length / (T * duty)` = 0.18/0.09 = 2.0 m/s --
+/// exactly where it stops.
+///
+/// This is the falsifiable version of that claim. Sweep commands ABOVE the
+/// geometric ceiling at two `max_step_length` values whose ceilings differ by
+/// 44% (0.18 -> 2.00 m/s, 0.26 -> 2.89 m/s). If the ceiling is geometric,
+/// achieved speed should track `v_max` and NOT the command: the 0.18 rows
+/// should all pin near 2.0 regardless of whether 2.5 or 3.0 was asked for,
+/// while the 0.26 rows keep climbing. If instead both saturate at the same
+/// speed, the ceiling is something else (force, or the tracking-efficiency
+/// loss that D-4 and the duty>0.5 sweep both ran into) and stride is the
+/// wrong lever.
+///
+/// This decides whether front/rear-asymmetric stride is worth the ~40-line
+/// change to `GaitConfig::max_step_length_m`. Note the swing-speed cost of a
+/// longer stride: at T=0.18, duty 0.50, cmd 3.0, max_step 0.26 needs roughly
+/// (0.26 + 3.0*0.09 + 0.10)/0.09 = 7.0 m/s at the foot, past the ~6.4 m/s
+/// knee limit -- so a 0.26 row that fails at cmd 3.0 may be failing on swing
+/// kinematics rather than on anything to do with the ceiling.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored"]
+fn go2_wbc_bound_stride_ceiling_probe() {
+    for max_step in [0.18, 0.26] {
+        for cmd_vx in [2.00, 2.50, 3.00] {
+            let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+            let params = WbcParams {
+                cmd_vx,
+                total_time_s: 8.0,
+                burn_in_s: 0.5,
+                gait_type_override: Some(GaitType::Bound),
+                duty_factor_override: Some(0.50),
+                gait_cycle_period_override: Some(0.18),
+                max_step_length_override: Some(max_step),
+                bound_trim_reference: Some((100.0, 10.0)),
+                bound_trim_thrust_scale_override: Some(0.7),
+                friction_mu_override: Some(0.70),
+                yaw_pd_gain_override: Some((10.0, 1.0)),
+                full_centroidal: Some(FullCentroidalOpts {
+                    legged_control_parity: true,
+                    use_mpc_predicted_footstep: false,
+                    dynamic_joint_q_reference: false,
+                    mpc_override: None,
+                    task_space_joint_vel_weight: None,
+                    true_centroidal_coupling: false,
+                    capture_point_gain_override: Some(0.0),
+                    base_pos_xy_weight_override: None,
+                    max_normal_force_override: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                    roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                    bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                }),
+                ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            let v_max = max_step / (0.18 * 0.50);
+            report_walk_summary(
+                &format!("CEILING max_step={max_step:.2} (v_max={v_max:.2}) cmd={cmd_vx:.1}"),
+                &samples, cmd_vx);
+        }
+    }
+}
+
+/// REAR-BIASED THRUST -- the propulsive half of a gathered gallop (2026-07-31).
+///
+/// `go2_wbc_bound_rear_gather` tested the postural half alone (rear feet
+/// pulled forward) and it did not help: speed flat-to-worse, pitch worse, and
+/// the one apparent win (torque saturation 15.9% -> 7.7%) was traceable to the
+/// trim's `r_x` shrinking by 10%, not to the gathered posture. That is the
+/// expected result for half of a two-part idea -- a gather shortens the rear's
+/// moment arm and removes propulsion without adding any back.
+///
+/// This is the other half. `bound_fx_thrust_bias` is a net forward push added
+/// to the MPC's GRF reference on stance feet; `bound_fx_thrust_rear_frac`
+/// (new) splits it front/rear. At 0.5 the two pair gains are exactly 1.0 and
+/// the behaviour is unchanged; at 1.0 the entire push comes from the rear pair
+/// at double magnitude while the front contributes none.
+///
+/// ONE VARIABLE PER STEP. The bias magnitude and the split are swept
+/// independently, because introducing both at once would make a win
+/// unattributable -- `frac` cannot be read at all without a symmetric-bias
+/// control at the same magnitude:
+///   (bias 0)          -- current best, no feedforward push at all
+///   (bias X, frac 0.5) -- what the push alone does
+///   (bias X, frac 1.0) -- what moving that same push to the rear does
+/// Only if the third beats the second is the ASYMMETRY doing anything.
+///
+/// Run at both cmd 1.5 and 2.0: the bias exists to raise a speed ceiling, so
+/// it should matter more at the command nearer that ceiling
+/// (`v_max = max_step/(T*duty)` = 2.0 m/s here).
+///
+/// EXPECT NOSE-UP PITCH. A rearward-biased push injects a pitch moment the
+/// (low-weight) attitude cost has to absorb. If `peak_pitch` grows with `frac`
+/// that is the mechanism working as designed, not a bug -- the question is
+/// whether the speed gained is worth it.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored"]
+fn go2_wbc_bound_rear_thrust() {
+    for cmd_vx in [1.50, 2.00] {
+        for (bias, frac) in [(0.0, 0.5), (20.0, 0.5), (20.0, 1.0), (40.0, 0.5), (40.0, 1.0)] {
+            let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+            let params = WbcParams {
+                cmd_vx,
+                total_time_s: 8.0,
+                burn_in_s: 0.5,
+                gait_type_override: Some(GaitType::Bound),
+                duty_factor_override: Some(0.50),
+                gait_cycle_period_override: Some(0.18),
+                max_step_length_override: Some(0.18),
+                bound_fx_thrust_bias_override: if bias > 0.0 { Some(bias) } else { None },
+                bound_fx_thrust_rear_frac_override: if bias > 0.0 { Some(frac) } else { None },
+                bound_trim_reference: Some((100.0, 10.0)),
+                bound_trim_thrust_scale_override: Some(0.7),
+                friction_mu_override: Some(0.70),
+                yaw_pd_gain_override: Some((10.0, 1.0)),
+                full_centroidal: Some(FullCentroidalOpts {
+                    legged_control_parity: true,
+                    use_mpc_predicted_footstep: false,
+                    dynamic_joint_q_reference: false,
+                    mpc_override: None,
+                    task_space_joint_vel_weight: None,
+                    true_centroidal_coupling: false,
+                    capture_point_gain_override: Some(0.0),
+                    base_pos_xy_weight_override: None,
+                    max_normal_force_override: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                    roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                    bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                }),
+                ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk_summary(
+                &format!("THRUST cmd={cmd_vx:.1} bias={bias:.0} frac={frac:.1}"), &samples, cmd_vx);
+        }
+    }
+}
+
+/// GATHERED BOUND -- front/rear asymmetry (2026-07-31).
+///
+/// Proposed after watching the duty > 0.5 videos: a real bounding animal does
+/// not use the same stride front and rear. The rear pair is gathered forward,
+/// landing close under the front feet while the front pair is still loaded,
+/// and the propulsive impulse then comes overwhelmingly from the rear as it
+/// extends. That is a cheetah's gathered gallop, and none of it is what this
+/// controller does -- every force and stride lever in the stack is either a
+/// global scalar or, in `BoundTrimConfig`'s case, structurally forced to be
+/// front/rear symmetric (`sample()` derives the rear half-cycle by exact
+/// negation of the front, with a unit test pinning `f_z` equal).
+///
+/// `rear_gather_x` is the one piece of this reachable without a library
+/// change, because `nominal_foot_body` is already per-leg. It moves the rear
+/// stride window forward; it does NOT add a rear-biased thrust, which needs
+/// `GaitConfig::bound_fx_thrust_bias` split into a pair.
+///
+/// Swept against duty, because a gather only means anything if there IS an
+/// overlap phase for the rear foot to land into -- at duty 0.50 the pairs
+/// tile and "landing while the front is down" cannot happen by construction.
+/// duty 0.50 is therefore the control, not a candidate.
+///
+/// WHAT TO READ. `span_at_overlap` is the direct check that the knob did what
+/// it says: mean(front foot x) - mean(rear foot x) over the both-pairs-down
+/// ticks. If it does not shrink with `gather`, the gather is being undone
+/// downstream (the Raibert term re-centres the foothold on the commanded
+/// speed) and nothing else in the row means anything. Only then read speed
+/// and peak_pitch. The duty 0.60 / gather 0.0 cell is the 0.838 m/s,
+/// 0.071 rad, 20.8% overlap point from `go2_wbc_bound_duty_above_half`.
+///
+/// EXPECT A CONFOUND. `nominal_foot_body.x` also feeds the trim's
+/// `r_x = 0.5*(r_x_front + r_x_rear)`, so a gather shrinks r_x and therefore
+/// the model's own `mu_needed = r_x/h0`. A pitch improvement here is NOT
+/// cleanly attributable to the gathered geometry -- part of it is just the
+/// trim being asked for less fore-aft force. Read the `[trim]` line for the
+/// r_x actually used.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored"]
+fn go2_wbc_bound_rear_gather() {
+    for duty in [0.50, 0.60] {
+        for gather in [0.00, 0.04, 0.08] {
+            let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+            let params = WbcParams {
+                cmd_vx: 1.50,
+                total_time_s: 8.0,
+                burn_in_s: 0.5,
+                gait_type_override: Some(GaitType::Bound),
+                duty_factor_override: Some(duty),
+                gait_cycle_period_override: Some(0.18),
+                max_step_length_override: Some(0.18),
+                rear_gather_x: if gather > 0.0 { Some(gather) } else { None },
+                bound_trim_reference: Some((100.0, 10.0)),
+                bound_trim_thrust_scale_override: Some(0.7),
+                friction_mu_override: Some(0.70),
+                yaw_pd_gain_override: Some((10.0, 1.0)),
+                full_centroidal: Some(FullCentroidalOpts {
+                    legged_control_parity: true,
+                    use_mpc_predicted_footstep: false,
+                    dynamic_joint_q_reference: false,
+                    mpc_override: None,
+                    task_space_joint_vel_weight: None,
+                    true_centroidal_coupling: false,
+                    capture_point_gain_override: Some(0.0),
+                    base_pos_xy_weight_override: None,
+                    max_normal_force_override: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                    roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                    bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                }),
+                ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk_summary(
+                &format!("GATHER duty={duty:.2} gather={gather:.2}"), &samples, 1.50);
         }
     }
 }
