@@ -82,6 +82,20 @@ fn main() {
     // kv <= 2.0 stands 5 s, kv = 3.0 collapses at 0.65 s.
     const EL05_JOINT_DAMPING: f64 = 0.15;
     const EL05_ARMATURE: f64 = 0.0005;
+    // Scale every actuator limit, to separate "the foot is too small" from
+    // "the motors are too weak" as the cause of a level-0 infeasibility.
+    let torque_scale = env_f64("TORQUE_SCALE", 1.0);
+    // Baumgarte stabilisation on the contact constraint. zero_contact_
+    // acceleration pins J*qddot + Jdot*v = 0, which is an ACCELERATION
+    // constraint: give the foot any angular velocity and its orientation
+    // drifts at that rate forever, because nothing feeds the pose error
+    // back. Invisible in a symmetric squat (the foot never acquires roll
+    // rate) and fatal in a lateral weight shift, where the stance sole
+    // rolled to 19 deg while the solver still reported the contact
+    // satisfied. Once the sole is on its edge, patch_contact's rectangular
+    // CoP box describes a footprint that is no longer touching the floor.
+    let kp_c = env_f64("KP_CONTACT", 1600.0);
+    let kd_c = env_f64("KD_CONTACT", 80.0);
     let burnin_kp = env_f64("BURNIN_KP", 150.0);
     let burnin_kv = env_f64("BURNIN_KV", 2.0);
     let burnin_s = env_f64("BURNIN_S", 1.2);
@@ -98,6 +112,8 @@ fn main() {
     // Fore/aft centre of the sole in the foot link frame. MUST match the
     // URDF's foot collision box origin.
     const SOLE_CENTRE_X: f64 = 0.0;
+    // Sole half-width. MUST match the URDF foot collision box.
+    let sole_half_w: f64 = env_f64("SOLE_HALF_W", 0.019);
     const SOLE_CLEARANCE: f64 = 0.001;
     let sim_dt = env_f64("SIM_DT", 0.001);
     let make_opts = |z: f64| MjcfExportOptions {
@@ -127,6 +143,23 @@ fn main() {
     }
     let mut sim = MujocoSim::new(&robot, make_opts(spawn_z)).expect("MujocoSim::new");
     let mj_dt = sim.timestep();
+
+    // The forearms used to sit geometrically INSIDE the hip blocks (shoulder
+    // at y = +-0.08, 35 mm forearm, hip actuator reaching y = 0.095): 16
+    // contacts and 37.2 kN at the spawn pose, 570x body weight, present in
+    // every tick of every run. It braced the robot -- single-leg stance
+    // "passed" only because of it. Shoulders moved to +-0.115; assert it
+    // stays gone, because no number below means anything while the robot is
+    // fighting itself.
+    {
+        let hits: Vec<String> = sim
+            .contacts()
+            .into_iter()
+            .filter(|c| !c.body1.is_empty() && !c.body2.is_empty())
+            .map(|c| format!("{} <-> {}", c.body1, c.body2))
+            .collect();
+        assert!(hits.is_empty(), "self-collision at spawn ({}): {:?}", hits.len(), hits);
+    }
 
     let (model, a2m, link_to_idx) = build_floating_base_model(&robot);
     let nv = model.nv;
@@ -172,7 +205,7 @@ fn main() {
         }
         let vi = model.v_idx[mi];
         if vi >= 6 {
-            torque_max[vi - 6] = robot.joints[ji].effort.max(1.0);
+            torque_max[vi - 6] = robot.joints[ji].effort.max(1.0) * torque_scale;
         }
     }
 
@@ -261,6 +294,7 @@ fn main() {
     let com_dx = env_f64("COM_DX", 0.0);
     let t_shift = env_f64("T_SHIFT", 3.0);   // seconds spent moving the CoM across
     let lift_h = env_f64("LIFT_H", 0.04);    // swing-foot clearance, m
+    let lift_ramp = env_f64("LIFT_RAMP", 1.0);
     let kp_sw = env_f64("KP_SWING", 400.0);
     let kd_sw = env_f64("KD_SWING", 40.0);
     let total_t = env_f64("T", 6.0);
@@ -359,6 +393,9 @@ fn main() {
 
     let mut com_ref0: Option<na::Vector3<f64>> = None;
     let mut swing_home_cell: Option<na::Vector3<f64>> = None;
+    let mut last_good: Option<Vec<f64>> = None;
+    // touchdown pose per foot: (position, rotation) the contact should hold
+    let mut anchor: [Option<(na::Vector3<f64>, na::Matrix3<f64>)>; 2] = [None, None];
     let mut prev_com: Option<na::Vector3<f64>> = None;
     let mut prev_body_pos: Option<[f64; 3]> = None;
     let mut n_degraded = 0u32;
@@ -433,8 +470,26 @@ fn main() {
         }
         let v_dvec = na::DVector::from_column_slice(&v);
 
-        let mass = misarta::crba::crba(&model, &q);
-        let h = misarta::rnea::nonlinear_effects(&model, &q, &v);
+        let mut mass = misarta::crba::crba(&model, &q);
+        let mut h = misarta::rnea::nonlinear_effects(&model, &q, &v);
+        // misarta's dynamics Model carries no rotor inertia and no joint
+        // damping -- `armature`/`joint_damping` are MJCF export fields and
+        // reach the plant only. So the WBC has been solving a model that
+        // differs from the simulator on EVERY actuated joint. Reflected
+        // rotor inertia is a diagonal add to M; viscous damping is a
+        // velocity term in h. Add both at this boundary so the two agree.
+        for ji in 0..robot.joints.len() {
+            let Some(mi) = a2m[ji] else { continue };
+            if model.joints[mi].joint_type.nv() != 1 {
+                continue;
+            }
+            let vi = model.v_idx[mi];
+            if vi < 6 {
+                continue;
+            }
+            mass[(vi, vi)] += EL05_ARMATURE;
+            h[vi] += EL05_JOINT_DAMPING * v[vi];
+        }
         let data = misarta::fk::forward_kinematics(&model, &q);
 
         // ---- CoM position, Jacobian and bias, all world-frame ----------
@@ -540,6 +595,9 @@ fn main() {
             vec![left_foot_mi, right_foot_mi]
         };
         let nc = stance.len();
+        if single {
+            anchor[1] = None;   // right foot is swinging; forget its anchor
+        }
         let mut j_contact = na::DMatrix::zeros(6 * nc, nv);
         let mut dj_v = na::DVector::zeros(6 * nc);
         for (slot, foot_mi) in stance.iter().copied().enumerate() {
@@ -569,7 +627,7 @@ fn main() {
         const SOLE_OFFSET_LOCAL: [f64; 3] = [SOLE_CENTRE_X, 0.0, -0.035];
         let sole_patch = tasks::ContactPatch {
             mu: FRICTION_MU,
-            cop_half: (0.049 * cop_frac, 0.019 * cop_frac),
+            cop_half: (0.049 * cop_frac, sole_half_w * cop_frac),
             mu_torsion: 0.05,
             f_max: 150.0,
         };
@@ -580,6 +638,23 @@ fn main() {
         for (slot, foot_mi) in stance.iter().copied().enumerate() {
             let js = j_contact.rows(6 * slot, 6).into_owned();
             let djvs = dj_v.rows(6 * slot, 6).into_owned();
+            // pose error against the anchor, in world frame, [ang; lin]
+            let pos = misarta::se3::translation(&data.oMi[foot_mi]);
+            let rot = misarta::se3::rotation_matrix(&data.oMi[foot_mi]);
+            let side = if foot_mi == left_foot_mi { 0 } else { 1 };
+            let (p0_, r0_) = *anchor[side].get_or_insert((pos, rot));
+            let dr = r0_ * rot.transpose();
+            // rotation vector of dr (small-angle: the skew part)
+            let e_ang = na::Vector3::new(dr[(2, 1)] - dr[(1, 2)],
+                                        dr[(0, 2)] - dr[(2, 0)],
+                                        dr[(1, 0)] - dr[(0, 1)]) * 0.5;
+            let e_lin = p0_ - pos;
+            let vel = &js * &v_dvec;
+            let mut acc_ref = na::DVector::zeros(6);
+            for k in 0..3 {
+                acc_ref[k] = kp_c * e_ang[k] - kd_c * vel[k];
+                acc_ref[3 + k] = kp_c * e_lin[k] - kd_c * vel[3 + k];
+            }
             let rot = misarta::se3::rotation_matrix(&data.oMi[foot_mi]);
             let r_w = rot
                 * na::Vector3::new(SOLE_OFFSET_LOCAL[0], SOLE_OFFSET_LOCAL[1], SOLE_OFFSET_LOCAL[2]);
@@ -600,7 +675,7 @@ fn main() {
             }
             let w_sole = &sel * &forces.as_affine();
             p0 = p0
-                + tasks::zero_contact_acceleration(dyn_ctx.qddot(), &js, &djvs)
+                + tasks::cartesian_acceleration(dyn_ctx.qddot(), &js, &djvs, &acc_ref)
                 + tasks::patch_contact(&w_sole, &sole_patch);
         }
 
@@ -715,7 +790,13 @@ fn main() {
             let djv = &djf * &v_dvec;
             let pos = misarta::se3::translation(&data.oMi[right_foot_mi]);
             let vel = &jf.rows(3, 3).into_owned() * &v_dvec;
-            let tgt = swing_home + na::Vector3::new(0.0, 0.0, lift_h);
+            // Ramp the clearance in rather than stepping it: releasing the
+            // contact and jumping the target 40 mm in the same tick is a
+            // step input, and its reaction lands straight on the stance
+            // foot's narrow CoP budget.
+            let a_lift = ((t - t_shift) / lift_ramp).clamp(0.0, 1.0);
+            let a_lift = 0.5 - 0.5 * (PI * a_lift).cos();
+            let tgt = swing_home + na::Vector3::new(0.0, 0.0, lift_h * a_lift);
             let a = kp_sw * (tgt - pos) - kd_sw * na::Vector3::new(vel[0], vel[1], vel[2]);
             Some(tasks::cartesian_acceleration(
                 dyn_ctx.qddot(),
@@ -761,6 +842,18 @@ fn main() {
         // collapse. If it does not, something is holding the robot.
         if flag("NO_TORQUE", false) {
             robot_taus.iter_mut().for_each(|t| *t = 0.0);
+        }
+        // A degraded solve is NOT a slightly-worse solve. misa-wbc's HoQp
+        // returns x_new = prev.x on a failed inner QP, and at level 0 that is
+        // the zero vector, so the "solution" satisfies the HOMOGENEOUS EoM --
+        // all 65 N of gravity dropped, and the contact Baumgarte rows
+        // discarded along with it, on exactly the transition ticks where they
+        // work hardest. Hold the last good torque instead.
+        match last_good.as_ref() {
+            Some(prev) if !matches!(sol.status, misa_wbc::SolveStatus::Optimal) => {
+                robot_taus.copy_from_slice(prev);
+            }
+            _ => last_good = Some(robot_taus.clone()),
         }
         sim.set_wbc_torques(&robot_taus);
         sim.step_n_frames(&mut robot, mj_substeps, true);

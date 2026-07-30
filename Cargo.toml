@@ -167,3 +167,7 @@ quadruped-gait = { path = "../quadruped-gait/quadruped-gait" }
 [patch."https://github.com/takarakasai/misarta.git"]
 misarta = { path = "../misarta" }
 misarta-formats = { path = "../misarta/misarta-formats" }
+
+[[example]]
+name = "kyo46rs_selfcollision_check"
+required-features = ["mujoco"]
