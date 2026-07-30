@@ -99,6 +99,21 @@ fn main() {
     }
     seed_legs(&mut robot, &kin);
 
+    // The namiashi arm actuator ships very soft (kp=5, kv=0.5) — far too slow
+    // to track a moving head reference, which reads as the head lagging the
+    // body. Stiffen it to a usable tracking gain so the ChickenHead command
+    // (position + the velocity feed-forward below) is actually followed.
+    // The namiashi arm actuator ships soft (kp=5, kv=0.5). Give it a modest
+    // stiffness bump with **critical** damping (the arm's reflected inertia is
+    // tiny, ~0.0014 kg·m², so the shipped over-damping was what made it
+    // sluggish). Combined with the velocity feed-forward below, this lets the
+    // head track the trunk instead of trailing it. kp=30 → ωn≈19 Hz, far above
+    // the ~0.5 Hz body motion; kv≈1.0 keeps it near critical (not over-damped).
+    if let Some(&arm_ji) = robot.joint_map.get(ARM_JOINT) {
+        robot.joints[arm_ji].actuator_kp = 30.0;
+        robot.joints[arm_ji].actuator_kv = 1.0;
+    }
+
     // Per-leg kinematics, joint indices + IK→URDF sign, and the FIXED world
     // foot contact point (level-body home stance; foot z = 0 on the ground).
     let legs_kin = [&kin.fl, &kin.fr, &kin.rl, &kin.rr];
@@ -160,6 +175,9 @@ fn main() {
     let mut k = 0usize;
     let mut pitch_sq = 0.0;
     let mut pitch_n = 0usize;
+    // Head-world tracking error: head_world = trunk_pitch + sign·arm_q. With a
+    // perfectly-tracking head this is ~0; lag shows up as a nonzero RMS.
+    let mut head_world_sq = 0.0;
     while frame < n_frames {
         // Body-pose command: pitch the trunk about the ground support centre
         // while keeping every foot at its FIXED world contact point. Per-leg
@@ -184,12 +202,28 @@ fn main() {
                 }
             }
         }
-        // Head: real ChickenHead command off the *measured* trunk attitude.
+        // Head: real ChickenHead command off the *measured* trunk attitude —
+        // BOTH the position target and the velocity feed-forward the
+        // controller provides. The feed-forward (`q̇* = -sign·ω_body`) is what
+        // cancels the position-PD's phase lag on the moving reference, so the
+        // head tracks the body instead of trailing it.
         let body_quat = sim
             .body_world_orientation(&robot.root_link)
             .unwrap_or_else(nalgebra::UnitQuaternion::identity);
-        let head_q = if chicken.enabled { chicken.target_angle(&body_quat) } else { 0.0 };
-        sim.set_position_target(chicken.joint_idx, head_q);
+        if chicken.enabled {
+            sim.set_position_target(chicken.joint_idx, chicken.target_angle(&body_quat));
+            let w = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            let omega_body = body_quat.inverse() * Vector3::new(w[0], w[1], w[2]);
+            // Position-mode velocity feed-forward: q̇* = -sign·ω_body drives the
+            // head at the trunk's counter-rate so the PD doesn't lag.
+            sim.set_position_target_velocity(
+                chicken.joint_idx,
+                chicken.target_velocity(&omega_body),
+            );
+        } else {
+            sim.set_position_target(chicken.joint_idx, 0.0);
+            sim.set_position_target_velocity(chicken.joint_idx, 0.0);
+        }
 
         sim.step(&mut robot, dt, true);
 
@@ -199,8 +233,18 @@ fn main() {
             renderer
                 .save_rgb(format!("{outdir}/frame_{frame:04}.png"))
                 .expect("save_rgb");
-            let p = body_quat.euler_angles().1;
+            // Re-read the trunk attitude POST-step so it is time-consistent
+            // with the post-step arm angle (avoids a spurious one-tick offset
+            // in the tracking metric).
+            let p = sim
+                .body_world_orientation(&robot.root_link)
+                .unwrap_or_else(nalgebra::UnitQuaternion::identity)
+                .euler_angles()
+                .1;
             pitch_sq += p * p;
+            let arm_q = sim.joint_q_qd(ARM_JOINT).map(|(q, _)| q).unwrap_or(0.0);
+            let head_world = p + chicken.axis_sign * arm_q;
+            head_world_sq += head_world * head_world;
             pitch_n += 1;
             frame += 1;
         }
@@ -208,7 +252,9 @@ fn main() {
     }
 
     let pitch_rms = (pitch_sq / pitch_n.max(1) as f64).sqrt().to_degrees();
+    let head_world_rms = (head_world_sq / pitch_n.max(1) as f64).sqrt().to_degrees();
     eprintln!(
-        "[{head_mode}] wrote {frame} frames to {outdir}  ·  measured trunk-pitch RMS = {pitch_rms:.2}°"
+        "[{head_mode}] wrote {frame} frames to {outdir}  ·  trunk-pitch RMS = {pitch_rms:.2}°  \
+         ·  head-world RMS = {head_world_rms:.2}° (lower = tighter head hold)"
     );
 }
