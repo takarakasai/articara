@@ -3206,6 +3206,86 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
             span_ov_n += 1;
         }
     }
+    // PER-LEG STANCE SWEEP -- the quantity the footstep cap actually bounds.
+    // While a foot is loaded it is planted and the BODY travels over it, so
+    // the fore-aft excursion of the foot in the body frame across one stance
+    // episode is the distance that stance contributed to forward travel. That
+    // is `2*half` in compute_mpc_footstep, capped at `max_step_length_m`, and
+    // summing it over the two pairs is what gives v_max = (f + r)/T.
+    // Reported per pair because the front and rear caps can now differ.
+    let mut sweep_sum = [0.0_f64; 4];
+    let mut sweep_n = [0usize; 4];
+    let mut step_sum = [0.0_f64; 4];
+    let mut step_n = [0usize; 4];
+    {
+        let mut in_stance = [false; 4];
+        let mut rel_at_td = [0.0_f64; 4];
+        let mut world_at_td = [0.0_f64; 4];
+        let mut prev_world_td: [Option<f64>; 4] = [None; 4];
+        let mut last_rel = [0.0_f64; 4];
+        for s in walk.iter() {
+            for fi in 0..4 {
+                let down = s.foot_fz[fi] > 5.0;
+                let rel = s.foot_xy[fi][0] - s.body_x;
+                if down && !in_stance[fi] {
+                    rel_at_td[fi] = rel;
+                    world_at_td[fi] = s.foot_xy[fi][0];
+                    if let Some(prev) = prev_world_td[fi] {
+                        step_sum[fi] += s.foot_xy[fi][0] - prev;
+                        step_n[fi] += 1;
+                    }
+                    prev_world_td[fi] = Some(s.foot_xy[fi][0]);
+                } else if !down && in_stance[fi] {
+                    // liftoff: the body has moved forward, so the foot has
+                    // moved BACKWARD in the body frame. Sweep is positive.
+                    sweep_sum[fi] += rel_at_td[fi] - last_rel[fi];
+                    sweep_n[fi] += 1;
+                }
+                in_stance[fi] = down;
+                last_rel[fi] = rel;
+            }
+        }
+        let _ = world_at_td;
+    }
+    // The per-episode sweep above is contaminated: at a 5 N threshold each
+    // foot registers ~1.5 contact episodes per cycle, so a single stance gets
+    // chopped into fragments and its excursion is under-counted. Measure the
+    // stride excursion a second way, independent of contact detection: the
+    // peak-to-peak of the foot's fore-aft position in the BODY frame over a
+    // sliding one-cycle window. The planner puts lift-off at `nominal - half`
+    // and touch-down at `nominal + half`, so this is `2*half` -- the same
+    // quantity `max_step_length_m` caps -- whether or not the contact signal
+    // is clean.
+    let cycle_ticks = ((final_period_s / (walk[1].t - walk[0].t)).round() as usize).max(2);
+    let mut p2p_sum = [0.0_f64; 4];
+    let mut p2p_n = 0usize;
+    for w in walk.windows(cycle_ticks) {
+        for fi in 0..4 {
+            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+            for s in w.iter() {
+                let rel = s.foot_xy[fi][0] - s.body_x;
+                lo = lo.min(rel);
+                hi = hi.max(rel);
+            }
+            p2p_sum[fi] += hi - lo;
+        }
+        p2p_n += 1;
+    }
+    let p2p = |fi: usize| if p2p_n > 0 { p2p_sum[fi] / p2p_n as f64 } else { f64::NAN };
+    let p2p_front = 0.5 * (p2p(0) + p2p(1));
+    let p2p_rear = 0.5 * (p2p(2) + p2p(3));
+    // How badly fragmented the contact signal is: episodes per foot per cycle.
+    // 1.0 is one clean stance per cycle; above that the 5 N threshold is being
+    // recrossed mid-stance.
+    let n_cycles = (t1 - t0) / final_period_s;
+    let frag_front = 0.5 * (sweep_n[0] + sweep_n[1]) as f64 / n_cycles;
+    let frag_rear = 0.5 * (sweep_n[2] + sweep_n[3]) as f64 / n_cycles;
+    let sweep = |fi: usize| if sweep_n[fi] > 0 { sweep_sum[fi] / sweep_n[fi] as f64 } else { f64::NAN };
+    let step = |fi: usize| if step_n[fi] > 0 { step_sum[fi] / step_n[fi] as f64 } else { f64::NAN };
+    let sweep_front = 0.5 * (sweep(0) + sweep(1));
+    let sweep_rear = 0.5 * (sweep(2) + sweep(3));
+    let step_front = 0.5 * (step(0) + step(1));
+    let step_rear = 0.5 * (step(2) + step(3));
     let span_mean = if span_n > 0 { span_sum / span_n as f64 } else { f64::NAN };
     let span_overlap = if span_ov_n > 0 { span_ov_sum / span_ov_n as f64 } else { f64::NAN };
     let (slip5_mean, slip5_max, slip5_n) = slip_at(5.0);
@@ -3247,7 +3327,13 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
          | CoT={cot:.2} (mech_power={mean_power:.0}W)\n\
          AUDIT support@5N: n_down 0/1/2/3/4 = {:.3}/{:.3}/{:.3}/{:.3}/{:.3} | \
          both_pairs={:.3} front_only={:.3} rear_only={:.3} flight={:.3} | \
-         span_mean={span_mean:.4}m span_at_overlap={span_overlap:.4}m (n={span_ov_n})",
+         span_mean={span_mean:.4}m span_at_overlap={span_overlap:.4}m (n={span_ov_n})\n\
+         AUDIT stride: stance_sweep front={sweep_front:.4}m rear={sweep_rear:.4}m \
+         (sum={:.4}m -> v={:.3}m/s at T) | step_len front={step_front:.4}m rear={step_rear:.4}m \
+         | n_stance F={} {} R={} {}\n\
+         AUDIT stride2: body-frame p2p front={p2p_front:.4}m rear={p2p_rear:.4}m \
+         (= 2*half; cap is max_step) | planned half=v_cmd*d*T/2={:.4}m (before the max_step clamp) \
+         | contact episodes/cycle F={frag_front:.2} R={frag_rear:.2}",
         x1 - x0, t1 - t0, !has_nan, mismatch_frac * 100.0,
         if cmd_vx.abs() > 1e-6 { 100.0 * meas_vx / cmd_vx } else { 0.0 },
         duty5[0], duty5[1], duty5[2], duty5[3],
@@ -3257,6 +3343,9 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
         n_down_hist[4] as f64 / n_walk,
         both_pairs as f64 / n_walk, front_only as f64 / n_walk,
         rear_only as f64 / n_walk, neither as f64 / n_walk,
+        sweep_front + sweep_rear, (sweep_front + sweep_rear) / final_period_s,
+        sweep_n[0], sweep_n[1], sweep_n[2], sweep_n[3],
+        cmd_vx * 0.5 * 0.5 * final_period_s,
     );
 }
 
