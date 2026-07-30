@@ -171,3 +171,7 @@ misarta-formats = { path = "../misarta/misarta-formats" }
 [[example]]
 name = "kyo46rs_selfcollision_check"
 required-features = ["mujoco"]
+
+[[example]]
+name = "kyo46rs_leg_conditioning"
+required-features = ["mujoco"]
