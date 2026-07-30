@@ -1379,6 +1379,20 @@ impl MujocoSim {
         Some((view.qpos[0], view.qvel[0]))
     }
 
+    /// Borrow the compiled MuJoCo model handle (ref-counted). Lets an
+    /// offscreen `MjRenderer` be built against the exact model this sim
+    /// steps, so headless render demos draw the live physics state.
+    pub fn mj_model(&self) -> Arc<MjModel> {
+        Arc::clone(&self.model)
+    }
+
+    /// Mutably borrow the live `MjData` so an `MjRenderer` can `sync_data`
+    /// the current physics state each frame — the same handle [`Self::step`]
+    /// integrates.
+    pub fn mj_data_mut(&mut self) -> &mut MjData<Arc<MjModel>> {
+        &mut self.data
+    }
+
     /// World-frame orientation of `body_link` as a unit quaternion.
     /// MuJoCo's `xquat` stores `[w, x, y, z]` (Hamilton); we hand it
     /// to `nalgebra::Quaternion::new(w, i, j, k)` directly. Used by

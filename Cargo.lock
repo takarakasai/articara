@@ -3201,9 +3201,12 @@ version = "4.0.1+mj-3.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34beda400f8c14ea890a4c11b1e62602a1b756da86656ef2e75512d311639359"
 dependencies = [
+ "bitflags 2.11.0",
  "bytemuck",
+ "glutin",
  "paste",
  "pkg-config",
+ "png",
 ]
 
 [[package]]
