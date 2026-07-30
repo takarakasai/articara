@@ -185,6 +185,12 @@ def draw_ground(draw, cam):
                   fill=(86, 92, 104) if axis else (60, 65, 76), width=2 if axis else 1)
 
 
+def sole_roll_deg(pose):
+    """Roll of the LEFT (stance) sole. Reads zero when the foot is flat."""
+    _, Rf = pose["left_foot_link"]
+    return math.degrees(math.atan2(Rf[2][1], Rf[2][2]))
+
+
 def render_frame(links, joints, pose, cam, hud):
     img = gradient_bg()
     draw = ImageDraw.Draw(img, "RGBA")
@@ -258,7 +264,8 @@ def render_frame(links, joints, pose, cam, hud):
         draw.polygon(poly, fill=col, outline=(28, 30, 36))
 
     # ── HUD ────────────────────────────────────────────────────────────
-    t, com_z, ref_z, tilt, hist, taus, tau_names, tau_lims, tau_total, n_stance, degraded = hud
+    (t, com_z, ref_z, tilt, hist, taus, tau_names, tau_lims, tau_total,
+     n_stance, degraded, sole_roll) = hud
     compact = os.environ.get("COMPACT")
     if compact:
         draw.rectangle([0, 0, W, 76], fill=(16, 18, 23, 214))
@@ -270,6 +277,9 @@ def render_frame(links, joints, pose, cam, hud):
                   fill=col, font=F_SMALL)
         draw.text((W - 150, 52), "1 foot" if n_stance == 1 else "2 feet",
                   fill=(226, 140, 92) if n_stance == 1 else (126, 200, 140), font=F_SMALL)
+        sr = hud[-1]
+        draw.text((W - 150, 32), f"sole {sr:+5.1f} deg",
+                  fill=(214, 97, 90) if abs(sr) > 3.0 else (150, 158, 172), font=F_SMALL)
         return img
     draw.rectangle([0, 0, W, 84], fill=(16, 18, 23, 210))
     draw.text((22, 10), os.environ.get("TITLE", "kyo46rs  /  centroidal WBC squat"),
@@ -410,7 +420,8 @@ def main():
                             float(r["tilt"]), hist[-260:],
                             tau_hist, tau_names, tau_lims, len(sel),
                             int(r.get("n_stance", 2)),
-                            int(r.get("n_stance", 2)) == 1))
+                            int(r.get("n_stance", 2)) == 1,
+                            sole_roll_deg(pose)))
         img.save(os.path.join(frame_dir, f"f{i:05d}.png"))
         if i % 50 == 0:
             print(f"  frame {i}/{len(sel)}")
