@@ -3053,6 +3053,26 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
         let max = per_contact.iter().cloned().fold(0.0_f64, f64::max);
         (mean, max, n)
     };
+    // Support-pattern census (2026-07-31). The trim model assumes the two pairs
+    // TILE the cycle -- at most one pair loaded at any instant, no 4-support
+    // phase. Animal bounding is often described the other way round
+    // (4-support -> rear-only -> flight -> front-only -> 4-support). Per-foot
+    // duty and flight fraction cannot distinguish those; the NUMBER of feet
+    // loaded at each instant can. Feet are FL,FR,RL,RR in that order.
+    let mut n_down_hist = [0usize; 5];
+    let (mut both_pairs, mut front_only, mut rear_only, mut neither) = (0usize, 0usize, 0usize, 0usize);
+    for s in walk.iter() {
+        let down: Vec<bool> = s.foot_fz.iter().map(|f| *f > 5.0).collect();
+        n_down_hist[down.iter().filter(|d| **d).count()] += 1;
+        let f = down[0] || down[1];
+        let r = down[2] || down[3];
+        match (f, r) {
+            (true, true) => both_pairs += 1,
+            (true, false) => front_only += 1,
+            (false, true) => rear_only += 1,
+            (false, false) => neither += 1,
+        }
+    }
     let (slip5_mean, slip5_max, slip5_n) = slip_at(5.0);
     let (slip20_mean, _slip20_max, slip20_n) = slip_at(20.0);
     // measured duty at an explicit 5 N threshold, for like-for-like comparison
@@ -3089,11 +3109,18 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
          mean={slip20_mean:.4}m (n={slip20_n} @20N)\n\
          AUDIT duty@5N: {:.3} {:.3} {:.3} {:.3} (mean={duty5_mean:.3}), flight@5N={flight5:.3}\n\
          AUDIT tau: max={tau_max_all:.1} mean_of_max={tau_mean:.1} N.m, frac_ticks_over_23.5={:.1}% \
-         | CoT={cot:.2} (mech_power={mean_power:.0}W)",
+         | CoT={cot:.2} (mech_power={mean_power:.0}W)\n\
+         AUDIT support@5N: n_down 0/1/2/3/4 = {:.3}/{:.3}/{:.3}/{:.3}/{:.3} | \
+         both_pairs={:.3} front_only={:.3} rear_only={:.3} flight={:.3}",
         x1 - x0, t1 - t0, !has_nan, mismatch_frac * 100.0,
         if cmd_vx.abs() > 1e-6 { 100.0 * meas_vx / cmd_vx } else { 0.0 },
         duty5[0], duty5[1], duty5[2], duty5[3],
         frac_over_235 * 100.0,
+        n_down_hist[0] as f64 / n_walk, n_down_hist[1] as f64 / n_walk,
+        n_down_hist[2] as f64 / n_walk, n_down_hist[3] as f64 / n_walk,
+        n_down_hist[4] as f64 / n_walk,
+        both_pairs as f64 / n_walk, front_only as f64 / n_walk,
+        rear_only as f64 / n_walk, neither as f64 / n_walk,
     );
 }
 
@@ -5022,6 +5049,136 @@ fn go2_wbc_bound_cmaes_mode_h() {
                   swing_speed(&best.1, c));
         if let Some(samples) = run_wbc_sim(build(&best.1, c, 10.5)) {
             report_walk_summary(&format!("CEM Mode H winner cmd_vx={c:.2}"), &samples, c);
+        }
+    }
+}
+
+/// Video-capture source for the duty > 0.5 comparison. Duty is read from the
+/// WBC_BOUND_DUTY env var so the same binary can dump several CSVs without a
+/// rebuild:
+///   WBC_BOUND_DUTY=0.50 WBC_BOUND_JOINT_CSV_OUT=csv/duty050.csv cargo test ...
+///   WBC_BOUND_DUTY=0.60 WBC_BOUND_JOINT_CSV_OUT=csv/duty060.csv cargo test ...
+/// Otherwise identical to go2_wbc_bound_duty_above_half's cmd 1.5 arm, run
+/// longer (15 s) for a watchable clip.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; CSV/video source for the duty sweep"]
+fn go2_wbc_bound_duty_video_source() {
+    let duty: f64 = std::env::var("WBC_BOUND_DUTY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.50);
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 1.50,
+        total_time_s: 15.0,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(duty),
+        gait_cycle_period_override: Some(0.18),
+        max_step_length_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(0.7),
+        friction_mu_override: Some(0.70),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+            roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+            bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_walk_summary(&format!("DUTY VIDEO duty={duty:.2} cmd 1.5"), &samples, 1.50);
+}
+
+/// DUTY ABOVE 0.5 -- the 4-support overlap regime (2026-07-31).
+///
+/// Every duty sweep in this file has gone DOWNWARD from 0.50 (0.45, 0.40, 0.35,
+/// 0.30, 0.25), chasing a flight phase. The opposite direction has never been
+/// tested, and the physics says it is the interesting one for pitch.
+///
+/// Measured support census on the current best config: both pairs are loaded
+/// simultaneously only 1.0% of the time (RL policy: 5.0%), i.e. the two pairs
+/// tile the cycle almost exactly as bound_reference.rs's derivation assumes.
+/// During single-pair stance the loaded pair alone carries m*g at a moment arm
+/// of r_x, so cancelling pitch needs mu_needed = r_x/h0 = 0.83 -- more than the
+/// plant provides, which is why the reference is friction-clipped and pitch is
+/// only partly compensated.
+///
+/// With BOTH pairs loaded and F_z shared, the front (+r_x) and rear (-r_x)
+/// moment arms cancel exactly: tau = -h0*(F_xf + F_xr) - r_x*F_zf + r_x*F_zr,
+/// so at F_zf = F_zr the r_x terms vanish and zero net F_x gives zero pitch
+/// moment. **mu_needed = 0 during 4-support.** An overlap phase is therefore
+/// free time for pitch, and duty > 0.5 is how the schedule creates one --
+/// overlap length is (2d - 1)*T.
+///
+/// Note the measured effective duty runs ~0.05 BELOW commanded (0.452 measured
+/// at 0.50 commanded, because contact force ramps rather than switching), so
+/// commanding 0.55 should be near the onset of real overlap and 0.60 well into
+/// it.
+///
+/// Requires the duty_trim() clamp in bound_reference.rs: the trim's closed form
+/// assumes tiling, and above 0.5 it would both under-support gravity
+/// (m*g/(2d) = 0.909*m*g at d = 0.55) and break its own half-cycle periodicity
+/// closure. The clamp is a strict no-op at d <= 0.5.
+///
+/// Read the AUDIT support line: `both_pairs` is the quantity under test. If it
+/// does not rise materially above the 1.0% baseline, the schedule is not
+/// actually producing overlap and any speed/pitch change has another cause.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; duty > 0.5 overlap regime"]
+fn go2_wbc_bound_duty_above_half() {
+    for duty in [0.50, 0.55, 0.60] {
+        for cmd_vx in [1.50] {
+            let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+            let params = WbcParams {
+                cmd_vx,
+                total_time_s: 10.5,
+                gait_type_override: Some(GaitType::Bound),
+                duty_factor_override: Some(duty),
+                gait_cycle_period_override: Some(0.18),
+                // headroom, not a target: v_max = max_step/(T*duty), so raising
+                // duty at a fixed max_step would silently LOWER the ceiling
+                // (0.18/(0.18*0.60) = 1.67 m/s) and we would measure the cap
+                // rather than the duty. 0.26 keeps v_max >= 2.4 for every arm.
+                max_step_length_override: Some(0.18),
+                bound_trim_reference: Some((100.0, 10.0)),
+                bound_trim_thrust_scale_override: Some(0.7),
+                friction_mu_override: Some(0.70),
+                yaw_pd_gain_override: Some((10.0, 1.0)),
+                full_centroidal: Some(FullCentroidalOpts {
+                    legged_control_parity: true,
+                    use_mpc_predicted_footstep: false,
+                    dynamic_joint_q_reference: false,
+                    mpc_override: None,
+                    task_space_joint_vel_weight: None,
+                    true_centroidal_coupling: false,
+                    capture_point_gain_override: Some(0.0),
+                    base_pos_xy_weight_override: None,
+                    max_normal_force_override: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                    roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                    bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                }),
+                ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+            };
+            if let Some(samples) = run_wbc_sim(params) {
+                let overlap = (2.0 * duty - 1.0).max(0.0) * 0.18;
+                report_walk_summary(
+                    &format!("DUTY={duty:.2} cmd_vx={cmd_vx:.2} \
+                              (overlap={:.1}ms/cycle, max_step=0.26, mu=0.70, T=0.18)", overlap * 1000.0),
+                    &samples, cmd_vx,
+                );
+            }
         }
     }
 }
