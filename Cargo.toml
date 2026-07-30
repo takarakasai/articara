@@ -10,6 +10,9 @@ description = "A high-performance robot model editor built in Rust. articara foc
 default = ["gui", "scripting"]
 gui = ["dep:eframe", "dep:egui_plot", "dep:glow", "dep:env_logger"]
 mujoco = ["dep:mujoco"]
+# Headless offscreen rendering (EGL) via mujoco-rs's `renderer` feature — used
+# by demo examples that write MuJoCo frames to disk without a GUI window.
+render = ["mujoco", "mujoco/renderer"]
 serde = ["dep:serde", "nalgebra/serde-serialize"]
 scripting = ["dep:rhai"]
 # Live gait viewer (see `viz_feed`): subscribe to a `go2-gait-runner --viz`
@@ -54,6 +57,13 @@ required-features = ["mujoco"]
 [[example]]
 name = "script_repl"
 required-features = ["scripting"]
+
+[[example]]
+name = "chicken_head_demo"
+
+[[example]]
+name = "chicken_head_render"
+required-features = ["render"]
 
 [dependencies]
 eframe = { version = "0.34.1", features = ["glow"], optional = true }
