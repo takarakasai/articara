@@ -93,9 +93,9 @@ fn main() {
         let total = leg_kin.upper_leg_m + leg_kin.lower_leg_m;
         // Raise the foot in the body frame so the legs stay out of the fully
         // extended singularity. The `0.08·leg` term keeps a small margin; the
-        // extra 8 cm crouches the standing pose so the legs are visibly bent
-        // (not over-extended) — a more natural quadruped stance.
-        leg_kin.nominal_foot_body.z += 0.08 * total + 0.08;
+        // extra 16 cm crouches the standing pose so the legs are clearly bent
+        // (not over-extended) — a natural, low quadruped stance.
+        leg_kin.nominal_foot_body.z += 0.08 * total + 0.16;
     }
     seed_legs(&mut robot, &kin);
 
