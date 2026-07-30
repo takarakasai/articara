@@ -23,7 +23,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 URDF = "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf"
-W, H = 960, 720
+W, H = int(os.environ.get("VID_W", 960)), 720
 FPS = 50
 
 # ── URDF ───────────────────────────────────────────────────────────────
@@ -259,6 +259,18 @@ def render_frame(links, joints, pose, cam, hud):
 
     # ── HUD ────────────────────────────────────────────────────────────
     t, com_z, ref_z, tilt, hist, taus, tau_names, tau_lims, tau_total, n_stance, degraded = hud
+    compact = os.environ.get("COMPACT")
+    if compact:
+        draw.rectangle([0, 0, W, 76], fill=(16, 18, 23, 214))
+        draw.text((16, 8), os.environ.get("TITLE", ""), fill=(238, 242, 250), font=F_BODY)
+        draw.text((16, 32), f"t {t:5.2f}s   tilt {math.degrees(tilt):5.1f} deg",
+                  fill=(176, 184, 198), font=F_SMALL)
+        col = (214, 97, 90) if degraded else (126, 200, 140)
+        draw.text((16, 52), "QP infeasible" if degraded else "QP solving",
+                  fill=col, font=F_SMALL)
+        draw.text((W - 150, 52), "1 foot" if n_stance == 1 else "2 feet",
+                  fill=(226, 140, 92) if n_stance == 1 else (126, 200, 140), font=F_SMALL)
+        return img
     draw.rectangle([0, 0, W, 84], fill=(16, 18, 23, 210))
     draw.text((22, 10), os.environ.get("TITLE", "kyo46rs  /  centroidal WBC squat"),
               fill=(238, 242, 250), font=F_TITLE)
@@ -374,7 +386,9 @@ def main():
     if os.environ.get("ANKLE_CLOSEUP"):
         cam = Camera(eye=(0.30, -0.42, 0.16), target=(0.01, 0.0, 0.06), fov=34, y_shift=60)
     else:
-        cam = Camera(eye=(1.15, -1.38, 0.62), target=(0.02, 0.0, 0.30), fov=33, y_shift=24)
+        cam = (Camera(eye=(1.30, -1.55, 0.62), target=(0.02, 0.0, 0.28), fov=30, y_shift=-10)
+               if os.environ.get("COMPACT")
+               else Camera(eye=(1.15, -1.38, 0.62), target=(0.02, 0.0, 0.30), fov=33, y_shift=24))
     hist = []
     for i, r in enumerate(sel):
         q = {n: float(r[n]) for n in jnames}
