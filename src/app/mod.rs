@@ -1164,6 +1164,14 @@ impl ArticaraApp {
                                     .unwrap_or([0.0, 0.0, 0.0]),
                             };
 
+                            // Clone the ChickenHead + standing-gesture configs
+                            // out before the `gc` mutable borrow of `self.gait`
+                            // begins (the driver can't borrow `self.gait.*`
+                            // while `gc = self.gait.controller.as_mut()` is
+                            // live). `None` / disabled ⇒ no command.
+                            let chicken_cfg = self.gait.chicken_head.clone();
+                            let gesture_cfg = self.gait.gesture.clone();
+                            let gesture_t = self.gait.gesture_time_s;
                             if let Some(gc) = self.gait.controller.as_mut() {
                                 if gc.is_enabled() {
                                     // Feed observed body linear + angular
@@ -1196,6 +1204,56 @@ impl ArticaraApp {
                                     let (out, targets, torque_ff) = gc.tick(dt as f64);
                                     for (idx, q) in targets {
                                         mj_sim.set_position_target(idx, q);
+                                    }
+                                    // ── ChickenHead (Position-PD path) ──
+                                    // Command the head actuator's position
+                                    // target to hold the head level in the
+                                    // world. This drives the head under pure
+                                    // Position-PD; when WBC is active below,
+                                    // the same reference is *also* injected as
+                                    // a WBC joint task (dynamic consistency,
+                                    // legged_control-style hybrid).
+                                    if let Some(cfg) =
+                                        chicken_cfg.as_ref().filter(|c| c.enabled)
+                                    {
+                                        let body_quat = mj_sim
+                                            .body_world_orientation(&model.root_link)
+                                            .unwrap_or_else(
+                                                nalgebra::UnitQuaternion::identity,
+                                            );
+                                        let q_ref = cfg.target_angle(&body_quat);
+                                        mj_sim.set_position_target(cfg.joint_idx, q_ref);
+                                    }
+                                    // ── Standing gesture: head channel ──
+                                    // A head gesture (Nod) bobs the head on
+                                    // top of its base pose. The base is the
+                                    // ChickenHead world-level hold when that's
+                                    // active, else the head's neutral (0) — so
+                                    // the head bobs *around* level. Overrides
+                                    // the ChickenHead command above for this
+                                    // tick when a head gesture is running.
+                                    if let Some(g) =
+                                        gesture_cfg.as_ref().filter(|g| g.enabled)
+                                    {
+                                        if let Some(head_idx) = g.head_joint_idx {
+                                            let base = chicken_cfg
+                                                .as_ref()
+                                                .filter(|c| c.enabled)
+                                                .map(|c| {
+                                                    let bq = mj_sim
+                                                        .body_world_orientation(
+                                                            &model.root_link,
+                                                        )
+                                                        .unwrap_or_else(
+                                                            nalgebra::UnitQuaternion::identity,
+                                                        );
+                                                    c.target_angle(&bq)
+                                                })
+                                                .unwrap_or(0.0);
+                                            if let Some(q) = g.head_target(gesture_t, base) {
+                                                mj_sim.set_position_target(head_idx, q);
+                                            }
+                                        }
                                     }
                                     // Phase 4 WBC (single-layer feedforward):
                                     // layer the SRBD MPC's GRF-derived
@@ -1315,6 +1373,40 @@ impl ArticaraApp {
                                             out.legs[3].phase.is_stance,
                                         ];
                                         let pipeline = self.sim.wbc_pipeline.as_mut().unwrap();
+                                        // ChickenHead (WBC path): inject the
+                                        // head-attitude hold as a joint task so
+                                        // the WBC τ dynamically reinforces the
+                                        // Position-PD head command set above.
+                                        // Gated internally by `cfg.enabled`;
+                                        // `None` is an exact no-op.
+                                        pipeline.chicken_head = chicken_cfg.clone();
+                                        // ── Standing gesture: body-attitude
+                                        // channel ── Drive the WBC roll/pitch/
+                                        // yaw refs from a body gesture (Sway).
+                                        // Always written each tick so a
+                                        // turned-off gesture leaves no stale
+                                        // reference: idle ⇒ level (0) with the
+                                        // attitude PD disabled, exactly the
+                                        // default every gait ran with before.
+                                        if let Some(g) = gesture_cfg
+                                            .as_ref()
+                                            .filter(|g| g.enabled && g.uses_body_attitude())
+                                        {
+                                            let out = g.sample(gesture_t);
+                                            pipeline.roll_ref = out.roll;
+                                            pipeline.pitch_ref = out.pitch;
+                                            pipeline.yaw_ref = out.yaw;
+                                            pipeline.roll_pd_gain = g.attitude_pd_gain;
+                                            pipeline.pitch_pd_gain = g.attitude_pd_gain;
+                                            pipeline.yaw_pd_gain = g.attitude_pd_gain;
+                                        } else {
+                                            pipeline.roll_ref = 0.0;
+                                            pipeline.pitch_ref = 0.0;
+                                            pipeline.yaw_ref = 0.0;
+                                            pipeline.roll_pd_gain = (0.0, 0.0);
+                                            pipeline.pitch_pd_gain = (0.0, 0.0);
+                                            pipeline.yaw_pd_gain = (0.0, 0.0);
+                                        }
                                         // P5b: per-cmd-direction weight scheduling.
                                         // For lateral / yaw commands the joint-space
                                         // swing_leg PD reaction-torques the body in
@@ -1382,6 +1474,14 @@ impl ArticaraApp {
                             } else {
                                 mj_sim.clear_torque_feedforward();
                                 mj_sim.clear_wbc_torques();
+                            }
+                            // Advance the standing-gesture phase clock (reset
+                            // to 0 when idle so each enable starts at a clean
+                            // zero-crossing). Outside the `gc` borrow above.
+                            if gesture_cfg.as_ref().is_some_and(|g| g.enabled) {
+                                self.gait.gesture_time_s += dt as f64;
+                            } else {
+                                self.gait.gesture_time_s = 0.0;
                             }
                             // Step physics. When a script's async queue has
                             // a `StepFrames` op at the head, switch from the

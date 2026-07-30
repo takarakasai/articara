@@ -66,6 +66,22 @@ pub(super) struct GaitPanelState {
     pub goal_max_wz_rad_s: f32,
     /// Whether the controller currently has a goal pose set.
     pub goal_pose_active: bool,
+    /// **ChickenHead** world-frame head-attitude hold config
+    /// ([`articara::chicken_head`]). Built at gait Setup by resolving the
+    /// model's head joint (`arm_pitch_joint`); `None` when the model has no
+    /// such joint (the controls are then inert). The panel edits its
+    /// `enabled` / `target_world_angle` / gains; the sim driver reads it each
+    /// tick to command the head actuator and drive the WBC head task.
+    pub chicken_head: Option<articara::chicken_head::ChickenHeadConfig>,
+    /// **Standing gesture** config ([`articara::standing_gesture`]) — a cute
+    /// idle motion (head nod / body sway) played while standing. Built at
+    /// gait Setup. Body-attitude gestures need the WBC running; head gestures
+    /// work under Position-PD too.
+    pub gesture: Option<articara::standing_gesture::StandingGestureConfig>,
+    /// Elapsed phase time (s) fed to the gesture oscillator. Advances while a
+    /// gesture is enabled, resets to 0 when disabled so each run starts at a
+    /// clean zero-crossing.
+    pub gesture_time_s: f64,
 }
 
 impl Default for GaitPanelState {
@@ -88,6 +104,9 @@ impl Default for GaitPanelState {
             goal_max_v_m_s: 0.15,
             goal_max_wz_rad_s: 0.5,
             goal_pose_active: false,
+            chicken_head: None,
+            gesture: None,
+            gesture_time_s: 0.0,
         }
     }
 }
@@ -513,6 +532,160 @@ impl ArticaraApp {
              before being commanded to MuJoCo. Available only in MPC \
              gait mode.",
         );
+        // ── ChickenHead: world-frame head-attitude hold ──────────────
+        // Counter-rotates the model's head joint (namiashi's
+        // `arm_pitch_joint`) against the trunk pitch so the head stays
+        // level in the world while the body moves — the classic robot
+        // "chicken head" stabilisation. Works in both the Position-PD and
+        // WBC paths (the driver commands the head actuator's position
+        // target and, when WBC is on, injects a matching joint task).
+        // Shown only when the model actually has a head joint.
+        if let Some(chicken) = self.gait.chicken_head.as_mut() {
+            ui.separator();
+            ui.horizontal(|ui| {
+                let resp = ui.checkbox(&mut chicken.enabled, "🐔 ChickenHead");
+                if resp.changed() {
+                    self.status_message = if chicken.enabled {
+                        format!(
+                            "ChickenHead ON — holding '{}' level in world",
+                            chicken.joint_name
+                        )
+                    } else {
+                        "ChickenHead OFF".into()
+                    };
+                }
+            })
+            .response
+            .on_hover_text(
+                "Keep the head joint level in the world frame while the \
+                 trunk pitches (Bound, stumbles, …) — like a chicken \
+                 stabilising its head. Drives both the Position-PD head \
+                 target and, when Hierarchical WBC is on, a matching WBC \
+                 head task.",
+            );
+            ui.add_enabled_ui(chicken.enabled, |ui| {
+                ui.horizontal(|ui| {
+                    // Target world pitch, edited in degrees for legibility.
+                    let mut target_deg = chicken.target_world_angle.to_degrees() as f32;
+                    ui.label("Hold pitch:");
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut target_deg, -45.0..=45.0)
+                                .suffix("°")
+                                .fixed_decimals(1),
+                        )
+                        .on_hover_text(
+                            "World-frame pitch the head is held at. 0° = \
+                             level (classic chicken-head); positive tips the \
+                             head up.",
+                        )
+                        .changed()
+                    {
+                        chicken.target_world_angle = (target_deg as f64).to_radians();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("WBC gains  kp:");
+                    ui.add(
+                        egui::DragValue::new(&mut chicken.kp)
+                            .speed(1.0)
+                            .range(0.0..=1000.0),
+                    );
+                    ui.label("kd:");
+                    ui.add(
+                        egui::DragValue::new(&mut chicken.kd)
+                            .speed(0.1)
+                            .range(0.0..=100.0),
+                    );
+                })
+                .response
+                .on_hover_text(
+                    "Joint-acceleration task gains used only on the WBC \
+                     path (q̈* = kp·(q*−q) + kd·(q̇*−q̇)). The Position-PD \
+                     path uses the actuator's own PD gains instead.",
+                );
+            });
+        }
+
+        // ── Standing gesture: cute idle motion ───────────────────────
+        // A small rhythmic gesture (head nod / body sway) played while
+        // standing in place. Head gestures run under Position-PD; body
+        // gestures need the WBC on (they drive the trunk attitude refs).
+        if let Some(gesture) = self.gait.gesture.as_mut() {
+            ui.separator();
+            ui.horizontal(|ui| {
+                let resp = ui.checkbox(&mut gesture.enabled, "✨ Standing gesture");
+                if resp.changed() {
+                    self.status_message = if gesture.enabled {
+                        format!("Standing gesture ON — {}", gesture.kind.label())
+                    } else {
+                        "Standing gesture OFF".into()
+                    };
+                }
+            })
+            .response
+            .on_hover_text(
+                "Play a cute idle motion while standing (velocity command 0). \
+                 'Nod' bobs the head (namiashi) or the body pitch; 'Sway' \
+                 rocks the trunk in roll via the WBC attitude reference \
+                 (needs Hierarchical WBC on).",
+            );
+            ui.add_enabled_ui(gesture.enabled, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Motion:");
+                    let mut kind = gesture.kind;
+                    egui::ComboBox::from_id_salt("gesture_kind_combo")
+                        .selected_text(kind.label())
+                        .show_ui(ui, |ui| {
+                            for k in articara::standing_gesture::GestureKind::ALL {
+                                ui.selectable_value(&mut kind, k, k.label());
+                            }
+                        });
+                    if kind != gesture.kind {
+                        gesture.kind = kind;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    let mut amp_deg = gesture.amplitude_rad.to_degrees() as f32;
+                    ui.label("Amplitude:");
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut amp_deg, 0.0..=25.0)
+                                .suffix("°")
+                                .fixed_decimals(1),
+                        )
+                        .changed()
+                    {
+                        gesture.amplitude_rad = (amp_deg as f64).to_radians();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    let mut f = gesture.frequency_hz as f32;
+                    ui.label("Frequency:");
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut f, 0.1..=2.0)
+                                .suffix(" Hz")
+                                .fixed_decimals(2),
+                        )
+                        .changed()
+                    {
+                        gesture.frequency_hz = f as f64;
+                    }
+                });
+                if gesture.uses_body_attitude() {
+                    ui.label(
+                        egui::RichText::new(
+                            "↳ body-attitude gesture — needs Hierarchical WBC on \
+                             to be visible",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                }
+            });
+        }
+
         // Capture-point feedback gain (MPC-only — CHAMP has no
         // closed-loop foot placement correction). Lowering this to 0
         // disables the positive-feedback loop documented in commit
@@ -1404,6 +1577,46 @@ impl ArticaraApp {
                         // keeps the UI responsive (ZOH on the last result).
                         gc.set_async_mpc(true);
                         self.gait.controller = Some(gc);
+                        // Resolve the ChickenHead head joint for this model
+                        // (namiashi's `arm_pitch_joint`). `None` if absent, so
+                        // the feature stays inert on legs-only robots. Carry
+                        // any previously-set enable / target / gains across a
+                        // rebuild so a Setup → Clear → Setup keeps the user's
+                        // ChickenHead tuning.
+                        let prev = self.gait.chicken_head.take();
+                        self.gait.chicken_head =
+                            articara::chicken_head::ChickenHeadConfig::for_joint(
+                                model,
+                                "arm_pitch_joint",
+                                articara::chicken_head::StabAxis::Pitch,
+                            )
+                            .map(|mut c| {
+                                if let Some(p) = prev {
+                                    c.enabled = p.enabled;
+                                    c.target_world_angle = p.target_world_angle;
+                                    c.kp = p.kp;
+                                    c.kd = p.kd;
+                                }
+                                c
+                            });
+                        // Standing gesture — rebuild for this model, carrying
+                        // any prior tuning (kind / amplitude / frequency /
+                        // enable) across a Setup → Clear → Setup.
+                        let prev_g = self.gait.gesture.take();
+                        let kind = prev_g
+                            .as_ref()
+                            .map(|g| g.kind)
+                            .unwrap_or(articara::standing_gesture::GestureKind::Nod);
+                        let mut g = articara::standing_gesture::StandingGestureConfig::for_robot(
+                            model, kind,
+                        );
+                        if let Some(p) = prev_g {
+                            g.enabled = p.enabled;
+                            g.amplitude_rad = p.amplitude_rad;
+                            g.frequency_hz = p.frequency_hz;
+                            g.attitude_pd_gain = p.attitude_pd_gain;
+                        }
+                        self.gait.gesture = Some(g);
                         self.status_message =
                             "Gait controller built (saved params restored)".into();
                     }
