@@ -295,6 +295,28 @@ fn main() {
     let t_shift = env_f64("T_SHIFT", 3.0);   // seconds spent moving the CoM across
     let lift_h = env_f64("LIFT_H", 0.04);    // swing-foot clearance, m
     let lift_ramp = env_f64("LIFT_RAMP", 1.0);
+    // Seconds spent unloading the swing foot before it leaves the contact
+    // set. 0 restores the old one-tick switch. 0.10 measured best (degraded
+    // 223 -> 150, tilt 0.268 -> 0.197 rad); 0.25 and above fall over,
+    // because the ramp only moves the cone collapse earlier -- it does not
+    // create the CoP margin the stance foot is already out of.
+    let unload_ramp = env_f64("UNLOAD_RAMP", 0.10);
+    // Degraded-solve fallback gains (torque PD onto the seed posture, on top
+    // of gravity compensation). HOLD_LAST=1 restores the old freeze-the-last-
+    // good-torque behaviour for comparison.
+    let hold_kp = env_f64("HOLD_KP", 15.0);
+    let hold_kd = env_f64("HOLD_KD", 2.0);
+    // Consecutive degraded ticks bridged with the last good torque before
+    // switching to the recomputed one.
+    let hold_bridge = env_f64("HOLD_BRIDGE", 8.0) as u32;
+    // Ticks spent crossfading on each fallback <-> QP handover. Default OFF:
+    // measured, every non-zero length falls (10/20/40/80 ticks all topple,
+    // 20 drives the knee to -25.8 deg). The step at handover is not what it
+    // looked like -- the same stance-foot liftoff happens with the fallback
+    // disabled entirely, always on the tick a degraded RUN ends, so the
+    // discontinuity is between the QP's broken solution and its recovered
+    // one, and crossfading into a broken solution cannot help.
+    let blend_ticks = if flag("HOLD_LAST", false) { 0 } else { env_f64("BLEND_TICKS", 0.0) as u32 };
     let kp_sw = env_f64("KP_SWING", 400.0);
     let kd_sw = env_f64("KD_SWING", 40.0);
     let total_t = env_f64("T", 6.0);
@@ -374,6 +396,17 @@ fn main() {
         use std::io::Write;
         let mut f = std::fs::File::create(&path).expect("create trajectory log");
         write!(f, "t,x,y,z,qw,qx,qy,qz,com_x,com_y,com_z,com_ref_z,tilt,com_ref_y,n_stance,swing_z").unwrap();
+        // Centre of pressure per foot, in that foot's sole frame (mm), from
+        // two independent sources: what the QP's solved contact wrench
+        // implies, and what MuJoCo's actual contact set produces. They
+        // disagree exactly where the solve degrades, which is the point of
+        // logging both. fz<=0 means "no support / no valid solution".
+        write!(f, ",degraded,cop_lx,cop_ly").unwrap();
+        for side in ["l", "r"] {
+            for src in ["qp", "mj"] {
+                write!(f, ",cop_{src}_{side}_x,cop_{src}_{side}_y,fz_{src}_{side}").unwrap();
+            }
+        }
         for n in &log_joint_order {
             write!(f, ",{n}").unwrap();
         }
@@ -395,6 +428,16 @@ fn main() {
     let mut swing_home_cell: Option<na::Vector3<f64>> = None;
     let mut last_good: Option<Vec<f64>> = None;
     let mut consec_degraded: u32 = 0;
+    // Crossfade state for the fallback <-> QP handover. Swapping controllers
+    // in one tick puts a step into the torque, and a step lands in the
+    // contact: measured, the stance foot left the ground entirely on the
+    // tick after a 40 ms fallback episode ended (fz 0 -> 113.9 N, 1.75x body
+    // weight) and the resulting bounce, not the lift-off itself, is what set
+    // the final lean.
+    let mut cmd_prev: Vec<f64> = vec![0.0; robot.joints.len()];
+    let mut blend_from: Vec<f64> = vec![0.0; robot.joints.len()];
+    let mut blend_left: u32 = 0;
+    let mut in_fallback_prev = false;
     // touchdown pose per foot: (position, rotation) the contact should hold
     let mut anchor: [Option<(na::Vector3<f64>, na::Matrix3<f64>)>; 2] = [None, None];
     let mut prev_com: Option<na::Vector3<f64>> = None;
@@ -596,6 +639,24 @@ fn main() {
             vec![left_foot_mi, right_foot_mi]
         };
         let nc = stance.len();
+        // Unloading ramp. Dropping the swing foot's rows in a single tick
+        // hands its whole share of the load to a stance foot whose CoP box
+        // is already pinned at the lateral edge, and the level-0 cone loses
+        // its interior in one step -- that is the NumericalFailure at
+        // t=t_shift. Ramping the swing foot's force ceiling to zero *before*
+        // it leaves the set lets the remaining box tighten gradually.
+        let unload = if lift_leg && unload_ramp > 0.0 {
+            ((t - (t_shift - unload_ramp)) / unload_ramp).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let load_share = |foot_mi: usize| -> f64 {
+            if foot_mi == right_foot_mi {
+                1.0 - unload
+            } else {
+                1.0
+            }
+        };
         if single {
             anchor[1] = None;   // right foot is swinging; forget its anchor
         }
@@ -660,17 +721,15 @@ fn main() {
         // in the model and forgetting this makes the QP defend a
         // footprint the robot no longer has.
         const SOLE_OFFSET_LOCAL: [f64; 3] = [SOLE_CENTRE_X, 0.0, -0.035];
-        let sole_patch = tasks::ContactPatch {
-            mu: FRICTION_MU,
-            cop_half: (0.049 * cop_frac, sole_half_w * cop_frac),
-            mu_torsion: 0.05,
-            f_max: 150.0,
-        };
         let mut p0 = dyn_ctx
             .dynamics_task()
             .expect("Explicit keeps the EoM task")
             + tasks::box_bound(dyn_ctx.tau(), &torque_max);
-        let _ = &sole_patch;
+        // Keep each foot's force -> sole-wrench map so the solved CoP can be
+        // measured against the box that constrained it. A level-0
+        // NumericalFailure says the cone was hard to navigate; this says
+        // whether it was hard because the CoP had nowhere left to go.
+        let mut sole_sel: Vec<na::DMatrix<f64>> = Vec::with_capacity(nc);
         for (slot, foot_mi) in stance.iter().copied().enumerate() {
             let js = j_contact.rows(6 * slot, 6).into_owned();
             let djvs = dj_v.rows(6 * slot, 6).into_owned();
@@ -710,8 +769,19 @@ fn main() {
                 }
             }
             let w_sole = &sel * &forces.as_affine();
+            sole_sel.push(sel.clone());
             p0 = p0 + tasks::cartesian_acceleration(dyn_ctx.qddot(), &js, &djvs, &acc_ref);
             if !flag("NO_PATCH", false) {
+                // f_max carries the ramp. The CoP box is |m| <= L*fz, so
+                // squeezing fz shrinks the box with it -- the swing foot
+                // stops being able to argue for a CoP it is about to lose.
+                let share = load_share(foot_mi);
+                let sole_patch = tasks::ContactPatch {
+                    mu: FRICTION_MU,
+                    cop_half: (0.049 * cop_frac, sole_half_w * cop_frac),
+                    mu_torsion: 0.05,
+                    f_max: (150.0 * share).max(0.5),
+                };
                 p0 = p0 + tasks::patch_contact(&w_sole, &sole_patch);
             }
         }
@@ -813,9 +883,14 @@ fn main() {
                 tau_gravity[vi - 6] = g_full[vi];
             }
         }
+        // Split the nominal load the same way the ramp splits the ceiling,
+        // so the regulariser is not still asking the swing foot for half the
+        // weight while the patch constraint is taking it away.
         let mut forces_nominal = na::DVector::zeros(forces.size());
+        let shares: Vec<f64> = stance.iter().copied().map(load_share).collect();
+        let share_tot: f64 = shares.iter().sum::<f64>().max(1e-6);
         for slot in 0..nc {
-            forces_nominal[6 * slot + 5] = total_mass * G / nc as f64;
+            forces_nominal[6 * slot + 5] = total_mass * G * shares[slot] / share_tot;
         }
         let p_reg = tasks::regularize(dyn_ctx.tau(), &tau_gravity)
             + tasks::regularize(&dyn_ctx.forces(), &forces_nominal);
@@ -864,6 +939,76 @@ fn main() {
         }
         let extracted = dyn_ctx.extract(&sol.x);
 
+        // Where did the QP actually put the centre of pressure, and how much
+        // of the box was left? w_sole = [m(0..2); f(3..5)] in the sole frame,
+        // so cop = (-my/fz, mx/fz) and the patch constraint is |cop| <= L.
+        if flag("COPCHK", false) && tick % 5 == 0 {
+            let (lx, ly) = (0.049 * cop_frac, sole_half_w * cop_frac);
+            let mut parts = Vec::new();
+            for (slot, sel) in sole_sel.iter().enumerate() {
+                let w = sel * &extracted.forces;
+                let fz = w[5];
+                if fz.abs() < 1e-6 {
+                    parts.push(format!("foot{slot}: fz~0"));
+                    continue;
+                }
+                let (cx, cy) = (-w[1] / fz, w[0] / fz);
+                parts.push(format!(
+                    "foot{slot} fz={fz:6.1}N cop=({:+6.1},{:+6.1})mm  use=({:5.2},{:5.2})",
+                    cx * 1e3, cy * 1e3, cx.abs() / lx, cy.abs() / ly
+                ));
+            }
+            println!("  [cop] t={t:6.3} nc={nc}  {}", parts.join("   "));
+        }
+
+        // CoP per foot in that foot's sole frame, side 0 = left, 1 = right,
+        // as [x, y, fz]. fz = 0 means the foot is unsupported (or, for the
+        // QP column, that the solve degraded and returned nothing usable).
+        // Both are evaluated against the same `q`/`data` as the QP saw, so
+        // they are directly comparable.
+        let mut cop_qp = [[0.0_f64; 3]; 2];
+        for (slot, foot_mi) in stance.iter().copied().enumerate() {
+            let side = usize::from(foot_mi != left_foot_mi);
+            let w = &sole_sel[slot] * &extracted.forces;
+            let fz = w[5];
+            if fz > 1e-6 {
+                cop_qp[side] = [-w[1] / fz, w[0] / fz, fz];
+            }
+        }
+        let mut cop_mj = [[0.0_f64; 3]; 2];
+        {
+            // Force-weighted mean of the ground contact points on each foot.
+            let mut acc = [[0.0_f64; 4]; 2]; // [sum fz*x, fz*y, fz*z, sum fz]
+            for c in sim.contacts() {
+                let name = if c.body1.is_empty() { &c.body2 } else { &c.body1 };
+                let side = match name.as_str() {
+                    "left_foot_link" => 0,
+                    "right_foot_link" => 1,
+                    _ => continue,
+                };
+                let fz = c.force_world[2];
+                if fz <= 0.0 {
+                    continue;
+                }
+                for k in 0..3 {
+                    acc[side][k] += fz * c.pos[k];
+                }
+                acc[side][3] += fz;
+            }
+            for side in 0..2 {
+                let fz = acc[side][3];
+                if fz <= 1e-6 {
+                    continue;
+                }
+                let foot_mi = if side == 0 { left_foot_mi } else { right_foot_mi };
+                let o = misarta::se3::translation(&data.oMi[foot_mi]);
+                let r = misarta::se3::rotation_matrix(&data.oMi[foot_mi]);
+                let pw = na::Vector3::new(acc[side][0] / fz, acc[side][1] / fz, acc[side][2] / fz);
+                let pl = r.transpose() * (pw - o);
+                cop_mj[side] = [pl.x - SOLE_CENTRE_X, pl.y, fz];
+            }
+        }
+
         let mut robot_taus = vec![0.0_f64; robot.joints.len()];
         for ji in 0..robot.joints.len() {
             let Some(mi) = a2m[ji] else { continue };
@@ -886,9 +1031,47 @@ fn main() {
         // all 65 N of gravity dropped, and the contact Baumgarte rows
         // discarded along with it, on exactly the transition ticks where they
         // work hardest. Hold the last good torque instead.
+        // ...which is what the old fallback did, and it was measured to be
+        // actively harmful here. A torque solved for two feet supplies about
+        // half the support one foot needs, so freezing it let the stance
+        // knee sag 49 -> 11 deg over 705 ms; the QP then had to recover from
+        // a leg whose own 6x6 Jacobian had gone from cond 49 to cond 206,
+        // which cost a 79.5 N (130% body weight) spike and left the robot
+        // leaning. Recompute a support torque for the pose we are ACTUALLY
+        // in instead: gravity compensation, which is already on hand for the
+        // regulariser, plus a PD that holds the seed posture.
+        let fallback_tau = |robot_taus: &mut Vec<f64>| {
+            for ji in 0..robot.joints.len() {
+                let Some(mi) = a2m[ji] else { continue };
+                if model.joints[mi].joint_type.nv() != 1 {
+                    continue;
+                }
+                let vi = model.v_idx[mi];
+                if vi < 6 {
+                    continue;
+                }
+                let e = q_seed[ji] - robot.joint_positions[ji];
+                let tau = tau_gravity[vi - 6] + hold_kp * e - hold_kd * v[vi];
+                let lim = torque_max[vi - 6];
+                robot_taus[ji] = tau.clamp(-lim, lim);
+            }
+        };
+        let mut in_fallback = false;
         match last_good.as_ref() {
             Some(prev) if !matches!(sol.status, misa_wbc::SolveStatus::Optimal) => {
-                robot_taus.copy_from_slice(prev);
+                in_fallback = true;
+                // Bridge a brief hiccup with the last good torque -- over a
+                // few ticks it is the smoother choice, and swapping in a
+                // different controller every other tick just chatters (a
+                // straight swap measured a 256 N contact spike, 4x body
+                // weight). Only a failure that PERSISTS means the stale
+                // command no longer describes the robot's support state, and
+                // that is when the recomputed torque earns its place.
+                if flag("HOLD_LAST", false) || consec_degraded < hold_bridge {
+                    robot_taus.copy_from_slice(prev);
+                } else {
+                    fallback_tau(&mut robot_taus);
+                }
                 consec_degraded += 1;
                 // Holding the last good torque bridges an occasional failed
                 // solve. It must not quietly become the controller: a long
@@ -898,12 +1081,13 @@ fn main() {
                 // of frozen torque while the stance knee folded 48 -> 11 deg,
                 // with the torque columns byte-identical throughout.)
                 if consec_degraded == 10 {
-                    println!(
-                        "  [OPEN LOOP] t={t:6.3} nc={nc}: {} consecutive degraded solves, \
-                         still commanding the torque from t={:.3}",
-                        consec_degraded,
-                        t - consec_degraded as f64 * dt
-                    );
+                    let src = if flag("HOLD_LAST", false) {
+                        format!("still commanding the torque from t={:.3}",
+                                t - consec_degraded as f64 * dt)
+                    } else {
+                        "running on gravity comp + posture PD".to_string()
+                    };
+                    println!("  [OPEN LOOP] t={t:6.3} nc={nc}: {consec_degraded} consecutive degraded solves, {src}");
                 }
             }
             _ => {
@@ -914,6 +1098,24 @@ fn main() {
                 last_good = Some(robot_taus.clone());
             }
         }
+        // Crossfade whenever the commanding controller changes, in either
+        // direction, from whatever was last actually sent. `last_good` keeps
+        // the QP's own output rather than this blended command, so the
+        // bridge still freezes a real solution.
+        if blend_ticks > 0 && in_fallback != in_fallback_prev {
+            blend_left = blend_ticks;
+            blend_from.copy_from_slice(&cmd_prev);
+        }
+        in_fallback_prev = in_fallback;
+        if blend_left > 0 {
+            let a = 1.0 - f64::from(blend_left) / f64::from(blend_ticks);
+            for k in 0..robot_taus.len() {
+                robot_taus[k] = blend_from[k] * (1.0 - a) + robot_taus[k] * a;
+            }
+            blend_left -= 1;
+        }
+        cmd_prev.copy_from_slice(&robot_taus);
+
         sim.set_wbc_torques(&robot_taus);
         sim.step_n_frames(&mut robot, mj_substeps, true);
 
@@ -931,6 +1133,14 @@ fn main() {
             .unwrap();
             let sw = sim.body_world_position("right_foot_link").unwrap()[2];
             write!(f, ",{y_ref:.5},{nc},{sw:.5}").unwrap();
+            let deg = u8::from(!matches!(sol.status, misa_wbc::SolveStatus::Optimal));
+            write!(f, ",{deg},{:.5},{:.5}", 0.049 * cop_frac, sole_half_w * cop_frac).unwrap();
+            for side in 0..2 {
+                for src in [&cop_qp, &cop_mj] {
+                    let c = src[side];
+                    write!(f, ",{:.6},{:.6},{:.4}", c[0], c[1], c[2]).unwrap();
+                }
+            }
             for n in &log_joint_order {
                 let a = robot.joint_map.get(*n).map(|&ji| robot.joint_positions[ji]).unwrap_or(0.0);
                 write!(f, ",{a:.5}").unwrap();

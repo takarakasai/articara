@@ -129,8 +129,13 @@ F_SMALL = ImageFont.truetype(_FD + "DejaVuSansMono.ttf", 15)
 
 
 class Camera:
-    def __init__(self, eye, target, up=(0, 0, 1), fov=42.0, y_shift=0.0):
+    # w/h default to the main frame; the side panels pass their own so the
+    # same projection code serves both without a second implementation.
+    def __init__(self, eye, target, up=(0, 0, 1), fov=42.0, y_shift=0.0,
+                 w=None, h=None):
         self.y_shift = y_shift
+        self.w = W if w is None else w
+        self.h = H if h is None else h
         self.eye = np.array(eye, float)
         f = np.array(target, float) - self.eye
         f /= np.linalg.norm(f)
@@ -139,14 +144,14 @@ class Camera:
         s /= np.linalg.norm(s)
         u = np.cross(s, f)
         self.R = np.stack([s, u, -f])          # world -> camera
-        self.fl = (H / 2) / math.tan(math.radians(fov) / 2)
+        self.fl = (self.h / 2) / math.tan(math.radians(fov) / 2)
 
     def project(self, pts):
         cam = (pts - self.eye) @ self.R.T
         z = -cam[:, 2]
         z = np.maximum(z, 1e-4)
-        x = W / 2 + self.fl * cam[:, 0] / z
-        y = H / 2 - self.y_shift - self.fl * cam[:, 1] / z
+        x = self.w / 2 + self.fl * cam[:, 0] / z
+        y = self.h / 2 - self.y_shift - self.fl * cam[:, 1] / z
         return np.stack([x, y], 1), z
 
 
@@ -163,11 +168,12 @@ def shade(base, normal, light=np.array([0.4, 0.7, 0.6])):
     return tuple(int(np.clip(c * d, 0, 255)) for c in base)
 
 
-def gradient_bg():
-    col = np.linspace(0, 1, H)[:, None]
+def gradient_bg(w=None, h=None):
+    w, h = (W if w is None else w), (H if h is None else h)
+    col = np.linspace(0, 1, h)[:, None]
     img = (np.array(BG_TOP)[None, None, :] * (1 - col[:, :, None])
            + np.array(BG_BOT)[None, None, :] * col[:, :, None])
-    return Image.fromarray(np.repeat(img.astype(np.uint8), W, axis=1))
+    return Image.fromarray(np.repeat(img.astype(np.uint8), w, axis=1))
 
 
 def draw_ground(draw, cam):
@@ -191,11 +197,8 @@ def sole_roll_deg(pose):
     return math.degrees(math.atan2(Rf[2][1], Rf[2][2]))
 
 
-def render_frame(links, joints, pose, cam, hud):
-    img = gradient_bg()
-    draw = ImageDraw.Draw(img, "RGBA")
-    draw_ground(draw, cam)
-
+def draw_body(draw, links, pose, cam):
+    """Rasterise the visual primitives, painter's algorithm, back to front."""
     faces = []
     for lname, vis in links.items():
         if lname not in pose:
@@ -262,6 +265,99 @@ def render_frame(links, joints, pose, cam, hud):
 
     for _, poly, col in sorted(faces, key=lambda t: -t[0]):
         draw.polygon(poly, fill=col, outline=(28, 30, 36))
+
+
+COP_MJ = (240, 196, 72)    # what MuJoCo's contacts actually produce
+COP_QP = (128, 196, 246)   # what the QP's solved wrench assumes
+
+
+def render_side_view(links, pose, w, h, label):
+    """Frontal-plane view. The lateral weight shift is what decides this
+    experiment, and it is edge-on -- invisible -- in the main camera."""
+    cam = Camera(eye=(1.85, 0.0, 0.33), target=(0.0, 0.0, 0.33),
+                 fov=26, y_shift=0, w=w, h=h)
+    img = gradient_bg(w, h)
+    draw = ImageDraw.Draw(img, "RGBA")
+    draw_ground(draw, cam)
+    draw_body(draw, links, pose, cam)
+    draw.rectangle([0, 0, w - 1, h - 1], outline=(64, 70, 82))
+    draw.text((10, 8), label, fill=(198, 206, 220), font=F_SMALL)
+    return img
+
+
+def draw_cop_panel(img, ox, oy, w, h, feet, box, trails):
+    """Both soles seen from above, with the centre of pressure on each.
+
+    `feet` is [(cop_qp, cop_mj, airborne), ...] for left then right, each
+    cop a (x, y, fz) triple in sole-frame metres. The rectangle drawn is
+    the CoP box the QP is constrained to -- which is the sole itself, so
+    a dot on the edge means the foot is about to roll over that edge.
+    """
+    draw = ImageDraw.Draw(img, "RGBA")
+    draw.rectangle([ox, oy, ox + w - 1, oy + h - 1], fill=(16, 18, 23, 230),
+                   outline=(64, 70, 82))
+    draw.text((ox + 10, oy + 8), "soles from above  /  centre of pressure",
+              fill=(198, 206, 220), font=F_SMALL)
+
+    lx, ly = box                      # CoP half-extents, metres
+    stance_y = 0.0706                 # foot centres at +-70.6 mm
+    # Fit both soles plus their separation into the panel width.
+    span_y = 2 * (stance_y + ly) * 1e3
+    scale = (w - 56) / span_y         # px per mm
+    cx, cy = ox + w / 2, oy + h / 2 + 12
+
+    def to_px(side_y, fx, fy):
+        # top-down: +x (forward) is up the screen, +y (left) is screen-left
+        return (cx - (side_y + fy) * 1e3 * scale, cy - fx * 1e3 * scale)
+
+    for i, ((qp, mj, airborne), side_y) in enumerate(zip(feet, (stance_y, -stance_y))):
+        a, b = to_px(side_y, +lx, +ly), to_px(side_y, -lx, -ly)
+        rect = [min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1])]
+        edge = (70, 78, 92) if airborne else SOLE
+        draw.rectangle(rect, fill=(30, 34, 42, 210), outline=edge, width=2)
+        # centre cross-hairs, so an off-centre CoP is readable at a glance
+        draw.line([(rect[0], (rect[1] + rect[3]) / 2), (rect[2], (rect[1] + rect[3]) / 2)],
+                  fill=(58, 64, 76))
+        draw.line([((rect[0] + rect[2]) / 2, rect[1]), ((rect[0] + rect[2]) / 2, rect[3])],
+                  fill=(58, 64, 76))
+        draw.text((rect[0], rect[3] + 6), "LEFT" if i == 0 else "RIGHT",
+                  fill=(120, 128, 142) if airborne else (168, 176, 190), font=F_SMALL)
+        def readout(s, col):
+            # keep the label inside the panel; the outer foot would clip
+            tw = draw.textlength(s, font=F_SMALL)
+            x = min(max(rect[0], ox + 8), ox + w - 8 - tw)
+            draw.text((x, rect[1] - 20), s, fill=col, font=F_SMALL)
+
+        if airborne:
+            readout("airborne", (120, 128, 142))
+            continue
+
+        for pt in trails[i]:
+            p = to_px(side_y, pt[0], pt[1])
+            draw.ellipse([p[0] - 1.5, p[1] - 1.5, p[0] + 1.5, p[1] + 1.5],
+                         fill=(96, 82, 40))
+        if qp[2] > 1e-6:
+            p = to_px(side_y, qp[0], qp[1])
+            draw.ellipse([p[0] - 7, p[1] - 7, p[0] + 7, p[1] + 7], outline=COP_QP, width=2)
+        if mj[2] > 1e-6:
+            p = to_px(side_y, mj[0], mj[1])
+            draw.ellipse([p[0] - 5, p[1] - 5, p[0] + 5, p[1] + 5], fill=COP_MJ)
+            use = abs(mj[1]) / ly if ly > 0 else 0.0
+            col = (214, 97, 90) if use > 0.97 else (168, 176, 190)
+            readout(f"{mj[2]:4.0f}N y{mj[1]*1e3:+5.1f} {use:4.2f}", col)
+
+    ky = oy + h - 24
+    draw.ellipse([ox + 12, ky, ox + 22, ky + 10], fill=COP_MJ)
+    draw.text((ox + 28, ky - 3), "MuJoCo", fill=(150, 158, 172), font=F_SMALL)
+    draw.ellipse([ox + 118, ky - 1, ox + 130, ky + 11], outline=COP_QP, width=2)
+    draw.text((ox + 138, ky - 3), "QP assumed", fill=(150, 158, 172), font=F_SMALL)
+
+
+def render_frame(links, joints, pose, cam, hud):
+    img = gradient_bg()
+    draw = ImageDraw.Draw(img, "RGBA")
+    draw_ground(draw, cam)
+    draw_body(draw, links, pose, cam)
 
     # ── HUD ────────────────────────────────────────────────────────────
     (t, com_z, ref_z, tilt, hist, taus, tau_names, tau_lims, tau_total,
@@ -399,6 +495,14 @@ def main():
         cam = (Camera(eye=(1.30, -1.55, 0.62), target=(0.02, 0.0, 0.28), fov=30, y_shift=-10)
                if os.environ.get("COMPACT")
                else Camera(eye=(1.15, -1.38, 0.62), target=(0.02, 0.0, 0.30), fov=33, y_shift=24))
+    # Side column: frontal view on top, top-down CoP panel underneath.
+    SIDE_W = 420
+    FRONT_H = 350
+    COP_H = H - FRONT_H
+    box = (float(sel[0].get("cop_lx", 0.049)), float(sel[0].get("cop_ly", 0.019)))
+    has_cop = "cop_mj_l_x" in sel[0]
+    trails = [[], []]
+
     hist = []
     for i, r in enumerate(sel):
         q = {n: float(r[n]) for n in jnames}
@@ -420,8 +524,34 @@ def main():
                             float(r["tilt"]), hist[-260:],
                             tau_hist, tau_names, tau_lims, len(sel),
                             int(r.get("n_stance", 2)),
-                            int(r.get("n_stance", 2)) == 1,
+                            # the solver's ACTUAL status when the log carries
+                            # it; older CSVs have no such column, and stance
+                            # count is not a substitute, so say nothing then
+                            bool(int(r.get("degraded", 0))),
                             sole_roll_deg(pose)))
+        if has_cop:
+            feet = []
+            for side in ("l", "r"):
+                qp = tuple(float(r[f"cop_qp_{side}_{k}"]) for k in ("x", "y")) \
+                     + (float(r[f"fz_qp_{side}"]),)
+                mj = tuple(float(r[f"cop_mj_{side}_{k}"]) for k in ("x", "y")) \
+                     + (float(r[f"fz_mj_{side}"]),)
+                feet.append((qp, mj, mj[2] <= 1e-6))
+            for k in range(2):
+                if not feet[k][2]:
+                    trails[k].append(feet[k][1][:2])
+                else:
+                    trails[k].clear()
+                del trails[k][:-90]
+
+            canvas = Image.new("RGB", (W + SIDE_W, H), BG_TOP)
+            canvas.paste(img, (0, 0))
+            canvas.paste(render_side_view(links, pose, SIDE_W, FRONT_H,
+                                          "front view  (frontal plane)"),
+                         (W, 0))
+            draw_cop_panel(canvas, W, FRONT_H, SIDE_W, COP_H, feet, box, trails)
+            img = canvas
+
         img.save(os.path.join(frame_dir, f"f{i:05d}.png"))
         if i % 50 == 0:
             print(f"  frame {i}/{len(sel)}")
