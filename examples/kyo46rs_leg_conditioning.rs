@@ -13,7 +13,7 @@ fn main() {
 
     println!("right leg, hip+knee+ankle held on a straight-leg locus (ankle keeps the sole flat)");
     println!("{:>10} {:>12} {:>12} {:>14}", "knee[deg]", "sigma_min", "cond", "1/sigma_min");
-    for kd in [40.0_f64, 30.0, 20.0, 12.0, 8.0, 4.0, 2.0, 1.0, 0.5, 0.1] {
+    for kd in [63.4_f64, 60.0, 55.0, 49.1, 45.0, 40.0, 33.8, 26.4, 20.9, 13.4, 11.3, 8.0, 4.0, 1.0] {
         let k = kd.to_radians();
         let mut q = model.neutral_q();
         q[qi("right_hip_pitch_joint")] = -k / 2.0;
