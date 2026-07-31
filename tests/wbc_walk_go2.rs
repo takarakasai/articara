@@ -5444,6 +5444,288 @@ fn go2_wbc_bound_cmaes_mode_h() {
     }
 }
 
+/// TABULATED BOUNCE AT DUTY 0.5 -- the way around the model's flat reference
+/// (2026-07-31).
+///
+/// `go2_wbc_bound_command_the_bounce` established both halves of a dead end.
+/// Commanding a vertical bounce genuinely helps (+50% at duty 0.45, +74% at
+/// 0.40, with the gain growing as the commanded bounce grows), and it cannot
+/// be commanded at duty 0.50 because `BoundTrimConfig` derives
+/// `com_z_velocity` from `t_flight = (1 - 2d)*T`, which is zero there. The
+/// gait works at 0.50; the bounce is only expressible below it, where torque
+/// has already lost the regime.
+///
+/// A tabulated reference is not subject to that derivation.
+/// `go2_wbc_bound_dump_orbit` phase-averages the baseline's own measured orbit
+/// -- which already contains 4.4% flight and 18 mm of trunk motion that the
+/// model puts at zero -- and writes it at three vertical amplitudes.
+///
+/// TWO COMPARISONS, and only the second is clean:
+///
+/// none vs x1 is CONFOUNDED. The table overrides all five of z, pitch, vx, vz
+/// and w, so it replaces the trim's pitch reference too. A difference here
+/// could be the vertical part or the pitch part. It is still worth reading:
+/// §5f7/5f8 found forward-vx + trim-pitch + flat-height mutually infeasible,
+/// and a measured orbit is feasible by construction, so this row tests
+/// "consistent reference" against "flat reference" as a whole.
+///
+/// x1 vs x2 vs x3 is CLEAN. Those tables are identical except that z is
+/// scaled about its mean and vz with it -- 9.8, 19.5, 29.3 mm of commanded
+/// excursion, vz_max 0.29, 0.58, 0.87 m/s. Nothing else differs. This is the
+/// only place in this whole line where commanded vertical amplitude is varied
+/// with everything else held fixed.
+///
+/// PRE-DECLARED. The tables all ask for a 2.5 m/s mean, which is 25% above
+/// the geometric ceiling of `max_step/(T*d)` = 2.00. If a commanded bounce
+/// lets the gait exceed that ceiling, it shows up here as a speed above 2.0
+/// that rises with amplitude. If the amplitude series is flat or falling, then
+/// vertical freedom is not what the ceiling was made of, and the +74% seen at
+/// duty 0.40 was about the aerial phase specifically rather than about trunk
+/// motion in general.
+///
+/// Also read trunk_z range against the commanded excursion. A table that is
+/// not being tracked will show the measured range ignoring the 3x sweep.
+///
+/// FOLLOW-UP: the kin-only arms did exactly that -- trunk_z stayed 15-16 mm
+/// across a 3x sweep of commanded excursion (9.8 -> 29.3 mm). The table
+/// states where the body should be and carries no force columns, and the
+/// tabulated branch bypasses the trim's vertical-GRF branch entirely, so it
+/// was asking the MPC to bounce while the GRF reference still said "support
+/// gravity and nothing else".
+///
+/// The `+force` arms add the missing half. `sample_tabulated_z_accel` (new)
+/// differentiates the table's own vz column and feeds
+/// `F_z = m*(g + z_ddot)` into the GRF reference. Nothing is tuned -- the
+/// vertical dynamics determine the force from the trajectory uniquely. Gated
+/// on `bound_trim_vertical_reference`, which at duty 0.5 was a no-op before
+/// this because the trim's `f_z_total` equals m*g exactly there.
+///
+/// kin-only vs +force at the same amplitude is now the clean test of whether
+/// a commanded bounce needs its force feedforward, and the +force amplitude
+/// series is the clean test of whether a bigger bounce helps at all.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored; needs go2_wbc_bound_dump_orbit first"]
+fn go2_wbc_bound_tabulated_bounce() {
+    for (label, table, force_ff) in [
+        ("none", None, false),
+        ("x1 kin-only", Some("csv/bound_orbit_x1.csv"), false),
+        ("x2 kin-only", Some("csv/bound_orbit_x2.csv"), false),
+        ("x3 kin-only", Some("csv/bound_orbit_x3.csv"), false),
+        ("x1 +force", Some("csv/bound_orbit_x1.csv"), true),
+        ("x2 +force", Some("csv/bound_orbit_x2.csv"), true),
+        ("x3 +force", Some("csv/bound_orbit_x3.csv"), true),
+    ] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 2.50,
+            total_time_s: 8.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.50),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            bound_trim_vertical_reference_override: Some(force_ff),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(0.7),
+            friction_mu_override: Some(0.70),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: table,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk_summary(&format!("TABBOUNCE {label}"), &samples, 2.50);
+    }
+}
+
+/// Write a phase-averaged `phase,z,pitch,vx,vz,w` orbit table from a measured
+/// rollout, in the format `FullCentroidalOpts::bound_tabulated_reference_csv`
+/// consumes.
+///
+/// WHY THIS EXISTS. `BoundTrimConfig` derives its vertical reference from
+/// `t_flight = (1 - 2d)*T`, which is exactly zero at duty 0.50 -- so at the
+/// only duty where this gait works, the model can only ask for a flat trunk,
+/// while the real robot flies 4.4% of the time and moves its trunk 17 mm. A
+/// table built from measurement is not subject to that derivation, so it can
+/// carry a bounce at duty 0.50.
+///
+/// Cycles are aligned on FL touchdown, which is where the controller's own
+/// `cycle_phase_k` puts phase 0 (`fl_sub * duty` with `fl_sub = 0` at the
+/// start of stance). Touchdowns are taken only after >= 30 ms unloaded so the
+/// brief re-contact at lift-off does not split a cycle.
+///
+/// `target_vx` retargets the MEAN of the vx column while preserving its
+/// intra-cycle ripple. Writing the measured mean instead would make the
+/// reference self-fulfilling -- the MPC would aim at the speed the rollout
+/// happened to reach and could never exceed it.
+///
+/// `z_amp` scales the z excursion about its mean, and vz by the same factor
+/// since the time base is unchanged. This is the knob that isolates vertical
+/// amplitude: tables differing only in `z_amp` differ ONLY in how much bounce
+/// is commanded, everything else held identical.
+fn write_bound_orbit_csv(
+    samples: &[WbcSample],
+    period_s: f64,
+    target_vx: f64,
+    z_amp: f64,
+    n_phase: usize,
+    path: &str,
+) {
+    let t0 = samples[0].t + 2.0;
+    let walk: Vec<&WbcSample> = samples.iter().filter(|s| s.t >= t0).collect();
+    if walk.len() < 10 {
+        panic!("write_bound_orbit_csv: not enough post-burn-in samples");
+    }
+    let dt = (walk[1].t - walk[0].t).max(1e-9);
+    // Central-difference the derivatives once, so every bin averages the same
+    // quantity rather than differencing across a bin boundary.
+    let n = walk.len();
+    let deriv = |f: &dyn Fn(&WbcSample) -> f64, i: usize| -> f64 {
+        let (a, b) = (i.saturating_sub(1), (i + 1).min(n - 1));
+        if b == a { 0.0 } else { (f(walk[b]) - f(walk[a])) / ((b - a) as f64 * dt) }
+    };
+    let swing_min = ((0.030 / dt).round() as usize).max(1);
+    let mut td_idx: Vec<usize> = Vec::new();
+    let mut unloaded_run = 0usize;
+    for i in 0..n {
+        if walk[i].foot_fz[0] > 5.0 {
+            if unloaded_run >= swing_min {
+                td_idx.push(i);
+            }
+            unloaded_run = 0;
+        } else {
+            unloaded_run += 1;
+        }
+    }
+    if td_idx.len() < 3 {
+        panic!("write_bound_orbit_csv: only {} FL touchdowns found", td_idx.len());
+    }
+    let mut acc = vec![[0.0_f64; 5]; n_phase];
+    let mut cnt = vec![0usize; n_phase];
+    for w in td_idx.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let span = b - a;
+        // Reject cycles whose length is far off nominal: a missed or doubled
+        // touchdown would otherwise smear the whole average.
+        let nominal = (period_s / dt).round() as usize;
+        if span < nominal / 2 || span > nominal * 2 {
+            continue;
+        }
+        for i in a..b {
+            let ph = (i - a) as f64 / span as f64;
+            let bin = ((ph * n_phase as f64).floor() as usize).min(n_phase - 1);
+            acc[bin][0] += walk[i].body_z;
+            acc[bin][1] += walk[i].pitch;
+            acc[bin][2] += deriv(&|s: &WbcSample| s.body_x, i);
+            acc[bin][3] += deriv(&|s: &WbcSample| s.body_z, i);
+            acc[bin][4] += deriv(&|s: &WbcSample| s.pitch, i);
+            cnt[bin] += 1;
+        }
+    }
+    let mut rows: Vec<[f64; 6]> = Vec::new();
+    for j in 0..n_phase {
+        if cnt[j] == 0 {
+            continue;
+        }
+        let c = cnt[j] as f64;
+        rows.push([
+            (j as f64 + 0.5) / n_phase as f64,
+            acc[j][0] / c,
+            acc[j][1] / c,
+            acc[j][2] / c,
+            acc[j][3] / c,
+            acc[j][4] / c,
+        ]);
+    }
+    // Retarget the vx mean; scale z about its mean and vz with it.
+    let mean = |k: usize| rows.iter().map(|r| r[k]).sum::<f64>() / rows.len() as f64;
+    let (vx_mean, z_mean) = (mean(3), mean(1));
+    for r in rows.iter_mut() {
+        r[3] += target_vx - vx_mean;
+        r[1] = z_mean + z_amp * (r[1] - z_mean);
+        r[4] *= z_amp;
+    }
+    let z_min = rows.iter().map(|r| r[1]).fold(f64::INFINITY, f64::min);
+    let z_max = rows.iter().map(|r| r[1]).fold(f64::NEG_INFINITY, f64::max);
+    let vz_max = rows.iter().map(|r| r[4].abs()).fold(0.0_f64, f64::max);
+    let mut out = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in rows.iter() {
+        out.push_str(&format!(
+            "{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]
+        ));
+    }
+    std::fs::write(path, out).unwrap_or_else(|e| panic!("write {path}: {e}"));
+    eprintln!(
+        "[orbit] {path}: {} rows from {} cycles | z {:.4}..{:.4} (range {:.1}mm, amp x{z_amp:.1}) \
+         | vz_max {:.3} m/s | vx mean {:.3} -> {target_vx:.3}",
+        rows.len(), td_idx.len() - 1, z_min, z_max, (z_max - z_min) * 1e3, vz_max, vx_mean,
+    );
+}
+
+/// Dumps the measured orbit at three vertical amplitudes for
+/// `go2_wbc_bound_tabulated_bounce` to consume. Source rollout is the
+/// symmetric baseline -- duty 0.50, max_step 0.18, T 0.18, cmd 2.5, the
+/// 2.013 m/s configuration that everything else in this file is measured
+/// against.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored; writes csv/bound_orbit_x*.csv"]
+fn go2_wbc_bound_dump_orbit() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 2.50,
+        total_time_s: 12.0,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.50),
+        gait_cycle_period_override: Some(0.18),
+        max_step_length_override: Some(0.18),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(0.7),
+        friction_mu_override: Some(0.70),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+            roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+            bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    report_walk_summary("ORBIT SOURCE duty 0.50 cmd 2.5", &samples, 2.50);
+    for (amp, path) in [
+        (1.0, "csv/bound_orbit_x1.csv"),
+        (2.0, "csv/bound_orbit_x2.csv"),
+        (3.0, "csv/bound_orbit_x3.csv"),
+    ] {
+        write_bound_orbit_csv(&samples, 0.18, 2.50, amp, 50, path);
+    }
+}
+
 /// COMMAND THE BOUNCE -- duty below 0.5 with a vertical reference that is
 /// not flat (2026-07-31).
 ///
