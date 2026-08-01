@@ -5444,6 +5444,161 @@ fn go2_wbc_bound_cmaes_mode_h() {
     }
 }
 
+/// HOW FAR CAN THE REFERENCE ASK FOR? (2026-07-31)
+///
+/// `go2_wbc_bound_ceiling_with_orbit` refuted the idea that a feasible
+/// reference makes a raised max_step survivable, but produced a sharper
+/// question on the way. At max_step 0.18 the geometric ceiling is 2.00 m/s,
+/// and the measured-orbit table helps or hurts depending on what mean speed
+/// it asks for:
+///
+///   table mean 2.5 (+25% over the ceiling)   2.017 m/s, torque sat 3.5%
+///   table mean 3.0 (+50% over the ceiling)   1.653 m/s, torque sat 5.5%,
+///                                            trunk z 18 -> 69 mm
+///
+/// The 3.0 table reproduces the exact failure the table was supposed to cure:
+/// an unreachable reference the MPC burns force fighting. So "feasible
+/// reference" is not a property of being measured -- it is a property of
+/// asking for something achievable, and the measured shape is only half of
+/// it.
+///
+/// If that reading is right, targeting the reference at the ACHIEVABLE speed
+/// rather than the commanded one should be better still. The command stays at
+/// 2.5 across all arms so the planner saturates identically and the only
+/// variable is what the reference asks for.
+///
+/// PRE-DECLARED: torque saturation should be ordered v20 <= v25 < v30, and
+/// speed should not fall below 2.0 for v20 -- if it does, the reference has
+/// become a speed cap rather than a feasibility aid, which is the failure
+/// mode of aiming a reference at exactly what you already get.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored; needs go2_wbc_bound_dump_orbit first"]
+fn go2_wbc_bound_orbit_target_sweep() {
+    for (label, table) in [
+        ("none", None),
+        ("v20 (= ceiling)", Some("csv/bound_orbit_v20.csv")),
+        ("v25 (+25%)", Some("csv/bound_orbit_v25.csv")),
+        ("v30 (+50%)", Some("csv/bound_orbit_v30.csv")),
+        ("v35 (+75%)", Some("csv/bound_orbit_v35.csv")),
+    ] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 2.50,
+            total_time_s: 8.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.50),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(0.7),
+            friction_mu_override: Some(0.70),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: table,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk_summary(&format!("ORBITTGT {label}"), &samples, 2.50);
+    }
+}
+
+/// DOES A FEASIBLE REFERENCE MAKE THE CEILING RAISABLE? (2026-07-31)
+///
+/// The one lever left that has not been tried, and the argument for it needs
+/// stating carefully because the obvious version is wrong.
+///
+/// WRONG VERSION: "the measured-orbit reference halves torque saturation
+/// (6.8% -> 3.5%), so there is more budget for speed." That does not follow.
+/// `go2_wbc_bound_stride_ceiling_probe` showed the ceiling is NOT
+/// force-limited -- at v_max the controller tracks to 99% while spending
+/// 2.2% of ticks above 23.5 N.m. Handing 98% headroom another 3 points buys
+/// nothing.
+///
+/// VERSION THAT SURVIVES: the ceiling is not force-limited, but the COLLAPSE
+/// when you try to exceed it is force-involved. Raising max_step to 0.26 runs
+/// torque saturation to 22.8%, alongside late touchdowns, 31% flight and a
+/// trunk bouncing 88 mm. The claim is not that a feasible reference raises
+/// v_max -- it is that it may make a raised max_step survivable, which is a
+/// different and testable thing.
+///
+/// Every arm pairs the command with a table retargeted to that same mean, so
+/// the reference is never asking for a speed the test is not.
+///
+/// PRE-DECLARED. The none/0.18 rows reproduce 2.013 and 1.980. If the
+/// hypothesis is right, the orbit rows at 0.22 and 0.26 stay upright and beat
+/// 2.013. If it is wrong they collapse the same way the none rows do
+/// (0.070 and 0.045), and the honest conclusion is that the ceiling is not
+/// reachable from the force side at all and the measured-orbit reference is
+/// an efficiency win only.
+///
+/// A THIRD OUTCOME to watch for: surviving but pinning at the TABLE's mean
+/// rather than the new geometric v_max. That would mean the reference became
+/// the binding constraint, and the answer would be to bootstrap -- record the
+/// orbit of the surviving gait and feed it back, which is a fixed point this
+/// test is a first iteration of, not a failure.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored; needs go2_wbc_bound_dump_orbit first"]
+fn go2_wbc_bound_ceiling_with_orbit() {
+    for (cmd_vx, table) in [(2.50, "csv/bound_orbit_v25.csv"), (3.00, "csv/bound_orbit_v30.csv")] {
+        for max_step in [0.18, 0.22, 0.26] {
+            for use_table in [false, true] {
+                let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+                let params = WbcParams {
+                    cmd_vx,
+                    total_time_s: 8.0,
+                    burn_in_s: 0.5,
+                    gait_type_override: Some(GaitType::Bound),
+                    duty_factor_override: Some(0.50),
+                    gait_cycle_period_override: Some(0.18),
+                    max_step_length_override: Some(max_step),
+                    bound_trim_reference: Some((100.0, 10.0)),
+                    bound_trim_thrust_scale_override: Some(0.7),
+                    friction_mu_override: Some(0.70),
+                    yaw_pd_gain_override: Some((10.0, 1.0)),
+                    full_centroidal: Some(FullCentroidalOpts {
+                        legged_control_parity: true,
+                        use_mpc_predicted_footstep: false,
+                        dynamic_joint_q_reference: false,
+                        mpc_override: None,
+                        task_space_joint_vel_weight: None,
+                        true_centroidal_coupling: false,
+                        capture_point_gain_override: Some(0.0),
+                        base_pos_xy_weight_override: None,
+                        base_pos_z_weight_override: None,
+                        max_normal_force_override: None,
+                        roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                        roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                        bound_pitch_placement_dc_tau_override: None,
+                        bound_tabulated_reference_csv: if use_table { Some(table) } else { None },
+                    }),
+                    ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+                };
+                let Some(samples) = run_wbc_sim(params) else { return };
+                let v_max = max_step / (0.18 * 0.50);
+                report_walk_summary(
+                    &format!("ORBITCEIL cmd={cmd_vx:.1} max_step={max_step:.2} (v_max={v_max:.2}) \
+                              orbit={use_table}"),
+                    &samples, cmd_vx);
+            }
+        }
+    }
+}
+
 /// TABULATED BOUNCE AT DUTY 0.5 -- the way around the model's flat reference
 /// (2026-07-31).
 ///
@@ -5723,6 +5878,18 @@ fn go2_wbc_bound_dump_orbit() {
         (3.0, "csv/bound_orbit_x3.csv"),
     ] {
         write_bound_orbit_csv(&samples, 0.18, 2.50, amp, 50, path);
+    }
+    // Same orbit shape retargeted to other commanded speeds, for
+    // go2_wbc_bound_ceiling_with_orbit. The reference's vx mean must match
+    // the command being run or the MPC is being asked to hold a speed the
+    // test is not asking for -- which would cap the very thing under test.
+    for (target, path) in [
+        (2.00, "csv/bound_orbit_v20.csv"),
+        (2.50, "csv/bound_orbit_v25.csv"),
+        (3.00, "csv/bound_orbit_v30.csv"),
+        (3.50, "csv/bound_orbit_v35.csv"),
+    ] {
+        write_bound_orbit_csv(&samples, 0.18, target, 1.0, 50, path);
     }
 }
 
