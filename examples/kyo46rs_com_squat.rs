@@ -94,6 +94,11 @@ fn main() {
     // rolled to 19 deg while the solver still reported the contact
     // satisfied. Once the sole is on its edge, patch_contact's rectangular
     // CoP box describes a footprint that is no longer touching the floor.
+    // Rate (1/s) at which the contact anchor follows the foot's actual pose.
+    // 0 freezes it at first touch, which is what produced a 24 N phantom
+    // reaction after the foot slid. See the comment at the use site.
+    let anchor_leak = env_f64("ANCHOR_LEAK", 0.0);
+    let anchor_leak_rot = env_f64("ANCHOR_LEAK_ROT", 0.0);
     let kp_c = env_f64("KP_CONTACT", 1600.0);
     let kd_c = env_f64("KD_CONTACT", 80.0);
     let burnin_kp = env_f64("BURNIN_KP", 150.0);
@@ -116,10 +121,15 @@ fn main() {
     let sole_half_w: f64 = env_f64("SOLE_HALF_W", 0.019);
     const SOLE_CLEARANCE: f64 = 0.001;
     let sim_dt = env_f64("SIM_DT", 0.001);
+    let mu_ground = env_f64("MU_GROUND", 0.7);
     let make_opts = |z: f64| MjcfExportOptions {
         base_pos: Some([0.0, 0.0, z]),
         ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 2.0, roll: 0.0, pitch: 0.0 }),
         timestep: Some(sim_dt),
+        // Plant-side friction, separate from the QP's FRICTION_MU. Raising
+        // it is not a fix -- it is how to measure what the stance foot's
+        // slip is costing, by removing the slip and nothing else.
+        default_friction: [mu_ground, 0.005, 0.0001],
         ..MjcfExportOptions::default()
     };
     let probe_z = 0.47;
@@ -414,7 +424,14 @@ fn main() {
         // implies, and what MuJoCo's actual contact set produces. They
         // disagree exactly where the solve degrades, which is the point of
         // logging both. fz<=0 means "no support / no valid solution".
-        write!(f, ",degraded,cop_lx,cop_ly").unwrap();
+        write!(f, ",degraded,cop_lx,cop_ly,slip_l,slip_r,patch_lx,patch_ly").unwrap();
+        for side in ["l", "r"] {
+            for src in ["qp", "mj"] {
+                for ax in ["x", "y", "z"] {
+                    write!(f, ",f{src}_{side}_{ax}").unwrap();
+                }
+            }
+        }
         for side in ["l", "r"] {
             for src in ["qp", "mj"] {
                 write!(f, ",cop_{src}_{side}_x,cop_{src}_{side}_y,fz_{src}_{side}").unwrap();
@@ -750,7 +767,37 @@ fn main() {
             let pos = misarta::se3::translation(&data.oMi[foot_mi]);
             let rot = misarta::se3::rotation_matrix(&data.oMi[foot_mi]);
             let side = if foot_mi == left_foot_mi { 0 } else { 1 };
-            let (p0_, r0_) = *anchor[side].get_or_insert((pos, rot));
+            anchor[side].get_or_insert((pos, rot));
+            // Let the anchor follow a foot that has genuinely moved.
+            //
+            // The anchor was frozen once and never revisited, and the stance
+            // foot slides ~12 mm during the transition. A stale anchor is not
+            // a small error: kp_c * 12 mm = 19.6 m/s^2 of lateral foot
+            // acceleration demanded forever, which the QP pays for by
+            // planning a contact force that does not exist. Measured in the
+            // settled single-leg pose, the QP believed it was applying 24 N
+            // of tangential force -- 37% of body weight -- while MuJoCo's
+            // contacts summed to 0.0 N, and it thought fz was 71.3 N when
+            // the true value is 65.1 N = mg exactly. The torque it sends is
+            // computed against that phantom reaction.
+            //
+            // Baumgarte is there to reject drift, not to relitigate where the
+            // foot ought to be, so the anchor leaks toward the current pose
+            // with a time constant far slower than the contact dynamics.
+            if anchor_leak > 0.0 {
+                if let Some((ap, ar)) = anchor[side].as_mut() {
+                    let a = (anchor_leak * dt).min(1.0);
+                    *ap += (pos - *ap) * a;
+                    // Orientation is deliberately NOT leaked by default.
+                    // Rotational drift is the failure this Baumgarte term
+                    // exists for -- unchecked, the stance sole rolled to
+                    // 19 deg while the solver still called the contact
+                    // satisfied. Translation can be conceded; roll cannot.
+                    let ar_a = (anchor_leak_rot * dt).min(1.0);
+                    *ar = *ar + (rot - *ar) * ar_a;
+                }
+            }
+            let (p0_, r0_) = anchor[side].expect("anchor set above");
             let dr = r0_ * rot.transpose();
             // rotation vector of dr (small-angle: the skew part)
             let e_ang = na::Vector3::new(dr[(2, 1)] - dr[(1, 2)],
@@ -1028,6 +1075,10 @@ fn main() {
         // Both are evaluated against the same `q`/`data` as the QP saw, so
         // they are directly comparable.
         let mut cop_qp = [[0.0_f64; 3]; 2];
+        // The force variables themselves are WORLD frame (`sel` is what
+        // rotates them into the sole), so this is directly comparable with
+        // what MuJoCo's contacts sum to -- same frame, same instant, same q.
+        let mut f_qp_w = [[0.0_f64; 3]; 2];
         for (slot, foot_mi) in stance.iter().copied().enumerate() {
             let side = usize::from(foot_mi != left_foot_mi);
             let w = &sole_sel[slot] * &extracted.forces;
@@ -1035,11 +1086,20 @@ fn main() {
             if fz > 1e-6 {
                 cop_qp[side] = [-w[1] / fz, w[0] / fz, fz];
             }
+            for k in 0..3 {
+                f_qp_w[side][k] = extracted.forces[6 * slot + 3 + k];
+            }
         }
         let mut cop_mj = [[0.0_f64; 3]; 2];
+        let mut slip = [0.0_f64; 2];   // |f_tangential| / (mu * fz) per foot
+        let mut patch_w = [[0.0_f64; 2]; 2];   // world (x,y) of each contact patch
+        let mut f_mj_w = [[0.0_f64; 3]; 2];    // MuJoCo world contact force per foot
         {
             // Force-weighted mean of the ground contact points on each foot.
             let mut acc = [[0.0_f64; 4]; 2]; // [sum fz*x, fz*y, fz*z, sum fz]
+            // Tangential ground force per foot, to test the stance foot
+            // against its own friction cone rather than assuming it sticks.
+            let mut ft = [[0.0_f64; 2]; 2];
             for c in sim.contacts() {
                 let name = if c.body1.is_empty() { &c.body2 } else { &c.body1 };
                 let side = match name.as_str() {
@@ -1055,6 +1115,8 @@ fn main() {
                     acc[side][k] += fz * c.pos[k];
                 }
                 acc[side][3] += fz;
+                ft[side][0] += c.force_world[0];
+                ft[side][1] += c.force_world[1];
             }
             for side in 0..2 {
                 let fz = acc[side][3];
@@ -1067,6 +1129,14 @@ fn main() {
                 let pw = na::Vector3::new(acc[side][0] / fz, acc[side][1] / fz, acc[side][2] / fz);
                 let pl = r.transpose() * (pw - o);
                 cop_mj[side] = [pl.x - SOLE_CENTRE_X, pl.y, fz];
+                let tan = (ft[side][0].powi(2) + ft[side][1].powi(2)).sqrt();
+                slip[side] = tan / (FRICTION_MU * fz).max(1e-9);
+                // WORLD position of the contact patch. The link origin sits
+                // 35 mm above the sole, so it swings sideways when the ankle
+                // rolls -- watching the origin cannot tell a foot that slid
+                // from a foot that merely tipped. This can.
+                patch_w[side] = [pw.x, pw.y];
+                f_mj_w[side] = [ft[side][0], ft[side][1], fz];
             }
         }
 
@@ -1196,6 +1266,14 @@ fn main() {
             write!(f, ",{y_ref:.5},{nc},{sw:.5}").unwrap();
             let deg = u8::from(!matches!(sol.status, misa_wbc::SolveStatus::Optimal));
             write!(f, ",{deg},{:.5},{:.5}", 0.049 * cop_frac, sole_half_w * cop_frac).unwrap();
+            write!(f, ",{:.4},{:.4}", slip[0], slip[1]).unwrap();
+            write!(f, ",{:.6},{:.6}", patch_w[0][0], patch_w[0][1]).unwrap();
+            for side in 0..2 {
+                for src in [&f_qp_w, &f_mj_w] {
+                    let v = src[side];
+                    write!(f, ",{:.4},{:.4},{:.4}", v[0], v[1], v[2]).unwrap();
+                }
+            }
             for side in 0..2 {
                 for src in [&cop_qp, &cop_mj] {
                     let c = src[side];
