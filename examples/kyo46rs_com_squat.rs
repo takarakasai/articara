@@ -81,6 +81,11 @@ struct Profile {
     /// 241.9 kN per side, 722x body weight, present on every tick. That is
     /// the same brace that made kyo46rs's single-leg stance look solved.
     collide_primitives_only: bool,
+    /// Body whose orientation P2 holds upright. None = the FreeFlyer body
+    /// itself. kyo46rs's floating base IS its torso; G1's is the pelvis, with
+    /// a waist joint between it and the upper body, so "hold the trunk level"
+    /// means different things on the two machines.
+    trunk_link: Option<&'static str>,
 }
 
 #[cfg(feature = "mujoco")]
@@ -104,6 +109,7 @@ const KYO46RS: Profile = Profile {
     armature: 0.0005,
     joint_damping: 0.15,
     collide_primitives_only: false,
+    trunk_link: None,
     log_joints: &[
         "left_hip_yaw_joint", "left_hip_roll_joint", "left_hip_pitch_joint",
         "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
@@ -147,6 +153,7 @@ const G1_23DOF: Profile = Profile {
     armature: 0.01,
     joint_damping: 1.0,
     collide_primitives_only: true,
+    trunk_link: Some("torso_link"),
     log_joints: &[
         "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
         "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
@@ -322,7 +329,12 @@ fn main() {
     let right_foot_mi = *link_to_idx
         .get(prof.foot_links[1])
         .unwrap_or_else(|| panic!("no link {}", prof.foot_links[1]));
-    let trunk_mi = 1usize; // the FreeFlyer's own body
+    // P2's target body: the FreeFlyer itself unless the profile names another.
+    let trunk_mi = match prof.trunk_link {
+        None => 1usize,
+        Some(n) => *link_to_idx.get(n).unwrap_or_else(|| panic!("no link {n}")),
+    };
+    let trunk_from_base = prof.trunk_link.is_none();
 
     // Links that carry mass, paired with their misarta index and the CoM
     // offset in the link frame -- everything `J_com` needs.
@@ -483,6 +495,20 @@ fn main() {
     let kd_post = env_f64("KD_POST", 20.0);
     let use_post = flag("POST", true);
     let trunk_sign = env_f64("TRUNK_SIGN", 1.0);
+    // TRUNK=0 drops the P2 level entirely, to test whether it is carrying its
+    // weight or just failing. `trunk_mi` is the FreeFlyer body: kyo46rs's
+    // torso, but G1's PELVIS -- G1 has a waist joint, so the thing being held
+    // upright there is not the upper body.
+    let use_trunk = flag("TRUNK", true);
+    // Ways to loosen P2 without deleting it:
+    //   TRUNK_DEAD  - tolerance (rad). Inside it, command no correction at
+    //                 all, so the task stops fighting for the last degree.
+    //   TRUNK_LATE  - demote it below posture. In an HQP the structural way
+    //                 to say "less important" is a lower priority, not a
+    //                 smaller gain: the gain changes how hard it pulls, the
+    //                 priority changes what it is allowed to disturb.
+    let trunk_dead = env_f64("TRUNK_DEAD", 0.0);
+    let trunk_late = flag("TRUNK_LATE", false);
     // Shrink the admissible CoP box to keep a margin: riding the exact
     // edge means the next disturbance makes P0 infeasible outright.
     let cop_frac = env_f64("COP_FRAC", 1.0);
@@ -515,6 +541,28 @@ fn main() {
     // Consecutive degraded ticks bridged with the last good torque before
     // switching to the recomputed one.
     let hold_bridge = env_f64("HOLD_BRIDGE", 8.0) as u32;
+    // Which priority levels, if they degrade, invalidate the whole solution.
+    //
+    // misa-wbc's cascade "holds the last good x for a failed level, so a host
+    // can decide whether to command it or hold". This code was not deciding:
+    // any status other than Optimal threw the solution away. That is right
+    // for level 0 -- there the held x is the ZERO vector, i.e. the
+    // homogeneous EoM with gravity dropped -- but wrong below it. A level-2
+    // failure returns the level-1 solution, which still satisfies the EoM,
+    // the contacts, the friction and CoP cones, the torque box AND the CoM
+    // task; only trunk orientation is compromised. Replacing that with
+    // gravity comp is strictly worse. Measured on G1: the first failures are
+    // level 2 at t=0.018 while the robot is tracking to 7 mm with the
+    // contact force sitting exactly on body weight.
+    // It is not. Measured both ways: kyo46rs single-leg goes SURVIVED -> FELL
+    // (tilt 0.146 -> 0.529) and G1 goes 0.147 -> 0.522 rad. The reason is the
+    // bottom of the stack, not the top -- the LAST level is the regulariser,
+    // and a solution that stopped before it has an unconstrained null-space
+    // component, so tau can be anything the higher levels did not pin.
+    // "Satisfies the hard constraints" does not mean "is a sane torque".
+    // Default keeps the conservative behaviour; the knob stays so the
+    // experiment is repeatable.
+    let fallback_max_level = env_f64("FALLBACK_LEVEL", 999.0) as usize;
     // Target the force regulariser at the load split the CoM reference
     // implies, rather than an equal share.
     //
@@ -621,7 +669,7 @@ fn main() {
         // implies, and what MuJoCo's actual contact set produces. They
         // disagree exactly where the solve degrades, which is the point of
         // logging both. fz<=0 means "no support / no valid solution".
-        write!(f, ",degraded,cop_lx,cop_ly,slip_l,slip_r,patch_lx,patch_ly").unwrap();
+        write!(f, ",trunk_tilt,degraded,cop_lx,cop_ly,slip_l,slip_r,patch_lx,patch_ly").unwrap();
         for side in ["l", "r"] {
             for src in ["qp", "mj"] {
                 for ax in ["x", "y", "z"] {
@@ -670,6 +718,11 @@ fn main() {
     let mut prev_com: Option<na::Vector3<f64>> = None;
     let mut prev_body_pos: Option<[f64; 3]> = None;
     let mut n_degraded = 0u32;
+    let mut level_by_name = vec![0u32; 8];
+    // The stack changes shape between double and single support, so the tally
+    // has to be labelled with the names of the LAST configuration actually
+    // solved -- a fixed list mislabels every single-support run by one.
+    let mut final_level_names: Vec<&str> = Vec::new();
     let mut fell = false;
     let mut min_z = f64::INFINITY;
     let mut max_tilt: f64 = 0.0;
@@ -1078,7 +1131,26 @@ fn main() {
         let j_trunk = misarta::jacobian::compute_joint_jacobian_from_data(&model, &q, &data, trunk_mi);
         let dj_trunk = misarta::jacobian::compute_joint_jacobian_time_derivative(&model, &q, &v, trunk_mi);
         let djv_trunk = &dj_trunk * &v_dvec;
-        let (roll, pitch, _yaw) = body_quat.euler_angles();
+        // The Jacobian comes from misarta's FK, so on the face of it the
+        // ERROR should too -- reading the base attitude from MuJoCo mixes two
+        // sources. Measured, it is worse: kyo46rs single-leg goes SURVIVED ->
+        // FELL (46 degraded / 0.146 rad -> 77 / 0.559). The two should agree
+        // exactly, since misarta's q was synced from that same quaternion one
+        // line earlier, and the fact that swapping them changes the outcome
+        // at all says they do NOT -- either a frame offset between MuJoCo's
+        // body and misarta's FreeFlyer, or my euler extraction disagreeing
+        // with nalgebra's. Unresolved; default keeps what is measured to work.
+        let attitude_from_fk = flag("ATT_FK", false);
+        let (roll, pitch) = if trunk_from_base && !attitude_from_fk {
+            let (r, p, _) = body_quat.euler_angles();
+            (r, p)
+        } else {
+            // Orientation of the task body itself, from the same FK the
+            // Jacobian came from -- mixing the base's attitude with another
+            // link's Jacobian would regulate one thing using another's error.
+            let rot = misarta::se3::rotation_matrix(&data.oMi[trunk_mi]);
+            (rot[(2, 1)].atan2(rot[(2, 2)]), (-rot[(2, 0)]).asin())
+        };
         let mut j_rp = na::DMatrix::zeros(2, nv);
         for c in 0..nv {
             j_rp[(0, c)] = j_trunk[(0, c)];
@@ -1094,9 +1166,12 @@ fn main() {
         // slow positive feedback (CoM z drifts 0.2939 -> 0.3388 instead
         // of tracking), which is why it is not the default despite
         // "surviving" longer.
+        // Deadband on the POSITION error only; damping stays live, so the
+        // task still resists rate inside the band instead of going open.
+        let dead = |e: f64| if e.abs() <= trunk_dead { 0.0 } else { e - trunk_dead * e.signum() };
         let rp_ref = na::DVector::from_vec(vec![
-            trunk_sign * (kp_trunk * (0.0 - roll) + kd_trunk * (0.0 - v_ang_w[0])),
-            trunk_sign * (kp_trunk * (0.0 - pitch) + kd_trunk * (0.0 - v_ang_w[1])),
+            trunk_sign * (kp_trunk * (0.0 - dead(roll)) + kd_trunk * (0.0 - v_ang_w[0])),
+            trunk_sign * (kp_trunk * (0.0 - dead(pitch)) + kd_trunk * (0.0 - v_ang_w[1])),
         ]);
         let p2 = tasks::cartesian_acceleration(
             dyn_ctx.qddot(),
@@ -1225,21 +1300,54 @@ fn main() {
             None
         };
 
-        let mut levels = vec![p0, p1, p2];
+        // Names alongside, because the INDEX moves: swing only exists in
+        // single support and trunk/posture are switchable, so "level 4" is
+        // the regulariser in double support and posture in single. Reading
+        // the number without the configuration has already caused one
+        // misreading in this file's history.
+        let mut levels = vec![p0, p1];
+        let mut level_names: Vec<&str> = vec!["dynamics+contact+cones", "com"];
+        let mut p2_late = None;
+        if use_trunk {
+            if trunk_late {
+                p2_late = Some(p2);
+            } else {
+                levels.push(p2);
+                level_names.push("trunk");
+            }
+        }
         if let Some(ps) = p_swing {
             levels.push(ps);
+            level_names.push("swing");
         }
         if use_post {
             levels.push(p3);
+            level_names.push("posture");
+        }
+        if let Some(pt) = p2_late {
+            levels.push(pt);
+            level_names.push("trunk(late)");
         }
         levels.push(p_reg);
+        level_names.push("regularise");
+        final_level_names = level_names.clone();
         let sol = solver
             .solve(&levels, &cfg)
             .unwrap_or_else(|e| panic!("wbc solve failed at t={t:.3}: {e}"));
         if !matches!(sol.status, misa_wbc::SolveStatus::Optimal) {
             n_degraded += 1;
+            if let misa_wbc::SolveStatus::Degraded { level, .. } = sol.status {
+                if level < level_by_name.len() {
+                    level_by_name[level] += 1;
+                }
+            }
             if n_degraded <= 6 || tick % 200 == 0 {
-                println!("    [degraded] t={t:6.3} nc={nc} status={:?}", sol.status);
+                let nm = match sol.status {
+                    misa_wbc::SolveStatus::Degraded { level, .. } =>
+                        level_names.get(level).copied().unwrap_or("?"),
+                    _ => "-",
+                };
+                println!("    [degraded] t={t:6.3} nc={nc} level={nm} status={:?}", sol.status);
             }
         }
         let extracted = dyn_ctx.extract(&sol.x);
@@ -1384,9 +1492,16 @@ fn main() {
                 robot_taus[ji] = tau.clamp(-lim, lim);
             }
         };
+        // A degraded level BELOW the cutoff still yields a dynamically
+        // consistent command; count it, report it, but command it.
+        let bad_level = match sol.status {
+            misa_wbc::SolveStatus::Optimal => None,
+            misa_wbc::SolveStatus::Degraded { level, .. } => Some(level),
+        };
+        let unusable = bad_level.is_some_and(|l| l <= fallback_max_level);
         let mut in_fallback = false;
         match last_good.as_ref() {
-            Some(prev) if !matches!(sol.status, misa_wbc::SolveStatus::Optimal) => {
+            Some(prev) if unusable => {
                 in_fallback = true;
                 // Bridge a brief hiccup with the last good torque -- over a
                 // few ticks it is the smoother choice, and swapping in a
@@ -1423,7 +1538,11 @@ fn main() {
                     println!("  [recovered] t={t:6.3} after {consec_degraded} degraded ticks");
                 }
                 consec_degraded = 0;
-                last_good = Some(robot_taus.clone());
+                // Only a clean solve becomes the held command. A level-3
+                // solution is good enough to send but not to freeze.
+                if bad_level.is_none() {
+                    last_good = Some(robot_taus.clone());
+                }
             }
         }
         // Crossfade whenever the commanding controller changes, in either
@@ -1459,8 +1578,14 @@ fn main() {
                 roll.abs().max(pitch.abs())
             )
             .unwrap();
+            // Orientation of the P2 target body, so a run that holds the
+            // torso can be compared with one that holds the pelvis; `tilt`
+            // above is always the BASE and changes meaning between them.
+            let trot = misarta::se3::rotation_matrix(&data.oMi[trunk_mi]);
+            let ttilt = trot[(2, 1)].atan2(trot[(2, 2)]).abs()
+                .max((-trot[(2, 0)]).asin().abs());
             let sw = sim.body_world_position(prof.foot_links[1]).unwrap()[2];
-            write!(f, ",{y_ref:.5},{nc},{sw:.5}").unwrap();
+            write!(f, ",{y_ref:.5},{nc},{sw:.5},{ttilt:.5}").unwrap();
             let deg = u8::from(!matches!(sol.status, misa_wbc::SolveStatus::Optimal));
             write!(f, ",{deg},{:.5},{:.5}", sole_half_l * cop_frac, sole_half_w * cop_frac).unwrap();
             write!(f, ",{:.4},{:.4}", slip[0], slip[1]).unwrap();
@@ -1513,6 +1638,20 @@ fn main() {
     println!("  max |J_com*v - d(com)/dt| relative error: {max_jcom_err:.4}");
     println!("  min trunk z = {min_z:.3}   max tilt = {max_tilt:.3} rad");
     println!("  degraded solves: {n_degraded}");
+    {
+        // Final tally by NAME. The last tick's level_names is representative
+        // for a run that stayed in one support mode; a run that switches
+        // reports both under whatever that tick's stack was.
+        let parts: Vec<String> = level_by_name
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| **c > 0)
+            .map(|(i, c)| format!("{}={c}", final_level_names.get(i).map(|s| *s).unwrap_or("?")))
+            .collect();
+        if !parts.is_empty() {
+            println!("    by level: {}", parts.join("  "));
+        }
+    }
     println!("  verdict: {}", if fell { "FELL" } else { "SURVIVED" });
 }
 
