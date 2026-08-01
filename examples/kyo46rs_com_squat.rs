@@ -680,6 +680,10 @@ fn main() {
     // torso, but G1's PELVIS -- G1 has a waist joint, so the thing being held
     // upright there is not the upper body.
     let use_trunk = flag("TRUNK", true);
+    // Put the equation of motion on its own top level so the null-space
+    // cascade enforces it exactly, instead of letting it be traded against
+    // the cones in a shared least-squares objective.
+    let eom_hard = flag("EOM_HARD", true);
     // Ways to loosen P2 without deleting it:
     //   TRUNK_DEAD  - tolerance (rad). Inside it, command no correction at
     //                 all, so the task stops fighting for the last degree.
@@ -1181,10 +1185,25 @@ fn main() {
         // in the model and forgetting this makes the QP defend a
         // footprint the robot no longer has.
         let sole_offset_local: [f64; 3] = [sole_centre_x, 0.0, -sole_below_foot_origin];
-        let mut p0 = dyn_ctx
-            .dynamics_task()
-            .expect("Explicit keeps the EoM task")
-            + tasks::box_bound(dyn_ctx.tau(), &torque_max);
+        // The equation of motion is `Task::soft_eq` -- a least-squares term,
+        // not a constraint. Sharing a level with the cones and the torque box
+        // means the solver may trade physics against them, and it does: the
+        // objective there is ½‖EoM residual‖² + ½‖contact accel residual‖² +
+        // ½‖slack‖², summed with no weights across N·m, m/s² and N. Which
+        // term dominates is then an accident of magnitude, and on G1 the N·m
+        // rows are an order larger than on kyo46rs.
+        //
+        // HoQp has no hard-equality facility, but it does not need one: give
+        // the EoM a level of its own ABOVE everything else and its
+        // least-squares problem has nothing to trade against, so the residual
+        // goes to zero -- and every later level is then confined to
+        // null(A_eom), which preserves it exactly.
+        let eom_task = dyn_ctx.dynamics_task().expect("Explicit keeps the EoM task");
+        let mut p0 = if eom_hard {
+            tasks::box_bound(dyn_ctx.tau(), &torque_max)
+        } else {
+            eom_task.clone() + tasks::box_bound(dyn_ctx.tau(), &torque_max)
+        };
         // Keep each foot's force -> sole-wrench map so the solved CoP can be
         // measured against the box that constrained it. A level-0
         // NumericalFailure says the cone was hard to navigate; this says
@@ -1499,8 +1518,16 @@ fn main() {
         // the regulariser in double support and posture in single. Reading
         // the number without the configuration has already caused one
         // misreading in this file's history.
-        let mut levels = vec![p0, p1];
-        let mut level_names: Vec<&str> = vec!["dynamics+contact+cones", "com"];
+        let mut levels: Vec<misa_wbc::Task> = Vec::new();
+        let mut level_names: Vec<&str> = Vec::new();
+        if eom_hard {
+            levels.push(eom_task);
+            level_names.push("eom");
+        }
+        levels.push(p0);
+        level_names.push(if eom_hard { "contact+cones" } else { "dynamics+contact+cones" });
+        levels.push(p1);
+        level_names.push("com");
         let mut p2_late = None;
         if use_trunk {
             if trunk_late {
