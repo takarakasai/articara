@@ -22,7 +22,26 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-URDF = "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf"
+# Which machine. The replay is kinematic -- it re-walks the URDF per logged
+# frame -- so it needs the same description the sim ran, not a copy of the
+# controller's assumptions.
+ROBOT = os.environ.get("ROBOT", "kyo46rs")
+# Half the lateral foot spacing, for the top-down CoP panel's layout only.
+STANCE_Y = float(os.environ.get("STANCE_Y", 0.0996 if os.environ.get("ROBOT", "").startswith("g1") else 0.0706))
+# Camera distance / target height multiplier, roughly the height ratio.
+CAM_SCALE = float(os.environ.get("CAM_SCALE", 2.2 if os.environ.get("ROBOT", "").startswith("g1") else 1.0))
+LEGEND_NOTE = (
+    ["visual: full STL geometry", "collision: primitives only"]
+    if os.environ.get("ROBOT", "").startswith("g1")
+    else ["EL05 46x44 mm, true size", "knee / hip_pitch: dual"]
+)
+URDFS = {
+    "kyo46rs": "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
+    "g1": "/home/takara/work/dp/articara/models/unitree_g1_src/robots/g1_description/g1_23dof.urdf",
+    "g1_23dof": "/home/takara/work/dp/articara/models/unitree_g1_src/robots/g1_description/g1_23dof.urdf",
+}
+URDF = os.environ.get("URDF", URDFS.get(ROBOT, URDFS["kyo46rs"]))
+FOOT_L = os.environ.get("FOOT_L", "left_ankle_roll_link" if ROBOT.startswith("g1") else "left_foot_link")
 W, H = int(os.environ.get("VID_W", 960)), 720
 FPS = 50
 
@@ -39,6 +58,77 @@ def rpy_to_mat(r, p, y):
         [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
         [-sp, cp * sr, cp * cr],
     ])
+
+
+_MESH_CACHE = {}
+
+
+def load_stl(path):
+    """Binary STL as a triangle soup, shape (ntri, 3, 3). No decimation.
+
+    Two earlier attempts simplified the geometry -- a convex hull, then
+    vertex clustering -- and both were the wrong trade. G1's 29 instanced
+    visuals are 401k triangles, but at this camera nearly all of them are
+    smaller than a pixel: the model is dense because it is a CAD export, not
+    because the detail is visible. So keep every triangle and drop, per
+    frame, the ones that cannot be seen. What survives is the real surface
+    rather than an approximation of it.
+    """
+    if path in _MESH_CACHE:
+        return _MESH_CACHE[path]
+    import struct
+    with open(path, "rb") as fh:
+        ntri = struct.unpack("<I", fh.read(84)[80:84])[0]
+        buf = fh.read(50 * ntri)
+    if len(buf) < 50 * ntri:                       # ASCII STL, or truncated
+        _MESH_CACHE[path] = None
+        return None
+    raw = np.frombuffer(buf, dtype=np.uint8).reshape(ntri, 50)
+    tri = raw[:, 12:48].copy().view(np.float32).reshape(ntri, 3, 3).astype(np.float64)
+    _MESH_CACHE[path] = tri
+    return tri
+
+
+# Screen-space area, in px^2, below which a triangle is not worth drawing.
+MIN_TRI_PX = float(os.environ.get("MIN_TRI_PX", 1.0))
+_LIGHT = np.array([0.4, 0.7, 0.6])
+_LIGHT = _LIGHT / np.linalg.norm(_LIGHT)
+
+
+def emit_mesh(faces, tri_world, cam, base):
+    """Project, cull and shade a triangle soup straight into `faces`."""
+    n = len(tri_world)
+    p2, z = cam.project(tri_world.reshape(-1, 3))
+    p2 = p2.reshape(n, 3, 2)
+    z = z.reshape(n, 3)
+
+    keep = (z > 0.05).all(1)
+    a = p2[:, 1] - p2[:, 0]
+    b = p2[:, 2] - p2[:, 0]
+    keep &= 0.5 * np.abs(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]) >= MIN_TRI_PX
+
+    e0 = tri_world[:, 1] - tri_world[:, 0]
+    e1 = tri_world[:, 2] - tri_world[:, 0]
+    nrm = np.cross(e0, e1)
+    ln = np.linalg.norm(nrm, axis=1)
+    keep &= ln > 1e-12
+    nrm = nrm / np.maximum(ln, 1e-12)[:, None]
+    keep &= np.einsum("ij,ij->i", nrm, cam.eye - tri_world.mean(1)) > 0
+
+    idx = np.nonzero(keep)[0]
+    if not len(idx):
+        return
+    d = 0.42 + 0.58 * np.clip(nrm[idx] @ _LIGHT, 0.0, None)
+    cols = np.clip(np.asarray(base, float)[None, :] * d[:, None], 0, 255).astype(int)
+    zc = z[idx].mean(1)
+    pp = p2[idx]
+    for k in range(len(idx)):
+        faces.append((zc[k],
+                      [(pp[k, 0, 0], pp[k, 0, 1]),
+                       (pp[k, 1, 0], pp[k, 1, 1]),
+                       (pp[k, 2, 0], pp[k, 2, 1])],
+                      (cols[k, 0], cols[k, 1], cols[k, 2]),
+                      None))
 
 
 def parse_urdf(path):
@@ -63,6 +153,18 @@ def parse_urdf(path):
             elif cyl is not None:
                 vis.append(("cyl", np.array(xyz), rpy_to_mat(*rpy),
                             (float(cyl.get("radius")), float(cyl.get("length"))), name))
+            else:
+                msh = g.find("mesh")
+                if msh is None:
+                    continue
+                fn = msh.get("filename", "")
+                fn = fn.replace("package://", "")
+                cand = fn if os.path.isabs(fn) else os.path.join(os.path.dirname(path), fn)
+                if not os.path.exists(cand):
+                    continue
+                sc = msh.get("scale")
+                sc = float(sc.split()[0]) if sc else 1.0
+                vis.append(("mesh", np.array(xyz), rpy_to_mat(*rpy), (cand, sc), name))
         links[lk.get("name")] = vis
     for j in root.findall("joint"):
         o = j.find("origin")
@@ -79,6 +181,14 @@ def parse_urdf(path):
             type=j.get("type"),
         )
     return links, joints
+
+
+def root_link_of(joints):
+    """The one link that is nobody's child."""
+    kids = {j["child"] for j in joints.values()}
+    parents = {j["parent"] for j in joints.values()}
+    roots = sorted(parents - kids)
+    return roots[0] if roots else "torso"
 
 
 def axis_angle(axis, ang):
@@ -193,7 +303,9 @@ def draw_ground(draw, cam):
 
 def sole_roll_deg(pose):
     """Roll of the LEFT (stance) sole. Reads zero when the foot is flat."""
-    _, Rf = pose["left_foot_link"]
+    if FOOT_L not in pose:
+        return 0.0
+    _, Rf = pose[FOOT_L]
     return math.degrees(math.atan2(Rf[2][1], Rf[2][2]))
 
 
@@ -244,7 +356,14 @@ def draw_body(draw, links, pose, cam):
                     if nv_ @ (cam.eye - quad.mean(0)) < 0:
                         continue
                     faces.append((z[list(f)].mean(), [tuple(p2[i]) for i in f],
-                                  shade(base, nv_)))
+                                  shade(base, nv_), (28, 30, 36)))
+                continue
+            elif kind == "mesh":
+                fn, sc = size
+                tri = load_stl(fn)
+                if tri is None:
+                    continue
+                emit_mesh(faces, wp + (tri * sc) @ wR.T, cam, base)
                 continue
             else:
                 r, l = size
@@ -261,10 +380,13 @@ def draw_body(draw, links, pose, cam):
                 n /= nn
                 if n @ (cam.eye - quad.mean(0)) < 0:
                     continue  # backface
-                faces.append((z[list(f)].mean(), [tuple(p2[i]) for i in f], shade(base, n)))
+                faces.append((z[list(f)].mean(), [tuple(p2[i]) for i in f], shade(base, n), (28, 30, 36)))
 
-    for _, poly, col in sorted(faces, key=lambda t: -t[0]):
-        draw.polygon(poly, fill=col, outline=(28, 30, 36))
+    # Mesh faces carry outline=None. A decimated mesh has hundreds of small
+    # facets and stroking each one turns the whole link into a dark scribble;
+    # the primitives are few and large and read better with an edge.
+    for _, poly, col, edge in sorted(faces, key=lambda t: -t[0]):
+        draw.polygon(poly, fill=col, outline=edge)
 
 
 COP_MJ = (240, 196, 72)    # what MuJoCo's contacts actually produce
@@ -274,7 +396,8 @@ COP_QP = (128, 196, 246)   # what the QP's solved wrench assumes
 def render_side_view(links, pose, w, h, label):
     """Frontal-plane view. The lateral weight shift is what decides this
     experiment, and it is edge-on -- invisible -- in the main camera."""
-    cam = Camera(eye=(1.85, 0.0, 0.33), target=(0.0, 0.0, 0.33),
+    k = CAM_SCALE
+    cam = Camera(eye=(1.85 * k, 0.0, 0.33 * k), target=(0.0, 0.0, 0.33 * k),
                  fov=26, y_shift=0, w=w, h=h)
     img = gradient_bg(w, h)
     draw = ImageDraw.Draw(img, "RGBA")
@@ -300,7 +423,7 @@ def draw_cop_panel(img, ox, oy, w, h, feet, box, trails):
               fill=(198, 206, 220), font=F_SMALL)
 
     lx, ly = box                      # CoP half-extents, metres
-    stance_y = 0.0706                 # foot centres at +-70.6 mm
+    stance_y = STANCE_Y               # foot centres at +-STANCE_Y
     # Fit both soles plus their separation into the panel width.
     span_y = 2 * (stance_y + ly) * 1e3
     scale = (w - 56) / span_y         # px per mm
@@ -405,10 +528,8 @@ def render_frame(links, joints, pose, cam, hud):
         y = ky + i * 20
         draw.rectangle([kx, y, kx + 12, y + 11], fill=col)
         draw.text((kx + 20, y - 3), lab, fill=(150, 158, 172), font=F_SMALL)
-    draw.text((kx, ky + 64), "EL05 46x44 mm, true size",
-              fill=(108, 116, 130), font=F_SMALL)
-    draw.text((kx, ky + 82), "knee / hip_pitch: dual",
-              fill=(108, 116, 130), font=F_SMALL)
+    for i, line in enumerate(LEGEND_NOTE):
+        draw.text((kx, ky + 64 + 18 * i), line, fill=(108, 116, 130), font=F_SMALL)
 
     # ── live pitch-joint torque strip, full width along the bottom ─────
     px, py, pw, ph = 22, H - 140, W - 62, 92
@@ -416,13 +537,14 @@ def render_frame(links, joints, pose, cam, hud):
     draw.text((px, py - 26), "sagittal joint torque, left leg",
               fill=(198, 206, 220), font=F_SMALL)
 
-    span = float(os.environ.get("TAU_SPAN", 2.5))
+    span = float(os.environ.get("TAU_SPAN", max(2.5, 0.25 * max(tau_lims))))
     ymid = py + ph / 2
     def ty(v):
         return ymid - (ph / 2) * max(-1.0, min(1.0, v / span))
 
     # zero line + gridlines every 1 N*m
-    for g in (-2.0, -1.0, 1.0, 2.0):
+    for frac in (-0.8, -0.4, 0.4, 0.8):
+        g = frac * span
         draw.line([(px, ty(g)), (px + pw, ty(g))], fill=(46, 51, 62), width=1)
         draw.text((px + pw + 4, ty(g) - 8), f"{g:+.0f}", fill=(96, 104, 118), font=F_SMALL)
     draw.line([(px, ymid), (px + pw, ymid)], fill=(78, 86, 100), width=1)
@@ -470,6 +592,8 @@ def main():
         os.remove(os.path.join(frame_dir, f))
 
     links, joints = parse_urdf(URDF)
+    root = root_link_of(joints)
+    print(f"robot={ROBOT}  root={root}  links={len(links)}  joints={len(joints)}")
     with open(csv_path) as f:
         rows = list(csv.DictReader(f))
     print(f"{len(rows)} logged ticks")
@@ -492,9 +616,12 @@ def main():
     if os.environ.get("ANKLE_CLOSEUP"):
         cam = Camera(eye=(0.30, -0.42, 0.16), target=(0.01, 0.0, 0.06), fov=34, y_shift=60)
     else:
-        cam = (Camera(eye=(1.30, -1.55, 0.62), target=(0.02, 0.0, 0.28), fov=30, y_shift=-10)
+        # Frame by the machine, not by kyo46rs. G1 is twice the height and
+        # the old camera showed it from the knees down.
+        k = CAM_SCALE
+        cam = (Camera(eye=(1.30 * k, -1.55 * k, 0.62 * k), target=(0.02, 0.0, 0.28 * k), fov=30, y_shift=-10)
                if os.environ.get("COMPACT")
-               else Camera(eye=(1.15, -1.38, 0.62), target=(0.02, 0.0, 0.30), fov=33, y_shift=24))
+               else Camera(eye=(1.15 * k, -1.38 * k, 0.62 * k), target=(0.02, 0.0, 0.30 * k), fov=33, y_shift=24))
     # Side column: frontal view on top, top-down CoP panel underneath.
     SIDE_W = 420
     FRONT_H = 350
@@ -515,7 +642,7 @@ def main():
             [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
             [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
         ])
-        pose = forward_kinematics(links, joints, "torso", bp, bR, q)
+        pose = forward_kinematics(links, joints, root, bp, bR, q)
         hist.append((float(r["com_z"]), float(r["com_ref_z"])))
         for k, (col, _) in enumerate(TAU_JOINTS):
             tau_hist[k].append(float(r["tau_" + col]))
