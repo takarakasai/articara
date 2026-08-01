@@ -3421,6 +3421,68 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
             }
         }
     }
+    // VERTICAL FORCE BUDGET. Where the trunk's vertical motion comes from.
+    // In steady state the cycle-mean of the total normal force must equal m*g
+    // exactly -- anything else is a net vertical impulse and the trunk climbs
+    // or sinks. The PROFILE says where within the cycle the budget is spent:
+    // the model's picture is a flat m*g/(2d) held through each pair's stance
+    // and nothing in between, so a profile that peaks and troughs instead is
+    // the trunk being driven up and down rather than held.
+    // Aligned on FL touchdown, same convention as everything else here.
+    const FZ_BINS: usize = 10;
+    let mut fz_acc = [0.0_f64; FZ_BINS];
+    // Split by pair as well as totalled: a total that loses its second hump
+    // could be the rear pair failing to load OR the two pairs merging, and
+    // those are different failures. Inferring from the sum is not enough.
+    let mut fzf_acc = [0.0_f64; FZ_BINS];
+    let mut fzr_acc = [0.0_f64; FZ_BINS];
+    let mut fz_cnt = [0usize; FZ_BINS];
+    {
+        let swing_min_b = ((0.030 / dt_tick).round() as usize).max(1);
+        let mut td: Vec<usize> = Vec::new();
+        let mut run = 0usize;
+        for i in 0..walk.len() {
+            if walk[i].foot_fz[0] > 5.0 {
+                if run >= swing_min_b {
+                    td.push(i);
+                }
+                run = 0;
+            } else {
+                run += 1;
+            }
+        }
+        let nominal = (final_period_s / dt_tick).round() as usize;
+        for w in td.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let span = b - a;
+            if span < nominal / 2 || span > nominal * 2 {
+                continue;
+            }
+            for i in a..b {
+                let bin = (((i - a) * FZ_BINS) / span).min(FZ_BINS - 1);
+                fz_acc[bin] += walk[i].total_fz_world;
+                fzf_acc[bin] += walk[i].foot_fz[0] + walk[i].foot_fz[1];
+                fzr_acc[bin] += walk[i].foot_fz[2] + walk[i].foot_fz[3];
+                fz_cnt[bin] += 1;
+            }
+        }
+    }
+    const AUDIT_MG: f64 = 15.61 * 9.81;
+    let fz_prof: Vec<f64> = (0..FZ_BINS)
+        .map(|j| if fz_cnt[j] > 0 { fz_acc[j] / fz_cnt[j] as f64 / AUDIT_MG } else { f64::NAN })
+        .collect();
+    let prof_of = |acc: &[f64; FZ_BINS]| -> Vec<f64> {
+        (0..FZ_BINS)
+            .map(|j| if fz_cnt[j] > 0 { acc[j] / fz_cnt[j] as f64 / AUDIT_MG } else { f64::NAN })
+            .collect()
+    };
+    let fzf_prof = prof_of(&fzf_acc);
+    let fzr_prof = prof_of(&fzr_acc);
+    let fzf_share = fzf_acc.iter().sum::<f64>()
+        / (fzf_acc.iter().sum::<f64>() + fzr_acc.iter().sum::<f64>()).max(1e-9);
+    let fz_cycle_mean = walk.iter().map(|s| s.total_fz_world).sum::<f64>() / n_walk / AUDIT_MG;
+    let fz_prof_min = fz_prof.iter().cloned().fold(f64::INFINITY, f64::min);
+    let fz_prof_max = fz_prof.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let pair = |a: [f64; 4], n: [usize; 4], front: bool| -> f64 {
         let (i, j) = if front { (0, 1) } else { (2, 3) };
         let d = (n[i] + n[j]) as f64;
@@ -3463,7 +3525,13 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
          | contact episodes/cycle F={frag_front:.2} R={frag_rear:.2}\n\
          AUDIT touchdown: n F={} R={} | v_impact F={vimp_f:+.3} R={vimp_r:+.3} m/s \
          | fz_peak F={peak_f:.0} R={peak_r:.0} N @ F={:.1} R={:.1} ms \
-         | re-unload<100ms F={:.0}% R={:.0}% @ F={:.1} R={:.1} ms, foot lift F={:.2} R={:.2} mm",
+         | re-unload<100ms F={:.0}% R={:.0}% @ F={:.1} R={:.1} ms, foot lift F={:.2} R={:.2} mm\n\
+         AUDIT fz: cycle_mean={fz_cycle_mean:.3} x mg (1.000 = balanced), \
+         profile min={fz_prof_min:.2} max={fz_prof_max:.2} | \
+         {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} {:.2}\n\
+         AUDIT fz_pair: front_share={:.3} (0.500 = even) | \
+         F {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} {:.2}\n\
+         {:>28} R {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} {:.2}",
         x1 - x0, t1 - t0, !has_nan, mismatch_frac * 100.0,
         if cmd_vx.abs() > 1e-6 { 100.0 * meas_vx / cmd_vx } else { 0.0 },
         duty5[0], duty5[1], duty5[2], duty5[3],
@@ -3479,6 +3547,14 @@ fn report_walk_summary(label: &str, samples: &[WbcSample], cmd_vx: f64) {
         td_n[0] + td_n[1], td_n[2] + td_n[3],
         tpk_f * 1e3, tpk_r * 1e3,
         ru_f * 100.0, ru_r * 100.0, rut_f * 1e3, rut_r * 1e3, rul_f * 1e3, rul_r * 1e3,
+        fz_prof[0], fz_prof[1], fz_prof[2], fz_prof[3], fz_prof[4],
+        fz_prof[5], fz_prof[6], fz_prof[7], fz_prof[8], fz_prof[9],
+        fzf_share,
+        fzf_prof[0], fzf_prof[1], fzf_prof[2], fzf_prof[3], fzf_prof[4],
+        fzf_prof[5], fzf_prof[6], fzf_prof[7], fzf_prof[8], fzf_prof[9],
+        "",
+        fzr_prof[0], fzr_prof[1], fzr_prof[2], fzr_prof[3], fzr_prof[4],
+        fzr_prof[5], fzr_prof[6], fzr_prof[7], fzr_prof[8], fzr_prof[9],
     );
 }
 
@@ -5444,6 +5520,156 @@ fn go2_wbc_bound_cmaes_mode_h() {
     }
 }
 
+/// (a) IS THE ORBIT-TARGET RESPONSE STRUCTURED OR CHAOTIC? (2026-07-31)
+///
+/// `go2_wbc_bound_orbit_target_sweep` found a non-monotonic response to the
+/// reference's target speed -- +25% good (2.017 m/s, 3.5% saturation), +50%
+/// catastrophic (0.926, 15.1%), +75% best (1.972, 2.5%). The v30 failure is
+/// repeatable, so it is not sample noise, but four points cannot distinguish
+/// a narrow structured dip from a response that is simply erratic.
+///
+/// The distinction decides whether the v25 improvement can be trusted at all.
+///
+/// KEY SIMPLIFICATION that makes this a clean experiment: the tables are
+/// byte-identical apart from a CONSTANT added to the vx column
+/// (`write_bound_orbit_csv` shifts the mean and changes nothing else). So
+/// this is a one-dimensional sweep of a single scalar offset on the velocity
+/// reference, not a sweep of five coupled trajectories.
+///
+/// Two things are swept, and the second matters as much as the first:
+///   the offset, at 0.2 m/s resolution across the whole range
+///   the run duration, at three values for the two contested points
+///
+/// A gait whose reported speed depends on how long you watch it is not in a
+/// steady state, and the duration arms are the check for that. If v25 and v30
+/// hold their values across 8/10/12 s, the response is structured and a
+/// narrow dip is a real phenomenon worth explaining. If they move around,
+/// the whole target sweep is measuring transients and the v25 "win" is luck.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored; needs go2_wbc_bound_dump_orbit first"]
+fn go2_wbc_bound_orbit_target_fine() {
+    for (label, table, secs) in [
+        ("v20", "csv/bound_orbit_v20.csv", 8.0),
+        ("v22", "csv/bound_orbit_v22.csv", 8.0),
+        ("v24", "csv/bound_orbit_v24.csv", 8.0),
+        ("v25", "csv/bound_orbit_v25.csv", 8.0),
+        ("v26", "csv/bound_orbit_v26.csv", 8.0),
+        ("v28", "csv/bound_orbit_v28.csv", 8.0),
+        ("v30", "csv/bound_orbit_v30.csv", 8.0),
+        ("v32", "csv/bound_orbit_v32.csv", 8.0),
+        ("v34", "csv/bound_orbit_v34.csv", 8.0),
+        ("v35", "csv/bound_orbit_v35.csv", 8.0),
+        ("v25 @10s", "csv/bound_orbit_v25.csv", 10.0),
+        ("v25 @12s", "csv/bound_orbit_v25.csv", 12.0),
+        ("v30 @10s", "csv/bound_orbit_v30.csv", 10.0),
+        ("v30 @12s", "csv/bound_orbit_v30.csv", 12.0),
+    ] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 2.50,
+            total_time_s: secs,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.50),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.18),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(0.7),
+            friction_mu_override: Some(0.70),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some(table),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk_summary(&format!("TGTFINE {label}"), &samples, 2.50);
+    }
+}
+
+/// (b) WHERE DOES THE TRUNK'S VERTICAL MOTION COME FROM? (2026-07-31)
+///
+/// The collapse chain established so far is "longer stride -> trunk vertical
+/// dynamics break down -> foot lands fast -> bounces -> stance lost", and the
+/// FIRST arrow is the one never explained. Trunk z range goes 17 mm at
+/// max_step 0.18 to 88-107 mm at 0.26. Why does lengthening the stride make
+/// the BODY bounce?
+///
+/// The vertical force budget is where that has to show up, and the model
+/// makes a sharp prediction about it. At duty 0.5 the pairs tile the cycle,
+/// so the total normal force should be a flat m*g held continuously, handed
+/// from one pair to the other. Its cycle mean must be exactly 1.000 x m*g in
+/// steady state -- anything else is a net vertical impulse and the trunk
+/// climbs or sinks -- and its profile should be flat.
+///
+/// The new AUDIT fz line reports both: the cycle mean as a multiple of m*g,
+/// and the phase profile in 10 bins aligned on FL touchdown.
+///
+/// WHAT TO READ. A profile that stays near 1.0 is the model's picture. A
+/// profile that dips toward 0 between the pairs and overshoots above 1
+/// during them means the support is NOT being handed over cleanly -- the
+/// trunk is being dropped and caught, which is a driven oscillation rather
+/// than a held height, and its amplitude would then be expected to grow with
+/// how far apart the catches are. That would explain the first arrow.
+///
+/// Swept over the stride that triggers it, at both commands, so the profile
+/// can be watched deforming as the gait goes from healthy to collapsed
+/// rather than only compared at the endpoints.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored"]
+fn go2_wbc_bound_vertical_force_budget() {
+    for cmd_vx in [2.00, 2.50] {
+        for max_step in [0.18, 0.20, 0.22, 0.26] {
+            let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+            let params = WbcParams {
+                cmd_vx,
+                total_time_s: 8.0,
+                burn_in_s: 0.5,
+                gait_type_override: Some(GaitType::Bound),
+                duty_factor_override: Some(0.50),
+                gait_cycle_period_override: Some(0.18),
+                max_step_length_override: Some(max_step),
+                bound_trim_reference: Some((100.0, 10.0)),
+                bound_trim_thrust_scale_override: Some(0.7),
+                friction_mu_override: Some(0.70),
+                yaw_pd_gain_override: Some((10.0, 1.0)),
+                full_centroidal: Some(FullCentroidalOpts {
+                    legged_control_parity: true,
+                    use_mpc_predicted_footstep: false,
+                    dynamic_joint_q_reference: false,
+                    mpc_override: None,
+                    task_space_joint_vel_weight: None,
+                    true_centroidal_coupling: false,
+                    capture_point_gain_override: Some(0.0),
+                    base_pos_xy_weight_override: None,
+                    base_pos_z_weight_override: None,
+                    max_normal_force_override: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                    roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                    bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                }),
+                ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk_summary(
+                &format!("FZBUDGET cmd={cmd_vx:.1} max_step={max_step:.2}"), &samples, cmd_vx);
+        }
+    }
+}
+
 /// HOW FAR CAN THE REFERENCE ASK FOR? (2026-07-31)
 ///
 /// `go2_wbc_bound_ceiling_with_orbit` refuted the idea that a feasible
@@ -5885,8 +6111,14 @@ fn go2_wbc_bound_dump_orbit() {
     // test is not asking for -- which would cap the very thing under test.
     for (target, path) in [
         (2.00, "csv/bound_orbit_v20.csv"),
+        (2.20, "csv/bound_orbit_v22.csv"),
+        (2.40, "csv/bound_orbit_v24.csv"),
         (2.50, "csv/bound_orbit_v25.csv"),
+        (2.60, "csv/bound_orbit_v26.csv"),
+        (2.80, "csv/bound_orbit_v28.csv"),
         (3.00, "csv/bound_orbit_v30.csv"),
+        (3.20, "csv/bound_orbit_v32.csv"),
+        (3.40, "csv/bound_orbit_v34.csv"),
         (3.50, "csv/bound_orbit_v35.csv"),
     ] {
         write_bound_orbit_csv(&samples, 0.18, target, 1.0, 50, path);
