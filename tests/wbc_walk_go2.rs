@@ -5675,9 +5675,19 @@ fn report_lock_sweep(label: &str, samples: &[WbcSample], burn_in_s: f64) {
 #[test]
 #[ignore = "exploratory stress test -- run with --ignored; CSV source for the RL reference"]
 fn go2_wbc_bound_continuation_ref_source() {
+    // Commanded speed is read from WBC_REF_CMD_VX so several teacher orbits can
+    // be recorded without a rebuild. The default 2.50 saturates at the
+    // geometric ceiling and gives the fastest gait this controller has; lower
+    // values give a teacher closer to what the RL policy can actually reach,
+    // which is the variable under test after the 2.30 m/s teacher made the
+    // student 18% SLOWER.
+    let cmd_vx: f64 = std::env::var("WBC_REF_CMD_VX")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2.50);
     let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
     let params = WbcParams {
-        cmd_vx: 2.50,
+        cmd_vx,
         total_time_s: 30.0,
         burn_in_s: 2.0,
         gait_type_override: Some(GaitType::Bound),
@@ -5708,7 +5718,7 @@ fn go2_wbc_bound_continuation_ref_source() {
     };
     let Some(samples) = run_wbc_sim(params) else { return };
     let held: Vec<WbcSample> = samples.iter().filter(|s| s.t >= 12.0).cloned().collect();
-    report_walk_summary("CONTIN REF SOURCE max_step 0.20 (held 12-30s)", &held, 2.50);
+    report_walk_summary(&format!("CONTIN REF SOURCE max_step 0.20 cmd={cmd_vx:.2} (held 12-30s)"), &held, cmd_vx);
 }
 
 /// RE-TEST THE REJECTED LEVERS ALONG A CONTINUATION PATH (2026-07-31)
