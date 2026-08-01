@@ -32,6 +32,120 @@
 //!
 //! Run with: `cargo run --features mujoco --example kyo46rs_com_squat`
 
+
+/// Everything in this controller that is a property of the ROBOT rather than
+/// of the control law. It was all inlined for kyo46rs, which is exactly how
+/// `WbcPipeline` ended up unusable for anything but a quadruped -- the leg
+/// count was spelled `[String; 4]` in a dozen places. Adding a second machine
+/// is the moment to pay that off, not after.
+#[cfg(feature = "mujoco")]
+struct Profile {
+    name: &'static str,
+    urdf: &'static str,
+    root_link: &'static str,
+    foot_links: [&'static str; 2],
+    /// hip_pitch / knee / ankle_pitch, per side, for the crouch seed.
+    sagittal: [[&'static str; 3]; 2],
+    hip_roll: [&'static str; 2],
+    /// Sole plane, in the foot link's own frame: how far below the origin it
+    /// sits, and where its centre is fore/aft. MUST match the URDF -- the CoP
+    /// box is described in this frame and a wrong centre silently describes a
+    /// footprint the robot does not have.
+    sole_below_origin: f64,
+    sole_centre_x: f64,
+    /// CoP box half-extents (fore/aft, lateral).
+    cop_half: (f64, f64),
+    /// Height to drop the model from while measuring where the soles land.
+    probe_z: f64,
+    /// Crouch seed: knee angle. hip_pitch and ankle_pitch are -knee/2 so the
+    /// three sum to zero and the sole stays parallel to the floor.
+    knee_seed: f64,
+    /// Joints written to the trajectory CSV, in order.
+    log_joints: &'static [&'static str],
+    /// Burn-in position PD, and the rotor inertia / viscous damping added to
+    /// the WBC's M and h. All four scale with the machine: a gain sized for
+    /// a 6.6 kg robot with 6 N*m joints does nothing to a 34 kg one with
+    /// 139 N*m knees, and armature copied from the wrong motor puts a
+    /// systematic error on every actuated row of the mass matrix.
+    /// kv must stay under 2*I/dt -- the plant's joint PD is explicit.
+    burnin_kp: f64,
+    burnin_kv: f64,
+    armature: f64,
+    joint_damping: f64,
+}
+
+#[cfg(feature = "mujoco")]
+const KYO46RS: Profile = Profile {
+    name: "kyo46rs",
+    urdf: "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
+    root_link: "torso",
+    foot_links: ["left_foot_link", "right_foot_link"],
+    sagittal: [
+        ["left_hip_pitch_joint", "left_knee_joint", "left_ankle_pitch_joint"],
+        ["right_hip_pitch_joint", "right_knee_joint", "right_ankle_pitch_joint"],
+    ],
+    hip_roll: ["left_hip_roll_joint", "right_hip_roll_joint"],
+    sole_below_origin: 0.035,
+    sole_centre_x: 0.0,
+    cop_half: (0.049, 0.019),
+    probe_z: 0.47,
+    knee_seed: 0.70,
+    burnin_kp: 150.0,
+    burnin_kv: 2.0,
+    armature: 0.0005,
+    joint_damping: 0.15,
+    log_joints: &[
+        "left_hip_yaw_joint", "left_hip_roll_joint", "left_hip_pitch_joint",
+        "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+        "right_hip_yaw_joint", "right_hip_roll_joint", "right_hip_pitch_joint",
+        "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+        "left_shoulder_pitch_joint", "left_elbow_joint",
+        "right_shoulder_pitch_joint", "right_elbow_joint",
+    ],
+};
+
+/// Unitree G1, 23-DOF variant. 34.13 kg against kyo46rs's 6.64, and every
+/// torque limit is a real per-joint number (knee 139, ankle 35, hip 88)
+/// rather than an estimate, which is the point of running it: it separates
+/// "the control law is fragile" from "the model is fragile".
+///
+/// Foot: four 5 mm contact spheres at the corners of a 170 x 60 mm footprint,
+/// 35 mm below the ankle_roll origin, and the patch is NOT centred on the
+/// ankle -- it runs -50..+120 mm fore/aft, so its centre is 35 mm forward.
+#[cfg(feature = "mujoco")]
+const G1_23DOF: Profile = Profile {
+    name: "g1_23dof",
+    urdf: "/home/takara/work/dp/articara/models/unitree_g1_src/robots/g1_description/g1_23dof.urdf",
+    root_link: "pelvis",
+    foot_links: ["left_ankle_roll_link", "right_ankle_roll_link"],
+    sagittal: [
+        ["left_hip_pitch_joint", "left_knee_joint", "left_ankle_pitch_joint"],
+        ["right_hip_pitch_joint", "right_knee_joint", "right_ankle_pitch_joint"],
+    ],
+    hip_roll: ["left_hip_roll_joint", "right_hip_roll_joint"],
+    sole_below_origin: 0.035,
+    sole_centre_x: 0.035,
+    cop_half: (0.085, 0.030),
+    probe_z: 0.90,
+    knee_seed: 0.70,
+    // Sized off the torque limits: G1's knee is 139 N*m against kyo46rs's 12,
+    // and 34 kg against 6.6. The URDF declares no damping, friction or
+    // armature at all, so these are engineering placeholders, not data --
+    // flagged here because the same gap on kyo46rs cost a day.
+    burnin_kp: 2000.0,
+    burnin_kv: 20.0,
+    armature: 0.01,
+    joint_damping: 1.0,
+    log_joints: &[
+        "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
+        "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+        "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
+        "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+        "left_shoulder_pitch_joint", "left_elbow_joint",
+        "right_shoulder_pitch_joint", "right_elbow_joint",
+    ],
+};
+
 #[cfg(feature = "mujoco")]
 fn main() {
     use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
@@ -50,24 +164,27 @@ fn main() {
         std::env::var(k).map(|v| v != "0").unwrap_or(d)
     };
 
-    // ── Crouch seed (hip+knee+ankle must sum to 0 for a flat sole) ─────
-    let hip_p = env_f64("HIP_PITCH", -0.35);
-    let knee_q = env_f64("KNEE", 0.70);
-    let ankle_p = env_f64("ANKLE_PITCH", -(0.70 - 0.35));
+    let prof = match std::env::var("ROBOT").unwrap_or_default().as_str() {
+        "" | "kyo46rs" => KYO46RS,
+        "g1" | "g1_23dof" => G1_23DOF,
+        other => panic!("unknown ROBOT={other:?} (kyo46rs | g1)"),
+    };
+    println!("robot: {}", prof.name);
 
-    let urdf_path = std::path::Path::new(
-        "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
-    );
-    let mut robot = RobotModel::from_urdf(urdf_path).expect("load kyo46rs.urdf");
-    let crouch = [
-        ("left_hip_pitch_joint", hip_p),
-        ("left_knee_joint", knee_q),
-        ("left_ankle_pitch_joint", ankle_p),
-        ("right_hip_pitch_joint", hip_p),
-        ("right_knee_joint", knee_q),
-        ("right_ankle_pitch_joint", ankle_p),
-    ];
-    for (name, q) in crouch {
+    // ── Crouch seed (hip+knee+ankle must sum to 0 for a flat sole) ─────
+    let knee_q = env_f64("KNEE", prof.knee_seed);
+    let hip_p = env_f64("HIP_PITCH", -knee_q / 2.0);
+    let ankle_p = env_f64("ANKLE_PITCH", -knee_q / 2.0);
+
+    let urdf_path = std::path::Path::new(prof.urdf);
+    let mut robot = RobotModel::from_urdf(urdf_path)
+        .unwrap_or_else(|e| panic!("load {}: {e}", prof.urdf));
+    let crouch: Vec<(&str, f64)> = prof
+        .sagittal
+        .iter()
+        .flat_map(|[h, k, a]| [(*h, hip_p), (*k, knee_q), (*a, ankle_p)])
+        .collect();
+    for (name, q) in crouch.iter().copied() {
         if let Some(&ji) = robot.joint_map.get(name) {
             robot.joint_positions[ji] = q;
         }
@@ -80,8 +197,8 @@ fn main() {
     // kv < 2*I/dt, and the distal roll joints have I ~ 6e-4 kg*m^2.
     // Measured threshold (kyo46rs_stand_check.rs, position control only):
     // kv <= 2.0 stands 5 s, kv = 3.0 collapses at 0.65 s.
-    const EL05_JOINT_DAMPING: f64 = 0.15;
-    const EL05_ARMATURE: f64 = 0.0005;
+    let joint_damping: f64 = env_f64("JOINT_DAMPING", prof.joint_damping);
+    let armature: f64 = env_f64("ARMATURE", prof.armature);
     // Scale every actuator limit, to separate "the foot is too small" from
     // "the motors are too weak" as the cause of a level-0 infeasibility.
     let torque_scale = env_f64("TORQUE_SCALE", 1.0);
@@ -97,28 +214,29 @@ fn main() {
     // Rate (1/s) at which the contact anchor follows the foot's actual pose.
     // 0 freezes it at first touch, which is what produced a 24 N phantom
     // reaction after the foot slid. See the comment at the use site.
-    let anchor_leak = env_f64("ANCHOR_LEAK", 0.0);
+    let anchor_leak = env_f64("ANCHOR_LEAK", 0.2);
     let anchor_leak_rot = env_f64("ANCHOR_LEAK_ROT", 0.0);
     let kp_c = env_f64("KP_CONTACT", 1600.0);
     let kd_c = env_f64("KD_CONTACT", 80.0);
-    let burnin_kp = env_f64("BURNIN_KP", 150.0);
-    let burnin_kv = env_f64("BURNIN_KV", 2.0);
+    let burnin_kp = env_f64("BURNIN_KP", prof.burnin_kp);
+    let burnin_kv = env_f64("BURNIN_KV", prof.burnin_kv);
     let burnin_s = env_f64("BURNIN_S", 1.2);
     for j in robot.joints.iter_mut() {
         j.actuator_mode = ActuatorMode::Position;
         j.actuator_kp = burnin_kp;
         j.actuator_kv = burnin_kv;
-        j.joint_damping = EL05_JOINT_DAMPING;
-        j.armature = EL05_ARMATURE;
+        j.joint_damping = joint_damping;
+        j.armature = armature;
     }
 
     // ── Spawn so the soles just touch: measured, not hand-derived ──────
-    const SOLE_BELOW_FOOT_ORIGIN: f64 = 0.035;
+    let sole_below_foot_origin: f64 = prof.sole_below_origin;
     // Fore/aft centre of the sole in the foot link frame. MUST match the
     // URDF's foot collision box origin.
-    const SOLE_CENTRE_X: f64 = 0.0;
+    let sole_centre_x: f64 = prof.sole_centre_x;
     // Sole half-width. MUST match the URDF foot collision box.
-    let sole_half_w: f64 = env_f64("SOLE_HALF_W", 0.019);
+    let sole_half_l: f64 = env_f64("SOLE_HALF_L", prof.cop_half.0);
+    let sole_half_w: f64 = env_f64("SOLE_HALF_W", prof.cop_half.1);
     const SOLE_CLEARANCE: f64 = 0.001;
     let sim_dt = env_f64("SIM_DT", 0.001);
     let mu_ground = env_f64("MU_GROUND", 0.7);
@@ -132,11 +250,11 @@ fn main() {
         default_friction: [mu_ground, 0.005, 0.0001],
         ..MjcfExportOptions::default()
     };
-    let probe_z = 0.47;
+    let probe_z = env_f64("PROBE_Z", prof.probe_z);
     let spawn_z = {
         let probe = MujocoSim::new(&robot, make_opts(probe_z)).expect("probe sim");
-        let f = probe.body_world_position("left_foot_link").expect("foot")[2];
-        probe_z - ((f - SOLE_BELOW_FOOT_ORIGIN) - SOLE_CLEARANCE)
+        let f = probe.body_world_position(prof.foot_links[0]).expect("foot")[2];
+        probe_z - ((f - sole_below_foot_origin) - SOLE_CLEARANCE)
     };
     {
         // Prove the base is genuinely FREE and the ground is real, rather
@@ -174,8 +292,12 @@ fn main() {
     let (model, a2m, link_to_idx) = build_floating_base_model(&robot);
     let nv = model.nv;
     let na_count = nv - 6;
-    let left_foot_mi = *link_to_idx.get("left_foot_link").expect("left_foot_link");
-    let right_foot_mi = *link_to_idx.get("right_foot_link").expect("right_foot_link");
+    let left_foot_mi = *link_to_idx
+        .get(prof.foot_links[0])
+        .unwrap_or_else(|| panic!("no link {}", prof.foot_links[0]));
+    let right_foot_mi = *link_to_idx
+        .get(prof.foot_links[1])
+        .unwrap_or_else(|| panic!("no link {}", prof.foot_links[1]));
     let trunk_mi = 1usize; // the FreeFlyer's own body
 
     // Links that carry mass, paired with their misarta index and the CoM
@@ -248,10 +370,24 @@ fn main() {
         for ji in 0..robot.joints.len() {
             robot.joint_positions[ji] = settle_robot.joint_positions[ji];
         }
-        let worst = (0..robot.joints.len())
-            .map(|ji| (robot.joint_positions[ji] - q_seed[ji]).abs())
-            .fold(0.0_f64, f64::max);
-        println!("settled (base welded) for {burnin_s}s: max joint move from seed = {worst:.4} rad");
+        // Name the joint, not just the number. A big number on an arm is
+        // cosmetic; the same number on a stance knee means the plant cannot
+        // hold the seed pose and nothing measured afterwards is worth much.
+        let (wi, worst) = (0..robot.joints.len())
+            .map(|ji| (ji, (robot.joint_positions[ji] - q_seed[ji]).abs()))
+            .fold((0, 0.0_f64), |acc, x| if x.1 > acc.1 { x } else { acc });
+        println!(
+            "settled (base welded) for {burnin_s}s: max joint move from seed = {worst:.4} rad  ({})",
+            robot.joints[wi].name
+        );
+        let mut moved: Vec<(f64, &str)> = (0..robot.joints.len())
+            .map(|ji| ((robot.joint_positions[ji] - q_seed[ji]).abs(), robot.joints[ji].name.as_str()))
+            .filter(|(d, _)| *d > 0.01)
+            .collect();
+        moved.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        for (d, n) in moved.iter().take(6) {
+            println!("    {n:32} {:+.4} rad", d);
+        }
     }
     // Re-spawn free-based at the settled pose, centred at the origin.
     let mut sim = MujocoSim::new(&robot, make_opts(spawn_z)).expect("MujocoSim::new (run)");
@@ -265,13 +401,13 @@ fn main() {
     }
     {
         let hr = |n: &str| sim.joint_q_qd(n).map(|(q, _)| q).unwrap_or(f64::NAN);
-        let lp = sim.body_world_position("left_foot_link").unwrap();
-        let rp = sim.body_world_position("right_foot_link").unwrap();
+        let lp = sim.body_world_position(prof.foot_links[0]).unwrap();
+        let rp = sim.body_world_position(prof.foot_links[1]).unwrap();
         let rpy = sim.body_world_orientation(&robot.root_link).unwrap().euler_angles();
         println!(
             "post-burn-in: rpy=({:+.3},{:+.3},{:+.3}) hip_roll=({:+.3},{:+.3}) foot inner-gap={:+.4}",
             rpy.0, rpy.1, rpy.2,
-            hr("left_hip_roll_joint"), hr("right_hip_roll_joint"),
+            hr(prof.hip_roll[0]), hr(prof.hip_roll[1]),
             (lp[1] - 0.019) - (rp[1] + 0.019),
         );
     }
@@ -386,7 +522,7 @@ fn main() {
         let ankle_x = 0.5
             * (misarta::se3::translation(&d0.oMi[left_foot_mi]).x
                 + misarta::se3::translation(&d0.oMi[right_foot_mi]).x);
-        let (cx, half) = (SOLE_CENTRE_X, 0.049);
+        let (cx, half) = (sole_centre_x, sole_half_l);
         let (back, front) = (ankle_x + cx - half, ankle_x + cx + half);
         println!(
             "footprint: ankle x={ankle_x:+.4}  sole x=[{back:+.4},{front:+.4}]  CoM x={:+.4}",
@@ -407,14 +543,7 @@ fn main() {
 
     // Trajectory log for offline rendering (same column layout
     // kyo46rs_squat.rs uses, so the replay tooling is shared).
-    let log_joint_order: Vec<&str> = vec![
-        "left_hip_yaw_joint", "left_hip_roll_joint", "left_hip_pitch_joint",
-        "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
-        "right_hip_yaw_joint", "right_hip_roll_joint", "right_hip_pitch_joint",
-        "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
-        "left_shoulder_pitch_joint", "left_elbow_joint",
-        "right_shoulder_pitch_joint", "right_elbow_joint",
-    ];
+    let log_joint_order: Vec<&str> = prof.log_joints.to_vec();
     let mut log_file = std::env::var("TRAJ_CSV").ok().map(|path| {
         use std::io::Write;
         let mut f = std::fs::File::create(&path).expect("create trajectory log");
@@ -561,8 +690,8 @@ fn main() {
             if vi < 6 {
                 continue;
             }
-            mass[(vi, vi)] += EL05_ARMATURE;
-            h[vi] += EL05_JOINT_DAMPING * v[vi];
+            mass[(vi, vi)] += armature;
+            h[vi] += joint_damping * v[vi];
         }
         let data = misarta::fk::forward_kinematics(&model, &q);
 
@@ -750,7 +879,7 @@ fn main() {
         // the pressure centre about the wrong place -- moving the sole
         // in the model and forgetting this makes the QP defend a
         // footprint the robot no longer has.
-        const SOLE_OFFSET_LOCAL: [f64; 3] = [SOLE_CENTRE_X, 0.0, -0.035];
+        let sole_offset_local: [f64; 3] = [sole_centre_x, 0.0, -sole_below_foot_origin];
         let mut p0 = dyn_ctx
             .dynamics_task()
             .expect("Explicit keeps the EoM task")
@@ -812,7 +941,7 @@ fn main() {
             }
             let rot = misarta::se3::rotation_matrix(&data.oMi[foot_mi]);
             let r_w = rot
-                * na::Vector3::new(SOLE_OFFSET_LOCAL[0], SOLE_OFFSET_LOCAL[1], SOLE_OFFSET_LOCAL[2]);
+                * na::Vector3::new(sole_offset_local[0], sole_offset_local[1], sole_offset_local[2]);
             let rt = rot.transpose();
             let skew = na::Matrix3::new(
                 0.0, -r_w.z, r_w.y,
@@ -838,7 +967,7 @@ fn main() {
                 let share = load_share(foot_mi);
                 let sole_patch = tasks::ContactPatch {
                     mu: FRICTION_MU,
-                    cop_half: (0.049 * cop_frac, sole_half_w * cop_frac),
+                    cop_half: (sole_half_l * cop_frac, sole_half_w * cop_frac),
                     mu_torsion: 0.05,
                     f_max: (150.0 * share).max(0.5),
                 };
@@ -1051,7 +1180,7 @@ fn main() {
         // of the box was left? w_sole = [m(0..2); f(3..5)] in the sole frame,
         // so cop = (-my/fz, mx/fz) and the patch constraint is |cop| <= L.
         if flag("COPCHK", false) && tick % 5 == 0 {
-            let (lx, ly) = (0.049 * cop_frac, sole_half_w * cop_frac);
+            let (lx, ly) = (sole_half_l * cop_frac, sole_half_w * cop_frac);
             let mut parts = Vec::new();
             for (slot, sel) in sole_sel.iter().enumerate() {
                 let w = sel * &extracted.forces;
@@ -1103,8 +1232,8 @@ fn main() {
             for c in sim.contacts() {
                 let name = if c.body1.is_empty() { &c.body2 } else { &c.body1 };
                 let side = match name.as_str() {
-                    "left_foot_link" => 0,
-                    "right_foot_link" => 1,
+                    n if n == prof.foot_links[0] => 0,
+                    n if n == prof.foot_links[1] => 1,
                     _ => continue,
                 };
                 let fz = c.force_world[2];
@@ -1128,7 +1257,7 @@ fn main() {
                 let r = misarta::se3::rotation_matrix(&data.oMi[foot_mi]);
                 let pw = na::Vector3::new(acc[side][0] / fz, acc[side][1] / fz, acc[side][2] / fz);
                 let pl = r.transpose() * (pw - o);
-                cop_mj[side] = [pl.x - SOLE_CENTRE_X, pl.y, fz];
+                cop_mj[side] = [pl.x - sole_centre_x, pl.y, fz];
                 let tan = (ft[side][0].powi(2) + ft[side][1].powi(2)).sqrt();
                 slip[side] = tan / (FRICTION_MU * fz).max(1e-9);
                 // WORLD position of the contact patch. The link origin sits
@@ -1262,10 +1391,10 @@ fn main() {
                 roll.abs().max(pitch.abs())
             )
             .unwrap();
-            let sw = sim.body_world_position("right_foot_link").unwrap()[2];
+            let sw = sim.body_world_position(prof.foot_links[1]).unwrap()[2];
             write!(f, ",{y_ref:.5},{nc},{sw:.5}").unwrap();
             let deg = u8::from(!matches!(sol.status, misa_wbc::SolveStatus::Optimal));
-            write!(f, ",{deg},{:.5},{:.5}", 0.049 * cop_frac, sole_half_w * cop_frac).unwrap();
+            write!(f, ",{deg},{:.5},{:.5}", sole_half_l * cop_frac, sole_half_w * cop_frac).unwrap();
             write!(f, ",{:.4},{:.4}", slip[0], slip[1]).unwrap();
             write!(f, ",{:.6},{:.6}", patch_w[0][0], patch_w[0][1]).unwrap();
             for side in 0..2 {
