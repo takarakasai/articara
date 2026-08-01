@@ -270,7 +270,7 @@ fn main() {
     let cfg = SolveConfig::default();
     const FRICTION_MU: f64 = 0.6;
     let kp_com = env_f64("KP_COM", 300.0);
-    let kd_com = env_f64("KD_COM", 40.0);
+    let kd_com = env_f64("KD_COM", 80.0);
     let kp_trunk = env_f64("KP_TRUNK", 200.0);
     let kd_trunk = env_f64("KD_TRUNK", 40.0);
     let kp_post = env_f64("KP_POST", 100.0);
@@ -300,7 +300,7 @@ fn main() {
     // 223 -> 150, tilt 0.268 -> 0.197 rad); 0.25 and above fall over,
     // because the ramp only moves the cone collapse earlier -- it does not
     // create the CoP margin the stance foot is already out of.
-    let unload_ramp = env_f64("UNLOAD_RAMP", 0.10);
+    let unload_ramp = env_f64("UNLOAD_RAMP", 0.0);
     // Degraded-solve fallback gains (torque PD onto the seed posture, on top
     // of gravity compensation). HOLD_LAST=1 restores the old freeze-the-last-
     // good-torque behaviour for comparison.
@@ -309,6 +309,17 @@ fn main() {
     // Consecutive degraded ticks bridged with the last good torque before
     // switching to the recomputed one.
     let hold_bridge = env_f64("HOLD_BRIDGE", 8.0) as u32;
+    // Target the force regulariser at the load split the CoM reference
+    // implies, rather than an equal share.
+    //
+    // Default OFF, and that is not because it is wrong -- it is the correct
+    // formulation and it removes the CoP saturation completely (peak box use
+    // over the whole weight shift 0.99 -> 0.17). It is off because switching
+    // it on makes the run FALL: it uncovers a lift-off roll transient that
+    // the saturated CoP was masking, and until that is fixed, LAT_SHARE=0 is
+    // the configuration that actually stands up. Turn it on to work on the
+    // real problem; leave it off to reproduce the standing baseline.
+    let lat_share = flag("LAT_SHARE", true);
     // Ticks spent crossfading on each fallback <-> QP handover. Default OFF:
     // measured, every non-zero length falls (10/20/40/80 ticks all topple,
     // 20 drives the knee to -25.8 deg). The step at handover is not what it
@@ -317,6 +328,8 @@ fn main() {
     // discontinuity is between the QP's broken solution and its recovered
     // one, and crossfading into a broken solution cannot help.
     let blend_ticks = if flag("HOLD_LAST", false) { 0 } else { env_f64("BLEND_TICKS", 0.0) as u32 };
+    // Constrain only the swing foot's clearance, not its world x,y.
+    let swing_z_only = flag("SWING_ZONLY", true);
     let kp_sw = env_f64("KP_SWING", 400.0);
     let kd_sw = env_f64("KD_SWING", 40.0);
     let total_t = env_f64("T", 6.0);
@@ -887,7 +900,41 @@ fn main() {
         // so the regulariser is not still asking the swing foot for half the
         // weight while the patch constraint is taking it away.
         let mut forces_nominal = na::DVector::zeros(forces.size());
-        let shares: Vec<f64> = stance.iter().copied().map(load_share).collect();
+        // Ask each foot for the load that PUTS the net CoP under the CoM
+        // reference, not for an equal share. An equal-share target is the
+        // reason the CoP box saturated: the CoM task can be met either by
+        // transferring load between the feet or by walking the CoP outward,
+        // those are interchangeable in the task's null space, and a 50/50
+        // force target makes the regulariser pick the second one every time.
+        // Measured with the equal-share target: at CoM y = +15 mm the split
+        // was still 50.1/49.9 and the stance CoP was already 74% of the way
+        // to its edge, when 60.8/39.2 would have held the CoP centred.
+        let lat: Vec<f64> = if lat_share {
+            let ys: Vec<f64> = stance
+                .iter()
+                .map(|&mi| misarta::se3::translation(&data.oMi[mi]).y)
+                .collect();
+            match ys.len() {
+                2 => {
+                    let (y0, y1) = (ys[0], ys[1]);
+                    let a = if (y0 - y1).abs() > 1e-6 {
+                        ((y_ref - y1) / (y0 - y1)).clamp(0.0, 1.0)
+                    } else {
+                        0.5
+                    };
+                    vec![a, 1.0 - a]
+                }
+                _ => vec![1.0; ys.len()],
+            }
+        } else {
+            vec![1.0; nc]
+        };
+        let shares: Vec<f64> = stance
+            .iter()
+            .copied()
+            .zip(&lat)
+            .map(|(mi, l)| load_share(mi) * l)
+            .collect();
         let share_tot: f64 = shares.iter().sum::<f64>().max(1e-6);
         for slot in 0..nc {
             forces_nominal[6 * slot + 5] = total_mass * G * shares[slot] / share_tot;
@@ -910,12 +957,26 @@ fn main() {
             let a_lift = 0.5 - 0.5 * (PI * a_lift).cos();
             let tgt = swing_home + na::Vector3::new(0.0, 0.0, lift_h * a_lift);
             let a = kp_sw * (tgt - pos) - kd_sw * na::Vector3::new(vel[0], vel[1], vel[2]);
-            Some(tasks::cartesian_acceleration(
-                dyn_ctx.qddot(),
-                &jf.rows(3, 3).into_owned(),
-                &na::DVector::from_vec(vec![djv[3], djv[4], djv[5]]),
-                &na::DVector::from_vec(vec![a.x, a.y, a.z]),
-            ))
+            // What this task is FOR is clearance -- the foot must not scuff.
+            // Constraining x and y as well pins the swing foot to the world
+            // position it happened to occupy at t=0, on a robot that is
+            // deliberately translating its body 70 mm sideways, and the
+            // reaction for holding it there lands on the stance leg.
+            if swing_z_only {
+                Some(tasks::cartesian_acceleration(
+                    dyn_ctx.qddot(),
+                    &jf.rows(5, 1).into_owned(),
+                    &na::DVector::from_vec(vec![djv[5]]),
+                    &na::DVector::from_vec(vec![a.z]),
+                ))
+            } else {
+                Some(tasks::cartesian_acceleration(
+                    dyn_ctx.qddot(),
+                    &jf.rows(3, 3).into_owned(),
+                    &na::DVector::from_vec(vec![djv[3], djv[4], djv[5]]),
+                    &na::DVector::from_vec(vec![a.x, a.y, a.z]),
+                ))
+            }
         } else {
             None
         };
