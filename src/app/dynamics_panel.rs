@@ -361,6 +361,9 @@ impl ArticaraApp {
                                     0.005,
                                     0.0001,
                                 ],
+                                // GUI sims stay on the hand-rolled PD path.
+                                native_velocity_servo: None,
+                                integrator: None,
                             };
                             match articara::mujoco_sim::MujocoSim::new(model, opts) {
                                 Ok(mut sim) => {
