@@ -845,6 +845,22 @@ impl GaitController {
         self.inner.set_max_step_length_m(m);
     }
 
+    /// Update `duty_factor` in place without resetting the phase clock.
+    /// No-op outside FullCentroidal mode. Needed to move duty CONTINUOUSLY
+    /// at run time -- this gait is bistable in its stride parameter and the
+    /// locked branch can only be reached by tracking into it, so every
+    /// parameter judged from a static start is worth re-testing along a
+    /// continuation path.
+    pub fn set_duty_factor(&mut self, duty: f64) {
+        self.inner.set_duty_factor(duty);
+    }
+
+    /// Update `max_step_length_rear_scale` in place. No-op outside
+    /// FullCentroidal mode.
+    pub fn set_max_step_length_rear_scale(&mut self, scale: f64) {
+        self.inner.set_max_step_length_rear_scale(scale);
+    }
+
     /// Set the Bound-specific fore-aft foot-placement feedback gain
     /// (see `quadruped_gait::FullCentroidalMpcGaitController::
     /// set_bound_fore_aft_placement_gain`). No-op outside FullCentroidal
