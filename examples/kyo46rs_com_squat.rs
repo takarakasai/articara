@@ -86,6 +86,27 @@ struct Profile {
     /// a waist joint between it and the upper body, so "hold the trunk level"
     /// means different things on the two machines.
     trunk_link: Option<&'static str>,
+    /// WBC period. Not a preference: G1 holds 6.6 s at 2 ms against 0.96 s at
+    /// 5 ms, because between ticks the plant runs open-loop on a torque
+    /// computed for a state it has since left, and how far it drifts scales
+    /// with the machine.
+    ctrl_dt: f64,
+    /// Swing-foot clearance (m) and the gains that hold it. Geometric and
+    /// leg-length dependent -- 40 mm is a real step on a 0.66 m robot and a
+    /// scuff on a 1.3 m one.
+    lift_h: f64,
+    kp_swing: f64,
+    kd_swing: f64,
+    /// Degraded-solve fallback PD. TORQUE dimension, so it does not carry
+    /// across machines the way the acceleration-level task gains do.
+    hold_kp: f64,
+    hold_kd: f64,
+    /// Seconds of base-welded settling before the free-base run.
+    burnin_s: f64,
+    /// Friction the QP plans against. Deliberately BELOW the plant's
+    /// MU_GROUND so the solver is the conservative one; keeping the margin
+    /// explicit stops the two drifting apart silently.
+    friction_margin: f64,
 }
 
 #[cfg(feature = "mujoco")]
@@ -110,6 +131,14 @@ const KYO46RS: Profile = Profile {
     joint_damping: 0.15,
     collide_primitives_only: false,
     trunk_link: None,
+    ctrl_dt: 0.005,
+    lift_h: 0.04,
+    kp_swing: 400.0,
+    kd_swing: 40.0,
+    hold_kp: 15.0,
+    hold_kd: 2.0,
+    burnin_s: 1.2,
+    friction_margin: 0.857,   // 0.6 against a 0.7 plant, the measured pair
     log_joints: &[
         "left_hip_yaw_joint", "left_hip_roll_joint", "left_hip_pitch_joint",
         "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
@@ -154,6 +183,22 @@ const G1_23DOF: Profile = Profile {
     joint_damping: 1.0,
     collide_primitives_only: true,
     trunk_link: Some("torso_link"),
+    // 2 ms measured; 5 ms loses the machine in under a second.
+    ctrl_dt: 0.002,
+    // Scaled by leg length (G1's is roughly 2x kyo46rs's). NOT measured --
+    // single support has never run far enough on G1 to tune the swing.
+    lift_h: 0.08,
+    kp_swing: 400.0,
+    kd_swing: 40.0,
+    // Left at kyo46rs's values ON PURPOSE. The torque-dimension argument says
+    // these should scale with the actuators (25-139 N*m against 6-12), but
+    // measured, raising them hurts: 15 -> 200 takes G1 from 6.63 s to 0.81 s,
+    // and 600 gives 1.08 s. Whatever the fallback is doing, it is not
+    // limited by its authority.
+    hold_kp: 15.0,
+    hold_kd: 2.0,
+    burnin_s: 1.2,
+    friction_margin: 0.857,
     log_joints: &[
         "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
         "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
@@ -251,7 +296,7 @@ fn main() {
     let kd_c = env_f64("KD_CONTACT", 80.0);
     let burnin_kp = env_f64("BURNIN_KP", prof.burnin_kp);
     let burnin_kv = env_f64("BURNIN_KV", prof.burnin_kv);
-    let burnin_s = env_f64("BURNIN_S", 1.2);
+    let burnin_s = env_f64("BURNIN_S", prof.burnin_s);
     // How the WBC's answer reaches the plant.
     //
     //   torque  - command tau directly (what this file has always done).
@@ -295,6 +340,9 @@ fn main() {
     // URDF's foot collision box origin.
     let sole_centre_x: f64 = prof.sole_centre_x;
     // Sole half-width. MUST match the URDF foot collision box.
+    // Per-foot vertical force ceiling. Sized off the robot, with enough
+    // headroom that one foot alone can carry the whole machine plus dynamic
+    // load -- a biped in single support needs exactly that.
     let sole_half_l: f64 = env_f64("SOLE_HALF_L", prof.cop_half.0);
     let sole_half_w: f64 = env_f64("SOLE_HALF_W", prof.cop_half.1);
     const SOLE_CLEARANCE: f64 = 0.001;
@@ -304,7 +352,7 @@ fn main() {
         base_pos: Some([0.0, 0.0, z]),
         ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 2.0, roll: 0.0, pitch: 0.0 }),
         timestep: Some(sim_dt),
-        // Plant-side friction, separate from the QP's FRICTION_MU. Raising
+        // Plant-side friction, separate from the QP's friction_mu. Raising
         // it is not a fix -- it is how to measure what the stance foot's
         // slip is costing, by removing the slip and nothing else.
         default_friction: [mu_ground, 0.005, 0.0001],
@@ -397,8 +445,47 @@ fn main() {
         "centroidal model: nv={nv} na={na_count} mass_links={} total_mass={total_mass:.3} kg  dt={mj_dt}",
         mass_links.len()
     );
+    // Per-foot vertical force ceiling on patch_contact.
+    //
+    // 150 N looks wrong on G1 -- less than half its 335 N weight, so two feet
+    // could not be asked for enough to hold it up -- and raising it looked
+    // like the fix. It is not. At 150 the level-0 cone never degrades once;
+    // at 250 and above it degrades on EVERY tick and the robot only stands
+    // because the fallback's posture PD freezes it (CoM stuck 23.6 mm off its
+    // reference, contact forces identical to 0.1 N for 16 s). A looser bound
+    // cannot make a feasible problem infeasible, so the ceiling was never
+    // binding: the QP's own solution stayed under it, and the 162-176 N the
+    // feet actually carried is the QP-vs-plant force gap already documented
+    // in doc section 4.5, not the QP exceeding its box.
+    // Scale it with the machine, because the thing it has to be consistent
+    // with already is: the P5 regulariser asks each stance foot for
+    // total_mass*G/nc, which in SINGLE support is the whole weight. A cap
+    // below that puts the lowest-priority target outside the highest-priority
+    // constraint, and the QP resolves the contradiction with slack -- silently,
+    // reported as Optimal. On G1 the old flat 150 N was 45% of body weight and
+    // the solved fz breached it on 21-68% of ticks, peaking at 177 N.
+    let f_max_scale = env_f64("F_MAX_SCALE", 2.3);
+    let f_max_per_foot = env_f64("F_MAX", f_max_scale * total_mass * G);
+    println!(
+        "  contact f_max per foot: {f_max_per_foot:.1} N  (weight {:.1} N, \
+         single-support nominal {:.1} N)",
+        total_mass * G,
+        total_mass * G
+    );
+    assert!(
+        f_max_per_foot >= total_mass * G,
+        "f_max ({f_max_per_foot:.1} N) is below the single-support nominal \
+         ({:.1} N): the force regulariser would be asking for something the \
+         contact cone forbids, and the QP would break the cone with slack \
+         while still reporting Optimal",
+        total_mass * G
+    );
 
-    let mut torque_max = na::DVector::from_element(na_count, 6.0);
+
+    // NaN, not a number: 6.0 was kyo46rs's small-joint effort, so any
+    // actuated row the loop below failed to reach kept a plausible-looking
+    // limit from the wrong robot instead of failing loudly.
+    let mut torque_max = na::DVector::from_element(na_count, f64::NAN);
     for ji in 0..robot.joints.len() {
         let Some(mi) = a2m[ji] else { continue };
         if model.joints[mi].joint_type.nv() != 1 {
@@ -408,6 +495,36 @@ fn main() {
         if vi >= 6 {
             torque_max[vi - 6] = robot.joints[ji].effort.max(1.0) * torque_scale;
         }
+    }
+
+    // The QP's torque box and MuJoCo's actuator forcerange must be the same
+    // numbers -- both come from the URDF effort, but only if every actuated
+    // row was actually written.
+    {
+        let bad: Vec<String> = (0..na_count)
+            .filter(|&i| !torque_max[i].is_finite())
+            .map(|i| format!("row {i}"))
+            .collect();
+        assert!(bad.is_empty(), "torque box left unset on: {}", bad.join(", "));
+        let mut lims: Vec<(String, f64)> = Vec::new();
+        for ji in 0..robot.joints.len() {
+            let Some(mi) = a2m[ji] else { continue };
+            if model.joints[mi].joint_type.nv() != 1 {
+                continue;
+            }
+            let vi = model.v_idx[mi];
+            if vi >= 6 {
+                lims.push((robot.joints[ji].name.clone(), robot.joints[ji].effort));
+            }
+        }
+        let mut uniq: Vec<f64> = lims.iter().map(|(_, e)| *e).collect();
+        uniq.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        uniq.dedup();
+        println!(
+            "  torque limits (QP box == MuJoCo forcerange, from URDF effort): {:?} N*m over {} joints",
+            uniq,
+            lims.len()
+        );
     }
 
     // ── Settle with the base WELDED, then hand a clean pose over ───────
@@ -547,7 +664,9 @@ fn main() {
 
     let mut solver = Solver::new();
     let cfg = SolveConfig::default();
-    const FRICTION_MU: f64 = 0.6;
+    // Derived from the plant's friction, never written independently: two
+    // separate literals is how they drift apart without anyone noticing.
+    let friction_mu: f64 = env_f64("friction_mu", mu_ground * prof.friction_margin);
     let kp_com = env_f64("KP_COM", 300.0);
     let kd_com = env_f64("KD_COM", 80.0);
     let kp_trunk = env_f64("KP_TRUNK", 200.0);
@@ -586,7 +705,7 @@ fn main() {
     // stance does, and stays inside a regime the QP can actually solve.
     let com_dx = env_f64("COM_DX", 0.0);
     let t_shift = env_f64("T_SHIFT", 3.0);   // seconds spent moving the CoM across
-    let lift_h = env_f64("LIFT_H", 0.04);    // swing-foot clearance, m
+    let lift_h = env_f64("LIFT_H", prof.lift_h);    // swing-foot clearance, m
     let lift_ramp = env_f64("LIFT_RAMP", 1.0);
     // Seconds spent unloading the swing foot before it leaves the contact
     // set. 0 restores the old one-tick switch. 0.10 measured best (degraded
@@ -597,8 +716,8 @@ fn main() {
     // Degraded-solve fallback gains (torque PD onto the seed posture, on top
     // of gravity compensation). HOLD_LAST=1 restores the old freeze-the-last-
     // good-torque behaviour for comparison.
-    let hold_kp = env_f64("HOLD_KP", 15.0);
-    let hold_kd = env_f64("HOLD_KD", 2.0);
+    let hold_kp = env_f64("HOLD_KP", prof.hold_kp);
+    let hold_kd = env_f64("HOLD_KD", prof.hold_kd);
     // Consecutive degraded ticks bridged with the last good torque before
     // switching to the recomputed one.
     let hold_bridge = env_f64("HOLD_BRIDGE", 8.0) as u32;
@@ -645,8 +764,8 @@ fn main() {
     let blend_ticks = if flag("HOLD_LAST", false) { 0 } else { env_f64("BLEND_TICKS", 0.0) as u32 };
     // Constrain only the swing foot's clearance, not its world x,y.
     let swing_z_only = flag("SWING_ZONLY", true);
-    let kp_sw = env_f64("KP_SWING", 400.0);
-    let kd_sw = env_f64("KD_SWING", 40.0);
+    let kp_sw = env_f64("KP_SWING", prof.kp_swing);
+    let kd_sw = env_f64("KD_SWING", prof.kd_swing);
     let total_t = env_f64("T", 6.0);
 
     // Control period, distinct from the physics step. The plant runs at
@@ -654,7 +773,7 @@ fn main() {
     // WBC runs every CTRL_DT and MuJoCo is stepped CTRL_DT/SIM_DT times in
     // between. 5 ms was picked for kyo46rs to keep a 6 s experiment under a
     // minute of QP time, and never revisited for a machine 5x its mass.
-    let ctrl_dt = env_f64("CTRL_DT", 0.005);
+    let ctrl_dt = env_f64("CTRL_DT", prof.ctrl_dt);
     let mj_substeps = (ctrl_dt / mj_dt).round().max(1.0) as u32;
     let dt = mj_substeps as f64 * mj_dt;
     println!("control: {:.1} kHz plant / {:.0} Hz WBC ({mj_substeps} substeps per tick)",
@@ -1150,12 +1269,21 @@ fn main() {
                 // f_max carries the ramp. The CoP box is |m| <= L*fz, so
                 // squeezing fz shrinks the box with it -- the swing foot
                 // stops being able to argue for a CoP it is about to lose.
+                //
+                // The ceiling itself scales with the machine. It was 150 N
+                // flat, which is 4.6x kyo46rs's 65 N weight and never once
+                // bound -- and 0.45x G1's 335 N, so on G1 the two feet
+                // together could be asked for at most 300 N and the QP had
+                // no feasible way to hold the robot up. It spent 4.5 s
+                // sagging by the ~10% it was short before the accumulated
+                // error tipped it over, which is why every attitude,
+                // friction and actuation theory came back negative.
                 let share = load_share(foot_mi);
                 let sole_patch = tasks::ContactPatch {
-                    mu: FRICTION_MU,
+                    mu: friction_mu,
                     cop_half: (sole_half_l * cop_frac, sole_half_w * cop_frac),
                     mu_torsion: 0.05,
-                    f_max: (150.0 * share).max(0.5),
+                    f_max: (f_max_per_foot * share).max(0.5),
                 };
                 p0 = p0 + tasks::patch_contact(&w_sole, &sole_patch);
             }
@@ -1501,7 +1629,7 @@ fn main() {
                 let pl = r.transpose() * (pw - o);
                 cop_mj[side] = [pl.x - sole_centre_x, pl.y, fz];
                 let tan = (ft[side][0].powi(2) + ft[side][1].powi(2)).sqrt();
-                slip[side] = tan / (FRICTION_MU * fz).max(1e-9);
+                slip[side] = tan / (friction_mu * fz).max(1e-9);
                 // WORLD position of the contact patch. The link origin sits
                 // 35 mm above the sole, so it swings sideways when the ankle
                 // rolls -- watching the origin cannot tell a foot that slid
