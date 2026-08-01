@@ -72,6 +72,15 @@ struct Profile {
     burnin_kv: f64,
     armature: f64,
     joint_damping: f64,
+    /// Drop mesh collision geoms and contact only on the URDF's primitives.
+    /// This is what Unitree's own `g1_23dof.xml` does -- every mesh geom in
+    /// it carries `contype="0" conaffinity="0" group="1"`, i.e. visual only,
+    /// and the 8 spheres + 4 cylinders carry all the contact. Converting the
+    /// URDF naively instead collides the detailed meshes against each other,
+    /// and on G1 the pelvis cover overlaps the hip links BY DESIGN: measured,
+    /// 241.9 kN per side, 722x body weight, present on every tick. That is
+    /// the same brace that made kyo46rs's single-leg stance look solved.
+    collide_primitives_only: bool,
 }
 
 #[cfg(feature = "mujoco")]
@@ -94,6 +103,7 @@ const KYO46RS: Profile = Profile {
     burnin_kv: 2.0,
     armature: 0.0005,
     joint_damping: 0.15,
+    collide_primitives_only: false,
     log_joints: &[
         "left_hip_yaw_joint", "left_hip_roll_joint", "left_hip_pitch_joint",
         "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
@@ -136,6 +146,7 @@ const G1_23DOF: Profile = Profile {
     burnin_kv: 20.0,
     armature: 0.01,
     joint_damping: 1.0,
+    collide_primitives_only: true,
     log_joints: &[
         "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
         "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
@@ -188,6 +199,19 @@ fn main() {
         if let Some(&ji) = robot.joint_map.get(name) {
             robot.joint_positions[ji] = q;
         }
+    }
+    if prof.collide_primitives_only {
+        use articara::rbd::model::GeomData;
+        let mut dropped = 0usize;
+        for link in robot.links.iter_mut() {
+            let before = link.collisions.len();
+            link.collisions
+                .retain(|c| !matches!(c.geometry, GeomData::Mesh { .. }));
+            dropped += before - link.collisions.len();
+        }
+        let kept: usize = robot.links.iter().map(|l| l.collisions.len()).sum();
+        println!("collision: dropped {dropped} mesh geoms, kept {kept} primitives (visual meshes untouched)");
+        assert!(kept > 0, "no primitive colliders left -- the feet would have nothing to stand on");
     }
     robot.rebuild_misarta_model();
     let q_seed: Vec<f64> = robot.joint_positions.clone();
@@ -366,7 +390,43 @@ fn main() {
         for ji in 0..settle_robot.joints.len() {
             settle.set_position_target(ji, q_seed[ji]);
         }
+        {
+            let fz0 = settle.body_world_position(prof.foot_links[0]).unwrap()[2];
+            let nc0 = settle.contacts().len();
+            println!("  burn-in t=0: foot z={:.4} (sole {:+.4} vs floor), contacts={nc0}",
+                     fz0, fz0 - sole_below_foot_origin);
+            // The free-base spawn has had a self-collision assert since the
+            // kyo46rs forearm/hip brace; this rig did not, and G1 walked
+            // straight through the gap -- 241.9 kN of pelvis-cover against
+            // hip link, 722x body weight, on every burn-in tick. A guard
+            // that covers one of two sims is not a guard.
+            let hits: Vec<String> = settle
+                .contacts()
+                .iter()
+                .filter(|c| !c.body1.is_empty() && !c.body2.is_empty())
+                .map(|c| format!("{} <-> {} ({:.0} N)", c.body1, c.body2, c.force_mag))
+                .collect();
+            assert!(
+                hits.is_empty(),
+                "self-collision in the burn-in rig -- the robot is braced against itself, \
+                 and nothing measured after this means anything:\n  {}",
+                hits.join("\n  ")
+            );
+        }
         settle.step_n_frames(&mut settle_robot, (burnin_s / mj_dt) as u32, true);
+        {
+            for c in settle.contacts().iter().take(12) {
+                println!("      contact {:>28} <-> {:<28} |f|={:.1} N",
+                         if c.body1.is_empty() { "WORLD" } else { &c.body1 },
+                         if c.body2.is_empty() { "WORLD" } else { &c.body2 },
+                         c.force_mag);
+            }
+            let fz1 = settle.body_world_position(prof.foot_links[0]).unwrap()[2];
+            let nc1 = settle.contacts().len();
+            let f: f64 = settle.contacts().iter().map(|c| c.force_world[2]).sum();
+            println!("  burn-in end: foot z={:.4} (sole {:+.4}), contacts={nc1}, sum fz={f:.1} N (weight {:.1} N)",
+                     fz1, fz1 - sole_below_foot_origin, total_mass * G);
+        }
         for ji in 0..robot.joints.len() {
             robot.joint_positions[ji] = settle_robot.joint_positions[ji];
         }
@@ -480,8 +540,16 @@ fn main() {
     let kd_sw = env_f64("KD_SWING", 40.0);
     let total_t = env_f64("T", 6.0);
 
-    let mj_substeps = (0.005 / mj_dt).round().max(1.0) as u32;
+    // Control period, distinct from the physics step. The plant runs at
+    // SIM_DT (1 ms, forced by the explicit joint PD's kv < 2I/dt limit); the
+    // WBC runs every CTRL_DT and MuJoCo is stepped CTRL_DT/SIM_DT times in
+    // between. 5 ms was picked for kyo46rs to keep a 6 s experiment under a
+    // minute of QP time, and never revisited for a machine 5x its mass.
+    let ctrl_dt = env_f64("CTRL_DT", 0.005);
+    let mj_substeps = (ctrl_dt / mj_dt).round().max(1.0) as u32;
     let dt = mj_substeps as f64 * mj_dt;
+    println!("control: {:.1} kHz plant / {:.0} Hz WBC ({mj_substeps} substeps per tick)",
+             1e-3 / mj_dt, 1.0 / dt);
     let n_ticks = (total_t / dt) as usize;
 
     // Helper: world-frame CoM position from an FK snapshot.
