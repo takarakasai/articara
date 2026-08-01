@@ -306,7 +306,7 @@ fn go2_diag_bound_duty_factor_flight_phase_sweep() {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct WbcSample {
     t: f64,
     body_x: f64,
@@ -634,6 +634,33 @@ struct WbcParams {
     /// duty<0.5). No-op if `cmd_vx_ramp_s` is `None`. `None` (default)
     /// preserves prior behaviour exactly.
     max_step_length_ramp_start_m: Option<f64>,
+    /// Sweep `max_step_length_m` as a TRIANGLE across the post-burn-in
+    /// window: `(min, max)` linearly min -> max over the first half and
+    /// max -> min over the second (2026-07-31).
+    ///
+    /// This is for measuring HYSTERESIS. The bistability claim so far rests
+    /// on scattered independent samples -- good rows clustering at trunk z
+    /// 0.015-0.022 and bad rows at 0.051-0.105 with nothing between. That is
+    /// suggestive, not proof. A hysteresis loop is: if the gait holds phase
+    /// lock up to some stride on the way UP and does not recover until a
+    /// noticeably LOWER stride on the way back DOWN, two attractors coexist
+    /// over the gap, and the gap width is the thing worth knowing.
+    ///
+    /// Unlike `max_step_length_ramp_start_m`, which is tied to the cmd_vx
+    /// ramp and holds after it, this sweeps for the whole run.
+    max_step_length_triangle: Option<(f64, f64)>,
+    /// Ramp `max_step_length_m` from `start` to `end` over `ramp_s` seconds
+    /// after burn-in, then HOLD (2026-07-31).
+    ///
+    /// The hysteresis sweep found the gait holds phase lock up to
+    /// max_step 0.2148 when the stride is raised continuously, running
+    /// 2.45-2.53 m/s -- while a run STARTED at max_step 0.22 collapses to
+    /// 0.548. The difference is the path, not the parameter: static
+    /// initialisation begins outside the basin and cannot enter it.
+    ///
+    /// This is the continuation path made into an operating point, so the
+    /// speed can be measured at steady state rather than mid-sweep.
+    max_step_length_ramp_hold: Option<(f64, f64, f64)>,
     /// Same idea as `max_step_length_ramp_start_m`, for `cycle_
     /// period_s`: ramps from `start_s` to the final (post-`gait_cycle_
     /// period_override`, or the gait's own default) target over the
@@ -1024,7 +1051,7 @@ impl WbcParams {
             rear_gather_x: None, bound_fx_thrust_rear_frac_override: None,
             max_step_length_rear_scale_override: None,
             duty_factor_rear_scale_override: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, max_step_length_triangle: None, max_step_length_ramp_hold: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
     }
@@ -1039,7 +1066,7 @@ impl WbcParams {
             rear_gather_x: None, bound_fx_thrust_rear_frac_override: None,
             max_step_length_rear_scale_override: None,
             duty_factor_rear_scale_override: None, full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, max_step_length_triangle: None, max_step_length_ramp_hold: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
     }
@@ -1079,7 +1106,7 @@ impl WbcParams {
             max_step_length_rear_scale_override: None,
             duty_factor_rear_scale_override: None,
             full_centroidal: None,
-            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
+            swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, max_step_length_triangle: None, max_step_length_ramp_hold: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
             gait_type_override: None,
             duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
@@ -1927,6 +1954,22 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
 
         if k == 0 {
             gc.enable();
+        }
+        // Triangle sweep of max_step_length across the post-burn-in window,
+        // for the hysteresis measurement. Applied every tick (not gated on
+        // the cmd_vx ramp) so the stride moves continuously and the exact
+        // value at which lock is lost -- and the different value at which it
+        // returns -- can be read off against time.
+        if let Some((start_m, end_m, ramp_s)) = params.max_step_length_ramp_hold {
+            let u = ((t - params.burn_in_s) / ramp_s.max(1e-6)).clamp(0.0, 1.0);
+            gc.set_max_step_length_m(start_m + u * (end_m - start_m));
+        }
+        if let Some((lo, hi)) = params.max_step_length_triangle {
+            let t0 = params.burn_in_s;
+            let span = (params.total_time_s - t0).max(1e-6);
+            let u = ((t - t0) / span).clamp(0.0, 1.0);
+            let tri = if u < 0.5 { 2.0 * u } else { 2.0 * (1.0 - u) };
+            gc.set_max_step_length_m(lo + tri * (hi - lo));
         }
         if let Some(step_s) = params.staircase_step_s {
             let n_levels =
@@ -5516,6 +5559,268 @@ fn go2_wbc_bound_cmaes_mode_h() {
                   swing_speed(&best.1, c));
         if let Some(samples) = run_wbc_sim(build(&best.1, c, 10.5)) {
             report_walk_summary(&format!("CEM Mode H winner cmd_vx={c:.2}"), &samples, c);
+        }
+    }
+}
+
+/// Per-cycle trace for a `max_step_length_triangle` run: what the stride was,
+/// how fast the body went, and whether the rear pair still had phase lock.
+///
+/// The lock metric comes straight from the per-pair force profile that
+/// identified the failure. Cycles are delimited by FL touchdowns, so the
+/// front pair's stance is the FIRST half by construction and the rear's the
+/// second. `rear_lock` is the fraction of the rear pair's vertical impulse
+/// that falls in that second half: 1.0 is perfectly locked, 0.5 is impulse
+/// spread evenly over the cycle, i.e. no phase relationship at all.
+fn report_lock_sweep(label: &str, samples: &[WbcSample], burn_in_s: f64) {
+    let t0 = samples[0].t + burn_in_s;
+    let walk: Vec<&WbcSample> = samples.iter().filter(|s| s.t >= t0).collect();
+    if walk.len() < 50 {
+        eprintln!("=== {label}: too few samples ===");
+        return;
+    }
+    let dt = (walk[1].t - walk[0].t).max(1e-9);
+    let swing_min = ((0.030 / dt).round() as usize).max(1);
+    let mut td: Vec<usize> = Vec::new();
+    let mut run = 0usize;
+    for i in 0..walk.len() {
+        if walk[i].foot_fz[0] > 5.0 {
+            if run >= swing_min {
+                td.push(i);
+            }
+            run = 0;
+        } else {
+            run += 1;
+        }
+    }
+    eprintln!("=== {label} === ({} cycles)", td.len().saturating_sub(1));
+    eprintln!("  t     max_step  v_cycle  rear_lock  trunk_dz  leg");
+    for w in td.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let span = b - a;
+        if span < 10 {
+            continue;
+        }
+        let (mut rear_all, mut rear_2nd) = (0.0_f64, 0.0_f64);
+        let (mut zlo, mut zhi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for i in a..b {
+            let fr = walk[i].foot_fz[2] + walk[i].foot_fz[3];
+            rear_all += fr;
+            if (i - a) * 2 >= span {
+                rear_2nd += fr;
+            }
+            zlo = zlo.min(walk[i].body_z);
+            zhi = zhi.max(walk[i].body_z);
+        }
+        let lock = if rear_all > 1e-9 { rear_2nd / rear_all } else { f64::NAN };
+        let v = (walk[b].body_x - walk[a].body_x) / (walk[b].t - walk[a].t);
+        // max_step is not recorded per sample; recompute the triangle from t.
+        eprintln!(
+            "  {:.2}   {:>7}  {:>7.3}  {:>9.3}  {:>7.1}mm  {}",
+            walk[a].t, "-", v, lock, (zhi - zlo) * 1e3,
+            if lock > 0.85 { "LOCKED" } else if lock > 0.65 { "slipping" } else { "BROKEN" },
+        );
+    }
+}
+
+/// CONTINUATION -- reach the locked high-stride branch by walking to it
+/// (2026-07-31).
+///
+/// The hysteresis sweep produced the first result in this whole line that
+/// beats the baseline, and it did so by accident. Raising max_step
+/// continuously, the gait holds phase lock all the way to 0.2148 and runs
+/// 2.455 / 2.490 / 2.491 / 2.528 m/s over consecutive cycles -- 22-26% above
+/// the 2.013 m/s that every static test has been measured against. A run
+/// STARTED at max_step 0.22 collapses to 0.548. Same parameter, different
+/// path.
+///
+/// So 2.013 was never a ceiling. It is where static initialisation lands,
+/// and the locked branch extends well beyond it but cannot be entered from
+/// outside. The stride is a basin selector, and the basin has to be tracked,
+/// not jumped into.
+///
+/// This turns that into a measurable operating point: ramp to the target
+/// over 8 s and hold for the rest, reporting only the held portion.
+///
+/// PRE-DECLARED. 0.21 should hold near 2.4-2.5 m/s with rear phase lock
+/// intact and trunk excursion in the locked band (15-25 mm, not 50-100).
+/// 0.22 sits just past where the sweep lost lock and is expected to fail --
+/// if it survives, the sweep rate was the disturbance rather than the stride
+/// value, and the boundary is further out than measured.
+///
+/// The 0.18 arm is the control: same ramp machinery, target unchanged, so
+/// any difference between it and the static baseline is the ramp itself
+/// rather than the stride.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored"]
+fn go2_wbc_bound_continuation_to_high_stride() {
+    for target in [0.18, 0.20, 0.21, 0.215, 0.22] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx: 2.50,
+            total_time_s: 20.0,
+            burn_in_s: 2.0,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.50),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.16),
+            max_step_length_ramp_hold: Some((0.16, target, 8.0)),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(0.7),
+            friction_mu_override: Some(0.70),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        // Report only the HELD portion: burn_in 2 + ramp 8 = 10 s in.
+        let held: Vec<WbcSample> = samples.iter().filter(|s| s.t >= 10.0).cloned().collect();
+        report_walk_summary(&format!("CONTIN target={target:.3} (held 10-20s)"), &held, 2.50);
+    }
+}
+
+/// HYSTERESIS -- does the gait have two coexisting attractors? (2026-07-31)
+///
+/// The bistability claim rests on scattered independent samples clustering
+/// into two groups with nothing between them. That is suggestive but not
+/// proof: a sharply nonlinear single attractor would look similar when
+/// sampled coarsely.
+///
+/// A hysteresis loop settles it. `max_step_length` is swept as a triangle,
+/// up and back down, within one continuous run. If lock is lost at some
+/// stride going up and does not return until a NOTICEABLY LOWER stride
+/// coming down, two attractors coexist over the gap and the gap is the basin
+/// width. If the two edges coincide, there is one attractor with a sharp
+/// boundary and "bistable" is the wrong word.
+///
+/// The lock metric is the rear pair's phase concentration, taken from the
+/// per-pair force profile that identified the failure: the fraction of the
+/// rear's vertical impulse landing in the second half of the FL-to-FL cycle.
+/// Locked is ~1.0; 0.5 is impulse with no phase relationship at all.
+///
+/// Run long (40 s) so the sweep is slow relative to the 0.18 s gait period --
+/// roughly 500 ns of stride change per cycle -- otherwise the sweep rate
+/// itself becomes the disturbance.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored"]
+fn go2_wbc_bound_stride_hysteresis() {
+    for cmd_vx in [2.50] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let params = WbcParams {
+            cmd_vx,
+            total_time_s: 40.0,
+            burn_in_s: 2.0,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.50),
+            gait_cycle_period_override: Some(0.18),
+            max_step_length_override: Some(0.16),
+            max_step_length_triangle: Some((0.16, 0.28)),
+            bound_trim_reference: Some((100.0, 10.0)),
+            bound_trim_thrust_scale_override: Some(0.7),
+            friction_mu_override: Some(0.70),
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: None,
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_lock_sweep(&format!("HYSTERESIS cmd={cmd_vx:.1} max_step 0.16->0.28->0.16"),
+            &samples, 2.0);
+    }
+}
+
+/// REAR DUTY ABOVE 1.0 -- the direction the plant is asking for (2026-07-31)
+///
+/// `duty_factor_rear_scale` was swept at 0.80, 0.90 and 1.00 in
+/// `go2_wbc_bound_asymmetric_duty`, i.e. downward only, on the theory that
+/// the rear needed more swing time. Measurement says the opposite. Effective
+/// duty at a 5 N threshold is 0.435/0.445 front and 0.477/0.492 rear -- the
+/// rear is on the ground about 9% LONGER than the front, and it carries 60%
+/// of the vertical impulse, with nothing in the config asking for either.
+///
+/// So the plant has picked a front/rear asymmetry on its own, in the
+/// direction opposite to the one that was imposed and failed. The scale
+/// above 1.0 has never been run. This is the same oversight as the duty
+/// sweep that only ever went below 0.5 until it was questioned.
+///
+/// Note coverage: at scale 1.09 the rear duty is 0.545 and d_front + d_rear
+/// = 1.045, so this opens a 4-support overlap -- but an ASYMMETRIC one,
+/// created by extending the rear rather than both pairs, which is not what
+/// `go2_wbc_bound_duty_above_half` tested.
+///
+/// PRE-DECLARED: scale 1.09 matches the measured effective duty ratio. If
+/// the plant's own choice is the good one, that arm should be the best. If
+/// performance is flat across the sweep, the measured asymmetry is a
+/// consequence of the dynamics rather than something the schedule should
+/// encode, and imposing it changes nothing.
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored"]
+fn go2_wbc_bound_rear_duty_above_one() {
+    for cmd_vx in [2.00, 2.50] {
+        for scale in [1.00, 1.05, 1.09, 1.15, 1.20] {
+            let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+            let params = WbcParams {
+                cmd_vx,
+                total_time_s: 8.0,
+                burn_in_s: 0.5,
+                gait_type_override: Some(GaitType::Bound),
+                duty_factor_override: Some(0.50),
+                duty_factor_rear_scale_override: Some(scale),
+                gait_cycle_period_override: Some(0.18),
+                max_step_length_override: Some(0.18),
+                bound_trim_reference: Some((100.0, 10.0)),
+                bound_trim_thrust_scale_override: Some(0.7),
+                friction_mu_override: Some(0.70),
+                yaw_pd_gain_override: Some((10.0, 1.0)),
+                full_centroidal: Some(FullCentroidalOpts {
+                    legged_control_parity: true,
+                    use_mpc_predicted_footstep: false,
+                    dynamic_joint_q_reference: false,
+                    mpc_override: None,
+                    task_space_joint_vel_weight: None,
+                    true_centroidal_coupling: false,
+                    capture_point_gain_override: Some(0.0),
+                    base_pos_xy_weight_override: None,
+                    base_pos_z_weight_override: None,
+                    max_normal_force_override: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+                    roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+                    bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                }),
+                ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk_summary(
+                &format!("REARDUTY cmd={cmd_vx:.1} scale={scale:.2} (d_rear={:.3}, cov={:.3})",
+                    0.5 * scale, 0.5 + 0.5 * scale),
+                &samples, cmd_vx);
         }
     }
 }
