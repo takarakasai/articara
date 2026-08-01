@@ -5655,6 +5655,62 @@ fn report_lock_sweep(label: &str, samples: &[WbcSample], burn_in_s: f64) {
     }
 }
 
+/// Joint-trace source for the RL imitation reference, at the current best
+/// model-based operating point (2026-07-31).
+///
+/// The RL side's `ref/bound_ref.npz` teacher runs at 1.127 m/s mean, built
+/// from a WBC configuration this line has long since passed -- the policy
+/// trained on it already outruns it at 1.725 m/s. The best model-based gait
+/// is now 2.29 m/s: max_step 0.20 reached by continuation, which is 14%
+/// above the static baseline and better on peak pitch and cost of transport
+/// as well.
+///
+/// Runs the continuation (0.16 -> 0.20 over 8 s from t=2) and then holds for
+/// 20 s, so `WBC_BOUND_JOINT_CSV_OUT` captures a long stretch of the held
+/// gait. `ref/build_bound_ref.py --t0` selects the steady portion; anything
+/// from t=12 on is post-ramp.
+///
+///   WBC_BOUND_JOINT_CSV_OUT=csv/bound_ref_continuation.csv \
+///     cargo test --release ... go2_wbc_bound_continuation_ref_source -- --ignored
+#[test]
+#[ignore = "exploratory stress test -- run with --ignored; CSV source for the RL reference"]
+fn go2_wbc_bound_continuation_ref_source() {
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let params = WbcParams {
+        cmd_vx: 2.50,
+        total_time_s: 30.0,
+        burn_in_s: 2.0,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.50),
+        gait_cycle_period_override: Some(0.18),
+        max_step_length_override: Some(0.16),
+        max_step_length_ramp_hold: Some((0.16, 0.20, 8.0)),
+        bound_trim_reference: Some((100.0, 10.0)),
+        bound_trim_thrust_scale_override: Some(0.7),
+        friction_mu_override: Some(0.70),
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: None,
+            base_pos_z_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
+            roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
+            bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    let held: Vec<WbcSample> = samples.iter().filter(|s| s.t >= 12.0).cloned().collect();
+    report_walk_summary("CONTIN REF SOURCE max_step 0.20 (held 12-30s)", &held, 2.50);
+}
+
 /// RE-TEST THE REJECTED LEVERS ALONG A CONTINUATION PATH (2026-07-31)
 ///
 /// The stride result invalidates the METHOD every other lever was judged by.
