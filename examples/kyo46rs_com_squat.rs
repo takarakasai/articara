@@ -252,6 +252,35 @@ fn main() {
     let burnin_kp = env_f64("BURNIN_KP", prof.burnin_kp);
     let burnin_kv = env_f64("BURNIN_KV", prof.burnin_kv);
     let burnin_s = env_f64("BURNIN_S", 1.2);
+    // How the WBC's answer reaches the plant.
+    //
+    //   torque  - command tau directly (what this file has always done).
+    //   hybrid  - command q_des / qd_des integrated from the QP's own qddot,
+    //             with tau as feedforward, i.e. the (q, dq, kp, kd, tau)
+    //             interface real hardware exposes and G1's SDK in particular.
+    //
+    // The motivation is measured, not stylistic: between WBC ticks the plant
+    // runs open-loop on a torque that was computed for a state it has since
+    // left, and at 5 ms G1's commanded torque reached 2.06x its own box
+    // purely from that drift. A joint-level PD closes that gap at the plant
+    // rate instead of leaving it open.
+    //   velocity - integrate the QP's qddot to a joint VELOCITY command and
+    //             let a servo realise it (velocity-resolved WBC). The force
+    //             variables stop being commands and become predictions: what
+    //             the contact actually does is then whatever torque the servo
+    //             needed, so the friction cone and CoP box go from guaranteed
+    //             to merely expected. In exchange it is far less sensitive to
+    //             model error, which is the failure mode being chased here.
+    let ctrl_mode = std::env::var("CTRL_MODE").unwrap_or_else(|_| "torque".into());
+    let hybrid = ctrl_mode == "hybrid";
+    let velocity_mode = ctrl_mode == "velocity";
+    // "servo" is velocity-resolved as well, but the loop lives inside MuJoCo
+    // (<velocity> actuator + implicitfast) instead of being an explicit PD
+    // evaluated in Rust between steps.
+    let native_servo = ctrl_mode == "servo";
+    let run_kp = env_f64("RUN_KP", prof.burnin_kp);
+    let run_kv = env_f64("RUN_KV", prof.burnin_kv);
+
     for j in robot.joints.iter_mut() {
         j.actuator_mode = ActuatorMode::Position;
         j.actuator_kp = burnin_kp;
@@ -279,6 +308,10 @@ fn main() {
         // it is not a fix -- it is how to measure what the stance foot's
         // slip is costing, by removing the slip and nothing else.
         default_friction: [mu_ground, 0.005, 0.0001],
+        // CTRL_MODE=servo hands the velocity loop to MuJoCo itself rather
+        // than computing it in Rust, which is what lifts the kv ceiling.
+        native_velocity_servo: if native_servo { Some(run_kv) } else { None },
+        integrator: None,
         ..MjcfExportOptions::default()
     };
     let probe_z = env_f64("PROBE_Z", prof.probe_z);
@@ -461,6 +494,23 @@ fn main() {
             println!("    {n:32} {:+.4} rad", d);
         }
     }
+    if hybrid || velocity_mode || native_servo {
+        // Run-time gains, not the burn-in ones. This applied only to `hybrid`
+        // at first, which silently left velocity mode on the burn-in kv and
+        // made a sweep from 5 to 1000 return byte-identical results -- the
+        // third time in this session that a knob failed to reach the plant.
+        // Hence the print below: the effective configuration is now stated,
+        // not assumed.
+        for j in robot.joints.iter_mut() {
+            j.actuator_kp = run_kp;
+            j.actuator_kv = run_kv;
+        }
+    }
+    println!(
+        "actuation: mode={ctrl_mode} kp={} kv={}",
+        if hybrid { run_kp } else { 0.0 },
+        if hybrid || velocity_mode { run_kv } else { 0.0 }
+    );
     // Re-spawn free-based at the settled pose, centred at the origin.
     let mut sim = MujocoSim::new(&robot, make_opts(spawn_z)).expect("MujocoSim::new (run)");
     for ji in 0..robot.joints.len() {
@@ -469,7 +519,18 @@ fn main() {
     // Brief hold so the contacts engage before torque control starts.
     sim.step_n_frames(&mut robot, (0.05 / mj_dt) as u32, true);
     for j in robot.joints.iter_mut() {
-        j.actuator_mode = ActuatorMode::Torque;
+        // Hybrid keeps Position mode -- that arm is the only one that reads
+        // the position/velocity targets and the torque feedforward at all.
+        // Switching everything to Torque here silently made every hybrid
+        // gain a no-op, which is why a sweep from kp=0 to kp=2000 moved
+        // survival by 0.04 s.
+        j.actuator_mode = if hybrid {
+            ActuatorMode::Position
+        } else if velocity_mode || native_servo {
+            ActuatorMode::Velocity
+        } else {
+            ActuatorMode::Torque
+        };
     }
     {
         let hr = |n: &str| sim.joint_q_qd(n).map(|(q, _)| q).unwrap_or(f64::NAN);
@@ -669,7 +730,7 @@ fn main() {
         // implies, and what MuJoCo's actual contact set produces. They
         // disagree exactly where the solve degrades, which is the point of
         // logging both. fz<=0 means "no support / no valid solution".
-        write!(f, ",trunk_tilt,degraded,cop_lx,cop_ly,slip_l,slip_r,patch_lx,patch_ly").unwrap();
+        write!(f, ",trunk_tilt,foot_z,foot_vz,acc_ref_z,e_lin_z,acom_x,acom_y,acom_z,arp_r,arp_p,degraded,cop_lx,cop_ly,slip_l,slip_r,patch_lx,patch_ly").unwrap();
         for side in ["l", "r"] {
             for src in ["qp", "mj"] {
                 for ax in ["x", "y", "z"] {
@@ -1010,6 +1071,7 @@ fn main() {
         // NumericalFailure says the cone was hard to navigate; this says
         // whether it was hard because the CoP had nowhere left to go.
         let mut sole_sel: Vec<na::DMatrix<f64>> = Vec::with_capacity(nc);
+        let mut acc_dbg = [0.0_f64; 2];
         for (slot, foot_mi) in stance.iter().copied().enumerate() {
             let js = j_contact.rows(6 * slot, 6).into_owned();
             let djvs = dj_v.rows(6 * slot, 6).into_owned();
@@ -1059,6 +1121,9 @@ fn main() {
             for k in 0..3 {
                 acc_ref[k] = kp_c * e_ang[k] - kd_c * vel[k];
                 acc_ref[3 + k] = kp_c * e_lin[k] - kd_c * vel[3 + k];
+            }
+            if foot_mi == left_foot_mi {
+                acc_dbg = [acc_ref[5], e_lin.z];
             }
             let rot = misarta::se3::rotation_matrix(&data.oMi[foot_mi]);
             let r_w = rot
@@ -1173,6 +1238,7 @@ fn main() {
             trunk_sign * (kp_trunk * (0.0 - dead(roll)) + kd_trunk * (0.0 - v_ang_w[0])),
             trunk_sign * (kp_trunk * (0.0 - dead(pitch)) + kd_trunk * (0.0 - v_ang_w[1])),
         ]);
+        let rp_dbg = [rp_ref[0], rp_ref[1]];
         let p2 = tasks::cartesian_acceleration(
             dyn_ctx.qddot(),
             &j_rp,
@@ -1563,7 +1629,49 @@ fn main() {
         }
         cmd_prev.copy_from_slice(&robot_taus);
 
-        sim.set_wbc_torques(&robot_taus);
+        if velocity_mode || native_servo {
+            for ji in 0..robot.joints.len() {
+                let Some(mi) = a2m[ji] else { continue };
+                if model.joints[mi].joint_type.nv() != 1 {
+                    continue;
+                }
+                let vi = model.v_idx[mi];
+                if vi < 6 {
+                    continue;
+                }
+                let qd_des = v[vi] + extracted.qddot[vi] * dt;
+                if native_servo {
+                    // MuJoCo's own <velocity> servo: ctrl IS the target.
+                    sim.set_actuator_ctrl(ji, qd_des);
+                } else {
+                    sim.set_velocity_target(ji, qd_des);
+                }
+            }
+        } else if hybrid {
+            // Integrate the QP's own qddot one control period forward from
+            // the MEASURED state, so the reference never drifts away from
+            // where the robot actually is, and hand the plant the triple it
+            // wants. tau goes in as feedforward: the PD is there to cover
+            // what changes between ticks, not to reproduce the dynamics.
+            for ji in 0..robot.joints.len() {
+                let Some(mi) = a2m[ji] else { continue };
+                if model.joints[mi].joint_type.nv() != 1 {
+                    continue;
+                }
+                let vi = model.v_idx[mi];
+                if vi < 6 {
+                    continue;
+                }
+                let qdd = extracted.qddot[vi];
+                let q_now = robot.joint_positions[ji];
+                let qd_now = v[vi];
+                sim.set_position_target(ji, q_now + qd_now * dt + 0.5 * qdd * dt * dt);
+                sim.set_position_target_velocity(ji, qd_now + qdd * dt);
+                sim.set_torque_feedforward(ji, robot_taus[ji]);
+            }
+        } else {
+            sim.set_wbc_torques(&robot_taus);
+        }
         sim.step_n_frames(&mut robot, mj_substeps, true);
 
         if let Some(f) = log_file.as_mut() {
@@ -1584,8 +1692,21 @@ fn main() {
             let trot = misarta::se3::rotation_matrix(&data.oMi[trunk_mi]);
             let ttilt = trot[(2, 1)].atan2(trot[(2, 2)]).abs()
                 .max((-trot[(2, 0)]).asin().abs());
+            // What the contact constraint is ASKING the stance foot to do
+            // (Baumgarte accel_ref, vertical row) against what the foot is
+            // actually doing. Both feet unload together at the failure and
+            // the CoM falls at the same time, which is only consistent with
+            // the legs shortening -- so watch the demand, not just the result.
+            let foot_z = sim.body_world_position(prof.foot_links[0]).unwrap()[2];
+            let foot_vz = sim
+                .body_world_linear_velocity(prof.foot_links[0])
+                .map(|v| v[2])
+                .unwrap_or(0.0);
+            // Task reference accelerations. If the QP solution jumps while
+            // the solve is still Optimal, either an input jumped or the
+            // problem is ill-conditioned; these separate the two.
             let sw = sim.body_world_position(prof.foot_links[1]).unwrap()[2];
-            write!(f, ",{y_ref:.5},{nc},{sw:.5},{ttilt:.5}").unwrap();
+            write!(f, ",{y_ref:.5},{nc},{sw:.5},{ttilt:.5},{foot_z:.6},{foot_vz:.5},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}", acc_dbg[0], acc_dbg[1], a_com.x, a_com.y, a_com.z, rp_dbg[0], rp_dbg[1]).unwrap();
             let deg = u8::from(!matches!(sol.status, misa_wbc::SolveStatus::Optimal));
             write!(f, ",{deg},{:.5},{:.5}", sole_half_l * cop_frac, sole_half_w * cop_frac).unwrap();
             write!(f, ",{:.4},{:.4}", slip[0], slip[1]).unwrap();

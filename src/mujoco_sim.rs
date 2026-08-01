@@ -46,6 +46,8 @@ pub struct MujocoSim {
     /// fight any deliberate motion (`Kv·(0 − q̇)` brakes against the target),
     /// causing high-amplitude torque oscillation during fast moves like jumps.
     position_target_velocities: Vec<f64>,
+    /// Per-joint raw `ctrl` override (see `set_actuator_ctrl`).
+    raw_ctrl: Vec<Option<f64>>,
     /// Per-joint trajectory acceleration feedforward q̈* used by the
     /// `ComputedTorque` mode. Updated each step from the trajectory's
     /// second derivative; zero when no trajectory is running. Multiplied by
@@ -448,6 +450,7 @@ impl MujocoSim {
         // range limiter — see the clamp block above for the failure mode.
         let position_targets = seeded_positions.clone();
         let position_target_velocities = vec![0.0; robot.joints.len()];
+        let raw_ctrl = vec![None; robot.joints.len()];
         let position_target_accelerations = vec![0.0; robot.joints.len()];
         let velocity_targets = vec![0.0; robot.joints.len()];
         let torque_targets = vec![0.0; robot.joints.len()];
@@ -465,6 +468,7 @@ impl MujocoSim {
             history_max: 5000,
             position_targets,
             position_target_velocities,
+            raw_ctrl,
             position_target_accelerations,
             velocity_targets,
             torque_targets,
@@ -720,6 +724,37 @@ impl MujocoSim {
     pub fn set_position_target(&mut self, joint_idx: usize, target: f64) {
         if let Some(slot) = self.position_targets.get_mut(joint_idx) {
             *slot = target;
+        }
+    }
+
+    /// Write a raw value straight into an actuator's `ctrl` slot, bypassing
+    /// every mode's control law.
+    ///
+    /// Needed when the actuator is not a `<motor>`: MuJoCo's `<velocity>` and
+    /// `<position>` servos interpret `ctrl` as the TARGET, not as a force, so
+    /// the usual path -- compute a PD in Rust, write the resulting torque --
+    /// would be feeding a velocity actuator a torque. Values are not clamped
+    /// against `effort`, because for those actuator types `ctrl` is not a
+    /// force and the joint's N·m limit is meaningless as a bound on it.
+    pub fn set_actuator_ctrl(&mut self, joint_idx: usize, value: f64) {
+        if let Some(slot) = self.raw_ctrl.get_mut(joint_idx) {
+            *slot = Some(value);
+        }
+    }
+
+    /// Set the velocity that Position mode's PD tracks alongside its
+    /// position target, i.e. the `q̇_des` in
+    /// `τ = kp·(q_des − q) + kv·(q̇_des − q̇) + τ_ff`.
+    ///
+    /// Distinct from [`Self::set_velocity_target`], which drives the separate
+    /// Velocity actuator mode. Until now this slot was only writable by the
+    /// trajectory player, which left a WBC running in position/velocity form
+    /// no way to say "and I want this joint moving at this rate" -- without
+    /// it the PD damps against ZERO velocity and fights every commanded
+    /// motion.
+    pub fn set_position_target_velocity(&mut self, joint_idx: usize, qd: f64) {
+        if let Some(slot) = self.position_target_velocities.get_mut(joint_idx) {
+            *slot = qd;
         }
     }
 
@@ -1088,6 +1123,10 @@ impl MujocoSim {
                 }
             }
 
+            // A raw override wins over whatever the mode computed.
+            if let Some(Some(raw)) = self.raw_ctrl.get(ji).copied() {
+                tau = raw;
+            }
             // Write to the motor actuator's ctrl slot.
             let actuator_name = format!("motor_{}", joint.name);
             if let Some(act_info) = self.data.actuator(&actuator_name) {
