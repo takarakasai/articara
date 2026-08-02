@@ -321,6 +321,39 @@ impl SupportBox {
         SupportBox { lo, hi }
     }
 
+    /// The support polygon with the soles ROTATED to their planned yaw.
+    ///
+    /// The axis-aligned version describes a footprint the robot does not have
+    /// the moment it turns: a 98 x 38 mm sole yawed by 30 degrees has an
+    /// axis-aligned hull 34 mm wider than the sole in y and 30 mm shorter in
+    /// x, so the clamp permits pressure the foot cannot deliver and forbids
+    /// pressure it can. Take the hull of the rotated corners instead. Still a
+    /// box, so the clamp stays a clamp -- but a box around the right shape.
+    pub fn from_stance_yawed(
+        steps: &Footsteps,
+        support: Support,
+        cop_half: (f64, f64),
+        margin: f64,
+    ) -> Self {
+        let mut lo = na::Vector2::new(f64::INFINITY, f64::INFINITY);
+        let mut hi = na::Vector2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
+        let (hx, hy) = (cop_half.0 * margin, cop_half.1 * margin);
+        for side in 0..2 {
+            if !support.is_stance(side) {
+                continue;
+            }
+            let c = steps.xy(side);
+            let (cs, sn) = (steps.yaw[side].cos(), steps.yaw[side].sin());
+            for (sx, sy) in [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)] {
+                let (dx, dy) = (sx * hx, sy * hy);
+                let p = na::Vector2::new(c.x + cs * dx - sn * dy, c.y + sn * dx + cs * dy);
+                lo = na::Vector2::new(lo.x.min(p.x), lo.y.min(p.y));
+                hi = na::Vector2::new(hi.x.max(p.x), hi.y.max(p.y));
+            }
+        }
+        SupportBox { lo, hi }
+    }
+
     /// Returns the clamped point and how far it had to move (0 = inside).
     pub fn clamp(&self, p: &na::Vector2<f64>) -> (na::Vector2<f64>, f64) {
         let c = na::Vector2::new(p.x.clamp(self.lo.x, self.hi.x), p.y.clamp(self.lo.y, self.hi.y));
