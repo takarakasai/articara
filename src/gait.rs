@@ -315,9 +315,29 @@ pub fn auto_detect_srbd_mpc_config(
         cfg.mass_kg = mass_total;
     }
 
-    // Find the heaviest link and read its inertia diagonal. Reject
-    // near-zero diagonals — the SRBD MPC's QP becomes ill-conditioned
-    // with ~0 diagonal entries.
+    // Heaviest link's own inertia diagonal, NOT the composite.
+    //
+    // This is known to be wrong and is kept deliberately. On namiashi with
+    // its corrected 3.3 kg mass the heaviest link (the trunk, now 0.872 kg)
+    // returns (0.00111, 0.00504, 0.00529) against a true composite of
+    // (0.02722, 0.07575, 0.06584) -- 12 to 24 times too small. The heuristic
+    // also degrades as the model gets more accurate: correcting namiashi's
+    // mass moved weight out of the trunk into the legs, so the heaviest link
+    // got lighter while the composite roughly doubled.
+    //
+    // Substituting the composite (the same
+    // `misarta::centroidal::compute_centroidal_inertia` call
+    // `auto_detect_centroidal_mpc_config` already makes) was tried and
+    // measured. It buys namiashi's Walk very little -- three-foot support
+    // 0.745 -> 0.763 -- and costs Go2 most of its top speed on
+    // `go2_wbc_velocity_staircase_fine`: measured 0.485 -> 0.194 m/s at a
+    // 1.00 m/s command, 0.481 -> 0.340 at 0.75, with no fall. Go2's tuning
+    // was built against this value, and a robot-agnostic swap trades a large
+    // regression there for a small gain here.
+    //
+    // If a caller wants the composite, it should set it explicitly via
+    // `GaitController::set_srbd_mpc_config` for that robot rather than
+    // changing what every robot gets.
     let heaviest = model
         .links
         .iter()
@@ -330,6 +350,8 @@ pub fn auto_detect_srbd_mpc_config(
     if let Some(link) = heaviest {
         let i = &link.inertial;
         let diag = na::Vector3::new(i.ixx, i.iyy, i.izz);
+        // Reject near-zero diagonals — the SRBD MPC's QP becomes
+        // ill-conditioned with ~0 diagonal entries.
         if diag.iter().all(|&x| x > 1e-9) {
             cfg.inertia_diag_body = diag;
         }
