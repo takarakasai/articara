@@ -33,7 +33,7 @@ use std::path::PathBuf;
 
 use articara::gait::{
     auto_detect_centroidal_mpc_config, auto_detect_kinematics_config,
-    GaitController, DEFAULT_FOOT_LINKS,
+    auto_detect_srbd_mpc_config, GaitController, DEFAULT_FOOT_LINKS,
 };
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
@@ -346,6 +346,20 @@ struct WbcParams {
     /// swing instead of extrapolating `k_capture * v_err`. Only has an
     /// effect under `GaitMode::FullCentroidal`.
     mpc_predicted_footstep: bool,
+    /// Give the SRBD MPC namiashi's composite inertia instead of the heaviest
+    /// link's.
+    ///
+    /// `auto_detect_srbd_mpc_config` takes the heaviest link's own tensor,
+    /// which on this model is the 0.872 kg trunk: (0.00111, 0.00504, 0.00529)
+    /// against a composite of (0.02722, 0.07575, 0.06584), so 12 to 24 times
+    /// too small. A pitch inertia that small tells the MPC a tiny moment buys
+    /// a large angular acceleration.
+    ///
+    /// Fixing it inside `auto_detect` was tried and reverted: it costs Go2
+    /// 0.485 -> 0.194 m/s at a 1.00 m/s command, and Go2's tuning was built
+    /// against the old value. The function's doc says to set it per robot
+    /// instead, which is what this does.
+    mpc_composite_inertia: bool,
     /// Which actuator interface the controller drives.
     actuation: Actuation,
     /// Rate at which the whole host-side controller runs -- gait generator,
@@ -426,6 +440,7 @@ impl WbcParams {
             vel_obs: VelObs::Truth,
             gait_mode: GaitMode::Mpc,
             mpc_predicted_footstep: false,
+            mpc_composite_inertia: false,
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
             cmd_schedule: Vec::new(),
@@ -460,6 +475,7 @@ impl WbcParams {
             vel_obs: VelObs::Truth,
             gait_mode: GaitMode::Mpc,
             mpc_predicted_footstep: false,
+            mpc_composite_inertia: false,
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
             cmd_schedule: Vec::new(),
@@ -620,6 +636,30 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         .expect("GaitController::build");
     if params.mpc_predicted_footstep {
         gc.set_use_mpc_predicted_footstep(true);
+    }
+    if params.mpc_composite_inertia {
+        let c = auto_detect_centroidal_mpc_config(&robot);
+        let i = c.centroidal_inertia_body;
+        let mut cfg = auto_detect_srbd_mpc_config(&robot);
+        cfg.mass_kg = c.mass_kg;
+        cfg.inertia_diag_body =
+            Vector3::new(i[(0, 0)], i[(1, 1)], i[(2, 2)]);
+        eprintln!(
+            "[mpc] composite inertia: m={:.3}kg  I=({:.5},{:.5},{:.5})",
+            cfg.mass_kg,
+            cfg.inertia_diag_body.x,
+            cfg.inertia_diag_body.y,
+            cfg.inertia_diag_body.z,
+        );
+        gc.set_srbd_mpc_config(cfg);
+        // Read it straight back, because a setter that silently does nothing
+        // would look exactly like a controller that ignores its inertia.
+        match gc.srbd_mpc_config_inertia() {
+            Some(b) => eprintln!(
+                "[mpc] read back: I=({:.5},{:.5},{:.5})", b.x, b.y, b.z
+            ),
+            None => eprintln!("[mpc] read back: NONE -- setter did not apply"),
+        }
     }
     if let Some(k) = params.k_capture_s {
         gc.set_capture_point_gain(k);
@@ -3865,6 +3905,130 @@ fn namiashi_capture_gain_recheck_regression() {
             };
             let Some(samples) = run_wbc_sim(params) else { return };
             report_walk(&format!("{gait:?} k={k:.3}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// GIVING THE MPC namiashi'S REAL INERTIA.
+///
+/// `auto_detect_srbd_mpc_config` hands the SRBD MPC the heaviest link's own
+/// tensor. On this model that is the 0.872 kg trunk, (0.00111, 0.00504,
+/// 0.00529), against a composite of (0.02722, 0.07575, 0.06584) -- 12 to 24
+/// times too small. The heuristic also degrades as the model improves:
+/// correcting namiashi's mass moved weight into the legs, so the heaviest
+/// link got lighter while the composite roughly doubled.
+///
+/// Fixing it inside `auto_detect` was tried and reverted, because it costs Go2
+/// most of its top speed and Go2's tuning was built against the old value.
+/// Per robot is what the function's own doc recommends, and that is what this
+/// measures.
+///
+/// Three things at once, because they are the same question at different
+/// depths. Does the walk improve? Does push survival improve -- in particular
+/// phases 6 and 7, which fall at every capture gain? And does the OCS2-derived
+/// predicted-footstep planner become usable, given it was measured at 1 of 8
+/// and the suspicion was that it inherits the MPC's bad prediction?
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_mpc_composite_inertia() {
+    const I: usize = 0; // Trot for the push work
+    let (_, period, .., cmd) = NAMIASHI_TUNED[I];
+
+    eprintln!("---- nominal walk, all three gaits ----");
+    for composite in [false, true] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., c) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                mpc_composite_inertia: composite,
+                total_time_s: 16.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            let tag = if composite { "composite" } else { "heaviest" };
+            report_walk(&format!("{gait:?} {tag}"), &samples, c, 1.0);
+        }
+    }
+
+    eprintln!("---- push survival, Trot, 8 phases ----");
+    let variants: [(&str, bool, bool); 3] = [
+        ("heaviest", false, false),
+        ("composite", true, false),
+        ("composite+pred", true, true),
+    ];
+    for (tag, composite, predicted) in variants {
+        for step in 0..8 {
+            let t_push = 6.0 + period * step as f64 / 8.0;
+            let params = WbcParams {
+                actuation: Actuation::VelocityIdeal { k_track: 40.0 },
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                cmd_vx: cmd,
+                mpc_composite_inertia: composite,
+                mpc_predicted_footstep: predicted,
+                gait_mode: if predicted {
+                    GaitMode::FullCentroidal
+                } else {
+                    GaitMode::Mpc
+                },
+                push: Some((t_push, [0.0, 12.0, 0.0], 0.12)),
+                total_time_s: 11.0,
+                ..namiashi_tuned_params(I)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_push(&format!("Trot {tag} p{step}"), &samples, t_push, cmd);
+        }
+    }
+}
+
+/// THE INERTIA COMPARISON, REDONE ON A PATH THAT CAN CARRY IT.
+///
+/// `namiashi_mpc_composite_inertia` swept the push phases with
+/// `Actuation::VelocityIdeal`, and a speed-mode driver takes a speed and
+/// nothing else -- the WBC's torque is never delivered on that path. So the
+/// MPC's output could not reach the physics by construction, and the
+/// bit-identical results proved nothing about inertia. That was an
+/// experimental design error, not a finding.
+///
+/// The MPC's output does change, and substantially. Logging the predicted
+/// GRF: at the same tick the heaviest-link config gives per-foot 15.40 / 0 /
+/// 0 / 17.54 N with a moment of (+0.077, -0.181, -0.015), and the composite
+/// gives 12.79 / 0 / 0 / 20.58 N with (+0.459, -0.042, +0.084). A sixfold
+/// change in the roll moment.
+///
+/// Redone on `Actuation::Torque`, where the WBC's torque is the command.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_mpc_inertia_on_torque_path() {
+    const I: usize = 0; // Trot
+    let (_, period, .., cmd) = NAMIASHI_TUNED[I];
+    for composite in [false, true] {
+        let tag = if composite { "composite" } else { "heaviest" };
+        let params = WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: cmd,
+            mpc_composite_inertia: composite,
+            total_time_s: 12.0,
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Trot {tag} nominal"), &samples, cmd, 1.0);
+
+        for step in 0..8 {
+            let t_push = 6.0 + period * step as f64 / 8.0;
+            let params = WbcParams {
+                actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                cmd_vx: cmd,
+                mpc_composite_inertia: composite,
+                push: Some((t_push, [0.0, 12.0, 0.0], 0.12)),
+                total_time_s: 11.0,
+                ..namiashi_tuned_params(I)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_push(&format!("Trot {tag} p{step}"), &samples, t_push, cmd);
         }
     }
 }

@@ -713,6 +713,13 @@ impl GaitController {
     /// robot's actual mass should call this once after `build` — the
     /// default 9 kg / Cheetah-3 inertia is wildly off for most robots
     /// and produces grossly over- or under-scaled τ_ff.
+    /// The inertia the SRBD MPC is currently using. For confirming a
+    /// `set_srbd_mpc_config` actually landed -- a setter that quietly does
+    /// nothing is indistinguishable from a controller that ignores the value.
+    pub fn srbd_mpc_config_inertia(&self) -> Option<na::Vector3<f64>> {
+        self.inner.srbd_mpc_config().map(|c| c.inertia_diag_body)
+    }
+
     pub fn set_srbd_mpc_config(
         &mut self,
         cfg: quadruped_gait::SrbdMpcConfig,
