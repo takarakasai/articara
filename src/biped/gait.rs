@@ -188,6 +188,63 @@ impl Footsteps {
     }
 }
 
+/// Where both feet are planted during each slice of the schedule.
+///
+/// Stepping in place needed one fixed pair; walking needs one pair PER SLICE,
+/// and everything downstream reads it -- the ZMP plan, the swing foot's
+/// touchdown target, the support polygon the commanded ZMP is clamped into,
+/// the load split, and the z a touchdown anchor is projected onto. Threading
+/// a sequence through instead of a constant is the whole difference between
+/// the two gaits.
+///
+/// For a slice in single support the swing foot's entry is where it is GOING,
+/// i.e. its target at the end of the slice. For a double-support slice both
+/// entries are where the feet already are.
+pub struct FootstepPlan {
+    pub at: Vec<Footsteps>,
+    /// Where each foot started, kept so a stopped plan can be read back.
+    pub initial: Footsteps,
+}
+
+impl FootstepPlan {
+    /// Constant-stride walk. `stride` is the distance the BODY advances per
+    /// step, so each foot moves 2x that when it swings -- the standard
+    /// bookkeeping slip is to move the foot by one stride and wonder why the
+    /// robot travels at half the commanded speed.
+    ///
+    /// `stride = 0` reproduces stepping in place exactly, which is what keeps
+    /// the working gait a special case of this one rather than a separate
+    /// path.
+    pub fn constant_stride(plan: &GaitPlan, initial: &Footsteps, stride: f64) -> Self {
+        let mut cur = *initial;
+        let mut at = Vec::with_capacity(plan.slices.len());
+        for s in &plan.slices {
+            match s.support {
+                Support::Single { swing, .. } => {
+                    // The swing foot advances two strides from where it was,
+                    // landing one stride ahead of the stance foot.
+                    let mut next = cur;
+                    next.sole[swing].x += 2.0 * stride;
+                    at.push(next);
+                    cur = next;
+                }
+                Support::Double => at.push(cur),
+            }
+        }
+        FootstepPlan { at, initial: *initial }
+    }
+
+    pub fn at_slice(&self, i: usize) -> &Footsteps {
+        &self.at[i.min(self.at.len() - 1)]
+    }
+
+    /// Total forward travel the plan asks the body to make.
+    pub fn travel_x(&self) -> f64 {
+        let last = self.at.last().unwrap_or(&self.initial);
+        (last.mid_xy().x - self.initial.mid_xy().x).max(0.0)
+    }
+}
+
 /// Corrects the scheduled support set with what the feet are ACTUALLY doing.
 ///
 /// The schedule is a plan, and the plant does not read it. Measured on
