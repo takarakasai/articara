@@ -111,7 +111,7 @@ fn seed_joint_positions_from_kinematics(
 /// Per-tick sample. We track `total_fz_world` (Σ contact-force z over
 /// all contacts) so the static-balance test can compare it with
 /// `m · g` after the burn-in window.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct WbcSample {
     t: f64,
     body_x: f64,
@@ -318,6 +318,15 @@ struct WbcParams {
     /// silently gives 500, and asking for 200 silently gives 167. The run
     /// prints what it actually used; set a finer `dt` to reach other rates.
     host_rate_hz: Option<f64>,
+    /// Piecewise-constant command schedule: `(t_from, vx, vy, wz)`. Overrides
+    /// `cmd_vx/vy/wz` once the first entry's time is reached. For asking how
+    /// the two interfaces handle a command that moves, rather than one held
+    /// constant for the whole run.
+    cmd_schedule: Vec<(f64, f64, f64, f64)>,
+    /// World-frame push on the trunk: `(t_start, [fx, fy, fz], duration)`.
+    /// A disturbance neither interface plans for, so it is the one test that
+    /// asks what happens when the model is wrong.
+    push: Option<(f64, [f64; 3], f64)>,
     dt: f64,
     /// `None` = the legacy `wbc::solve_warm_with_weights` path
     /// (walk-validated default). `Some` opts the pipeline into the
@@ -376,6 +385,8 @@ impl WbcParams {
             vel_obs: VelObs::Truth,
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
+            cmd_schedule: Vec::new(),
+            push: None,
         }
     }
     fn forward_walk() -> Self {
@@ -406,6 +417,8 @@ impl WbcParams {
             vel_obs: VelObs::Truth,
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
+            cmd_schedule: Vec::new(),
+            push: None,
         }
     }
 
@@ -678,6 +691,30 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 vy: params.cmd_vy,
                 wz: params.cmd_wz,
             });
+        }
+        // Command schedule, applied on the tick its segment begins.
+        if k >= burn_in_steps {
+            if let Some(&(_, vx, vy, wz)) = params
+                .cmd_schedule
+                .iter()
+                .rev()
+                .find(|(t_from, ..)| t >= *t_from)
+            {
+                let now = gc.velocity_cmd();
+                if (now.vx - vx).abs() > 1e-9
+                    || (now.vy - vy).abs() > 1e-9
+                    || (now.wz - wz).abs() > 1e-9
+                {
+                    gc.set_velocity_cmd(VelocityCmd { vx, vy, wz });
+                }
+            }
+        }
+        // Push. Applied once, at its start tick; MuJoCo counts the duration
+        // down itself.
+        if let Some((t_push, force, dur)) = params.push {
+            if k > 0 && t >= t_push && (t - params.dt) < t_push {
+                sim.apply_external_force(&robot.root_link, force, [0.0; 3], dur);
+            }
         }
 
         // Feed observed body velocity to the closed-loop generators, after
@@ -3304,6 +3341,190 @@ fn namiashi_ideal_velocity_source() {
                     1.0,
                 );
             }
+        }
+    }
+}
+
+/// What a push did, measured against the same run's own pre-push behaviour.
+///
+/// Reported rather than asserted, because the interesting quantity is not
+/// "did it survive" -- both interfaces do -- but how far it went and how long
+/// it took to come back, which is what separates them.
+fn report_push(label: &str, samples: &[WbcSample], t_push: f64, cmd_vx: f64) {
+    let period = samples[0].cycle_period_s;
+    let win = period * (0.8 / period).ceil();
+
+    // Body-frame rates over a whole number of gait cycles, same convention as
+    // everywhere else in this file.
+    let rate_at = |i: usize| -> (f64, f64, f64) {
+        let t0 = samples[i].t - win;
+        let j = samples.iter().position(|s| s.t >= t0).unwrap_or(0);
+        if j >= i {
+            return (0.0, 0.0, 0.0);
+        }
+        let (a, b) = (&samples[j], &samples[i]);
+        let dt = b.t - a.t;
+        let (c, sn) = ((-a.yaw).cos(), (-a.yaw).sin());
+        let (dx, dy) = (b.body_x - a.body_x, b.body_y - a.body_y);
+        let mut dyaw = b.yaw - a.yaw;
+        while dyaw > std::f64::consts::PI {
+            dyaw -= 2.0 * std::f64::consts::PI;
+        }
+        while dyaw < -std::f64::consts::PI {
+            dyaw += 2.0 * std::f64::consts::PI;
+        }
+        (
+            (c * dx - sn * dy) / dt,
+            (sn * dx + c * dy) / dt,
+            dyaw.to_degrees() / dt,
+        )
+    };
+
+    let idx_at = |t: f64| samples.iter().position(|s| s.t >= t).unwrap_or(0);
+    let i_push = idx_at(t_push);
+    let after: Vec<usize> = (i_push..samples.len()).collect();
+
+    let mut vy_peak = 0.0_f64;
+    let mut roll_peak = 0.0_f64;
+    let mut z_min = f64::INFINITY;
+    let mut t_recover = None;
+    for &i in &after {
+        let (_, vy, _) = rate_at(i);
+        vy_peak = vy_peak.max(vy.abs());
+        roll_peak = roll_peak.max(samples[i].roll.abs());
+        z_min = z_min.min(samples[i].body_z);
+        // Recovered: sideways rate back under 5 cm/s and staying there.
+        if t_recover.is_none() && samples[i].t > t_push + 0.3 && vy.abs() < 0.05 {
+            t_recover = Some(samples[i].t - t_push);
+        }
+    }
+    // Lateral offset left behind, in the heading frame at the push.
+    let a = &samples[i_push];
+    let b = &samples[samples.len() - 1];
+    let (c, sn) = ((-a.yaw).cos(), (-a.yaw).sin());
+    let (dx, dy) = (b.body_x - a.body_x, b.body_y - a.body_y);
+    let lat_left = sn * dx + c * dy;
+    let fwd_after = (c * dx - sn * dy) / (b.t - a.t);
+
+    eprintln!(
+        "=== {label} (push at {t_push:.1}s) ===\n\
+         peak |vy|={vy_peak:.3} m/s  recovered after {}  \
+         lateral offset left={lat_left:+.3}m\n\
+         peak roll={:.1}deg  min z={z_min:.3}m  \
+         forward after push={fwd_after:+.3} m/s ({:.0}% of cmd)",
+        t_recover.map_or("never".into(), |t| format!("{t:.2}s")),
+        roll_peak.to_degrees(),
+        if cmd_vx.abs() > 1e-9 { 100.0 * fwd_after / cmd_vx } else { 0.0 },
+    );
+}
+
+/// SPEED MODE AGAINST TORQUE MODE, ACROSS EVERYTHING THE ROBOT IS ASKED TO DO.
+///
+/// Both at 400 Hz, both on the tuned configuration, differing only in the
+/// interface: speed mode as an ideal torque-limited velocity source with
+/// `k_track = 40`, torque mode as the host computing the whole loop.
+///
+/// Forward is the case every earlier result covered. The other five are the
+/// ones that decide whether an interface is usable rather than merely
+/// demonstrable -- a gait that only walks forward on flat ground with a
+/// constant command is not a controller.
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_interface_full_comparison() {
+    const HOST_HZ: f64 = 400.0;
+    const SWEEP_DT: f64 = 0.0005;
+    // 12 N for 0.12 s on a 3.3 kg robot is 1.44 N*s, a 0.44 m/s kick
+    // sideways -- comparable to the fastest gait's own command, so it is a
+    // real disturbance and not a nudge.
+    const PUSH_T: f64 = 7.0;
+
+    let modes: [(&str, Actuation); 2] = [
+        ("speed", Actuation::VelocityIdeal { k_track: 40.0 }),
+        ("torque", Actuation::Torque { kp: 100.0, kd: 1.2 }),
+    ];
+
+    for i in 0..NAMIASHI_TUNED.len() {
+        let (gait, .., cmd) = NAMIASHI_TUNED[i];
+        let lat = 0.5 * cmd;
+        for (mtag, act) in modes {
+            let base = |p: WbcParams| WbcParams {
+                actuation: act,
+                host_rate_hz: Some(HOST_HZ),
+                dt: SWEEP_DT,
+                ..p
+            };
+
+            // Steady commands: forward, backward, turn, strafe both ways.
+            for (tag, vx, vy, wz) in [
+                ("forward", cmd, 0.0, 0.0),
+                ("backward", -cmd, 0.0, 0.0),
+                ("turn", 0.0, 0.0, 0.60),
+                ("strafe_L", 0.0, lat, 0.0),
+                ("strafe_R", 0.0, -lat, 0.0),
+            ] {
+                let params = base(WbcParams {
+                    cmd_vx: vx,
+                    cmd_vy: vy,
+                    cmd_wz: wz,
+                    total_time_s: 14.0,
+                    ..namiashi_tuned_params(i)
+                });
+                let Some(samples) = run_wbc_sim(params) else { return };
+                report_walk_cmd(
+                    &format!("{gait:?} {mtag} {tag}"),
+                    &samples,
+                    vx,
+                    vy,
+                    wz,
+                    1.0,
+                );
+            }
+
+            // Speed regulation: a command that moves, in steps.
+            let params = base(WbcParams {
+                cmd_vx: 0.0,
+                cmd_schedule: vec![
+                    (1.0, 0.35 * cmd, 0.0, 0.0),
+                    (5.0, cmd, 0.0, 0.0),
+                    (9.0, 0.6 * cmd, 0.0, 0.0),
+                    (13.0, 0.0, 0.0, 0.0),
+                ],
+                total_time_s: 17.0,
+                ..namiashi_tuned_params(i)
+            });
+            if let Some(samples) = run_wbc_sim(params) {
+                // Reported per segment, since a whole-run average over a
+                // moving command means nothing.
+                for (t0, want) in
+                    [(2.0, 0.35 * cmd), (6.0, cmd), (10.0, 0.6 * cmd), (14.0, 0.0)]
+                {
+                    let seg: Vec<WbcSample> = samples
+                        .iter()
+                        .filter(|s| s.t >= t0 && s.t < t0 + 3.0)
+                        .map(|s| WbcSample { ..*s })
+                        .collect();
+                    if seg.len() > 10 {
+                        report_walk(
+                            &format!("{gait:?} {mtag} ramp@{want:.2}"),
+                            &seg,
+                            want,
+                            0.0,
+                        );
+                    }
+                }
+            } else {
+                return;
+            }
+
+            // Disturbance: walk forward, get pushed sideways.
+            let params = base(WbcParams {
+                cmd_vx: cmd,
+                push: Some((PUSH_T, [0.0, 12.0, 0.0], 0.12)),
+                total_time_s: 14.0,
+                ..namiashi_tuned_params(i)
+            });
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_push(&format!("{gait:?} {mtag} push"), &samples, PUSH_T, cmd);
         }
     }
 }
