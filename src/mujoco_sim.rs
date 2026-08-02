@@ -585,6 +585,34 @@ impl MujocoSim {
     /// a host driving that path has to add it, exactly as it would on real
     /// hardware where the driver has no model of the robot. This exposes the
     /// same numbers the other two modes use, so the paths stay comparable.
+    /// Per-joint nonlinear bias `h(q, q̇) = C(q,q̇)·q̇ + g(q)` at the current
+    /// state -- gravity plus Coriolis and centrifugal, not gravity alone.
+    ///
+    /// The term a torque-mode host has to supply if it wants the joint to
+    /// behave like a free body under its command. `gravity_torques` is the
+    /// `q̇ = 0` special case; at the joint speeds this leg reaches during
+    /// swing the velocity-dependent part is not obviously negligible, which
+    /// is worth measuring rather than assuming either way.
+    pub fn bias_torques(&self, robot: &RobotModel) -> Vec<f64> {
+        let adapter = robot.mc();
+        let q = robot.build_q();
+        let mut v = vec![0.0_f64; adapter.model.nv];
+        for ji in 0..robot.joints.len() {
+            if let Some(mi) = adapter.a2m.get(ji).and_then(|&m| m) {
+                if adapter.model.joints[mi].joint_type.nv() == 1 {
+                    if let Some(info) = self.data.joint(&robot.joints[ji].name) {
+                        let view = info.view(&self.data);
+                        if !view.qvel.is_empty() {
+                            v[adapter.model.v_idx[mi]] = view.qvel[0];
+                        }
+                    }
+                }
+            }
+        }
+        let h = misarta::rnea::nonlinear_effects(&adapter.model, &q, &v);
+        project_nv_to_joints(&h, &adapter, robot.joints.len())
+    }
+
     pub fn gravity_torques(&self, robot: &RobotModel) -> Vec<f64> {
         let adapter = robot.mc();
         let q = robot.build_q();

@@ -133,12 +133,21 @@ struct WbcSample {
     /// 1.0 is clamped: the commanded torque is not the torque being produced,
     /// and the modelled controller is not the controller running.
     tau_frac: [f64; 12],
+    /// |applied torque| in N*m. Kept alongside `tau_frac` because the peak
+    /// and the continuous rating are different numbers and only the peak is
+    /// in the model.
+    tau_nm: [f64; 12],
     /// |joint velocity| / that joint's rated `velocity`. The knee's rating
     /// drops to 21.5 rad/s once its 9:14 reduction is referred properly, and
     /// `mujoco_sim` brakes overspeed with a torque added *before* the effort
     /// clamp -- so a joint that is too fast shows up as a joint that is out
     /// of torque, which is a different problem with a different fix.
     qd_frac: [f64; 12],
+    /// Which legs the gait schedule had in stance this tick. Saturation means
+    /// two different things depending on it -- a clamped stance joint is a
+    /// robot that cannot hold itself up, a clamped swing joint is a leg that
+    /// cannot be thrown fast enough -- and the fixes are unrelated.
+    stance_mask: [bool; 4],
 }
 
 /// Threshold for "trunk has fallen". Below this z, the body has either
@@ -191,6 +200,35 @@ enum Actuation {
     /// host sent is held until the next one arrives. `WbcParams::host_rate_hz`
     /// is what makes that difference visible.
     Torque { kp: f64, kd: f64 },
+    /// `legged_control`'s actual scheme: stance legs pure torque, swing legs
+    /// position-tracked.
+    ///
+    /// That stack sends Unitree's `(q, dq, kp, kd, tau)` with `kp = kd = 0`
+    /// on stance legs, so the WBC's contact force *is* the joint torque and
+    /// nothing else acts on them; swing legs get position gains because they
+    /// are tracking a trajectory, not producing a force.
+    ///
+    /// Every result in this file has instead run kp=100 on all twelve joints
+    /// with the WBC's torque added as feedforward. Under a stiff position
+    /// servo tracking an IK trajectory, a force allocation is a small
+    /// perturbation -- which is the obvious candidate for why four separate
+    /// measurements have found the MPC not to matter here while it plainly
+    /// does in legged_control.
+    TorqueLeggedControl {
+        swing_kp: f64,
+        swing_kd: f64,
+        stance_kd: f64,
+        /// Scale on an explicit `h(q, q̇)` bias feedforward -- gravity plus
+        /// Coriolis, not gravity alone. 0 leaves it to the WBC, whose `tau`
+        /// solves the full equation of motion and should already carry it;
+        /// 1 adds the whole thing. Measured rather than reasoned about,
+        /// because at a static stand `tau_wbc` on a stance leg is
+        /// (-0.369, +0.008, +0.559) against a leg-gravity of (+0.074, +0.048,
+        /// -0.033) -- the support load dwarfs the bias, so a duplicate is a
+        /// 10-20% error rather than a doubling, and the sign of its effect is
+        /// not obvious.
+        bias_ff: f64,
+    },
 }
 
 /// What the controller is told about its own velocity.
@@ -242,6 +280,15 @@ enum VelObs {
 /// sqrt(h/g) = 0.155 for this stance. See `namiashi_capture_gain_low_side`
 /// for why that formula does not apply here.
 const NAMIASHI_CAPTURE_GAIN_S: f64 = 0.015;
+
+/// Continuous torque rating, N*m, hip and thigh. The knee's 9:14 reduction
+/// scales it the same way its peak is scaled.
+///
+/// `effort` in the model is the *peak* (2.5 N*m, 3.889 at the knee) and
+/// MuJoCo clamps to it, so exceeding the continuous rating is invisible
+/// there: a gait that sits at 2 N*m for a whole run never clamps and still
+/// cooks the motor. Reported separately for that reason.
+const NAMIASHI_RATED_TORQUE_NM: f64 = 1.0;
 
 /// How far below the harness's original nominal stance every run now sits.
 ///
@@ -550,7 +597,8 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 Actuation::VelocityIdeal { .. } => {
                     robot.joints[ji].actuator_mode = ActuatorMode::Velocity;
                 }
-                Actuation::Torque { .. } => {
+                Actuation::Torque { .. }
+                | Actuation::TorqueLeggedControl { .. } => {
                     robot.joints[ji].actuator_mode = ActuatorMode::Torque;
                 }
                 Actuation::PositionTorque => unreachable!(),
@@ -768,6 +816,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut v_hist: Vec<[f64; 3]> = Vec::with_capacity(n_steps);
     // Previous tick's IK targets, so the velocity path can differentiate them.
     let mut prev_targets = [0.0_f64; 12];
+    let mut stance_mask = [true; 4];
     // Host-computed PD for the torque path, paired with its joint index.
     let mut host_pd = [(0usize, 0.0_f64); 12];
 
@@ -862,6 +911,9 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         if gc.is_enabled() && host_tick {
             let host_dt = params.dt * host_decim as f64;
             let (out, targets, torque_ff) = gc.tick(host_dt);
+            for slot in 0..4 {
+                stance_mask[slot] = out.legs[slot].phase.is_stance;
+            }
             match params.actuation {
                 Actuation::PositionTorque => {
                     for (idx, q) in targets {
@@ -884,6 +936,52 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                             + grav.get(idx).copied().unwrap_or(0.0);
                         host_pd[slot] = (idx, pd);
                         sim.set_torque_target(idx, pd);
+                    }
+                }
+                Actuation::TorqueLeggedControl {
+                    swing_kp,
+                    swing_kd,
+                    stance_kd,
+                    bias_ff,
+                } => {
+                    // Gains chosen per leg by gait phase, the way
+                    // legged_control does: a stance leg is a force source, a
+                    // swing leg is a position tracker.
+                    //
+                    let bias = if bias_ff != 0.0 {
+                        sim.bias_torques(&robot)
+                    } else {
+                        vec![0.0; robot.joints.len()]
+                    };
+                    // Before burn-in the WBC is not running, so a stance leg
+                    // at kp=0 has no command at all and the robot free-falls.
+                    // Hold every leg on position gains until then, the way a
+                    // real startup sequence would, and hand over to the
+                    // stance/swing split once the WBC is up.
+                    //
+                    // This is the second time this bug has appeared -- the
+                    // same z_min of 0.039 showed up on `Actuation::Torque`
+                    // for the same reason. Any path with no driver-side loop
+                    // needs a command written on every tick, burn-in
+                    // included.
+                    let handed_over = k >= burn_in_steps;
+                    for (slot, tri) in gc.joint_indices().iter().enumerate() {
+                        let stance = handed_over && out.legs[slot].phase.is_stance;
+                        for (j, &ji) in tri.iter().enumerate() {
+                            let k = slot * 3 + j;
+                            let q_star = targets[k].1;
+                            let (q_meas, qd_meas) = sim
+                                .joint_q_qd(&robot.joints[ji].name)
+                                .unwrap_or((q_star, 0.0));
+                            let pd = if stance {
+                                -stance_kd * qd_meas
+                            } else {
+                                swing_kp * (q_star - q_meas) - swing_kd * qd_meas
+                            };
+                            let tau = pd + bias_ff * bias[ji];
+                            host_pd[k] = (ji, tau);
+                            sim.set_torque_target(ji, tau);
+                        }
                     }
                 }
                 Actuation::Velocity { k_track, .. }
@@ -1115,7 +1213,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 for (ji, &tau) in taus.iter().enumerate() {
                     sim.set_torque_feedforward(ji, if deliver_tau { tau } else { 0.0 });
                 }
-                if let Actuation::Torque { .. } = params.actuation {
+                if matches!(
+                    params.actuation,
+                    Actuation::Torque { .. } | Actuation::TorqueLeggedControl { .. }
+                ) {
                     // One raw torque per joint: the host PD computed above,
                     // plus the WBC's. Nothing on the driver side adds gravity
                     // in this mode -- the WBC's tau carries it, since the QP
@@ -1152,6 +1253,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         // hardware cannot produce and nothing would say so.
         let qfrc = sim.qfrc_actuator();
         let mut tau_frac = [0.0f64; 12];
+        let mut tau_nm = [0.0f64; 12];
         let mut qd_frac = [0.0f64; 12];
         for (leg, tri) in gc.joint_indices().iter().enumerate() {
             for (j, &ji) in tri.iter().enumerate() {
@@ -1160,6 +1262,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     if let Some(adr) = sim.joint_dof_adr(&joint.name) {
                         if let Some(&t) = qfrc.get(adr) {
                             tau_frac[leg * 3 + j] = (t / joint.effort).abs();
+                            tau_nm[leg * 3 + j] = t.abs();
                         }
                     }
                 }
@@ -1224,7 +1327,9 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             yaw,
             cycle_period_s,
             tau_frac,
+            tau_nm,
             qd_frac,
+            stance_mask,
         });
     }
     if let Some(dir) = replay_out.as_deref() {
@@ -1529,12 +1634,47 @@ fn report_walk_cmd(
                 }
             }
         }
+        // Split by gait phase. Both numbers are a fraction of the ticks that
+        // joint spent in that phase, not of the whole run, so a gait with a
+        // short swing does not look better than it is.
+        let (mut st_sat, mut st_n, mut sw_sat, mut sw_n) = (0usize, 0usize, 0usize, 0usize);
+        for s in walk.iter() {
+            for leg in 0..4 {
+                let hit = s.tau_frac[leg * 3 + j] > 0.99;
+                if s.stance_mask[leg] {
+                    st_n += 1;
+                    st_sat += hit as usize;
+                } else {
+                    sw_n += 1;
+                    sw_sat += hit as usize;
+                }
+            }
+        }
+        let pct = |a: usize, b: usize| if b > 0 { 100.0 * a as f64 / b as f64 } else { 0.0 };
+        // Time above the continuous rating, which the peak clamp cannot show.
+        let rated = NAMIASHI_RATED_TORQUE_NM
+            * if j == 2 { 14.0 / 9.0 } else { 1.0 };
+        let mut over_rated = 0usize;
+        let mut nm_peak = 0.0f64;
+        for s in walk.iter() {
+            for leg in 0..4 {
+                let t = s.tau_nm[leg * 3 + j];
+                nm_peak = nm_peak.max(t);
+                if t > rated {
+                    over_rated += 1;
+                }
+            }
+        }
         role_line += &format!(
-            "  {}: tau pk={peak:.2} sat={:.1}% | qd pk={qd_peak:.2} over={:.1}%",
+            "  {}: pk={nm_peak:.2}Nm clamp={:.1}% (st {:.1}/sw {:.1}) \
+             over-rated={:.1}% | qd pk={qd_peak:.2}",
             ROLE[j],
             100.0 * sat as f64 / (4.0 * n),
-            100.0 * qd_over as f64 / (4.0 * n),
+            pct(st_sat, st_n),
+            pct(sw_sat, sw_n),
+            100.0 * over_rated as f64 / (4.0 * n),
         );
+        let _ = peak;
     }
     eprintln!("{role_line}");
 
@@ -4029,6 +4169,141 @@ fn namiashi_mpc_inertia_on_torque_path() {
             };
             let Some(samples) = run_wbc_sim(params) else { return };
             report_push(&format!("Trot {tag} p{step}"), &samples, t_push, cmd);
+        }
+    }
+}
+
+/// IS THE POSITION SERVO WHY THE MPC DOES NOT MATTER HERE?
+///
+/// Four measurements have found the MPC and WBC to contribute almost
+/// nothing -- zeroing the WBC's torque, swapping FullCentroidal for Mpc,
+/// sweeping the two weights its prediction reaches the torque by, and
+/// correcting a 12-24x inertia error. In `legged_control` the same
+/// architecture plainly does matter, so something structural differs.
+///
+/// The candidate is where the stance legs get their torque. `legged_control`
+/// sends Unitree `(q, dq, kp, kd, tau)` with `kp = kd = 0` on stance legs:
+/// the WBC's contact force *is* the joint torque, nothing else acts on them.
+/// Swing legs get position gains because they are tracking a trajectory.
+///
+/// This file has run kp=100 on all twelve joints throughout, with the WBC's
+/// torque added as feedforward. Under a stiff servo tracking an IK
+/// trajectory, a force allocation is a small correction to a much larger
+/// command -- which would explain every one of those four results at once.
+///
+/// The test is not whether it walks, but whether the WBC becomes necessary.
+/// If stance legs are pure torque and zeroing the WBC still leaves the robot
+/// walking, the position servo was never the reason.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_legged_control_gain_split() {
+    const I: usize = 0; // Trot
+    let (_, .., cmd) = NAMIASHI_TUNED[I];
+    let cases: [(&str, Actuation, bool); 6] = [
+        ("all-kp100 WBC on", Actuation::Torque { kp: 100.0, kd: 1.2 }, false),
+        ("all-kp100 WBC off", Actuation::Torque { kp: 100.0, kd: 1.2 }, true),
+        (
+            "stance-free WBC on",
+            Actuation::TorqueLeggedControl {
+                swing_kp: 100.0,
+                swing_kd: 1.2,
+                stance_kd: 0.0,
+                bias_ff: 0.0,
+            },
+            false,
+        ),
+        (
+            "stance-free WBC off",
+            Actuation::TorqueLeggedControl {
+                swing_kp: 100.0,
+                swing_kd: 1.2,
+                stance_kd: 0.0,
+                bias_ff: 0.0,
+            },
+            true,
+        ),
+        // A little stance damping, since kd=0 leaves the joint with nothing
+        // resisting velocity at all and MuJoCo's own joint damping is 0.1.
+        (
+            "stance-damped WBC on",
+            Actuation::TorqueLeggedControl {
+                swing_kp: 100.0,
+                swing_kd: 1.2,
+                stance_kd: 0.5,
+                bias_ff: 0.0,
+            },
+            false,
+        ),
+        (
+            "stance-damped WBC off",
+            Actuation::TorqueLeggedControl {
+                swing_kp: 100.0,
+                swing_kd: 1.2,
+                stance_kd: 0.5,
+                bias_ff: 0.0,
+            },
+            true,
+        ),
+    ];
+    for (tag, act, no_wbc) in cases {
+        let params = WbcParams {
+            actuation: act,
+            kinematic_only: no_wbc,
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: cmd,
+            total_time_s: 12.0,
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Trot {tag}"), &samples, cmd, 1.0);
+    }
+}
+
+/// DOES AN EXPLICIT BIAS FEEDFORWARD RESCUE THE STANCE-FREE PATH?
+///
+/// With stance legs at kp=0 -- `legged_control`'s scheme -- the WBC becomes
+/// necessary (trunk holds at 0.225 m with it, 0.134 without) but not
+/// sufficient: the robot still goes down, and the thigh is clamped half the
+/// run.
+///
+/// The WBC's `tau` solves the full equation of motion, so in principle it
+/// carries the nonlinear bias already. Measured at a static stand it carries
+/// far more than that: `tau_wbc` on a stance leg is (-0.369, +0.008, +0.559)
+/// against a leg gravity of (+0.074, +0.048, -0.033), because the support
+/// load dominates. So a duplicate bias term is a 10-20% error rather than a
+/// doubling, and whether adding it helps or hurts is not something to reason
+/// about from the sign.
+///
+/// `h(q, q̇)` rather than gravity alone, since the swing leg reaches 13-15
+/// rad/s and the velocity-dependent part is not obviously negligible there.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_bias_feedforward() {
+    const I: usize = 0; // Trot
+    let (_, .., cmd) = NAMIASHI_TUNED[I];
+    for stance_kd in [0.0, 0.5] {
+        for bias_ff in [0.0, 0.5, 1.0] {
+            let params = WbcParams {
+                actuation: Actuation::TorqueLeggedControl {
+                    swing_kp: 100.0,
+                    swing_kd: 1.2,
+                    stance_kd,
+                    bias_ff,
+                },
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                cmd_vx: cmd,
+                total_time_s: 12.0,
+                ..namiashi_tuned_params(I)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(
+                &format!("Trot skd={stance_kd:.1} bias={bias_ff:.1}"),
+                &samples,
+                cmd,
+                1.0,
+            );
         }
     }
 }
