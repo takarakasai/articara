@@ -173,7 +173,12 @@ enum Actuation {
     /// stiffness -- the model's `actuator_kv` of 1.2 is a position-mode
     /// damping value and would need 1.25 rad/s of error to reach the 1.5 N*m
     /// limit, which is not what a real speed loop does.
-    Velocity { k_track: f64, loop_kv: f64 },
+    Velocity { k_track: f64, loop_kv: f64, loop_ki: f64 },
+    /// Speed mode with the driver modelled as an ideal velocity source,
+    /// limited only by torque. The right abstraction for a loop that closes
+    /// at 8-16 kHz against a host at a few hundred: from the host's side it
+    /// tracks whatever it is asked for, until the motor runs out.
+    VelocityIdeal { k_track: f64 },
     /// Raw joint torque, as a closed-loop-iq driver takes. The driver holds no
     /// position or velocity loop at all, so the host has to supply the whole
     /// thing: `tau = kp*(q* - q) + kd*(0 - qd) + tau_wbc`.
@@ -303,9 +308,15 @@ struct WbcParams {
     /// Which actuator interface the controller drives.
     actuation: Actuation,
     /// Rate at which the whole host-side controller runs -- gait generator,
-    /// WBC, and the command it emits. `None` means every physics tick
-    /// (500 Hz), which is what this file has always assumed and no robot on a
-    /// shared CAN bus gets. Between updates the last command is held.
+    /// WBC, and the command it emits. `None` means every physics tick, which
+    /// is what this file has always assumed and no robot on a shared CAN bus
+    /// gets. Between updates the last command is held.
+    ///
+    /// Only rates that divide the physics rate are representable, because the
+    /// gate is an integer tick count. At the default `dt` of 0.002 s that is
+    /// 500 / 250 / 167 / 125 / 100 Hz and nothing between -- asking for 400
+    /// silently gives 500, and asking for 200 silently gives 167. The run
+    /// prints what it actually used; set a finer `dt` to reach other rates.
     host_rate_hz: Option<f64>,
     dt: f64,
     /// `None` = the legacy `wbc::solve_warm_with_weights` path
@@ -462,6 +473,9 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     robot.joints[ji].actuator_mode = ActuatorMode::Velocity;
                     robot.joints[ji].actuator_kv = loop_kv;
                 }
+                Actuation::VelocityIdeal { .. } => {
+                    robot.joints[ji].actuator_mode = ActuatorMode::Velocity;
+                }
                 Actuation::Torque { .. } => {
                     robot.joints[ji].actuator_mode = ActuatorMode::Torque;
                 }
@@ -494,6 +508,11 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         .expect("write replay model.xml");
     }
     let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
+    match params.actuation {
+        Actuation::Velocity { loop_ki, .. } => sim.velocity_loop_ki = loop_ki,
+        Actuation::VelocityIdeal { .. } => sim.velocity_loop_ideal = true,
+        _ => {}
+    }
     // We don't want gravity-comp to compete with the WBC during the
     // walking window — the WBC's floating-base EoM task already
     // handles it. But during burn-in (gait disabled, WBC inactive),
@@ -520,6 +539,15 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     }
     if let Some(v) = params.max_step_length_m {
         cfg.max_step_length_m = v;
+    }
+    if let Some(hz) = params.host_rate_hz {
+        let decim = ((1.0 / hz) / params.dt).round().max(1.0);
+        eprintln!(
+            "[host] requested {hz:.0} Hz -> decim {decim:.0} -> effective \
+             {:.1} Hz (physics {:.0} Hz)",
+            1.0 / (params.dt * decim),
+            1.0 / params.dt,
+        );
     }
     eprintln!(
         "[gait] {:?}  T={:.3}s duty={:.3} max_step={:.3}m  cmd_vx={:.3}  \
@@ -729,7 +757,8 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         sim.set_torque_target(idx, pd);
                     }
                 }
-                Actuation::Velocity { k_track, .. } => {
+                Actuation::Velocity { k_track, .. }
+                | Actuation::VelocityIdeal { k_track } => {
                     // Trajectory velocity plus an outer position loop. A speed
                     // loop has no position feedback, so without the second
                     // term the leg tracks the right *rate* while its absolute
@@ -2946,7 +2975,7 @@ fn namiashi_velocity_actuation_sweep() {
             for i in 0..NAMIASHI_TUNED.len() {
                 let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
                 let params = WbcParams {
-                    actuation: Actuation::Velocity { k_track, loop_kv },
+                    actuation: Actuation::Velocity { k_track, loop_kv, loop_ki: 0.0 },
                     total_time_s: 16.0,
                     ..namiashi_tuned_params(i)
                 };
@@ -2991,7 +3020,7 @@ fn namiashi_velocity_actuation_zoom() {
             for i in 0..NAMIASHI_TUNED.len() {
                 let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
                 let params = WbcParams {
-                    actuation: Actuation::Velocity { k_track, loop_kv },
+                    actuation: Actuation::Velocity { k_track, loop_kv, loop_ki: 0.0 },
                     total_time_s: 16.0,
                     ..namiashi_tuned_params(i)
                 };
@@ -3031,7 +3060,7 @@ fn namiashi_speed_vs_torque_host_rate() {
         for i in 0..NAMIASHI_TUNED.len() {
             let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
             for (tag, act) in [
-                ("speed", Actuation::Velocity { k_track: 100.0, loop_kv: 1.2 }),
+                ("speed", Actuation::Velocity { k_track: 100.0, loop_kv: 1.2, loop_ki: 0.0 }),
                 // kp/kd are the model's own actuator gains, so the torque path
                 // reproduces the driver's PD exactly and only the rate differs.
                 ("torque", Actuation::Torque { kp: 100.0, kd: 1.2 }),
@@ -3070,7 +3099,7 @@ fn namiashi_actuation_video_source() {
         for i in 0..NAMIASHI_TUNED.len() {
             let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
             for (tag, act) in [
-                ("speed", Actuation::Velocity { k_track: 100.0, loop_kv: 1.2 }),
+                ("speed", Actuation::Velocity { k_track: 100.0, loop_kv: 1.2, loop_ki: 0.0 }),
                 ("torque", Actuation::Torque { kp: 100.0, kd: 1.2 }),
             ] {
                 let g = format!("{gait:?}").to_lowercase();
@@ -3083,6 +3112,197 @@ fn namiashi_actuation_video_source() {
                 };
                 let Some(samples) = run_wbc_sim(params) else { return };
                 report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
+            }
+        }
+    }
+}
+
+/// WHAT HOST RATE DOES TORQUE MODE NEED, PER GAIT?
+///
+/// The coarse sweep put the breakdown between 200 Hz, where torque mode holds
+/// 97-102% on all three gaits, and 100 Hz, where it falls to 73-90%. The bus
+/// is expected to reach 400 Hz, so the question is which gaits have margin
+/// there and which are running near their edge.
+///
+/// Torque mode has no inner loop: the last torque the host sent is held until
+/// the next arrives, so the host period is dead time inside the only loop
+/// there is. The rate a gait needs should therefore scale with how fast that
+/// gait moves -- Trot's 0.320 s period against Crawl's 0.800 s -- and that is
+/// worth checking rather than assuming, because the position loop's own
+/// bandwidth (kp=100, kd=1.2) is the same for all three and may be what binds
+/// instead.
+///
+/// Speed mode is swept alongside at the same rates, since the comparison at
+/// 400 Hz is the decision actually being made.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_host_rate_requirement() {
+    // 2 kHz physics so every rate below is an exact integer divisor. At the
+    // usual 0.002 s the gate quantises hard -- 400 Hz became 500 and 200
+    // became 167 -- and the sweep silently reported duplicate columns.
+    const SWEEP_DT: f64 = 0.0005;
+    for hz in [500.0, 400.0, 333.0, 250.0, 200.0, 143.0, 125.0, 100.0] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            for (tag, act) in [
+                ("torque", Actuation::Torque { kp: 100.0, kd: 1.2 }),
+                ("speed", Actuation::Velocity { k_track: 100.0, loop_kv: 1.2, loop_ki: 0.0 }),
+            ] {
+                let params = WbcParams {
+                    actuation: act,
+                    host_rate_hz: Some(hz),
+                    dt: SWEEP_DT,
+                    total_time_s: 16.0,
+                    ..namiashi_tuned_params(i)
+                };
+                let Some(samples) = run_wbc_sim(params) else { return };
+                report_walk(
+                    &format!("{gait:?} {tag} {hz:.0}"),
+                    &samples,
+                    cmd_vx,
+                    1.0,
+                );
+            }
+        }
+    }
+}
+
+/// THE SPEED-LOOP MODEL WAS PROPORTIONAL, AND A REAL ONE IS NOT.
+///
+/// Every speed-mode figure in this file so far came from a driver model of
+/// `tau = kv * (qd* - qd)`, with `kv = 1.2`. That leaves a standing error
+/// proportional to load: reaching the 1.5 N*m limit needs 1.25 rad/s of
+/// velocity error, so the commanded speed is never actually achieved. Trot's
+/// 89-94% ceiling on that path was the model, not the interface.
+///
+/// An MG4005 closes a PI loop internally at 8-16 kHz. The integral term is
+/// what removes the standing error and rejects load torque, and it is the
+/// bigger of the two things the model was missing -- the rate matters less
+/// than it sounds, since even the 2 kHz the simulator can offer is already
+/// five times the 400 Hz host.
+///
+/// So sweep the integral gain. `loop_ki` is in N*m per (rad/s * s); with the
+/// knee's 0.0034 kg*m^2 of reflected inertia, the proportional part alone
+/// puts the loop corner near 56 Hz, so an integral corner in the tens to low
+/// hundreds of rad/s is the region worth looking at.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_speed_loop_integral() {
+    for loop_ki in [0.0, 20.0, 80.0, 300.0, 1000.0] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                actuation: Actuation::Velocity {
+                    k_track: 100.0,
+                    loop_kv: 1.2,
+                    loop_ki,
+                },
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                total_time_s: 16.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} ki={loop_ki:.0}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// SO WHAT IS ACTUALLY LIMITING SPEED MODE ON TROT?
+///
+/// The proportional-only speed loop was a real modelling defect, and adding
+/// the integral a real driver has does not fix Trot: 89 / 89 / 85 / 81 / 83%
+/// across `loop_ki` of 0 / 20 / 80 / 300 / 1000. It makes it worse, and the
+/// saturation column says why -- the thigh goes 29 -> 40% clamped as the
+/// integral is turned up. The loop is not short of authority. It is already
+/// spending more than it has.
+///
+/// Which rules out the standing-error story and leaves the other half of the
+/// interface. In speed mode the host does not command a position at all; it
+/// commands `qd = dq*/dt + k_track*(q* - q)`, and everything the WBC computed
+/// is discarded, because a speed-mode driver has nowhere to put a torque.
+/// Trot is the gait with the shortest stance and the highest foot loads, so
+/// it is the one that misses that most.
+///
+/// Two things are still confounded in every speed-mode figure so far, and
+/// they pull opposite ways: `k_track` sets how hard the outer loop chases
+/// position error, and `loop_kv` sets how hard the driver resists. Sweeping
+/// them together at the 400 Hz the bus will actually run, with the integral
+/// at a value a real driver would have, is what separates them.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_speed_mode_trot_limit() {
+    for loop_kv in [1.2, 4.0, 12.0] {
+        for k_track in [40.0, 100.0, 200.0] {
+            let i = 0; // Trot -- the only gait that does not already work
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                actuation: Actuation::Velocity {
+                    k_track,
+                    loop_kv,
+                    loop_ki: 80.0,
+                },
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                total_time_s: 16.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(
+                &format!("{gait:?} kv={loop_kv:.1} kt={k_track:.0}"),
+                &samples,
+                cmd_vx,
+                1.0,
+            );
+        }
+    }
+}
+
+/// THE DRIVER MODELLED AS WHAT IT IS: A VELOCITY SOURCE.
+///
+/// Every speed-mode figure before this one came from a driver model that was
+/// a P or PI controller evaluated at the *physics* rate. That imports a
+/// slowness the real part does not have. An MG4005 closes its speed loop at
+/// 8-16 kHz; against a host at 400 Hz that is twenty to forty times faster
+/// than anything being asked of it, so from the controller's side it simply
+/// delivers the commanded velocity.
+///
+/// `VelocityIdeal` models it that way -- deadbeat, `M_ii*(qd* - qd)/dt` plus
+/// the joint's bias forces, clamped to `effort`. The clamp stays because
+/// torque is what actually binds on this robot; the loop bandwidth was never
+/// the constraint.
+///
+/// Swept against the PI model at both `k_track` values the earlier sweeps
+/// disagreed about -- 40 suited Trot, 100 suited Walk and Crawl -- at the
+/// 400 Hz the bus is designed for.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_ideal_velocity_source() {
+    for k_track in [40.0, 100.0, 200.0] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            for (tag, act) in [
+                ("PI kv1.2", Actuation::Velocity {
+                    k_track,
+                    loop_kv: 1.2,
+                    loop_ki: 80.0,
+                }),
+                ("ideal", Actuation::VelocityIdeal { k_track }),
+            ] {
+                let params = WbcParams {
+                    actuation: act,
+                    host_rate_hz: Some(400.0),
+                    dt: 0.0005,
+                    total_time_s: 16.0,
+                    ..namiashi_tuned_params(i)
+                };
+                let Some(samples) = run_wbc_sim(params) else { return };
+                report_walk(
+                    &format!("{gait:?} {tag} kt={k_track:.0}"),
+                    &samples,
+                    cmd_vx,
+                    1.0,
+                );
             }
         }
     }
