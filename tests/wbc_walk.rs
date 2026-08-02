@@ -145,6 +145,25 @@ struct WbcSample {
 /// `gait_walk_stability`.
 const TRUNK_Z_FALL_THRESHOLD_M: f64 = 0.18;
 
+/// What the controller is told about its own velocity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum VelObs {
+    /// Simulator ground truth -- what every result in this file was measured
+    /// with, and what no robot has.
+    Truth,
+    /// Nothing. Both the MPC's state feedback and the WBC's SRBD state see a
+    /// stationary robot.
+    Zero,
+    /// The commanded velocity, i.e. open loop: no velocity sensing at all,
+    /// the controller simply believes it is doing what it was asked.
+    Command,
+    /// Truth plus a constant error, in m/s. Stands in for the drift an
+    /// IMU-only estimate accumulates.
+    Bias(f64, f64),
+    /// Truth delayed by this many seconds.
+    Lag(f64),
+}
+
 /// How far below the harness's original nominal stance every run now sits.
 ///
 /// The file spent its whole history at one height, ~0.295 m, and
@@ -226,6 +245,18 @@ struct WbcParams {
     /// body-z reference are taken from, so the whole stack follows.
     /// Defaults to [`NAMIASHI_STANCE_DROP_M`].
     trunk_drop_m: f64,
+    /// Constant offset added to the base position the WBC observes, and a
+    /// per-second drift on top of it. Both are diagnostics for the hardware
+    /// question: is a bounded absolute position actually required?
+    base_pos_bias_m: [f64; 3],
+    base_pos_drift_mps: [f64; 3],
+    /// How the observed body velocity is corrupted before the controller sees
+    /// it. The hardware question: with only an IMU there is no bounded
+    /// velocity estimate to be had -- 1 deg of attitude error leaks
+    /// g*sin(1 deg) = 0.17 m/s^2 of phantom horizontal acceleration, which is
+    /// 0.85 m/s of velocity error in five seconds against a 0.80 m/s command.
+    /// So: how much does this controller actually depend on it?
+    vel_obs: VelObs,
     dt: f64,
     /// `None` = the legacy `wbc::solve_warm_with_weights` path
     /// (walk-validated default). `Some` opts the pipeline into the
@@ -279,6 +310,9 @@ impl WbcParams {
             contact_force_weight: None,
             replay_dir: None,
             trunk_drop_m: NAMIASHI_STANCE_DROP_M,
+            base_pos_bias_m: [0.0; 3],
+            base_pos_drift_mps: [0.0; 3],
+            vel_obs: VelObs::Truth,
         }
     }
     fn forward_walk() -> Self {
@@ -304,6 +338,9 @@ impl WbcParams {
             contact_force_weight: None,
             replay_dir: None,
             trunk_drop_m: NAMIASHI_STANCE_DROP_M,
+            base_pos_bias_m: [0.0; 3],
+            base_pos_drift_mps: [0.0; 3],
+            vel_obs: VelObs::Truth,
         }
     }
 
@@ -509,6 +546,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let n_steps = (params.total_time_s / params.dt).round() as usize;
     let burn_in_steps = (params.burn_in_s / params.dt).round() as usize;
     let mut samples: Vec<WbcSample> = Vec::with_capacity(n_steps);
+    let mut v_hist: Vec<[f64; 3]> = Vec::with_capacity(n_steps);
 
     for k in 0..n_steps {
         let t = k as f64 * params.dt;
@@ -524,10 +562,38 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             });
         }
 
-        // Feed observed body velocity to the closed-loop generators.
-        let v_obs = sim
+        // Feed observed body velocity to the closed-loop generators, after
+        // corrupting it the way the chosen `vel_obs` says. Everything
+        // downstream -- the gait controller's feedback, the MPC's SRBD state
+        // and the WBC -- sees this and only this.
+        let v_true = sim
             .body_world_linear_velocity(&robot.root_link)
             .unwrap_or([0.0, 0.0, 0.0]);
+        v_hist.push(v_true);
+        let v_obs: [f64; 3] = match params.vel_obs {
+            VelObs::Truth => v_true,
+            VelObs::Zero => [0.0; 3],
+            VelObs::Command => {
+                // Body-frame command rotated into world by the true yaw.
+                let (_, _, yaw_now) = robot.base_transform.rotation.euler_angles();
+                let cmd = if k >= burn_in_steps {
+                    (params.cmd_vx, params.cmd_vy)
+                } else {
+                    (0.0, 0.0)
+                };
+                [
+                    yaw_now.cos() * cmd.0 - yaw_now.sin() * cmd.1,
+                    yaw_now.sin() * cmd.0 + yaw_now.cos() * cmd.1,
+                    0.0,
+                ]
+            }
+            VelObs::Bias(bx, by) => [v_true[0] + bx, v_true[1] + by, v_true[2]],
+            VelObs::Lag(secs) => {
+                let back = (secs / params.dt).round() as usize;
+                let idx = v_hist.len().saturating_sub(1 + back);
+                v_hist[idx]
+            }
+        };
         let w_obs = sim
             .body_world_angular_velocity(&robot.root_link)
             .unwrap_or([0.0, 0.0, 0.0]);
@@ -594,6 +660,11 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     corrected[2].is_stance,
                     corrected[3].is_stance,
                 ];
+                wbc_pipeline.base_pos_bias_world = Vector3::new(
+                    params.base_pos_bias_m[0] + params.base_pos_drift_mps[0] * t,
+                    params.base_pos_bias_m[1] + params.base_pos_drift_mps[1] * t,
+                    params.base_pos_bias_m[2] + params.base_pos_drift_mps[2] * t,
+                );
                 let taus = wbc_pipeline.solve(
                     &robot,
                     &sim,
@@ -2530,6 +2601,145 @@ fn namiashi_height_video_source() {
             };
             let Some(samples) = run_wbc_sim(params) else { return };
             report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// DOES THE CONTROLLER NEED A BOUNDED ABSOLUTE BASE POSITION?
+///
+/// It reads one -- `WbcPipeline::solve` takes `body_world_position` straight
+/// from the simulator and writes it into the floating base's `q[0..3]`. On
+/// hardware there is nothing to read it from. IMU integration drifts without
+/// bound, and a legged state estimator gives good orientation and velocity
+/// but a position that walks away, so if this were a real dependency it would
+/// be a blocker.
+///
+/// It should not be. Rigid-body dynamics is translation invariant: `M(q)`,
+/// the nonlinear terms and the contact Jacobians depend on base *orientation*
+/// and joint angles, not on where the base is. The two places the position
+/// appears downstream are moment arms, `foot_pos_world - body_pos_w` and the
+/// CoM variant, where it cancels.
+///
+/// Also worth noting: nothing calls `set_body_pose_observed`, so the MPC's
+/// own `world_position` is never updated from observation at all, and its
+/// reference trajectory is built from that -- self-referential, hence
+/// invariant too.
+///
+/// Reasoning is not measurement. A constant 1 km offset tests invariance; a
+/// 0.10 m/s drift is what an unaided estimator actually does, and over 16 s
+/// that is 1.6 m of accumulated error.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_absolute_position_dependence() {
+    let cases: &[(&str, [f64; 3], [f64; 3])] = &[
+        ("none", [0.0; 3], [0.0; 3]),
+        ("bias 1km", [1000.0, -1000.0, 0.0], [0.0; 3]),
+        ("bias 1km + z", [1000.0, -1000.0, 5.0], [0.0; 3]),
+        ("drift 0.1m/s", [0.0; 3], [0.1, -0.1, 0.0]),
+        ("drift 0.5m/s", [0.0; 3], [0.5, -0.5, 0.05]),
+    ];
+    for &(tag, bias, drift) in cases {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                base_pos_bias_m: bias,
+                base_pos_drift_mps: drift,
+                total_time_s: 16.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// HOW MUCH VELOCITY SENSING DOES THIS CONTROLLER ACTUALLY NEED?
+///
+/// Every result in this file was measured with simulator ground truth for the
+/// body velocity: exact, noiseless, zero lag. namiashi will have an IMU and
+/// nothing else, and an IMU cannot give a bounded velocity. The horizontal
+/// acceleration comes out as `R(q_hat) * a_meas - g`, so an attitude error
+/// theta leaks `g*sin(theta)` of phantom acceleration -- 0.17 m/s^2 at one
+/// degree, which integrates to 0.85 m/s in five seconds against a 0.80 m/s
+/// command. Accelerometer bias, at 0.005-0.02 m/s^2 for a good part, is the
+/// smaller problem. Better hardware does not fix this; it is the structure.
+///
+/// The standard answer is leg odometry -- a loaded foot is stationary in the
+/// world, so `v_body = -J(q) q_dot` is a velocity measurement, and the
+/// 18-state KF in `legged-estimation` fuses exactly that with the IMU. But it
+/// wants a per-foot contact flag, which is the sensor namiashi is not going
+/// to carry.
+///
+/// Before building any of that, the cheaper question: what breaks without it?
+/// `k_capture` is already 0, so footstep placement does not read the velocity
+/// at all. What is left is the MPC's state feedback, and zeroing both paths
+/// its prediction reaches the torque by cost Walk almost nothing.
+///
+/// Five conditions, from ground truth down to no velocity sensing whatsoever.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_velocity_observation_dependence() {
+    let cases: &[(&str, VelObs)] = &[
+        ("truth", VelObs::Truth),
+        ("lag 20ms", VelObs::Lag(0.020)),
+        ("lag 50ms", VelObs::Lag(0.050)),
+        ("bias 0.3m/s", VelObs::Bias(0.3, 0.15)),
+        ("open loop", VelObs::Command),
+        ("zero", VelObs::Zero),
+    ];
+    for &(tag, vo) in cases {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                vel_obs: vo,
+                total_time_s: 16.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// THE SENSOR SET namiashi WILL ACTUALLY HAVE.
+///
+/// Two dependencies have already been measured away. Absolute base position
+/// is not used at all -- a 1 km offset and an 8 m accumulated drift leave
+/// every reported figure bit-identical, because rigid-body dynamics is
+/// translation invariant and the only place the position appears downstream
+/// is a moment arm where it cancels. Body velocity is barely used -- with
+/// `k_capture` at 0 the footstep plan does not read it, and feeding a
+/// constant zero still tracks 101-102%.
+///
+/// One is left. `ContactDrivenPhase` takes a per-foot normal force and flips
+/// a leg to stance the moment it reads above 5 N, and that flag decides the
+/// WBC's priority-0 constraints. namiashi will not carry foot force sensors.
+///
+/// So run the configuration the hardware can actually supply: joint encoders
+/// and an IMU, nothing else. Contact state from the gait schedule's nominal
+/// phase, no velocity estimate at all. Against the same settings with ground
+/// truth, at the tuned stance, for 25 s.
+#[test]
+#[ignore = "long -- run with --ignored"]
+fn namiashi_hardware_sensor_set() {
+    // label, contact-force threshold, velocity observation
+    let cases: &[(&str, f64, VelObs)] = &[
+        ("truth + contact", 5.0, VelObs::Truth),
+        ("truth, no contact", 1.0e9, VelObs::Truth),
+        ("no vel, contact", 5.0, VelObs::Zero),
+        ("IMU+enc only", 1.0e9, VelObs::Zero),
+    ];
+    for &(tag, thr, vo) in cases {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                early_contact_n: thr,
+                vel_obs: vo,
+                total_time_s: 26.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} | {tag}"), &samples, cmd_vx, 1.0);
         }
     }
 }
