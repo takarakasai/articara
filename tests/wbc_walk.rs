@@ -129,6 +129,12 @@ struct WbcSample {
     /// is dragged forward kinematically by the foot sweep, but with them at
     /// kp=0 the only thing left is this.
     foot_fx: [f64; 4],
+    /// Fore-aft force the MPC planned and the WBC's QP settled on, heading
+    /// frame. The ratio of the two is how much of the plan is getting
+    /// through, which is the question "is the MPC load-bearing" made
+    /// measurable on every run instead of by hand.
+    mpc_fx: f64,
+    wbc_fx: f64,
     body_y: f64,
     yaw: f64,
     /// Carried per-sample only so `report_walk_cmd` can size its averaging
@@ -205,8 +211,26 @@ enum Actuation {
     /// host sent is held until the next one arrives. `WbcParams::host_rate_hz`
     /// is what makes that difference visible.
     Torque { kp: f64, kd: f64 },
-    /// `legged_control`'s actual scheme: stance legs pure torque, swing legs
-    /// position-tracked.
+    /// `legged_control`'s actual low-level command, read off
+    /// `legged_controller.cpp:142`:
+    ///
+    /// ```text
+    /// setCommand(pos_des, vel_des, 5, 3, torque)
+    ///     -> tau = kp*(pos_des - q) + kd*(vel_des - qd) + torque
+    /// ```
+    ///
+    /// Three things this file has been getting wrong at once. The gain is 5,
+    /// not 100 -- a twentieth. It is uniform, with no stance/swing split. And
+    /// the damping term tracks a *velocity target* rather than damping toward
+    /// zero, so it does not fight the swing it is supposed to be producing.
+    ///
+    /// `pos_des` there comes from the MPC's optimised state rather than an IK
+    /// trajectory, which this does not reproduce -- the trajectory is still
+    /// the gait controller's. So this is half the difference, and worth
+    /// measuring before deciding whether the other half is needed.
+    LeggedControl { kp: f64, kd: f64 },
+
+    /// Stance legs pure torque, swing legs position-tracked.
     ///
     /// That stack sends Unitree's `(q, dq, kp, kd, tau)` with `kp = kd = 0`
     /// on stance legs, so the WBC's contact force *is* the joint torque and
@@ -222,6 +246,12 @@ enum Actuation {
     TorqueLeggedControl {
         swing_kp: f64,
         swing_kd: f64,
+        /// Position gain on stance legs. `legged_control` uses 0 -- the
+        /// WBC's contact force is the whole command. 100 is what this file
+        /// has run throughout, and at that value the servo supplies the
+        /// propulsion and the WBC only trims it. The interesting question is
+        /// whether anything in between hands over cleanly.
+        stance_kp: f64,
         stance_kd: f64,
         /// Scale on an explicit `h(q, q̇)` bias feedforward -- gravity plus
         /// Coriolis, not gravity alone. 0 leaves it to the WBC, whose `tau`
@@ -398,6 +428,21 @@ struct WbcParams {
     /// swing instead of extrapolating `k_capture * v_err`. Only has an
     /// effect under `GaitMode::FullCentroidal`.
     mpc_predicted_footstep: bool,
+    /// FullCentroidal's `legged_control_parity`: builds the per-step contact
+    /// schedule from a per-leg phase projection and enables the OCS2-shaped
+    /// swing reference. Prerequisite for `dynamic_joint_q_reference`.
+    legged_control_parity: bool,
+    /// Sample the swing/stance foot curve at each horizon step's projected
+    /// phase for the MPC's joint_q reference, instead of holding it flat.
+    ///
+    /// Note this changes what the MPC *plans against*, not what the joints
+    /// are commanded to. `FullCentroidalMpcGaitController`'s own docs are
+    /// explicit that the output joint angles remain the analytical IK's --
+    /// the MPC's joint_q exists so the per-node moment arm
+    /// `r = R (foot_body(q) - com_offset)` updates within the horizon. There
+    /// is no equivalent of legged_control's
+    /// `pos_des = getJointAngles(optimized_state)` in this implementation.
+    dynamic_joint_q_reference: bool,
     /// Give the SRBD MPC namiashi's composite inertia instead of the heaviest
     /// link's.
     ///
@@ -492,6 +537,8 @@ impl WbcParams {
             vel_obs: VelObs::Truth,
             gait_mode: GaitMode::Mpc,
             mpc_predicted_footstep: false,
+            legged_control_parity: false,
+            dynamic_joint_q_reference: false,
             mpc_composite_inertia: false,
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
@@ -527,6 +574,8 @@ impl WbcParams {
             vel_obs: VelObs::Truth,
             gait_mode: GaitMode::Mpc,
             mpc_predicted_footstep: false,
+            legged_control_parity: false,
+            dynamic_joint_q_reference: false,
             mpc_composite_inertia: false,
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
@@ -603,7 +652,8 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     robot.joints[ji].actuator_mode = ActuatorMode::Velocity;
                 }
                 Actuation::Torque { .. }
-                | Actuation::TorqueLeggedControl { .. } => {
+                | Actuation::TorqueLeggedControl { .. }
+                | Actuation::LeggedControl { .. } => {
                     robot.joints[ji].actuator_mode = ActuatorMode::Torque;
                 }
                 Actuation::PositionTorque => unreachable!(),
@@ -689,6 +739,12 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         .expect("GaitController::build");
     if params.mpc_predicted_footstep {
         gc.set_use_mpc_predicted_footstep(true);
+    }
+    if params.legged_control_parity {
+        gc.set_legged_control_parity(true);
+    }
+    if params.dynamic_joint_q_reference {
+        gc.set_dynamic_joint_q_reference(true);
     }
     if params.mpc_composite_inertia {
         let c = auto_detect_centroidal_mpc_config(&robot);
@@ -823,6 +879,8 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut prev_targets = [0.0_f64; 12];
     let mut stance_mask = [true; 4];
     let mut yaw_prev = 0.0_f64;
+    let mut mpc_fx = 0.0_f64;
+    let mut wbc_fx = 0.0_f64;
     // Host-computed PD for the torque path, paired with its joint index.
     let mut host_pd = [(0usize, 0.0_f64); 12];
 
@@ -944,9 +1002,31 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         sim.set_torque_target(idx, pd);
                     }
                 }
+                Actuation::LeggedControl { kp, kd } => {
+                    // Uniform gains, velocity feedforward from the
+                    // trajectory, no gravity term -- the WBC's tau carries
+                    // it, as it does in legged_control where nothing else
+                    // adds one.
+                    for (slot, &(idx, q_star)) in targets.iter().enumerate() {
+                        let qd_star = if k > burn_in_steps {
+                            (q_star - prev_targets[slot]) / host_dt
+                        } else {
+                            0.0
+                        };
+                        let (q_meas, qd_meas) = sim
+                            .joint_q_qd(&robot.joints[idx].name)
+                            .unwrap_or((q_star, 0.0));
+                        let pd =
+                            kp * (q_star - q_meas) + kd * (qd_star - qd_meas);
+                        host_pd[slot] = (idx, pd);
+                        sim.set_torque_target(idx, pd);
+                        prev_targets[slot] = q_star;
+                    }
+                }
                 Actuation::TorqueLeggedControl {
                     swing_kp,
                     swing_kd,
+                    stance_kp,
                     stance_kd,
                     bias_ff,
                 } => {
@@ -980,7 +1060,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                                 .joint_q_qd(&robot.joints[ji].name)
                                 .unwrap_or((q_star, 0.0));
                             let pd = if stance {
-                                -stance_kd * qd_meas
+                                stance_kp * (q_star - q_meas) - stance_kd * qd_meas
                             } else {
                                 swing_kp * (q_star - q_meas) - swing_kd * qd_meas
                             };
@@ -1073,6 +1153,13 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     params.base_pos_bias_m[1] + params.base_pos_drift_mps[1] * t,
                     params.base_pos_bias_m[2] + params.base_pos_drift_mps[2] * t,
                 );
+                {
+                    let (cy, sy) = ((-yaw_prev).cos(), (-yaw_prev).sin());
+                    mpc_fx = f_grf_world
+                        .iter()
+                        .map(|v| cy * v.x - sy * v.y)
+                        .sum();
+                }
                 let taus = wbc_pipeline.solve(
                     &robot,
                     &sim,
@@ -1105,31 +1192,6 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         .fold(0.0_f64, |a, b| a.max(b.abs()));
                     let mpc_fz_sum: f64 = f_grf_world.iter().map(|v| v.z).sum();
                     let stance_count = contact_flag.iter().filter(|b| **b).count();
-                    // Fore-aft force at three points along the chain: what
-                    // the MPC planned, what the WBC's QP settled on, and what
-                    // the ground actually delivered. Whichever pair disagrees
-                    // is where the propulsion is being lost.
-                    {
-                        let (cy, sy) = ((-yaw_prev).cos(), (-yaw_prev).sin());
-                        let rot = |v: &Vector3<f64>| cy * v.x - sy * v.y;
-                        let mpc_fx: f64 = f_grf_world.iter().map(rot).sum();
-                        let wbc_fx: f64 = wbc_pipeline
-                            .last_solution
-                            .as_ref()
-                            .map(|sol| {
-                                (0..4)
-                                    .map(|i| {
-                                        cy * sol.f_grf[3 * i]
-                                            - sy * sol.f_grf[3 * i + 1]
-                                    })
-                                    .sum()
-                            })
-                            .unwrap_or(0.0);
-                        eprintln!(
-                            "[fx k={k:5}] mpc={mpc_fx:+.3}  wbc={wbc_fx:+.3}  \
-                             stance={stance_count}"
-                        );
-                    }
                     eprintln!(
                         "[diag k={k:5} t={:.3}s] z={:.3} m  Σmpc_f_z={:.2} N  \
                          max|τ|={:.2} N·m  stance={}/4",
@@ -1234,6 +1296,20 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 // solution's f_GRF matches the MPC's predicted GRFs
                 // (= forward thrust included), but the actual tracking
                 // depends on `W_CONTACT_FORCE` in `quadruped_gait::wbc`.
+                {
+                    let (cy, sy) = ((-yaw_prev).cos(), (-yaw_prev).sin());
+                    wbc_fx = wbc_pipeline
+                        .last_solution
+                        .as_ref()
+                        .map(|sol| {
+                            (0..4)
+                                .map(|i| {
+                                    cy * sol.f_grf[3 * i] - sy * sol.f_grf[3 * i + 1]
+                                })
+                                .sum()
+                        })
+                        .unwrap_or(0.0);
+                }
                 let _ = torque_ff; // discard MPC ff — WBC owns the τ stream
                 // A speed-mode driver takes a speed and nothing else, so the
                 // WBC's torque has nowhere to go on that path. The sim's
@@ -1246,7 +1322,9 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 }
                 if matches!(
                     params.actuation,
-                    Actuation::Torque { .. } | Actuation::TorqueLeggedControl { .. }
+                    Actuation::Torque { .. }
+                        | Actuation::TorqueLeggedControl { .. }
+                        | Actuation::LeggedControl { .. }
                 ) {
                     // One raw torque per joint: the host PD computed above,
                     // plus the WBC's. Nothing on the driver side adds gravity
@@ -1359,6 +1437,8 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             total_fz_world,
             foot_fz,
             foot_fx,
+            mpc_fx,
+            wbc_fx,
             body_y: tx.y,
             yaw,
             cycle_period_s,
@@ -1661,10 +1741,11 @@ fn report_walk_cmd(
         .map(|s| s.foot_fx.iter().filter(|v| **v < 0.0).sum::<f64>())
         .sum::<f64>()
         / n;
+    let mpc_fx: f64 = walk.iter().map(|s| s.mpc_fx).sum::<f64>() / n;
+    let wbc_fx: f64 = walk.iter().map(|s| s.wbc_fx).sum::<f64>() / n;
     eprintln!(
-        "  ground fx: net={fx_mean:+.3} N  (pushing {fx_pos:+.3} / braking \
-         {fx_neg:+.3})   mg={:.1} N",
-        walk.len() as f64 * 0.0 + 3.3 * 9.81
+        "  fore-aft N: mpc plan={mpc_fx:+.3}  wbc solve={wbc_fx:+.3}  \
+         ground={fx_mean:+.3}  (push {fx_pos:+.3} / brake {fx_neg:+.3})"
     );
 
     let mut role_line = String::from("  tau/limit:");
@@ -4264,6 +4345,7 @@ fn namiashi_legged_control_gain_split() {
             Actuation::TorqueLeggedControl {
                 swing_kp: 100.0,
                 swing_kd: 1.2,
+                stance_kp: 0.0,
                 stance_kd: 0.0,
                 bias_ff: 0.0,
             },
@@ -4274,6 +4356,7 @@ fn namiashi_legged_control_gain_split() {
             Actuation::TorqueLeggedControl {
                 swing_kp: 100.0,
                 swing_kd: 1.2,
+                stance_kp: 0.0,
                 stance_kd: 0.0,
                 bias_ff: 0.0,
             },
@@ -4286,6 +4369,7 @@ fn namiashi_legged_control_gain_split() {
             Actuation::TorqueLeggedControl {
                 swing_kp: 100.0,
                 swing_kd: 1.2,
+                stance_kp: 0.0,
                 stance_kd: 0.5,
                 bias_ff: 0.0,
             },
@@ -4296,6 +4380,7 @@ fn namiashi_legged_control_gain_split() {
             Actuation::TorqueLeggedControl {
                 swing_kp: 100.0,
                 swing_kd: 1.2,
+                stance_kp: 0.0,
                 stance_kd: 0.5,
                 bias_ff: 0.0,
             },
@@ -4345,6 +4430,7 @@ fn namiashi_bias_feedforward() {
                 actuation: Actuation::TorqueLeggedControl {
                     swing_kp: 100.0,
                     swing_kd: 1.2,
+                    stance_kp: 0.0,
                     stance_kd,
                     bias_ff,
                 },
@@ -4361,6 +4447,211 @@ fn namiashi_bias_feedforward() {
                 cmd,
                 1.0,
             );
+        }
+    }
+}
+
+/// MAKING THE MPC LOAD-BEARING: STANCE GAIN AGAINST CONTACT-FORCE WEIGHT.
+///
+/// Five measurements say the MPC's plan does not reach the ground. The
+/// three-point trace says where it stops: freed of the position servo the MPC
+/// asks for 6-12 N of propulsion and the WBC passes 1% of it, because
+/// `contact_force` -- the task that tracks the MPC's GRF -- is weight 5 at
+/// priority 2, under `no_contact_motion` and `floating_base_eom` as hard
+/// constraints at priority 0.
+///
+/// Two knobs have to move together and neither works alone. Dropping the
+/// stance gain removes the propulsion the servo was supplying, and the robot
+/// stops walking (6% of command). Raising `contact_force` with the servo
+/// still there changes little, because the servo has already decided the
+/// motion and the WBC is only reconciling force with it.
+///
+/// So sweep the pair. Every run reports what the MPC planned, what the WBC
+/// solved and what the ground delivered, so "the MPC is load-bearing" is read
+/// off the numbers rather than inferred from the gait working.
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_make_the_mpc_load_bearing() {
+    const I: usize = 0; // Trot
+    let (_, .., cmd) = NAMIASHI_TUNED[I];
+    for stance_kp in [100.0, 40.0, 10.0, 0.0] {
+        for cf_w in [5.0, 50.0, 300.0] {
+            let params = WbcParams {
+                actuation: Actuation::TorqueLeggedControl {
+                    swing_kp: 100.0,
+                    swing_kd: 1.2,
+                    stance_kp,
+                    stance_kd: 0.5,
+                    bias_ff: 0.0,
+                },
+                contact_force_weight: Some(cf_w),
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                cmd_vx: cmd,
+                total_time_s: 12.0,
+                ..namiashi_tuned_params(I)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(
+                &format!("Trot skp={stance_kp:.0} cf={cf_w:.0}"),
+                &samples,
+                cmd,
+                1.0,
+            );
+        }
+    }
+}
+
+/// legged_control's OWN GAINS.
+///
+/// Its task stack turns out to be identical to this one -- floating-base EoM,
+/// torque limits, friction cone and no-contact-motion hard at priority 0,
+/// base-accel and swing-leg at 1, contact-force at 2. So the port is faithful
+/// and `contact_force` being lowest is not the problem, which is consistent
+/// with weighting it 5 to 300 changing nothing.
+///
+/// What differs is the command. `legged_controller.cpp:142`:
+///
+/// ```text
+/// setCommand(pos_des, vel_des, 5, 3, torque)
+/// ```
+///
+/// kp = 5, not the 100 this file has used throughout; uniform, with no
+/// stance/swing split; and the damping tracks a velocity target rather than
+/// damping toward zero. A twentieth of the gain, and not fighting the swing.
+///
+/// The stance-gain sweep already showed the MPC starting to matter as the
+/// gain comes down -- the ratio of WBC solution to MPC plan goes -9.9 at
+/// kp=100 (opposite sign; the WBC is reconciling force with motion the servo
+/// already produced) to +1.55 at 40. It stopped at 10 and 0, where the MPC
+/// asks for 5-12 N and the walk falls apart. 5 is below all of that, so
+/// whether it works is not obvious from the trend.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_legged_control_gains() {
+    const I: usize = 0; // Trot
+    let (_, .., cmd) = NAMIASHI_TUNED[I];
+    let cases: &[(&str, f64, f64)] = &[
+        ("lc 5/3", 5.0, 3.0),
+        ("lc 10/3", 10.0, 3.0),
+        ("lc 20/3", 20.0, 3.0),
+        ("lc 40/3", 40.0, 3.0),
+        ("lc 100/3", 100.0, 3.0),
+        // The current path for reference: same uniform gains but damping
+        // toward zero instead of tracking the trajectory velocity.
+        ("current 100/1.2", 100.0, 1.2),
+    ];
+    for &(tag, kp, kd) in cases {
+        let act = if tag.starts_with("current") {
+            Actuation::Torque { kp, kd }
+        } else {
+            Actuation::LeggedControl { kp, kd }
+        };
+        let params = WbcParams {
+            actuation: act,
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: cmd,
+            total_time_s: 12.0,
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Trot {tag}"), &samples, cmd, 1.0);
+    }
+}
+
+/// DOES MAKING THE MPC LOAD-BEARING BUY ANYTHING UNDER DISTURBANCE?
+///
+/// It costs something on flat ground. Dropping the uniform gain from 100 to 5
+/// takes the WBC-solution-to-MPC-plan ratio from +10.1 to +0.88 -- the WBC
+/// stops overriding the plan and starts following it -- and costs 107% -> 83%
+/// of command, 0.231 -> 0.198 m of trunk height and 4.3 -> 8.0 deg of roll.
+///
+/// Flat ground at a constant command is exactly where a predictive layer has
+/// nothing to predict, so that trade says little on its own. The reason to
+/// want the MPC load-bearing is what happens when something unexpected
+/// arrives, and the push test is the one condition in this file that supplies
+/// that. If a lower gain buys nothing here, chasing further fidelity to
+/// legged_control is chasing fidelity for its own sake.
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_mpc_authority_under_push() {
+    const I: usize = 0; // Trot
+    let (_, period, .., cmd) = NAMIASHI_TUNED[I];
+    let cases: &[(&str, Actuation)] = &[
+        ("current 100/1.2", Actuation::Torque { kp: 100.0, kd: 1.2 }),
+        ("lc 100/3", Actuation::LeggedControl { kp: 100.0, kd: 3.0 }),
+        ("lc 20/3", Actuation::LeggedControl { kp: 20.0, kd: 3.0 }),
+        ("lc 5/3", Actuation::LeggedControl { kp: 5.0, kd: 3.0 }),
+    ];
+    for &(tag, act) in cases {
+        for step in 0..8 {
+            let t_push = 6.0 + period * step as f64 / 8.0;
+            let params = WbcParams {
+                actuation: act,
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                cmd_vx: cmd,
+                push: Some((t_push, [0.0, 12.0, 0.0], 0.12)),
+                total_time_s: 11.0,
+                ..namiashi_tuned_params(I)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_push(&format!("Trot {tag} p{step}"), &samples, t_push, cmd);
+        }
+    }
+}
+
+/// FULLCENTROIDAL WITH ITS legged_control-PARITY OPTIONS.
+///
+/// The reason for coming here was to take `pos_des` from the MPC's optimised
+/// state, the way `legged_controller.cpp:142` does, since at kp=5 the IK
+/// trajectory and the MPC's plan disagree and the two fight.
+///
+/// That is not available. `FullCentroidalMpcGaitController`'s own header says
+/// so: "Reference joint_q is held at the controller's current IK output" and
+/// "swing leg foot tracking is still driven by the CHAMP layer's joint
+/// target". The 24-state MPC carries joint angles so that the per-node moment
+/// arm `r = R (foot_body(q) - com_offset)` updates within the horizon -- a
+/// coupling the 12-state SRBD cannot see -- but they never become a command.
+/// There is no `getJointAngles(optimized_state)` here.
+///
+/// What is available is `legged_control_parity`, which builds the per-step
+/// contact schedule from a per-leg phase projection and reshapes the swing
+/// reference, and `dynamic_joint_q_reference`, which samples the foot curve
+/// at each horizon step's projected phase instead of holding joint_q flat.
+/// Both change what the MPC plans against rather than what the joints are
+/// told, so they should show up as the MPC's plan getting better rather than
+/// as the servo being bypassed.
+///
+/// Measured at the gain where the MPC has authority (kp=5, ratio +0.88) and
+/// at the one that walks best (kp=100), so a change in the plan's quality is
+/// visible at both ends.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_fullcentroidal_parity() {
+    const I: usize = 0; // Trot
+    let (_, .., cmd) = NAMIASHI_TUNED[I];
+    let opts: [(&str, bool, bool); 3] = [
+        ("plain", false, false),
+        ("parity", true, false),
+        ("parity+dynq", true, true),
+    ];
+    for (otag, parity, dynq) in opts {
+        for (gtag, kp) in [("kp100", 100.0), ("kp5", 5.0)] {
+            let params = WbcParams {
+                gait_mode: GaitMode::FullCentroidal,
+                legged_control_parity: parity,
+                dynamic_joint_q_reference: dynq,
+                actuation: Actuation::LeggedControl { kp, kd: 3.0 },
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                cmd_vx: cmd,
+                total_time_s: 12.0,
+                ..namiashi_tuned_params(I)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("Trot {otag} {gtag}"), &samples, cmd, 1.0);
         }
     }
 }
