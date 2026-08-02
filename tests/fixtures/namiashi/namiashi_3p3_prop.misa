@@ -1201,11 +1201,11 @@ rpy = [
 [joint.limit]
 lower = -2.62
 upper = 2.62
-effort = 2.205
-velocity = 33.5
+effort = 2.33333
+velocity = 21.5357
 
 [joint.dynamics]
-armature = 0.0014
+armature = 0.00338765
 damping = 0.1
 friction = 0.0
 
@@ -1326,11 +1326,11 @@ rpy = [
 [joint.limit]
 lower = -2.62
 upper = 2.62
-effort = 2.205
-velocity = 33.5
+effort = 2.33333
+velocity = 21.5357
 
 [joint.dynamics]
-armature = 0.0014
+armature = 0.00338765
 damping = 0.1
 friction = 0.0
 
@@ -1451,11 +1451,11 @@ rpy = [
 [joint.limit]
 lower = -2.62
 upper = 2.62
-effort = 2.205
-velocity = 33.5
+effort = 2.33333
+velocity = 21.5357
 
 [joint.dynamics]
-armature = 0.0014
+armature = 0.00338765
 damping = 0.1
 friction = 0.0
 
@@ -1576,11 +1576,11 @@ rpy = [
 [joint.limit]
 lower = -2.62
 upper = 2.62
-effort = 2.205
-velocity = 33.5
+effort = 2.33333
+velocity = 21.5357
 
 [joint.dynamics]
-armature = 0.0014
+armature = 0.00338765
 damping = 0.1
 friction = 0.0
 
