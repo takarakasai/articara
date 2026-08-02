@@ -234,6 +234,43 @@ impl FootstepPlan {
         FootstepPlan { at, initial: *initial }
     }
 
+    /// Constant stride, reached over `ramp` steps from standing.
+    ///
+    /// Every failure above stride 0.04 happened 1 to 1.7 s after the FIRST
+    /// step, not after any accumulation, which points at the start rather
+    /// than at a steady-state ceiling: the plan asks a robot that has been
+    /// standing still to take a full-length step immediately, and the DCM has
+    /// to be moving at the walking rate the moment single support begins.
+    /// Ramping asks for it over several steps instead.
+    pub fn ramped_stride(
+        plan: &GaitPlan,
+        initial: &Footsteps,
+        stride: f64,
+        ramp: usize,
+    ) -> Self {
+        let mut cur = *initial;
+        let mut at = Vec::with_capacity(plan.slices.len());
+        let mut step = 0usize;
+        for s in &plan.slices {
+            match s.support {
+                Support::Single { swing, .. } => {
+                    let f = if ramp == 0 {
+                        1.0
+                    } else {
+                        ((step + 1) as f64 / ramp as f64).min(1.0)
+                    };
+                    let mut next = cur;
+                    next.sole[swing].x += 2.0 * stride * f;
+                    at.push(next);
+                    cur = next;
+                    step += 1;
+                }
+                Support::Double => at.push(cur),
+            }
+        }
+        FootstepPlan { at, initial: *initial }
+    }
+
     pub fn at_slice(&self, i: usize) -> &Footsteps {
         &self.at[i.min(self.at.len() - 1)]
     }
