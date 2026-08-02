@@ -30,8 +30,8 @@ fn main() {
     use articara::biped::contact::{contact_jacobians, cop_from_sole_wrench, Anchors};
     use articara::biped::dcm::{com_accel_xy, commanded_zmp, dcm_of, DcmPlan, SupportBox};
     use articara::biped::gait::{
-        swing_position, swing_velocity, ContactCorrection, Footsteps, GaitParams, GaitPlan,
-        Support,
+        swing_position, swing_velocity, ContactCorrection, FootstepPlan, Footsteps, GaitParams,
+        GaitPlan, Support,
     };
     use articara::biped::log::{measure_contacts, Row, TrajLog};
     use articara::biped::profile;
@@ -259,7 +259,12 @@ fn main() {
     // anything less is only reachable with both feet down, so it is a W1
     // instrument, not a gait parameter.
     let zmp_lat_scale = env_f64("ZMP_LAT_SCALE", 1.0);
-    let dcm_plan = DcmPlan::from_schedule(&gait, &steps, z_com, zmp_lat_scale);
+    // Forward travel per step, in metres of BODY advance. 0 is stepping in
+    // place, which stays a special case of this rather than a separate path.
+    // A commanded speed maps to it as stride = v * (t_ss + t_ds).
+    let stride = env_f64("STRIDE", 0.0);
+    let footsteps = FootstepPlan::constant_stride(&gait, &steps, stride);
+    let dcm_plan = DcmPlan::from_footsteps(&gait, &footsteps, z_com, zmp_lat_scale);
     let omega = dcm_plan.omega;
     println!(
         "gait: {} steps, DS {:.2}s / SS {:.2}s (start {:.2}s), first swing = {}",
@@ -281,6 +286,15 @@ fn main() {
         steps.sole[0].x, steps.sole[0].y, steps.sole[1].x, steps.sole[1].y,
         (steps.sole[0].y - steps.sole[1].y).abs() * 1e3
     );
+    if stride != 0.0 {
+        println!(
+            "stride: {:.3} m/step -> {:.3} m/s commanded, {:.2} m of travel planned over {} steps",
+            stride,
+            stride / (gp.t_ss + gp.t_ds),
+            footsteps.travel_x(),
+            gp.n_steps
+        );
+    }
     if no_lift {
         println!("NO_LIFT: the schedule drives the ZMP reference, but both feet stay in contact");
     }
@@ -364,6 +378,7 @@ fn main() {
 
     let mut prev_support = gait.support_at(0.0);
     let mut swing_lift_off: Option<na::Vector3<f64>> = None;
+    let x0_body = rig.sim.body_world_position(&rig.robot.root_link).unwrap()[0];
     let mut fell = false;
     let mut min_z = f64::INFINITY;
     let mut max_tilt: f64 = 0.0;
@@ -387,6 +402,9 @@ fn main() {
         let support = if no_lift { Support::Double } else { slice.support };
         let step_idx = gait.steps_taken(t.max(1e-9));
         let slice_idx = gait.index_at(t);
+        // Everything below reads the footsteps for THIS slice. With stride 0
+        // they are the same pair every time and this is the old behaviour.
+        let steps = *footsteps.at_slice(slice_idx);
 
         // Touchdown and lift-off are the only two events that may edit an
         // anchor. Doing it on the schedule (rather than lazily, the way
@@ -617,11 +635,13 @@ fn main() {
                 let pos = misarta::se3::translation(&data.oMi[mi]);
                 let vel3 = &jf.rows(3, 3).into_owned() * v_dvec;
                 let vel = na::Vector3::new(vel3[0], vel3[1], vel3[2]);
-                // Stepping in place: land back where we took off. The z of
-                // the target is the LIFT-OFF z, not the planned sole height,
-                // so a foot that started a millimetre high is not commanded
-                // to drive itself into the floor.
-                let touch_down = lift_off;
+                // Land on the PLANNED footstep. Its z stays the lift-off z
+                // rather than the plan's: the ground is flat, so they agree to
+                // within a millimetre, and using the measured one keeps a foot
+                // that started slightly high from being driven into the floor.
+                // With stride 0 this is exactly "land where you took off".
+                let plan_xy = steps.sole[side];
+                let touch_down = na::Vector3::new(plan_xy.x, plan_xy.y, lift_off.z);
                 let tgt = swing_position(lift_off, touch_down, lift_h, slice_frac);
                 let tgt_v =
                     swing_velocity(lift_off, touch_down, lift_h, slice_frac, slice.duration());
@@ -954,6 +974,22 @@ fn main() {
 
     println!("\n=== Result (walk) ===");
     println!("  steps taken: {}", step_stats.len());
+    {
+        // Commanded against achieved travel. A gait that "walks" at half the
+        // commanded speed is the classic footstep bookkeeping error, and it
+        // looks perfectly stable while doing it.
+        let x_end = rig.sim.body_world_position(&rig.robot.root_link).unwrap()[0];
+        println!(
+            "  travel: planned {:.3} m, body moved {:.3} m ({:.0}%)",
+            footsteps.travel_x(),
+            x_end - x0_body,
+            if footsteps.travel_x() > 1e-6 {
+                100.0 * (x_end - x0_body) / footsteps.travel_x()
+            } else {
+                100.0
+            }
+        );
+    }
     println!("  min trunk z = {min_z:.3}   max tilt = {max_tilt:.3} rad");
     println!("  max |xi - xi_ref| = {:.1} mm", max_dcm_err * 1e3);
     println!("  max CoP box use = {max_cop_use:.2}  (feet carrying >10% of weight)");
