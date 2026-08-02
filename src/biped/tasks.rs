@@ -110,6 +110,56 @@ pub fn trunk_rp_ref(
     ]
 }
 
+/// World-frame reference angular acceleration for [`trunk_rpy`], built from a
+/// rotation-vector error rather than from Euler components.
+///
+/// [`trunk_rp_ref`] feeds a ZYX roll/pitch error straight into the WORLD
+/// angular-acceleration rows, which is only the same thing at zero heading.
+/// A quarter turn later the body's roll axis points along world +y, so the
+/// roll correction comes out on the wrong axis; past 90 deg it is also
+/// wrong-signed. Measured on kyo46rs: every turn command fell after a fixed
+/// ACCUMULATED heading -- 120 deg at wz=0.10, 104 deg at 0.20, 90 deg at 0.40
+/// -- while tracking its commanded rate to ~90% right up to the fall.
+///
+/// `e = log(R_des * R^T)` is the world-frame rotation carrying the body to
+/// upright-at-`yaw_des`, so it is correct at any heading. When `yaw_ref` is
+/// `None` the desired heading is the current one and the z component is zero,
+/// which is what the caller drops.
+pub fn trunk_ori_ref(
+    r_body: &na::UnitQuaternion<f64>,
+    yaw_ref: Option<f64>,
+    omega_world: &[f64; 3],
+    gains: TrunkGains,
+) -> [f64; 3] {
+    let (_, _, yaw_now) = r_body.euler_angles();
+    let yaw_des = yaw_ref.unwrap_or(yaw_now);
+    let r_des = na::UnitQuaternion::from_euler_angles(0.0, 0.0, yaw_des);
+    let e = (r_des * r_body.inverse()).scaled_axis();
+    let dead = |v: f64| {
+        if v.abs() <= gains.deadband { 0.0 } else { v - gains.deadband * v.signum() }
+    };
+    [
+        gains.sign * (gains.kp * dead(e[0]) - gains.kd * omega_world[0]),
+        gains.sign * (gains.kp * dead(e[1]) - gains.kd * omega_world[1]),
+        gains.kp_yaw * e[2] + gains.kd_yaw * (gains.wz_ref - omega_world[2]),
+    ]
+}
+
+/// Gains for [`trunk_ori_ref`]. Roll/pitch and yaw keep separate gains because
+/// they are tuned against different things -- tilt rejection versus tracking a
+/// commanded turn.
+#[derive(Clone, Copy, Debug)]
+pub struct TrunkGains {
+    pub kp: f64,
+    pub kd: f64,
+    pub deadband: f64,
+    pub sign: f64,
+    pub kp_yaw: f64,
+    pub kd_yaw: f64,
+    /// Commanded yaw RATE, fed forward into the damping term.
+    pub wz_ref: f64,
+}
+
 /// P4: weak posture, so the null space does not wander.
 ///
 /// `actuated` is `(articara joint index, misarta v index)` as
