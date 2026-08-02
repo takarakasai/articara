@@ -204,6 +204,6 @@ pub fn by_name(name: &str) -> Profile {
         "" | "kyo46rs" => KYO46RS,
         "kyo46rs2" | "v2" => KYO46RS2,
         "g1" | "g1_23dof" => G1_23DOF,
-        other => panic!("unknown ROBOT={other:?} (kyo46rs | g1)"),
+        other => panic!("unknown ROBOT={other:?} (kyo46rs | kyo46rs2 | g1)"),
     }
 }
