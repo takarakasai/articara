@@ -193,6 +193,10 @@ struct WbcParams {
     /// Override for `WbcWeights::contact_force` (default 5.0) -- how hard the
     /// WBC pulls its own GRF solution toward the MPC's prediction.
     contact_force_weight: Option<f64>,
+    /// Write the exact MJCF the sim runs plus a per-tick root-pose and joint
+    /// trace here, for `render_namiashi.py` to replay. Purely a side channel;
+    /// nothing in the harness reads it back.
+    replay_dir: Option<String>,
     dt: f64,
     /// `None` = the legacy `wbc::solve_warm_with_weights` path
     /// (walk-validated default). `Some` opts the pipeline into the
@@ -244,6 +248,7 @@ impl WbcParams {
             f_min_stance_frac: 0.0,
             base_accel_weight: None,
             contact_force_weight: None,
+            replay_dir: None,
         }
     }
     fn forward_walk() -> Self {
@@ -267,6 +272,7 @@ impl WbcParams {
             f_min_stance_frac: 0.0,
             base_accel_weight: None,
             contact_force_weight: None,
+            replay_dir: None,
         }
     }
 
@@ -318,6 +324,19 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         add_actuators: true,
         ..Default::default()
     };
+    // Optional replay export for video rendering. Writes the exact MJCF the
+    // sim is running plus a per-tick root-pose + joint trace, so a renderer
+    // can replay the run kinematically without re-deriving any of it. Purely
+    // a side channel -- nothing below reads it.
+    let replay_out = params.replay_dir.clone();
+    if let Some(dir) = replay_out.as_deref() {
+        std::fs::create_dir_all(dir).expect("create replay dir");
+        std::fs::write(
+            format!("{dir}/model.xml"),
+            articara::mjcf::export_mjcf_with_options(&robot, opts.clone()),
+        )
+        .expect("write replay model.xml");
+    }
     let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
     // We don't want gravity-comp to compete with the WBC during the
     // walking window — the WBC's floating-base EoM task already
@@ -426,6 +445,23 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             c.com_offset_body.x, c.com_offset_body.y, c.com_offset_body.z,
             i[(0, 0)], i[(1, 1)], i[(2, 2)],
         );
+    }
+
+    // Joint names in the order `gc.joint_indices()` reports them, so the
+    // replay CSV and the model agree without either side guessing.
+    let replay_joint_names: Vec<String> = gc
+        .joint_indices()
+        .iter()
+        .flatten()
+        .map(|&ji| robot.joints[ji].name.clone())
+        .collect();
+    let mut replay_buf = String::new();
+    if replay_out.is_some() {
+        replay_buf.push_str("t,root_x,root_y,root_z,root_qw,root_qx,root_qy,root_qz");
+        for n in &replay_joint_names {
+            replay_buf.push_str(&format!(",{n}"));
+        }
+        replay_buf.push('\n');
     }
 
     let n_steps = (params.total_time_s / params.dt).round() as usize;
@@ -677,6 +713,19 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         // `sim.step → sync_back`.
         let tx = robot.base_transform.translation;
         let (roll, pitch, yaw) = robot.base_transform.rotation.euler_angles();
+        if replay_out.is_some() {
+            let p = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+            let q = robot.base_transform.rotation;
+            replay_buf.push_str(&format!(
+                "{:.5},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}",
+                t, p[0], p[1], p[2], q.w, q.i, q.j, q.k
+            ));
+            for name in &replay_joint_names {
+                let qj = sim.joint_q_qd(name).map(|(q, _)| q).unwrap_or(0.0);
+                replay_buf.push_str(&format!(",{qj:.6}"));
+            }
+            replay_buf.push('\n');
+        }
         let total_fz_world: f64 =
             sim.contacts().iter().map(|c| c.force_world[2]).sum();
         // Applied joint torque against its own effort limit. `mujoco_sim`
@@ -730,6 +779,11 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             tau_frac,
             qd_frac,
         });
+    }
+    if let Some(dir) = replay_out.as_deref() {
+        std::fs::write(format!("{dir}/trace.csv"), &replay_buf)
+            .expect("write replay trace.csv");
+        eprintln!("[replay] wrote {dir}/model.xml and trace.csv");
     }
     Some(samples)
 }
@@ -2289,6 +2343,69 @@ fn namiashi_wbc_inertia_decomposition() {
         };
         let Some(samples) = run_wbc_sim(params) else { return };
         report_walk(&format!("Walk {tag}"), &samples, NAMIASHI_TUNED[1].5, 1.0);
+    }
+}
+
+/// VIDEO SOURCE: the three tuned gaits, and the four commands.
+///
+/// Writes a replay trace per run under `NAMIASHI_REPLAY_OUT/<label>/`, which
+/// `render_namiashi.py` turns into an MP4. Nothing here asserts -- the
+/// assertions live in `namiashi_tuned_gaits_hold`; this exists so the video
+/// and the regression are demonstrably the same configuration, taken from
+/// `NAMIASHI_TUNED` rather than restated.
+///
+/// Run as:
+///   NAMIASHI_REPLAY_OUT=/tmp/namiashi_replay cargo test --release \
+///     --no-default-features --features mujoco --test wbc_walk \
+///     namiashi_video_source -- --ignored --nocapture
+#[test]
+#[ignore = "video source -- needs NAMIASHI_REPLAY_OUT"]
+fn namiashi_video_source() {
+    let Ok(root) = std::env::var("NAMIASHI_REPLAY_OUT") else {
+        eprintln!("NAMIASHI_REPLAY_OUT unset -- nothing to record");
+        return;
+    };
+
+    // Part 1: each tuned gait walking forward.
+    for i in 0..NAMIASHI_TUNED.len() {
+        let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+        let label = format!("{gait:?}").to_lowercase();
+        let params = WbcParams {
+            total_time_s: 13.0,
+            replay_dir: Some(format!("{root}/{label}")),
+            ..namiashi_tuned_params(i)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("{gait:?} video"), &samples, cmd_vx, 1.0);
+    }
+
+    // Part 2: Trot answering all four commands, so the turn is visible. The
+    // yaw moment arm fix took turning from 76% of command to 100%, and that
+    // is the one result a still number does not convey.
+    let (_, t, duty, step, h, fwd) = NAMIASHI_TUNED[0];
+    for (tag, vx, vy, wz) in [
+        ("cmd_fwd", fwd, 0.0, 0.0),
+        ("cmd_back", -fwd, 0.0, 0.0),
+        ("cmd_strafe", 0.0, 0.45, 0.0),
+        ("cmd_turn", 0.0, 0.0, 0.60),
+    ] {
+        let params = WbcParams {
+            replay_dir: Some(format!("{root}/{tag}")),
+            total_time_s: 11.0,
+            burn_in_s: 1.0,
+            cmd_vx: vx,
+            cmd_vy: vy,
+            cmd_wz: wz,
+            gait_type: Some(GaitType::Trot),
+            cycle_period_s: Some(t),
+            duty_factor: Some(duty),
+            max_step_length_m: Some(step),
+            swing_height_m: Some(h),
+            k_capture_s: Some(0.0),
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk_cmd(&format!("Trot {tag}"), &samples, vx, vy, wz, 1.0);
     }
 }
 
