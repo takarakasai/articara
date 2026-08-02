@@ -3085,9 +3085,10 @@ fn namiashi_speed_vs_torque_host_rate() {
 
 /// VIDEO SOURCE: speed mode against torque mode, per gait.
 ///
-/// Both at 200 Hz -- a host rate a CAN bus with twelve MG4005s on it might
-/// plausibly hold, and the rate at which the two paths visibly part company.
-/// Everything else is the tuned configuration.
+/// Both interfaces the MG4005 offers, at the 400 Hz the bus is designed for.
+/// The speed side uses the ideal-velocity-source model, since that is what an
+/// 8-16 kHz driver loop looks like from a 400 Hz host, and `k_track = 40`,
+/// which is the value that suits all three gaits under that model.
 #[test]
 #[ignore = "video source -- needs NAMIASHI_REPLAY_OUT"]
 fn namiashi_actuation_video_source() {
@@ -3095,24 +3096,23 @@ fn namiashi_actuation_video_source() {
         eprintln!("NAMIASHI_REPLAY_OUT unset -- nothing to record");
         return;
     };
-    for hz in [200.0] {
-        for i in 0..NAMIASHI_TUNED.len() {
-            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
-            for (tag, act) in [
-                ("speed", Actuation::Velocity { k_track: 100.0, loop_kv: 1.2, loop_ki: 0.0 }),
-                ("torque", Actuation::Torque { kp: 100.0, kd: 1.2 }),
-            ] {
-                let g = format!("{gait:?}").to_lowercase();
-                let params = WbcParams {
-                    actuation: act,
-                    host_rate_hz: Some(hz),
-                    total_time_s: 12.0,
-                    replay_dir: Some(format!("{root}/{g}_{tag}")),
-                    ..namiashi_tuned_params(i)
-                };
-                let Some(samples) = run_wbc_sim(params) else { return };
-                report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
-            }
+    for i in 0..NAMIASHI_TUNED.len() {
+        let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+        for (tag, act) in [
+            ("speed", Actuation::VelocityIdeal { k_track: 40.0 }),
+            ("torque", Actuation::Torque { kp: 100.0, kd: 1.2 }),
+        ] {
+            let g = format!("{gait:?}").to_lowercase();
+            let params = WbcParams {
+                actuation: act,
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                total_time_s: 12.0,
+                replay_dir: Some(format!("{root}/{g}_{tag}")),
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
         }
     }
 }
