@@ -51,9 +51,14 @@ def cases(group=None):
     for v in (0.018, 0.036, 0.055, 0.073):
         out.append(("lateral", f"vy={v:+.3f}", {"VY": f"{v}"}))
         out.append(("lateral", f"vy={-v:+.3f}", {"VY": f"{-v}"}))
-    for w in (0.05, 0.10, 0.20, 0.40):
+    for w in (0.05, 0.10, 0.20, 0.40, 0.60, 0.80):
         out.append(("turn", f"wz={w:+.2f}", {"WZ": f"{w}"}))
         out.append(("turn", f"wz={-w:+.2f}", {"WZ": f"{-w}"}))
+    # 0.80 rad/s needs the shorter step; the turn ceiling is ~19 deg PER STEP,
+    # so the rate follows the cadence. Below t_step=0.40 it stops holding.
+    for w in (0.80, 1.00):
+        out.append(("turn fast", f"wz={w:+.2f} t=0.40",
+                    {"WZ": f"{w}", "T_SS": "0.25", "T_DS": "0.15"}))
     for a in (0.01, 0.02, 0.04):
         out.append(("squat", f"amp={a*1e3:.0f}mm still", {"SQUAT_AMP": f"{a}", "N_STEPS": "0"}))
         out.append(("squat", f"amp={a*1e3:.0f}mm walk", {"SQUAT_AMP": f"{a}", "VX": "0.055"}))
@@ -65,7 +70,7 @@ def cases(group=None):
 
 PATTERNS = {
     "steps": r"steps taken:\s*(\d+)",
-    "achieved": r"achieved over the walk \([\d.]+ s\): (.*)",
+    "achieved": r"achieved after the ramp \([\d.]+ s\): (.*)",
     "dcm": r"max \|xi - xi_ref\| =\s*([\d.]+) mm",
     "cop": r"max CoP box use =\s*([\d.]+)",
     "ankle": r"max ankle_roll use =\s*(\d+)%",
@@ -81,8 +86,12 @@ def run(env_extra, traj=None):
     env["LD_LIBRARY_PATH"] = MUJOCO_LIB + ":" + env.get("LD_LIBRARY_PATH", "")
     env.update(COMMON)
     env["N_STEPS"] = str(N_STEPS)
-    env["T"] = f"{T_END}"
     env.update({k: str(v) for k, v in env_extra.items()})
+    # Duration follows the step time, so a faster-cadence case still gets its
+    # full N_STEPS plus the same settle window.
+    t_step = float(env["T_SS"]) + float(env["T_DS"])
+    env["T"] = f"{2.0 + int(env['N_STEPS']) * t_step + 2.0}"
+    env.setdefault("STRIDE_RAMP", COMMON["STRIDE_RAMP"])
     if traj:
         env["TRAJ_CSV"] = traj
     p = subprocess.run([BIN], env=env, capture_output=True, text=True, timeout=1800)
@@ -131,8 +140,11 @@ def main():
     # A case only counts as passing if it also went where it was told, on
     # every axis that was commanded.
     def tracked(r):
+        # A case with no locomotion command (standing squat) has nothing to
+        # track, so surviving IS the criterion -- counting it as a tracking
+        # failure understated the pass rate by exactly those three rows.
         pcts = [int(m) for m in re.findall(r"\((-?\d+)%\)", r["achieved"] or "")]
-        return bool(pcts) and all(p >= 85 for p in pcts)
+        return all(p >= 85 for p in pcts)
     n_real = sum(1 for r in rows if r["survived"] == "SURVIVED" and tracked(r))
     print(f"\n{n_ok}/{len(rows)} survived; {n_real}/{len(rows)} also tracked "
           f"the command to >=85% on every commanded axis")

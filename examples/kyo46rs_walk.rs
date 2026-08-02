@@ -248,7 +248,7 @@ fn main() {
     // Swing orientation gains. Without this task the foot's three rotational
     // DoF are free and the QP twists the leg: measured, hip_yaw walked to its
     // +-30 deg stop over 16 steps and the feet landed yawed by up to 31 deg.
-    let yaw0 = {
+    let _yaw0 = {
         let q = rig.sim.body_world_orientation(&rig.robot.root_link).unwrap();
         q.euler_angles().2
     };
@@ -483,6 +483,23 @@ fn main() {
         // 56 m/s.
         .unwrap_or(total_t);
     let mut walk_end_state: Option<([f64; 3], f64, f64)> = None;
+    // Achievement is measured from the end of the stride ramp, not from
+    // standing. Including the ramp charges every case a fixed shortfall that
+    // never recovers -- it read 91% for every forward speed, and 47% for a
+    // turn that was in fact holding 0.195 of a commanded 0.200 rad/s.
+    let t_ramp_end = gp.t_start + (stride_ramp as f64) * t_step;
+    let mut ramp_end_state: Option<([f64; 3], f64, f64)> = None;
+    // Last state before the loop ended, so a case that FELL reports the rate
+    // it was actually holding rather than a post-fall pose divided by a
+    // duration that never happened.
+    let mut last_state: ([f64; 3], f64, f64) = (p0_body, yaw0_body, 0.0);
+    // Command tracking is integrated in the BODY frame, tick by tick, rather
+    // than taken as a displacement in the start frame. Two reasons, both
+    // measured: euler yaw wraps at +-pi, so a turn past 180 deg read as
+    // -69% of its command; and a curved path's chord is not its arc, so
+    // vx+wz together read 56% on a run whose speed was right.
+    let mut travel = [0.0f64; 3]; // body-frame x, y, unwrapped yaw
+    let mut prev_pose: Option<([f64; 3], f64)> = None;
     let mut fell = false;
     let mut min_z = f64::INFINITY;
     let mut max_tilt: f64 = 0.0;
@@ -693,7 +710,7 @@ fn main() {
         let p_raw = commanded_zmp(&xi, &r, omega, k_dcm);
         // Clamp against the support that is REALLY there, which in NO_LIFT is
         // both feet even where the plan says one.
-        let sbox = SupportBox::from_stance(
+        let sbox = SupportBox::from_stance_yawed(
             &steps,
             support,
             (sole_half_l * cop_frac, sole_half_w * cop_frac),
@@ -781,15 +798,81 @@ fn main() {
             let rot = misarta::se3::rotation_matrix(&data.oMi[rig.trunk_mi]);
             (rot[(2, 1)].atan2(rot[(2, 2)]), (-rot[(2, 0)]).asin())
         };
-        let rp_ref =
-            bt::trunk_rp_ref(roll, pitch, &st.v_ang_w, kp_trunk, kd_trunk, trunk_dead, trunk_sign);
+        let _ = (roll, pitch);
         // Yaw error against the pose the plan was built in, not against the
         // last tick: the reference is a fixed world direction.
-        let yaw_ref = trunk_yaw.then(|| {
-            let (_, _, yaw) = st.body_quat.euler_angles();
-            kp_yaw * (yaw0 - yaw) + kd_yaw * (0.0 - st.v_ang_w[2])
-        });
-        let p2 = bt::trunk_rpy(dyn_ctx.qddot(), &j_trunk, &djv_trunk, &rp_ref, yaw_ref, nv);
+        // Trunk yaw follows the PLAN, not the initial heading.
+        //
+        // Regulating to `yaw0` with a zero rate reference is right for
+        // straight walking -- it is what stopped the legs twisting to their
+        // hip_yaw stops -- and it makes turning impossible, because the task
+        // then fights the commanded turn directly. Measured: every turn
+        // command in the benchmark fell, down to 0.05 rad/s. The planned
+        // heading is the mean of the two footstep yaws, which already carries
+        // the stride ramp.
+        // WHEN the body turns matters as much as how much.
+        //
+        // Yawing during SINGLE support has to be paid for out of the stance
+        // sole's torsional friction -- mu_torsion 0.05 against 65 N is
+        // 3.25 N*m, on a 38 mm-wide foot. Yawing during DOUBLE support is paid
+        // for by a couple between two feet 99.4 mm apart, which is a different
+        // order of authority. So hold the heading through single support and
+        // turn while both feet are down.
+        //
+        // `at_slice(i)` already has the swing foot at its LANDING yaw, so
+        // reading it during single support asks the trunk to rotate before the
+        // foot that will carry the rotation is even down.
+        let turn_in_ds = flag("TURN_IN_DS", true);
+        let yaw_plan = {
+            let mean = |i: usize| {
+                let y = footsteps.at_slice(i).yaw;
+                0.5 * (y[0] + y[1])
+            };
+            let prev = mean(slice_idx.saturating_sub(1));
+            if !turn_in_ds {
+                mean(slice_idx)
+            } else if matches!(support, Support::Single { .. }) {
+                prev
+            } else {
+                // Rotate across the double support.
+                prev + (mean(slice_idx) - prev) * slice_frac
+            }
+        };
+        // Rate reference follows the same shape as the heading: zero while a
+        // single foot is carrying the robot, the whole turn compressed into DS.
+        let wz_ref = if turn_in_ds {
+            if matches!(support, Support::Single { .. }) { 0.0 } else { wz * (t_step / gp.t_ds.max(1e-6)) }
+        } else {
+            wz
+        };
+        // Now an absolute target heading -- trunk_ori_ref forms the error.
+        let yaw_ref = trunk_yaw.then_some(yaw_plan);
+        // One world-frame rotation-vector error for all three rows. The
+        // roll/pitch rows are frame-correct at any heading this way; the old
+        // Euler form silently rotated its own correction away.
+        let ori = bt::trunk_ori_ref(
+            &st.body_quat,
+            yaw_ref,
+            &st.v_ang_w,
+            bt::TrunkGains {
+                kp: kp_trunk,
+                kd: kd_trunk,
+                deadband: trunk_dead,
+                sign: trunk_sign,
+                kp_yaw,
+                kd_yaw,
+                wz_ref,
+            },
+        );
+        let rp_ref = [ori[0], ori[1]];
+        let p2 = bt::trunk_rpy(
+            dyn_ctx.qddot(),
+            &j_trunk,
+            &djv_trunk,
+            &rp_ref,
+            yaw_ref.map(|_| ori[2]),
+            nv,
+        );
 
         // ---- P4: posture ------------------------------------------------
         let p3 = bt::posture(
@@ -1156,6 +1239,30 @@ fn main() {
             log.write(&rig, &row);
         }
 
+        if !fell {
+            let p = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
+            let y = rig.sim.body_world_orientation(&rig.robot.root_link).unwrap().euler_angles().2;
+            if let Some((pp, py)) = prev_pose {
+                if t >= t_ramp_end {
+                    let (dx, dy) = (p[0] - pp[0], p[1] - pp[1]);
+                    let (c, sn) = (py.cos(), py.sin());
+                    travel[0] += dx * c + dy * sn;
+                    travel[1] += -dx * sn + dy * c;
+                    // Shortest-arc difference, so the accumulator never wraps.
+                    let mut dy_aw = y - py;
+                    while dy_aw > std::f64::consts::PI { dy_aw -= std::f64::consts::TAU; }
+                    while dy_aw < -std::f64::consts::PI { dy_aw += std::f64::consts::TAU; }
+                    travel[2] += dy_aw;
+                }
+            }
+            prev_pose = Some((p, y));
+            last_state = (p, y, t);
+        }
+        if ramp_end_state.is_none() && t >= t_ramp_end {
+            let p = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
+            let y = rig.sim.body_world_orientation(&rig.robot.root_link).unwrap().euler_angles().2;
+            ramp_end_state = Some((p, y, t));
+        }
         if walk_end_state.is_none() && t >= t_walk_end {
             let p = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
             let y = rig.sim.body_world_orientation(&rig.robot.root_link).unwrap().euler_angles().2;
@@ -1210,19 +1317,14 @@ fn main() {
         // that goes half as far as it was told looks perfectly stable while
         // doing it -- and a travel metric that only reads x says "100%" for a
         // sideways command that went nowhere, which is worse than no metric.
-        let (pe, ye, te) = walk_end_state.unwrap_or_else(|| {
-            let p = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
-            let y = rig.sim.body_world_orientation(&rig.robot.root_link).unwrap().euler_angles().2;
-            (p, y, t_walk_end)
-        });
-        let dur = (te - gp.t_start).max(1e-6);
-        // Into the frame the command was given in.
-        let (c, sn) = (yaw0_body.cos(), yaw0_body.sin());
-        let (dx, dy) = (pe[0] - p0_body[0], pe[1] - p0_body[1]);
+        let (pe, ye, te) = walk_end_state.unwrap_or(last_state);
+        let (_, _, t0) = ramp_end_state.unwrap_or((p0_body, yaw0_body, gp.t_start));
+        let _ = (pe, ye);
+        let dur = (te - t0).max(1e-6);
         let ach = [
-            (c * dx + sn * dy) / dur,
-            (-sn * dx + c * dy) / dur,
-            (ye - yaw0_body) / dur,
+            travel[0] / dur,
+            travel[1] / dur,
+            travel[2] / dur,
         ];
         let cmd = [vx, vy, wz];
         let names = ["vx", "vy", "wz"];
@@ -1233,16 +1335,26 @@ fn main() {
                 continue;
             }
             let pct = if cmd[k].abs() > 1e-9 { 100.0 * ach[k] / cmd[k] } else { f64::NAN };
-            parts.push(format!(
-                "{}: {:+.4} / {:+.4} {} ({:.0}%)",
-                names[k], ach[k], cmd[k], units[k],
-                if pct.is_nan() { 0.0 } else { pct }
-            ));
+            // An uncommanded axis has no percentage -- it is cross-coupling,
+            // and printing "(0%)" for it makes the pass criterion read it as a
+            // failure.
+            if pct.is_nan() {
+                parts.push(format!("{}: {:+.4} {} (drift)", names[k], ach[k], units[k]));
+            } else {
+                parts.push(format!(
+                    "{}: {:+.4} / {:+.4} {} ({:.0}%)",
+                    names[k], ach[k], cmd[k], units[k], pct
+                ));
+            }
         }
         if parts.is_empty() {
             parts.push("no command".into());
         }
-        println!("  achieved over the walk ({:.1} s): {}", dur, parts.join("   "));
+        println!(
+            "  achieved after the ramp ({:.1} s): {}",
+            dur,
+            parts.join("   ")
+        );
     }
     println!("  min trunk z = {min_z:.3}   max tilt = {max_tilt:.3} rad");
     println!("  max |xi - xi_ref| = {:.1} mm", max_dcm_err * 1e3);

@@ -145,6 +145,30 @@ struct WbcSample {
 /// `gait_walk_stability`.
 const TRUNK_Z_FALL_THRESHOLD_M: f64 = 0.18;
 
+/// How far below the harness's original nominal stance every run now sits.
+///
+/// The file spent its whole history at one height, ~0.295 m, and
+/// `namiashi_trunk_height_sweep` shows that was not a neutral choice. All
+/// three gaits walk at 0, 2, 4 and 6 cm of crouch -- tracking stays 98-103%
+/// and trunk z lands within a millimetre or two of target -- but crouching
+/// rotates the leg Jacobian, so the same foot force gets split differently
+/// between thigh and knee:
+///
+///     Trot   thigh 26.7 -> 10.7 %    calf  6.0 -> 17.0 %
+///     Walk   thigh  6.3 ->  5.3 %    calf 11.3 ->  1.9 %
+///     Crawl  thigh  3.4 ->  2.1 %    calf  9.8 ->  0.5 %
+///
+/// 6 cm is the baseline because the thigh is the joint that actually binds --
+/// it was clamped at its 1.5 N*m limit for a quarter of every Trot run, and
+/// `mujoco_sim.rs:1121` does that silently -- and crouching more than halves
+/// it. Walk and Crawl get it nearly free; their knee saturation all but
+/// disappears and nothing else moves.
+///
+/// Trot pays for it. Its knee saturation nearly triples, and peak roll goes
+/// from 2.8 deg to 5.3. That is a deliberate trade, not an oversight: 17% on
+/// a 2.3 N*m knee is a better place to be than 27% on a 1.5 N*m thigh.
+const NAMIASHI_STANCE_DROP_M: f64 = 0.06;
+
 /// Minimum forward displacement during the walking window — the same
 /// 4 cm threshold the gait stability test uses.
 const MIN_DISPLACEMENT_M: f64 = 0.04;
@@ -197,6 +221,11 @@ struct WbcParams {
     /// trace here, for `render_namiashi.py` to replay. Purely a side channel;
     /// nothing in the harness reads it back.
     replay_dir: Option<String>,
+    /// Lower the nominal stance by this much, metres. Applied to every leg's
+    /// `nominal_foot_body.z`, which is what both the IK seed and the MPC's
+    /// body-z reference are taken from, so the whole stack follows.
+    /// Defaults to [`NAMIASHI_STANCE_DROP_M`].
+    trunk_drop_m: f64,
     dt: f64,
     /// `None` = the legacy `wbc::solve_warm_with_weights` path
     /// (walk-validated default). `Some` opts the pipeline into the
@@ -249,6 +278,7 @@ impl WbcParams {
             base_accel_weight: None,
             contact_force_weight: None,
             replay_dir: None,
+            trunk_drop_m: NAMIASHI_STANCE_DROP_M,
         }
     }
     fn forward_walk() -> Self {
@@ -273,6 +303,7 @@ impl WbcParams {
             base_accel_weight: None,
             contact_force_weight: None,
             replay_dir: None,
+            trunk_drop_m: NAMIASHI_STANCE_DROP_M,
         }
     }
 
@@ -311,6 +342,8 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     for leg_kin in [&mut kin.fl, &mut kin.fr, &mut kin.rl, &mut kin.rr] {
         let total_leg = leg_kin.upper_leg_m + leg_kin.lower_leg_m;
         leg_kin.nominal_foot_body.z += 0.08 * total_leg;
+        // Positive z moves the nominal foot toward the body, i.e. crouches.
+        leg_kin.nominal_foot_body.z += params.trunk_drop_m;
     }
     seed_joint_positions_from_kinematics(&mut robot, &kin);
 
@@ -2406,6 +2439,83 @@ fn namiashi_video_source() {
         };
         let Some(samples) = run_wbc_sim(params) else { return };
         report_walk_cmd(&format!("Trot {tag}"), &samples, vx, vy, wz, 1.0);
+    }
+}
+
+/// HOW LOW CAN namiashi STAND AND STILL WALK?
+///
+/// Every result so far is at one stance height, the 0.295 m the harness has
+/// always used. Crouching is not a free parameter: it rotates the leg
+/// Jacobian, and the same foot force then needs a different split between
+/// thigh and knee. On this robot that matters more than usual, because the
+/// thigh is already the joint that saturates -- 24% of the time on Trot
+/// against a 1.5 N*m limit.
+///
+/// It also eats the step-length budget from the other end. `max_step_length_m`
+/// is 0.145 m against a 0.306 m leg, and a crouched leg has less horizontal
+/// reach before it runs out of extension, so a drop that leaves the gait
+/// geometrically fine can still leave it kinematically infeasible.
+///
+/// Four heights, three gaits, tuned settings otherwise unchanged. `drop` here
+/// is absolute, measured from the harness's original ~0.295 m stance -- it
+/// overrides `NAMIASHI_STANCE_DROP_M` rather than adding to it, so the 0 cm
+/// row is the old baseline and the 6 cm row is the current one.
+#[test]
+#[ignore = "12 runs -- run with --ignored"]
+fn namiashi_trunk_height_sweep() {
+    for drop in [0.0, 0.02, 0.04, 0.06] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                trunk_drop_m: drop,
+                total_time_s: 16.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(
+                &format!("{gait:?} drop={:.0}cm", drop * 100.0),
+                &samples,
+                cmd_vx,
+                1.0,
+            );
+        }
+    }
+}
+
+/// VIDEO SOURCE: the same gait at four stance heights.
+///
+/// Records Trot and Walk at 0 / 2 / 4 / 6 cm of crouch for
+/// `render_namiashi_height.py` to show as a 2x2 grid. Same settings as
+/// `NAMIASHI_TUNED` otherwise, so the comparison is only about height.
+///
+/// Run as:
+///   NAMIASHI_REPLAY_OUT=/tmp/namiashi_height cargo test --release \
+///     --no-default-features --features mujoco --test wbc_walk \
+///     namiashi_height_video_source -- --ignored --nocapture
+#[test]
+#[ignore = "video source -- needs NAMIASHI_REPLAY_OUT"]
+fn namiashi_height_video_source() {
+    let Ok(root) = std::env::var("NAMIASHI_REPLAY_OUT") else {
+        eprintln!("NAMIASHI_REPLAY_OUT unset -- nothing to record");
+        return;
+    };
+    for i in [0usize, 1] {
+        let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+        for drop in [0.0, 0.02, 0.04, 0.06] {
+            let tag = format!(
+                "{}_{:.0}cm",
+                format!("{gait:?}").to_lowercase(),
+                drop * 100.0
+            );
+            let params = WbcParams {
+                trunk_drop_m: drop,
+                total_time_s: 12.0,
+                replay_dir: Some(format!("{root}/{tag}")),
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
+        }
     }
 }
 
