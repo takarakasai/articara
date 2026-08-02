@@ -76,6 +76,13 @@ pub struct WbcPipeline {
     /// argues otherwise. Hard constraint at priority 0, so keep it well
     /// under the real per-foot share or touchdown transients go infeasible.
     pub f_min_stance_n: f64,
+    /// Added to the observed base position before anything downstream sees
+    /// it. A diagnostic: rigid-body dynamics is translation invariant, so a
+    /// controller that needs a *bounded* absolute position is doing something
+    /// it should not. On hardware there is no bounded absolute position to be
+    /// had -- IMU integration drifts without limit -- so this is worth
+    /// measuring rather than assuming.
+    pub base_pos_bias_world: na::Vector3<f64>,
     /// SRBD physical parameters used by [`predicted_base_accel_world`]
     /// to derive the WBC's `a_base_des` from the MPC's GRF prediction.
     /// Mirror these to the host's [`SrbdMpcConfig`] so the WBC
@@ -255,6 +262,7 @@ impl WbcPipeline {
             // MPC agree on the friction limit.
             friction_mu: 0.5,
             f_min_stance_n: 0.0,
+            base_pos_bias_world: na::Vector3::zeros(),
             mass_kg: 9.0,
             inertia_diag_body: na::Vector3::new(0.07, 0.26, 0.242),
             centroidal_inertia_body: None,
@@ -334,7 +342,8 @@ impl WbcPipeline {
         let body_pos_w = mj_sim
             .body_world_position(&robot.root_link)
             .map(|p| na::Vector3::new(p[0], p[1], p[2]))
-            .unwrap_or_else(na::Vector3::zeros);
+            .unwrap_or_else(na::Vector3::zeros)
+            + self.base_pos_bias_world;
         let body_quat = mj_sim
             .body_world_orientation(&robot.root_link)
             .unwrap_or_else(na::UnitQuaternion::identity);
