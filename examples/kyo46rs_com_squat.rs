@@ -81,6 +81,13 @@ fn main() {
         o.uncollide_links = vec!["forearm", "upper_arm"];
     }
 
+    // URDF override, for sweeping model variants without editing the shipped
+    // package. Leaked because Profile stores &'static str; this runs once.
+    let mut prof = prof;
+    if let Ok(u) = std::env::var("URDF") {
+        prof.urdf = Box::leak(u.into_boxed_str());
+        println!("URDF override: {}", prof.urdf);
+    }
     let sole_half_l = env_f64("SOLE_HALF_L", prof.cop_half.0);
     let sole_half_w = env_f64("SOLE_HALF_W", prof.cop_half.1);
     let mu_ground = o.mu_ground;
