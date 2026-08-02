@@ -103,6 +103,17 @@ fn main() {
         prof.urdf = Box::leak(u.into_boxed_str());
         println!("URDF override: {}", prof.urdf);
     }
+    // A variant that adds a waist splits `torso` into a pelvis carrying the
+    // legs and an upper body carrying the arms -- the same shape as G1, where
+    // the FreeFlyer is the pelvis and the thing held upright is above the
+    // waist. Both names have to move together or P2 regulates one body using
+    // another's Jacobian.
+    if let Ok(l) = std::env::var("ROOT_LINK") {
+        prof.root_link = Box::leak(l.into_boxed_str());
+    }
+    if let Ok(l) = std::env::var("TRUNK_LINK") {
+        prof.trunk_link = Some(Box::leak(l.into_boxed_str()));
+    }
     let sole_half_l = env_f64("SOLE_HALF_L", prof.cop_half.0);
     let sole_half_w = env_f64("SOLE_HALF_W", prof.cop_half.1);
     let mu_ground = o.mu_ground;
