@@ -55,6 +55,40 @@ INERTIA_KEYS = ("ixx", "iyy", "izz", "ixy", "ixz", "iyz")
 KNEE_GEAR = 14.0 / 9.0
 KNEE_SUFFIX = "calf"
 
+# Actuator torque. The CAD-derived model shipped 1.5 N*m on the hip and thigh
+# and 2.205 on the calf; the real part is 2.5 N*m peak, and the knee's
+# reduction puts it at 2.5 * 14/9 = 3.889.
+#
+# `effort` in MuJoCo is a hard clamp, so it is the *peak*. The continuous
+# rating is 1.0 N*m, which the clamp cannot express -- a gait that sits at
+# 2 N*m indefinitely never clamps and still cooks the motor. The harness
+# reports time-above-rated separately for that reason.
+PEAK_TORQUE_NM = 2.5
+RATED_TORQUE_NM = 1.0
+
+
+def apply_torque_rating(text):
+    """Set peak torque on the leg joints: `PEAK_TORQUE_NM`, knee geared up."""
+    out = text
+    for name, st, en in reversed(list(_blocks(text, "joint"))):
+        if not name.startswith(LEG_PREFIXES):
+            continue
+        target = PEAK_TORQUE_NM * (
+            KNEE_GEAR if name.endswith(f"_{KNEE_SUFFIX}_joint") else 1.0
+        )
+        blk = re.sub(
+            r"^(\s*)effort = [0-9.eE+-]+",
+            lambda m: f"{m.group(1)}effort = {target:.6g}",
+            text[st:en],
+            count=1,
+            flags=re.M,
+        )
+        out = out[:st] + blk + out[en:]
+    print(f"  peak torque -> hip/thigh {PEAK_TORQUE_NM:.3f}, "
+          f"knee {PEAK_TORQUE_NM * KNEE_GEAR:.3f} N*m "
+          f"(rated {RATED_TORQUE_NM:.1f})")
+    return out
+
 
 def _blocks(text, kind):
     """Yield (name, start, end) for each [[kind]] block.
@@ -192,6 +226,7 @@ def build(variant):
         out = out[:st] + scale_block(block, f) + out[en:]
 
     out = apply_knee_gear(out)
+    out = apply_torque_rating(out)
 
     dst = HERE / f"namiashi_3p3_{variant}.misa"
     dst.write_text(out)

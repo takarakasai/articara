@@ -1133,7 +1133,7 @@ rpy = [
 [joint.limit]
 lower = -0.785
 upper = 1.05
-effort = 1.5
+effort = 2.5
 velocity = 33.5
 
 [joint.dynamics]
@@ -1167,7 +1167,7 @@ rpy = [
 [joint.limit]
 lower = -2.62
 upper = 2.62
-effort = 1.5
+effort = 2.5
 velocity = 33.5
 
 [joint.dynamics]
@@ -1201,7 +1201,7 @@ rpy = [
 [joint.limit]
 lower = -2.62
 upper = 2.62
-effort = 2.33333
+effort = 3.88889
 velocity = 21.5357
 
 [joint.dynamics]
@@ -1258,7 +1258,7 @@ rpy = [
 [joint.limit]
 lower = -0.785
 upper = 1.05
-effort = 1.5
+effort = 2.5
 velocity = 33.5
 
 [joint.dynamics]
@@ -1292,7 +1292,7 @@ rpy = [
 [joint.limit]
 lower = -2.62
 upper = 2.62
-effort = 1.5
+effort = 2.5
 velocity = 33.5
 
 [joint.dynamics]
@@ -1326,7 +1326,7 @@ rpy = [
 [joint.limit]
 lower = -2.62
 upper = 2.62
-effort = 2.33333
+effort = 3.88889
 velocity = 21.5357
 
 [joint.dynamics]
@@ -1383,7 +1383,7 @@ rpy = [
 [joint.limit]
 lower = -1.05
 upper = 0.785
-effort = 1.5
+effort = 2.5
 velocity = 33.5
 
 [joint.dynamics]
@@ -1417,7 +1417,7 @@ rpy = [
 [joint.limit]
 lower = -2.62
 upper = 2.62
-effort = 1.5
+effort = 2.5
 velocity = 33.5
 
 [joint.dynamics]
@@ -1451,7 +1451,7 @@ rpy = [
 [joint.limit]
 lower = -2.62
 upper = 2.62
-effort = 2.33333
+effort = 3.88889
 velocity = 21.5357
 
 [joint.dynamics]
@@ -1508,7 +1508,7 @@ rpy = [
 [joint.limit]
 lower = -1.05
 upper = 0.785
-effort = 1.5
+effort = 2.5
 velocity = 33.5
 
 [joint.dynamics]
@@ -1542,7 +1542,7 @@ rpy = [
 [joint.limit]
 lower = -2.62
 upper = 2.62
-effort = 1.5
+effort = 2.5
 velocity = 33.5
 
 [joint.dynamics]
@@ -1576,7 +1576,7 @@ rpy = [
 [joint.limit]
 lower = -2.62
 upper = 2.62
-effort = 2.33333
+effort = 3.88889
 velocity = 21.5357
 
 [joint.dynamics]
