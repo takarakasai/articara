@@ -212,6 +212,37 @@ enum VelObs {
     Lag(f64),
 }
 
+/// Capture-point footstep gain, seconds.
+///
+/// This was zero for most of this file's history, and that was right at the
+/// time: at the library's 0.05 the 0.295 m stance overshot by 20%, drifted
+/// sideways at 0.145 m/s and yawed at 2.34 deg/s, and zero fixed all three.
+///
+/// Every condition that was measured under has since changed -- the stance
+/// dropped 6 cm, the actuation moved to a speed- or torque-mode driver, the
+/// host went to 400 Hz -- and, more to the point, it was measured with
+/// nothing disturbing the robot. Footstep feedback has nothing to do on flat
+/// ground at a constant command; it can only add noise there. That is the one
+/// condition under which its value cannot be judged.
+///
+/// With a push test to judge it by, a small gain is better on both counts
+/// (Trot, speed mode, 400 Hz):
+///
+///     k        nominal   yaw drift      push survival
+///     0.000       90%    +5.28 deg/s      5 of 8
+///     0.015       97%    +0.85            6 of 8
+///     0.030      102%    +1.31            6 of 8
+///     0.050      106%    +0.11            6 of 8
+///
+/// 0.015 rather than 0.030 or 0.050 because the recovery is the same at all
+/// three and the walking is not: on the regression's own path over 25 s,
+/// 0.030 overshoots Trot to 115% where 0.015 sits at 107%.
+///
+/// Still far below the library's 0.05 and further below the LIP value
+/// sqrt(h/g) = 0.155 for this stance. See `namiashi_capture_gain_low_side`
+/// for why that formula does not apply here.
+const NAMIASHI_CAPTURE_GAIN_S: f64 = 0.015;
+
 /// How far below the harness's original nominal stance every run now sits.
 ///
 /// The file spent its whole history at one height, ~0.295 m, and
@@ -1943,9 +1974,7 @@ fn namiashi_tuned_params(i: usize) -> WbcParams {
         duty_factor: Some(duty),
         max_step_length_m: Some(step),
         swing_height_m: Some(h),
-        // Deliberately zero. The library default is 0.05 s and it is what was
-        // producing every symptom this file started with.
-        k_capture_s: Some(0.0),
+        k_capture_s: Some(NAMIASHI_CAPTURE_GAIN_S),
         ..WbcParams::forward_walk()
     }
 }
@@ -1961,7 +1990,7 @@ fn namiashi_tuned_params(i: usize) -> WbcParams {
 ///    Normalised by the 0.306 m leg the defaults are 33/26/20%; 0.145 m
 ///    (47%) is the ratio the Go2 work settled on, and it holds here.
 ///
-/// 2. **`k_capture` had to go to zero.** The library default of 0.05 s was
+/// 2. **`k_capture` had to come down hard.** The library default of 0.05 s was
 ///    the single cause of three separate symptoms: forward speed overshooting
 ///    by up to 20%, Trot sliding sideways at 0.145 m/s, and Crawl yawing at
 ///    2.34 deg/s. All three vanish at k=0, where the open-loop Raibert plan
@@ -1971,6 +2000,11 @@ fn namiashi_tuned_params(i: usize) -> WbcParams {
 ///    yaws 43 deg). The sqrt(h/g) formula assumes the foothold acts within
 ///    one step; here it is filtered through the MPC horizon, which adds lag
 ///    the formula does not model.
+///
+///    It went to exactly zero for a long time, and that turned out to be one
+///    step too far -- see [`NAMIASHI_CAPTURE_GAIN_S`]. Zero was chosen with
+///    nothing pushing the robot, which is the one condition under which
+///    footstep feedback cannot be judged.
 ///
 /// 3. **Crawl's swing clearance was 5 mm.** Fine over its default 0.06 m
 ///    step, a scuff over 0.145 m: at fixed gain, 0.005 -> 0.020 m took Crawl
