@@ -104,6 +104,9 @@ def load_stl(path):
 
 # Screen-space area, in px^2, below which a triangle is not worth drawing.
 MIN_TRI_PX = float(os.environ.get("MIN_TRI_PX", 1.0))
+# Restore one-sided rendering. Faster, and how every frame before 2026-08-03
+# was drawn -- kept so those can be reproduced, not because it is correct.
+CULL = os.environ.get("CULL", "0") != "0"
 _LIGHT = np.array([0.4, 0.7, 0.6])
 _LIGHT = _LIGHT / np.linalg.norm(_LIGHT)
 
@@ -126,7 +129,18 @@ def emit_mesh(faces, tri_world, cam, base):
     ln = np.linalg.norm(nrm, axis=1)
     keep &= ln > 1e-12
     nrm = nrm / np.maximum(ln, 1e-12)[:, None]
-    keep &= np.einsum("ij,ij->i", nrm, cam.eye - tri_world.mean(1)) > 0
+    # Two-sided. Back-face culling is only valid on a closed mesh with
+    # consistent winding, and these STLs are neither -- a motor barrel with no
+    # end caps loses its far wall and reads as see-through from behind, which
+    # is exactly how the ankle_roll cylinder looked. Instead of dropping the
+    # away-facing triangles, flip their normal toward the eye and shade them:
+    # with the painter's sort running far-to-near, the near surface paints
+    # over the far one and a closed shape still comes out solid.
+    facing = np.einsum("ij,ij->i", nrm, cam.eye - tri_world.mean(1))
+    if CULL:
+        keep &= facing > 0
+    else:
+        nrm = np.where(facing[:, None] < 0.0, -nrm, nrm)
 
     idx = np.nonzero(keep)[0]
     if not len(idx):
@@ -358,7 +372,11 @@ def draw_body(draw, links, pose, cam):
                 if (z < 0.05).any():
                     continue
                 side = [(i, (i + 1) % n, n + (i + 1) % n, n + i) for i in range(n)]
-                caps = [tuple(range(n)), tuple(range(n, 2 * n))]
+                # Both rings run counter-clockwise, so both cap normals come
+                # out as +z -- correct for the top, INWARD for the bottom, so
+                # the bottom cap was culled whenever it faced you and drawn
+                # when it did not. Reverse it.
+                caps = [tuple(reversed(range(n))), tuple(range(n, 2 * n))]
                 for f in side + caps:
                     quad = corners[list(f)]
                     nv_ = np.cross(quad[1] - quad[0], quad[2] - quad[0])
@@ -641,6 +659,10 @@ def main():
     tau_lims = [float(sel[0]["lim_" + c]) for c, _ in TAU_JOINTS]
     tau_names = [lbl for _, lbl in TAU_JOINTS]
     tau_hist = [[] for _ in TAU_JOINTS]
+    def _xyz(name):
+        v = os.environ.get(name)
+        return tuple(float(x) for x in v.split(",")) if v else None
+
     FOLLOW = os.environ.get("CAM_FOLLOW", "0") != "0"
 
     if os.environ.get("ANKLE_CLOSEUP"):
@@ -652,6 +674,12 @@ def main():
         cam = (Camera(eye=(1.30 * k, -1.55 * k, 0.62 * k), target=(0.02, 0.0, 0.28 * k), fov=30, y_shift=-10)
                if os.environ.get("COMPACT")
                else Camera(eye=(1.15 * k, -1.38 * k, 0.62 * k), target=(0.02, 0.0, 0.30 * k), fov=33, y_shift=24))
+    # CAM_EYE / CAM_TARGET override the built-in framing, which is what makes
+    # a view from behind checkable at all -- the bug above only shows there.
+    if _xyz("CAM_EYE") or _xyz("CAM_TARGET"):
+        cam = Camera(eye=_xyz("CAM_EYE") or cam.eye,
+                     target=_xyz("CAM_TARGET") or (0.02, 0.0, 0.28),
+                     fov=float(os.environ.get("CAM_FOV", 33)))
     base_eye = np.array(cam.eye, dtype=float)
     # Side column: frontal view on top, top-down CoP panel underneath.
     SIDE_W = 420
