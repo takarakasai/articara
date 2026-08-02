@@ -134,12 +134,19 @@ impl DcmPlan {
             let (p0, p1) = match target(i) {
                 Some(p) => (p, p),
                 None => {
-                    // Interpolate between the neighbouring single-support
-                    // points, falling back to mid-stance at the ends. In a
-                    // walk those neighbours are a stride apart, so this is
-                    // also what carries the body forward through double
-                    // support instead of parking it.
-                    let prev = (0..i).rev().find_map(target)
+                    // Start where the previous segment ENDED, not at the last
+                    // single-support point. Between two steps the two are the
+                    // same thing, so mid-gait behaviour is unchanged; at the
+                    // END of the plan they are not, and searching backward for
+                    // a single support makes every trailing double-support
+                    // slice re-ramp from the last stance sole. With more than
+                    // one trailing slice that means ramping to mid-stance over
+                    // and over, each time across the full slice -- which is
+                    // how a 25 s tail turned into eleven seconds of standing
+                    // on one foot.
+                    let prev = segs
+                        .last()
+                        .map(|s: &ZmpSeg| s.p1)
                         .unwrap_or_else(|| fp.at_slice(i).mid_xy());
                     let next = (i + 1..n).find_map(target)
                         .unwrap_or_else(|| fp.at_slice(i).mid_xy());
