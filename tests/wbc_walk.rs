@@ -124,6 +124,11 @@ struct WbcSample {
     /// the original four tests could not see the difference -- they checked
     /// trunk height and net displacement only.
     foot_fz: [f64; 4],
+    /// Per-foot fore-aft contact force (N), body-frame x. Where propulsion
+    /// actually comes from: with a position servo on the stance legs the body
+    /// is dragged forward kinematically by the foot sweep, but with them at
+    /// kp=0 the only thing left is this.
+    foot_fx: [f64; 4],
     body_y: f64,
     yaw: f64,
     /// Carried per-sample only so `report_walk_cmd` can size its averaging
@@ -817,6 +822,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     // Previous tick's IK targets, so the velocity path can differentiate them.
     let mut prev_targets = [0.0_f64; 12];
     let mut stance_mask = [true; 4];
+    let mut yaw_prev = 0.0_f64;
     // Host-computed PD for the torque path, paired with its joint index.
     let mut host_pd = [(0usize, 0.0_f64); 12];
 
@@ -1099,6 +1105,31 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         .fold(0.0_f64, |a, b| a.max(b.abs()));
                     let mpc_fz_sum: f64 = f_grf_world.iter().map(|v| v.z).sum();
                     let stance_count = contact_flag.iter().filter(|b| **b).count();
+                    // Fore-aft force at three points along the chain: what
+                    // the MPC planned, what the WBC's QP settled on, and what
+                    // the ground actually delivered. Whichever pair disagrees
+                    // is where the propulsion is being lost.
+                    {
+                        let (cy, sy) = ((-yaw_prev).cos(), (-yaw_prev).sin());
+                        let rot = |v: &Vector3<f64>| cy * v.x - sy * v.y;
+                        let mpc_fx: f64 = f_grf_world.iter().map(rot).sum();
+                        let wbc_fx: f64 = wbc_pipeline
+                            .last_solution
+                            .as_ref()
+                            .map(|sol| {
+                                (0..4)
+                                    .map(|i| {
+                                        cy * sol.f_grf[3 * i]
+                                            - sy * sol.f_grf[3 * i + 1]
+                                    })
+                                    .sum()
+                            })
+                            .unwrap_or(0.0);
+                        eprintln!(
+                            "[fx k={k:5}] mpc={mpc_fx:+.3}  wbc={wbc_fx:+.3}  \
+                             stance={stance_count}"
+                        );
+                    }
                     eprintln!(
                         "[diag k={k:5} t={:.3}s] z={:.3} m  Σmpc_f_z={:.2} N  \
                          max|τ|={:.2} N·m  stance={}/4",
@@ -1245,6 +1276,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         // `sim.step → sync_back`.
         let tx = robot.base_transform.translation;
         let (roll, pitch, yaw) = robot.base_transform.rotation.euler_angles();
+        yaw_prev = yaw;
         let total_fz_world: f64 =
             sim.contacts().iter().map(|c| c.force_world[2]).sum();
         // Applied joint torque against its own effort limit. `mujoco_sim`
@@ -1274,16 +1306,19 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             }
         }
         let mut foot_fz = [0.0f64; 4];
+        let mut foot_fx = [0.0f64; 4];
+        let (cy, sy) = ((-yaw).cos(), (-yaw).sin());
         for (fi, (_, link)) in DEFAULT_FOOT_LINKS.iter().enumerate() {
             let lname = link.to_lowercase();
-            foot_fz[fi] = sim
-                .contacts()
-                .iter()
-                .filter(|c| {
-                    c.body1.to_lowercase() == lname || c.body2.to_lowercase() == lname
-                })
-                .map(|c| c.force_world[2].abs())
-                .sum();
+            for c in sim.contacts().iter().filter(|c| {
+                c.body1.to_lowercase() == lname || c.body2.to_lowercase() == lname
+            }) {
+                foot_fz[fi] += c.force_world[2].abs();
+                // Rotated into the heading frame, since a force that is
+                // "forward" is only forward relative to where the robot
+                // points.
+                foot_fx[fi] += cy * c.force_world[0] - sy * c.force_world[1];
+            }
         }
 
         if replay_out.is_some() {
@@ -1323,6 +1358,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             pitch,
             total_fz_world,
             foot_fz,
+            foot_fx,
             body_y: tx.y,
             yaw,
             cycle_period_s,
@@ -1610,6 +1646,27 @@ fn report_walk_cmd(
     // does not have. Reported per joint role because the roles have different
     // limits (hip and thigh 1.5 N*m, calf 2.205) and very different jobs.
     const ROLE: [&str; 3] = ["hip", "thigh", "calf"];
+    // Net fore-aft ground force, the thing that actually accelerates the
+    // robot. Averaged over the window and separately over stance ticks, since
+    // a mean over the whole cycle hides which phase supplies it.
+    let fx_mean: f64 =
+        walk.iter().map(|s| s.foot_fx.iter().sum::<f64>()).sum::<f64>() / n;
+    let fx_pos: f64 = walk
+        .iter()
+        .map(|s| s.foot_fx.iter().filter(|v| **v > 0.0).sum::<f64>())
+        .sum::<f64>()
+        / n;
+    let fx_neg: f64 = walk
+        .iter()
+        .map(|s| s.foot_fx.iter().filter(|v| **v < 0.0).sum::<f64>())
+        .sum::<f64>()
+        / n;
+    eprintln!(
+        "  ground fx: net={fx_mean:+.3} N  (pushing {fx_pos:+.3} / braking \
+         {fx_neg:+.3})   mg={:.1} N",
+        walk.len() as f64 * 0.0 + 3.3 * 9.81
+    );
+
     let mut role_line = String::from("  tau/limit:");
     for j in 0..3 {
         let mut peak = 0.0f64;
