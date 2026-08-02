@@ -197,6 +197,10 @@ impl GaitPlan {
 #[derive(Clone, Copy, Debug)]
 pub struct Footsteps {
     pub sole: [na::Vector3<f64>; 2],
+    /// World yaw of each sole. Constant for straight walking; a turn rotates
+    /// the feet with the body, and the swing task has to be told, or the foot
+    /// lands square to the world while the body has turned under it.
+    pub yaw: [f64; 2],
 }
 
 impl Footsteps {
@@ -208,12 +212,14 @@ impl Footsteps {
         sole_below_origin: f64,
     ) -> Self {
         let mut sole = [na::Vector3::zeros(); 2];
+        let mut yaw = [0.0; 2];
         for side in 0..2 {
             let o = misarta::se3::translation(&data.oMi[foot_mi[side]]);
             let r = misarta::se3::rotation_matrix(&data.oMi[foot_mi[side]]);
             sole[side] = o + r * na::Vector3::new(sole_centre_x, 0.0, -sole_below_origin);
+            yaw[side] = r[(1, 0)].atan2(r[(0, 0)]);
         }
-        Footsteps { sole }
+        Footsteps { sole, yaw }
     }
 
     pub fn xy(&self, side: Side) -> na::Vector2<f64> {
@@ -264,6 +270,96 @@ impl FootstepPlan {
                     next.sole[swing].x += 2.0 * stride;
                     at.push(next);
                     cur = next;
+                }
+                Support::Double => at.push(cur),
+            }
+        }
+        FootstepPlan { at, initial: *initial }
+    }
+
+    /// A walk from a velocity command: forward/backward, sideways, and turning.
+    ///
+    /// Every footstep is the nominal foot offset expressed in a BODY FRAME
+    /// that advances by `(vx, vy) * T_step` and turns by `wz * T_step` each
+    /// step. The foot swinging at step k lands where the body will be at step
+    /// k+1, so the body moves one stride per step while the foot moves two --
+    /// which is the alternating-lead pattern, arrived at by construction
+    /// rather than by the half-first-step correction the x-only version
+    /// needed. For `vy = wz = 0` it reproduces [`FootstepPlan::alternating`]
+    /// exactly.
+    ///
+    /// Sideways and turning fall out of the same construction, and so does the
+    /// non-crossing property: the two offsets are fixed in the body frame, so
+    /// the feet can never swap sides however the frame moves. The lateral gap
+    /// does breathe by one stride either side of nominal, so `|vy| * T_step`
+    /// has to stay below the stance width.
+    pub fn velocity(
+        plan: &GaitPlan,
+        initial: &Footsteps,
+        vx: f64,
+        vy: f64,
+        wz: f64,
+        t_step: f64,
+        ramp: usize,
+    ) -> Self {
+        // The nominal offsets, read off the starting stance so a command of
+        // zero reproduces exactly where the robot already is.
+        let mid = initial.mid_xy();
+        let yaw0 = 0.5 * (initial.yaw[LEFT] + initial.yaw[RIGHT]);
+        let (c0, s0) = (yaw0.cos(), yaw0.sin());
+        let off: [na::Vector2<f64>; 2] = std::array::from_fn(|k| {
+            let d = initial.xy(k) - mid;
+            // into the body frame
+            na::Vector2::new(c0 * d.x + s0 * d.y, -s0 * d.x + c0 * d.y)
+        });
+
+        // Body pose after n steps, with the ramp applied step by step.
+        let mut pose = Vec::with_capacity(plan.slices.len() + 2);
+        let mut p = mid;
+        let mut th = yaw0;
+        pose.push((p, th));
+        let n_steps = plan
+            .slices
+            .iter()
+            .filter(|s| matches!(s.support, Support::Single { .. }))
+            .count();
+        for k in 0..=n_steps {
+            let f = if ramp == 0 { 1.0 } else { ((k + 1) as f64 / ramp as f64).min(1.0) };
+            let (c, s) = (th.cos(), th.sin());
+            p += na::Vector2::new(c * vx - s * vy, s * vx + c * vy) * (t_step * f);
+            th += wz * t_step * f;
+            pose.push((p, th));
+        }
+        let place = |k: usize, side: Side| -> (na::Vector3<f64>, f64) {
+            let (p, th) = pose[k.min(pose.len() - 1)];
+            let (c, s) = (th.cos(), th.sin());
+            let o = off[side];
+            (
+                na::Vector3::new(
+                    p.x + c * o.x - s * o.y,
+                    p.y + s * o.x + c * o.y,
+                    initial.sole[side].z,
+                ),
+                th,
+            )
+        };
+
+        let mut cur = *initial;
+        let mut at = Vec::with_capacity(plan.slices.len());
+        let mut step = 0usize;
+        for sl in &plan.slices {
+            match sl.support {
+                Support::Single { swing, .. } => {
+                    // Close the feet on the last step so the plan ends square
+                    // -- land at the body pose the OTHER foot is already at,
+                    // not one stride beyond it. Without this the plan finishes
+                    // mid-stride and the settle has to absorb the difference.
+                    let target = if step + 1 == n_steps { step } else { step + 1 };
+                    let (pos, th) = place(target, swing);
+                    cur.sole[swing] = pos;
+                    cur.yaw[swing] = th;
+                    at.push(cur);
+                    step += 1;
                 }
                 Support::Double => at.push(cur),
             }
@@ -601,6 +697,7 @@ mod tests {
         let plan = GaitPlan::new(&p);
         let init = Footsteps {
             sole: [na::Vector3::new(0.0, 0.05, 0.0), na::Vector3::new(0.0, -0.05, 0.0)],
+            yaw: [0.0, 0.0],
         };
         let stride = 0.05;
         let fp = FootstepPlan::alternating(&plan, &init, stride, 0);
@@ -641,6 +738,79 @@ mod tests {
             .map(|(i, _)| naive.at_slice(i).sole[LEFT].x - naive.at_slice(i).sole[RIGHT].x)
             .collect();
         assert!(ngaps[1].abs() < 1e-12 && ngaps[3].abs() < 1e-12);
+    }
+
+    #[test]
+    fn velocity_command_reproduces_the_x_only_plan() {
+        // The generalisation has to be a strict superset, or every result
+        // measured with `alternating` stops applying.
+        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.35, n_steps: 10,
+                             first_swing: RIGHT, t_end: 30.0 };
+        let plan = GaitPlan::new(&p);
+        let init = Footsteps {
+            sole: [na::Vector3::new(0.0, 0.05, 0.0), na::Vector3::new(0.0, -0.05, 0.0)],
+            yaw: [0.0, 0.0],
+        };
+        let t_step = p.t_ss + p.t_ds;
+        let stride = 0.05;
+        let a = FootstepPlan::alternating(&plan, &init, stride, 0);
+        let b = FootstepPlan::velocity(&plan, &init, stride / t_step, 0.0, 0.0, t_step, 0);
+        for i in 0..plan.slices.len() {
+            for side in 0..2 {
+                let (x, y) = (a.at_slice(i).sole[side], b.at_slice(i).sole[side]);
+                assert!(
+                    (x - y).norm() < 1e-12,
+                    "slice {i} side {side}: {x:?} vs {y:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sideways_and_turning_keep_the_feet_on_their_own_sides() {
+        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.35, n_steps: 12,
+                             first_swing: RIGHT, t_end: 30.0 };
+        let plan = GaitPlan::new(&p);
+        let init = Footsteps {
+            sole: [na::Vector3::new(0.0, 0.05, 0.0), na::Vector3::new(0.0, -0.05, 0.0)],
+            yaw: [0.0, 0.0],
+        };
+        let t_step = p.t_ss + p.t_ds;
+        for (vx, vy, wz) in [(0.0, 0.05, 0.0), (0.0, -0.05, 0.0), (0.0, 0.0, 0.3), (0.05, 0.0, -0.3)] {
+            let fp = FootstepPlan::velocity(&plan, &init, vx, vy, wz, t_step, 0);
+            for i in 0..plan.slices.len() {
+                let f = fp.at_slice(i);
+                // Left must stay to the left of right IN THE BODY FRAME, which
+                // for a turn means rotating the separation back.
+                let th = 0.5 * (f.yaw[LEFT] + f.yaw[RIGHT]);
+                let d = f.xy(LEFT) - f.xy(RIGHT);
+                let lateral = -th.sin() * d.x + th.cos() * d.y;
+                assert!(
+                    lateral > 0.02,
+                    "({vx},{vy},{wz}) slice {i}: feet crossed, lateral gap {lateral:.4}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn turning_rotates_the_footstep_yaw() {
+        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.35, n_steps: 10,
+                             first_swing: RIGHT, t_end: 30.0 };
+        let plan = GaitPlan::new(&p);
+        let init = Footsteps {
+            sole: [na::Vector3::new(0.0, 0.05, 0.0), na::Vector3::new(0.0, -0.05, 0.0)],
+            yaw: [0.0, 0.0],
+        };
+        let t_step = 0.55;
+        let wz = 0.4;
+        let fp = FootstepPlan::velocity(&plan, &init, 0.0, 0.0, wz, t_step, 0);
+        let last = fp.at.last().unwrap();
+        let turned = 0.5 * (last.yaw[LEFT] + last.yaw[RIGHT]);
+        // Ten steps at 0.4 rad/s over 0.55 s each, the feet lag the body by
+        // about half a step.
+        assert!(turned > 0.5 * 10.0 * wz * t_step, "only turned {turned:.3} rad");
+        assert!(turned <= 11.0 * wz * t_step + 1e-9);
     }
 
     #[test]

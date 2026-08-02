@@ -39,6 +39,7 @@ fn main() {
     use articara::biped::tasks as bt;
     use misa_wbc::{tasks, Dynamics, Formulation, SolveConfig, Solver};
     use nalgebra as na;
+    use std::f64::consts::PI;
 
     let env_f64 = |k: &str, d: f64| -> f64 {
         std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d)
@@ -237,6 +238,13 @@ fn main() {
     // that drifts is correcting toward it rather than tracking its own drift.
     let foot_rot0: [na::Matrix3<f64>; 2] =
         std::array::from_fn(|s| misarta::se3::rotation_matrix(&d0.oMi[rig.foot_mi[s]]));
+    // Rotate the nominal foot orientation to a planned yaw. A turn moves the
+    // footstep AND the direction the foot points; commanding the original
+    // orientation would land the foot square to the world under a turned body.
+    let foot_rot_at = |side: usize, yaw: f64| -> na::Matrix3<f64> {
+        let d = yaw - foot_rot0[side][(1, 0)].atan2(foot_rot0[side][(0, 0)]);
+        na::Rotation3::from_euler_angles(0.0, 0.0, d).matrix() * foot_rot0[side]
+    };
     // Swing orientation gains. Without this task the foot's three rotational
     // DoF are free and the QP twists the leg: measured, hip_yaw walked to its
     // +-30 deg stop over 16 steps and the feet landed yawed by up to 31 deg.
@@ -262,14 +270,23 @@ fn main() {
     // Forward travel per step, in metres of BODY advance. 0 is stepping in
     // place, which stays a special case of this rather than a separate path.
     // A commanded speed maps to it as stride = v * (t_ss + t_ds).
+    // Velocity command. STRIDE is kept as a shorthand for VX in m/step.
+    let t_step = gp.t_ss + gp.t_ds;
     let stride = env_f64("STRIDE", 0.0);
+    let vx = env_f64("VX", stride / t_step);
+    let vy = env_f64("VY", 0.0);
+    let wz = env_f64("WZ", 0.0);
+    // Crouch/rise while doing it, to load the sagittal chain during locomotion
+    // rather than only when standing.
+    let squat_amp = env_f64("SQUAT_AMP", 0.0);
+    let squat_period = env_f64("SQUAT_PERIOD", 3.0);
     // Steps over which the stride ramps in from standing.
     let stride_ramp = env_f64("STRIDE_RAMP", 6.0) as usize;
     // ALTERNATE=0 restores the step-and-close plan, for A/B.
     let footsteps = if flag("ALTERNATE", true) {
-        FootstepPlan::alternating(&gait, &steps, stride, stride_ramp)
+        FootstepPlan::velocity(&gait, &steps, vx, vy, wz, t_step, stride_ramp)
     } else {
-        FootstepPlan::ramped_stride(&gait, &steps, stride, stride_ramp)
+        FootstepPlan::ramped_stride(&gait, &steps, vx * t_step, stride_ramp)
     };
     let dcm_plan = DcmPlan::from_footsteps(&gait, &footsteps, z_com, zmp_lat_scale);
     let omega = dcm_plan.omega;
@@ -293,6 +310,12 @@ fn main() {
         steps.sole[0].x, steps.sole[0].y, steps.sole[1].x, steps.sole[1].y,
         (steps.sole[0].y - steps.sole[1].y).abs() * 1e3
     );
+    if vx != 0.0 || vy != 0.0 || wz != 0.0 || squat_amp != 0.0 {
+        println!(
+            "command: vx={vx:+.3} vy={vy:+.3} m/s  wz={wz:+.3} rad/s  squat={:.0} mm @ {squat_period:.1} s",
+            squat_amp * 1e3
+        );
+    }
     if stride != 0.0 {
         println!(
             "stride: {:.3} m/step -> {:.3} m/s commanded, {:.2} m of travel planned over {} steps",
@@ -445,7 +468,21 @@ fn main() {
 
     let mut prev_support = gait.support_at(0.0);
     let mut swing_lift_off: Option<na::Vector3<f64>> = None;
-    let x0_body = rig.sim.body_world_position(&rig.robot.root_link).unwrap()[0];
+    let p0_body = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
+    let yaw0_body = rig.sim.body_world_orientation(&rig.robot.root_link).unwrap().euler_angles().2;
+    // Time at which the last step ends, so achievement is measured over the
+    // WALK and not diluted by the settle.
+    let t_walk_end = gait
+        .slices
+        .iter()
+        .rposition(|s| matches!(s.support, Support::Single { .. }))
+        .map(|i| gait.slices[i].t1 + gp.t_ds)
+        // No steps at all (a standing squat): the "walk" is the whole run, so
+        // the achievement window is the whole run. Falling back to 0 made the
+        // window 1 microsecond wide and turned a millimetre of drift into
+        // 56 m/s.
+        .unwrap_or(total_t);
+    let mut walk_end_state: Option<([f64; 3], f64, f64)> = None;
     let mut fell = false;
     let mut min_z = f64::INFINITY;
     let mut max_tilt: f64 = 0.0;
@@ -710,7 +747,23 @@ fn main() {
         // z stays a PD on the nominal height: the LIPM says nothing about it,
         // and a constant-height assumption is exactly what makes omega a
         // constant in the first place.
-        let a_z = kp_com * (z_com - com.z) + kd_com * (0.0 - com_vel.z);
+        // Height reference. `omega` stays at the nominal height: the LIPM is
+        // derived for a constant one, and re-deriving it per tick is the
+        // variable-height DCM formulation, which this is not. The squat is
+        // therefore a disturbance the horizontal loop has to survive, which is
+        // the point of having it in the benchmark.
+        let (z_ref, zd_ref, zdd_ref) = if squat_amp > 0.0 {
+            let w = 2.0 * PI / squat_period;
+            let ph = w * t;
+            (
+                z_com - squat_amp * (1.0 - ph.cos()) * 0.5,
+                -squat_amp * 0.5 * w * ph.sin(),
+                -squat_amp * 0.5 * w * w * ph.cos(),
+            )
+        } else {
+            (z_com, 0.0, 0.0)
+        };
+        let a_z = zdd_ref + kp_com * (z_ref - com.z) + kd_com * (zd_ref - com_vel.z);
         let a_com = na::Vector3::new(a_xy.x, a_xy.y, a_z);
         let p1 = bt::com(dyn_ctx.qddot(), &st.j_com, &st.djv_com, &a_com);
 
@@ -837,7 +890,7 @@ fn main() {
                     },
                     Some((
                         misarta::se3::rotation_matrix(&data.oMi[mi]),
-                        foot_rot0[side],
+                        foot_rot_at(side, footsteps.at_slice(slice_idx).yaw[side]),
                         na::Vector3::new(om3[0], om3[1], om3[2]),
                         kp_sw_rot,
                         kd_sw_rot,
@@ -879,7 +932,7 @@ fn main() {
                     },
                     Some((
                         misarta::se3::rotation_matrix(&data.oMi[mi]),
-                        foot_rot0[side],
+                        foot_rot_at(side, footsteps.at_slice(slice_idx).yaw[side]),
                         na::Vector3::new(om3[0], om3[1], om3[2]),
                         kp_sw_rot,
                         kd_sw_rot,
@@ -1079,7 +1132,7 @@ fn main() {
             let row = Row {
                 t,
                 com,
-                com_ref_z: z_com,
+                com_ref_z: z_ref,
                 // The renderer's `com_ref_y` panel is the lateral reference;
                 // for a walk that is the DCM target, not a fixed point.
                 com_ref_y: r.xi.y,
@@ -1103,6 +1156,11 @@ fn main() {
             log.write(&rig, &row);
         }
 
+        if walk_end_state.is_none() && t >= t_walk_end {
+            let p = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
+            let y = rig.sim.body_world_orientation(&rig.robot.root_link).unwrap().euler_angles().2;
+            walk_end_state = Some((p, y, t));
+        }
         let cur_z = rig.sim.body_world_position(&rig.robot.root_link).unwrap()[2];
         min_z = min_z.min(cur_z);
         let tilt = roll.abs().max(pitch.abs());
@@ -1147,20 +1205,44 @@ fn main() {
     println!("\n=== Result (walk) ===");
     println!("  steps taken: {}", step_stats.len());
     {
-        // Commanded against achieved travel. A gait that "walks" at half the
-        // commanded speed is the classic footstep bookkeeping error, and it
-        // looks perfectly stable while doing it.
-        let x_end = rig.sim.body_world_position(&rig.robot.root_link).unwrap()[0];
-        println!(
-            "  travel: planned {:.3} m, body moved {:.3} m ({:.0}%)",
-            footsteps.travel_x(),
-            x_end - x0_body,
-            if footsteps.travel_x() > 1e-6 {
-                100.0 * (x_end - x0_body) / footsteps.travel_x()
-            } else {
-                100.0
+        // Achieved against COMMANDED, on every axis that was commanded, and
+        // measured over the walk rather than to the end of the log. A gait
+        // that goes half as far as it was told looks perfectly stable while
+        // doing it -- and a travel metric that only reads x says "100%" for a
+        // sideways command that went nowhere, which is worse than no metric.
+        let (pe, ye, te) = walk_end_state.unwrap_or_else(|| {
+            let p = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
+            let y = rig.sim.body_world_orientation(&rig.robot.root_link).unwrap().euler_angles().2;
+            (p, y, t_walk_end)
+        });
+        let dur = (te - gp.t_start).max(1e-6);
+        // Into the frame the command was given in.
+        let (c, sn) = (yaw0_body.cos(), yaw0_body.sin());
+        let (dx, dy) = (pe[0] - p0_body[0], pe[1] - p0_body[1]);
+        let ach = [
+            (c * dx + sn * dy) / dur,
+            (-sn * dx + c * dy) / dur,
+            (ye - yaw0_body) / dur,
+        ];
+        let cmd = [vx, vy, wz];
+        let names = ["vx", "vy", "wz"];
+        let units = ["m/s", "m/s", "rad/s"];
+        let mut parts = Vec::new();
+        for k in 0..3 {
+            if cmd[k].abs() < 1e-9 && ach[k].abs() < 1e-3 {
+                continue;
             }
-        );
+            let pct = if cmd[k].abs() > 1e-9 { 100.0 * ach[k] / cmd[k] } else { f64::NAN };
+            parts.push(format!(
+                "{}: {:+.4} / {:+.4} {} ({:.0}%)",
+                names[k], ach[k], cmd[k], units[k],
+                if pct.is_nan() { 0.0 } else { pct }
+            ));
+        }
+        if parts.is_empty() {
+            parts.push("no command".into());
+        }
+        println!("  achieved over the walk ({:.1} s): {}", dur, parts.join("   "));
     }
     println!("  min trunk z = {min_z:.3}   max tilt = {max_tilt:.3} rad");
     println!("  max |xi - xi_ref| = {:.1} mm", max_dcm_err * 1e3);
