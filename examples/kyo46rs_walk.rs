@@ -263,7 +263,9 @@ fn main() {
     // place, which stays a special case of this rather than a separate path.
     // A commanded speed maps to it as stride = v * (t_ss + t_ds).
     let stride = env_f64("STRIDE", 0.0);
-    let footsteps = FootstepPlan::constant_stride(&gait, &steps, stride);
+    // Steps over which the stride ramps in from standing.
+    let stride_ramp = env_f64("STRIDE_RAMP", 6.0) as usize;
+    let footsteps = FootstepPlan::ramped_stride(&gait, &steps, stride, stride_ramp);
     let dcm_plan = DcmPlan::from_footsteps(&gait, &footsteps, z_com, zmp_lat_scale);
     let omega = dcm_plan.omega;
     println!(
