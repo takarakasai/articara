@@ -26,7 +26,7 @@
 
 use nalgebra as na;
 
-use super::gait::{Footsteps, GaitPlan, Support};
+use super::gait::{FootstepPlan, Footsteps, GaitPlan, Support};
 
 pub const G: f64 = 9.81;
 
@@ -103,14 +103,27 @@ impl DcmPlan {
         z_com: f64,
         lateral_scale: f64,
     ) -> Self {
+        let fp = FootstepPlan::constant_stride(plan, steps, 0.0);
+        Self::from_footsteps(plan, &fp, z_com, lateral_scale)
+    }
+
+    /// The walking form: the pressure target comes from the footstep the
+    /// stance foot is standing on IN THAT SLICE, not from a fixed pair.
+    pub fn from_footsteps(
+        plan: &GaitPlan,
+        fp: &FootstepPlan,
+        z_com: f64,
+        lateral_scale: f64,
+    ) -> Self {
         let omega = (G / z_com).sqrt();
-        let mid = steps.mid_xy();
         // Pass 1: where the pressure sits during each SINGLE support phase,
         // and the resting point (mid-stance) for double support at the ends.
-        let target = |support: Support| -> Option<na::Vector2<f64>> {
-            match support {
+        let target = |i: usize| -> Option<na::Vector2<f64>> {
+            let st = fp.at_slice(i);
+            match plan.slices[i].support {
                 Support::Single { stance, .. } => {
-                    Some(mid + (steps.xy(stance) - mid) * lateral_scale)
+                    let mid = st.mid_xy();
+                    Some(mid + (st.xy(stance) - mid) * lateral_scale)
                 }
                 Support::Double => None,
             }
@@ -118,20 +131,18 @@ impl DcmPlan {
         let n = plan.slices.len();
         let mut segs: Vec<ZmpSeg> = Vec::with_capacity(n);
         for (i, s) in plan.slices.iter().enumerate() {
-            let (p0, p1) = match target(s.support) {
+            let (p0, p1) = match target(i) {
                 Some(p) => (p, p),
                 None => {
                     // Interpolate between the neighbouring single-support
-                    // points, falling back to mid-stance at the ends.
-                    let prev = plan.slices[..i]
-                        .iter()
-                        .rev()
-                        .find_map(|s| target(s.support))
-                        .unwrap_or_else(|| steps.mid_xy());
-                    let next = plan.slices[i + 1..]
-                        .iter()
-                        .find_map(|s| target(s.support))
-                        .unwrap_or_else(|| steps.mid_xy());
+                    // points, falling back to mid-stance at the ends. In a
+                    // walk those neighbours are a stride apart, so this is
+                    // also what carries the body forward through double
+                    // support instead of parking it.
+                    let prev = (0..i).rev().find_map(target)
+                        .unwrap_or_else(|| fp.at_slice(i).mid_xy());
+                    let next = (i + 1..n).find_map(target)
+                        .unwrap_or_else(|| fp.at_slice(i).mid_xy());
                     (prev, next)
                 }
             };

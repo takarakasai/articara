@@ -628,6 +628,7 @@ def main():
     tau_lims = [float(sel[0]["lim_" + c]) for c, _ in TAU_JOINTS]
     tau_names = [lbl for _, lbl in TAU_JOINTS]
     tau_hist = [[] for _ in TAU_JOINTS]
+    FOLLOW = os.environ.get("CAM_FOLLOW", "0") != "0"
 
     if os.environ.get("ANKLE_CLOSEUP"):
         cam = Camera(eye=(0.30, -0.42, 0.16), target=(0.01, 0.0, 0.06), fov=34, y_shift=60)
@@ -638,6 +639,7 @@ def main():
         cam = (Camera(eye=(1.30 * k, -1.55 * k, 0.62 * k), target=(0.02, 0.0, 0.28 * k), fov=30, y_shift=-10)
                if os.environ.get("COMPACT")
                else Camera(eye=(1.15 * k, -1.38 * k, 0.62 * k), target=(0.02, 0.0, 0.30 * k), fov=33, y_shift=24))
+    base_eye = np.array(cam.eye, dtype=float)
     # Side column: frontal view on top, top-down CoP panel underneath.
     SIDE_W = 420
     FRONT_H = 350
@@ -659,6 +661,16 @@ def main():
             [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
         ])
         pose = forward_kinematics(links, joints, root, bp, bR, q)
+        # Follow the robot along x. A forward walk leaves a fixed frame within
+        # a couple of seconds, and a robot that has walked out of shot cannot
+        # be judged. CAM_FOLLOW=0 keeps the old fixed camera, which is what a
+        # squat or a step in place wants -- there, motion relative to the
+        # ground is the thing being looked at.
+        if FOLLOW:
+            # Translating the eye along x is enough: the camera keeps only an
+            # orientation and a focal length, and both are invariant under a
+            # common translation of eye and target.
+            cam.eye = base_eye + np.array([bp[0], 0.0, 0.0])
         hist.append((float(r["com_z"]), float(r["com_ref_z"])))
         for k, (col, _) in enumerate(TAU_JOINTS):
             tau_hist[k].append(float(r["tau_" + col]))
