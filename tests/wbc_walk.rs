@@ -145,6 +145,30 @@ struct WbcSample {
 /// `gait_walk_stability`.
 const TRUNK_Z_FALL_THRESHOLD_M: f64 = 0.18;
 
+/// How far below the harness's original nominal stance every run now sits.
+///
+/// The file spent its whole history at one height, ~0.295 m, and
+/// `namiashi_trunk_height_sweep` shows that was not a neutral choice. All
+/// three gaits walk at 0, 2, 4 and 6 cm of crouch -- tracking stays 98-103%
+/// and trunk z lands within a millimetre or two of target -- but crouching
+/// rotates the leg Jacobian, so the same foot force gets split differently
+/// between thigh and knee:
+///
+///     Trot   thigh 26.7 -> 10.7 %    calf  6.0 -> 17.0 %
+///     Walk   thigh  6.3 ->  5.3 %    calf 11.3 ->  1.9 %
+///     Crawl  thigh  3.4 ->  2.1 %    calf  9.8 ->  0.5 %
+///
+/// 6 cm is the baseline because the thigh is the joint that actually binds --
+/// it was clamped at its 1.5 N*m limit for a quarter of every Trot run, and
+/// `mujoco_sim.rs:1121` does that silently -- and crouching more than halves
+/// it. Walk and Crawl get it nearly free; their knee saturation all but
+/// disappears and nothing else moves.
+///
+/// Trot pays for it. Its knee saturation nearly triples, and peak roll goes
+/// from 2.8 deg to 5.3. That is a deliberate trade, not an oversight: 17% on
+/// a 2.3 N*m knee is a better place to be than 27% on a 1.5 N*m thigh.
+const NAMIASHI_STANCE_DROP_M: f64 = 0.06;
+
 /// Minimum forward displacement during the walking window — the same
 /// 4 cm threshold the gait stability test uses.
 const MIN_DISPLACEMENT_M: f64 = 0.04;
@@ -200,6 +224,7 @@ struct WbcParams {
     /// Lower the nominal stance by this much, metres. Applied to every leg's
     /// `nominal_foot_body.z`, which is what both the IK seed and the MPC's
     /// body-z reference are taken from, so the whole stack follows.
+    /// Defaults to [`NAMIASHI_STANCE_DROP_M`].
     trunk_drop_m: f64,
     dt: f64,
     /// `None` = the legacy `wbc::solve_warm_with_weights` path
@@ -253,7 +278,7 @@ impl WbcParams {
             base_accel_weight: None,
             contact_force_weight: None,
             replay_dir: None,
-            trunk_drop_m: 0.0,
+            trunk_drop_m: NAMIASHI_STANCE_DROP_M,
         }
     }
     fn forward_walk() -> Self {
@@ -278,7 +303,7 @@ impl WbcParams {
             base_accel_weight: None,
             contact_force_weight: None,
             replay_dir: None,
-            trunk_drop_m: 0.0,
+            trunk_drop_m: NAMIASHI_STANCE_DROP_M,
         }
     }
 
@@ -2431,7 +2456,10 @@ fn namiashi_video_source() {
 /// reach before it runs out of extension, so a drop that leaves the gait
 /// geometrically fine can still leave it kinematically infeasible.
 ///
-/// Four heights, three gaits, tuned settings otherwise unchanged.
+/// Four heights, three gaits, tuned settings otherwise unchanged. `drop` here
+/// is absolute, measured from the harness's original ~0.295 m stance -- it
+/// overrides `NAMIASHI_STANCE_DROP_M` rather than adding to it, so the 0 cm
+/// row is the old baseline and the 6 cm row is the current one.
 #[test]
 #[ignore = "12 runs -- run with --ignored"]
 fn namiashi_trunk_height_sweep() {

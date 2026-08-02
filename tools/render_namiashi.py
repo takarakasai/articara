@@ -32,11 +32,11 @@ from PIL import Image, ImageDraw, ImageFont
 # boundary lands on one of two or four gait phases and the average never
 # settles. The harness has the same fix for the same reason.
 CLIPS = [
-    ("Trot", "trot", "T=0.320s  duty=0.50  step=0.145m", (0.80, 0.0, 0.0), 0.320),
-    ("Walk", "walk", "T=0.500s  duty=0.75  step=0.145m", (0.33, 0.0, 0.0), 0.500),
-    ("Crawl", "crawl", "T=0.800s  duty=0.85  step=0.145m", (0.17, 0.0, 0.0), 0.800),
+    ("Trot", "trot", "T=0.320s  duty=0.50  step=0.145m  crouch 6cm", (0.80, 0.0, 0.0), 0.320),
+    ("Walk", "walk", "T=0.500s  duty=0.75  step=0.145m  crouch 6cm", (0.33, 0.0, 0.0), 0.500),
+    ("Crawl", "crawl", "T=0.800s  duty=0.85  step=0.145m  crouch 6cm", (0.17, 0.0, 0.0), 0.800),
     ("Trot / forward", "cmd_fwd", "command coverage", (0.80, 0.0, 0.0), 0.320),
-    ("Trot / backward", "cmd_back", "command coverage", (-0.80, 0.0, 0.0), 0.320),
+    ("Trot / backward", "cmd_back", "the one that does not track", (-0.80, 0.0, 0.0), 0.320),
     ("Trot / strafe", "cmd_strafe", "command coverage", (0.0, 0.45, 0.0), 0.320),
     ("Trot / turn", "cmd_turn", "yaw arm fix: 76% -> 100%", (0.0, 0.0, 0.60), 0.320),
 ]
@@ -154,7 +154,7 @@ def overlay(frame, label, caption, cmd, meas, t, settling):
     d.rectangle([0, 0, w, 132], fill=(0, 0, 0, 165))
     d.text((22, 14), label, font=f_big, fill=(255, 255, 255))
     d.text((22, 56), caption, font=f_small, fill=(175, 185, 200))
-    d.text((22, 84), f"namiashi  3.30 kg  (legs 2.40, 73%)", font=f_small,
+    d.text((22, 84), "namiashi  3.30 kg   stance 0.235 m", font=f_small,
            fill=(175, 185, 200))
 
     cvx, cvy, cwz = cmd
@@ -267,7 +267,7 @@ def main():
 
     frames = []
     frames += title_card("namiashi  WBC gaits",
-                         "MuJoCo, model corrected to 3.3 kg",
+                         "3.3 kg model, 0.235 m stance",
                          args.width, args.height, args.fps, 2.2)
     for label, sub, caption, cmd, period in CLIPS:
         if not (Path(args.root) / sub / "trace.csv").exists():
