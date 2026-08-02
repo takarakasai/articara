@@ -51,6 +51,12 @@ fn namiashi_misa() -> PathBuf {
 
 /// The model every test runs on unless it says otherwise.
 ///
+/// Both 3.3 kg variants also carry the knee's 9:14 reduction referred through
+/// properly (see `rescale_mass.py`); `namiashi.misa` does not, so any
+/// comparison against it mixes the mass change with the gearing change. The
+/// comparison that matters -- `hip` vs `prop` -- is unaffected, since both
+/// have it.
+///
 /// `prop` rather than `hip` on purpose. Both are 3.3 kg with 600 g legs; they
 /// differ only in how far down the leg the added mass sits, and the spec does
 /// not say. `prop` keeps the CAD's own proportions, so it is the variant that
@@ -125,6 +131,12 @@ struct WbcSample {
     /// 1.0 is clamped: the commanded torque is not the torque being produced,
     /// and the modelled controller is not the controller running.
     tau_frac: [f64; 12],
+    /// |joint velocity| / that joint's rated `velocity`. The knee's rating
+    /// drops to 21.5 rad/s once its 9:14 reduction is referred properly, and
+    /// `mujoco_sim` brakes overspeed with a torque added *before* the effort
+    /// clamp -- so a joint that is too fast shows up as a joint that is out
+    /// of torque, which is a different problem with a different fix.
+    qd_frac: [f64; 12],
 }
 
 /// Threshold for "trunk has fallen". Below this z, the body has either
@@ -580,15 +592,20 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         // hardware cannot produce and nothing would say so.
         let qfrc = sim.qfrc_actuator();
         let mut tau_frac = [0.0f64; 12];
+        let mut qd_frac = [0.0f64; 12];
         for (leg, tri) in gc.joint_indices().iter().enumerate() {
             for (j, &ji) in tri.iter().enumerate() {
                 let joint = &robot.joints[ji];
-                if joint.effort <= 0.0 {
-                    continue;
+                if joint.effort > 0.0 {
+                    if let Some(adr) = sim.joint_dof_adr(&joint.name) {
+                        if let Some(&t) = qfrc.get(adr) {
+                            tau_frac[leg * 3 + j] = (t / joint.effort).abs();
+                        }
+                    }
                 }
-                if let Some(adr) = sim.joint_dof_adr(&joint.name) {
-                    if let Some(&t) = qfrc.get(adr) {
-                        tau_frac[leg * 3 + j] = (t / joint.effort).abs();
+                if joint.velocity > 0.0 {
+                    if let Some((_, qd)) = sim.joint_q_qd(&joint.name) {
+                        qd_frac[leg * 3 + j] = (qd / joint.velocity).abs();
                     }
                 }
             }
@@ -618,6 +635,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             yaw,
             cycle_period_s,
             tau_frac,
+            qd_frac,
         });
     }
     Some(samples)
@@ -906,10 +924,22 @@ fn report_walk_cmd(
                 }
             }
         }
+        let mut qd_peak = 0.0f64;
+        let mut qd_over = 0usize;
+        for s in walk.iter() {
+            for leg in 0..4 {
+                let f = s.qd_frac[leg * 3 + j];
+                qd_peak = qd_peak.max(f);
+                if f > 1.0 {
+                    qd_over += 1;
+                }
+            }
+        }
         role_line += &format!(
-            "  {}: peak={peak:.2} sat={:.1}%",
+            "  {}: tau pk={peak:.2} sat={:.1}% | qd pk={qd_peak:.2} over={:.1}%",
             ROLE[j],
-            100.0 * sat as f64 / (4.0 * n)
+            100.0 * sat as f64 / (4.0 * n),
+            100.0 * qd_over as f64 / (4.0 * n),
         );
     }
     eprintln!("{role_line}");
@@ -1843,6 +1873,31 @@ fn namiashi_is_the_dynamic_layer_load_bearing() {
     }
 }
 
+/// THE BAND WAS AN ARTEFACT OF AN UNDER-MODELLED KNEE.
+///
+/// This test was written before the knee's 9:14 reduction was referred
+/// through the model. The source URDF raised the calf's `effort` to 2.205
+/// against the others' 1.5 -- a ratio of 1.470 where 14/9 is 1.5556 -- and
+/// left `velocity` and `armature` at the same values as every other joint.
+/// A reduction does all three: torque x14/9, speed x9/14, and reflected
+/// rotor inertia x(14/9)^2. So the knee was carrying 2.4x too little
+/// inertia.
+///
+/// With that corrected the speed dependence disappears. Walk on prop at
+/// T=0.400 now holds three-foot support of only 0.16-0.21 at *every* speed
+/// from 0.30 to 0.48 m/s, where before it held 0.61-0.64 below the band and
+/// 0.65 above it. There is no band because there is no good region: T=0.400
+/// simply cannot walk this leg. The tuned setting had already moved to
+/// T=0.500, which holds 0.79.
+///
+/// The speed limit is not what binds, either -- knee velocity peaks at
+/// 0.63-0.70 of its (now correct) 21.5 rad/s rating and never exceeds it.
+/// The knee is torque-limited, and referring the inertia properly is what
+/// made that visible: calf saturation went from 0-1% to 9-11% on every gait
+/// despite the torque limit going *up* by 5.8%.
+///
+/// Original question, kept because the answer still stands:
+///
 /// DOES TORQUE SATURATION EXPLAIN THE WALK BAND?
 ///
 /// `mujoco_sim` clamps every joint to its `effort` limit silently
