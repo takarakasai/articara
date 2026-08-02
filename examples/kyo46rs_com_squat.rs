@@ -680,6 +680,10 @@ fn main() {
     // torso, but G1's PELVIS -- G1 has a waist joint, so the thing being held
     // upright there is not the upper body.
     let use_trunk = flag("TRUNK", true);
+    // LATCH_STANCE=0 restores reading the stance foot's y every tick, which
+    // is how the reference came to depend on the thing it is supposed to be
+    // steering.
+    let latch_stance = flag("LATCH_STANCE", true);
     // Put the equation of motion on its own top level so the null-space
     // cascade enforces it exactly, instead of letting it be traded against
     // the cones in a shared least-squares objective.
@@ -885,6 +889,7 @@ fn main() {
 
     let mut com_ref0: Option<na::Vector3<f64>> = None;
     let mut swing_home_cell: Option<na::Vector3<f64>> = None;
+    let mut stance_y_cell: Option<f64> = None;
     let mut last_good: Option<Vec<f64>> = None;
     let mut consec_degraded: u32 = 0;
     // Crossfade state for the fallback <-> QP handover. Swapping controllers
@@ -1314,8 +1319,25 @@ fn main() {
         let zd_ref = -squat_amp * 0.5 * (2.0 * PI / period_s) * phase.sin();
         let zdd_ref = -squat_amp * 0.5 * (2.0 * PI / period_s).powi(2) * phase.cos();
         // Move the CoM over the stance foot BEFORE releasing the other one.
+        //
+        // The target is LATCHED on the first tick, not re-read from the foot
+        // every tick. Reading it live puts the plant inside the reference:
+        // the foot link origin sits above the sole, so the moment the ankle
+        // rolls the origin swings sideways and the CoM target swings with it.
+        // Measured on G1, the stance foot rolled 4.6 mm 0.2 s after lift-off
+        // and the target jumped 37 mm inboard in two ticks; the QP tracked it
+        // faithfully, with zero degraded solves, straight into a fall. A
+        // balance target has to be a fixed point in the world -- if the foot
+        // moves, that is a disturbance to reject, not a new goal to chase.
+        let stance_y = *stance_y_cell.get_or_insert_with(|| {
+            misarta::se3::translation(&data.oMi[left_foot_mi]).y
+        });
         let y_ref = if lift_leg {
-            let stance_y = misarta::se3::translation(&data.oMi[left_foot_mi]).y;
+            let stance_y = if latch_stance {
+                stance_y
+            } else {
+                misarta::se3::translation(&data.oMi[left_foot_mi]).y
+            };
             let a = (t / t_shift).clamp(0.0, 1.0);
             let a = 0.5 - 0.5 * (PI * a).cos();          // smooth ramp
             com_ref0.y + a * (stance_y - com_ref0.y)
