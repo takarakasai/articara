@@ -220,6 +220,27 @@ fn main() {
     let d0 = rig.fk_now();
     let com0 = rig.com_of(&d0);
     let steps = Footsteps::from_fk(&d0, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
+    // The orientation each foot is PLANNED to land in, captured once from the
+    // settled pose. Stepping in place does not turn, so this never changes --
+    // which is the point: it is a plan, not a measurement, and a swing foot
+    // that drifts is correcting toward it rather than tracking its own drift.
+    let foot_rot0: [na::Matrix3<f64>; 2] =
+        std::array::from_fn(|s| misarta::se3::rotation_matrix(&d0.oMi[rig.foot_mi[s]]));
+    // Swing orientation gains. Without this task the foot's three rotational
+    // DoF are free and the QP twists the leg: measured, hip_yaw walked to its
+    // +-30 deg stop over 16 steps and the feet landed yawed by up to 31 deg.
+    let yaw0 = {
+        let q = rig.sim.body_world_orientation(&rig.robot.root_link).unwrap();
+        q.euler_angles().2
+    };
+    let kp_sw_rot = env_f64("KP_SWING_ROT", 400.0);
+    let kd_sw_rot = env_f64("KD_SWING_ROT", 40.0);
+    // 0 = translation only, 1 = + yaw (4 rows), 2 = full pose (6 rows).
+    let swing_rot_mode = env_f64("SWING_ROT", 1.0) as u32;
+    // Regulate the trunk's yaw as well as its roll and pitch.
+    let trunk_yaw = flag("TRUNK_YAW", true);
+    let kp_yaw = env_f64("KP_YAW", 200.0);
+    let kd_yaw = env_f64("KD_YAW", 40.0);
     let gait = GaitPlan::new(&gp);
     let z_com = env_f64("Z_COM", com0.z);
     // How far the ZMP is asked to travel laterally, as a fraction of the
@@ -516,7 +537,13 @@ fn main() {
         };
         let rp_ref =
             bt::trunk_rp_ref(roll, pitch, &st.v_ang_w, kp_trunk, kd_trunk, trunk_dead, trunk_sign);
-        let p2 = bt::trunk(dyn_ctx.qddot(), &j_trunk, &djv_trunk, &rp_ref, nv);
+        // Yaw error against the pose the plan was built in, not against the
+        // last tick: the reference is a fixed world direction.
+        let yaw_ref = trunk_yaw.then(|| {
+            let (_, _, yaw) = st.body_quat.euler_angles();
+            kp_yaw * (yaw0 - yaw) + kd_yaw * (0.0 - st.v_ang_w[2])
+        });
+        let p2 = bt::trunk_rpy(dyn_ctx.qddot(), &j_trunk, &djv_trunk, &rp_ref, yaw_ref, nv);
 
         // ---- P4: posture ------------------------------------------------
         let p3 = bt::posture(
@@ -588,7 +615,8 @@ fn main() {
                 let tgt_v =
                     swing_velocity(lift_off, touch_down, lift_h, slice_frac, slice.duration());
                 swing_tgt = tgt;
-                Some(bt::swing(
+                let om3 = &jf.rows(0, 3).into_owned() * v_dvec;
+                Some(bt::swing_with_pose(
                     dyn_ctx.qddot(),
                     &jf,
                     &djv,
@@ -599,7 +627,18 @@ fn main() {
                     kp_sw_xy,
                     kp_sw_z,
                     kd_sw,
-                    bt::SwingAxes::Xyz,
+                    match swing_rot_mode {
+                        0 => bt::SwingAxes::Xyz,
+                        2 => bt::SwingAxes::Pose,
+                        _ => bt::SwingAxes::XyzYaw,
+                    },
+                    Some((
+                        misarta::se3::rotation_matrix(&data.oMi[mi]),
+                        foot_rot0[side],
+                        na::Vector3::new(om3[0], om3[1], om3[2]),
+                        kp_sw_rot,
+                        kd_sw_rot,
+                    )),
                 ))
             }
             // Out of contact for any other reason -- it has not re-established
@@ -618,7 +657,8 @@ fn main() {
                 let vel = na::Vector3::new(vel3[0], vel3[1], vel3[2]);
                 let tgt = steps.sole[side] + na::Vector3::new(0.0, 0.0, prof.sole_below_origin);
                 swing_tgt = tgt;
-                Some(bt::swing(
+                let om3 = &jf.rows(0, 3).into_owned() * v_dvec;
+                Some(bt::swing_with_pose(
                     dyn_ctx.qddot(),
                     &jf,
                     &djv,
@@ -629,7 +669,18 @@ fn main() {
                     kp_sw_xy,
                     kp_sw_z,
                     kd_sw,
-                    bt::SwingAxes::Xyz,
+                    match swing_rot_mode {
+                        0 => bt::SwingAxes::Xyz,
+                        2 => bt::SwingAxes::Pose,
+                        _ => bt::SwingAxes::XyzYaw,
+                    },
+                    Some((
+                        misarta::se3::rotation_matrix(&data.oMi[mi]),
+                        foot_rot0[side],
+                        na::Vector3::new(om3[0], om3[1], om3[2]),
+                        kp_sw_rot,
+                        kd_sw_rot,
+                    )),
                 ))
             }
         };
