@@ -484,7 +484,7 @@ def render_frame(links, joints, pose, cam, hud):
 
     # ── HUD ────────────────────────────────────────────────────────────
     (t, com_z, ref_z, tilt, hist, taus, tau_names, tau_lims, tau_total,
-     n_stance, degraded, sole_roll) = hud
+     n_stance, degraded, sole_roll, stance_side) = hud
     compact = os.environ.get("COMPACT")
     if compact:
         draw.rectangle([0, 0, W, 76], fill=(16, 18, 23, 214))
@@ -513,7 +513,13 @@ def render_frame(links, joints, pose, cam, hud):
     else:
         draw.text((W - 262, 14), "QP: solving", fill=(126, 200, 140), font=F_BODY)
     if n_stance == 1:
-        draw.text((W - 262, 48), "contact: LEFT foot only", fill=(226, 140, 92), font=F_BODY)
+        # Which foot, read from the MEASURED contact forces rather than
+        # assumed. The squat example always lifted the right foot, so this
+        # label was hardcoded to "LEFT"; a walk alternates, and a label that
+        # names the wrong foot is how the last overlay bug (doc trap 8) turned
+        # into a wrong conclusion.
+        draw.text((W - 262, 48), f"contact: {stance_side} foot only",
+                  fill=(226, 140, 92), font=F_BODY)
     else:
         draw.text((W - 262, 48), "contact: both feet", fill=(126, 200, 140), font=F_BODY)
 
@@ -534,7 +540,7 @@ def render_frame(links, joints, pose, cam, hud):
     # ── live pitch-joint torque strip, full width along the bottom ─────
     px, py, pw, ph = 22, H - 140, W - 62, 92
     draw.rectangle([px - 10, py - 30, px + pw + 10, py + ph + 26], fill=(16, 18, 23, 214))
-    draw.text((px, py - 26), "sagittal joint torque, left leg",
+    draw.text((px, py - 26), os.environ.get("TAU_LABEL", "sagittal joint torque, left leg"),
               fill=(198, 206, 220), font=F_SMALL)
 
     span = float(os.environ.get("TAU_SPAN", max(2.5, 0.25 * max(tau_lims))))
@@ -606,9 +612,19 @@ def main():
     sel = rows[::stride]
     print(f"dt={dt:.4f}s -> stride {stride} -> {len(sel)} frames @ {FPS}fps")
 
-    TAU_JOINTS = [("left_hip_pitch_joint", "hip_pitch"),
-                  ("left_knee_joint", "knee"),
-                  ("left_ankle_pitch_joint", "ankle_pitch")]
+    # Which three joints the bottom strip plots. Default is the sagittal set,
+    # which is what a squat is about; a walk is about the FRONTAL plane, and on
+    # kyo46rs the joint that actually runs out of torque in single support is
+    # hip_roll (doc section 10.11), so that has to be selectable rather than
+    # baked in.
+    #   TAU_JOINTS="left_hip_roll_joint:L_hip_roll,right_hip_roll_joint:R_hip_roll,left_knee_joint:knee"
+    _tj = os.environ.get("TAU_JOINTS")
+    if _tj:
+        TAU_JOINTS = [tuple(x.split(":", 1)) if ":" in x else (x, x) for x in _tj.split(",")]
+    else:
+        TAU_JOINTS = [("left_hip_pitch_joint", "hip_pitch"),
+                      ("left_knee_joint", "knee"),
+                      ("left_ankle_pitch_joint", "ankle_pitch")]
     tau_lims = [float(sel[0]["lim_" + c]) for c, _ in TAU_JOINTS]
     tau_names = [lbl for _, lbl in TAU_JOINTS]
     tau_hist = [[] for _ in TAU_JOINTS]
@@ -655,7 +671,9 @@ def main():
                             # it; older CSVs have no such column, and stance
                             # count is not a substitute, so say nothing then
                             bool(int(r.get("degraded", 0))),
-                            sole_roll_deg(pose)))
+                            sole_roll_deg(pose),
+                            ("LEFT" if float(r.get("fz_mj_l", 0)) >= float(r.get("fz_mj_r", 0))
+                             else "RIGHT")))
         if has_cop:
             feet = []
             for side in ("l", "r"):
