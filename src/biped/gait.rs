@@ -112,12 +112,19 @@ impl GaitPlan {
             t += p.t_ds;
             swing = 1 - swing;
         }
-        // Run out to the end of the experiment on both feet, so the last
-        // touchdown has somewhere to settle instead of the log simply
-        // stopping mid-transient.
-        let last = slices.last_mut().expect("t_start slice always exists");
-        if p.t_end > last.t1 {
-            last.t1 = p.t_end;
+        // Run out to the end of the experiment on both feet, as a SEPARATE
+        // slice rather than by stretching the last double support.
+        //
+        // Stretching it was a real bug. The ZMP plan ramps linearly across a
+        // double-support slice from the last stance sole to mid-stance, so a
+        // slice extended to `t_end` spreads "come to rest in the middle" over
+        // the entire tail. Measured with a 25 s tail: the robot finished the
+        // walk standing on ONE foot -- 64.3 N against 0.6 N -- and stayed
+        // there for eleven seconds while its CoM crept back at 2 mm/s, until
+        // the unloaded foot finally caught 18 N and knocked it over. The
+        // settle has to have its own, bounded duration.
+        if p.t_end > t {
+            slices.push(Slice { support: Support::Double, t0: t, t1: p.t_end });
         }
         GaitPlan { slices }
     }
@@ -556,8 +563,14 @@ mod tests {
     fn plan_alternates_and_covers_the_timeline() {
         let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.4, n_steps: 3, first_swing: RIGHT, t_end: 10.0 };
         let plan = GaitPlan::new(&p);
-        // start DS, then (SS, DS) x 3
-        assert_eq!(plan.slices.len(), 7);
+        // start DS, then (SS, DS) x 3, then the SETTLE slice. The settle is
+        // separate on purpose -- stretching the last inter-step double support
+        // to t_end spreads the ZMP's return to mid-stance over the whole tail.
+        assert_eq!(plan.slices.len(), 8);
+        assert_eq!(plan.slices[6].support, Support::Double);
+        assert_eq!(plan.slices[7].support, Support::Double);
+        // ...and the inter-step double support keeps its own short duration.
+        assert!((plan.slices[6].duration() - 0.2).abs() < 1e-12);
         assert_eq!(plan.slices[0].support, Support::Double);
         assert_eq!(plan.slices[1].support, Support::Single { stance: LEFT, swing: RIGHT });
         assert_eq!(plan.slices[3].support, Support::Single { stance: RIGHT, swing: LEFT });
@@ -571,11 +584,14 @@ mod tests {
     }
 
     #[test]
-    fn no_steps_is_one_long_double_support() {
+    fn no_steps_is_double_support_throughout() {
         let p = GaitParams { n_steps: 0, t_start: 1.0, t_end: 5.0, ..Default::default() };
         let plan = GaitPlan::new(&p);
-        assert_eq!(plan.slices.len(), 1);
+        // The initial weight shift and the settle, both double support.
+        assert_eq!(plan.slices.len(), 2);
+        assert_eq!(plan.support_at(0.5), Support::Double);
         assert_eq!(plan.support_at(4.0), Support::Double);
+        assert_eq!(plan.slices.last().unwrap().t1, 5.0);
     }
 
     #[test]
@@ -625,6 +641,31 @@ mod tests {
             .map(|(i, _)| naive.at_slice(i).sole[LEFT].x - naive.at_slice(i).sole[RIGHT].x)
             .collect();
         assert!(ngaps[1].abs() < 1e-12 && ngaps[3].abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_settle_does_not_stretch_the_last_double_support() {
+        // The bug: extending the final inter-step double support to `t_end`
+        // made the ZMP ramp to mid-stance across the entire tail, so the robot
+        // finished the walk standing on one foot for eleven seconds and then
+        // fell over. The settle needs its own slice.
+        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.35, n_steps: 4,
+                             first_swing: RIGHT, t_end: 60.0 };
+        let plan = GaitPlan::new(&p);
+        let last_step_end = plan
+            .slices
+            .iter()
+            .rposition(|s| matches!(s.support, Support::Single { .. }))
+            .expect("there are steps");
+        // The double support right after the last step is a NORMAL one.
+        assert!(
+            (plan.slices[last_step_end + 1].duration() - 0.2).abs() < 1e-12,
+            "the post-step double support was stretched to {} s",
+            plan.slices[last_step_end + 1].duration()
+        );
+        // The tail is a separate slice and carries all the remaining time.
+        assert_eq!(plan.slices.last().unwrap().t1, 60.0);
+        assert!(plan.slices.last().unwrap().duration() > 50.0);
     }
 
     #[test]
