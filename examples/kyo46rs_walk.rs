@@ -265,7 +265,12 @@ fn main() {
     let stride = env_f64("STRIDE", 0.0);
     // Steps over which the stride ramps in from standing.
     let stride_ramp = env_f64("STRIDE_RAMP", 6.0) as usize;
-    let footsteps = FootstepPlan::ramped_stride(&gait, &steps, stride, stride_ramp);
+    // ALTERNATE=0 restores the step-and-close plan, for A/B.
+    let footsteps = if flag("ALTERNATE", true) {
+        FootstepPlan::alternating(&gait, &steps, stride, stride_ramp)
+    } else {
+        FootstepPlan::ramped_stride(&gait, &steps, stride, stride_ramp)
+    };
     let dcm_plan = DcmPlan::from_footsteps(&gait, &footsteps, z_com, zmp_lat_scale);
     let omega = dcm_plan.omega;
     println!(
