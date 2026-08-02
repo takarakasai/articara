@@ -175,6 +175,24 @@ struct WbcParams {
     /// 3.3 kg. Off by default so the effect can be measured against the
     /// state every earlier result in this file was produced under.
     wbc_real_inertia: bool,
+    /// Decomposition of `wbc_real_inertia`, which bundles three changes:
+    /// the mass (9.0 -> 3.3, a 2.7x amplification of `a_base_des`), the CoM
+    /// offset, and the composite inertia (which also switches the pipeline
+    /// onto the CoM-moment-arm accel prediction). Each can be applied alone.
+    wbc_real_mass_only: bool,
+    wbc_real_com_only: bool,
+    wbc_real_inertia_only: bool,
+    /// Minimum normal force on commanded-stance feet, as a fraction of the
+    /// static per-foot share `m*g/4`. Expressed as a fraction rather than
+    /// newtons so it means the same thing on the 2.4 and 3.3 kg models.
+    f_min_stance_frac: f64,
+    /// Override for `WbcWeights::base_accel` (default 200.0). This is the
+    /// largest soft weight in the QP and the one that carries the MPC's
+    /// predicted base acceleration into the torque.
+    base_accel_weight: Option<f64>,
+    /// Override for `WbcWeights::contact_force` (default 5.0) -- how hard the
+    /// WBC pulls its own GRF solution toward the MPC's prediction.
+    contact_force_weight: Option<f64>,
     dt: f64,
     /// `None` = the legacy `wbc::solve_warm_with_weights` path
     /// (walk-validated default). `Some` opts the pipeline into the
@@ -220,6 +238,12 @@ impl WbcParams {
             early_contact_n: 5.0,
             kinematic_only: false,
             wbc_real_inertia: false,
+            wbc_real_mass_only: false,
+            wbc_real_com_only: false,
+            wbc_real_inertia_only: false,
+            f_min_stance_frac: 0.0,
+            base_accel_weight: None,
+            contact_force_weight: None,
         }
     }
     fn forward_walk() -> Self {
@@ -237,6 +261,12 @@ impl WbcParams {
             early_contact_n: 5.0,
             kinematic_only: false,
             wbc_real_inertia: false,
+            wbc_real_mass_only: false,
+            wbc_real_com_only: false,
+            wbc_real_inertia_only: false,
+            f_min_stance_frac: 0.0,
+            base_accel_weight: None,
+            contact_force_weight: None,
         }
     }
 
@@ -341,6 +371,42 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut wbc_pipeline = WbcPipeline::new(&robot, foot_links);
     if let Some((formulation, cfg)) = params.misa_wbc_mode.clone() {
         wbc_pipeline = wbc_pipeline.with_wbc_solver(formulation, cfg);
+    }
+    if let Some(w) = params.contact_force_weight {
+        wbc_pipeline.weights.contact_force = w;
+        eprintln!("[wbc] contact_force weight = {w} (default 5.0)");
+    }
+    if let Some(w) = params.base_accel_weight {
+        wbc_pipeline.weights.base_accel = w;
+        eprintln!("[wbc] base_accel weight = {w} (default 200.0)");
+    }
+    if params.f_min_stance_frac > 0.0 {
+        let mg: f64 = robot.links.iter().map(|l| l.inertial.mass).sum::<f64>() * 9.81;
+        wbc_pipeline.f_min_stance_n = params.f_min_stance_frac * mg / 4.0;
+        eprintln!(
+            "[wbc] f_min_stance = {:.2} N ({:.0}% of m*g/4 = {:.2} N)",
+            wbc_pipeline.f_min_stance_n,
+            100.0 * params.f_min_stance_frac,
+            mg / 4.0,
+        );
+    }
+    if params.wbc_real_mass_only || params.wbc_real_com_only || params.wbc_real_inertia_only {
+        let c = auto_detect_centroidal_mpc_config(&robot);
+        if params.wbc_real_mass_only {
+            wbc_pipeline.mass_kg = c.mass_kg;
+        }
+        if params.wbc_real_com_only {
+            wbc_pipeline.com_offset_body = c.com_offset_body;
+        }
+        if params.wbc_real_inertia_only {
+            wbc_pipeline.centroidal_inertia_body = Some(c.centroidal_inertia_body);
+        }
+        eprintln!(
+            "[wbc] partial: mass={} com={} inertia={}",
+            params.wbc_real_mass_only,
+            params.wbc_real_com_only,
+            params.wbc_real_inertia_only,
+        );
     }
     if params.wbc_real_inertia {
         // Same source the centroidal MPC config already uses: total mass,
@@ -2006,6 +2072,223 @@ fn namiashi_wbc_real_inertia() {
                 report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
             }
         }
+    }
+}
+
+/// STEP 3: STOP THE QP ANSWERING A THREE-CONTACT PLAN WITH TWO CONTACTS.
+///
+/// With the horizon schedule and the WBC's inertia both corrected, the
+/// dynamic layer finally helps Trot -- peak roll 3.8 deg with its torque
+/// zeroed against 2.0 deg with it on. Walk went the other way: three-foot
+/// support 0.842 zeroed against 0.608 applied, and thigh saturation doubled.
+/// Walk is duty 0.75, so three feet are down by construction; a controller
+/// that costs three-foot support on that gait is doing something specific.
+///
+/// The friction pyramid constrains stance feet to push and not pull, and
+/// nothing more. With three or four contacts the GRF allocation is redundant
+/// and a two-contact solution satisfies every constraint in the QP -- the
+/// only thing arguing against it is a low-weight regulariser toward the
+/// MPC's plan. 0.608 is what choosing that vertex looks like from outside.
+///
+/// So demand a floor. Expressed as a fraction of the static per-foot share
+/// `m*g/4` so it means the same on every model. It is a hard constraint at
+/// priority 0: too large and the touchdown transient, where the commanded
+/// contact set and the physical one disagree for a tick, becomes infeasible
+/// rather than merely wrong. The sweep is there to find where that starts.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_min_stance_force() {
+    for frac in [0.0, 0.05, 0.10, 0.20, 0.35] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                wbc_real_inertia: true,
+                f_min_stance_frac: frac,
+                total_time_s: 16.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} fmin={frac:.2}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// STEP 4: IS THE BASE-ACCEL REFERENCE WHAT COSTS WALK ITS SUPPORT?
+///
+/// The minimum-normal-force floor did nothing. Walk's three-foot support sits
+/// at 0.606-0.610 whether the floor is 0% or 35% of the static per-foot
+/// share, so the QP was never picking a two-contact vertex -- it was already
+/// loading every stance foot, and the constraint never binds. The support is
+/// being lost in the physics, not in the solution.
+///
+/// Which moves the suspicion up one level, to what the torque is being asked
+/// to achieve. `base_accel` carries the MPC's predicted base acceleration and
+/// is the largest soft weight in the QP at 200, against 1 for swing-leg and 5
+/// for contact-force and tau-gravity. If that reference is wrong for Walk,
+/// the WBC spends most of its authority chasing it and unloads a foot doing
+/// so.
+///
+/// Sweeping the weight to zero turns the WBC into gravity compensation plus
+/// the low-weight terms, without disabling it the way `kinematic_only` does.
+/// If Walk's support climbs back toward the 0.842 it reaches with the torque
+/// zeroed, the reference is the problem. If it stays at 0.61, the reference
+/// is innocent and something in the priority-0 block is responsible.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_base_accel_weight() {
+    for w in [200.0, 50.0, 10.0, 0.0] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                wbc_real_inertia: true,
+                base_accel_weight: Some(w),
+                total_time_s: 16.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} w={w:.0}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// STEP 5: THE FLAGS THE WBC IS GIVEN DISAGREE WITH EACH OTHER.
+///
+/// Two suspects down. A minimum normal force on stance feet moves Walk's
+/// three-foot support from 0.608 to 0.610 across 0-35% of the static share,
+/// so the QP was never picking a two-contact vertex. Dropping `base_accel`
+/// from its default weight of 200 to zero moves it to 0.626, so the MPC's
+/// predicted base acceleration is not what the torque is being spent on
+/// either. Neither comes near the 0.842 the same gait reaches with the WBC's
+/// torque zeroed outright.
+///
+/// That leaves priority 0, and there is a specific inconsistency there.
+/// `ContactDrivenPhase::apply_correction` is called with a late-liftoff
+/// threshold of 0, so it is monotone: it can add stance legs, never remove
+/// them. When a foot touches down early, `contact_flag[i]` flips to true
+/// while `gait_out.legs[i].phase.is_stance` stays false. That leg then gets,
+/// simultaneously:
+///
+///   - `no_contact_motion`, a priority-0 hard equality gated on
+///     `contact_flag`, nailing the foot in place;
+///   - the swing-tracking cost, gated on the *nominal* phase, still asking
+///     it to follow an advancing swing arc;
+///   - the joint position-PD at kp=100, still driving q* along that arc.
+///
+/// Priority 0 wins. The foot is pinned while two other terms drag it, which
+/// unloads it -- and an unloaded foot is exactly what a support census reads
+/// as airborne.
+///
+/// This needs no code change to test: raising the early-touchdown threshold
+/// out of reach removes the correction, and with it the disagreement.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_contact_flag_consistency() {
+    for (thr, tag) in [(5.0, "5N"), (1.0e9, "off")] {
+        for kinematic_only in [false, true] {
+            let k = if kinematic_only { "PD only" } else { "WBC on" };
+            for i in 0..NAMIASHI_TUNED.len() {
+                let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+                let params = WbcParams {
+                    wbc_real_inertia: true,
+                    early_contact_n: thr,
+                    kinematic_only,
+                    total_time_s: 16.0,
+                    ..namiashi_tuned_params(i)
+                };
+                let Some(samples) = run_wbc_sim(params) else { return };
+                report_walk(&format!("{gait:?} {tag} {k}"), &samples, cmd_vx, 1.0);
+            }
+        }
+    }
+}
+
+/// STEP 6: THE WBC IS UNLOADING THE FRONT FEET SPECIFICALLY.
+///
+/// Removing `ContactDrivenPhase` moved Walk's three-foot support from 0.608
+/// to 0.585 -- the wrong direction, so the flag disagreement is not it
+/// either. But the per-foot duty in that run says what is happening:
+///
+///     Walk, WBC torque on   0.54 0.53 | 0.79 0.78
+///     Walk, WBC torque off  0.68 0.66 | 0.79 0.79
+///
+/// The rear pair is identical to two decimal places. Only the front pair
+/// drops. The WBC is not degrading the gait, it is shifting load rearward.
+///
+/// Of the terms that can distribute force front-to-rear, `base_accel` is
+/// already ruled out (weight 200 -> 0 moved support by 0.018). `contact_force`
+/// is the other one: at weight 5 it pulls the QP's own GRF solution toward
+/// the MPC's prediction, and the MPC computes its moment arms from the body
+/// root while the WBC -- now that `centroidal_inertia_body` is set -- computes
+/// its predicted acceleration from the CoM, 15.9 mm below the root on this
+/// model. If the MPC's allocation is front-light, the WBC is faithfully
+/// reproducing it.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_contact_force_weight() {
+    for w in [5.0, 1.0, 0.0] {
+        let params = WbcParams {
+            wbc_real_inertia: true,
+            contact_force_weight: Some(w),
+            total_time_s: 16.0,
+            ..namiashi_tuned_params(1)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Walk cf={w:.0}"), &samples, NAMIASHI_TUNED[1].5, 1.0);
+    }
+    // Both off: what is left is gravity comp plus the swing-leg term.
+    let params = WbcParams {
+        wbc_real_inertia: true,
+        contact_force_weight: Some(0.0),
+        base_accel_weight: Some(0.0),
+        total_time_s: 16.0,
+        ..namiashi_tuned_params(1)
+    };
+    if let Some(samples) = run_wbc_sim(params) {
+        report_walk("Walk cf=0 ba=0", &samples, NAMIASHI_TUNED[1].5, 1.0);
+    }
+}
+
+/// STEP 7: WHICH THIRD OF THE "REAL INERTIA" CHANGE COSTS WALK ITS FRONT FEET?
+///
+/// Correcting the MPC's own inertia -- it was using the heaviest link's
+/// tensor, 12 to 24 times under the composite -- moved Walk's three-foot
+/// support from 0.725 to 0.745 with the WBC still on its 9 kg placeholder,
+/// and its front duty from 0.54/0.53 back to 0.63/0.59. But with the WBC
+/// corrected too it sits at 0.592. Something in the WBC-side correction is
+/// undoing it.
+///
+/// `wbc_real_inertia` is three changes at once, and they are not equivalent:
+///   - mass 9.0 -> 3.3 kg scales `a_base_des` by 2.7 across the board;
+///   - the CoM offset moves where moments are taken about;
+///   - setting `centroidal_inertia_body` also switches the pipeline from
+///     `predicted_base_accel_world` to its centroidal variant, which is a
+///     different function, not just a different constant.
+///
+/// Bundling them is how the earlier one-at-a-time sweeps kept missing:
+/// `base_accel` and `contact_force` turned out to be jointly responsible
+/// (0.608 with both on, 0.655 and 0.626 with either alone, 0.819 with both
+/// off) because they carry the same MPC prediction down two paths. Same
+/// discipline applies here.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_wbc_inertia_decomposition() {
+    let cases: &[(&str, bool, bool, bool)] = &[
+        ("none", false, false, false),
+        ("mass", true, false, false),
+        ("com", false, true, false),
+        ("inertia", false, false, true),
+        ("all", true, true, true),
+    ];
+    for &(tag, m, c, i) in cases {
+        let params = WbcParams {
+            wbc_real_mass_only: m,
+            wbc_real_com_only: c,
+            wbc_real_inertia_only: i,
+            total_time_s: 16.0,
+            ..namiashi_tuned_params(1)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Walk {tag}"), &samples, NAMIASHI_TUNED[1].5, 1.0);
     }
 }
 
