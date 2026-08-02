@@ -2484,7 +2484,7 @@ fn namiashi_trunk_height_sweep() {
 
 /// VIDEO SOURCE: the same gait at four stance heights.
 ///
-/// Records Trot and Walk at 0 / 2 / 4 / 6 cm of crouch for
+/// Records all three tuned gaits at 0 / 2 / 4 / 6 cm of crouch for
 /// `render_namiashi_height.py` to show as a 2x2 grid. Same settings as
 /// `NAMIASHI_TUNED` otherwise, so the comparison is only about height.
 ///
@@ -2499,7 +2499,7 @@ fn namiashi_height_video_source() {
         eprintln!("NAMIASHI_REPLAY_OUT unset -- nothing to record");
         return;
     };
-    for i in [0usize, 1] {
+    for i in 0..NAMIASHI_TUNED.len() {
         let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
         for drop in [0.0, 0.02, 0.04, 0.06] {
             let tag = format!(

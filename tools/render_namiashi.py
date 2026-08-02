@@ -32,9 +32,9 @@ from PIL import Image, ImageDraw, ImageFont
 # boundary lands on one of two or four gait phases and the average never
 # settles. The harness has the same fix for the same reason.
 CLIPS = [
-    ("Trot", "trot", "T=0.320s  duty=0.50  step=0.145m  crouch 6cm", (0.80, 0.0, 0.0), 0.320),
-    ("Walk", "walk", "T=0.500s  duty=0.75  step=0.145m  crouch 6cm", (0.33, 0.0, 0.0), 0.500),
-    ("Crawl", "crawl", "T=0.800s  duty=0.85  step=0.145m  crouch 6cm", (0.17, 0.0, 0.0), 0.800),
+    ("Trot", "trot", "T=0.320s  duty=0.50  step=0.145m", (0.80, 0.0, 0.0), 0.320),
+    ("Walk", "walk", "T=0.500s  duty=0.75  step=0.145m", (0.33, 0.0, 0.0), 0.500),
+    ("Crawl", "crawl", "T=0.800s  duty=0.85  step=0.145m", (0.17, 0.0, 0.0), 0.800),
     ("Trot / forward", "cmd_fwd", "command coverage", (0.80, 0.0, 0.0), 0.320),
     ("Trot / backward", "cmd_back", "the one that does not track", (-0.80, 0.0, 0.0), 0.320),
     ("Trot / strafe", "cmd_strafe", "command coverage", (0.0, 0.45, 0.0), 0.320),
@@ -145,7 +145,7 @@ def font(size):
     return ImageFont.load_default()
 
 
-def overlay(frame, label, caption, cmd, meas, t, settling):
+def overlay(frame, label, caption, cmd, meas, t, settling, z):
     img = Image.fromarray(frame)
     d = ImageDraw.Draw(img, "RGBA")
     w, _ = img.size
@@ -154,7 +154,10 @@ def overlay(frame, label, caption, cmd, meas, t, settling):
     d.rectangle([0, 0, w, 132], fill=(0, 0, 0, 165))
     d.text((22, 14), label, font=f_big, fill=(255, 255, 255))
     d.text((22, 56), caption, font=f_small, fill=(175, 185, 200))
-    d.text((22, 84), "namiashi  3.30 kg   stance 0.235 m", font=f_small,
+    # Read off the trace, not typed in. A hardcoded stance height is exactly
+    # the kind of caption that keeps saying 0.235 m after someone changes the
+    # default, and there is no way to catch it by looking.
+    d.text((22, 84), f"namiashi  3.30 kg   trunk z = {z:.3f} m", font=f_small,
            fill=(175, 185, 200))
 
     cvx, cvy, cwz = cmd
@@ -237,7 +240,8 @@ def render_clip(root, label, sub, caption, cmd, period, fps, seconds, width, hei
             frames.append(
                 overlay(r.render(), label, caption, cmd,
                         body_frame_rates(trace, i, win), ts - t[0],
-                        settling=(ts - t[0]) < 1.15)
+                        settling=(ts - t[0]) < 1.15,
+                        z=trace["root"][i, 2])
             )
     return frames
 
@@ -267,7 +271,7 @@ def main():
 
     frames = []
     frames += title_card("namiashi  WBC gaits",
-                         "3.3 kg model, 0.235 m stance",
+                         "3.3 kg model",
                          args.width, args.height, args.fps, 2.2)
     for label, sub, caption, cmd, period in CLIPS:
         if not (Path(args.root) / sub / "trace.csv").exists():
