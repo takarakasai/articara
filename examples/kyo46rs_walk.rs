@@ -344,6 +344,23 @@ fn main() {
     // assumes. CONTACT_DRIVEN=0 restores the schedule-only behaviour for A/B.
     let contact_driven = flag("CONTACT_DRIVEN", true);
     let mut correction = ContactCorrection::new(total_mass * G, env_f64("CONTACT_TICKS", 2.0) as u32);
+    // Capture-point footstep adaptation. Default OFF because it was measured
+    // and does not earn its place: the ZMP clamp it exists to replace turns
+    // out to be a SYMPTOM, not the cause. See doc section 13.7 -- at the
+    // sustainable speed the clamp never binds and this fires zero times, and
+    // above it the clamp binds once, at the collapse, when a 67 mm step
+    // adjustment is already too late. Kept because the mechanism is right and
+    // will be needed once whatever actually limits the speed is found.
+    let adapt = flag("ADAPT_STEP", false);
+    // Reachability. Not a tuning knob -- past this the leg cannot get there,
+    // and a target it cannot reach is worse than a nominal one.
+    let adapt_max_x = env_f64("ADAPT_MAX_X", 0.06);
+    let adapt_max_y = env_f64("ADAPT_MAX_Y", 0.03);
+    let mut footsteps = footsteps;
+    let mut dcm_plan = dcm_plan;
+    let mut adapt_now = na::Vector2::zeros();
+    let mut max_adapt: f64 = 0.0;
+    let mut n_adapt = 0u32;
     let mut n_corrected = 0u32;
 
     // ankle_roll range of motion. The model review measured that holding the
@@ -425,6 +442,22 @@ fn main() {
                     swing_lift_off = Some(p);
                 }
                 (Support::Single { swing, .. }, Support::Double) => {
+                    // The foot has landed somewhere other than nominal, so
+                    // every future segment is relative to where it ACTUALLY
+                    // is. Rebuilding the DCM plan here is safe rather than
+                    // discontinuous: a segment's influence on the present
+                    // reference decays by exp(-omega*T) per step -- about a
+                    // factor of 7 at these timings -- so a few mm one step
+                    // ahead moves the current reference by a fraction of a
+                    // millimetre.
+                    if adapt && adapt_now.norm() > 1e-9 {
+                        footsteps.shift_from(slice_idx, swing, adapt_now);
+                        dcm_plan =
+                            DcmPlan::from_footsteps(&gait, &footsteps, z_com, zmp_lat_scale);
+                        max_adapt = max_adapt.max(adapt_now.norm());
+                        n_adapt += 1;
+                    }
+                    adapt_now = na::Vector2::zeros();
                     // Re-anchor the landed foot where it ACTUALLY is, not
                     // where it was planned to be: the anchor's job is to stop
                     // drift from here, and seeding it with a position the
@@ -538,6 +571,11 @@ fn main() {
         let r = dcm_plan.reference(t);
         let dcm_err = (xi - r.xi).norm();
         max_dcm_err = max_dcm_err.max(dcm_err);
+        // ---- capture-point footstep adaptation --------------------------
+        // Steer the NEXT footstep on the DCM's predicted position at
+        // touchdown. Recomputed every tick; the prediction horizon shrinks to
+        // zero as the step runs out, so the target converges rather than
+        // chasing early-step noise.
         let p_raw = commanded_zmp(&xi, &r, omega, k_dcm);
         // Clamp against the support that is REALLY there, which in NO_LIFT is
         // both feet even where the plan says one.
@@ -549,6 +587,35 @@ fn main() {
         );
         let (p_cmd, clamped) = if clamp_zmp { sbox.clamp(&p_raw) } else { (p_raw, 0.0) };
         max_zmp_clamp = max_zmp_clamp.max(clamped);
+
+        // ---- capture-point footstep adaptation --------------------------
+        //
+        // Trigger on ZMP SATURATION, not on a DCM prediction.
+        //
+        // The obvious formulation -- predict the DCM at touchdown open-loop
+        // and shift the foot by the error -- is wrong here and was measured
+        // to be: it ignores that the ZMP feedback is already pulling the DCM
+        // back, so the two corrections fight. At the head of a single support
+        // the prediction carries exp(omega*0.35) = 7, turning a 5 mm tracking
+        // error into a 35 mm step adjustment, and the gait went from 200
+        // steps to 190 at the sustainable speed and 26 to 14 above it.
+        //
+        // The foot should move only when the ZMP CANNOT do the job. The clamp
+        // deficit `p_raw - p_cmd` is exactly that: the pressure the controller
+        // asked for and the support polygon refused. Move the next footstep
+        // by it, and the next polygon contains what this one could not.
+        if adapt && matches!(support, Support::Single { .. }) && clamped > 1e-6 {
+            let d = p_raw - p_cmd;
+            let want = na::Vector2::new(
+                d.x.clamp(-adapt_max_x, adapt_max_x),
+                d.y.clamp(-adapt_max_y, adapt_max_y),
+            );
+            // Keep the largest demand seen this step rather than the latest:
+            // the deficit is transient and the foot has to be placed once.
+            if want.norm() > adapt_now.norm() {
+                adapt_now = want;
+            }
+        }
         let a_xy = com_accel_xy(&com, &p_cmd, omega);
         // z stays a PD on the nominal height: the LIPM says nothing about it,
         // and a constant-height assumption is exactly what makes omega a
@@ -648,7 +715,11 @@ fn main() {
                 // that started slightly high from being driven into the floor.
                 // With stride 0 this is exactly "land where you took off".
                 let plan_xy = steps.sole[side];
-                let touch_down = na::Vector3::new(plan_xy.x, plan_xy.y, lift_off.z);
+                let touch_down = na::Vector3::new(
+                    plan_xy.x + adapt_now.x,
+                    plan_xy.y + adapt_now.y,
+                    lift_off.z,
+                );
                 let tgt = swing_position(lift_off, touch_down, lift_h, slice_frac);
                 let tgt_v =
                     swing_velocity(lift_off, touch_down, lift_h, slice_frac, slice.duration());
@@ -1006,6 +1077,10 @@ fn main() {
     tally.report();
     println!("  open-loop ticks: {n_open_loop}");
     println!("  contact-set corrections: {n_corrected} ticks where the feet disagreed with the schedule");
+    println!(
+        "  footstep adaptations: {n_adapt} steps moved, largest {:.1} mm",
+        max_adapt * 1e3
+    );
     println!(
         "  self-collision ticks: {n_selfcollide}  (peak {max_selfcollide_f:.1} N)          -- any nonzero value means the QP was solving against a contact it has no model for"
     );

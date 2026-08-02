@@ -334,6 +334,18 @@ impl FootstepPlan {
         FootstepPlan { at, initial: *initial }
     }
 
+    /// Move one foot's planted position by `d`, from slice `from` onward.
+    ///
+    /// This is how a footstep adaptation becomes part of the plan rather than
+    /// a per-tick override: once the foot has landed somewhere other than
+    /// nominal, every future segment is relative to where it actually is.
+    pub fn shift_from(&mut self, from: usize, side: Side, d: na::Vector2<f64>) {
+        for f in self.at.iter_mut().skip(from) {
+            f.sole[side].x += d.x;
+            f.sole[side].y += d.y;
+        }
+    }
+
     pub fn at_slice(&self, i: usize) -> &Footsteps {
         &self.at[i.min(self.at.len() - 1)]
     }
