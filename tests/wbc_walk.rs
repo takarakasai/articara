@@ -32,7 +32,8 @@
 use std::path::PathBuf;
 
 use articara::gait::{
-    auto_detect_kinematics_config, GaitController, DEFAULT_FOOT_LINKS,
+    auto_detect_centroidal_mpc_config, auto_detect_kinematics_config,
+    GaitController, DEFAULT_FOOT_LINKS,
 };
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
@@ -169,6 +170,11 @@ struct WbcParams {
     /// only the joint position-PD tracking the IK targets. If the measured
     /// gait does not change, the dynamic layers are not contributing.
     kinematic_only: bool,
+    /// Give the WBC the robot it is actually driving. `WbcPipeline::new`
+    /// hardcodes `mass_kg: 9.0` and a 9 kg inertia diagonal; namiashi is
+    /// 3.3 kg. Off by default so the effect can be measured against the
+    /// state every earlier result in this file was produced under.
+    wbc_real_inertia: bool,
     dt: f64,
     /// `None` = the legacy `wbc::solve_warm_with_weights` path
     /// (walk-validated default). `Some` opts the pipeline into the
@@ -213,6 +219,7 @@ impl WbcParams {
             misa_file: DEFAULT_MISA,
             early_contact_n: 5.0,
             kinematic_only: false,
+            wbc_real_inertia: false,
         }
     }
     fn forward_walk() -> Self {
@@ -229,6 +236,7 @@ impl WbcParams {
             misa_file: DEFAULT_MISA,
             early_contact_n: 5.0,
             kinematic_only: false,
+            wbc_real_inertia: false,
         }
     }
 
@@ -333,6 +341,25 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut wbc_pipeline = WbcPipeline::new(&robot, foot_links);
     if let Some((formulation, cfg)) = params.misa_wbc_mode.clone() {
         wbc_pipeline = wbc_pipeline.with_wbc_solver(formulation, cfg);
+    }
+    if params.wbc_real_inertia {
+        // Same source the centroidal MPC config already uses: total mass,
+        // aggregate CoM relative to the body root, and the angular block of
+        // the composite-rigid-body inertia. Setting `centroidal_inertia_body`
+        // also switches the pipeline onto the centroidal accel prediction,
+        // which takes moment arms from the CoM instead of the root.
+        let c = auto_detect_centroidal_mpc_config(&robot);
+        wbc_pipeline.mass_kg = c.mass_kg;
+        wbc_pipeline.com_offset_body = c.com_offset_body;
+        wbc_pipeline.centroidal_inertia_body = Some(c.centroidal_inertia_body);
+        let i = c.centroidal_inertia_body;
+        eprintln!(
+            "[wbc] real inertia: m={:.3}kg (was 9.000)  com_off=({:+.4},{:+.4},{:+.4})m  \
+             I_diag=({:.5},{:.5},{:.5}) (was 0.07000,0.26000,0.24200)",
+            c.mass_kg,
+            c.com_offset_body.x, c.com_offset_body.y, c.com_offset_body.z,
+            i[(0, 0)], i[(1, 1)], i[(2, 2)],
+        );
     }
 
     let n_steps = (params.total_time_s / params.dt).round() as usize;
@@ -1933,6 +1960,52 @@ fn namiashi_walk_band_torque_saturation() {
         };
         let Some(samples) = run_wbc_sim(params) else { return };
         report_walk(&format!("Walk v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
+    }
+}
+
+/// STEP 1 OF MAKING THE DYNAMIC LAYER REAL: GIVE THE WBC THE RIGHT ROBOT.
+///
+/// `namiashi_is_the_dynamic_layer_load_bearing` established that zeroing the
+/// WBC's torque feedforward changes nothing -- Trot 106 -> 102%, Walk
+/// 100 -> 101%, Crawl 101 -> 100%, and Walk's three-foot support actually
+/// improves. That is a controller that is not controlling.
+///
+/// The most likely reason is that it is solving for the wrong machine.
+/// `WbcPipeline::new` hardcodes `mass_kg: 9.0` and `inertia_diag_body:
+/// (0.07, 0.26, 0.242)` -- a 9 kg robot -- and this harness has never
+/// overridden either. namiashi is 3.3 kg. The `base_accel` task those feed
+/// carries the largest soft weight in the QP, so at a static stand where the
+/// MPC hands over roughly m*g, the WBC reads that as 32.4/9.0 - 9.81 =
+/// -6.2 m/s^2 and spends its largest weight asking the trunk to accelerate
+/// downward at 0.63 g, continuously.
+///
+/// One variable at a time: mass, CoM offset and composite inertia from the
+/// same source the centroidal MPC config already uses, nothing else touched.
+/// Then the same falsification test, to see whether the dynamic layer has
+/// become load-bearing or merely better informed.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_wbc_real_inertia() {
+    for real in [false, true] {
+        for kinematic_only in [false, true] {
+            let tag = match (real, kinematic_only) {
+                (false, false) => "9kg WBC on",
+                (false, true) => "9kg PD only",
+                (true, false) => "real WBC on",
+                (true, true) => "real PD only",
+            };
+            for i in 0..NAMIASHI_TUNED.len() {
+                let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+                let params = WbcParams {
+                    wbc_real_inertia: real,
+                    kinematic_only,
+                    total_time_s: 16.0,
+                    ..namiashi_tuned_params(i)
+                };
+                let Some(samples) = run_wbc_sim(params) else { return };
+                report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
+            }
+        }
     }
 }
 
