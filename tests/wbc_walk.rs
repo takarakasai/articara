@@ -494,6 +494,15 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         for n in &replay_joint_names {
             replay_buf.push_str(&format!(",{n}"));
         }
+        // Measured per-foot normal force. A renderer cannot recover this from
+        // pose: foot height says whether a foot is touching, not whether it
+        // is carrying anything, and the two disagree by up to 0.24 of the
+        // cycle on Walk's front pair -- which is precisely the foot that gets
+        // unloaded. Writing the force out is cheaper than a proxy that
+        // misrepresents the thing being compared.
+        for (_, link) in DEFAULT_FOOT_LINKS.iter() {
+            replay_buf.push_str(&format!(",fz_{link}"));
+        }
         replay_buf.push('\n');
     }
 
@@ -746,19 +755,6 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         // `sim.step → sync_back`.
         let tx = robot.base_transform.translation;
         let (roll, pitch, yaw) = robot.base_transform.rotation.euler_angles();
-        if replay_out.is_some() {
-            let p = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
-            let q = robot.base_transform.rotation;
-            replay_buf.push_str(&format!(
-                "{:.5},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}",
-                t, p[0], p[1], p[2], q.w, q.i, q.j, q.k
-            ));
-            for name in &replay_joint_names {
-                let qj = sim.joint_q_qd(name).map(|(q, _)| q).unwrap_or(0.0);
-                replay_buf.push_str(&format!(",{qj:.6}"));
-            }
-            replay_buf.push('\n');
-        }
         let total_fz_world: f64 =
             sim.contacts().iter().map(|c| c.force_world[2]).sum();
         // Applied joint torque against its own effort limit. `mujoco_sim`
@@ -796,6 +792,25 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 })
                 .map(|c| c.force_world[2].abs())
                 .sum();
+        }
+
+        if replay_out.is_some() {
+            let p = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+            let q = robot.base_transform.rotation;
+            replay_buf.push_str(&format!(
+                "{:.5},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}",
+                t, p[0], p[1], p[2], q.w, q.i, q.j, q.k
+            ));
+            for name in &replay_joint_names {
+                let qj = sim.joint_q_qd(name).map(|(q, _)| q).unwrap_or(0.0);
+                replay_buf.push_str(&format!(",{qj:.6}"));
+            }
+            // After `foot_fz` is filled, not before -- the renderer's footfall
+            // diagram is only worth drawing if it shows measured load.
+            for fz in foot_fz {
+                replay_buf.push_str(&format!(",{fz:.4}"));
+            }
+            replay_buf.push('\n');
         }
 
         samples.push(WbcSample {
