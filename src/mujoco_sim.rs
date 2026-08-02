@@ -56,6 +56,31 @@ pub struct MujocoSim {
     position_target_accelerations: Vec<f64>,
     /// Per-joint velocity target (used by Velocity-mode controller).
     velocity_targets: Vec<f64>,
+    /// Integral state of the Velocity-mode speed loop, per joint (rad).
+    velocity_loop_integral: Vec<f64>,
+    /// Treat a Velocity-mode joint as an ideal velocity source, limited only
+    /// by its torque rating.
+    ///
+    /// This is the right abstraction for a driver whose speed loop closes at
+    /// 8-16 kHz while the host commands at a few hundred Hz: from the host's
+    /// side that loop is twenty to forty times faster than anything it can
+    /// ask for, so modelling it as a P or PI controller running at the
+    /// *physics* rate imports a slowness the real part does not have.
+    ///
+    /// Implemented as deadbeat: the torque that would null the velocity error
+    /// in one step, `M_ii * (qd* - qd) / dt` plus the joint's share of the
+    /// bias forces, clamped to `effort`. Perfect tracking whenever the motor
+    /// can deliver it, honest saturation when it cannot -- and the torque
+    /// limit has to stay, because on this robot it is what binds.
+    pub velocity_loop_ideal: bool,
+    /// Integral gain of the Velocity-mode speed loop, N·m per (rad/s · s).
+    ///
+    /// Zero keeps the historical proportional-only law. A real speed-mode
+    /// driver -- an LKMTech MG4005, say -- closes a PI loop internally at
+    /// 8-16 kHz, and modelling it as proportional understates what that
+    /// interface can do: the standing error under load is what makes the
+    /// commanded speed unreachable, not the loop rate.
+    pub velocity_loop_ki: f64,
     /// Per-joint direct torque command (used by Torque-mode controller).
     torque_targets: Vec<f64>,
     /// Per-joint feedforward torque added on top of the PD output for
@@ -471,6 +496,9 @@ impl MujocoSim {
             raw_ctrl,
             position_target_accelerations,
             velocity_targets,
+            velocity_loop_integral: vec![0.0; robot.joints.len()],
+            velocity_loop_ki: 0.0,
+            velocity_loop_ideal: false,
             torque_targets,
             position_target_torque_ff,
             wbc_torque_override: None,
@@ -861,6 +889,8 @@ impl MujocoSim {
     /// for Position and Velocity modes. Torque-mode joints are left alone
     /// since their command is supposed to be the user's full torque request.
     fn apply_controller(&mut self, robot: &mut RobotModel, enforce_limits: bool) {
+        // Integration step for the Velocity-mode speed loop's integral term.
+        let loop_dt = self.timestep();
         // ── WBC direct-torque override path ─────────────────────────
         // When the host has handed us a per-joint τ vector from the
         // Hierarchical WBC, write each motor's `ctrl` directly without
@@ -937,6 +967,48 @@ impl MujocoSim {
             // Without this the feedforward vectors would be stale by one tick.
             self.sync_back(robot);
         }
+
+        // Joint-space inertia diagonal and bias forces, for the ideal
+        // velocity source. One CRBA + RNEA per tick, only when it is asked
+        // for.
+        let (ideal_inertia, ideal_bias): (Option<Vec<f64>>, Option<Vec<f64>>) =
+            if self.velocity_loop_ideal {
+                let adapter = robot.mc();
+                let q = robot.build_q();
+                let mut v = vec![0.0_f64; adapter.model.nv];
+                for ji in 0..robot.joints.len() {
+                    if let Some(mi) = adapter.a2m.get(ji).and_then(|&m| m) {
+                        if adapter.model.joints[mi].joint_type.nv() == 1 {
+                            if let Some(info) = self.data.joint(&robot.joints[ji].name)
+                            {
+                                let view = info.view(&self.data);
+                                if !view.qvel.is_empty() {
+                                    v[adapter.model.v_idx[mi]] = view.qvel[0];
+                                }
+                            }
+                        }
+                    }
+                }
+                let m = misarta::crba::crba(&adapter.model, &q);
+                let h = misarta::rnea::nonlinear_effects(&adapter.model, &q, &v);
+                let mut diag = vec![0.0_f64; robot.joints.len()];
+                for ji in 0..robot.joints.len() {
+                    if let Some(mi) = adapter.a2m.get(ji).and_then(|&mm| mm) {
+                        if adapter.model.joints[mi].joint_type.nv() == 1 {
+                            let vi = adapter.model.v_idx[mi];
+                            // Plus the rotor, which the rigid-body mass matrix
+                            // does not know about and which dominates this leg.
+                            diag[ji] = m[(vi, vi)] + robot.joints[ji].armature;
+                        }
+                    }
+                }
+                (
+                    Some(diag),
+                    Some(project_nv_to_joints(&h, &adapter, robot.joints.len())),
+                )
+            } else {
+                (None, None)
+            };
 
         let gravity_torques: Option<Vec<f64>> = if self.gravity_compensation {
             let adapter = robot.mc();
@@ -1057,12 +1129,62 @@ impl MujocoSim {
                         // unreachable speed.
                         qd_target = qd_target.clamp(-joint.velocity, joint.velocity);
                     }
-                    let pd = joint.actuator_kv * (qd_target - qd);
-                    let grav = gravity_torques
-                        .as_ref()
-                        .and_then(|g| g.get(ji))
-                        .copied()
-                        .unwrap_or(0.0);
+                    let pd_out;
+                    if self.velocity_loop_ideal {
+                        // Deadbeat: ask for exactly the torque that nulls the
+                        // velocity error next step, and let the clamp below
+                        // decide whether the motor can supply it.
+                        let m_ii = ideal_inertia
+                            .as_ref()
+                            .and_then(|m| m.get(ji))
+                            .copied()
+                            .unwrap_or(0.0);
+                        let bias = ideal_bias
+                            .as_ref()
+                            .and_then(|b| b.get(ji))
+                            .copied()
+                            .unwrap_or(0.0);
+                        pd_out = m_ii * (qd_target - qd) / loop_dt + bias;
+                    } else {
+                    // Proportional-integral, because a real speed-mode driver
+                    // is one. Proportional alone leaves a standing error
+                    // proportional to load -- at `actuator_kv = 1.2` reaching
+                    // 1.5 N·m needs 1.25 rad/s of error, so the commanded
+                    // speed is simply never achieved and the gait pays for it.
+                    // The integral is what removes that.
+                    let err = qd_target - qd;
+                    let mut integ = self.velocity_loop_integral[ji];
+                    if self.velocity_loop_ki > 0.0 {
+                        integ += err * loop_dt;
+                        // Anti-windup: hold the integral wherever the total
+                        // command would exceed what the joint can produce.
+                        let cap = if joint.effort > 0.0 {
+                            joint.effort
+                        } else {
+                            f64::INFINITY
+                        };
+                        let unsat = joint.actuator_kv * err
+                            + self.velocity_loop_ki * integ;
+                        if unsat.abs() > cap {
+                            integ = self.velocity_loop_integral[ji];
+                        }
+                        self.velocity_loop_integral[ji] = integ;
+                    }
+                    pd_out = joint.actuator_kv * err
+                        + self.velocity_loop_ki * integ;
+                    }
+                    let pd = pd_out;
+                    // The ideal path already carries gravity inside `bias`;
+                    // adding the feedforward again would double it.
+                    let grav = if self.velocity_loop_ideal {
+                        0.0
+                    } else {
+                        gravity_torques
+                            .as_ref()
+                            .and_then(|g| g.get(ji))
+                            .copied()
+                            .unwrap_or(0.0)
+                    };
                     pd + grav
                 }
                 ActuatorMode::Torque => {
