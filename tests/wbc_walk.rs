@@ -305,6 +305,16 @@ struct WbcParams {
     /// 0.85 m/s of velocity error in five seconds against a 0.80 m/s command.
     /// So: how much does this controller actually depend on it?
     vel_obs: VelObs,
+    /// Which gait controller to run. `Mpc` is the body-root SRBD path this
+    /// file has always used; `FullCentroidal` is the one that carries the
+    /// OCS2-derived predicted-footstep planner.
+    gait_mode: GaitMode,
+    /// Enable `set_use_mpc_predicted_footstep` -- the legged_control /
+    /// OCS2 `SwingTrajectoryPlanner` analogue, which takes the foothold
+    /// correction from the MPC's own predicted base displacement over one
+    /// swing instead of extrapolating `k_capture * v_err`. Only has an
+    /// effect under `GaitMode::FullCentroidal`.
+    mpc_predicted_footstep: bool,
     /// Which actuator interface the controller drives.
     actuation: Actuation,
     /// Rate at which the whole host-side controller runs -- gait generator,
@@ -383,6 +393,8 @@ impl WbcParams {
             base_pos_bias_m: [0.0; 3],
             base_pos_drift_mps: [0.0; 3],
             vel_obs: VelObs::Truth,
+            gait_mode: GaitMode::Mpc,
+            mpc_predicted_footstep: false,
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
             cmd_schedule: Vec::new(),
@@ -415,6 +427,8 @@ impl WbcParams {
             base_pos_bias_m: [0.0; 3],
             base_pos_drift_mps: [0.0; 3],
             vel_obs: VelObs::Truth,
+            gait_mode: GaitMode::Mpc,
+            mpc_predicted_footstep: false,
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
             cmd_schedule: Vec::new(),
@@ -571,8 +585,11 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         robot.links.iter().map(|l| l.inertial.mass).sum::<f64>(),
     );
     let cycle_period_s = cfg.cycle_period_s;
-    let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::Mpc)
-        .expect("GaitController::build (Mpc mode)");
+    let mut gc = GaitController::build(&robot, kin.clone(), cfg, params.gait_mode)
+        .expect("GaitController::build");
+    if params.mpc_predicted_footstep {
+        gc.set_use_mpc_predicted_footstep(true);
+    }
     if let Some(k) = params.k_capture_s {
         gc.set_capture_point_gain(k);
     }
@@ -3654,6 +3671,166 @@ fn namiashi_push_phase_dependence() {
                 t_push,
                 cmd,
             );
+        }
+    }
+}
+
+/// THE ONE REACTIVE MECHANISM IN THE STACK IS SWITCHED OFF.
+///
+/// Nothing in this controller replans a gait. `PhaseGenerator::advance` is
+/// `cycle_phase += dt/period`, a free-running clock with no input.
+/// `ContactDrivenPhase::apply_correction` is stateless -- it flips
+/// `is_stance` for the WBC's constraints and never writes back, so a foot
+/// landing early does not move the schedule. The only thing that ever reacted
+/// to where the body actually was is the capture-point term in
+/// `compute_mpc_footstep`, which shifts the foothold by `k_capture * v_err`.
+///
+/// And `namiashi_capture_gain_low_side` set `k_capture` to 0, because at
+/// 0.05 it cost 20% of speed overshoot, 0.145 m/s of lateral drift and
+/// 2.34 deg/s of yaw. That was measured on flat ground, at a constant
+/// command, with no disturbance -- which is precisely the condition under
+/// which footstep feedback has nothing to do and can only add noise. The
+/// commit said as much and left it open.
+///
+/// `namiashi_push_phase_dependence` now gives the missing condition: three of
+/// eight push phases end on the floor. So ask the question properly -- does
+/// the term that was removed buy any of them back?
+///
+/// Both interfaces, all eight phases, four gains. The nominal cost is
+/// re-measured alongside, since a gain that saves a push and ruins the walk
+/// is not a trade worth making silently.
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_capture_gain_under_push() {
+    const I: usize = 0; // Trot
+    let (_, period, .., cmd) = NAMIASHI_TUNED[I];
+    for k in [0.0, 0.015, 0.030, 0.050] {
+        for (mtag, act) in [
+            ("speed", Actuation::VelocityIdeal { k_track: 40.0 }),
+            ("torque", Actuation::Torque { kp: 100.0, kd: 1.2 }),
+        ] {
+            // What it costs when nothing is pushing.
+            let params = WbcParams {
+                actuation: act,
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                cmd_vx: cmd,
+                k_capture_s: Some(k),
+                total_time_s: 12.0,
+                ..namiashi_tuned_params(I)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("Trot {mtag} k{k:.3} nominal"), &samples, cmd, 1.0);
+
+            for step in 0..8 {
+                let t_push = 6.0 + period * step as f64 / 8.0;
+                let params = WbcParams {
+                    actuation: act,
+                    host_rate_hz: Some(400.0),
+                    dt: 0.0005,
+                    cmd_vx: cmd,
+                    k_capture_s: Some(k),
+                    push: Some((t_push, [0.0, 12.0, 0.0], 0.12)),
+                    total_time_s: 11.0,
+                    ..namiashi_tuned_params(I)
+                };
+                let Some(samples) = run_wbc_sim(params) else { return };
+                report_push(
+                    &format!("Trot {mtag} k{k:.3} p{step}"),
+                    &samples,
+                    t_push,
+                    cmd,
+                );
+            }
+        }
+    }
+}
+
+/// THE OCS2-DERIVED FOOTSTEP PLANNER, UNDER THE SAME PUSH.
+///
+/// `quadruped-gait` carries two mechanisms taken from `legged_control` /
+/// OCS2, and namiashi has been using neither.
+///
+/// `SrbdMpcConfig::enable_foot_offset` extends the MPC's input to include a
+/// per-foot landing offset, so the optimiser itself can ask a foot to land
+/// further outboard to catch a lateral disturbance. It is implemented but
+/// deliberately not read in `GaitMode::Mpc`: `mpc_controller.rs:440` records
+/// that the offset never enters the MPC's own dynamics, so optimiser and
+/// controller would disagree about what was planned. Dead infrastructure on
+/// this path.
+///
+/// `use_mpc_predicted_footstep` is the `SwingTrajectoryPlanner` analogue --
+/// take the foothold correction from the MPC's predicted base displacement
+/// over one swing duration, rather than extrapolating `k_capture * v_err`
+/// linearly from the present. The MPC has already planned how its GRFs pull
+/// the body back, so where the base will be at touchdown is a better answer
+/// than where it is heading now. It lives only in `FullCentroidal`.
+///
+/// So this compares three planners on the same eight push phases: the current
+/// Mpc path with the capture gain that `namiashi_capture_gain_under_push`
+/// found (0.015, which took survival from 5/8 to 6/8), FullCentroidal with
+/// the same capture term, and FullCentroidal with the predicted-footstep
+/// planner instead. Nominal walking is re-measured for each, since a planner
+/// that survives pushes and cannot walk is not a planner.
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_ocs2_footstep_planner() {
+    const I: usize = 0; // Trot
+    let (_, period, .., cmd) = NAMIASHI_TUNED[I];
+    let variants: [(&str, GaitMode, bool, f64); 3] = [
+        ("mpc k.015", GaitMode::Mpc, false, 0.015),
+        ("fullcent k.015", GaitMode::FullCentroidal, false, 0.015),
+        ("fullcent predicted", GaitMode::FullCentroidal, true, 0.015),
+    ];
+    for (tag, mode, predicted, k) in variants {
+        let make = |push: Option<(f64, [f64; 3], f64)>, secs: f64| WbcParams {
+            actuation: Actuation::VelocityIdeal { k_track: 40.0 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: cmd,
+            k_capture_s: Some(k),
+            gait_mode: mode,
+            mpc_predicted_footstep: predicted,
+            push,
+            total_time_s: secs,
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(make(None, 12.0)) else { return };
+        report_walk(&format!("Trot {tag} nominal"), &samples, cmd, 1.0);
+
+        for step in 0..8 {
+            let t_push = 6.0 + period * step as f64 / 8.0;
+            let params = make(Some((t_push, [0.0, 12.0, 0.0], 0.12)), 11.0);
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_push(&format!("Trot {tag} p{step}"), &samples, t_push, cmd);
+        }
+    }
+}
+
+/// SHOULD THE TUNED CONFIGURATION CARRY A CAPTURE GAIN AGAIN?
+///
+/// `namiashi_capture_gain_low_side` set it to 0 and that has stood since.
+/// The conditions it was chosen under are all gone: 0.295 m stance,
+/// position-plus-torque actuation, 500 Hz, no disturbance. Under the current
+/// ones a small gain is better on both counts -- 90 -> 97% of command with
+/// yaw drift 5.28 -> 0.85 deg/s, and push survival 5/8 -> 6/8.
+///
+/// Before changing the default, check it against the thing the default has to
+/// keep passing: all three gaits, 25 s, on the regression's own actuation
+/// path rather than the one the push sweep used.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_capture_gain_recheck_regression() {
+    for k in [0.0, 0.015, 0.030] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                k_capture_s: Some(k),
+                total_time_s: 26.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} k={k:.3}"), &samples, cmd_vx, 1.0);
         }
     }
 }
