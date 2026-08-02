@@ -429,6 +429,15 @@ struct AdaptivePeriodConfig {
 }
 
 struct WbcParams {
+    /// Diagnostic: drop the WBC's torque, leaving only the joint position-PD
+    /// tracking the gait controller's IK targets.
+    ///
+    /// The same falsification the namiashi harness runs. There it found the
+    /// gait unchanged -- the WBC is solving, but the position loop is doing
+    /// the work. Whether that is a namiashi property or a property of this
+    /// stack is exactly what the Go2 side answers, and Go2 is the robot this
+    /// controller was tuned on.
+    kinematic_only: bool,
     total_time_s: f64,
     burn_in_s: f64,
     cmd_vx: f64,
@@ -1059,6 +1068,7 @@ struct FullCentroidalOpts {
 impl WbcParams {
     fn static_stand() -> Self {
         Self {
+            kinematic_only: false,
             total_time_s: 1.5, burn_in_s: 0.5, cmd_vx: 0.0, dt: 0.002,
             misa_wbc_mode: None, staircase_step_s: None,
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
@@ -1074,6 +1084,7 @@ impl WbcParams {
     }
     fn forward_walk() -> Self {
         Self {
+            kinematic_only: false,
             total_time_s: 3.0, burn_in_s: 0.5, cmd_vx: 0.15, dt: 0.002,
             misa_wbc_mode: None, staircase_step_s: None,
             staircase_step_mps: 0.0, staircase_max_mps: 0.0,
@@ -1106,6 +1117,7 @@ impl WbcParams {
     ) -> Self {
         let n_levels = (max_mps / step_mps).round() as usize + 1;
         Self {
+            kinematic_only: false,
             total_time_s,
             burn_in_s: 0.0, // level 0 (vx=0) already acts as the settle window
             cmd_vx: 0.0,    // unused; staircase_step_s drives the command instead
@@ -1156,6 +1168,7 @@ impl WbcParams {
         dt_per_step: f64,
     ) -> Self {
         Self {
+            kinematic_only: false,
             mpc_horizon_override: Some((horizon_steps, dt_per_step)),
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
         }
@@ -1172,6 +1185,7 @@ impl WbcParams {
         cycle_period_s: f64,
     ) -> Self {
         Self {
+            kinematic_only: false,
             gait_cycle_period_override: Some(cycle_period_s),
             ..Self::velocity_staircase_fine_with_horizon_misa_wbc(formulation, cfg, horizon_steps, dt_per_step)
         }
@@ -1187,6 +1201,7 @@ impl WbcParams {
         body_height_bias_frac: f64,
     ) -> Self {
         Self {
+            kinematic_only: false,
             body_height_bias_frac: Some(body_height_bias_frac),
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
         }
@@ -2205,7 +2220,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 }
                 let _ = torque_ff;
                 for (ji, &tau) in taus.iter().enumerate() {
-                    sim.set_torque_feedforward(ji, tau);
+                    sim.set_torque_feedforward(
+                        ji,
+                        if params.kinematic_only { 0.0 } else { tau },
+                    );
                 }
                 // validity audit: remember what the QP actually asked for, so
                 // the per-tick sample can report actuator headroom / power.
@@ -2383,6 +2401,54 @@ fn assert_static_stand_balances_gravity(samples: &[WbcSample]) {
         "static stand: Σf_z = {avg_fz:.2} N deviates from m·g = {mg:.2} N by {:.1}%",
         pct_err * 100.0,
     );
+}
+
+/// IS THE WBC LOAD-BEARING ON GO2?
+///
+/// The namiashi harness found it is not there: zeroing the WBC's torque and
+/// leaving only the joint position-PD changes the gait by a point or two, and
+/// four further measurements agreed -- swapping the MPC formulation, sweeping
+/// the two weights its prediction reaches the torque by, and correcting a
+/// 12-24x inertia error all left the walk essentially unchanged.
+///
+/// Go2 is the robot this stack was tuned on, and it is six times the mass
+/// with twenty times the joint torque, so the answer need not be the same.
+/// If Go2 also walks with the WBC's torque zeroed, the finding is about the
+/// architecture -- the position loop supplies the propulsion and the WBC
+/// trims it. If Go2 falls, it is about namiashi, and the interesting question
+/// becomes which of the differences matters.
+///
+/// Same configuration either way, only the torque delivery differs.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn go2_diag_is_the_wbc_load_bearing() {
+    for kinematic_only in [false, true] {
+        let params = WbcParams {
+            kinematic_only,
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        let tag = if kinematic_only { "PD only" } else { "WBC on" };
+        let n = samples.len();
+        let a = &samples[n / 4];
+        let b = &samples[n - 1];
+        let span = b.t - a.t;
+        let z_min = samples[n / 4..]
+            .iter()
+            .map(|s| s.body_z)
+            .fold(f64::INFINITY, f64::min);
+        let roll_pk = samples[n / 4..]
+            .iter()
+            .map(|s| s.roll.abs())
+            .fold(0.0_f64, f64::max);
+        eprintln!(
+            "=== go2 {tag}: dx={:+.3} m over {span:.1}s = {:+.3} m/s   \
+             z min={z_min:.3} m  peak roll={:.1} deg",
+            b.body_x - a.body_x,
+            (b.body_x - a.body_x) / span,
+            roll_pk.to_degrees(),
+        );
+    }
 }
 
 #[test]
