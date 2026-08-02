@@ -39,14 +39,87 @@ PER_LEG_KG = 0.600
 LEG_PREFIXES = ("FL_", "FR_", "RL_", "RR_")
 INERTIA_KEYS = ("ixx", "iyy", "izz", "ixy", "ixz", "iyz")
 
+# The knee runs through an extra 9:14 reduction that the hip and thigh do not.
+# The source URDF half-reflects it: calf `effort` is 2.205 against the others'
+# 1.5, a ratio of 1.470 where 14/9 is 1.5556 -- 5.5% short. And a reduction
+# does three things, not one:
+#
+#   torque   x 14/9        1.5   -> 2.3333 N*m   (file has 2.205)
+#   speed    x  9/14      33.5   -> 21.536 rad/s (file has 33.5, unchanged)
+#   rotor    x (14/9)^2   0.0014 -> 0.003388     (file has 0.0014, unchanged)
+#
+# The last two are not reflected at all, and they are the ones that bite. The
+# sim currently lets the knee spin 1.56x faster than the hardware can and
+# gives it 2.4x too little reflected inertia -- and armature is the dominant
+# term in this leg's swing inertia, so that is not a rounding error.
+KNEE_GEAR = 14.0 / 9.0
+KNEE_SUFFIX = "calf"
 
-def link_blocks(text):
-    """Yield (name, start, end) for each [[link]] block."""
-    starts = [m.start() for m in re.finditer(r"^\[\[link\]\]", text, re.M)]
-    for i, st in enumerate(starts):
-        en = starts[i + 1] if i + 1 < len(starts) else len(text)
+
+def _blocks(text, kind):
+    """Yield (name, start, end) for each [[kind]] block.
+
+    The end is the next top-level `[[...]]` header of ANY kind, not the next
+    header of this kind -- otherwise the last `[[link]]` runs to EOF and
+    swallows every joint, actuator and collision-pair entry after it.
+    """
+    tops = [m.start() for m in re.finditer(r"^\[\[[a-z_]+\]\]", text, re.M)]
+    for m in re.finditer(rf"^\[\[{kind}\]\]", text, re.M):
+        st = m.start()
+        en = next((t for t in tops if t > st), len(text))
         name = re.search(r'^name = "([^"]+)"', text[st:en], re.M)
         yield (name.group(1) if name else "", st, en)
+
+
+def link_blocks(text):
+    return _blocks(text, "link")
+
+
+def apply_knee_gear(text):
+    """Referred torque, speed and rotor inertia through the knee's reduction.
+
+    Applied to the ratios the other joints have, not to the calf's own
+    numbers, because the calf's `effort` is already partly geared (1.470x
+    rather than 14/9) and compounding it would double-count.
+    """
+    base = {}
+    for name, st, en in _blocks(text, "joint"):
+        if name.endswith("_thigh_joint"):
+            blk = text[st:en]
+            for key in ("effort", "velocity", "armature"):
+                m = re.search(rf"^\s*{key} = ([0-9.eE+-]+)", blk, re.M)
+                if m:
+                    base[key] = float(m.group(1))
+            break
+    missing = {"effort", "velocity", "armature"} - base.keys()
+    if missing:
+        sys.exit(f"no reference joint for {sorted(missing)}")
+
+    target = {
+        "effort": base["effort"] * KNEE_GEAR,
+        "velocity": base["velocity"] / KNEE_GEAR,
+        "armature": base["armature"] * KNEE_GEAR**2,
+    }
+
+    out = text
+    for name, st, en in reversed(list(_blocks(text, "joint"))):
+        if not name.endswith(f"_{KNEE_SUFFIX}_joint"):
+            continue
+        blk = text[st:en]
+        for key, val in target.items():
+            blk = re.sub(
+                rf"^(\s*){key} = [0-9.eE+-]+",
+                lambda m, k=key, v=val: f"{m.group(1)}{k} = {v:.6g}",
+                blk,
+                count=1,
+                flags=re.M,
+            )
+        out = out[:st] + blk + out[en:]
+    print(
+        "  knee 9:14 -> effort {effort:.4f} N*m  velocity {velocity:.3f} rad/s  "
+        "armature {armature:.6f}".format(**target)
+    )
+    return out
 
 
 def mass_of(block):
@@ -117,6 +190,8 @@ def build(variant):
         else:
             continue
         out = out[:st] + scale_block(block, f) + out[en:]
+
+    out = apply_knee_gear(out)
 
     dst = HERE / f"namiashi_3p3_{variant}.misa"
     dst.write_text(out)
