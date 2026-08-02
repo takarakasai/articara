@@ -134,6 +134,11 @@ struct WbcSample {
     /// through, which is the question "is the MPC load-bearing" made
     /// measurable on every run instead of by hand.
     mpc_fx: f64,
+    /// Vertical component of the same plan. A controller supporting a 3.3 kg
+    /// robot must plan about +32 N; anything near -32 is a sign convention,
+    /// not a control error, and the two are worth telling apart before
+    /// chasing the latter.
+    mpc_fz: f64,
     wbc_fx: f64,
     body_y: f64,
     yaw: f64,
@@ -740,6 +745,20 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if params.mpc_predicted_footstep {
         gc.set_use_mpc_predicted_footstep(true);
     }
+    if params.gait_mode == GaitMode::FullCentroidal {
+        if let Some(c) = gc.full_centroidal_mpc_config() {
+            let i = c.centroidal_inertia_body;
+            eprintln!(
+                "[fcm] m={:.3}kg  mu={:.2}  fz_max={:.1}N  I=({:.5},{:.5},{:.5})  \
+                 horizon={} dt={:.3} sqp={}",
+                c.mass_kg, c.friction_mu, c.max_normal_force,
+                i[(0, 0)], i[(1, 1)], i[(2, 2)],
+                c.horizon_steps, c.dt_per_step, c.sqp_iterations,
+            );
+        } else {
+            eprintln!("[fcm] config unavailable");
+        }
+    }
     if params.legged_control_parity {
         gc.set_legged_control_parity(true);
     }
@@ -880,6 +899,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut stance_mask = [true; 4];
     let mut yaw_prev = 0.0_f64;
     let mut mpc_fx = 0.0_f64;
+    let mut mpc_fz = 0.0_f64;
     let mut wbc_fx = 0.0_f64;
     // Host-computed PD for the torque path, paired with its joint index.
     let mut host_pd = [(0usize, 0.0_f64); 12];
@@ -1159,6 +1179,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         .iter()
                         .map(|v| cy * v.x - sy * v.y)
                         .sum();
+                    mpc_fz = f_grf_world.iter().map(|v| v.z).sum();
                 }
                 let taus = wbc_pipeline.solve(
                     &robot,
@@ -1438,6 +1459,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             foot_fz,
             foot_fx,
             mpc_fx,
+            mpc_fz,
             wbc_fx,
             body_y: tx.y,
             yaw,
@@ -1743,9 +1765,11 @@ fn report_walk_cmd(
         / n;
     let mpc_fx: f64 = walk.iter().map(|s| s.mpc_fx).sum::<f64>() / n;
     let wbc_fx: f64 = walk.iter().map(|s| s.wbc_fx).sum::<f64>() / n;
+    let mpc_fz: f64 = walk.iter().map(|s| s.mpc_fz).sum::<f64>() / n;
     eprintln!(
         "  fore-aft N: mpc plan={mpc_fx:+.3}  wbc solve={wbc_fx:+.3}  \
-         ground={fx_mean:+.3}  (push {fx_pos:+.3} / brake {fx_neg:+.3})"
+         ground={fx_mean:+.3}  (push {fx_pos:+.3} / brake {fx_neg:+.3})   \
+         mpc fz={mpc_fz:+.2} (mg=32.4)"
     );
 
     let mut role_line = String::from("  tau/limit:");
