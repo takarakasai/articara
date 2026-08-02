@@ -157,16 +157,7 @@ members = [".", "xtask"]
 # lands on the git rev this Cargo.toml is pinned to. Revert (or push
 # quadruped-gait + bump the git rev) once that comparison no longer
 # needs to track local-only commits.
-[patch."https://github.com/takarakasai/quadruped-gait.git"]
-quadruped-gait = { path = "../quadruped-gait/quadruped-gait" }
 
-# TEMPORARY (dev-only, mirrors the quadruped-gait patch above): point at
-# the local misarta checkout so the crba floating-base fix can be
-# validated against MuJoCo before it is pushed. Drop once the fix lands
-# on the pinned git rev.
-[patch."https://github.com/takarakasai/misarta.git"]
-misarta = { path = "../misarta" }
-misarta-formats = { path = "../misarta/misarta-formats" }
 
 [[example]]
 name = "kyo46rs_selfcollision_check"

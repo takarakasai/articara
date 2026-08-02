@@ -17,3 +17,7 @@
 
 # Rendered videos: large binaries, regenerate with tools/render_namiashi.py
 videos/
+
+
+# Python bytecode from the render/analysis scripts.
+__pycache__/
