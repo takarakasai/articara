@@ -174,6 +174,18 @@ enum Actuation {
     /// damping value and would need 1.25 rad/s of error to reach the 1.5 N*m
     /// limit, which is not what a real speed loop does.
     Velocity { k_track: f64, loop_kv: f64 },
+    /// Raw joint torque, as a closed-loop-iq driver takes. The driver holds no
+    /// position or velocity loop at all, so the host has to supply the whole
+    /// thing: `tau = kp*(q* - q) + kd*(0 - qd) + tau_wbc`.
+    ///
+    /// Numerically identical to the position path if the host computes that
+    /// PD at the same rate -- which is the point. What differs on hardware is
+    /// *where* the loop runs. A speed-mode driver closes its inner loop
+    /// internally on fresh encoder data at several kHz whatever the host is
+    /// doing; in torque mode there is no inner loop, and the last torque the
+    /// host sent is held until the next one arrives. `WbcParams::host_rate_hz`
+    /// is what makes that difference visible.
+    Torque { kp: f64, kd: f64 },
 }
 
 /// What the controller is told about its own velocity.
@@ -290,6 +302,11 @@ struct WbcParams {
     vel_obs: VelObs,
     /// Which actuator interface the controller drives.
     actuation: Actuation,
+    /// Rate at which the whole host-side controller runs -- gait generator,
+    /// WBC, and the command it emits. `None` means every physics tick
+    /// (500 Hz), which is what this file has always assumed and no robot on a
+    /// shared CAN bus gets. Between updates the last command is held.
+    host_rate_hz: Option<f64>,
     dt: f64,
     /// `None` = the legacy `wbc::solve_warm_with_weights` path
     /// (walk-validated default). `Some` opts the pipeline into the
@@ -347,6 +364,7 @@ impl WbcParams {
             base_pos_drift_mps: [0.0; 3],
             vel_obs: VelObs::Truth,
             actuation: Actuation::PositionTorque,
+            host_rate_hz: None,
         }
     }
     fn forward_walk() -> Self {
@@ -376,6 +394,7 @@ impl WbcParams {
             base_pos_drift_mps: [0.0; 3],
             vel_obs: VelObs::Truth,
             actuation: Actuation::PositionTorque,
+            host_rate_hz: None,
         }
     }
 
@@ -421,7 +440,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
 
     // Actuator interface. Set before the sim is built so the exported MJCF
     // and the per-tick control law agree.
-    if let Actuation::Velocity { loop_kv, .. } = params.actuation {
+    if !matches!(params.actuation, Actuation::PositionTorque) {
         // Resolve the twelve leg joints by name -- the gait controller, which
         // would hand over the indices, is not built until after the sim.
         let leg_joint_names: Vec<String> = [&kin.fl, &kin.fr, &kin.rl, &kin.rr]
@@ -438,8 +457,16 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             let Some(&ji) = robot.joint_map.get(name.as_str()) else {
                 panic!("velocity path: joint {name:?} not in the model");
             };
-            robot.joints[ji].actuator_mode = ActuatorMode::Velocity;
-            robot.joints[ji].actuator_kv = loop_kv;
+            match params.actuation {
+                Actuation::Velocity { loop_kv, .. } => {
+                    robot.joints[ji].actuator_mode = ActuatorMode::Velocity;
+                    robot.joints[ji].actuator_kv = loop_kv;
+                }
+                Actuation::Torque { .. } => {
+                    robot.joints[ji].actuator_mode = ActuatorMode::Torque;
+                }
+                Actuation::PositionTorque => unreachable!(),
+            }
         }
     }
 
@@ -608,6 +635,8 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut v_hist: Vec<[f64; 3]> = Vec::with_capacity(n_steps);
     // Previous tick's IK targets, so the velocity path can differentiate them.
     let mut prev_targets = [0.0_f64; 12];
+    // Host-computed PD for the torque path, paired with its joint index.
+    let mut host_pd = [(0usize, 0.0_f64); 12];
 
     for k in 0..n_steps {
         let t = k as f64 * params.dt;
@@ -663,12 +692,41 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
         );
 
-        if gc.is_enabled() {
-            let (out, targets, torque_ff) = gc.tick(params.dt);
+        // Host-rate gate. On a host tick the controller runs and emits a new
+        // command; between them the sim keeps whatever was last written,
+        // which is what a driver does with a stale command. The gait
+        // generator is advanced by the host period, not the physics one, so
+        // the gait keeps real time.
+        let host_decim = params
+            .host_rate_hz
+            .map(|hz| ((1.0 / hz) / params.dt).round().max(1.0) as usize)
+            .unwrap_or(1);
+        let host_tick = k % host_decim == 0;
+        if gc.is_enabled() && host_tick {
+            let host_dt = params.dt * host_decim as f64;
+            let (out, targets, torque_ff) = gc.tick(host_dt);
             match params.actuation {
                 Actuation::PositionTorque => {
                     for (idx, q) in targets {
                         sim.set_position_target(idx, q);
+                    }
+                }
+                Actuation::Torque { kp, kd } => {
+                    // The whole loop, host-side, including gravity -- a raw
+                    // torque command means what it says and the driver adds
+                    // nothing. Written every host tick, burn-in included: the
+                    // WBC does not start until burn-in ends, and with no
+                    // driver-side loop a joint whose torque was never set is
+                    // a joint with zero torque.
+                    let grav = sim.gravity_torques(&robot);
+                    for (slot, &(idx, q_star)) in targets.iter().enumerate() {
+                        let (q_meas, qd_meas) = sim
+                            .joint_q_qd(&robot.joints[idx].name)
+                            .unwrap_or((q_star, 0.0));
+                        let pd = kp * (q_star - q_meas) - kd * qd_meas
+                            + grav.get(idx).copied().unwrap_or(0.0);
+                        host_pd[slot] = (idx, pd);
+                        sim.set_torque_target(idx, pd);
                     }
                 }
                 Actuation::Velocity { k_track, .. } => {
@@ -679,7 +737,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     for (slot, &(idx, q_star)) in targets.iter().enumerate() {
                         let q_prev = prev_targets[slot];
                         let qd_ff = if k > burn_in_steps {
-                            (q_star - q_prev) / params.dt
+                            (q_star - q_prev) / host_dt
                         } else {
                             0.0
                         };
@@ -898,6 +956,17 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     && !params.kinematic_only;
                 for (ji, &tau) in taus.iter().enumerate() {
                     sim.set_torque_feedforward(ji, if deliver_tau { tau } else { 0.0 });
+                }
+                if let Actuation::Torque { .. } = params.actuation {
+                    // One raw torque per joint: the host PD computed above,
+                    // plus the WBC's. Nothing on the driver side adds gravity
+                    // in this mode -- the WBC's tau carries it, since the QP
+                    // solves the full equation of motion.
+                    for &(idx, pd) in host_pd.iter() {
+                        let tau_wbc =
+                            if params.kinematic_only { 0.0 } else { taus[idx] };
+                        sim.set_torque_target(idx, pd + tau_wbc);
+                    }
                 }
                 sim.clear_wbc_torques();
             } else {
@@ -2933,6 +3002,87 @@ fn namiashi_velocity_actuation_zoom() {
                     cmd_vx,
                     1.0,
                 );
+            }
+        }
+    }
+}
+
+/// SPEED MODE AGAINST TORQUE MODE, AT HOST RATES A CAN BUS CAN ACTUALLY HOLD.
+///
+/// Both are on the MG4005. The choice between them is not about which control
+/// law is better -- at the same update rate they are close to the same law,
+/// since the torque path is just the driver's PD computed host-side. The
+/// choice is about *where the loop lives*.
+///
+/// A speed-mode driver closes its inner loop internally, on fresh encoder
+/// data, at several kHz, whatever the host is doing. The host only has to
+/// shape the trajectory and supply the outer position term. In torque mode
+/// there is no inner loop at all: the last torque the host sent is held until
+/// the next one arrives, so host rate and bus latency set the stability
+/// margin directly.
+///
+/// Everything measured in this file so far ran the controller at 500 Hz, the
+/// physics rate. A CAN bus with twelve motors on it does not. So sweep the
+/// host rate and watch which path degrades first.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_speed_vs_torque_host_rate() {
+    for hz in [500.0, 200.0, 100.0] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            for (tag, act) in [
+                ("speed", Actuation::Velocity { k_track: 100.0, loop_kv: 1.2 }),
+                // kp/kd are the model's own actuator gains, so the torque path
+                // reproduces the driver's PD exactly and only the rate differs.
+                ("torque", Actuation::Torque { kp: 100.0, kd: 1.2 }),
+            ] {
+                let params = WbcParams {
+                    actuation: act,
+                    host_rate_hz: Some(hz),
+                    total_time_s: 16.0,
+                    ..namiashi_tuned_params(i)
+                };
+                let Some(samples) = run_wbc_sim(params) else { return };
+                report_walk(
+                    &format!("{gait:?} {tag} {hz:.0}Hz"),
+                    &samples,
+                    cmd_vx,
+                    1.0,
+                );
+            }
+        }
+    }
+}
+
+/// VIDEO SOURCE: speed mode against torque mode, per gait.
+///
+/// Both at 200 Hz -- a host rate a CAN bus with twelve MG4005s on it might
+/// plausibly hold, and the rate at which the two paths visibly part company.
+/// Everything else is the tuned configuration.
+#[test]
+#[ignore = "video source -- needs NAMIASHI_REPLAY_OUT"]
+fn namiashi_actuation_video_source() {
+    let Ok(root) = std::env::var("NAMIASHI_REPLAY_OUT") else {
+        eprintln!("NAMIASHI_REPLAY_OUT unset -- nothing to record");
+        return;
+    };
+    for hz in [200.0] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            for (tag, act) in [
+                ("speed", Actuation::Velocity { k_track: 100.0, loop_kv: 1.2 }),
+                ("torque", Actuation::Torque { kp: 100.0, kd: 1.2 }),
+            ] {
+                let g = format!("{gait:?}").to_lowercase();
+                let params = WbcParams {
+                    actuation: act,
+                    host_rate_hz: Some(hz),
+                    total_time_s: 12.0,
+                    replay_dir: Some(format!("{root}/{g}_{tag}")),
+                    ..namiashi_tuned_params(i)
+                };
+                let Some(samples) = run_wbc_sim(params) else { return };
+                report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
             }
         }
     }

@@ -550,6 +550,20 @@ impl MujocoSim {
         self.gravity_compensation
     }
 
+    /// Per-joint static gravity torque at the current configuration.
+    ///
+    /// Position and Velocity modes add this internally. `ActuatorMode::Torque`
+    /// deliberately does not -- a raw torque command means what it says -- so
+    /// a host driving that path has to add it, exactly as it would on real
+    /// hardware where the driver has no model of the robot. This exposes the
+    /// same numbers the other two modes use, so the paths stay comparable.
+    pub fn gravity_torques(&self, robot: &RobotModel) -> Vec<f64> {
+        let adapter = robot.mc();
+        let q = robot.build_q();
+        let g_full = misarta::rnea::compute_gravity(&adapter.model, &q);
+        project_nv_to_joints(&g_full, &adapter, robot.joints.len())
+    }
+
     /// Read-only view of the time-series ring buffer (oldest → newest).
     pub fn trace(&self) -> impl Iterator<Item = &TraceFrame> {
         self.trace.iter()
