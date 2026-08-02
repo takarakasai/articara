@@ -448,6 +448,28 @@ struct WbcParams {
     /// is no equivalent of legged_control's
     /// `pos_des = getJointAngles(optimized_state)` in this implementation.
     dynamic_joint_q_reference: bool,
+    /// Input cost on the 24-state MPC's GRF entries, `r_diag[0..12]`.
+    ///
+    /// The default is `[1e-3; 24]` -- one scalar across both halves of an
+    /// input vector whose first twelve entries are forces in newtons and
+    /// whose last twelve are joint velocities in rad/s. The field's own doc
+    /// says those "two distinct scales coexist ... unlike the 12-state
+    /// version we cannot share a scalar", and then the default shares one.
+    /// `q_diag` is `[1.0; 24]` over a state mixing radians, metres, m/s and
+    /// joint angles, with the same problem.
+    ///
+    /// `None` leaves the default. The 12-state SRBD does not suffer this
+    /// because its twelve inputs are all forces.
+    fcm_grf_cost: Option<f64>,
+    /// Per-block state cost for the 24-state MPC: `[v_com, omega, base_pos,
+    /// euler, joint_q]`, applied over `q_diag`'s
+    /// `[0..3, 3..6, 6..9, 9..12, 12..24]`.
+    ///
+    /// The default is `[1.0; 24]` over five different physical quantities --
+    /// m/s, rad/s, m, rad, rad. The base position entry is the one to look at
+    /// first: it grows without bound as the robot walks, so a weight on it is
+    /// a weight on an error that can only increase.
+    fcm_state_cost: Option<[f64; 5]>,
     /// Give the SRBD MPC namiashi's composite inertia instead of the heaviest
     /// link's.
     ///
@@ -544,6 +566,8 @@ impl WbcParams {
             mpc_predicted_footstep: false,
             legged_control_parity: false,
             dynamic_joint_q_reference: false,
+            fcm_grf_cost: None,
+            fcm_state_cost: None,
             mpc_composite_inertia: false,
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
@@ -581,6 +605,8 @@ impl WbcParams {
             mpc_predicted_footstep: false,
             legged_control_parity: false,
             dynamic_joint_q_reference: false,
+            fcm_grf_cost: None,
+            fcm_state_cost: None,
             mpc_composite_inertia: false,
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
@@ -744,6 +770,29 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         .expect("GaitController::build");
     if params.mpc_predicted_footstep {
         gc.set_use_mpc_predicted_footstep(true);
+    }
+    if params.fcm_grf_cost.is_some() || params.fcm_state_cost.is_some() {
+        if let Some(c) = gc.full_centroidal_mpc_config() {
+            let mut cfg = c.clone();
+            if let Some(w) = params.fcm_grf_cost {
+                for r in cfg.r_diag.iter_mut().take(12) {
+                    *r = w;
+                }
+            }
+            if let Some(q) = params.fcm_state_cost {
+                let blocks = [(0, 3), (3, 6), (6, 9), (9, 12), (12, 24)];
+                for (bi, (a, b)) in blocks.iter().enumerate() {
+                    for e in cfg.q_diag[*a..*b].iter_mut() {
+                        *e = q[bi];
+                    }
+                }
+                eprintln!(
+                    "[fcm] q_diag: v_com={} omega={} pos={} euler={} joint_q={}",
+                    q[0], q[1], q[2], q[3], q[4]
+                );
+            }
+            gc.set_full_centroidal_mpc_config(cfg);
+        }
     }
     if params.gait_mode == GaitMode::FullCentroidal {
         if let Some(c) = gc.full_centroidal_mpc_config() {
@@ -4676,6 +4725,97 @@ fn namiashi_fullcentroidal_parity() {
             };
             let Some(samples) = run_wbc_sim(params) else { return };
             report_walk(&format!("Trot {otag} {gtag}"), &samples, cmd, 1.0);
+        }
+    }
+}
+
+/// THE 24-STATE MPC SHARES ONE COST SCALAR ACROSS TWO UNIT SYSTEMS.
+///
+/// Its plan is wrong in a specific way: 40-50 N of vertical against m*g of
+/// 32.4, and -20 N of fore-aft while the robot walks forward. Not a sign
+/// convention (vertical is positive), not the mass (3.300 kg, read back), not
+/// the normal-force cap (200 N, six times m*g). An over-large vertical
+/// paired with a large backward fore-aft, at 84% of what the friction cone
+/// allows at that vertical, is a solution riding the cone edge.
+///
+/// The defaults are `q_diag: [1.0; 24]` and `r_diag: [1e-3; 24]`. The input
+/// vector is twelve forces in newtons followed by twelve joint velocities in
+/// rad/s, and `r_diag`'s own doc says those "two distinct scales coexist ...
+/// unlike the 12-state version we cannot share a scalar" -- and then the
+/// default shares one. Forces of tens of newtons cost the same per unit as
+/// velocities of tens of rad/s, so the optimiser buys force cheaply. The
+/// 12-state SRBD avoids this by having twelve inputs that are all forces.
+///
+/// Sweeping the GRF half alone. If this is the cause, the vertical should
+/// come down toward 34 and the fore-aft toward zero.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_fullcentroidal_grf_cost() {
+    const I: usize = 0; // Trot
+    let (_, .., cmd) = NAMIASHI_TUNED[I];
+    for w in [1e-3, 1e-2, 1e-1, 1.0] {
+        for (gtag, kp) in [("kp100", 100.0), ("kp5", 5.0)] {
+            let params = WbcParams {
+                gait_mode: GaitMode::FullCentroidal,
+                fcm_grf_cost: Some(w),
+                actuation: Actuation::LeggedControl { kp, kd: 3.0 },
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                cmd_vx: cmd,
+                total_time_s: 12.0,
+                ..namiashi_tuned_params(I)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("Trot r={w:e} {gtag}"), &samples, cmd, 1.0);
+        }
+    }
+}
+
+/// THE 24-STATE MPC ALSO WEIGHS FIVE UNIT SYSTEMS EQUALLY.
+///
+/// Fixing the input side worked: `r_diag[0..12]` from 1e-3 to 1 takes the
+/// planned vertical from 50.5 N to 32.6 against m*g of 32.4, and the fore-aft
+/// from -20.9 to -1.2. The state side has the same shape of problem --
+/// `q_diag: [1.0; 24]` over `[v_com (m/s), omega (rad/s), base_pos (m), euler
+/// (rad), joint_q (rad)]`.
+///
+/// The base-position block is the one that stands out. A quadruped walking
+/// forward accumulates position without bound, so a cost on absolute position
+/// is a cost on an error that only grows -- and the 12-state SRBD was already
+/// measured not to need absolute position at all: a 1 km offset and an 8 m
+/// drift left every figure bit-identical.
+///
+/// Swept as blocks rather than 24 scalars, with the GRF cost held at the
+/// value the input sweep found.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_fullcentroidal_state_cost() {
+    const I: usize = 0; // Trot
+    let (_, .., cmd) = NAMIASHI_TUNED[I];
+    //                       v_com omega  pos  euler joint_q
+    let cases: &[(&str, [f64; 5])] = &[
+        ("default", [1.0, 1.0, 1.0, 1.0, 1.0]),
+        ("no-pos", [1.0, 1.0, 0.0, 1.0, 1.0]),
+        ("no-pos no-jq", [1.0, 1.0, 0.0, 1.0, 0.0]),
+        // Velocity tracking is the actual objective, so weight it.
+        ("vel-led", [10.0, 5.0, 0.0, 5.0, 0.1]),
+        ("vel-led+jq", [10.0, 5.0, 0.0, 5.0, 1.0]),
+    ];
+    for &(tag, q) in cases {
+        for (gtag, kp) in [("kp100", 100.0), ("kp5", 5.0)] {
+            let params = WbcParams {
+                gait_mode: GaitMode::FullCentroidal,
+                fcm_grf_cost: Some(1.0),
+                fcm_state_cost: Some(q),
+                actuation: Actuation::LeggedControl { kp, kd: 3.0 },
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                cmd_vx: cmd,
+                total_time_s: 12.0,
+                ..namiashi_tuned_params(I)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("Trot {tag} {gtag}"), &samples, cmd, 1.0);
         }
     }
 }
