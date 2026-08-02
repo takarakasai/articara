@@ -37,6 +37,7 @@ use articara::gait::{
 };
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
+use articara::rbd::model::ActuatorMode;
 use articara::robot::RobotModel;
 use articara::wbc_pipeline::WbcPipeline;
 use nalgebra::Vector3;
@@ -144,6 +145,36 @@ struct WbcSample {
 /// tipped over or sunk through the ground. Same value as
 /// `gait_walk_stability`.
 const TRUNK_Z_FALL_THRESHOLD_M: f64 = 0.18;
+
+/// Which actuator interface the leg joints are driven through.
+///
+/// The target hardware for namiashi is the LKMTech MG4005, which has no MIT
+/// mode: the CAN protocol offers closed-loop position, closed-loop speed, and
+/// closed-loop iq. So the position-plus-torque-feedforward path this file has
+/// used throughout -- which is what a Unitree-style `(q, dq, kp, kd, tau)`
+/// frame gives you -- is not available as such.
+///
+/// Speed mode is the first choice over iq for a reason worth writing down:
+/// torque mode puts the entire stabilising loop on the host, so host rate and
+/// bus latency set the stability margin directly. Position and speed modes
+/// close a fast inner loop inside the driver, and the host only has to be
+/// fast enough to shape the trajectory.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Actuation {
+    /// Joint position target plus the WBC's torque feedforward -- everything
+    /// in this file before the MG4005 was chosen. Not available on that part.
+    PositionTorque,
+    /// Joint velocity command only, as a speed-mode driver takes.
+    ///
+    /// `qd_des = dq*/dt + k_track * (q* - q)`. The feedforward alone would
+    /// leave position free to drift, since a speed loop has no position
+    /// feedback of its own; `k_track` is the outer position loop the host has
+    /// to supply. `loop_kv` stands in for the driver's own speed-loop
+    /// stiffness -- the model's `actuator_kv` of 1.2 is a position-mode
+    /// damping value and would need 1.25 rad/s of error to reach the 1.5 N*m
+    /// limit, which is not what a real speed loop does.
+    Velocity { k_track: f64, loop_kv: f64 },
+}
 
 /// What the controller is told about its own velocity.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -257,6 +288,8 @@ struct WbcParams {
     /// 0.85 m/s of velocity error in five seconds against a 0.80 m/s command.
     /// So: how much does this controller actually depend on it?
     vel_obs: VelObs,
+    /// Which actuator interface the controller drives.
+    actuation: Actuation,
     dt: f64,
     /// `None` = the legacy `wbc::solve_warm_with_weights` path
     /// (walk-validated default). `Some` opts the pipeline into the
@@ -313,6 +346,7 @@ impl WbcParams {
             base_pos_bias_m: [0.0; 3],
             base_pos_drift_mps: [0.0; 3],
             vel_obs: VelObs::Truth,
+            actuation: Actuation::PositionTorque,
         }
     }
     fn forward_walk() -> Self {
@@ -341,6 +375,7 @@ impl WbcParams {
             base_pos_bias_m: [0.0; 3],
             base_pos_drift_mps: [0.0; 3],
             vel_obs: VelObs::Truth,
+            actuation: Actuation::PositionTorque,
         }
     }
 
@@ -383,6 +418,30 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         leg_kin.nominal_foot_body.z += params.trunk_drop_m;
     }
     seed_joint_positions_from_kinematics(&mut robot, &kin);
+
+    // Actuator interface. Set before the sim is built so the exported MJCF
+    // and the per-tick control law agree.
+    if let Actuation::Velocity { loop_kv, .. } = params.actuation {
+        // Resolve the twelve leg joints by name -- the gait controller, which
+        // would hand over the indices, is not built until after the sim.
+        let leg_joint_names: Vec<String> = [&kin.fl, &kin.fr, &kin.rl, &kin.rr]
+            .iter()
+            .flat_map(|lk| {
+                [
+                    lk.hip_joint.clone(),
+                    lk.thigh_joint.clone(),
+                    lk.calf_joint.clone(),
+                ]
+            })
+            .collect();
+        for name in &leg_joint_names {
+            let Some(&ji) = robot.joint_map.get(name.as_str()) else {
+                panic!("velocity path: joint {name:?} not in the model");
+            };
+            robot.joints[ji].actuator_mode = ActuatorMode::Velocity;
+            robot.joints[ji].actuator_kv = loop_kv;
+        }
+    }
 
     let opts = MjcfExportOptions {
         ground_plane: Some(GroundPlaneCfg {
@@ -547,6 +606,8 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let burn_in_steps = (params.burn_in_s / params.dt).round() as usize;
     let mut samples: Vec<WbcSample> = Vec::with_capacity(n_steps);
     let mut v_hist: Vec<[f64; 3]> = Vec::with_capacity(n_steps);
+    // Previous tick's IK targets, so the velocity path can differentiate them.
+    let mut prev_targets = [0.0_f64; 12];
 
     for k in 0..n_steps {
         let t = k as f64 * params.dt;
@@ -604,8 +665,35 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
 
         if gc.is_enabled() {
             let (out, targets, torque_ff) = gc.tick(params.dt);
-            for (idx, q) in targets {
-                sim.set_position_target(idx, q);
+            match params.actuation {
+                Actuation::PositionTorque => {
+                    for (idx, q) in targets {
+                        sim.set_position_target(idx, q);
+                    }
+                }
+                Actuation::Velocity { k_track, .. } => {
+                    // Trajectory velocity plus an outer position loop. A speed
+                    // loop has no position feedback, so without the second
+                    // term the leg tracks the right *rate* while its absolute
+                    // position walks away.
+                    for (slot, &(idx, q_star)) in targets.iter().enumerate() {
+                        let q_prev = prev_targets[slot];
+                        let qd_ff = if k > burn_in_steps {
+                            (q_star - q_prev) / params.dt
+                        } else {
+                            0.0
+                        };
+                        let q_meas = sim
+                            .joint_q_qd(&robot.joints[idx].name)
+                            .map(|(q, _)| q)
+                            .unwrap_or(q_star);
+                        sim.set_velocity_target(
+                            idx,
+                            qd_ff + k_track * (q_star - q_meas),
+                        );
+                        prev_targets[slot] = q_star;
+                    }
+                }
             }
             // After burn-in: route through WBC. Skip during burn-in
             // so the body has a chance to settle on its feet via the
@@ -802,11 +890,14 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 // (= forward thrust included), but the actual tracking
                 // depends on `W_CONTACT_FORCE` in `quadruped_gait::wbc`.
                 let _ = torque_ff; // discard MPC ff — WBC owns the τ stream
+                // A speed-mode driver takes a speed and nothing else, so the
+                // WBC's torque has nowhere to go on that path. The sim's
+                // Velocity law ignores `tau_ff` for the same reason; this
+                // keeps the two from disagreeing about why.
+                let deliver_tau = params.actuation == Actuation::PositionTorque
+                    && !params.kinematic_only;
                 for (ji, &tau) in taus.iter().enumerate() {
-                    sim.set_torque_feedforward(
-                        ji,
-                        if params.kinematic_only { 0.0 } else { tau },
-                    );
+                    sim.set_torque_feedforward(ji, if deliver_tau { tau } else { 0.0 });
                 }
                 sim.clear_wbc_torques();
             } else {
@@ -2740,6 +2831,109 @@ fn namiashi_hardware_sensor_set() {
             };
             let Some(samples) = run_wbc_sim(params) else { return };
             report_walk(&format!("{gait:?} | {tag}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// CAN THIS RUN THROUGH A SPEED-MODE DRIVER?
+///
+/// The LKMTech MG4005 has no MIT mode. Its CAN protocol offers closed-loop
+/// position, closed-loop speed and closed-loop iq, so the
+/// position-target-plus-torque-feedforward interface every result in this
+/// file was produced with does not exist on the part. Speed mode is the first
+/// choice over iq because torque mode moves the whole stabilising loop onto
+/// the host, where bus latency and host rate set the stability margin
+/// directly.
+///
+/// Two gains decide whether it works, and they are different things:
+///
+///   `loop_kv`  stands in for the driver's own speed loop. The model ships
+///              `actuator_kv = 1.2`, which is a position-mode damping value:
+///              reaching the 1.5 N*m limit would need 1.25 rad/s of velocity
+///              error. A real speed loop is far stiffer, and has integral
+///              action this proportional stand-in does not.
+///   `k_track`  is the outer position loop the host has to add. A speed loop
+///              has no position feedback, so trajectory velocity alone tracks
+///              the right rate while absolute position walks away.
+///
+/// Swept against the position path at the same stance and settings.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_velocity_actuation_sweep() {
+    eprintln!("---- reference: position target + torque feedforward ----");
+    for i in 0..NAMIASHI_TUNED.len() {
+        let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+        let params = WbcParams {
+            total_time_s: 16.0,
+            ..namiashi_tuned_params(i)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("{gait:?} pos+tau"), &samples, cmd_vx, 1.0);
+    }
+
+    eprintln!("---- speed mode: loop stiffness x position-loop gain ----");
+    for loop_kv in [1.2, 5.0, 20.0] {
+        for k_track in [0.0, 20.0, 60.0] {
+            for i in 0..NAMIASHI_TUNED.len() {
+                let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+                let params = WbcParams {
+                    actuation: Actuation::Velocity { k_track, loop_kv },
+                    total_time_s: 16.0,
+                    ..namiashi_tuned_params(i)
+                };
+                let Some(samples) = run_wbc_sim(params) else { return };
+                report_walk(
+                    &format!("{gait:?} kv={loop_kv:.1} kt={k_track:.0}"),
+                    &samples,
+                    cmd_vx,
+                    1.0,
+                );
+            }
+        }
+    }
+}
+
+/// SPEED MODE, ZOOMED IN ON WHAT THE FIRST SWEEP FOUND.
+///
+/// Three things came out of it. Trajectory velocity alone does not stand the
+/// robot up -- at `k_track = 0` all three gaits end the run at a trunk height
+/// of 0.041 m, which is lying down. A speed loop has no position feedback, so
+/// the outer loop is not optional.
+///
+/// `k_track = 60` gets Walk and Crawl to 103% of command, but Trot only to
+/// 93% and with 3 deg/s of yaw drift against 0.39 on the position path.
+///
+/// And a *stiffer* driver loop is worse, not better: at `k_track = 60`,
+/// `loop_kv` of 1.2 / 5 / 20 gives 93 / 91 / 90% on Trot and 103 / 97 / 90%
+/// on Walk. Worth understanding rather than just noting -- a stiff
+/// proportional speed loop reaches the 1.5 N*m clamp on a small velocity
+/// error, so it spends most of its time saturated and stops being
+/// proportional at all.
+///
+/// So: hold the loop soft and push the outer gain. `k_track` is in 1/s -- 60
+/// means a 0.01 rad position error asks for 0.6 rad/s -- so this is also
+/// asking how much outer-loop bandwidth the host has to supply, which on a
+/// CAN bus is a real constraint and not just a number.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_velocity_actuation_zoom() {
+    for loop_kv in [1.2, 2.5] {
+        for k_track in [60.0, 100.0, 150.0, 220.0] {
+            for i in 0..NAMIASHI_TUNED.len() {
+                let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+                let params = WbcParams {
+                    actuation: Actuation::Velocity { k_track, loop_kv },
+                    total_time_s: 16.0,
+                    ..namiashi_tuned_params(i)
+                };
+                let Some(samples) = run_wbc_sim(params) else { return };
+                report_walk(
+                    &format!("{gait:?} kv={loop_kv:.1} kt={k_track:.0}"),
+                    &samples,
+                    cmd_vx,
+                    1.0,
+                );
+            }
         }
     }
 }
