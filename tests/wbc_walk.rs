@@ -121,6 +121,10 @@ struct WbcSample {
     /// Carried per-sample only so `report_walk_cmd` can size its averaging
     /// window in whole gait cycles without every call site threading it.
     cycle_period_s: f64,
+    /// |applied torque| / that joint's `effort` limit, per joint. A joint at
+    /// 1.0 is clamped: the commanded torque is not the torque being produced,
+    /// and the modelled controller is not the controller running.
+    tau_frac: [f64; 12],
 }
 
 /// Threshold for "trunk has fallen". Below this z, the body has either
@@ -131,6 +135,10 @@ const TRUNK_Z_FALL_THRESHOLD_M: f64 = 0.18;
 /// Minimum forward displacement during the walking window — the same
 /// 4 cm threshold the gait stability test uses.
 const MIN_DISPLACEMENT_M: f64 = 0.04;
+
+/// How much of the tail of a static-stand run the gravity-balance average
+/// covers.
+const STATIC_AVG_WINDOW_S: f64 = 0.5;
 
 struct WbcParams {
     total_time_s: f64,
@@ -145,6 +153,10 @@ struct WbcParams {
     /// hit harder, so on the 3.3 kg models this threshold fires on contacts
     /// the 2.4 kg model never produced.
     early_contact_n: f64,
+    /// Diagnostic: drop the WBC's torque and the MPC's GRF reference, leaving
+    /// only the joint position-PD tracking the IK targets. If the measured
+    /// gait does not change, the dynamic layers are not contributing.
+    kinematic_only: bool,
     dt: f64,
     /// `None` = the legacy `wbc::solve_warm_with_weights` path
     /// (walk-validated default). `Some` opts the pipeline into the
@@ -188,6 +200,7 @@ impl WbcParams {
             cmd_vy: 0.0, cmd_wz: 0.0,
             misa_file: DEFAULT_MISA,
             early_contact_n: 5.0,
+            kinematic_only: false,
         }
     }
     fn forward_walk() -> Self {
@@ -203,6 +216,7 @@ impl WbcParams {
             cmd_vy: 0.0, cmd_wz: 0.0,
             misa_file: DEFAULT_MISA,
             early_contact_n: 5.0,
+            kinematic_only: false,
         }
     }
 
@@ -535,7 +549,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 // depends on `W_CONTACT_FORCE` in `quadruped_gait::wbc`.
                 let _ = torque_ff; // discard MPC ff — WBC owns the τ stream
                 for (ji, &tau) in taus.iter().enumerate() {
-                    sim.set_torque_feedforward(ji, tau);
+                    sim.set_torque_feedforward(
+                        ji,
+                        if params.kinematic_only { 0.0 } else { tau },
+                    );
                 }
                 sim.clear_wbc_torques();
             } else {
@@ -557,6 +574,25 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         let (roll, pitch, yaw) = robot.base_transform.rotation.euler_angles();
         let total_fz_world: f64 =
             sim.contacts().iter().map(|c| c.force_world[2]).sum();
+        // Applied joint torque against its own effort limit. `mujoco_sim`
+        // clamps to `joint.effort` silently, so without this a saturated
+        // actuator is invisible: the harness would report a gait that the
+        // hardware cannot produce and nothing would say so.
+        let qfrc = sim.qfrc_actuator();
+        let mut tau_frac = [0.0f64; 12];
+        for (leg, tri) in gc.joint_indices().iter().enumerate() {
+            for (j, &ji) in tri.iter().enumerate() {
+                let joint = &robot.joints[ji];
+                if joint.effort <= 0.0 {
+                    continue;
+                }
+                if let Some(adr) = sim.joint_dof_adr(&joint.name) {
+                    if let Some(&t) = qfrc.get(adr) {
+                        tau_frac[leg * 3 + j] = (t / joint.effort).abs();
+                    }
+                }
+            }
+        }
         let mut foot_fz = [0.0f64; 4];
         for (fi, (_, link)) in DEFAULT_FOOT_LINKS.iter().enumerate() {
             let lname = link.to_lowercase();
@@ -581,6 +617,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             body_y: tx.y,
             yaw,
             cycle_period_s,
+            tau_frac,
         });
     }
     Some(samples)
@@ -612,10 +649,12 @@ fn robot_mass(robot: &RobotModel) -> f64 {
 /// check catches the real failure mode (body slumping below 0.18 m).
 #[test]
 fn wbc_static_stand_balances_gravity() {
-    let Some(samples) = run_wbc_sim(WbcParams::static_stand()) else {
+    let params = WbcParams::static_stand();
+    let misa = params.misa_file;
+    let Some(samples) = run_wbc_sim(params) else {
         return;
     };
-    assert_static_stand_balances_gravity(&samples);
+    assert_static_stand_balances_gravity(&samples, misa);
 }
 
 /// Same invariants as [`wbc_static_stand_balances_gravity`], but
@@ -628,15 +667,21 @@ fn wbc_static_stand_balances_gravity() {
 #[test]
 fn wbc_static_stand_balances_gravity_force_space_active_set() {
     let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
-    let Some(samples) =
-        run_wbc_sim(WbcParams::static_stand_misa_wbc(wbc::Formulation::ForceSpace, cfg))
-    else {
+    let params = WbcParams::static_stand_misa_wbc(wbc::Formulation::ForceSpace, cfg);
+    let misa = params.misa_file;
+    let Some(samples) = run_wbc_sim(params) else {
         return;
     };
-    assert_static_stand_balances_gravity(&samples);
+    assert_static_stand_balances_gravity(&samples, misa);
 }
 
-fn assert_static_stand_balances_gravity(samples: &[WbcSample]) {
+/// NOTE: takes the model path because the m*g reference has to come from the
+/// same robot the samples came from. Before `WbcParams::misa_file` existed
+/// there was only one model and this read a hardcoded `namiashi.misa`; once a
+/// 3.3 kg variant could be passed in, that silently compared 32.4 N of
+/// measured contact force against a 23.5 N reference -- a 38% error sitting
+/// inside a +/-60% tolerance, so it would have passed while being wrong.
+fn assert_static_stand_balances_gravity(samples: &[WbcSample], misa_file: &str) {
     // No fall.
     let min_z = samples.iter().map(|s| s.body_z).fold(f64::INFINITY, f64::min);
     assert!(
@@ -646,12 +691,15 @@ fn assert_static_stand_balances_gravity(samples: &[WbcSample]) {
     );
 
     // Burn-in window done; sample the last 0.5 s for the f_z average.
-    let dt: f64 = 0.002;
-    let total_time = 1.5;
-    let burn_in = 0.5;
-    let total_n = (total_time / dt).round() as usize;
-    let window_n = (0.5 / dt).round() as usize;
-    let start = total_n.saturating_sub(window_n);
+    // Window derived from the samples, not from hardcoded run lengths: these
+    // used to be literal 1.5/0.5 s constants that happened to match
+    // `WbcParams::static_stand()` and would have silently sliced the wrong
+    // window the moment anyone changed it.
+    let t_end = samples[samples.len() - 1].t;
+    let start = samples
+        .iter()
+        .position(|s| s.t >= t_end - STATIC_AVG_WINDOW_S)
+        .unwrap_or(0);
     let avg_fz: f64 = samples[start..]
         .iter()
         .map(|s| s.total_fz_world)
@@ -659,7 +707,7 @@ fn assert_static_stand_balances_gravity(samples: &[WbcSample]) {
         / (samples.len() - start) as f64;
 
     // Reference m·g. Recompute by reloading the .misa (cheap).
-    let path = namiashi_misa();
+    let path = namiashi_misa_named(misa_file);
     let robot = RobotModel::from_misa(&path).unwrap();
     let mg = robot_mass(&robot) * 9.81;
 
@@ -689,7 +737,6 @@ fn assert_static_stand_balances_gravity(samples: &[WbcSample]) {
          by {:.1}% — friction cone + EoM may be inconsistent",
         pct_err * 100.0,
     );
-    let _ = burn_in;
 }
 
 /// Forward walk under WBC + Position-PD hybrid joint command.
@@ -841,6 +888,32 @@ fn report_walk_cmd(
     // not average the phase out, it averages two or four clusters.
     let period = walk[0].cycle_period_s;
     let win_s = period * (1.0 / period).ceil();
+    // Torque headroom. `mujoco_sim` clamps to `joint.effort` without a word,
+    // so a gait can look fine here while asking the hardware for torque it
+    // does not have. Reported per joint role because the roles have different
+    // limits (hip and thigh 1.5 N*m, calf 2.205) and very different jobs.
+    const ROLE: [&str; 3] = ["hip", "thigh", "calf"];
+    let mut role_line = String::from("  tau/limit:");
+    for j in 0..3 {
+        let mut peak = 0.0f64;
+        let mut sat = 0usize;
+        for s in walk.iter() {
+            for leg in 0..4 {
+                let f = s.tau_frac[leg * 3 + j];
+                peak = peak.max(f);
+                if f > 0.99 {
+                    sat += 1;
+                }
+            }
+        }
+        role_line += &format!(
+            "  {}: peak={peak:.2} sat={:.1}%",
+            ROLE[j],
+            100.0 * sat as f64 / (4.0 * n)
+        );
+    }
+    eprintln!("{role_line}");
+
     let mut line = format!("  per-{win_s:.2}s vx/vy/wz:");
     let (mut vx_sum, mut vy_sum, mut nw) = (0.0, 0.0, 0usize);
     let mut w0 = 0usize;
@@ -1721,6 +1794,90 @@ fn namiashi_prop_retune_trot_crawl() {
         };
         let Some(samples) = run_wbc_sim(params) else { return };
         report_walk(&format!("Crawl v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
+    }
+}
+
+/// IS THE DYNAMIC LAYER DOING ANYTHING?
+///
+/// An architecture review of this stack argued that the measured locomotion
+/// is produced by the joint position-PD tracking IK targets, and that the MPC
+/// and WBC contribute almost nothing. Its evidence is checkable and checks
+/// out:
+///
+///   - `WbcPipeline::new` hardcodes `mass_kg: 9.0` and an inertia diagonal
+///     for a 9 kg machine (`articara/src/wbc_pipeline.rs:250`), and this
+///     harness never overrides either. namiashi is 3.3 kg. The `base_accel`
+///     task carries the largest soft weight in the QP.
+///   - The MPC's horizon contact schedule is `self.cfg.duty_factor > 0.5`
+///     for every node past the first (`mpc_controller.rs:600`). Trot's duty
+///     is exactly 0.50, so that is false, and the MPC plans all four legs
+///     airborne for nine of its ten nodes. Walk and Crawl plan all four in
+///     stance for all nine. Neither resembles the gait being walked.
+///   - `wbc_pipeline.rs:515` is `let _ = (v_cmd_body, wz_cmd, omega_obs_world);`
+///     and every attitude PD gain defaults to (0.0, 0.0).
+///   - During stance `Footstep::stance_at` sweeps the foot from
+///     `nominal + half` to `nominal - half` over the stance window, so under
+///     no-slip `v_body = 2*half/T_st` identically. With open-loop Raibert
+///     that is `v_cmd` exactly -- which is what 101-103% tracking and an
+///     exactly-obeyed geometric ceiling look like.
+///
+/// The claim is falsifiable in one run: zero the WBC's torque feedforward and
+/// leave the position-PD alone. If the gait is unchanged, every number in
+/// this file describes the PD and IK layer, and the tuning conclusions are
+/// statements about kinematics.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_is_the_dynamic_layer_load_bearing() {
+    for kinematic_only in [false, true] {
+        let tag = if kinematic_only { "PD only" } else { "WBC on" };
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                kinematic_only,
+                total_time_s: 16.0,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// DOES TORQUE SATURATION EXPLAIN THE WALK BAND?
+///
+/// `mujoco_sim` clamps every joint to its `effort` limit silently
+/// (`src/mujoco_sim.rs:1121`), so a saturated actuator has been invisible in
+/// every run in this file. Measuring it changes the picture: on the tuned
+/// settings the thigh joint is clamped 22.5% of the time on Trot with the
+/// corrected mass, 11.1% even on the original 2.4 kg model, and every joint
+/// role reaches its limit at some point on every gait. namiashi's hip and
+/// thigh are rated 1.5 N*m and its calf 2.205.
+///
+/// That is a candidate mechanism for the Walk band that neither swing time
+/// nor the contact override could account for. If it is the cause, the
+/// saturation fraction should spike inside 0.38-0.42 and fall away on both
+/// sides, tracking the failure rather than rising monotonically with speed.
+/// If it rises smoothly through the band, saturation is a separate (and
+/// separately serious) problem and the band is still unexplained.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_walk_band_torque_saturation() {
+    for cmd_vx in [0.30, 0.34, 0.38, 0.40, 0.42, 0.44, 0.48] {
+        let params = WbcParams {
+            misa_file: "namiashi_3p3_prop.misa",
+            total_time_s: 16.0,
+            burn_in_s: 1.0,
+            cmd_vx,
+            gait_type: Some(GaitType::Walk),
+            cycle_period_s: Some(0.400),
+            duty_factor: Some(0.75),
+            max_step_length_m: Some(0.145),
+            swing_height_m: Some(0.035),
+            k_capture_s: Some(0.0),
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Walk v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
     }
 }
 
