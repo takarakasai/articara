@@ -46,11 +46,30 @@ use quadruped_gait::{
 };
 
 fn namiashi_misa() -> PathBuf {
+    namiashi_misa_named("namiashi.misa")
+}
+
+/// The model every test runs on unless it says otherwise.
+///
+/// `prop` rather than `hip` on purpose. Both are 3.3 kg with 600 g legs; they
+/// differ only in how far down the leg the added mass sits, and the spec does
+/// not say. `prop` keeps the CAD's own proportions, so it is the variant that
+/// assumes nothing, and it is the pessimistic one -- it is the model on which
+/// Walk showed a failure band. Tuning against it means the tuning still holds
+/// if the real robot turns out to be closer to `hip`; the reverse is not true.
+const DEFAULT_MISA: &str = "namiashi_3p3_prop.misa";
+
+/// The shipped `namiashi.misa` came from a CAD export totalling 2.400 kg with
+/// 36% of that in the legs. The built robot is 3.3 kg with 600 g per leg --
+/// 73% in the legs. `rescale_mass.py` in the same directory regenerates the
+/// corrected models; `_hip` puts the extra mass at the hip where the motors
+/// are, `_prop` spreads it along the leg as the CAD distribution implies.
+fn namiashi_misa_named(file: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
         .join("namiashi")
-        .join("namiashi.misa")
+        .join(file)
 }
 
 /// Same seeding logic as `gait_walk_stability`. Keeps the legs out of
@@ -99,6 +118,9 @@ struct WbcSample {
     foot_fz: [f64; 4],
     body_y: f64,
     yaw: f64,
+    /// Carried per-sample only so `report_walk_cmd` can size its averaging
+    /// window in whole gait cycles without every call site threading it.
+    cycle_period_s: f64,
 }
 
 /// Threshold for "trunk has fallen". Below this z, the body has either
@@ -116,6 +138,13 @@ struct WbcParams {
     cmd_vx: f64,
     cmd_vy: f64,
     cmd_wz: f64,
+    /// Model file under `tests/fixtures/namiashi/`.
+    misa_file: &'static str,
+    /// Early-touchdown force at which `ContactDrivenPhase` overrides the
+    /// nominal phase, newtons. The harness has always used 5.0. Heavier legs
+    /// hit harder, so on the 3.3 kg models this threshold fires on contacts
+    /// the 2.4 kg model never produced.
+    early_contact_n: f64,
     dt: f64,
     /// `None` = the legacy `wbc::solve_warm_with_weights` path
     /// (walk-validated default). `Some` opts the pipeline into the
@@ -157,6 +186,8 @@ impl WbcParams {
             duty_factor: None, max_step_length_m: None,
             swing_height_m: None, k_capture_s: None,
             cmd_vy: 0.0, cmd_wz: 0.0,
+            misa_file: DEFAULT_MISA,
+            early_contact_n: 5.0,
         }
     }
     fn forward_walk() -> Self {
@@ -170,6 +201,8 @@ impl WbcParams {
             duty_factor: None, max_step_length_m: None,
             swing_height_m: None, k_capture_s: None,
             cmd_vy: 0.0, cmd_wz: 0.0,
+            misa_file: DEFAULT_MISA,
+            early_contact_n: 5.0,
         }
     }
 
@@ -189,7 +222,7 @@ impl WbcParams {
 /// Run a WBC sim, sampling per-tick. Returns `None` if the namiashi
 /// fixture is missing (skip cleanly).
 fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
-    let path = namiashi_misa();
+    let path = namiashi_misa_named(params.misa_file);
     if !path.exists() {
         eprintln!(
             "namiashi fixture missing at {} — skipping WBC test",
@@ -250,10 +283,14 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         cfg.max_step_length_m = v;
     }
     eprintln!(
-        "[gait] {:?}  T={:.3}s duty={:.3} max_step={:.3}m  cmd_vx={:.3}",
+        "[gait] {:?}  T={:.3}s duty={:.3} max_step={:.3}m  cmd_vx={:.3}  \
+         model={} m={:.3}kg",
         cfg.gait_type, cfg.cycle_period_s, cfg.duty_factor,
         cfg.max_step_length_m, params.cmd_vx,
+        params.misa_file,
+        robot.links.iter().map(|l| l.inertial.mass).sum::<f64>(),
     );
+    let cycle_period_s = cfg.cycle_period_s;
     let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::Mpc)
         .expect("GaitController::build (Mpc mode)");
     if let Some(k) = params.k_capture_s {
@@ -344,7 +381,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 let corrected = ContactDrivenPhase::apply_correction(
                     &nominal_phases,
                     force_z,
-                    /* early_contact_threshold_n = */ 5.0,
+                    params.early_contact_n,
                     // late_liftoff disabled (= 0 N): if every foot is
                     // momentarily unloaded during a transient body fall,
                     // a non-zero threshold would flip ALL legs to swing
@@ -543,6 +580,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             foot_fz,
             body_y: tx.y,
             yaw,
+            cycle_period_s,
         });
     }
     Some(samples)
@@ -796,13 +834,20 @@ fn report_walk_cmd(
     // instead of the start of the run is the whole point: it separates "the
     // robot is sliding sideways" from "the robot is pointing somewhere else
     // by now", which the run-start frame silently mixes together.
-    let mut line = String::from("  per-1s vx/vy/wz:");
+    // Round the averaging window up to a whole number of gait cycles. A fixed
+    // 1.0 s window beats against the gait: 1.0/0.400 = 2.5 and 1.0/0.800 =
+    // 1.25, so every Walk window boundary lands on one of two gait phases and
+    // every Crawl boundary on one of four. Averaging many such windows does
+    // not average the phase out, it averages two or four clusters.
+    let period = walk[0].cycle_period_s;
+    let win_s = period * (1.0 / period).ceil();
+    let mut line = format!("  per-{win_s:.2}s vx/vy/wz:");
     let (mut vx_sum, mut vy_sum, mut nw) = (0.0, 0.0, 0usize);
     let mut w0 = 0usize;
     while w0 < walk.len() {
         let w1 = walk
             .iter()
-            .position(|s| s.t >= walk[w0].t + 1.0)
+            .position(|s| s.t >= walk[w0].t + win_s)
             .unwrap_or(walk.len() - 1);
         if w1 <= w0 {
             break;
@@ -1246,8 +1291,18 @@ fn namiashi_turn_rate_linearity() {
 /// `k_capture = 0.0` is not an oversight -- see `namiashi_tuned_gaits_hold`.
 const NAMIASHI_TUNED: [(GaitType, f64, f64, f64, f64, f64); 3] = [
     // gait, cycle_period_s, duty, max_step_m, swing_height_m, cmd_vx
-    (GaitType::Trot, 0.260, 0.50, 0.145, 0.040, 0.890),
-    (GaitType::Walk, 0.400, 0.75, 0.145, 0.035, 0.380),
+    //
+    // Retuned for the corrected 3.3 kg mass. Two rows moved:
+    //   Trot 0.260 -> 0.320 s. At 0.260 the corrected model was airborne
+    //     2.0-2.8% of the time with 4.5 deg of roll; 0.320 cuts that to
+    //     0.5-1.3%. The 2.4 kg model was never airborne at either.
+    //   Walk 0.400 -> 0.500 s, command 0.380 -> 0.330. T=0.400 has a failure
+    //     band from ~0.37 to ~0.43 m/s that only exists with mass out at the
+    //     thigh and calf; T=0.500 has none. Its ceiling is
+    //     0.145/(0.500*0.75) = 0.387, so 0.330 keeps 15% of margin.
+    // Crawl was 101-102% at every speed tried on every model and is unchanged.
+    (GaitType::Trot, 0.320, 0.50, 0.145, 0.040, 0.800),
+    (GaitType::Walk, 0.500, 0.75, 0.145, 0.035, 0.330),
     (GaitType::Crawl, 0.800, 0.85, 0.145, 0.040, 0.170),
 ];
 
@@ -1338,6 +1393,334 @@ fn namiashi_tuned_gaits_hold() {
             "{gait:?}: yawed at {:.2} deg/s with wz=0",
             m.yaw_rate_deg_s
         );
+    }
+}
+
+/// THE TUNING WAS DONE ON A ROBOT THAT WEIGHS 0.9 kg LESS THAN THE REAL ONE.
+///
+/// `namiashi.misa` came from a CAD export totalling 2.400 kg, 36% of it in
+/// the legs. The built robot is 3.3 kg with 600 g per leg, so the legs are
+/// 2.4 kg and the body is 0.9 kg: 73% of the machine is leg. That is not a
+/// scale factor, it is an inversion of where the mass lives, and it lands on
+/// the two assumptions this controller rests on.
+///
+/// The SRBD MPC treats the legs as massless -- all mass in one rigid trunk,
+/// contact forces the only thing acting on it. At 36% leg that is a stretch;
+/// at 73% the swinging legs carry more momentum than the body they are
+/// supposed to be steering, and every swing reacts on the trunk directly.
+/// The Raibert foothold plan has the same blind spot: `v * stance/2` says
+/// where to put a massless foot, and says nothing about the impulse of
+/// throwing 600 g forward and stopping it.
+///
+/// Three models, same tuned settings, so the comparison is only about mass:
+///   - `namiashi.misa`      2.400 kg, 36% leg -- what the tuning was done on
+///   - `namiashi_3p3_hip`   3.300 kg, 73% leg, added mass at the hip
+///   - `namiashi_3p3_prop`  3.300 kg, 73% leg, added mass spread down the leg
+///
+/// hip-vs-prop is the same total and the same leg fraction, differing only in
+/// how far out the mass sits. If the controller cares about mass at all, it
+/// cares through leg inertia, and those two bracket it.
+#[test]
+#[ignore = "9 x 25 s runs -- run with --ignored"]
+fn namiashi_mass_variants() {
+    for model in [
+        "namiashi.misa",
+        "namiashi_3p3_hip.misa",
+        "namiashi_3p3_prop.misa",
+    ] {
+        for i in 0..NAMIASHI_TUNED.len() {
+            let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+            let params = WbcParams {
+                misa_file: model,
+                ..namiashi_tuned_params(i)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            let tag = model.trim_end_matches(".misa");
+            report_walk(&format!("{gait:?} @{tag}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// WHY prop BREAKS WALK, AND WHETHER SWING TIME BUYS IT BACK.
+///
+/// Correcting the mass to 3.3 kg costs nothing on its own: with the extra
+/// mass at the hip, all three gaits track 100-101% and the yaw drift
+/// actually halves. Spreading the same extra mass down the leg is what
+/// hurts, and the two models differ by only 74 g per leg (thigh 20.7 -> 57.3
+/// g, calf 21.3 -> 58.9 g). Walk falls to 82% of command and its three-foot
+/// support collapses from 70.7% to 14.2% -- it stops being a walk and starts
+/// running on two supports at an effective duty of 0.53 against a commanded
+/// 0.75.
+///
+/// The ranking points at swing time. Required swing speed at each gait's
+/// tuned command -- ground travel per stance, over the swing window -- is
+/// Walk 1.14 m/s, Crawl 0.97, Trot 0.89, and they broke in exactly that
+/// order. Walk has the shortest swing window of the three (0.400 s * 0.25 =
+/// 0.100 s) despite being the slowest of the two fast gaits, because duty
+/// 0.75 spends the cycle on the ground. A leg with three times the distal
+/// mass has to be accelerated and stopped inside that window, and if it
+/// arrives late the foot touches down late, which is exactly the low
+/// measured duty.
+///
+/// If that is the mechanism, buying swing time fixes it, and the two ways to
+/// buy it are a longer period and a lower duty. Both cost something: the
+/// ceiling `max_step/(T*duty)` moves with each, so each row is checked
+/// against its own ceiling rather than a fixed command.
+#[test]
+#[ignore = "re-tune sweep -- run with --ignored"]
+fn namiashi_prop_walk_swing_time() {
+    // T, duty -- swing window is T*(1-duty)
+    let rows: &[(f64, f64)] = &[
+        (0.400, 0.75), // the current tuning: 0.100 s of swing
+        (0.500, 0.75), // 0.125 s, via period
+        (0.600, 0.75), // 0.150 s, via period
+        (0.400, 0.65), // 0.140 s, via duty
+        (0.400, 0.55), // 0.180 s, via duty -- close to a trot
+        (0.500, 0.65), // 0.175 s, both
+    ];
+    for &(t, duty) in rows {
+        let step = 0.145;
+        let ceil = step / (t * duty);
+        let cmd_vx = 0.80 * ceil;
+        let params = WbcParams {
+            misa_file: "namiashi_3p3_prop.misa",
+            total_time_s: 16.0,
+            burn_in_s: 1.0,
+            cmd_vx,
+            gait_type: Some(GaitType::Walk),
+            cycle_period_s: Some(t),
+            duty_factor: Some(duty),
+            max_step_length_m: Some(step),
+            swing_height_m: Some(0.035),
+            k_capture_s: Some(0.0),
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(
+            &format!("Walk T={t:.3} d={duty:.2} swing={:.3}s", t * (1.0 - duty)),
+            &samples,
+            cmd_vx,
+            1.0,
+        );
+    }
+}
+
+/// SWING TIME WAS THE WRONG VARIABLE, AND THE SWEEP THAT SAID SO WAS RIGGED.
+///
+/// `namiashi_prop_walk_swing_time` set each row's command to 80% of that
+/// row's ceiling, so the command moved with the parameters. The two rows
+/// that worked were the two slowest commands (0.309 and 0.258 m/s); every
+/// row at 0.357 m/s or above failed, whatever its swing window. The row with
+/// the most swing time of all (T=0.400, duty 0.55, 0.180 s) failed at
+/// 0.527 m/s while a row with less (T=0.500, duty 0.75, 0.125 s) succeeded
+/// at 0.309. That is a speed threshold wearing a parameter's clothes.
+///
+/// Two sweeps that do not confound:
+///   A. hold T and duty at the tuning, walk the command up -- where does the
+///      three-foot support actually go away?
+///   B. hold the command at 0.38 m/s, vary T and duty among settings whose
+///      ceiling clears it -- does any of them survive a speed that the
+///      tuned setting cannot?
+#[test]
+#[ignore = "re-tune sweep -- run with --ignored"]
+fn namiashi_prop_walk_speed_vs_shape() {
+    let base = |t: f64, duty: f64, cmd_vx: f64| WbcParams {
+        misa_file: "namiashi_3p3_prop.misa",
+        total_time_s: 16.0,
+        burn_in_s: 1.0,
+        cmd_vx,
+        gait_type: Some(GaitType::Walk),
+        cycle_period_s: Some(t),
+        duty_factor: Some(duty),
+        max_step_length_m: Some(0.145),
+        swing_height_m: Some(0.035),
+        k_capture_s: Some(0.0),
+        ..WbcParams::forward_walk()
+    };
+
+    eprintln!("---- A: speed sweep at the tuned shape (T=0.400, duty=0.75) ----");
+    for cmd_vx in [0.20, 0.26, 0.31, 0.34, 0.38, 0.44] {
+        let Some(samples) = run_wbc_sim(base(0.400, 0.75, cmd_vx)) else { return };
+        report_walk(&format!("Walk v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
+    }
+
+    eprintln!("---- B: shape sweep at a fixed 0.38 m/s ----");
+    // Every row's ceiling 0.145/(T*duty) clears 0.38.
+    for &(t, duty) in &[
+        (0.400, 0.75),
+        (0.500, 0.75),
+        (0.400, 0.65),
+        (0.500, 0.65),
+        (0.400, 0.55),
+        (0.300, 0.75),
+    ] {
+        let Some(samples) = run_wbc_sim(base(t, duty, 0.38)) else { return };
+        report_walk(&format!("Walk T={t:.3} d={duty:.2}"), &samples, 0.38, 1.0);
+    }
+}
+
+/// IS THE BAD BAND REAL, AND IS THE PHASE OVERRIDE WHAT DIGS IT?
+///
+/// The speed sweep found a hole, not a limit: on the prop model at T=0.400 /
+/// duty 0.75, Walk tracks 103/101/97/96% at 0.20-0.34 m/s, drops to 82% at
+/// 0.38, and is back to 94% at 0.44. Every setting that failed anywhere
+/// failed into the same state -- effective duty ~0.53 with 81-87% of the
+/// time on two feet. Duty 0.53 on two supports is a trot. Walk is not
+/// degrading, it is being captured by a different gait.
+///
+/// The only thing in this loop that can rewrite the gait pattern at runtime
+/// is `ContactDrivenPhase`, which flips a leg to stance the moment its foot
+/// reads above 5 N. That threshold was chosen for a 2.4 kg robot whose whole
+/// leg weighed 217 g. A 600 g leg with 74 g more of it out at the thigh and
+/// calf lands harder, so contacts that never reached 5 N now do -- and each
+/// spurious flip shortens that leg's stance, which is the low measured duty.
+///
+/// Two questions, one sweep: is the band narrow (fine speed steps), and does
+/// raising the override threshold out of reach close it (5 N vs 15 N vs off)?
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_prop_walk_contact_override() {
+    for thr in [5.0, 15.0, 1.0e9] {
+        let label = if thr > 1.0e6 {
+            "off".to_string()
+        } else {
+            format!("{thr:.0}N")
+        };
+        eprintln!("---- early-contact override = {label} ----");
+        for cmd_vx in [0.34, 0.36, 0.38, 0.40, 0.42, 0.44] {
+            let params = WbcParams {
+                misa_file: "namiashi_3p3_prop.misa",
+                total_time_s: 16.0,
+                burn_in_s: 1.0,
+                cmd_vx,
+                gait_type: Some(GaitType::Walk),
+                cycle_period_s: Some(0.400),
+                duty_factor: Some(0.75),
+                max_step_length_m: Some(0.145),
+                swing_height_m: Some(0.035),
+                k_capture_s: Some(0.0),
+                early_contact_n: thr,
+                ..WbcParams::forward_walk()
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("Walk v={cmd_vx:.2} thr={label}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// NOT THE PHASE OVERRIDE EITHER -- AND IT IS A BAND, NOT A HOLE.
+///
+/// `ContactDrivenPhase` was the only thing in the loop that can rewrite the
+/// gait pattern at runtime, so the guess was that heavier legs trip its 5 N
+/// early-touchdown threshold spuriously. Disabling it entirely changes
+/// nothing: at 0.38 m/s the prop model tracks 82% with the override at 5 N,
+/// 83% at 15 N and 83% with it off. Every speed matches to within 1-3 points
+/// across all three settings. The override is not involved.
+///
+/// The finer sweep also corrected the shape of the failure. It is not a hole
+/// at 0.38 -- it is a band: 96% at 0.34, 95/88/89% at 0.36 (the edge),
+/// 79-83% from 0.38 to 0.42, and back to 94-95% at 0.44. Roughly 0.37 to
+/// 0.43 m/s, about 0.06 m/s wide, with clean walking on both sides.
+///
+/// Which leaves the question that actually matters for the design, since two
+/// readings of the evidence so far are still alive:
+///   - distal leg mass CREATES a band that the light model does not have; or
+///   - a band is always there and the parameters only move it, and the 2.4 kg
+///     tuning happened to sit beside it.
+/// Those imply opposite fixes -- redistribute mass in hardware, versus pick a
+/// period. Sweeping the same speeds on the hip model (same total mass, same
+/// leg fraction, mass held proximal) and on prop at the period that escaped
+/// (T=0.500) separates them.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_walk_band_is_mass_or_tuning() {
+    let cases: &[(&str, &str, f64)] = &[
+        ("namiashi_3p3_hip.misa", "hip T=0.400", 0.400),
+        ("namiashi_3p3_prop.misa", "prop T=0.500", 0.500),
+        ("namiashi.misa", "2.4kg T=0.400", 0.400),
+    ];
+    for &(model, label, t) in cases {
+        eprintln!("---- {label} ----");
+        for cmd_vx in [0.34, 0.36, 0.38, 0.40, 0.42, 0.44] {
+            let params = WbcParams {
+                misa_file: model,
+                total_time_s: 16.0,
+                burn_in_s: 1.0,
+                cmd_vx,
+                gait_type: Some(GaitType::Walk),
+                cycle_period_s: Some(t),
+                duty_factor: Some(0.75),
+                max_step_length_m: Some(0.145),
+                swing_height_m: Some(0.035),
+                k_capture_s: Some(0.0),
+                ..WbcParams::forward_walk()
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_walk(&format!("{label} v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
+        }
+    }
+}
+
+/// RE-TUNE TROT AND CRAWL ON THE CORRECTED MASS.
+///
+/// The band belongs to distal leg mass: at T=0.400 the 2.4 kg model tracks
+/// 101% flat from 0.34 to 0.44 m/s and the hip model 99-100%, while prop
+/// drops to 79-82% across 0.38-0.42. Moving prop to T=0.500 removes it --
+/// what looks like decay there (99 -> 87% as speed rises) is just the
+/// ceiling: 0.145/(0.500*0.75) = 0.387 m/s, and 0.387/0.44 = 88% against 87%
+/// measured, with three-foot support holding at 0.67.
+///
+/// So Walk moves to T=0.500 and a command safely under 0.387. Trot needs
+/// checking too: on prop at the old tuning it overshot to 111% and was
+/// airborne 2.6% of the time with 4.5 deg of roll, which the 2.4 kg model
+/// never did. Crawl was 102% and untouched, but gets swept anyway rather
+/// than assumed.
+#[test]
+#[ignore = "re-tune sweep -- run with --ignored"]
+fn namiashi_prop_retune_trot_crawl() {
+    eprintln!("---- Trot on prop: speed at T=0.260, and a longer period ----");
+    for &(t, cmd_vx) in &[
+        (0.260, 0.70),
+        (0.260, 0.80),
+        (0.260, 0.89),
+        (0.320, 0.70),
+        (0.320, 0.80),
+        (0.320, 0.89),
+    ] {
+        let params = WbcParams {
+            misa_file: "namiashi_3p3_prop.misa",
+            total_time_s: 16.0,
+            burn_in_s: 1.0,
+            cmd_vx,
+            gait_type: Some(GaitType::Trot),
+            cycle_period_s: Some(t),
+            duty_factor: Some(0.50),
+            max_step_length_m: Some(0.145),
+            swing_height_m: Some(0.040),
+            k_capture_s: Some(0.0),
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Trot T={t:.3} v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
+    }
+
+    eprintln!("---- Crawl on prop ----");
+    for cmd_vx in [0.13, 0.17, 0.20] {
+        let params = WbcParams {
+            misa_file: "namiashi_3p3_prop.misa",
+            total_time_s: 16.0,
+            burn_in_s: 1.0,
+            cmd_vx,
+            gait_type: Some(GaitType::Crawl),
+            cycle_period_s: Some(0.800),
+            duty_factor: Some(0.85),
+            max_step_length_m: Some(0.145),
+            swing_height_m: Some(0.040),
+            k_capture_s: Some(0.0),
+            ..WbcParams::forward_walk()
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Crawl v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
     }
 }
 
