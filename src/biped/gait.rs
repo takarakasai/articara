@@ -122,6 +122,36 @@ impl GaitPlan {
         GaitPlan { slices }
     }
 
+    /// End the slice covering `at` at time `new_t1`, sliding every later
+    /// slice by the same amount.
+    ///
+    /// This is how a contact-driven phase transition stays consistent with
+    /// the DCM plan. The alternative -- keeping a nominal schedule and running
+    /// a separate "actual" clock that jumps -- leaves the DCM reference
+    /// describing a step that is no longer being taken. Retiming the PLAN and
+    /// rebuilding the reference from it keeps one clock and one story.
+    ///
+    /// Rebuilding is cheap and, more importantly, nearly continuous: a
+    /// segment's influence on the present DCM reference decays by
+    /// `exp(-omega*T)` per step, about a factor of 20 at these timings, so
+    /// moving a boundary by tens of milliseconds moves the current reference
+    /// by microns.
+    ///
+    /// Returns the shift applied (positive = the step was cut short).
+    pub fn retime(&mut self, at: usize, new_t1: f64) -> f64 {
+        let old_t1 = self.slices[at].t1;
+        let d = old_t1 - new_t1;
+        if d.abs() < 1e-12 {
+            return 0.0;
+        }
+        self.slices[at].t1 = new_t1;
+        for s in self.slices.iter_mut().skip(at + 1) {
+            s.t0 -= d;
+            s.t1 -= d;
+        }
+        d
+    }
+
     /// The slice covering `t`, clamped to the ends.
     pub fn index_at(&self, t: f64) -> usize {
         match self.slices.iter().position(|s| t < s.t1) {

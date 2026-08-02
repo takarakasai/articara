@@ -252,7 +252,7 @@ fn main() {
     let trunk_yaw = flag("TRUNK_YAW", true);
     let kp_yaw = env_f64("KP_YAW", 200.0);
     let kd_yaw = env_f64("KD_YAW", 40.0);
-    let gait = GaitPlan::new(&gp);
+    let mut gait = GaitPlan::new(&gp);
     let z_com = env_f64("Z_COM", com0.z);
     // How far the ZMP is asked to travel laterally, as a fraction of the
     // half stance width. 1.0 is true single support (all load on one sole);
@@ -359,6 +359,35 @@ fn main() {
     let mut footsteps = footsteps;
     let mut dcm_plan = dcm_plan;
     let mut adapt_now = na::Vector2::zeros();
+    // ---- contact-driven phase transitions -----------------------------
+    //
+    // The schedule says when the step ENDS; the ground says when it actually
+    // ended. Measured on this robot, the swing foot lands about 30 ms early
+    // on a 0.35 s single support -- 8.6% of the phase, every step, same sign
+    // -- and a time-based schedule keeps commanding a swing that has already
+    // finished while the QP solves against a contact set that is a step
+    // behind. Terminating the swing on contact is what a passive-ankle biped
+    // does in hardware (Kim et al. 2019, arXiv:1901.08100: contact switches
+    // "terminate swing foot motion controls when the swing foot touches the
+    // ground earlier than anticipated").
+    let phase_by_contact = flag("PHASE_BY_CONTACT", true);
+    // A late foot gets the step extended rather than the contact set being
+    // told a lie, but not forever -- past this the swing is not coming down
+    // and holding the phase would only stall the robot in single support.
+    let phase_extend_max = env_f64("PHASE_EXTEND", 0.5);
+    // A touchdown is only believed in the last part of the swing. The naive
+    // version -- "any load above 10% of body weight ends the step" -- fires on
+    // a mid-swing scuff, and measured, it cut 61 ms off every 350 ms step and
+    // took the gait from 200 steps to 46. The foot brushing the ground on its
+    // way past is not the end of the step.
+    let phase_min_frac = env_f64("PHASE_MIN_FRAC", 0.75);
+    // ...and it has to be a real load, held for a few ticks, not a graze.
+    let phase_load_frac = env_f64("PHASE_LOAD", 0.30);
+    let phase_ticks = env_f64("PHASE_TICKS", 3.0) as u32;
+    let mut land_count = 0u32;
+    let mut n_early = 0u32;
+    let mut n_late = 0u32;
+    let mut retime_total = 0.0_f64;
     let mut max_adapt: f64 = 0.0;
     let mut n_adapt = 0u32;
     let mut n_corrected = 0u32;
@@ -418,8 +447,41 @@ fn main() {
         let t = tick as f64 * dt;
         let st = rig.sync();
         let (q, v, v_dvec, data) = (&st.q, &st.v, &st.v_dvec, &st.data);
+        // Ground truth first: the phase logic, the contact set and the tasks
+        // all solve against this, so it is read before any of them.
+        let measured_c = measure_contacts(&rig, data, friction_mu);
+        let measured_pre = [measured_c.f_w[0][2], measured_c.f_w[1][2]];
         let com = st.com;
         let com_vel = st.com_vel;
+
+        // ---- contact-driven retiming, before anything reads the phase ---
+        if phase_by_contact {
+            let i = gait.index_at(t);
+            if let Support::Single { swing, .. } = gait.slices[i].support {
+                let loaded = measured_pre[swing] > phase_load_frac * total_mass * G;
+                land_count = if loaded { land_count + 1 } else { 0 };
+                let nominal_end = gait.slices[i].t1;
+                let frac = gait.slices[i].frac(t);
+                let landed = land_count >= phase_ticks && frac >= phase_min_frac;
+                if landed && t < nominal_end - 1e-9 {
+                    // Early: the step is over, so say so.
+                    retime_total += gait.retime(i, t).abs();
+                    n_early += 1;
+                    land_count = 0;
+                    dcm_plan = DcmPlan::from_footsteps(&gait, &footsteps, z_com, zmp_lat_scale);
+                } else if !loaded && t >= nominal_end - 1e-9 {
+                    // Late: hold the phase open until the foot arrives.
+                    let limit = gait.slices[i].t0
+                        + (nominal_end - gait.slices[i].t0) * (1.0 + phase_extend_max);
+                    if t + dt <= limit {
+                        retime_total += gait.retime(i, t + dt).abs();
+                        n_late += 1;
+                        dcm_plan =
+                            DcmPlan::from_footsteps(&gait, &footsteps, z_com, zmp_lat_scale);
+                    }
+                }
+            }
+        }
 
         // ---- schedule -> contact set -----------------------------------
         let (slice, slice_frac) = gait.at(t);
@@ -474,10 +536,8 @@ fn main() {
             prev_support = support;
         }
 
-        // Ground truth first: everything below solves against this, so it has
-        // to be read before the tasks are built, not after the solve.
-        let measured = measure_contacts(&rig, data, friction_mu);
-        let fz_meas = [measured.f_w[0][2], measured.f_w[1][2]];
+        let fz_meas = [measured_pre[0], measured_pre[1]];
+        let measured = measured_c;
         let stance_sides: Vec<usize> = if contact_driven {
             let (sides, fresh) = correction.update(support, fz_meas);
             for side in fresh {
@@ -1077,6 +1137,10 @@ fn main() {
     tally.report();
     println!("  open-loop ticks: {n_open_loop}");
     println!("  contact-set corrections: {n_corrected} ticks where the feet disagreed with the schedule");
+    println!(
+        "  phase retimed by contact: {n_early} early / {n_late} late ticks, {:.0} ms total",
+        retime_total * 1e3
+    );
     println!(
         "  footstep adaptations: {n_adapt} steps moved, largest {:.1} mm",
         max_adapt * 1e3
