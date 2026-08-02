@@ -39,16 +39,45 @@ pub fn trunk(
     rp_ref: &[f64; 2],
     nv: usize,
 ) -> Task {
-    let mut j_rp = na::DMatrix::zeros(2, nv);
+    trunk_rpy(qddot, j_trunk, djv_trunk, rp_ref, None, nv)
+}
+
+/// [`trunk`] with an optional YAW row.
+///
+/// Roll and pitch alone leave the whole stack with nothing regulating
+/// rotation about the vertical. Measured on kyo46rs stepping in place: the
+/// swing leg twists (its own orientation being unconstrained), that injects
+/// vertical-axis angular momentum, and the base counter-rotates +-8 deg to
+/// conserve it while hip_yaw walks to its +-30 deg stop. Regulating the trunk's
+/// yaw asks for the quantity that matters and lets the QP decide which joints
+/// pay for it, rather than dictating a swing-foot angle.
+pub fn trunk_rpy(
+    qddot: &Affine,
+    j_trunk: &na::DMatrix<f64>,
+    djv_trunk: &na::DVector<f64>,
+    rp_ref: &[f64; 2],
+    yaw_ref: Option<f64>,
+    nv: usize,
+) -> Task {
+    let rows = if yaw_ref.is_some() { 3 } else { 2 };
+    let mut j_rp = na::DMatrix::zeros(rows, nv);
     for c in 0..nv {
         j_rp[(0, c)] = j_trunk[(0, c)];
         j_rp[(1, c)] = j_trunk[(1, c)];
+        if yaw_ref.is_some() {
+            j_rp[(2, c)] = j_trunk[(2, c)];
+        }
+    }
+    let (mut dj, mut r) = (vec![djv_trunk[0], djv_trunk[1]], vec![rp_ref[0], rp_ref[1]]);
+    if let Some(y) = yaw_ref {
+        dj.push(djv_trunk[2]);
+        r.push(y);
     }
     wt::cartesian_acceleration(
         qddot,
         &j_rp,
-        &na::DVector::from_vec(vec![djv_trunk[0], djv_trunk[1]]),
-        &na::DVector::from_vec(vec![rp_ref[0], rp_ref[1]]),
+        &na::DVector::from_vec(dj),
+        &na::DVector::from_vec(r),
     )
 }
 
@@ -116,6 +145,25 @@ pub enum SwingAxes {
     /// Full 3-D tracking. What STEPPING wants: the target is a planned
     /// footstep that moves, so there is nothing to fight.
     Xyz,
+    /// Position plus YAW only, four rows.
+    ///
+    /// The middle ground, and usually the right one. Taking all six of the
+    /// foot's DoF leaves the swing leg no null space at all -- with the
+    /// stance contact already spending 6 rows and CoM + trunk another 5, a
+    /// six-row swing task drops the robot in one or two steps at every gain
+    /// tried. Yaw is the DoF that actually ran away.
+    XyzYaw,
+    /// Position AND orientation, six rows.
+    ///
+    /// Leaving the swing foot's three ROTATIONAL DoF unconstrained is the same
+    /// mistake as leaving its translation unconstrained, and it is less
+    /// obvious because nothing flies through the air -- the leg simply twists.
+    /// Measured on kyo46rs stepping in place with translation-only swing:
+    /// hip_yaw walked from 0.04 deg to its +-30 deg STOP over 16 steps, the
+    /// feet landed yawed by up to 31 deg, and the base yawed +-8 deg trying to
+    /// conserve the angular momentum the twisting legs kept injecting. The QP
+    /// was using the free leg's yaw as a null-space dumping ground.
+    Pose,
 }
 
 /// P3: swing-foot tracking. `kp_xy` is separate from `kp_z` because the two
@@ -136,6 +184,36 @@ pub fn swing(
     kd: f64,
     axes: SwingAxes,
 ) -> Task {
+    swing_with_pose(qddot, j_foot, djv, pos, vel, target, target_vel, kp_xy, kp_z, kd, axes, None)
+}
+
+/// [`swing`] with an optional orientation target for [`SwingAxes::Pose`].
+///
+/// `orientation` is `(R_current, R_target, omega, kp, kd)`. The target should
+/// come from the PLAN -- the orientation the foot is meant to land in -- not
+/// from where the foot happens to be, or the error it is meant to remove
+/// becomes the thing it tracks.
+#[allow(clippy::too_many_arguments)]
+pub fn swing_with_pose(
+    qddot: &Affine,
+    j_foot: &na::DMatrix<f64>,
+    djv: &na::DVector<f64>,
+    pos: &na::Vector3<f64>,
+    vel: &na::Vector3<f64>,
+    target: &na::Vector3<f64>,
+    target_vel: &na::Vector3<f64>,
+    kp_xy: f64,
+    kp_z: f64,
+    kd: f64,
+    axes: SwingAxes,
+    orientation: Option<(
+        na::Matrix3<f64>,
+        na::Matrix3<f64>,
+        na::Vector3<f64>,
+        f64,
+        f64,
+    )>,
+) -> Task {
     let a = na::Vector3::new(
         kp_xy * (target.x - pos.x) + kd * (target_vel.x - vel.x),
         kp_xy * (target.y - pos.y) + kd * (target_vel.y - vel.y),
@@ -154,6 +232,45 @@ pub fn swing(
             &na::DVector::from_vec(vec![djv[3], djv[4], djv[5]]),
             &na::DVector::from_vec(vec![a.x, a.y, a.z]),
         ),
+        SwingAxes::XyzYaw => {
+            let (rot, rot_tgt, omega, kp_r, kd_r) = orientation
+                .expect("SwingAxes::XyzYaw needs an orientation target");
+            let dr = rot_tgt * rot.transpose();
+            let e_yaw = (dr[(1, 0)] - dr[(0, 1)]) * 0.5;
+            let a_yaw = kp_r * e_yaw - kd_r * omega.z;
+            let mut j = na::DMatrix::zeros(4, j_foot.ncols());
+            for c in 0..j_foot.ncols() {
+                j[(0, c)] = j_foot[(2, c)];
+                for r in 0..3 {
+                    j[(1 + r, c)] = j_foot[(3 + r, c)];
+                }
+            }
+            wt::cartesian_acceleration(
+                qddot,
+                &j,
+                &na::DVector::from_vec(vec![djv[2], djv[3], djv[4], djv[5]]),
+                &na::DVector::from_vec(vec![a_yaw, a.x, a.y, a.z]),
+            )
+        }
+        SwingAxes::Pose => {
+            let (rot, rot_tgt, omega, kp_r, kd_r) = orientation
+                .expect("SwingAxes::Pose needs an orientation target");
+            // Same small-angle extraction the contact anchor uses: the skew
+            // part of R_target * R_current^T.
+            let dr = rot_tgt * rot.transpose();
+            let e = na::Vector3::new(
+                dr[(2, 1)] - dr[(1, 2)],
+                dr[(0, 2)] - dr[(2, 0)],
+                dr[(1, 0)] - dr[(0, 1)],
+            ) * 0.5;
+            let a_ang = e * kp_r - omega * kd_r;
+            wt::cartesian_acceleration(
+                qddot,
+                &j_foot.rows(0, 6).into_owned(),
+                &na::DVector::from_vec(vec![djv[0], djv[1], djv[2], djv[3], djv[4], djv[5]]),
+                &na::DVector::from_vec(vec![a_ang.x, a_ang.y, a_ang.z, a.x, a.y, a.z]),
+            )
+        }
     }
 }
 
