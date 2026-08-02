@@ -109,8 +109,12 @@ def main():
     ap.add_argument("--group")
     ap.add_argument("--csv")
     ap.add_argument("--record", help="label of one case whose trajectory CSV to keep")
+    ap.add_argument("--robot", help="profile name (kyo46rs | kyo46rs2 | g1)")
     a = ap.parse_args()
 
+    if a.robot:
+        COMMON["ROBOT"] = a.robot
+        print(f"robot: {a.robot}")
     if not os.path.exists(BIN):
         sys.exit(f"{BIN} not found -- cargo build --release --features mujoco --examples")
 
