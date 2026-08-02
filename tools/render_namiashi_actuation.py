@@ -7,8 +7,9 @@ PD computed host-side -- so what this compares is not two algorithms but two
 places to put the loop. A speed-mode driver closes its inner loop internally
 at several kHz on fresh encoder data, whatever the host is doing; in torque
 mode there is no inner loop, and the last torque the host sent is held until
-the next arrives. Both clips therefore run the host at 200 Hz, which is where
-they part company.
+the next arrives. Both clips run the host at 400 Hz, the rate the bus is designed for, and the
+speed side models the driver as the velocity source an 8-16 kHz loop is from
+a 400 Hz host -- limited by torque, not by bandwidth.
 
 Each panel carries the footfall diagram from the measured normal force, since
 what degrades first is the contact pattern rather than the speed.
@@ -37,11 +38,15 @@ COMMAND = {g[1]: g[5] for g in GAITS}
 
 # label, directory suffix, one-line description of the interface
 MODES = [
-    ("Speed mode", "speed", "driver closes the speed loop;  host adds "
-                            "qd = dq*/dt + 100*(q*-q)"),
-    ("Torque mode", "torque", "no driver loop;  host sends "
-                              "kp(q*-q) - kd*qd + gravity + WBC tau"),
+    ("Speed mode", "speed",
+     "driver is an 8-16 kHz velocity source, torque-limited;"
+     "host sends qd = dq*/dt + 40*(q*-q)"),
+    ("Torque mode", "torque",
+     "no driver loop at all;"
+     "host sends kp(q*-q) - kd*qd + gravity + WBC tau"),
 ]
+
+HOST_HZ = 400
 
 CAM_DIST, CAM_ELEV, CAM_AZIM, LOOKAT_Z = 1.10, -12.0, 148.0, 0.17
 
@@ -114,7 +119,7 @@ def main():
         dh.text((16, 10), f"namiashi  {args.gait.capitalize()}  "
                           f"MG4005 interface comparison", font=f_title,
                 fill=(240, 244, 250))
-        dh.text((16, 46), f"host 200 Hz   command {cmd:+.2f} m/s   "
+        dh.text((16, 46), f"host {HOST_HZ} Hz   command {cmd:+.2f} m/s   "
                           f"stance 0.235 m   identical gait and gains -- "
                           f"only where the loop runs differs",
                 font=f_sub, fill=(150, 162, 180))
