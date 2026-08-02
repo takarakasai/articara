@@ -37,10 +37,23 @@ LEGEND_NOTE = (
 )
 URDFS = {
     "kyo46rs": "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
+    "kyo46rs2": "/home/takara/work/dp/humanoid/kyo46rs2_description/urdf/kyo46rs2.urdf",
     "g1": "/home/takara/work/dp/articara/models/unitree_g1_src/robots/g1_description/g1_23dof.urdf",
     "g1_23dof": "/home/takara/work/dp/articara/models/unitree_g1_src/robots/g1_description/g1_23dof.urdf",
 }
-URDF = os.environ.get("URDF", URDFS.get(ROBOT, URDFS["kyo46rs"]))
+# No silent fallback. This defaulted to kyo46rs for ANY unknown ROBOT, so a
+# kyo46rs2 run rendered as v1 and looked plausible -- the two machines differ
+# by 8 mm of leg. A renderer that draws the wrong robot without saying so is
+# worse than one that refuses.
+if "URDF" in os.environ:
+    URDF = os.environ["URDF"]
+elif ROBOT in URDFS:
+    URDF = URDFS[ROBOT]
+else:
+    raise SystemExit(
+        f"ROBOT={ROBOT!r} has no URDF here. Known: {', '.join(sorted(URDFS))}. "
+        f"Pass URDF=<path> to override."
+    )
 FOOT_L = os.environ.get("FOOT_L", "left_ankle_roll_link" if ROBOT.startswith("g1") else "left_foot_link")
 W, H = int(os.environ.get("VID_W", 960)), 720
 FPS = 50
