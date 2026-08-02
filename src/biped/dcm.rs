@@ -212,6 +212,36 @@ impl DcmPlan {
     }
 }
 
+impl DcmPlan {
+    /// The plan's DCM at the END of the segment covering `t`.
+    pub fn eos_at(&self, t: f64) -> na::Vector2<f64> {
+        self.xi_eos[self.index_at(t)]
+    }
+
+    /// Where the MEASURED DCM will be at the end of the current segment, if
+    /// the ZMP follows the plan from here.
+    ///
+    /// This is the quantity footstep adaptation steers on: the next foot
+    /// should land under where the DCM is actually going, not under where the
+    /// plan assumed it would go.
+    ///
+    /// The `exp(+omega dt)` here is honest -- it is a forward PREDICTION over
+    /// a shrinking horizon, not an evaluation of a stored coefficient
+    /// (contrast [`DcmPlan::reference`]). It is noisy at the start of a step,
+    /// where dt is a full single support and the factor is ~7, and exact at
+    /// touchdown, where dt is zero. Applying the correction continuously is
+    /// what makes that acceptable: it converges as the step runs out.
+    pub fn predict_eos(&self, t: f64, xi: &na::Vector2<f64>) -> na::Vector2<f64> {
+        let i = self.index_at(t);
+        let s = &self.segs[i];
+        let t_end = s.t0 + s.duration;
+        let dt_left = (t_end - t).max(0.0);
+        let v_over_w = s.slope() / self.omega;
+        s.at(t_end) + v_over_w
+            + (xi - s.at(t) - v_over_w) * (self.omega * dt_left).exp()
+    }
+}
+
 /// Measured DCM from the measured CoM state.
 pub fn dcm_of(com: &na::Vector3<f64>, com_vel: &na::Vector3<f64>, omega: f64) -> na::Vector2<f64> {
     na::Vector2::new(com.x + com_vel.x / omega, com.y + com_vel.y / omega)
