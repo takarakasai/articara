@@ -667,6 +667,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         for (_, link) in DEFAULT_FOOT_LINKS.iter() {
             replay_buf.push_str(&format!(",fz_{link}"));
         }
+        // The command as applied, and whether a push is being delivered.
+        // Recorded rather than restated in the renderer: a schedule written
+        // out twice is a schedule that will disagree with itself.
+        replay_buf.push_str(",cmd_vx,cmd_vy,cmd_wz,push_fy");
         replay_buf.push('\n');
     }
 
@@ -1107,6 +1111,16 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             for fz in foot_fz {
                 replay_buf.push_str(&format!(",{fz:.4}"));
             }
+            let c = gc.velocity_cmd();
+            let push_fy = params
+                .push
+                .filter(|(t0, _, dur)| t >= *t0 && t < *t0 + *dur)
+                .map(|(_, f, _)| f[1])
+                .unwrap_or(0.0);
+            replay_buf.push_str(&format!(
+                ",{:.4},{:.4},{:.4},{push_fy:.2}",
+                c.vx, c.vy, c.wz
+            ));
             replay_buf.push('\n');
         }
 
@@ -3525,6 +3539,121 @@ fn namiashi_interface_full_comparison() {
             });
             let Some(samples) = run_wbc_sim(params) else { return };
             report_push(&format!("{gait:?} {mtag} push"), &samples, PUSH_T, cmd);
+        }
+    }
+}
+
+/// VIDEO SOURCE: the two cases that separate the interfaces, on Trot.
+///
+/// Steady commands and speed regulation came out close between speed and
+/// torque mode, so neither makes a useful film. These two do.
+///
+/// The push clips record a whole stride's worth of push phases, because
+/// `namiashi_push_phase_dependence` showed a single push time says nothing:
+/// over eight phases of Trot's 0.320 s cycle, speed mode falls at three of
+/// them and torque mode at three, and they are not the same three. A video
+/// built on one push time would be showing an accident of phase as though it
+/// were a property of the interface.
+///
+/// The schedule clip steps through forward slow, forward fast, turn, strafe,
+/// backward and stop. Steps rather than ramps, because a step is what exposes
+/// handover behaviour.
+#[test]
+#[ignore = "video source -- needs NAMIASHI_REPLAY_OUT"]
+fn namiashi_robustness_video_source() {
+    let Ok(root) = std::env::var("NAMIASHI_REPLAY_OUT") else {
+        eprintln!("NAMIASHI_REPLAY_OUT unset -- nothing to record");
+        return;
+    };
+    const I: usize = 0; // Trot
+    let (_, period, .., cmd) = NAMIASHI_TUNED[I];
+    let modes: [(&str, Actuation); 2] = [
+        ("speed", Actuation::VelocityIdeal { k_track: 40.0 }),
+        ("torque", Actuation::Torque { kp: 100.0, kd: 1.2 }),
+    ];
+
+    for (mtag, act) in modes {
+        let base = |p: WbcParams| WbcParams {
+            actuation: act,
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            ..p
+        };
+
+        for step in 0..8 {
+            let t_push = 6.0 + period * step as f64 / 8.0;
+            let params = base(WbcParams {
+                cmd_vx: cmd,
+                push: Some((t_push, [0.0, 12.0, 0.0], 0.12)),
+                total_time_s: 10.0,
+                replay_dir: Some(format!("{root}/push{step}_{mtag}")),
+                ..namiashi_tuned_params(I)
+            });
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_push(&format!("Trot {mtag} p{step}"), &samples, t_push, cmd);
+        }
+
+        let params = base(WbcParams {
+            cmd_vx: 0.0,
+            cmd_schedule: vec![
+                (1.0, 0.35 * cmd, 0.0, 0.0),
+                (4.0, cmd, 0.0, 0.0),
+                (7.0, 0.0, 0.0, 0.60),
+                (10.0, 0.0, 0.5 * cmd, 0.0),
+                (13.0, -cmd, 0.0, 0.0),
+                (16.0, 0.0, 0.0, 0.0),
+            ],
+            total_time_s: 19.0,
+            replay_dir: Some(format!("{root}/schedule_{mtag}")),
+            ..namiashi_tuned_params(I)
+        });
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Trot {mtag} schedule"), &samples, cmd, 1.0);
+    }
+}
+
+/// THE PUSH OUTCOME DEPENDS ON WHEN IN THE STRIDE IT LANDS.
+///
+/// `namiashi_interface_full_comparison` pushed at 7.0 s and found Trot
+/// shrugging it off in both modes -- 6.3 and 12.2 degrees of roll, 95% of
+/// command afterwards. Moving the same push to 6.0 s knocks both down: 17 and
+/// 99 degrees of roll, trunk to 0.124 m, 10-13% of command afterwards.
+///
+/// Nothing about the interfaces changed. What changed is which feet were
+/// loaded when the impulse arrived, and Trot spends most of its cycle on a
+/// diagonal pair, so a sideways kick lands somewhere between "into the
+/// support line" and "across it" depending on phase.
+///
+/// So a single push time says nothing about an interface, and the videos
+/// should not be built on one. Sweep a whole stride -- eight phases over
+/// Trot's 0.320 s -- in both modes, and see what the spread actually is.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_push_phase_dependence() {
+    const I: usize = 0; // Trot
+    let (_, period, .., cmd) = NAMIASHI_TUNED[I];
+    for step in 0..8 {
+        let t_push = 6.0 + period * step as f64 / 8.0;
+        for (mtag, act) in [
+            ("speed", Actuation::VelocityIdeal { k_track: 40.0 }),
+            ("torque", Actuation::Torque { kp: 100.0, kd: 1.2 }),
+        ] {
+            let params = WbcParams {
+                actuation: act,
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                cmd_vx: cmd,
+                push: Some((t_push, [0.0, 12.0, 0.0], 0.12)),
+                total_time_s: 12.0,
+                ..namiashi_tuned_params(I)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            report_push(
+                &format!("Trot {mtag} phase{step}"),
+                &samples,
+                t_push,
+                cmd,
+            );
         }
     }
 }
