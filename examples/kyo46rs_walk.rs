@@ -359,6 +359,19 @@ fn main() {
     let mut footsteps = footsteps;
     let mut dcm_plan = dcm_plan;
     let mut adapt_now = na::Vector2::zeros();
+    // How much of `adapt_now` is already committed to the footstep plan.
+    //
+    // The adaptation has to be IN the plan, not added on top of it. If the
+    // foot target moves but the DCM reference still describes the nominal
+    // footstep, the ZMP feedback and the step adjustment see the same error
+    // and fight over it -- which is exactly what made the first two attempts
+    // at this worse than doing nothing (section 13.7). Every method in the
+    // literature regenerates the reference from the adapted decision
+    // variables: Khadiv et al. re-solve every control cycle and the solution
+    // IS the reference, so the CoP layer only ever sees the residual.
+    let mut adapt_applied = na::Vector2::zeros();
+    // Rebuild the plan continuously rather than only at touchdown.
+    let adapt_live = flag("ADAPT_LIVE", true);
     // ---- contact-driven phase transitions -----------------------------
     //
     // The schedule says when the step ENDS; the ground says when it actually
@@ -370,7 +383,7 @@ fn main() {
     // does in hardware (Kim et al. 2019, arXiv:1901.08100: contact switches
     // "terminate swing foot motion controls when the swing foot touches the
     // ground earlier than anticipated").
-    let phase_by_contact = flag("PHASE_BY_CONTACT", true);
+    let phase_by_contact = flag("PHASE_BY_CONTACT", false);
     // A late foot gets the step extended rather than the contact set being
     // told a lie, but not forever -- past this the swing is not coming down
     // and holding the phase would only stall the robot in single support.
@@ -390,6 +403,7 @@ fn main() {
     let mut retime_total = 0.0_f64;
     let mut max_adapt: f64 = 0.0;
     let mut n_adapt = 0u32;
+    let mut n_replan = 0u32;
     let mut n_corrected = 0u32;
 
     // ankle_roll range of motion. The model review measured that holding the
@@ -513,13 +527,16 @@ fn main() {
                     // ahead moves the current reference by a fraction of a
                     // millimetre.
                     if adapt && adapt_now.norm() > 1e-9 {
-                        footsteps.shift_from(slice_idx, swing, adapt_now);
-                        dcm_plan =
-                            DcmPlan::from_footsteps(&gait, &footsteps, z_com, zmp_lat_scale);
+                        if !adapt_live {
+                            footsteps.shift_from(slice_idx, swing, adapt_now);
+                            dcm_plan =
+                                DcmPlan::from_footsteps(&gait, &footsteps, z_com, zmp_lat_scale);
+                        }
                         max_adapt = max_adapt.max(adapt_now.norm());
                         n_adapt += 1;
                     }
                     adapt_now = na::Vector2::zeros();
+                    adapt_applied = na::Vector2::zeros();
                     // Re-anchor the landed foot where it ACTUALLY is, not
                     // where it was planned to be: the anchor's job is to stop
                     // drift from here, and seeding it with a position the
@@ -676,6 +693,19 @@ fn main() {
                 adapt_now = want;
             }
         }
+        // Commit the change to the plan NOW, so `xi_ref` below describes the
+        // footstep the foot is actually going to.
+        if adapt_live {
+            if let Support::Single { swing, .. } = support {
+                let d = adapt_now - adapt_applied;
+                if d.norm() > 1e-9 {
+                    footsteps.shift_from(slice_idx, swing, d);
+                    dcm_plan = DcmPlan::from_footsteps(&gait, &footsteps, z_com, zmp_lat_scale);
+                    adapt_applied = adapt_now;
+                    n_replan += 1;
+                }
+            }
+        }
         let a_xy = com_accel_xy(&com, &p_cmd, omega);
         // z stays a PD on the nominal height: the LIPM says nothing about it,
         // and a constant-height assumption is exactly what makes omega a
@@ -774,10 +804,14 @@ fn main() {
                 // within a millimetre, and using the measured one keeps a foot
                 // that started slightly high from being driven into the floor.
                 // With stride 0 this is exactly "land where you took off".
-                let plan_xy = steps.sole[side];
+                // Read the plan, which already carries the adaptation when
+                // ADAPT_LIVE is on. Adding `adapt_now` on top of a plan that
+                // has been shifted would apply it twice.
+                let plan_xy = footsteps.at_slice(slice_idx).sole[side];
+                let extra = if adapt_live { na::Vector2::zeros() } else { adapt_now };
                 let touch_down = na::Vector3::new(
-                    plan_xy.x + adapt_now.x,
-                    plan_xy.y + adapt_now.y,
+                    plan_xy.x + extra.x,
+                    plan_xy.y + extra.y,
                     lift_off.z,
                 );
                 let tgt = swing_position(lift_off, touch_down, lift_h, slice_frac);
@@ -1142,7 +1176,7 @@ fn main() {
         retime_total * 1e3
     );
     println!(
-        "  footstep adaptations: {n_adapt} steps moved, largest {:.1} mm",
+        "  footstep adaptations: {n_adapt} steps moved, largest {:.1} mm, {n_replan} live replans",
         max_adapt * 1e3
     );
     println!(
