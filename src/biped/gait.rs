@@ -234,6 +234,69 @@ impl FootstepPlan {
         FootstepPlan { at, initial: *initial }
     }
 
+    /// Alternating-lead walk: the feet stay one stride apart and take turns
+    /// leading, instead of one foot stepping out and the other closing up.
+    ///
+    /// The naive version -- every swing advances 2x stride from where it was
+    /// -- looks right and is not. From feet together it produces
+    ///
+    /// ```text
+    ///   after step 1 (R swings)   L 0.000  R 0.100   R leads
+    ///   after step 2 (L swings)   L 0.100  R 0.100   TOGETHER
+    ///   after step 3 (R swings)   L 0.100  R 0.200   R leads
+    /// ```
+    ///
+    /// so the right foot always leads and the left only ever catches up. That
+    /// is a step-and-close gait, left/right asymmetric, and it spends every
+    /// other double support with no fore/aft offset between the feet at all.
+    ///
+    /// The fix is the first step: make it a HALF stride and the phase is right
+    /// from then on, with each foot alternately one stride ahead. The last
+    /// step is likewise a half stride so the plan ends with the feet level,
+    /// which is what the DCM plan's "come to rest at mid-stance" terminal
+    /// condition assumes.
+    ///
+    /// `ramp` steps of stride build-up on top, because a robot that has been
+    /// standing still cannot take a full step immediately -- the DCM has to
+    /// already be moving at the walking rate the instant single support
+    /// begins.
+    pub fn alternating(
+        plan: &GaitPlan,
+        initial: &Footsteps,
+        stride: f64,
+        ramp: usize,
+    ) -> Self {
+        let n_steps = plan
+            .slices
+            .iter()
+            .filter(|s| matches!(s.support, Support::Single { .. }))
+            .count();
+        let mut cur = *initial;
+        let mut at = Vec::with_capacity(plan.slices.len());
+        let mut step = 0usize;
+        for s in &plan.slices {
+            match s.support {
+                Support::Single { swing, .. } => {
+                    let ramp_f = if ramp == 0 {
+                        1.0
+                    } else {
+                        ((step + 1) as f64 / ramp as f64).min(1.0)
+                    };
+                    // Half on the way in and on the way out, full in between.
+                    let half = step == 0 || step + 1 == n_steps;
+                    let advance = if half { stride } else { 2.0 * stride };
+                    let mut next = cur;
+                    next.sole[swing].x += advance * ramp_f;
+                    at.push(next);
+                    cur = next;
+                    step += 1;
+                }
+                Support::Double => at.push(cur),
+            }
+        }
+        FootstepPlan { at, initial: *initial }
+    }
+
     /// Constant stride, reached over `ramp` steps from standing.
     ///
     /// Every failure above stride 0.04 happened 1 to 1.7 s after the FIRST
@@ -471,6 +534,55 @@ mod tests {
         let plan = GaitPlan::new(&p);
         assert_eq!(plan.slices.len(), 1);
         assert_eq!(plan.support_at(4.0), Support::Double);
+    }
+
+    #[test]
+    fn alternating_keeps_the_feet_one_stride_apart_and_swaps_the_lead() {
+        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.35, n_steps: 8,
+                             first_swing: RIGHT, t_end: 20.0 };
+        let plan = GaitPlan::new(&p);
+        let init = Footsteps {
+            sole: [na::Vector3::new(0.0, 0.05, 0.0), na::Vector3::new(0.0, -0.05, 0.0)],
+        };
+        let stride = 0.05;
+        let fp = FootstepPlan::alternating(&plan, &init, stride, 0);
+
+        // Gap after each single-support slice, in step order.
+        let gaps: Vec<f64> = plan
+            .slices
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| matches!(s.support, Support::Single { .. }))
+            .map(|(i, _)| fp.at_slice(i).sole[LEFT].x - fp.at_slice(i).sole[RIGHT].x)
+            .collect();
+
+        // Steady steps: one stride apart, lead alternating. Excludes the
+        // half step in and the half step out.
+        for (k, g) in gaps.iter().enumerate().take(gaps.len() - 1).skip(1) {
+            assert!(
+                (g.abs() - stride).abs() < 1e-12,
+                "step {k}: gap {g} is not one stride"
+            );
+            assert!(
+                g * gaps[k - 1] < 0.0 || k == 1,
+                "step {k}: the lead did not swap ({} then {g})",
+                gaps[k - 1]
+            );
+        }
+        // ...and the plan closes with the feet level.
+        assert!(gaps.last().unwrap().abs() < 1e-12, "the last step does not close the feet");
+
+        // The naive version is what this replaces: it alternates one stride
+        // apart with dead level, which is a step-and-close.
+        let naive = FootstepPlan::constant_stride(&plan, &init, stride);
+        let ngaps: Vec<f64> = plan
+            .slices
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| matches!(s.support, Support::Single { .. }))
+            .map(|(i, _)| naive.at_slice(i).sole[LEFT].x - naive.at_slice(i).sole[RIGHT].x)
+            .collect();
+        assert!(ngaps[1].abs() < 1e-12 && ngaps[3].abs() < 1e-12);
     }
 
     #[test]
