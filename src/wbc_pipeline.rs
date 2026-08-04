@@ -83,6 +83,18 @@ pub struct WbcPipeline {
     /// had -- IMU integration drifts without limit -- so this is worth
     /// measuring rather than assuming.
     pub base_pos_bias_world: na::Vector3<f64>,
+    /// Include the `- omega_b x v_b` term when converting the predicted world
+    /// acceleration into the FreeFlyer's body-frame `q̈[0..6]`.
+    ///
+    /// `v[0..6]` is built as a body-frame *spatial* velocity, so the matching
+    /// acceleration is `R^T a_world - omega_b x v_b`, not `R^T a_world`. The
+    /// dropped term is purely lateral, scales as `vx * wz`, and reaches
+    /// 0.15 m/s^2 at 0.3 m/s and 0.5 rad/s -- 15-30% of a base-accel
+    /// reference of order 0.5-1 m/s^2, with the sign of `vx * wz`.
+    ///
+    /// Off by default so the change can be measured against every earlier
+    /// result rather than silently folded into them.
+    pub base_accel_coriolis: bool,
     /// SRBD physical parameters used by [`predicted_base_accel_world`]
     /// to derive the WBC's `a_base_des` from the MPC's GRF prediction.
     /// Mirror these to the host's [`SrbdMpcConfig`] so the WBC
@@ -263,6 +275,7 @@ impl WbcPipeline {
             friction_mu: 0.5,
             f_min_stance_n: 0.0,
             base_pos_bias_world: na::Vector3::zeros(),
+            base_accel_coriolis: false,
             mass_kg: 9.0,
             inertia_diag_body: na::Vector3::new(0.07, 0.26, 0.242),
             centroidal_inertia_body: None,
@@ -525,7 +538,12 @@ impl WbcPipeline {
         };
         // q̈[0..6] is body-frame for a FreeFlyer joint, so rotate the
         // world-frame predicted accels in. Layout: [angular; linear].
-        let a_lin_body = r_bw * a_lin_world;
+        let a_lin_body = if self.base_accel_coriolis {
+            let v_body = r_bw * v_obs_world;
+            r_bw * a_lin_world - omega_obs_body.cross(&v_body)
+        } else {
+            r_bw * a_lin_world
+        };
         let mut a_ang_body = r_bw * a_ang_world;
         // suppress unused-arg warnings during the PD-removal transition;
         // velocity / yaw commands now flow into the MPC layer instead.
