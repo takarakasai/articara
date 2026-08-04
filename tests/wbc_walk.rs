@@ -470,6 +470,14 @@ struct WbcParams {
     /// first: it grows without bound as the robot walks, so a weight on it is
     /// a weight on an error that can only increase.
     fcm_state_cost: Option<[f64; 5]>,
+    /// Add the missing `- omega_b x v_b` term to the WBC's base-accel
+    /// reference. See `WbcPipeline::base_accel_coriolis`.
+    base_accel_coriolis: bool,
+    /// Set every `WbcWeights` entry to 1.0, as `legged_control` effectively
+    /// has them -- it concatenates tasks within a priority level unweighted.
+    flat_wbc_weights: bool,
+    /// Drop the `tau_gravity` task, which `legged_control` does not have.
+    drop_tau_gravity: bool,
     /// Give the SRBD MPC namiashi's composite inertia instead of the heaviest
     /// link's.
     ///
@@ -568,6 +576,9 @@ impl WbcParams {
             dynamic_joint_q_reference: false,
             fcm_grf_cost: None,
             fcm_state_cost: None,
+            base_accel_coriolis: false,
+            flat_wbc_weights: false,
+            drop_tau_gravity: false,
             mpc_composite_inertia: false,
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
@@ -607,6 +618,9 @@ impl WbcParams {
             dynamic_joint_q_reference: false,
             fcm_grf_cost: None,
             fcm_state_cost: None,
+            base_accel_coriolis: false,
+            flat_wbc_weights: false,
+            drop_tau_gravity: false,
             mpc_composite_inertia: false,
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
@@ -852,6 +866,19 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut wbc_pipeline = WbcPipeline::new(&robot, foot_links);
     if let Some((formulation, cfg)) = params.misa_wbc_mode.clone() {
         wbc_pipeline = wbc_pipeline.with_wbc_solver(formulation, cfg);
+    }
+    wbc_pipeline.base_accel_coriolis = params.base_accel_coriolis;
+    if params.flat_wbc_weights {
+        let w = &mut wbc_pipeline.weights;
+        w.floating_base_eom = 1.0;
+        w.no_contact_motion = 1.0;
+        w.base_accel = 1.0;
+        w.swing_leg = 1.0;
+        w.contact_force = 1.0;
+        w.tau_gravity = 1.0;
+    }
+    if params.drop_tau_gravity {
+        wbc_pipeline.weights.tau_gravity = 0.0;
     }
     if let Some(w) = params.contact_force_weight {
         wbc_pipeline.weights.contact_force = w;
@@ -1379,6 +1406,28 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                                 .sum()
                         })
                         .unwrap_or(0.0);
+                }
+                if k == burn_in_steps + 2000 || k == burn_in_steps + 2050 {
+                    if let Some(sol) = wbc_pipeline.last_solution.as_ref() {
+                        // Exact dimensions, from the solution vector itself:
+                        // x = [q_ddot (nv); f (3nc); tau (na)].
+                        let nv = sol.q_ddot.len();
+                        let na = sol.tau.len();
+                        let n_dec = nv + sol.f_grf.len() + na;
+                        let n_st = contact_flag.iter().filter(|b| **b).count();
+                        let n_sw = 4 - n_st;
+                        // P0 equalities: EoM (nv) + no-contact-motion (3/stance)
+                        // + friction-cone swing-zero (3/swing) = nv + 12.
+                        let p0 = nv + 3 * n_st + 3 * n_sw;
+                        // P1: base accel (6) + swing leg (3 actuators/swing leg).
+                        let p1 = 6 + 3 * n_sw;
+                        eprintln!(
+                            "[null k={k}] nv={nv} na={na} n_dec={n_dec} stance={n_st}  \
+                             dimZ0={} dimZ1={}  <- freedom left for priority 2",
+                            n_dec as i64 - p0 as i64,
+                            n_dec as i64 - p0 as i64 - p1 as i64,
+                        );
+                    }
                 }
                 let _ = torque_ff; // discard MPC ff — WBC owns the τ stream
                 // A speed-mode driver takes a speed and nothing else, so the
@@ -4816,6 +4865,108 @@ fn namiashi_fullcentroidal_state_cost() {
             };
             let Some(samples) = run_wbc_sim(params) else { return };
             report_walk(&format!("Trot {tag} {gtag}"), &samples, cmd, 1.0);
+        }
+    }
+}
+
+/// FOUR CONFOUNDS REMOVED AT ONCE.
+///
+/// A line-by-line audit against `legged_control/legged_wbc` found the eight
+/// task formulations faithful -- same A/b/D/f blocks, same friction pyramid
+/// rows, same selection matrix, same hierarchical projection. The divergences
+/// are elsewhere, and four of them are cheap to remove together:
+///
+/// 1. `a_lin_body = R^T a_world` drops `- omega_b x v_b`. `v[0..6]` is built
+///    as a body-frame spatial velocity, so the matching acceleration needs
+///    that term. It is purely lateral and scales as `vx * wz` -- 0.15 m/s^2
+///    at 0.3 m/s and 0.5 rad/s, against a reference of order 0.5-1.
+/// 2. Per-task weights (eom 1000, no-contact 1000, base-accel 200,
+///    contact-force 5) that `legged_control` does not have; it concatenates
+///    tasks within a level unweighted. Row-scaling an exactly-solvable
+///    least-squares system does not move its solution, and levels 0 and 1
+///    are exactly solvable here, so the weights are inert except where an
+///    inequality binds -- which would make the tuning table built on them
+///    a record of closed-loop noise.
+/// 3. `tau_gravity`, a task with no counterpart in the original. It anchors
+///    tau toward `RNEA(q, 0, 0)`, the torque to hold the legs up with the
+///    base externally supported and the feet unloaded -- not the stance
+///    torque, which is dominated by `J^T f`.
+/// 4. The joint servo: kp=100 here against legged_control's 5, with `pos_des`
+///    from analytical IK rather than the MPC's optimised state.
+///
+/// Measured one at a time and then together, so a null result on the whole
+/// does not hide an effect in a part.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_legged_control_confounds() {
+    const I: usize = 0; // Trot
+    let (_, .., cmd) = NAMIASHI_TUNED[I];
+    //             tag              coriolis  flat-w  drop-tg  kp
+    let cases: &[(&str, bool, bool, bool, f64)] = &[
+        ("baseline", false, false, false, 100.0),
+        ("+coriolis", true, false, false, 100.0),
+        ("+flat weights", false, true, false, 100.0),
+        ("+drop tau_grav", false, false, true, 100.0),
+        ("all three", true, true, true, 100.0),
+        ("all three, kp5", true, true, true, 5.0),
+        ("kp5 alone", false, false, false, 5.0),
+    ];
+    for &(tag, cor, flat, drop, kp) in cases {
+        let params = WbcParams {
+            base_accel_coriolis: cor,
+            flat_wbc_weights: flat,
+            drop_tau_gravity: drop,
+            actuation: Actuation::LeggedControl { kp, kd: 3.0 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: cmd,
+            total_time_s: 12.0,
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Trot {tag}"), &samples, cmd, 1.0);
+    }
+}
+
+/// THE MISSING CORIOLIS TERM, UNDER THE COMMAND THAT ACTUALLY EXCITES IT.
+///
+/// `a_lin_body = R^T a_world` omits `- omega_b x v_b`. `v[0..6]` is built as a
+/// body-frame spatial velocity (`wbc_pipeline.rs:373-376` says so), so the
+/// matching acceleration needs that term.
+///
+/// `namiashi_legged_control_confounds` found adding it changed nothing, but
+/// that ran a straight forward walk where `wz` is 0.5 deg/s -- the term is
+/// `omega x v`, so it is identically zero there and the null result says
+/// nothing. It is purely lateral and scales as `vx * wz`, so it only appears
+/// when the robot is walking and turning at once.
+///
+/// Both signs of `wz`, because the claim is that the error carries the sign of
+/// `vx * wz`: if so, the lateral drift should be asymmetric in `wz` without
+/// the term and symmetric with it.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_base_accel_coriolis() {
+    const I: usize = 0; // Trot
+    let (_, .., cmd) = NAMIASHI_TUNED[I];
+    for wz in [0.6, -0.6] {
+        for coriolis in [false, true] {
+            let params = WbcParams {
+                base_accel_coriolis: coriolis,
+                cmd_vx: 0.5 * cmd,
+                cmd_wz: wz,
+                total_time_s: 16.0,
+                ..namiashi_tuned_params(I)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            let tag = if coriolis { "with" } else { "without" };
+            report_walk_cmd(
+                &format!("Trot wz={wz:+.1} {tag}"),
+                &samples,
+                0.5 * cmd,
+                0.0,
+                wz,
+                1.0,
+            );
         }
     }
 }
