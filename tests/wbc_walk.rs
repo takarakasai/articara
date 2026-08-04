@@ -477,6 +477,15 @@ struct WbcParams {
     /// Warm start with one SQP iteration, as the reference does, instead of
     /// three cold ones.
     fcm_warm_start: bool,
+    /// FullCentroidal horizon, in steps and seconds-per-step. The default is
+    /// 10 x 0.030 = 0.300 s against legged_control's 1.0 s, and
+    /// `set_srbd_mpc_config` cannot reach it -- that setter is a silent no-op
+    /// outside `GaitMode::Mpc`, so `mpc_horizon_steps` does nothing here.
+    fcm_horizon_steps: Option<usize>,
+    fcm_dt_per_step: Option<f64>,
+    /// SQP iterations, separately from `fcm_warm_start`. The warm-start path
+    /// also drops iterations from 3 to 1, and those are two different changes.
+    fcm_sqp_iterations: Option<usize>,
     fcm_grf_cost: Option<f64>,
     /// Per-block state cost for the 24-state MPC: `[v_com, omega, base_pos,
     /// euler, joint_q]`, applied over `q_diag`'s
@@ -595,6 +604,9 @@ impl WbcParams {
             mpc_px_cost: None,
             fcm_taskspace_jv_weight: None,
             fcm_warm_start: false,
+            fcm_horizon_steps: None,
+            fcm_dt_per_step: None,
+            fcm_sqp_iterations: None,
             fcm_grf_cost: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
@@ -641,6 +653,9 @@ impl WbcParams {
             mpc_px_cost: None,
             fcm_taskspace_jv_weight: None,
             fcm_warm_start: false,
+            fcm_horizon_steps: None,
+            fcm_dt_per_step: None,
+            fcm_sqp_iterations: None,
             fcm_grf_cost: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
@@ -861,6 +876,25 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     "[fcm] q_diag: v_com={} omega={} pos={} euler={} joint_q={}",
                     q[0], q[1], q[2], q[3], q[4]
                 );
+            }
+            gc.set_full_centroidal_mpc_config(cfg);
+        }
+    }
+    if params.gait_mode == GaitMode::FullCentroidal
+        && (params.fcm_horizon_steps.is_some()
+            || params.fcm_dt_per_step.is_some()
+            || params.fcm_sqp_iterations.is_some())
+    {
+        if let Some(c) = gc.full_centroidal_mpc_config() {
+            let mut cfg = c.clone();
+            if let Some(n) = params.fcm_horizon_steps {
+                cfg.horizon_steps = n;
+            }
+            if let Some(dt) = params.fcm_dt_per_step {
+                cfg.dt_per_step = dt;
+            }
+            if let Some(n) = params.fcm_sqp_iterations {
+                cfg.sqp_iterations = n;
             }
             gc.set_full_centroidal_mpc_config(cfg);
         }
@@ -5111,6 +5145,107 @@ fn namiashi_support_torque_budget() {
 /// through. Tracking percentage is a gate, not a score: 107% of command from
 /// an open-loop Raibert plan on flat ground is already near the geometric
 /// ceiling `max_step/(T*duty)`, and there is nothing there for a predictive
+/// Where the FullCentroidal MPC's -19 N of fore-aft plan comes from.
+///
+/// ANSWER (measured): the friction cone, not any cost weight. Every arm below
+/// lands at |fx|/fz = 0.489..0.495 against mu = 0.50 -- the solution is pinned
+/// to the cone boundary, so the state weights cannot move it, and the vertical
+/// force runs 23% above mg because inflating fz is how the QP buys cone
+/// headroom for the horizontal force it wants.
+///
+/// The long-horizon arms (F, G) do not answer to the reference either. With
+/// `QG_MPC_SOLVE_LOG=1`: 5550/5550 Solved at 0.300 s, and 2208/2220
+/// NumericalError + 12/2220 InsufficientProgress at 0.900 s -- not one success.
+/// `failed_solution` hands the WBC a zeroed `first_input`, which is why the
+/// planned force reads +0.03 N. So the collapse is a numerical failure in the
+/// condensed QP, not a consequence of what the reference contains: arm F
+/// (gamma on) collapses exactly as hard as arm G (gamma off).
+///
+/// `namiashi_wiring_repair_ladder` measured the repaired FullCentroidal path
+/// planning -19.45 N of fore-aft force and +39.79 N of vertical force on a
+/// 3.3 kg robot (weight 32.4 N) whose feet deliver +0.255 N and whose trunk
+/// holds 0.236 m. The plan is not dimensionally credible, and the mode walks
+/// well anyway, so something in the cost is being paid for with GRF that has
+/// nothing to do with the ground.
+///
+/// Two candidates, both in `q_diag`, which defaults to `[1.0; 24]` across five
+/// different physical units:
+///
+///   - `joint_q` (12 of the 24 entries, half the state cost). The reference
+///     holds joint_q at its current value for the whole horizon unless
+///     `dynamic_joint_q_reference` is on, so every swing leg is a growing
+///     "error" the MPC is charged for. Its only actuator is GRF, and the
+///     `d(alpha)/d(joint_q)` coupling gives it a path -- so it can pour force
+///     into stopping a leg from swinging.
+///   - `base_pos`. Not the accumulating-reference story: the reference is
+///     rebuilt from the current state every cycle
+///     (`full_centroidal_controller.rs:1434`), exactly as legged_control does,
+///     so the position error starts at zero each solve and cannot integrate.
+///     Still worth zeroing, to separate it from the joint_q term.
+///
+/// Runs at the default 10 x 0.030 horizon, because the question is which cost
+/// term the force answers to, not how far ahead it looks.
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_fcm_fore_aft_attribution() {
+    const I: usize = 0; // Trot
+    let (_, period, .., cmd) = NAMIASHI_TUNED[I];
+    let _ = period;
+    let base = || WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: cmd,
+        total_time_s: 12.0,
+        wbc_real_inertia: true,
+        gait_mode: GaitMode::FullCentroidal,
+        legged_control_parity: true,
+        ..namiashi_tuned_params(I)
+    };
+    let arms: Vec<(&str, WbcParams)> = vec![
+        ("A all q=1", base()),
+        (
+            "B joint_q=0",
+            WbcParams { fcm_state_cost: Some([1.0, 1.0, 1.0, 1.0, 0.0]), ..base() },
+        ),
+        (
+            "C dyn joint_q ref",
+            WbcParams { dynamic_joint_q_reference: true, ..base() },
+        ),
+        (
+            "D base_pos=0",
+            WbcParams { fcm_state_cost: Some([1.0, 1.0, 0.0, 1.0, 1.0]), ..base() },
+        ),
+        (
+            "E both=0",
+            WbcParams { fcm_state_cost: Some([1.0, 1.0, 0.0, 1.0, 0.0]), ..base() },
+        ),
+        // The combination the ladder implies should work. Extending the horizon
+        // alone drove the planned vertical force to +1.58 N against a 32.4 N
+        // weight -- past about a third of a gait cycle the frozen-joint_q
+        // reference is not a motion the robot can perform, so linearizing about
+        // it produces a model in which asking for no force is optimal. gamma
+        // makes each horizon step an IK solution of the actual footstep plan,
+        // which is the only thing that makes a long horizon meaningful here.
+        (
+            "F dyn ref + 0.9s",
+            WbcParams {
+                dynamic_joint_q_reference: true,
+                fcm_horizon_steps: Some(30),
+                ..base()
+            },
+        ),
+        (
+            "G horizon 0.9s only",
+            WbcParams { fcm_horizon_steps: Some(30), ..base() },
+        ),
+    ];
+    for (tag, params) in arms {
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Trot {tag}"), &samples, cmd, 1.0);
+    }
+}
+
 /// layer to win.
 #[test]
 #[ignore = "large sweep -- run with --ignored"]
@@ -5158,29 +5293,57 @@ fn namiashi_wiring_repair_ladder() {
                 ..base()
             },
         ),
-        // The last two fixes are FullCentroidal-only -- the input weight and the
-        // warm start have no counterpart on the SRBD path -- so the mode change
-        // is its own rung. Otherwise a difference at rung 6 could be the weight
-        // or could be the 24-state model, and there would be no way to tell.
+        // FullCentroidal is its own ladder, not a continuation of the one
+        // above. `set_srbd_mpc_config` is a silent no-op outside
+        // `GaitMode::Mpc` (generator.rs:334), so rungs 2-4 cannot reach this
+        // mode at all -- carrying their flags down here would label the rows
+        // with repairs that were never applied. It does not need rungs 1-2
+        // either: FullCentroidal already auto-detects m=3.300 kg and the
+        // composite inertia (0.02722, 0.07575, 0.06584), which is most of why
+        // it starts out ahead of the SRBD path.
+        //
+        // What it does still differ from legged_control on is the horizon --
+        // 10 x 0.030 = 0.300 s against 1.0 s -- and that is what rungs 6-7
+        // measure. Rung 9 separates the warm start from the iteration count,
+        // because `fcm_warm_start` changes both at once.
         (
-            "5 fullcentroidal",
+            "5 fcm (parity)",
             WbcParams {
                 wbc_real_inertia: true,
-                mpc_composite_inertia: true,
-                mpc_horizon_steps: Some(30),
-                mpc_px_cost: Some(1000.0),
                 gait_mode: GaitMode::FullCentroidal,
                 legged_control_parity: true,
                 ..base()
             },
         ),
         (
-            "6 + jv weight",
+            "6 + horizon 0.9s",
             WbcParams {
                 wbc_real_inertia: true,
-                mpc_composite_inertia: true,
-                mpc_horizon_steps: Some(30),
-                mpc_px_cost: Some(1000.0),
+                gait_mode: GaitMode::FullCentroidal,
+                legged_control_parity: true,
+                fcm_horizon_steps: Some(30),
+                ..base()
+            },
+        ),
+        (
+            "7 + lc dt 0.015",
+            WbcParams {
+                wbc_real_inertia: true,
+                gait_mode: GaitMode::FullCentroidal,
+                legged_control_parity: true,
+                fcm_horizon_steps: Some(66),
+                fcm_dt_per_step: Some(0.015),
+                ..base()
+            },
+        ),
+        // Against rung 5, not rung 7. Stacked on 66 x 0.015 this arm stalls --
+        // 100% CPU with no simulated progress for 45 s -- and the plan it would
+        // be weighting has already collapsed to +0.10 N, so there is nothing
+        // there left to measure.
+        (
+            "8 jv weight",
+            WbcParams {
+                wbc_real_inertia: true,
                 gait_mode: GaitMode::FullCentroidal,
                 legged_control_parity: true,
                 fcm_taskspace_jv_weight: Some([1.0, 1.0, 1.0]),
@@ -5188,15 +5351,21 @@ fn namiashi_wiring_repair_ladder() {
             },
         ),
         (
-            "7 + warm start",
+            "9 sqp=1 only",
             WbcParams {
                 wbc_real_inertia: true,
-                mpc_composite_inertia: true,
-                mpc_horizon_steps: Some(30),
-                mpc_px_cost: Some(1000.0),
                 gait_mode: GaitMode::FullCentroidal,
                 legged_control_parity: true,
-                fcm_taskspace_jv_weight: Some([1.0, 1.0, 1.0]),
+                fcm_sqp_iterations: Some(1),
+                ..base()
+            },
+        ),
+        (
+            "10 + warm start",
+            WbcParams {
+                wbc_real_inertia: true,
+                gait_mode: GaitMode::FullCentroidal,
+                legged_control_parity: true,
                 fcm_warm_start: true,
                 ..base()
             },
