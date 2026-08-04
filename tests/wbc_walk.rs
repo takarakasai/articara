@@ -460,6 +460,23 @@ struct WbcParams {
     ///
     /// `None` leaves the default. The 12-state SRBD does not suffer this
     /// because its twelve inputs are all forces.
+    /// SRBD horizon length in steps. The default 10 at `dt_per_step = 0.030`
+    /// is 0.300 s -- shorter than Trot's 0.320 s cycle, so the MPC cannot see
+    /// one complete contact sequence. `legged_control` uses 1.0 s over 67
+    /// nodes, roughly two cycles of its own gait.
+    mpc_horizon_steps: Option<usize>,
+    /// Fore-aft position cost, `q_diag[p_x]`. Zero in all three MPCs here;
+    /// `task.info:159` gives it 1000. Without it the MPC has no objective that
+    /// grows when the body falls behind, which is why it plans +0.22 N.
+    mpc_px_cost: Option<f64>,
+    /// `set_task_space_joint_vel_weight` -- `legged_control`'s
+    /// `initializeInputCostWeight` maps a task-space foot-velocity weight
+    /// through the leg Jacobian into joint space. Implemented here and never
+    /// called, so the joint-velocity cost is isotropic in rad/s instead.
+    fcm_taskspace_jv_weight: Option<[f64; 3]>,
+    /// Warm start with one SQP iteration, as the reference does, instead of
+    /// three cold ones.
+    fcm_warm_start: bool,
     fcm_grf_cost: Option<f64>,
     /// Per-block state cost for the 24-state MPC: `[v_com, omega, base_pos,
     /// euler, joint_q]`, applied over `q_diag`'s
@@ -574,6 +591,10 @@ impl WbcParams {
             mpc_predicted_footstep: false,
             legged_control_parity: false,
             dynamic_joint_q_reference: false,
+            mpc_horizon_steps: None,
+            mpc_px_cost: None,
+            fcm_taskspace_jv_weight: None,
+            fcm_warm_start: false,
             fcm_grf_cost: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
@@ -616,6 +637,10 @@ impl WbcParams {
             mpc_predicted_footstep: false,
             legged_control_parity: false,
             dynamic_joint_q_reference: false,
+            mpc_horizon_steps: None,
+            mpc_px_cost: None,
+            fcm_taskspace_jv_weight: None,
+            fcm_warm_start: false,
             fcm_grf_cost: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
@@ -785,6 +810,38 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if params.mpc_predicted_footstep {
         gc.set_use_mpc_predicted_footstep(true);
     }
+    if params.mpc_horizon_steps.is_some() || params.mpc_px_cost.is_some() {
+        if let Some(c) = gc.srbd_mpc_config() {
+            let mut cfg = c.clone();
+            if let Some(h) = params.mpc_horizon_steps {
+                cfg.horizon_steps = h;
+            }
+            if let Some(w) = params.mpc_px_cost {
+                // q_diag layout: [theta(3); p(3); omega(3); v(3); g].
+                cfg.q_diag[3] = w;
+            }
+            eprintln!(
+                "[srbd] horizon={} ({:.3}s)  q_diag[p_x]={}",
+                cfg.horizon_steps,
+                cfg.horizon_steps as f64 * cfg.dt_per_step,
+                cfg.q_diag[3],
+            );
+            gc.set_srbd_mpc_config(cfg);
+        }
+    }
+    if let Some(w) = params.fcm_taskspace_jv_weight {
+        gc.set_task_space_joint_vel_weight(Some(w));
+        eprintln!("[fcm] task-space joint-vel weight = {w:?}");
+    }
+    if params.fcm_warm_start {
+        if let Some(c) = gc.full_centroidal_mpc_config() {
+            let mut cfg = c.clone();
+            cfg.warm_start = true;
+            cfg.sqp_iterations = 1;
+            gc.set_full_centroidal_mpc_config(cfg);
+            eprintln!("[fcm] warm start, 1 SQP iteration");
+        }
+    }
     if params.fcm_grf_cost.is_some() || params.fcm_state_cost.is_some() {
         if let Some(c) = gc.full_centroidal_mpc_config() {
             let mut cfg = c.clone();
@@ -831,7 +888,15 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if params.mpc_composite_inertia {
         let c = auto_detect_centroidal_mpc_config(&robot);
         let i = c.centroidal_inertia_body;
-        let mut cfg = auto_detect_srbd_mpc_config(&robot);
+        // Start from whatever is already configured, not from a fresh
+        // auto-detect. Rebuilding from scratch here silently discarded a
+        // horizon of 30 and a p_x cost of 1000 that had been set earlier in
+        // this same function, and the sweep reported three rungs of a ladder
+        // as having no effect.
+        let mut cfg = gc
+            .srbd_mpc_config()
+            .cloned()
+            .unwrap_or_else(|| auto_detect_srbd_mpc_config(&robot));
         cfg.mass_kg = c.mass_kg;
         cfg.inertia_diag_body =
             Vector3::new(i[(0, 0)], i[(1, 1)], i[(2, 2)]);
@@ -4967,6 +5032,205 @@ fn namiashi_base_accel_coriolis() {
                 wz,
                 1.0,
             );
+        }
+    }
+}
+
+/// HOW MUCH TORQUE DOES SUPPORTING THIS ROBOT ACTUALLY COST?
+///
+/// The case against adopting legged_control's architecture rests on one
+/// physical claim: that at 3.3 kg with 2.5 N*m peak and 0.306 m legs there is
+/// no headroom for an MPC to author accelerations, because supporting body
+/// weight already consumes the budget. The figure quoted was "one stance foot
+/// carrying m*g/2 at a 0.15 m moment arm is 2.4 N*m", i.e. peak torque at
+/// static stance.
+///
+/// That does not match the leg's actual Jacobian at this stance. A vertical
+/// foot force produces no thigh torque at all -- the thigh axis responds to
+/// fore-aft force -- and vertical load is carried by the knee and hip-roll.
+/// So the claim needs computing rather than estimating, and it is the only
+/// physical argument in the case, so it is worth getting right.
+///
+/// Measured directly: hold still, then walk each gait, and report the peak and
+/// mean torque per joint role as a fraction of what the joint can deliver.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_support_torque_budget() {
+    eprintln!("---- static stance: what holding still costs ----");
+    let params = WbcParams {
+        total_time_s: 4.0,
+        burn_in_s: 1.0,
+        cmd_vx: 0.0,
+        ..namiashi_tuned_params(0)
+    };
+    if let Some(samples) = run_wbc_sim(params) {
+        report_walk("static", &samples, 0.0, 1.5);
+    }
+
+    eprintln!("---- each tuned gait ----");
+    for i in 0..NAMIASHI_TUNED.len() {
+        let (gait, .., cmd_vx) = NAMIASHI_TUNED[i];
+        let params = WbcParams {
+            total_time_s: 16.0,
+            ..namiashi_tuned_params(i)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("{gait:?}"), &samples, cmd_vx, 1.0);
+    }
+}
+
+/// FIXING THE WIRING, ONE LAYER AT A TIME, ON A PATH THAT CARRIES THE TORQUE.
+///
+/// The case for rejecting this architecture collapsed on inspection, so the
+/// measurements have to be redone. Three separate defects invalidated most of
+/// them:
+///
+/// - `WbcPipeline` hardcodes `mass_kg: 9.0` and a 9 kg inertia diagonal, and
+///   only five of the fifty-nine tests in this file override them. At a static
+///   stand that makes the largest soft weight in the QP command the trunk
+///   downward at 0.63 g, continuously. Every low-gain experiment -- the ones
+///   that hand authority to the WBC -- ran with the WBC most wrong about the
+///   robot.
+/// - `namiashi_ocs2_footstep_planner` runs `Actuation::VelocityIdeal`, where
+///   `deliver_tau` is false and the WBC's torque is discarded. Both the
+///   "FullCentroidal is bit-identical to Mpc" and the "predicted footstep gives
+///   1/8" results came from a configuration where the MPC could not reach the
+///   plant at all. The same error was found and corrected for a different test
+///   and never propagated here.
+/// - The SRBD horizon is 10 steps at 0.030 s = 0.300 s, shorter than Trot's
+///   0.320 s cycle. A receding-horizon controller that cannot see one contact
+///   sequence has nothing to predict. `legged_control` runs 1.0 s.
+///
+/// And two settings the reference has that this does not: `q_diag[p_x]` is 0
+/// against `task.info:159`'s 1000, so nothing in the cost grows when the body
+/// falls behind -- which is the whole explanation for the MPC planning +0.22 N
+/// -- and `initializeInputCostWeight`'s Jacobian-mapped joint-velocity weight
+/// is implemented and never called.
+///
+/// Adjudicated on delivered force, attitude and how much of the plan gets
+/// through. Tracking percentage is a gate, not a score: 107% of command from
+/// an open-loop Raibert plan on flat ground is already near the geometric
+/// ceiling `max_step/(T*duty)`, and there is nothing there for a predictive
+/// layer to win.
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_wiring_repair_ladder() {
+    const I: usize = 0; // Trot
+    let (_, period, .., cmd) = NAMIASHI_TUNED[I];
+    // One rung per fix, each keeping the ones below it. `Actuation::Torque`
+    // throughout, because it is the path where the WBC's torque is the
+    // command rather than a discarded argument.
+    let base = || WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: cmd,
+        total_time_s: 12.0,
+        ..namiashi_tuned_params(I)
+    };
+    let rungs: Vec<(&str, WbcParams)> = vec![
+        ("0 baseline", base()),
+        ("1 wbc real m,I", WbcParams { wbc_real_inertia: true, ..base() }),
+        (
+            "2 + mpc composite I",
+            WbcParams {
+                wbc_real_inertia: true,
+                mpc_composite_inertia: true,
+                ..base()
+            },
+        ),
+        (
+            "3 + horizon 0.9s",
+            WbcParams {
+                wbc_real_inertia: true,
+                mpc_composite_inertia: true,
+                mpc_horizon_steps: Some(30),
+                ..base()
+            },
+        ),
+        (
+            "4 + q_diag[p_x]",
+            WbcParams {
+                wbc_real_inertia: true,
+                mpc_composite_inertia: true,
+                mpc_horizon_steps: Some(30),
+                mpc_px_cost: Some(1000.0),
+                ..base()
+            },
+        ),
+        // The last two fixes are FullCentroidal-only -- the input weight and the
+        // warm start have no counterpart on the SRBD path -- so the mode change
+        // is its own rung. Otherwise a difference at rung 6 could be the weight
+        // or could be the 24-state model, and there would be no way to tell.
+        (
+            "5 fullcentroidal",
+            WbcParams {
+                wbc_real_inertia: true,
+                mpc_composite_inertia: true,
+                mpc_horizon_steps: Some(30),
+                mpc_px_cost: Some(1000.0),
+                gait_mode: GaitMode::FullCentroidal,
+                legged_control_parity: true,
+                ..base()
+            },
+        ),
+        (
+            "6 + jv weight",
+            WbcParams {
+                wbc_real_inertia: true,
+                mpc_composite_inertia: true,
+                mpc_horizon_steps: Some(30),
+                mpc_px_cost: Some(1000.0),
+                gait_mode: GaitMode::FullCentroidal,
+                legged_control_parity: true,
+                fcm_taskspace_jv_weight: Some([1.0, 1.0, 1.0]),
+                ..base()
+            },
+        ),
+        (
+            "7 + warm start",
+            WbcParams {
+                wbc_real_inertia: true,
+                mpc_composite_inertia: true,
+                mpc_horizon_steps: Some(30),
+                mpc_px_cost: Some(1000.0),
+                gait_mode: GaitMode::FullCentroidal,
+                legged_control_parity: true,
+                fcm_taskspace_jv_weight: Some([1.0, 1.0, 1.0]),
+                fcm_warm_start: true,
+                ..base()
+            },
+        ),
+    ];
+    for (tag, params) in rungs {
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Trot {tag}"), &samples, cmd, 1.0);
+    }
+
+    // The top rung under a push, since disturbance is where a predictive
+    // layer is supposed to earn its place.
+    eprintln!("---- push, 8 phases: baseline vs repaired ----");
+    // Three arms, not two: the SRBD rung with the best flat-ground drift and
+    // the FullCentroidal rung with the best roll disagree about which repair
+    // helped, and a push is the one place the difference could show up.
+    for (tag, repaired) in [("baseline", 0), ("srbd", 3), ("fcm", 5)] {
+        for step in 0..8 {
+            let t_push = 6.0 + period * step as f64 / 8.0;
+            let mut p = base();
+            p.push = Some((t_push, [0.0, 12.0, 0.0], 0.12));
+            p.total_time_s = 11.0;
+            if repaired > 0 {
+                p.wbc_real_inertia = true;
+                p.mpc_composite_inertia = true;
+                p.mpc_horizon_steps = Some(30);
+                p.mpc_px_cost = Some(1000.0);
+            }
+            if repaired == 5 {
+                p.gait_mode = GaitMode::FullCentroidal;
+                p.legged_control_parity = true;
+            }
+            let Some(samples) = run_wbc_sim(p) else { return };
+            report_push(&format!("Trot {tag} p{step}"), &samples, t_push, cmd);
         }
     }
 }
