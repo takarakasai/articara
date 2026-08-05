@@ -120,6 +120,16 @@ pub struct MjcfExportOptions {
     /// Integrator name for `<option integrator="…">`. `None` leaves MuJoCo's
     /// default (semi-implicit Euler).
     pub integrator: Option<&'static str>,
+    /// Raw `<geom .../>` (or any other worldbody-legal) XML, spliced in just
+    /// before the closing `</worldbody>` tag.
+    ///
+    /// There is no structured terrain builder in this exporter -- the ground
+    /// is a single infinite plane, optionally tilted, via
+    /// [`GroundPlaneCfg`]. This is the escape hatch for anything that plane
+    /// cannot express (stepping-stone islands, a low-friction patch, a curb),
+    /// without inventing a terrain API before there is a second caller that
+    /// needs one. `None` (the default) changes nothing.
+    pub extra_worldbody_xml: Option<String>,
 }
 
 impl Default for MjcfExportOptions {
@@ -135,6 +145,7 @@ impl Default for MjcfExportOptions {
             default_friction: [0.7, 0.005, 0.0001],
             native_velocity_servo: None,
             integrator: None,
+            extra_worldbody_xml: None,
             timestep: None,
         }
     }
@@ -255,7 +266,7 @@ pub fn export_mjcf_with_options(
     // Swap `<motor …/>` for `<velocity kv="…" …/>`, keeping name, joint and
     // force limits so the rest of the pipeline (which looks actuators up by
     // `motor_<joint>`) does not notice.
-    match opts.native_velocity_servo {
+    let xml = match opts.native_velocity_servo {
         None => xml,
         Some(kv) => xml
             .lines()
@@ -269,6 +280,17 @@ pub fn export_mjcf_with_options(
             })
             .collect::<Vec<_>>()
             .join("\n"),
+    };
+
+    match &opts.extra_worldbody_xml {
+        None => xml,
+        Some(extra) => match xml.rfind("</worldbody>") {
+            Some(i) => format!("{}{extra}\n{}", &xml[..i], &xml[i..]),
+            None => {
+                log::error!("MJCF export: no </worldbody> to splice extra_worldbody_xml into");
+                xml
+            }
+        },
     }
 }
 
