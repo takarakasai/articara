@@ -6060,64 +6060,69 @@ fn assert_forward_command_advances_body(samples: &[WbcSample]) {
     );
 }
 
-/// Sanity check for the staircase environment: loads, stands, doesn't fall
-/// while still on the approach floor, and writes a replay so the geometry
-/// can be looked at rather than trusted.
+/// Sanity check for the staircase environment at three rise heights, loads,
+/// stands, doesn't fall while still on the approach floor, and writes a
+/// replay per rise so the geometry can be looked at rather than trusted.
 ///
-/// 10 steps x 0.10 m rise (1.0 m total) is a large step for this robot: it is
-/// ~43% of namiashi's tuned stance height (0.235 m) and 2-3x the swing
-/// clearance the gait planner budgets on flat ground (0.035-0.045 m). Whether
-/// it can climb at all is an open question this test does not answer -- it
-/// only confirms the terrain itself loads correctly and the robot survives
-/// the approach up to the first riser.
+/// 0.10 m is a large step for this robot: ~43% of namiashi's tuned stance
+/// height (0.235 m) and 2-3x the swing clearance the gait planner budgets on
+/// flat ground (0.035-0.045 m, terrain-blind everywhere in this codebase).
+/// 0.05 m and 0.02 m are added to see where that clearance mismatch stops
+/// being the dominant effect -- 0.02 m sits below the swing clearance
+/// entirely. `run_m` and `n_steps` are held fixed across the three so rise is
+/// the only thing that changes. Whether any of them can be climbed is an open
+/// question this test does not answer -- it only confirms the terrain loads
+/// correctly and the robot survives the approach up to the first riser.
 #[test]
-#[ignore = "writes a replay for visual inspection -- run with --ignored"]
+#[ignore = "writes a replay per rise for visual inspection -- run with --ignored"]
 fn namiashi_staircase_environment_smoke() {
     const I: usize = 0; // Trot
     let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
-    let stairs = StaircaseCfg {
-        rise_m: 0.10,
-        run_m: 0.20,
-        n_steps: 10,
-        approach_m: 1.5,
-        top_platform_m: 1.5,
-        half_width_m: 1.0,
-    };
-    eprintln!(
-        "[stairs] rise={:.2}m run={:.2}m steps={}  total_rise={:.2}m  \
-         first riser at x={:.2}m  top platform x=[{:.2}, {:.2}]m",
-        stairs.rise_m,
-        stairs.run_m,
-        stairs.n_steps,
-        stairs.total_rise_m(),
-        stairs.approach_m,
-        stairs.top_platform_start_x(),
-        stairs.top_platform_start_x() + stairs.top_platform_m,
-    );
-    let params = WbcParams {
-        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
-        host_rate_hz: Some(400.0),
-        dt: 0.0005,
-        cmd_vx: cmd,
-        total_time_s: 6.0,
-        wbc_real_inertia: true,
-        staircase: Some(stairs),
-        replay_dir: Some("/tmp/nami_stairs/smoke".to_string()),
-        ..namiashi_tuned_params(I)
-    };
-    let approach_end_x = stairs.approach_m;
-    let Some(samples) = run_wbc_sim(params) else { return };
-    let min_z_on_approach = samples
-        .iter()
-        .filter(|s| s.body_x < approach_end_x - 0.05)
-        .map(|s| s.body_z)
-        .fold(f64::INFINITY, f64::min);
-    let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
-    eprintln!(
-        "[stairs] min_z on approach = {min_z_on_approach:.3} m   reached x = {max_x:.3} m"
-    );
-    assert!(
-        min_z_on_approach > TRUNK_Z_FALL_THRESHOLD_M,
-        "fell while still on the approach floor: min_z = {min_z_on_approach:.3} m",
-    );
+    for (tag, rise_m) in [("rise_10", 0.10), ("rise_05", 0.05), ("rise_02", 0.02)] {
+        let stairs = StaircaseCfg {
+            rise_m,
+            run_m: 0.20,
+            n_steps: 10,
+            approach_m: 1.5,
+            top_platform_m: 1.5,
+            half_width_m: 1.0,
+        };
+        eprintln!(
+            "[stairs {tag}] rise={:.2}m run={:.2}m steps={}  total_rise={:.2}m  \
+             first riser at x={:.2}m  top platform x=[{:.2}, {:.2}]m",
+            stairs.rise_m,
+            stairs.run_m,
+            stairs.n_steps,
+            stairs.total_rise_m(),
+            stairs.approach_m,
+            stairs.top_platform_start_x(),
+            stairs.top_platform_start_x() + stairs.top_platform_m,
+        );
+        let params = WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: cmd,
+            total_time_s: 6.0,
+            wbc_real_inertia: true,
+            staircase: Some(stairs),
+            replay_dir: Some(format!("/tmp/nami_stairs/{tag}")),
+            ..namiashi_tuned_params(I)
+        };
+        let approach_end_x = stairs.approach_m;
+        let Some(samples) = run_wbc_sim(params) else { return };
+        let min_z_on_approach = samples
+            .iter()
+            .filter(|s| s.body_x < approach_end_x - 0.05)
+            .map(|s| s.body_z)
+            .fold(f64::INFINITY, f64::min);
+        let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+        eprintln!(
+            "[stairs {tag}] min_z on approach = {min_z_on_approach:.3} m   reached x = {max_x:.3} m"
+        );
+        assert!(
+            min_z_on_approach > TRUNK_Z_FALL_THRESHOLD_M,
+            "[{tag}] fell while still on the approach floor: min_z = {min_z_on_approach:.3} m",
+        );
+    }
 }
