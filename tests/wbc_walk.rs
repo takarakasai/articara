@@ -491,6 +491,10 @@ struct WbcParams {
     /// `A_d^k` explicitly and dies at any horizon worth having.
     fcm_sparse_qp: bool,
     fcm_grf_cost: Option<f64>,
+    /// `r_diag[12..24]` -- the joint-velocity cost. `fcm_grf_cost` only sets
+    /// the GRF half, and the default leaves this at 1.0 against the GRF's
+    /// 1e-3, so ground force is a thousand times cheaper than leg motion.
+    fcm_jointv_cost: Option<f64>,
     /// Per-block state cost for the 24-state MPC: `[v_com, omega, base_pos,
     /// euler, joint_q]`, applied over `q_diag`'s
     /// `[0..3, 3..6, 6..9, 9..12, 12..24]`.
@@ -613,6 +617,7 @@ impl WbcParams {
             fcm_sqp_iterations: None,
             fcm_sparse_qp: false,
             fcm_grf_cost: None,
+            fcm_jointv_cost: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -663,6 +668,7 @@ impl WbcParams {
             fcm_sqp_iterations: None,
             fcm_sparse_qp: false,
             fcm_grf_cost: None,
+            fcm_jointv_cost: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -863,13 +869,22 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             eprintln!("[fcm] warm start, 1 SQP iteration");
         }
     }
-    if params.fcm_grf_cost.is_some() || params.fcm_state_cost.is_some() {
+    if params.fcm_grf_cost.is_some()
+        || params.fcm_jointv_cost.is_some()
+        || params.fcm_state_cost.is_some()
+    {
         if let Some(c) = gc.full_centroidal_mpc_config() {
             let mut cfg = c.clone();
             if let Some(w) = params.fcm_grf_cost {
                 for r in cfg.r_diag.iter_mut().take(12) {
                     *r = w;
                 }
+            }
+            if let Some(w) = params.fcm_jointv_cost {
+                for r in cfg.r_diag.iter_mut().skip(12) {
+                    *r = w;
+                }
+                eprintln!("[fcm] r_diag joint_v = {w}");
             }
             if let Some(q) = params.fcm_state_cost {
                 let blocks = [(0, 3), (3, 6), (6, 9), (9, 12), (12, 24)];
@@ -5155,6 +5170,122 @@ fn namiashi_support_torque_budget() {
 /// through. Tracking percentage is a gate, not a score: 107% of command from
 /// an open-loop Raibert plan on flat ground is already near the geometric
 /// ceiling `max_step/(T*duty)`, and there is nothing there for a predictive
+/// Confirms that the GRF-vs-joint_v cost imbalance is what pins the plan to
+/// the friction cone.
+///
+/// `namiashi_fcm_grf_cost_ratio` showed that raising `r_diag[0..12]` takes the
+/// plan off the cone while scaling `q_diag` down by the same factor does not.
+/// The reason is that `fcm_grf_cost` moves only the GRF half of `r_diag`: the
+/// joint_v half stays at its 1.0 default. So "r = 1" is not "GRF cost equals
+/// state cost", it is "GRF cost equals joint_v cost".
+///
+/// If that is the mechanism, lowering joint_v to meet GRF must do the same
+/// thing as raising GRF to meet joint_v, and raising joint_v further must make
+/// it worse.
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_fcm_jointv_cost_confirm() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let base = || WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: cmd,
+        total_time_s: 12.0,
+        wbc_real_inertia: true,
+        gait_mode: GaitMode::FullCentroidal,
+        legged_control_parity: true,
+        fcm_horizon_steps: Some(30),
+        fcm_sparse_qp: true,
+        ..namiashi_tuned_params(I)
+    };
+    let arms: Vec<(&str, WbcParams)> = vec![
+        ("jv=1e-3 meet grf", WbcParams { fcm_jointv_cost: Some(1e-3), ..base() }),
+        ("jv=100 worse?", WbcParams { fcm_jointv_cost: Some(100.0), ..base() }),
+    ];
+    for (tag, params) in arms {
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Trot {tag}"), &samples, cmd, 1.0);
+    }
+}
+
+/// Is the plan's friction-cone saturation a cost-ratio problem?
+///
+/// With the sparse QP the numerics are out of the way, and what is left is a
+/// plan pinned to the cone at every horizon: |fx|/fz = 0.486..0.489 against
+/// mu = 0.50, with the mean planned vertical force 39.6 N against a 32.4 N
+/// weight while the trunk holds 0.233 m.
+///
+/// The production weights are `r_diag[0..12] = 1e-3` on GRF against
+/// `q_diag[0..12] = 1.0` on the body states -- a thousand to one. At that ratio
+/// force is nearly free, so the QP buys any state-error reduction with as much
+/// of it as the cone allows. That would also explain why zeroing individual Q
+/// blocks did nothing in `namiashi_fcm_fore_aft_attribution`: whatever block
+/// was left still dominated 1e-3.
+///
+/// If the ratio is the cause, then raising `r_diag` and lowering `q_diag` must
+/// have the same effect, which is what the last arm checks. If only one of them
+/// moves the plan, the ratio is not the story.
+///
+/// All arms run the sparse QP at 0.900 s, where the plan is a converged
+/// solution rather than a failure fallback.
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_fcm_grf_cost_ratio() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let base = || WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: cmd,
+        total_time_s: 12.0,
+        wbc_real_inertia: true,
+        gait_mode: GaitMode::FullCentroidal,
+        legged_control_parity: true,
+        fcm_horizon_steps: Some(30),
+        fcm_sparse_qp: true,
+        ..namiashi_tuned_params(I)
+    };
+    let mut arms: Vec<(String, WbcParams)> =
+        vec![("r=1e-3 (default)".to_string(), base())];
+    for w in [1e-2, 1e-1, 1.0, 10.0] {
+        arms.push((
+            format!("r={w}"),
+            WbcParams { fcm_grf_cost: Some(w), ..base() },
+        ));
+    }
+    // The other side of the same ratio: leave GRF at 1e-3 and drop the body
+    // state weights by 1000x instead. `fcm_state_cost` is
+    // `[v_com, omega, base_pos, euler, joint_q]`; joint_q defaults to 0.1, so
+    // scale it by the same factor rather than setting it equal to the others.
+    // The decisive one. `fcm_grf_cost` moves only `r_diag[0..12]`; the joint_v
+    // half stays at 1.0. So `r=1` is not "GRF cost equals state cost", it is
+    // "GRF cost equals joint_v cost" -- and if that is what matters, then
+    // lowering joint_v to meet GRF must do the same thing as raising GRF to
+    // meet joint_v, while raising joint_v further must make it worse.
+    arms.push((
+        "jv=1e-3 (meet grf)".to_string(),
+        WbcParams { fcm_jointv_cost: Some(1e-3), ..base() },
+    ));
+    arms.push((
+        "jv=100 (worse?)".to_string(),
+        WbcParams { fcm_jointv_cost: Some(100.0), ..base() },
+    ));
+    arms.push((
+        "q/1000 instead".to_string(),
+        WbcParams {
+            fcm_state_cost: Some([1e-3, 1e-3, 1e-3, 1e-3, 1e-4]),
+            ..base()
+        },
+    ));
+    for (tag, params) in arms {
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Trot {tag}"), &samples, cmd, 1.0);
+    }
+}
+
 /// Condensed against sparse QP, at horizons the condensed form cannot reach.
 ///
 /// `namiashi_fcm_fore_aft_attribution` established that the FullCentroidal
