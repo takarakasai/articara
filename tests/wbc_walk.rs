@@ -495,6 +495,18 @@ struct WbcParams {
     /// the GRF half, and the default leaves this at 1.0 against the GRF's
     /// 1e-3, so ground force is a thousand times cheaper than leg motion.
     fcm_jointv_cost: Option<f64>,
+    /// Ablation of the `base_accel` task's feedforward. When set, the GRF fed
+    /// into `WbcPipeline::solve` (both the linear/angular Newton's-law
+    /// feedforward and the priority-2 contact_force reference) is replaced by
+    /// a quasi-static gravity split across whichever feet are in stance --
+    /// no momentum plan, no footstep-driven moment -- and the pipeline's
+    /// `roll_pd_gain`/`pitch_pd_gain` are set to this `(kp, kd)`, so attitude
+    /// correction comes entirely from an explicit PD term rather than from
+    /// whatever GaitMode is doing upstream. Isolates what the MPC's own
+    /// predicted trajectory is contributing through the channel
+    /// (`base_accel`, priority 1) that already has real authority, as
+    /// opposed to a bare regulator.
+    attitude_pd_ablation: Option<(f64, f64)>,
     /// Per-block state cost for the 24-state MPC: `[v_com, omega, base_pos,
     /// euler, joint_q]`, applied over `q_diag`'s
     /// `[0..3, 3..6, 6..9, 9..12, 12..24]`.
@@ -618,6 +630,7 @@ impl WbcParams {
             fcm_sparse_qp: false,
             fcm_grf_cost: None,
             fcm_jointv_cost: None,
+            attitude_pd_ablation: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -669,6 +682,7 @@ impl WbcParams {
             fcm_sparse_qp: false,
             fcm_grf_cost: None,
             fcm_jointv_cost: None,
+            attitude_pd_ablation: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -987,6 +1001,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         DEFAULT_FOOT_LINKS[2].1.to_string(),
         DEFAULT_FOOT_LINKS[3].1.to_string(),
     ];
+    let mg_total: f64 = robot.links.iter().map(|l| l.inertial.mass).sum::<f64>() * 9.81;
     let mut wbc_pipeline = WbcPipeline::new(&robot, foot_links);
     if let Some((formulation, cfg)) = params.misa_wbc_mode.clone() {
         wbc_pipeline = wbc_pipeline.with_wbc_solver(formulation, cfg);
@@ -1011,6 +1026,11 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if let Some(w) = params.base_accel_weight {
         wbc_pipeline.weights.base_accel = w;
         eprintln!("[wbc] base_accel weight = {w} (default 200.0)");
+    }
+    if let Some((kp, kd)) = params.attitude_pd_ablation {
+        wbc_pipeline.roll_pd_gain = (kp, kd);
+        wbc_pipeline.pitch_pd_gain = (kp, kd);
+        eprintln!("[wbc] attitude_pd_ablation: roll/pitch PD = ({kp}, {kd}), GRF plan replaced by gravity split");
     }
     if params.f_min_stance_frac > 0.0 {
         let mg: f64 = robot.links.iter().map(|l| l.inertial.mass).sum::<f64>() * 9.81;
@@ -1320,10 +1340,26 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // Position-PD path (the WBC's static balance only
             // converges once the legs are loaded).
             if k >= burn_in_steps {
-                let f_grf_world = gc
-                    .predicted_grfs()
-                    .map(|sol| sol.grfs_first_step)
-                    .unwrap_or([Vector3::zeros(); 4]);
+                let f_grf_world = if params.attitude_pd_ablation.is_some() {
+                    // Quasi-static gravity split across the feet currently in
+                    // stance per the gait's own phase (not yet the corrected
+                    // early-touchdown flags, which are computed a few lines
+                    // below from measured force -- open-loop is enough here,
+                    // this is a *reference*, not a contact determination).
+                    let n_stance = out.legs.iter().filter(|l| l.phase.is_stance).count().max(1);
+                    let f_each = mg_total / n_stance as f64;
+                    let mut f = [Vector3::zeros(); 4];
+                    for (slot, leg) in out.legs.iter().enumerate() {
+                        if leg.phase.is_stance {
+                            f[slot] = Vector3::new(0.0, 0.0, f_each);
+                        }
+                    }
+                    f
+                } else {
+                    gc.predicted_grfs()
+                        .map(|sol| sol.grfs_first_step)
+                        .unwrap_or([Vector3::zeros(); 4])
+                };
                 let cmd = gc.velocity_cmd();
                 // Body-frame command — the WBC pipeline rotates the
                 // observation internally using the current xquat.
@@ -5170,6 +5206,151 @@ fn namiashi_support_torque_budget() {
 /// through. Tracking percentage is a gate, not a score: 107% of command from
 /// an open-loop Raibert plan on flat ground is already near the geometric
 /// ceiling `max_step/(T*duty)`, and there is nothing there for a predictive
+/// Does the MPC's own predicted trajectory add anything over a naive attitude
+/// regulator, on the one channel (`base_accel`, priority 1) the null-space
+/// measurement showed actually has room to matter?
+///
+/// `namiashi_contact_force_authority` found `contact_force` (priority 2) inert
+/// at Trot's two-foot stance -- one scalar direction out of 44 -- and the real
+/// authority sits at priority 1, split between `base_accel` (the MPC-derived
+/// Newton's-law feedforward) and `swing_leg`. That measurement did not ask
+/// whether the *specific plan* riding on `base_accel` matters, only that the
+/// channel has room. This does: it replaces the MPC's GRF-derived feedforward
+/// with a quasi-static gravity split (no momentum plan, no footstep-driven
+/// moment) plus an explicit roll/pitch PD, and compares that bare regulator
+/// against the corrected FullCentroidal plan under the same push battery.
+///
+///   A  fcm fixed        the real plan: sparse QP, 0.900 s, cost ratio fixed
+///   B  pd kp=400 kd=40   critically-damped attitude PD, gravity-split GRF,
+///                        no plan at all
+///   C  pd kp=900 kd=60   a stiffer, faster PD -- so a loss for A is not
+///                        credited to B being under-tuned
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_base_accel_ablation() {
+    const I: usize = 0; // Trot
+    let (_, period, .., cmd) = NAMIASHI_TUNED[I];
+    let base = || WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: cmd,
+        total_time_s: 11.0,
+        wbc_real_inertia: true,
+        ..namiashi_tuned_params(I)
+    };
+    let fcm_fixed = || WbcParams {
+        gait_mode: GaitMode::FullCentroidal,
+        legged_control_parity: true,
+        fcm_horizon_steps: Some(30),
+        fcm_sparse_qp: true,
+        fcm_jointv_cost: Some(1e-3),
+        ..base()
+    };
+    let arms: Vec<(&str, Box<dyn Fn() -> WbcParams>)> = vec![
+        ("A fcm fixed", Box::new(fcm_fixed)),
+        (
+            "B pd kp=400",
+            Box::new(move || WbcParams { attitude_pd_ablation: Some((400.0, 40.0)), ..base() }),
+        ),
+        (
+            "C pd kp=900",
+            Box::new(move || WbcParams { attitude_pd_ablation: Some((900.0, 60.0)), ..base() }),
+        ),
+    ];
+    // Same two worst-case phases as the crossover sweep, at the baseline
+    // impulse (12 N) plus the largest one that sweep tests (52 N), so this
+    // reads directly against those results.
+    let phase_steps = [1_usize, 7];
+    let magnitudes_n = [12.0, 52.0];
+    for (tag, mk) in arms {
+        for &step in &phase_steps {
+            let t_push = 6.0 + period * step as f64 / 8.0;
+            for &f_n in &magnitudes_n {
+                let mut p = mk();
+                p.push = Some((t_push, [0.0, f_n, 0.0], 0.12));
+                let Some(samples) = run_wbc_sim(p) else { return };
+                report_push(
+                    &format!("Trot {tag} p{step} F={f_n:.0}N"),
+                    &samples,
+                    t_push,
+                    cmd,
+                );
+            }
+        }
+    }
+}
+
+/// Push magnitude crossover: does a bigger disturbance find a regime where a
+/// corrected MPC plan survives and the open-loop baseline does not?
+///
+/// The 8-phase push battery (12 N x 0.12 s, 1.44 N*s) never found daylight
+/// between arms: 0/8 falls everywhere, and on flat ground at steady state the
+/// open-loop Raibert plan is already near the geometric ceiling
+/// `max_step/(T*duty)`, so a predictive layer has nothing to add. That impulse
+/// was chosen to be survivable, not to be adversarial. This raises the
+/// magnitude at the two phases that were worst in that battery (p1, p7 --
+/// `namiashi_mpc_plan_under_push` had A at 11.8/13.0 deg and C at 10.5/12.1 deg
+/// there) to look for the crossover -- the point where geometric footstep
+/// timing alone can no longer recover but a plan that reasons about the whole
+/// body's momentum still can. If no crossover appears before both arms fail
+/// together, disturbance rejection is not where this MPC earns its keep either,
+/// and the honest place left to look is uneven terrain, not bigger flat-ground
+/// shoves.
+///
+///   A  production `GaitMode::Mpc` (SRBD, the tuned gaits' baseline)
+///   C  FullCentroidal, sparse QP at 0.900 s, `r_diag[12..24] = 1e-3` (the
+///      cost-ratio fix from `namiashi_fcm_jointv_cost_confirm`)
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_push_magnitude_crossover() {
+    const I: usize = 0; // Trot
+    let (_, period, .., cmd) = NAMIASHI_TUNED[I];
+    let base = || WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: cmd,
+        total_time_s: 11.0,
+        wbc_real_inertia: true,
+        ..namiashi_tuned_params(I)
+    };
+    let arms: Vec<(&str, Box<dyn Fn() -> WbcParams>)> = vec![
+        ("A srbd", Box::new(base)),
+        (
+            "C fcm fixed",
+            Box::new(move || WbcParams {
+                gait_mode: GaitMode::FullCentroidal,
+                legged_control_parity: true,
+                fcm_horizon_steps: Some(30),
+                fcm_sparse_qp: true,
+                fcm_jointv_cost: Some(1e-3),
+                ..base()
+            }),
+        ),
+    ];
+    // Steps 1 and 7 of the 8-phase cycle, the two that were worst for both
+    // arms in the earlier battery.
+    let phase_steps = [1_usize, 7];
+    let magnitudes_n = [12.0, 14.0, 16.0, 18.0, 20.0, 28.0, 36.0, 44.0, 52.0];
+    for (tag, mk) in arms {
+        for &step in &phase_steps {
+            let t_push = 6.0 + period * step as f64 / 8.0;
+            for &f_n in &magnitudes_n {
+                let mut p = mk();
+                p.push = Some((t_push, [0.0, f_n, 0.0], 0.12));
+                let Some(samples) = run_wbc_sim(p) else { return };
+                report_push(
+                    &format!("Trot {tag} p{step} F={f_n:.0}N"),
+                    &samples,
+                    t_push,
+                    cmd,
+                );
+            }
+        }
+    }
+}
+
 /// Is the contact-force task's authority a weight problem or a structural one?
 ///
 /// With the FullCentroidal plan corrected (`r_diag[12..24] = 1e-3`, sparse QP at
