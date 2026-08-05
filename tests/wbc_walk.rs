@@ -486,6 +486,10 @@ struct WbcParams {
     /// SQP iterations, separately from `fcm_warm_start`. The warm-start path
     /// also drops iterations from 3 to 1, and those are two different changes.
     fcm_sqp_iterations: Option<usize>,
+    /// Solve the FullCentroidal QP in sparse multiple-shooting form. See
+    /// `FullCentroidalMpcConfig::sparse_qp` -- the condensed form forms
+    /// `A_d^k` explicitly and dies at any horizon worth having.
+    fcm_sparse_qp: bool,
     fcm_grf_cost: Option<f64>,
     /// Per-block state cost for the 24-state MPC: `[v_com, omega, base_pos,
     /// euler, joint_q]`, applied over `q_diag`'s
@@ -607,6 +611,7 @@ impl WbcParams {
             fcm_horizon_steps: None,
             fcm_dt_per_step: None,
             fcm_sqp_iterations: None,
+            fcm_sparse_qp: false,
             fcm_grf_cost: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
@@ -656,6 +661,7 @@ impl WbcParams {
             fcm_horizon_steps: None,
             fcm_dt_per_step: None,
             fcm_sqp_iterations: None,
+            fcm_sparse_qp: false,
             fcm_grf_cost: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
@@ -883,7 +889,8 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if params.gait_mode == GaitMode::FullCentroidal
         && (params.fcm_horizon_steps.is_some()
             || params.fcm_dt_per_step.is_some()
-            || params.fcm_sqp_iterations.is_some())
+            || params.fcm_sqp_iterations.is_some()
+            || params.fcm_sparse_qp)
     {
         if let Some(c) = gc.full_centroidal_mpc_config() {
             let mut cfg = c.clone();
@@ -896,6 +903,9 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             if let Some(n) = params.fcm_sqp_iterations {
                 cfg.sqp_iterations = n;
             }
+            if params.fcm_sparse_qp {
+                cfg.sparse_qp = true;
+            }
             gc.set_full_centroidal_mpc_config(cfg);
         }
     }
@@ -904,10 +914,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             let i = c.centroidal_inertia_body;
             eprintln!(
                 "[fcm] m={:.3}kg  mu={:.2}  fz_max={:.1}N  I=({:.5},{:.5},{:.5})  \
-                 horizon={} dt={:.3} sqp={}",
+                 horizon={} dt={:.3} sqp={} sparse={}",
                 c.mass_kg, c.friction_mu, c.max_normal_force,
                 i[(0, 0)], i[(1, 1)], i[(2, 2)],
-                c.horizon_steps, c.dt_per_step, c.sqp_iterations,
+                c.horizon_steps, c.dt_per_step, c.sqp_iterations, c.sparse_qp,
             );
         } else {
             eprintln!("[fcm] config unavailable");
@@ -5145,6 +5155,68 @@ fn namiashi_support_torque_budget() {
 /// through. Tracking percentage is a gate, not a score: 107% of command from
 /// an open-loop Raibert plan on flat ground is already near the geometric
 /// ceiling `max_step/(T*duty)`, and there is nothing there for a predictive
+/// Condensed against sparse QP, at horizons the condensed form cannot reach.
+///
+/// `namiashi_fcm_fore_aft_attribution` established that the FullCentroidal
+/// plan has two failure modes and neither answers to a cost weight: at a
+/// 0.300 s horizon the QP solves but pins itself to the friction cone
+/// (|fx|/fz = 0.489 against mu = 0.50, with fz 23% over mg to buy the
+/// headroom), and at 0.900 s it returns `NumericalError` on 2208 of 2220
+/// solves. The second is a property of the condensed formulation: it builds
+/// `A_x[k] = A_k...A_0` and `B_u[k][j] = A_k...A_{j+1} B_j` explicitly, and at
+/// dt 0.030 with an angular block near 1/0.027 those powers overflow the
+/// conditioning of `B_u' Q B_u`.
+///
+/// The sparse form keeps the states as decision variables, so no power of
+/// `A_d` is ever formed. `sparse_and_condensed_agree_at_short_horizon` checks
+/// the two describe the same problem where both are sound; this measures what
+/// the difference buys on the robot.
+///
+/// The last row is legged_control's own horizon (66 x 0.015 = 1.0 s), which is
+/// the setting this port has never been able to run.
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_fcm_sparse_vs_condensed() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let base = || WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: cmd,
+        total_time_s: 12.0,
+        wbc_real_inertia: true,
+        gait_mode: GaitMode::FullCentroidal,
+        legged_control_parity: true,
+        ..namiashi_tuned_params(I)
+    };
+    let arms: Vec<(&str, WbcParams)> = vec![
+        ("cond 0.30s", WbcParams { fcm_horizon_steps: Some(10), ..base() }),
+        (
+            "sparse 0.30s",
+            WbcParams { fcm_horizon_steps: Some(10), fcm_sparse_qp: true, ..base() },
+        ),
+        ("cond 0.90s", WbcParams { fcm_horizon_steps: Some(30), ..base() }),
+        (
+            "sparse 0.90s",
+            WbcParams { fcm_horizon_steps: Some(30), fcm_sparse_qp: true, ..base() },
+        ),
+        (
+            "sparse 1.0s lc dt",
+            WbcParams {
+                fcm_horizon_steps: Some(66),
+                fcm_dt_per_step: Some(0.015),
+                fcm_sparse_qp: true,
+                ..base()
+            },
+        ),
+    ];
+    for (tag, params) in arms {
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Trot {tag}"), &samples, cmd, 1.0);
+    }
+}
+
 /// Where the FullCentroidal MPC's -19 N of fore-aft plan comes from.
 ///
 /// ANSWER (measured): the friction cone, not any cost weight. Every arm below
