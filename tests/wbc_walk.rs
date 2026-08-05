@@ -5170,6 +5170,71 @@ fn namiashi_support_torque_budget() {
 /// through. Tracking percentage is a gate, not a score: 107% of command from
 /// an open-loop Raibert plan on flat ground is already near the geometric
 /// ceiling `max_step/(T*duty)`, and there is nothing there for a predictive
+/// Is the contact-force task's authority a weight problem or a structural one?
+///
+/// With the FullCentroidal plan corrected (`r_diag[12..24] = 1e-3`, sparse QP at
+/// 0.900 s) the MPC now asks for something physically sensible: vertical force
+/// on mg, fore-aft -4.5 N, off the friction cone. The WBC still does not deliver
+/// it -- its solved fore-aft force is -1.15 N and the feet produce +0.27 N, the
+/// opposite sign.
+///
+/// Two explanations, and they call for different work:
+///
+///   - Weights. `contact_force` is 5.0 against `base_accel`'s 200.0. If the
+///     task is simply outbid, raising it must move the delivered force.
+///   - Structure. `contact_force` sits at priority 2, underneath BaseAccel and
+///     SwingLeg at priority 1, and can only move inside the null space of
+///     whatever they have already decided. If priority 1 leaves no freedom, the
+///     contact force is fully determined before the task is ever consulted and
+///     its weight cannot matter at all.
+///
+/// The sweep separates them. Four decades of `contact_force`, including zero --
+/// if the solved force is the same at 0 and at 5000, the task is inert and the
+/// answer is structural. The last two arms drop `base_accel` by 100x, which is
+/// the only handle on how much room priority 1 leaves behind.
+#[test]
+#[ignore = "6 sims -- run with --ignored"]
+fn namiashi_contact_force_authority() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let base = || WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: cmd,
+        total_time_s: 12.0,
+        wbc_real_inertia: true,
+        gait_mode: GaitMode::FullCentroidal,
+        legged_control_parity: true,
+        fcm_horizon_steps: Some(30),
+        fcm_sparse_qp: true,
+        fcm_jointv_cost: Some(1e-3),
+        ..namiashi_tuned_params(I)
+    };
+    let arms: Vec<(&str, WbcParams)> = vec![
+        ("cf=5 default", base()),
+        ("cf=0", WbcParams { contact_force_weight: Some(0.0), ..base() }),
+        ("cf=100", WbcParams { contact_force_weight: Some(100.0), ..base() }),
+        ("cf=5000", WbcParams { contact_force_weight: Some(5000.0), ..base() }),
+        (
+            "ba=2 cf=5",
+            WbcParams { base_accel_weight: Some(2.0), ..base() },
+        ),
+        (
+            "ba=2 cf=5000",
+            WbcParams {
+                base_accel_weight: Some(2.0),
+                contact_force_weight: Some(5000.0),
+                ..base()
+            },
+        ),
+    ];
+    for (tag, params) in arms {
+        let Some(samples) = run_wbc_sim(params) else { return };
+        report_walk(&format!("Trot {tag}"), &samples, cmd, 1.0);
+    }
+}
+
 /// Does a correct MPC plan finally earn its keep under a disturbance?
 ///
 /// This is the question the whole MPC thread has been circling. On flat ground
