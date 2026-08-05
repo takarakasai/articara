@@ -362,6 +362,85 @@ const MIN_DISPLACEMENT_M: f64 = 0.04;
 /// covers.
 const STATIC_AVG_WINDOW_S: f64 = 0.5;
 
+/// A straight staircase: `n_steps` steps of `rise_m` height and `run_m` tread
+/// depth, `approach_m` of flat floor before the first riser, `top_platform_m`
+/// of flat floor after the last one. Built from solid overlapping boxes
+/// (`MjcfExportOptions::extra_worldbody_xml`) rather than a heightfield --
+/// each step's box shares one back edge with every other step and extends
+/// down to z=-0.5, so at any x the tallest overlapping box is exactly that
+/// tread's height and there is no seam a foot could catch on.
+#[derive(Clone, Copy, Debug)]
+struct StaircaseCfg {
+    rise_m: f64,
+    run_m: f64,
+    n_steps: usize,
+    /// Flat floor length from the spawn point (x=0) to the first riser.
+    approach_m: f64,
+    /// Flat floor length after the last riser.
+    top_platform_m: f64,
+    half_width_m: f64,
+}
+
+impl StaircaseCfg {
+    fn top_platform_start_x(&self) -> f64 {
+        self.approach_m + self.n_steps as f64 * self.run_m
+    }
+
+    fn total_rise_m(&self) -> f64 {
+        self.rise_m * self.n_steps as f64
+    }
+
+    fn worldbody_xml(&self) -> String {
+        fn box_geom(name: &str, cx: f64, cy: f64, cz: f64, hx: f64, hy: f64, hz: f64, rgba: &str) -> String {
+            format!(
+                "    <geom name=\"{name}\" type=\"box\" pos=\"{cx} {cy} {cz}\"                  size=\"{hx} {hy} {hz}\" rgba=\"{rgba}\"/>\n"
+            )
+        }
+        let hy = self.half_width_m;
+        let bottom_z = -0.5_f64;
+        // A little runway behind the spawn point, purely for margin -- not
+        // exposed as a config knob since nothing walks backward here.
+        let margin_behind_m = 0.5_f64;
+        let stairs_start_x = self.approach_m;
+        let back_x = self.top_platform_start_x() + self.top_platform_m;
+
+        let mut xml = String::new();
+
+        // Approach floor. Emitted first so `render_namiashi.py`'s single
+        // find-and-replace for the checker material (keyed on this exact
+        // rgba string, the same one `GroundPlaneCfg` emits) lands here,
+        // matching the floor look of every other namiashi clip.
+        {
+            let x0 = -margin_behind_m;
+            let x1 = stairs_start_x;
+            let hx = (x1 - x0) / 2.0;
+            let cx = (x0 + x1) / 2.0;
+            let hz = (0.0 - bottom_z) / 2.0;
+            let cz = (0.0 + bottom_z) / 2.0;
+            xml += &box_geom("stair_approach", cx, 0.0, cz, hx, hy, hz, "0.5 0.5 0.55 1");
+        }
+
+        // Steps 1..=n_steps. Box i's front edge is its own riser; its back
+        // edge is shared (`back_x`) with every other step, so the region it
+        // alone determines the height of is exactly its own tread -- see the
+        // struct doc comment for why that makes the profile seamless.
+        for i in 1..=self.n_steps {
+            let x0 = stairs_start_x + (i as f64 - 1.0) * self.run_m;
+            let top_z = i as f64 * self.rise_m;
+            let hx = (back_x - x0) / 2.0;
+            let cx = (back_x + x0) / 2.0;
+            let hz = (top_z - bottom_z) / 2.0;
+            let cz = (top_z + bottom_z) / 2.0;
+            // Alternating shades so the profile reads without a checker
+            // material, which would visually fight with a level tread.
+            let rgba = if i % 2 == 0 { "0.58 0.56 0.52 1" } else { "0.50 0.48 0.44 1" };
+            xml += &box_geom(&format!("stair_step{i}"), cx, 0.0, cz, hx, hy, hz, rgba);
+        }
+
+        xml
+    }
+}
+
 struct WbcParams {
     total_time_s: f64,
     burn_in_s: f64,
@@ -507,6 +586,9 @@ struct WbcParams {
     /// (`base_accel`, priority 1) that already has real authority, as
     /// opposed to a bare regulator.
     attitude_pd_ablation: Option<(f64, f64)>,
+    /// Replace the flat ground plane with a staircase. `None` (default)
+    /// behaves exactly as before -- the infinite `GroundPlaneCfg` plane.
+    staircase: Option<StaircaseCfg>,
     /// Per-block state cost for the 24-state MPC: `[v_com, omega, base_pos,
     /// euler, joint_q]`, applied over `q_diag`'s
     /// `[0..3, 3..6, 6..9, 9..12, 12..24]`.
@@ -631,6 +713,7 @@ impl WbcParams {
             fcm_grf_cost: None,
             fcm_jointv_cost: None,
             attitude_pd_ablation: None,
+            staircase: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -683,6 +766,7 @@ impl WbcParams {
             fcm_grf_cost: None,
             fcm_jointv_cost: None,
             attitude_pd_ablation: None,
+            staircase: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -773,12 +857,12 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     }
 
     let opts = MjcfExportOptions {
-        ground_plane: Some(GroundPlaneCfg {
-            z: 0.0,
-            half_size: 4.0,
-            roll: 0.0,
-            pitch: 0.0,
-        }),
+        ground_plane: if params.staircase.is_none() {
+            Some(GroundPlaneCfg { z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0 })
+        } else {
+            None
+        },
+        extra_worldbody_xml: params.staircase.map(|s| s.worldbody_xml()),
         add_actuators: true,
         ..Default::default()
     };
@@ -5973,5 +6057,67 @@ fn assert_forward_command_advances_body(samples: &[WbcSample]) {
     assert!(
         peak_pitch < 0.5,
         "forward walk: |pitch| peak {peak_pitch:.2} rad too large",
+    );
+}
+
+/// Sanity check for the staircase environment: loads, stands, doesn't fall
+/// while still on the approach floor, and writes a replay so the geometry
+/// can be looked at rather than trusted.
+///
+/// 10 steps x 0.10 m rise (1.0 m total) is a large step for this robot: it is
+/// ~43% of namiashi's tuned stance height (0.235 m) and 2-3x the swing
+/// clearance the gait planner budgets on flat ground (0.035-0.045 m). Whether
+/// it can climb at all is an open question this test does not answer -- it
+/// only confirms the terrain itself loads correctly and the robot survives
+/// the approach up to the first riser.
+#[test]
+#[ignore = "writes a replay for visual inspection -- run with --ignored"]
+fn namiashi_staircase_environment_smoke() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.10,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 1.5,
+        half_width_m: 1.0,
+    };
+    eprintln!(
+        "[stairs] rise={:.2}m run={:.2}m steps={}  total_rise={:.2}m  \
+         first riser at x={:.2}m  top platform x=[{:.2}, {:.2}]m",
+        stairs.rise_m,
+        stairs.run_m,
+        stairs.n_steps,
+        stairs.total_rise_m(),
+        stairs.approach_m,
+        stairs.top_platform_start_x(),
+        stairs.top_platform_start_x() + stairs.top_platform_m,
+    );
+    let params = WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: cmd,
+        total_time_s: 6.0,
+        wbc_real_inertia: true,
+        staircase: Some(stairs),
+        replay_dir: Some("/tmp/nami_stairs/smoke".to_string()),
+        ..namiashi_tuned_params(I)
+    };
+    let approach_end_x = stairs.approach_m;
+    let Some(samples) = run_wbc_sim(params) else { return };
+    let min_z_on_approach = samples
+        .iter()
+        .filter(|s| s.body_x < approach_end_x - 0.05)
+        .map(|s| s.body_z)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+    eprintln!(
+        "[stairs] min_z on approach = {min_z_on_approach:.3} m   reached x = {max_x:.3} m"
+    );
+    assert!(
+        min_z_on_approach > TRUNK_Z_FALL_THRESHOLD_M,
+        "fell while still on the approach floor: min_z = {min_z_on_approach:.3} m",
     );
 }
