@@ -5170,6 +5170,72 @@ fn namiashi_support_torque_budget() {
 /// through. Tracking percentage is a gate, not a score: 107% of command from
 /// an open-loop Raibert plan on flat ground is already near the geometric
 /// ceiling `max_step/(T*duty)`, and there is nothing there for a predictive
+/// Does a correct MPC plan finally earn its keep under a disturbance?
+///
+/// This is the question the whole MPC thread has been circling. On flat ground
+/// an open-loop Raibert plan is already near the geometric ceiling
+/// `max_step/(T*duty)`, so there is nothing there for a predictive layer to
+/// win, and every tracking number in this file has said so. A push is the one
+/// place a plan that looks ahead should beat one that does not.
+///
+/// Three arms, 8 push phases each, because
+/// `namiashi_push_phase_dependence` established that which foot pair is loaded
+/// when the impulse lands decides the outcome -- a single push time would be
+/// reporting an accident of timing as a property of the controller.
+///
+///   A  production: `GaitMode::Mpc`, the SRBD path the tuned gaits ship with.
+///   B  FullCentroidal, sparse QP at 0.900 s, default `r_diag`. The QP solves
+///      every tick but the plan is pinned to the friction cone: |fx|/fz = 0.486
+///      against mu = 0.50, vertical force 39.6 N against a 32.4 N weight.
+///   C  same, with `r_diag[12..24] = 1e-3` so the joint_v cost meets the GRF
+///      cost. Plan off the cone, vertical force on mg, fore-aft -4.5 N.
+///
+/// If C does not beat B and A here, then a correct plan is not what the
+/// disturbance response was missing, and the remaining suspect is what happens
+/// downstream of it -- the WBC's contact-force task, which measurably prefers
+/// being told to ask for nothing.
+#[test]
+#[ignore = "24 sims -- run with --ignored"]
+fn namiashi_mpc_plan_under_push() {
+    const I: usize = 0; // Trot
+    let (_, period, .., cmd) = NAMIASHI_TUNED[I];
+    let base = || WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: cmd,
+        total_time_s: 11.0,
+        wbc_real_inertia: true,
+        ..namiashi_tuned_params(I)
+    };
+    let fcm = || WbcParams {
+        gait_mode: GaitMode::FullCentroidal,
+        legged_control_parity: true,
+        fcm_horizon_steps: Some(30),
+        fcm_sparse_qp: true,
+        ..base()
+    };
+    // Closures rather than values: `WbcParams` is not `Clone`, and each push
+    // phase needs its own copy with a different `push` time.
+    let arms: Vec<(&str, Box<dyn Fn() -> WbcParams>)> = vec![
+        ("A srbd prod", Box::new(base)),
+        ("B fcm cone", Box::new(fcm)),
+        (
+            "C fcm fixed",
+            Box::new(move || WbcParams { fcm_jointv_cost: Some(1e-3), ..fcm() }),
+        ),
+    ];
+    for (tag, mk) in arms {
+        for step in 0..8 {
+            let t_push = 6.0 + period * step as f64 / 8.0;
+            let mut p = mk();
+            p.push = Some((t_push, [0.0, 12.0, 0.0], 0.12));
+            let Some(samples) = run_wbc_sim(p) else { return };
+            report_push(&format!("Trot {tag} p{step}"), &samples, t_push, cmd);
+        }
+    }
+}
+
 /// Confirms that the GRF-vs-joint_v cost imbalance is what pins the plan to
 /// the friction cone.
 ///
