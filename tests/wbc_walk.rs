@@ -406,6 +406,29 @@ impl StaircaseCfg {
         }
     }
 
+    /// Nudge a horizontal touchdown target off a riser edge, onto solid
+    /// tread: clamps `world_x` to stay at least `margin_m` from either edge
+    /// of whichever tread it falls on (the top platform counts as one long
+    /// tread). No-op on the approach floor -- there is no edge there to
+    /// avoid, and the caller is expected to gate on `height_at > 0` anyway
+    /// for the same reason the vertical correction does.
+    fn snap_to_tread(&self, world_x: f64, margin_m: f64) -> f64 {
+        if world_x < self.approach_m {
+            return world_x;
+        }
+        let step = ((world_x - self.approach_m) / self.run_m).floor() as i64 + 1;
+        let step = step.clamp(1, self.n_steps as i64);
+        let start = self.approach_m + (step - 1) as f64 * self.run_m;
+        let end = if step == self.n_steps as i64 {
+            self.top_platform_start_x() + self.top_platform_m
+        } else {
+            self.approach_m + step as f64 * self.run_m
+        };
+        let lo = start + margin_m;
+        let hi = (end - margin_m).max(lo);
+        world_x.clamp(lo, hi)
+    }
+
     fn worldbody_xml(&self) -> String {
         fn box_geom(name: &str, cx: f64, cy: f64, cz: f64, hx: f64, hy: f64, hz: f64, rgba: &str) -> String {
             format!(
@@ -497,22 +520,29 @@ struct ContactReflexCfg {
     freeze_phase_during_reflex: bool,
 }
 
-/// Perception-informed swing height: the "would knowing the terrain help at
-/// all" question, tested in the cheapest honest way before building a real
+/// Perception-informed swing height (and, with `horizontal_margin_m > 0`,
+/// touchdown placement): the "would knowing the terrain help at all"
+/// question, tested in the cheapest honest way before building a real
 /// sensor or a terrain-aware MPC cost term.
 ///
 /// Every reflex variant in `ContactReflexCfg` reacts *after* a foot has
 /// already caught the riser -- proprioception has no way to see it coming.
-/// This instead queries `StaircaseCfg::height_at` at the swing target's
-/// current world x every tick and raises the *z* component only (touchdown
-/// x, y stay exactly what the open-loop gait already chose) to
-/// `terrain_height + clearance_m` -- continuous ground-contouring rather
-/// than a threshold-triggered correction. No horizontal placement change: if
-/// clearance alone is not the story here either, that will show up as
-/// clearly as it did in `namiashi_staircase_5cm_swing_clearance_sweep`.
+/// This instead queries `StaircaseCfg::height_at`/`snap_to_tread` at the
+/// swing target's current world x every tick: raises the *z* component to
+/// `terrain_height + clearance_m` (continuous ground-contouring rather than
+/// a threshold-triggered correction), and, separately, nudges the *x*
+/// component off a riser edge and onto solid tread by `horizontal_margin_m`.
+///
+/// `clearance_m` alone (`horizontal_margin_m = 0`) is what
+/// `namiashi_staircase_5cm_terrain_footplan` measured: gets onto and
+/// balances on the first tread for ~7 s, but stalls there -- touchdown x
+/// oscillates right at the tread-1/riser boundary (1.44-1.56 m against a
+/// riser at 1.5 m) rather than committing onto solid ground, which is
+/// exactly what `horizontal_margin_m` targets.
 #[derive(Clone, Copy, Debug)]
 struct TerrainFootplanCfg {
     clearance_m: f64,
+    horizontal_margin_m: f64,
 }
 
 struct WbcParams {
@@ -1511,7 +1541,28 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         // only adds clearance over what the terrain needs,
                         // it does not shortcut a foot down early.
                         let target_z = desired_body_z.max(nominal_body.z);
-                        let lift_target = Vector3::new(nominal_body.x, nominal_body.y, target_z);
+                        // Horizontal: nudge world_x off whichever riser edge
+                        // it is closest to, converting the world-frame delta
+                        // back to body frame via the inverse yaw rotation (a
+                        // pure delta in world x maps to
+                        // (cy*delta, -sy*delta) in body frame -- derived from
+                        // the same forward rotation used to compute world_x
+                        // above, not a separate approximation).
+                        let target_x;
+                        let target_y;
+                        if cfg.horizontal_margin_m > 0.0 {
+                            let snapped_x = params
+                                .staircase
+                                .map(|s| s.snap_to_tread(world_x, cfg.horizontal_margin_m))
+                                .unwrap_or(world_x);
+                            let delta_world_x = snapped_x - world_x;
+                            target_x = nominal_body.x + cy * delta_world_x;
+                            target_y = nominal_body.y - sy * delta_world_x;
+                        } else {
+                            target_x = nominal_body.x;
+                            target_y = nominal_body.y;
+                        }
+                        let lift_target = Vector3::new(target_x, target_y, target_z);
                         let leg_kin = gc.kinematics().legs()[slot];
                         let signs = gc.joint_signs()[slot];
                         let ji = gc.joint_indices()[slot];
@@ -6602,7 +6653,7 @@ fn namiashi_staircase_5cm_terrain_footplan() {
         total_time_s: 20.0,
         wbc_real_inertia: true,
         staircase: Some(stairs),
-        terrain_footplan: Some(TerrainFootplanCfg { clearance_m: 0.02 }),
+        terrain_footplan: Some(TerrainFootplanCfg { clearance_m: 0.02, horizontal_margin_m: 0.05 }),
         replay_dir: Some("/tmp/nami_stairs/rise05_footplan".to_string()),
         ..namiashi_tuned_params(I)
     };
