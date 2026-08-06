@@ -21,8 +21,37 @@ from pathlib import Path
 
 import mujoco
 import numpy as np
+from PIL import Image, ImageDraw
 
 from render_namiashi import JOINTS, body_frame_rates, font, load_trace, overlay, scened_model
+
+
+def draw_step_progress(frame, z, stance_z, rise_m, n_steps):
+    """A bottom-of-frame bar: which riser height the trunk is currently at,
+    out of `n_steps`, read from z rather than from x -- so it reflects
+    height actually gained, not just horizontal distance travelled (the two
+    diverge exactly when climbing fails, which is the case this needs to
+    show clearly)."""
+    if rise_m <= 0:
+        return frame
+    climbed = (z - stance_z) / rise_m
+    climbed_clamped = max(0.0, min(n_steps, climbed))
+    img = Image.fromarray(frame)
+    d = ImageDraw.Draw(img, "RGBA")
+    w, h = img.size
+    label_w, bar_h = 210, 26
+    bar_w = w - 44 - label_w
+    x0, y0 = 22, h - 70
+    d.rectangle([x0, y0, x0 + bar_w, y0 + bar_h], fill=(0, 0, 0, 150))
+    fill_w = bar_w * climbed_clamped / n_steps
+    d.rectangle([x0, y0, x0 + fill_w, y0 + bar_h], fill=(120, 200, 130, 220))
+    for k in range(1, n_steps):
+        xk = x0 + bar_w * k / n_steps
+        d.line([(xk, y0), (xk, y0 + bar_h)], fill=(20, 22, 28, 200), width=1)
+    f = font(17)
+    label = f"step {climbed_clamped:4.1f} / {n_steps}"
+    d.text((x0 + bar_w + 10, y0 + 3), label, font=f, fill=(220, 225, 235))
+    return np.asarray(img)
 
 
 def main():
@@ -61,6 +90,9 @@ def main():
 
     win = args.period * math.ceil(0.8 / args.period)
     t = trace["t"]
+    # First tick's z, before the robot has moved -- the flat-approach stance
+    # height the step count is measured up from.
+    stance_z = trace["root"][0, 2]
     end = min(t[-1], t[0] + args.seconds)
     stamps = np.arange(t[0], end, 1.0 / args.fps)
     frames = []
@@ -75,14 +107,15 @@ def main():
 
             cam.lookat[:] = data.qpos[0:3]
             r.update_scene(data, cam, opt)
-            frames.append(
-                overlay(r.render(), "namiashi  staircase",
-                        caption,
-                        (args.cmd_vx, 0.0, 0.0),
-                        body_frame_rates(trace, i, win), ts - t[0],
-                        settling=(ts - t[0]) < 1.15,
-                        z=trace["root"][i, 2])
-            )
+            z = trace["root"][i, 2]
+            frame = overlay(r.render(), "namiashi  staircase",
+                             caption,
+                             (args.cmd_vx, 0.0, 0.0),
+                             body_frame_rates(trace, i, win), ts - t[0],
+                             settling=(ts - t[0]) < 1.15,
+                             z=z)
+            frame = draw_step_progress(frame, z, stance_z, args.rise_m, args.n_steps)
+            frames.append(frame)
 
     imageio.mimsave(args.out, frames, fps=args.fps, quality=8, macro_block_size=1)
     print(f"wrote {args.out}  ({len(frames)} frames, {len(frames)/args.fps:.1f}s)")
