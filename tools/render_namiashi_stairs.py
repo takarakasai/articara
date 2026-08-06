@@ -36,7 +36,12 @@ def main():
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--period", type=float, default=0.320)
     ap.add_argument("--cmd_vx", type=float, default=0.80)
+    ap.add_argument("--rise_m", type=float, default=0.10)
+    ap.add_argument("--run_m", type=float, default=0.20)
+    ap.add_argument("--n_steps", type=int, default=10)
     args = ap.parse_args()
+    caption = (f"rise={args.rise_m:.2f}m  run={args.run_m:.2f}m  {args.n_steps} steps  "
+               f"({args.rise_m * args.n_steps:.1f} m total)")
 
     import imageio.v2 as imageio
 
@@ -72,7 +77,7 @@ def main():
             r.update_scene(data, cam, opt)
             frames.append(
                 overlay(r.render(), "namiashi  staircase",
-                        "rise=0.10m  run=0.20m  10 steps  (1.0 m total)",
+                        caption,
                         (args.cmd_vx, 0.0, 0.0),
                         body_frame_rates(trace, i, win), ts - t[0],
                         settling=(ts - t[0]) < 1.15,
