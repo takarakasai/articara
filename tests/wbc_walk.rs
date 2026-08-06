@@ -465,6 +465,20 @@ struct ContactReflexCfg {
     trigger_m: f64,
     resume_m: f64,
     lift_m: f64,
+    /// While any leg is `reflex_active`, pass `dt=0` to `gc.tick()` instead of
+    /// the real host period, freezing every leg's phase together rather than
+    /// just overriding the disrupted leg's target.
+    ///
+    /// Without this, the other three legs' schedule keeps advancing on the
+    /// gait's single shared phase clock while the disrupted leg is still
+    /// fighting the obstacle -- so by the time it resolves, the rest of the
+    /// gait already expects it to have been in stance for however long the
+    /// reflex took, i.e. the robot is trying to balance on however many legs
+    /// actually landed on schedule, not however many the gait *thinks* are
+    /// down. That desync, not the collision itself, is the leading
+    /// suspect for why the first two reflex attempts (lift from current
+    /// position; lift the nominal target) both still ended in a collapse.
+    freeze_phase_during_reflex: bool,
 }
 
 struct WbcParams {
@@ -1332,7 +1346,17 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         let host_tick = k % host_decim == 0;
         if gc.is_enabled() && host_tick {
             let host_dt = params.dt * host_decim as f64;
-            let (out, targets, torque_ff) = gc.tick(host_dt);
+            // Freeze the gait's phase clock -- not just the disrupted leg's
+            // target -- while any leg is mid-reflex. `reflex_active` here is
+            // still last tick's value (this tick's has not been computed
+            // yet), which is exactly what is wanted: the decision has to be
+            // made before `gc.tick()` runs, not after.
+            let phase_frozen = params
+                .contact_reflex
+                .is_some_and(|cfg| cfg.freeze_phase_during_reflex)
+                && reflex_active.iter().any(|&a| a);
+            let gait_dt = if phase_frozen { 0.0 } else { host_dt };
+            let (out, targets, torque_ff) = gc.tick(gait_dt);
             let mut targets = targets;
             for slot in 0..4 {
                 stance_mask[slot] = out.legs[slot].phase.is_stance;
@@ -1360,28 +1384,38 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                             leg_kin, q_leg[0], q_leg[1], q_leg[2],
                         );
                         let nominal_body = out.legs[slot].foot_body;
-                        let err = (nominal_body - measured_body).norm();
+                        let lift_target = nominal_body + Vector3::new(0.0, 0.0, cfg.lift_m);
+                        // Trigger reads error against the *nominal* target --
+                        // that is the collision signal. Resume must read error
+                        // against the *lift* target instead: while active this
+                        // leg is deliberately not tracking nominal, so it sits
+                        // ~lift_m away from it even once the manoeuvre has
+                        // fully succeeded. Comparing against nominal here was
+                        // a bug in the first two attempts -- with lift_m
+                        // (0.06) above resume_m (0.025), it could never
+                        // satisfy its own exit condition, and combined with
+                        // `freeze_phase_during_reflex` (which stops the
+                        // nominal target from moving at all) it deadlocked
+                        // permanently: q_dot pinned at exactly 0.000 rad/s for
+                        // the rest of a 20 s run.
+                        let err_nominal = (nominal_body - measured_body).norm();
+                        let err_lift = (lift_target - measured_body).norm();
                         if reflex_active[slot] {
-                            if err < cfg.resume_m {
+                            if err_lift < cfg.resume_m {
                                 reflex_active[slot] = false;
                             }
-                        } else if err > cfg.trigger_m {
+                        } else if err_nominal > cfg.trigger_m {
                             reflex_active[slot] = true;
                         }
                         if reflex_active[slot] {
                             // Lift the *intended* touchdown, not the stuck
-                            // position: the first version pushed straight up
-                            // from wherever the foot currently was, which
-                            // does not advance it past the obstacle
-                            // horizontally -- it comes back down on the same
-                            // edge and re-triggers, and the robot gets wedged
-                            // in a stable low crouch instead of tipping over
-                            // (better, but still not climbing). Adding the
-                            // lift to the nominal target keeps the leg
-                            // heading toward wherever the gait's own swing
-                            // curve wants it, just higher.
-                            let lift_target =
-                                nominal_body + Vector3::new(0.0, 0.0, cfg.lift_m);
+                            // position: pushing straight up from wherever the
+                            // foot currently was does not advance it past the
+                            // obstacle horizontally -- it comes back down on
+                            // the same edge and re-triggers. Adding the lift
+                            // to the nominal target keeps the leg heading
+                            // toward wherever the gait's own swing curve
+                            // wants it, just higher.
                             let sol = solve_leg_ik(
                                 leg_kin, lift_target, gc.knee_forward()[slot],
                             );
@@ -6409,7 +6443,12 @@ fn namiashi_staircase_5cm_contact_reflex() {
         total_time_s: 20.0,
         wbc_real_inertia: true,
         staircase: Some(stairs),
-        contact_reflex: Some(ContactReflexCfg { trigger_m: 0.065, resume_m: 0.025, lift_m: 0.06 }),
+        contact_reflex: Some(ContactReflexCfg {
+            trigger_m: 0.065,
+            resume_m: 0.025,
+            lift_m: 0.06,
+            freeze_phase_during_reflex: true,
+        }),
         replay_dir: Some("/tmp/nami_stairs/rise05_reflex".to_string()),
         ..namiashi_tuned_params(I)
     };
