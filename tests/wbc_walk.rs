@@ -1428,6 +1428,18 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             let gait_dt = if phase_frozen { 0.0 } else { host_dt };
             let (out, targets, torque_ff) = gc.tick(gait_dt);
             let mut targets = targets;
+            // `out` is shadowed mutable so any per-leg override below can
+            // rewrite `out.legs[slot].{q_hip,q_thigh,q_calf}` in place, not
+            // just `targets`. `wbc_pipeline.solve()` (called later this tick)
+            // takes `&out` directly and its swing_leg task reads those three
+            // fields for its own q_ddot reference -- independently of
+            // `targets`, which only feeds the host-side PD in
+            // `Actuation::Torque`. The two paths are summed
+            // (`pd + tau_wbc`), not one overriding the other, so writing only
+            // `targets` left the WBC's swing task pulling every overridden
+            // leg back toward the original flat-ground target the whole
+            // time, fighting the correction rather than sharing it.
+            let mut out = out;
             for slot in 0..4 {
                 stance_mask[slot] = out.legs[slot].phase.is_stance;
             }
@@ -1494,6 +1506,13 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                             for kk in 0..3 {
                                 targets[slot * 3 + kk] = (ji[kk], signs[kk] * q_ik[kk]);
                             }
+                            // Keep the WBC's swing_leg reference in sync --
+                            // see the comment where `out` is shadowed mutable
+                            // above.
+                            out.legs[slot].q_hip = hip;
+                            out.legs[slot].q_thigh = thigh;
+                            out.legs[slot].q_calf = calf;
+                            out.legs[slot].foot_body = lift_target;
                         }
                     }
                 }
@@ -1508,61 +1527,64 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                             continue;
                         }
                         let nominal_body = out.legs[slot].foot_body;
-                        // Body-frame offset -> world x, yaw-only (roll/pitch
-                        // dropped, same level of approximation this file
-                        // already uses for frame rotations elsewhere).
-                        let world_x = body_pos_world.x + cy * nominal_body.x - sy * nominal_body.y;
+                        // `footstep.touch_down` is the Raibert planner's own
+                        // fixed target for this swing -- decided once by the
+                        // gait controller itself and held constant until
+                        // landing, unlike `foot_body`, which is *this tick's*
+                        // point along the lift_off -> touch_down arc. An
+                        // earlier version of this block sampled `foot_body`
+                        // at the first swing tick to decide a target, which
+                        // is nearly the *lift-off* position, not touchdown --
+                        // it was planning to land almost where the foot
+                        // started, not where the gait actually intended.
+                        // Reading the planner's own target instead needs no
+                        // state of this block's own to freeze anything: it is
+                        // already fixed for the whole swing by construction.
+                        let touch_down_body = out.legs[slot].footstep.touch_down;
+                        let touch_down_world_x = body_pos_world.x
+                            + cy * touch_down_body.x
+                            - sy * touch_down_body.y;
                         let terrain_z = params
                             .staircase
-                            .map(|s| s.height_at(world_x))
+                            .map(|s| s.height_at(touch_down_world_x))
                             .unwrap_or(0.0);
-                        // Flat ground under this foot -> leave it alone,
-                        // full stop. `desired_body_z` below is only valid
-                        // relative to the *current* body_pos_world.z, and
-                        // that is not a stable reference: it is whatever the
-                        // body's height happens to be on this tick, which is
-                        // wrong exactly when something is already going
-                        // wrong (a sag, a pitch). Without this guard, a rear
-                        // leg still over the approach floor got erroneously
-                        // lifted because the body had dipped, producing a
-                        // leg thrown out at a bad angle and a yaw spike to
-                        // +115 deg/s within 0.1 s -- caught on video, not by
-                        // the numbers alone.
+                        // Flat ground where this swing is headed -- no plan
+                        // needed, leave it alone.
                         if terrain_z <= 1e-6 {
                             continue;
                         }
-                        // foot_world_z = body_pos_world.z + nominal_body.z is
-                        // what the flat-ground swing curve currently intends;
-                        // solve for the body-frame z that instead puts the
-                        // foot at terrain_z + clearance in world frame.
+                        let world_x_target = if cfg.horizontal_margin_m > 0.0 {
+                            params
+                                .staircase
+                                .map(|s| s.snap_to_tread(touch_down_world_x, cfg.horizontal_margin_m))
+                                .unwrap_or(touch_down_world_x)
+                        } else {
+                            touch_down_world_x
+                        };
+                        // Apply the snap as a small delta on top of the
+                        // *current* interpolated position (`nominal_body`,
+                        // preserving the natural swing arc) rather than
+                        // solving for an exact body-frame x via `/cy`. That
+                        // division is only safe for small yaw, and this
+                        // staircase routinely produces much more than that
+                        // (40-115 deg excursions are the norm in the failure
+                        // modes this whole investigation has been chasing) --
+                        // an earlier version of this line divided by `cy` and
+                        // sent the body to z=-219 m the one time yaw swung
+                        // wide during a run. `delta_world_x` is usually 0
+                        // (most touchdowns need no snapping at all), and the
+                        // multiply-only form cannot blow up regardless of
+                        // yaw.
+                        let delta_world_x = world_x_target - touch_down_world_x;
+                        let target_x = nominal_body.x + cy * delta_world_x;
+                        let target_y_snap = nominal_body.y - sy * delta_world_x;
                         let desired_body_z =
                             terrain_z + cfg.clearance_m - body_pos_world.z;
                         // Never target *below* the open-loop plan -- this
                         // only adds clearance over what the terrain needs,
                         // it does not shortcut a foot down early.
                         let target_z = desired_body_z.max(nominal_body.z);
-                        // Horizontal: nudge world_x off whichever riser edge
-                        // it is closest to, converting the world-frame delta
-                        // back to body frame via the inverse yaw rotation (a
-                        // pure delta in world x maps to
-                        // (cy*delta, -sy*delta) in body frame -- derived from
-                        // the same forward rotation used to compute world_x
-                        // above, not a separate approximation).
-                        let target_x;
-                        let target_y;
-                        if cfg.horizontal_margin_m > 0.0 {
-                            let snapped_x = params
-                                .staircase
-                                .map(|s| s.snap_to_tread(world_x, cfg.horizontal_margin_m))
-                                .unwrap_or(world_x);
-                            let delta_world_x = snapped_x - world_x;
-                            target_x = nominal_body.x + cy * delta_world_x;
-                            target_y = nominal_body.y - sy * delta_world_x;
-                        } else {
-                            target_x = nominal_body.x;
-                            target_y = nominal_body.y;
-                        }
-                        let lift_target = Vector3::new(target_x, target_y, target_z);
+                        let lift_target = Vector3::new(target_x, target_y_snap, target_z);
                         let leg_kin = gc.kinematics().legs()[slot];
                         let signs = gc.joint_signs()[slot];
                         let ji = gc.joint_indices()[slot];
@@ -1572,12 +1594,17 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         for kk in 0..3 {
                             targets[slot * 3 + kk] = (ji[kk], signs[kk] * q_ik[kk]);
                         }
-                        if std::env::var_os("NAMI_FOOTPLAN_LOG").is_some()
-                            && terrain_z > 0.0
-                            && k % 20 == 0
-                        {
+                        // Keep the WBC's swing_leg reference in sync -- see
+                        // the comment where `out` is shadowed mutable above.
+                        out.legs[slot].q_hip = hip;
+                        out.legs[slot].q_thigh = thigh;
+                        out.legs[slot].q_calf = calf;
+                        out.legs[slot].foot_body = lift_target;
+                        if std::env::var_os("NAMI_FOOTPLAN_LOG").is_some() && k % 20 == 0 {
                             eprintln!(
-                                "[footplan k={k:5} slot={slot}] world_x={world_x:.3}                                  terrain_z={terrain_z:.3} nominal.z={:.4} target_z={target_z:.4}                                  reachable={:?}",
+                                "[footplan k={k:5} slot={slot}] world_x_target={world_x_target:.3} \
+                                 terrain_z={terrain_z:.3} nominal.z={:.4} target_z={target_z:.4} \
+                                 reachable={:?}",
                                 nominal_body.z,
                                 matches!(sol, LegIkSolution::Reached { .. }),
                             );
@@ -6664,6 +6691,53 @@ fn namiashi_staircase_5cm_terrain_footplan() {
     let reached_top = final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
     eprintln!(
         "[stairs 5cm footplan] reached x={max_x:.3}m  max z={max_z:.3}m  \
+         final (x,y,z)=({:.3},{:.3},{:.3})m  reached_top={reached_top}",
+        final_s.body_x, final_s.body_y, final_s.body_z,
+    );
+}
+
+/// Same terrain footplan (vertical clearance + horizontal snap), on Walk
+/// instead of Trot -- is the flat-ground-tuned gait's own timing (0.320 s
+/// period, 0.50 duty for Trot vs 0.500 s, 0.75 duty for Walk) part of why
+/// every footplan variant collapses shortly after engaging the riser,
+/// independent of how the touchdown target itself is computed? Walk keeps
+/// more feet down for more of the cycle and moves an order of magnitude
+/// slower, which should give the whole-body balance far more margin to
+/// absorb whatever a stairs-specific disruption costs -- a much cheaper
+/// hypothesis to test than any further per-leg placement tuning.
+#[test]
+#[ignore = "writes a replay for visual inspection -- run with --ignored"]
+fn namiashi_staircase_5cm_terrain_footplan_walk() {
+    const I: usize = 1; // Walk
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    let top_start_x = stairs.top_platform_start_x();
+    let params = WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: cmd,
+        total_time_s: 25.0,
+        wbc_real_inertia: true,
+        staircase: Some(stairs),
+        terrain_footplan: Some(TerrainFootplanCfg { clearance_m: 0.02, horizontal_margin_m: 0.05 }),
+        replay_dir: Some("/tmp/nami_stairs/rise05_footplan_walk".to_string()),
+        ..namiashi_tuned_params(I)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+    let max_z = samples.iter().map(|s| s.body_z).fold(f64::NEG_INFINITY, f64::max);
+    let final_s = samples.last().unwrap();
+    let reached_top = final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
+    eprintln!(
+        "[stairs 5cm footplan walk] reached x={max_x:.3}m  max z={max_z:.3}m  \
          final (x,y,z)=({:.3},{:.3},{:.3})m  reached_top={reached_top}",
         final_s.body_x, final_s.body_y, final_s.body_z,
     );
