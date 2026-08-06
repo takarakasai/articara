@@ -104,6 +104,9 @@ PUSH_PATTERNS = {
     "push_cop": r"peak CoP box use after the push =\s*([\d.]+)",
     "push_ankle": r"peak ankle_roll use after the push =\s*(\d+)%",
     "spill": r"PUSH WARNING: the [\d.]+ s pulse outlasts this slice by ([\d.]+) s",
+    "edge_pct": r"CoP on the sole edge \([^)]*\) for \d+/\d+ ticks \((\d+)%\)",
+    "edge_leave": r"left the edge (\d+) ms after the transfer",
+    "xfer_t": r"weight transfer at t=[\d.]+ \(([\d.]+) s after the push\)",
     "impact": r"peak [\d.]+ N \(([\d.]+)x weight\)",
     "fz_min": r"min [\d.]+ N \(([\d.]+)x weight\)",
     "unloaded": r"unloaded ticks after the push: \d+ \((\d+) ms",
@@ -272,7 +275,7 @@ def grid_limit(envx, cmd_env, step=0.05, hi=1.20, log=None):
             return None, None, 0, 0, None
         surv = v != "fell"
         seen.append((p, surv))
-        detail.append((p, surv, r))
+        detail.append((p, surv, r))  # r carries edge_pct / edge_leave
         if surv:
             best = r
     safe = 0.0
@@ -438,6 +441,8 @@ def push_sweep_main(a):
     cells = push_cases(a.push_group)
     grid = {}
     extra = {}
+    edge = {}
+    surv_map = {}
     for cond_label, cond_env in push_conditions(a.push_conditions):
         cmd_env = dict(base)
         cmd_env.update(cond_env)
@@ -467,6 +472,14 @@ def push_sweep_main(a):
                       if not sv and r.get("unloaded")]
             extra[label]["max_surv_air"] = max(surv_a) if surv_a else None
             extra[label]["min_fell_air"] = min(fell_a) if fell_a else None
+            # CoP-edge dwell, per grid point, for the paired comparison. A
+            # point with no transfer (run ended first) is dropped rather than
+            # scored 0 -- absence of a transfer is not a clean transfer.
+            edge[(label, cond_label)] = {
+                p: float(r["edge_pct"])
+                for p, _sv, r in det if r.get("edge_pct")
+            }
+            surv_map[(label, cond_label)] = {p: sv for p, sv, _r in det}
             print(f"  {label:>17} {cond_label:>12} -> safe "
                   f"{'nofire' if safe is None else format(safe, '.3f')}"
                   f"  fail {'-' if fail is None else format(fail, '.3f')}"
@@ -548,6 +561,36 @@ def push_sweep_main(a):
             continue
         med = nums[len(nums) // 2]
         print(f"{c:>12} {nums[0]:>13.3f} {med:>8.3f} {sum(nums):>8.2f}")
+    if len(conds) == 2:
+        c0, c1 = conds
+        print(f"\n=== CoP-edge dwell after the transfer, {c0} -> {c1} ===")
+        print("Percent of the first 100 ms in single support with the stance "
+              "CoP on the sole\nedge. Lower is better: a foot on the edge cannot "
+              "modulate its own pressure.")
+        thdr = (f"{'cell':>17} {'mean %':>13} {'better':>7} {'worse':>6} "
+                f"{'survived':>12}")
+        print(thdr)
+        print("-" * len(thdr))
+        tot_b = tot_w = 0
+        for lb in labels:
+            e0, e1 = edge.get((lb, c0), {}), edge.get((lb, c1), {})
+            common = sorted(set(e0) & set(e1))
+            if not common:
+                print(f"{lb:>17} {'-':>13} {'-':>7} {'-':>6} {'-':>12}")
+                continue
+            m0 = sum(e0[p] for p in common) / len(common)
+            m1 = sum(e1[p] for p in common) / len(common)
+            b = sum(1 for p in common if e1[p] < e0[p] - 1e-9)
+            w_ = sum(1 for p in common if e1[p] > e0[p] + 1e-9)
+            tot_b += b
+            tot_w += w_
+            s0 = sum(1 for v in surv_map.get((lb, c0), {}).values() if v)
+            s1 = sum(1 for v in surv_map.get((lb, c1), {}).values() if v)
+            n = len(surv_map.get((lb, c0), {}))
+            print(f"{lb:>17} {m0:>5.0f} -> {m1:>4.0f} {b:>7} {w_:>6} "
+                  f"{s0:>4}/{n} -> {s1:>2}/{n}")
+        print(f"\n{tot_b} grid points improved, {tot_w} worsened, over all cells.")
+
     if a.csv:
         with open(a.csv, "w", newline="") as f:
             w = csvmod.writer(f)
