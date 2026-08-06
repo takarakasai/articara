@@ -6218,3 +6218,63 @@ fn namiashi_staircase_rise02_wide_platform() {
         final_s.body_z, final_s.body_x,
     );
 }
+
+/// Is the 5 cm-rise staircase's failure a swing-clearance problem, or does it
+/// need foothold placement (perception, planning) to get anywhere at all?
+///
+/// The fixed swing-height schedule this codebase uses everywhere is
+/// terrain-blind: 0.040 m on Trot, chosen for flat ground, with no idea what
+/// is in front of the foot. A 5 cm riser is taller than that clearance, so a
+/// foot on the open-loop trajectory can catch the riser face before finishing
+/// its swing regardless of how good the horizontal touchdown target is.
+///
+/// This sweeps `swing_height_m` -- still blind, still one scalar, still the
+/// same schedule for every step including the flat approach -- to see whether
+/// clearance alone is the blocker. If some value gets the robot onto the
+/// stairs and progressing, the horizontal (open-loop Raibert) placement was
+/// already good enough and the missing piece was vertical clearance, not
+/// perception. If nothing does, the failure is not (only) clearance and a
+/// foothold planner would need to do more than just clear the riser.
+///
+/// Uses the same wide-platform methodology `namiashi_staircase_rise02_wide_
+/// platform` needed to avoid conflating "fell off the test track" with
+/// "failed to climb."
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_staircase_5cm_swing_clearance_sweep() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    let top_start_x = stairs.top_platform_start_x();
+    for swing_h in [0.040_f64, 0.060, 0.080, 0.100, 0.120] {
+        let params = WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: cmd,
+            total_time_s: 20.0,
+            wbc_real_inertia: true,
+            staircase: Some(stairs),
+            swing_height_m: Some(swing_h),
+            replay_dir: Some(format!("/tmp/nami_stairs/rise05_swing_{swing_h:.3}")),
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+        let max_z = samples.iter().map(|s| s.body_z).fold(f64::NEG_INFINITY, f64::max);
+        let final_s = samples.last().unwrap();
+        let reached_top = final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
+        eprintln!(
+            "[stairs 5cm swing={swing_h:.3}] reached x={max_x:.3}m  max z={max_z:.3}m  \
+             final (x,y,z)=({:.3},{:.3},{:.3})m  reached_top={reached_top}",
+            final_s.body_x, final_s.body_y, final_s.body_z,
+        );
+    }
+}
