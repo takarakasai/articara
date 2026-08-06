@@ -6126,3 +6126,95 @@ fn namiashi_staircase_environment_smoke() {
         );
     }
 }
+
+/// Does the 2 cm-rise staircase actually get climbed?
+///
+/// `namiashi_staircase_environment_smoke`'s 2 cm run reached x=2.815 m in 6 s
+/// -- more progress than 5 cm or 10 cm -- but its own trace showed a lateral
+/// drift accelerating once it started climbing, and it walked off that test's
+/// 2 m-wide platform (half_width_m=1.0) and free-fell before reaching the top.
+/// A first widen (half_width 3.0 m, top platform 2.0 m, 14 s) climbed cleanly
+/// -- z rose smoothly to the expected plateau (base stance 0.235 m + 0.20 m
+/// total rise = 0.435 m) by x=3.7 m, right at the top platform's start -- but
+/// then walked off the *far* end of that platform too and free-fell again,
+/// this time purely because the platform was too short for how far it kept
+/// walking with a persistent heading drift.
+///
+/// This is the version sized from that measurement (half_width 6.0 m, top
+/// platform 8.0 m, 16 s), and it holds: final position (x=11.27, y=-3.80,
+/// z=0.436) is stable on the platform, not mid-fall. The lateral drift itself
+/// turns out not to be a runaway -- it decelerates once past the last riser
+/// (roughly -0.38 m/s while climbing, down to -0.07 m/s by the second half of
+/// the flat-top walk) and looks like the same kind of disturbance-response
+/// settling the push tests measure, just stretched over ten small
+/// perturbations (one per riser) instead of one impulse.
+///
+/// So: climbable, cleanly, with a real but self-correcting lateral
+/// disturbance along the way. 5 cm and 10 cm did not even engage the stairs
+/// within 6 s in the three-rise smoke test (they bounced off the first riser
+/// in place) -- whether they climb given more time, or cannot climb at all,
+/// is still open and is not what this test measures.
+#[test]
+#[ignore = "writes a replay for visual inspection -- run with --ignored"]
+fn namiashi_staircase_rise02_wide_platform() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.02,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    eprintln!(
+        "[stairs wide] rise={:.2}m run={:.2}m steps={}  total_rise={:.2}m  \
+         first riser at x={:.2}m  top platform x=[{:.2}, {:.2}]m  half_width={:.1}m",
+        stairs.rise_m,
+        stairs.run_m,
+        stairs.n_steps,
+        stairs.total_rise_m(),
+        stairs.approach_m,
+        stairs.top_platform_start_x(),
+        stairs.top_platform_start_x() + stairs.top_platform_m,
+        stairs.half_width_m,
+    );
+    let params = WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: cmd,
+        total_time_s: 16.0,
+        wbc_real_inertia: true,
+        staircase: Some(stairs),
+        replay_dir: Some("/tmp/nami_stairs/rise_02_wide".to_string()),
+        ..namiashi_tuned_params(I)
+    };
+    let approach_end_x = stairs.approach_m;
+    let top_start_x = stairs.top_platform_start_x();
+    let Some(samples) = run_wbc_sim(params) else { return };
+    let min_z_on_approach = samples
+        .iter()
+        .filter(|s| s.body_x < approach_end_x - 0.05)
+        .map(|s| s.body_z)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+    let max_z = samples.iter().map(|s| s.body_z).fold(f64::NEG_INFINITY, f64::max);
+    let final_s = samples.last().unwrap();
+    let reached_top = final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
+    eprintln!(
+        "[stairs wide] min_z on approach = {min_z_on_approach:.3} m   \
+         reached x = {max_x:.3} m   max z = {max_z:.3} m   \
+         final (x,y,z) = ({:.3}, {:.3}, {:.3}) m   reached top = {reached_top}",
+        final_s.body_x, final_s.body_y, final_s.body_z,
+    );
+    assert!(
+        min_z_on_approach > TRUNK_Z_FALL_THRESHOLD_M,
+        "fell while still on the approach floor: min_z = {min_z_on_approach:.3} m",
+    );
+    assert!(
+        reached_top,
+        "did not end the run standing on the top platform: final z = {:.3} m at x = {:.3} m",
+        final_s.body_z, final_s.body_x,
+    );
+}
