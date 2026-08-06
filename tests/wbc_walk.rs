@@ -390,6 +390,22 @@ impl StaircaseCfg {
         self.rise_m * self.n_steps as f64
     }
 
+    /// Ground height at world x, per the same step geometry `worldbody_xml`
+    /// builds -- an idealized, exact height query, standing in for whatever
+    /// a real height-map (LiDAR + mapping) would eventually estimate. There
+    /// is no sensor model here (no noise, no occlusion, no latency); this is
+    /// deliberately the best case, to test whether height *knowledge* is the
+    /// missing piece before spending effort on how to acquire it.
+    fn height_at(&self, world_x: f64) -> f64 {
+        if world_x < self.approach_m {
+            0.0
+        } else {
+            let step = ((world_x - self.approach_m) / self.run_m).floor() as i64 + 1;
+            let step = step.clamp(1, self.n_steps as i64);
+            step as f64 * self.rise_m
+        }
+    }
+
     fn worldbody_xml(&self) -> String {
         fn box_geom(name: &str, cx: f64, cy: f64, cz: f64, hx: f64, hy: f64, hz: f64, rgba: &str) -> String {
             format!(
@@ -479,6 +495,24 @@ struct ContactReflexCfg {
     /// suspect for why the first two reflex attempts (lift from current
     /// position; lift the nominal target) both still ended in a collapse.
     freeze_phase_during_reflex: bool,
+}
+
+/// Perception-informed swing height: the "would knowing the terrain help at
+/// all" question, tested in the cheapest honest way before building a real
+/// sensor or a terrain-aware MPC cost term.
+///
+/// Every reflex variant in `ContactReflexCfg` reacts *after* a foot has
+/// already caught the riser -- proprioception has no way to see it coming.
+/// This instead queries `StaircaseCfg::height_at` at the swing target's
+/// current world x every tick and raises the *z* component only (touchdown
+/// x, y stay exactly what the open-loop gait already chose) to
+/// `terrain_height + clearance_m` -- continuous ground-contouring rather
+/// than a threshold-triggered correction. No horizontal placement change: if
+/// clearance alone is not the story here either, that will show up as
+/// clearly as it did in `namiashi_staircase_5cm_swing_clearance_sweep`.
+#[derive(Clone, Copy, Debug)]
+struct TerrainFootplanCfg {
+    clearance_m: f64,
 }
 
 struct WbcParams {
@@ -634,6 +668,10 @@ struct WbcParams {
     /// matter how far off it drifts -- the behaviour every other test in
     /// this file assumes.
     contact_reflex: Option<ContactReflexCfg>,
+    /// Perception-informed swing height, using `StaircaseCfg::height_at` as
+    /// an idealized stand-in for a real height-map. `None` (default) is the
+    /// terrain-blind behaviour every other test in this file assumes.
+    terrain_footplan: Option<TerrainFootplanCfg>,
     /// Per-block state cost for the 24-state MPC: `[v_com, omega, base_pos,
     /// euler, joint_q]`, applied over `q_diag`'s
     /// `[0..3, 3..6, 6..9, 9..12, 12..24]`.
@@ -760,6 +798,7 @@ impl WbcParams {
             attitude_pd_ablation: None,
             staircase: None,
             contact_reflex: None,
+            terrain_footplan: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -814,6 +853,7 @@ impl WbcParams {
             attitude_pd_ablation: None,
             staircase: None,
             contact_reflex: None,
+            terrain_footplan: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -1424,6 +1464,72 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                             for kk in 0..3 {
                                 targets[slot * 3 + kk] = (ji[kk], signs[kk] * q_ik[kk]);
                             }
+                        }
+                    }
+                }
+            }
+            if let Some(cfg) = params.terrain_footplan {
+                if k >= burn_in_steps {
+                    let body_pos_world = robot.base_transform.translation.vector;
+                    let (_, _, yaw_now) = robot.base_transform.rotation.euler_angles();
+                    let (cy, sy) = (yaw_now.cos(), yaw_now.sin());
+                    for slot in 0..4 {
+                        if out.legs[slot].phase.is_stance {
+                            continue;
+                        }
+                        let nominal_body = out.legs[slot].foot_body;
+                        // Body-frame offset -> world x, yaw-only (roll/pitch
+                        // dropped, same level of approximation this file
+                        // already uses for frame rotations elsewhere).
+                        let world_x = body_pos_world.x + cy * nominal_body.x - sy * nominal_body.y;
+                        let terrain_z = params
+                            .staircase
+                            .map(|s| s.height_at(world_x))
+                            .unwrap_or(0.0);
+                        // Flat ground under this foot -> leave it alone,
+                        // full stop. `desired_body_z` below is only valid
+                        // relative to the *current* body_pos_world.z, and
+                        // that is not a stable reference: it is whatever the
+                        // body's height happens to be on this tick, which is
+                        // wrong exactly when something is already going
+                        // wrong (a sag, a pitch). Without this guard, a rear
+                        // leg still over the approach floor got erroneously
+                        // lifted because the body had dipped, producing a
+                        // leg thrown out at a bad angle and a yaw spike to
+                        // +115 deg/s within 0.1 s -- caught on video, not by
+                        // the numbers alone.
+                        if terrain_z <= 1e-6 {
+                            continue;
+                        }
+                        // foot_world_z = body_pos_world.z + nominal_body.z is
+                        // what the flat-ground swing curve currently intends;
+                        // solve for the body-frame z that instead puts the
+                        // foot at terrain_z + clearance in world frame.
+                        let desired_body_z =
+                            terrain_z + cfg.clearance_m - body_pos_world.z;
+                        // Never target *below* the open-loop plan -- this
+                        // only adds clearance over what the terrain needs,
+                        // it does not shortcut a foot down early.
+                        let target_z = desired_body_z.max(nominal_body.z);
+                        let lift_target = Vector3::new(nominal_body.x, nominal_body.y, target_z);
+                        let leg_kin = gc.kinematics().legs()[slot];
+                        let signs = gc.joint_signs()[slot];
+                        let ji = gc.joint_indices()[slot];
+                        let sol = solve_leg_ik(leg_kin, lift_target, gc.knee_forward()[slot]);
+                        let (hip, thigh, calf) = sol.angles();
+                        let q_ik = [hip, thigh, calf];
+                        for kk in 0..3 {
+                            targets[slot * 3 + kk] = (ji[kk], signs[kk] * q_ik[kk]);
+                        }
+                        if std::env::var_os("NAMI_FOOTPLAN_LOG").is_some()
+                            && terrain_z > 0.0
+                            && k % 20 == 0
+                        {
+                            eprintln!(
+                                "[footplan k={k:5} slot={slot}] world_x={world_x:.3}                                  terrain_z={terrain_z:.3} nominal.z={:.4} target_z={target_z:.4}                                  reachable={:?}",
+                                nominal_body.z,
+                                matches!(sol, LegIkSolution::Reached { .. }),
+                            );
                         }
                     }
                 }
@@ -6459,6 +6565,54 @@ fn namiashi_staircase_5cm_contact_reflex() {
     let reached_top = final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
     eprintln!(
         "[stairs 5cm reflex] reached x={max_x:.3}m  max z={max_z:.3}m  \
+         final (x,y,z)=({:.3},{:.3},{:.3})m  reached_top={reached_top}",
+        final_s.body_x, final_s.body_y, final_s.body_z,
+    );
+}
+
+/// Does perfect, idealized height knowledge alone get the 5 cm staircase
+/// climbed -- before spending effort on how a real sensor would acquire it?
+///
+/// `TerrainFootplanCfg` queries `StaircaseCfg::height_at` (exact, no sensor
+/// noise, no mapping latency -- the best case for perception) every tick and
+/// raises each swinging foot's z target to `terrain height + clearance`,
+/// continuously, not just reactively after a collision the way
+/// `ContactReflexCfg` did. Horizontal touchdown placement is untouched --
+/// isolating whether vertical clearance informed by real height knowledge is
+/// the missing piece, same discipline as the earlier blind clearance sweep.
+#[test]
+#[ignore = "writes a replay for visual inspection -- run with --ignored"]
+fn namiashi_staircase_5cm_terrain_footplan() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    let top_start_x = stairs.top_platform_start_x();
+    let params = WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: cmd,
+        total_time_s: 20.0,
+        wbc_real_inertia: true,
+        staircase: Some(stairs),
+        terrain_footplan: Some(TerrainFootplanCfg { clearance_m: 0.02 }),
+        replay_dir: Some("/tmp/nami_stairs/rise05_footplan".to_string()),
+        ..namiashi_tuned_params(I)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+    let max_z = samples.iter().map(|s| s.body_z).fold(f64::NEG_INFINITY, f64::max);
+    let final_s = samples.last().unwrap();
+    let reached_top = final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
+    eprintln!(
+        "[stairs 5cm footplan] reached x={max_x:.3}m  max z={max_z:.3}m  \
          final (x,y,z)=({:.3},{:.3},{:.3})m  reached_top={reached_top}",
         final_s.body_x, final_s.body_y, final_s.body_z,
     );
