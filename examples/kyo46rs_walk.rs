@@ -216,6 +216,42 @@ fn main() {
     // everything that touchdown brings with it.
     let no_lift = flag("NO_LIFT", false);
 
+    // ---- disturbance: one rectangular push at a chosen gait phase --------
+    //
+    // Sized in IMPULSE (N*s), not force, because that is the quantity the
+    // machine's recovery budget is denominated in: an ankle strategy can
+    // absorb `m * omega * d_cop` of it and no more, which on this robot is
+    // 6.63 * 5.585 * 0.019 = 0.70 N*s sideways against 1.8 N*s fore-aft.
+    // Quoting a force instead hides the duration and makes two runs with the
+    // same "10 N push" incomparable.
+    let push_imp = env_f64("PUSH_IMPULSE", 0.0);
+    // Horizontal direction, degrees: 0 = +x (forward), 90 = +y (left). The
+    // whole circle is reachable, so diagonals are one number rather than a
+    // pair of components that have to be kept consistent with each other.
+    let push_deg = env_f64("PUSH_DEG", 90.0);
+    // Yaw impulse (N*m*s) about +z, independent of the linear one so a pure
+    // twist is expressible.
+    let push_yaw_imp = env_f64("PUSH_YAW_IMPULSE", 0.0);
+    let push_dt = env_f64("PUSH_DT", 0.10).max(1e-6);
+    // WHEN. Not a wall-clock time: what the machine can absorb differs by
+    // several times between double and single support, so a ladder that does
+    // not pin the phase measures the phase as much as the impulse. Fire on
+    // the first tick that is inside step `PUSH_STEP`, in the requested
+    // support, at or past `PUSH_AT` of the way through that slice.
+    let push_step = env_f64("PUSH_STEP", 5.0) as usize;
+    let push_at = env_f64("PUSH_AT", 0.5).clamp(0.0, 1.0);
+    // "ds" | "ss" | "any" -- which support phase to catch.
+    let push_support = std::env::var("PUSH_SUPPORT").unwrap_or_else(|_| "ss".into());
+    // Recovery is declared when the DCM error comes back under this and
+    // STAYS under it -- a single tick dipping below the line is the error
+    // crossing zero on its way past, not a recovery.
+    let push_recover_m = env_f64("PUSH_RECOVER_MM", 20.0) * 1e-3;
+    // How long it has to stay under. The DCM time constant is 1/omega =
+    // 0.179 s on this machine, so anything shorter than a couple of those is
+    // indistinguishable from the error passing through the band.
+    let push_recover_s = env_f64("PUSH_RECOVER_S", 0.5);
+    let push_link = std::env::var("PUSH_LINK").unwrap_or_else(|_| prof.root_link.to_string());
+
     let ctrl_dt = env_f64("CTRL_DT", prof.ctrl_dt);
     let mj_substeps = (ctrl_dt / mj_dt).round().max(1.0) as u32;
     let dt = mj_substeps as f64 * mj_dt;
@@ -510,9 +546,37 @@ fn main() {
     let mut n_open_loop = 0u32;
     let mut n_selfcollide = 0u32;
     let mut max_selfcollide_f: f64 = 0.0;
+    // ---- disturbance response ------------------------------------------
+    // Whole-run maxima say nothing about a push: they are dominated by the
+    // walk itself. Everything about the recovery has to be measured from the
+    // moment of the push forward, which is what these hold.
+    let mut push_at_t: Option<f64> = None;
+    let mut push_at_step: usize = 0;
+    let mut push_dcm_err_max: f64 = 0.0;
+    let mut push_tilt_max: f64 = 0.0;
+    let mut push_degraded_at: u32 = 0;
+    let mut push_cop_max: f64 = 0.0;
+    let mut push_slip_wbc_max: f64 = 0.0;
+    let mut push_slip_plant_max: f64 = 0.0;
+    let mut push_slip_ticks: u32 = 0;
+    // Landing impact and the unloading that follows it. Measured on the
+    // straddling pair at 0.20 (fell) against 0.15 and 0.30 (both survived):
+    // the faller spiked to 2.77x body weight and then spent 100 ms with the
+    // two feet carrying less than half the robot's weight between them --
+    // effectively ballistic -- while both survivors never dropped below 0.63x
+    // and peaked at 1.22x / 1.41x. Neither friction use nor CoP use nor
+    // ankle_roll range separated those three runs; this did.
+    let mut push_fz_total_min: f64 = f64::INFINITY;
+    let mut push_fz_total_max: f64 = 0.0;
+    let mut push_unloaded_ticks: u32 = 0;
+    let mut push_ankle_max: f64 = 0.0;
+    let mut push_exceeded = false;
+    let mut push_last_exceed: Option<f64> = None;
+    let mut t_last: f64 = 0.0;
 
     for tick in 0..n_ticks {
         let t = tick as f64 * dt;
+        t_last = t;
         let st = rig.sync();
         let (q, v, v_dvec, data) = (&st.q, &st.v, &st.v_dvec, &st.data);
         // Ground truth first: the phase logic, the contact set and the tasks
@@ -702,6 +766,28 @@ fn main() {
         let r = dcm_plan.reference(t);
         let dcm_err = (xi - r.xi).norm();
         max_dcm_err = max_dcm_err.max(dcm_err);
+        // Post-push accumulation. The push fires late in the tick, after this
+        // point, so the firing tick's error is still the undisturbed one and
+        // the window starts one tick later -- which is what we want.
+        if push_at_t.is_some() {
+            push_dcm_err_max = push_dcm_err_max.max(dcm_err);
+            // Recovery is decided BACKWARD from the end of the run, from the
+            // LAST time the error was out of tolerance -- not forward from the
+            // first time it dipped back in.
+            //
+            // Both cheaper definitions are wrong, and each was measured wrong
+            // here before this comment existed. Counting the first N ticks
+            // under the line credits recovery 5 ms after the shove, because
+            // the impulse has not reached the CoM yet. Counting the first
+            // N-tick dwell after the error exceeds the line credits recovery
+            // at 5.150 s to a robot that fell at 5.915 s, because the error is
+            // not monotonic on the way down and crosses the band on the way
+            // past. Only "went under and STAYED under" is a recovery.
+            if dcm_err >= push_recover_m {
+                push_exceeded = true;
+                push_last_exceed = Some(t);
+            }
+        }
         // ---- capture-point footstep adaptation --------------------------
         // Steer the NEXT footstep on the DCM's predicted position at
         // touchdown. Recomputed every tick; the prediction horizon shrinks to
@@ -1090,6 +1176,44 @@ fn main() {
             }
         }
         max_cop_use = max_cop_use.max(cop_use);
+        if push_at_t.is_some() {
+            push_cop_max = push_cop_max.max(cop_use);
+            // Friction utilisation, against BOTH denominators, because they
+            // answer different questions and swapping them silently is how a
+            // friction sweep comes to measure its own assumption.
+            //
+            //   ...wbc   -- tangential / (friction_mu * fz): what the WBC
+            //               thinks it is allowed. Sweeping `friction_mu` moves
+            //               this by construction, so it cannot show whether
+            //               the foot slipped.
+            //   ...plant -- tangential / (mu_ground * fz): what the ground
+            //               actually offers. Above 1.0 the foot IS sliding,
+            //               regardless of what the controller assumed.
+            let fz_total = measured.f_w[0][2] + measured.f_w[1][2];
+            push_fz_total_min = push_fz_total_min.min(fz_total);
+            push_fz_total_max = push_fz_total_max.max(fz_total);
+            if fz_total < 0.5 * total_mass * G {
+                push_unloaded_ticks += 1;
+            }
+            for side in 0..2 {
+                let fz = measured.f_w[side][2];
+                if fz <= 1.0 {
+                    continue; // an unloaded foot has no meaningful ratio
+                }
+                let tan = (measured.f_w[side][0].powi(2)
+                    + measured.f_w[side][1].powi(2))
+                    .sqrt();
+                push_slip_wbc_max = push_slip_wbc_max.max(tan / (friction_mu * fz));
+                push_slip_plant_max = push_slip_plant_max.max(tan / (mu_ground * fz));
+                // AT the cone, not past it: MuJoCo's contact solver never
+                // returns a force outside the cone, so `tan > mu*fz` is only
+                // ever true by floating-point luck and counted 0 ticks on a
+                // run that slid for 150 ms. Riding the boundary IS sliding.
+                if tan >= 0.98 * mu_ground * fz {
+                    push_slip_ticks += 1;
+                }
+            }
+        }
 
         // Self-collision, watched EVERY tick rather than only at spawn.
         //
@@ -1146,7 +1270,11 @@ fn main() {
         });
         for i in 0..2 {
             if ankle_roll_lim[i].is_finite() && ankle_roll_lim[i] > 1e-6 {
-                max_ankle_roll_use = max_ankle_roll_use.max(ankle_roll[i].abs() / ankle_roll_lim[i]);
+                let use_i = ankle_roll[i].abs() / ankle_roll_lim[i];
+                max_ankle_roll_use = max_ankle_roll_use.max(use_i);
+                if push_at_t.is_some() {
+                    push_ankle_max = push_ankle_max.max(use_i);
+                }
             }
         }
 
@@ -1189,6 +1317,60 @@ fn main() {
         let trot = misarta::se3::rotation_matrix(&data.oMi[rig.trunk_mi]);
         let trunk_tilt =
             trot[(2, 1)].atan2(trot[(2, 2)]).abs().max((-trot[(2, 0)]).asin().abs());
+
+        // ---- disturbance: fire once, at the requested phase --------------
+        // After the plant write and before the plant step, so the push lands
+        // on the same tick boundary as the torques it has to fight, and the
+        // controller sees the consequence on the NEXT tick's measurement --
+        // which is the causal order a real shove has.
+        if push_at_t.is_none() && (push_imp.abs() > 0.0 || push_yaw_imp.abs() > 0.0) {
+            let phase_ok = match push_support.as_str() {
+                "ds" => matches!(support, Support::Double),
+                "ss" => matches!(support, Support::Single { .. }),
+                _ => true,
+            };
+            if step_idx == push_step && phase_ok && slice_frac >= push_at {
+                let th = push_deg.to_radians();
+                let f = push_imp / push_dt;
+                let (fx, fy) = (f * th.cos(), f * th.sin());
+                let tz = push_yaw_imp / push_dt;
+                rig.sim
+                    .apply_external_force(&push_link, [fx, fy, 0.0], [0.0, 0.0, tz], push_dt);
+                let dv = push_imp / total_mass;
+                println!(
+                    "  PUSH at t={t:.3} step={step_idx} {} frac={slice_frac:.2}: \
+                     {push_imp:.3} N*s at {push_deg:.0} deg \
+                     (F=[{fx:.1}, {fy:.1}] N for {push_dt:.3} s) -> dv={dv:.3} m/s, \
+                     capture-point shift {:.1} mm",
+                    match support {
+                        Support::Double => "DS".to_string(),
+                        Support::Single { stance, .. } =>
+                            format!("SS/{}", if stance == 0 { "L" } else { "R" }),
+                    },
+                    dv / omega * 1e3,
+                );
+                // If the pulse outlives the slice it was fired into, the run
+                // is not measuring what the label says. Firing 0.10 s into a
+                // 0.20 s double-support at frac 0.5 puts the tail of the pulse
+                // exactly on liftoff, and the resulting "double support"
+                // number came out BELOW the single-support one -- the phase
+                // was being measured, not the impulse. Say so rather than
+                // letting the row be compared with the others.
+                let slice_left = slice.t1 - t;
+                if push_dt > slice_left {
+                    println!(
+                        "  PUSH WARNING: the {push_dt:.3} s pulse outlasts this \
+                         slice by {:.3} s, so it spills into the next support \
+                         phase. Lower PUSH_AT or PUSH_DT to keep the \
+                         disturbance inside one phase.",
+                        push_dt - slice_left
+                    );
+                }
+                push_at_t = Some(t);
+                push_at_step = step_idx;
+                push_degraded_at = tally.n;
+            }
+        }
 
         write_to_plant(&mut rig, ctrl_mode, &robot_taus, &extracted.qddot, v, dt);
         rig.step(mj_substeps);
@@ -1272,6 +1454,9 @@ fn main() {
         min_z = min_z.min(cur_z);
         let tilt = roll.abs().max(pitch.abs());
         max_tilt = max_tilt.max(tilt);
+        if push_at_t.is_some() {
+            push_tilt_max = push_tilt_max.max(tilt);
+        }
         if tick % 40 == 0 {
             let sup = match support {
                 Support::Double => "DS  ".to_string(),
@@ -1376,6 +1561,95 @@ fn main() {
     println!(
         "  self-collision ticks: {n_selfcollide}  (peak {max_selfcollide_f:.1} N)          -- any nonzero value means the QP was solving against a contact it has no model for"
     );
+    if let Some(tp) = push_at_t {
+        println!("\n=== Disturbance ===");
+        println!(
+            "  push: {push_imp:.3} N*s at {push_deg:.0} deg, {push_dt:.3} s, \
+             t={tp:.3} step={push_at_step} ({push_support}, frac>={push_at:.2})"
+        );
+        // The ankle-strategy budget, from the CoP box this run is actually
+        // using. Printed next to the impulse so a row that survived on
+        // stepping alone is distinguishable from one the feet could have
+        // absorbed standing still -- the two are different results.
+        // How far the CoP can travel along the push direction before it leaves
+        // the sole. For a rectangular box that is where the ray exits, i.e.
+        // min over the axes of half_extent / |component| -- NOT the half
+        // extent of whichever axis is dominant, which is only right for the
+        // two axis-aligned cases and gets a 45 deg push wrong by 1.8x.
+        let (ux, uy) = (push_deg.to_radians().cos(), push_deg.to_radians().sin());
+        let d_cop = [
+            if ux.abs() > 1e-9 { sole_half_l / ux.abs() } else { f64::INFINITY },
+            if uy.abs() > 1e-9 { sole_half_w / uy.abs() } else { f64::INFINITY },
+        ]
+        .into_iter()
+        .fold(f64::INFINITY, f64::min);
+        let ankle_budget = total_mass * omega * d_cop;
+        println!(
+            "  ankle-strategy budget in that direction: {ankle_budget:.2} N*s \
+             ({:.1}x exceeded)",
+            push_imp / ankle_budget.max(1e-9)
+        );
+        println!("  peak |xi - xi_ref| after the push = {:.1} mm", push_dcm_err_max * 1e3);
+        println!("  peak tilt after the push = {push_tilt_max:.3} rad");
+        println!("  degraded solves after the push: {}", tally.n - push_degraded_at);
+        // What was actually saturating when it let go. On this machine the DCM
+        // error stays small right up to the limit and then the robot falls, so
+        // the error is not the early warning -- these two are.
+        println!("  peak CoP box use after the push = {push_cop_max:.2}");
+        println!(
+            "  peak friction use after the push = {push_slip_plant_max:.2} of the \
+             PLANT cone (mu={mu_ground:.2}), {push_slip_wbc_max:.2} of what the WBC \
+             assumed (mu={friction_mu:.2})"
+        );
+        println!(
+            "  sliding ticks after the push: {push_slip_ticks} ({:.0} ms)  -- a loaded \
+             foot riding the plant's friction cone",
+            push_slip_ticks as f64 * dt * 1e3
+        );
+        println!(
+            "  total vertical ground force after the push: min {:.1} N ({:.2}x weight), \
+             peak {push_fz_total_max:.1} N ({:.2}x weight)",
+            push_fz_total_min,
+            push_fz_total_min / (total_mass * G),
+            push_fz_total_max / (total_mass * G),
+        );
+        println!(
+            "  unloaded ticks after the push: {push_unloaded_ticks} ({:.0} ms below half \
+             body weight)  -- the machine is ballistic and the QP is planning \
+             against contacts that are not carrying it",
+            push_unloaded_ticks as f64 * dt * 1e3
+        );
+        println!(
+            "  peak ankle_roll use after the push = {:.0}% of limit",
+            push_ankle_max * 100.0
+        );
+        let settled_for = push_last_exceed.map(|te| t_last - te).unwrap_or(f64::INFINITY);
+        if fell {
+            println!("  NOT RECOVERED: fell");
+        } else if !push_exceeded {
+            println!(
+                "  ABSORBED: the DCM error never left the {:.0} mm band at all",
+                push_recover_m * 1e3
+            );
+        } else if settled_for >= push_recover_s {
+            let te = push_last_exceed.unwrap();
+            println!(
+                "  RECOVERED at t={te:.3} ({:.3} s, {} steps after the push) -- \
+                 last out-of-band tick, then under {:.0} mm for {settled_for:.2} s \
+                 to the end of the run",
+                te - tp,
+                gait.steps_taken(te.max(1e-9)).saturating_sub(push_at_step),
+                push_recover_m * 1e3,
+            );
+        } else {
+            println!(
+                "  NOT RECOVERED: survived, but the DCM error was still outside \
+                 the {:.0} mm band {settled_for:.2} s before the run ended \
+                 (needs {push_recover_s:.2} s) -- lengthen T to decide this row",
+                push_recover_m * 1e3
+            );
+        }
+    }
     println!("  verdict: {}", if fell { "FELL" } else { "SURVIVED" });
 }
 
