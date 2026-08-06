@@ -437,9 +437,15 @@ impl StaircaseCfg {
         }
         let hy = self.half_width_m;
         let bottom_z = -0.5_f64;
-        // A little runway behind the spawn point, purely for margin -- not
-        // exposed as a config knob since nothing walks backward here.
-        let margin_behind_m = 0.5_f64;
+        // Runway behind the spawn point. Not exposed as a config knob, but
+        // no longer "a little" -- the 3 cm rise sweep found the robot can
+        // genuinely walk itself backward down a staircase it had climbed
+        // (a slow, uncorrected yaw drift accumulating to a full 180 deg
+        // turn while balanced on a tread, with nothing ever commanding one),
+        // and 0.5 m was not enough: it walked off the back of the floor and
+        // free-fell, which looked like a climbing failure in the summary
+        // numbers and was actually a test-track limitation.
+        let margin_behind_m = 8.0_f64;
         let stairs_start_x = self.approach_m;
         let back_x = self.top_platform_start_x() + self.top_platform_m;
 
@@ -585,6 +591,15 @@ struct WbcParams {
     /// Override for `WbcWeights::contact_force` (default 5.0) -- how hard the
     /// WBC pulls its own GRF solution toward the MPC's prediction.
     contact_force_weight: Option<f64>,
+    /// `WbcPipeline::yaw_pd_gain`: an explicit `(kp, kd)` heading correction,
+    /// additive on top of whatever the GRF-derived feedforward already does
+    /// -- `(0.0, 0.0)` (the default everywhere else in this file) is an
+    /// exact no-op. Nothing commands a turn on the staircase (cmd_wz stays
+    /// 0 throughout), yet yaw drifts by a full 180 deg over ~5-8 s while
+    /// the robot is balanced on a 3 cm-riser tread -- this is the direct
+    /// lever to test whether that drift is simply unregulated rather than
+    /// something a footplan or WBC weight change would ever reach.
+    yaw_pd_gain: Option<(f64, f64)>,
     /// Write the exact MJCF the sim runs plus a per-tick root-pose and joint
     /// trace here, for `render_namiashi.py` to replay. Purely a side channel;
     /// nothing in the harness reads it back.
@@ -806,6 +821,7 @@ impl WbcParams {
             f_min_stance_frac: 0.0,
             base_accel_weight: None,
             contact_force_weight: None,
+            yaw_pd_gain: None,
             replay_dir: None,
             trunk_drop_m: NAMIASHI_STANCE_DROP_M,
             base_pos_bias_m: [0.0; 3],
@@ -861,6 +877,7 @@ impl WbcParams {
             f_min_stance_frac: 0.0,
             base_accel_weight: None,
             contact_force_weight: None,
+            yaw_pd_gain: None,
             replay_dir: None,
             trunk_drop_m: NAMIASHI_STANCE_DROP_M,
             base_pos_bias_m: [0.0; 3],
@@ -1227,6 +1244,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if let Some(w) = params.base_accel_weight {
         wbc_pipeline.weights.base_accel = w;
         eprintln!("[wbc] base_accel weight = {w} (default 200.0)");
+    }
+    if let Some((kp, kd)) = params.yaw_pd_gain {
+        wbc_pipeline.yaw_pd_gain = (kp, kd);
+        eprintln!("[wbc] yaw_pd_gain = ({kp}, {kd}) (default (0.0, 0.0))");
     }
     if let Some((kp, kd)) = params.attitude_pd_ablation {
         wbc_pipeline.roll_pd_gain = (kp, kd);
@@ -6867,4 +6888,56 @@ fn namiashi_staircase_box_floor_only_nullspace_check() {
     };
     let Some(samples) = run_wbc_sim(params) else { return };
     report_walk("box-floor-only (no stairs reached)", &samples, cmd, 1.0);
+}
+
+/// Where between 2 cm (climbs cleanly) and 5 cm (never climbs) does this
+/// stop working? Namiashi's flat-ground swing clearance is a fixed
+/// 0.035-0.045 m -- 3 cm sits inside that budget, 4 cm sits right at its
+/// edge, 5 cm is already past it. Reuses the best config found so far
+/// (Trot, terrain footplan with vertical clearance + horizontal snap, wide
+/// platform sizing) at each rise, changing only `rise_m`.
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_staircase_rise_sweep_3_4cm() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    for rise_m in [0.03_f64, 0.04, 0.05] {
+        let stairs = StaircaseCfg {
+            rise_m,
+            run_m: 0.20,
+            n_steps: 10,
+            approach_m: 1.5,
+            top_platform_m: 8.0,
+            half_width_m: 6.0,
+        };
+        let top_start_x = stairs.top_platform_start_x();
+        let params = WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: cmd,
+            total_time_s: 20.0,
+            wbc_real_inertia: true,
+            staircase: Some(stairs),
+            terrain_footplan: Some(TerrainFootplanCfg {
+                clearance_m: 0.02,
+                horizontal_margin_m: 0.05,
+            }),
+            yaw_pd_gain: Some((200.0, 20.0)),
+            replay_dir: Some(format!("/tmp/nami_stairs/rise{:.0}cm_footplan_yaw", rise_m * 100.0)),
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+        let max_z = samples.iter().map(|s| s.body_z).fold(f64::NEG_INFINITY, f64::max);
+        let final_s = samples.last().unwrap();
+        let reached_top =
+            final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
+        eprintln!(
+            "[stairs rise={:.0}cm] reached x={max_x:.3}m  max z={max_z:.3}m  \
+             final (x,y,z)=({:.3},{:.3},{:.3})m  reached_top={reached_top}",
+            rise_m * 100.0,
+            final_s.body_x, final_s.body_y, final_s.body_z,
+        );
+    }
 }
