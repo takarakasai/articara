@@ -250,6 +250,37 @@ fn main() {
     // 0.179 s on this machine, so anything shorter than a couple of those is
     // indistinguishable from the error passing through the band.
     let push_recover_s = env_f64("PUSH_RECOVER_S", 0.5);
+    // Early window. Every post-push maximum below is reported TWICE: once over
+    // this window and once over the rest of the run.
+    //
+    // WHY: the whole-run versions measure the crash. On the 0.20 N*s run that
+    // falls, the 2.77x "landing impact" peak lands 0.69 s after touchdown with
+    // the trunk already at 28 deg -- that is the robot hitting the floor, not
+    // the disturbance. The unloading has the same problem: the total ground
+    // force first drops below half body weight at t=5.40, by which point the
+    // tilt has already run to 0.122 rad. A quantity that only separates
+    // survivors from fallers over the whole run may be restating "it fell".
+    // Windowed to the first 1/omega or so after the push, a quantity that
+    // still separates is a PRECURSOR, and only that is usable for judging a
+    // change.
+    let push_window_s = env_f64("PUSH_WINDOW_S", 0.20);
+    // ---- weight-transfer quality ---------------------------------------
+    //
+    // What actually separated the 0.20 N*s run that falls from the 0.30 that
+    // survives, tick by tick: after the support changes, the survivor's CoP
+    // leaves the sole EDGE within 10 ms and settles 2-4 mm from the sole
+    // centre, and the total ground force locks at 1.00x. The faller's CoP
+    // stays pinned at 18-19 mm -- the edge of a 19 mm half-width sole -- for
+    // the whole rest of the run, while the force oscillates between 0 and
+    // 1.97x.
+    //
+    // A CoP on the edge is a foot that cannot modulate its own pressure. The
+    // peak `cop_use` does not show this (it reads 1.00 in benign runs too);
+    // what matters is whether the foot comes OFF the edge, so this measures
+    // TIME AT THE EDGE, anchored on the support change rather than on the
+    // clock, so the number is not contaminated by however the fall unfolds.
+    let edge_frac = env_f64("PUSH_EDGE_FRAC", 0.9);
+    let transfer_s = env_f64("PUSH_TRANSFER_S", 0.10);
     let push_link = std::env::var("PUSH_LINK").unwrap_or_else(|_| prof.root_link.to_string());
 
     let ctrl_dt = env_f64("CTRL_DT", prof.ctrl_dt);
@@ -569,6 +600,25 @@ fn main() {
     let mut push_fz_total_min: f64 = f64::INFINITY;
     let mut push_fz_total_max: f64 = 0.0;
     let mut push_unloaded_ticks: u32 = 0;
+    // Early-window counterparts (see `push_window_s`).
+    let mut win_dcm_err_max: f64 = 0.0;
+    let mut win_tilt_max: f64 = 0.0;
+    let mut win_cop_max: f64 = 0.0;
+    let mut win_slip_plant_max: f64 = 0.0;
+    let mut win_slip_ticks: u32 = 0;
+    let mut win_fz_total_min: f64 = f64::INFINITY;
+    let mut win_fz_total_max: f64 = 0.0;
+    let mut win_unloaded_ticks: u32 = 0;
+    let mut win_degraded_at: Option<u32> = None;
+    let mut win_degraded_end: u32 = 0;
+    // First support change after the push, and the CoP-edge accounting over
+    // the `transfer_s` that follows it.
+    let mut transfer_t: Option<f64> = None;
+    let mut support_prev: Option<Support> = None;
+    let mut xfer_edge_ticks: u32 = 0;
+    let mut xfer_ticks: u32 = 0;
+    let mut xfer_leave_t: Option<f64> = None;
+    let mut xfer_wrongfoot_ticks: u32 = 0;
     let mut push_ankle_max: f64 = 0.0;
     let mut push_exceeded = false;
     let mut push_last_exceed: Option<f64> = None;
@@ -577,6 +627,16 @@ fn main() {
     for tick in 0..n_ticks {
         let t = tick as f64 * dt;
         t_last = t;
+        // Read before the push fires later in this tick, so the window opens
+        // on the tick AFTER the impulse -- the same convention the whole-run
+        // accumulators use.
+        let in_push_window = push_at_t.map(|tp| t - tp <= push_window_s).unwrap_or(false);
+        if in_push_window {
+            if win_degraded_at.is_none() {
+                win_degraded_at = Some(tally.n);
+            }
+            win_degraded_end = tally.n;
+        }
         let st = rig.sync();
         let (q, v, v_dvec, data) = (&st.q, &st.v, &st.v_dvec, &st.data);
         // Ground truth first: the phase logic, the contact set and the tasks
@@ -769,6 +829,9 @@ fn main() {
         // Post-push accumulation. The push fires late in the tick, after this
         // point, so the firing tick's error is still the undisturbed one and
         // the window starts one tick later -- which is what we want.
+        if in_push_window {
+            win_dcm_err_max = win_dcm_err_max.max(dcm_err);
+        }
         if push_at_t.is_some() {
             push_dcm_err_max = push_dcm_err_max.max(dcm_err);
             // Recovery is decided BACKWARD from the end of the run, from the
@@ -1189,11 +1252,60 @@ fn main() {
             //   ...plant -- tangential / (mu_ground * fz): what the ground
             //               actually offers. Above 1.0 the foot IS sliding,
             //               regardless of what the controller assumed.
+            // The first support change after the push opens the transfer
+            // window. `support` is the SCHEDULE's opinion; that is the right
+            // anchor, because the question is whether the machine completed
+            // the transfer the plan asked for.
+            // The anchor is entry into SINGLE support -- the tick the plan
+            // commits the whole machine to one foot. The other transition
+            // (single -> double) does not discriminate: at the first one after
+            // the push both the 0.20 that falls and the 0.30 that survives sit
+            // on the edge for 21/21 ticks, because in double support the CoP
+            // of each sole rides its inner edge by construction. It is the
+            // commitment to one foot that the disturbed machine either
+            // completes or does not.
+            if transfer_t.is_none() {
+                if let (Some(Support::Double), Support::Single { .. }) = (support_prev, support) {
+                    transfer_t = Some(t);
+                }
+            }
+            if let Some(t0) = transfer_t {
+                if t - t0 <= transfer_s {
+                    xfer_ticks += 1;
+                    let mut on_edge = false;
+                    for side in 0..2 {
+                        let fz = measured.cop[side][2];
+                        if fz <= 0.1 * total_mass * G {
+                            continue;
+                        }
+                        if measured.cop[side][1].abs() >= edge_frac * sole_half_w {
+                            on_edge = true;
+                        }
+                        // A foot the schedule says is swinging, carrying load.
+                        if !support.is_stance(side) {
+                            xfer_wrongfoot_ticks += 1;
+                        }
+                    }
+                    if on_edge {
+                        xfer_edge_ticks += 1;
+                    } else if xfer_leave_t.is_none() {
+                        xfer_leave_t = Some(t);
+                    }
+                }
+            }
             let fz_total = measured.f_w[0][2] + measured.f_w[1][2];
             push_fz_total_min = push_fz_total_min.min(fz_total);
             push_fz_total_max = push_fz_total_max.max(fz_total);
             if fz_total < 0.5 * total_mass * G {
                 push_unloaded_ticks += 1;
+            }
+            if in_push_window {
+                win_cop_max = win_cop_max.max(cop_use);
+                win_fz_total_min = win_fz_total_min.min(fz_total);
+                win_fz_total_max = win_fz_total_max.max(fz_total);
+                if fz_total < 0.5 * total_mass * G {
+                    win_unloaded_ticks += 1;
+                }
             }
             for side in 0..2 {
                 let fz = measured.f_w[side][2];
@@ -1205,6 +1317,12 @@ fn main() {
                     .sqrt();
                 push_slip_wbc_max = push_slip_wbc_max.max(tan / (friction_mu * fz));
                 push_slip_plant_max = push_slip_plant_max.max(tan / (mu_ground * fz));
+                if in_push_window {
+                    win_slip_plant_max = win_slip_plant_max.max(tan / (mu_ground * fz));
+                    if tan >= 0.98 * mu_ground * fz {
+                        win_slip_ticks += 1;
+                    }
+                }
                 // AT the cone, not past it: MuJoCo's contact solver never
                 // returns a force outside the cone, so `tan > mu*fz` is only
                 // ever true by floating-point luck and counted 0 ticks on a
@@ -1372,6 +1490,7 @@ fn main() {
             }
         }
 
+        support_prev = Some(support);
         write_to_plant(&mut rig, ctrl_mode, &robot_taus, &extracted.qddot, v, dt);
         rig.step(mj_substeps);
 
@@ -1456,6 +1575,9 @@ fn main() {
         max_tilt = max_tilt.max(tilt);
         if push_at_t.is_some() {
             push_tilt_max = push_tilt_max.max(tilt);
+        }
+        if in_push_window {
+            win_tilt_max = win_tilt_max.max(tilt);
         }
         if tick % 40 == 0 {
             let sup = match support {
@@ -1589,6 +1711,64 @@ fn main() {
              ({:.1}x exceeded)",
             push_imp / ankle_budget.max(1e-9)
         );
+        // ---- the early window: everything below the push, before the fall --
+        println!(
+            "  --- first {push_window_s:.2} s after the push (precursor window) ---"
+        );
+        match transfer_t {
+            Some(t0) => {
+                println!(
+                    "  weight transfer at t={t0:.3} ({:.3} s after the push), \
+                     first {transfer_s:.2} s of it:",
+                    t0 - tp
+                );
+                println!(
+                    "    CoP on the sole edge (|y| >= {:.0}% of half-width) for \
+                     {xfer_edge_ticks}/{xfer_ticks} ticks ({:.0}%)",
+                    edge_frac * 100.0,
+                    100.0 * xfer_edge_ticks as f64 / xfer_ticks.max(1) as f64,
+                );
+                match xfer_leave_t {
+                    Some(tl) => println!(
+                        "    left the edge {:.0} ms after the transfer",
+                        (tl - t0) * 1e3
+                    ),
+                    None => println!(
+                        "    NEVER left the edge inside the window -- the stance \
+                         foot could not modulate its own pressure"
+                    ),
+                }
+                println!(
+                    "    load on a foot the schedule says is swinging: \
+                     {xfer_wrongfoot_ticks} ticks"
+                );
+            }
+            None => println!("  no support change after the push (run ended first)"),
+        }
+        println!("  win peak |xi - xi_ref| = {:.1} mm", win_dcm_err_max * 1e3);
+        println!("  win peak tilt = {win_tilt_max:.3} rad");
+        println!("  win peak CoP box use = {win_cop_max:.2}");
+        println!(
+            "  win peak friction use = {win_slip_plant_max:.2} of the plant cone, \
+             sliding {win_slip_ticks} ticks ({:.0} ms)",
+            win_slip_ticks as f64 * dt * 1e3
+        );
+        println!(
+            "  win total vertical ground force: min {:.1} N ({:.2}x weight), \
+             peak {win_fz_total_max:.1} N ({:.2}x weight)",
+            if win_fz_total_min.is_finite() { win_fz_total_min } else { 0.0 },
+            if win_fz_total_min.is_finite() { win_fz_total_min / (total_mass * G) } else { 0.0 },
+            win_fz_total_max / (total_mass * G),
+        );
+        println!(
+            "  win unloaded ticks: {win_unloaded_ticks} ({:.0} ms below half body weight)",
+            win_unloaded_ticks as f64 * dt * 1e3
+        );
+        println!(
+            "  win degraded solves: {}",
+            win_degraded_end.saturating_sub(win_degraded_at.unwrap_or(win_degraded_end))
+        );
+        println!("  --- whole run after the push (contaminated by the fall) ---");
         println!("  peak |xi - xi_ref| after the push = {:.1} mm", push_dcm_err_max * 1e3);
         println!("  peak tilt after the push = {push_tilt_max:.3} rad");
         println!("  degraded solves after the push: {}", tally.n - push_degraded_at);
