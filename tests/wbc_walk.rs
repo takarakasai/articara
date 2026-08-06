@@ -441,6 +441,32 @@ impl StaircaseCfg {
     }
 }
 
+/// Proprioceptive mid-swing collision recovery.
+///
+/// `namiashi_staircase_5cm_swing_clearance_sweep` ruled out swing-height
+/// alone: raising it up to 3x flat-ground clearance still tips the robot
+/// over on the first riser. But the diagnostic stream already carries a
+/// clean signal for the moment of the collision itself -- swing FK error
+/// (measured foot position vs. the open-loop swing target, in body frame)
+/// spikes to ~0.09 m the instant a foot catches the riser, against a
+/// flat-ground ceiling of ~0.05 m -- roughly 1.4 s before the yaw-rate
+/// runaway that actually causes the fall. That is real lead time, and the
+/// signal needs no new sensor: joint encoders plus the swing target the
+/// gait controller already computes are enough.
+///
+/// This is the reflex built on that signal: when a swinging leg's FK error
+/// crosses `trigger_m`, stop tracking its open-loop target and instead drive
+/// straight up by `lift_m` from wherever the foot actually is -- "back off
+/// and go over it" -- until the error falls back under `resume_m` (hysteresis
+/// so it does not chatter at the threshold), at which point it resumes
+/// tracking the normal swing trajectory.
+#[derive(Clone, Copy, Debug)]
+struct ContactReflexCfg {
+    trigger_m: f64,
+    resume_m: f64,
+    lift_m: f64,
+}
+
 struct WbcParams {
     total_time_s: f64,
     burn_in_s: f64,
@@ -589,6 +615,11 @@ struct WbcParams {
     /// Replace the flat ground plane with a staircase. `None` (default)
     /// behaves exactly as before -- the infinite `GroundPlaneCfg` plane.
     staircase: Option<StaircaseCfg>,
+    /// Proprioceptive "hit something mid-swing" recovery. `None` (default)
+    /// leaves every swing leg tracking its open-loop target unmodified, no
+    /// matter how far off it drifts -- the behaviour every other test in
+    /// this file assumes.
+    contact_reflex: Option<ContactReflexCfg>,
     /// Per-block state cost for the 24-state MPC: `[v_com, omega, base_pos,
     /// euler, joint_q]`, applied over `q_diag`'s
     /// `[0..3, 3..6, 6..9, 9..12, 12..24]`.
@@ -714,6 +745,7 @@ impl WbcParams {
             fcm_jointv_cost: None,
             attitude_pd_ablation: None,
             staircase: None,
+            contact_reflex: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -767,6 +799,7 @@ impl WbcParams {
             fcm_jointv_cost: None,
             attitude_pd_ablation: None,
             staircase: None,
+            contact_reflex: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -1201,6 +1234,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     // Previous tick's IK targets, so the velocity path can differentiate them.
     let mut prev_targets = [0.0_f64; 12];
     let mut stance_mask = [true; 4];
+    let mut reflex_active = [false; 4];
     let mut yaw_prev = 0.0_f64;
     let mut mpc_fx = 0.0_f64;
     let mut mpc_fz = 0.0_f64;
@@ -1299,8 +1333,66 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         if gc.is_enabled() && host_tick {
             let host_dt = params.dt * host_decim as f64;
             let (out, targets, torque_ff) = gc.tick(host_dt);
+            let mut targets = targets;
             for slot in 0..4 {
                 stance_mask[slot] = out.legs[slot].phase.is_stance;
+            }
+            // Contact reflex: only meaningful once the WBC has taken over
+            // (before that every leg is held on position gains regardless of
+            // gait phase, so "swing FK error" isn't measuring a collision).
+            if let Some(cfg) = params.contact_reflex {
+                if k >= burn_in_steps {
+                    for slot in 0..4 {
+                        if out.legs[slot].phase.is_stance {
+                            reflex_active[slot] = false;
+                            continue;
+                        }
+                        let leg_kin = gc.kinematics().legs()[slot];
+                        let signs = gc.joint_signs()[slot];
+                        let ji = gc.joint_indices()[slot];
+                        let mut q_leg = [0.0_f64; 3];
+                        for kk in 0..3 {
+                            if let Some((q, _)) = sim.joint_q_qd(&robot.joints[ji[kk]].name) {
+                                q_leg[kk] = signs[kk] * q;
+                            }
+                        }
+                        let measured_body = quadruped_gait::forward_leg_kinematics(
+                            leg_kin, q_leg[0], q_leg[1], q_leg[2],
+                        );
+                        let nominal_body = out.legs[slot].foot_body;
+                        let err = (nominal_body - measured_body).norm();
+                        if reflex_active[slot] {
+                            if err < cfg.resume_m {
+                                reflex_active[slot] = false;
+                            }
+                        } else if err > cfg.trigger_m {
+                            reflex_active[slot] = true;
+                        }
+                        if reflex_active[slot] {
+                            // Lift the *intended* touchdown, not the stuck
+                            // position: the first version pushed straight up
+                            // from wherever the foot currently was, which
+                            // does not advance it past the obstacle
+                            // horizontally -- it comes back down on the same
+                            // edge and re-triggers, and the robot gets wedged
+                            // in a stable low crouch instead of tipping over
+                            // (better, but still not climbing). Adding the
+                            // lift to the nominal target keeps the leg
+                            // heading toward wherever the gait's own swing
+                            // curve wants it, just higher.
+                            let lift_target =
+                                nominal_body + Vector3::new(0.0, 0.0, cfg.lift_m);
+                            let sol = solve_leg_ik(
+                                leg_kin, lift_target, gc.knee_forward()[slot],
+                            );
+                            let (hip, thigh, calf) = sol.angles();
+                            let q_ik = [hip, thigh, calf];
+                            for kk in 0..3 {
+                                targets[slot * 3 + kk] = (ji[kk], signs[kk] * q_ik[kk]);
+                            }
+                        }
+                    }
+                }
             }
             match params.actuation {
                 Actuation::PositionTorque => {
@@ -6277,4 +6369,58 @@ fn namiashi_staircase_5cm_swing_clearance_sweep() {
             final_s.body_x, final_s.body_y, final_s.body_z,
         );
     }
+}
+
+/// Does the swing-collision reflex get the 5 cm staircase past where blind
+/// clearance alone could not?
+///
+/// `namiashi_staircase_5cm_swing_clearance_sweep` showed swing height was
+/// never the blocker -- every value from 0.040 to 0.120 m tips over the same
+/// way, ~1 s after first contact with the riser. `ContactReflexCfg` acts on
+/// the signal that actually discriminates the collision (swing FK error
+/// spiking to ~0.09 m against a flat-ground ceiling of ~0.05 m): trigger at
+/// 0.065 m -- above every flat-ground sample seen, below the measured
+/// collision spike -- lift 0.06 m straight up from wherever the foot
+/// actually is, resume normal tracking once error falls back under 0.025 m.
+///
+/// Same wide-platform sizing `namiashi_staircase_rise02_wide_platform`
+/// needed to avoid conflating "fell off the test track" with "failed to
+/// climb" -- 0.05 m risers taking longer per step than 0.02 m ones, if this
+/// works at all, so there is no reason to assume less room is enough.
+#[test]
+#[ignore = "writes a replay for visual inspection -- run with --ignored"]
+fn namiashi_staircase_5cm_contact_reflex() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    let top_start_x = stairs.top_platform_start_x();
+    let params = WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: cmd,
+        total_time_s: 20.0,
+        wbc_real_inertia: true,
+        staircase: Some(stairs),
+        contact_reflex: Some(ContactReflexCfg { trigger_m: 0.065, resume_m: 0.025, lift_m: 0.06 }),
+        replay_dir: Some("/tmp/nami_stairs/rise05_reflex".to_string()),
+        ..namiashi_tuned_params(I)
+    };
+    let Some(samples) = run_wbc_sim(params) else { return };
+    let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+    let max_z = samples.iter().map(|s| s.body_z).fold(f64::NEG_INFINITY, f64::max);
+    let final_s = samples.last().unwrap();
+    let reached_top = final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
+    eprintln!(
+        "[stairs 5cm reflex] reached x={max_x:.3}m  max z={max_z:.3}m  \
+         final (x,y,z)=({:.3},{:.3},{:.3})m  reached_top={reached_top}",
+        final_s.body_x, final_s.body_y, final_s.body_z,
+    );
 }
