@@ -138,6 +138,25 @@ AIRBORNE_LIMIT_MS = 50.0
 PUSH_STEP = 6
 PUSH_STEP_MIRROR = 7
 
+# Per-cell centre for `--grid-around`: the baseline `safe` impulse measured on
+# 2026-08-07 with `timing off` over the full 0.05-2.00 grid.
+#
+# Most of a full grid is deep-survive or deep-fail territory that no
+# intervention moves; all the information (and all the noise) lives within a
+# couple of grid steps of the boundary. Narrowing to +-4 steps costs ~3x fewer
+# runs for the same discrimination.
+#
+# The window is per CELL, never per CONDITION -- the conditions being compared
+# share one grid, which is the property that the adaptive ladder broke (Sec.
+# 18.2). Cells are never compared with each other, so their windows may differ.
+GRID_CENTRE = {
+    "fwd ds": 1.35, "back ds": 0.75, "left ds": 0.65, "right ds": 0.95,
+    "diag ds": 0.55, "fwd ss": 1.40, "back ss": 0.90, "left ss": 0.60,
+    "right ss": 0.60, "diag ss": 0.70,
+    "left ds (mirror)": 0.95, "left ss (mirror)": 0.45,
+    "right ds (mirror)": 0.45, "right ss (mirror)": 0.55,
+}
+
 
 def push_cases(group=None):
     """(group, label, env-overrides) for the disturbance matrix."""
@@ -250,7 +269,8 @@ def run_push(envx, impulse, cmd_env):
     return v, r
 
 
-def grid_limit(envx, cmd_env, step=0.05, hi=1.20, log=None):
+def grid_limit(envx, cmd_env, step=0.05, hi=1.20, log=None, centre=None,
+               half_pts=4):
     """Survival over a FIXED impulse grid, identical for every cell and
     condition. Returns (safe, fail, n_surv_in_band, n_in_band, best_row).
 
@@ -264,8 +284,12 @@ def grid_limit(envx, cmd_env, step=0.05, hi=1.20, log=None):
     so the grid resolution IS the error bar and it has to be the same
     everywhere for the numbers to be comparable.
     """
-    n = int(round(hi / step))
-    pts = [step * (k + 1) for k in range(n)]
+    if centre is None:
+        n = int(round(hi / step))
+        pts = [step * (k + 1) for k in range(n)]
+    else:
+        lo = max(step, centre - half_pts * step)
+        pts = [round(lo + k * step, 4) for k in range(2 * half_pts + 1)]
     seen, best, detail = [], None, []
     for p in pts:
         v, r = run_push(envx, p, cmd_env)
@@ -433,6 +457,11 @@ PUSH_CONDITIONS = [
     # does not, the first result was the gait quietly changing shape.
     ("timing dead20", {"ADAPT_STEP": "0", "K_DCM": "2.0", "ADAPT_TIME": "1",
                        "ADAPT_TIME_DEAD": "0.020"}),
+    # The reduced-step reflex on top of timing: when the solve reports
+    # Unreachable (the DCM is outboard of the stance ZMP, measured on 75 of 83
+    # ticks in a run that falls), end the step instead of doing nothing.
+    ("timing cut", {"ADAPT_STEP": "0", "K_DCM": "2.0", "ADAPT_TIME": "1",
+                    "ADAPT_TIME_CUT": "1"}),
 ]
 
 
@@ -478,7 +507,9 @@ def push_sweep_main(a):
         cmd_env.update(rep_env)
         for _, label, envx in cells:
             safe, fail, n_s, n_b, best = grid_limit(
-                envx, cmd_env, step=a.grid_step, hi=a.grid_max)
+                envx, cmd_env, step=a.grid_step, hi=a.grid_max,
+                centre=GRID_CENTRE.get(label) if a.grid_around else None,
+                half_pts=a.grid_half)
             key = (label, cond_label)
             grid[key] = (safe, fail, n_s, n_b)
             b = best or {}
@@ -744,6 +775,11 @@ def main():
                     help="comma-separated condition labels, e.g. 'adapt0 k2.0'")
     ap.add_argument("--grid-step", type=float, default=0.05,
                     help="impulse grid resolution, N*s (this IS the error bar)")
+    ap.add_argument("--grid-around", action="store_true",
+                    help="grid only +-grid-half steps around each cell's known "
+                         "boundary (GRID_CENTRE) instead of the full range")
+    ap.add_argument("--grid-half", type=int, default=4,
+                    help="half-width of the --grid-around window, in steps")
     ap.add_argument("--grid-max", type=float, default=1.20,
                     help="top of the impulse grid, N*s")
     ap.add_argument("--push-sweep", action="store_true",

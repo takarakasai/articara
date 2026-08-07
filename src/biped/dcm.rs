@@ -513,31 +513,51 @@ mod tests {
 /// on: the lateral CoP box is +-19 mm against +-49 mm fore-aft, and every
 /// failure traced in Sec.19 was the stance CoP pinned to the lateral edge.
 ///
-/// Returns `None` when the solve is meaningless rather than clamping silently:
-/// when the measured DCM is on the wrong side of the ZMP (the exponential is
-/// diverging away from the target and no positive time reaches it), or when
-/// either gap is too small to divide by.
+/// The outcome of [`step_timing`], which is not always a time.
+///
+/// The distinction matters and measuring it changed the reading of the whole
+/// feature: on a run that falls, the solve reports [`Unreachable`] on 75 of 83
+/// ticks and returns a time on only 8, while runs that survive ask for a time
+/// once or not at all. So the timing adaptation, as first written, was silent
+/// on exactly the disturbance class that kills the machine -- its measured
+/// gain came from correcting steps that were merely late.
+///
+/// [`Unreachable`]: StepTiming::Unreachable
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StepTiming {
+    /// Remaining single-support time that lands the DCM on its target.
+    Time(f64),
+    /// The DCM is on the FAR SIDE of the ZMP from the target. During single
+    /// support the DCM only ever moves away from the ZMP, so no positive time
+    /// reaches the target: this step cannot be rescued by waiting. It can only
+    /// be ENDED -- which is what a reduced-step reflex does with this.
+    Unreachable,
+    /// One of the two gaps is too small to divide by; the ratio would be noise.
+    Degenerate,
+}
+
+/// Solve for the remaining single-support duration. See [`StepTiming`] for
+/// what the non-numeric outcomes mean; they are reported rather than folded
+/// into a `None` because "no answer" and "the answer is: stop waiting" call
+/// for opposite actions.
 pub fn step_timing(
     xi_meas: &na::Vector2<f64>,
     xi_target: &na::Vector2<f64>,
     p: &na::Vector2<f64>,
     omega: f64,
     axis: usize,
-) -> Option<f64> {
+) -> StepTiming {
     const MIN_GAP: f64 = 1e-4; // 0.1 mm; below this the ratio is noise
     let now = xi_meas[axis] - p[axis];
     let want = xi_target[axis] - p[axis];
     if now.abs() < MIN_GAP || want.abs() < MIN_GAP {
-        return None;
+        return StepTiming::Degenerate;
     }
     let ratio = want / now;
-    // A negative ratio means the target is on the other side of the ZMP from
-    // where the DCM currently is. The DCM only ever moves AWAY from the ZMP
-    // during single support, so no amount of waiting gets there.
     if ratio <= 0.0 {
-        return None;
+        return StepTiming::Unreachable;
     }
-    Some(ratio.ln() / omega)
+    StepTiming::Time(ratio.ln() / omega)
 }
 
 #[cfg(test)]
@@ -552,7 +572,9 @@ mod timing_tests {
         let xi0 = na::Vector2::new(0.0, -0.02);
         let tau: f64 = 0.23;
         let xi_end = p + (xi0 - p) * (omega * tau).exp() as f64;
-        let got = step_timing(&xi0, &xi_end, &p, omega, 1).expect("solvable");
+        let StepTiming::Time(got) = step_timing(&xi0, &xi_end, &p, omega, 1) else {
+            panic!("expected a solvable time");
+        };
         assert!((got - tau).abs() < 1e-9, "got {got}, want {tau}");
     }
 
@@ -564,7 +586,9 @@ mod timing_tests {
         let nominal = na::Vector2::new(0.0, -0.02);
         let target = p + (nominal - p) * (omega * 0.30_f64).exp();
         let ahead = na::Vector2::new(0.0, -0.005); // further from the ZMP
-        let got = step_timing(&ahead, &target, &p, omega, 1).expect("solvable");
+        let StepTiming::Time(got) = step_timing(&ahead, &target, &p, omega, 1) else {
+            panic!("expected a solvable time");
+        };
         assert!(got < 0.30, "expected a shorter step, got {got}");
     }
 
@@ -574,6 +598,6 @@ mod timing_tests {
         let p = na::Vector2::new(0.0, 0.0);
         let xi = na::Vector2::new(0.0, 0.03);
         let target = na::Vector2::new(0.0, -0.03);
-        assert!(step_timing(&xi, &target, &p, omega, 1).is_none());
+        assert_eq!(step_timing(&xi, &target, &p, omega, 1), StepTiming::Unreachable);
     }
 }
