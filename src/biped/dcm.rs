@@ -480,3 +480,100 @@ mod tests {
         assert!(c.y >= ss.lo.y - 1e-12);
     }
 }
+
+/// Step-timing adjustment: how long the current single support should still
+/// last so that the DCM arrives where the plan wanted it.
+///
+/// # Why timing and not placement
+///
+/// During single support the ZMP is parked at the stance sole, so the DCM
+/// obeys `xi(t) = p + (xi_0 - p) exp(omega t)` in closed form. Two knobs can
+/// steer where it ends up at touchdown: WHERE the next foot goes, and WHEN it
+/// gets there. Placement is [`crate::biped::gait::FootstepPlan`]'s adaptation
+/// (`ADAPT_STEP`), and on this machine it is measured harmful -- 26 grid
+/// points improved against 83 worsened over 672 runs (doc Sec.19.6). Timing
+/// has never been tried: `t_ss` is a constant, so a disturbed machine walks
+/// the same schedule as an undisturbed one and commits to the next stance
+/// foot at a time chosen before the push happened.
+///
+/// # The solve
+///
+/// Fix the footstep, target the plan's own end-of-segment DCM `xi_eos`, and
+/// invert the closed form for the remaining time:
+///
+/// ```text
+/// xi_eos = p + (xi_meas - p) exp(omega tau)
+/// tau    = ln((xi_eos - p) / (xi_meas - p)) / omega
+/// ```
+///
+/// This is a division and a log, not an optimisation -- there is no QP and no
+/// MPC here. The catch is that it is one equation per axis and only one
+/// unknown, so the two axes disagree; `axis` picks which one to honour.
+/// Lateral (`1`) is the default because that is the axis this machine falls
+/// on: the lateral CoP box is +-19 mm against +-49 mm fore-aft, and every
+/// failure traced in Sec.19 was the stance CoP pinned to the lateral edge.
+///
+/// Returns `None` when the solve is meaningless rather than clamping silently:
+/// when the measured DCM is on the wrong side of the ZMP (the exponential is
+/// diverging away from the target and no positive time reaches it), or when
+/// either gap is too small to divide by.
+pub fn step_timing(
+    xi_meas: &na::Vector2<f64>,
+    xi_target: &na::Vector2<f64>,
+    p: &na::Vector2<f64>,
+    omega: f64,
+    axis: usize,
+) -> Option<f64> {
+    const MIN_GAP: f64 = 1e-4; // 0.1 mm; below this the ratio is noise
+    let now = xi_meas[axis] - p[axis];
+    let want = xi_target[axis] - p[axis];
+    if now.abs() < MIN_GAP || want.abs() < MIN_GAP {
+        return None;
+    }
+    let ratio = want / now;
+    // A negative ratio means the target is on the other side of the ZMP from
+    // where the DCM currently is. The DCM only ever moves AWAY from the ZMP
+    // during single support, so no amount of waiting gets there.
+    if ratio <= 0.0 {
+        return None;
+    }
+    Some(ratio.ln() / omega)
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+
+    #[test]
+    fn timing_recovers_the_undisturbed_duration() {
+        // Roll the closed form forward by a known tau, then ask for it back.
+        let omega = 5.585;
+        let p = na::Vector2::new(0.0, -0.05);
+        let xi0 = na::Vector2::new(0.0, -0.02);
+        let tau: f64 = 0.23;
+        let xi_end = p + (xi0 - p) * (omega * tau).exp() as f64;
+        let got = step_timing(&xi0, &xi_end, &p, omega, 1).expect("solvable");
+        assert!((got - tau).abs() < 1e-9, "got {got}, want {tau}");
+    }
+
+    #[test]
+    fn a_dcm_that_ran_ahead_shortens_the_step() {
+        // Pushed toward the target: less time left than nominal.
+        let omega = 5.585;
+        let p = na::Vector2::new(0.0, -0.05);
+        let nominal = na::Vector2::new(0.0, -0.02);
+        let target = p + (nominal - p) * (omega * 0.30_f64).exp();
+        let ahead = na::Vector2::new(0.0, -0.005); // further from the ZMP
+        let got = step_timing(&ahead, &target, &p, omega, 1).expect("solvable");
+        assert!(got < 0.30, "expected a shorter step, got {got}");
+    }
+
+    #[test]
+    fn wrong_side_of_the_zmp_is_unsolvable() {
+        let omega = 5.585;
+        let p = na::Vector2::new(0.0, 0.0);
+        let xi = na::Vector2::new(0.0, 0.03);
+        let target = na::Vector2::new(0.0, -0.03);
+        assert!(step_timing(&xi, &target, &p, omega, 1).is_none());
+    }
+}
