@@ -505,6 +505,37 @@ fn main() {
     // measured with ADAPT_TIME reproduces bit-for-bit.
     let adapt_time_cut = flag("ADAPT_TIME_CUT", false);
     let mut n_time_cut = 0u32;
+    // ---- variable double support ---------------------------------------
+    //
+    // `t_ds` has been a constant since the gait was written, so the tick at
+    // which the plan commits the whole machine to one foot is chosen before
+    // the disturbance happens. Measured at that instant, on the lateral cell
+    // with no adaptation of any kind, the DCM's offset from the foot being
+    // committed to separates the outcomes completely over 8 impulses:
+    //
+    //   survived  +7.7  +7.8  +3.3  +8.9 mm
+    //   fell      -4.3 -11.9         (committed LATE, the DCM is already
+    //                                 outboard of the new stance foot)
+    //   fell     +23.2 +23.9         (committed EARLY, the DCM has not
+    //                                 travelled far enough yet)
+    //
+    // against a periodic-walk nominal of b_y = l_p / (1 + exp(omega t_ss)) =
+    // 12.3 mm. So end double support when the DCM ARRIVES, not when the clock
+    // says. This is the mirror of the reduced-step reflex (which shortens
+    // single support AFTER commitment and measured as no effect, Sec.21.5) --
+    // the damage is done at the commitment itself.
+    let adapt_ds = flag("ADAPT_DS", false);
+    // Same discipline as `ADAPT_TIME_TRIG`: without a gate this fires on an
+    // undisturbed walk too and quietly rewrites the nominal gait, which cost
+    // 8 of the 42 command-benchmark cases when step timing did it.
+    let adapt_ds_trig = env_f64("ADAPT_DS_TRIG", 0.015);
+    // 0.5 was the first guess and it bound: a run whose DCM was already
+    // 11.9 mm OUTBOARD at commitment could only be pulled back to +0.8 mm
+    // because double support could not be cut below 0.10 s.
+    let adapt_ds_min = env_f64("ADAPT_DS_MIN", 0.25);
+    let adapt_ds_max = env_f64("ADAPT_DS_MAX", 2.0);
+    let mut n_ds_retime = 0u32;
+    let mut ds_retime_max: f64 = 0.0;
     // Why the timing solve declined, per tick. A reviewer's claim worth
     // checking: `step_timing` returns None when the DCM is on the far side of
     // the ZMP, which may be exactly the lateral-outboard case that falls -- in
@@ -687,6 +718,15 @@ fn main() {
     // momentum at all. Measured before implementing the task, not after.
     let mut h_roll_max: f64 = 0.0;
     let mut h_roll_at_xfer: f64 = 0.0;
+    // DCM offset relative to the foot the plan is about to commit to, at the
+    // instant of commitment. The Khadiv/Englsberger nominal for a periodic
+    // walk is b_y = l_p / (1 + exp(omega * t_ss)) with the sign alternating;
+    // entering single support at the wrong sign or magnitude is the candidate
+    // mechanism for the failures traced in Sec.19-21. Zero new machinery is
+    // needed to check it -- the footstep plan and the measured DCM are both
+    // already here.
+    let mut xfer_dcm_off = [0.0f64; 2];
+    let mut xfer_stance: i32 = -1;
     let mut push_ankle_max: f64 = 0.0;
     let mut push_exceeded = false;
     let mut push_last_exceed: Option<f64> = None;
@@ -925,6 +965,57 @@ fn main() {
                 push_last_exceed = Some(t);
             }
         }
+        // ---- variable double support -------------------------------------
+        // Ends the CURRENT double support the moment the measured DCM reaches
+        // the nominal offset from the foot the next slice commits to.
+        if adapt_ds && matches!(support, Support::Double) && dcm_err >= adapt_ds_trig {
+            let i = gait.index_at(t);
+            if let Some(next) = gait.slices.get(i + 1).copied() {
+                if let Support::Single { stance, .. } = next.support {
+                    let u = steps.xy(stance);
+                    // Inboard is the direction of the OTHER foot, so the sign
+                    // of the nominal offset follows the stance side rather
+                    // than being hard-coded.
+                    let other = steps.xy(1 - stance);
+                    let inboard = (other.y - u.y).signum();
+                    let b_y = (other.y - u.y).abs() / (1.0 + (omega * gp.t_ss).exp());
+                    let off = (xi.y - u.y) * inboard;
+                    let t0 = gait.slices[i].t0;
+                    let lo = t0 + gp.t_ds * adapt_ds_min;
+                    let hi = t0 + gp.t_ds * adapt_ds_max;
+                    // The DCM has arrived: commit now. Or it has NOT arrived
+                    // and the clock is about to commit anyway: hold the phase
+                    // open. Both directions are needed -- the first version
+                    // only shortened, and the two runs that failed by
+                    // committing EARLY (+23 mm, the DCM not yet close enough)
+                    // never triggered it at all.
+                    // Open the phase to its maximum and let the arrival
+                    // branch close it. Extending by one tick at a time does
+                    // not work: `retime(i, t + dt)` puts the boundary exactly
+                    // on the next tick, `index_at` then returns the FOLLOWING
+                    // slice, and the branch never runs again -- measured as
+                    // exactly one retime per run and an unchanged commitment
+                    // offset.
+                    let new_end = if off <= b_y {
+                        Some(t.clamp(lo, hi))
+                    } else if gait.slices[i].t1 < hi - 1e-9 {
+                        Some(hi)
+                    } else {
+                        None
+                    };
+                    if let Some(ne) = new_end {
+                        if (gait.slices[i].t1 - ne).abs() > 1e-4 {
+                            let d = gait.retime(i, ne);
+                            n_ds_retime += 1;
+                            ds_retime_max = ds_retime_max.max(d.abs());
+                            dcm_plan =
+                                DcmPlan::from_footsteps(&gait, &footsteps, z_com, zmp_lat_scale);
+                        }
+                    }
+                }
+            }
+        }
+
         // ---- step-timing adaptation --------------------------------------
         // Placed after the DCM reference and before the footstep adaptation,
         // so the two never argue over the same tick: timing reads the plan's
@@ -1395,6 +1486,11 @@ fn main() {
                         &rig.model, &st.q,
                     );
                     h_roll_at_xfer = (&ag * v_dvec)[0];
+                    if let Support::Single { stance, .. } = support {
+                        let u = steps.xy(stance);
+                        xfer_dcm_off = [xi.x - u.x, xi.y - u.y];
+                        xfer_stance = stance as i32;
+                    }
                 }
             } else if transfer2_t.is_none() && t > transfer_t.unwrap() + 1e-9 {
                 if let (Some(Support::Double), Support::Single { .. }) = (support_prev, support) {
@@ -1840,6 +1936,10 @@ fn main() {
         "  reduced-step cuts: {n_time_cut} ticks (unreachable -> end the step now)"
     );
     println!(
+        "  double-support retimes: {n_ds_retime} ticks, largest shift {:.0} ms",
+        ds_retime_max * 1e3
+    );
+    println!(
         "  step-timing solve: {n_time_solved} solved / {n_time_wrongside} declined \
          (DCM on the far side of the ZMP -- no positive time reaches the target), \
          {n_time_clamped} clamped to the duration bounds"
@@ -1916,6 +2016,16 @@ fn main() {
                 println!(
                     "    centroidal roll momentum: {h_roll_at_xfer:+.4} kg*m^2/s at the \
                      transfer, peak |h_x| {h_roll_max:.4} in the first second"
+                );
+                let b_nom = (steps.sole[0].y - steps.sole[1].y).abs()
+                    / (1.0 + (omega * gp.t_ss).exp());
+                println!(
+                    "    DCM offset from the committed stance foot: \
+                     x {:+.1} mm, y {:+.1} mm (stance {}), nominal |b_y| = {:.1} mm",
+                    xfer_dcm_off[0] * 1e3,
+                    xfer_dcm_off[1] * 1e3,
+                    if xfer_stance == 0 { "L" } else { "R" },
+                    b_nom * 1e3,
                 );
             }
             None => println!("  no support change after the push (run ended first)"),
