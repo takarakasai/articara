@@ -28,7 +28,9 @@
 fn main() {
     use articara::biped::actuate::{gravity_plus_posture, write_to_plant, CommandPolicy, DegradedTally};
     use articara::biped::contact::{contact_jacobians, cop_from_sole_wrench, Anchors};
-    use articara::biped::dcm::{com_accel_xy, commanded_zmp, dcm_of, DcmPlan, SupportBox};
+    use articara::biped::dcm::{
+        com_accel_xy, commanded_zmp, dcm_of, step_timing, DcmPlan, SupportBox,
+    };
     use articara::biped::gait::{
         swing_position, swing_velocity, ContactCorrection, FootstepPlan, Footsteps, GaitParams,
         GaitPlan, Support,
@@ -462,6 +464,41 @@ fn main() {
     let mut adapt_applied = na::Vector2::zeros();
     // Rebuild the plan continuously rather than only at touchdown.
     let adapt_live = flag("ADAPT_LIVE", true);
+    // ---- step TIMING adaptation ----------------------------------------
+    //
+    // Independent of `ADAPT_STEP`, which moves WHERE the next foot goes.
+    // This moves WHEN it gets there, by inverting the single-support DCM
+    // closed form for the remaining time (see `dcm::step_timing`). Default
+    // OFF: `t_ss` has been a constant for every result in this doc, and a
+    // schedule that breathes changes the swing trajectory's duration, the
+    // ZMP plan and the per-step accounting all at once.
+    let adapt_time = flag("ADAPT_TIME", false);
+    // Which axis the (over-determined) solve honours. 1 = lateral, because
+    // that is the axis this machine falls on -- +-19 mm of CoP box against
+    // +-49 mm fore-aft, and every failure traced in doc Sec.19 was the
+    // stance CoP pinned to the LATERAL edge.
+    let adapt_time_axis = env_f64("ADAPT_TIME_AXIS", 1.0) as usize;
+    // How far the solve may move the end of the current single support, as a
+    // fraction of the nominal `t_ss`. The swing trajectory is re-evaluated
+    // against the new duration, so a large cut asks the leg for a speed it
+    // does not have; a large extension leaves the machine on one foot longer
+    // than the plan ever tested.
+    let adapt_time_min = env_f64("ADAPT_TIME_MIN", 0.6);
+    let adapt_time_max = env_f64("ADAPT_TIME_MAX", 1.4);
+    // Deadband: below this the retime is not worth the plan rebuild it costs.
+    let adapt_time_dead = env_f64("ADAPT_TIME_DEAD", 0.005);
+    // Trigger: only solve when the DCM is actually off its reference by this
+    // much. Without it the solve fires on EVERY tick of an undisturbed walk --
+    // 54-60 ticks and ~500 ms of accumulated retiming with no disturbance at
+    // all -- because the measured DCM never matches `xi_eos` exactly, so the
+    // solver always has a few milliseconds to ask for. That is not disturbance
+    // rejection, it is a slow rewrite of the gait, and it cost 8 of the 42
+    // cases in the command benchmark (34/42 -> 26/42) before this existed.
+    // The nominal gait has to be preserved bit-for-bit when nothing is wrong.
+    let adapt_time_trig = env_f64("ADAPT_TIME_TRIG", 0.015);
+    let mut n_retime_dcm = 0u32;
+    let mut retime_dcm_total = 0.0f64;
+    let mut retime_dcm_max: f64 = 0.0;
     // ---- contact-driven phase transitions -----------------------------
     //
     // The schedule says when the step ENDS; the ground says when it actually
@@ -676,7 +713,13 @@ fn main() {
         }
 
         // ---- schedule -> contact set -----------------------------------
-        let (slice, slice_frac) = gait.at(t);
+        // By value, not by reference: `Slice` is `Copy`, and holding a
+        // borrow on `gait` here is what stops the step-timing adaptation
+        // below from retiming it.
+        let (slice, slice_frac) = {
+            let (sl, f) = gait.at(t);
+            (*sl, f)
+        };
         let support = if no_lift { Support::Double } else { slice.support };
         let step_idx = gait.steps_taken(t.max(1e-9));
         let slice_idx = gait.index_at(t);
@@ -851,6 +894,33 @@ fn main() {
                 push_last_exceed = Some(t);
             }
         }
+        // ---- step-timing adaptation --------------------------------------
+        // Placed after the DCM reference and before the footstep adaptation,
+        // so the two never argue over the same tick: timing reads the plan's
+        // own `xi_eos` as its target, which placement would have moved.
+        if adapt_time && matches!(support, Support::Single { .. }) && dcm_err >= adapt_time_trig {
+            let i = gait.index_at(t);
+            let nominal_end = gait.slices[i].t1;
+            let target = dcm_plan.eos_at(t);
+            if let Some(tau) = step_timing(&xi, &target, &r.p, omega, adapt_time_axis) {
+                let lo = gp.t_ss * adapt_time_min;
+                let hi = gp.t_ss * adapt_time_max;
+                // Clamp on the SLICE duration, not on tau alone: the solve is
+                // "how much longer from now", and a step already 90% done can
+                // legitimately want 10 ms while still being a full-length step.
+                let slice_t0 = gait.slices[i].t0;
+                let new_end = (t + tau).clamp(slice_t0 + lo, slice_t0 + hi);
+                let shift = nominal_end - new_end;
+                if shift.abs() > adapt_time_dead {
+                    let d = gait.retime(i, new_end);
+                    n_retime_dcm += 1;
+                    retime_dcm_total += d.abs();
+                    retime_dcm_max = retime_dcm_max.max(d.abs());
+                    dcm_plan = DcmPlan::from_footsteps(&gait, &footsteps, z_com, zmp_lat_scale);
+                }
+            }
+        }
+
         // ---- capture-point footstep adaptation --------------------------
         // Steer the NEXT footstep on the DCM's predicted position at
         // touchdown. Recomputed every tick; the prediction horizon shrinks to
@@ -1679,6 +1749,12 @@ fn main() {
     println!(
         "  footstep adaptations: {n_adapt} steps moved, largest {:.1} mm, {n_replan} live replans",
         max_adapt * 1e3
+    );
+    println!(
+        "  step-timing adaptations: {n_retime_dcm} ticks retimed, {:.0} ms total, \
+         largest single shift {:.0} ms",
+        retime_dcm_total * 1e3,
+        retime_dcm_max * 1e3
     );
     println!(
         "  self-collision ticks: {n_selfcollide}  (peak {max_selfcollide_f:.1} N)          -- any nonzero value means the QP was solving against a contact it has no model for"

@@ -421,6 +421,18 @@ PUSH_CONDITIONS = [
     (f"adapt{ad} k{k}", {"ADAPT_STEP": str(ad), "K_DCM": str(k)})
     for ad in (0, 1)
     for k in (2.0, 1.0, 0.5)
+] + [
+    # Step TIMING adaptation (dcm::step_timing), against the same baseline.
+    # Kept separate from the adapt/k cross because it is a different layer:
+    # placement moves WHERE the next foot goes, timing moves WHEN.
+    ("timing off", {"ADAPT_STEP": "0", "K_DCM": "2.0", "ADAPT_TIME": "0"}),
+    ("timing on", {"ADAPT_STEP": "0", "K_DCM": "2.0", "ADAPT_TIME": "1"}),
+    # Same, with a deadband wide enough to stop the every-tick retiming seen
+    # on the first runs (54-60 ticks / ~500 ms even with no disturbance at
+    # all). If the benefit survives this, it is a response to the push; if it
+    # does not, the first result was the gait quietly changing shape.
+    ("timing dead20", {"ADAPT_STEP": "0", "K_DCM": "2.0", "ADAPT_TIME": "1",
+                       "ADAPT_TIME_DEAD": "0.020"}),
 ]
 
 
@@ -429,6 +441,20 @@ def push_conditions(only=None):
         return PUSH_CONDITIONS
     want = {w.strip() for w in only.split(",")}
     return [c for c in PUSH_CONDITIONS if c[0] in want]
+
+
+# Physically meaningless perturbations used to measure the bench's own noise.
+#
+# A 1e-7 RELATIVE change in the ground friction -- one ten-millionth of 0.7 --
+# moves the 24-point survival count of a single cell by +-2, and individual
+# grid points flip. That is the error bar on every single-cell comparison this
+# script can make, and it is bigger than several effects that were reported as
+# real before it was measured (doc Sec.20). Nothing derived from one cell's
+# count is meaningful below about +-8%.
+def perturbations(n):
+    return [("", {})] if n <= 1 else [
+        (f"+{k}e-7", {"MU_GROUND": f"{0.7 + k * 1e-7:.9f}"}) for k in range(n)
+    ]
 
 
 def push_sweep_main(a):
@@ -443,13 +469,18 @@ def push_sweep_main(a):
     extra = {}
     edge = {}
     surv_map = {}
+    repeat_counts = {}
+    reps = perturbations(a.repeat)
     for cond_label, cond_env in push_conditions(a.push_conditions):
+      for rep_label, rep_env in reps:
         cmd_env = dict(base)
         cmd_env.update(cond_env)
+        cmd_env.update(rep_env)
         for _, label, envx in cells:
             safe, fail, n_s, n_b, best = grid_limit(
                 envx, cmd_env, step=a.grid_step, hi=a.grid_max)
-            grid[(label, cond_label)] = (safe, fail, n_s, n_b)
+            key = (label, cond_label)
+            grid[key] = (safe, fail, n_s, n_b)
             b = best or {}
             extra.setdefault(label, {"budget": b.get("budget", ""),
                                      "stance": b.get("stance", "")})
@@ -457,6 +488,8 @@ def push_sweep_main(a):
             # its fallers? Reported per cell, because a threshold that only
             # holds on the cell it was fitted to is not a criterion.
             det = (best or {}).get("_detail", [])
+            repeat_counts.setdefault(key, []).append(
+                sum(1 for _, sv, _r in det if sv))
             # `run_push` stores `m.group(1)`, i.e. a STRING -- indexing it
             # takes the first character, which turned 2.84 into 2.0 and made
             # every cell look like it separated at a suspiciously round number.
@@ -561,6 +594,25 @@ def push_sweep_main(a):
             continue
         med = nums[len(nums) // 2]
         print(f"{c:>12} {nums[0]:>13.3f} {med:>8.3f} {sum(nums):>8.2f}")
+    if a.repeat > 1:
+        print(f"\n=== Noise floor: the same grid under {a.repeat} physically "
+              f"meaningless perturbations ===")
+        print("Survivals out of the grid, per repeat. The spread is the error "
+              "bar on this cell.")
+        nhdr = f"{'cell':>17} {'condition':>14} {'counts':>28} {'spread':>7}"
+        print(nhdr)
+        print("-" * len(nhdr))
+        worst = 0
+        for (lb, cd), counts in repeat_counts.items():
+            if len(counts) < 2:
+                continue
+            sp = max(counts) - min(counts)
+            worst = max(worst, sp)
+            print(f"{lb:>17} {cd:>14} {str(counts):>28} {sp:>7}")
+        print(f"\nWorst spread {worst} grid points. Any difference between two "
+              f"conditions smaller\nthan this, on one cell, is not a "
+              f"measurement.")
+
     if len(conds) == 2:
         c0, c1 = conds
         print(f"\n=== CoP-edge dwell after the transfer, {c0} -> {c1} ===")
@@ -685,6 +737,9 @@ def main():
     ap.add_argument("--recover-s", default="0.5", help="dwell inside the band, s")
     ap.add_argument("--vx", default="0.055", help="forward command during the push")
     ap.add_argument("--push-steps", default="20", help="steps per push run")
+    ap.add_argument("--repeat", type=int, default=1,
+                    help="repeat each grid under N negligible perturbations, "
+                         "to measure this bench's own noise floor")
     ap.add_argument("--push-conditions",
                     help="comma-separated condition labels, e.g. 'adapt0 k2.0'")
     ap.add_argument("--grid-step", type=float, default=0.05,
