@@ -507,11 +507,94 @@ def draw_cop_panel(img, ox, oy, w, h, feet, box, trails):
     draw.text((ox + 138, ky - 3), "QP assumed", fill=(150, 158, 172), font=F_SMALL)
 
 
-def render_frame(links, joints, pose, cam, hud):
+def draw_push(draw, cam, origin, fxy, phase=1.0, dt_rel=None):
+    """The disturbance, drawn where it is applied and pointing where it pushes.
+
+    The force is read from the trajectory log (`push_fx` / `push_fy`, written
+    by the driver from the simulator's own live pulse list), so the arrow
+    cannot disagree with what the plant actually received -- a caption saying
+    "1.20 N*s to the left" can, and a viewer has no way to check it.
+
+    The pulse itself lasts 0.10 s, which at 50 fps is five frames and is over
+    before a viewer has found it. `phase` fades the same arrow in beforehand
+    and leaves it fading afterwards, so the eye has somewhere to be: a hollow
+    ghost while the push is coming, solid while it is applied, then a fading
+    trace of what was done. `dt_rel` (seconds relative to the pulse start)
+    drives the label.
+    """
+    f = np.array([fxy[0], fxy[1], 0.0])
+    mag = float(np.linalg.norm(f))
+    if mag < 1e-6 or phase <= 0.0:
+        return
+    scale = float(os.environ.get("PUSH_ARROW_SCALE", 0.020))
+    u = f / mag
+    length = 0.055 + mag * scale
+    # Start the shaft back from the body so the arrow reads as pushing INTO
+    # the robot rather than emerging from inside it, and lift it to chest
+    # height where nothing else is drawn.
+    tail = np.asarray(origin, float) + np.array([0.0, 0.0, 0.06]) - u * length
+    tip = tail + u * length
+    # Project the shaft, then build the head in SCREEN space. Doing it in 3D
+    # spreads the head along `cross(u, up)`, which for a sideways push is the
+    # fore-aft axis -- and this camera looks nearly along it, so the triangle
+    # collapsed to a line and the arrow had no readable direction at all.
+    (p2, _z) = cam.project(np.array([tail, tip]))
+    t0 = np.array([float(p2[0][0]), float(p2[0][1])])
+    t1 = np.array([float(p2[1][0]), float(p2[1][1])])
+    d = t1 - t0
+    n = float(np.linalg.norm(d))
+    if n < 1e-6:
+        return
+    d = d / n
+    perp = np.array([-d[1], d[0]])
+    head_px = max(18.0, min(46.0, 0.30 * n))
+    apex = t1
+    base = t1 - d * head_px
+    left = base + perp * head_px * 0.58
+    right = base - perp * head_px * 0.58
+    a = int(round(255 * max(0.0, min(1.0, phase))))
+    solid = phase >= 0.999
+    col = (255, 110, 80, a)
+    shaft = max(3, int(round(11 * phase)))
+    tri = [tuple(apex), tuple(left), tuple(right)]
+    if solid:
+        # A dark outline first: the arrow lands on the torso, and a bare
+        # orange triangle on grey plastic loses its edges.
+        draw.line([tuple(t0), tuple(base)], fill=(12, 14, 18, a), width=shaft + 6)
+        draw.polygon([tuple(apex + d * 5), tuple(left + (perp * 4 - d * 3)),
+                      tuple(right + (-perp * 4 - d * 3))], fill=(12, 14, 18, a))
+        draw.line([tuple(t0), tuple(base)], fill=col, width=shaft)
+        draw.polygon(tri, fill=col)
+    else:
+        draw.line([tuple(t0), tuple(base)], fill=col, width=max(2, shaft // 2))
+        draw.polygon(tri, outline=col)
+    lbl = f"PUSH  {mag:.0f} N"
+    imp = os.environ.get("PUSH_IMPULSE_LABEL")
+    if imp:
+        lbl += f"  ({imp} N*s)"
+    if dt_rel is not None:
+        if dt_rel < -1e-6:
+            lbl = f"PUSH in {-dt_rel:4.2f} s"
+        elif dt_rel > 0.105:
+            lbl = f"pushed {dt_rel - 0.10:4.2f} s ago"
+    # Above the shaft's midpoint: the tail sits over the CoM-height panel and
+    # the tip sits on the robot, so both ends are already busy.
+    mx = 0.5 * (t0[0] + t1[0])
+    my = 0.5 * (t0[1] + t1[1]) - 46
+    w = draw.textlength(lbl, font=F_BODY)
+    draw.rectangle([mx - w / 2 - 10, my - 6, mx + w / 2 + 10, my + 26],
+                   fill=(16, 18, 23, 232))
+    draw.text((mx - w / 2, my), lbl, fill=col, font=F_BODY)
+
+
+def render_frame(links, joints, pose, cam, hud, push=None, push_at=None,
+                 push_phase=1.0, push_dt=None):
     img = gradient_bg()
     draw = ImageDraw.Draw(img, "RGBA")
     draw_ground(draw, cam)
     draw_body(draw, links, pose, cam)
+    if push is not None and push_at is not None:
+        draw_push(draw, cam, push_at, push, push_phase, push_dt)
 
     # ── HUD ────────────────────────────────────────────────────────────
     (t, com_z, ref_z, tilt, hist, taus, tau_names, tau_lims, tau_total,
@@ -690,6 +773,22 @@ def main():
     trails = [[], []]
 
     hist = []
+    # Pre-scan the WHOLE log (not the decimated frames) for the pulse, so the
+    # anticipation and decay windows are anchored on when it really happened
+    # rather than on whichever frame happened to catch it.
+    push_rows = [(float(x["t"]), float(x.get("push_fx", 0) or 0),
+                  float(x.get("push_fy", 0) or 0)) for x in rows
+                 if abs(float(x.get("push_fy", 0) or 0)) > 1e-9
+                 or abs(float(x.get("push_fx", 0) or 0)) > 1e-9]
+    push_t0 = push_rows[0][0] if push_rows else None
+    push_t1 = push_rows[-1][0] if push_rows else None
+    push_vec = (push_rows[0][1], push_rows[0][2]) if push_rows else (0.0, 0.0)
+    PUSH_PRE = float(os.environ.get("PUSH_PRE", 0.8))
+    PUSH_POST = float(os.environ.get("PUSH_POST", 2.0))
+    if push_t0 is not None:
+        print(f"push: {push_vec[1]:+.1f} N in y, t={push_t0:.3f}..{push_t1:.3f}, "
+              f"shown from -{PUSH_PRE}s to +{PUSH_POST}s")
+
     for i, r in enumerate(sel):
         q = {n: float(r[n]) for n in jnames}
         bp = np.array([float(r["x"]), float(r["y"]), float(r["z"])])
@@ -715,6 +814,22 @@ def main():
         hist.append((float(r["com_z"]), float(r["com_ref_z"])))
         for k, (col, _) in enumerate(TAU_JOINTS):
             tau_hist[k].append(float(r["tau_" + col]))
+        # Show the arrow across a window around the pulse, not only while it
+        # is live: 0.10 s is five frames at 50 fps and is gone before the eye
+        # finds it.
+        push_xy, push_phase, push_dt = (0.0, 0.0), 0.0, None
+        if push_t0 is not None:
+            tt = float(r["t"])
+            push_dt = tt - push_t0
+            if -PUSH_PRE <= push_dt <= (push_t1 - push_t0) + PUSH_POST:
+                push_xy = push_vec
+                if push_dt < 0.0:
+                    push_phase = 0.15 + 0.55 * (1.0 + push_dt / PUSH_PRE)
+                elif tt <= push_t1 + 1e-9:
+                    push_phase = 1.0
+                else:
+                    decay = (tt - push_t1) / PUSH_POST
+                    push_phase = 0.75 * (1.0 - decay)
         img = render_frame(links, joints, pose, cam,
                            (float(r["t"]), float(r["com_z"]), float(r["com_ref_z"]),
                             float(r["tilt"]), hist[-260:],
@@ -726,7 +841,9 @@ def main():
                             bool(int(r.get("degraded", 0))),
                             sole_roll_deg(pose),
                             ("LEFT" if float(r.get("fz_mj_l", 0)) >= float(r.get("fz_mj_r", 0))
-                             else "RIGHT")))
+                             else "RIGHT")),
+                           push=push_xy, push_at=bp,
+                           push_phase=push_phase, push_dt=push_dt)
         if has_cop:
             feet = []
             for side in ("l", "r"):
