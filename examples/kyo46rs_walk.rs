@@ -417,6 +417,10 @@ fn main() {
         "zmp_cmd_x", "zmp_cmd_y", "zmp_clamp", "dcm_err", "support", "step",
         "share_l", "share_r", "swing_tgt_x", "swing_tgt_y", "swing_tgt_z",
         "ankle_roll_l", "ankle_roll_r",
+        // The disturbance itself, so a replay can DRAW it instead of the
+        // viewer having to be told separately what was applied. Zero except
+        // while a pulse is live.
+        "push_fx", "push_fy",
     ];
     let mut log = TrajLog::create(
         std::env::var("TRAJ_CSV").ok(),
@@ -1816,6 +1820,16 @@ fn main() {
         }
 
         support_prev = Some(support);
+        // What the disturbance is doing RIGHT NOW, for the replay to draw.
+        // Read from the sim's own pulse list rather than recomputed here, so
+        // the arrow cannot disagree with the force the plant actually saw.
+        let push_now = rig
+            .sim
+            .external_force_pulses()
+            .iter()
+            .find(|p| p.link_name == push_link)
+            .map(|p| [p.force[0], p.force[1]])
+            .unwrap_or([0.0, 0.0]);
         write_to_plant(&mut rig, ctrl_mode, &robot_taus, &extracted.qddot, v, dt);
         rig.step(mj_substeps);
 
@@ -1837,6 +1851,7 @@ fn main() {
                 *shares.first().unwrap_or(&0.0), *shares.get(1).unwrap_or(&0.0),
                 swing_tgt.x, swing_tgt.y, swing_tgt.z,
                 ankle_roll[0], ankle_roll[1],
+                push_now[0], push_now[1],
             ];
             let row = Row {
                 t,

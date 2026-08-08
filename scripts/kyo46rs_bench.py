@@ -50,6 +50,7 @@ import subprocess
 import sys
 
 BIN = "./target/release/examples/kyo46rs_walk"
+URDF_DIR = "/home/takara/work/dp/humanoid/kyo46rs_description/urdf"
 MUJOCO_LIB = "/home/takara/.mujoco/mujoco-3.8.0/lib"
 
 # Fixed for every case, so the only thing varying is the command.
@@ -462,6 +463,29 @@ PUSH_CONDITIONS = [
     # ticks in a run that falls), end the step instead of doing nothing.
     ("timing cut", {"ADAPT_STEP": "0", "K_DCM": "2.0", "ADAPT_TIME": "1",
                     "ADAPT_TIME_CUT": "1"}),
+    # Sole width. The ankle-roll actuator is a cylinder of radius 23 mm with
+    # its axis fore-aft, so it is ALREADY 46 mm across in y while the sole
+    # plate is 38 mm -- widening to 46 adds no swept volume at all. 60 mm is
+    # the ceiling this sweep measures; the inner gap between the two feet at a
+    # 99.4 mm stance goes 61.4 -> 39.4 mm there, which the swing foot has to
+    # clear (doc Sec.10.6 records it hitting the stance foot once already).
+    # Both the URDF box and the WBC's assumed CoP box have to move together or
+    # the controller is planning against a foot the robot does not have.
+    # Cadence. `t_ss` has been 0.35 s in every result in this doc, fixed in
+    # COMMON and never swept. It is the strongest untried lever on lateral
+    # balance because the periodic-walk DCM offset depends on it
+    # EXPONENTIALLY: b_y = l_p / (1 + exp(omega * t_ss)) goes 12.3 -> 21.5 mm
+    # between 0.35 and 0.25 s, and a faster cadence also puts the foot down
+    # more often, which is the one thing a small-footed machine can do about a
+    # sideways push. Sec.16.5 already ran this robot at t_step 0.40 for fast
+    # turns, so the shorter end is known to be feasible.
+    ("cad 0.35", {}),
+    ("cad 0.30", {"T_SS": "0.30"}),
+    ("cad 0.25", {"T_SS": "0.25"}),
+    ("cad 0.20", {"T_SS": "0.20"}),
+    ("sole 38", {}),
+    ("sole 46", {"URDF": f"{URDF_DIR}/kyo46rs_sole46.urdf", "SOLE_HALF_W": "0.0230"}),
+    ("sole 60", {"URDF": f"{URDF_DIR}/kyo46rs_sole60.urdf", "SOLE_HALF_W": "0.0300"}),
 ]
 
 
@@ -644,8 +668,11 @@ def push_sweep_main(a):
               f"conditions smaller\nthan this, on one cell, is not a "
               f"measurement.")
 
-    if len(conds) == 2:
-        c0, c1 = conds
+    # Pairwise against the FIRST condition, so a three-way sweep (e.g. a
+    # baseline and two variants) still gets the paired read rather than only
+    # the per-condition totals.
+    for c1 in conds[1:]:
+        c0 = conds[0]
         print(f"\n=== CoP-edge dwell after the transfer, {c0} -> {c1} ===")
         print("Percent of the first 100 ms in single support with the stance "
               "CoP on the sole\nedge. Lower is better: a foot on the edge cannot "
