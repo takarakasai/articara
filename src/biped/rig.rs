@@ -162,6 +162,12 @@ pub struct BipedRig {
     pub mass_links: Vec<MassLink>,
     pub total_mass: f64,
     pub torque_max: na::DVector<f64>,
+    /// URDF position/velocity limits, indexed like `torque_max` (misarta
+    /// v-index - 6). For `joint_limit_cbf` (doc Sec.21.7 item 4 / Sec.25.4) --
+    /// not wired into any level by default (see `JLIM` in kyo46rs_walk.rs).
+    pub q_min: na::DVector<f64>,
+    pub q_max: na::DVector<f64>,
+    pub v_max: na::DVector<f64>,
     /// Joint angles the posture task and the degraded-solve fallback hold.
     pub q_seed: Vec<f64>,
     pub nv: usize,
@@ -355,6 +361,9 @@ impl BipedRig {
         // actuated row the loop below failed to reach kept a plausible-looking
         // limit from the wrong robot instead of failing loudly.
         let mut torque_max = na::DVector::from_element(na_count, f64::NAN);
+        let mut q_min = na::DVector::from_element(na_count, f64::NAN);
+        let mut q_max = na::DVector::from_element(na_count, f64::NAN);
+        let mut v_max = na::DVector::from_element(na_count, f64::NAN);
         for ji in 0..robot.joints.len() {
             let Some(mi) = a2m[ji] else { continue };
             if model.joints[mi].joint_type.nv() != 1 {
@@ -363,6 +372,9 @@ impl BipedRig {
             let vi = model.v_idx[mi];
             if vi >= 6 {
                 torque_max[vi - 6] = robot.joints[ji].effort.max(1.0) * o.torque_scale;
+                q_min[vi - 6] = robot.joints[ji].lower;
+                q_max[vi - 6] = robot.joints[ji].upper;
+                v_max[vi - 6] = robot.joints[ji].velocity;
             }
         }
 
@@ -547,6 +559,9 @@ impl BipedRig {
             mass_links,
             total_mass,
             torque_max,
+            q_min,
+            q_max,
+            v_max,
             q_seed,
             nv,
             na: na_count,

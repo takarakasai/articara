@@ -138,7 +138,42 @@ fn main() {
 
     // ── Control-law knobs ──────────────────────────────────────────────
     let mut solver = Solver::new();
-    let cfg = SolveConfig::default();
+    // Proximal warm-start weight. Default OFF (0.0, i.e. SolveConfig::default()
+    // unchanged) so nothing measured before this exists changes meaning.
+    // At 0.0, the `Solver` session above stores an anchor every tick
+    // (`self.anchor = Some(sol.warm_anchor)`) that the solve NEVER reads back
+    // (`solve.rs`: `if cfg.prox_weight > 0.0 { self.anchor.clone() } else {
+    // None }`) -- a cold solve every tick despite the warm-start plumbing
+    // being live. `PROX_WEIGHT=1e-4` matches `WbcPipeline::qp_prox_weight`'s
+    // own default (`wbc_pipeline.rs`) elsewhere in this crate; the misa-wbc
+    // test suite calls this magnitude "preserves strict optimum" (as opposed
+    // to 1.0, which it calls "strong: a measurable shift"), so it should damp
+    // tick-to-tick jitter without biasing task tracking -- unverified on this
+    // robot until measured against the 42-case bench, doc Sec.21.7/25.4.
+    let prox_weight = env_f64("PROX_WEIGHT", 0.0);
+    let cfg = SolveConfig { prox_weight, ..SolveConfig::default() };
+    // Joint position/velocity safety limits (misa_wbc::tasks::joint_limit_cbf).
+    // Off by default: only the torque box is enforced today, which is why a
+    // redundant leg could be commanded into a solution only realisable by
+    // running a joint past its physical stop -- measured on ankle_roll at
+    // 196% of its URDF limit while falling (doc Sec.18.5). Added at the same
+    // priority as the torque box (`base`, below), since both are "never
+    // violate" safety constraints rather than tracked objectives. Gains are
+    // a first guess, unverified on this robot -- doc Sec.21.7/25.4.
+    let jlim = flag("JLIM", false);
+    let jlim_alpha1 = env_f64("JLIM_ALPHA1", 10.0);
+    let jlim_alpha2 = env_f64("JLIM_ALPHA2", 10.0);
+    let jlim_alpha3 = env_f64("JLIM_ALPHA3", 10.0);
+    let jlim_amax = env_f64("JLIM_AMAX", 50.0);
+    let jlim_cfg = tasks::JointLimitCbf {
+        q_min: rig.q_min.clone(),
+        q_max: rig.q_max.clone(),
+        v_max: rig.v_max.clone(),
+        a_max: na::DVector::from_element(na_count, jlim_amax),
+        alpha1: na::DVector::from_element(na_count, jlim_alpha1),
+        alpha2: na::DVector::from_element(na_count, jlim_alpha2),
+        alpha3: na::DVector::from_element(na_count, jlim_alpha3),
+    };
     let friction_mu: f64 = env_f64("friction_mu", mu_ground * prof.friction_margin);
     let kp_com = env_f64("KP_COM", 300.0);
     let kd_com = env_f64("KD_COM", 80.0);
@@ -509,6 +544,24 @@ fn main() {
     // measured with ADAPT_TIME reproduces bit-for-bit.
     let adapt_time_cut = flag("ADAPT_TIME_CUT", false);
     let mut n_time_cut = 0u32;
+    // Reactive widen. `ADAPT_TIME_CUT` alone (same `Unreachable` trigger)
+    // measured as no effect (doc Sec.21.5) -- it only moves WHEN the step
+    // ends, not WHERE the next one lands, and the resulting support polygon
+    // is the same nominal width either way. This is the untried half: bias
+    // the swing foot's landing OUTWARD (away from the centreline) by a fixed
+    // amount when `Unreachable` fires, growing the polygon instead of just
+    // reaching it sooner. Independent flag from `ADAPT_TIME_CUT` so cut-only,
+    // wide-only and cut+wide are separately measurable. ALWAYS outward,
+    // unlike `ADAPT_STEP` (Sec.19.6, harmful over 336 points): that chases
+    // the ZMP clamp deficit in whichever direction it points and reacts to
+    // small, benign saturation; this fires only on the much cleaner
+    // `Unreachable` signal (Sec.21.2: 75/83 ticks in a falling run, ~0 in
+    // survivors) and only ever grows the polygon. Fires at most once per
+    // step (`last_wide_slice` guard) -- doc Sec.25.4.
+    let adapt_time_wide = flag("ADAPT_TIME_WIDE", false);
+    let adapt_time_widen = env_f64("ADAPT_TIME_WIDEN", 0.02);
+    let mut n_time_wide = 0u32;
+    let mut last_wide_slice: Option<usize> = None;
     // ---- variable double support ---------------------------------------
     //
     // `t_ds` has been a constant since the gait was written, so the tick at
@@ -960,6 +1013,25 @@ fn main() {
         } else {
             eom_task.clone() + tasks::box_bound(dyn_ctx.tau(), &rig.torque_max)
         };
+        let base = if jlim {
+            // Live actuated-row position/velocity. NOT `rig.robot.joint_positions`
+            // (frozen at the barn-in seed pose, never updated after
+            // `BipedRig::new` -- fine for `posture`'s reference, wrong for a
+            // barrier that needs the CURRENT distance to the limit) -- read
+            // `q` (misarta's raw state vector) through `model.q_idx` instead.
+            let actuated = rig.actuated();
+            let mut q_act = na::DVector::zeros(na_count);
+            let mut v_act = na::DVector::zeros(na_count);
+            for &(ji, vi) in &actuated {
+                if let Some(mi) = rig.a2m[ji] {
+                    q_act[vi - 6] = q[rig.model.q_idx[mi]];
+                }
+                v_act[vi - 6] = v[vi];
+            }
+            base + bt::joint_limits(dyn_ctx.qddot(), &actuated, &q_act, &v_act, &jlim_cfg, na_count, nv)
+        } else {
+            base
+        };
         let p0 = bt::contact_level(
             &dyn_ctx,
             base,
@@ -1080,6 +1152,19 @@ fn main() {
                     retime_dcm_max = retime_dcm_max.max(d.abs());
                     dcm_plan = DcmPlan::from_footsteps(&gait, &footsteps, z_com, zmp_lat_scale);
                 }
+            }
+            // The other half of the reflex: unreachable also means "the next
+            // footstep should grow the polygon". `swing == 0` is LEFT (URDF:
+            // left leg at positive y), so its landing moves further +y and
+            // RIGHT's moves further -y -- both away from the centreline.
+            if adapt_time_wide && solved == StepTiming::Unreachable && last_wide_slice != Some(i) {
+                let swing = support.swing().expect("Support::Single has a swing side");
+                let outward = if swing == 0 { 1.0 } else { -1.0 };
+                let d = na::Vector2::new(0.0, outward * adapt_time_widen);
+                footsteps.shift_from(i, swing, d);
+                dcm_plan = DcmPlan::from_footsteps(&gait, &footsteps, z_com, zmp_lat_scale);
+                last_wide_slice = Some(i);
+                n_time_wide += 1;
             }
             if let StepTiming::Time(tau) = solved {
                 let lo = gp.t_ss * adapt_time_min;
@@ -2028,6 +2113,10 @@ fn main() {
     );
     println!(
         "  reduced-step cuts: {n_time_cut} ticks (unreachable -> end the step now)"
+    );
+    println!(
+        "  reactive widen: {n_time_wide} steps ({:.0} mm, unreachable -> land further out)",
+        adapt_time_widen * 1e3
     );
     println!(
         "  double-support retimes: {n_ds_retime} ticks, largest shift {:.0} ms",

@@ -1,0 +1,43 @@
+group,command,steps,achieved,dcm,cop,ankle,degraded,selfcol,openloop,fell_t,survived
+forward,vx=+0.020,40,vx: +0.0197 / +0.0200 m/s (98%)   vy: -0.0017 m/s (drift),6.3,1.00,81,30,0,0,,SURVIVED
+forward,vx=+0.036,40,vx: +0.0354 / +0.0360 m/s (98%)   vy: -0.0017 m/s (drift),6.3,1.00,84,35,0,0,,SURVIVED
+forward,vx=+0.055,40,vx: +0.0539 / +0.0550 m/s (98%)   vy: -0.0017 m/s (drift),6.3,1.00,81,35,0,0,,SURVIVED
+forward,vx=+0.073,17,vx: +0.0738 / +0.0730 m/s (101%)   vy: -0.0622 m/s (drift)   wz: +0.1213 rad/s (drift),355.2,1.01,205,53,9,0,10.895,FELL
+forward,vx=+0.091,7,vx: +0.1749 / +0.0910 m/s (192%)   vy: +0.4711 m/s (drift)   wz: -0.5389 rad/s (drift),391.4,1.01,184,50,46,0,5.785,FELL
+forward,vx=+0.109,36,vx: +0.1168 / +0.1090 m/s (107%)   wz: -0.0483 rad/s (drift),69.3,1.00,158,342,254,2,21.355,FELL
+forward,vx=+0.145,4,vx: +0.0000 / +0.1450 m/s (0%),192.1,1.00,198,38,26,0,4.000,FELL
+backward,vx=-0.036,40,vx: -0.0351 / -0.0360 m/s (97%)   vy: -0.0017 m/s (drift),6.3,1.00,80,16,0,0,,SURVIVED
+backward,vx=-0.073,40,vx: -0.0711 / -0.0730 m/s (97%)   vy: -0.0017 m/s (drift),6.3,1.00,83,27,0,0,,SURVIVED
+backward,vx=-0.091,40,vx: -0.0886 / -0.0910 m/s (97%)   vy: -0.0017 m/s (drift),6.3,1.00,83,58,0,0,,SURVIVED
+backward,vx=-0.109,22,vx: -0.1100 / -0.1090 m/s (101%)   vy: +0.0113 m/s (drift)   wz: -0.0554 rad/s (drift),109.2,1.01,191,154,222,0,13.745,FELL
+lateral,vy=+0.018,40,vy: +0.0158 / +0.0180 m/s (88%),6.3,1.00,84,18,0,0,,SURVIVED
+lateral,vy=-0.018,40,vy: -0.0193 / -0.0180 m/s (107%),6.3,1.00,81,22,0,0,,SURVIVED
+lateral,vy=+0.036,40,vy: +0.0334 / +0.0360 m/s (93%)   wz: +0.0017 rad/s (drift),26.2,1.00,81,45,0,0,,SURVIVED
+lateral,vy=-0.036,40,vx: -0.0010 m/s (drift)   vy: -0.0369 / -0.0360 m/s (102%),15.4,1.00,87,54,0,0,,SURVIVED
+lateral,vy=+0.055,8,vx: -0.0481 m/s (drift)   vy: +0.0370 / +0.0550 m/s (67%)   wz: -0.2746 rad/s (drift),181.1,1.00,196,36,38,0,5.915,FELL
+lateral,vy=-0.055,11,vx: +0.0157 m/s (drift)   vy: -0.1507 / -0.0550 m/s (274%)   wz: +0.0064 rad/s (drift),309.5,1.01,193,24,33,0,7.805,FELL
+lateral,vy=+0.073,6,vy: +0.0000 / +0.0730 m/s (0%),246.1,1.00,207,13,2,0,5.045,FELL
+lateral,vy=-0.073,12,vx: -0.0199 m/s (drift)   vy: -0.1772 / -0.0730 m/s (243%)   wz: -0.0168 rad/s (drift),350.4,1.00,192,70,326,0,8.415,FELL
+turn,wz=+0.05,40,vy: -0.0020 m/s (drift)   wz: +0.0502 / +0.0500 rad/s (100%),6.3,1.00,78,20,0,0,,SURVIVED
+turn,wz=-0.05,40,vy: -0.0015 m/s (drift)   wz: -0.0503 / -0.0500 rad/s (101%),6.3,1.00,86,28,0,0,,SURVIVED
+turn,wz=+0.10,40,vy: -0.0022 m/s (drift)   wz: +0.1005 / +0.1000 rad/s (100%),6.3,1.00,80,17,0,0,,SURVIVED
+turn,wz=-0.10,40,vy: -0.0012 m/s (drift)   wz: -0.1005 / -0.1000 rad/s (101%),6.3,1.00,89,18,0,0,,SURVIVED
+turn,wz=+0.20,40,vy: -0.0027 m/s (drift)   wz: +0.2010 / +0.2000 rad/s (100%),6.3,1.00,75,14,0,0,,SURVIVED
+turn,wz=-0.20,40,wz: -0.2010 / -0.2000 rad/s (101%),6.3,1.00,92,20,0,0,,SURVIVED
+turn,wz=+0.40,40,vx: +0.0013 m/s (drift)   vy: -0.0028 m/s (drift)   wz: +0.4021 / +0.4000 rad/s (101%),20.9,1.01,87,35,177,0,,SURVIVED
+turn,wz=-0.40,30,vx: +0.0062 m/s (drift)   vy: -0.0025 m/s (drift)   wz: -0.3573 / -0.4000 rad/s (89%),108.6,1.01,141,63,21,0,18.000,FELL
+turn,wz=+0.60,8,vx: -0.0469 m/s (drift)   vy: -0.3460 m/s (drift)   wz: -0.3769 / +0.6000 rad/s (-63%),325.9,1.01,180,25,383,0,6.170,FELL
+turn,wz=-0.60,8,vx: -0.1197 m/s (drift)   vy: -0.1372 m/s (drift)   wz: +0.1748 / -0.6000 rad/s (-29%),66.7,1.00,153,53,357,0,5.915,FELL
+turn,wz=+0.80,4,wz: +0.0000 / +0.8000 rad/s (0%),123.0,1.01,197,11,375,0,3.790,FELL
+turn,wz=-0.80,5,wz: +0.0000 / -0.8000 rad/s (-0%),78.2,1.00,184,35,382,0,4.565,FELL
+turn fast,wz=+0.80 t=0.40,4,wz: +0.0000 / +0.8000 rad/s (0%),76.0,1.00,166,11,394,0,3.525,FELL
+turn fast,wz=+1.00 t=0.40,15,vx: -0.0056 m/s (drift)   vy: -0.0101 m/s (drift)   wz: +1.1132 / +1.0000 rad/s (111%),193.7,1.01,186,90,827,0,7.650,FELL
+squat,amp=10mm still,0,no command,2.4,0.34,0,0,0,0,,SURVIVED
+squat,amp=10mm walk,40,vx: +0.0540 / +0.0550 m/s (98%)   vy: -0.0017 m/s (drift),10.2,1.00,101,52,0,0,,SURVIVED
+squat,amp=20mm still,0,no command,2.4,0.35,0,0,0,0,,SURVIVED
+squat,amp=20mm walk,40,vx: +0.0539 / +0.0550 m/s (98%)   vy: -0.0017 m/s (drift),11.1,1.00,102,31,0,0,,SURVIVED
+squat,amp=40mm still,0,no command,2.4,0.35,0,0,0,0,,SURVIVED
+squat,amp=40mm walk,40,vx: +0.0533 / +0.0550 m/s (97%)   vy: -0.0019 m/s (drift),24.0,1.00,128,22,0,0,,SURVIVED
+combined,vx+wz,9,vx: +0.0218 / +0.0550 m/s (40%)   vy: -0.1430 m/s (drift)   wz: +0.1727 / +0.1000 rad/s (173%),226.3,1.01,167,46,106,0,6.810,FELL
+combined,vx+vy,9,vx: +0.0297 / +0.0550 m/s (54%)   vy: +0.1542 / +0.0360 m/s (428%)   wz: -0.3460 rad/s (drift),242.7,1.00,185,52,28,0,6.830,FELL
+combined,vx+squat,40,vx: +0.0539 / +0.0550 m/s (98%)   vy: -0.0017 m/s (drift),11.1,1.00,102,31,0,0,,SURVIVED

@@ -463,6 +463,14 @@ PUSH_CONDITIONS = [
     # ticks in a run that falls), end the step instead of doing nothing.
     ("timing cut", {"ADAPT_STEP": "0", "K_DCM": "2.0", "ADAPT_TIME": "1",
                     "ADAPT_TIME_CUT": "1"}),
+    # The other half of the same reflex: on the same Unreachable trigger,
+    # bias the swing foot's landing OUTWARD (never inward) instead of ending
+    # the step sooner. Doc Sec.25.4 -- untried because Sec.21.5 only tested
+    # the timing half alone.
+    ("timing wide", {"ADAPT_STEP": "0", "K_DCM": "2.0", "ADAPT_TIME": "1",
+                     "ADAPT_TIME_WIDE": "1"}),
+    ("timing cut+wide", {"ADAPT_STEP": "0", "K_DCM": "2.0", "ADAPT_TIME": "1",
+                         "ADAPT_TIME_CUT": "1", "ADAPT_TIME_WIDE": "1"}),
     # Sole width. The ankle-roll actuator is a cylinder of radius 23 mm with
     # its axis fore-aft, so it is ALREADY 46 mm across in y while the sole
     # plate is 38 mm -- widening to 46 adds no swept volume at all. 60 mm is
@@ -486,6 +494,19 @@ PUSH_CONDITIONS = [
     ("sole 38", {}),
     ("sole 46", {"URDF": f"{URDF_DIR}/kyo46rs_sole46.urdf", "SOLE_HALF_W": "0.0230"}),
     ("sole 60", {"URDF": f"{URDF_DIR}/kyo46rs_sole60.urdf", "SOLE_HALF_W": "0.0300"}),
+    # Stance width. Sec.10.11 set the 99.4 mm baseline on hip_roll TORQUE
+    # grounds (single-support hip_roll was at 253% of continuous rating) --
+    # never remeasured against the disturbance/CoP-edge metric this doc
+    # settled on. Widening trades against itself: DS lateral margin grows with
+    # stance (more room to shift the CoM before commit) but so does the
+    # single-support hip_roll moment arm, and the direction of the net effect
+    # is exactly what this sweep is for. hip_yaw origin y only -- no cop_half
+    # coupling, since the sole box does not move.
+    ("stance 90", {"URDF": f"{URDF_DIR}/kyo46rs_stance90.urdf"}),
+    ("stance 99", {}),
+    ("stance 110", {"URDF": f"{URDF_DIR}/kyo46rs_stance110.urdf"}),
+    ("stance 120", {"URDF": f"{URDF_DIR}/kyo46rs_stance120.urdf"}),
+    ("stance 130", {"URDF": f"{URDF_DIR}/kyo46rs_stance130.urdf"}),
 ]
 
 

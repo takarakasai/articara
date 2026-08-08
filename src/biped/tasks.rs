@@ -184,6 +184,38 @@ pub fn posture(
     wt::cartesian_acceleration(qddot, &j_post, &na::DVector::zeros(na_count), &post_ref)
 }
 
+/// Joint position/velocity safety limits, as `misa_wbc::tasks::joint_limit_cbf`
+/// on the actuated rows. Not in any level by default -- only the torque box
+/// is enforced today, so a redundant leg can be commanded into a solution
+/// that is only realisable by running a joint past its physical stop
+/// (measured: ankle_roll pushed to 196% of its URDF limit while falling,
+/// doc Sec.18.5). See `JLIM` in kyo46rs_walk.rs for the level this feeds.
+///
+/// `limits` (gains and `q_min`/`q_max`/`v_max`/`a_max`) is built once by the
+/// caller from [`super::rig::BipedRig`]'s URDF-derived bounds. `q_act`/`v_act`
+/// are this tick's LIVE actuated-row position/velocity, indexed like
+/// `actuated`'s `vi` (i.e. `rig.model.q_idx`/`v_idx`-based, NOT
+/// `rig.robot.joint_positions` -- that field is frozen at the barn-in seed
+/// pose and never updated after `BipedRig::new`, which is fine for
+/// [`posture`]'s reference but silently zeroes a safety barrier's notion of
+/// "how close to the limit" if reused here).
+pub fn joint_limits(
+    qddot: &Affine,
+    actuated: &[(usize, usize)],
+    q_act: &na::DVector<f64>,
+    v_act: &na::DVector<f64>,
+    limits: &wt::JointLimitCbf,
+    na_count: usize,
+    nv: usize,
+) -> Task {
+    let mut j_sel = na::DMatrix::zeros(na_count, nv);
+    for &(_, vi) in actuated {
+        j_sel[(vi - 6, vi)] = 1.0;
+    }
+    let qddot_act = &j_sel * qddot;
+    wt::joint_limit_cbf(&qddot_act, q_act, v_act, limits)
+}
+
 /// Which rows of the swing foot's linear Jacobian to constrain.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SwingAxes {
