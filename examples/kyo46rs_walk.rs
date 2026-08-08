@@ -534,6 +534,41 @@ fn main() {
     // because double support could not be cut below 0.10 s.
     let adapt_ds_min = env_f64("ADAPT_DS_MIN", 0.25);
     let adapt_ds_max = env_f64("ADAPT_DS_MAX", 2.0);
+    // ---- corrective impulse at the commitment instant -------------------
+    //
+    // A causal probe, not another correlate. Six quantities have now been
+    // found that separate survivors from fallers; the three that could be
+    // moved changed nothing (Sec.22.5). Separation cannot tell a cause you can
+    // act on from a symptom, because a trajectory heading for a fall departs
+    // from a healthy one in every quantity at once.
+    //
+    // So intervene instead: at the instant the plan commits to one foot, add
+    // an impulse that changes the CoM velocity by a chosen amount along a
+    // chosen axis, and sweep it. If some value saves the run, that axis
+    // carries the fatal information and the control problem is to produce that
+    // velocity change. If no value on either axis saves it, the state at
+    // commitment is not where the cause lives, and the search moves on
+    // without another round of correlate-chasing.
+    let fix_dv = env_f64("FIX_DV", 0.0);
+    let fix_deg = env_f64("FIX_DEG", 90.0);
+    let fix_dt = env_f64("FIX_DT", 0.02);
+    // Angular version of the same probe. A linear impulse cannot touch the
+    // attitude/angular-rate part of the state, and sweeping +-0.15 m/s of CoM
+    // velocity -- five times the disturbance that caused the fall -- saved 1
+    // of 4 runs. So the next place to look is the part a linear impulse
+    // cannot reach. `FIX_TAU` is an ANGULAR impulse [N*m*s] about the world
+    // axis named by `FIX_TAU_AXIS` (0 = roll, 1 = pitch, 2 = yaw).
+    let fix_tau = env_f64("FIX_TAU", 0.0);
+    let fix_tau_axis = env_f64("FIX_TAU_AXIS", 0.0) as usize;
+    // WHEN to apply the corrective impulse, as seconds after the push.
+    // Negative (the default) means "at the commitment instant", which is where
+    // the first two probes fired -- and neither +-0.15 m/s of CoM velocity nor
+    // +-1.5 N*m*s of angular impulse saved 3 of the 4 runs there. By then it
+    // is too late. Sweeping this backwards towards the push finds the boundary
+    // of where it is still early enough, which is a control BANDWIDTH
+    // requirement rather than another correlate.
+    let fix_at_s = env_f64("FIX_AT_S", -1.0);
+    let mut fix_fired = false;
     let mut n_ds_retime = 0u32;
     let mut ds_retime_max: f64 = 0.0;
     // Why the timing solve declined, per tick. A reviewer's claim worth
@@ -1480,6 +1515,26 @@ fn main() {
             if transfer_t.is_none() {
                 if let (Some(Support::Double), Support::Single { .. }) = (support_prev, support) {
                     transfer_t = Some(t);
+                    if (fix_dv.abs() > 0.0 || fix_tau.abs() > 0.0) && !fix_fired {
+                        let th = fix_deg.to_radians();
+                        let f = total_mass * fix_dv / fix_dt;
+                        let mut tq = [0.0; 3];
+                        if fix_tau_axis < 3 {
+                            tq[fix_tau_axis] = fix_tau / fix_dt;
+                        }
+                        rig.sim.apply_external_force(
+                            &push_link,
+                            [f * th.cos(), f * th.sin(), 0.0],
+                            tq,
+                            fix_dt,
+                        );
+                        fix_fired = true;
+                        println!(
+                            "  FIX at t={t:.3} (commitment): dv={fix_dv:+.3} m/s at \
+                             {fix_deg:.0} deg, angular {fix_tau:+.4} N*m*s about axis \
+                             {fix_tau_axis}, over {fix_dt:.3} s"
+                        );
+                    }
                     // 6-D centroidal momentum h = A_G * v; rows 0..3 are
                     // angular, and row 0 is the roll axis.
                     let ag = misarta::centroidal::compute_centroidal_momentum_matrix(
@@ -1496,6 +1551,30 @@ fn main() {
                 if let (Some(Support::Double), Support::Single { .. }) = (support_prev, support) {
                     transfer2_t = Some(t);
                 }
+            }
+            // Time-triggered corrective impulse (see `fix_at_s`).
+            if fix_at_s >= 0.0
+                && !fix_fired
+                && (fix_dv.abs() > 0.0 || fix_tau.abs() > 0.0)
+                && push_at_t.map(|tp0| t - tp0 >= fix_at_s).unwrap_or(false)
+            {
+                let th = fix_deg.to_radians();
+                let f = total_mass * fix_dv / fix_dt;
+                let mut tq = [0.0; 3];
+                if fix_tau_axis < 3 {
+                    tq[fix_tau_axis] = fix_tau / fix_dt;
+                }
+                rig.sim.apply_external_force(
+                    &push_link,
+                    [f * th.cos(), f * th.sin(), 0.0],
+                    tq,
+                    fix_dt,
+                );
+                fix_fired = true;
+                println!(
+                    "  FIX at t={t:.3} (+{fix_at_s:.2} s after the push): \
+                     dv={fix_dv:+.3} m/s at {fix_deg:.0} deg, angular {fix_tau:+.3}"
+                );
             }
             if push_at_t.map(|tp0| t - tp0 <= 1.0).unwrap_or(false) {
                 let ag = misarta::centroidal::compute_centroidal_momentum_matrix(
