@@ -740,6 +740,58 @@ def push_sweep_main(a):
         print(f"\nwrote {a.csv}")
 
 
+def push_dt_sweep_main(a):
+    """Is the impulse [N*s] actually what determines the outcome, or does
+    the bench's foundational assumption -- that duration does not matter once
+    impulse is fixed -- not hold?
+
+    Holds the impulse at each cell's known boundary value (GRID_CENTRE, where
+    a survive/fall flip is most likely to be visible) and varies PUSH_DT.
+    `f = impulse / dt` (kyo46rs_walk.rs), so a shorter pulse is a bigger peak
+    force delivering the SAME total impulse. If the verdict flips across
+    duration at fixed impulse, every safe/fail number this script has ever
+    reported is conditioned on the unstated 0.10 s default and does not mean
+    what the doc has been treating it to mean.
+    """
+    base = {"VX": a.vx, "PUSH_AT": a.push_at, "PUSH_RECOVER_MM": a.recover_mm,
+            "PUSH_RECOVER_S": a.recover_s, "N_STEPS": a.push_steps}
+    if a.first_swing is not None:
+        base["FIRST_SWING"] = a.first_swing
+    cells = push_cases(a.push_group)
+    dts = [float(x) for x in a.pushdt_values.split(",")]
+    rows = []
+    hdr = f"{'cell':>17} {'impulse':>8} " + " ".join(f"{dt:>9.2f}s" for dt in dts)
+    print(hdr)
+    print("-" * len(hdr))
+    for _, label, envx in cells:
+        impulse = GRID_CENTRE.get(label)
+        if impulse is None:
+            continue
+        verdicts = []
+        for dt in dts:
+            cmd_env = dict(base)
+            cmd_env["PUSH_DT"] = f"{dt}"
+            v, r = run_push(envx, impulse, cmd_env)
+            verdicts.append(v)
+            rows.append({"cell": label, "impulse": impulse, "push_dt": dt,
+                         "verdict": v, **r})
+        flips = len(set(v for v in verdicts if v != "nofire")) > 1
+        mark = "  <- FLIPS" if flips else ""
+        print(f"{label:>17} {impulse:>8.3f} " +
+              " ".join(f"{v:>10}" for v in verdicts) + mark, flush=True)
+    n_flip = sum(1 for lb in {r["cell"] for r in rows}
+                 if len({r["verdict"] for r in rows
+                         if r["cell"] == lb and r["verdict"] != "nofire"}) > 1)
+    print(f"\n{n_flip}/{len(cells)} cells flip verdict across "
+          f"PUSH_DT in {a.pushdt_values} at a fixed impulse.")
+    if a.csv:
+        with open(a.csv, "w", newline="") as f:
+            w = csvmod.DictWriter(f, fieldnames=list(rows[0].keys()))
+            w.writeheader()
+            w.writerows(rows)
+        print(f"wrote {a.csv}")
+
+
 def push_main(a):
     # Fewer steps than the command matrix: the push lands at step 6 and the
     # rest of the run only has to be long enough to decide the recovery dwell.
@@ -832,6 +884,12 @@ def main():
                     help="top of the impulse grid, N*s")
     ap.add_argument("--push-sweep", action="store_true",
                     help="cross the push matrix with ADAPT_STEP x K_DCM")
+    ap.add_argument("--push-dt-sweep", action="store_true",
+                    help="hold impulse fixed at each cell's GRID_CENTRE and "
+                         "vary PUSH_DT -- checks whether duration matters "
+                         "once impulse is fixed (it is assumed not to)")
+    ap.add_argument("--pushdt-values", default="0.05,0.10,0.15,0.20",
+                    help="comma-separated PUSH_DT values, s (--push-dt-sweep)")
     ap.add_argument("--first-swing",
                     help="override FIRST_SWING (which leg swings first)")
     ap.add_argument("--verbose", action="store_true", help="print every probe")
@@ -843,6 +901,9 @@ def main():
     if not os.path.exists(BIN):
         sys.exit(f"{BIN} not found -- cargo build --release --features mujoco --examples")
 
+    if a.push_dt_sweep:
+        push_dt_sweep_main(a)
+        return
     if a.push_sweep:
         push_sweep_main(a)
         return
