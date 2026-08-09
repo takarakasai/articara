@@ -5171,6 +5171,91 @@ fn collapse_index(samples: &[WbcSample], stairs: &StaircaseCfg) -> Option<usize>
         .position(|s| s.body_z - stairs.height_at(s.body_x) < TRUNK_Z_FALL_THRESHOLD_M)
 }
 
+/// What actually ends the two stance-height runs.
+///
+/// Neither holds what it climbs: gain 1.0 never collapses but finishes at
+/// x=0.737 m, below the first riser, and gain 1.45 reaches ~3.6 steps and
+/// then goes flat on the stairs around t=15 s. `max_x` cannot distinguish
+/// those, and neither can a still frame -- so this dumps the signals that
+/// separate the candidate causes, on a 0.5 s grid across the whole run:
+///
+///   - yaw: the documented failure mode is a slow uncommanded turn-around,
+///     after which "forward" in the body frame is backward in world x. If
+///     the retreat is that, yaw crosses 90 deg before x starts dropping.
+///   - max tau_frac: 1.0 means a joint is clamped at its effort limit, so
+///     the modelled controller is not the controller running.
+///   - max qd_frac: `mujoco_sim` brakes overspeed with a torque applied
+///     BEFORE the effort clamp, so a too-fast joint presents as a joint out
+///     of torque -- a different problem with a different fix.
+///   - stance count and total contact fz: a collapse with feet still loaded
+///     is a strength/posture problem; one with fz falling away first is a
+///     loss of contact.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_staircase_5cm_stance_failure_diag() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    for gain in [1.0, 1.45] {
+        let params = WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: cmd,
+            total_time_s: 20.0,
+            wbc_real_inertia: true,
+            staircase: Some(stairs),
+            terrain_stance: Some(TerrainStanceCfg { gain, max_offset_m: 0.10 }),
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        let collapse = collapse_index(&samples, &stairs);
+        eprintln!(
+            "\n=== stance gain={gain:.2}  collapse at {} ===",
+            collapse
+                .map(|i| format!("t={:.2}s x={:.3}m", samples[i].t, samples[i].body_x))
+                .unwrap_or_else(|| "never".into()),
+        );
+        eprintln!(
+            "    t     x      z    z-terr   yaw    pitch  stance  fz_tot  \
+             tau_max qd_max  sat"
+        );
+        let mut next = 0.0_f64;
+        for s in &samples {
+            if s.t + 1e-9 < next {
+                continue;
+            }
+            next += 0.5;
+            let tau_max = s.tau_frac.iter().cloned().fold(0.0_f64, f64::max);
+            let qd_max = s.qd_frac.iter().cloned().fold(0.0_f64, f64::max);
+            let n_sat = s.tau_frac.iter().filter(|&&f| f > 0.99).count();
+            let n_stance = s.stance_mask.iter().filter(|&&b| b).count();
+            eprintln!(
+                "{:6.2} {:6.3} {:6.3} {:6.3} {:7.1} {:7.1} {:5}/4 {:7.1} \
+                 {:6.2} {:6.2} {:3}",
+                s.t,
+                s.body_x,
+                s.body_z,
+                s.body_z - stairs.height_at(s.body_x),
+                s.yaw.to_degrees(),
+                s.pitch.to_degrees(),
+                n_stance,
+                s.total_fz_world,
+                tau_max,
+                qd_max,
+                n_sat,
+            );
+        }
+    }
+}
+
 /// Replay source for the stance-height comparison clip: the same staircase
 /// with the per-leg correction off and at gain=1.45, so the difference is
 /// visible rather than only tabulated.
