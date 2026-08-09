@@ -1,0 +1,13 @@
+cell,stance,limit_ns,budget_ns,ratio,outcome,peak_dcm_mm,peak_tilt_rad,cop_use,ankle_use_pct,degraded,recover_s,pulse_spill_s
+fwd ds,DS,1.519,1.81,0.84,recovered,42.6,0.034,1.01,103,17,1.270,
+back ds,DS,0.754,1.81,0.42,absorbed,13.5,0.014,1.00,65,7,,
+left ds,DS,0.686,0.70,0.98,absorbed,16.7,0.011,1.00,65,8,,
+right ds,DS,0.968,0.70,1.38,absorbed,15.9,0.013,1.00,64,11,,
+diag ds,DS,0.585,1.00,0.58,absorbed,13.4,0.010,1.00,103,14,,
+fwd ss,SS/R,1.384,1.81,0.76,recovered,29.1,0.030,1.00,65,14,0.255,
+back ss,SS/R,1.080,1.81,0.60,recovered,46.0,0.057,1.01,65,34,0.910,
+left ss,SS/R,0.607,0.70,0.87,absorbed,17.8,0.008,1.00,66,10,,
+right ss,SS/R,0.607,0.70,0.87,recovered,22.1,0.145,1.00,108,14,0.205,
+diag ss,SS/R,1.001,1.00,1.00,recovered,28.1,0.016,1.00,82,20,0.210,
+left ss (mirror),SS/L,0.540,0.70,0.77,absorbed,17.9,0.133,1.00,106,13,,
+right ss (mirror),SS/L,0.596,0.70,0.85,absorbed,17.5,0.008,1.00,64,8,,
