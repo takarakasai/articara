@@ -52,6 +52,10 @@ import sys
 BIN = "./target/release/examples/kyo46rs_walk"
 URDF_DIR = "/home/takara/work/dp/humanoid/kyo46rs_description/urdf"
 MUJOCO_LIB = "/home/takara/.mujoco/mujoco-3.8.0/lib"
+# The Sec.34 recommendation, written by scripts/kyo46rs_vy_regression.py
+# (run it once, or point REC_URDF elsewhere).
+REC_URDF = os.environ.get(
+    "REC_URDF", "/tmp/kyo46rs_vy_regression/urdf/kyo46rs_v6_rec.urdf")
 
 # Fixed for every case, so the only thing varying is the command.
 COMMON = {
@@ -483,6 +487,22 @@ PUSH_CONDITIONS = [
     ("mom off", {"ADAPT_STEP": "0", "K_DCM": "2.0", "MOM": "0"}),
     ("mom merge k10", {"ADAPT_STEP": "0", "K_DCM": "2.0", "MOM": "1",
                        "KP_MOM": "10", "MOM_LEVEL": "post_merge", "MOM_AXES": "x--"}),
+    # Guard stance (doc Sec.35), on the Sec.34 stack. ARM_HOLD is on in BOTH so
+    # the only thing varying is where the arms are -- holding them is not the
+    # variable, since without it the guard does not walk at all (9/28).
+    #
+    # ARM_PITCH has to live in the condition dict, not the environment: `run`
+    # applies COMMON (which pins ARM_PITCH=0) before the condition, so an
+    # exported value would be overwritten and the "guard" cells would silently
+    # be arms-down cells.
+    ("arms down", {"ADAPT_STEP": "0", "K_DCM": "2.0",
+                   "URDF": REC_URDF,
+                   "SOLE_HALF_W": "0.030", "ARM_PITCH": "0", "ELBOW": "0",
+                   "ARM_HOLD": "1", "KP_ARM": "100", "KD_ARM": "20"}),
+    ("guard", {"ADAPT_STEP": "0", "K_DCM": "2.0",
+               "URDF": REC_URDF,
+               "SOLE_HALF_W": "0.030", "ARM_PITCH": "-2.40", "ELBOW": "2.00",
+               "ARM_HOLD": "1", "KP_ARM": "100", "KD_ARM": "20"}),
     # prox_weight. Measured on the 42-case command bench only (34 -> 37/42,
     # doc Sec.26.1) -- the disturbance side was an open question. Baseline is
     # everything else at its own default (ADAPT_STEP=0, K_DCM=2.0, no timing
