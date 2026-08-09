@@ -5116,10 +5116,7 @@ fn namiashi_staircase_5cm_terrain_stance() {
                 ..namiashi_tuned_params(I)
             };
             let Some(samples) = run_wbc_sim(params) else { return };
-            let upright = samples
-                .iter()
-                .position(|s| s.body_z < TRUNK_Z_FALL_THRESHOLD_M)
-                .unwrap_or(samples.len());
+            let upright = collapse_index(&samples, &stairs).unwrap_or(samples.len());
             let fell = upright < samples.len();
             // Progress over the UPRIGHT window. A whole-run max_x reports a
             // numerical blow-up as progress -- the first pass of this sweep
@@ -5143,13 +5140,75 @@ fn namiashi_staircase_5cm_terrain_stance() {
             // to notice the implausible number.
             let terrain_end_x = top_start_x + stairs.top_platform_m;
             let diverged = raw_max_x > terrain_end_x;
+            // Where it ENDS, not just how far it got: gain 1.0 never
+            // collapses yet finishes below the first riser, having climbed
+            // and then walked itself back down. max_x alone scores that as
+            // the best non-falling run in the sweep.
             eprintln!(
                 "[stance {tag} gain={gain:.1}] upright: max_x={max_x:.3}m max_z={max_z:.3}m \
-                 (~{steps:.1} steps)  fell={fell}  raw_max_x={raw_max_x:.3}m  \
-                 reached_top={reached_top}{}",
+                 (~{steps:.1} steps)  final_x={:.3}m  fell={fell}  \
+                 raw_max_x={raw_max_x:.3}m  reached_top={reached_top}{}",
+                final_s.body_x,
                 if diverged { "  <- DIVERGED (past terrain end)" } else { "" },
             );
         }
+    }
+}
+
+/// First sample where the trunk has collapsed RELATIVE TO THE STEP IT IS
+/// STANDING ON, or `None` if it never does.
+///
+/// `TRUNK_Z_FALL_THRESHOLD_M` is a world-frame absolute, which is correct on
+/// flat ground and quietly wrong on a staircase: a robot belly-down on step 3
+/// sits at z=0.251 m, above the 0.18 m threshold, and reads as upright. The
+/// stance-height sweep reported `fell=false` for exactly that state until a
+/// replay showed the robot flat on the stairs and motionless. Same class of
+/// bug as `base_height_floor`'s on the RL side, which needed the identical
+/// "ground is not at world zero" correction.
+fn collapse_index(samples: &[WbcSample], stairs: &StaircaseCfg) -> Option<usize> {
+    samples
+        .iter()
+        .position(|s| s.body_z - stairs.height_at(s.body_x) < TRUNK_Z_FALL_THRESHOLD_M)
+}
+
+/// Replay source for the stance-height comparison clip: the same staircase
+/// with the per-leg correction off and at gain=1.45, so the difference is
+/// visible rather than only tabulated.
+#[test]
+#[ignore = "writes replays for video -- run with --ignored"]
+fn namiashi_staircase_5cm_terrain_stance_video() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    for (gain, dir) in [(0.0, "stance_off"), (1.0, "stance_100"), (1.45, "stance_145")] {
+        let params = WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: cmd,
+            total_time_s: 20.0,
+            wbc_real_inertia: true,
+            staircase: Some(stairs),
+            terrain_stance: if gain == 0.0 {
+                None
+            } else {
+                Some(TerrainStanceCfg { gain, max_offset_m: 0.10 })
+            },
+            replay_dir: Some(format!("/tmp/nami_stairs/{dir}")),
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        let upright = collapse_index(&samples, &stairs).unwrap_or(samples.len());
+        let walking = &samples[..upright.max(1)];
+        let max_x = walking.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+        eprintln!("[stance_video gain={gain:.2} -> {dir}] max_x={max_x:.3}m  fell={}", upright < samples.len());
     }
 }
 
@@ -5195,10 +5254,7 @@ fn namiashi_staircase_5cm_terrain_stance_robustness() {
             ..namiashi_tuned_params(I)
         };
         let Some(samples) = run_wbc_sim(params) else { return };
-        let upright = samples
-            .iter()
-            .position(|s| s.body_z < TRUNK_Z_FALL_THRESHOLD_M)
-            .unwrap_or(samples.len());
+        let upright = collapse_index(&samples, &stairs).unwrap_or(samples.len());
         let fell = upright < samples.len();
         let walking = &samples[..upright.max(1)];
         let max_x = walking.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
