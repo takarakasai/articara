@@ -306,75 +306,82 @@ impl StaircaseCfg {
 /// a 100 mm circular hole out of boxes needs hundreds of them per plate and
 /// still stair-steps the rim; one grid expresses all of it.
 ///
-/// # Dimensions are read off the rulebook FIGURE, not a CAD source
+/// # Where the dimensions come from
 ///
-/// Every measurement below is exposed as a field, and each carries where it
-/// came from: `[fig]` is dimensioned in the drawing, `[est]` is scaled off
-/// the drawing by eye, `[assumed]` is not in the drawing at all. Correcting
-/// a wrong one should be a one-line change, never a rebuild -- which is why
-/// nothing here is a hardcoded constant. The rulebook itself notes
-/// "安全対策及び加工・配置に起因する寸法、形状誤差があります", so the real
-/// ring is not exact either.
+/// Everything except the bank height was recovered from the rulebook PDF's
+/// own vector geometry (`31th_ring_0401.pdf`), not scaled off a raster by
+/// eye: the drawing's line work was extracted, the ring square used as the
+/// scale reference (538.578 pt = 190 cm), and every feature's corners read
+/// out of it. Values land on exact centimetres, which is the check that the
+/// scale is right. An earlier version of this type guessed the obstacle
+/// centres at +/-48 cm; they are +/-65 cm, and the two start platforms are
+/// the same size rather than the 30/45 asymmetry the raster suggested.
+///
+/// `[pdf]` is measured from that geometry. `[assumed]` is not in the drawing
+/// at all -- only the edge bank's height, since the rulebook gives its
+/// profile as "断面が半楕円形" with no dimension. Every measurement is still
+/// a field rather than a constant, because the rulebook itself notes
+/// "安全対策及び加工・配置に起因する寸法、形状誤差があります".
 #[derive(Clone, Debug)]
 pub struct KawasakiRingCfg {
-    /// `[fig]` Ring plate, square, 190 cm on a side.
+    /// `[pdf]` Ring plate, square, 190 cm on a side.
     pub ring_m: f64,
-    /// `[fig]` Start platform footprint `(width_along_edge, depth_outward)`.
-    /// The drawing gives the blue platform as 45 cm along the edge and 35 cm
-    /// deep; the red one is dimensioned 30 cm and appears smaller, which may
-    /// be a drafting artifact rather than a real asymmetry -- see
-    /// `red_platform_m`.
+    /// `[pdf]` Start platform footprint `(width_along_edge, depth_outward)`.
+    /// Both platforms measure 45 x 35 cm: the drawing's 30 cm dimension
+    /// belongs to something else, and the apparent red/blue asymmetry was an
+    /// artifact of reading the raster. Kept as two fields anyway so an
+    /// actual asymmetry stays expressible.
     pub blue_platform_m: (f64, f64),
-    /// `[fig]` Red start platform, dimensioned 30 cm in the drawing. Kept
-    /// separate from `blue_platform_m` rather than assuming symmetry,
-    /// because assuming it away would hide the discrepancy.
+    /// `[pdf]` See `blue_platform_m` -- same size.
     pub red_platform_m: (f64, f64),
-    /// `[est]` Start platform top surface height above the ring plate.
+    /// Start platform top surface relative to the ring surface. 0.0 = flush,
+    /// which is how the isometric reads: a start zone the robot drives off,
+    /// not a step it has to descend.
     pub platform_h_m: f64,
-    /// `[fig]` Central bowl obstacle: 45 cm square.
+    /// `[pdf]` Central bowl obstacle: 45 cm square.
     pub bowl_m: f64,
-    /// `[fig]` Width of the bowl's flat outer frame.
+    /// `[pdf]` Width of the bowl's flat outer frame.
     pub bowl_frame_m: f64,
-    /// `[fig]` Bowl rim height. The drawing shows 2.8 cm on the side view
+    /// `[pdf]` Bowl rim height. The drawing shows 2.8 cm on the side view
     /// and 2.5 cm on section A-A; taken as the rim, with the difference
     /// most likely frame-vs-lip.
     pub bowl_rim_h_m: f64,
-    /// `[fig]` Height at the bowl's centre, i.e. how far the dish drops.
+    /// `[pdf]` Height at the bowl's centre, i.e. how far the dish drops.
     pub bowl_centre_h_m: f64,
-    /// `[fig]` Hole-plate obstacles are 30 cm square, 1.5 cm thick.
+    /// `[pdf]` Hole-plate obstacles are 30 cm square, 1.5 cm thick.
     pub plate_m: f64,
     pub plate_h_m: f64,
-    /// `[fig]` Single-hole plate: one 180 mm hole, centred.
+    /// `[pdf]` Single-hole plate: one 180 mm hole, centred.
     pub round_hole_d_m: f64,
-    /// `[fig]` Four-hole plate: 100 mm holes on a 150 mm square pitch.
+    /// `[pdf]` Four-hole plate: 100 mm holes on a 150 mm square pitch.
     pub quad_hole_d_m: f64,
     pub quad_hole_pitch_m: f64,
-    /// `[est]` Obstacle centres, in metres from the ring centre, as
-    /// `(x, y)`. The drawing dimensions these only against edges and
-    /// centrelines, so these are scaled off it.
+    /// `[pdf]` Round-hole plate centres, metres from the ring centre.
     pub round_plate_centres: Vec<(f64, f64)>,
-    /// `[est]` Four-hole plates. Drawn rotated 45 deg (diamond).
+    /// `[pdf]` Four-hole plate centres. Drawn rotated 45 deg (diamond).
     pub quad_plate_centres: Vec<(f64, f64)>,
-    /// `[assumed]` Edge banks. The rulebook says only "断面が半楕円形の
-    /// エッジバンクを配置する" with no dimensions at all, so the profile is
-    /// a guess: `(half_width, height)` of the semi-ellipse.
+    /// `[pdf]` Half-width of the edge bank's semi-elliptical section. The
+    /// banks measure 2 cm across and sit flush against the ring edge.
     pub bank_half_w_m: f64,
+    /// `[assumed]` Bank height -- the ONE number the rulebook never gives.
+    /// "断面が半楕円形" only says the section is a半楕円, so this picks a
+    /// height that is not simply the半円 that a 1 cm half-width would imply.
     pub bank_h_m: f64,
-    /// `[est]` Edge bank segments as `(x0, y0, x1, y1)` centrelines, metres
-    /// from the ring centre.
+    /// `[pdf]` Edge bank segments as `(x0, y0, x1, y1)` centrelines, metres
+    /// from the ring centre. Each runs 1 cm in from its own ring edge.
     pub bank_segments: Vec<(f64, f64, f64, f64)>,
     /// Heightfield grid pitch. 5 mm resolves a 100 mm hole across 20 cells.
     pub cell_m: f64,
 }
 
 impl Default for KawasakiRingCfg {
+    /// Measured from `31th_ring_0401.pdf`; see the type's doc comment.
     fn default() -> Self {
-        let r = 1.90 / 2.0;
         Self {
             ring_m: 1.90,
             blue_platform_m: (0.45, 0.35),
-            red_platform_m: (0.30, 0.30),
-            platform_h_m: 0.05,
+            red_platform_m: (0.45, 0.35),
+            platform_h_m: 0.0,
             bowl_m: 0.45,
             bowl_frame_m: 0.05,
             bowl_rim_h_m: 0.028,
@@ -384,18 +391,21 @@ impl Default for KawasakiRingCfg {
             round_hole_d_m: 0.18,
             quad_hole_d_m: 0.10,
             quad_hole_pitch_m: 0.15,
-            // Left and right of centre on the horizontal centreline.
-            round_plate_centres: vec![(-0.48, 0.0), (0.48, 0.0)],
-            // Above and below centre on the vertical centreline.
-            quad_plate_centres: vec![(0.0, 0.48), (0.0, -0.48)],
-            bank_half_w_m: 0.04,
-            bank_h_m: 0.025,
-            // The long bars top and bottom (150 cm), and the two shorter
-            // runs down the right-hand side.
+            round_plate_centres: vec![(-0.65, 0.0), (0.65, 0.0)],
+            quad_plate_centres: vec![(0.0, -0.65), (0.0, 0.65)],
+            bank_half_w_m: 0.01,
+            bank_h_m: 0.015,
+            // Each bank is 2 cm across and flush with its own ring edge, so
+            // the centreline sits 1 cm in from +/-0.95. Top and bottom run
+            // 150 cm centred; the two side banks run 100 cm and are offset
+            // in opposite directions, which is what makes the layout
+            // rotationally symmetric about the ring centre rather than
+            // mirror-symmetric.
             bank_segments: vec![
-                (-0.75, r - 0.30, 0.75, r - 0.30),
-                (-0.75, -(r - 0.30), 0.75, -(r - 0.30)),
-                (r - 0.30, -0.50, r - 0.30, 0.50),
+                (-0.75, 0.94, 0.75, 0.94),
+                (-0.75, -0.94, 0.75, -0.94),
+                (-0.94, -0.25, -0.94, 0.75),
+                (0.94, -0.75, 0.94, 0.25),
             ],
             cell_m: 0.005,
         }

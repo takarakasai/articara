@@ -53,14 +53,16 @@ fn main() {
         ("ring floor", 0.80, 0.80),
         ("bowl centre", 0.0, 0.0),
         ("bowl rim", 0.21, 0.0),
-        ("round plate body", 0.48 + 0.13, 0.0),
-        ("round plate hole", 0.48, 0.0),
-        // The quad plate is drawn as a diamond, so a point straight above
-        // its centre is on the DIAGONAL and lands between the holes -- the
-        // first version of these probes had these two swapped, which read as
-        // a geometry bug until the elevation map showed the plate was fine.
-        ("quad plate hole", 0.0, 0.48 + 0.13),
-        ("quad plate body", 0.075 / 1.4142, 0.48 + 0.075 / 1.4142),
+        ("round plate body", 0.65 + 0.13, 0.0),
+        ("round plate hole", 0.65, 0.0),
+        // The quad plate is a diamond, so its hole centres sit on the world
+        // axes even though they are on a square pitch in the plate's own
+        // frame: (+q,+q) in plate coords maps to (0, q*sqrt(2)) in world.
+        // An earlier version probed straight up from the centre and called
+        // that the plate body -- it is a hole.
+        ("quad plate body", 0.0, 0.65),
+        ("quad plate hole", 0.0, 0.65 + 0.075 * 1.41421),
+        ("quad plate hole 2", 0.075 * 1.41421, 0.65),
     ] {
         println!("  {label:<20} ({x:+.3},{y:+.3}) -> {:.1} mm",
                  ring.height_at(x, y) * 1000.0);
