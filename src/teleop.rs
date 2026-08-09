@@ -15,6 +15,8 @@
 //! | `Shift` (held)            | full speed instead of half  |
 //! | `1`/`2`/`3`               | Crawl / Walk / Trot         |
 //! | `R`/`F`                   | swing height +/- 5 mm       |
+//! | `O`/`L`                   | ground friction mu +/- 0.05 |
+//! | `P`/`.`                   | controller's assumed mu     |
 //!
 //! Hold-to-move, release-to-stop: a released key means zero on that axis
 //! that same frame, not a latched command that keeps running. The two
@@ -52,6 +54,17 @@ pub struct LiveTeleop {
     /// would be the more surprising behaviour. The tuned values are within
     /// 5 mm of each other anyway (0.035-0.040 m).
     pub swing_height_m: f64,
+    /// Simulated sliding friction of every geom -- the actual slipperiness
+    /// of the world. Applied via `MujocoSim::set_slide_friction_all`.
+    pub ground_mu: f64,
+    /// The friction the CONTROLLER believes it has: the half-angle of the
+    /// WBC QP's friction cone and the MPC's own force-planning limit.
+    ///
+    /// Deliberately separate from `ground_mu`, because the two were found
+    /// to disagree (0.5 assumed against 0.7 simulated, with a stale
+    /// comment in wbc_pipeline.rs claiming they matched). Being able to
+    /// drive them apart, or together, is the point.
+    pub controller_mu: f64,
 
     // ── Telemetry: written by the physics loop, read by the HUD. These
     // flow the OPPOSITE way from the fields above -- the key callback
@@ -117,6 +130,10 @@ impl LiveTeleop {
             cmd: [0.0; 3],
             gait,
             swing_height_m: crate::wbc_harness::namiashi_tuned_swing_height_m(gait),
+            // Seeded from the live sim/controller at startup (see
+            // run_wbc_sim); these are only a placeholder until then.
+            ground_mu: 0.0,
+            controller_mu: 0.0,
             body_x_m: 0.0,
             body_z_m: 0.0,
             measured_vx_mps: 0.0,
@@ -213,6 +230,30 @@ pub fn poll_swing_height_delta(ctx: &egui::Context) -> f64 {
     })
 }
 
+/// One key-press worth of friction change.
+pub const FRICTION_STEP: f64 = 0.05;
+
+/// Clamp on both friction coefficients. The floor is well below any real
+/// surface (deliberately -- being able to make the world skating-rink
+/// slippery is the point of having the control); the ceiling is past
+/// rubber-on-dry-concrete.
+pub const FRICTION_RANGE: (f64, f64) = (0.05, 1.50);
+
+/// `(d_ground_mu, d_controller_mu)` requested this frame. `O`/`L` move the
+/// world's friction, `P`/`.` move what the controller thinks it has.
+/// Edge-triggered, like the other discrete controls.
+pub fn poll_friction_deltas(ctx: &egui::Context) -> (f64, f64) {
+    ctx.input(|r| {
+        let step = |up: egui::Key, down: egui::Key| {
+            ((r.key_pressed(up) as i32 - r.key_pressed(down) as i32) as f64) * FRICTION_STEP
+        };
+        (
+            step(egui::Key::O, egui::Key::L),
+            step(egui::Key::P, egui::Key::Period),
+        )
+    })
+}
+
 /// The gait requested this frame, if any. Edge-triggered (`key_pressed`,
 /// not `key_down`) so holding `1` doesn't re-apply Crawl every frame.
 pub fn poll_gait(ctx: &egui::Context) -> Option<GaitType> {
@@ -272,8 +313,30 @@ pub fn draw_hud(
                         crate::wbc_harness::namiashi_tuned_swing_height_m(st.gait),
                     ),
                 );
-                ui.separator();
             }
+            // Ground friction is physics, not control -- it applies to the
+            // learned policy exactly as much as to the WBC.
+            row(ui, "ground mu", format!("{:.2}   [O/L]", st.ground_mu));
+            if gaited {
+                // Flagged when the controller's friction cone disagrees
+                // with the floor it is standing on. Assuming LESS than the
+                // world provides is merely conservative; assuming MORE
+                // means planning forces the ground cannot deliver, so the
+                // two directions are called out differently.
+                let note = if st.controller_mu > st.ground_mu + 1e-9 {
+                    "  OVER-ASSUMED"
+                } else if st.controller_mu < st.ground_mu - 1e-9 {
+                    "  (conservative)"
+                } else {
+                    "  = matched"
+                };
+                row(
+                    ui,
+                    "ctrl mu",
+                    format!("{:.2}{note}   [P/.]", st.controller_mu),
+                );
+            }
+            ui.separator();
 
             row(
                 ui,
