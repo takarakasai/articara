@@ -17,3 +17,13 @@
 
 # Rendered videos: large binaries, regenerate with tools/render_namiashi.py
 videos/
+
+# Python tool bytecode cache (tools/ has a handful of render/analysis scripts
+# alongside the Rust crate).
+__pycache__/
+
+# Generated IsaacLab USD import output (tests/fixtures/namiashi/usd/) --
+# regenerate via the URDF->USD conversion pipeline; requires an IsaacLab
+# environment, so it is not portable as a plain git blob the way the
+# source URDF/.misa fixtures are.
+tests/fixtures/namiashi/usd/

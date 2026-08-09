@@ -377,6 +377,20 @@ fn find_plugin_dir() -> Option<PathBuf> {
 }
 
 impl MujocoSim {
+    /// The underlying MuJoCo model, for attaching an [`mujoco::viewer::MjViewer`]
+    /// (feature `mujoco-viewer`) or other direct mujoco-rs API use. `Arc<MjModel>`
+    /// derefs to `MjModel`, so this satisfies `MjViewer::launch_passive`'s
+    /// `Deref<Target = MjModel>` bound directly.
+    pub fn mj_model(&self) -> &Arc<MjModel> {
+        &self.model
+    }
+
+    /// Mutable access to the underlying MuJoCo data, for
+    /// [`mujoco::viewer::MjViewer::sync_data`] (feature `mujoco-viewer`).
+    pub fn mj_data_mut(&mut self) -> &mut MjData<Arc<MjModel>> {
+        &mut self.data
+    }
+
     /// Create a new MuJoCo simulation instance from the current RobotModel
     /// using the supplied MJCF export options.
     ///
