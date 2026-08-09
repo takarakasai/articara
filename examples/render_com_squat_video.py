@@ -33,7 +33,10 @@ CAM_SCALE = float(os.environ.get("CAM_SCALE", 2.2 if os.environ.get("ROBOT", "")
 LEGEND_NOTE = (
     ["visual: full STL geometry", "collision: primitives only"]
     if os.environ.get("ROBOT", "").startswith("g1")
-    else ["EL05 46x44 mm, true size", "knee / hip_pitch: dual"]
+    # v6: hip_roll/knee are RS00 (57x51mm), everything else Edulite05
+    # (46x44mm), single motor each -- no more dual-motor joints (v3/v5
+    # retired the knee's and hip_pitch's boosters).
+    else ["Edulite05 46x44mm, RS00 57x51mm", "hip_roll/knee: RS00, no boosters"]
 )
 URDFS = {
     "kyo46rs": "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
