@@ -676,12 +676,15 @@ pub struct WbcParams {
     /// the two interfaces handle a command that moves, rather than one held
     /// constant for the whole run.
     pub cmd_schedule: Vec<(f64, f64, f64, f64)>,
-    /// Live teleop command `[vx, vy, wz]`, updated asynchronously (e.g. by a
-    /// keyboard UI callback on another thread) and read every physics tick,
-    /// taking priority over `cmd_vx/vy/wz` and `cmd_schedule` once burn-in
-    /// ends. `None` (the default) leaves every other call site's fixed- or
+    /// Live teleop state (velocity command + requested gait), updated
+    /// asynchronously by the viewer's keyboard callback and read every
+    /// physics tick. The command takes priority over `cmd_vx/vy/wz` and
+    /// `cmd_schedule` once burn-in ends; a changed gait is applied by
+    /// swapping the whole `GaitConfig` (see `namiashi_tuned_gait_config`).
+    /// `None` (the default) leaves every other call site's fixed- or
     /// scheduled-command behavior completely unaffected.
-    pub live_cmd: Option<std::sync::Arc<std::sync::Mutex<[f64; 3]>>>,
+    #[cfg(feature = "mujoco-viewer")]
+    pub live_teleop: Option<std::sync::Arc<std::sync::Mutex<crate::teleop::LiveTeleop>>>,
     /// Open a real-time `mujoco::viewer::MjViewer` (feature `mujoco-viewer`)
     /// on the sim instead of running headless-and-tracing. Runs until the
     /// viewer window is closed rather than for a fixed `total_time_s`.
@@ -775,7 +778,8 @@ impl WbcParams {
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
             cmd_schedule: Vec::new(),
-            live_cmd: None,
+            #[cfg(feature = "mujoco-viewer")]
+            live_teleop: None,
             live_viewer: false,
             push: None,
         }
@@ -835,7 +839,8 @@ impl WbcParams {
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
             cmd_schedule: Vec::new(),
-            live_cmd: None,
+            #[cfg(feature = "mujoco-viewer")]
+            live_teleop: None,
             live_viewer: false,
             push: None,
         }
@@ -852,6 +857,85 @@ impl WbcParams {
     pub fn forward_walk_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
         Self { misa_wbc_mode: Some((formulation, cfg)), ..Self::forward_walk() }
     }
+}
+
+/// The settings each gait was tuned to, and the numbers they have to hold.
+///
+/// `k_capture = 0.0` is not an oversight -- see `namiashi_tuned_gaits_hold`.
+pub const NAMIASHI_TUNED: [(GaitType, f64, f64, f64, f64, f64); 3] = [
+    // gait, cycle_period_s, duty, max_step_m, swing_height_m, cmd_vx
+    //
+    // Retuned for the corrected 3.3 kg mass. Two rows moved:
+    //   Trot 0.260 -> 0.320 s. At 0.260 the corrected model was airborne
+    //     2.0-2.8% of the time with 4.5 deg of roll; 0.320 cuts that to
+    //     0.5-1.3%. The 2.4 kg model was never airborne at either.
+    //   Walk 0.400 -> 0.500 s, command 0.380 -> 0.330. T=0.400 has a failure
+    //     band from ~0.37 to ~0.43 m/s that only exists with mass out at the
+    //     thigh and calf; T=0.500 has none. Its ceiling is
+    //     0.145/(0.500*0.75) = 0.387, so 0.330 keeps 15% of margin.
+    // Crawl was 101-102% at every speed tried on every model and is unchanged.
+    (GaitType::Trot, 0.320, 0.50, 0.145, 0.040, 0.800),
+    (GaitType::Walk, 0.500, 0.75, 0.145, 0.035, 0.330),
+    (GaitType::Crawl, 0.800, 0.85, 0.145, 0.040, 0.170),
+];
+
+pub fn namiashi_tuned_params(i: usize) -> WbcParams {
+    let (gait, t, duty, step, h, cmd_vx) = NAMIASHI_TUNED[i];
+    WbcParams {
+        total_time_s: 26.0,
+        burn_in_s: 1.0,
+        cmd_vx,
+        gait_type: Some(gait),
+        cycle_period_s: Some(t),
+        duty_factor: Some(duty),
+        max_step_length_m: Some(step),
+        swing_height_m: Some(h),
+        k_capture_s: Some(NAMIASHI_CAPTURE_GAIN_S),
+        ..WbcParams::forward_walk()
+    }
+}
+
+/// That gait's own row in [`NAMIASHI_TUNED`], or Trot's if it has none
+/// (only Trot/Walk/Crawl were ever tuned for namiashi).
+fn namiashi_tuned_row(gait: GaitType) -> (GaitType, f64, f64, f64, f64, f64) {
+    NAMIASHI_TUNED
+        .iter()
+        .copied()
+        .find(|row| row.0 == gait)
+        .unwrap_or(NAMIASHI_TUNED[0])
+}
+
+/// The forward speed [`NAMIASHI_TUNED`] settled on for this gait. Each is
+/// bounded by its own `max_step_length_m / (cycle_period_s * duty_factor)`,
+/// so they are genuinely different numbers, not one speed with different
+/// leg timings -- see [`crate::teleop::SpeedEnvelope::for_gait`].
+pub fn namiashi_tuned_cmd_vx(gait: GaitType) -> f64 {
+    namiashi_tuned_row(gait).5
+}
+
+/// The peak swing-foot lift [`NAMIASHI_TUNED`] settled on for this gait.
+pub fn namiashi_tuned_swing_height_m(gait: GaitType) -> f64 {
+    namiashi_tuned_row(gait).4
+}
+
+/// A [`GaitConfig`] carrying this gait's tuned period/duty/step/swing.
+/// Used to swap gaits at runtime (`GaitController::set_config`) in the
+/// interactive teleop demo, so a live switch lands on exactly the same
+/// settings a batch run of that gait would have used.
+pub fn namiashi_tuned_gait_config(gait: GaitType) -> GaitConfig {
+    let (_, t, duty, step, h, _) = namiashi_tuned_row(gait);
+    let mut cfg = match gait {
+        GaitType::Walk => GaitConfig::walk(),
+        GaitType::Pace => GaitConfig::pace(),
+        GaitType::Bound => GaitConfig::bound(),
+        GaitType::Crawl => GaitConfig::crawl(),
+        GaitType::Trot => GaitConfig::trot(),
+    };
+    cfg.cycle_period_s = t;
+    cfg.duty_factor = duty;
+    cfg.max_step_length_m = step;
+    cfg.swing_height_m = h;
+    cfg
 }
 
 /// Run a WBC sim, sampling per-tick. Returns `None` if the namiashi
@@ -991,7 +1075,14 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         params.misa_file,
         robot.links.iter().map(|l| l.inertial.mass).sum::<f64>(),
     );
-    let cycle_period_s = cfg.cycle_period_s;
+    // `mut` only because live teleop can swap the gait mid-run; every
+    // non-interactive caller leaves both of these at their built values.
+    #[allow(unused_mut)]
+    let mut cycle_period_s = cfg.cycle_period_s;
+    #[cfg(feature = "mujoco-viewer")]
+    let mut live_gait = cfg.gait_type;
+    #[cfg(feature = "mujoco-viewer")]
+    let mut live_swing_height_m = cfg.swing_height_m;
     let mut gc = GaitController::build(&robot, kin.clone(), cfg, params.gait_mode)
         .expect("GaitController::build");
     if params.mpc_predicted_footstep {
@@ -1293,53 +1384,30 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut viewer: Option<mujoco::viewer::MjViewer> = if params.live_viewer {
         let mut v = mujoco::viewer::MjViewer::launch_passive(sim.mj_model().clone(), 0)
             .expect("launch MjViewer");
-        if let Some(live) = params.live_cmd.clone() {
-            // Shared keyboard-teleop bindings -- see
-            // `namiashi_staircase_5cm_teleop`'s doc comment (also mirrored
-            // in go2_rl/sim2sim_namiashi_mujoco.py's `--interactive` mode).
+        if let Some(live) = params.live_teleop.clone() {
+            // Bindings live in `crate::teleop` so this and the RL demo
+            // (examples/namiashi_rl_teleop.rs) cannot drift apart.
             // `_detached` (no `&mut MjData` param) since this only reads
             // egui's key state and writes `live` -- it never touches sim
             // state, so the cheaper detached path applies directly.
-            use mujoco::viewer::egui;
-            const STEP: f64 = 0.02;
-            const VX_MAX: f64 = 0.8;
-            const VY_MAX: f64 = 0.3;
-            const WZ_MAX: f64 = 1.0;
+            use crate::teleop::{
+                poll_cmd, poll_gait, poll_swing_height_delta, SpeedEnvelope,
+                SWING_HEIGHT_RANGE_M,
+            };
             v.add_ui_callback_detached(move |ctx| {
-                let (up, down, left, right, strafe_l, strafe_r, reset) = ctx.input(|r| {
-                    (
-                        r.key_down(egui::Key::W) || r.key_down(egui::Key::ArrowUp),
-                        r.key_down(egui::Key::S) || r.key_down(egui::Key::ArrowDown),
-                        r.key_down(egui::Key::A) || r.key_down(egui::Key::ArrowLeft),
-                        r.key_down(egui::Key::D) || r.key_down(egui::Key::ArrowRight),
-                        r.key_down(egui::Key::Q) || r.key_down(egui::Key::PageUp),
-                        r.key_down(egui::Key::E) || r.key_down(egui::Key::PageDown),
-                        r.key_pressed(egui::Key::Space),
-                    )
-                });
-                let mut cmd = live.lock().unwrap();
-                if reset {
-                    *cmd = [0.0; 3];
-                    return;
+                let mut st = live.lock().unwrap();
+                if let Some(g) = poll_gait(ctx) {
+                    st.gait = g;
                 }
-                if up {
-                    cmd[0] = (cmd[0] + STEP).min(VX_MAX);
+                let dh = poll_swing_height_delta(ctx);
+                if dh != 0.0 {
+                    st.swing_height_m = (st.swing_height_m + dh)
+                        .clamp(SWING_HEIGHT_RANGE_M.0, SWING_HEIGHT_RANGE_M.1);
                 }
-                if down {
-                    cmd[0] = (cmd[0] - STEP).max(-VX_MAX);
-                }
-                if left {
-                    cmd[2] = (cmd[2] + STEP).min(WZ_MAX);
-                }
-                if right {
-                    cmd[2] = (cmd[2] - STEP).max(-WZ_MAX);
-                }
-                if strafe_l {
-                    cmd[1] = (cmd[1] + STEP).min(VY_MAX);
-                }
-                if strafe_r {
-                    cmd[1] = (cmd[1] - STEP).max(-VY_MAX);
-                }
+                // Envelope follows the *requested* gait, so switching to
+                // Crawl immediately re-scales what a full-deflection key
+                // means rather than leaving Trot's ceiling in place.
+                st.cmd = poll_cmd(ctx, SpeedEnvelope::for_gait(st.gait));
             });
         }
         Some(v)
@@ -1388,15 +1456,57 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         }
         // Live teleop command, highest priority -- read every tick (not just
         // on change) since it can change between any two ticks.
+        #[cfg(feature = "mujoco-viewer")]
         if k >= burn_in_steps {
-            if let Some(live) = &params.live_cmd {
-                let [vx, vy, wz] = *live.lock().unwrap();
+            if let Some(live) = &params.live_teleop {
+                let st = *live.lock().unwrap();
+                let [vx, vy, wz] = st.cmd;
                 let now = gc.velocity_cmd();
                 if (now.vx - vx).abs() > 1e-9
                     || (now.vy - vy).abs() > 1e-9
                     || (now.wz - wz).abs() > 1e-9
                 {
                     gc.set_velocity_cmd(VelocityCmd { vx, vy, wz });
+                }
+                let gait_changed = st.gait != live_gait;
+                let swing_changed = (st.swing_height_m - live_swing_height_m).abs() > 1e-9;
+                if gait_changed || swing_changed {
+                    // One `set_config` covers both: it swaps
+                    // period/duty/step/swing AND the per-leg phase offsets.
+                    // Rebuilding from the tuned row each time is idempotent
+                    // when only the swing height moved.
+                    //
+                    // The phase generator keeps its current cycle_phase
+                    // across the swap, so a gait switch mid-stride moves
+                    // legs to their new offsets in one tick -- fine from a
+                    // standstill (phase is frozen while the command is
+                    // zero, all four feet in stance), a visible transient
+                    // if done at speed.
+                    let mut cfg = namiashi_tuned_gait_config(st.gait);
+                    cfg.swing_height_m = st.swing_height_m;
+                    gc.set_config(cfg);
+                    cycle_period_s = gc.config().cycle_period_s;
+                    live_gait = st.gait;
+                    live_swing_height_m = st.swing_height_m;
+                    if gait_changed {
+                        eprintln!(
+                            "[teleop] gait -> {:?} (T={:.3}s duty={:.2} \
+                             max_step={:.3}m, tuned cmd_vx={:.3})",
+                            st.gait,
+                            cycle_period_s,
+                            gc.config().duty_factor,
+                            gc.config().max_step_length_m,
+                            namiashi_tuned_cmd_vx(st.gait),
+                        );
+                    }
+                    if swing_changed {
+                        eprintln!(
+                            "[teleop] swing height -> {:.3} m (tuned {:.3} m for {:?})",
+                            st.swing_height_m,
+                            namiashi_tuned_swing_height_m(st.gait),
+                            st.gait,
+                        );
+                    }
                 }
             }
         }

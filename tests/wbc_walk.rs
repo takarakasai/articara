@@ -855,41 +855,10 @@ fn namiashi_turn_rate_linearity() {
     }
 }
 
-/// The settings each gait was tuned to, and the numbers they have to hold.
-///
-/// `k_capture = 0.0` is not an oversight -- see `namiashi_tuned_gaits_hold`.
-const NAMIASHI_TUNED: [(GaitType, f64, f64, f64, f64, f64); 3] = [
-    // gait, cycle_period_s, duty, max_step_m, swing_height_m, cmd_vx
-    //
-    // Retuned for the corrected 3.3 kg mass. Two rows moved:
-    //   Trot 0.260 -> 0.320 s. At 0.260 the corrected model was airborne
-    //     2.0-2.8% of the time with 4.5 deg of roll; 0.320 cuts that to
-    //     0.5-1.3%. The 2.4 kg model was never airborne at either.
-    //   Walk 0.400 -> 0.500 s, command 0.380 -> 0.330. T=0.400 has a failure
-    //     band from ~0.37 to ~0.43 m/s that only exists with mass out at the
-    //     thigh and calf; T=0.500 has none. Its ceiling is
-    //     0.145/(0.500*0.75) = 0.387, so 0.330 keeps 15% of margin.
-    // Crawl was 101-102% at every speed tried on every model and is unchanged.
-    (GaitType::Trot, 0.320, 0.50, 0.145, 0.040, 0.800),
-    (GaitType::Walk, 0.500, 0.75, 0.145, 0.035, 0.330),
-    (GaitType::Crawl, 0.800, 0.85, 0.145, 0.040, 0.170),
-];
-
-fn namiashi_tuned_params(i: usize) -> WbcParams {
-    let (gait, t, duty, step, h, cmd_vx) = NAMIASHI_TUNED[i];
-    WbcParams {
-        total_time_s: 26.0,
-        burn_in_s: 1.0,
-        cmd_vx,
-        gait_type: Some(gait),
-        cycle_period_s: Some(t),
-        duty_factor: Some(duty),
-        max_step_length_m: Some(step),
-        swing_height_m: Some(h),
-        k_capture_s: Some(NAMIASHI_CAPTURE_GAIN_S),
-        ..WbcParams::forward_walk()
-    }
-}
+// NAMIASHI_TUNED / namiashi_tuned_params moved to src/wbc_harness.rs (pub,
+// re-imported by the glob above) once the interactive teleop demo needed
+// the same per-gait tuning to switch between Crawl/Walk/Trot at runtime --
+// two copies of these numbers would be two things to keep in sync.
 
 /// REGRESSION: Trot, Walk and Crawl each hold for 25 s.
 ///

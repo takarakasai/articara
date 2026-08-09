@@ -20,19 +20,25 @@
 //! Run: `cargo run --release --no-default-features --features
 //! "mujoco,mujoco-viewer" --example namiashi_wbc_teleop`
 //!
-//! Keys (identical to `sim2sim_namiashi_mujoco.py --interactive` and
-//! `namiashi_rl_teleop.rs`):
-//!   W/S or Up/Down          -- forward/back speed (vx)
-//!   A/D or Left/Right       -- turn (wz)
-//!   Q/E or PageUp/PageDown  -- strafe (vy)
-//!   Space                   -- zero all three
+//! Keys: see `articara::teleop`'s module docs -- W/S (or arrows) drive,
+//! A/D turn, Q/E (or PgUp/PgDn) strafe, Shift for full speed instead of
+//! half, 1/2/3 switch between Crawl / Walk / Trot, and R/F raise/lower
+//! the swing foot in 5 mm steps. Holding a key moves, releasing it stops.
+//!
+//! Each gait keeps its own tuned speed envelope (Crawl 0.17, Walk 0.33,
+//! Trot 0.80 m/s), since each is bounded by its own
+//! `max_step_length_m / (cycle_period_s * duty_factor)` -- commanding
+//! Trot's speed in Crawl would just saturate. Switching gait is cleanest
+//! from a standstill: the phase generator holds its cycle phase across a
+//! swap, so a mid-stride switch snaps the legs to their new offsets.
 
 #[cfg(all(feature = "mujoco", feature = "mujoco-viewer"))]
 fn main() {
     use std::sync::{Arc, Mutex};
 
     use articara::mjcf::StaircaseCfg;
-    use articara::wbc_harness::{run_wbc_sim, Actuation, WbcParams, NAMIASHI_CAPTURE_GAIN_S};
+    use articara::teleop::LiveTeleop;
+    use articara::wbc_harness::{namiashi_tuned_params, run_wbc_sim, Actuation, WbcParams};
     use quadruped_gait::GaitType;
 
     let stairs = StaircaseCfg {
@@ -43,31 +49,32 @@ fn main() {
         top_platform_m: 8.0,
         half_width_m: 6.0,
     };
-    let live = Arc::new(Mutex::new([0.0_f64; 3]));
-
-    // The known-good Trot preset (tests/wbc_walk.rs's NAMIASHI_TUNED[0]),
-    // not the hip_bias_gate experiment -- that was shown non-robust
-    // under trivial parameter perturbation
+    // Start stopped, in Trot -- NAMIASHI_TUNED[0], the known-good preset.
+    // Deliberately NOT the hip_bias_gate experiment: that was shown
+    // non-robust under trivial parameter perturbation
     // (namiashi_staircase_5cm_hip_gate_robustness) and has no place in a
     // hands-on demo.
+    let live = Arc::new(Mutex::new(LiveTeleop::new(GaitType::Trot)));
+
     let params = WbcParams {
         actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
         host_rate_hz: Some(400.0),
         dt: 0.0005,
-        gait_type: Some(GaitType::Trot),
-        cycle_period_s: Some(0.320),
-        duty_factor: Some(0.50),
-        max_step_length_m: Some(0.145),
-        swing_height_m: Some(0.040),
-        k_capture_s: Some(NAMIASHI_CAPTURE_GAIN_S),
-        cmd_vx: 0.800,
+        // Stand still until a key is pressed; live_teleop overrides this
+        // from the first post-burn-in tick anyway.
+        cmd_vx: 0.0,
         total_time_s: 1800.0, // ends via the viewer window closing, not a timeout
         wbc_real_inertia: true,
         staircase: Some(stairs),
-        live_cmd: Some(live),
+        live_teleop: Some(live),
         live_viewer: true,
-        ..WbcParams::forward_walk()
+        ..namiashi_tuned_params(0)
     };
+    eprintln!(
+        "[teleop] W/S drive, A/D turn, Q/E strafe (arrows + PgUp/PgDn too), \
+         Shift = full speed, 1/2/3 = Crawl/Walk/Trot, R/F = swing height \
+         +/-5mm. Release to stop."
+    );
     run_wbc_sim(params);
 }
 
