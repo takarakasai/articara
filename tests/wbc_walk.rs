@@ -35,7 +35,7 @@ use articara::gait::{
     auto_detect_centroidal_mpc_config, auto_detect_kinematics_config,
     auto_detect_srbd_mpc_config, GaitController, DEFAULT_FOOT_LINKS,
 };
-use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
+use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions, StaircaseCfg};
 use articara::mujoco_sim::MujocoSim;
 use articara::rbd::model::ActuatorMode;
 use articara::robot::RobotModel;
@@ -362,130 +362,6 @@ const MIN_DISPLACEMENT_M: f64 = 0.04;
 /// covers.
 const STATIC_AVG_WINDOW_S: f64 = 0.5;
 
-/// A straight staircase: `n_steps` steps of `rise_m` height and `run_m` tread
-/// depth, `approach_m` of flat floor before the first riser, `top_platform_m`
-/// of flat floor after the last one. Built from solid overlapping boxes
-/// (`MjcfExportOptions::extra_worldbody_xml`) rather than a heightfield --
-/// each step's box shares one back edge with every other step and extends
-/// down to z=-0.5, so at any x the tallest overlapping box is exactly that
-/// tread's height and there is no seam a foot could catch on.
-#[derive(Clone, Copy, Debug)]
-struct StaircaseCfg {
-    rise_m: f64,
-    run_m: f64,
-    n_steps: usize,
-    /// Flat floor length from the spawn point (x=0) to the first riser.
-    approach_m: f64,
-    /// Flat floor length after the last riser.
-    top_platform_m: f64,
-    half_width_m: f64,
-}
-
-impl StaircaseCfg {
-    fn top_platform_start_x(&self) -> f64 {
-        self.approach_m + self.n_steps as f64 * self.run_m
-    }
-
-    fn total_rise_m(&self) -> f64 {
-        self.rise_m * self.n_steps as f64
-    }
-
-    /// Ground height at world x, per the same step geometry `worldbody_xml`
-    /// builds -- an idealized, exact height query, standing in for whatever
-    /// a real height-map (LiDAR + mapping) would eventually estimate. There
-    /// is no sensor model here (no noise, no occlusion, no latency); this is
-    /// deliberately the best case, to test whether height *knowledge* is the
-    /// missing piece before spending effort on how to acquire it.
-    fn height_at(&self, world_x: f64) -> f64 {
-        if world_x < self.approach_m {
-            0.0
-        } else {
-            let step = ((world_x - self.approach_m) / self.run_m).floor() as i64 + 1;
-            let step = step.clamp(1, self.n_steps as i64);
-            step as f64 * self.rise_m
-        }
-    }
-
-    /// Nudge a horizontal touchdown target off a riser edge, onto solid
-    /// tread: clamps `world_x` to stay at least `margin_m` from either edge
-    /// of whichever tread it falls on (the top platform counts as one long
-    /// tread). No-op on the approach floor -- there is no edge there to
-    /// avoid, and the caller is expected to gate on `height_at > 0` anyway
-    /// for the same reason the vertical correction does.
-    fn snap_to_tread(&self, world_x: f64, margin_m: f64) -> f64 {
-        if world_x < self.approach_m {
-            return world_x;
-        }
-        let step = ((world_x - self.approach_m) / self.run_m).floor() as i64 + 1;
-        let step = step.clamp(1, self.n_steps as i64);
-        let start = self.approach_m + (step - 1) as f64 * self.run_m;
-        let end = if step == self.n_steps as i64 {
-            self.top_platform_start_x() + self.top_platform_m
-        } else {
-            self.approach_m + step as f64 * self.run_m
-        };
-        let lo = start + margin_m;
-        let hi = (end - margin_m).max(lo);
-        world_x.clamp(lo, hi)
-    }
-
-    fn worldbody_xml(&self) -> String {
-        fn box_geom(name: &str, cx: f64, cy: f64, cz: f64, hx: f64, hy: f64, hz: f64, rgba: &str) -> String {
-            format!(
-                "    <geom name=\"{name}\" type=\"box\" pos=\"{cx} {cy} {cz}\"                  size=\"{hx} {hy} {hz}\" rgba=\"{rgba}\"/>\n"
-            )
-        }
-        let hy = self.half_width_m;
-        let bottom_z = -0.5_f64;
-        // Runway behind the spawn point. Not exposed as a config knob, but
-        // no longer "a little" -- the 3 cm rise sweep found the robot can
-        // genuinely walk itself backward down a staircase it had climbed
-        // (a slow, uncorrected yaw drift accumulating to a full 180 deg
-        // turn while balanced on a tread, with nothing ever commanding one),
-        // and 0.5 m was not enough: it walked off the back of the floor and
-        // free-fell, which looked like a climbing failure in the summary
-        // numbers and was actually a test-track limitation.
-        let margin_behind_m = 8.0_f64;
-        let stairs_start_x = self.approach_m;
-        let back_x = self.top_platform_start_x() + self.top_platform_m;
-
-        let mut xml = String::new();
-
-        // Approach floor. Emitted first so `render_namiashi.py`'s single
-        // find-and-replace for the checker material (keyed on this exact
-        // rgba string, the same one `GroundPlaneCfg` emits) lands here,
-        // matching the floor look of every other namiashi clip.
-        {
-            let x0 = -margin_behind_m;
-            let x1 = stairs_start_x;
-            let hx = (x1 - x0) / 2.0;
-            let cx = (x0 + x1) / 2.0;
-            let hz = (0.0 - bottom_z) / 2.0;
-            let cz = (0.0 + bottom_z) / 2.0;
-            xml += &box_geom("stair_approach", cx, 0.0, cz, hx, hy, hz, "0.5 0.5 0.55 1");
-        }
-
-        // Steps 1..=n_steps. Box i's front edge is its own riser; its back
-        // edge is shared (`back_x`) with every other step, so the region it
-        // alone determines the height of is exactly its own tread -- see the
-        // struct doc comment for why that makes the profile seamless.
-        for i in 1..=self.n_steps {
-            let x0 = stairs_start_x + (i as f64 - 1.0) * self.run_m;
-            let top_z = i as f64 * self.rise_m;
-            let hx = (back_x - x0) / 2.0;
-            let cx = (back_x + x0) / 2.0;
-            let hz = (top_z - bottom_z) / 2.0;
-            let cz = (top_z + bottom_z) / 2.0;
-            // Alternating shades so the profile reads without a checker
-            // material, which would visually fight with a level tread.
-            let rgba = if i % 2 == 0 { "0.58 0.56 0.52 1" } else { "0.50 0.48 0.44 1" };
-            xml += &box_geom(&format!("stair_step{i}"), cx, 0.0, cz, hx, hy, hz, rgba);
-        }
-
-        xml
-    }
-}
-
 /// Proprioceptive mid-swing collision recovery.
 ///
 /// `namiashi_staircase_5cm_swing_clearance_sweep` ruled out swing-height
@@ -551,6 +427,31 @@ struct TerrainFootplanCfg {
     horizontal_margin_m: f64,
 }
 
+/// See `WbcParams::hip_bias_gate`'s doc comment.
+#[derive(Clone, Copy, Debug)]
+struct HipBiasGateCfg {
+    /// Swing-leg FK tracking error, metres, above which the gate opens.
+    trigger_m: f64,
+    /// `hip_lr_bias_rad` magnitude applied while the gate is open, at the
+    /// moment the gate opens (`err == trigger_m`).
+    bias_mag: f64,
+    /// Extra bias per metre of FK error beyond `trigger_m`, added to
+    /// `bias_mag` at trigger time -- e.g. a bigger riser collision gets a
+    /// bigger correction, rather than every trigger getting the same
+    /// constant nudge regardless of how far off the nominal foothold the
+    /// leg actually was. 0.0 recovers the original constant-magnitude
+    /// gate. The magnitude is fixed for the whole `duration_s` window
+    /// once computed at trigger time, not recomputed every tick, so a
+    /// later smaller error mid-window can't shrink an already-open gate.
+    bias_gain: f64,
+    /// Hard clamp on the trigger-time magnitude (`bias_mag +
+    /// bias_gain * (err - trigger_m)`), radians -- a safety bound so the
+    /// gain term can't run away on a large collision.
+    max_bias_rad: f64,
+    /// How long the gate stays open after the last trigger, seconds.
+    duration_s: f64,
+}
+
 struct WbcParams {
     total_time_s: f64,
     burn_in_s: f64,
@@ -600,6 +501,33 @@ struct WbcParams {
     /// lever to test whether that drift is simply unregulated rather than
     /// something a footplan or WBC weight change would ever reach.
     yaw_pd_gain: Option<(f64, f64)>,
+    /// Constant hip-roll offset (IK convention, radians), added to the
+    /// LEFT legs (FL, RL) and SUBTRACTED from the RIGHT legs (FR, RR),
+    /// every tick, stance and swing alike -- a persistent left-right
+    /// stance-width asymmetry, not a footstep-plan or swing-only
+    /// correction. Taken directly from a namiashi RL policy's own
+    /// recorded joint trace (go2_rl/namiashi_rl), which does NOT show
+    /// this on flat ground (L-R hip asymmetry ~0.01 rad, noise level) but
+    /// holds a consistent +0.07 to +0.16 rad asymmetry throughout all ten
+    /// riser crossings of a successful 5cm climb -- this field tests
+    /// whether that alone, injected into the existing WBC/IK output
+    /// rather than learned, buys any of the same yaw/roll stability.
+    /// `None` (everywhere else in this file) is a no-op.
+    hip_lr_bias_rad: Option<f64>,
+    /// A GATED version of `hip_lr_bias_rad`: instead of applying constantly,
+    /// only activate (for `duration_s` seconds) once any swing leg's FK
+    /// tracking error exceeds `trigger_m` -- the same collision signal
+    /// `ContactReflexCfg` already uses, computed independently here so
+    /// this field works without `contact_reflex` also being set. The
+    /// point: a constant bias (`hip_lr_bias_rad` alone) did not help
+    /// (`namiashi_staircase_5cm_rl_inspired_hip_bias`); this tests whether
+    /// the RL policy's benefit instead came from applying that same
+    /// correction only IN RESPONSE to a detected riser disturbance --
+    /// i.e. an explicit, hand-written state-based rule standing in for
+    /// whatever implicit state-conditioned behavior the RL policy learned.
+    /// The three fields are exactly what a small gradient-free search
+    /// (see `namiashi_staircase_5cm_hip_gate_search`) optimizes.
+    hip_bias_gate: Option<HipBiasGateCfg>,
     /// Write the exact MJCF the sim runs plus a per-tick root-pose and joint
     /// trace here, for `render_namiashi.py` to replay. Purely a side channel;
     /// nothing in the harness reads it back.
@@ -766,6 +694,16 @@ struct WbcParams {
     /// the two interfaces handle a command that moves, rather than one held
     /// constant for the whole run.
     cmd_schedule: Vec<(f64, f64, f64, f64)>,
+    /// Live teleop command `[vx, vy, wz]`, updated asynchronously (e.g. by a
+    /// keyboard UI callback on another thread) and read every physics tick,
+    /// taking priority over `cmd_vx/vy/wz` and `cmd_schedule` once burn-in
+    /// ends. `None` (the default) leaves every other call site's fixed- or
+    /// scheduled-command behavior completely unaffected.
+    live_cmd: Option<std::sync::Arc<std::sync::Mutex<[f64; 3]>>>,
+    /// Open a real-time `mujoco::viewer::MjViewer` (feature `mujoco-viewer`)
+    /// on the sim instead of running headless-and-tracing. Runs until the
+    /// viewer window is closed rather than for a fixed `total_time_s`.
+    live_viewer: bool,
     /// World-frame push on the trunk: `(t_start, [fx, fy, fz], duration)`.
     /// A disturbance neither interface plans for, so it is the one test that
     /// asks what happens when the model is wrong.
@@ -822,6 +760,8 @@ impl WbcParams {
             base_accel_weight: None,
             contact_force_weight: None,
             yaw_pd_gain: None,
+            hip_lr_bias_rad: None,
+            hip_bias_gate: None,
             replay_dir: None,
             trunk_drop_m: NAMIASHI_STANCE_DROP_M,
             base_pos_bias_m: [0.0; 3],
@@ -853,6 +793,8 @@ impl WbcParams {
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
             cmd_schedule: Vec::new(),
+            live_cmd: None,
+            live_viewer: false,
             push: None,
         }
     }
@@ -878,6 +820,8 @@ impl WbcParams {
             base_accel_weight: None,
             contact_force_weight: None,
             yaw_pd_gain: None,
+            hip_lr_bias_rad: None,
+            hip_bias_gate: None,
             replay_dir: None,
             trunk_drop_m: NAMIASHI_STANCE_DROP_M,
             base_pos_bias_m: [0.0; 3],
@@ -909,6 +853,8 @@ impl WbcParams {
             actuation: Actuation::PositionTorque,
             host_rate_hz: None,
             cmd_schedule: Vec::new(),
+            live_cmd: None,
+            live_viewer: false,
             push: None,
         }
     }
@@ -1340,6 +1286,13 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut prev_targets = [0.0_f64; 12];
     let mut stance_mask = [true; 4];
     let mut reflex_active = [false; 4];
+    // `hip_bias_gate`'s countdown: the sim time (seconds since t=0) at
+    // which the gate closes again. Starts at -infinity so it reads as
+    // "closed" before the first trigger.
+    let mut hip_gate_open_until_s = f64::NEG_INFINITY;
+    // Magnitude latched at the moment the gate last opened (see
+    // `HipBiasGateCfg::bias_gain`'s doc comment).
+    let mut hip_gate_bias_now = 0.0_f64;
     // Committed foothold plan per leg: (world_x, world_z_target), decided
     // once at the first tick of a swing and held fixed until that leg
     // returns to stance. `None` means "no plan yet for this swing" -- the
@@ -1353,6 +1306,73 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut wbc_fx = 0.0_f64;
     // Host-computed PD for the torque path, paired with its joint index.
     let mut host_pd = [(0usize, 0.0_f64); 12];
+
+    #[cfg(feature = "mujoco-viewer")]
+    let mut viewer: Option<mujoco::viewer::MjViewer> = if params.live_viewer {
+        let mut v = mujoco::viewer::MjViewer::launch_passive(sim.mj_model().clone(), 0)
+            .expect("launch MjViewer");
+        if let Some(live) = params.live_cmd.clone() {
+            // Shared keyboard-teleop bindings -- see
+            // `namiashi_staircase_5cm_teleop`'s doc comment (also mirrored
+            // in go2_rl/sim2sim_namiashi_mujoco.py's `--interactive` mode).
+            // `_detached` (no `&mut MjData` param) since this only reads
+            // egui's key state and writes `live` -- it never touches sim
+            // state, so the cheaper detached path applies directly.
+            use mujoco::viewer::egui;
+            const STEP: f64 = 0.02;
+            const VX_MAX: f64 = 0.8;
+            const VY_MAX: f64 = 0.3;
+            const WZ_MAX: f64 = 1.0;
+            v.add_ui_callback_detached(move |ctx| {
+                let (up, down, left, right, strafe_l, strafe_r, reset) = ctx.input(|r| {
+                    (
+                        r.key_down(egui::Key::W) || r.key_down(egui::Key::ArrowUp),
+                        r.key_down(egui::Key::S) || r.key_down(egui::Key::ArrowDown),
+                        r.key_down(egui::Key::A) || r.key_down(egui::Key::ArrowLeft),
+                        r.key_down(egui::Key::D) || r.key_down(egui::Key::ArrowRight),
+                        r.key_down(egui::Key::Q) || r.key_down(egui::Key::PageUp),
+                        r.key_down(egui::Key::E) || r.key_down(egui::Key::PageDown),
+                        r.key_pressed(egui::Key::Space),
+                    )
+                });
+                let mut cmd = live.lock().unwrap();
+                if reset {
+                    *cmd = [0.0; 3];
+                    return;
+                }
+                if up {
+                    cmd[0] = (cmd[0] + STEP).min(VX_MAX);
+                }
+                if down {
+                    cmd[0] = (cmd[0] - STEP).max(-VX_MAX);
+                }
+                if left {
+                    cmd[2] = (cmd[2] + STEP).min(WZ_MAX);
+                }
+                if right {
+                    cmd[2] = (cmd[2] - STEP).max(-WZ_MAX);
+                }
+                if strafe_l {
+                    cmd[1] = (cmd[1] + STEP).min(VY_MAX);
+                }
+                if strafe_r {
+                    cmd[1] = (cmd[1] - STEP).max(-VY_MAX);
+                }
+            });
+        }
+        Some(v)
+    } else {
+        None
+    };
+    #[cfg(not(feature = "mujoco-viewer"))]
+    if params.live_viewer {
+        panic!("WbcParams::live_viewer requires building with --features mujoco-viewer");
+    }
+    // ~60 Hz render/sync cadence, independent of the (much finer) physics dt
+    // -- rendering every physics tick would be thousands of frames/sec for
+    // no visual benefit.
+    let render_decim = ((1.0 / 60.0) / params.dt).round().max(1.0) as usize;
+    let wall_start = std::time::Instant::now();
 
     for k in 0..n_steps {
         let t = k as f64 * params.dt;
@@ -1375,6 +1395,20 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 .rev()
                 .find(|(t_from, ..)| t >= *t_from)
             {
+                let now = gc.velocity_cmd();
+                if (now.vx - vx).abs() > 1e-9
+                    || (now.vy - vy).abs() > 1e-9
+                    || (now.wz - wz).abs() > 1e-9
+                {
+                    gc.set_velocity_cmd(VelocityCmd { vx, vy, wz });
+                }
+            }
+        }
+        // Live teleop command, highest priority -- read every tick (not just
+        // on change) since it can change between any two ticks.
+        if k >= burn_in_steps {
+            if let Some(live) = &params.live_cmd {
+                let [vx, vy, wz] = *live.lock().unwrap();
                 let now = gc.velocity_cmd();
                 if (now.vx - vx).abs() > 1e-9
                     || (now.vy - vy).abs() > 1e-9
@@ -1431,6 +1465,28 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
             Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
         );
+        // Feed the MPC's own body-pose estimate -- until now nothing called
+        // this, so `body_state.world_yaw` inside the vendored MPC
+        // (quadruped-gait) stayed pinned at its open-loop-integrated value
+        // (identically 0.0 here, since cmd_wz==0 the whole run) regardless
+        // of the real robot's yaw. The MPC uses that yaw to rotate each
+        // foot's body-frame offset into world frame for its r_i x f_i
+        // moment-arm balance (mpc_controller.rs's own comment: "any
+        // integrated yaw makes the cross product mix frames and breaks
+        // in-place rotation tracking") -- once a riser disturbs the real
+        // yaw, every subsequent corrective GRF is computed against the
+        // WRONG foot geometry, which can easily point the "correction"
+        // the wrong way and amplify the drift instead of damping it. Using
+        // ground-truth yaw/position here (matches `PoseSource::GroundTruth`
+        // in gait.rs, already an established pattern in
+        // tests/integration_walk.rs) isolates whether this wiring gap
+        // alone explains the runaway drift, before swapping in a
+        // proprioceptive estimator (Madgwick IMU fusion + leg odometry,
+        // both already implemented -- see gait.rs's `PoseSource`) for a
+        // real-hardware-deployable version.
+        let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
+        let pos_obs = sim.body_world_position(&robot.root_link).unwrap_or([0.0, 0.0, 0.0]);
+        gc.set_body_pose_observed(yaw_obs, Vector3::new(pos_obs[0], pos_obs[1], pos_obs[2]));
 
         // Host-rate gate. On a host tick the controller runs and emits a new
         // command; between them the sim keeps whatever was last written,
@@ -1638,6 +1694,68 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                             );
                         }
                     }
+                }
+            }
+            if let Some(cfg) = params.hip_bias_gate {
+                if k >= burn_in_steps {
+                    // Same FK-tracking-error collision signal
+                    // `ContactReflexCfg` uses, computed independently here
+                    // (see `hip_bias_gate`'s doc comment) -- max over
+                    // currently-swinging legs only, matching the reflex's
+                    // own "stance legs can't be mid-collision" reasoning.
+                    let mut max_err = 0.0_f64;
+                    for slot in 0..4 {
+                        if out.legs[slot].phase.is_stance {
+                            continue;
+                        }
+                        let leg_kin = gc.kinematics().legs()[slot];
+                        let signs = gc.joint_signs()[slot];
+                        let ji = gc.joint_indices()[slot];
+                        let mut q_leg = [0.0_f64; 3];
+                        for kk in 0..3 {
+                            if let Some((q, _)) = sim.joint_q_qd(&robot.joints[ji[kk]].name) {
+                                q_leg[kk] = signs[kk] * q;
+                            }
+                        }
+                        let measured_body = quadruped_gait::forward_leg_kinematics(
+                            leg_kin, q_leg[0], q_leg[1], q_leg[2],
+                        );
+                        let nominal_body = out.legs[slot].foot_body;
+                        max_err = max_err.max((nominal_body - measured_body).norm());
+                    }
+                    if max_err > cfg.trigger_m {
+                        hip_gate_open_until_s = t + cfg.duration_s;
+                        hip_gate_bias_now = (cfg.bias_mag + cfg.bias_gain * (max_err - cfg.trigger_m))
+                            .min(cfg.max_bias_rad);
+                    }
+                    if t < hip_gate_open_until_s {
+                        for slot in 0..4 {
+                            let signs = gc.joint_signs()[slot];
+                            let leg_bias = if slot == 0 || slot == 2 { hip_gate_bias_now } else { -hip_gate_bias_now };
+                            out.legs[slot].q_hip += leg_bias;
+                            let (idx, q) = targets[slot * 3];
+                            targets[slot * 3] = (idx, q + signs[0] * leg_bias);
+                        }
+                    }
+                }
+            }
+            if let Some(bias) = params.hip_lr_bias_rad {
+                // slot order is LegId::ALL = [FL, FR, RL, RR] -- left legs
+                // are slots 0 and 2, right legs 1 and 3. Applied to BOTH
+                // `out` (keeps the WBC's swing_leg q_ddot reference in
+                // sync, same reasoning as the reflex/footplan blocks
+                // above) and `targets` (the host-side PD target actually
+                // sent to the sim) every tick, stance and swing alike --
+                // unlike those two blocks this is not conditioned on
+                // swing phase or burn-in, since the RL trace this is
+                // testing showed the asymmetry held constantly, not just
+                // during a swing correction.
+                for slot in 0..4 {
+                    let signs = gc.joint_signs()[slot];
+                    let leg_bias = if slot == 0 || slot == 2 { bias } else { -bias };
+                    out.legs[slot].q_hip += leg_bias;
+                    let (idx, q) = targets[slot * 3];
+                    targets[slot * 3] = (idx, q + signs[0] * leg_bias);
                 }
             }
             match params.actuation {
@@ -2049,6 +2167,27 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         }
 
         sim.step(&mut robot, params.dt, true);
+
+        if params.live_viewer {
+            #[cfg(feature = "mujoco-viewer")]
+            if let Some(v) = &mut viewer {
+                if k % render_decim == 0 {
+                    v.sync_data(sim.mj_data_mut());
+                    let _ = v.render();
+                }
+                if !v.running() {
+                    break;
+                }
+            }
+            // Real-time pacing: physics alone runs faster than real time,
+            // so without this the whole run would blow past in a couple of
+            // seconds instead of being watchable/steerable live.
+            let target = std::time::Duration::from_secs_f64(t + params.dt);
+            let elapsed = wall_start.elapsed();
+            if elapsed < target {
+                std::thread::sleep(target - elapsed);
+            }
+        }
 
         // Sample after the step so contact forces and pose are
         // synchronised. `base_transform` was just refreshed by
@@ -6615,6 +6754,551 @@ fn namiashi_staircase_5cm_swing_clearance_sweep() {
             final_s.body_x, final_s.body_y, final_s.body_z,
         );
     }
+}
+
+/// Does slowing the gait + widening the swing arc (both taken directly from
+/// a namiashi RL policy that DOES clear the 5 cm staircase, measured via
+/// sim-to-sim replay in MuJoCo -- see go2_rl/namiashi_rl -- not guessed)
+/// get further than `namiashi_staircase_5cm_swing_clearance_sweep`'s own
+/// swing-height-alone sweep did?
+///
+/// The RL policy's own recorded joint trace, compared against its
+/// steady-state flat-ground reference and against this WBC's own 5 cm
+/// climb attempt, showed three things the WBC has never tried in
+/// combination:
+///   1. gait period 0.320s (Trot) -> 0.41-0.44s, self-selected, on the
+///      approach AND while climbing -- never swept together with a wider
+///      swing arc, only alone (`namiashi_prop_retune_trot_crawl`, which
+///      only measured flat-ground speed tracking, not climbing).
+///   2. calf (knee) joint range roughly DOUBLES relative to the flat
+///      steady-state Trot reference (0.42 rad -> 0.95-1.09 rad) --
+///      `swing_height_m` is a foot-space clearance knob, not a joint-space
+///      one, but it is this test's only available lever toward that same
+///      effect, so it is swept wider here (up to 0.20 m, above the
+///      earlier sweep's 0.12 m ceiling) alongside the slower period.
+///   3. yaw drift stays under 11 deg over the whole climb, vs. this WBC's
+///      own 23+ deg in the first 6 s alone at the standard 0.320s/0.04m
+///      settings -- tested separately in
+///      `namiashi_staircase_5cm_rl_inspired_hip_bias` (the L-R hip-angle
+///      asymmetry finding), not folded in here, to keep this sweep's
+///      result attributable to period+swing alone.
+#[test]
+#[ignore = "large sweep -- run with --ignored"]
+fn namiashi_staircase_5cm_rl_inspired_period_swing() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    let top_start_x = stairs.top_platform_start_x();
+    for period in [0.320_f64, 0.420, 0.450] {
+        for swing_h in [0.040_f64, 0.080, 0.120, 0.160, 0.200] {
+            let params = WbcParams {
+                actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                cmd_vx: cmd,
+                total_time_s: 20.0,
+                wbc_real_inertia: true,
+                staircase: Some(stairs),
+                cycle_period_s: Some(period),
+                swing_height_m: Some(swing_h),
+                replay_dir: Some(format!("/tmp/nami_stairs/rise05_rl_period{period:.3}_swing{swing_h:.3}")),
+                ..namiashi_tuned_params(I)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+            let max_z = samples.iter().map(|s| s.body_z).fold(f64::NEG_INFINITY, f64::max);
+            let final_s = samples.last().unwrap();
+            let reached_top = final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
+            eprintln!(
+                "[stairs 5cm period={period:.3} swing={swing_h:.3}] reached x={max_x:.3}m  max z={max_z:.3}m  \
+                 final (x,y,z)=({:.3},{:.3},{:.3})m  reached_top={reached_top}",
+                final_s.body_x, final_s.body_y, final_s.body_z,
+            );
+        }
+    }
+}
+
+/// Does a constant left-right hip-roll asymmetry -- taken directly from an
+/// RL policy's own recorded joint trace on a successful 5cm climb (see
+/// `hip_lr_bias_rad`'s doc comment) -- buy any yaw/roll stability on the
+/// standard 5cm staircase? Swept both signs (the IK/RL sign convention
+/// correspondence was not independently verified) and several magnitudes
+/// around the measured +0.07..+0.16 rad range, at the standard 0.320s/
+/// 0.04m gait (isolated from `namiashi_staircase_5cm_rl_inspired_period_
+/// swing`'s period/swing changes, so any effect here is attributable to
+/// the hip bias alone).
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_staircase_5cm_rl_inspired_hip_bias() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    let top_start_x = stairs.top_platform_start_x();
+    for bias in [-0.16_f64, -0.10, -0.05, 0.05, 0.10, 0.16] {
+        let params = WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: cmd,
+            total_time_s: 20.0,
+            wbc_real_inertia: true,
+            staircase: Some(stairs),
+            hip_lr_bias_rad: Some(bias),
+            replay_dir: Some(format!("/tmp/nami_stairs/rise05_rl_hipbias_{bias:+.3}")),
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+        let max_z = samples.iter().map(|s| s.body_z).fold(f64::NEG_INFINITY, f64::max);
+        let final_s = samples.last().unwrap();
+        let reached_top = final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
+        eprintln!(
+            "[stairs 5cm hip_bias={bias:+.3}] reached x={max_x:.3}m  max z={max_z:.3}m  \
+             final (x,y,z)=({:.3},{:.3},{:.3})m  reached_top={reached_top}",
+            final_s.body_x, final_s.body_y, final_s.body_z,
+        );
+    }
+}
+
+/// Tiny xorshift64* PRNG -- avoids adding the `rand` crate as a dependency
+/// for what is otherwise a handful of `next_f64`/`next_gauss` calls.
+struct Xorshift64(u64);
+impl Xorshift64 {
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+    /// Uniform in [0, 1).
+    fn next_f64(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+    /// Standard normal via Box-Muller.
+    fn next_gauss(&mut self) -> f64 {
+        let u1 = self.next_f64().max(1e-12);
+        let u2 = self.next_f64();
+        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+    }
+}
+
+/// A constant hip-lr bias did not help
+/// (`namiashi_staircase_5cm_rl_inspired_hip_bias`). This gates the SAME
+/// correction (`hip_bias_gate`) on a detected riser disturbance instead of
+/// applying it constantly, and rather than guessing the gate's three
+/// parameters (`trigger_m`, `bias_mag`, `duration_s`), searches for them
+/// with a small gradient-free (1+K) hill-climber: each generation samples
+/// K perturbations of the current best around a shrinking Gaussian radius,
+/// evaluates each via `run_wbc_sim`'s own `max_x` (how far up the 5cm
+/// staircase the run got before falling/timing out), and keeps whichever
+/// scored highest -- reached_top acts as an early-stop, not the fitness
+/// itself, since max_x still orders "got further but didn't quite finish"
+/// runs usefully while `reached_top` alone would not.
+///
+/// This is deliberately NOT a neural-network policy: the three numbers
+/// this converges to ARE the model -- no separate distillation step from
+/// a learned policy into an interpretable rule is needed, by construction.
+#[test]
+#[ignore = "optimization run -- slow, run with --ignored"]
+fn namiashi_staircase_5cm_hip_gate_search() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    let top_start_x = stairs.top_platform_start_x();
+
+    let eval = |trigger_m: f64, bias_mag: f64, duration_s: f64| -> (f64, bool) {
+        let params = WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: cmd,
+            total_time_s: 20.0,
+            wbc_real_inertia: true,
+            staircase: Some(stairs),
+            hip_bias_gate: Some(HipBiasGateCfg {
+                trigger_m,
+                bias_mag,
+                bias_gain: 0.0,
+                max_bias_rad: bias_mag,
+                duration_s,
+            }),
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return (f64::NEG_INFINITY, false) };
+        let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+        let final_s = samples.last().unwrap();
+        let reached_top = final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
+        (max_x, reached_top)
+    };
+
+    // Center on ContactReflexCfg's own established trigger (0.065 m) and
+    // the earlier constant-bias sweep's tested range for bias_mag.
+    let mut center = (0.065_f64, 0.10_f64, 0.30_f64);
+    let bounds = [(0.02, 0.15), (0.0, 0.30), (0.05, 1.0)];
+    let mut best = eval(center.0, center.1, center.2);
+    eprintln!("[hip_gate_search] gen=0 (seed) params={center:?} max_x={:.3} reached_top={}", best.0, best.1);
+    if best.1 {
+        return;
+    }
+
+    let mut rng = Xorshift64(0xC0FFEE_u64.wrapping_mul(2654435761).wrapping_add(1));
+    const GENERATIONS: usize = 6;
+    const CANDIDATES_PER_GEN: usize = 6;
+    for g in 1..=GENERATIONS {
+        // Shrinking search radius: starts at ~40% of each param's own
+        // range, halves every 2 generations.
+        let shrink = 0.5_f64.powf((g - 1) as f64 / 2.0);
+        let sigmas = [
+            (bounds[0].1 - bounds[0].0) * 0.4 * shrink,
+            (bounds[1].1 - bounds[1].0) * 0.4 * shrink,
+            (bounds[2].1 - bounds[2].0) * 0.4 * shrink,
+        ];
+        let mut gen_best: Option<(f64, bool, (f64, f64, f64))> = None;
+        for _ in 0..CANDIDATES_PER_GEN {
+            let cand = (
+                (center.0 + sigmas[0] * rng.next_gauss()).clamp(bounds[0].0, bounds[0].1),
+                (center.1 + sigmas[1] * rng.next_gauss()).clamp(bounds[1].0, bounds[1].1),
+                (center.2 + sigmas[2] * rng.next_gauss()).clamp(bounds[2].0, bounds[2].1),
+            );
+            let (max_x, reached_top) = eval(cand.0, cand.1, cand.2);
+            eprintln!(
+                "[hip_gate_search] gen={g} params=(trigger={:.4} bias={:.4} dur={:.3}) max_x={max_x:.3} reached_top={reached_top}",
+                cand.0, cand.1, cand.2,
+            );
+            if gen_best.is_none_or(|(bx, _, _)| max_x > bx) {
+                gen_best = Some((max_x, reached_top, cand));
+            }
+        }
+        let (gb_x, gb_top, gb_params) = gen_best.unwrap();
+        if gb_x > best.0 {
+            best = (gb_x, gb_top);
+            center = gb_params;
+        }
+        eprintln!(
+            "[hip_gate_search] gen={g} best-so-far params={center:?} max_x={:.3} reached_top={}",
+            best.0, best.1,
+        );
+        if best.1 {
+            eprintln!("[hip_gate_search] reached_top -- stopping early");
+            return;
+        }
+    }
+    eprintln!(
+        "[hip_gate_search] DONE. best params={center:?}  max_x={:.3}  reached_top={}",
+        best.0, best.1,
+    );
+}
+
+/// Extends `namiashi_staircase_5cm_hip_gate_search`'s converged rule
+/// (trigger=0.0297 m, bias=0.273 rad, dur=0.052 s -> max_x=2.857 m,
+/// reached_top=false, ~68% up the stairs -- the best model-based number
+/// this whole investigation produced, but still short of the platform)
+/// with a 4th parameter, `bias_gain`: scale the correction by how far past
+/// the trigger the FK error actually was, rather than applying the same
+/// fixed nudge to a small brush and a hard collision alike. Re-searches
+/// all 4 parameters together from a seed centered on v1's optimum
+/// (`bias_gain=0` recovers it exactly), per the user's explicit request to
+/// extend the gate rule and re-search rather than stop at v1 or bring in
+/// unrelated RL-derived static parameters.
+#[test]
+#[ignore = "optimization run -- slow, run with --ignored"]
+fn namiashi_staircase_5cm_hip_gate_search_v2() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    let top_start_x = stairs.top_platform_start_x();
+    const MAX_BIAS_RAD: f64 = 0.35; // fixed safety clamp, not searched
+
+    let eval = |trigger_m: f64, bias_mag: f64, bias_gain: f64, duration_s: f64| -> (f64, bool) {
+        let params = WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: cmd,
+            total_time_s: 20.0,
+            wbc_real_inertia: true,
+            staircase: Some(stairs),
+            hip_bias_gate: Some(HipBiasGateCfg {
+                trigger_m,
+                bias_mag,
+                bias_gain,
+                max_bias_rad: MAX_BIAS_RAD,
+                duration_s,
+            }),
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return (f64::NEG_INFINITY, false) };
+        let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+        let final_s = samples.last().unwrap();
+        let reached_top = final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
+        (max_x, reached_top)
+    };
+
+    // Seed at v1's converged optimum, bias_gain=0 (exactly recovers v1).
+    let mut center = (0.0297_f64, 0.2726_f64, 0.0_f64, 0.052_f64);
+    let bounds = [(0.02, 0.15), (0.0, 0.30), (0.0, 4.0), (0.05, 1.0)];
+    let mut best = eval(center.0, center.1, center.2, center.3);
+    eprintln!("[hip_gate_search_v2] gen=0 (seed) params={center:?} max_x={:.3} reached_top={}", best.0, best.1);
+    if best.1 {
+        return;
+    }
+
+    let mut rng = Xorshift64(0xFACADE_u64.wrapping_mul(2654435761).wrapping_add(1));
+    const GENERATIONS: usize = 6;
+    const CANDIDATES_PER_GEN: usize = 8;
+    for g in 1..=GENERATIONS {
+        let shrink = 0.5_f64.powf((g - 1) as f64 / 2.0);
+        let sigmas = [
+            (bounds[0].1 - bounds[0].0) * 0.4 * shrink,
+            (bounds[1].1 - bounds[1].0) * 0.4 * shrink,
+            (bounds[2].1 - bounds[2].0) * 0.4 * shrink,
+            (bounds[3].1 - bounds[3].0) * 0.4 * shrink,
+        ];
+        let mut gen_best: Option<(f64, bool, (f64, f64, f64, f64))> = None;
+        for _ in 0..CANDIDATES_PER_GEN {
+            let cand = (
+                (center.0 + sigmas[0] * rng.next_gauss()).clamp(bounds[0].0, bounds[0].1),
+                (center.1 + sigmas[1] * rng.next_gauss()).clamp(bounds[1].0, bounds[1].1),
+                (center.2 + sigmas[2] * rng.next_gauss()).clamp(bounds[2].0, bounds[2].1),
+                (center.3 + sigmas[3] * rng.next_gauss()).clamp(bounds[3].0, bounds[3].1),
+            );
+            let (max_x, reached_top) = eval(cand.0, cand.1, cand.2, cand.3);
+            eprintln!(
+                "[hip_gate_search_v2] gen={g} params=(trigger={:.4} bias={:.4} gain={:.3} dur={:.3}) \
+                 max_x={max_x:.3} reached_top={reached_top}",
+                cand.0, cand.1, cand.2, cand.3,
+            );
+            if gen_best.is_none_or(|(bx, _, _)| max_x > bx) {
+                gen_best = Some((max_x, reached_top, cand));
+            }
+        }
+        let (gb_x, gb_top, gb_params) = gen_best.unwrap();
+        if gb_x > best.0 {
+            best = (gb_x, gb_top);
+            center = gb_params;
+        }
+        eprintln!(
+            "[hip_gate_search_v2] gen={g} best-so-far params={center:?} max_x={:.3} reached_top={}",
+            best.0, best.1,
+        );
+        if best.1 {
+            eprintln!("[hip_gate_search_v2] reached_top -- stopping early");
+            return;
+        }
+    }
+    eprintln!(
+        "[hip_gate_search_v2] DONE. best params={center:?}  max_x={:.3}  reached_top={}",
+        best.0, best.1,
+    );
+}
+
+/// Both `namiashi_staircase_5cm_hip_gate_search` and `..._v2`'s "converged"
+/// optima turned out to be suspiciously sharp: seeding v2 from v1's winner
+/// rounded to 4 decimal places (0.0297 vs the actual 0.029736654...) alone
+/// dropped max_x from 2.857 m to 1.643 m -- the same ~1.5-1.7 m plateau
+/// nearly every OTHER sampled point in both searches landed on. That is a
+/// red flag for a rule meant to generalize (sim-to-sim, real hardware,
+/// sensor noise), not just fit one exact deterministic trace, so per the
+/// user's explicit request this checks whether v2's winner
+/// (trigger=0.11347570313929631, bias=0.27363657175214146,
+/// gain=2.012430903480257, dur=0.11419665821391292, max_x=3.175) sits on a
+/// genuine basin or another isolated spike, before trusting it as anything
+/// more than an artifact of this one search run.
+///
+/// Three probes, all against the exact same winning point as baseline:
+///   1. One-parameter-at-a-time +/-5% and +/-10% perturbations (8 runs) --
+///      isolates which single parameter (if any) the result is sensitive to.
+///   2. Six independent joint perturbations, all 4 params simultaneously
+///      shifted by a uniform +/-10% each (a fresh, unrelated RNG stream) --
+///      closer to what "the same rule on a slightly different day" would
+///      see than the one-at-a-time probes are.
+///   3. Two discretization changes (dt scaled 0.8x and 1.25x, holding
+///      host_rate_hz fixed) -- checks whether the result is an artifact of
+///      this exact timestep rather than the physical rule itself.
+#[test]
+#[ignore = "optimization run -- slow, run with --ignored"]
+fn namiashi_staircase_5cm_hip_gate_robustness() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    let top_start_x = stairs.top_platform_start_x();
+    const MAX_BIAS_RAD: f64 = 0.35;
+    const BASE: (f64, f64, f64, f64) = (
+        0.11347570313929631,
+        0.27363657175214146,
+        2.012430903480257,
+        0.11419665821391292,
+    );
+
+    let eval_dt = |trigger_m: f64, bias_mag: f64, bias_gain: f64, duration_s: f64, dt: f64| -> (f64, bool) {
+        let params = WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt,
+            cmd_vx: cmd,
+            total_time_s: 20.0,
+            wbc_real_inertia: true,
+            staircase: Some(stairs),
+            hip_bias_gate: Some(HipBiasGateCfg {
+                trigger_m,
+                bias_mag,
+                bias_gain,
+                max_bias_rad: MAX_BIAS_RAD,
+                duration_s,
+            }),
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return (f64::NEG_INFINITY, false) };
+        let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+        let final_s = samples.last().unwrap();
+        let reached_top = final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
+        (max_x, reached_top)
+    };
+    let eval = |trigger_m: f64, bias_mag: f64, bias_gain: f64, duration_s: f64| {
+        eval_dt(trigger_m, bias_mag, bias_gain, duration_s, 0.0005)
+    };
+
+    let (base_x, base_top) = eval(BASE.0, BASE.1, BASE.2, BASE.3);
+    eprintln!("[hip_gate_robustness] baseline params={BASE:?} max_x={base_x:.3} reached_top={base_top}");
+
+    eprintln!("[hip_gate_robustness] -- probe 1: one-at-a-time +/-5%/+/-10% --");
+    let names = ["trigger", "bias", "gain", "dur"];
+    let mut probe1_max = f64::NEG_INFINITY;
+    let mut probe1_min = f64::INFINITY;
+    for (i, name) in names.iter().enumerate() {
+        for frac in [-0.10, -0.05, 0.05, 0.10] {
+            let mut p = [BASE.0, BASE.1, BASE.2, BASE.3];
+            p[i] *= 1.0 + frac;
+            let (x, top) = eval(p[0], p[1], p[2], p[3]);
+            probe1_max = probe1_max.max(x);
+            probe1_min = probe1_min.min(x);
+            let pct = frac * 100.0;
+            eprintln!(
+                "[hip_gate_robustness] {name}{pct:+.0}% params=({:.4},{:.4},{:.3},{:.3}) max_x={x:.3} reached_top={top}",
+                p[0], p[1], p[2], p[3],
+            );
+        }
+    }
+
+    eprintln!("[hip_gate_robustness] -- probe 2: 6x joint +/-10% perturbations --");
+    let mut rng = Xorshift64(0xB0B0CAFE_u64.wrapping_mul(2654435761).wrapping_add(1));
+    let mut probe2_max = f64::NEG_INFINITY;
+    let mut probe2_min = f64::INFINITY;
+    for _ in 0..6 {
+        let mut jitter = |v: f64| v * (1.0 + 0.10 * (2.0 * rng.next_f64() - 1.0));
+        let p = [jitter(BASE.0), jitter(BASE.1), jitter(BASE.2), jitter(BASE.3)];
+        let (x, top) = eval(p[0], p[1], p[2], p[3]);
+        probe2_max = probe2_max.max(x);
+        probe2_min = probe2_min.min(x);
+        eprintln!(
+            "[hip_gate_robustness] joint params=({:.4},{:.4},{:.3},{:.3}) max_x={x:.3} reached_top={top}",
+            p[0], p[1], p[2], p[3],
+        );
+    }
+
+    eprintln!("[hip_gate_robustness] -- probe 3: dt scaled 0.8x / 1.25x --");
+    for scale in [0.8, 1.25] {
+        let (x, top) = eval_dt(BASE.0, BASE.1, BASE.2, BASE.3, 0.0005 * scale);
+        eprintln!("[hip_gate_robustness] dt*{scale:.2} max_x={x:.3} reached_top={top}");
+    }
+
+    eprintln!(
+        "[hip_gate_robustness] SUMMARY baseline={base_x:.3}  \
+         probe1(one-at-a-time) range=[{probe1_min:.3},{probe1_max:.3}]  \
+         probe2(joint +/-10%) range=[{probe2_min:.3},{probe2_max:.3}]",
+    );
+}
+
+/// Interactive, real-time keyboard teleop of the WBC/MPC pipeline on the
+/// same 5 cm / 10-step staircase every other test in this file measures
+/// against -- opens a real window via `run_wbc_sim`'s `live_viewer` (see
+/// `WbcParams::live_viewer`'s doc comment), driven live by `live_cmd`
+/// rather than a fixed/scheduled command. Requires building with
+/// `--features mujoco-viewer`; not meant to run under a normal headless
+/// `cargo test`, hence `#[ignore]` AND a feature-gate rather than either
+/// alone. Uses `namiashi_tuned_params`/the known-good Trot baseline, not
+/// the `hip_bias_gate` experiment -- that was shown non-robust
+/// (`namiashi_staircase_5cm_hip_gate_robustness`) and has no place in a
+/// hands-on demo.
+///
+/// Key bindings (mirrored exactly in `go2_rl/sim2sim_namiashi_mujoco.py`'s
+/// `--interactive` mode, so the same muscle memory works on both the
+/// WBC/MPC and RL demos):
+///   - `W`/`S` or `Up`/`Down`: forward/back speed (vx)
+///   - `A`/`D` or `Left`/`Right`: turn (wz)
+///   - `Q`/`E` or `PageUp`/`PageDown`: strafe (vy)
+///   - `Space`: zero all three
+///
+/// Run: `cargo test --release --no-default-features --features \
+/// "mujoco,mujoco-viewer" --test wbc_walk namiashi_staircase_5cm_teleop \
+/// -- --ignored --nocapture`
+#[test]
+#[ignore = "interactive -- opens a real window, run manually with --ignored"]
+#[cfg(feature = "mujoco-viewer")]
+fn namiashi_staircase_5cm_teleop() {
+    const I: usize = 0; // Trot
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    let live = std::sync::Arc::new(std::sync::Mutex::new([0.0_f64; 3]));
+
+    let params = WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        // Long enough to be "until you close the window" in practice; the
+        // viewer's own close button/Esc ends the run well before this via
+        // `live_viewer`'s `!viewer.running()` break.
+        total_time_s: 1800.0,
+        wbc_real_inertia: true,
+        staircase: Some(stairs),
+        live_cmd: Some(live),
+        live_viewer: true,
+        ..namiashi_tuned_params(I)
+    };
+    run_wbc_sim(params);
 }
 
 /// Does the swing-collision reflex get the 5 cm staircase past where blind

@@ -17,6 +17,23 @@ scripting = ["dep:rhai"]
 # this adds no DDS/C toolchain dependency.
 viz = ["quadruped-gait/viz-sub"]
 policy-sim = ["dep:policy-runtime"]
+# Interactive MuJoCo viewer for real-time/teleop use (see
+# tests/wbc_walk.rs's namiashi_staircase_5cm_teleop) -- mujoco-rs's own
+# native egui-based viewer, not a custom renderer. Additive: does not
+# change the `mujoco` feature's default (headless) behavior.
+mujoco-viewer = ["mujoco", "mujoco/viewer-ui"]
+# Real ONNX Runtime bindings (`ort`, pyke's binding to Microsoft's C++
+# onnxruntime -- the same engine go2_rl's Python sim2sim/training tooling
+# uses) for running a trained RL policy's ONNX export directly in Rust
+# (examples/namiashi_rl_teleop.rs). Deliberately NOT `policy-runtime`
+# (dep:tract-onnx, a different, pure-Rust ONNX engine chosen there for the
+# real robot's aarch64 no-C-deps hardware-deploy constraint, which does not
+# apply to a desktop sim2sim/teleop tool) -- using the actual onnxruntime
+# engine here means the Rust and Python validation paths share not just the
+# same weights but the same numerics, closing off a whole class of
+# engine-level discrepancy the DCMotor-torque sim2sim bug already showed
+# this kind of subtle mismatch is worth guarding against.
+onnx = ["dep:ort", "dep:ndarray"]
 
 # The GUI binary and several examples only build with specific features.
 # Declaring required-features lets `cargo build/test` with other feature
@@ -108,6 +125,10 @@ name = "go2_policy_sim"
 required-features = ["mujoco", "policy-sim"]
 
 [[example]]
+name = "namiashi_rl_teleop"
+required-features = ["mujoco-viewer", "onnx"]
+
+[[example]]
 name = "exp_sweep"
 required-features = ["mujoco"]
 
@@ -143,6 +164,14 @@ parry3d = "0.25"
 rhai = { version = "1", optional = true }
 roxmltree = "0.20"
 serde = { version = "1", features = ["derive"], optional = true }
+# `load-dynamic` instead of the default `download-binaries`: loads the
+# onnxruntime shared library at RUNTIME from a path given via
+# `ort::init_from` / `ORT_DYLIB_PATH` (examples/namiashi_rl_teleop.rs points
+# it at the same libonnxruntime.so the go2_rl Python venv already has
+# installed) rather than having ort-sys's build script fetch a prebuilt
+# binary from GitHub during `cargo build`.
+ort = { version = "2.0.0-rc.13", optional = true, default-features = false, features = ["load-dynamic", "ndarray", "std"] }
+ndarray = { version = "0.17.2", optional = true }
 
 [dev-dependencies]
 approx = "0.5"

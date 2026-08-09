@@ -151,6 +151,139 @@ impl Default for MjcfExportOptions {
     }
 }
 
+/// A straight staircase: `n_steps` steps of `rise_m` height and `run_m` tread
+/// depth, `approach_m` of flat floor before the first riser, `top_platform_m`
+/// of flat floor after the last one. Built from solid overlapping boxes
+/// (via [`MjcfExportOptions::extra_worldbody_xml`]) rather than a
+/// heightfield -- each step's box shares one back edge with every other
+/// step and extends down to z=-0.5, so at any x the tallest overlapping box
+/// is exactly that tread's height and there is no seam a foot could catch
+/// on.
+///
+/// Promoted out of `articara-namiashi/tests/wbc_walk.rs` (where it started
+/// as the WBC/MPC harness's own test fixture) once a second caller needed
+/// the identical geometry: `examples/namiashi_rl_teleop.rs` builds the same
+/// staircase for the RL policy's own live MuJoCo rollout, and both need to
+/// agree bit-for-bit with each other (and with the standalone
+/// `go2_rl/sim2sim_namiashi_mujoco.py` validation) for any WBC/MPC-vs-RL
+/// comparison to mean anything.
+#[derive(Clone, Copy, Debug)]
+pub struct StaircaseCfg {
+    pub rise_m: f64,
+    pub run_m: f64,
+    pub n_steps: usize,
+    /// Flat floor length from the spawn point (x=0) to the first riser.
+    pub approach_m: f64,
+    /// Flat floor length after the last riser.
+    pub top_platform_m: f64,
+    pub half_width_m: f64,
+}
+
+impl StaircaseCfg {
+    pub fn top_platform_start_x(&self) -> f64 {
+        self.approach_m + self.n_steps as f64 * self.run_m
+    }
+
+    pub fn total_rise_m(&self) -> f64 {
+        self.rise_m * self.n_steps as f64
+    }
+
+    /// Ground height at world x, per the same step geometry `worldbody_xml`
+    /// builds -- an idealized, exact height query, standing in for whatever
+    /// a real height-map (LiDAR + mapping) would eventually estimate. There
+    /// is no sensor model here (no noise, no occlusion, no latency); this is
+    /// deliberately the best case, to test whether height *knowledge* is the
+    /// missing piece before spending effort on how to acquire it.
+    pub fn height_at(&self, world_x: f64) -> f64 {
+        if world_x < self.approach_m {
+            0.0
+        } else {
+            let step = ((world_x - self.approach_m) / self.run_m).floor() as i64 + 1;
+            let step = step.clamp(1, self.n_steps as i64);
+            step as f64 * self.rise_m
+        }
+    }
+
+    /// Nudge a horizontal touchdown target off a riser edge, onto solid
+    /// tread: clamps `world_x` to stay at least `margin_m` from either edge
+    /// of whichever tread it falls on (the top platform counts as one long
+    /// tread). No-op on the approach floor -- there is no edge there to
+    /// avoid, and the caller is expected to gate on `height_at > 0` anyway
+    /// for the same reason the vertical correction does.
+    pub fn snap_to_tread(&self, world_x: f64, margin_m: f64) -> f64 {
+        if world_x < self.approach_m {
+            return world_x;
+        }
+        let step = ((world_x - self.approach_m) / self.run_m).floor() as i64 + 1;
+        let step = step.clamp(1, self.n_steps as i64);
+        let start = self.approach_m + (step - 1) as f64 * self.run_m;
+        let end = if step == self.n_steps as i64 {
+            self.top_platform_start_x() + self.top_platform_m
+        } else {
+            self.approach_m + step as f64 * self.run_m
+        };
+        let lo = start + margin_m;
+        let hi = (end - margin_m).max(lo);
+        world_x.clamp(lo, hi)
+    }
+
+    pub fn worldbody_xml(&self) -> String {
+        fn box_geom(name: &str, cx: f64, cy: f64, cz: f64, hx: f64, hy: f64, hz: f64, rgba: &str) -> String {
+            format!(
+                "    <geom name=\"{name}\" type=\"box\" pos=\"{cx} {cy} {cz}\"                  size=\"{hx} {hy} {hz}\" rgba=\"{rgba}\"/>\n"
+            )
+        }
+        let hy = self.half_width_m;
+        let bottom_z = -0.5_f64;
+        // Runway behind the spawn point. Not exposed as a config knob, but
+        // no longer "a little" -- the 3 cm rise sweep found the robot can
+        // genuinely walk itself backward down a staircase it had climbed
+        // (a slow, uncorrected yaw drift accumulating to a full 180 deg
+        // turn while balanced on a tread, with nothing ever commanding one),
+        // and 0.5 m was not enough: it walked off the back of the floor and
+        // free-fell, which looked like a climbing failure in the summary
+        // numbers and was actually a test-track limitation.
+        let margin_behind_m = 8.0_f64;
+        let stairs_start_x = self.approach_m;
+        let back_x = self.top_platform_start_x() + self.top_platform_m;
+
+        let mut xml = String::new();
+
+        // Approach floor. Emitted first so `render_namiashi.py`'s single
+        // find-and-replace for the checker material (keyed on this exact
+        // rgba string, the same one `GroundPlaneCfg` emits) lands here,
+        // matching the floor look of every other namiashi clip.
+        {
+            let x0 = -margin_behind_m;
+            let x1 = stairs_start_x;
+            let hx = (x1 - x0) / 2.0;
+            let cx = (x0 + x1) / 2.0;
+            let hz = (0.0 - bottom_z) / 2.0;
+            let cz = (0.0 + bottom_z) / 2.0;
+            xml += &box_geom("stair_approach", cx, 0.0, cz, hx, hy, hz, "0.5 0.5 0.55 1");
+        }
+
+        // Steps 1..=n_steps. Box i's front edge is its own riser; its back
+        // edge is shared (`back_x`) with every other step, so the region it
+        // alone determines the height of is exactly its own tread -- see the
+        // struct doc comment for why that makes the profile seamless.
+        for i in 1..=self.n_steps {
+            let x0 = stairs_start_x + (i as f64 - 1.0) * self.run_m;
+            let top_z = i as f64 * self.rise_m;
+            let hx = (back_x - x0) / 2.0;
+            let cx = (back_x + x0) / 2.0;
+            let hz = (top_z - bottom_z) / 2.0;
+            let cz = (top_z + bottom_z) / 2.0;
+            // Alternating shades so the profile reads without a checker
+            // material, which would visually fight with a level tread.
+            let rgba = if i % 2 == 0 { "0.58 0.56 0.52 1" } else { "0.50 0.48 0.44 1" };
+            xml += &box_geom(&format!("stair_step{i}"), cx, 0.0, cz, hx, hy, hz, rgba);
+        }
+
+        xml
+    }
+}
+
 /// Export a RobotModel to MJCF XML string with default options.
 pub fn export_mjcf(model: &RobotModel) -> String {
     export_mjcf_with_options(model, MjcfExportOptions::default())
