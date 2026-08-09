@@ -301,6 +301,11 @@ pub enum VelObs {
 /// Still far below the library's 0.05 and further below the LIP value
 /// sqrt(h/g) = 0.155 for this stance. See `namiashi_capture_gain_low_side`
 /// for why that formula does not apply here.
+/// Asset name for the ring heightfield; shared by the `<hfield>`
+/// declaration, the `<geom>` that references it and the runtime fill, so
+/// the three cannot drift apart.
+pub const RING_HFIELD: &str = "kawasaki_ring";
+
 pub const NAMIASHI_CAPTURE_GAIN_S: f64 = 0.015;
 
 /// Continuous torque rating, N*m, hip and thigh. The knee's 9:14 reduction
@@ -666,6 +671,14 @@ pub struct WbcParams {
     /// See [`TerrainStanceCfg`]. `None` leaves all four legs sharing one
     /// nominal stance height, which is what every other test here uses.
     pub terrain_stance: Option<TerrainStanceCfg>,
+    /// Run on the かわさきロボット競技大会 ring instead of flat ground or a
+    /// staircase. Mutually exclusive with `staircase`; the ring brings its
+    /// own plate, so no separate ground plane is emitted either.
+    pub kawasaki_ring: Option<crate::mjcf::KawasakiRingCfg>,
+    /// Where to put the robot's base at t=0, `(x, y)`. `None` spawns at the
+    /// origin, which is the approach floor on a staircase but the centre
+    /// obstacle on the ring.
+    pub spawn_xy: Option<(f64, f64)>,
     /// Per-block state cost for the 24-state MPC: `[v_com, omega, base_pos,
     /// euler, joint_q]`, applied over `q_diag`'s
     /// `[0..3, 3..6, 6..9, 9..12, 12..24]`.
@@ -810,6 +823,8 @@ impl WbcParams {
             contact_reflex: None,
             terrain_footplan: None,
             terrain_stance: None,
+            kawasaki_ring: None,
+            spawn_xy: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -872,6 +887,8 @@ impl WbcParams {
             contact_reflex: None,
             terrain_footplan: None,
             terrain_stance: None,
+            kawasaki_ring: None,
+            spawn_xy: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -1043,13 +1060,22 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         }
     }
 
+    // The ring and the staircase each bring their own floor, so the flat
+    // plane is only emitted when neither is present.
+    let ring = params.kawasaki_ring.clone();
     let opts = MjcfExportOptions {
-        ground_plane: if params.staircase.is_none() {
+        ground_plane: if params.staircase.is_none() && ring.is_none() {
             Some(GroundPlaneCfg { z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0 })
         } else {
             None
         },
-        extra_worldbody_xml: params.staircase.map(|s| s.worldbody_xml()),
+        extra_worldbody_xml: match (&ring, params.staircase) {
+            (Some(r), _) => Some(r.worldbody_xml(RING_HFIELD)),
+            (None, Some(s)) => Some(s.worldbody_xml()),
+            (None, None) => None,
+        },
+        extra_asset_xml: ring.as_ref().map(|r| r.asset_xml(RING_HFIELD)),
+        base_xy: params.spawn_xy,
         add_actuators: true,
         ..Default::default()
     };
@@ -1067,6 +1093,14 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         .expect("write replay model.xml");
     }
     let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
+    if let Some(r) = &ring {
+        // The <hfield> was declared with nrow/ncol and no file, so MuJoCo is
+        // holding an uninitialised grid until this lands -- an unfilled one
+        // is a perfectly flat ring, which would look like the obstacles
+        // silently not existing rather than like an error.
+        sim.set_hfield_data(RING_HFIELD, &r.heights())
+            .expect("fill kawasaki ring hfield");
+    }
     match params.actuation {
         Actuation::Velocity { loop_ki, .. } => sim.velocity_loop_ki = loop_ki,
         Actuation::VelocityIdeal { .. } => sim.velocity_loop_ideal = true,

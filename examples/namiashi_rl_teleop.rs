@@ -51,11 +51,12 @@
 fn main() {
     use std::sync::{Arc, Mutex};
 
-    use articara::mjcf::{MjcfExportOptions, StaircaseCfg};
+    use articara::mjcf::{KawasakiRingCfg, MjcfExportOptions, StaircaseCfg};
     use articara::mujoco_sim::MujocoSim;
     use articara::rbd::model::ActuatorMode;
     use articara::robot::RobotModel;
     use nalgebra::Vector3;
+    use articara::wbc_harness::RING_HFIELD;
     use ort::session::Session;
     use ort::value::TensorRef;
 
@@ -71,6 +72,9 @@ fn main() {
     let vx0: f64 = get("--vx").and_then(|v| v.parse().ok()).unwrap_or(0.8);
     let vy0: f64 = get("--vy").and_then(|v| v.parse().ok()).unwrap_or(0.0);
     let wz0: f64 = get("--wz").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    // Same `--field` choice as namiashi_wbc_teleop, so the two demos can be
+    // put on the same ground without remembering two spellings.
+    let field = get("--field").unwrap_or_else(|| "ring".into());
 
     // ── Constants (ported verbatim from sim2sim_namiashi_mujoco.py) ────────
     const ISAAC_NAMES: [&str; 12] = [
@@ -115,6 +119,7 @@ fn main() {
         .join("tests/fixtures/namiashi/namiashi_3p3_prop.misa");
     let mut robot = RobotModel::from_misa(&misa).unwrap_or_else(|e| panic!(".misa load failed ({}): {e}", misa.display()));
     let stairs = StaircaseCfg { rise_m: 0.05, run_m: 0.20, n_steps: 10, approach_m: 1.5, top_platform_m: 8.0, half_width_m: 6.0 };
+    let ring = KawasakiRingCfg::default();
 
     for (k, name) in ISAAC_NAMES.iter().enumerate() {
         let Some(&ji) = robot.joint_map.get(*name) else { panic!("joint missing: {name}") };
@@ -128,13 +133,40 @@ fn main() {
     }
     robot.rebuild_misarta_model();
 
-    let opts = MjcfExportOptions {
-        extra_worldbody_xml: Some(stairs.worldbody_xml()),
-        add_actuators: true,
-        timestep: Some(PHYSICS_DT),
-        ..MjcfExportOptions::default()
+    let opts = match field.as_str() {
+        "stairs" => MjcfExportOptions {
+            extra_worldbody_xml: Some(stairs.worldbody_xml()),
+            add_actuators: true,
+            timestep: Some(PHYSICS_DT),
+            ..MjcfExportOptions::default()
+        },
+        "ring" => {
+            // On the red start platform: the origin is the centre bowl.
+            let (w, d) = ring.red_platform_m;
+            MjcfExportOptions {
+                extra_worldbody_xml: Some(ring.worldbody_xml(RING_HFIELD)),
+                extra_asset_xml: Some(ring.asset_xml(RING_HFIELD)),
+                base_xy: Some((
+                    -(ring.ring_m / 2.0 + d / 2.0),
+                    -(ring.ring_m / 2.0 - w / 2.0),
+                )),
+                add_actuators: true,
+                timestep: Some(PHYSICS_DT),
+                ..MjcfExportOptions::default()
+            }
+        }
+        other => {
+            eprintln!("unknown --field {other:?}: expected \"ring\" or \"stairs\"");
+            std::process::exit(2);
+        }
     };
     let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
+    if field == "ring" {
+        // Declared with nrow/ncol and no file, so MuJoCo holds an
+        // uninitialised grid until this lands -- unfilled reads as a
+        // perfectly flat ring, i.e. the obstacles silently not existing.
+        sim.set_hfield_data(RING_HFIELD, &ring.heights()).expect("fill ring hfield");
+    }
     sim.set_gravity_compensation(false); // Torque mode carries gravity itself -- see run_wbc_sim's Actuation::Torque comment
     let dt = sim.timestep();
     let decim = ((1.0 / INFER_HZ) / dt).round().max(1.0) as u32;
@@ -204,6 +236,7 @@ fn main() {
         "[teleop] W/S drive, A/D turn, Q/E strafe (arrows + PgUp/PgDn too), \
          Shift = full speed, O/L = ground mu. Release to stop."
     );
+    eprintln!("[teleop] field = {field}  (--field ring | stairs)");
 
     // ── Main loop: ONNX inference every `decim` physics ticks, held
     // between (matches sim2sim_namiashi_mujoco.py's own decimation). ───

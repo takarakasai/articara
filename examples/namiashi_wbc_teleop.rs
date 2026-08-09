@@ -39,19 +39,19 @@
 fn main() {
     use std::sync::{Arc, Mutex};
 
-    use articara::mjcf::StaircaseCfg;
+    use articara::mjcf::{KawasakiRingCfg, StaircaseCfg};
     use articara::teleop::LiveTeleop;
     use articara::wbc_harness::{namiashi_tuned_params, run_wbc_sim, Actuation, WbcParams};
     use quadruped_gait::GaitType;
 
-    let stairs = StaircaseCfg {
-        rise_m: 0.05,
-        run_m: 0.20,
-        n_steps: 10,
-        approach_m: 1.5,
-        top_platform_m: 8.0,
-        half_width_m: 6.0,
-    };
+    // `--field ring` (default) or `--field stairs`.
+    let args: Vec<String> = std::env::args().collect();
+    let field = args
+        .iter()
+        .position(|a| a == "--field")
+        .and_then(|i| args.get(i + 1).cloned())
+        .unwrap_or_else(|| "ring".into());
+
     // Start stopped, in Trot -- NAMIASHI_TUNED[0], the known-good preset.
     // Deliberately NOT the hip_bias_gate experiment: that was shown
     // non-robust under trivial parameter perturbation
@@ -59,7 +59,7 @@ fn main() {
     // hands-on demo.
     let live = Arc::new(Mutex::new(LiveTeleop::new(GaitType::Trot)));
 
-    let params = WbcParams {
+    let base = WbcParams {
         actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
         host_rate_hz: Some(400.0),
         dt: 0.0005,
@@ -68,16 +68,44 @@ fn main() {
         cmd_vx: 0.0,
         total_time_s: 1800.0, // ends via the viewer window closing, not a timeout
         wbc_real_inertia: true,
-        staircase: Some(stairs),
         live_teleop: Some(live),
         live_viewer: true,
         ..namiashi_tuned_params(0)
+    };
+    let params = match field.as_str() {
+        "stairs" => WbcParams {
+            staircase: Some(StaircaseCfg {
+                rise_m: 0.05,
+                run_m: 0.20,
+                n_steps: 10,
+                approach_m: 1.5,
+                top_platform_m: 8.0,
+                half_width_m: 6.0,
+            }),
+            ..base
+        },
+        "ring" => {
+            let ring = KawasakiRingCfg::default();
+            // On the red start platform, facing the ring. Spawning at the
+            // origin would drop the robot onto the centre bowl.
+            let (w, d) = ring.red_platform_m;
+            WbcParams {
+                spawn_xy: Some((-(ring.ring_m / 2.0 + d / 2.0), -(ring.ring_m / 2.0 - w / 2.0))),
+                kawasaki_ring: Some(ring),
+                ..base
+            }
+        }
+        other => {
+            eprintln!("unknown --field {other:?}: expected \"ring\" or \"stairs\"");
+            std::process::exit(2);
+        }
     };
     eprintln!(
         "[teleop] W/S drive, A/D turn, Q/E strafe (arrows + PgUp/PgDn too), \
          Shift = full speed, 1/2/3 = Crawl/Walk/Trot, R/F = swing height, \
          O/L = ground mu, P/. = controller mu. Release to stop."
     );
+    eprintln!("[teleop] field = {field}  (--field ring | stairs)");
     run_wbc_sim(params);
 }
 

@@ -47,6 +47,11 @@ pub struct MjcfExportOptions {
     /// Override for the floating-base world position. `None` = auto-lift so
     /// the lowest link sits just above z = 0.
     pub base_pos: Option<[f64; 3]>,
+    /// Override only the base's x/y, keeping the automatic z lift. Ignored
+    /// when `base_pos` is set. For placing a robot somewhere other than the
+    /// origin on a field whose surface is still at z=0 -- a start platform,
+    /// say -- without having to reproduce the lift calculation to get z.
+    pub base_xy: Option<(f64, f64)>,
     /// Embed a collidable ground plane geom at the given configuration.
     pub ground_plane: Option<GroundPlaneCfg>,
     /// When true, emit `<motor>` actuators (named `motor_<joint>`) for each
@@ -149,6 +154,7 @@ impl Default for MjcfExportOptions {
     fn default() -> Self {
         Self {
             base_pos: None,
+            base_xy: None,
             ground_plane: None,
             add_actuators: false,
             base_locked_axes: [false; 6],
@@ -334,9 +340,12 @@ pub struct KawasakiRingCfg {
     pub blue_platform_m: (f64, f64),
     /// `[pdf]` See `blue_platform_m` -- same size.
     pub red_platform_m: (f64, f64),
-    /// Start platform top surface relative to the ring surface. 0.0 = flush,
-    /// which is how the isometric reads: a start zone the robot drives off,
-    /// not a step it has to descend.
+    /// Start platform slab THICKNESS. Its top is flush with the ring
+    /// surface, which is how the isometric reads -- a start zone the robot
+    /// drives off, not a step it has to descend -- so this only sets how far
+    /// the slab hangs below. Must be positive; MuJoCo rejects a zero-size
+    /// box, and a flush platform is expressed by where the slab sits, not by
+    /// giving it no thickness.
     pub platform_h_m: f64,
     /// `[pdf]` Central bowl obstacle: 45 cm square.
     pub bowl_m: f64,
@@ -381,7 +390,7 @@ impl Default for KawasakiRingCfg {
             ring_m: 1.90,
             blue_platform_m: (0.45, 0.35),
             red_platform_m: (0.45, 0.35),
-            platform_h_m: 0.0,
+            platform_h_m: 0.05,
             bowl_m: 0.45,
             bowl_frame_m: 0.05,
             bowl_rim_h_m: 0.028,
@@ -559,7 +568,7 @@ impl KawasakiRingCfg {
                  size=\"{} {} {}\" rgba=\"{rgba}\"/>\n",
                 sx * (half + d / 2.0),
                 sy * (self.ring_m / 2.0 - w / 2.0),
-                self.platform_h_m / 2.0,
+                -self.platform_h_m / 2.0,
                 d / 2.0,
                 w / 2.0,
                 self.platform_h_m / 2.0,
@@ -644,7 +653,8 @@ pub fn export_mjcf_with_options(
         let ground_z = opts.ground_plane.as_ref().map(|g| g.z).unwrap_or(0.0);
         // Solve  root_z + local_min_z = ground_z + clearance  for root_z.
         let root_z = ground_z + CLEARANCE_M - local_min_z;
-        [0.0, 0.0, root_z]
+        let (x, y) = opts.base_xy.unwrap_or((0.0, 0.0));
+        [x, y, root_z]
     });
 
     let fopts = misarta_formats::mjcf::MjcfExportOptions {
