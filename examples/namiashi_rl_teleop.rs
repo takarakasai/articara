@@ -194,6 +194,7 @@ fn main() {
     let mut last_action = [0.0f32; 12];
     let mut q_des_isaac = DEFAULT_ISAAC;
     let wall_start = std::time::Instant::now();
+    let mut fps_meter = articara::teleop::FpsMeter::new();
     let mut k: u64 = 0;
     loop {
         if k % decim as u64 == 0 {
@@ -251,6 +252,7 @@ fn main() {
             // `vx cmd` shown beside it. Same cadence/contract as the WBC
             // demo's (see run_wbc_sim's live_viewer block).
             {
+                let fps = fps_meter.tick();
                 let p = robot.base_transform.translation;
                 let v_w = sim
                     .body_world_linear_velocity(&robot.root_link)
@@ -263,6 +265,9 @@ fn main() {
                 st.body_x_m = p.x;
                 st.body_z_m = p.z;
                 st.measured_vx_mps = v_b.x;
+                st.sim_time_s = k as f64 * dt;
+                st.wall_time_s = wall_start.elapsed().as_secs_f64();
+                st.fps = fps;
             }
             viewer.sync_data(sim.mj_data_mut());
             let _ = viewer.render();

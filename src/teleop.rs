@@ -64,6 +64,50 @@ pub struct LiveTeleop {
     /// Measured world-frame forward speed, m/s -- what the robot is
     /// actually doing, against the `cmd[0]` it was asked for.
     pub measured_vx_mps: f64,
+    /// Simulated time since the run started, seconds.
+    pub sim_time_s: f64,
+    /// Wall-clock time since the run started, seconds. Shown against
+    /// `sim_time_s` as a real-time factor: both demos pace themselves to
+    /// real time, so a factor under 1.0 means the physics could not keep
+    /// up and everything on screen is running slow.
+    pub wall_time_s: f64,
+    /// Smoothed render rate, from [`FpsMeter`].
+    pub fps: f64,
+}
+
+/// Exponentially-smoothed frame-rate meter for the HUD. Lives in the
+/// render loop rather than the UI callback so it measures the rate frames
+/// are actually produced at, not how often egui happens to run.
+#[derive(Default)]
+pub struct FpsMeter {
+    last: Option<std::time::Instant>,
+    fps: f64,
+}
+
+impl FpsMeter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Call once per rendered frame; returns the smoothed rate. The first
+    /// call has no interval to measure and reports 0.
+    pub fn tick(&mut self) -> f64 {
+        let now = std::time::Instant::now();
+        if let Some(prev) = self.last.replace(now) {
+            let dt = now.duration_since(prev).as_secs_f64();
+            if dt > 0.0 {
+                let instant = 1.0 / dt;
+                // ~0.2 s time constant at 60 Hz: settles fast enough to
+                // show a stall, slow enough not to flicker.
+                self.fps = if self.fps == 0.0 {
+                    instant
+                } else {
+                    self.fps * 0.9 + instant * 0.1
+                };
+            }
+        }
+        self.fps
+    }
 }
 
 impl LiveTeleop {
@@ -76,6 +120,9 @@ impl LiveTeleop {
             body_x_m: 0.0,
             body_z_m: 0.0,
             measured_vx_mps: 0.0,
+            sim_time_s: 0.0,
+            wall_time_s: 0.0,
+            fps: 0.0,
         }
     }
 }
@@ -244,5 +291,17 @@ pub fn draw_hud(
             row(ui, "vx meas", format!("{:+.3} m/s", st.measured_vx_mps));
             row(ui, "trunk x", format!("{:+.3} m", st.body_x_m));
             row(ui, "trunk z", format!("{:+.3} m", st.body_z_m));
+
+            ui.separator();
+            row(ui, "fps", format!("{:.1}", st.fps));
+            // Real-time factor, not decoration: both demos sleep to pace
+            // themselves to real time, so anything below ~1.0 means the
+            // physics is the bottleneck and the run is playing back slow.
+            let rt = if st.wall_time_s > 1e-9 {
+                st.sim_time_s / st.wall_time_s
+            } else {
+                0.0
+            };
+            row(ui, "time", format!("{:.1} s  (rt x{rt:.2})", st.sim_time_s));
         });
 }
