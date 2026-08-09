@@ -195,6 +195,32 @@ fn main() {
     let kp_post = env_f64("KP_POST", 100.0);
     let kd_post = env_f64("KD_POST", 20.0);
     let use_post = flag("POST", true);
+    // Centroidal angular-momentum task (doc Sec.21.3, reopened by the v6
+    // shoulder roll -- see `bt::angular_momentum`). `MOM_AXES` is a 3-char
+    // mask over roll/pitch/yaw, e.g. "x--" for roll only. Default OFF: it
+    // costs two extra CMM evaluations a tick and has never been measured.
+    let use_mom = flag("MOM", false);
+    let kp_mom = env_f64("KP_MOM", 10.0);
+    let mom_axes = {
+        let s = std::env::var("MOM_AXES").unwrap_or_else(|_| "x--".into());
+        let b = s.as_bytes();
+        [
+            b.first().is_some_and(|c| *c == b'x'),
+            b.get(1).is_some_and(|c| *c == b'y'),
+            b.get(2).is_some_and(|c| *c == b'z'),
+        ]
+    };
+    // Where the level sits in the stack. The task is an EQUALITY at its
+    // level, so `kp` does not control how much of the null space it takes --
+    // even `kp=0` still demands `ḣ_ang = 0`, i.e. "never change roll momentum",
+    // which a walk cannot honour. Placement is therefore the real knob:
+    //   `swing_before` / `swing_after` -- above posture, all authority
+    //   `post_after`                   -- below posture, only what is left
+    //   `post_merge`                   -- SAME level as posture, so the two
+    //                                     trade off inside one least-squares
+    //                                     instead of one strictly preceding
+    //                                     the other
+    let mom_level = std::env::var("MOM_LEVEL").unwrap_or_else(|_| "swing_after".into());
     let use_trunk = flag("TRUNK", true);
     let trunk_sign = env_f64("TRUNK_SIGN", 1.0);
     let trunk_dead = env_f64("TRUNK_DEAD", 0.0);
@@ -1373,6 +1399,27 @@ fn main() {
             nv,
         );
 
+        // ---- centroidal angular momentum --------------------------------
+        //
+        // `A_G` and `Ȧ_G v` are recomputed here rather than cached: the CMM is
+        // a function of q, and this loop's whole point is that q moves.
+        let p_mom = if use_mom {
+            let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
+            let dcmm_v = misarta::centroidal::compute_cmm_dot_times_v(&rig.model, q, v);
+            let h_now = &cmm * v_dvec;
+            bt::angular_momentum(
+                dyn_ctx.qddot(),
+                &cmm,
+                &na::DVector::from_row_slice(dcmm_v.as_slice()),
+                &h_now,
+                kp_mom,
+                mom_axes,
+                nv,
+            )
+        } else {
+            None
+        };
+
         // ---- P4: posture ------------------------------------------------
         let p3 = bt::posture(
             dyn_ctx.qddot(),
@@ -1542,14 +1589,39 @@ fn main() {
                 level_names.push("trunk");
             }
         }
+        let mut mom_pending = p_mom;
+        let mut push_mom = |at: &str,
+                            levels: &mut Vec<misa_wbc::Task>,
+                            names: &mut Vec<&'static str>,
+                            pending: &mut Option<misa_wbc::Task>| {
+            if mom_level == at {
+                if let Some(pm) = pending.take() {
+                    levels.push(pm);
+                    names.push("momentum");
+                }
+            }
+        };
+        push_mom("swing_before", &mut levels, &mut level_names, &mut mom_pending);
         if let Some(ps) = p_swing {
             levels.push(ps);
             level_names.push("swing");
         }
+        push_mom("swing_after", &mut levels, &mut level_names, &mut mom_pending);
         if use_post {
-            levels.push(p3);
-            level_names.push("posture");
+            let merged = match (mom_level.as_str(), mom_pending.take()) {
+                ("post_merge", Some(pm)) => {
+                    level_names.push("posture+momentum");
+                    p3 + pm
+                }
+                (_, back) => {
+                    mom_pending = back;
+                    level_names.push("posture");
+                    p3
+                }
+            };
+            levels.push(merged);
         }
+        push_mom("post_after", &mut levels, &mut level_names, &mut mom_pending);
         if let Some(pt) = p2_late {
             levels.push(pt);
             level_names.push("trunk(late)");

@@ -112,8 +112,13 @@ pub const KYO46RS: Profile = Profile {
         "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
         "right_hip_yaw_joint", "right_hip_roll_joint", "right_hip_pitch_joint",
         "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
-        "left_shoulder_pitch_joint", "left_elbow_joint",
-        "right_shoulder_pitch_joint", "right_elbow_joint",
+        // A joint missing from this list is not merely absent from the CSV:
+        // the renderer defaults an unknown joint to 0.0, so it is DRAWN as
+        // never having moved, and "it did not move" cannot be told apart from
+        // "the log does not carry it". The v6 shoulder roll spent a session in
+        // exactly that state.
+        "left_shoulder_roll_joint", "left_shoulder_pitch_joint", "left_elbow_joint",
+        "right_shoulder_roll_joint", "right_shoulder_pitch_joint", "right_elbow_joint",
     ],
 };
 
