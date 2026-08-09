@@ -810,6 +810,12 @@ fn main() {
     let mut max_zmp_clamp: f64 = 0.0;
     let mut max_ankle_roll_use: f64 = 0.0;
     let mut n_open_loop = 0u32;
+    // Per-joint travel, so a joint that swings without hitting anything is
+    // still visible. Sec.30 found the v6 arm at 111 deg peak-to-peak in a clip
+    // that logged 44 self-collision ticks: the collision count is a count of
+    // collisions, and it was being read as if it were a measure of behaviour.
+    let mut q_lo: Vec<f64> = vec![f64::INFINITY; rig.robot.joints.len()];
+    let mut q_hi: Vec<f64> = vec![f64::NEG_INFINITY; rig.robot.joints.len()];
     let mut n_selfcollide = 0u32;
     let mut max_selfcollide_f: f64 = 0.0;
     // ---- disturbance response ------------------------------------------
@@ -1895,6 +1901,11 @@ fn main() {
         // stance-width sweep found 130 mm topples the robot because the FEET
         // touch -- and a contact the QP has no model for is indistinguishable
         // in the logs from a control failure.
+        for ji in 0..rig.robot.joints.len() {
+            let qj = rig.robot.joint_positions[ji];
+            q_lo[ji] = q_lo[ji].min(qj);
+            q_hi[ji] = q_hi[ji].max(qj);
+        }
         {
             let hits: Vec<(String, String, f64)> = rig
                 .sim
@@ -2267,6 +2278,36 @@ fn main() {
          (DCM on the far side of the ZMP -- no positive time reaches the target), \
          {n_time_clamped} clamped to the duration bounds"
     );
+    {
+        // Arms first and by name, because they are the ones nothing else
+        // constrains; then the worst joint anywhere, so a leg that starts
+        // wandering is not silently omitted by an arm-shaped filter.
+        let pp = |ji: usize| (q_hi[ji] - q_lo[ji]).to_degrees();
+        let mut arms: Vec<(f64, &str)> = (0..rig.robot.joints.len())
+            .filter(|&ji| {
+                let n = rig.robot.joints[ji].name.as_str();
+                (n.contains("shoulder") || n.contains("elbow")) && q_hi[ji] > q_lo[ji]
+            })
+            .map(|ji| (pp(ji), rig.robot.joints[ji].name.as_str()))
+            .collect();
+        arms.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        let worst = (0..rig.robot.joints.len())
+            .filter(|&ji| q_hi[ji] > q_lo[ji])
+            .map(|ji| (pp(ji), rig.robot.joints[ji].name.as_str()))
+            .fold((0.0_f64, ""), |acc, x| if x.0 > acc.0 { x } else { acc });
+        let arm_max = arms.first().map(|a| a.0).unwrap_or(0.0);
+        println!(
+            "  joint travel peak-to-peak: arms {arm_max:.1} deg ({}), worst overall \
+             {:.1} deg ({})          -- an arm that swings without touching anything \
+             is invisible to the self-collision count above",
+            arms.first().map(|a| a.1).unwrap_or("none"),
+            worst.0,
+            worst.1
+        );
+        for (d, n) in arms.iter().take(3) {
+            println!("    {n:32} {d:7.1} deg");
+        }
+    }
     println!(
         "  self-collision ticks: {n_selfcollide}  (peak {max_selfcollide_f:.1} N)          -- any nonzero value means the QP was solving against a contact it has no model for"
     );
