@@ -195,6 +195,25 @@ fn main() {
     let kp_post = env_f64("KP_POST", 100.0);
     let kd_post = env_f64("KD_POST", 20.0);
     let use_post = flag("POST", true);
+    // Hold the arms, at their own level ABOVE posture.
+    //
+    // Sec.29.6 measured the v6 arm swinging 111 deg peak-to-peak at the
+    // shoulder roll and dragging pitch and elbow to 64/26 deg with it, where
+    // every pre-v6 model and `v6fixed` sit at 2-10 deg. The posture level is
+    // the only thing regulating any of it, and it runs at one uniform gain
+    // BELOW swing -- for the legs that is harmless because the contact/CoM/
+    // swing tasks pin them anyway, and for an arm in every one of those
+    // tasks' null space it is the whole budget.
+    //
+    // NOT free, though it looked like it should be: the arms carry no load, so
+    // a level of their own reads like it can only take null space nothing else
+    // wanted. Measured (Sec.30.3), the same task on v4 -- a model with no
+    // shoulder roll and no problem -- costs 22/28 -> 16/28. On v6 it is a net
+    // win only because the flailing was costing more than the level does.
+    // Default OFF for that reason.
+    let arm_hold = flag("ARM_HOLD", false);
+    let kp_arm = env_f64("KP_ARM", 400.0);
+    let kd_arm = env_f64("KD_ARM", 40.0);
     // Centroidal angular-momentum task (doc Sec.21.3, reopened by the v6
     // shoulder roll -- see `bt::angular_momentum`). `MOM_AXES` is a 3-char
     // mask over roll/pitch/yaw, e.g. "x--" for roll only. Default OFF: it
@@ -1420,6 +1439,38 @@ fn main() {
             None
         };
 
+        // ---- arm hold ----------------------------------------------------
+        //
+        // Same task as posture, restricted to the arm rows. Rows outside the
+        // filter stay all-zero with a zero reference, i.e. `0 = 0`, which the
+        // solver satisfies for free -- so this really is "posture, arms only,
+        // at its own gain".
+        let p_arm = if arm_hold {
+            let arms: Vec<(usize, usize)> = rig
+                .actuated()
+                .into_iter()
+                .filter(|&(ji, _)| {
+                    let n = rig.robot.joints[ji].name.as_str();
+                    n.contains("shoulder") || n.contains("elbow")
+                })
+                .collect();
+            (!arms.is_empty()).then(|| {
+                bt::posture(
+                    dyn_ctx.qddot(),
+                    &arms,
+                    &rig.robot.joint_positions,
+                    &rig.q_seed,
+                    v,
+                    kp_arm,
+                    kd_arm,
+                    na_count,
+                    nv,
+                )
+            })
+        } else {
+            None
+        };
+
         // ---- P4: posture ------------------------------------------------
         let p3 = bt::posture(
             dyn_ctx.qddot(),
@@ -1607,6 +1658,10 @@ fn main() {
             level_names.push("swing");
         }
         push_mom("swing_after", &mut levels, &mut level_names, &mut mom_pending);
+        if let Some(pa) = p_arm {
+            levels.push(pa);
+            level_names.push("arm hold");
+        }
         if use_post {
             let merged = match (mom_level.as_str(), mom_pending.take()) {
                 ("post_merge", Some(pm)) => {
