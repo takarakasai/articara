@@ -4977,6 +4977,89 @@ fn namiashi_staircase_5cm_hip_gate_robustness() {
 // run_wbc_sim (now pub, articara::wbc_harness) with the same
 // live_cmd/live_viewer wiring.
 
+/// Is the yaw drift simply unregulated, and does regulating it unblock the
+/// terrain footplan?
+///
+/// `WbcPipeline::yaw_pd_gain` has existed since the drift was identified but
+/// has never been measured on its own -- it defaults to `(0.0, 0.0)`, an
+/// exact no-op, so every staircase number in this file so far was taken with
+/// NOTHING holding heading. `yaw_ref` stays at its default 0.0, which is the
+/// correct target here: the run starts at yaw 0 and `cmd_wz` is 0 throughout,
+/// so "hold straight" is literally yaw_ref = 0.
+///
+/// Motivated by re-measuring the terrain footplan (an idealized, exact
+/// per-leg touchdown height from `StaircaseCfg::height_at`) and finding it
+/// reaches x=1.609 m against a bare baseline's 1.579 m -- i.e. perfect
+/// terrain knowledge bought essentially nothing -- while ending 0.715 m
+/// sideways of the track. A footplan cannot show its value while the run is
+/// being ended by an unrelated failure, so this sweeps the yaw gain both
+/// without and with the footplan: the first column asks whether the drift is
+/// regulable at all, the second whether removing it lets terrain knowledge
+/// finally pay.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_staircase_5cm_yaw_regulation() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    let top_start_x = stairs.top_platform_start_x();
+
+    // (0,0) first so the table carries its own baseline rather than asking
+    // the reader to trust a number from another test's output.
+    let gains = [(0.0, 0.0), (20.0, 2.0), (50.0, 5.0), (100.0, 10.0), (200.0, 20.0)];
+    for footplan in [None, Some(TerrainFootplanCfg { clearance_m: 0.02, horizontal_margin_m: 0.05 })] {
+        let tag = if footplan.is_some() { "footplan" } else { "bare    " };
+        for (kp, kd) in gains {
+            let params = WbcParams {
+                actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                cmd_vx: cmd,
+                total_time_s: 20.0,
+                wbc_real_inertia: true,
+                staircase: Some(stairs),
+                terrain_footplan: footplan,
+                yaw_pd_gain: if (kp, kd) == (0.0, 0.0) { None } else { Some((kp, kd)) },
+                ..namiashi_tuned_params(I)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            let max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+            // Drift stats over the UPRIGHT window only. `run_wbc_sim` keeps
+            // sampling after a topple, and a tumbling body sweeps every yaw
+            // there is -- measuring across that reports the fall, not the
+            // heading error the gain was supposed to prevent, and it does so
+            // in the direction that makes a working gain look broken.
+            let upright = samples
+                .iter()
+                .position(|s| s.body_z < TRUNK_Z_FALL_THRESHOLD_M)
+                .unwrap_or(samples.len());
+            let fell = upright < samples.len();
+            let walking = &samples[..upright.max(1)];
+            let max_yaw_deg = walking
+                .iter()
+                .map(|s| s.yaw.abs().to_degrees())
+                .fold(0.0_f64, f64::max);
+            let max_abs_y = walking.iter().map(|s| s.body_y.abs()).fold(0.0_f64, f64::max);
+            let x_at_fall = walking.last().map(|s| s.body_x).unwrap_or(0.0);
+            let final_s = samples.last().unwrap();
+            let reached_top =
+                final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
+            eprintln!(
+                "[yaw_reg {tag} kp={kp:5.1} kd={kd:4.1}] max_x={max_x:.3}m  \
+                 upright: max|yaw|={max_yaw_deg:5.1}deg max|y|={max_abs_y:.3}m \
+                 until x={x_at_fall:.3}m  fell={fell}  reached_top={reached_top}",
+            );
+        }
+    }
+}
+
 /// Does the swing-collision reflex get the 5 cm staircase past where blind
 /// clearance alone could not?
 ///
