@@ -391,6 +391,54 @@ impl MujocoSim {
         &mut self.data
     }
 
+    /// Fill a named heightfield's elevation grid.
+    ///
+    /// An `<hfield>` declared with `nrow`/`ncol` and no `file=` leaves MuJoCo
+    /// holding an allocated but uninitialised grid, which is what lets a
+    /// terrain be built in Rust and handed over without an image on disk --
+    /// see [`crate::mjcf::MjcfExportOptions::extra_asset_xml`].
+    ///
+    /// `data` is row-major, `nrow * ncol` values normalised to `[0, 1]`;
+    /// MuJoCo scales them by the `z_top` component of the hfield's `size`.
+    /// Returns `Err` on an unknown name or a length mismatch rather than
+    /// writing a partial grid, since a half-filled heightfield is terrain
+    /// with a cliff in it and would look like a physics bug.
+    ///
+    /// Elevation data is safe to change between steps; MuJoCo re-reads it
+    /// per contact. The same single-threaded caveat as
+    /// [`Self::set_slide_friction_all`] applies.
+    pub fn set_hfield_data(&mut self, name: &str, data: &[f32]) -> Result<(), String> {
+        let m = self.model.ffi();
+        let id = self
+            .model
+            .name_to_id(mujoco::prelude::MjtObj::mjOBJ_HFIELD, name)
+            .ok_or_else(|| format!("no hfield named {name:?}"))?;
+        // SAFETY: `id` came from MuJoCo's own name lookup, so it indexes the
+        // hfield_* arrays in range.
+        let (nrow, ncol, adr) = unsafe {
+            (
+                *m.hfield_nrow.add(id) as usize,
+                *m.hfield_ncol.add(id) as usize,
+                *m.hfield_adr.add(id) as usize,
+            )
+        };
+        if data.len() != nrow * ncol {
+            return Err(format!(
+                "hfield {name:?} is {nrow}x{ncol} = {} values, got {}",
+                nrow * ncol,
+                data.len()
+            ));
+        }
+        // SAFETY: hfield_data is a MuJoCo-owned f32 array; this hfield owns
+        // `nrow*ncol` of it starting at `adr`, and the length was just
+        // checked. `ffi()` borrows the mjModel struct, not the arrays it
+        // points at, so no Rust reference aliases this write.
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), m.hfield_data.add(adr), data.len());
+        }
+        Ok(())
+    }
+
     /// Sliding-friction coefficient of geom 0, i.e. the value every geom
     /// shares in practice: the MJCF exporter emits a single
     /// `<default><geom friction="…"/></default>` and never overrides it

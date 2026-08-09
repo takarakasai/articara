@@ -130,6 +130,19 @@ pub struct MjcfExportOptions {
     /// without inventing a terrain API before there is a second caller that
     /// needs one. `None` (the default) changes nothing.
     pub extra_worldbody_xml: Option<String>,
+    /// Raw `<asset>`-legal XML (`<hfield>`, `<texture>`, `<material>`, …),
+    /// spliced in as its own `<asset>` block. MJCF merges repeated top-level
+    /// sections, so this coexists with the mesh assets the exporter emits.
+    ///
+    /// The companion to [`Self::extra_worldbody_xml`]: a `<geom
+    /// type="hfield" hfield="…"/>` in the worldbody needs the matching
+    /// `<hfield>` declared here, and there is no other way to reach the
+    /// asset section without forking `misarta_formats::mjcf::export`.
+    /// Declaring an hfield with `nrow`/`ncol` and no `file` leaves MuJoCo to
+    /// allocate the grid uninitialised, for the host to fill via
+    /// [`crate::mujoco_sim::MujocoSim::set_hfield_data`] -- no image file on
+    /// disk, and the terrain can change between runs without touching it.
+    pub extra_asset_xml: Option<String>,
 }
 
 impl Default for MjcfExportOptions {
@@ -146,6 +159,7 @@ impl Default for MjcfExportOptions {
             native_velocity_servo: None,
             integrator: None,
             extra_worldbody_xml: None,
+            extra_asset_xml: None,
             timestep: None,
         }
     }
@@ -284,6 +298,267 @@ impl StaircaseCfg {
     }
 }
 
+/// The 第31回かわさきロボット競技大会 competition ring, as a heightfield.
+///
+/// A heightfield rather than composed primitives because every feature here
+/// is single-valued in z -- holes are the plate's thickness being *absent*,
+/// the central bowl is a dished surface, the edge banks are bumps. Building
+/// a 100 mm circular hole out of boxes needs hundreds of them per plate and
+/// still stair-steps the rim; one grid expresses all of it.
+///
+/// # Dimensions are read off the rulebook FIGURE, not a CAD source
+///
+/// Every measurement below is exposed as a field, and each carries where it
+/// came from: `[fig]` is dimensioned in the drawing, `[est]` is scaled off
+/// the drawing by eye, `[assumed]` is not in the drawing at all. Correcting
+/// a wrong one should be a one-line change, never a rebuild -- which is why
+/// nothing here is a hardcoded constant. The rulebook itself notes
+/// "安全対策及び加工・配置に起因する寸法、形状誤差があります", so the real
+/// ring is not exact either.
+#[derive(Clone, Debug)]
+pub struct KawasakiRingCfg {
+    /// `[fig]` Ring plate, square, 190 cm on a side.
+    pub ring_m: f64,
+    /// `[fig]` Start platform footprint `(width_along_edge, depth_outward)`.
+    /// The drawing gives the blue platform as 45 cm along the edge and 35 cm
+    /// deep; the red one is dimensioned 30 cm and appears smaller, which may
+    /// be a drafting artifact rather than a real asymmetry -- see
+    /// `red_platform_m`.
+    pub blue_platform_m: (f64, f64),
+    /// `[fig]` Red start platform, dimensioned 30 cm in the drawing. Kept
+    /// separate from `blue_platform_m` rather than assuming symmetry,
+    /// because assuming it away would hide the discrepancy.
+    pub red_platform_m: (f64, f64),
+    /// `[est]` Start platform top surface height above the ring plate.
+    pub platform_h_m: f64,
+    /// `[fig]` Central bowl obstacle: 45 cm square.
+    pub bowl_m: f64,
+    /// `[fig]` Width of the bowl's flat outer frame.
+    pub bowl_frame_m: f64,
+    /// `[fig]` Bowl rim height. The drawing shows 2.8 cm on the side view
+    /// and 2.5 cm on section A-A; taken as the rim, with the difference
+    /// most likely frame-vs-lip.
+    pub bowl_rim_h_m: f64,
+    /// `[fig]` Height at the bowl's centre, i.e. how far the dish drops.
+    pub bowl_centre_h_m: f64,
+    /// `[fig]` Hole-plate obstacles are 30 cm square, 1.5 cm thick.
+    pub plate_m: f64,
+    pub plate_h_m: f64,
+    /// `[fig]` Single-hole plate: one 180 mm hole, centred.
+    pub round_hole_d_m: f64,
+    /// `[fig]` Four-hole plate: 100 mm holes on a 150 mm square pitch.
+    pub quad_hole_d_m: f64,
+    pub quad_hole_pitch_m: f64,
+    /// `[est]` Obstacle centres, in metres from the ring centre, as
+    /// `(x, y)`. The drawing dimensions these only against edges and
+    /// centrelines, so these are scaled off it.
+    pub round_plate_centres: Vec<(f64, f64)>,
+    /// `[est]` Four-hole plates. Drawn rotated 45 deg (diamond).
+    pub quad_plate_centres: Vec<(f64, f64)>,
+    /// `[assumed]` Edge banks. The rulebook says only "断面が半楕円形の
+    /// エッジバンクを配置する" with no dimensions at all, so the profile is
+    /// a guess: `(half_width, height)` of the semi-ellipse.
+    pub bank_half_w_m: f64,
+    pub bank_h_m: f64,
+    /// `[est]` Edge bank segments as `(x0, y0, x1, y1)` centrelines, metres
+    /// from the ring centre.
+    pub bank_segments: Vec<(f64, f64, f64, f64)>,
+    /// Heightfield grid pitch. 5 mm resolves a 100 mm hole across 20 cells.
+    pub cell_m: f64,
+}
+
+impl Default for KawasakiRingCfg {
+    fn default() -> Self {
+        let r = 1.90 / 2.0;
+        Self {
+            ring_m: 1.90,
+            blue_platform_m: (0.45, 0.35),
+            red_platform_m: (0.30, 0.30),
+            platform_h_m: 0.05,
+            bowl_m: 0.45,
+            bowl_frame_m: 0.05,
+            bowl_rim_h_m: 0.028,
+            bowl_centre_h_m: 0.012,
+            plate_m: 0.30,
+            plate_h_m: 0.015,
+            round_hole_d_m: 0.18,
+            quad_hole_d_m: 0.10,
+            quad_hole_pitch_m: 0.15,
+            // Left and right of centre on the horizontal centreline.
+            round_plate_centres: vec![(-0.48, 0.0), (0.48, 0.0)],
+            // Above and below centre on the vertical centreline.
+            quad_plate_centres: vec![(0.0, 0.48), (0.0, -0.48)],
+            bank_half_w_m: 0.04,
+            bank_h_m: 0.025,
+            // The long bars top and bottom (150 cm), and the two shorter
+            // runs down the right-hand side.
+            bank_segments: vec![
+                (-0.75, r - 0.30, 0.75, r - 0.30),
+                (-0.75, -(r - 0.30), 0.75, -(r - 0.30)),
+                (r - 0.30, -0.50, r - 0.30, 0.50),
+            ],
+            cell_m: 0.005,
+        }
+    }
+}
+
+impl KawasakiRingCfg {
+    /// Grid dimensions of the heightfield, `(nrow, ncol)`.
+    pub fn grid(&self) -> (usize, usize) {
+        let n = (self.ring_m / self.cell_m).round().max(2.0) as usize;
+        (n, n)
+    }
+
+    /// Tallest feature, metres. MuJoCo scales the normalised grid by this.
+    pub fn z_top_m(&self) -> f64 {
+        self.bowl_rim_h_m
+            .max(self.plate_h_m)
+            .max(self.bank_h_m)
+            .max(1e-6)
+    }
+
+    /// Elevation grid, row-major, normalised to `[0, 1]` for
+    /// [`crate::mujoco_sim::MujocoSim::set_hfield_data`].
+    ///
+    /// Row 0 is `-y`, column 0 is `-x`, matching MuJoCo's own hfield layout.
+    pub fn heights(&self) -> Vec<f32> {
+        let (nrow, ncol) = self.grid();
+        let z_top = self.z_top_m();
+        let half = self.ring_m / 2.0;
+        let mut out = vec![0.0_f32; nrow * ncol];
+        for r in 0..nrow {
+            // Cell centres, so a feature edge never lands exactly on a
+            // sample and alias to whichever side floating point picks.
+            let y = -half + (r as f64 + 0.5) * self.ring_m / nrow as f64;
+            for c in 0..ncol {
+                let x = -half + (c as f64 + 0.5) * self.ring_m / ncol as f64;
+                out[r * ncol + c] = (self.height_at(x, y) / z_top) as f32;
+            }
+        }
+        out
+    }
+
+    /// Surface height at a ring-frame point, metres above the plate.
+    ///
+    /// Features are applied highest-wins rather than in sequence: they do
+    /// not overlap in the nominal layout, but a mistyped centre should show
+    /// as two obstacles intersecting, not as one silently erasing the other.
+    pub fn height_at(&self, x: f64, y: f64) -> f64 {
+        let mut z: f64 = 0.0;
+
+        // Central bowl: flat frame at the rim, dishing to the centre.
+        let hb = self.bowl_m / 2.0;
+        if x.abs() <= hb && y.abs() <= hb {
+            let inner = hb - self.bowl_frame_m;
+            // Chebyshev radius, so the dish is square-symmetric like the
+            // drawing's four triangular faces rather than a circular bowl.
+            let t = (x.abs().max(y.abs()) - 0.0) / inner.max(1e-9);
+            z = z.max(if x.abs() <= inner && y.abs() <= inner {
+                self.bowl_centre_h_m
+                    + (self.bowl_rim_h_m - self.bowl_centre_h_m) * t.clamp(0.0, 1.0)
+            } else {
+                self.bowl_rim_h_m
+            });
+        }
+
+        let hp = self.plate_m / 2.0;
+        for &(cx, cy) in &self.round_plate_centres {
+            let (dx, dy) = (x - cx, y - cy);
+            if dx.abs() <= hp && dy.abs() <= hp && dx.hypot(dy) > self.round_hole_d_m / 2.0 {
+                z = z.max(self.plate_h_m);
+            }
+        }
+        for &(cx, cy) in &self.quad_plate_centres {
+            // Drawn as a diamond: rotate the query into the plate's frame.
+            let (dx, dy) = (x - cx, y - cy);
+            let s = std::f64::consts::FRAC_1_SQRT_2;
+            let (px, py) = (s * (dx + dy), s * (dy - dx));
+            if px.abs() > hp || py.abs() > hp {
+                continue;
+            }
+            let q = self.quad_hole_pitch_m / 2.0;
+            let in_hole = [(-q, -q), (q, -q), (-q, q), (q, q)]
+                .iter()
+                .any(|&(ox, oy)| (px - ox).hypot(py - oy) <= self.quad_hole_d_m / 2.0);
+            if !in_hole {
+                z = z.max(self.plate_h_m);
+            }
+        }
+
+        // Edge banks: semi-elliptical across the segment, flat along it.
+        for &(x0, y0, x1, y1) in &self.bank_segments {
+            let (vx, vy) = (x1 - x0, y1 - y0);
+            let len2 = vx * vx + vy * vy;
+            if len2 < 1e-12 {
+                continue;
+            }
+            let t = (((x - x0) * vx + (y - y0) * vy) / len2).clamp(0.0, 1.0);
+            let d = (x - (x0 + t * vx)).hypot(y - (y0 + t * vy));
+            if d < self.bank_half_w_m {
+                let u = d / self.bank_half_w_m;
+                z = z.max(self.bank_h_m * (1.0 - u * u).max(0.0).sqrt());
+            }
+        }
+        z
+    }
+
+    /// The `<hfield>` declaration for
+    /// [`MjcfExportOptions::extra_asset_xml`]. No `file=`, so MuJoCo
+    /// allocates the grid and the host fills it.
+    pub fn asset_xml(&self, name: &str) -> String {
+        let (nrow, ncol) = self.grid();
+        format!(
+            "    <hfield name=\"{name}\" nrow=\"{nrow}\" ncol=\"{ncol}\" \
+             size=\"{} {} {} {}\"/>\n",
+            self.ring_m / 2.0,
+            self.ring_m / 2.0,
+            self.z_top_m(),
+            0.05,
+        )
+    }
+
+    /// Ring plate, start platforms and the heightfield geom, for
+    /// [`MjcfExportOptions::extra_worldbody_xml`].
+    ///
+    /// The plate is a solid box under the heightfield rather than the
+    /// heightfield's own base thickness, so the ring has sides a robot can
+    /// fall off -- driving off the edge is part of this field, unlike the
+    /// staircase where it was only ever a test-track artifact.
+    pub fn worldbody_xml(&self, name: &str) -> String {
+        let half = self.ring_m / 2.0;
+        let plate_h = 0.05;
+        let mut xml = String::new();
+        xml += &format!(
+            "    <geom name=\"ring_plate\" type=\"box\" pos=\"0 0 {}\" \
+             size=\"{half} {half} {}\" rgba=\"0.22 0.22 0.24 1\"/>\n",
+            -plate_h / 2.0,
+            plate_h / 2.0,
+        );
+        xml += &format!(
+            "    <geom name=\"ring_field\" type=\"hfield\" hfield=\"{name}\" \
+             pos=\"0 0 0\" rgba=\"0.30 0.30 0.33 1\"/>\n"
+        );
+        for (label, (w, d), sx, sy, rgba) in [
+            ("start_red", self.red_platform_m, -1.0, -1.0, "0.75 0.15 0.15 1"),
+            ("start_blue", self.blue_platform_m, 1.0, 1.0, "0.15 0.20 0.75 1"),
+        ] {
+            // Butted against the outside of the ring edge, on opposite
+            // corners, matching the isometric.
+            xml += &format!(
+                "    <geom name=\"{label}\" type=\"box\" pos=\"{} {} {}\" \
+                 size=\"{} {} {}\" rgba=\"{rgba}\"/>\n",
+                sx * (half + d / 2.0),
+                sy * (self.ring_m / 2.0 - w / 2.0),
+                self.platform_h_m / 2.0,
+                d / 2.0,
+                w / 2.0,
+                self.platform_h_m / 2.0,
+            );
+        }
+        xml
+    }
+}
+
 /// Export a RobotModel to MJCF XML string with default options.
 pub fn export_mjcf(model: &RobotModel) -> String {
     export_mjcf_with_options(model, MjcfExportOptions::default())
@@ -415,7 +690,7 @@ pub fn export_mjcf_with_options(
             .join("\n"),
     };
 
-    match &opts.extra_worldbody_xml {
+    let xml = match &opts.extra_worldbody_xml {
         None => xml,
         Some(extra) => match xml.rfind("</worldbody>") {
             Some(i) => format!("{}{extra}\n{}", &xml[..i], &xml[i..]),
@@ -423,6 +698,17 @@ pub fn export_mjcf_with_options(
                 log::error!("MJCF export: no </worldbody> to splice extra_worldbody_xml into");
                 xml
             }
+        },
+    };
+
+    // Own `<asset>` block after the opening `<mujoco …>` line, the same
+    // splice `<option>` uses above. MJCF merges repeated top-level sections,
+    // so this does not disturb the mesh `<asset>` the exporter emits.
+    match &opts.extra_asset_xml {
+        None => xml,
+        Some(extra) => match xml.find('\n') {
+            Some(nl) => format!("{}\n  <asset>\n{extra}  </asset>{}", &xml[..nl], &xml[nl..]),
+            None => xml,
         },
     }
 }

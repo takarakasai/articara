@@ -133,6 +133,10 @@ name = "namiashi_wbc_teleop"
 required-features = ["mujoco-viewer"]
 
 [[example]]
+name = "kawasaki_ring_check"
+required-features = ["mujoco"]
+
+[[example]]
 name = "exp_sweep"
 required-features = ["mujoco"]
 
