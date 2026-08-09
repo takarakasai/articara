@@ -471,6 +471,18 @@ PUSH_CONDITIONS = [
                      "ADAPT_TIME_WIDE": "1"}),
     ("timing cut+wide", {"ADAPT_STEP": "0", "K_DCM": "2.0", "ADAPT_TIME": "1",
                          "ADAPT_TIME_CUT": "1", "ADAPT_TIME_WIDE": "1"}),
+    # Centroidal angular-momentum task (doc Sec.21.3, implemented 2026-08-09
+    # once the v6 shoulder roll voided its "roll component is architecturally
+    # zero" premise). Sec.21.3's argument was about THIS bench -- rejecting a
+    # push -- not about walking sideways, so the lateral ladder's negative
+    # result (Sec.28.8) does not answer it. Baseline matches "timing off".
+    #
+    # Only the merged placement is worth a grid: above the posture level the
+    # task takes the whole null space and the walk dies outright, below it the
+    # task is inert. Roll axis only, the axis Sec.21.3 measured.
+    ("mom off", {"ADAPT_STEP": "0", "K_DCM": "2.0", "MOM": "0"}),
+    ("mom merge k10", {"ADAPT_STEP": "0", "K_DCM": "2.0", "MOM": "1",
+                       "KP_MOM": "10", "MOM_LEVEL": "post_merge", "MOM_AXES": "x--"}),
     # prox_weight. Measured on the 42-case command bench only (34 -> 37/42,
     # doc Sec.26.1) -- the disturbance side was an open question. Baseline is
     # everything else at its own default (ADAPT_STEP=0, K_DCM=2.0, no timing

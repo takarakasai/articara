@@ -160,6 +160,46 @@ pub struct TrunkGains {
     pub wz_ref: f64,
 }
 
+/// Centroidal ANGULAR momentum, driven toward zero: `ḣ_ang = -kp · h_ang`.
+///
+/// `cmm` is misarta's `A_G` with `h = [h_ang; h_lin]`, so the angular rows are
+/// 0..3 -- the linear rows are deliberately not used, because `h_lin = m·ṗ_com`
+/// is the CoM task's variable and asking two levels for the same quantity only
+/// decides which one loses.
+///
+/// `axes` selects which of roll/pitch/yaw to regulate. Doc Sec.21.3 ruled this
+/// task out before implementing it, on two grounds: the roll component was
+/// architecturally zero (shoulder and elbow were both sagittal), and the `h_x`
+/// seen while falling reached 1.10 kg·m²/s against roughly 0.3 available from
+/// the arms. **The first ground died with the v6 shoulder roll; the second did
+/// not** -- 1.10 is the value `h_x` grows TO during a fall, while the value at
+/// single-support entry was 0.178, and that one is inside what the arms can
+/// produce. Which of the two numbers this task has to beat is exactly what
+/// was never measured.
+pub fn angular_momentum(
+    qddot: &Affine,
+    cmm: &na::DMatrix<f64>,
+    dcmm_v: &na::DVector<f64>,
+    h_now: &na::DVector<f64>,
+    kp: f64,
+    axes: [bool; 3],
+    nv: usize,
+) -> Option<Task> {
+    let rows: Vec<usize> = (0..3).filter(|&i| axes[i]).collect();
+    if rows.is_empty() {
+        return None;
+    }
+    let mut j = na::DMatrix::zeros(rows.len(), nv);
+    let mut bias = na::DVector::zeros(rows.len());
+    let mut href = na::DVector::zeros(rows.len());
+    for (r, &i) in rows.iter().enumerate() {
+        j.row_mut(r).copy_from(&cmm.row(i));
+        bias[r] = dcmm_v[i];
+        href[r] = -kp * h_now[i];
+    }
+    Some(wt::cartesian_acceleration(qddot, &j, &bias, &href))
+}
+
 /// P4: weak posture, so the null space does not wander.
 ///
 /// `actuated` is `(articara joint index, misarta v index)` as
@@ -193,12 +233,16 @@ pub fn posture(
 ///
 /// `limits` (gains and `q_min`/`q_max`/`v_max`/`a_max`) is built once by the
 /// caller from [`super::rig::BipedRig`]'s URDF-derived bounds. `q_act`/`v_act`
-/// are this tick's LIVE actuated-row position/velocity, indexed like
-/// `actuated`'s `vi` (i.e. `rig.model.q_idx`/`v_idx`-based, NOT
-/// `rig.robot.joint_positions` -- that field is frozen at the barn-in seed
-/// pose and never updated after `BipedRig::new`, which is fine for
-/// [`posture`]'s reference but silently zeroes a safety barrier's notion of
-/// "how close to the limit" if reused here).
+/// are this tick's LIVE actuated-row position/velocity, read through
+/// `rig.model.q_idx`/`v_idx` off misarta's raw state.
+///
+/// The older wording here said `rig.robot.joint_positions` is "frozen at the
+/// burn-in seed pose and never updated" -- **that is wrong, and it cost a
+/// session's worth of chasing a bug that was not there.** `BipedRig::new`
+/// writes it once at the end of the settle, but the plant step also writes it
+/// every tick (`MujocoSim::step_n_frames` takes `&mut robot`), so it does
+/// track the joint. Both readings are live; use whichever the surrounding
+/// code already uses.
 pub fn joint_limits(
     qddot: &Affine,
     actuated: &[(usize, usize)],
