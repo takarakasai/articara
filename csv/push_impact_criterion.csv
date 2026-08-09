@@ -1,0 +1,15 @@
+cell,stance,budget_ns,adapt0 k2.0 safe,adapt0 k2.0 fail,adapt0 k2.0 speckle
+fwd ds,DS,1.81,1.200,,0/0
+back ds,DS,1.81,0.750,,2/9
+left ds,DS,0.70,0.650,0.800,1/2
+right ds,DS,0.70,0.950,1.000,0/0
+diag ds,DS,1.00,0.550,0.750,2/3
+fwd ss,SS/R,1.81,1.200,,0/0
+back ss,SS/R,1.81,0.900,0.950,0/0
+left ss,SS/R,0.70,0.600,1.100,2/9
+right ss,SS/R,0.70,0.600,0.650,0/0
+diag ss,SS/R,1.00,0.700,,6/10
+left ds (mirror),DS,0.70,0.950,1.000,0/0
+left ss (mirror),SS/L,0.70,0.450,0.650,2/3
+right ds (mirror),DS,0.70,0.450,0.800,5/6
+right ss (mirror),SS/L,0.70,0.550,0.850,2/5
