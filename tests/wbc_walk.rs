@@ -5060,6 +5060,169 @@ fn namiashi_staircase_5cm_yaw_regulation() {
     }
 }
 
+/// Does a per-leg NOMINAL STANCE height unblock the 5 cm staircase?
+///
+/// The one thing about the leg geometry that no experiment in this file had
+/// ever varied: `auto_detect_kinematics_config` hands all four legs a single
+/// shared `nominal_foot_body`, so the whole gait is built on a flat-ground
+/// assumption even in the runs that fed it exact terrain knowledge. On a
+/// staircase the front and rear legs are on different steps for essentially
+/// the entire climb.
+///
+/// Everything else measured so far plateaus at 1.40-1.61 m: blind swing
+/// clearance, three reflex designs, the oracle touchdown footplan (1.609 m
+/// against a 1.579 m bare baseline), and yaw regulation both alone and
+/// combined with the footplan. The riser is at 1.5 m, so that plateau is
+/// "cannot commit to step 1". This asks whether the support pattern being
+/// flat is why.
+///
+/// Swept against the footplan rather than instead of it: the two act on
+/// opposite halves of the same stride (stance geometry vs swing touchdown)
+/// and the interesting cell is whether they only pay off together.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_staircase_5cm_terrain_stance() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    let top_start_x = stairs.top_platform_start_x();
+
+    for footplan in [None, Some(TerrainFootplanCfg { clearance_m: 0.02, horizontal_margin_m: 0.05 })] {
+        let tag = if footplan.is_some() { "+footplan" } else { "bare     " };
+        // gain 0.0 first: an exact no-op, so each column carries its own
+        // baseline instead of borrowing one from another test's run.
+        for gain in [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0] {
+            let params = WbcParams {
+                actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+                host_rate_hz: Some(400.0),
+                dt: 0.0005,
+                cmd_vx: cmd,
+                total_time_s: 20.0,
+                wbc_real_inertia: true,
+                staircase: Some(stairs),
+                terrain_footplan: footplan,
+                terrain_stance: if gain == 0.0 {
+                    None
+                } else {
+                    Some(TerrainStanceCfg { gain, max_offset_m: 0.10 })
+                },
+                ..namiashi_tuned_params(I)
+            };
+            let Some(samples) = run_wbc_sim(params) else { return };
+            let upright = samples
+                .iter()
+                .position(|s| s.body_z < TRUNK_Z_FALL_THRESHOLD_M)
+                .unwrap_or(samples.len());
+            let fell = upright < samples.len();
+            // Progress over the UPRIGHT window. A whole-run max_x reports a
+            // numerical blow-up as progress -- the first pass of this sweep
+            // printed 16.190 m for one cell, well past the 11.5 m end of the
+            // terrain, from the robot being flung rather than climbing.
+            let walking = &samples[..upright.max(1)];
+            let max_x = walking.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+            let max_z = walking.iter().map(|s| s.body_z).fold(f64::NEG_INFINITY, f64::max);
+            let raw_max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+            let final_s = samples.last().unwrap();
+            let reached_top =
+                final_s.body_x >= top_start_x && final_s.body_z > TRUNK_Z_FALL_THRESHOLD_M;
+            // ~3.8 steps of rise per 0.19 m of trunk lift; printed so the
+            // headline number is "how far up", not just "how far along".
+            let steps = ((max_z - samples[0].body_z) / 0.05).max(0.0);
+            // Past the far end of the built terrain there is nothing to walk
+            // on, so any x beyond it is the solver launching the robot, not
+            // progress -- and it can do that WITHOUT tripping the fall
+            // threshold (one cell here holds trunk z high all the way to
+            // x=12 m). Called out explicitly rather than left for the reader
+            // to notice the implausible number.
+            let terrain_end_x = top_start_x + stairs.top_platform_m;
+            let diverged = raw_max_x > terrain_end_x;
+            eprintln!(
+                "[stance {tag} gain={gain:.1}] upright: max_x={max_x:.3}m max_z={max_z:.3}m \
+                 (~{steps:.1} steps)  fell={fell}  raw_max_x={raw_max_x:.3}m  \
+                 reached_top={reached_top}{}",
+                if diverged { "  <- DIVERGED (past terrain end)" } else { "" },
+            );
+        }
+    }
+}
+
+/// Is `TerrainStanceCfg`'s gain=1.5 optimum a basin or a spike?
+///
+/// `namiashi_staircase_5cm_terrain_stance` found 1.5 reaching 1.915 m and
+/// ~3.8 steps upright, against 1.470 m for the same run with the correction
+/// off -- the first thing in this file to move that plateau without either
+/// falling or diverging. But both neighbours in that sweep are worse (1.0
+/// climbs 2.8 steps, 2.0 falls), and this investigation has already been
+/// fooled once: `namiashi_staircase_5cm_hip_gate_search` converged on a
+/// point that collapsed under a 4th-decimal-digit rounding of its own
+/// parameters. A peak that narrow is a property of one deterministic
+/// trajectory, not of the robot.
+///
+/// So: fine gain steps either side, then the same timestep change that
+/// exposed the hip-gate result as an artifact.
+#[test]
+#[ignore = "sweep -- run with --ignored"]
+fn namiashi_staircase_5cm_terrain_stance_robustness() {
+    const I: usize = 0; // Trot
+    let (_, _period, .., cmd) = NAMIASHI_TUNED[I];
+    let stairs = StaircaseCfg {
+        rise_m: 0.05,
+        run_m: 0.20,
+        n_steps: 10,
+        approach_m: 1.5,
+        top_platform_m: 8.0,
+        half_width_m: 6.0,
+    };
+    let top_start_x = stairs.top_platform_start_x();
+
+    let run = |gain: f64, dt: f64, label: &str| {
+        let params = WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt,
+            cmd_vx: cmd,
+            total_time_s: 20.0,
+            wbc_real_inertia: true,
+            staircase: Some(stairs),
+            terrain_stance: Some(TerrainStanceCfg { gain, max_offset_m: 0.10 }),
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        let upright = samples
+            .iter()
+            .position(|s| s.body_z < TRUNK_Z_FALL_THRESHOLD_M)
+            .unwrap_or(samples.len());
+        let fell = upright < samples.len();
+        let walking = &samples[..upright.max(1)];
+        let max_x = walking.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+        let max_z = walking.iter().map(|s| s.body_z).fold(f64::NEG_INFINITY, f64::max);
+        let steps = ((max_z - samples[0].body_z) / 0.05).max(0.0);
+        let raw_max_x = samples.iter().map(|s| s.body_x).fold(f64::NEG_INFINITY, f64::max);
+        let diverged = raw_max_x > top_start_x + stairs.top_platform_m;
+        eprintln!(
+            "[stance_rob {label:>12} gain={gain:.3} dt={dt:.5}] max_x={max_x:.3}m \
+             (~{steps:.1} steps)  fell={fell}{}",
+            if diverged { "  <- DIVERGED" } else { "" },
+        );
+    };
+
+    eprintln!("[stance_rob] -- gain sweep either side of 1.5 --");
+    for gain in [1.30, 1.40, 1.45, 1.50, 1.55, 1.60, 1.70] {
+        run(gain, 0.0005, "gain");
+    }
+    eprintln!("[stance_rob] -- timestep change at the optimum --");
+    for scale in [0.8, 1.25] {
+        run(1.50, 0.0005 * scale, "dt-change");
+    }
+}
+
 /// Does the swing-collision reflex get the 5 cm staircase past where blind
 /// clearance alone could not?
 ///

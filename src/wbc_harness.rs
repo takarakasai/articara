@@ -409,6 +409,42 @@ pub struct TerrainFootplanCfg {
     pub horizontal_margin_m: f64,
 }
 
+/// Per-leg NOMINAL STANCE height, terrain-informed -- the support-side
+/// counterpart to [`TerrainFootplanCfg`]'s swing-side touchdown height.
+///
+/// `auto_detect_kinematics_config` gives all four legs one shared
+/// `nominal_foot_body` offset, and `run_wbc_sim` then shifts all four by the
+/// same `trunk_drop_m`. That is a flat-ground assumption baked into the leg
+/// geometry itself: on a staircase the front and rear legs are on different
+/// steps for essentially the whole climb, so a single shared support height
+/// asks the front legs to stand as far below the trunk as the rear ones
+/// while the ground under them is 5-10 cm higher.
+///
+/// Distinct from the footplan in what it moves. The footplan retargets a
+/// SWING foot's touchdown; this moves the stance geometry the whole gait is
+/// built around -- `Footstep`'s lift-off/touch-down pair is centred on
+/// `nominal_foot_body`, so raising one leg's nominal raises where that leg
+/// stands, steps from, and returns to. Applied as a difference from the
+/// four-leg mean rather than an absolute height, so the body's own standing
+/// height is untouched (the mean offset is zero by construction) and only
+/// the front-to-rear support pattern tilts to match the stairs. Reduces to
+/// an exact no-op on flat ground, where every leg's terrain height is equal.
+///
+/// `GaitController::set_kinematics`'s own doc names `nominal_foot_body` as a
+/// field that IS safe to change between calls (unlike joint names, which
+/// would invalidate cached indices), so this is a supported runtime edit
+/// rather than a reach around the controller.
+#[derive(Clone, Copy, Debug)]
+pub struct TerrainStanceCfg {
+    /// Fraction of the measured terrain difference actually applied. 1.0
+    /// levels the support pattern to the stairs exactly; lower values ask
+    /// how much of the correction is needed, and 0.0 is a no-op.
+    pub gain: f64,
+    /// Clamp on the per-leg offset, metres, in case a leg's nominal x lands
+    /// somewhere with a large height jump.
+    pub max_offset_m: f64,
+}
+
 /// See `WbcParams::hip_bias_gate`'s doc comment.
 #[derive(Clone, Copy, Debug)]
 pub struct HipBiasGateCfg {
@@ -627,6 +663,9 @@ pub struct WbcParams {
     /// an idealized stand-in for a real height-map. `None` (default) is the
     /// terrain-blind behaviour every other test in this file assumes.
     pub terrain_footplan: Option<TerrainFootplanCfg>,
+    /// See [`TerrainStanceCfg`]. `None` leaves all four legs sharing one
+    /// nominal stance height, which is what every other test here uses.
+    pub terrain_stance: Option<TerrainStanceCfg>,
     /// Per-block state cost for the 24-state MPC: `[v_com, omega, base_pos,
     /// euler, joint_q]`, applied over `q_diag`'s
     /// `[0..3, 3..6, 6..9, 9..12, 12..24]`.
@@ -770,6 +809,7 @@ impl WbcParams {
             staircase: None,
             contact_reflex: None,
             terrain_footplan: None,
+            terrain_stance: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -831,6 +871,7 @@ impl WbcParams {
             staircase: None,
             contact_reflex: None,
             terrain_footplan: None,
+            terrain_stance: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -1083,6 +1124,16 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut live_gait = cfg.gait_type;
     #[cfg(feature = "mujoco-viewer")]
     let mut live_swing_height_m = cfg.swing_height_m;
+    // Flat-ground baseline for `TerrainStanceCfg`: the shared nominal the
+    // four legs were built with, before any per-leg terrain offset. Captured
+    // rather than recomputed so the offset is always measured from one fixed
+    // reference and cannot integrate drift across ticks.
+    let base_nominal_z: [f64; 4] = [
+        kin.fl.nominal_foot_body.z,
+        kin.fr.nominal_foot_body.z,
+        kin.rl.nominal_foot_body.z,
+        kin.rr.nominal_foot_body.z,
+    ];
     let mut gc = GaitController::build(&robot, kin.clone(), cfg, params.gait_mode)
         .expect("GaitController::build");
     if params.mpc_predicted_footstep {
@@ -1648,6 +1699,42 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 .contact_reflex
                 .is_some_and(|cfg| cfg.freeze_phase_during_reflex)
                 && reflex_active.iter().any(|&a| a);
+            // Per-leg nominal stance height, terrain-informed. Must land
+            // before `gc.tick()`: the tick builds this cycle's Footstep
+            // around `nominal_foot_body`, so a change applied afterwards
+            // would not reach the plan it is meant to shape.
+            if let (Some(cfg_st), Some(stairs)) = (params.terrain_stance, params.staircase) {
+                if k >= burn_in_steps {
+                    let body_pos_world = robot.base_transform.translation.vector;
+                    let (_, _, yaw_now) = robot.base_transform.rotation.euler_angles();
+                    let (cy, sy) = (yaw_now.cos(), yaw_now.sin());
+                    let mut terrain_z = [0.0_f64; 4];
+                    for (slot, leg) in gc.kinematics().legs().iter().enumerate() {
+                        // The leg's nominal stance point in world x, from the
+                        // *base* nominal (not the currently-offset one) so
+                        // this tick's query cannot be biased by last tick's
+                        // own correction.
+                        let n = leg.nominal_foot_body;
+                        let world_x = body_pos_world.x + cy * n.x - sy * n.y;
+                        terrain_z[slot] = stairs.height_at(world_x);
+                    }
+                    let mean = terrain_z.iter().sum::<f64>() / 4.0;
+                    let mut kin_now = gc.kinematics().clone();
+                    for (slot, leg) in
+                        [&mut kin_now.fl, &mut kin_now.fr, &mut kin_now.rl, &mut kin_now.rr]
+                            .into_iter()
+                            .enumerate()
+                    {
+                        let off = (cfg_st.gain * (terrain_z[slot] - mean))
+                            .clamp(-cfg_st.max_offset_m, cfg_st.max_offset_m);
+                        // Positive terrain difference = ground under this leg
+                        // is higher than the four-leg mean = the foot sits
+                        // LESS far below the trunk, i.e. nominal z rises.
+                        leg.nominal_foot_body.z = base_nominal_z[slot] + off;
+                    }
+                    gc.set_kinematics(kin_now);
+                }
+            }
             let gait_dt = if phase_frozen { 0.0 } else { host_dt };
             let (out, targets, torque_ff) = gc.tick(gait_dt);
             let mut targets = targets;
