@@ -1391,7 +1391,7 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // egui's key state and writes `live` -- it never touches sim
             // state, so the cheaper detached path applies directly.
             use crate::teleop::{
-                poll_cmd, poll_gait, poll_swing_height_delta, SpeedEnvelope,
+                draw_hud, poll_cmd, poll_gait, poll_swing_height_delta, SpeedEnvelope,
                 SWING_HEIGHT_RANGE_M,
             };
             v.add_ui_callback_detached(move |ctx| {
@@ -1407,7 +1407,9 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 // Envelope follows the *requested* gait, so switching to
                 // Crawl immediately re-scales what a full-deflection key
                 // means rather than leaving Trot's ceiling in place.
-                st.cmd = poll_cmd(ctx, SpeedEnvelope::for_gait(st.gait));
+                let env = SpeedEnvelope::for_gait(st.gait);
+                st.cmd = poll_cmd(ctx, env);
+                draw_hud(ctx, &st, env, "WBC / MPC", true);
             });
         }
         Some(v)
@@ -2264,6 +2266,25 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             #[cfg(feature = "mujoco-viewer")]
             if let Some(v) = &mut viewer {
                 if k % render_decim == 0 {
+                    // Telemetry for the HUD, at render cadence rather than
+                    // every physics tick -- nothing reads it faster. Body
+                    // frame, so `vx meas` is directly comparable to the
+                    // `vx cmd` shown beside it (a turned robot's world-x
+                    // speed is not its forward speed).
+                    if let Some(live) = &params.live_teleop {
+                        let p = robot.base_transform.translation;
+                        let v_w = sim
+                            .body_world_linear_velocity(&robot.root_link)
+                            .unwrap_or([0.0; 3]);
+                        let v_b = robot
+                            .base_transform
+                            .rotation
+                            .inverse_transform_vector(&Vector3::new(v_w[0], v_w[1], v_w[2]));
+                        let mut st = live.lock().unwrap();
+                        st.body_x_m = p.x;
+                        st.body_z_m = p.z;
+                        st.measured_vx_mps = v_b.x;
+                    }
                     v.sync_data(sim.mj_data_mut());
                     let _ = v.render();
                 }

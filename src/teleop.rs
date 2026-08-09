@@ -52,6 +52,18 @@ pub struct LiveTeleop {
     /// would be the more surprising behaviour. The tuned values are within
     /// 5 mm of each other anyway (0.035-0.040 m).
     pub swing_height_m: f64,
+
+    // ── Telemetry: written by the physics loop, read by the HUD. These
+    // flow the OPPOSITE way from the fields above -- the key callback
+    // must never write them, the loop must never read them as input.
+    /// Trunk world x, metres. On the staircase this is the progress
+    /// readout: risers start at 1.5 m, treads are 0.20 m apart.
+    pub body_x_m: f64,
+    /// Trunk world z, metres.
+    pub body_z_m: f64,
+    /// Measured world-frame forward speed, m/s -- what the robot is
+    /// actually doing, against the `cmd[0]` it was asked for.
+    pub measured_vx_mps: f64,
 }
 
 impl LiveTeleop {
@@ -61,6 +73,9 @@ impl LiveTeleop {
             cmd: [0.0; 3],
             gait,
             swing_height_m: crate::wbc_harness::namiashi_tuned_swing_height_m(gait),
+            body_x_m: 0.0,
+            body_z_m: 0.0,
+            measured_vx_mps: 0.0,
         }
     }
 }
@@ -165,4 +180,69 @@ pub fn poll_gait(ctx: &egui::Context) -> Option<GaitType> {
             None
         }
     })
+}
+
+/// Always-on overlay of everything the keys control, plus what the robot
+/// is actually doing about it. Anchored top-right so it clears
+/// `MjViewer`'s own left side panel.
+///
+/// `gaited` is false for a learned policy: it has no gait schedule and no
+/// swing-height parameter, so showing either would be showing a knob that
+/// does nothing. Drawn from the shared [`LiveTeleop`] alone -- no MjData
+/// needed, so this works from the cheap detached UI callback.
+pub fn draw_hud(
+    ctx: &egui::Context,
+    st: &LiveTeleop,
+    env: SpeedEnvelope,
+    controller: &str,
+    gaited: bool,
+) {
+    let fast = ctx.input(|r| r.modifiers.shift);
+    egui::Window::new("teleop_hud")
+        .title_bar(false)
+        .resizable(false)
+        .movable(false)
+        .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
+        .show(ctx, |ui| {
+            ui.label(egui::RichText::new(controller).strong());
+            ui.separator();
+
+            let row = |ui: &mut egui::Ui, k: &str, v: String| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("{k:<10}")).monospace().weak());
+                    ui.label(egui::RichText::new(v).monospace());
+                });
+            };
+
+            if gaited {
+                row(ui, "gait", format!("{:?}   [1/2/3]", st.gait));
+                row(
+                    ui,
+                    "swing h",
+                    format!(
+                        "{:.3} m (tuned {:.3})   [R/F]",
+                        st.swing_height_m,
+                        crate::wbc_harness::namiashi_tuned_swing_height_m(st.gait),
+                    ),
+                );
+                ui.separator();
+            }
+
+            row(
+                ui,
+                "speed",
+                format!(
+                    "{}  (Shift for full)",
+                    if fast { "FULL" } else { "half" },
+                ),
+            );
+            row(ui, "vx cmd", format!("{:+.3} / {:.3} m/s   [W/S]", st.cmd[0], env.vx));
+            row(ui, "vy cmd", format!("{:+.3} / {:.3} m/s   [Q/E]", st.cmd[1], env.vy));
+            row(ui, "wz cmd", format!("{:+.3} / {:.3} rad/s [A/D]", st.cmd[2], env.wz));
+
+            ui.separator();
+            row(ui, "vx meas", format!("{:+.3} m/s", st.measured_vx_mps));
+            row(ui, "trunk x", format!("{:+.3} m", st.body_x_m));
+            row(ui, "trunk z", format!("{:+.3} m", st.body_z_m));
+        });
 }

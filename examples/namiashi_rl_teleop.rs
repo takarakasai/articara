@@ -162,17 +162,26 @@ fn main() {
 
     // ── Live teleop command + viewer. Bindings come from articara::teleop
     // so this and namiashi_wbc_teleop.rs cannot drift apart. ────────────
-    let live = Arc::new(Mutex::new([vx0, vy0, wz0]));
+    // A learned policy has no gait to switch, so unlike the WBC demo the
+    // envelope is fixed -- namiashi_rl's own training command range
+    // (namiashi_rl/env_cfg.py), which is Trot-like.
+    const ENV: articara::teleop::SpeedEnvelope =
+        articara::teleop::SpeedEnvelope { vx: 0.8, vy: 0.3, wz: 1.0 };
+    let live = Arc::new(Mutex::new(articara::teleop::LiveTeleop {
+        cmd: [vx0, vy0, wz0],
+        ..articara::teleop::LiveTeleop::new(quadruped_gait::GaitType::Trot)
+    }));
     let mut viewer = mujoco::viewer::MjViewer::launch_passive(sim.mj_model().clone(), 0).expect("launch MjViewer");
     {
-        use articara::teleop::{poll_cmd, SpeedEnvelope};
-        // A learned policy has no gait to switch, so unlike the WBC demo
-        // the envelope is fixed -- namiashi_rl's own training command
-        // range (namiashi_rl/env_cfg.py), which is Trot-like.
-        let env = SpeedEnvelope { vx: 0.8, vy: 0.3, wz: 1.0 };
+        use articara::teleop::{draw_hud, poll_cmd};
         let live = live.clone();
         viewer.add_ui_callback_detached(move |ctx| {
-            *live.lock().unwrap() = poll_cmd(ctx, env);
+            let mut st = live.lock().unwrap();
+            st.cmd = poll_cmd(ctx, ENV);
+            // `gaited: false` -- no gait row, no swing-height row: the
+            // policy has neither knob, and showing a dead control would
+            // misrepresent what this controller actually exposes.
+            draw_hud(ctx, &st, ENV, "RL policy (ONNX)", false);
         });
     }
     eprintln!(
@@ -192,7 +201,7 @@ fn main() {
             let q_wb = sim.body_world_orientation(&robot.root_link).expect("root quat");
             let ang_vel_b = q_wb.inverse_transform_vector(&Vector3::new(ang_vel_w[0], ang_vel_w[1], ang_vel_w[2]));
             let grav_b = q_wb.inverse_transform_vector(&Vector3::new(0.0, 0.0, -1.0));
-            let cmd = *live.lock().unwrap();
+            let cmd = live.lock().unwrap().cmd;
 
             let mut obs = [0.0f32; 45];
             obs[0] = ang_vel_b.x as f32;
@@ -238,6 +247,23 @@ fn main() {
         // ~60 Hz render/sync cadence, independent of the finer physics dt.
         let render_decim = ((1.0 / 60.0) / dt).round().max(1.0) as u64;
         if k % render_decim == 0 {
+            // HUD telemetry, body frame so `vx meas` is comparable to the
+            // `vx cmd` shown beside it. Same cadence/contract as the WBC
+            // demo's (see run_wbc_sim's live_viewer block).
+            {
+                let p = robot.base_transform.translation;
+                let v_w = sim
+                    .body_world_linear_velocity(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
+                let v_b = robot
+                    .base_transform
+                    .rotation
+                    .inverse_transform_vector(&Vector3::new(v_w[0], v_w[1], v_w[2]));
+                let mut st = live.lock().unwrap();
+                st.body_x_m = p.x;
+                st.body_z_m = p.z;
+                st.measured_vx_mps = v_b.x;
+            }
             viewer.sync_data(sim.mj_data_mut());
             let _ = viewer.render();
             if !viewer.running() {
