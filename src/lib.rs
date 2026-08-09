@@ -31,6 +31,10 @@ pub mod usd_import;
 pub mod wbc_pipeline;
 #[cfg(feature = "mujoco")]
 pub mod wbc_harness;
+/// Shared keyboard bindings for the interactive teleop demos
+/// (`examples/namiashi_wbc_teleop.rs`, `examples/namiashi_rl_teleop.rs`).
+#[cfg(feature = "mujoco-viewer")]
+pub mod teleop;
 
 /// Live gait viewer: subscribe to a `go2-gait-runner --viz` Zenoh stream and
 /// drive the loaded model in real time. See [`viz_feed`].

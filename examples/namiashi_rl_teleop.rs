@@ -34,12 +34,14 @@
 //!     cargo run --release --no-default-features --features "mujoco,mujoco-viewer,onnx" \
 //!     --example namiashi_rl_teleop -- --onnx policy.onnx [--vx 0.8] [--vy 0] [--wz 0]
 //!
-//! Keys (identical to `namiashi_staircase_5cm_teleop` and
-//! `sim2sim_namiashi_mujoco.py --interactive`):
-//!   W/S or Up/Down          -- forward/back speed (vx)
-//!   A/D or Left/Right       -- turn (wz)
-//!   Q/E or PageUp/PageDown  -- strafe (vy)
-//!   Space                   -- zero all three
+//! Keys: see `articara::teleop`'s module docs, shared verbatim with
+//! `namiashi_wbc_teleop.rs` -- W/S (or arrows) drive, A/D turn, Q/E (or
+//! PgUp/PgDn) strafe, Shift for full speed instead of half. Holding a key
+//! moves, releasing it stops. The gait and swing-height keys (1/2/3, R/F)
+//! do nothing here: a learned policy has no gait schedule to switch and no
+//! swing-height parameter to set -- it decides foot clearance itself, per
+//! step, from the observation. That contrast is itself worth feeling
+//! directly against the WBC/MPC demo.
 
 #[cfg(all(feature = "mujoco", feature = "mujoco-viewer", feature = "onnx"))]
 fn main() {
@@ -158,42 +160,25 @@ fn main() {
         sim.step(&mut robot, dt, true);
     }
 
-    // ── Live teleop command + viewer, identical mechanism/keybindings to
-    // namiashi_staircase_5cm_teleop (tests/wbc_walk.rs). ────────────────
+    // ── Live teleop command + viewer. Bindings come from articara::teleop
+    // so this and namiashi_wbc_teleop.rs cannot drift apart. ────────────
     let live = Arc::new(Mutex::new([vx0, vy0, wz0]));
     let mut viewer = mujoco::viewer::MjViewer::launch_passive(sim.mj_model().clone(), 0).expect("launch MjViewer");
     {
-        use mujoco::viewer::egui;
-        const STEP: f64 = 0.02;
-        const VX_MAX: f64 = 0.8;
-        const VY_MAX: f64 = 0.3;
-        const WZ_MAX: f64 = 1.0;
+        use articara::teleop::{poll_cmd, SpeedEnvelope};
+        // A learned policy has no gait to switch, so unlike the WBC demo
+        // the envelope is fixed -- namiashi_rl's own training command
+        // range (namiashi_rl/env_cfg.py), which is Trot-like.
+        let env = SpeedEnvelope { vx: 0.8, vy: 0.3, wz: 1.0 };
         let live = live.clone();
         viewer.add_ui_callback_detached(move |ctx| {
-            let (up, down, left, right, strafe_l, strafe_r, reset) = ctx.input(|r| {
-                (
-                    r.key_down(egui::Key::W) || r.key_down(egui::Key::ArrowUp),
-                    r.key_down(egui::Key::S) || r.key_down(egui::Key::ArrowDown),
-                    r.key_down(egui::Key::A) || r.key_down(egui::Key::ArrowLeft),
-                    r.key_down(egui::Key::D) || r.key_down(egui::Key::ArrowRight),
-                    r.key_down(egui::Key::Q) || r.key_down(egui::Key::PageUp),
-                    r.key_down(egui::Key::E) || r.key_down(egui::Key::PageDown),
-                    r.key_pressed(egui::Key::Space),
-                )
-            });
-            let mut cmd = live.lock().unwrap();
-            if reset {
-                *cmd = [0.0; 3];
-                return;
-            }
-            if up { cmd[0] = (cmd[0] + STEP).min(VX_MAX); }
-            if down { cmd[0] = (cmd[0] - STEP).max(-VX_MAX); }
-            if left { cmd[2] = (cmd[2] + STEP).min(WZ_MAX); }
-            if right { cmd[2] = (cmd[2] - STEP).max(-WZ_MAX); }
-            if strafe_l { cmd[1] = (cmd[1] + STEP).min(VY_MAX); }
-            if strafe_r { cmd[1] = (cmd[1] - STEP).max(-VY_MAX); }
+            *live.lock().unwrap() = poll_cmd(ctx, env);
         });
     }
+    eprintln!(
+        "[teleop] W/S drive, A/D turn, Q/E strafe (arrows + PgUp/PgDn too), \
+         Shift = full speed. Release to stop."
+    );
 
     // ── Main loop: ONNX inference every `decim` physics ticks, held
     // between (matches sim2sim_namiashi_mujoco.py's own decimation). ───
