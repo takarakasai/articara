@@ -531,9 +531,11 @@ ROBOT=g1 KNEE=0.70 HIP_PITCH=-0.325 ANKLE_PITCH=-0.375 \
 > `urdf/kyo46rs.urdf` を訂正済み)。RS00 単体(連続 5.0 N·m / ピーク
 > 14.0 N·m)は 2.04 N·m の要求に対し連続定格の **41%**、しかも旧v2の
 > 2 基合計(連続 3.6 / ピーク 12.0)を単体で上回る。**ブースタは削除、
-> 脚もむしろ軽くなった**(thigh+shank 0.926→0.722 kg/脚)。次の一手は
-> `articara/doc/kyo46rs_next_improvements_plan.md` §1.1 を参照
-> (hip_roll も同じ発想 ── ブースタ追加ではなく EL05 → RS00 の単体置き換え)。
+> 脚もむしろ軽くなった**(thigh+shank 0.926→0.722 kg/脚)。同じ発想
+> (ブースタ追加ではなく EL05 → RS00 の単体置き換え)を hip_roll にも適用
+> 済み(v4、§10.11 のトルク要求 4.56 N·m がピーク比 76%→33%、連続定格比
+> 253%→91% に改善)。詳細は
+> `articara/doc/kyo46rs_next_improvements_plan.md` §1.1 を参照。
 
 ---
 
