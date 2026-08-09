@@ -1391,7 +1391,8 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // egui's key state and writes `live` -- it never touches sim
             // state, so the cheaper detached path applies directly.
             use crate::teleop::{
-                draw_hud, poll_cmd, poll_gait, poll_swing_height_delta, SpeedEnvelope,
+                draw_hud, poll_cmd, poll_friction_deltas, poll_gait,
+                poll_swing_height_delta, SpeedEnvelope, FRICTION_RANGE,
                 SWING_HEIGHT_RANGE_M,
             };
             v.add_ui_callback_detached(move |ctx| {
@@ -1403,6 +1404,15 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 if dh != 0.0 {
                     st.swing_height_m = (st.swing_height_m + dh)
                         .clamp(SWING_HEIGHT_RANGE_M.0, SWING_HEIGHT_RANGE_M.1);
+                }
+                let (dg, dc) = poll_friction_deltas(ctx);
+                if dg != 0.0 {
+                    st.ground_mu =
+                        (st.ground_mu + dg).clamp(FRICTION_RANGE.0, FRICTION_RANGE.1);
+                }
+                if dc != 0.0 {
+                    st.controller_mu =
+                        (st.controller_mu + dc).clamp(FRICTION_RANGE.0, FRICTION_RANGE.1);
                 }
                 // Envelope follows the *requested* gait, so switching to
                 // Crawl immediately re-scales what a full-deflection key
@@ -1427,6 +1437,20 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let wall_start = std::time::Instant::now();
     #[cfg(feature = "mujoco-viewer")]
     let mut fps_meter = crate::teleop::FpsMeter::new();
+    // Seed the live friction knobs from what the sim and the controller
+    // were actually built with, so the HUD opens showing the truth rather
+    // than a guess, and the first keypress steps off the real value.
+    #[cfg(feature = "mujoco-viewer")]
+    let (mut live_ground_mu, mut live_controller_mu) = {
+        let g = sim.slide_friction();
+        let c = wbc_pipeline.friction_mu;
+        if let Some(live) = &params.live_teleop {
+            let mut st = live.lock().unwrap();
+            st.ground_mu = g;
+            st.controller_mu = c;
+        }
+        (g, c)
+    };
 
     for k in 0..n_steps {
         let t = k as f64 * params.dt;
@@ -1511,6 +1535,25 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                             st.gait,
                         );
                     }
+                }
+                if (st.ground_mu - live_ground_mu).abs() > 1e-9 {
+                    sim.set_slide_friction_all(st.ground_mu);
+                    live_ground_mu = st.ground_mu;
+                    eprintln!("[teleop] ground mu -> {:.2}", st.ground_mu);
+                }
+                if (st.controller_mu - live_controller_mu).abs() > 1e-9 {
+                    // Both consumers of the belief: the WBC QP's friction
+                    // cone (what actually clips the commanded tangential
+                    // force) and the MPC's own force planning. Setting one
+                    // and not the other would leave the plan and the
+                    // solver disagreeing about the same ground.
+                    wbc_pipeline.friction_mu = st.controller_mu;
+                    if let Some(mut mpc) = gc.srbd_mpc_config().cloned() {
+                        mpc.friction_mu = st.controller_mu;
+                        gc.set_srbd_mpc_config(mpc);
+                    }
+                    live_controller_mu = st.controller_mu;
+                    eprintln!("[teleop] controller mu -> {:.2}", st.controller_mu);
                 }
             }
         }

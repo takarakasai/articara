@@ -23,7 +23,10 @@
 //! Keys: see `articara::teleop`'s module docs -- W/S (or arrows) drive,
 //! A/D turn, Q/E (or PgUp/PgDn) strafe, Shift for full speed instead of
 //! half, 1/2/3 switch between Crawl / Walk / Trot, and R/F raise/lower
-//! the swing foot in 5 mm steps. Holding a key moves, releasing it stops.
+//! the swing foot in 5 mm steps. O/L change the ground's friction and
+//! P/. change what the controller believes that friction is (they were
+//! found to disagree: 0.5 assumed against 0.7 simulated). Holding a key
+//! moves, releasing it stops.
 //!
 //! Each gait keeps its own tuned speed envelope (Crawl 0.17, Walk 0.33,
 //! Trot 0.80 m/s), since each is bounded by its own
@@ -72,8 +75,8 @@ fn main() {
     };
     eprintln!(
         "[teleop] W/S drive, A/D turn, Q/E strafe (arrows + PgUp/PgDn too), \
-         Shift = full speed, 1/2/3 = Crawl/Walk/Trot, R/F = swing height \
-         +/-5mm. Release to stop."
+         Shift = full speed, 1/2/3 = Crawl/Walk/Trot, R/F = swing height, \
+         O/L = ground mu, P/. = controller mu. Release to stop."
     );
     run_wbc_sim(params);
 }

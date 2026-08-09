@@ -37,10 +37,14 @@
 //! Keys: see `articara::teleop`'s module docs, shared verbatim with
 //! `namiashi_wbc_teleop.rs` -- W/S (or arrows) drive, A/D turn, Q/E (or
 //! PgUp/PgDn) strafe, Shift for full speed instead of half. Holding a key
-//! moves, releasing it stops. The gait and swing-height keys (1/2/3, R/F)
-//! do nothing here: a learned policy has no gait schedule to switch and no
-//! swing-height parameter to set -- it decides foot clearance itself, per
-//! step, from the observation. That contrast is itself worth feeling
+//! moves, releasing it stops. O/L change the ground's friction, which is
+//! physics and so applies here exactly as it does to the WBC demo.
+//!
+//! The gait, swing-height and controller-mu keys (1/2/3, R/F, P/.) do
+//! nothing here: a learned policy has no gait schedule to switch, no
+//! swing-height parameter to set, and no friction cone to inform -- it
+//! decides foot clearance itself, per step, from the observation, and
+//! never reasons about mu at all. That contrast is itself worth feeling
 //! directly against the WBC/MPC demo.
 
 #[cfg(all(feature = "mujoco", feature = "mujoco-viewer", feature = "onnx"))]
@@ -169,24 +173,36 @@ fn main() {
         articara::teleop::SpeedEnvelope { vx: 0.8, vy: 0.3, wz: 1.0 };
     let live = Arc::new(Mutex::new(articara::teleop::LiveTeleop {
         cmd: [vx0, vy0, wz0],
+        // Ground friction is physics, so it is seeded and steerable here
+        // exactly as in the WBC demo -- "does the learned policy cope with
+        // a slippery floor" is one of the more interesting things this
+        // pair of demos can be asked side by side.
+        ground_mu: sim.slide_friction(),
         ..articara::teleop::LiveTeleop::new(quadruped_gait::GaitType::Trot)
     }));
+    let mut live_ground_mu = live.lock().unwrap().ground_mu;
     let mut viewer = mujoco::viewer::MjViewer::launch_passive(sim.mj_model().clone(), 0).expect("launch MjViewer");
     {
-        use articara::teleop::{draw_hud, poll_cmd};
+        use articara::teleop::{draw_hud, poll_cmd, poll_friction_deltas, FRICTION_RANGE};
         let live = live.clone();
         viewer.add_ui_callback_detached(move |ctx| {
             let mut st = live.lock().unwrap();
             st.cmd = poll_cmd(ctx, ENV);
-            // `gaited: false` -- no gait row, no swing-height row: the
-            // policy has neither knob, and showing a dead control would
+            let (dg, _) = poll_friction_deltas(ctx);
+            if dg != 0.0 {
+                st.ground_mu = (st.ground_mu + dg).clamp(FRICTION_RANGE.0, FRICTION_RANGE.1);
+            }
+            // `gaited: false` -- no gait row, no swing-height row, no
+            // controller-mu row: the policy has none of those knobs (it
+            // has no friction cone at all -- it never reasons about mu,
+            // it just reacts), and showing a dead control would
             // misrepresent what this controller actually exposes.
             draw_hud(ctx, &st, ENV, "RL policy (ONNX)", false);
         });
     }
     eprintln!(
         "[teleop] W/S drive, A/D turn, Q/E strafe (arrows + PgUp/PgDn too), \
-         Shift = full speed. Release to stop."
+         Shift = full speed, O/L = ground mu. Release to stop."
     );
 
     // ── Main loop: ONNX inference every `decim` physics ticks, held
@@ -195,6 +211,7 @@ fn main() {
     let mut q_des_isaac = DEFAULT_ISAAC;
     let wall_start = std::time::Instant::now();
     let mut fps_meter = articara::teleop::FpsMeter::new();
+    let mut pending_mu: Option<f64> = None;
     let mut k: u64 = 0;
     loop {
         if k % decim as u64 == 0 {
@@ -268,6 +285,16 @@ fn main() {
                 st.sim_time_s = k as f64 * dt;
                 st.wall_time_s = wall_start.elapsed().as_secs_f64();
                 st.fps = fps;
+                if (st.ground_mu - live_ground_mu).abs() > 1e-9 {
+                    live_ground_mu = st.ground_mu;
+                    pending_mu = Some(live_ground_mu);
+                }
+            }
+            if let Some(mu) = pending_mu.take() {
+                // Outside the lock/borrow above: set_slide_friction_all
+                // needs &mut sim, which the telemetry block is holding.
+                sim.set_slide_friction_all(mu);
+                eprintln!("[teleop] ground mu -> {mu:.2}");
             }
             viewer.sync_data(sim.mj_data_mut());
             let _ = viewer.render();

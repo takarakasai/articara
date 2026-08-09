@@ -391,6 +391,53 @@ impl MujocoSim {
         &mut self.data
     }
 
+    /// Sliding-friction coefficient of geom 0, i.e. the value every geom
+    /// shares in practice: the MJCF exporter emits a single
+    /// `<default><geom friction="…"/></default>` and never overrides it
+    /// per-geom, so one read describes the whole model.
+    pub fn slide_friction(&self) -> f64 {
+        let m = self.model.ffi();
+        if m.ngeom < 1 || m.geom_friction.is_null() {
+            return 0.0;
+        }
+        // SAFETY: `geom_friction` is a MuJoCo-owned `ngeom * 3` array of
+        // mjtNum; element 0 is geom 0's sliding coefficient.
+        unsafe { *m.geom_friction }
+    }
+
+    /// Overwrite the sliding-friction coefficient (`geom_friction[0]`) of
+    /// **every** geom, leaving the torsional and rolling components alone.
+    ///
+    /// All-geoms rather than ground-only on purpose: MuJoCo combines a
+    /// contact pair's friction by per-axis `max`, so leaving the feet at
+    /// the old value would pin the contact to whichever side was higher
+    /// and a "lower the friction" request would silently do nothing. The
+    /// exporter already gives every geom one shared value, so this keeps
+    /// that invariant rather than introducing per-geom divergence.
+    ///
+    /// `geom_friction` is one of the model fields MuJoCo documents as safe
+    /// to change between steps — contacts re-read it each step.
+    ///
+    /// Single-threaded use only. This writes a buffer the viewer's own
+    /// `Arc<MjModel>` clone also points at, which is sound here because
+    /// `run_wbc_sim` renders on the same thread it steps on; it would race
+    /// under mujoco-rs's threaded-viewer pattern.
+    pub fn set_slide_friction_all(&mut self, mu: f64) {
+        let m = self.model.ffi();
+        let ngeom = m.ngeom as usize;
+        let p = m.geom_friction;
+        if p.is_null() {
+            return;
+        }
+        for i in 0..ngeom {
+            // SAFETY: as above -- index `3*i` is geom i's sliding
+            // coefficient in a MuJoCo-owned array. `ffi()` borrows the
+            // mjModel struct, not the arrays it points at, so no Rust
+            // reference aliases this write.
+            unsafe { *p.add(i * 3) = mu };
+        }
+    }
+
     /// Create a new MuJoCo simulation instance from the current RobotModel
     /// using the supplied MJCF export options.
     ///
