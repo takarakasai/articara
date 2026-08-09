@@ -471,6 +471,12 @@ PUSH_CONDITIONS = [
                      "ADAPT_TIME_WIDE": "1"}),
     ("timing cut+wide", {"ADAPT_STEP": "0", "K_DCM": "2.0", "ADAPT_TIME": "1",
                          "ADAPT_TIME_CUT": "1", "ADAPT_TIME_WIDE": "1"}),
+    # prox_weight. Measured on the 42-case command bench only (34 -> 37/42,
+    # doc Sec.26.1) -- the disturbance side was an open question. Baseline is
+    # everything else at its own default (ADAPT_STEP=0, K_DCM=2.0, no timing
+    # adaptation), matching "timing off" above so this is comparable to it.
+    ("prox 0", {"ADAPT_STEP": "0", "K_DCM": "2.0", "PROX_WEIGHT": "0"}),
+    ("prox 1e-4", {"ADAPT_STEP": "0", "K_DCM": "2.0", "PROX_WEIGHT": "1e-4"}),
     # Sole width. The ankle-roll actuator is a cylinder of radius 23 mm with
     # its axis fore-aft, so it is ALREADY 46 mm across in y while the sole
     # plate is 38 mm -- widening to 46 adds no swept volume at all. 60 mm is
