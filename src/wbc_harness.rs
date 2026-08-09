@@ -1425,6 +1425,8 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     // no visual benefit.
     let render_decim = ((1.0 / 60.0) / params.dt).round().max(1.0) as usize;
     let wall_start = std::time::Instant::now();
+    #[cfg(feature = "mujoco-viewer")]
+    let mut fps_meter = crate::teleop::FpsMeter::new();
 
     for k in 0..n_steps {
         let t = k as f64 * params.dt;
@@ -2271,6 +2273,7 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     // frame, so `vx meas` is directly comparable to the
                     // `vx cmd` shown beside it (a turned robot's world-x
                     // speed is not its forward speed).
+                    let fps = fps_meter.tick();
                     if let Some(live) = &params.live_teleop {
                         let p = robot.base_transform.translation;
                         let v_w = sim
@@ -2284,6 +2287,9 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         st.body_x_m = p.x;
                         st.body_z_m = p.z;
                         st.measured_vx_mps = v_b.x;
+                        st.sim_time_s = t;
+                        st.wall_time_s = wall_start.elapsed().as_secs_f64();
+                        st.fps = fps;
                     }
                     v.sync_data(sim.mj_data_mut());
                     let _ = v.render();
