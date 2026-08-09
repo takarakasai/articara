@@ -58,7 +58,7 @@ FIRST_SWING = [0, 1]
 
 GIT_REVS = [("v2base", "1d2e446"), ("v2knee", "1d32b17"),
             ("v3", "79f5afd"), ("v4", "a9298c9"), ("v6", "839d69c")]
-CUT_REVS = ["v5only", "v6only", "v6fixed"]
+CUT_REVS = ["v5only", "v6only", "v6fixed", "v6_rec", "v6_rec_free"]
 ORDER = ["v2base", "v2knee", "v3", "v4", "v5only", "v6only", "v6", "v6fixed"]
 
 PATTERNS = {
@@ -125,7 +125,25 @@ def build_urdfs():
         v6f = re.sub(r'(<joint name="%s_shoulder_roll_joint" type=")revolute(">)' % side,
                      r'\1fixed\2', v6f)
 
-    for name, txt, want in (("v5only", v5, 16), ("v6only", v6o, 18), ("v6fixed", v6f, 16)):
+    # The recommendation of Sec.34, as one file: v5's torque halving kept, its
+    # 0.524 kg put back in the torso, the roll axis locked, the sole widened to
+    # 60 mm with the stance left at 100 mm. Emitted here so the push bench and
+    # the demo script can point at a path that regenerates, rather than at
+    # whatever happened to be in a scratch directory.
+    M_LIGHT = ('<mass value="0.7500"/><inertia ixx="0.0034584" ixy="0" ixz="0" '
+               'iyy="0.0032453" iyz="0" izz="0.0018078"/>')
+    M_HEAVY = ('<mass value="1.2740"/><inertia ixx="0.0058747" ixy="0" ixz="0" '
+               'iyy="0.0055126" iyz="0" izz="0.0030709"/>')
+    SOLE38 = '<geometry><box size="0.098 0.038 0.012"/></geometry>'
+    SOLE60 = '<geometry><box size="0.098 0.06 0.012"/></geometry>'
+    rec = v6f.replace(M_LIGHT, M_HEAVY).replace(SOLE38, SOLE60)
+    assert 'mass value="1.2740"' in rec and rec.count(SOLE60) == 4
+    # Same stack with the roll axis left free -- for the guard, where ARM_HOLD
+    # commands the arm instead of the joint being dead (Sec.35.2).
+    rec_free = src.replace(M_LIGHT, M_HEAVY).replace(SOLE38, SOLE60)
+
+    for name, txt, want in (("v5only", v5, 16), ("v6only", v6o, 18), ("v6fixed", v6f, 16),
+                            ("v6_rec", rec, 16), ("v6_rec_free", rec_free, 18)):
         n = txt.count('type="revolute"')
         assert n == want, f"{name}: {n} revolute joints, expected {want}"
         open(f"{WORK}/urdf/kyo46rs_{name}.urdf", "w").write(txt)
