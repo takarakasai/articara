@@ -29,6 +29,8 @@ pub mod usd;
 pub mod usd_import;
 #[cfg(feature = "mujoco")]
 pub mod wbc_pipeline;
+#[cfg(feature = "mujoco")]
+pub mod wbc_harness;
 
 /// Live gait viewer: subscribe to a `go2-gait-runner --viz` Zenoh stream and
 /// drive the loaded model in real time. See [`viz_feed`].

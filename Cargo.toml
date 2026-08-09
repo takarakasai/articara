@@ -129,6 +129,10 @@ name = "namiashi_rl_teleop"
 required-features = ["mujoco-viewer", "onnx"]
 
 [[example]]
+name = "namiashi_wbc_teleop"
+required-features = ["mujoco-viewer"]
+
+[[example]]
 name = "exp_sweep"
 required-features = ["mujoco"]
 
