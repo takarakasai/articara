@@ -90,6 +90,19 @@ fn main() {
             ("right_elbow_joint", elbow),
         ];
     }
+    // Abduct the arms. The v6 shoulder roll exists precisely to open the
+    // forearm <-> hip_roll_block clearance Sec.10.4 measured at 2.5 mm, but
+    // nothing on the control side commands it -- the posture task only holds
+    // it near its seed, so at seed 0 the arm keeps the pitch-only geometry
+    // and now has a free axis to swing further in along. Positive is outward
+    // on the left, negative on the right (mirrored limits in the URDF).
+    // Setting it on a pre-v6 URDF panics in the rig, which is the honest
+    // outcome: the seed cannot be applied to a joint that does not exist.
+    let shoulder_roll_seed = env_f64("SHOULDER_ROLL", 0.0);
+    if shoulder_roll_seed != 0.0 {
+        o.extra_seed.push(("left_shoulder_roll_joint", shoulder_roll_seed));
+        o.extra_seed.push(("right_shoulder_roll_joint", -shoulder_roll_seed));
+    }
     if hip_roll_seed != 0.0 {
         // Signs mirror: both hips roll inward to bring the feet together, and
         // the ankles roll back so the soles stay flat on the floor.
