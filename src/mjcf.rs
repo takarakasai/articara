@@ -386,8 +386,17 @@ pub struct KawasakiRingCfg {
     /// indefinitely -- which reads as a diverging simulation rather than as
     /// the ring-out it actually is.
     pub floor_size_m: Option<f64>,
-    /// How far the floor's surface sits below the ring surface.
-    pub floor_drop_m: f64,
+    /// Air gap between the ring slab's UNDERSIDE and the floor -- the space
+    /// you actually see under the ring, not the drop from its top face.
+    /// Measured from the underside on purpose: quoting it from the ring
+    /// surface makes the visible gap depend on `plate_thickness_m`, so the
+    /// same number looks different every time the slab changes.
+    pub floor_gap_m: f64,
+    /// Thickness of the ring slab itself. Not in the rulebook -- the drawing
+    /// dimensions the ring's top face and its obstacles, never how deep the
+    /// plate is -- so `[assumed]`, and exposed because it eats into
+    /// `floor_drop_m`'s visible gap.
+    pub plate_thickness_m: f64,
 }
 
 impl Default for KawasakiRingCfg {
@@ -425,12 +434,19 @@ impl Default for KawasakiRingCfg {
             ],
             cell_m: 0.005,
             floor_size_m: Some(5.0),
-            floor_drop_m: 0.20,
+            floor_gap_m: 0.20,
+            plate_thickness_m: 0.05,
         }
     }
 }
 
 impl KawasakiRingCfg {
+    /// Depth of the floor's top surface below the ring surface, metres --
+    /// the slab's own thickness plus the air gap under it.
+    pub fn floor_top_z(&self) -> f64 {
+        self.plate_thickness_m + self.floor_gap_m
+    }
+
     /// Grid dimensions of the heightfield, `(nrow, ncol)`.
     pub fn grid(&self) -> (usize, usize) {
         let n = (self.ring_m / self.cell_m).round().max(2.0) as usize;
@@ -554,7 +570,7 @@ impl KawasakiRingCfg {
     /// staircase where it was only ever a test-track artifact.
     pub fn worldbody_xml(&self, name: &str) -> String {
         let half = self.ring_m / 2.0;
-        let plate_h = 0.05;
+        let plate_h = self.plate_thickness_m;
         let mut xml = String::new();
         if let Some(side) = self.floor_size_m {
             // A slab, not an infinite plane: the ring is what the robot is
@@ -564,7 +580,7 @@ impl KawasakiRingCfg {
             const FLOOR_H: f64 = 0.05;
             xml += &format!(
                 "    <geom name=\"ring_floor\" type=\"box\" pos=\"0 0 {}\" size=\"{} {} {}\" rgba=\"0.16 0.17 0.19 1\"/>\n",
-                -self.floor_drop_m - FLOOR_H / 2.0,
+                -self.floor_top_z() - FLOOR_H / 2.0,
                 side / 2.0,
                 side / 2.0,
                 FLOOR_H / 2.0,

@@ -671,6 +671,10 @@ pub struct WbcParams {
     /// See [`TerrainStanceCfg`]. `None` leaves all four legs sharing one
     /// nominal stance height, which is what every other test here uses.
     pub terrain_stance: Option<TerrainStanceCfg>,
+    /// See [`ProprioStanceCfg`] -- the same body levelling, with the terrain
+    /// oracle replaced by IMU + encoders. Mutually exclusive with
+    /// `terrain_stance` in practice; both write the same nominal.
+    pub proprio_stance: Option<ProprioStanceCfg>,
     /// Run on the かわさきロボット競技大会 ring instead of flat ground or a
     /// staircase. Mutually exclusive with `staircase`; the ring brings its
     /// own plate, so no separate ground plane is emitted either.
@@ -834,6 +838,7 @@ impl WbcParams {
             contact_reflex: None,
             terrain_footplan: None,
             terrain_stance: None,
+            proprio_stance: None,
             kawasaki_ring: None,
             spawn_xy: None,
             render_hz: None,
@@ -899,6 +904,7 @@ impl WbcParams {
             contact_reflex: None,
             terrain_footplan: None,
             terrain_stance: None,
+            proprio_stance: None,
             kawasaki_ring: None,
             spawn_xy: None,
             render_hz: None,
@@ -1007,6 +1013,68 @@ pub fn namiashi_tuned_gait_config(gait: GaitType) -> GaitConfig {
     cfg.max_step_length_m = step;
     cfg.swing_height_m = h;
     cfg
+}
+
+/// Per-leg stance height from PROPRIOCEPTION ONLY -- the deployable
+/// counterpart to [`TerrainStanceCfg`].
+///
+/// `TerrainStanceCfg` levels the body by asking `StaircaseCfg::height_at`
+/// how high the ground under each leg is. That is an oracle: exact,
+/// noise-free, occlusion-free advance knowledge of the terrain, i.e. a
+/// stand-in for a vision system. namiashi has no room for one, so this
+/// derives the same per-leg heights from what the robot actually carries:
+/// joint encoders and an IMU.
+///
+/// # How a leg's ground height is known without seeing it
+///
+/// A foot that is IN CONTACT is standing on the ground, so its own position
+/// tells you where the ground is. Forward kinematics from the encoders gives
+/// that foot in the body frame; rotating by the IMU's attitude estimate puts
+/// it in a gravity-aligned frame, where its z is the foot's height below the
+/// body measured against gravity rather than against the (possibly tilted)
+/// chassis. Do that for every foot in contact and the spread of those
+/// heights IS the local relief -- measured, not predicted.
+///
+/// Yaw does not enter: rotating a vector by yaw leaves its z alone, so the
+/// estimate is immune to the heading drift an IMU without a magnetometer
+/// always has. Only roll and pitch matter, and those are exactly what an
+/// accelerometer observes.
+///
+/// # What it cannot do
+///
+/// It only knows terrain a foot has ALREADY touched. A vision system sees
+/// the step before the leg arrives; this sees it on landing. For the case
+/// this was asked for -- standing with some feet on a raised obstacle and
+/// some on the flat ring -- that is enough, because the feet are already
+/// there. For striding onto something new it is one step behind, and the
+/// first footfall onto a new level still lands unlevelled.
+#[derive(Clone, Copy, Debug)]
+pub struct ProprioStanceCfg {
+    /// Fraction of the measured height difference applied. 1.0 levels the
+    /// support pattern to what the feet report; 0.0 is a no-op.
+    pub gain: f64,
+    /// Clamp on the per-leg offset, metres.
+    pub max_offset_m: f64,
+    /// Time constant of the per-leg height filter, seconds. The raw estimate
+    /// moves with every contact transition and with each leg's own swing
+    /// arc, so it is smoothed before it is allowed to move the stance the
+    /// whole gait is built on.
+    pub tau_s: f64,
+    /// Normal force above which a foot counts as in contact, N. Comes from a
+    /// foot force sensor on hardware, or from the joint-torque residual --
+    /// either way proprioceptive. Deliberately NOT the gait schedule's own
+    /// `is_stance`: the schedule says when a foot is *supposed* to be down,
+    /// and uneven ground is precisely where that is wrong.
+    pub contact_n: f64,
+    /// Madgwick filter gain (rad/s) for the IMU attitude used to project the
+    /// feet into a gravity-aligned frame.
+    pub imu_beta: f64,
+}
+
+impl Default for ProprioStanceCfg {
+    fn default() -> Self {
+        Self { gain: 1.0, max_offset_m: 0.10, tau_s: 0.20, contact_n: 3.0, imu_beta: 0.10 }
+    }
 }
 
 /// Run a WBC sim, sampling per-tick. Returns `None` if the namiashi
@@ -1175,6 +1243,23 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     // four legs were built with, before any per-leg terrain offset. Captured
     // rather than recomputed so the offset is always measured from one fixed
     // reference and cannot integrate drift across ticks.
+    // Proprioceptive attitude: an actual IMU filter fed from the trunk IMU,
+    // not `body_world_orientation`. The rest of this harness reads the sim's
+    // ground-truth pose in places; the levelling below must not, or it would
+    // be answering a question the robot cannot ask on hardware.
+    let mut ahrs = crate::attitude_estimator::MadgwickAhrs::new(
+        params.proprio_stance.map(|c| c.imu_beta).unwrap_or(0.1),
+    );
+    // Per-leg ground height in the gravity-aligned frame, filtered, plus
+    // whether each has ever been seeded. A leg that has not touched down yet
+    // has no estimate and must not contribute one.
+    let mut leg_h_filt = [0.0_f64; 4];
+    let mut leg_h_seen = [false; 4];
+    // Last tick's measured per-foot normal force. Read at the TOP of a tick,
+    // written at the bottom -- a controller acts on the force it has already
+    // measured, not on one from a step it has not taken yet.
+    let mut foot_fz_now = [0.0_f64; 4];
+
     let base_nominal_z: [f64; 4] = [
         kin.fl.nominal_foot_body.z,
         kin.fr.nominal_foot_body.z,
@@ -1561,6 +1646,16 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     for k in 0..n_steps {
         let t = k as f64 * params.dt;
 
+        // Feed the attitude filter at the physics rate from the trunk IMU.
+        // Only the proprioceptive levelling consumes it, but it has to be
+        // integrated every tick regardless -- a filter stepped only when
+        // someone asks for its output is a filter with the wrong dt.
+        if params.proprio_stance.is_some() {
+            if let Some(imu) = sim.imu_readings(&robot).first() {
+                ahrs.update_imu(imu.gyro, imu.accel, params.dt);
+            }
+        }
+
         if k == 0 {
             gc.enable();
         }
@@ -1758,6 +1853,81 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // before `gc.tick()`: the tick builds this cycle's Footstep
             // around `nominal_foot_body`, so a change applied afterwards
             // would not reach the plan it is meant to shape.
+            // Proprioceptive levelling. Runs before the oracle version so
+            // that if both are somehow set the measured one is what the
+            // oracle overwrites, making the mistake visible rather than
+            // silently blending two sources.
+            if let Some(cfg_pp) = params.proprio_stance {
+                if k >= burn_in_steps {
+                    // Attitude from the IMU, gravity-aligned. Yaw is left to
+                    // drift -- it cannot affect a z component.
+                    let q_wb = ahrs.quaternion();
+                    let mut sum = 0.0;
+                    let mut n = 0usize;
+                    let mut h_now = [0.0_f64; 4];
+                    let mut in_contact = [false; 4];
+                    for slot in 0..4 {
+                        let leg_kin = gc.kinematics().legs()[slot];
+                        let signs = gc.joint_signs()[slot];
+                        let ji = gc.joint_indices()[slot];
+                        let mut q_leg = [0.0_f64; 3];
+                        for kk in 0..3 {
+                            if let Some((q, _)) = sim.joint_q_qd(&robot.joints[ji[kk]].name) {
+                                q_leg[kk] = signs[kk] * q;
+                            }
+                        }
+                        let foot_body = quadruped_gait::forward_leg_kinematics(
+                            leg_kin, q_leg[0], q_leg[1], q_leg[2],
+                        );
+                        h_now[slot] = (q_wb * foot_body).z;
+                        // `foot_fz` is this tick's measured normal force per
+                        // foot; see ProprioStanceCfg::contact_n for why the
+                        // gait's own is_stance is the wrong signal here.
+                        in_contact[slot] = foot_fz_now[slot] > cfg_pp.contact_n;
+                    }
+                    let alpha = (params.dt * host_decim as f64 / cfg_pp.tau_s).clamp(0.0, 1.0);
+                    for slot in 0..4 {
+                        if in_contact[slot] {
+                            leg_h_filt[slot] = if leg_h_seen[slot] {
+                                leg_h_filt[slot] + alpha * (h_now[slot] - leg_h_filt[slot])
+                            } else {
+                                leg_h_seen[slot] = true;
+                                h_now[slot]
+                            };
+                        }
+                        // A leg that has never touched down holds nothing to
+                        // average; one that is mid-swing holds its last
+                        // stance value, which is still the best guess for
+                        // the ground it left.
+                        if leg_h_seen[slot] {
+                            sum += leg_h_filt[slot];
+                            n += 1;
+                        }
+                    }
+                    if n > 0 {
+                        let mean = sum / n as f64;
+                        let mut kin_now = gc.kinematics().clone();
+                        for (slot, leg) in [
+                            &mut kin_now.fl,
+                            &mut kin_now.fr,
+                            &mut kin_now.rl,
+                            &mut kin_now.rr,
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            let off = if leg_h_seen[slot] {
+                                (cfg_pp.gain * (leg_h_filt[slot] - mean))
+                                    .clamp(-cfg_pp.max_offset_m, cfg_pp.max_offset_m)
+                            } else {
+                                0.0
+                            };
+                            leg.nominal_foot_body.z = base_nominal_z[slot] + off;
+                        }
+                        gc.set_kinematics(kin_now);
+                    }
+                }
+            }
             if let (Some(cfg_st), Some(stairs)) = (params.terrain_stance, params.staircase) {
                 if k >= burn_in_steps {
                     let body_pos_world = robot.base_transform.translation.vector;
@@ -2551,6 +2721,8 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 foot_fx[fi] += cy * c.force_world[0] - sy * c.force_world[1];
             }
         }
+
+        foot_fz_now = foot_fz;
 
         if replay_out.is_some() {
             let p = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);

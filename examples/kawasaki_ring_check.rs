@@ -144,9 +144,9 @@ fn main() {
             sim2.step(&mut robot2, dt2, true);
         }
         let p = sim2.body_world_position(&robot2.root_link).unwrap_or([0.0; 3]);
-        // Spawned just above the ring surface, so it drops floor_drop_m onto
-        // the floor and should end a stance height above -floor_drop_m.
-        let above_floor = p[2] + ring.floor_drop_m;
+        // Spawned just above the ring surface, so it drops onto the floor
+        // and should end one stance height above it.
+        let above_floor = p[2] + ring.floor_top_z();
         println!(
             "off-ring drop at ({off:+.2},{off:+.2}): trunk z={:+.3} m, {:.3} m above the floor",
             p[2], above_floor,

@@ -5297,6 +5297,70 @@ fn namiashi_staircase_5cm_terrain_stance_video() {
     }
 }
 
+/// Does IMU + encoders alone level the trunk when the feet straddle two
+/// heights?
+///
+/// The case asked for: standing on the かわさきロボット競技大会 ring with
+/// some feet up on a raised obstacle and some down on the flat plate, and
+/// wanting the trunk level anyway. `TerrainStanceCfg` already does this,
+/// but by querying the terrain -- an oracle standing in for a vision system
+/// namiashi has no room to carry. `ProprioStanceCfg` derives the same
+/// per-leg heights from forward kinematics of the feet that are in contact,
+/// projected into a gravity-aligned frame by a Madgwick filter on the trunk
+/// IMU. No exteroception anywhere in that path.
+///
+/// Spawned straddling a round-hole plate's edge, so the front feet are on
+/// 15 mm of plate and the rear on the ring: exactly the two-level stance,
+/// with no walking needed to reach it. Trunk roll/pitch after settling is
+/// the measurement -- the correction off is the control.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_ring_proprio_levelling() {
+    use articara::mjcf::KawasakiRingCfg;
+    const I: usize = 0; // Trot
+    let ring = KawasakiRingCfg::default();
+    // The right-hand round plate spans x 0.50..0.80 at y 0. Straddle its
+    // near edge so front and rear legs land on different levels.
+    let spawn = (0.50, 0.0);
+    for gain in [0.0, 1.0] {
+        let params = WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: 0.0, // stand: this is a posture question, not a gait one
+            total_time_s: 4.0,
+            wbc_real_inertia: true,
+            kawasaki_ring: Some(ring.clone()),
+            spawn_xy: Some(spawn),
+            proprio_stance: if gain == 0.0 {
+                None
+            } else {
+                Some(ProprioStanceCfg { gain, ..Default::default() })
+            },
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        // Last second only: the first few hundred ms are the drop onto the
+        // plate, which says nothing about the steady posture.
+        let tail: Vec<_> = samples.iter().filter(|s| s.t > samples.last().unwrap().t - 1.0).collect();
+        let n = tail.len().max(1) as f64;
+        let mean_roll = tail.iter().map(|s| s.roll).sum::<f64>() / n;
+        let mean_pitch = tail.iter().map(|s| s.pitch).sum::<f64>() / n;
+        let max_tilt = tail
+            .iter()
+            .map(|s| s.roll.abs().max(s.pitch.abs()))
+            .fold(0.0_f64, f64::max);
+        eprintln!(
+            "[proprio_level gain={gain:.1}] steady roll={:+.2}deg pitch={:+.2}deg  \
+             max|tilt|={:.2}deg  final z={:.3}m",
+            mean_roll.to_degrees(),
+            mean_pitch.to_degrees(),
+            max_tilt.to_degrees(),
+            samples.last().unwrap().body_z,
+        );
+    }
+}
+
 /// Is `TerrainStanceCfg`'s gain=1.5 optimum a basin or a spike?
 ///
 /// `namiashi_staircase_5cm_terrain_stance` found 1.5 reaching 1.915 m and
