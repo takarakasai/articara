@@ -1584,6 +1584,15 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut respawn_pending = false;
     #[allow(unused_mut)]
     let mut respawn_inverted = false;
+    // Seconds into the self-righting trajectory, or None when not
+    // recovering, plus how long it has held an upright attitude. The hold is
+    // what ends the recovery: a single upright sample happens mid-tumble
+    // too, and handing back to the gait at that instant drops the robot
+    // straight back over.
+    #[allow(unused_mut)]
+    let mut recover_t: Option<f64> = None;
+    #[allow(unused_mut)]
+    let mut recover_upright_s = 0.0_f64;
 
     let render_hz = params.render_hz.unwrap_or(60.0).max(1.0);
     let render_decim = ((1.0 / render_hz) / params.dt).round().max(1.0) as usize;
@@ -1606,7 +1615,7 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // state, so the cheaper detached path applies directly.
             use crate::teleop::{
                 draw_hud, poll_body_lift_delta, poll_cmd, poll_friction_deltas, poll_gait,
-                poll_arm_rate, poll_help_toggle, poll_level_toggle, poll_respawn,
+                poll_arm_rate, poll_help_toggle, poll_level_toggle, poll_recover, poll_respawn,
                 poll_swing_height_delta,
                 SpeedEnvelope, BODY_LIFT_RANGE_M,
                 FRICTION_RANGE, SWING_HEIGHT_RANGE_M,
@@ -1628,6 +1637,9 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 if let Some(inverted) = poll_respawn(ctx) {
                     st.respawn_requested = true;
                     st.respawn_inverted = inverted;
+                }
+                if poll_recover(ctx) {
+                    st.recover_requested = true;
                 }
                 if poll_level_toggle(ctx) {
                     st.level_enabled = !st.level_enabled;
@@ -1687,13 +1699,12 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         let t = k as f64 * params.dt;
 
         // Feed the attitude filter at the physics rate from the trunk IMU.
-        // Only the proprioceptive levelling consumes it, but it has to be
-        // integrated every tick regardless -- a filter stepped only when
-        // someone asks for its output is a filter with the wrong dt.
-        if params.proprio_stance.is_some() {
-            if let Some(imu) = sim.imu_readings(&robot).first() {
-                ahrs.update_imu(imu.gyro, imu.accel, params.dt);
-            }
+        // Every tick and unconditionally: a filter stepped only when someone
+        // asks for its output is a filter with the wrong dt, and it now has
+        // a second consumer (self-righting) that has no reason to know
+        // whether the levelling happens to be configured.
+        if let Some(imu) = sim.imu_readings(&robot).first() {
+            ahrs.update_imu(imu.gyro, imu.accel, params.dt);
         }
 
         if k == 0 {
@@ -1734,9 +1745,16 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     respawn_pending = true;
                     respawn_inverted = st.respawn_inverted;
                 }
+                if std::mem::replace(&mut st.recover_requested, false) {
+                    recover_t = Some(0.0);
+                    recover_upright_s = 0.0;
+                    eprintln!("[teleop] self-righting");
+                }
             }
             if respawn_pending {
                 respawn_pending = false;
+                recover_t = None;
+                recover_upright_s = 0.0;
                 // Dropped in from 10 cm up, so the first contact is a short
                 // fall rather than MuJoCo shoving the robot out of a
                 // penetration it woke up inside.
@@ -2356,6 +2374,63 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     targets[slot * 3] = (idx, q + signs[0] * leg_bias);
                 }
             }
+            // Self-righting overrides everything the gait and WBC just
+            // produced. It is a different problem -- the WBC solves for
+            // contact forces on a standing robot and there is nothing for it
+            // to say about a robot on its back -- so the trajectory drives
+            // the joints directly and the QP's torque is suppressed below.
+            //
+            // Attitude comes from `ahrs`, the IMU filter, not from
+            // `body_world_orientation`: the whole controller is restricted
+            // to proprioception, and a recovery that only works when handed
+            // the simulator's ground truth is not one the robot has.
+            #[allow(unused_mut)]
+            let mut recovering = false;
+            #[cfg(feature = "mujoco-viewer")]
+            if let Some(rt) = recover_t {
+                use crate::self_righting::{RECOVERY, UPRIGHT_UP};
+                recovering = true;
+                let q_wb = ahrs.quaternion();
+                let up = (q_wb * Vector3::<f64>::z()).z;
+                let g_body_y = (q_wb.inverse() * Vector3::new(0.0, 0.0, -1.0)).y;
+                let (arm_q, legs) = RECOVERY.targets(rt, up, g_body_y);
+                for slot in 0..4 {
+                    let ji = gc.joint_indices()[slot];
+                    for kk in 0..3 {
+                        targets[slot * 3 + kk] = (ji[kk], legs[slot][kk]);
+                    }
+                }
+                if let Some(ji) = arm_ji {
+                    sim.set_position_target(ji, arm_q);
+                    arm_angle = arm_q;
+                }
+                recover_upright_s = if up > UPRIGHT_UP { recover_upright_s + host_dt } else { 0.0 };
+                let done = recover_upright_s > 1.0;
+                // 12 s is past every trajectory the search produced (the
+                // slowest righted at 6.9 s), so this is a giving-up limit,
+                // not a schedule.
+                if done || rt > 12.0 {
+                    eprintln!(
+                        "[teleop] self-righting {} after {rt:.1} s",
+                        if done { "done" } else { "gave up" }
+                    );
+                    recover_t = None;
+                    recover_upright_s = 0.0;
+                    // Back to a standstill, for the same reason respawn does
+                    // it: the gait phase has been running this whole time
+                    // against a robot that was not walking.
+                    gc.disable();
+                    gc.enable();
+                    prev_targets = [0.0; 12];
+                    stance_mask = [true; 4];
+                    reflex_active = [false; 4];
+                    foot_fz_now = [0.0; 4];
+                    leg_h_filt = [0.0; 4];
+                    leg_h_seen = [false; 4];
+                } else {
+                    recover_t = Some(rt + host_dt);
+                }
+            }
             match params.actuation {
                 Actuation::PositionTorque => {
                     for (idx, q) in targets {
@@ -2748,8 +2823,11 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     // in this mode -- the WBC's tau carries it, since the QP
                     // solves the full equation of motion.
                     for &(idx, pd) in host_pd.iter() {
-                        let tau_wbc =
-                            if params.kinematic_only { 0.0 } else { taus[idx] };
+                        let tau_wbc = if params.kinematic_only || recovering {
+                            0.0
+                        } else {
+                            taus[idx]
+                        };
                         sim.set_torque_target(idx, pd + tau_wbc);
                     }
                 }

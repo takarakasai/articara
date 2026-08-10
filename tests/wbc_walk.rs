@@ -5625,6 +5625,64 @@ fn namiashi_respawn_restores_start_pose() {
     );
 }
 
+/// Does the searched recovery trajectory get the robot back on its feet
+/// through the control path the teleop actually uses?
+///
+/// Driven as `run_wbc_sim` drives it -- leg joints in torque mode with a
+/// host-side PD and gravity compensation, attitude from the Madgwick IMU
+/// filter rather than the simulator's pose -- because the trajectory is
+/// sensitive to that choice. `RECOVERY` rights the robot in 14 of these 15
+/// conditions on the teleop drive and 7 of 15 on the .misa's Position
+/// actuators, which is why the search was eventually pointed at the former.
+///
+/// Scores on the simulator's true attitude while the CONTROLLER sees only
+/// the filter, so this measures the recovery and not the estimator agreeing
+/// with itself.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_self_righting_teleop_drive() {
+    use articara::mjcf::KawasakiRingCfg;
+    use articara::self_righting::{evaluate_with, Drive, RECOVERY};
+
+    let ring = KawasakiRingCfg::default();
+    let (pw, pd) = ring.red_platform_m;
+    let misa = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/namiashi/namiashi_3p3_prop.misa");
+    let sites: [(&str, (f64, f64)); 5] = [
+        ("flat venue floor", (1.60, 1.60)),
+        ("open ring surface", (0.35, 0.35)),
+        ("ring centre (bowl)", (0.0, 0.0)),
+        ("on a round plate", ring.round_plate_centres[0]),
+        (
+            "red platform (edge)",
+            (-(ring.ring_m / 2.0 + pd / 2.0), -(ring.ring_m / 2.0 - pw / 2.0)),
+        ),
+    ];
+    // The teleop's own gains and filter constant.
+    let teleop = Drive::TorqueAhrs { kp: 100.0, kd: 1.2, imu_beta: 0.1 };
+    let (mut ok, mut total) = (0, 0);
+    for (name, xy) in sites {
+        for mu in [0.30_f64, 0.70, 1.00] {
+            let o = evaluate_with(&misa, &ring, xy, mu, &RECOVERY, 8.0, teleop);
+            total += 1;
+            ok += o.righted() as u32;
+            eprintln!(
+                "[right] {name:<20} mu {mu:.2}  final up {:+.3}  peak {:+.3}  \
+                 t {:.2} s  travel {:.3} m  {}",
+                o.final_up,
+                o.peak_up,
+                o.t_right_s,
+                o.travel_m,
+                if o.righted() { "RIGHTED" } else { "no" },
+            );
+        }
+    }
+    eprintln!("[right] {ok}/{total} righted");
+    // 14/15 measured. The one failure is the red platform at mu 0.70, a
+    // 5 cm plinth barely wider than the robot which the recovery slides off.
+    assert!(ok >= 13, "self-righting regressed: {ok}/{total}");
+}
+
 /// Does `Shift`+`N` actually put the robot on its back, and does it STAY
 /// there?
 ///

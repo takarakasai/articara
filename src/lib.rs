@@ -21,6 +21,7 @@ pub mod primitives;
 pub mod rbd;
 pub mod robot;
 pub mod sdf;
+pub mod self_righting;
 #[cfg(feature = "scripting")]
 pub mod scripting;
 #[cfg(feature = "scripting")]

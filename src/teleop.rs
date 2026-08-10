@@ -19,6 +19,7 @@
 //! | `B`                       | trunk levelling on/off      |
 //! | `N`                       | respawn at the start pose   |
 //! | `Shift`+`N`               | respawn upside down         |
+//! | `V`                       | self-right from a fall      |
 //! | `Y`/`G` (held)            | arm pitch up / down         |
 //! | `K`                       | show / hide this list       |
 //! | `O`/`L`                   | ground friction mu +/- 0.05 |
@@ -94,6 +95,9 @@ pub struct LiveTeleop {
     /// Whether that request is for the upside-down pose (`Shift`+`N`).
     /// Only meaningful while `respawn_requested` is set.
     pub respawn_inverted: bool,
+    /// Set by `V`: run the self-righting trajectory. Also an edge, for the
+    /// same reason as `respawn_requested`.
+    pub recover_requested: bool,
     /// Simulated sliding friction of every geom -- the actual slipperiness
     /// of the world. Applied via `MujocoSim::set_slide_friction_all`.
     pub ground_mu: f64,
@@ -177,6 +181,7 @@ impl LiveTeleop {
             arm_angle_rad: 0.0,
             respawn_requested: false,
             respawn_inverted: false,
+            recover_requested: false,
             // Seeded from the live sim/controller at startup (see
             // run_wbc_sim); these are only a placeholder until then.
             ground_mu: 0.0,
@@ -277,6 +282,7 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("Y / G", "arm pitch up / down (held)"),
     ("N", "respawn at the start pose, 10 cm up"),
     ("Shift+N", "respawn upside down"),
+    ("V", "self-right from a fall"),
     ("O / L", "ground friction mu"),
     ("P / .", "controller's assumed mu"),
     ("K", "show / hide this list"),
@@ -300,6 +306,11 @@ pub const ARM_RATE_RAD_S: f64 = 0.8;
 /// loop overwrites on the next sync -- to `qpos0`, every hinge straight.
 /// For a robot whose spawn height was computed for a bent stance, that is
 /// a pose with its feet through the floor.
+/// `V`, edge-triggered: start the self-righting trajectory.
+pub fn poll_recover(ctx: &egui::Context) -> bool {
+    ctx.input(|r| r.key_pressed(egui::Key::V))
+}
+
 pub fn poll_respawn(ctx: &egui::Context) -> Option<bool> {
     ctx.input(|r| {
         r.key_pressed(egui::Key::N).then_some(r.modifiers.shift)
