@@ -338,7 +338,17 @@ fn main() {
                 sim.set_slide_friction_all(mu);
                 eprintln!("[teleop] ground mu -> {mu:.2}");
             }
+            // See run_wbc_sim's copy: sync_data merges the viewer's own
+            // edits back into our data, so its Reset button really does
+            // reset this sim -- to qpos0, legs straight, feet through the
+            // floor. A clock that went backwards is the only trace it
+            // leaves.
+            let t_before = sim.sim_time();
             viewer.sync_data(sim.mj_data_mut());
+            if sim.sim_time() < t_before - 1e-9 {
+                sim.respawn(&mut robot, 0.10);
+                eprintln!("[teleop] viewer Reset -> respawned at the start pose, +0.10 m");
+            }
             let _ = viewer.render();
 
             // Pace once per rendered frame, not per physics tick -- see

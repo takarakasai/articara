@@ -2741,7 +2741,23 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         st.wall_time_s = wall_start.elapsed().as_secs_f64();
                         st.fps = fps;
                     }
+                    // `sync_data` is a three-way MERGE, not a push: anything
+                    // the viewer changed in its own copy since the last sync
+                    // is written back into ours. So the Reset button does
+                    // reach this simulation -- it sets qpos to `qpos0`,
+                    // every hinge straight, which for a spawn height
+                    // computed around a BENT stance means feet through the
+                    // floor. Catching it here is the only handle available:
+                    // the button raises no event this side can subscribe to,
+                    // and a reset clock is the one trace it leaves.
+                    let t_before = sim.sim_time();
                     v.sync_data(sim.mj_data_mut());
+                    if sim.sim_time() < t_before - 1e-9 {
+                        sim.respawn(&mut robot, 0.10);
+                        eprintln!(
+                            "[teleop] viewer Reset -> respawned at the start pose, +0.10 m"
+                        );
+                    }
                     let _ = v.render();
 
                     // Real-time pacing, ONCE PER RENDERED FRAME. Doing it

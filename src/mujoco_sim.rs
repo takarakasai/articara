@@ -2085,6 +2085,16 @@ impl MujocoSim {
         self.sync_back(robot);
     }
 
+    /// MuJoCo's own simulation clock, seconds.
+    ///
+    /// Worth having because it is not the host's own tick count: the viewer
+    /// can write it, and `mj_resetData` sets it to zero. A value that has
+    /// gone BACKWARDS since the last read is the only signal a passive
+    /// viewer gives that its Reset button was pressed.
+    pub fn sim_time(&self) -> f64 {
+        self.data.ffi().time
+    }
+
     /// Put the robot back where it started, optionally `lift_m` higher, at
     /// rest.
     ///

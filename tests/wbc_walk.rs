@@ -5297,6 +5297,108 @@ fn namiashi_staircase_5cm_terrain_stance_video() {
     }
 }
 
+/// Does a `mj_resetData`-style reset get caught, and does respawn undo it?
+///
+/// The viewer's Reset button reaches this simulation -- `sync_data` is a
+/// three-way merge, so whatever the viewer changed in its own copy is
+/// written back into ours -- but it raises no event this side can
+/// subscribe to. The only trace is the clock: `mj_resetData` sets time to
+/// zero. This reproduces the reset directly (same call the viewer makes)
+/// and checks both halves: that the clock going backwards is detectable,
+/// and that respawn puts the robot somewhere it can stand.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_viewer_reset_is_caught() {
+    use articara::mjcf::{KawasakiRingCfg, MjcfExportOptions};
+    use articara::mujoco_sim::MujocoSim;
+    use articara::robot::RobotModel;
+
+    let ring = KawasakiRingCfg::default();
+    let (pw, pd) = ring.red_platform_m;
+    let misa = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/namiashi/namiashi_3p3_prop.misa");
+    let mut robot = RobotModel::from_misa(&misa).expect("load namiashi");
+    // Seed the BENT stance exactly as run_wbc_sim does. This is the whole
+    // mechanism: the MJCF carries no joint `ref`, so qpos0 keeps every hinge
+    // at zero -- legs straight -- while the base's auto-lift is computed for
+    // the seeded bent pose. Without this line the spawn pose IS qpos0 and a
+    // reset changes nothing, which is why an earlier version of this test
+    // reproduced no sinking at all and looked like the report was wrong.
+    let kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS)
+        .expect("auto-detect kinematics");
+    seed_joint_positions_from_kinematics(&mut robot, &kin);
+    robot.rebuild_misarta_model();
+    let opts = MjcfExportOptions {
+        base_xy: Some((
+            -(ring.ring_m / 2.0 + pd / 2.0),
+            -(ring.ring_m / 2.0 - pw / 2.0),
+        )),
+        extra_asset_xml: Some(ring.asset_xml("kawasaki")),
+        extra_worldbody_xml: Some(ring.worldbody_xml("kawasaki")),
+        add_actuators: true,
+        ..MjcfExportOptions::default()
+    };
+    let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
+    sim.set_hfield_data("kawasaki", &ring.heights()).expect("fill hfield");
+    let dt = sim.timestep();
+    for _ in 0..(1.0 / dt) as u32 {
+        sim.step(&mut robot, dt, true);
+    }
+    let before = sim.sim_time();
+    let z_ok = sim.body_world_position(&robot.root_link).unwrap()[2];
+
+    // Exactly what UiEvent::ResetSimulation does to the data it holds.
+    sim.mj_data_mut().reset();
+    sim.mj_data_mut().forward();
+    let after_reset = sim.sim_time();
+    let z_reset = sim.body_world_position(&robot.root_link).unwrap()[2];
+    // Feet on straight legs reach further than the bent stance the spawn
+    // height was computed for, so this is the sinking, in one number: how
+    // far the lowest foot ends up BELOW the surface it should rest on.
+    let deepest = (0..4)
+        .filter_map(|i| {
+            let link = DEFAULT_FOOT_LINKS[i].1;
+            sim.body_world_position(link).map(|p| p[2])
+        })
+        .fold(f64::INFINITY, f64::min);
+    eprintln!(
+        "[reset] t {before:.3} -> {after_reset:.3} (detected: {})  trunk z {z_ok:.3} -> {z_reset:.3}  \
+         lowest foot z={deepest:+.4} m (ring surface is 0)",
+        after_reset < before - 1e-9,
+    );
+
+    // The reset POSE does not penetrate (see the +0.021 m above). If the
+    // report is real the sinking has to come from what happens next: the
+    // per-joint PD still holds targets for the bent stance, so it yanks a
+    // straight-legged robot back down through whatever it is standing on.
+    // Step it and watch the lowest foot.
+    let mut worst = f64::INFINITY;
+    for _ in 0..(1.0 / dt) as u32 {
+        sim.step(&mut robot, dt, true);
+        for i in 0..4 {
+            if let Some(p) = sim.body_world_position(DEFAULT_FOOT_LINKS[i].1) {
+                worst = worst.min(p[2]);
+            }
+        }
+    }
+    eprintln!(
+        "[reset] 1 s AFTER the reset, with the PD still holding stance targets: \
+         lowest foot reached {worst:+.4} m  trunk z={:.3}",
+        sim.body_world_position(&robot.root_link).unwrap()[2],
+    );
+
+    sim.respawn(&mut robot, 0.10);
+    let z_respawn = sim.body_world_position(&robot.root_link).unwrap()[2];
+    for _ in 0..(1.5 / dt) as u32 {
+        sim.step(&mut robot, dt, true);
+    }
+    let z_settled = sim.body_world_position(&robot.root_link).unwrap()[2];
+    eprintln!(
+        "[reset] respawned z={z_respawn:.3} -> settled z={z_settled:.3} \
+         (standing height was {z_ok:.3})",
+    );
+}
+
 /// Does the arm key actually move the arm, and stop at the joint's limits?
 ///
 /// The arm is not part of the gait -- the .misa drives `arm_pitch_joint` as
