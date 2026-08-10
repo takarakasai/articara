@@ -388,6 +388,10 @@ pub struct KawasakiRingCfg {
     /// physical rather than scenery -- a robot that leaves the ring stops
     /// here instead of walking out of the world. `None` omits it.
     ///
+    /// The gap is bounded by `floor_size_m`: the panels stand ON the venue
+    /// floor, so `ring_m/2 + gap + thickness` has to stay inside it. At the
+    /// 5 m default that caps the gap near 1.5 m.
+    ///
     /// `[photo]` throughout: read off event photographs, not a drawing.
     pub barrier: Option<(f64, f64, f64)>,
     /// `[photo]` Coloured border framing the ring on the two start sides,
@@ -455,7 +459,7 @@ impl Default for KawasakiRingCfg {
             round_plate_centres: vec![(-0.65, 0.0), (0.65, 0.0)],
             quad_plate_centres: vec![(0.0, -0.65), (0.0, 0.65)],
             bank_half_w_m: 0.01,
-            barrier: Some((0.60, 0.55, 0.02)),
+            barrier: Some((0.60, 1.50, 0.02)),
             border: Some((0.08, 0.03)),
             lighting: true,
             bank_h_m: 0.015,

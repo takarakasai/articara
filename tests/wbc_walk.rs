@@ -5297,6 +5297,80 @@ fn namiashi_staircase_5cm_terrain_stance_video() {
     }
 }
 
+/// Does respawn put the robot back at its START pose, rather than at
+/// MuJoCo's `qpos0`?
+///
+/// The viewer's own Reset button calls `mj_resetData`, which sets every
+/// hinge to its `ref` -- legs straight. namiashi's spawn height was
+/// computed for a BENT stance, so straight legs put the feet through the
+/// surface and the body inside it, which is the sinking the Reset button
+/// produces. `MujocoSim::respawn` restores the pose the sim started in
+/// instead. This walks the robot away first, so "went back" is a real
+/// claim rather than "never moved".
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+#[cfg(feature = "mujoco-viewer")]
+fn namiashi_respawn_restores_start_pose() {
+    use articara::mjcf::KawasakiRingCfg;
+    use articara::mujoco_sim::MujocoSim;
+    use articara::mjcf::MjcfExportOptions;
+    use articara::robot::RobotModel;
+
+    let ring = KawasakiRingCfg::default();
+    let (pw, pd) = ring.red_platform_m;
+    let misa = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/namiashi/namiashi_3p3_prop.misa");
+    let mut robot = RobotModel::from_misa(&misa).expect("load namiashi");
+    let opts = MjcfExportOptions {
+        base_xy: Some((
+            -(ring.ring_m / 2.0 + pd / 2.0),
+            -(ring.ring_m / 2.0 - pw / 2.0),
+        )),
+        extra_asset_xml: Some(ring.asset_xml("kawasaki")),
+        extra_worldbody_xml: Some(ring.worldbody_xml("kawasaki")),
+        add_actuators: true,
+        ..MjcfExportOptions::default()
+    };
+    let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
+    sim.set_hfield_data("kawasaki", &ring.heights()).expect("fill hfield");
+    let dt = sim.timestep();
+    let start = sim.body_world_position(&robot.root_link).unwrap();
+
+    // Shove it off the platform. Simply "not commanding anything" does not
+    // move this robot -- the .misa puts the joints in Position mode, so the
+    // per-joint PD holds the spawn pose and the first version of this test
+    // watched it sit still for two seconds and called that displacement.
+    sim.apply_external_force(&robot.root_link, [22.0, 14.0, 0.0], [0.0; 3], 0.6);
+    for _ in 0..(2.0 / dt) as u32 {
+        sim.step(&mut robot, dt, true);
+    }
+    let fallen = sim.body_world_position(&robot.root_link).unwrap();
+    eprintln!(
+        "[respawn] pushed to ({:+.3},{:+.3}) -- {:.3} m from spawn",
+        fallen[0],
+        fallen[1],
+        ((fallen[0] - start[0]).powi(2) + (fallen[1] - start[1]).powi(2)).sqrt(),
+    );
+
+    sim.respawn(&mut robot, 0.10);
+    let after = sim.body_world_position(&robot.root_link).unwrap();
+    // Let it settle out of the 10 cm drop.
+    for _ in 0..(1.0 / dt) as u32 {
+        sim.step(&mut robot, dt, true);
+    }
+    let settled = sim.body_world_position(&robot.root_link).unwrap();
+    eprintln!(
+        "[respawn] start z={:.3}  after 2 s uncontrolled z={:.3}  \
+         respawned z={:.3} (start+0.10={:.3})  settled z={:.3}",
+        start[2], fallen[2], after[2], start[2] + 0.10, settled[2],
+    );
+    eprintln!(
+        "[respawn] xy back to spawn: dx={:+.4} dy={:+.4}",
+        after[0] - start[0],
+        after[1] - start[1],
+    );
+}
+
 /// Does the live trunk-height control actually move the trunk, and by the
 /// amount asked for?
 ///

@@ -31,6 +31,11 @@ pub struct MujocoSim {
     /// Robot pose captured at sim start, restored on Stop.
     saved_base_transform: na::Isometry3<f64>,
     saved_joint_positions: Vec<f64>,
+    /// MuJoCo's own `qpos` at sim start, for [`Self::respawn`]. Kept
+    /// separately from `saved_joint_positions`, which mirrors the Rust-side
+    /// `RobotModel` and says nothing about the free joint or MuJoCo's
+    /// layout.
+    spawn_qpos: Vec<f64>,
     /// Ring buffer of pre-step snapshots, used for backward frame stepping.
     history: VecDeque<FrameSnapshot>,
     /// Maximum number of snapshots to retain (older entries are discarded).
@@ -577,6 +582,10 @@ impl MujocoSim {
         // Refresh xpos/xquat/qfrc_bias etc. from the seeded qpos so the very
         // first sync_back can render the correct initial pose.
         data.forward();
+        // Snapshot the spawn pose here, after seeding and forward but before
+        // anything has stepped, so `respawn` returns to what the sim
+        // actually started from.
+        let spawn_qpos = data.qpos().to_vec();
 
         // Initial control targets: hold the start pose in Position mode, no
         // velocity/torque command in the other modes. Use the *clamped*
@@ -596,6 +605,7 @@ impl MujocoSim {
             time_accumulator: 0.0,
             saved_base_transform: robot.base_transform,
             saved_joint_positions: robot.joint_positions.clone(),
+            spawn_qpos,
             history: VecDeque::new(),
             // ~10s of history at the default 2 ms timestep — bounded so the
             // ring buffer can't grow without bound during long sessions.
@@ -2071,6 +2081,40 @@ impl MujocoSim {
         // simulator. Refresh so everything describes the same instant —
         // same reason `step_back_frames` calls `forward()` after
         // restoring `qpos`/`qvel`.
+        self.data.forward();
+        self.sync_back(robot);
+    }
+
+    /// Put the robot back where it started, optionally `lift_m` higher, at
+    /// rest.
+    ///
+    /// Not the same as MuJoCo's own `mj_resetData`, which returns `qpos` to
+    /// `qpos0` -- every hinge at its `ref`, i.e. legs straight. On a robot
+    /// whose spawn height was computed for a BENT stance that puts the feet
+    /// below the ground and the body inside the floor, which is exactly what
+    /// the viewer's Reset button does and why it looks like the robot sinks.
+    /// This restores the pose the sim actually started in.
+    ///
+    /// `lift_m` drops it in from above so the first contact is a short fall
+    /// onto the surface rather than a resolve-out-of-penetration shove.
+    pub fn respawn(&mut self, robot: &mut RobotModel, lift_m: f64) {
+        if self.spawn_qpos.len() != self.data.qpos().len() {
+            return;
+        }
+        self.data.qpos_mut().copy_from_slice(&self.spawn_qpos);
+        // qpos[0..3] is the free joint's translation, but only when the base
+        // actually has one -- `base_locked_axes` can replace it with slide/
+        // hinge joints, or nothing, and then index 2 means something else.
+        let free_base = {
+            let m = self.model.ffi();
+            // SAFETY: jnt_type is an njnt-long array; guarded on njnt > 0.
+            m.njnt > 0 && unsafe { *m.jnt_type } == mujoco::prelude::MjtJoint::mjJNT_FREE as i32
+        };
+        if free_base {
+            self.data.qpos_mut()[2] += lift_m;
+        }
+        self.data.qvel_mut().fill(0.0);
+        self.history.clear();
         self.data.forward();
         self.sync_back(robot);
     }

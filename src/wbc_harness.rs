@@ -1594,7 +1594,7 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // state, so the cheaper detached path applies directly.
             use crate::teleop::{
                 draw_hud, poll_body_lift_delta, poll_cmd, poll_friction_deltas, poll_gait,
-                poll_level_toggle, poll_swing_height_delta, SpeedEnvelope, BODY_LIFT_RANGE_M,
+                poll_level_toggle, poll_respawn, poll_swing_height_delta, SpeedEnvelope, BODY_LIFT_RANGE_M,
                 FRICTION_RANGE, SWING_HEIGHT_RANGE_M,
             };
             v.add_ui_callback_detached(move |ctx| {
@@ -1606,6 +1606,9 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 if dh != 0.0 {
                     st.swing_height_m = (st.swing_height_m + dh)
                         .clamp(SWING_HEIGHT_RANGE_M.0, SWING_HEIGHT_RANGE_M.1);
+                }
+                if poll_respawn(ctx) {
+                    st.respawn_requested = true;
                 }
                 if poll_level_toggle(ctx) {
                     st.level_enabled = !st.level_enabled;
@@ -1701,6 +1704,24 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 }
             }
         }
+        // Respawn, before anything else this tick reads the state: a
+        // controller that has already sampled the old pose would spend a
+        // tick driving toward it from the new one.
+        #[cfg(feature = "mujoco-viewer")]
+        if let Some(live) = &params.live_teleop {
+            let asked = {
+                let mut st = live.lock().unwrap();
+                std::mem::replace(&mut st.respawn_requested, false)
+            };
+            if asked {
+                // Dropped in from 10 cm up, so the first contact is a short
+                // fall rather than MuJoCo shoving the robot out of a
+                // penetration it woke up inside.
+                sim.respawn(&mut robot, 0.10);
+                eprintln!("[teleop] respawned at the start pose, +0.10 m");
+            }
+        }
+
         // Live teleop command, highest priority -- read every tick (not just
         // on change) since it can change between any two ticks.
         #[cfg(feature = "mujoco-viewer")]

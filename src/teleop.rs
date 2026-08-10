@@ -17,6 +17,7 @@
 //! | `R`/`F`                   | swing height +/- 5 mm       |
 //! | `=`/`-`                   | trunk height +/- 5 mm       |
 //! | `B`                       | trunk levelling on/off      |
+//! | `N`                       | respawn at the start pose   |
 //! | `O`/`L`                   | ground friction mu +/- 0.05 |
 //! | `P`/`.`                   | controller's assumed mu     |
 //!
@@ -69,6 +70,10 @@ pub struct LiveTeleop {
     /// standing astride a step and switching it off tips the trunk by the
     /// step's own geometry, live.
     pub level_enabled: bool,
+    /// Set by the `N` key, cleared by the physics loop once it has acted.
+    /// A request rather than a state, because respawning is an edge: leaving
+    /// it latched would teleport the robot home every tick.
+    pub respawn_requested: bool,
     /// Simulated sliding friction of every geom -- the actual slipperiness
     /// of the world. Applied via `MujocoSim::set_slide_friction_all`.
     pub ground_mu: f64,
@@ -147,6 +152,7 @@ impl LiveTeleop {
             swing_height_m: crate::wbc_harness::namiashi_tuned_swing_height_m(gait),
             body_lift_m: 0.0,
             level_enabled: true,
+            respawn_requested: false,
             // Seeded from the live sim/controller at startup (see
             // run_wbc_sim); these are only a placeholder until then.
             ground_mu: 0.0,
@@ -225,6 +231,17 @@ pub fn poll_cmd(ctx: &egui::Context, env: SpeedEnvelope) -> [f64; 3] {
             ),
         ]
     })
+}
+
+/// Was a respawn asked for this frame? Edge-triggered.
+///
+/// Deliberately not the viewer's own Reset button, which cannot be hooked:
+/// it resets the viewer's private copy of the data -- which the physics
+/// loop overwrites on the next sync -- to `qpos0`, every hinge straight.
+/// For a robot whose spawn height was computed for a bent stance, that is
+/// a pose with its feet through the floor.
+pub fn poll_respawn(ctx: &egui::Context) -> bool {
+    ctx.input(|r| r.key_pressed(egui::Key::N))
 }
 
 /// Was the levelling toggle pressed this frame? Edge-triggered.
