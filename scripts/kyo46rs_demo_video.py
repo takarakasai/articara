@@ -33,6 +33,12 @@ COMMON = {
 }
 # Lateral is shot at 0.018, not 0.036: Sec.28 measured 0.036 falling on v6, and
 # a demo clip is not the place to argue about it.
+# Keys the caller is allowed to override COMMON with: everything that decides
+# what the upper body is doing, plus the sole box that has to travel with a
+# widened URDF.
+POSE_KEYS = ("ARM_PITCH", "ELBOW", "SHOULDER_ROLL", "ARM_HOLD", "KP_ARM",
+             "KD_ARM", "SOLE_HALF_W", "SOLE_HALF_L", "HIP_ROLL_SEED")
+
 CLIPS = [
     ("forward",  {"VX": "0.055"}),
     ("backward", {"VX": "-0.055"}),
@@ -49,6 +55,13 @@ def shoot(name, cmd_env, urdf, tag, keep_going):
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = MUJOCO_LIB + ":" + env.get("LD_LIBRARY_PATH", "")
     env.update(COMMON)
+    # COMMON pins ARM_PITCH=0, which silently overwrote an exported arm pose and
+    # shot two whole sets of "guard" clips with the arms hanging (doc Sec.37).
+    # The bench has the same ordering and the same trap; here the caller wins
+    # for the keys that describe the pose, and only those.
+    for k in POSE_KEYS:
+        if k in os.environ:
+            env[k] = os.environ[k]
     env.update(cmd_env)
     env["TRAJ_CSV"] = csv
     if urdf:
