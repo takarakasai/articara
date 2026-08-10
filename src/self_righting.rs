@@ -92,6 +92,48 @@ pub struct RecoveryParams {
     pub stand_hip: f64,
     pub stand_thigh: f64,
     pub stand_calf: f64,
+    /// Ceiling on how fast any commanded joint angle may move (rad/s),
+    /// applied by [`Slew`] to whatever [`targets`] returns.
+    ///
+    /// The parameters alone cannot express this. `ramp_s` only shapes the
+    /// rock cycle -- the step into the rest pose at t=0, and both regime
+    /// changes, are instantaneous target jumps whatever it is set to, and
+    /// a position servo asked to jump moves as fast as it physically can.
+    /// The first searched trajectory peaked at 30 to 39 rad/s of measured
+    /// joint speed, against the .misa's own 33.5 rad/s limit.
+    ///
+    /// [`targets`]: RecoveryParams::targets
+    pub max_rate_rad_s: f64,
+}
+
+/// Rate limiter for the commanded joint angles.
+///
+/// Seeded from where the joints actually are when the recovery starts, so
+/// the first command is a continuation of the current pose rather than a
+/// jump to the trajectory's.
+#[derive(Clone, Copy, Debug)]
+pub struct Slew {
+    pub max_rate_rad_s: f64,
+    arm: f64,
+    legs: LegTargets,
+}
+
+impl Slew {
+    pub fn new(max_rate_rad_s: f64, arm: f64, legs: LegTargets) -> Self {
+        Self { max_rate_rad_s, arm, legs }
+    }
+
+    pub fn apply(&mut self, dt: f64, arm: f64, legs: LegTargets) -> (f64, LegTargets) {
+        let step = (self.max_rate_rad_s * dt).max(0.0);
+        let to = |from: f64, want: f64| from + (want - from).clamp(-step, step);
+        self.arm = to(self.arm, arm);
+        for l in 0..4 {
+            for k in 0..3 {
+                self.legs[l][k] = to(self.legs[l][k], legs[l][k]);
+            }
+        }
+        (self.arm, self.legs)
+    }
 }
 
 /// The best hand-written plan from the probe, as a starting point for
@@ -117,6 +159,7 @@ pub const PROBE_BEST: RecoveryParams = RecoveryParams {
     stand_hip: 0.0,
     stand_thigh: STANCE[1],
     stand_calf: STANCE[2],
+    max_rate_rad_s: 1000.0,
 };
 
 /// Round 1 of the CEM search in `examples/namiashi_self_righting_search`:
@@ -142,6 +185,7 @@ pub const SEARCHED_V1: RecoveryParams = RecoveryParams {
     stand_hip: 0.0,
     stand_thigh: STANCE[1],
     stand_calf: STANCE[2],
+    max_rate_rad_s: 1000.0,
 };
 
 /// Round 2: seeded from [`SEARCHED_V1`], trained on all five ring sites at
@@ -169,6 +213,7 @@ pub const SEARCHED_V2: RecoveryParams = RecoveryParams {
     stand_hip: 0.2382010722464898,
     stand_thigh: 0.767670263584147,
     stand_calf: -2.0872727063104746,
+    max_rate_rad_s: 1000.0,
 };
 
 /// Round 3: the first searched against the teleop's own drive law, which
@@ -197,6 +242,7 @@ pub const SEARCHED_V3: RecoveryParams = RecoveryParams {
     stand_hip: 0.7607914621396008,
     stand_thigh: 2.62,
     stand_calf: -0.11086124631030347,
+    max_rate_rad_s: 1000.0,
 };
 
 /// Round 5, and the one in use. Searched against the teleop's drive law with
@@ -233,22 +279,71 @@ pub const SEARCHED_V4: RecoveryParams = RecoveryParams {
     stand_hip: 0.7591406978703054,
     stand_thigh: 2.593111185239448,
     stand_calf: 1.9850827369063018,
+    max_rate_rad_s: 1000.0,
 };
 
-/// The trajectory the teleop `V` key runs. An alias so that re-running the
-/// search and pointing this at a new constant is a one-line change.
-pub const RECOVERY: RecoveryParams = SEARCHED_V4;
+/// First unhurried recovery: commanded joint rate held under 1.5 rad/s.
+/// Rights the robot in 7 of 15 conditions, at an RMS trunk angular speed of
+/// 0.6 to 1.6 rad/s and RMS joint speed of 0.5 to 1.0 -- inside the
+/// gentleness targets, and roughly a fifth of [`SEARCHED_V4`]'s.
+///
+/// The reliability is the price: 7/15 against [`SEARCHED_V4`]'s 12/15. That
+/// one rocks to build momentum and throws the body over -- its measured
+/// joint speed reaches 20 to 31 rad/s while its commands are already limited
+/// to 5.6, so the speed is the body being flung rather than the targets
+/// moving, and no rate limit alone can take it out.
+///
+/// Where it fails is specific rather than random: every round plate and
+/// every red-platform condition, both of which are raised features the robot
+/// has to roll across rather than on.
+pub const GENTLE_V1: RecoveryParams = RecoveryParams {
+    period_s: 5.0,
+    push_frac: 0.8312312855533875,
+    ramp_s: 0.41276754458812226,
+    hip_push: [1.0274136769414768, -0.3700724244386972],
+    hip_rest: [-0.5872458267151148, -0.6538882786363448],
+    thigh_push: -2.275770962972069,
+    calf_push: -1.2909873761218726,
+    thigh_rest: -1.928576928696653,
+    calf_rest: -2.62,
+    arm_push: -1.6709787462491992,
+    arm_rest: 0.1943547238402507,
+    handoff_up: 0.7954077396695414,
+    finish_hip: 0.9281519870867532,
+    finish_thigh: -2.1560857985365356,
+    finish_calf: -0.27395062266247017,
+    finish_arm: 0.85,
+    stand_hip: 0.27908731891393374,
+    stand_thigh: 2.300333872967274,
+    stand_calf: 1.9745608936502057,
+    max_rate_rad_s: 1.5,
+};
+
+/// What the teleop's `V` key runs: the unhurried recovery.
+///
+/// The default because a recovery that throws a 3.3 kg robot around is not
+/// one to run on hardware, and the numbers behind that judgement are
+/// measured rather than aesthetic -- see [`GENTLE_V1`] against
+/// [`SEARCHED_V4`]. The cost is reliability, 7 of 15 conditions against 14.
+pub const RECOVERY_GENTLE: RecoveryParams = GENTLE_V1;
+
+/// What `Shift`+`V` runs: the reliable one, which gets there by rocking up
+/// momentum and throwing the body over.
+///
+/// Kept because 12/15 against 7/15 is a real difference and the choice
+/// between them is a judgement about the robot, not about the search.
+pub const RECOVERY_FAST: RecoveryParams = SEARCHED_V4;
 
 /// Number of searchable dimensions; see [`RecoveryParams::to_vec`].
-pub const DIM: usize = 20;
+pub const DIM: usize = 21;
 
 /// Per-dimension search bounds, in the order [`RecoveryParams::to_vec`]
 /// uses. Every one is a joint limit from the .misa or a duration that a
 /// 3.3 kg body can plausibly act on, so no candidate is unphysical.
 pub const BOUNDS: [(f64, f64); DIM] = [
-    (0.20, 2.00),  // period_s
+    (0.40, 12.00), // period_s
     (0.10, 0.90),  // push_frac
-    (0.00, 0.40),  // ramp_s
+    (0.00, 2.00),  // ramp_s
     HIP_LIMIT_L,   // hip_push[0]
     HIP_LIMIT_R,   // hip_push[1]
     HIP_LIMIT_L,   // hip_rest[0]
@@ -266,6 +361,7 @@ pub const BOUNDS: [(f64, f64); DIM] = [
     HIP_LIMIT_L,   // stand_hip
     THIGH_LIMIT,   // stand_thigh
     CALF_LIMIT,    // stand_calf
+    (0.30, 8.00),  // max_rate_rad_s
 ];
 
 impl RecoveryParams {
@@ -291,6 +387,7 @@ impl RecoveryParams {
             self.stand_hip,
             self.stand_thigh,
             self.stand_calf,
+            self.max_rate_rad_s,
         ]
     }
 
@@ -323,6 +420,7 @@ impl RecoveryParams {
             stand_hip: c(17),
             stand_thigh: c(18),
             stand_calf: c(19),
+            max_rate_rad_s: c(20),
         }
     }
 
@@ -411,7 +509,34 @@ pub struct Outcome {
     /// How far it travelled in xy. Large values mean it slid rather than
     /// rolled, which on the ring usually means it fell off something.
     pub travel_m: f64,
+    /// Peak trunk angular speed (rad/s).
+    pub peak_omega_rad_s: f64,
+    /// Peak measured joint speed over the twelve leg joints (rad/s).
+    pub peak_joint_rad_s: f64,
+    /// RMS trunk angular speed over the run (rad/s).
+    pub rms_omega_rad_s: f64,
+    /// RMS joint speed over the run and over the twelve leg joints (rad/s).
+    pub rms_joint_rad_s: f64,
 }
+
+/// Targets for what counts as an unhurried recovery. Not limits the robot
+/// would break through -- the .misa allows 33.5 rad/s at the hips -- but the
+/// speeds below which the motion behaves like a deliberate one rather than a
+/// thrash.
+///
+/// RMS, not peak, and that distinction was not obvious: a robot doing
+/// nothing but standing still on flat ground measures a PEAK of 3.28 rad/s
+/// of trunk angular speed and 6.49 rad/s of joint speed, all of it stiff-PD
+/// ringing and contact noise. A peak-based target of 3 rad/s was therefore
+/// below the standing baseline -- unreachable by construction, and
+/// measuring the controller's numerics rather than the motion. In RMS the
+/// same standing robot measures 0.310 rad/s of trunk angular speed and
+/// 0.107 rad/s of joint speed, so these targets sit about 3x and 14x above
+/// the noise floor -- reachable, and far below the 2.6 to 4.7 and 4.2 to 6.5
+/// the first searched trajectory produced.
+pub const GENTLE_OMEGA_RAD_S: f64 = 1.0;
+pub const GENTLE_JOINT_RAD_S: f64 = 1.5;
+pub const GENTLE_TRAVEL_M: f64 = 0.25;
 
 impl Outcome {
     pub fn righted(&self) -> bool {
@@ -424,6 +549,24 @@ impl Outcome {
     /// that gradient the search sees a flat landscape of failures.
     pub fn score(&self) -> f64 {
         self.final_up + 0.3 * self.peak_up + if self.righted() { 0.5 } else { 0.0 }
+    }
+
+    /// How far past the gentleness targets this run went, as a penalty to
+    /// subtract from [`score`].
+    ///
+    /// Hinged, so staying under a target buys nothing and there is no
+    /// pressure to creep toward zero motion, and capped at 1.5 so that
+    /// righting the robot violently still scores above never righting it at
+    /// all (1.8 - 1.5 against -1.3). Without the cap the search can find
+    /// that lying still is the tidiest option.
+    ///
+    /// [`score`]: Outcome::score
+    pub fn roughness(&self) -> f64 {
+        let over = |v: f64, target: f64| (v / target - 1.0).max(0.0);
+        (0.6 * over(self.rms_omega_rad_s, GENTLE_OMEGA_RAD_S)
+            + 0.6 * over(self.rms_joint_rad_s, GENTLE_JOINT_RAD_S)
+            + 0.6 * over(self.travel_m, GENTLE_TRAVEL_M))
+        .min(1.5)
     }
 }
 
@@ -525,6 +668,27 @@ mod sim {
         let mut upright_s = 0.0_f64;
         let mut handed_back = false;
 
+        // Seeded from where the joints actually are, so the recovery starts
+        // by continuing the current pose rather than jumping to its own.
+        let mut spawn_legs = [[0.0_f64; 3]; 4];
+        for (slot, leg) in leg_ji.iter().enumerate() {
+            for (k, ji) in leg.iter().enumerate() {
+                if let Some(ji) = ji {
+                    spawn_legs[slot][k] = sim
+                        .joint_q_qd(&robot.joints[*ji].name)
+                        .map(|(q, _)| q)
+                        .unwrap_or(STANCE[k]);
+                }
+            }
+        }
+        let spawn_arm = arm_ji
+            .and_then(|ji| sim.joint_q_qd(&robot.joints[ji].name))
+            .map(|(q, _)| q)
+            .unwrap_or(ARM_LIMIT.1);
+        let mut slew = Slew::new(params.max_rate_rad_s, spawn_arm, spawn_legs);
+
+        let (mut peak_omega, mut peak_qd) = (0.0_f64, 0.0_f64);
+        let (mut sum_omega2, mut sum_qd2, mut n_samp) = (0.0_f64, 0.0_f64, 0_u64);
         let (mut peak_up, mut t_right_s, mut t) = (-1.0_f64, f64::NAN, 0.0);
         while t < horizon_s {
             // Attitude, from whichever source this drive is entitled to.
@@ -549,11 +713,12 @@ mod sim {
             };
             upright_s = if up > UPRIGHT_UP { upright_s + dt } else { 0.0 };
             handed_back |= upright_s > HOLD_S;
-            let (arm, legs) = if handed_back {
+            let want = if handed_back {
                 (ARM_LIMIT.1, [STANCE; 4])
             } else {
                 params.targets(t, up, g_body_y)
             };
+            let (arm, legs) = slew.apply(dt, want.0, want.1);
             // The arm is on its Position actuator either way.
             if let Some(ji) = arm_ji {
                 sim.set_position_target(ji, arm);
@@ -585,6 +750,22 @@ mod sim {
             }
             sim.step(&mut robot, dt, true);
             t += dt;
+            if let Some(w) = sim.body_world_angular_velocity(&root) {
+                let w2 = w[0] * w[0] + w[1] * w[1] + w[2] * w[2];
+                peak_omega = peak_omega.max(w2.sqrt());
+                sum_omega2 += w2;
+            }
+            let mut qd2 = 0.0;
+            for leg in leg_ji.iter() {
+                for ji in leg.iter().flatten() {
+                    if let Some((_, qd)) = sim.joint_q_qd(&robot.joints[*ji].name) {
+                        peak_qd = peak_qd.max(qd.abs());
+                        qd2 += qd * qd;
+                    }
+                }
+            }
+            sum_qd2 += qd2 / 12.0;
+            n_samp += 1;
             let up = (sim.body_world_orientation(&root).unwrap() * nalgebra::Vector3::z()).z;
             peak_up = peak_up.max(up);
             if up > UPRIGHT_UP && t_right_s.is_nan() {
@@ -598,6 +779,10 @@ mod sim {
             final_up,
             t_right_s,
             travel_m: ((end[0] - start[0]).powi(2) + (end[1] - start[1]).powi(2)).sqrt(),
+            peak_omega_rad_s: peak_omega,
+            peak_joint_rad_s: peak_qd,
+            rms_omega_rad_s: (sum_omega2 / n_samp.max(1) as f64).sqrt(),
+            rms_joint_rad_s: (sum_qd2 / n_samp.max(1) as f64).sqrt(),
         }
     }
 }

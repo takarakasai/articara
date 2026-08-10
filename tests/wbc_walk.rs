@@ -5642,7 +5642,10 @@ fn namiashi_respawn_restores_start_pose() {
 #[ignore = "diagnostic -- run with --ignored"]
 fn namiashi_self_righting_teleop_drive() {
     use articara::mjcf::KawasakiRingCfg;
-    use articara::self_righting::{evaluate_with, Drive, RECOVERY};
+    use articara::self_righting::{
+        evaluate_with, Drive, GENTLE_JOINT_RAD_S, GENTLE_OMEGA_RAD_S, RECOVERY_FAST,
+        RECOVERY_GENTLE,
+    };
 
     let ring = KawasakiRingCfg::default();
     let (pw, pd) = ring.red_platform_m;
@@ -5660,27 +5663,44 @@ fn namiashi_self_righting_teleop_drive() {
     ];
     // The teleop's own gains and filter constant.
     let teleop = Drive::TorqueAhrs { kp: 100.0, kd: 1.2, imu_beta: 0.1 };
-    let (mut ok, mut total) = (0, 0);
-    for (name, xy) in sites {
-        for mu in [0.30_f64, 0.70, 1.00] {
-            let o = evaluate_with(&misa, &ring, xy, mu, &RECOVERY, 8.0, teleop);
-            total += 1;
-            ok += o.righted() as u32;
-            eprintln!(
-                "[right] {name:<20} mu {mu:.2}  final up {:+.3}  peak {:+.3}  \
-                 t {:.2} s  travel {:.3} m  {}",
-                o.final_up,
-                o.peak_up,
-                o.t_right_s,
-                o.travel_m,
-                if o.righted() { "RIGHTED" } else { "no" },
-            );
+    let mut counts = [0_u32; 2];
+    let mut rough = [0.0_f64; 2];
+    for (which, (label, plan, secs)) in
+        [("gentle", RECOVERY_GENTLE, 20.0), ("fast", RECOVERY_FAST, 14.0)]
+            .into_iter()
+            .enumerate()
+    {
+        for (name, xy) in sites {
+            for mu in [0.30_f64, 0.70, 1.00] {
+                let o = evaluate_with(&misa, &ring, xy, mu, &plan, secs, teleop);
+                counts[which] += o.righted() as u32;
+                rough[which] = rough[which].max(o.rms_omega_rad_s);
+                eprintln!(
+                    "[{label:<6}] {name:<20} mu {mu:.2}  final up {:+.3}  t {:>5.2} s  \
+                     travel {:.3} m  RMS w {:.2}  qd {:.2}  {}",
+                    o.final_up,
+                    o.t_right_s,
+                    o.travel_m,
+                    o.rms_omega_rad_s,
+                    o.rms_joint_rad_s,
+                    if o.righted() { "RIGHTED" } else { "no" },
+                );
+            }
         }
+        eprintln!("[{label:<6}] {}/15 righted, worst RMS w = {:.2} rad/s", counts[which], rough[which]);
     }
-    eprintln!("[right] {ok}/{total} righted");
-    // 14/15 measured. The one failure is the red platform at mu 0.70, a
-    // 5 cm plinth barely wider than the robot which the recovery slides off.
-    assert!(ok >= 13, "self-righting regressed: {ok}/{total}");
+    // Measured: gentle 7/15 at an RMS trunk angular speed under 1.7 rad/s,
+    // fast 12/15 at 2.0 to 3.8. The trade is real and the point of keeping
+    // both. A standing robot measures 0.310 rad/s, so the gentle one is
+    // within about 5x of doing nothing and the fast one is 10 to 15x.
+    assert!(counts[0] >= 6, "gentle self-righting regressed: {}/15", counts[0]);
+    assert!(counts[1] >= 11, "fast self-righting regressed: {}/15", counts[1]);
+    assert!(
+        rough[0] < 2.0 * GENTLE_OMEGA_RAD_S,
+        "gentle recovery is no longer gentle: worst RMS w = {:.2} rad/s",
+        rough[0],
+    );
+    let _ = GENTLE_JOINT_RAD_S;
 }
 
 /// Does `Shift`+`N` actually put the robot on its back, and does it STAY

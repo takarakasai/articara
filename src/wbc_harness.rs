@@ -1593,6 +1593,10 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut recover_t: Option<f64> = None;
     #[allow(unused_mut)]
     let mut recover_upright_s = 0.0_f64;
+    #[allow(unused_mut)]
+    let mut recover_slew: Option<crate::self_righting::Slew> = None;
+    #[allow(unused_mut)]
+    let mut recover_fast = false;
 
     let render_hz = params.render_hz.unwrap_or(60.0).max(1.0);
     let render_decim = ((1.0 / render_hz) / params.dt).round().max(1.0) as usize;
@@ -1638,8 +1642,9 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     st.respawn_requested = true;
                     st.respawn_inverted = inverted;
                 }
-                if poll_recover(ctx) {
+                if let Some(fast) = poll_recover(ctx) {
                     st.recover_requested = true;
+                    st.recover_fast = fast;
                 }
                 if poll_level_toggle(ctx) {
                     st.level_enabled = !st.level_enabled;
@@ -1748,13 +1753,19 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 if std::mem::replace(&mut st.recover_requested, false) {
                     recover_t = Some(0.0);
                     recover_upright_s = 0.0;
-                    eprintln!("[teleop] self-righting");
+                    recover_slew = None;
+                    recover_fast = st.recover_fast;
+                    eprintln!(
+                        "[teleop] self-righting ({})",
+                        if recover_fast { "fast" } else { "unhurried" }
+                    );
                 }
             }
             if respawn_pending {
                 respawn_pending = false;
                 recover_t = None;
                 recover_upright_s = 0.0;
+                recover_slew = None;
                 // Dropped in from 10 cm up, so the first contact is a short
                 // fall rather than MuJoCo shoving the robot out of a
                 // penetration it woke up inside.
@@ -2388,12 +2399,34 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             let mut recovering = false;
             #[cfg(feature = "mujoco-viewer")]
             if let Some(rt) = recover_t {
-                use crate::self_righting::{RECOVERY, UPRIGHT_UP};
+                use crate::self_righting::{RECOVERY_FAST, RECOVERY_GENTLE, UPRIGHT_UP};
+                let plan = if recover_fast { RECOVERY_FAST } else { RECOVERY_GENTLE };
                 recovering = true;
                 let q_wb = ahrs.quaternion();
                 let up = (q_wb * Vector3::<f64>::z()).z;
                 let g_body_y = (q_wb.inverse() * Vector3::new(0.0, 0.0, -1.0)).y;
-                let (arm_q, legs) = RECOVERY.targets(rt, up, g_body_y);
+                let want = plan.targets(rt, up, g_body_y);
+                // Same rate limit the search optimised under. Without it the
+                // regime changes are instantaneous target jumps and a
+                // position servo asked to jump moves as fast as it can.
+                let slew = recover_slew.get_or_insert_with(|| {
+                    let mut legs0 = [[0.0_f64; 3]; 4];
+                    for slot in 0..4 {
+                        let ji = gc.joint_indices()[slot];
+                        for kk in 0..3 {
+                            legs0[slot][kk] = sim
+                                .joint_q_qd(&robot.joints[ji[kk]].name)
+                                .map(|(q, _)| q)
+                                .unwrap_or(want.1[slot][kk]);
+                        }
+                    }
+                    let arm0 = arm_ji
+                        .and_then(|ji| sim.joint_q_qd(&robot.joints[ji].name))
+                        .map(|(q, _)| q)
+                        .unwrap_or(want.0);
+                    crate::self_righting::Slew::new(plan.max_rate_rad_s, arm0, legs0)
+                });
+                let (arm_q, legs) = slew.apply(host_dt, want.0, want.1);
                 for slot in 0..4 {
                     let ji = gc.joint_indices()[slot];
                     for kk in 0..3 {
@@ -2406,16 +2439,17 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 }
                 recover_upright_s = if up > UPRIGHT_UP { recover_upright_s + host_dt } else { 0.0 };
                 let done = recover_upright_s > 1.0;
-                // 12 s is past every trajectory the search produced (the
-                // slowest righted at 6.9 s), so this is a giving-up limit,
-                // not a schedule.
-                if done || rt > 12.0 {
+                // Past every trajectory the search produced -- the unhurried
+                // one takes up to 6.1 s -- so this is a giving-up limit, not
+                // a schedule.
+                if done || rt > 20.0 {
                     eprintln!(
                         "[teleop] self-righting {} after {rt:.1} s",
                         if done { "done" } else { "gave up" }
                     );
                     recover_t = None;
                     recover_upright_s = 0.0;
+                    recover_slew = None;
                     // Back to a standstill, for the same reason respawn does
                     // it: the gait phase has been running this whole time
                     // against a robot that was not walking.

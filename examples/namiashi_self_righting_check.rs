@@ -15,7 +15,9 @@
 #[cfg(feature = "mujoco")]
 fn main() {
     use articara::mjcf::KawasakiRingCfg;
-    use articara::self_righting::{evaluate_with, Drive, RECOVERY};
+    use articara::self_righting::{
+        evaluate_with, Drive, GENTLE_JOINT_RAD_S, GENTLE_OMEGA_RAD_S, GENTLE_TRAVEL_M, RECOVERY_GENTLE,
+    };
 
     let ring = KawasakiRingCfg::default();
     let (pw, pd) = ring.red_platform_m;
@@ -36,28 +38,34 @@ fn main() {
     let teleop = Drive::TorqueAhrs { kp: 100.0, kd: 1.2, imu_beta: 0.1 };
 
     println!(
-        "{:<22} {:>5} | {:>8} {:>7} | {:>8} {:>7}",
-        "site", "mu", "pos up", "t", "teleop up", "t"
+        "{:<22} {:>5} | {:>7} | {:>7} {:>6} {:>7} {:>7} {:>7}",
+        "site", "mu", "pos up", "up", "t", "d_xy m", "w rms", "qd rms"
     );
     let (mut ok_p, mut ok_t, mut total) = (0, 0, 0);
     for (name, xy) in sites {
         for mu in [0.30_f64, 0.70, 1.00] {
-            let p = evaluate_with(&misa, &ring, xy, mu, &RECOVERY, 8.0, Drive::Position);
-            let t = evaluate_with(&misa, &ring, xy, mu, &RECOVERY, 8.0, teleop);
+            let p = evaluate_with(&misa, &ring, xy, mu, &RECOVERY_GENTLE, 8.0, Drive::Position);
+            let t = evaluate_with(&misa, &ring, xy, mu, &RECOVERY_GENTLE, 8.0, teleop);
             total += 1;
             ok_p += p.righted() as u32;
             ok_t += t.righted() as u32;
             println!(
-                "{name:<22} {mu:>5.2} | {:>8.3} {:>7.2} | {:>8.3} {:>7.2}  {}",
+                "{name:<22} {mu:>5.2} | {:>7.3} | {:>7.3} {:>6.2} {:>7.3} {:>7.1} {:>7.1}  {}",
                 p.final_up,
-                p.t_right_s,
                 t.final_up,
                 t.t_right_s,
+                t.travel_m,
+                t.rms_omega_rad_s,
+                t.rms_joint_rad_s,
                 if t.righted() { "RIGHTED" } else { "no" }
             );
         }
     }
     println!("\nposition actuators: {ok_p}/{total}   teleop drive: {ok_t}/{total}");
+    println!(
+        "gentleness targets (RMS): w <= {GENTLE_OMEGA_RAD_S} rad/s, qd <= \
+         {GENTLE_JOINT_RAD_S} rad/s, travel <= {GENTLE_TRAVEL_M} m"
+    );
 }
 
 #[cfg(not(feature = "mujoco"))]

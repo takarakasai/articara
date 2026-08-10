@@ -19,7 +19,8 @@
 //! | `B`                       | trunk levelling on/off      |
 //! | `N`                       | respawn at the start pose   |
 //! | `Shift`+`N`               | respawn upside down         |
-//! | `V`                       | self-right from a fall      |
+//! | `V`                       | self-right, unhurried       |
+//! | `Shift`+`V`               | self-right, fast            |
 //! | `Y`/`G` (held)            | arm pitch up / down         |
 //! | `K`                       | show / hide this list       |
 //! | `O`/`L`                   | ground friction mu +/- 0.05 |
@@ -98,6 +99,10 @@ pub struct LiveTeleop {
     /// Set by `V`: run the self-righting trajectory. Also an edge, for the
     /// same reason as `respawn_requested`.
     pub recover_requested: bool,
+    /// Whether that request is for the fast trajectory (`Shift`+`V`) rather
+    /// than the unhurried one. Only meaningful while `recover_requested` is
+    /// set.
+    pub recover_fast: bool,
     /// Simulated sliding friction of every geom -- the actual slipperiness
     /// of the world. Applied via `MujocoSim::set_slide_friction_all`.
     pub ground_mu: f64,
@@ -182,6 +187,7 @@ impl LiveTeleop {
             respawn_requested: false,
             respawn_inverted: false,
             recover_requested: false,
+            recover_fast: false,
             // Seeded from the live sim/controller at startup (see
             // run_wbc_sim); these are only a placeholder until then.
             ground_mu: 0.0,
@@ -282,7 +288,8 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("Y / G", "arm pitch up / down (held)"),
     ("N", "respawn at the start pose, 10 cm up"),
     ("Shift+N", "respawn upside down"),
-    ("V", "self-right from a fall"),
+    ("V", "self-right, unhurried"),
+    ("Shift+V", "self-right, fast"),
     ("O / L", "ground friction mu"),
     ("P / .", "controller's assumed mu"),
     ("K", "show / hide this list"),
@@ -306,9 +313,10 @@ pub const ARM_RATE_RAD_S: f64 = 0.8;
 /// loop overwrites on the next sync -- to `qpos0`, every hinge straight.
 /// For a robot whose spawn height was computed for a bent stance, that is
 /// a pose with its feet through the floor.
-/// `V`, edge-triggered: start the self-righting trajectory.
-pub fn poll_recover(ctx: &egui::Context) -> bool {
-    ctx.input(|r| r.key_pressed(egui::Key::V))
+/// `V`, edge-triggered: start the self-righting trajectory. `Some(true)` for
+/// the fast one (`Shift` held), `Some(false)` for the unhurried default.
+pub fn poll_recover(ctx: &egui::Context) -> Option<bool> {
+    ctx.input(|r| r.key_pressed(egui::Key::V).then_some(r.modifiers.shift))
 }
 
 pub fn poll_respawn(ctx: &egui::Context) -> Option<bool> {

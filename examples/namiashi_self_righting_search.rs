@@ -7,6 +7,9 @@
 //! 1.05 to 2.40 rad does not move that number at all. So the pose is
 //! reachable and what is missing is the timing to reach it.
 //!
+//! Scored on success MINUS roughness, so an unhurried recovery beats a
+//! violent one that works equally well.
+//!
 //! Scored through `Drive::TorqueAhrs` -- the torque PD and IMU-filtered
 //! attitude `run_wbc_sim` uses -- not the .misa's Position actuators.
 //!
@@ -38,7 +41,7 @@
 fn main() {
     use articara::mjcf::KawasakiRingCfg;
     use articara::self_righting::{
-        evaluate_with, Drive, RecoveryParams, BOUNDS, DIM, SEARCHED_V4,
+        evaluate_with, Drive, RecoveryParams, BOUNDS, DIM, GENTLE_V1, SEARCHED_V4,
     };
 
     // Search against the control path the teleop actually runs, not the
@@ -51,16 +54,50 @@ fn main() {
 
     const POP: usize = 40;
     const ELITE: usize = 10;
-    const GENS: usize = 25;
-    /// Search and validation horizons, deliberately equal. They were 6 and 8
+    const GENS: usize = 35;
+    /// Search and validation horizons, deliberately equal, and long enough
+    /// for a rate-limited recovery to finish -- an 8 s window would score a
+    /// slow trajectory as a failed one. They were 6 and 8
     /// and round 4 scored 2.69 out of a possible 2.70 in training while
     /// righting only 4 of 15 in validation -- ten of those fifteen ARE the
     /// training conditions, so the contradiction was entirely the two extra
     /// seconds. The trajectory stood up inside six and toppled inside eight.
     /// A shorter search horizon does not select for faster recoveries, it
     /// selects for ones that have not fallen over yet.
-    const SEARCH_S: f64 = 8.0;
-    const VALIDATE_S: f64 = 8.0;
+    const SEARCH_S: f64 = 20.0;
+    const VALIDATE_S: f64 = 20.0;
+
+    // `--gentle` forbids the rocking. The searches so far all converge on a
+    // ~1.3 s rock cycle and pay nearly the full roughness penalty, and the
+    // reason is visible in the numbers: measured joint speed reaches 20 to
+    // 31 rad/s while the COMMAND is rate-limited to 5.6, so the violence is
+    // the body being thrown, not the targets moving fast. Rocking is how the
+    // trajectory buys the momentum to get over.
+    //
+    // So this asks the question directly: with `period_s` pinned past the
+    // horizon (one push, no cycles) and the command rate held under 1.5
+    // rad/s, is there a quasi-static way over at all? If the answer is no,
+    // that is worth knowing plainly rather than inferring from a penalty
+    // the search keeps choosing to pay.
+    // `--rate <v>` caps the commanded joint rate at v rad/s. The default
+    // search converges on a ~1.3 s rock cycle and pays nearly the full
+    // roughness penalty, and the numbers say why: measured joint speed
+    // reaches 20 to 31 rad/s while the COMMAND is already limited to 5.6, so
+    // the violence is the body being thrown, not the targets moving fast.
+    // Rocking is how the trajectory buys the momentum to get over. Capping
+    // the rate is therefore the one knob that actually forbids that, and
+    // sweeping it maps the trade between how gentle a recovery is and how
+    // often it works.
+    let args: Vec<String> = std::env::args().collect();
+    let rate_cap: Option<f64> = args
+        .iter()
+        .position(|a| a == "--rate")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok());
+    let mut bounds = BOUNDS;
+    if let Some(cap) = rate_cap {
+        bounds[20] = (BOUNDS[20].0, cap.clamp(BOUNDS[20].0, BOUNDS[20].1));
+    }
 
     let ring = KawasakiRingCfg::default();
     let (pw, pd) = ring.red_platform_m;
@@ -100,7 +137,13 @@ fn main() {
         let mut sum = 0.0;
         let mut worst = f64::INFINITY;
         for &(xy, mu) in conds {
-            let s = evaluate_with(&misa, &ring, xy, mu, p, secs, TELEOP).score();
+            let o = evaluate_with(&misa, &ring, xy, mu, p, secs, TELEOP);
+            // The success term minus how far past the gentleness targets it
+            // went. Measured on the previous winner: 30 to 39 rad/s of joint
+            // speed against a 33.5 rad/s limit, and 10 to 18 rad/s of trunk
+            // angular speed -- two to three body revolutions per second. It
+            // rights the robot by throwing it.
+            let s = o.score() - o.roughness();
             sum += s;
             worst = worst.min(s);
         }
@@ -118,20 +161,35 @@ fn main() {
         m + s * r * (2.0 * std::f64::consts::PI * u2).cos()
     };
 
-    let mut mean = SEARCHED_V4.to_vec();
+    // Seed from whichever incumbent belongs to this mode -- a rate-capped
+    // search started from the violent trajectory spends its first
+    // generations undoing it.
+    let mut mean = if rate_cap.is_some() { GENTLE_V1.to_vec() } else { SEARCHED_V4.to_vec() };
     let mut sigma = [0.0; DIM];
     for i in 0..DIM {
         // Wider again than a pure refinement: the seed works under a
         // different evaluator, so its optimum is not necessarily near this
         // one's.
-        sigma[i] = 0.18 * (BOUNDS[i].1 - BOUNDS[i].0);
+        mean[i] = mean[i].clamp(bounds[i].0, bounds[i].1);
+        sigma[i] = 0.18 * (bounds[i].1 - bounds[i].0);
     }
 
-    let seed_fit = fitness(&SEARCHED_V4, &train, SEARCH_S);
+    let seed = RecoveryParams::from_vec(&{
+        let mut v = mean;
+        for i in 0..DIM {
+            v[i] = v[i].clamp(bounds[i].0, bounds[i].1);
+        }
+        v
+    });
+    println!(
+        "commanded joint rate <= {} rad/s",
+        rate_cap.map_or("(unconstrained)".to_string(), |c| format!("{c:.2}"))
+    );
+    let seed_fit = fitness(&seed, &train, SEARCH_S);
     println!("seed (previous winner) fitness = {seed_fit:.4}");
     println!("{:>4} {:>10} {:>10} {:>10}", "gen", "best", "elite mean", "sigma sum");
 
-    let mut best = (seed_fit, SEARCHED_V4);
+    let mut best = (seed_fit, seed);
     for g in 0..GENS {
         // Sample the population up front so the RNG draw order does not
         // depend on thread scheduling.
@@ -140,7 +198,8 @@ fn main() {
         while cands.len() < POP {
             let mut v = [0.0; DIM];
             for i in 0..DIM {
-                v[i] = gauss(mean[i], sigma[i], next_unit(), next_unit());
+                v[i] = gauss(mean[i], sigma[i], next_unit(), next_unit())
+                    .clamp(bounds[i].0, bounds[i].1);
             }
             cands.push(RecoveryParams::from_vec(&v));
         }
@@ -180,7 +239,7 @@ fn main() {
         for i in 0..DIM {
             // Floor at 2% of the range: a diagonal CEM collapses its own
             // variance and stops exploring long before it has to.
-            new_sigma[i] = new_sigma[i].sqrt().max(0.02 * (BOUNDS[i].1 - BOUNDS[i].0));
+            new_sigma[i] = new_sigma[i].sqrt().max(0.02 * (bounds[i].1 - bounds[i].0));
         }
         mean = new_mean;
         sigma = new_sigma;
@@ -196,8 +255,8 @@ fn main() {
     // ---- validation on all fifteen conditions -------------------------
     println!("\nbest fitness {:.4}\n{:#?}\n", best.0, best.1);
     println!(
-        "validation at {VALIDATE_S} s ('*' = a condition the search never saw)\n{:<22} {:>5} {:>8} {:>8} {:>8} {:>7}",
-        "site", "mu", "peak up", "final", "d_xy m", "t_right"
+        "validation at {VALIDATE_S} s ('*' = a condition the search never saw)\n{:<22} {:>5} {:>8} {:>8} {:>8} {:>7} {:>7} {:>7}",
+        "site", "mu", "peak up", "final", "d_xy m", "t_right", "w rms", "qd rms"
     );
     let (mut ok, mut total) = (0, 0);
     for (name, xy) in sites {
@@ -209,11 +268,13 @@ fn main() {
                 ok += 1;
             }
             println!(
-                "{unseen}{name:<21} {mu:>5.2} {:>8.3} {:>8.3} {:>8.3} {:>7.2}  {}",
+                "{unseen}{name:<21} {mu:>5.2} {:>8.3} {:>8.3} {:>8.3} {:>7.2} {:>7.1} {:>7.1}  {}",
                 o.peak_up,
                 o.final_up,
                 o.travel_m,
                 o.t_right_s,
+                o.rms_omega_rad_s,
+                o.rms_joint_rad_s,
                 if o.righted() { "RIGHTED" } else { "no" }
             );
         }
