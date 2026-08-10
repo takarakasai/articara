@@ -30,14 +30,30 @@ ROBOT = os.environ.get("ROBOT", "kyo46rs")
 STANCE_Y = float(os.environ.get("STANCE_Y", 0.0996 if os.environ.get("ROBOT", "").startswith("g1") else 0.0706))
 # Camera distance / target height multiplier, roughly the height ratio.
 CAM_SCALE = float(os.environ.get("CAM_SCALE", 2.2 if os.environ.get("ROBOT", "").startswith("g1") else 1.0))
-LEGEND_NOTE = (
-    ["visual: full STL geometry", "collision: primitives only"]
-    if os.environ.get("ROBOT", "").startswith("g1")
-    # v6: hip_roll/knee are RS00 (57x51mm), everything else Edulite05
-    # (46x44mm), single motor each -- no more dual-motor joints (v3/v5
-    # retired the knee's and hip_pitch's boosters).
-    else ["Edulite05 46x44mm, RS00 57x51mm", "hip_roll/knee: RS00, no boosters"]
-)
+def _legend():
+    """Two lines naming what the actuators ARE.
+
+    This has now gone stale twice -- once for the v3/v5 booster retirements
+    (fixed in 786d0e8) and again for v7/v8, where the arms became Dynamixels
+    and the hardcoded "Edulite05" line started captioning a robot that has
+    none in its arms. A caption nobody re-derives is a caption that lies, so
+    `LEGEND` overrides it and the default at least says which file was drawn.
+    """
+    if "LEGEND" in os.environ:
+        return (os.environ["LEGEND"].split("|") + ["", ""])[:2]
+    if os.environ.get("ROBOT", "").startswith("g1"):
+        return ["visual: full STL geometry", "collision: primitives only"]
+    urdf = os.environ.get("URDF", "")
+    if "_v8" in urdf:
+        return ["legs Edulite05 / RS00 (hip_roll, knee)", "arms XM430-W210 x3 per side"]
+    if "_v7" in urdf:
+        return ["legs Edulite05 / RS00 (hip_roll, knee)", "arms XM430 x2 + XM335 elbow"]
+    # v6 and its cuts: hip_roll/knee RS00 (57x51), everything else Edulite05
+    # (46x44), single motor each -- v3/v5 retired the knee's and hip_pitch's.
+    return ["Edulite05 46x44mm, RS00 57x51mm", "hip_roll/knee: RS00, no boosters"]
+
+
+LEGEND_NOTE = _legend()
 URDFS = {
     "kyo46rs": "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
     "kyo46rs2": "/home/takara/work/dp/humanoid/kyo46rs2_description/urdf/kyo46rs2.urdf",
