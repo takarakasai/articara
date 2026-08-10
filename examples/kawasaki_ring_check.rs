@@ -73,8 +73,14 @@ fn main() {
     let misa = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/namiashi/namiashi_3p3_prop.misa");
     let robot = RobotModel::from_misa(&misa).expect("load namiashi");
+    // Spawn on the red start platform, same as both teleop demos -- the
+    // origin is the centre bowl.
+    let (pw, pd) = ring.red_platform_m;
     let opts = MjcfExportOptions {
-        base_pos: Some([-0.75, -0.75, 0.30]),
+        base_xy: Some((
+            -(ring.ring_m / 2.0 + pd / 2.0),
+            -(ring.ring_m / 2.0 - pw / 2.0),
+        )),
         extra_asset_xml: Some(ring.asset_xml("kawasaki")),
         extra_worldbody_xml: Some(ring.worldbody_xml("kawasaki")),
         add_actuators: true,
@@ -85,9 +91,37 @@ fn main() {
         .expect("write xml");
     println!("wrote {xml_path}");
 
+    let mut robot = robot;
     let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
     sim.set_hfield_data("kawasaki", &heights).expect("fill hfield");
     println!("MuJoCo loaded the ring and accepted the {}-value grid.", heights.len());
+
+    // Loading is not standing. Step it: a heightfield the robot falls
+    // through, or one whose contacts explode, is invisible until something
+    // actually rests on it -- and the ring is the first hfield in this repo,
+    // so nothing else has exercised that path.
+    let dt = sim.timestep();
+    let start = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+    for _ in 0..(2.0 / dt) as u32 {
+        sim.step(&mut robot, dt, true);
+    }
+    let end = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+    let contacts = sim.contacts().len();
+    println!(
+        "after 2 s holding stance: trunk ({:+.3},{:+.3},{:+.3}) -> ({:+.3},{:+.3},{:+.3}), \
+         {contacts} contacts",
+        start[0], start[1], start[2], end[0], end[1], end[2],
+    );
+    println!(
+        "  verdict: {}",
+        if end[2] < -0.10 {
+            "FELL THROUGH the field"
+        } else if !end[2].is_finite() || end[2].abs() > 5.0 {
+            "DIVERGED"
+        } else {
+            "stands on the platform"
+        }
+    );
 }
 
 #[cfg(not(feature = "mujoco"))]
