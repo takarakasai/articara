@@ -40,12 +40,13 @@
 //! moves, releasing it stops. O/L change the ground's friction, which is
 //! physics and so applies here exactly as it does to the WBC demo.
 //!
-//! The gait, swing-height and controller-mu keys (1/2/3, R/F, P/.) do
-//! nothing here: a learned policy has no gait schedule to switch, no
-//! swing-height parameter to set, and no friction cone to inform -- it
-//! decides foot clearance itself, per step, from the observation, and
-//! never reasons about mu at all. That contrast is itself worth feeling
-//! directly against the WBC/MPC demo.
+//! The gait, swing-height, body-height, levelling and controller-mu keys
+//! (1/2/3, R/F, =/-, B, P/.) do nothing here: a learned policy has no gait
+//! schedule to switch, no swing-height or stance-height parameter to set,
+//! no nominal to level, and no friction cone to inform -- it decides foot
+//! clearance, posture and contact timing itself, per step, from the
+//! observation, and never reasons about mu at all. That contrast is itself
+//! worth feeling directly against the WBC/MPC demo.
 
 #[cfg(all(feature = "mujoco", feature = "mujoco-viewer", feature = "onnx"))]
 fn main() {

@@ -5374,9 +5374,18 @@ fn namiashi_ring_proprio_levelling() {
     // The last row crouches WHILE levelling: the two write the same nominal
     // through one accumulator, and an accumulator that drops a contributor
     // looks exactly like a controller that ignores a key.
-    for (gain, lift) in [(0.0, 0.0), (1.0, 0.0), (1.0, -0.03)] {
+    // The `enabled` column is the `B` toggle. It must gate the CORRECTION,
+    // not just a flag: configured-but-toggled-off has to land on the same
+    // tilt as never configured at all, or the key is decorative.
+    for (gain, lift, enabled) in [
+        (0.0, 0.0, true),   // not configured
+        (1.0, 0.0, false),  // configured, toggled off
+        (1.0, 0.0, true),   // configured, on
+        (1.0, -0.03, true), // on, while crouching
+    ] {
         let live = std::sync::Arc::new(std::sync::Mutex::new(articara::teleop::LiveTeleop {
             body_lift_m: lift,
+            level_enabled: enabled,
             ..articara::teleop::LiveTeleop::new(GaitType::Trot)
         }));
         let params = WbcParams {
@@ -5408,7 +5417,8 @@ fn namiashi_ring_proprio_levelling() {
             .map(|s| s.roll.abs().max(s.pitch.abs()))
             .fold(0.0_f64, f64::max);
         eprintln!(
-            "[proprio_level gain={gain:.1} lift={lift:+.3}] roll={:+.2}deg pitch={:+.2}deg  \
+            "[proprio_level gain={gain:.1} lift={lift:+.3} on={enabled:<5}] \
+             roll={:+.2}deg pitch={:+.2}deg  \
              max|tilt|={:.2}deg  final z={:.3}m",
             mean_roll.to_degrees(),
             mean_pitch.to_degrees(),

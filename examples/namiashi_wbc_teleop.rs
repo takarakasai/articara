@@ -41,7 +41,9 @@ fn main() {
 
     use articara::mjcf::{KawasakiRingCfg, StaircaseCfg};
     use articara::teleop::LiveTeleop;
-    use articara::wbc_harness::{namiashi_tuned_params, run_wbc_sim, Actuation, WbcParams};
+    use articara::wbc_harness::{
+        namiashi_tuned_params, run_wbc_sim, Actuation, ProprioStanceCfg, WbcParams,
+    };
     use quadruped_gait::GaitType;
 
     // `--field ring` (default) or `--field stairs`.
@@ -90,6 +92,9 @@ fn main() {
         live_teleop: Some(live),
         live_viewer: true,
         render_hz: Some(render_hz),
+        // Configured always; `B` gates it live. Proprioceptive only -- IMU
+        // and encoders, no terrain oracle -- so it is honest to leave on.
+        proprio_stance: Some(ProprioStanceCfg::default()),
         ..namiashi_tuned_params(0)
     };
     let params = match field.as_str() {
@@ -123,7 +128,8 @@ fn main() {
     eprintln!(
         "[teleop] W/S drive, A/D turn, Q/E strafe (arrows + PgUp/PgDn too), \
          Shift = full speed, 1/2/3 = Crawl/Walk/Trot, R/F = swing height, \
-         O/L = ground mu, P/. = controller mu. Release to stop."
+         =/- = body height, B = levelling, O/L = ground mu, P/. = controller mu. \
+         Release to stop."
     );
     eprintln!("[teleop] field = {field}  (--field ring | stairs, --cell-mm {cell_mm}, --render-hz {render_hz})");
     run_wbc_sim(params);

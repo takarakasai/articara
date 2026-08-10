@@ -1584,8 +1584,8 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // state, so the cheaper detached path applies directly.
             use crate::teleop::{
                 draw_hud, poll_body_lift_delta, poll_cmd, poll_friction_deltas, poll_gait,
-                poll_swing_height_delta, SpeedEnvelope, BODY_LIFT_RANGE_M, FRICTION_RANGE,
-                SWING_HEIGHT_RANGE_M,
+                poll_level_toggle, poll_swing_height_delta, SpeedEnvelope, BODY_LIFT_RANGE_M,
+                FRICTION_RANGE, SWING_HEIGHT_RANGE_M,
             };
             v.add_ui_callback_detached(move |ctx| {
                 let mut st = live.lock().unwrap();
@@ -1596,6 +1596,9 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 if dh != 0.0 {
                     st.swing_height_m = (st.swing_height_m + dh)
                         .clamp(SWING_HEIGHT_RANGE_M.0, SWING_HEIGHT_RANGE_M.1);
+                }
+                if poll_level_toggle(ctx) {
+                    st.level_enabled = !st.level_enabled;
                 }
                 let dl = poll_body_lift_delta(ctx);
                 if dl != 0.0 {
@@ -1854,6 +1857,10 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // driving the robot will actually reach for.
             let mut nom_off = [0.0_f64; 4];
             let mut nom_dirty = false;
+            // Levelling is on unless a live session has switched it off;
+            // a batch run has no toggle and gets whatever it configured.
+            #[allow(unused_mut)]
+            let mut level_on = true;
 
             // Live body height. Positive `body_lift_m` raises the trunk, so
             // it LOWERS the nominal foot z -- `nominal_foot_body.z` measures
@@ -1861,7 +1868,13 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // by increasing it.
             #[cfg(feature = "mujoco-viewer")]
             if let Some(live) = &params.live_teleop {
-                let lift = live.lock().unwrap().body_lift_m;
+                // One lock for both: they are read at the same instant and
+                // taking it twice invites them to disagree by a tick.
+                let (lift, on) = {
+                    let st = live.lock().unwrap();
+                    (st.body_lift_m, st.level_enabled)
+                };
+                level_on = on;
                 if lift.abs() > 1e-9 {
                     for o in nom_off.iter_mut() {
                         *o -= lift;
@@ -1887,7 +1900,7 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // oracle overwrites, making the mistake visible rather than
             // silently blending two sources.
             if let Some(cfg_pp) = params.proprio_stance {
-                if k >= burn_in_steps {
+                if level_on && k >= burn_in_steps {
                     // Attitude from the IMU, gravity-aligned. Yaw is left to
                     // drift -- it cannot affect a z component.
                     let q_wb = ahrs.quaternion();

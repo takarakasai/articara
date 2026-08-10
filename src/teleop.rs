@@ -16,6 +16,7 @@
 //! | `1`/`2`/`3`               | Crawl / Walk / Trot         |
 //! | `R`/`F`                   | swing height +/- 5 mm       |
 //! | `=`/`-`                   | trunk height +/- 5 mm       |
+//! | `B`                       | trunk levelling on/off      |
 //! | `O`/`L`                   | ground friction mu +/- 0.05 |
 //! | `P`/`.`                   | controller's assumed mu     |
 //!
@@ -62,6 +63,12 @@ pub struct LiveTeleop {
     /// convention for leg geometry and the wrong one for a key that says
     /// "up". The conversion happens once, where it is applied.
     pub body_lift_m: f64,
+    /// Whether the proprioceptive trunk levelling is engaged
+    /// ([`crate::wbc_harness::ProprioStanceCfg`]). A toggle rather than a
+    /// build-time choice because its value is most obvious as a difference:
+    /// standing astride a step and switching it off tips the trunk by the
+    /// step's own geometry, live.
+    pub level_enabled: bool,
     /// Simulated sliding friction of every geom -- the actual slipperiness
     /// of the world. Applied via `MujocoSim::set_slide_friction_all`.
     pub ground_mu: f64,
@@ -139,6 +146,7 @@ impl LiveTeleop {
             gait,
             swing_height_m: crate::wbc_harness::namiashi_tuned_swing_height_m(gait),
             body_lift_m: 0.0,
+            level_enabled: true,
             // Seeded from the live sim/controller at startup (see
             // run_wbc_sim); these are only a placeholder until then.
             ground_mu: 0.0,
@@ -217,6 +225,11 @@ pub fn poll_cmd(ctx: &egui::Context, env: SpeedEnvelope) -> [f64; 3] {
             ),
         ]
     })
+}
+
+/// Was the levelling toggle pressed this frame? Edge-triggered.
+pub fn poll_level_toggle(ctx: &egui::Context) -> bool {
+    ctx.input(|r| r.key_pressed(egui::Key::B))
 }
 
 /// One `=`/`-` press worth of trunk-height change.
@@ -332,6 +345,14 @@ pub fn draw_hud(
 
             if gaited {
                 row(ui, "gait", format!("{:?}   [1/2/3]", st.gait));
+                row(
+                    ui,
+                    "levelling",
+                    format!(
+                        "{}   [B]",
+                        if st.level_enabled { "ON  (IMU + encoders)" } else { "off" }
+                    ),
+                );
                 row(
                     ui,
                     "body h",
