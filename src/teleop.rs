@@ -18,6 +18,7 @@
 //! | `=`/`-`                   | trunk height +/- 5 mm       |
 //! | `B`                       | trunk levelling on/off      |
 //! | `N`                       | respawn at the start pose   |
+//! | `Y`/`G` (held)            | arm pitch up / down         |
 //! | `O`/`L`                   | ground friction mu +/- 0.05 |
 //! | `P`/`.`                   | controller's assumed mu     |
 //!
@@ -70,6 +71,15 @@ pub struct LiveTeleop {
     /// standing astride a step and switching it off tips the trunk by the
     /// step's own geometry, live.
     pub level_enabled: bool,
+    /// Arm pitch rate, -1 / 0 / +1. A RATE rather than an angle because the
+    /// key callback runs at frame rate and the physics loop knows dt: having
+    /// the loop integrate keeps the arm's speed the same whether the display
+    /// is managing 60 fps or 6.
+    pub arm_rate: f64,
+    /// Commanded arm pitch, radians -- integrated by the physics loop from
+    /// `arm_rate` and clamped to the joint's own limits, then echoed here
+    /// for the HUD. Telemetry, not input.
+    pub arm_angle_rad: f64,
     /// Set by the `N` key, cleared by the physics loop once it has acted.
     /// A request rather than a state, because respawning is an edge: leaving
     /// it latched would teleport the robot home every tick.
@@ -152,6 +162,8 @@ impl LiveTeleop {
             swing_height_m: crate::wbc_harness::namiashi_tuned_swing_height_m(gait),
             body_lift_m: 0.0,
             level_enabled: true,
+            arm_rate: 0.0,
+            arm_angle_rad: 0.0,
             respawn_requested: false,
             // Seeded from the live sim/controller at startup (see
             // run_wbc_sim); these are only a placeholder until then.
@@ -232,6 +244,17 @@ pub fn poll_cmd(ctx: &egui::Context, env: SpeedEnvelope) -> [f64; 3] {
         ]
     })
 }
+
+/// Arm pitch direction held this frame: +1 up, -1 down, 0 neither.
+/// Hold-to-move, since an arm is aimed rather than stepped.
+pub fn poll_arm_rate(ctx: &egui::Context) -> f64 {
+    ctx.input(|r| {
+        (r.key_down(egui::Key::Y) as i32 - r.key_down(egui::Key::G) as i32) as f64
+    })
+}
+
+/// Radians per second the arm sweeps at full deflection.
+pub const ARM_RATE_RAD_S: f64 = 0.8;
 
 /// Was a respawn asked for this frame? Edge-triggered.
 ///
@@ -362,6 +385,11 @@ pub fn draw_hud(
 
             if gaited {
                 row(ui, "gait", format!("{:?}   [1/2/3]", st.gait));
+                row(
+                    ui,
+                    "arm",
+                    format!("{:+.2} rad ({:+.0} deg)   [Y/G]", st.arm_angle_rad, st.arm_angle_rad.to_degrees()),
+                );
                 row(
                     ui,
                     "levelling",

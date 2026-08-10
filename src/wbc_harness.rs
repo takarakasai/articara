@@ -1270,6 +1270,14 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     // measured, not on one from a step it has not taken yet.
     let mut foot_fz_now = [0.0_f64; 4];
 
+    // The arm is not part of the gait: the .misa drives it as its own
+    // Position-mode actuator, and run_wbc_sim's Torque switch only touches
+    // the twelve leg joints. So it is commanded by position target, and its
+    // travel comes from the model's own limits rather than a guess.
+    let arm_ji = robot.joint_map.get("arm_pitch_joint").copied();
+    let arm_range = arm_ji.map(|ji| (robot.joints[ji].lower, robot.joints[ji].upper));
+    let mut arm_angle = arm_ji.map(|ji| robot.joint_positions[ji]).unwrap_or(0.0);
+
     let base_nominal_z: [f64; 4] = [
         kin.fl.nominal_foot_body.z,
         kin.fr.nominal_foot_body.z,
@@ -1594,7 +1602,8 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // state, so the cheaper detached path applies directly.
             use crate::teleop::{
                 draw_hud, poll_body_lift_delta, poll_cmd, poll_friction_deltas, poll_gait,
-                poll_level_toggle, poll_respawn, poll_swing_height_delta, SpeedEnvelope, BODY_LIFT_RANGE_M,
+                poll_arm_rate, poll_level_toggle, poll_respawn, poll_swing_height_delta,
+                SpeedEnvelope, BODY_LIFT_RANGE_M,
                 FRICTION_RANGE, SWING_HEIGHT_RANGE_M,
             };
             v.add_ui_callback_detached(move |ctx| {
@@ -1607,6 +1616,7 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     st.swing_height_m = (st.swing_height_m + dh)
                         .clamp(SWING_HEIGHT_RANGE_M.0, SWING_HEIGHT_RANGE_M.1);
                 }
+                st.arm_rate = poll_arm_rate(ctx);
                 if poll_respawn(ctx) {
                     st.respawn_requested = true;
                 }
@@ -1720,6 +1730,21 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 sim.respawn(&mut robot, 0.10);
                 eprintln!("[teleop] respawned at the start pose, +0.10 m");
             }
+        }
+
+        // Arm pitch: integrate the held direction at the physics rate, so
+        // the sweep speed does not depend on how fast the display is
+        // managing to draw.
+        #[cfg(feature = "mujoco-viewer")]
+        if let (Some(live), Some(ji), Some((lo, hi))) = (&params.live_teleop, arm_ji, arm_range) {
+            let rate = live.lock().unwrap().arm_rate;
+            if rate != 0.0 {
+                arm_angle = (arm_angle
+                    + rate * crate::teleop::ARM_RATE_RAD_S * params.dt)
+                    .clamp(lo, hi);
+                sim.set_position_target(ji, arm_angle);
+            }
+            live.lock().unwrap().arm_angle_rad = arm_angle;
         }
 
         // Live teleop command, highest priority -- read every tick (not just

@@ -5297,6 +5297,82 @@ fn namiashi_staircase_5cm_terrain_stance_video() {
     }
 }
 
+/// Does the arm key actually move the arm, and stop at the joint's limits?
+///
+/// The arm is not part of the gait -- the .misa drives `arm_pitch_joint` as
+/// its own Position-mode actuator (kp=5) and run_wbc_sim's Torque switch
+/// only touches the twelve leg joints -- so it is commanded by position
+/// target, and its travel is the model's own -2.3 .. +0.85 rad rather than
+/// a range picked here. Holds the key one way, then the other, and reads
+/// the joint back out of the sim.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+#[cfg(feature = "mujoco-viewer")]
+fn namiashi_arm_command() {
+    use articara::teleop::LiveTeleop;
+    use std::sync::{Arc, Mutex};
+    for (label, rate, secs) in [("up (Y)", 1.0, 2.0), ("down (G)", -1.0, 5.0)] {
+        let live = Arc::new(Mutex::new(LiveTeleop {
+            arm_rate: rate,
+            ..LiveTeleop::new(GaitType::Trot)
+        }));
+        let params = WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: 0.0,
+            total_time_s: secs,
+            wbc_real_inertia: true,
+            live_teleop: Some(live.clone()),
+            live_viewer: false,
+            ..namiashi_tuned_params(0)
+        };
+        if run_wbc_sim(params).is_none() {
+            return;
+        }
+        let st = *live.lock().unwrap();
+        eprintln!(
+            "[arm {label:<9} {secs:.0}s] commanded {:+.3} rad ({:+.0} deg)  \
+             limits -2.300 .. +0.850",
+            st.arm_angle_rad,
+            st.arm_angle_rad.to_degrees(),
+        );
+    }
+
+    // The above reads back this harness's own integrator, which proves the
+    // key is wired and clamped and NOTHING about whether the arm moved.
+    // kp=5 against the arm's own weight is a real question, so drive the
+    // position target directly and read the joint out of the sim.
+    {
+        use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
+        use articara::mujoco_sim::MujocoSim;
+        use articara::robot::RobotModel;
+        let misa = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/namiashi/namiashi_3p3_prop.misa");
+        let mut robot = RobotModel::from_misa(&misa).expect("load namiashi");
+        let ji = robot.joint_map["arm_pitch_joint"];
+        let opts = MjcfExportOptions {
+            ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0 }),
+            add_actuators: true,
+            ..MjcfExportOptions::default()
+        };
+        let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
+        let dt = sim.timestep();
+        for target in [0.85, -2.30, 0.0] {
+            sim.set_position_target(ji, target);
+            for _ in 0..(3.0 / dt) as u32 {
+                sim.step(&mut robot, dt, true);
+            }
+            let (q, _) = sim.joint_q_qd("arm_pitch_joint").expect("arm state");
+            eprintln!(
+                "[arm measured] target {target:+.3} rad -> actual {q:+.3} rad  \
+                 (error {:+.3})",
+                q - target,
+            );
+        }
+    }
+}
+
 /// Does respawn put the robot back at its START pose, rather than at
 /// MuJoCo's `qpos0`?
 ///
