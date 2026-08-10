@@ -36,8 +36,9 @@ COMMON = {
 # Keys the caller is allowed to override COMMON with: everything that decides
 # what the upper body is doing, plus the sole box that has to travel with a
 # widened URDF.
-POSE_KEYS = ("ARM_PITCH", "ELBOW", "SHOULDER_ROLL", "ARM_HOLD", "KP_ARM",
-             "KD_ARM", "SOLE_HALF_W", "SOLE_HALF_L", "HIP_ROLL_SEED")
+POSE_KEYS = ("ARM_PITCH", "ELBOW", "SHOULDER_ROLL", "ARM_HOLD", "ARM_HOLD_JOINTS",
+             "KP_ARM", "KD_ARM", "SOLE_HALF_W", "SOLE_HALF_L", "HIP_ROLL_SEED",
+             "JAB", "JAB_PERIOD", "JAB_START", "JAB_PITCH", "JAB_ELBOW", "JAB_PATTERN")
 
 CLIPS = [
     ("forward",  {"VX": "0.055"}),

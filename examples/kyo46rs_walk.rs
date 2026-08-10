@@ -225,6 +225,17 @@ fn main() {
     //   elbow    -- fold held, shoulder free to swing
     //   shoulder -- the opposite, for symmetry of the experiment
     let arm_hold_joints = std::env::var("ARM_HOLD_JOINTS").unwrap_or_else(|_| "all".into());
+    // Jab: sweep one arm from the guard to an extended pose and back, in the
+    // order `JAB_PATTERN` gives (L/R, e.g. "LLRR" = left twice then right
+    // twice). One character per `JAB_PERIOD`. Needs ARM_HOLD to have anything
+    // to drive. Held off until `JAB_START` so the burn-in and the stride ramp
+    // are not measuring a punch.
+    let jab = flag("JAB", false);
+    let jab_period = env_f64("JAB_PERIOD", 0.55);
+    let jab_start = env_f64("JAB_START", 2.5);
+    let jab_pitch = env_f64("JAB_PITCH", -1.3963); // -80 deg: arm out front
+    let jab_elbow = env_f64("JAB_ELBOW", -0.1745); // -10 deg: nearly straight
+    let jab_pattern = std::env::var("JAB_PATTERN").unwrap_or_else(|_| "LLRR".into());
     // Centroidal angular-momentum task (doc Sec.21.3, reopened by the v6
     // shoulder roll -- see `bt::angular_momentum`). `MOM_AXES` is a 3-char
     // mask over roll/pitch/yaw, e.g. "x--" for roll only. Default OFF: it
@@ -1462,25 +1473,68 @@ fn main() {
         // filter stay all-zero with a zero reference, i.e. `0 = 0`, which the
         // solver satisfies for free -- so this really is "posture, arms only,
         // at its own gain".
+        // Jab. The arm-hold reference stops being the seed and becomes a
+        // function of time for ONE arm at a time, out and back along a raised
+        // cosine so the reversal has no corner.
+        //
+        // The punching arm needs its ELBOW driven too, and Sec.38 measured that
+        // holding both rows of both arms costs four cells. So the elbow is
+        // added to the held set only for the arm that is currently punching,
+        // and only while it is: the other arm keeps whatever
+        // `ARM_HOLD_JOINTS` asked for.
+        let (jab_side, jab_a) = if jab && t >= jab_start {
+            let ph = (t - jab_start) / jab_period;
+            let idx = ph.floor().max(0.0) as usize;
+            let side = if jab_pattern
+                .chars()
+                .nth(idx % jab_pattern.chars().count())
+                .is_some_and(|c| c.eq_ignore_ascii_case(&'l'))
+            {
+                0
+            } else {
+                1
+            };
+            (Some(side), 0.5 * (1.0 - (2.0 * PI * ph.fract()).cos()))
+        } else {
+            (None, 0.0)
+        };
         let p_arm = if arm_hold {
+            let jab_names: Option<(&str, &str)> = jab_side.map(|s| {
+                if s == 0 {
+                    ("left_shoulder_pitch_joint", "left_elbow_joint")
+                } else {
+                    ("right_shoulder_pitch_joint", "right_elbow_joint")
+                }
+            });
             let arms: Vec<(usize, usize)> = rig
                 .actuated()
                 .into_iter()
                 .filter(|&(ji, _)| {
                     let n = rig.robot.joints[ji].name.as_str();
-                    match arm_hold_joints.as_str() {
+                    let base = match arm_hold_joints.as_str() {
                         "elbow" => n.contains("elbow"),
                         "shoulder" => n.contains("shoulder"),
                         _ => n.contains("shoulder") || n.contains("elbow"),
-                    }
+                    };
+                    base || jab_names.is_some_and(|(_, e)| n == e)
                 })
                 .collect();
+            // Reference = the seed, with the punching arm's two rows swept
+            // toward the extended pose.
+            let mut q_ref = rig.q_seed.clone();
+            if let Some((sh, el)) = jab_names {
+                for (name, target) in [(sh, jab_pitch), (el, jab_elbow)] {
+                    if let Some(&ji) = rig.robot.joint_map.get(name) {
+                        q_ref[ji] += jab_a * (target - q_ref[ji]);
+                    }
+                }
+            }
             (!arms.is_empty()).then(|| {
                 bt::posture(
                     dyn_ctx.qddot(),
                     &arms,
                     &rig.robot.joint_positions,
-                    &rig.q_seed,
+                    &q_ref,
                     v,
                     kp_arm,
                     kd_arm,
