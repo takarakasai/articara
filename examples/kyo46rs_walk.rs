@@ -214,6 +214,17 @@ fn main() {
     let arm_hold = flag("ARM_HOLD", false);
     let kp_arm = env_f64("KP_ARM", 400.0);
     let kd_arm = env_f64("KD_ARM", 40.0);
+    // WHICH arm rows to hold. Holding all of them keeps a commanded pose but
+    // costs the top lateral rung: at VY=0.073 the held arm survives 1 of 16
+    // probes where the free arm survives 16 (Sec.38). The free arm keeps the
+    // guard's SHAPE anyway -- measured, the elbow sits at -128 deg against a
+    // -130 seed and travels 23 deg, while the shoulder swings 132 deg about
+    // its seed. So the shoulder swing is what the walk wants and the elbow
+    // fold is what the guard wants, and they are separable.
+    //   all      -- shoulder + elbow (what Sec.30 measured)
+    //   elbow    -- fold held, shoulder free to swing
+    //   shoulder -- the opposite, for symmetry of the experiment
+    let arm_hold_joints = std::env::var("ARM_HOLD_JOINTS").unwrap_or_else(|_| "all".into());
     // Centroidal angular-momentum task (doc Sec.21.3, reopened by the v6
     // shoulder roll -- see `bt::angular_momentum`). `MOM_AXES` is a 3-char
     // mask over roll/pitch/yaw, e.g. "x--" for roll only. Default OFF: it
@@ -1457,7 +1468,11 @@ fn main() {
                 .into_iter()
                 .filter(|&(ji, _)| {
                     let n = rig.robot.joints[ji].name.as_str();
-                    n.contains("shoulder") || n.contains("elbow")
+                    match arm_hold_joints.as_str() {
+                        "elbow" => n.contains("elbow"),
+                        "shoulder" => n.contains("shoulder"),
+                        _ => n.contains("shoulder") || n.contains("elbow"),
+                    }
                 })
                 .collect();
             (!arms.is_empty()).then(|| {
