@@ -78,6 +78,9 @@ fn main() {
     // See namiashi_wbc_teleop: physics is indifferent to this, rendering is
     // not (2 triangles per cell).
     let cell_mm: f64 = get("--cell-mm").and_then(|v| v.parse().ok()).unwrap_or(5.0);
+    // See WbcParams::render_hz -- lower this when the display, not the
+    // physics, is what cannot keep up.
+    let render_hz: f64 = get("--render-hz").and_then(|v| v.parse().ok()).unwrap_or(60.0);
 
     // ── Constants (ported verbatim from sim2sim_namiashi_mujoco.py) ────────
     const ISAAC_NAMES: [&str; 12] = [
@@ -239,7 +242,7 @@ fn main() {
         "[teleop] W/S drive, A/D turn, Q/E strafe (arrows + PgUp/PgDn too), \
          Shift = full speed, O/L = ground mu. Release to stop."
     );
-    eprintln!("[teleop] field = {field}  (--field ring | stairs, --cell-mm {cell_mm})");
+    eprintln!("[teleop] field = {field}  (--field ring | stairs, --cell-mm {cell_mm}, --render-hz {render_hz})");
 
     // ── Main loop: ONNX inference every `decim` physics ticks, held
     // between (matches sim2sim_namiashi_mujoco.py's own decimation). ───
@@ -299,7 +302,7 @@ fn main() {
         k += 1;
 
         // ~60 Hz render/sync cadence, independent of the finer physics dt.
-        let render_decim = ((1.0 / 60.0) / dt).round().max(1.0) as u64;
+        let render_decim = ((1.0 / render_hz.max(1.0)) / dt).round().max(1.0) as u64;
         if k % render_decim == 0 {
             // HUD telemetry, body frame so `vx meas` is comparable to the
             // `vx cmd` shown beside it. Same cadence/contract as the WBC

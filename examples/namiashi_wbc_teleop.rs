@@ -62,6 +62,14 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|v| v.parse().ok())
         .unwrap_or(5.0);
+    // Frames per second to draw. Lower it when the DISPLAY is the
+    // bottleneck (ssh -X, software GL): see WbcParams::render_hz.
+    let render_hz: f64 = args
+        .iter()
+        .position(|a| a == "--render-hz")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60.0);
 
     // Start stopped, in Trot -- NAMIASHI_TUNED[0], the known-good preset.
     // Deliberately NOT the hip_bias_gate experiment: that was shown
@@ -81,6 +89,7 @@ fn main() {
         wbc_real_inertia: true,
         live_teleop: Some(live),
         live_viewer: true,
+        render_hz: Some(render_hz),
         ..namiashi_tuned_params(0)
     };
     let params = match field.as_str() {
@@ -116,7 +125,7 @@ fn main() {
          Shift = full speed, 1/2/3 = Crawl/Walk/Trot, R/F = swing height, \
          O/L = ground mu, P/. = controller mu. Release to stop."
     );
-    eprintln!("[teleop] field = {field}  (--field ring | stairs, --cell-mm {cell_mm})");
+    eprintln!("[teleop] field = {field}  (--field ring | stairs, --cell-mm {cell_mm}, --render-hz {render_hz})");
     run_wbc_sim(params);
 }
 

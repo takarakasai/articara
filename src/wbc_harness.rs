@@ -737,6 +737,17 @@ pub struct WbcParams {
     /// scheduled-command behavior completely unaffected.
     #[cfg(feature = "mujoco-viewer")]
     pub live_teleop: Option<std::sync::Arc<std::sync::Mutex<crate::teleop::LiveTeleop>>>,
+    /// Render rate for `live_viewer`, Hz. `None` = 60.
+    ///
+    /// Worth lowering when the display is the bottleneck rather than the
+    /// physics -- over `ssh -X`, for instance, where every frame is shipped
+    /// as X protocol and costs hundreds of milliseconds regardless of what
+    /// is in it. The loop advances `render_decim` physics ticks per frame,
+    /// so a slow frame caps how much simulated time passes: at 60 Hz a
+    /// 400 ms frame yields 16.6 ms of sim (rt 0.04), while at 5 Hz the same
+    /// frame yields 200 ms (rt 0.5). Choppier, but the robot moves at
+    /// something like real speed and stays steerable.
+    pub render_hz: Option<f64>,
     /// Open a real-time `mujoco::viewer::MjViewer` (feature `mujoco-viewer`)
     /// on the sim instead of running headless-and-tracing. Runs until the
     /// viewer window is closed rather than for a fixed `total_time_s`.
@@ -825,6 +836,7 @@ impl WbcParams {
             terrain_stance: None,
             kawasaki_ring: None,
             spawn_xy: None,
+            render_hz: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -889,6 +901,7 @@ impl WbcParams {
             terrain_stance: None,
             kawasaki_ring: None,
             spawn_xy: None,
+            render_hz: None,
             fcm_state_cost: None,
             base_accel_coriolis: false,
             flat_wbc_weights: false,
@@ -1465,6 +1478,15 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     // Host-computed PD for the torque path, paired with its joint index.
     let mut host_pd = [(0usize, 0.0_f64); 12];
 
+    let render_hz = params.render_hz.unwrap_or(60.0).max(1.0);
+    let render_decim = ((1.0 / render_hz) / params.dt).round().max(1.0) as usize;
+    if params.live_viewer {
+        eprintln!(
+            "[viewer] render {render_hz:.0} Hz (every {render_decim} ticks = \
+             {:.0} ms of sim per frame)",
+            render_decim as f64 * params.dt * 1000.0,
+        );
+    }
     #[cfg(feature = "mujoco-viewer")]
     let mut viewer: Option<mujoco::viewer::MjViewer> = if params.live_viewer {
         let mut v = mujoco::viewer::MjViewer::launch_passive(sim.mj_model().clone(), 0)
@@ -1518,7 +1540,6 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     // ~60 Hz render/sync cadence, independent of the (much finer) physics dt
     // -- rendering every physics tick would be thousands of frames/sec for
     // no visual benefit.
-    let render_decim = ((1.0 / 60.0) / params.dt).round().max(1.0) as usize;
     let wall_start = std::time::Instant::now();
     #[cfg(feature = "mujoco-viewer")]
     let mut fps_meter = crate::teleop::FpsMeter::new();
