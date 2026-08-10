@@ -1580,6 +1580,8 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut wbc_fx = 0.0_f64;
     // Host-computed PD for the torque path, paired with its joint index.
     let mut host_pd = [(0usize, 0.0_f64); 12];
+    #[allow(unused_mut)]
+    let mut respawn_pending = false;
 
     let render_hz = params.render_hz.unwrap_or(60.0).max(1.0);
     let render_decim = ((1.0 / render_hz) / params.dt).round().max(1.0) as usize;
@@ -1722,17 +1724,54 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         // controller that has already sampled the old pose would spend a
         // tick driving toward it from the new one.
         #[cfg(feature = "mujoco-viewer")]
-        if let Some(live) = &params.live_teleop {
-            let asked = {
-                let mut st = live.lock().unwrap();
-                std::mem::replace(&mut st.respawn_requested, false)
-            };
-            if asked {
+        {
+            if let Some(live) = &params.live_teleop {
+                if std::mem::replace(&mut live.lock().unwrap().respawn_requested, false) {
+                    respawn_pending = true;
+                }
+            }
+            if respawn_pending {
+                respawn_pending = false;
                 // Dropped in from 10 cm up, so the first contact is a short
                 // fall rather than MuJoCo shoving the robot out of a
                 // penetration it woke up inside.
                 sim.respawn(&mut robot, 0.10);
-                eprintln!("[teleop] respawned at the start pose, +0.10 m");
+
+                // The reference pose is "standing still with no gait
+                // playing", so the CONTROLLER has to come back too --
+                // restoring the body and leaving the gait mid-stride would
+                // put the legs straight back into a step the robot is no
+                // longer positioned for. `disable` returns the phase to the
+                // cycle origin, resets the body integrator and zeroes the
+                // command; `enable` starts it from there.
+                gc.disable();
+                gc.enable();
+
+                // Everything else the loop carries across ticks and would
+                // otherwise keep from before the reset: a differentiator
+                // that spikes, a reflex or gate that thinks it is still
+                // triggered, a foothold committed for a leg that has moved,
+                // an attitude filter and per-leg ground heights estimated
+                // somewhere else entirely.
+                prev_targets = [0.0; 12];
+                stance_mask = [true; 4];
+                reflex_active = [false; 4];
+                hip_gate_open_until_s = f64::NEG_INFINITY;
+                hip_gate_bias_now = 0.0;
+                planned_foothold = [None; 4];
+                yaw_prev = 0.0;
+                foot_fz_now = [0.0; 4];
+                leg_h_filt = [0.0; 4];
+                leg_h_seen = [false; 4];
+                ahrs.reset();
+                if let Some(ji) = arm_ji {
+                    // The joint itself is back at its spawn angle; without
+                    // this the PD target is still the pre-reset one and
+                    // hauls it straight back.
+                    arm_angle = robot.joint_positions[ji];
+                    sim.set_position_target(ji, arm_angle);
+                }
+                eprintln!("[teleop] respawn: start pose +0.10 m, gait reset to standstill");
             }
         }
 
@@ -2753,10 +2792,11 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     let t_before = sim.sim_time();
                     v.sync_data(sim.mj_data_mut());
                     if sim.sim_time() < t_before - 1e-9 {
-                        sim.respawn(&mut robot, 0.10);
-                        eprintln!(
-                            "[teleop] viewer Reset -> respawned at the start pose, +0.10 m"
-                        );
+                        // Handled at the top of the next tick, through the
+                        // same path as the N key, so a reset from either
+                        // trigger lands the robot in exactly one state.
+                        respawn_pending = true;
+                        eprintln!("[teleop] viewer Reset detected");
                     }
                     let _ = v.render();
 

@@ -5297,6 +5297,82 @@ fn namiashi_staircase_5cm_terrain_stance_video() {
     }
 }
 
+/// Does a respawn land the robot STANDING STILL, or mid-stride?
+///
+/// The reference pose is "standing still with no gait playing", which is
+/// two things: the body back at its spawn, and the controller back at the
+/// cycle origin with a zero command. Restoring only the body leaves the
+/// phase where it was, so the legs resume a step the robot is no longer
+/// positioned for -- which looks like the reset did not take.
+///
+/// Walks first, so the gait is genuinely mid-stride when the respawn lands,
+/// then asks whether the feet are all down and the body is where it started.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+#[cfg(feature = "mujoco-viewer")]
+fn namiashi_respawn_lands_at_standstill() {
+    use articara::teleop::LiveTeleop;
+    use std::sync::{Arc, Mutex};
+
+    let live = Arc::new(Mutex::new(LiveTeleop::new(GaitType::Trot)));
+    // Walk for 3 s, respawn, then stand for 1.5 s with no command.
+    {
+        let mut st = live.lock().unwrap();
+        st.cmd = [0.4, 0.0, 0.0];
+    }
+    let params = WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: 0.0,
+        total_time_s: 3.0,
+        wbc_real_inertia: true,
+        live_teleop: Some(live.clone()),
+        live_viewer: false,
+        ..namiashi_tuned_params(0)
+    };
+    let Some(walk) = run_wbc_sim(params) else { return };
+    let end = walk.last().unwrap();
+    let stance_at_end = end.stance_mask.iter().filter(|&&b| b).count();
+    eprintln!(
+        "[standstill] after 3 s walking: x={:.3} m, {stance_at_end}/4 feet down, \
+         phase mid-stride",
+        end.body_x,
+    );
+
+    // Same run, but the respawn fires partway and the command is released.
+    {
+        let mut st = live.lock().unwrap();
+        st.cmd = [0.0; 3];
+        st.respawn_requested = true;
+    }
+    let params2 = WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: 0.0,
+        total_time_s: 1.5,
+        wbc_real_inertia: true,
+        live_teleop: Some(live.clone()),
+        live_viewer: false,
+        ..namiashi_tuned_params(0)
+    };
+    let Some(after) = run_wbc_sim(params2) else { return };
+    let s = after.last().unwrap();
+    let down = s.stance_mask.iter().filter(|&&b| b).count();
+    eprintln!(
+        "[standstill] after respawn + 1.5 s idle: x={:.3} m  z={:.3} m  \
+         {down}/4 feet down  |vx meas| over last 0.5 s = {:.4} m/s",
+        s.body_x,
+        s.body_z,
+        {
+            let tail: Vec<_> = after.iter().rev().take(1000).collect();
+            let dx = tail.first().unwrap().body_x - tail.last().unwrap().body_x;
+            (dx / 0.5).abs()
+        },
+    );
+}
+
 /// Does a `mj_resetData`-style reset get caught, and does respawn undo it?
 ///
 /// The viewer's Reset button reaches this simulation -- `sync_data` is a
