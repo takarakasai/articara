@@ -137,6 +137,10 @@ name = "kawasaki_ring_check"
 required-features = ["mujoco"]
 
 [[example]]
+name = "kawasaki_ring_bench"
+required-features = ["mujoco"]
+
+[[example]]
 name = "exp_sweep"
 required-features = ["mujoco"]
 

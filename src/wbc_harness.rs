@@ -2457,18 +2457,27 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     }
                     v.sync_data(sim.mj_data_mut());
                     let _ = v.render();
+
+                    // Real-time pacing, ONCE PER RENDERED FRAME. Doing it
+                    // per physics tick is the obvious reading and is what
+                    // this did first, but at dt=0.5 ms that is 2000 sleeps
+                    // per simulated second, and a sleep never returns early
+                    // -- it overshoots by the scheduler's granularity every
+                    // single time. Those overshoots add up: ~50 us each on
+                    // a tuned desktop is a 10% slowdown, and on a coarser
+                    // timer (WSL2) 7-8 ms each drops the loop to ~2.5 fps
+                    // while the physics, the WBC and the renderer are all
+                    // individually running 100x+ faster than they need to.
+                    // At 60 Hz there are 33x fewer sleeps to overshoot on.
+                    let target = std::time::Duration::from_secs_f64(t + params.dt);
+                    let elapsed = wall_start.elapsed();
+                    if elapsed < target {
+                        std::thread::sleep(target - elapsed);
+                    }
                 }
                 if !v.running() {
                     break;
                 }
-            }
-            // Real-time pacing: physics alone runs faster than real time,
-            // so without this the whole run would blow past in a couple of
-            // seconds instead of being watchable/steerable live.
-            let target = std::time::Duration::from_secs_f64(t + params.dt);
-            let elapsed = wall_start.elapsed();
-            if elapsed < target {
-                std::thread::sleep(target - elapsed);
             }
         }
 

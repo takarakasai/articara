@@ -51,6 +51,17 @@ fn main() {
         .position(|a| a == "--field")
         .and_then(|i| args.get(i + 1).cloned())
         .unwrap_or_else(|| "ring".into());
+    // Heightfield grid pitch, mm. Physics does not care (5 mm and 40 mm
+    // benchmark identically -- see examples/kawasaki_ring_bench), but the
+    // grid is drawn as 2 triangles per cell, so 5 mm is ~289k triangles and
+    // a host on software OpenGL will feel that. Exposed so the trade
+    // against hole fidelity can be made without a code edit.
+    let cell_mm: f64 = args
+        .iter()
+        .position(|a| a == "--cell-mm")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5.0);
 
     // Start stopped, in Trot -- NAMIASHI_TUNED[0], the known-good preset.
     // Deliberately NOT the hip_bias_gate experiment: that was shown
@@ -85,7 +96,7 @@ fn main() {
             ..base
         },
         "ring" => {
-            let ring = KawasakiRingCfg::default();
+            let ring = KawasakiRingCfg { cell_m: cell_mm / 1000.0, ..Default::default() };
             // On the red start platform, facing the ring. Spawning at the
             // origin would drop the robot onto the centre bowl.
             let (w, d) = ring.red_platform_m;
@@ -105,7 +116,7 @@ fn main() {
          Shift = full speed, 1/2/3 = Crawl/Walk/Trot, R/F = swing height, \
          O/L = ground mu, P/. = controller mu. Release to stop."
     );
-    eprintln!("[teleop] field = {field}  (--field ring | stairs)");
+    eprintln!("[teleop] field = {field}  (--field ring | stairs, --cell-mm {cell_mm})");
     run_wbc_sim(params);
 }
 

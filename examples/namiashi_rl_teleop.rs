@@ -75,6 +75,9 @@ fn main() {
     // Same `--field` choice as namiashi_wbc_teleop, so the two demos can be
     // put on the same ground without remembering two spellings.
     let field = get("--field").unwrap_or_else(|| "ring".into());
+    // See namiashi_wbc_teleop: physics is indifferent to this, rendering is
+    // not (2 triangles per cell).
+    let cell_mm: f64 = get("--cell-mm").and_then(|v| v.parse().ok()).unwrap_or(5.0);
 
     // ── Constants (ported verbatim from sim2sim_namiashi_mujoco.py) ────────
     const ISAAC_NAMES: [&str; 12] = [
@@ -119,7 +122,7 @@ fn main() {
         .join("tests/fixtures/namiashi/namiashi_3p3_prop.misa");
     let mut robot = RobotModel::from_misa(&misa).unwrap_or_else(|e| panic!(".misa load failed ({}): {e}", misa.display()));
     let stairs = StaircaseCfg { rise_m: 0.05, run_m: 0.20, n_steps: 10, approach_m: 1.5, top_platform_m: 8.0, half_width_m: 6.0 };
-    let ring = KawasakiRingCfg::default();
+    let ring = KawasakiRingCfg { cell_m: cell_mm / 1000.0, ..Default::default() };
 
     for (k, name) in ISAAC_NAMES.iter().enumerate() {
         let Some(&ji) = robot.joint_map.get(*name) else { panic!("joint missing: {name}") };
@@ -236,7 +239,7 @@ fn main() {
         "[teleop] W/S drive, A/D turn, Q/E strafe (arrows + PgUp/PgDn too), \
          Shift = full speed, O/L = ground mu. Release to stop."
     );
-    eprintln!("[teleop] field = {field}  (--field ring | stairs)");
+    eprintln!("[teleop] field = {field}  (--field ring | stairs, --cell-mm {cell_mm})");
 
     // ── Main loop: ONNX inference every `decim` physics ticks, held
     // between (matches sim2sim_namiashi_mujoco.py's own decimation). ───
@@ -331,14 +334,18 @@ fn main() {
             }
             viewer.sync_data(sim.mj_data_mut());
             let _ = viewer.render();
+
+            // Pace once per rendered frame, not per physics tick -- see
+            // run_wbc_sim's live_viewer block for why the per-tick version
+            // collapses the frame rate on a coarse-timer host.
+            let target = std::time::Duration::from_secs_f64(k as f64 * dt);
+            let elapsed = wall_start.elapsed();
+            if elapsed < target {
+                std::thread::sleep(target - elapsed);
+            }
             if !viewer.running() {
                 break;
             }
-        }
-        let target = std::time::Duration::from_secs_f64(k as f64 * dt);
-        let elapsed = wall_start.elapsed();
-        if elapsed < target {
-            std::thread::sleep(target - elapsed);
         }
     }
 }
