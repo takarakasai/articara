@@ -2101,6 +2101,29 @@ fn main() {
                     },
                     dv / omega * 1e3,
                 );
+                // Where the jab was when the shove landed. The jab runs on its
+                // own clock, unrelated to the gait, so without this line a
+                // push-vs-jab comparison is averaging over an unrecorded phase
+                // -- and "pushed at full extension" and "pushed back in guard"
+                // are not the same experiment.
+                if jab {
+                    let ph = ((t - jab_start) / jab_period).max(0.0);
+                    let side = if jab_pattern
+                        .chars()
+                        .nth(ph.floor() as usize % jab_pattern.chars().count())
+                        .is_some_and(|c| c.eq_ignore_ascii_case(&'l'))
+                    {
+                        "L"
+                    } else {
+                        "R"
+                    };
+                    let a = 0.5 * (1.0 - (2.0 * PI * ph.fract()).cos());
+                    println!(
+                        "  PUSH JAB PHASE: side={side} phase={:.3} extension={a:.3} \
+                         (0 = in guard, 1 = fully extended)",
+                        ph.fract()
+                    );
+                }
                 // If the pulse outlives the slice it was fired into, the run
                 // is not measuring what the label says. Firing 0.10 s into a
                 // 0.20 s double-support at frac 0.5 puts the tail of the pulse

@@ -503,6 +503,15 @@ PUSH_CONDITIONS = [
                "URDF": REC_URDF,
                "SOLE_HALF_W": "0.030", "ARM_PITCH": "-2.40", "ELBOW": "2.00",
                "ARM_HOLD": "1", "KP_ARM": "100", "KD_ARM": "20"}),
+    # Sec.40: the same guard, punching. JAB_START is fixed here, so this pair
+    # measures ONE jab phase at the push -- for the phase sweep use
+    # scripts/kyo46rs_jab_push.py, which bins runs by the extension the walk
+    # prints at the push instant.
+    ("guard jab", {"ADAPT_STEP": "0", "K_DCM": "2.0", "URDF": REC_URDF,
+                   "SOLE_HALF_W": "0.030", "ARM_PITCH": "-0.4363", "ELBOW": "-2.2689",
+                   "ARM_HOLD": "1", "ARM_HOLD_JOINTS": "shoulder",
+                   "KP_ARM": "200", "KD_ARM": "20",
+                   "JAB": "1", "JAB_PERIOD": "0.70", "JAB_START": "2.5"}),
     # prox_weight. Measured on the 42-case command bench only (34 -> 37/42,
     # doc Sec.26.1) -- the disturbance side was an open question. Baseline is
     # everything else at its own default (ADAPT_STEP=0, K_DCM=2.0, no timing
