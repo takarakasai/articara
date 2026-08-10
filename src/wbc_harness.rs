@@ -1602,7 +1602,8 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // state, so the cheaper detached path applies directly.
             use crate::teleop::{
                 draw_hud, poll_body_lift_delta, poll_cmd, poll_friction_deltas, poll_gait,
-                poll_arm_rate, poll_level_toggle, poll_respawn, poll_swing_height_delta,
+                poll_arm_rate, poll_help_toggle, poll_level_toggle, poll_respawn,
+                poll_swing_height_delta,
                 SpeedEnvelope, BODY_LIFT_RANGE_M,
                 FRICTION_RANGE, SWING_HEIGHT_RANGE_M,
             };
@@ -1615,6 +1616,9 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 if dh != 0.0 {
                     st.swing_height_m = (st.swing_height_m + dh)
                         .clamp(SWING_HEIGHT_RANGE_M.0, SWING_HEIGHT_RANGE_M.1);
+                }
+                if poll_help_toggle(ctx) {
+                    st.show_help = !st.show_help;
                 }
                 st.arm_rate = poll_arm_rate(ctx);
                 if poll_respawn(ctx) {

@@ -34,11 +34,10 @@
 //!     cargo run --release --no-default-features --features "mujoco,mujoco-viewer,onnx" \
 //!     --example namiashi_rl_teleop -- --onnx policy.onnx [--vx 0.8] [--vy 0] [--wz 0]
 //!
-//! Keys: see `articara::teleop`'s module docs, shared verbatim with
-//! `namiashi_wbc_teleop.rs` -- W/S (or arrows) drive, A/D turn, Q/E (or
-//! PgUp/PgDn) strafe, Shift for full speed instead of half. Holding a key
-//! moves, releasing it stops. O/L change the ground's friction, which is
-//! physics and so applies here exactly as it does to the WBC demo.
+//! Keys: press `K` in the viewer, or see `articara::teleop`'s module docs,
+//! shared verbatim with `namiashi_wbc_teleop.rs`. Holding a key moves,
+//! releasing it stops. O/L change the ground's friction, which is physics
+//! and so applies here exactly as it does to the WBC demo.
 //!
 //! The gait, swing-height, body-height, levelling and controller-mu keys
 //! (1/2/3, R/F, =/-, B, P/.) do nothing here: a learned policy has no gait
@@ -229,6 +228,9 @@ fn main() {
         let live = live.clone();
         viewer.add_ui_callback_detached(move |ctx| {
             let mut st = live.lock().unwrap();
+            if articara::teleop::poll_help_toggle(ctx) {
+                st.show_help = !st.show_help;
+            }
             st.cmd = poll_cmd(ctx, ENV);
             let (dg, _) = poll_friction_deltas(ctx);
             if dg != 0.0 {
@@ -242,10 +244,7 @@ fn main() {
             draw_hud(ctx, &st, ENV, "RL policy (ONNX)", false);
         });
     }
-    eprintln!(
-        "[teleop] W/S drive, A/D turn, Q/E strafe (arrows + PgUp/PgDn too), \
-         Shift = full speed, O/L = ground mu. Release to stop."
-    );
+    eprintln!("[teleop] press K in the viewer for the controls list");
     eprintln!("[teleop] field = {field}  (--field ring | stairs, --cell-mm {cell_mm}, --render-hz {render_hz})");
 
     // ── Main loop: ONNX inference every `decim` physics ticks, held

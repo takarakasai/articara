@@ -20,13 +20,12 @@
 //! Run: `cargo run --release --no-default-features --features
 //! "mujoco,mujoco-viewer" --example namiashi_wbc_teleop`
 //!
-//! Keys: see `articara::teleop`'s module docs -- W/S (or arrows) drive,
-//! A/D turn, Q/E (or PgUp/PgDn) strafe, Shift for full speed instead of
-//! half, 1/2/3 switch between Crawl / Walk / Trot, and R/F raise/lower
-//! the swing foot in 5 mm steps. O/L change the ground's friction and
-//! P/. change what the controller believes that friction is (they were
-//! found to disagree: 0.5 assumed against 0.7 simulated). Holding a key
-//! moves, releasing it stops.
+//! Keys: press `K` in the viewer, or see `articara::teleop`'s module docs.
+//! Holding a key moves, releasing it stops. Two worth knowing about here:
+//! `B` toggles the proprioceptive trunk levelling, and `P`/`.` change what
+//! the controller BELIEVES the friction is, separately from `O`/`L` which
+//! change the friction itself -- the two were found to disagree (0.5
+//! assumed against 0.7 simulated).
 //!
 //! Each gait keeps its own tuned speed envelope (Crawl 0.17, Walk 0.33,
 //! Trot 0.80 m/s), since each is bounded by its own
@@ -125,12 +124,7 @@ fn main() {
             std::process::exit(2);
         }
     };
-    eprintln!(
-        "[teleop] W/S drive, A/D turn, Q/E strafe (arrows + PgUp/PgDn too), \
-         Shift = full speed, 1/2/3 = Crawl/Walk/Trot, R/F = swing height, \
-         =/- = body height, B = levelling, O/L = ground mu, P/. = controller mu. \
-         Release to stop."
-    );
+    eprintln!("[teleop] press K in the viewer for the controls list");
     eprintln!("[teleop] field = {field}  (--field ring | stairs, --cell-mm {cell_mm}, --render-hz {render_hz})");
     run_wbc_sim(params);
 }

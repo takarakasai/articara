@@ -19,6 +19,7 @@
 //! | `B`                       | trunk levelling on/off      |
 //! | `N`                       | respawn at the start pose   |
 //! | `Y`/`G` (held)            | arm pitch up / down         |
+//! | `K`                       | show / hide this list       |
 //! | `O`/`L`                   | ground friction mu +/- 0.05 |
 //! | `P`/`.`                   | controller's assumed mu     |
 //!
@@ -80,6 +81,11 @@ pub struct LiveTeleop {
     /// `arm_rate` and clamped to the joint's own limits, then echoed here
     /// for the HUD. Telemetry, not input.
     pub arm_angle_rad: f64,
+    /// Whether the controls list is up. Off by default: the HUD's job is to
+    /// show what the robot is DOING, and a permanent key legend crowds that
+    /// out for something you need once. The one-line `[K] controls` footer
+    /// stays visible so it is still findable without reading the source.
+    pub show_help: bool,
     /// Set by the `N` key, cleared by the physics loop once it has acted.
     /// A request rather than a state, because respawning is an edge: leaving
     /// it latched would teleport the robot home every tick.
@@ -162,6 +168,7 @@ impl LiveTeleop {
             swing_height_m: crate::wbc_harness::namiashi_tuned_swing_height_m(gait),
             body_lift_m: 0.0,
             level_enabled: true,
+            show_help: false,
             arm_rate: 0.0,
             arm_angle_rad: 0.0,
             respawn_requested: false,
@@ -244,6 +251,30 @@ pub fn poll_cmd(ctx: &egui::Context, env: SpeedEnvelope) -> [f64; 3] {
         ]
     })
 }
+
+/// Was the controls-list toggle pressed this frame? Edge-triggered.
+pub fn poll_help_toggle(ctx: &egui::Context) -> bool {
+    ctx.input(|r| r.key_pressed(egui::Key::K))
+}
+
+/// The bindings, as `(keys, what)`. One list, rendered by the help panel and
+/// mirrored by this module's own header table -- so a key that moves has one
+/// place to move in.
+pub const BINDINGS: &[(&str, &str)] = &[
+    ("W / S", "forward, back        (Up / Down too)"),
+    ("A / D", "turn                 (Left / Right too)"),
+    ("Q / E", "strafe               (PgUp / PgDn too)"),
+    ("Shift", "full speed while held (otherwise half)"),
+    ("1 / 2 / 3", "gait: Crawl / Walk / Trot"),
+    ("R / F", "swing height +/- 5 mm"),
+    ("= / -", "trunk height +/- 5 mm"),
+    ("B", "trunk levelling on / off"),
+    ("Y / G", "arm pitch up / down (held)"),
+    ("N", "respawn at the start pose, 10 cm up"),
+    ("O / L", "ground friction mu"),
+    ("P / .", "controller's assumed mu"),
+    ("K", "show / hide this list"),
+];
 
 /// Arm pitch direction held this frame: +1 up, -1 down, 0 neither.
 /// Hold-to-move, since an arm is aimed rather than stepped.
@@ -384,30 +415,30 @@ pub fn draw_hud(
             };
 
             if gaited {
-                row(ui, "gait", format!("{:?}   [1/2/3]", st.gait));
+                row(ui, "gait", format!("{:?}", st.gait));
                 row(
                     ui,
                     "arm",
-                    format!("{:+.2} rad ({:+.0} deg)   [Y/G]", st.arm_angle_rad, st.arm_angle_rad.to_degrees()),
+                    format!("{:+.2} rad ({:+.0} deg)", st.arm_angle_rad, st.arm_angle_rad.to_degrees()),
                 );
                 row(
                     ui,
                     "levelling",
                     format!(
-                        "{}   [B]",
+                        "{}",
                         if st.level_enabled { "ON  (IMU + encoders)" } else { "off" }
                     ),
                 );
                 row(
                     ui,
                     "body h",
-                    format!("{:+.3} m from tuned   [=/-]", st.body_lift_m),
+                    format!("{:+.3} m from tuned", st.body_lift_m),
                 );
                 row(
                     ui,
                     "swing h",
                     format!(
-                        "{:.3} m (tuned {:.3})   [R/F]",
+                        "{:.3} m (tuned {:.3})",
                         st.swing_height_m,
                         crate::wbc_harness::namiashi_tuned_swing_height_m(st.gait),
                     ),
@@ -415,7 +446,7 @@ pub fn draw_hud(
             }
             // Ground friction is physics, not control -- it applies to the
             // learned policy exactly as much as to the WBC.
-            row(ui, "ground mu", format!("{:.2}   [O/L]", st.ground_mu));
+            row(ui, "ground mu", format!("{:.2}", st.ground_mu));
             if gaited {
                 // Flagged when the controller's friction cone disagrees
                 // with the floor it is standing on. Assuming LESS than the
@@ -432,7 +463,7 @@ pub fn draw_hud(
                 row(
                     ui,
                     "ctrl mu",
-                    format!("{:.2}{note}   [P/.]", st.controller_mu),
+                    format!("{:.2}{note}", st.controller_mu),
                 );
             }
             ui.separator();
@@ -441,13 +472,13 @@ pub fn draw_hud(
                 ui,
                 "speed",
                 format!(
-                    "{}  (Shift for full)",
+                    "{}",
                     if fast { "FULL" } else { "half" },
                 ),
             );
-            row(ui, "vx cmd", format!("{:+.3} / {:.3} m/s   [W/S]", st.cmd[0], env.vx));
-            row(ui, "vy cmd", format!("{:+.3} / {:.3} m/s   [Q/E]", st.cmd[1], env.vy));
-            row(ui, "wz cmd", format!("{:+.3} / {:.3} rad/s [A/D]", st.cmd[2], env.wz));
+            row(ui, "vx cmd", format!("{:+.3} / {:.3} m/s", st.cmd[0], env.vx));
+            row(ui, "vy cmd", format!("{:+.3} / {:.3} m/s", st.cmd[1], env.vy));
+            row(ui, "wz cmd", format!("{:+.3} / {:.3} rad/s", st.cmd[2], env.wz));
 
             ui.separator();
             row(ui, "vx meas", format!("{:+.3} m/s", st.measured_vx_mps));
@@ -465,5 +496,45 @@ pub fn draw_hud(
                 0.0
             };
             row(ui, "time", format!("{:.1} s  (rt x{rt:.2})", st.sim_time_s));
+
+            ui.separator();
+            ui.label(
+                egui::RichText::new(if st.show_help {
+                    "[K] hide controls"
+                } else {
+                    "[K] controls"
+                })
+                .monospace()
+                .weak(),
+            );
+        });
+
+    if !st.show_help {
+        return;
+    }
+    // Opposite corner from the readout, so the two never fight for the same
+    // space on a small window.
+    egui::Window::new("teleop_help")
+        .title_bar(false)
+        .resizable(false)
+        .movable(false)
+        .anchor(egui::Align2::LEFT_BOTTOM, [8.0, -8.0])
+        .show(ctx, |ui| {
+            ui.label(egui::RichText::new("controls").strong());
+            ui.separator();
+            for (keys, what) in BINDINGS {
+                // A learned policy has no gait, stance or friction cone to
+                // set, so listing those keys there would be listing keys
+                // that do nothing.
+                if !gaited
+                    && matches!(*keys, "1 / 2 / 3" | "R / F" | "= / -" | "B" | "Y / G" | "P / .")
+                {
+                    continue;
+                }
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("{keys:<10}")).monospace());
+                    ui.label(egui::RichText::new(*what).monospace().weak());
+                });
+            }
         });
 }
