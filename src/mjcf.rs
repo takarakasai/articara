@@ -381,6 +381,13 @@ pub struct KawasakiRingCfg {
     pub bank_segments: Vec<(f64, f64, f64, f64)>,
     /// Heightfield grid pitch. 5 mm resolves a 100 mm hole across 20 cells.
     pub cell_m: f64,
+    /// Flat floor under the ring, as the side length of a square slab.
+    /// `None` omits it, leaving a robot that walks off the edge to fall
+    /// indefinitely -- which reads as a diverging simulation rather than as
+    /// the ring-out it actually is.
+    pub floor_size_m: Option<f64>,
+    /// How far the floor's surface sits below the ring surface.
+    pub floor_drop_m: f64,
 }
 
 impl Default for KawasakiRingCfg {
@@ -417,6 +424,8 @@ impl Default for KawasakiRingCfg {
                 (0.94, -0.75, 0.94, 0.25),
             ],
             cell_m: 0.005,
+            floor_size_m: Some(5.0),
+            floor_drop_m: 0.20,
         }
     }
 }
@@ -547,6 +556,20 @@ impl KawasakiRingCfg {
         let half = self.ring_m / 2.0;
         let plate_h = 0.05;
         let mut xml = String::new();
+        if let Some(side) = self.floor_size_m {
+            // A slab, not an infinite plane: the ring is what the robot is
+            // meant to stay on, and a floor with a visible edge makes that
+            // read at a glance. Thickness is arbitrary -- only its top
+            // surface matters -- so it is not a config knob.
+            const FLOOR_H: f64 = 0.05;
+            xml += &format!(
+                "    <geom name=\"ring_floor\" type=\"box\" pos=\"0 0 {}\" size=\"{} {} {}\" rgba=\"0.16 0.17 0.19 1\"/>\n",
+                -self.floor_drop_m - FLOOR_H / 2.0,
+                side / 2.0,
+                side / 2.0,
+                FLOOR_H / 2.0,
+            );
+        }
         xml += &format!(
             "    <geom name=\"ring_plate\" type=\"box\" pos=\"0 0 {}\" \
              size=\"{half} {half} {}\" rgba=\"0.22 0.22 0.24 1\"/>\n",
@@ -713,7 +736,14 @@ pub fn export_mjcf_with_options(
     let xml = match &opts.extra_worldbody_xml {
         None => xml,
         Some(extra) => match xml.rfind("</worldbody>") {
-            Some(i) => format!("{}{extra}\n{}", &xml[..i], &xml[i..]),
+            // `xml[..i]` ends with `</worldbody>`'s own indentation, so
+            // splicing there donates it to the first line of `extra` and
+            // leaves the closing tag at column zero. Hand it back.
+            Some(i) => {
+                let head = xml[..i].trim_end_matches(' ');
+                let indent = &xml[head.len()..i];
+                format!("{head}{extra}{indent}{}", &xml[i..])
+            }
             None => {
                 log::error!("MJCF export: no </worldbody> to splice extra_worldbody_xml into");
                 xml

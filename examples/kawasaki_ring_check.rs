@@ -122,6 +122,46 @@ fn main() {
             "stands on the platform"
         }
     );
+
+    // The floor exists to catch a ring-out. Checking that it does needs a
+    // robot placed off the ring, because nothing on the ring ever reaches
+    // it -- an absent or mis-placed floor looks identical from up here.
+    if let Some(side) = ring.floor_size_m {
+        let off = ring.ring_m / 2.0 + 0.4; // clear of the ring, well inside the floor
+        assert!(off < side / 2.0, "test point must land ON the floor");
+        let mut robot2 = RobotModel::from_misa(&misa).expect("load namiashi");
+        let opts2 = MjcfExportOptions {
+            base_xy: Some((off, off)),
+            extra_asset_xml: Some(ring.asset_xml("kawasaki")),
+            extra_worldbody_xml: Some(ring.worldbody_xml("kawasaki")),
+            add_actuators: true,
+            ..MjcfExportOptions::default()
+        };
+        let mut sim2 = MujocoSim::new(&robot2, opts2).expect("MujocoSim::new (off-ring)");
+        sim2.set_hfield_data("kawasaki", &heights).expect("fill hfield");
+        let dt2 = sim2.timestep();
+        for _ in 0..(2.0 / dt2) as u32 {
+            sim2.step(&mut robot2, dt2, true);
+        }
+        let p = sim2.body_world_position(&robot2.root_link).unwrap_or([0.0; 3]);
+        // Spawned just above the ring surface, so it drops floor_drop_m onto
+        // the floor and should end a stance height above -floor_drop_m.
+        let above_floor = p[2] + ring.floor_drop_m;
+        println!(
+            "off-ring drop at ({off:+.2},{off:+.2}): trunk z={:+.3} m, {:.3} m above the floor",
+            p[2], above_floor,
+        );
+        println!(
+            "  verdict: {}",
+            if above_floor > 0.15 && above_floor < 0.35 {
+                "caught by the floor"
+            } else if p[2] < -1.0 {
+                "FELL PAST the floor"
+            } else {
+                "landed, but not at the expected height"
+            }
+        );
+    }
 }
 
 #[cfg(not(feature = "mujoco"))]
