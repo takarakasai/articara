@@ -1582,6 +1582,8 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut host_pd = [(0usize, 0.0_f64); 12];
     #[allow(unused_mut)]
     let mut respawn_pending = false;
+    #[allow(unused_mut)]
+    let mut respawn_inverted = false;
 
     let render_hz = params.render_hz.unwrap_or(60.0).max(1.0);
     let render_decim = ((1.0 / render_hz) / params.dt).round().max(1.0) as usize;
@@ -1623,8 +1625,9 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     st.show_help = !st.show_help;
                 }
                 st.arm_rate = poll_arm_rate(ctx);
-                if poll_respawn(ctx) {
+                if let Some(inverted) = poll_respawn(ctx) {
                     st.respawn_requested = true;
+                    st.respawn_inverted = inverted;
                 }
                 if poll_level_toggle(ctx) {
                     st.level_enabled = !st.level_enabled;
@@ -1726,8 +1729,10 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         #[cfg(feature = "mujoco-viewer")]
         {
             if let Some(live) = &params.live_teleop {
-                if std::mem::replace(&mut live.lock().unwrap().respawn_requested, false) {
+                let mut st = live.lock().unwrap();
+                if std::mem::replace(&mut st.respawn_requested, false) {
                     respawn_pending = true;
+                    respawn_inverted = st.respawn_inverted;
                 }
             }
             if respawn_pending {
@@ -1735,7 +1740,15 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 // Dropped in from 10 cm up, so the first contact is a short
                 // fall rather than MuJoCo shoving the robot out of a
                 // penetration it woke up inside.
-                sim.respawn(&mut robot, 0.10);
+                if respawn_inverted {
+                    // Small, unlike the upright 0.10: `respawn_inverted`
+                    // measures the pose and this is real clearance above the
+                    // surface, not an offset from a feet-on-the-ground z.
+                    sim.respawn_inverted(&mut robot, 0.03);
+                } else {
+                    sim.respawn(&mut robot, 0.10);
+                }
+                respawn_inverted = false;
 
                 // The reference pose is "standing still with no gait
                 // playing", so the CONTROLLER has to come back too --
@@ -1771,7 +1784,7 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     arm_angle = robot.joint_positions[ji];
                     sim.set_position_target(ji, arm_angle);
                 }
-                eprintln!("[teleop] respawn: start pose +0.10 m, gait reset to standstill");
+                eprintln!("[teleop] respawn: gait reset to standstill");
             }
         }
 

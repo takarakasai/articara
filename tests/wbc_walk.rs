@@ -5625,6 +5625,87 @@ fn namiashi_respawn_restores_start_pose() {
     );
 }
 
+/// Does `Shift`+`N` actually put the robot on its back, and does it STAY
+/// there?
+///
+/// Two separate claims, and the first does not imply the second. Writing a
+/// 180-degree quaternion into `qpos` guarantees the pose at t=0 only; a
+/// 3.3 kg body dropped 25 cm onto a heightfield with its legs sticking up
+/// is free to bounce back onto its feet, or land on an edge and roll off
+/// the ring, either of which would make this a useless starting state for
+/// testing self-righting. So: check the orientation at spawn, then settle
+/// it under gravity and check again.
+///
+/// Measures the trunk's own up-axis in world coordinates (row 2 of the
+/// rotation matrix applied to body +z). Upright is +1, on its back is -1.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_inverted_respawn_stays_inverted() {
+    use articara::mjcf::KawasakiRingCfg;
+    use articara::mjcf::MjcfExportOptions;
+    use articara::mujoco_sim::MujocoSim;
+    use articara::robot::RobotModel;
+
+    let ring = KawasakiRingCfg::default();
+    let (pw, pd) = ring.red_platform_m;
+    let misa = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/namiashi/namiashi_3p3_prop.misa");
+    let mut robot = RobotModel::from_misa(&misa).expect("load namiashi");
+    let opts = MjcfExportOptions {
+        base_xy: Some((
+            -(ring.ring_m / 2.0 + pd / 2.0),
+            -(ring.ring_m / 2.0 - pw / 2.0),
+        )),
+        extra_asset_xml: Some(ring.asset_xml("kawasaki")),
+        extra_worldbody_xml: Some(ring.worldbody_xml("kawasaki")),
+        add_actuators: true,
+        ..MjcfExportOptions::default()
+    };
+    let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
+    sim.set_hfield_data("kawasaki", &ring.heights()).expect("fill hfield");
+    let dt = sim.timestep();
+
+    let root = robot.root_link.clone();
+    let up = |sim: &MujocoSim| -> f64 {
+        (sim.body_world_orientation(&root).unwrap() * nalgebra::Vector3::z()).z
+    };
+    let yaw0 = sim.body_world_yaw(&robot.root_link).unwrap();
+    eprintln!("[inverted] upright: trunk +z_world = {:+.3}", up(&sim));
+
+    sim.respawn_inverted(&mut robot, 0.03);
+    let at_spawn = up(&sim);
+    let z_spawn = sim.body_world_position(&robot.root_link).unwrap()[2];
+    let yaw1 = sim.body_world_yaw(&robot.root_link).unwrap();
+
+    // Two seconds is well past the drop and any bounce; the joint PDs hold
+    // the stance pose throughout, which is what the legs would do if the
+    // robot flipped with its controller still running.
+    for _ in 0..(2.0 / dt) as u32 {
+        sim.step(&mut robot, dt, true);
+    }
+    let settled = up(&sim);
+    let p = sim.body_world_position(&robot.root_link).unwrap();
+    eprintln!(
+        "[inverted] at spawn: trunk +z_world = {at_spawn:+.3}  z = {z_spawn:.3} m  \
+         (yaw {:+.1} deg -> {:+.1} deg)",
+        yaw0.to_degrees(),
+        yaw1.to_degrees(),
+    );
+    eprintln!(
+        "[inverted] after 2 s settling: trunk +z_world = {settled:+.3}  \
+         at ({:+.3},{:+.3},{:.3})",
+        p[0], p[1], p[2],
+    );
+    assert!(
+        at_spawn < -0.99,
+        "spawn pose is not inverted: trunk +z_world = {at_spawn:+.3}",
+    );
+    assert!(
+        settled < -0.7,
+        "did not stay inverted -- settled with trunk +z_world = {settled:+.3}",
+    );
+}
+
 /// Does the live trunk-height control actually move the trunk, and by the
 /// amount asked for?
 ///

@@ -2108,6 +2108,62 @@ impl MujocoSim {
     /// `lift_m` drops it in from above so the first contact is a short fall
     /// onto the surface rather than a resolve-out-of-penetration shove.
     pub fn respawn(&mut self, robot: &mut RobotModel, lift_m: f64) {
+        self.respawn_impl(robot, lift_m, false);
+    }
+
+    /// Lower the free base until the robot just touches whatever is under
+    /// it, then raise it by `clearance_m`, so that dropping it is a drop of
+    /// exactly `clearance_m` regardless of pose or terrain.
+    ///
+    /// Asks the collision detector rather than doing geometry: bisect on
+    /// base z for the boundary between "MuJoCo reports contacts" and "it
+    /// does not". A bounding-sphere estimate was tried first and put the
+    /// robot 27 cm too high -- the trunk's bounding sphere is its
+    /// half-diagonal, which for a flat box hangs far below the box.
+    ///
+    /// No-ops if the base is not a free joint, or if the search brackets
+    /// fail to straddle the boundary.
+    fn drop_base_to_contact(&mut self, clearance_m: f64) {
+        let touching = |s: &mut Self, z: f64| -> bool {
+            s.data.qpos_mut()[2] = z;
+            s.data.forward();
+            s.data.ffi().ncon > 0
+        };
+        let z0 = self.data.qpos()[2];
+        // Bracket: `hi` free, `lo` in contact. 1 m covers this robot on any
+        // terrain it spawns on; anything wider means the pose is wrong.
+        let (mut hi, mut lo) = (z0 + 0.5, z0 - 0.5);
+        if touching(self, hi) || !touching(self, lo) {
+            self.data.qpos_mut()[2] = z0;
+            self.data.forward();
+            return;
+        }
+        for _ in 0..40 {
+            let mid = 0.5 * (hi + lo);
+            if touching(self, mid) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        self.data.qpos_mut()[2] = hi + clearance_m;
+    }
+
+    /// Same, but on its back: the base rolled 180 degrees about world x,
+    /// legs still in their spawn stance and now pointing up.
+    ///
+    /// For testing whatever gets the robot back over. Turning it over by
+    /// hand in the viewer is fiddly and never lands twice the same way, and
+    /// a self-righting attempt that only ever sees one hand-made starting
+    /// pose has not been tested against much.
+    ///
+    /// `lift_m` wants to be generous here -- the trunk is the lowest thing
+    /// now, not the feet, and the spawn height was computed for feet.
+    pub fn respawn_inverted(&mut self, robot: &mut RobotModel, lift_m: f64) {
+        self.respawn_impl(robot, lift_m, true);
+    }
+
+    fn respawn_impl(&mut self, robot: &mut RobotModel, lift_m: f64, invert: bool) {
         if self.spawn_qpos.len() != self.data.qpos().len() {
             return;
         }
@@ -2121,7 +2177,34 @@ impl MujocoSim {
             m.njnt > 0 && unsafe { *m.jnt_type } == mujoco::prelude::MjtJoint::mjJNT_FREE as i32
         };
         if free_base {
-            self.data.qpos_mut()[2] += lift_m;
+            if invert {
+                // MuJoCo stores the free joint's orientation as (w, x, y, z).
+                // Pre-multiplying by a 180-degree roll about world x flips
+                // the body while leaving its heading alone -- post-
+                // multiplying would roll about the body's own x, which for
+                // an already-yawed spawn is a different pose.
+                let q = self.data.qpos();
+                let spawn = na::UnitQuaternion::from_quaternion(na::Quaternion::new(
+                    q[3], q[4], q[5], q[6],
+                ));
+                let flipped = na::UnitQuaternion::from_axis_angle(
+                    &na::Vector3::x_axis(),
+                    std::f64::consts::PI,
+                ) * spawn;
+                let qp = self.data.qpos_mut();
+                qp[3] = flipped.w;
+                qp[4] = flipped.i;
+                qp[5] = flipped.j;
+                qp[6] = flipped.k;
+
+                // Adding `lift_m` to the spawn z the way the upright path
+                // does would drop it from far too high: that z was chosen to
+                // put the FEET on the ground, and the feet now point at the
+                // sky. Find where this pose actually rests instead.
+                self.drop_base_to_contact(lift_m);
+            } else {
+                self.data.qpos_mut()[2] += lift_m;
+            }
         }
         self.data.qvel_mut().fill(0.0);
         self.history.clear();

@@ -18,6 +18,7 @@
 //! | `=`/`-`                   | trunk height +/- 5 mm       |
 //! | `B`                       | trunk levelling on/off      |
 //! | `N`                       | respawn at the start pose   |
+//! | `Shift`+`N`               | respawn upside down         |
 //! | `Y`/`G` (held)            | arm pitch up / down         |
 //! | `K`                       | show / hide this list       |
 //! | `O`/`L`                   | ground friction mu +/- 0.05 |
@@ -90,6 +91,9 @@ pub struct LiveTeleop {
     /// A request rather than a state, because respawning is an edge: leaving
     /// it latched would teleport the robot home every tick.
     pub respawn_requested: bool,
+    /// Whether that request is for the upside-down pose (`Shift`+`N`).
+    /// Only meaningful while `respawn_requested` is set.
+    pub respawn_inverted: bool,
     /// Simulated sliding friction of every geom -- the actual slipperiness
     /// of the world. Applied via `MujocoSim::set_slide_friction_all`.
     pub ground_mu: f64,
@@ -172,6 +176,7 @@ impl LiveTeleop {
             arm_rate: 0.0,
             arm_angle_rad: 0.0,
             respawn_requested: false,
+            respawn_inverted: false,
             // Seeded from the live sim/controller at startup (see
             // run_wbc_sim); these are only a placeholder until then.
             ground_mu: 0.0,
@@ -271,6 +276,7 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("B", "trunk levelling on / off"),
     ("Y / G", "arm pitch up / down (held)"),
     ("N", "respawn at the start pose, 10 cm up"),
+    ("Shift+N", "respawn upside down"),
     ("O / L", "ground friction mu"),
     ("P / .", "controller's assumed mu"),
     ("K", "show / hide this list"),
@@ -294,8 +300,10 @@ pub const ARM_RATE_RAD_S: f64 = 0.8;
 /// loop overwrites on the next sync -- to `qpos0`, every hinge straight.
 /// For a robot whose spawn height was computed for a bent stance, that is
 /// a pose with its feet through the floor.
-pub fn poll_respawn(ctx: &egui::Context) -> bool {
-    ctx.input(|r| r.key_pressed(egui::Key::N))
+pub fn poll_respawn(ctx: &egui::Context) -> Option<bool> {
+    ctx.input(|r| {
+        r.key_pressed(egui::Key::N).then_some(r.modifiers.shift)
+    })
 }
 
 /// Was the levelling toggle pressed this frame? Edge-triggered.

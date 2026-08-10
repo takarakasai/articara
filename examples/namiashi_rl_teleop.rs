@@ -231,6 +231,10 @@ fn main() {
             if articara::teleop::poll_help_toggle(ctx) {
                 st.show_help = !st.show_help;
             }
+            if let Some(inverted) = articara::teleop::poll_respawn(ctx) {
+                st.respawn_requested = true;
+                st.respawn_inverted = inverted;
+            }
             st.cmd = poll_cmd(ctx, ENV);
             let (dg, _) = poll_friction_deltas(ctx);
             if dg != 0.0 {
@@ -345,9 +349,18 @@ fn main() {
             // leaves.
             let t_before = sim.sim_time();
             viewer.sync_data(sim.mj_data_mut());
-            if sim.sim_time() < t_before - 1e-9 {
-                sim.respawn(&mut robot, 0.10);
-                eprintln!("[teleop] viewer Reset -> respawned at the start pose, +0.10 m");
+            let reset_seen = sim.sim_time() < t_before - 1e-9;
+            let (asked, inverted) = {
+                let mut st = live.lock().unwrap();
+                (std::mem::replace(&mut st.respawn_requested, false), st.respawn_inverted)
+            };
+            if reset_seen || asked {
+                if inverted && asked {
+                    sim.respawn_inverted(&mut robot, 0.03);
+                } else {
+                    sim.respawn(&mut robot, 0.10);
+                }
+                eprintln!("[teleop] respawned{}", if inverted && asked { " upside down" } else { "" });
             }
             let _ = viewer.render();
 
