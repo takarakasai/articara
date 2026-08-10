@@ -5297,6 +5297,54 @@ fn namiashi_staircase_5cm_terrain_stance_video() {
     }
 }
 
+/// Does the live trunk-height control actually move the trunk, and by the
+/// amount asked for?
+///
+/// `body_lift_m` reaches the robot through three sign flips -- a key that
+/// says "up", a `nominal_foot_body.z` that increases to CROUCH, and an
+/// accumulator it now shares with two levelling corrections -- so "the
+/// number changed" is not evidence the body did.
+///
+/// Drives the LIVE path specifically (`live_teleop` set, `live_viewer` off),
+/// because the static `trunk_drop_m` reaches the same nominal by a different
+/// route and would pass whether or not the keys work. Flat ground, standing,
+/// so the answer should simply be the commanded offset.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+#[cfg(feature = "mujoco-viewer")]
+fn namiashi_body_height_command() {
+    use articara::teleop::LiveTeleop;
+    use std::sync::{Arc, Mutex};
+    const I: usize = 0; // Trot
+    let mut base_z = None;
+    for lift in [0.0, -0.03, 0.03] {
+        let live = Arc::new(Mutex::new(LiveTeleop {
+            body_lift_m: lift,
+            ..LiveTeleop::new(GaitType::Trot)
+        }));
+        let params = WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: 0.0,
+            total_time_s: 3.0,
+            wbc_real_inertia: true,
+            live_teleop: Some(live),
+            live_viewer: false, // the shared state is read regardless
+            ..namiashi_tuned_params(I)
+        };
+        let Some(samples) = run_wbc_sim(params) else { return };
+        let tail: Vec<_> = samples.iter().rev().take(400).collect();
+        let z = tail.iter().map(|s| s.body_z).sum::<f64>() / tail.len() as f64;
+        let delta = base_z.map(|b: f64| z - b);
+        base_z.get_or_insert(z);
+        eprintln!(
+            "[body_height lift={lift:+.3}] trunk z={z:.4} m{}",
+            delta.map(|d| format!("  (delta {d:+.4} m, asked {lift:+.3})")).unwrap_or_default(),
+        );
+    }
+}
+
 /// Does IMU + encoders alone level the trunk when the feet straddle two
 /// heights?
 ///
@@ -5315,6 +5363,7 @@ fn namiashi_staircase_5cm_terrain_stance_video() {
 /// the measurement -- the correction off is the control.
 #[test]
 #[ignore = "diagnostic -- run with --ignored"]
+#[cfg(feature = "mujoco-viewer")]
 fn namiashi_ring_proprio_levelling() {
     use articara::mjcf::KawasakiRingCfg;
     const I: usize = 0; // Trot
@@ -5322,7 +5371,14 @@ fn namiashi_ring_proprio_levelling() {
     // The right-hand round plate spans x 0.50..0.80 at y 0. Straddle its
     // near edge so front and rear legs land on different levels.
     let spawn = (0.50, 0.0);
-    for gain in [0.0, 1.0] {
+    // The last row crouches WHILE levelling: the two write the same nominal
+    // through one accumulator, and an accumulator that drops a contributor
+    // looks exactly like a controller that ignores a key.
+    for (gain, lift) in [(0.0, 0.0), (1.0, 0.0), (1.0, -0.03)] {
+        let live = std::sync::Arc::new(std::sync::Mutex::new(articara::teleop::LiveTeleop {
+            body_lift_m: lift,
+            ..articara::teleop::LiveTeleop::new(GaitType::Trot)
+        }));
         let params = WbcParams {
             actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
             host_rate_hz: Some(400.0),
@@ -5332,6 +5388,7 @@ fn namiashi_ring_proprio_levelling() {
             wbc_real_inertia: true,
             kawasaki_ring: Some(ring.clone()),
             spawn_xy: Some(spawn),
+            live_teleop: Some(live),
             proprio_stance: if gain == 0.0 {
                 None
             } else {
@@ -5351,7 +5408,7 @@ fn namiashi_ring_proprio_levelling() {
             .map(|s| s.roll.abs().max(s.pitch.abs()))
             .fold(0.0_f64, f64::max);
         eprintln!(
-            "[proprio_level gain={gain:.1}] steady roll={:+.2}deg pitch={:+.2}deg  \
+            "[proprio_level gain={gain:.1} lift={lift:+.3}] roll={:+.2}deg pitch={:+.2}deg  \
              max|tilt|={:.2}deg  final z={:.3}m",
             mean_roll.to_degrees(),
             mean_pitch.to_degrees(),

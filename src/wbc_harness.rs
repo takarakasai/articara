@@ -1583,8 +1583,8 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // egui's key state and writes `live` -- it never touches sim
             // state, so the cheaper detached path applies directly.
             use crate::teleop::{
-                draw_hud, poll_cmd, poll_friction_deltas, poll_gait,
-                poll_swing_height_delta, SpeedEnvelope, FRICTION_RANGE,
+                draw_hud, poll_body_lift_delta, poll_cmd, poll_friction_deltas, poll_gait,
+                poll_swing_height_delta, SpeedEnvelope, BODY_LIFT_RANGE_M, FRICTION_RANGE,
                 SWING_HEIGHT_RANGE_M,
             };
             v.add_ui_callback_detached(move |ctx| {
@@ -1596,6 +1596,11 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 if dh != 0.0 {
                     st.swing_height_m = (st.swing_height_m + dh)
                         .clamp(SWING_HEIGHT_RANGE_M.0, SWING_HEIGHT_RANGE_M.1);
+                }
+                let dl = poll_body_lift_delta(ctx);
+                if dl != 0.0 {
+                    st.body_lift_m = (st.body_lift_m + dl)
+                        .clamp(BODY_LIFT_RANGE_M.0, BODY_LIFT_RANGE_M.1);
                 }
                 let (dg, dc) = poll_friction_deltas(ctx);
                 if dg != 0.0 {
@@ -1840,6 +1845,30 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         let host_tick = k % host_decim == 0;
         if gc.is_enabled() && host_tick {
             let host_dt = params.dt * host_decim as f64;
+            // Per-leg nominal-stance offsets for this tick, ACCUMULATED.
+            // Three things want to move the same `nominal_foot_body.z` --
+            // live body height, proprioceptive levelling, terrain levelling
+            // -- and each used to write it outright, so whichever ran last
+            // silently erased the others. Summing here lets a crouch and a
+            // levelling correction coexist, which is the combination anyone
+            // driving the robot will actually reach for.
+            let mut nom_off = [0.0_f64; 4];
+            let mut nom_dirty = false;
+
+            // Live body height. Positive `body_lift_m` raises the trunk, so
+            // it LOWERS the nominal foot z -- `nominal_foot_body.z` measures
+            // the foot toward the body, which is why `trunk_drop_m` crouches
+            // by increasing it.
+            #[cfg(feature = "mujoco-viewer")]
+            if let Some(live) = &params.live_teleop {
+                let lift = live.lock().unwrap().body_lift_m;
+                if lift.abs() > 1e-9 {
+                    for o in nom_off.iter_mut() {
+                        *o -= lift;
+                    }
+                    nom_dirty = true;
+                }
+            }
             // Freeze the gait's phase clock -- not just the disrupted leg's
             // target -- while any leg is mid-reflex. `reflex_active` here is
             // still last tick's value (this tick's has not been computed
@@ -1906,25 +1935,13 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     }
                     if n > 0 {
                         let mean = sum / n as f64;
-                        let mut kin_now = gc.kinematics().clone();
-                        for (slot, leg) in [
-                            &mut kin_now.fl,
-                            &mut kin_now.fr,
-                            &mut kin_now.rl,
-                            &mut kin_now.rr,
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        {
-                            let off = if leg_h_seen[slot] {
-                                (cfg_pp.gain * (leg_h_filt[slot] - mean))
-                                    .clamp(-cfg_pp.max_offset_m, cfg_pp.max_offset_m)
-                            } else {
-                                0.0
-                            };
-                            leg.nominal_foot_body.z = base_nominal_z[slot] + off;
+                        for slot in 0..4 {
+                            if leg_h_seen[slot] {
+                                nom_off[slot] += (cfg_pp.gain * (leg_h_filt[slot] - mean))
+                                    .clamp(-cfg_pp.max_offset_m, cfg_pp.max_offset_m);
+                            }
                         }
-                        gc.set_kinematics(kin_now);
+                        nom_dirty = true;
                     }
                 }
             }
@@ -1944,21 +1961,26 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         terrain_z[slot] = stairs.height_at(world_x);
                     }
                     let mean = terrain_z.iter().sum::<f64>() / 4.0;
-                    let mut kin_now = gc.kinematics().clone();
-                    for (slot, leg) in
-                        [&mut kin_now.fl, &mut kin_now.fr, &mut kin_now.rl, &mut kin_now.rr]
-                            .into_iter()
-                            .enumerate()
-                    {
-                        let off = (cfg_st.gain * (terrain_z[slot] - mean))
-                            .clamp(-cfg_st.max_offset_m, cfg_st.max_offset_m);
+                    for slot in 0..4 {
                         // Positive terrain difference = ground under this leg
                         // is higher than the four-leg mean = the foot sits
                         // LESS far below the trunk, i.e. nominal z rises.
-                        leg.nominal_foot_body.z = base_nominal_z[slot] + off;
+                        nom_off[slot] += (cfg_st.gain * (terrain_z[slot] - mean))
+                            .clamp(-cfg_st.max_offset_m, cfg_st.max_offset_m);
                     }
-                    gc.set_kinematics(kin_now);
+                    nom_dirty = true;
                 }
+            }
+            if nom_dirty {
+                let mut kin_now = gc.kinematics().clone();
+                for (slot, leg) in
+                    [&mut kin_now.fl, &mut kin_now.fr, &mut kin_now.rl, &mut kin_now.rr]
+                        .into_iter()
+                        .enumerate()
+                {
+                    leg.nominal_foot_body.z = base_nominal_z[slot] + nom_off[slot];
+                }
+                gc.set_kinematics(kin_now);
             }
             let gait_dt = if phase_frozen { 0.0 } else { host_dt };
             let (out, targets, torque_ff) = gc.tick(gait_dt);

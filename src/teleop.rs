@@ -15,6 +15,7 @@
 //! | `Shift` (held)            | full speed instead of half  |
 //! | `1`/`2`/`3`               | Crawl / Walk / Trot         |
 //! | `R`/`F`                   | swing height +/- 5 mm       |
+//! | `=`/`-`                   | trunk height +/- 5 mm       |
 //! | `O`/`L`                   | ground friction mu +/- 0.05 |
 //! | `P`/`.`                   | controller's assumed mu     |
 //!
@@ -54,6 +55,13 @@ pub struct LiveTeleop {
     /// would be the more surprising behaviour. The tuned values are within
     /// 5 mm of each other anyway (0.035-0.040 m).
     pub swing_height_m: f64,
+    /// Trunk height relative to the tuned stance, metres. Positive raises.
+    ///
+    /// Sign chosen for the driver, not for the internals: `trunk_drop_m` and
+    /// `nominal_foot_body.z` both increase to CROUCH, which is the right
+    /// convention for leg geometry and the wrong one for a key that says
+    /// "up". The conversion happens once, where it is applied.
+    pub body_lift_m: f64,
     /// Simulated sliding friction of every geom -- the actual slipperiness
     /// of the world. Applied via `MujocoSim::set_slide_friction_all`.
     pub ground_mu: f64,
@@ -130,6 +138,7 @@ impl LiveTeleop {
             cmd: [0.0; 3],
             gait,
             swing_height_m: crate::wbc_harness::namiashi_tuned_swing_height_m(gait),
+            body_lift_m: 0.0,
             // Seeded from the live sim/controller at startup (see
             // run_wbc_sim); these are only a placeholder until then.
             ground_mu: 0.0,
@@ -207,6 +216,25 @@ pub fn poll_cmd(ctx: &egui::Context, env: SpeedEnvelope) -> [f64; 3] {
                 env.wz,
             ),
         ]
+    })
+}
+
+/// One `=`/`-` press worth of trunk-height change.
+pub const BODY_LIFT_STEP_M: f64 = 0.005;
+
+/// Clamp on the live trunk height, metres either side of the tuned stance.
+/// The lower bound is what stops a crouch from folding the legs past the
+/// nominal the whole gait is built around.
+pub const BODY_LIFT_RANGE_M: (f64, f64) = (-0.05, 0.06);
+
+/// Trunk-height change requested this frame, metres. Edge-triggered.
+pub fn poll_body_lift_delta(ctx: &egui::Context) -> f64 {
+    ctx.input(|r| {
+        // Equals rather than Plus: `+` needs Shift, which is already the
+        // full-speed modifier, so pressing it would also make the robot run.
+        let up = r.key_pressed(egui::Key::Equals);
+        let down = r.key_pressed(egui::Key::Minus);
+        ((up as i32 - down as i32) as f64) * BODY_LIFT_STEP_M
     })
 }
 
@@ -304,6 +332,11 @@ pub fn draw_hud(
 
             if gaited {
                 row(ui, "gait", format!("{:?}   [1/2/3]", st.gait));
+                row(
+                    ui,
+                    "body h",
+                    format!("{:+.3} m from tuned   [=/-]", st.body_lift_m),
+                );
                 row(
                     ui,
                     "swing h",
