@@ -1155,7 +1155,17 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             (None, Some(s)) => Some(s.worldbody_xml()),
             (None, None) => None,
         },
-        extra_asset_xml: ring.as_ref().map(|r| r.asset_xml(RING_HFIELD)),
+        extra_asset_xml: ring.as_ref().map(|r| {
+            let mut a = r.asset_xml(RING_HFIELD);
+            if r.lighting {
+                a += &crate::mjcf::scene_lighting_asset_xml();
+            }
+            a
+        }),
+        extra_visual_xml: ring
+            .as_ref()
+            .filter(|r| r.lighting)
+            .map(|_| crate::mjcf::scene_lighting_visual_xml()),
         base_xy: params.spawn_xy,
         add_actuators: true,
         ..Default::default()

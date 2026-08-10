@@ -152,7 +152,10 @@ fn main() {
             let (w, d) = ring.red_platform_m;
             MjcfExportOptions {
                 extra_worldbody_xml: Some(ring.worldbody_xml(RING_HFIELD)),
-                extra_asset_xml: Some(ring.asset_xml(RING_HFIELD)),
+                extra_asset_xml: Some(
+                    ring.asset_xml(RING_HFIELD) + &articara::mjcf::scene_lighting_asset_xml(),
+                ),
+                extra_visual_xml: Some(articara::mjcf::scene_lighting_visual_xml()),
                 base_xy: Some((
                     -(ring.ring_m / 2.0 + d / 2.0),
                     -(ring.ring_m / 2.0 - w / 2.0),

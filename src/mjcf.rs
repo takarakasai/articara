@@ -148,6 +148,15 @@ pub struct MjcfExportOptions {
     /// [`crate::mujoco_sim::MujocoSim::set_hfield_data`] -- no image file on
     /// disk, and the terrain can change between runs without touching it.
     pub extra_asset_xml: Option<String>,
+    /// Raw `<visual>`-legal XML (`<headlight>`, `<rgba>`, `<global>`, …),
+    /// spliced as its own `<visual>` block.
+    ///
+    /// MuJoCo's default scene is lit by a dim headlight and nothing else,
+    /// which is fine for a debug view of one robot and leaves a whole
+    /// competition field reading as a black rectangle. Also the only way to
+    /// reach `<global offwidth>`, without which offscreen renders are capped
+    /// at 640x480.
+    pub extra_visual_xml: Option<String>,
 }
 
 impl Default for MjcfExportOptions {
@@ -166,6 +175,7 @@ impl Default for MjcfExportOptions {
             integrator: None,
             extra_worldbody_xml: None,
             extra_asset_xml: None,
+            extra_visual_xml: None,
             timestep: None,
         }
     }
@@ -372,6 +382,26 @@ pub struct KawasakiRingCfg {
     /// `[pdf]` Half-width of the edge bank's semi-elliptical section. The
     /// banks measure 2 cm across and sit flush against the ring edge.
     pub bank_half_w_m: f64,
+    /// `[photo]` Safety barrier around the field: `(height, gap_outside_ring,
+    /// thickness)` in metres. Transparent panels on frames, visible in every
+    /// competition photo, and the one piece of the surroundings that is
+    /// physical rather than scenery -- a robot that leaves the ring stops
+    /// here instead of walking out of the world. `None` omits it.
+    ///
+    /// `[photo]` throughout: read off event photographs, not a drawing.
+    pub barrier: Option<(f64, f64, f64)>,
+    /// `[photo]` Coloured border framing the ring on the two start sides,
+    /// as `(width, height)`. Scenery -- the red and blue frames that make
+    /// which end is which readable at a glance. `None` omits it.
+    pub border: Option<(f64, f64)>,
+    /// Whether to emit lighting, sky and the two fill lights. Off leaves
+    /// MuJoCo's default dim headlight and black void.
+    ///
+    /// Note the colours here are deliberately LIGHTER than the real field,
+    /// which is near-black in every photograph. At the real contrast the
+    /// 15 mm obstacle plates disappear into the surface they sit on, and a
+    /// simulation you cannot read is not more realistic in any useful sense.
+    pub lighting: bool,
     /// `[assumed]` Bank height -- the ONE number the rulebook never gives.
     /// "断面が半楕円形" only says the section is a半楕円, so this picks a
     /// height that is not simply the半円 that a 1 cm half-width would imply.
@@ -386,11 +416,17 @@ pub struct KawasakiRingCfg {
     /// indefinitely -- which reads as a diverging simulation rather than as
     /// the ring-out it actually is.
     pub floor_size_m: Option<f64>,
-    /// Air gap between the ring slab's UNDERSIDE and the floor -- the space
-    /// you actually see under the ring, not the drop from its top face.
-    /// Measured from the underside on purpose: quoting it from the ring
+    /// Height of the stand under the ring: the distance from the ring
+    /// slab's UNDERSIDE down to the venue floor.
+    ///
+    /// Measured from the underside on purpose -- quoting it from the ring
     /// surface makes the visible gap depend on `plate_thickness_m`, so the
     /// same number looks different every time the slab changes.
+    ///
+    /// Competition photos put the ring at about table height, so ~0.7 is
+    /// what the real setup looks like; the default stays at the 0.20 that
+    /// was asked for, since it is one number to change and guessing at a
+    /// height nobody specified is not an improvement.
     pub floor_gap_m: f64,
     /// Thickness of the ring slab itself. Not in the rulebook -- the drawing
     /// dimensions the ring's top face and its obstacles, never how deep the
@@ -419,6 +455,9 @@ impl Default for KawasakiRingCfg {
             round_plate_centres: vec![(-0.65, 0.0), (0.65, 0.0)],
             quad_plate_centres: vec![(0.0, -0.65), (0.0, 0.65)],
             bank_half_w_m: 0.01,
+            barrier: Some((0.60, 0.55, 0.02)),
+            border: Some((0.08, 0.03)),
+            lighting: true,
             bank_h_m: 0.015,
             // Each bank is 2 cm across and flush with its own ring edge, so
             // the centreline sits 1 cm in from +/-0.95. Top and bottom run
@@ -551,13 +590,18 @@ impl KawasakiRingCfg {
     /// allocates the grid and the host fills it.
     pub fn asset_xml(&self, name: &str) -> String {
         let (nrow, ncol) = self.grid();
+        // The 4th size component is how far the field extends BELOW z=0,
+        // i.e. the ring slab itself -- MuJoCo builds that solid for free.
+        // A separate box for the plate would duplicate exactly this volume
+        // and put two coplanar faces at z=0, which renders as a speckled
+        // mess of z-fighting across the whole field.
         format!(
             "    <hfield name=\"{name}\" nrow=\"{nrow}\" ncol=\"{ncol}\" \
              size=\"{} {} {} {}\"/>\n",
             self.ring_m / 2.0,
             self.ring_m / 2.0,
             self.z_top_m(),
-            0.05,
+            self.plate_thickness_m,
         )
     }
 
@@ -571,40 +615,53 @@ impl KawasakiRingCfg {
     pub fn worldbody_xml(&self, name: &str) -> String {
         let half = self.ring_m / 2.0;
         let plate_h = self.plate_thickness_m;
+        let floor_top = -self.floor_top_z();
         let mut xml = String::new();
+
+        if self.lighting {
+            xml += &scene_lighting_worldbody_xml();
+        }
+
         if let Some(side) = self.floor_size_m {
-            // A slab, not an infinite plane: the ring is what the robot is
-            // meant to stay on, and a floor with a visible edge makes that
-            // read at a glance. Thickness is arbitrary -- only its top
-            // surface matters -- so it is not a config knob.
+            // Venue floor. A slab, not an infinite plane: the ring is what
+            // the robot is meant to stay on, and a floor with a visible edge
+            // makes that read at a glance.
             const FLOOR_H: f64 = 0.05;
             xml += &format!(
-                "    <geom name=\"ring_floor\" type=\"box\" pos=\"0 0 {}\" size=\"{} {} {}\" rgba=\"0.16 0.17 0.19 1\"/>\n",
-                -self.floor_top_z() - FLOOR_H / 2.0,
+                "    <geom name=\"ring_floor\" type=\"box\" pos=\"0 0 {}\" size=\"{} {} {}\" rgba=\"0.42 0.44 0.47 1\"/>\n",
+                floor_top - FLOOR_H / 2.0,
                 side / 2.0,
                 side / 2.0,
                 FLOOR_H / 2.0,
             );
+            // The stand the ring sits on, filling floor-to-underside. Inset
+            // slightly so the ring reads as a top plate on a base rather
+            // than as one solid block.
+            let inset = 0.06;
+            let h = -plate_h - floor_top;
+            if h > 1e-6 {
+                xml += &format!(
+                    "    <geom name=\"ring_stand\" type=\"box\" pos=\"0 0 {}\" size=\"{} {} {}\" rgba=\"0.20 0.22 0.28 1\"/>\n",
+                    floor_top + h / 2.0,
+                    half - inset,
+                    half - inset,
+                    h / 2.0,
+                );
+            }
         }
+
         xml += &format!(
-            "    <geom name=\"ring_plate\" type=\"box\" pos=\"0 0 {}\" \
-             size=\"{half} {half} {}\" rgba=\"0.22 0.22 0.24 1\"/>\n",
-            -plate_h / 2.0,
-            plate_h / 2.0,
+            "    <geom name=\"ring_field\" type=\"hfield\" hfield=\"{name}\" pos=\"0 0 0\" rgba=\"0.36 0.37 0.40 1\"/>\n"
         );
-        xml += &format!(
-            "    <geom name=\"ring_field\" type=\"hfield\" hfield=\"{name}\" \
-             pos=\"0 0 0\" rgba=\"0.30 0.30 0.33 1\"/>\n"
-        );
+
         for (label, (w, d), sx, sy, rgba) in [
-            ("start_red", self.red_platform_m, -1.0, -1.0, "0.75 0.15 0.15 1"),
-            ("start_blue", self.blue_platform_m, 1.0, 1.0, "0.15 0.20 0.75 1"),
+            ("start_red", self.red_platform_m, -1.0, -1.0, "0.72 0.12 0.12 1"),
+            ("start_blue", self.blue_platform_m, 1.0, 1.0, "0.12 0.20 0.72 1"),
         ] {
             // Butted against the outside of the ring edge, on opposite
             // corners, matching the isometric.
             xml += &format!(
-                "    <geom name=\"{label}\" type=\"box\" pos=\"{} {} {}\" \
-                 size=\"{} {} {}\" rgba=\"{rgba}\"/>\n",
+                "    <geom name=\"{label}\" type=\"box\" pos=\"{} {} {}\" size=\"{} {} {}\" rgba=\"{rgba}\"/>\n",
                 sx * (half + d / 2.0),
                 sy * (self.ring_m / 2.0 - w / 2.0),
                 -self.platform_h_m / 2.0,
@@ -613,6 +670,42 @@ impl KawasakiRingCfg {
                 self.platform_h_m / 2.0,
             );
         }
+
+        // Coloured border along each start side, so which end is which reads
+        // at a glance the way the red/blue frames do in the photographs.
+        if let Some((bw, bh)) = self.border {
+            for (label, sx, rgba) in
+                [("border_red", -1.0_f64, "0.72 0.12 0.12 1"), ("border_blue", 1.0, "0.12 0.20 0.72 1")]
+            {
+                xml += &format!(
+                    "    <geom name=\"{label}\" type=\"box\" pos=\"{} 0 {}\" size=\"{} {half} {}\" rgba=\"{rgba}\"/>\n",
+                    sx * (half + bw / 2.0),
+                    bh / 2.0 - plate_h,
+                    bw / 2.0,
+                    (bh + plate_h) / 2.0,
+                );
+            }
+        }
+
+        // Safety barrier: four transparent panels, standing on the venue
+        // floor and clear of the start platforms. Collidable -- this is the
+        // one part of the surroundings a robot can actually hit.
+        if let Some((bh, gap, bt)) = self.barrier {
+            let r = half + gap;
+            for (label, x, y, sx, sy) in [
+                ("barrier_xp", r, 0.0, bt / 2.0, r + bt),
+                ("barrier_xn", -r, 0.0, bt / 2.0, r + bt),
+                ("barrier_yp", 0.0, r, r + bt, bt / 2.0),
+                ("barrier_yn", 0.0, -r, r + bt, bt / 2.0),
+            ] {
+                xml += &format!(
+                    "    <geom name=\"{label}\" type=\"box\" pos=\"{x} {y} {}\" size=\"{sx} {sy} {}\" rgba=\"0.55 0.70 0.80 0.25\"/>\n",
+                    floor_top + bh / 2.0,
+                    bh / 2.0,
+                );
+            }
+        }
+
         xml
     }
 }
@@ -770,13 +863,51 @@ pub fn export_mjcf_with_options(
     // Own `<asset>` block after the opening `<mujoco …>` line, the same
     // splice `<option>` uses above. MJCF merges repeated top-level sections,
     // so this does not disturb the mesh `<asset>` the exporter emits.
-    match &opts.extra_asset_xml {
+    let xml = match &opts.extra_asset_xml {
         None => xml,
         Some(extra) => match xml.find('\n') {
             Some(nl) => format!("{}\n  <asset>\n{extra}  </asset>{}", &xml[..nl], &xml[nl..]),
             None => xml,
         },
+    };
+
+    match &opts.extra_visual_xml {
+        None => xml,
+        Some(extra) => match xml.find('\n') {
+            Some(nl) => format!("{}\n  <visual>\n{extra}  </visual>{}", &xml[..nl], &xml[nl..]),
+            None => xml,
+        },
     }
+}
+
+/// Lighting, sky and offscreen-buffer settings for a scene that has to be
+/// LOOKED at rather than just stepped.
+///
+/// MuJoCo's default is a dim headlight on a black void: enough to see one
+/// robot in a debug view, not enough to read a 1.9 m competition field, and
+/// the reason every render of the ring so far came out nearly black. This is
+/// deliberately generic rather than ring-specific -- the staircase wants the
+/// same treatment the moment anyone films it.
+pub fn scene_lighting_visual_xml() -> String {
+    // Offscreen default is 640x480, which silently caps `mujoco.Renderer`.
+    "    <headlight ambient=\"0.45 0.45 0.48\" diffuse=\"0.55 0.55 0.55\" specular=\"0.15 0.15 0.15\"/>\n    <rgba haze=\"0.62 0.68 0.76 1\"/>\n    <map znear=\"0.01\" zfar=\"50\"/>\n    <global offwidth=\"1920\" offheight=\"1080\"/>\n"
+        .to_string()
+}
+
+/// Sky and floor textures to go with [`scene_lighting_visual_xml`].
+pub fn scene_lighting_asset_xml() -> String {
+    "    <texture name=\"sky\" type=\"skybox\" builtin=\"gradient\" rgb1=\"0.32 0.42 0.55\" rgb2=\"0.08 0.10 0.14\" width=\"256\" height=\"256\"/>\n"
+        .to_string()
+}
+
+/// Key and fill lights for [`scene_lighting_visual_xml`]. Worldbody-legal.
+///
+/// Two directional lights from opposite quarters rather than one: a single
+/// source leaves the far side of every obstacle in shadow, which on a field
+/// made of 15 mm plates is most of what there is to see.
+pub fn scene_lighting_worldbody_xml() -> String {
+    "    <light name=\"key\" pos=\"2 -2 4\" dir=\"-0.4 0.4 -1\" directional=\"true\" diffuse=\"0.55 0.55 0.55\" specular=\"0.1 0.1 0.1\" castshadow=\"true\"/>\n    <light name=\"fill\" pos=\"-3 2 3\" dir=\"0.6 -0.4 -1\" directional=\"true\" diffuse=\"0.28 0.28 0.32\" specular=\"0 0 0\" castshadow=\"false\"/>\n"
+        .to_string()
 }
 
 /// Computes the minimum cumulative z translation in the kinematic chain.

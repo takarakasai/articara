@@ -81,7 +81,8 @@ fn main() {
             -(ring.ring_m / 2.0 + pd / 2.0),
             -(ring.ring_m / 2.0 - pw / 2.0),
         )),
-        extra_asset_xml: Some(ring.asset_xml("kawasaki")),
+        extra_asset_xml: Some(ring.asset_xml("kawasaki") + &articara::mjcf::scene_lighting_asset_xml()),
+        extra_visual_xml: Some(articara::mjcf::scene_lighting_visual_xml()),
         extra_worldbody_xml: Some(ring.worldbody_xml("kawasaki")),
         add_actuators: true,
         ..MjcfExportOptions::default()
@@ -132,7 +133,8 @@ fn main() {
         let mut robot2 = RobotModel::from_misa(&misa).expect("load namiashi");
         let opts2 = MjcfExportOptions {
             base_xy: Some((off, off)),
-            extra_asset_xml: Some(ring.asset_xml("kawasaki")),
+            extra_asset_xml: Some(ring.asset_xml("kawasaki") + &articara::mjcf::scene_lighting_asset_xml()),
+        extra_visual_xml: Some(articara::mjcf::scene_lighting_visual_xml()),
             extra_worldbody_xml: Some(ring.worldbody_xml("kawasaki")),
             add_actuators: true,
             ..MjcfExportOptions::default()
@@ -151,15 +153,22 @@ fn main() {
             "off-ring drop at ({off:+.2},{off:+.2}): trunk z={:+.3} m, {:.3} m above the floor",
             p[2], above_floor,
         );
+        // Two separate questions, because they used to be conflated: does
+        // the floor CATCH it (the floor's whole job), and does it survive
+        // the landing (not the floor's job at all). Spawning at ring height
+        // means a 0.49 m drop, which this robot topples from about as often
+        // as not -- reading that as a floor failure sent the first version
+        // of this check looking in the wrong place.
         println!(
-            "  verdict: {}",
-            if above_floor > 0.15 && above_floor < 0.35 {
+            "  verdict: {}{}",
+            if above_floor > -0.02 && above_floor < 0.45 {
                 "caught by the floor"
-            } else if p[2] < -1.0 {
+            } else if above_floor <= -0.02 {
                 "FELL PAST the floor"
             } else {
-                "landed, but not at the expected height"
-            }
+                "did not reach the floor"
+            },
+            if above_floor > 0.15 { ", still upright" } else { ", toppled on landing" },
         );
     }
 }
