@@ -607,11 +607,16 @@ def draw_push(draw, cam, origin, fxy, phase=1.0, dt_rel=None):
 
 
 def render_frame(links, joints, pose, cam, hud, push=None, push_at=None,
-                 push_phase=1.0, push_dt=None):
+                 push_phase=1.0, push_dt=None, draw_set=None):
+    """`draw_set` overrides WHAT is rasterised without changing what the HUD
+    reads. Two robots are drawn from one merged dict so the painter's sort
+    orders them against each other, but every HUD panel below is about the
+    logged robot and would read a prefixed key as a missing joint."""
     img = gradient_bg()
     draw = ImageDraw.Draw(img, "RGBA")
     draw_ground(draw, cam)
-    draw_body(draw, links, pose, cam)
+    dl, dp = draw_set if draw_set else (links, pose)
+    draw_body(draw, dl, dp, cam)
     if push is not None and push_at is not None:
         draw_push(draw, cam, push_at, push, push_phase, push_dt)
 
@@ -629,7 +634,9 @@ def render_frame(links, joints, pose, cam, hud, push=None, push_at=None,
                   fill=col, font=F_SMALL)
         draw.text((W - 150, 52), "1 foot" if n_stance == 1 else "2 feet",
                   fill=(226, 140, 92) if n_stance == 1 else (126, 200, 140), font=F_SMALL)
-        sr = hud[-1]
+        # hud[-1] is `stance_side`, a string; the sole roll is hud[-2]. This
+        # only ever ran under COMPACT, so the crash sat here unseen.
+        sr = hud[-2]
         draw.text((W - 150, 32), f"sole {sr:+5.1f} deg",
                   fill=(214, 97, 90) if abs(sr) > 3.0 else (150, 158, 172), font=F_SMALL)
         return img
@@ -767,6 +774,16 @@ def main():
 
     FOLLOW = os.environ.get("CAM_FOLLOW", "0") != "0"
 
+    # A second robot, drawn from its own trajectory, turned to face this one.
+    # Kinematic only: nothing in this file simulates contact, so this shows
+    # reach and timing and NOT what a hit would do -- articara's MujocoSim
+    # takes a single RobotModel, so two bodies in one scene is a rig change,
+    # not a rendering one (doc Sec.42).
+    OPP = os.environ.get("OPPONENT_CSV")
+    OPP_GAP = float(os.environ.get("OPPONENT_GAP", 0.473))
+    OPP_YAW = math.radians(float(os.environ.get("OPPONENT_YAW", 180.0)))
+    opp_rows = list(csv.DictReader(open(OPP))) if OPP else None
+
     if os.environ.get("ANKLE_CLOSEUP"):
         cam = Camera(eye=(0.30, -0.42, 0.16), target=(0.01, 0.0, 0.06), fov=34, y_shift=60)
     else:
@@ -820,6 +837,28 @@ def main():
             [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
         ])
         pose = forward_kinematics(links, joints, root, bp, bR, q)
+        links_draw, pose_draw = links, pose
+        if opp_rows:
+            # Same clock, clamped: the two runs need not be the same length.
+            ro = opp_rows[min(int(i * len(opp_rows) / max(1, len(sel))), len(opp_rows) - 1)]
+            qo = {n: float(ro[n]) for n in jnames}
+            bpo = np.array([float(ro["x"]), float(ro["y"]), float(ro["z"])])
+            w, xq, yq, zq = (float(ro["qw"]), float(ro["qx"]), float(ro["qy"]), float(ro["qz"]))
+            nn = math.sqrt(w * w + xq * xq + yq * yq + zq * zq) or 1.0
+            w, xq, yq, zq = w / nn, xq / nn, yq / nn, zq / nn
+            bRo = np.array([
+                [1 - 2 * (yq * yq + zq * zq), 2 * (xq * yq - zq * w), 2 * (xq * zq + yq * w)],
+                [2 * (xq * yq + zq * w), 1 - 2 * (xq * xq + zq * zq), 2 * (yq * zq - xq * w)],
+                [2 * (xq * zq - yq * w), 2 * (yq * zq + xq * w), 1 - 2 * (xq * xq + yq * yq)],
+            ])
+            cy, sy = math.cos(OPP_YAW), math.sin(OPP_YAW)
+            Rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
+            off = np.array([OPP_GAP, 0.0, 0.0])
+            po = forward_kinematics(links, joints, root, Rz @ bpo + off, Rz @ bRo, qo)
+            links_draw = {f"A/{k}": v for k, v in links.items()}
+            links_draw.update({f"B/{k}": v for k, v in links.items()})
+            pose_draw = {f"A/{k}": v for k, v in pose.items()}
+            pose_draw.update({f"B/{k}": v for k, v in po.items()})
         # Follow the robot along x. A forward walk leaves a fixed frame within
         # a couple of seconds, and a robot that has walked out of shot cannot
         # be judged. CAM_FOLLOW=0 keeps the old fixed camera, which is what a
@@ -862,7 +901,8 @@ def main():
                             ("LEFT" if float(r.get("fz_mj_l", 0)) >= float(r.get("fz_mj_r", 0))
                              else "RIGHT")),
                            push=push_xy, push_at=bp,
-                           push_phase=push_phase, push_dt=push_dt)
+                           push_phase=push_phase, push_dt=push_dt,
+                           draw_set=(links_draw, pose_draw) if opp_rows else None)
         if has_cop:
             feet = []
             for side in ("l", "r"):
