@@ -135,6 +135,26 @@ fn main() {
     let mu_ground = o.mu_ground;
     let ctrl_mode = o.ctrl_mode;
 
+    // A thing to hit. `SPAR_WALL` is where its FRONT FACE goes, in metres
+    // along +x; the body is welded to the world, which is the upper bound on
+    // what a punch can transfer -- an opponent that gives way takes less.
+    // Doc Sec.42.4 could not tell an impact from a lean because there was
+    // nothing in the scene to make contact with.
+    let spar_wall = env_f64("SPAR_WALL", 0.0);
+    if spar_wall > 0.0 {
+        // Height and width are MEASURED, not guessed: standing, the base sits
+        // at z = 0.477 and the extended fist passes through (x 0.221, z 0.558)
+        // with the two fists at y = +-0.115. A first attempt put the box at
+        // z = 0.43 half a torso-height too low and 0.10 too narrow, and it
+        // recorded zero contacts while looking like a null result.
+        let cx = spar_wall + 0.05;
+        let cz = env_f64("SPAR_WALL_Z", 0.52);
+        o.extra_worldbody = Some(format!(
+            "\n    <body name=\"spar_target\" pos=\"{cx:.4} 0 {cz:.4}\">\
+             \n      <geom name=\"spar_target_geom\" type=\"box\" size=\"0.05 0.18 0.16\" \
+             rgba=\"0.75 0.30 0.22 1\"/>\n    </body>"
+        ));
+    }
     let mut rig = BipedRig::build(prof, &o);
     let nv = rig.nv;
     let na_count = rig.na;
@@ -838,6 +858,20 @@ fn main() {
     // collisions, and it was being read as if it were a measure of behaviour.
     let mut q_lo: Vec<f64> = vec![f64::INFINITY; rig.robot.joints.len()];
     let mut q_hi: Vec<f64> = vec![f64::NEG_INFINITY; rig.robot.joints.len()];
+    // Hits on `spar_target`, kept OUT of the self-collision tally: a contact
+    // with the thing the robot is aiming at is not the QP solving against a
+    // contact it has no model for, which is what that counter means.
+    let mut hit_ticks = 0u32;
+    let mut hit_peak_f: f64 = 0.0;
+    let mut hit_impulse: f64 = 0.0;
+    let mut hit_first_t: Option<f64> = None;
+    let mut hit_last_t: f64 = 0.0;
+    // Per-PUNCH, not per-run: the totals above sum every contact in the run,
+    // and "how long does one punch stay on the target" is the question Sec.42.4
+    // actually asked. An episode is a contiguous run of ticks in contact.
+    let mut hit_episodes: Vec<(f64, f64)> = Vec::new();   // (duration s, impulse N*s)
+    let mut ep_t0: Option<f64> = None;
+    let mut ep_imp: f64 = 0.0;
     let mut n_selfcollide = 0u32;
     let mut max_selfcollide_f: f64 = 0.0;
     // ---- disturbance response ------------------------------------------
@@ -1976,12 +2010,34 @@ fn main() {
             q_hi[ji] = q_hi[ji].max(qj);
         }
         {
-            let hits: Vec<(String, String, f64)> = rig
+            let all: Vec<(String, String, f64)> = rig
                 .sim
                 .contacts()
                 .into_iter()
                 .filter(|c| !c.body1.is_empty() && !c.body2.is_empty())
                 .map(|c| (c.body1.clone(), c.body2.clone(), c.force_mag))
+                .collect();
+            let is_target = |a: &str, b: &str| a == "spar_target" || b == "spar_target";
+            let f_hit: f64 = all
+                .iter()
+                .filter(|(a, b, _)| is_target(a, b))
+                .map(|(_, _, f)| *f)
+                .sum();
+            if f_hit > 0.0 {
+                hit_ticks += 1;
+                hit_peak_f = hit_peak_f.max(f_hit);
+                hit_impulse += f_hit * dt;
+                hit_first_t.get_or_insert(t);
+                hit_last_t = t;
+                ep_t0.get_or_insert(t);
+                ep_imp += f_hit * dt;
+            } else if let Some(t0) = ep_t0.take() {
+                hit_episodes.push((t - t0, ep_imp));
+                ep_imp = 0.0;
+            }
+            let hits: Vec<(String, String, f64)> = all
+                .into_iter()
+                .filter(|(a, b, _)| !is_target(a, b))
                 .collect();
             if !hits.is_empty() {
                 n_selfcollide += 1;
@@ -2398,6 +2454,27 @@ fn main() {
         );
         for (d, n) in arms.iter().take(3) {
             println!("    {n:32} {d:7.1} deg");
+        }
+    }
+    if spar_wall > 0.0 {
+        let span = hit_first_t.map(|t0| hit_last_t - t0).unwrap_or(0.0);
+        println!(
+            "  target hits: {hit_ticks} ticks, first contact at t={:.3}, span {:.3} s, \
+             peak {hit_peak_f:.1} N, transferred impulse {hit_impulse:.4} N*s",
+            hit_first_t.unwrap_or(f64::NAN),
+            span
+        );
+        if !hit_episodes.is_empty() {
+            let n = hit_episodes.len() as f64;
+            let dmean = hit_episodes.iter().map(|e| e.0).sum::<f64>() / n;
+            let dmax = hit_episodes.iter().map(|e| e.0).fold(0.0, f64::max);
+            let imean = hit_episodes.iter().map(|e| e.1).sum::<f64>() / n;
+            let imax = hit_episodes.iter().map(|e| e.1).fold(0.0, f64::max);
+            println!(
+                "  per punch ({} contacts): duration mean {dmean:.3} s / max {dmax:.3} s, \
+                 impulse mean {imean:.3} / max {imax:.3} N*s",
+                hit_episodes.len()
+            );
         }
     }
     println!(

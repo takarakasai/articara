@@ -77,6 +77,9 @@ impl CtrlMode {
 /// Split out so a driver can expose whichever of them it wants as env knobs
 /// without the rig having to know about the environment at all.
 pub struct RigOptions {
+    /// Extra MJCF spliced into the scene's `<worldbody>` -- a target to hit, a
+    /// wall, an obstacle. See [`crate::mjcf::MjcfExportOptions::extra_worldbody`].
+    pub extra_worldbody: Option<String>,
     /// Crouch seed. hip + knee + ankle must sum to zero for a flat sole.
     pub knee: f64,
     pub hip_pitch: f64,
@@ -123,6 +126,7 @@ impl RigOptions {
     /// Profile defaults, before any env override.
     pub fn from_profile(p: &Profile) -> Self {
         RigOptions {
+            extra_worldbody: None,
             knee: p.knee_seed,
             hip_pitch: -p.knee_seed / 2.0,
             ankle_pitch: -p.knee_seed / 2.0,
@@ -271,8 +275,10 @@ impl BipedRig {
         let mu_ground = o.mu_ground;
         let sim_dt = o.sim_dt;
         let run_kv = o.run_kv;
+        let extra_wb = o.extra_worldbody.clone();
         let make_opts = move |z: f64| MjcfExportOptions {
             base_pos: Some([0.0, 0.0, z]),
+            extra_worldbody: extra_wb.clone(),
             ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 2.0, roll: 0.0, pitch: 0.0 }),
             timestep: Some(sim_dt),
             default_friction: [mu_ground, 0.005, 0.0001],

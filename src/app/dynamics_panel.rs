@@ -356,6 +356,7 @@ impl ArticaraApp {
                                 mesh_path_style:
                                     articara::mesh_paths::MeshPathStyle::default(),
                                 timestep: None, // keep MuJoCo's default
+                                extra_worldbody: None,
                                 default_friction: [
                                     self.sim.sim_default_friction,
                                     0.005,

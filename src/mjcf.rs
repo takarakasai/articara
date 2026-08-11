@@ -83,6 +83,17 @@ pub struct MjcfExportOptions {
     /// [`MeshPathStyle::Absolute`]: crate::mesh_paths::MeshPathStyle::Absolute
     /// [`MeshPathStyle::RelativeToDir`]: crate::mesh_paths::MeshPathStyle::RelativeToDir
     pub mesh_path_style: crate::mesh_paths::MeshPathStyle,
+    /// Extra MJCF spliced in just before `</worldbody>`: a sparring partner,
+    /// an obstacle, a wall. Emitted verbatim, so it is the caller's job to
+    /// give the bodies names that do not collide with the robot's.
+    ///
+    /// This exists because `MujocoSim` builds its whole scene from one
+    /// generated string and takes a single `RobotModel` -- anything the scene
+    /// needs that is not the robot has nowhere else to enter. Contacts against
+    /// what is added here show up in `MujocoSim::contacts()` like any other,
+    /// which is the point: doc Sec.42.4 could not say whether a punch is an
+    /// impact or a lean because nothing was there to be punched.
+    pub extra_worldbody: Option<String>,
     /// Override MuJoCo's physics timestep (s). `None` keeps MuJoCo's own
     /// default (2 ms).
     ///
@@ -149,6 +160,7 @@ impl Default for MjcfExportOptions {
             timestep: None,
             impratio: None,
             cone: None,
+            extra_worldbody: None,
         }
     }
 }
@@ -269,6 +281,20 @@ pub fn export_mjcf_with_options(
                 None => xml,
             }
         }
+    };
+
+    // Splice the caller's extra bodies in before `</worldbody>`. Same
+    // string-level approach as `<option>` above and for the same reason: the
+    // upstream exporter has no hook and forking it costs more than it saves.
+    let xml = match opts.extra_worldbody.as_deref() {
+        None => xml,
+        Some(extra) => match xml.rfind("</worldbody>") {
+            Some(i) => format!("{}{extra}\n  {}", &xml[..i], &xml[i..]),
+            None => {
+                log::error!("MJCF export: no </worldbody> to splice extra bodies into");
+                xml
+            }
+        },
     };
 
     // Swap `<motor …/>` for `<velocity kv="…" …/>`, keeping name, joint and
