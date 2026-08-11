@@ -19,6 +19,7 @@
 //! | `B`                       | trunk levelling on/off      |
 //! | `N`                       | respawn at the start pose   |
 //! | `Shift`+`N`               | respawn upside down         |
+//! | `X`                       | tip the opponent over       |
 //! | `V`                       | self-right, unhurried       |
 //! | `Shift`+`V`               | self-right, fast            |
 //! | `Y`/`G` (held)            | arm pitch up / down         |
@@ -103,6 +104,11 @@ pub struct LiveTeleop {
     /// than the unhurried one. Only meaningful while `recover_requested` is
     /// set.
     pub recover_fast: bool,
+    /// Set by `X`: swing the arm under the opponent and tip it over.
+    pub attack_requested: bool,
+    /// Fire the attack at this sim time, once, and clear. Same reason as
+    /// [`Self::recover_at_sim_s`].
+    pub attack_at_sim_s: Option<f64>,
     /// Fire the recovery at this sim time, once, and clear.
     ///
     /// Nothing on the keyboard sets this -- it exists so a scripted run can
@@ -198,6 +204,8 @@ impl LiveTeleop {
             recover_requested: false,
             recover_fast: false,
             recover_at_sim_s: None,
+            attack_requested: false,
+            attack_at_sim_s: None,
             // Seeded from the live sim/controller at startup (see
             // run_wbc_sim); these are only a placeholder until then.
             ground_mu: 0.0,
@@ -298,6 +306,7 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("Y / G", "arm pitch up / down (held)"),
     ("N", "respawn at the start pose, 10 cm up"),
     ("Shift+N", "respawn upside down"),
+    ("X", "arm attack: tip the opponent over"),
     ("V", "self-right, unhurried"),
     ("Shift+V", "self-right, fast"),
     ("O / L", "ground friction mu"),
@@ -323,6 +332,11 @@ pub const ARM_RATE_RAD_S: f64 = 0.8;
 /// loop overwrites on the next sync -- to `qpos0`, every hinge straight.
 /// For a robot whose spawn height was computed for a bent stance, that is
 /// a pose with its feet through the floor.
+/// `X`, edge-triggered: start the arm attack.
+pub fn poll_attack(ctx: &egui::Context) -> bool {
+    ctx.input(|r| r.key_pressed(egui::Key::X))
+}
+
 /// `V`, edge-triggered: start the self-righting trajectory. `Some(true)` for
 /// the fast one (`Shift` held), `Some(false)` for the unhurried default.
 pub fn poll_recover(ctx: &egui::Context) -> Option<bool> {

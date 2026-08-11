@@ -96,6 +96,9 @@ pub fn seed_joint_positions_from_kinematics(
 #[derive(Debug, Clone, Copy)]
 pub struct WbcSample {
     pub t: f64,
+    /// The opponent's `[x, y, z, up]`, or `None` when the scene has none.
+    /// `up` is its trunk's own +z in world coordinates.
+    pub foe: Option<[f64; 4]>,
     pub body_x: f64,
     pub body_z: f64,
     pub roll: f64,
@@ -305,6 +308,10 @@ pub enum VelObs {
 /// declaration, the `<geom>` that references it and the runtime fill, so
 /// the three cannot drift apart.
 pub const RING_HFIELD: &str = "kawasaki_ring";
+
+/// Name prefix on the opponent's bodies, so `foe_trunk` and friends can be
+/// asked about without colliding with the robot's own names.
+pub const OPPONENT_PREFIX: &str = "foe_";
 
 pub const NAMIASHI_CAPTURE_GAIN_S: f64 = 0.015;
 
@@ -679,6 +686,14 @@ pub struct WbcParams {
     /// staircase. Mutually exclusive with `staircase`; the ring brings its
     /// own plate, so no separate ground plane is emitted either.
     pub kawasaki_ring: Option<crate::mjcf::KawasakiRingCfg>,
+    /// A second, joint-locked robot dropped into the scene as the opponent:
+    /// `(pose, world position)`. It has the real robot's masses, inertias
+    /// and collision shapes -- tipping something over is entirely a question
+    /// of where its mass is -- but no actuators and no hinges, so it cannot
+    /// act. Its root free joint stays, because it does have to fall over.
+    pub opponent: Option<(crate::mjcf::LockedPose, [f64; 3])>,
+    /// Timings and amplitudes of the `X` attack.
+    pub attack_params: crate::attack::AttackParams,
     /// Where to put the robot's base at t=0, `(x, y)`. `None` spawns at the
     /// origin, which is the approach floor on a staircase but the centre
     /// obstacle on the ring.
@@ -840,6 +855,8 @@ impl WbcParams {
             terrain_stance: None,
             proprio_stance: None,
             kawasaki_ring: None,
+            opponent: None,
+            attack_params: crate::attack::AttackParams::DEFAULT,
             spawn_xy: None,
             render_hz: None,
             fcm_state_cost: None,
@@ -858,6 +875,7 @@ impl WbcParams {
     }
     pub fn forward_walk() -> Self {
         Self {
+            attack_params: crate::attack::AttackParams::DEFAULT,
             total_time_s: 3.0,
             burn_in_s: 0.5,
             cmd_vx: 0.15,
@@ -906,6 +924,7 @@ impl WbcParams {
             terrain_stance: None,
             proprio_stance: None,
             kawasaki_ring: None,
+            opponent: None,
             spawn_xy: None,
             render_hz: None,
             fcm_state_cost: None,
@@ -1150,10 +1169,20 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         } else {
             None
         },
-        extra_worldbody_xml: match (&ring, params.staircase) {
-            (Some(r), _) => Some(r.worldbody_xml(RING_HFIELD)),
-            (None, Some(s)) => Some(s.worldbody_xml()),
-            (None, None) => None,
+        extra_worldbody_xml: {
+            let terrain = match (&ring, params.staircase) {
+                (Some(r), _) => Some(r.worldbody_xml(RING_HFIELD)),
+                (None, Some(s)) => Some(s.worldbody_xml()),
+                (None, None) => None,
+            };
+            match params.opponent {
+                None => terrain,
+                Some((pose, at)) => Some(format!(
+                    "{}\n{}",
+                    terrain.unwrap_or_default(),
+                    crate::mjcf::locked_robot_worldbody_xml(&robot, OPPONENT_PREFIX, at, pose),
+                )),
+            }
         },
         extra_asset_xml: ring.as_ref().map(|r| {
             let mut a = r.asset_xml(RING_HFIELD);
@@ -1599,6 +1628,14 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut recover_fast = false;
     #[allow(unused_mut)]
     let mut recover_tilt: Option<crate::self_righting::TiltEstimator> = None;
+    // Seconds into the arm attack, or None. Unlike the recovery this does
+    // NOT take the joints away from the controller: it moves the front legs
+    // through their nominal foot height, so the gait and the WBC keep the
+    // robot up throughout and a failed attempt can just be walked out of.
+    #[allow(unused_mut)]
+    let mut attack_t: Option<f64> = None;
+    #[allow(unused_mut)]
+    let mut attack_now: Option<crate::attack::AttackCmd> = None;
 
     let render_hz = params.render_hz.unwrap_or(60.0).max(1.0);
     let render_decim = ((1.0 / render_hz) / params.dt).round().max(1.0) as usize;
@@ -1621,7 +1658,8 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // state, so the cheaper detached path applies directly.
             use crate::teleop::{
                 draw_hud, poll_body_lift_delta, poll_cmd, poll_friction_deltas, poll_gait,
-                poll_arm_rate, poll_help_toggle, poll_level_toggle, poll_recover, poll_respawn,
+                poll_arm_rate, poll_attack, poll_help_toggle, poll_level_toggle, poll_recover,
+                poll_respawn,
                 poll_swing_height_delta,
                 SpeedEnvelope, BODY_LIFT_RANGE_M,
                 FRICTION_RANGE, SWING_HEIGHT_RANGE_M,
@@ -1643,6 +1681,9 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 if let Some(inverted) = poll_respawn(ctx) {
                     st.respawn_requested = true;
                     st.respawn_inverted = inverted;
+                }
+                if poll_attack(ctx) {
+                    st.attack_requested = true;
                 }
                 if let Some(fast) = poll_recover(ctx) {
                     st.recover_requested = true;
@@ -1758,12 +1799,20 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     st.recover_at_sim_s = None;
                     st.recover_requested = true;
                 }
+                if st.attack_at_sim_s.is_some_and(|at| t >= at) {
+                    st.attack_at_sim_s = None;
+                    st.attack_requested = true;
+                }
             }
             if let Some(live) = &params.live_teleop {
                 let mut st = live.lock().unwrap();
                 if std::mem::replace(&mut st.respawn_requested, false) {
                     respawn_pending = true;
                     respawn_inverted = st.respawn_inverted;
+                }
+                if std::mem::replace(&mut st.attack_requested, false) {
+                    attack_t = Some(0.0);
+                    eprintln!("[teleop] arm attack");
                 }
                 if std::mem::replace(&mut st.recover_requested, false) {
                     recover_t = Some(0.0);
@@ -1782,6 +1831,7 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 recover_t = None;
                 recover_upright_s = 0.0;
                 recover_slew = None;
+                attack_t = None;
                 // Dropped in from 10 cm up, so the first contact is a short
                 // fall rather than MuJoCo shoving the robot out of a
                 // penetration it woke up inside.
@@ -1839,7 +1889,13 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         #[cfg(feature = "mujoco-viewer")]
         if let (Some(live), Some(ji), Some((lo, hi))) = (&params.live_teleop, arm_ji, arm_range) {
             let rate = live.lock().unwrap().arm_rate;
-            if rate != 0.0 {
+            // The attack owns the arm while it runs; Y/G are ignored, the
+            // same way W is during the creep.
+            #[allow(unused_assignments)]
+            if let Some(a) = attack_now {
+                arm_angle = a.arm_rad.clamp(lo, hi);
+                sim.set_position_target(ji, arm_angle);
+            } else if rate != 0.0 {
                 arm_angle = (arm_angle
                     + rate * crate::teleop::ARM_RATE_RAD_S * params.dt)
                     .clamp(lo, hi);
@@ -1848,13 +1904,39 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             live.lock().unwrap().arm_angle_rad = arm_angle;
         }
 
+        // Advance the attack before anything reads its command this tick.
+        // The recovery wins if both are somehow live: one is a robot on its
+        // back and the other assumes it is standing.
+        #[cfg(feature = "mujoco-viewer")]
+        {
+            attack_now = None;
+            if recover_t.is_some() {
+                attack_t = None;
+            } else if let Some(at) = attack_t {
+                let plan = params.attack_params;
+                if at > plan.total_s() {
+                    attack_t = None;
+                    eprintln!("[teleop] arm attack done");
+                } else {
+                    attack_now = Some(plan.at(at));
+                    attack_t = Some(at + params.dt);
+                }
+            }
+        }
+
         // Live teleop command, highest priority -- read every tick (not just
         // on change) since it can change between any two ticks.
         #[cfg(feature = "mujoco-viewer")]
         if k >= burn_in_steps {
             if let Some(live) = &params.live_teleop {
                 let st = *live.lock().unwrap();
-                let [vx, vy, wz] = st.cmd;
+                // The attack drives the creep itself; the keys are ignored
+                // for its duration so a held W does not walk the robot
+                // through the opponent mid-move.
+                let [vx, vy, wz] = match attack_now {
+                    Some(a) => [a.cmd_vx, 0.0, 0.0],
+                    None => st.cmd,
+                };
                 let now = gc.velocity_cmd();
                 if (now.vx - vx).abs() > 1e-9
                     || (now.vy - vy).abs() > 1e-9
@@ -2018,6 +2100,18 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             // a batch run has no toggle and gets whatever it configured.
             #[allow(unused_mut)]
             let mut level_on = true;
+
+            // The attack's front-leg crouch and lift. Slots 0 and 1 are FL
+            // and FR (LegId::ALL order), so this tilts the body nose-down
+            // and back up without touching the rear pair.
+            #[cfg(feature = "mujoco-viewer")]
+            if let Some(a) = attack_now {
+                if a.front_nom_off_m.abs() > 1e-9 {
+                    nom_off[0] += a.front_nom_off_m;
+                    nom_off[1] += a.front_nom_off_m;
+                    nom_dirty = true;
+                }
+            }
 
             // Live body height. Positive `body_lift_m` raises the trunk, so
             // it LOWERS the nominal foot z -- `nominal_foot_body.z` measures
@@ -3065,6 +3159,22 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
 
         samples.push(WbcSample {
             t,
+            // The opponent's pose, when there is one: `[x, y, z, up]`, where
+            // `up` is its own +z in world coordinates (+1 as placed, -1 on
+            // its back). Reported per sample rather than as a summary
+            // because "did it end up flipped" and "was it just shoved
+            // across the ring" are different questions and both need the
+            // whole trace.
+            foe: params.opponent.map(|_| {
+                let p = sim
+                    .body_world_position(&format!("{OPPONENT_PREFIX}trunk"))
+                    .unwrap_or([0.0; 3]);
+                let up = sim
+                    .body_world_orientation(&format!("{OPPONENT_PREFIX}trunk"))
+                    .map(|r| (r * Vector3::<f64>::z()).z)
+                    .unwrap_or(0.0);
+                [p[0], p[1], p[2], up]
+            }),
             body_x: tx.x,
             body_z: tx.z,
             roll,

@@ -38,7 +38,7 @@
 fn main() {
     use std::sync::{Arc, Mutex};
 
-    use articara::mjcf::{KawasakiRingCfg, StaircaseCfg};
+    use articara::mjcf::{KawasakiRingCfg, LockedPose, StaircaseCfg};
     use articara::teleop::LiveTeleop;
     use articara::wbc_harness::{
         namiashi_tuned_params, run_wbc_sim, Actuation, ProprioStanceCfg, WbcParams,
@@ -65,6 +65,11 @@ fn main() {
         .unwrap_or(5.0);
     // Frames per second to draw. Lower it when the DISPLAY is the
     // bottleneck (ssh -X, software GL): see WbcParams::render_hz.
+    // A joint-locked opponent at the ring centre, on by default with
+    // `--no-opponent` to turn it off. Real masses and collision shapes, no
+    // actuators and no hinges, but a free root joint -- it cannot act, and
+    // it can be turned over.
+    let opponent = !args.iter().any(|a| a == "--no-opponent");
     let render_hz: f64 = args
         .iter()
         .position(|a| a == "--render-hz")
@@ -113,8 +118,12 @@ fn main() {
             // On the red start platform, facing the ring. Spawning at the
             // origin would drop the robot onto the centre bowl.
             let (w, d) = ring.red_platform_m;
+            let foe = opponent.then(|| {
+                (LockedPose::default(), [0.0, 0.0, ring.z_top_m() + 0.30])
+            });
             WbcParams {
                 spawn_xy: Some((-(ring.ring_m / 2.0 + d / 2.0), -(ring.ring_m / 2.0 - w / 2.0))),
+                opponent: foe,
                 kawasaki_ring: Some(ring),
                 ..base
             }
@@ -125,6 +134,16 @@ fn main() {
         }
     };
     eprintln!("[teleop] press K in the viewer for the controls list");
+    if opponent && field == "ring" {
+        // The range is the whole trick: measured in
+        // `examples/namiashi_attack_sweep`, the arm does not reach from
+        // 0.45 m and by 0.32 m the robot tips the opponent by walking into
+        // it whatever the arm does.
+        eprintln!(
+            "[teleop] opponent at the ring centre -- drive to about 0.38 m out, \
+             facing it, then press X"
+        );
+    }
     eprintln!("[teleop] field = {field}  (--field ring | stairs, --cell-mm {cell_mm}, --render-hz {render_hz})");
     run_wbc_sim(params);
 }

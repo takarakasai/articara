@@ -5625,6 +5625,102 @@ fn namiashi_respawn_restores_start_pose() {
     );
 }
 
+/// Does the `X` attack actually turn the opponent over?
+///
+/// The move is: crouch the front and drop the arm, creep forward so the arm
+/// goes under, then extend the front legs while the arm swings up. Every
+/// part of that is plausible on paper, and the only thing that settles it is
+/// where the opponent ends up.
+///
+/// Scored on the OPPONENT's trunk +z in world coordinates -- +1 as placed,
+/// -1 flat on its back -- and on how far it moved. Both matter: shoving it
+/// across the ring without turning it over is a different move, and reads as
+/// success to anything watching only the attitude at the end.
+///
+/// The opponent is joint-locked, so nothing it does can help or hinder; what
+/// is being measured is entirely the attacker's move against the real
+/// masses and collision shapes.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+#[cfg(feature = "mujoco-viewer")]
+fn namiashi_arm_attack_tips_the_opponent() {
+    use articara::attack::AttackParams;
+    use articara::mjcf::{KawasakiRingCfg, LockedPose};
+    use articara::teleop::LiveTeleop;
+    use articara::wbc_harness::{namiashi_tuned_params, run_wbc_sim, Actuation, WbcParams};
+    use quadruped_gait::GaitType;
+    use std::sync::{Arc, Mutex};
+
+    // (final opponent trunk +z, how far it was pushed)
+    let run = |start_x: f64, plan: AttackParams| -> (f64, f64) {
+        let ring = KawasakiRingCfg::default();
+        let live = Arc::new(Mutex::new(LiveTeleop::new(GaitType::Trot)));
+        // Scheduled in the loop, not posted from a thread: see
+        // `namiashi_teleop_v_key_rights_the_robot` for what that cost. 2 s
+        // in, so the burn-in and the initial settle are done.
+        live.lock().unwrap().attack_at_sim_s = Some(2.0);
+        let samples = run_wbc_sim(WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: 0.0,
+            total_time_s: 12.0,
+            wbc_real_inertia: true,
+            live_teleop: Some(Arc::clone(&live)),
+            live_viewer: false,
+            spawn_xy: Some((start_x, 0.0)),
+            opponent: Some((LockedPose::default(), [0.0, 0.0, ring.z_top_m() + 0.30])),
+            kawasaki_ring: Some(ring),
+            attack_params: plan,
+            ..namiashi_tuned_params(0)
+        })
+        .expect("run_wbc_sim");
+        let first = samples[0].foe.expect("no opponent in the scene");
+        let last = samples.last().unwrap().foe.unwrap();
+        (
+            last[3],
+            ((last[0] - first[0]).powi(2) + (last[1] - first[1]).powi(2)).sqrt(),
+        )
+    };
+
+    // 0.38 m out, which `examples/namiashi_attack_sweep` measured as the
+    // range where the move works: at 0.45 m the arm never arrives, and by
+    // 0.32 m the robot tips the opponent whatever the arm does, shoving it
+    // 0.71 m along the ring in the process. That last one matters -- being
+    // too close turns this from a lever into a bulldoze, and a test run
+    // there would pass without the arm existing.
+    const RANGE_M: f64 = -0.38;
+
+    let (up, moved) = run(RANGE_M, AttackParams::DEFAULT);
+    eprintln!("[attack] full move:          opponent up {up:+.3}, moved {moved:.3} m");
+    assert!(up < 0.3, "opponent still upright after the attack: trunk +z {up:+.3}");
+
+    // The arm has to be what does it. Same move with the arm left up: if the
+    // opponent goes over anyway, this test is measuring a robot walking into
+    // something and would keep passing however the arm were wired.
+    let (up_noarm, moved_noarm) = run(
+        RANGE_M,
+        AttackParams { arm_down: -2.3, arm_up: -2.3, ..AttackParams::DEFAULT },
+    );
+    eprintln!(
+        "[attack] arm never lowered:  opponent up {up_noarm:+.3}, moved {moved_noarm:.3} m"
+    );
+    assert!(
+        up_noarm > 0.3,
+        "the opponent goes over without the arm ({up_noarm:+.3}) -- this is a shove, \
+         not the move, and the attack is not being tested",
+    );
+
+    // And the front legs have to extend. Crouching and staying there leaves
+    // the arm doing the whole lift from below and it does not get there.
+    let (up_nolift, _) = run(RANGE_M, AttackParams { front_rise_m: 0.055, ..AttackParams::DEFAULT });
+    eprintln!("[attack] front never lifts:  opponent up {up_nolift:+.3}");
+    assert!(
+        up_nolift > 0.3,
+        "the front-leg extension turns out not to matter: {up_nolift:+.3}",
+    );
+}
+
 /// Does the `V` key path in `run_wbc_sim` actually right the robot?
 ///
 /// Everything else about self-righting has been measured through

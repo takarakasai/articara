@@ -932,3 +932,187 @@ fn compute_initial_z_legacy(model: &RobotModel) -> f64 {
     }
     min_z_recursive(model, &model.root_link, 0.0)
 }
+
+/// A second copy of `model`, joints welded at `pose`, as worldbody XML.
+///
+/// For the opponent robot: it has to be a physical body that can be tipped
+/// over, but it must not move under its own power. So the root keeps its
+/// free joint and every hinge is deleted, with the angle it was holding
+/// baked into the child body's orientation instead.
+///
+/// Built by re-exporting `model` and rewriting the result rather than by
+/// assembling primitives, so the opponent has the real robot's masses,
+/// inertias, collision shapes and meshes -- flipping something over is
+/// entirely a question of where its mass is, and a stand-in built out of
+/// boxes would answer a different question.
+///
+/// `pose` is `[hip, thigh, calf]` applied to all four legs plus the arm,
+/// matching [`crate::self_righting::STANCE`]'s layout with the arm appended.
+/// Mesh assets are NOT re-emitted: the caller's own export already declares
+/// them and this XML refers to the same ones.
+///
+/// # Panics
+/// Never; on a shape it does not recognise it returns an empty string and
+/// logs, which shows up as an opponent that is simply not there.
+pub fn locked_robot_worldbody_xml(
+    model: &RobotModel,
+    prefix: &str,
+    pos: [f64; 3],
+    pose: LockedPose,
+) -> String {
+    let xml = export_mjcf_with_options(
+        model,
+        MjcfExportOptions {
+            base_pos: Some(pos),
+            ground_plane: None,
+            add_actuators: false,
+            ..MjcfExportOptions::default()
+        },
+    );
+    let Some(start) = xml.find("<body name=\"") else {
+        log::error!("locked robot: no <body> in the re-exported MJCF");
+        return String::new();
+    };
+    let Some(end) = xml.rfind("</worldbody>") else {
+        log::error!("locked robot: no </worldbody> in the re-exported MJCF");
+        return String::new();
+    };
+    let subtree = &xml[start..end];
+
+    let mut out = String::new();
+    for line in subtree.lines() {
+        let t = line.trim_start();
+
+        // Hinges become welds. The joint sits at the body frame's origin and
+        // rotates that frame about its own axis, so welding it at `q` is
+        // exactly a body `quat` of that rotation -- the child geoms and the
+        // rest of the subtree are expressed in the frame and follow it.
+        if t.starts_with("<joint ") {
+            continue;
+        }
+        if t.starts_with("<freejoint") {
+            // Kept: the opponent has to be able to fall over.
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if t.starts_with("<body ") {
+            let name = attr(t, "name").unwrap_or_default();
+            let q = pose.angle_for(&name);
+            let mut l = line.to_string();
+            if let Some(axis) = joint_axis_for(subtree, &name) {
+                if q != 0.0 {
+                    let quat = quat_about(axis, q);
+                    let ins = l.rfind('>').unwrap_or(l.len());
+                    l.insert_str(
+                        ins,
+                        &format!(
+                            " quat=\"{:.9} {:.9} {:.9} {:.9}\"",
+                            quat[0], quat[1], quat[2], quat[3]
+                        ),
+                    );
+                }
+            }
+            l = l.replace(
+                &format!("name=\"{name}\""),
+                &format!("name=\"{prefix}{name}\""),
+            );
+            out.push_str(&l);
+            out.push('\n');
+            continue;
+        }
+        // Sites carry names too and would collide with the caller's.
+        if t.starts_with("<site ") {
+            if let Some(name) = attr(t, "name") {
+                out.push_str(&line.replace(
+                    &format!("name=\"{name}\""),
+                    &format!("name=\"{prefix}{name}\""),
+                ));
+                out.push('\n');
+                continue;
+            }
+        }
+        // Tint the visual geoms so the opponent reads as the opponent. Only
+        // group 1 -- group 3 is the collision shell, drawn translucent.
+        if t.starts_with("<geom ") && t.contains("group=\"1\"") {
+            if let Some(rgba) = attr(t, "rgba") {
+                out.push_str(&line.replace(
+                    &format!("rgba=\"{rgba}\""),
+                    "rgba=\"0.85 0.25 0.22 1\"",
+                ));
+                out.push('\n');
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Joint angles to weld a [`locked_robot_worldbody_xml`] copy at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LockedPose {
+    /// `[hip, thigh, calf]`, applied to all four legs.
+    pub leg: [f64; 3],
+    pub arm: f64,
+}
+
+impl Default for LockedPose {
+    /// Crouched: lower than the walking stance, which is what an opponent
+    /// waiting to be attacked looks like and also what makes it possible to
+    /// get an arm underneath.
+    fn default() -> Self {
+        Self { leg: [0.0, 1.60, -2.55], arm: 0.85 }
+    }
+}
+
+impl LockedPose {
+    fn angle_for(&self, body: &str) -> f64 {
+        if body.ends_with("_hip") {
+            // Left and right hips mirror, so a common sign in the trunk
+            // frame needs opposite signs per side.
+            let s = if body.starts_with("FL") || body.starts_with("RL") { 1.0 } else { -1.0 };
+            s * self.leg[0]
+        } else if body.ends_with("_thigh") {
+            self.leg[1]
+        } else if body.ends_with("_calf") {
+            self.leg[2]
+        } else if body == "arm" {
+            self.arm
+        } else {
+            0.0
+        }
+    }
+}
+
+fn attr(line: &str, key: &str) -> Option<String> {
+    let pat = format!("{key}=\"");
+    let i = line.find(&pat)? + pat.len();
+    let j = line[i..].find('"')? + i;
+    Some(line[i..j].to_string())
+}
+
+/// The axis of the hinge declared inside `<body name="{body}">`, if any.
+fn joint_axis_for(subtree: &str, body: &str) -> Option<[f64; 3]> {
+    let i = subtree.find(&format!("<body name=\"{body}\""))?;
+    // The body's own joint is the first one after its opening tag and before
+    // any nested body, which the exporter always emits in that order.
+    let rest = &subtree[i..];
+    let stop = rest[1..].find("<body ").map(|k| k + 1).unwrap_or(rest.len());
+    let head = &rest[..stop];
+    let j = head.find("<joint ")?;
+    let axis = attr(&head[j..head[j..].find('>')? + j], "axis")?;
+    let v: Vec<f64> = axis.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+    (v.len() == 3).then(|| [v[0], v[1], v[2]])
+}
+
+/// Unit quaternion `[w, x, y, z]` for `angle` about `axis`.
+fn quat_about(axis: [f64; 3], angle: f64) -> [f64; 4] {
+    let n = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    if n < 1e-12 {
+        return [1.0, 0.0, 0.0, 0.0];
+    }
+    let (s, c) = ((angle * 0.5).sin(), (angle * 0.5).cos());
+    [c, s * axis[0] / n, s * axis[1] / n, s * axis[2] / n]
+}
