@@ -462,13 +462,60 @@ pub const GENTLE_V2: RecoveryParams = RecoveryParams {
     stand_rate_rad_s: 4.968451683225109,
 };
 
+/// Round 6: the first unhurried search trained on side-lying starts as well
+/// as on-its-back ones, and the first with [`RecoveryParams::targets_mirrored`]
+/// available so the rock can adapt to which side is down.
+///
+/// It buys the side fall and pays for it on the back. Head to head over
+/// three sites x three starting rolls x three friction values:
+///
+///                     GENTLE_V2   GENTLE_V3   RECOVERY_FAST
+///     on its back        2 of 9      2 of 9          9 of 9
+///     side, +90 deg      2 of 9      6 of 9          6 of 9
+///     side, -90 deg      0 of 9      3 of 9          8 of 9
+///     total             4 of 27    11 of 27        23 of 27
+///
+/// On that grid it is nearly three times the coverage. But on the older
+/// five-site ON-ITS-BACK grid -- the one `namiashi_self_righting_teleop_drive`
+/// runs -- it manages 2 of 15 where [`GENTLE_V2`] managed 5. The extra ring
+/// features are where it loses them, so the trade is real: what this buys in
+/// starting attitudes it gives back in terrain.
+///
+/// It is on `V` because being knocked onto a side is the ordinary way to end
+/// up down and 4 of 27 was not a usable number. It does not touch
+/// [`SEARCHED_V4`], twice as reliable again at 23 of 27 and what `Shift`+`V`
+/// runs; the unhurried one is for when the motion matters more than the odds.
+pub const GENTLE_V3: RecoveryParams = RecoveryParams {
+    period_s: 6.719088095889823,
+    push_frac: 0.674526389495254,
+    ramp_s: 0.9178268243245967,
+    hip_push: [0.9301197553778584, -0.0681222284078224],
+    hip_rest: [-0.785, -0.34188947179592155],
+    thigh_push: -2.3997499832536673,
+    calf_push: -2.0109146719418627,
+    thigh_rest: -1.6667232875810047,
+    calf_rest: -1.9850065244400934,
+    arm_push: -2.14633135003746,
+    arm_rest: 0.16991488960597312,
+    handoff_up: 0.718046125057601,
+    finish_hip: 0.7464098498232922,
+    finish_thigh: -1.145790616178967,
+    finish_calf: 0.4601861938981359,
+    finish_arm: 0.85,
+    stand_hip: STANCE[0],
+    stand_thigh: STANCE[1],
+    stand_calf: STANCE[2],
+    max_rate_rad_s: 1.4320819304001957,
+    stand_rate_rad_s: 6.81690861539927,
+};
+
 /// What the teleop's `V` key runs: the unhurried recovery.
 ///
 /// The default because a recovery that throws a 3.3 kg robot around is not
 /// one to run on hardware, and the numbers behind that judgement are
 /// measured rather than aesthetic -- see [`GENTLE_V1`] against
 /// [`SEARCHED_V4`]. The cost is reliability, 7 of 15 conditions against 14.
-pub const RECOVERY_GENTLE: RecoveryParams = GENTLE_V2;
+pub const RECOVERY_GENTLE: RecoveryParams = GENTLE_V3;
 
 /// What `Shift`+`V` runs: the reliable one, which gets there by rocking up
 /// momentum and throwing the body over.
@@ -576,6 +623,44 @@ impl RecoveryParams {
     /// upright, -1 on its back) and `g_body_y` is gravity's y component in
     /// the trunk frame, whose sign says which side is underneath. Both are
     /// available from an attitude estimate alone.
+    /// `mirror` swaps the rock cycle left-for-right.
+    ///
+    /// The cycle's hip angles are fixed per side, so without this the robot
+    /// always rocks the same way in its own frame -- fine from flat on its
+    /// back, where either direction works, and wrong from one of the two
+    /// sides, where it means pushing into the ground it is already lying on.
+    /// The caller latches the decision once from which side is down rather
+    /// than reading it live: on its back `g_body_y` is near zero and its
+    /// sign is noise, and a cycle that flips direction mid-rock cancels
+    /// itself out.
+    pub fn targets_mirrored(
+        &self,
+        t: f64,
+        up: f64,
+        g_body_y: f64,
+        mirror: bool,
+    ) -> (f64, LegTargets) {
+        if !mirror {
+            return self.targets(t, up, g_body_y);
+        }
+        let m = Self {
+            // Left takes the right's angle negated and vice versa: a mirror
+            // in the body's yz plane, clamped back into each side's own
+            // limits, which are not symmetric (-0.785..1.05 against
+            // -1.05..0.785).
+            hip_push: [
+                (-self.hip_push[1]).clamp(HIP_LIMIT_L.0, HIP_LIMIT_L.1),
+                (-self.hip_push[0]).clamp(HIP_LIMIT_R.0, HIP_LIMIT_R.1),
+            ],
+            hip_rest: [
+                (-self.hip_rest[1]).clamp(HIP_LIMIT_L.0, HIP_LIMIT_L.1),
+                (-self.hip_rest[0]).clamp(HIP_LIMIT_R.0, HIP_LIMIT_R.1),
+            ],
+            ..*self
+        };
+        m.targets(t, up, g_body_y)
+    }
+
     pub fn targets(&self, t: f64, up: f64, g_body_y: f64) -> (f64, LegTargets) {
         if up >= UPRIGHT_UP {
             return (ARM_LIMIT.1, [STANCE; 4]);
@@ -863,6 +948,10 @@ mod sim {
         const HOLD_S: f64 = 1.0;
         let mut upright_s = 0.0_f64;
         let mut handed_back = false;
+        // Which side is down, decided once and held. `None` until the tilt
+        // estimate has something to say; flat on its back it never will, and
+        // `false` is then as good an answer as any.
+        let mut mirror: Option<bool> = None;
 
         // Seeded from where the joints actually are, so the recovery starts
         // by continuing the current pose rather than jumping to its own.
@@ -908,10 +997,13 @@ mod sim {
                 handed_back = true;
                 slew.max_rate_rad_s = params.stand_rate_rad_s;
             }
+            if mirror.is_none() && g_body_y.abs() > 0.35 {
+                mirror = Some(g_body_y < 0.0);
+            }
             let want = if handed_back {
                 (ARM_LIMIT.1, [STANCE; 4])
             } else {
-                params.targets(t, up, g_body_y)
+                params.targets_mirrored(t, up, g_body_y, mirror.unwrap_or(false))
             };
             let (arm, legs) = slew.apply(dt, want.0, want.1);
             // The arm is on its Position actuator either way.

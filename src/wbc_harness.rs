@@ -1636,6 +1636,9 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut recover_fast = false;
     #[allow(unused_mut)]
     let mut recover_tilt: Option<crate::self_righting::TiltEstimator> = None;
+    // Which side the robot is lying on, latched once per recovery.
+    #[allow(unused_mut)]
+    let mut recover_mirror: Option<bool> = None;
     // Seconds into the arm attack, or None. Unlike the recovery this does
     // NOT take the joints away from the controller: it moves the front legs
     // through their nominal foot height, so the gait and the WBC keep the
@@ -1827,6 +1830,7 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     recover_upright_s = 0.0;
                     recover_tilt = None;
                     recover_slew = None;
+                    recover_mirror = None;
                     recover_fast = st.recover_fast;
                     eprintln!(
                         "[teleop] self-righting ({})",
@@ -2534,7 +2538,11 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     tilt.update(imu.accel, host_dt);
                 }
                 let (up, g_body_y) = (tilt.up(), tilt.g_body_y());
-                let want = plan.targets(rt, up, g_body_y);
+                if recover_mirror.is_none() && g_body_y.abs() > 0.35 {
+                    recover_mirror = Some(g_body_y < 0.0);
+                }
+                let want =
+                    plan.targets_mirrored(rt, up, g_body_y, recover_mirror.unwrap_or(false));
                 // Same rate limit the search optimised under. Without it the
                 // regime changes are instantaneous target jumps and a
                 // position servo asked to jump moves as fast as it can.
@@ -2586,6 +2594,7 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     recover_upright_s = 0.0;
                     recover_slew = None;
                     recover_tilt = None;
+                    recover_mirror = None;
                     // Back to a standstill, for the same reason respawn does
                     // it: the gait phase has been running this whole time
                     // against a robot that was not walking.

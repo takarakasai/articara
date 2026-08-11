@@ -41,7 +41,7 @@
 fn main() {
     use articara::mjcf::KawasakiRingCfg;
     use articara::self_righting::{
-        evaluate_with, Drive, RecoveryParams, BOUNDS, DIM, GENTLE_V1, SEARCHED_V4,
+        evaluate_rolled, Drive, RecoveryParams, BOUNDS, DIM, GENTLE_V2, SEARCHED_V4,
     };
 
     // Search against the control path the teleop actually runs, not the
@@ -126,20 +126,39 @@ fn main() {
     // out entirely instead: it keeps a real generalisation check (five
     // conditions the search never sees) while no longer asking the
     // trajectory to generalise across terrain it was never shown.
-    let train: Vec<((f64, f64), f64)> = sites
+    // Starting rolls, in radians. 180 degrees is flat on its back and is
+    // what every earlier search trained on; +/-90 is on its side, which is
+    // how a robot that has been knocked over usually ends up and which the
+    // resulting trajectories then could not recover from at all (0 of 4,
+    // `namiashi_self_righting_from_its_side`). Both signs, because the hip
+    // limits are mirrored and the arm is off-centre in y, so the two sides
+    // are not the same problem.
+    let rolls = [
+        std::f64::consts::PI,
+        std::f64::consts::FRAC_PI_2,
+        -std::f64::consts::FRAC_PI_2,
+    ];
+    // Two sites rather than five: adding the roll axis triples the
+    // conditions, and covering the attitudes matters more here than
+    // covering terrain the earlier rounds already showed it handles.
+    let train: Vec<((f64, f64), f64, f64)> = sites[..2]
         .iter()
-        .flat_map(|&(_, xy)| [0.30, 1.00].map(move |mu| (xy, mu)))
+        .flat_map(|&(_, xy)| {
+            [0.30_f64, 1.00]
+                .into_iter()
+                .flat_map(move |mu| rolls.map(move |r| (xy, mu, r)))
+        })
         .collect();
 
     // Fitness across the training conditions. `mean + 0.5 * worst`: the mean
     // gives the search something to climb while everything still fails, the
     // worst-case term stops it trading a condition away once things start
     // working.
-    let fitness = |p: &RecoveryParams, conds: &[((f64, f64), f64)], secs: f64| -> f64 {
+    let fitness = |p: &RecoveryParams, conds: &[((f64, f64), f64, f64)], secs: f64| -> f64 {
         let mut sum = 0.0;
         let mut worst = f64::INFINITY;
-        for &(xy, mu) in conds {
-            let o = evaluate_with(&misa, &ring, xy, mu, p, secs, TELEOP);
+        for &(xy, mu, roll) in conds {
+            let o = evaluate_rolled(&misa, &ring, xy, mu, p, secs, TELEOP, None, roll);
             // The success term minus how far past the gentleness targets it
             // went. Measured on the previous winner: 30 to 39 rad/s of joint
             // speed against a 33.5 rad/s limit, and 10 to 18 rad/s of trunk
@@ -166,7 +185,7 @@ fn main() {
     // Seed from whichever incumbent belongs to this mode -- a rate-capped
     // search started from the violent trajectory spends its first
     // generations undoing it.
-    let mut mean = if rate_cap.is_some() { GENTLE_V1.to_vec() } else { SEARCHED_V4.to_vec() };
+    let mut mean = if rate_cap.is_some() { GENTLE_V2.to_vec() } else { SEARCHED_V4.to_vec() };
     let mut sigma = [0.0; DIM];
     for i in 0..DIM {
         // Wider again than a pure refinement: the seed works under a
@@ -257,29 +276,31 @@ fn main() {
     // ---- validation on all fifteen conditions -------------------------
     println!("\nbest fitness {:.4}\n{:#?}\n", best.0, best.1);
     println!(
-        "validation at {VALIDATE_S} s ('*' = a condition the search never saw)\n{:<22} {:>5} {:>8} {:>8} {:>8} {:>7} {:>7} {:>7}",
-        "site", "mu", "peak up", "final", "d_xy m", "t_right", "w rms", "qd rms"
+        "validation at {VALIDATE_S} s ('*' = a condition the search never saw)\n{:<18} {:>6} {:>5} {:>8} {:>8} {:>7} {:>7} {:>7}",
+        "site", "roll", "mu", "peak up", "final", "t_right", "w rms", "qd rms"
     );
     let (mut ok, mut total) = (0, 0);
     for (name, xy) in sites {
+      for roll in rolls {
         for mu in [0.30_f64, 0.70, 1.00] {
-            let o = evaluate_with(&misa, &ring, xy, mu, &best.1, VALIDATE_S, TELEOP);
-            let unseen = if train.contains(&(xy, mu)) { ' ' } else { '*' };
+            let o = evaluate_rolled(&misa, &ring, xy, mu, &best.1, VALIDATE_S, TELEOP, None, roll);
+            let unseen = if train.contains(&(xy, mu, roll)) { ' ' } else { '*' };
             total += 1;
             if o.righted() {
                 ok += 1;
             }
             println!(
-                "{unseen}{name:<21} {mu:>5.2} {:>8.3} {:>8.3} {:>8.3} {:>7.2} {:>7.1} {:>7.1}  {}",
+                "{unseen}{name:<17} {:>5.0}d {mu:>5.2} {:>8.3} {:>8.3} {:>7.2} {:>7.1} {:>7.1}  {}",
+                roll.to_degrees(),
                 o.peak_up,
                 o.final_up,
-                o.travel_m,
                 o.t_right_s,
                 o.rms_omega_rad_s,
                 o.rms_joint_rad_s,
                 if o.righted() { "RIGHTED" } else { "no" }
             );
         }
+      }
     }
     println!("\n{ok}/{total} righted");
 }

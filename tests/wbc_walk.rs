@@ -5672,20 +5672,18 @@ fn namiashi_self_righting_from_its_side() {
         }
     }
     eprintln!("[side] fast {fast_ok}/{total}, gentle {gentle_ok}/{total}");
-    // Measured: fast 3/4, gentle 0/4. The one fast failure is the flat floor
-    // at +90 degrees, where it ends at -0.701 -- further over than it
-    // started, having rolled onto its back rather than onto its feet.
-    //
-    // The unhurried trajectory was searched from a 180-degree start and does
-    // not generalise off it: it settles at 0.47 from every side-lying start
-    // tried. Worth asserting rather than leaving as a footnote, because `V`
-    // is the default key and someone knocked onto their side will press it
-    // first.
+    // The unhurried trajectory used to score 0/4 here: it had been searched
+    // from a 180-degree start only and settled at 0.47 from every side-lying
+    // start tried. `GENTLE_V3` was searched with +/-90 in the training set
+    // and with the rock able to mirror itself, and gets some of them. It is
+    // still well behind `Shift`+`V`, which is the point of asserting both:
+    // `V` is the default key and someone knocked onto their side will press
+    // it first.
     assert!(fast_ok >= 3, "Shift+V no longer gets up from its side: {fast_ok}/{total}");
     assert!(
-        gentle_ok < total,
-        "the unhurried recovery now works from its side too ({gentle_ok}/{total}) -- \
-         good, but the docs and the teleop hint both say it does not",
+        gentle_ok >= 1,
+        "the unhurried recovery is back to never getting up from its side: \
+         {gentle_ok}/{total}",
     );
 }
 
@@ -5961,11 +5959,18 @@ fn namiashi_self_righting_teleop_drive() {
         }
         eprintln!("[{label:<6}] {}/15 righted, worst RMS w = {:.2} rad/s", counts[which], rough[which]);
     }
-    // Measured: gentle 5/15 at an RMS trunk angular speed under 1.4 rad/s,
-    // fast 12/15 at up to 4.0. The trade is real and the point of keeping
+    // Measured: gentle 2/15 at an RMS trunk angular speed under 1.5 rad/s,
+    // fast 12/15 at up to 4.2.
+    //
+    // The gentle number was 5/15 for `GENTLE_V2`. `GENTLE_V3` replaced it to
+    // get side falls working -- 9 of 18 side-lying starts against 2 -- and
+    // gave back three of these on-its-back conditions doing it. This grid
+    // only ever starts the robot flat on its back, so it sees the cost and
+    // none of the gain; `namiashi_self_righting_from_its_side` is the other
+    // half of the picture and the two have to be read together. The trade is real and the point of keeping
     // both. A standing robot measures 0.310 rad/s, so the gentle one is
     // within about 5x of doing nothing and the fast one is 10 to 15x.
-    assert!(counts[0] >= 4, "gentle self-righting regressed: {}/15", counts[0]);
+    assert!(counts[0] >= 2, "gentle self-righting regressed: {}/15", counts[0]);
     assert!(counts[1] >= 11, "fast self-righting regressed: {}/15", counts[1]);
     assert!(
         rough[0] < 2.0 * GENTLE_OMEGA_RAD_S,
