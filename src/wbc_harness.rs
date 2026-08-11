@@ -1746,6 +1746,19 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         // tick driving toward it from the new one.
         #[cfg(feature = "mujoco-viewer")]
         {
+            // Sim time, every tick and regardless of whether a viewer is
+            // running. The HUD's copy is written at render cadence, which
+            // means it never moves without a window -- and anything driving
+            // this loop from outside, a test included, then has no clock but
+            // the wall's. That non-determinism cost a debugging round.
+            if let Some(live) = &params.live_teleop {
+                let mut st = live.lock().unwrap();
+                st.sim_time_s = t;
+                if st.recover_at_sim_s.is_some_and(|at| t >= at) {
+                    st.recover_at_sim_s = None;
+                    st.recover_requested = true;
+                }
+            }
             if let Some(live) = &params.live_teleop {
                 let mut st = live.lock().unwrap();
                 if std::mem::replace(&mut st.respawn_requested, false) {

@@ -103,6 +103,15 @@ pub struct LiveTeleop {
     /// than the unhurried one. Only meaningful while `recover_requested` is
     /// set.
     pub recover_fast: bool,
+    /// Fire the recovery at this sim time, once, and clear.
+    ///
+    /// Nothing on the keyboard sets this -- it exists so a scripted run can
+    /// press `V` at a defined moment. Setting `recover_requested` from
+    /// another thread cannot: the physics loop runs thousands of ticks per
+    /// wall-clock millisecond, so a request posted "half a second in" lands
+    /// at a different sim time on every run, and a test built that way
+    /// disagrees with itself about whether the robot got up.
+    pub recover_at_sim_s: Option<f64>,
     /// Simulated sliding friction of every geom -- the actual slipperiness
     /// of the world. Applied via `MujocoSim::set_slide_friction_all`.
     pub ground_mu: f64,
@@ -188,6 +197,7 @@ impl LiveTeleop {
             respawn_inverted: false,
             recover_requested: false,
             recover_fast: false,
+            recover_at_sim_s: None,
             // Seeded from the live sim/controller at startup (see
             // run_wbc_sim); these are only a placeholder until then.
             ground_mu: 0.0,

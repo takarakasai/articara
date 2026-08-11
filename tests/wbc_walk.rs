@@ -5625,6 +5625,118 @@ fn namiashi_respawn_restores_start_pose() {
     );
 }
 
+/// Does the `V` key path in `run_wbc_sim` actually right the robot?
+///
+/// Everything else about self-righting has been measured through
+/// `self_righting::evaluate_with`, which reproduces the teleop's drive law
+/// but is not the teleop. This drives the real thing: `Shift`+`N` to land on
+/// its back, then `V`, both through the same `LiveTeleop` the viewer writes
+/// to, with the gait controller, the WBC and the whole harness loop in
+/// place. Those are exactly the parts `evaluate_with` does not have.
+///
+/// The request is fired from a thread on a wall-clock delay because nothing
+/// in `LiveTeleop` reports sim time unless the viewer is running. A second
+/// is far inside a 40 s WBC run, and the assertion is on the attitude at the
+/// end rather than on timing, so the delay only has to land somewhere in the
+/// first half.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+#[cfg(feature = "mujoco-viewer")]
+fn namiashi_teleop_v_key_rights_the_robot() {
+    use articara::mjcf::KawasakiRingCfg;
+    use articara::teleop::LiveTeleop;
+    use articara::wbc_harness::{namiashi_tuned_params, run_wbc_sim, Actuation, WbcParams};
+    use quadruped_gait::GaitType;
+    use std::sync::{Arc, Mutex};
+
+    let live = Arc::new(Mutex::new(LiveTeleop::new(GaitType::Trot)));
+    // On its back from the first tick.
+    {
+        let mut st = live.lock().unwrap();
+        st.respawn_requested = true;
+        st.respawn_inverted = true;
+    }
+    // ...and `V` half a second of SIM time later, matching the settle the
+    // evaluator gives it. Scheduled inside the physics loop rather than
+    // posted from a thread: the loop runs thousands of ticks per wall-clock
+    // millisecond, so a request sent "half a second in" landed at a
+    // different sim time on every run and this test disagreed with itself
+    // about whether the robot got up.
+    //
+    // Half a second also has to pass at all. Firing on the same tick as the
+    // respawn would be cancelled -- the respawn handler clears a pending
+    // recovery, deliberately, so that landing somewhere new cannot leave a
+    // half-run trajectory driving the legs.
+    live.lock().unwrap().recover_at_sim_s = Some(0.5);
+
+    let ring = KawasakiRingCfg::default();
+    let samples = run_wbc_sim(WbcParams {
+        actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+        host_rate_hz: Some(400.0),
+        dt: 0.0005,
+        cmd_vx: 0.0,
+        total_time_s: 20.0,
+        wbc_real_inertia: true,
+        live_teleop: Some(Arc::clone(&live)),
+        live_viewer: false,
+        spawn_xy: Some((0.35, 0.35)),
+        kawasaki_ring: Some(ring),
+        ..namiashi_tuned_params(0)
+    })
+    .expect("run_wbc_sim");
+
+    // Trunk +z from the reported roll and pitch: +1 upright, -1 on its back.
+    let up = |s: &articara::wbc_harness::WbcSample| s.roll.cos() * s.pitch.cos();
+    let worst = samples.iter().map(up).fold(f64::INFINITY, f64::min);
+    let best = samples.iter().map(up).fold(f64::NEG_INFINITY, f64::max);
+    let end = up(samples.last().expect("samples"));
+    eprintln!(
+        "[V key] {} samples: lowest trunk +z {worst:+.3}, highest {best:+.3}, final {end:+.3}",
+        samples.len(),
+    );
+    let step = (samples.len() / 24).max(1);
+    for s in samples.iter().step_by(step) {
+        eprintln!(
+            "[V key] t {:6.2}  trunk +z {:+.3}  z {:.3} m  contacts {}",
+            s.t,
+            up(s),
+            s.body_z,
+            s.foot_fz.iter().filter(|f| **f > 1.0).count(),
+        );
+    }
+    assert!(
+        worst < -0.7,
+        "never actually landed on its back -- lowest trunk +z was {worst:+.3}, \
+         so this test proved nothing about righting",
+    );
+
+    // Upright, and still upright two seconds later. NOT the attitude at the
+    // end of the run: the recovery travels about 0.6 m, which from a spawn
+    // 0.35 m off centre puts the robot within a few centimetres of the edge
+    // of a 1.9 m ring, and the first version of this test spent its last 25
+    // seconds watching it drift off and land on the venue floor 0.25 m
+    // below. That is a fair thing to know and a separate question from
+    // whether the key works.
+    // The last two seconds, not the first moment the attitude crosses 0.9:
+    // the roll passes through upright on its way over and briefly touches
+    // it, so an "upright, and still upright two seconds later" test measured
+    // that transient and failed on a run that ended standing.
+    let t_last = samples.last().expect("samples").t;
+    let held = samples
+        .iter()
+        .filter(|s| s.t > t_last - 2.0)
+        .map(up)
+        .fold(f64::INFINITY, f64::min);
+    eprintln!(
+        "[V key] lowest trunk +z over the final 2 s: {held:+.3}  (final {end:+.3}, peak {best:+.3})"
+    );
+    assert!(
+        held > 0.9,
+        "not standing at the end: lowest trunk +z over the final two seconds \
+         was {held:+.3}",
+    );
+}
+
 /// Does the searched recovery trajectory get the robot back on its feet
 /// through the control path the teleop actually uses?
 ///
