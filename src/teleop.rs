@@ -22,6 +22,8 @@
 //! | `X`                       | tip the opponent over       |
 //! | `V`                       | self-right, unhurried       |
 //! | `Shift`+`V`               | self-right, fast            |
+//!
+//! `V` only works from flat on its back; a side fall needs `Shift`+`V`.
 //! | `Y`/`G` (held)            | arm pitch up / down         |
 //! | `K`                       | show / hide this list       |
 //! | `O`/`L`                   | ground friction mu +/- 0.05 |
@@ -307,8 +309,8 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("N", "respawn at the start pose, 10 cm up"),
     ("Shift+N", "respawn upside down"),
     ("X", "arm attack: tip the opponent over"),
-    ("V", "self-right, unhurried"),
-    ("Shift+V", "self-right, fast"),
+    ("V", "self-right, unhurried (from its back only)"),
+    ("Shift+V", "self-right, fast (also from a side fall)"),
     ("O / L", "ground friction mu"),
     ("P / .", "controller's assumed mu"),
     ("K", "show / hide this list"),

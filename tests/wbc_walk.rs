@@ -5625,6 +5625,70 @@ fn namiashi_respawn_restores_start_pose() {
     );
 }
 
+/// Can it get up from lying on its SIDE, not just from flat on its back?
+///
+/// Every self-righting measurement so far started at a 180-degree roll,
+/// which is not how a robot that has been knocked over usually ends up. On
+/// its side the body is halfway there, but halfway in a direction that can
+/// go either way: gravity finishes the job or undoes it depending on which
+/// way it is leaning, so it is not safe to assume the easier-looking start
+/// is easier.
+///
+/// It is not, for one of the two trajectories.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+fn namiashi_self_righting_from_its_side() {
+    use articara::mjcf::KawasakiRingCfg;
+    use articara::self_righting::{evaluate_rolled, Drive, RECOVERY_FAST, RECOVERY_GENTLE};
+
+    let ring = KawasakiRingCfg::default();
+    let misa = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/namiashi/namiashi_3p3_prop.misa");
+    let teleop = Drive::TorqueAhrs { kp: 100.0, kd: 1.2, tilt_tau_s: 0.15 };
+    let sites: [(&str, (f64, f64)); 2] =
+        [("flat floor", (1.60, 1.60)), ("ring surface", (0.35, 0.35))];
+
+    let (mut fast_ok, mut gentle_ok, mut total) = (0, 0, 0);
+    for (name, xy) in sites {
+        // Both ways over. Which side it lies on is not a symmetry: the hip
+        // roll limits are mirrored (-0.785..1.05 against -1.05..0.785) and
+        // the arm is off-centre in y.
+        for deg in [90.0_f64, -90.0] {
+            let roll = deg.to_radians();
+            let g = evaluate_rolled(
+                &misa, &ring, xy, 0.70, &RECOVERY_GENTLE, 20.0, teleop, None, roll,
+            );
+            let f = evaluate_rolled(
+                &misa, &ring, xy, 0.70, &RECOVERY_FAST, 20.0, teleop, None, roll,
+            );
+            total += 1;
+            fast_ok += f.righted() as u32;
+            gentle_ok += g.righted() as u32;
+            eprintln!(
+                "[side] {name:<13} roll {deg:>+5.0} deg  gentle {:+.3}  fast {:+.3} \
+                 (t {:.2} s)",
+                g.final_up, f.final_up, f.t_right_s,
+            );
+        }
+    }
+    eprintln!("[side] fast {fast_ok}/{total}, gentle {gentle_ok}/{total}");
+    // Measured: fast 3/4, gentle 0/4. The one fast failure is the flat floor
+    // at +90 degrees, where it ends at -0.701 -- further over than it
+    // started, having rolled onto its back rather than onto its feet.
+    //
+    // The unhurried trajectory was searched from a 180-degree start and does
+    // not generalise off it: it settles at 0.47 from every side-lying start
+    // tried. Worth asserting rather than leaving as a footnote, because `V`
+    // is the default key and someone knocked onto their side will press it
+    // first.
+    assert!(fast_ok >= 3, "Shift+V no longer gets up from its side: {fast_ok}/{total}");
+    assert!(
+        gentle_ok < total,
+        "the unhurried recovery now works from its side too ({gentle_ok}/{total}) -- \
+         good, but the docs and the teleop hint both say it does not",
+    );
+}
+
 /// Does the `X` attack actually turn the opponent over?
 ///
 /// The move is: crouch the front and drop the arm, creep forward so the arm

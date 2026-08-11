@@ -2108,7 +2108,7 @@ impl MujocoSim {
     /// `lift_m` drops it in from above so the first contact is a short fall
     /// onto the surface rather than a resolve-out-of-penetration shove.
     pub fn respawn(&mut self, robot: &mut RobotModel, lift_m: f64) {
-        self.respawn_impl(robot, lift_m, false);
+        self.respawn_impl(robot, lift_m, None);
     }
 
     /// Lower the free base until the robot just touches whatever is under
@@ -2160,10 +2160,18 @@ impl MujocoSim {
     /// `lift_m` wants to be generous here -- the trunk is the lowest thing
     /// now, not the feet, and the spawn height was computed for feet.
     pub fn respawn_inverted(&mut self, robot: &mut RobotModel, lift_m: f64) {
-        self.respawn_impl(robot, lift_m, true);
+        self.respawn_impl(robot, lift_m, Some(std::f64::consts::PI));
     }
 
-    fn respawn_impl(&mut self, robot: &mut RobotModel, lift_m: f64, invert: bool) {
+    /// Same, rolled by an arbitrary angle about world x rather than a half
+    /// turn. `PI` is [`Self::respawn_inverted`]; `PI/2` is lying on its side,
+    /// which is what a robot that has been knocked over usually ends up in
+    /// and is a different starting state from flat on its back.
+    pub fn respawn_rolled(&mut self, robot: &mut RobotModel, lift_m: f64, roll_rad: f64) {
+        self.respawn_impl(robot, lift_m, Some(roll_rad));
+    }
+
+    fn respawn_impl(&mut self, robot: &mut RobotModel, lift_m: f64, roll: Option<f64>) {
         if self.spawn_qpos.len() != self.data.qpos().len() {
             return;
         }
@@ -2177,7 +2185,7 @@ impl MujocoSim {
             m.njnt > 0 && unsafe { *m.jnt_type } == mujoco::prelude::MjtJoint::mjJNT_FREE as i32
         };
         if free_base {
-            if invert {
+            if let Some(roll) = roll {
                 // MuJoCo stores the free joint's orientation as (w, x, y, z).
                 // Pre-multiplying by a 180-degree roll about world x flips
                 // the body while leaving its heading alone -- post-
@@ -2187,10 +2195,8 @@ impl MujocoSim {
                 let spawn = na::UnitQuaternion::from_quaternion(na::Quaternion::new(
                     q[3], q[4], q[5], q[6],
                 ));
-                let flipped = na::UnitQuaternion::from_axis_angle(
-                    &na::Vector3::x_axis(),
-                    std::f64::consts::PI,
-                ) * spawn;
+                let flipped =
+                    na::UnitQuaternion::from_axis_angle(&na::Vector3::x_axis(), roll) * spawn;
                 let qp = self.data.qpos_mut();
                 qp[3] = flipped.w;
                 qp[4] = flipped.i;
@@ -2199,8 +2205,8 @@ impl MujocoSim {
 
                 // Adding `lift_m` to the spawn z the way the upright path
                 // does would drop it from far too high: that z was chosen to
-                // put the FEET on the ground, and the feet now point at the
-                // sky. Find where this pose actually rests instead.
+                // put the FEET on the ground, and they are no longer what is
+                // lowest. Find where this pose actually rests instead.
                 self.drop_base_to_contact(lift_m);
             } else {
                 self.data.qpos_mut()[2] += lift_m;

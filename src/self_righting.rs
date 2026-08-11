@@ -428,6 +428,12 @@ pub const GENTLE_V1: RecoveryParams = RecoveryParams {
 /// (0.460, 0.474, 0.479) rather than anywhere random. That is the open
 /// problem, and it is a catching problem rather than a turning-over one.
 ///
+/// It also does not generalise off the pose it was searched from. Started
+/// on its SIDE rather than flat on its back it recovers in 0 of 4 tried,
+/// settling at the same 0.47 -- which matters, because being knocked onto a
+/// side is the common way to end up down. [`SEARCHED_V4`] manages 3 of those
+/// 4. See `namiashi_self_righting_from_its_side`.
+///
 /// [`GENTLE_V1`]'s 7/15 is not a regression from this: it was measured
 /// against the broken attitude signal described on [`TiltEstimator`], where
 /// the recovery never terminated and simply held a pose that happened to be
@@ -467,7 +473,13 @@ pub const RECOVERY_GENTLE: RecoveryParams = GENTLE_V2;
 /// What `Shift`+`V` runs: the reliable one, which gets there by rocking up
 /// momentum and throwing the body over.
 ///
-/// Kept because 12/15 against 5/15 is a real difference and the choice
+/// Kept because 12/15 against 5/15 is a real difference, and because it is
+/// the only one of the two that gets up from a SIDE fall: 3 of 4 side-lying
+/// starts against 0 of 4 (`namiashi_self_righting_from_its_side`). Its one
+/// failure there ends at -0.701, having rolled onto its back instead of onto
+/// its feet.
+///
+/// The choice between them and the choice
 /// between them is a judgement about the robot, not about the search.
 pub const RECOVERY_FAST: RecoveryParams = SEARCHED_V4;
 
@@ -758,6 +770,36 @@ mod sim {
         drive: Drive,
         mut trace: Option<(&mut Vec<TraceRow>, f64)>,
     ) -> Outcome {
+        evaluate_rolled(
+            misa,
+            ring,
+            xy,
+            mu,
+            params,
+            horizon_s,
+            drive,
+            trace.as_mut().map(|(v, e)| (&mut **v, *e)),
+            std::f64::consts::PI,
+        )
+    }
+
+    /// The full-control entry point: everything the others take, plus the
+    /// roll the robot starts at. `PI` is flat on its back; `PI/2` is on its
+    /// side, which is where a robot that has been knocked over usually ends
+    /// up and is a materially easier or harder start depending on which way
+    /// it is leaning.
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_rolled(
+        misa: &std::path::Path,
+        ring: &KawasakiRingCfg,
+        xy: (f64, f64),
+        mu: f64,
+        params: &RecoveryParams,
+        horizon_s: f64,
+        drive: Drive,
+        mut trace: Option<(&mut Vec<TraceRow>, f64)>,
+        start_roll_rad: f64,
+    ) -> Outcome {
         let mut robot = RobotModel::from_misa(misa).expect("load robot");
         if let Drive::TorqueAhrs { .. } = drive {
             // Set before the sim is built, so the exported MJCF and the
@@ -791,7 +833,7 @@ mod sim {
         };
         let root = robot.root_link.clone();
 
-        sim.respawn_inverted(&mut robot, 0.03);
+        sim.respawn_rolled(&mut robot, 0.03, start_roll_rad);
         // Settle the drop before driving anything, so the trajectory is
         // scored on its own motion and not on the landing.
         for _ in 0..(0.5 / dt) as u32 {
@@ -967,4 +1009,4 @@ mod sim {
 }
 
 #[cfg(feature = "mujoco")]
-pub use sim::{evaluate, evaluate_traced, evaluate_with, TraceRow};
+pub use sim::{evaluate, evaluate_rolled, evaluate_traced, evaluate_with, TraceRow};
