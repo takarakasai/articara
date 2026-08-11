@@ -1578,6 +1578,14 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         // Recorded rather than restated in the renderer: a schedule written
         // out twice is a schedule that will disagree with itself.
         replay_buf.push_str(",cmd_vx,cmd_vy,cmd_wz,push_fy");
+        // The arm, and the opponent's free-joint pose when there is one.
+        // Neither is in the twelve leg joints, and a replay of an arm attack
+        // without the arm or the thing it is attacking is a replay of a
+        // robot standing about.
+        replay_buf.push_str(",arm_pitch_joint");
+        if params.opponent.is_some() {
+            replay_buf.push_str(",foe_x,foe_y,foe_z,foe_qw,foe_qx,foe_qy,foe_qz");
+        }
         replay_buf.push('\n');
     }
 
@@ -3154,6 +3162,23 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 ",{:.4},{:.4},{:.4},{push_fy:.2}",
                 c.vx, c.vy, c.wz
             ));
+            let qa = arm_ji
+                .and_then(|ji| sim.joint_q_qd(&robot.joints[ji].name))
+                .map(|(q, _)| q)
+                .unwrap_or(0.0);
+            replay_buf.push_str(&format!(",{qa:.6}"));
+            if params.opponent.is_some() {
+                let fp = sim
+                    .body_world_position(&format!("{OPPONENT_PREFIX}trunk"))
+                    .unwrap_or([0.0; 3]);
+                let fq = sim
+                    .body_world_orientation(&format!("{OPPONENT_PREFIX}trunk"))
+                    .unwrap_or_else(nalgebra::UnitQuaternion::identity);
+                replay_buf.push_str(&format!(
+                    ",{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}",
+                    fp[0], fp[1], fp[2], fq.w, fq.i, fq.j, fq.k
+                ));
+            }
             replay_buf.push('\n');
         }
 
