@@ -5625,6 +5625,117 @@ fn namiashi_respawn_restores_start_pose() {
     );
 }
 
+/// Do these moves survive a change of robot?
+///
+/// Both trajectories and the attack were searched and measured on
+/// `namiashi_3p3_prop`. The fixtures carry two other distinct models:
+/// `namiashi_3p3_hip` has the same mass, joints and actuators with the leg
+/// mass moved into the hip (thigh 0.021 kg against 0.057), and `namiashi` is
+/// 2.40 kg with weaker joints (hip 1.5 N.m against 2.5).
+///
+/// Two things this pins down, from
+/// `examples/namiashi_cross_model_check`'s fuller sweep:
+///
+/// The unhurried recovery turns the body over just as often on every model
+/// -- peak trunk +z above 0.9 in 14 of 18 conditions on all of them -- and
+/// converts that into standing in 7, 2 and 0. So what a change of robot
+/// breaks is the catch, not the turn.
+///
+/// And the arm attack's mechanism does not carry over at all: on
+/// `namiashi_3p3_hip` the full move leaves the opponent up at +0.463 while
+/// the no-arm control puts it down at -0.918. The arm makes it WORSE there.
+/// Asserted so that a later change which quietly makes the attack
+/// model-independent shows up as a failing test rather than going unnoticed.
+#[test]
+#[ignore = "diagnostic -- run with --ignored"]
+#[cfg(feature = "mujoco-viewer")]
+fn namiashi_moves_across_models() {
+    use articara::attack::AttackParams;
+    use articara::mjcf::{KawasakiRingCfg, LockedPose};
+    use articara::self_righting::{evaluate_rolled, Drive, RECOVERY_GENTLE};
+    use articara::teleop::LiveTeleop;
+    use articara::wbc_harness::{namiashi_tuned_params, run_wbc_sim, Actuation, WbcParams};
+    use quadruped_gait::GaitType;
+    use std::sync::{Arc, Mutex};
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/namiashi");
+    let teleop = Drive::TorqueAhrs { kp: 100.0, kd: 1.2, tilt_tau_s: 0.15 };
+    let ring = KawasakiRingCfg::default();
+
+    // How often the unhurried recovery gets the body all the way over, as
+    // opposed to all the way over AND standing.
+    // Six conditions each (two sites x three rolls, at one friction), so
+    // the counts here are a subset of the example's eighteen and not
+    // directly comparable to the 14/18 quoted above.
+    for (label, file) in [
+        ("3p3_prop", "namiashi_3p3_prop.misa"),
+        ("3p3_hip", "namiashi_3p3_hip.misa"),
+        ("2.4 kg", "namiashi.misa"),
+    ] {
+        let misa = dir.join(file);
+        let (mut ok, mut peaked, mut n) = (0, 0, 0);
+        for xy in [(1.60, 1.60), (0.35, 0.35)] {
+            for deg in [180.0_f64, 90.0, -90.0] {
+                let o = evaluate_rolled(
+                    &misa, &ring, xy, 0.70, &RECOVERY_GENTLE, 20.0, teleop, None,
+                    deg.to_radians(),
+                );
+                n += 1;
+                ok += o.righted() as u32;
+                peaked += (o.peak_up > 0.9) as u32;
+            }
+        }
+        eprintln!("[models] {label:<10} unhurried: righted {ok}/{n}, reached upright {peaked}/{n}");
+        assert!(
+            peaked >= 3,
+            "{label}: the recovery no longer even turns the body over ({peaked}/{n})",
+        );
+    }
+
+    // The attack, each model against a locked copy of itself.
+    let attack = |file: &str, plan: AttackParams| -> f64 {
+        let live = Arc::new(Mutex::new(LiveTeleop::new(GaitType::Trot)));
+        live.lock().unwrap().attack_at_sim_s = Some(2.0);
+        let ring = KawasakiRingCfg::default();
+        let samples = run_wbc_sim(WbcParams {
+            actuation: Actuation::Torque { kp: 100.0, kd: 1.2 },
+            host_rate_hz: Some(400.0),
+            dt: 0.0005,
+            cmd_vx: 0.0,
+            total_time_s: 12.0,
+            wbc_real_inertia: true,
+            live_teleop: Some(Arc::clone(&live)),
+            live_viewer: false,
+            spawn_xy: Some((-0.38, 0.0)),
+            opponent: Some((LockedPose::default(), [0.0, 0.0, ring.z_top_m() + 0.30])),
+            kawasaki_ring: Some(ring),
+            attack_params: plan,
+            misa_file: Box::leak(
+                dir.join(file).to_string_lossy().into_owned().into_boxed_str(),
+            ),
+            ..namiashi_tuned_params(0)
+        })
+        .expect("run_wbc_sim");
+        samples.last().unwrap().foe.expect("no opponent")[3]
+    };
+    let no_arm = AttackParams { arm_down: -2.3, arm_up: -2.3, ..AttackParams::DEFAULT };
+
+    let prop = (attack("namiashi_3p3_prop.misa", AttackParams::DEFAULT),
+                attack("namiashi_3p3_prop.misa", no_arm));
+    let hip = (attack("namiashi_3p3_hip.misa", AttackParams::DEFAULT),
+               attack("namiashi_3p3_hip.misa", no_arm));
+    eprintln!("[models] attack 3p3_prop: full {:+.3}, no-arm {:+.3}", prop.0, prop.1);
+    eprintln!("[models] attack 3p3_hip:  full {:+.3}, no-arm {:+.3}", hip.0, hip.1);
+
+    assert!(prop.0 < 0.3 && prop.1 > 0.3, "the attack stopped working on the model it was built on");
+    assert!(
+        hip.0 > 0.3,
+        "the attack now works on 3p3_hip ({:+.3}) -- good, but every doc and \
+         comment saying the mechanism does not carry across models is now wrong",
+        hip.0,
+    );
+}
+
 /// Can it get up from lying on its SIDE, not just from flat on its back?
 ///
 /// Every self-righting measurement so far started at a 180-degree roll,
