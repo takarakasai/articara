@@ -50,7 +50,7 @@ fn main() {
     // 8/15 through the torque PD and IMU-filtered attitude that
     // `run_wbc_sim` uses. A trajectory that only works under the evaluator
     // it was fitted to is the same failure as fitting one condition.
-    const TELEOP: Drive = Drive::TorqueAhrs { kp: 100.0, kd: 1.2, imu_beta: 0.1 };
+    const TELEOP: Drive = Drive::TorqueAhrs { kp: 100.0, kd: 1.2, tilt_tau_s: 0.15 };
 
     const POP: usize = 40;
     const ELITE: usize = 10;
@@ -96,7 +96,9 @@ fn main() {
         .and_then(|v| v.parse().ok());
     let mut bounds = BOUNDS;
     if let Some(cap) = rate_cap {
-        bounds[20] = (BOUNDS[20].0, cap.clamp(BOUNDS[20].0, BOUNDS[20].1));
+        // `max_rate_rad_s` is the second-to-last dimension.
+        let i = DIM - 2;
+        bounds[i] = (BOUNDS[i].0, cap.clamp(BOUNDS[i].0, BOUNDS[i].1));
     }
 
     let ring = KawasakiRingCfg::default();

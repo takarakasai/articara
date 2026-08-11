@@ -82,13 +82,18 @@ pub struct RecoveryParams {
     pub finish_thigh: f64,
     pub finish_calf: f64,
     pub finish_arm: f64,
-    /// Regime 3. Searched rather than fixed at [`STANCE`] because the first
-    /// search round righted the robot in 10 of 15 conditions and four of the
-    /// five failures reached a peak of 0.85 to 0.98 first -- they stood up
-    /// and toppled back. A nominal stance has no margin against the angular
-    /// momentum left over from the roll; a wider one might. Left legs take
-    /// `+stand_hip` and right legs `-stand_hip`, so the sign chooses whether
-    /// the stance widens or narrows.
+    /// Regime 3. No longer searched -- pinned to [`STANCE`], and these are
+    /// kept only so existing constants still describe a whole trajectory.
+    ///
+    /// Searching them was tried, on the theory that a wider stance would
+    /// have more margin against the momentum left over from the roll, and it
+    /// backfired. With a corrected attitude signal the search chose
+    /// `stand_calf` = +1.72, bent the opposite way to the stance's -1.8 and
+    /// unable to carry the robot at all: it righted itself (peak trunk +z
+    /// 1.000 in every condition) and immediately collapsed into that pose,
+    /// so it never accumulated the second of upright attitude that ends the
+    /// recovery, and settled at 0.474 in ten of fifteen. Once the robot is
+    /// up, the right pose is the one it stands in.
     pub stand_hip: f64,
     pub stand_thigh: f64,
     pub stand_calf: f64,
@@ -104,6 +109,89 @@ pub struct RecoveryParams {
     ///
     /// [`targets`]: RecoveryParams::targets
     pub max_rate_rad_s: f64,
+    /// Rate limit for the return to a normal stance, once the recovery is
+    /// over. Separate from `max_rate_rad_s` because they are different
+    /// problems: the low rate during the roll is what stops the trajectory
+    /// building momentum, but applying it to the stand-up as well cost every
+    /// condition. Measured with both at 1.5 rad/s, the robot reached a trunk
+    /// +z of 1.000 in all fifteen and then settled back to 0.477 in eleven
+    /// of them -- it was righting itself and toppling during the two and a
+    /// half seconds the legs needed to unfold. The RMS gentleness terms
+    /// cover the whole run, so a stand-up violent enough to matter is still
+    /// penalised.
+    pub stand_rate_rad_s: f64,
+}
+
+/// Which way is down, from the accelerometer alone.
+///
+/// The recovery needs two numbers: the trunk's +z in world coordinates
+/// (upright or not) and which side of the body is underneath. Both are just
+/// the direction of gravity in the body frame, which a stationary or
+/// slowly-moving accelerometer measures directly.
+///
+/// A full attitude filter was tried first and is the wrong tool here. The
+/// Madgwick filter this project already carries starts from identity and
+/// walks toward the measurement at a rate set by `beta`; at the 0.1 the
+/// proprioceptive levelling uses -- correct for that job, which only ever
+/// sees small angles -- a 180-degree initial error takes far longer than a
+/// recovery lasts. Measured on a robot lying still on its back: after six
+/// seconds the filter reported a trunk +z of +0.371 against a true -0.985,
+/// and over a whole 12 s recovery it never got the sign right. Every regime
+/// switch and the hand-back to a normal stance were keying off that.
+///
+/// The accelerometer has no convergence time. Its problem is the opposite --
+/// it reads specific force, so it is wrong exactly when the body is being
+/// accelerated -- hence the low pass. Still proprioception only, no
+/// exteroception, and no gyro integration to drift.
+#[derive(Clone, Copy, Debug)]
+pub struct TiltEstimator {
+    /// Filtered gravity direction in the trunk frame, unit-ish.
+    g: [f64; 3],
+    seeded: bool,
+    /// Time constant of the low pass (s).
+    pub tau_s: f64,
+}
+
+impl TiltEstimator {
+    pub fn new(tau_s: f64) -> Self {
+        Self { g: [0.0, 0.0, -1.0], seeded: false, tau_s }
+    }
+
+    /// Feed one accelerometer sample (m/s^2, trunk frame, specific force --
+    /// so a robot standing still reads +9.81 on its own +z).
+    pub fn update(&mut self, accel: [f64; 3], dt: f64) {
+        let n = (accel[0] * accel[0] + accel[1] * accel[1] + accel[2] * accel[2]).sqrt();
+        if n < 1e-6 {
+            return;
+        }
+        // Gravity points opposite to the specific force.
+        let m = [-accel[0] / n, -accel[1] / n, -accel[2] / n];
+        let a = if self.seeded {
+            (dt / self.tau_s.max(1e-6)).clamp(0.0, 1.0)
+        } else {
+            self.seeded = true;
+            1.0
+        };
+        for k in 0..3 {
+            self.g[k] += a * (m[k] - self.g[k]);
+        }
+    }
+
+    /// Trunk +z expressed in world coordinates: +1 upright, -1 on its back.
+    pub fn up(&self) -> f64 {
+        let n = (self.g[0] * self.g[0] + self.g[1] * self.g[1] + self.g[2] * self.g[2]).sqrt();
+        if n < 1e-9 {
+            0.0
+        } else {
+            -self.g[2] / n
+        }
+    }
+
+    /// Gravity's y component in the trunk frame; its sign says which side of
+    /// the body is underneath.
+    pub fn g_body_y(&self) -> f64 {
+        self.g[1]
+    }
 }
 
 /// Rate limiter for the commanded joint angles.
@@ -160,6 +248,7 @@ pub const PROBE_BEST: RecoveryParams = RecoveryParams {
     stand_thigh: STANCE[1],
     stand_calf: STANCE[2],
     max_rate_rad_s: 1000.0,
+    stand_rate_rad_s: 4.0,
 };
 
 /// Round 1 of the CEM search in `examples/namiashi_self_righting_search`:
@@ -186,6 +275,7 @@ pub const SEARCHED_V1: RecoveryParams = RecoveryParams {
     stand_thigh: STANCE[1],
     stand_calf: STANCE[2],
     max_rate_rad_s: 1000.0,
+    stand_rate_rad_s: 4.0,
 };
 
 /// Round 2: seeded from [`SEARCHED_V1`], trained on all five ring sites at
@@ -214,6 +304,7 @@ pub const SEARCHED_V2: RecoveryParams = RecoveryParams {
     stand_thigh: 0.767670263584147,
     stand_calf: -2.0872727063104746,
     max_rate_rad_s: 1000.0,
+    stand_rate_rad_s: 4.0,
 };
 
 /// Round 3: the first searched against the teleop's own drive law, which
@@ -243,6 +334,7 @@ pub const SEARCHED_V3: RecoveryParams = RecoveryParams {
     stand_thigh: 2.62,
     stand_calf: -0.11086124631030347,
     max_rate_rad_s: 1000.0,
+    stand_rate_rad_s: 4.0,
 };
 
 /// Round 5, and the one in use. Searched against the teleop's drive law with
@@ -280,12 +372,15 @@ pub const SEARCHED_V4: RecoveryParams = RecoveryParams {
     stand_thigh: 2.593111185239448,
     stand_calf: 1.9850827369063018,
     max_rate_rad_s: 1000.0,
+    stand_rate_rad_s: 4.0,
 };
 
 /// First unhurried recovery: commanded joint rate held under 1.5 rad/s.
-/// Rights the robot in 7 of 15 conditions, at an RMS trunk angular speed of
-/// 0.6 to 1.6 rad/s and RMS joint speed of 0.5 to 1.0 -- inside the
-/// gentleness targets, and roughly a fifth of [`SEARCHED_V4`]'s.
+/// Scored 7/15 when it was found -- but that was against the broken
+/// attitude signal described on [`TiltEstimator`], which never let the
+/// recovery terminate, so what the number really measured was a pose that
+/// happened to leave the robot upright. Under a working signal it scores
+/// 0/15. Superseded by [`GENTLE_V2`]; kept as the record.
 ///
 /// The reliability is the price: 7/15 against [`SEARCHED_V4`]'s 12/15. That
 /// one rocks to build momentum and throws the body over -- its measured
@@ -317,6 +412,48 @@ pub const GENTLE_V1: RecoveryParams = RecoveryParams {
     stand_thigh: 2.300333872967274,
     stand_calf: 1.9745608936502057,
     max_rate_rad_s: 1.5,
+    stand_rate_rad_s: 4.0,
+};
+
+/// Round 5 of the unhurried search, and the first run with a working
+/// attitude signal (see [`TiltEstimator`]).
+///
+/// Rights the robot in 5 of 15, at an RMS trunk angular speed of 0.7 to 1.4
+/// rad/s and RMS joint speed of 0.5 to 0.8 -- inside the gentleness targets,
+/// and against 0.310 and 0.107 for a robot merely standing.
+///
+/// Every one of the fifteen reaches a peak trunk +z of 1.000, so it always
+/// turns all the way over; the failures are all falling back down
+/// afterwards, and they settle on the same handful of resting attitudes
+/// (0.460, 0.474, 0.479) rather than anywhere random. That is the open
+/// problem, and it is a catching problem rather than a turning-over one.
+///
+/// [`GENTLE_V1`]'s 7/15 is not a regression from this: it was measured
+/// against the broken attitude signal described on [`TiltEstimator`], where
+/// the recovery never terminated and simply held a pose that happened to be
+/// upright. Under a working signal it scores 0/15.
+pub const GENTLE_V2: RecoveryParams = RecoveryParams {
+    period_s: 4.881933523758614,
+    push_frac: 0.8401655821182884,
+    ramp_s: 0.24826637171419955,
+    hip_push: [0.878523494576535, -0.21850959581930013],
+    hip_rest: [-0.542827424478892, -0.40349497272430357],
+    thigh_push: -2.4491616366093174,
+    calf_push: -1.7592486832167968,
+    thigh_rest: -1.3312088807102656,
+    calf_rest: -2.2446429173056237,
+    arm_push: -1.941360711242757,
+    arm_rest: 0.2347805767090969,
+    handoff_up: 0.7942872132722747,
+    finish_hip: 1.0094822213574963,
+    finish_thigh: -2.533666829939073,
+    finish_calf: 0.2617418451917215,
+    finish_arm: 0.85,
+    stand_hip: STANCE[0],
+    stand_thigh: STANCE[1],
+    stand_calf: STANCE[2],
+    max_rate_rad_s: 1.4359838992034755,
+    stand_rate_rad_s: 4.968451683225109,
 };
 
 /// What the teleop's `V` key runs: the unhurried recovery.
@@ -325,17 +462,17 @@ pub const GENTLE_V1: RecoveryParams = RecoveryParams {
 /// one to run on hardware, and the numbers behind that judgement are
 /// measured rather than aesthetic -- see [`GENTLE_V1`] against
 /// [`SEARCHED_V4`]. The cost is reliability, 7 of 15 conditions against 14.
-pub const RECOVERY_GENTLE: RecoveryParams = GENTLE_V1;
+pub const RECOVERY_GENTLE: RecoveryParams = GENTLE_V2;
 
 /// What `Shift`+`V` runs: the reliable one, which gets there by rocking up
 /// momentum and throwing the body over.
 ///
-/// Kept because 12/15 against 7/15 is a real difference and the choice
+/// Kept because 12/15 against 5/15 is a real difference and the choice
 /// between them is a judgement about the robot, not about the search.
 pub const RECOVERY_FAST: RecoveryParams = SEARCHED_V4;
 
 /// Number of searchable dimensions; see [`RecoveryParams::to_vec`].
-pub const DIM: usize = 21;
+pub const DIM: usize = 19;
 
 /// Per-dimension search bounds, in the order [`RecoveryParams::to_vec`]
 /// uses. Every one is a joint limit from the .misa or a duration that a
@@ -358,10 +495,8 @@ pub const BOUNDS: [(f64, f64); DIM] = [
     HIP_LIMIT_L,   // finish_hip
     THIGH_LIMIT,   // finish_thigh
     CALF_LIMIT,    // finish_calf
-    HIP_LIMIT_L,   // stand_hip
-    THIGH_LIMIT,   // stand_thigh
-    CALF_LIMIT,    // stand_calf
     (0.30, 8.00),  // max_rate_rad_s
+    (0.50, 8.00),  // stand_rate_rad_s
 ];
 
 impl RecoveryParams {
@@ -384,10 +519,8 @@ impl RecoveryParams {
             self.finish_hip,
             self.finish_thigh,
             self.finish_calf,
-            self.stand_hip,
-            self.stand_thigh,
-            self.stand_calf,
             self.max_rate_rad_s,
+            self.stand_rate_rad_s,
         ]
     }
 
@@ -417,10 +550,11 @@ impl RecoveryParams {
             finish_thigh: c(15),
             finish_calf: c(16),
             finish_arm: ARM_LIMIT.1,
-            stand_hip: c(17),
-            stand_thigh: c(18),
-            stand_calf: c(19),
-            max_rate_rad_s: c(20),
+            stand_hip: STANCE[0],
+            stand_thigh: STANCE[1],
+            stand_calf: STANCE[2],
+            max_rate_rad_s: c(17),
+            stand_rate_rad_s: c(18),
         }
     }
 
@@ -432,10 +566,7 @@ impl RecoveryParams {
     /// available from an attitude estimate alone.
     pub fn targets(&self, t: f64, up: f64, g_body_y: f64) -> (f64, LegTargets) {
         if up >= UPRIGHT_UP {
-            let h = self.stand_hip;
-            let l = [h.clamp(HIP_LIMIT_L.0, HIP_LIMIT_L.1), self.stand_thigh, self.stand_calf];
-            let r = [(-h).clamp(HIP_LIMIT_R.0, HIP_LIMIT_R.1), self.stand_thigh, self.stand_calf];
-            return (ARM_LIMIT.1, [l, r, l, r]);
+            return (ARM_LIMIT.1, [STANCE; 4]);
         }
         if up >= self.handoff_up {
             let down_is_left = g_body_y > 0.0;
@@ -491,10 +622,10 @@ pub enum Drive {
     /// What the search optimises against.
     Position,
     /// What the WBC teleop actually does: leg joints in torque mode with a
-    /// host-side PD plus gravity compensation, and attitude from the
-    /// Madgwick IMU filter instead of the simulator's pose. The arm stays on
-    /// its Position actuator, as it does there.
-    TorqueAhrs { kp: f64, kd: f64, imu_beta: f64 },
+    /// host-side PD plus gravity compensation, and which-way-is-down from
+    /// the accelerometer via [`TiltEstimator`] instead of the simulator's
+    /// pose. The arm stays on its Position actuator, as it does there.
+    TorqueAhrs { kp: f64, kd: f64, tilt_tau_s: f64 },
 }
 
 /// What one run of a recovery trajectory did.
@@ -593,6 +724,14 @@ mod sim {
         evaluate_with(misa, ring, xy, mu, params, horizon_s, Drive::Position)
     }
 
+    /// One row of a replay trace: time, root pose as `[x, y, z, qw, qx, qy,
+    /// qz]`, the twelve leg joints in FL/FR/RL/RR order followed by the arm,
+    /// then two diagnostics -- the trunk +z the CONTROLLER believes (which
+    /// under `Drive::TorqueAhrs` is the IMU filter's, not the truth the rest
+    /// of the row carries) and whether the recovery has handed back to a
+    /// normal stance.
+    pub type TraceRow = (f64, [f64; 7], [f64; 13], f64, bool);
+
     pub fn evaluate_with(
         misa: &std::path::Path,
         ring: &KawasakiRingCfg,
@@ -601,6 +740,23 @@ mod sim {
         params: &RecoveryParams,
         horizon_s: f64,
         drive: Drive,
+    ) -> Outcome {
+        evaluate_traced(misa, ring, xy, mu, params, horizon_s, drive, None)
+    }
+
+    /// Same, plus a replay trace sampled every `trace.1` seconds. Kept as one
+    /// function rather than two so a rendered video cannot drift from what
+    /// the search and the tests measure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_traced(
+        misa: &std::path::Path,
+        ring: &KawasakiRingCfg,
+        xy: (f64, f64),
+        mu: f64,
+        params: &RecoveryParams,
+        horizon_s: f64,
+        drive: Drive,
+        mut trace: Option<(&mut Vec<TraceRow>, f64)>,
     ) -> Outcome {
         let mut robot = RobotModel::from_misa(misa).expect("load robot");
         if let Drive::TorqueAhrs { .. } = drive {
@@ -629,10 +785,8 @@ mod sim {
             sim.set_gravity_compensation(true);
         }
         let dt = sim.timestep();
-        let mut ahrs = match drive {
-            Drive::TorqueAhrs { imu_beta, .. } => {
-                Some(crate::attitude_estimator::MadgwickAhrs::new(imu_beta))
-            }
+        let mut tilt = match drive {
+            Drive::TorqueAhrs { tilt_tau_s, .. } => Some(TiltEstimator::new(tilt_tau_s)),
             Drive::Position => None,
         };
         let root = robot.root_link.clone();
@@ -692,16 +846,12 @@ mod sim {
         let (mut peak_up, mut t_right_s, mut t) = (-1.0_f64, f64::NAN, 0.0);
         while t < horizon_s {
             // Attitude, from whichever source this drive is entitled to.
-            let (up, g_body_y) = match &mut ahrs {
+            let (up, g_body_y) = match &mut tilt {
                 Some(f) => {
                     if let Some(imu) = sim.imu_readings(&robot).first() {
-                        f.update_imu(imu.gyro, imu.accel, dt);
+                        f.update(imu.accel, dt);
                     }
-                    let q = f.quaternion();
-                    (
-                        (q * nalgebra::Vector3::z()).z,
-                        (q.inverse() * nalgebra::Vector3::new(0.0, 0.0, -1.0)).y,
-                    )
+                    (f.up(), f.g_body_y())
                 }
                 None => {
                     let r = sim.body_world_orientation(&root).unwrap();
@@ -712,7 +862,10 @@ mod sim {
                 }
             };
             upright_s = if up > UPRIGHT_UP { upright_s + dt } else { 0.0 };
-            handed_back |= upright_s > HOLD_S;
+            if !handed_back && upright_s > HOLD_S {
+                handed_back = true;
+                slew.max_rate_rad_s = params.stand_rate_rad_s;
+            }
             let want = if handed_back {
                 (ARM_LIMIT.1, [STANCE; 4])
             } else {
@@ -766,6 +919,32 @@ mod sim {
             }
             sum_qd2 += qd2 / 12.0;
             n_samp += 1;
+            if let Some((rows, every)) = trace.as_mut() {
+                if rows.last().is_none_or(|(t_last, ..)| t - *t_last >= *every - 1e-9) {
+                    let p = sim.body_world_position(&root).unwrap_or([0.0; 3]);
+                    let q = sim
+                        .body_world_orientation(&root)
+                        .unwrap_or_else(nalgebra::UnitQuaternion::identity);
+                    let mut qs = [0.0_f64; 13];
+                    for (slot, leg) in leg_ji.iter().enumerate() {
+                        for (k, ji) in leg.iter().enumerate() {
+                            if let Some(ji) = ji {
+                                qs[slot * 3 + k] = sim
+                                    .joint_q_qd(&robot.joints[*ji].name)
+                                    .map(|(q, _)| q)
+                                    .unwrap_or(0.0);
+                            }
+                        }
+                    }
+                    if let Some(ji) = arm_ji {
+                        qs[12] = sim
+                            .joint_q_qd(&robot.joints[ji].name)
+                            .map(|(q, _)| q)
+                            .unwrap_or(0.0);
+                    }
+                    rows.push((t, [p[0], p[1], p[2], q.w, q.i, q.j, q.k], qs, up, handed_back));
+                }
+            }
             let up = (sim.body_world_orientation(&root).unwrap() * nalgebra::Vector3::z()).z;
             peak_up = peak_up.max(up);
             if up > UPRIGHT_UP && t_right_s.is_nan() {
@@ -788,4 +967,4 @@ mod sim {
 }
 
 #[cfg(feature = "mujoco")]
-pub use sim::{evaluate, evaluate_with};
+pub use sim::{evaluate, evaluate_traced, evaluate_with, TraceRow};

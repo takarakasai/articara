@@ -35,7 +35,7 @@ fn main() {
     ];
     // The teleop's own gains and IMU filter constant, so a disagreement here
     // is a disagreement about the robot and not about the tuning.
-    let teleop = Drive::TorqueAhrs { kp: 100.0, kd: 1.2, imu_beta: 0.1 };
+    let teleop = Drive::TorqueAhrs { kp: 100.0, kd: 1.2, tilt_tau_s: 0.15 };
 
     println!(
         "{:<22} {:>5} | {:>7} | {:>7} {:>6} {:>7} {:>7} {:>7}",
@@ -44,8 +44,10 @@ fn main() {
     let (mut ok_p, mut ok_t, mut total) = (0, 0, 0);
     for (name, xy) in sites {
         for mu in [0.30_f64, 0.70, 1.00] {
-            let p = evaluate_with(&misa, &ring, xy, mu, &RECOVERY_GENTLE, 8.0, Drive::Position);
-            let t = evaluate_with(&misa, &ring, xy, mu, &RECOVERY_GENTLE, 8.0, teleop);
+            // 20 s, matching the search's validation horizon. At 8 s a
+            // recovery that stands up at 6 s is scored mid-transition.
+            let p = evaluate_with(&misa, &ring, xy, mu, &RECOVERY_GENTLE, 20.0, Drive::Position);
+            let t = evaluate_with(&misa, &ring, xy, mu, &RECOVERY_GENTLE, 20.0, teleop);
             total += 1;
             ok_p += p.righted() as u32;
             ok_t += t.righted() as u32;

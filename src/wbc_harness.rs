@@ -1597,6 +1597,8 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut recover_slew: Option<crate::self_righting::Slew> = None;
     #[allow(unused_mut)]
     let mut recover_fast = false;
+    #[allow(unused_mut)]
+    let mut recover_tilt: Option<crate::self_righting::TiltEstimator> = None;
 
     let render_hz = params.render_hz.unwrap_or(60.0).max(1.0);
     let render_decim = ((1.0 / render_hz) / params.dt).round().max(1.0) as usize;
@@ -1753,6 +1755,7 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 if std::mem::replace(&mut st.recover_requested, false) {
                     recover_t = Some(0.0);
                     recover_upright_s = 0.0;
+                    recover_tilt = None;
                     recover_slew = None;
                     recover_fast = st.recover_fast;
                     eprintln!(
@@ -2402,9 +2405,20 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 use crate::self_righting::{RECOVERY_FAST, RECOVERY_GENTLE, UPRIGHT_UP};
                 let plan = if recover_fast { RECOVERY_FAST } else { RECOVERY_GENTLE };
                 recovering = true;
-                let q_wb = ahrs.quaternion();
-                let up = (q_wb * Vector3::<f64>::z()).z;
-                let g_body_y = (q_wb.inverse() * Vector3::new(0.0, 0.0, -1.0)).y;
+                // Which way is down, from the accelerometer -- NOT from
+                // `ahrs`. The Madgwick filter is tuned for the levelling's
+                // small angles and takes far longer than a recovery to walk
+                // off a 180-degree initial error: measured on a robot lying
+                // still on its back it reported a trunk +z of +0.371 against
+                // a true -0.985 after six seconds, and never got the sign
+                // right across a whole recovery.
+                let tilt = recover_tilt.get_or_insert_with(|| {
+                    crate::self_righting::TiltEstimator::new(0.15)
+                });
+                if let Some(imu) = sim.imu_readings(&robot).first() {
+                    tilt.update(imu.accel, host_dt);
+                }
+                let (up, g_body_y) = (tilt.up(), tilt.g_body_y());
                 let want = plan.targets(rt, up, g_body_y);
                 // Same rate limit the search optimised under. Without it the
                 // regime changes are instantaneous target jumps and a
@@ -2437,8 +2451,14 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     sim.set_position_target(ji, arm_q);
                     arm_angle = arm_q;
                 }
-                recover_upright_s = if up > UPRIGHT_UP { recover_upright_s + host_dt } else { 0.0 };
+                recover_upright_s =
+                    if up > UPRIGHT_UP { recover_upright_s + host_dt } else { 0.0 };
                 let done = recover_upright_s > 1.0;
+                if recover_upright_s > 0.0 {
+                    // Unfold to a normal stance at its own rate; holding the
+                    // roll's low limit through the stand-up topples it.
+                    slew.max_rate_rad_s = plan.stand_rate_rad_s;
+                }
                 // Past every trajectory the search produced -- the unhurried
                 // one takes up to 6.1 s -- so this is a giving-up limit, not
                 // a schedule.
@@ -2450,6 +2470,7 @@ pub fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     recover_t = None;
                     recover_upright_s = 0.0;
                     recover_slew = None;
+                    recover_tilt = None;
                     // Back to a standstill, for the same reason respawn does
                     // it: the gait phase has been running this whole time
                     // against a robot that was not walking.
