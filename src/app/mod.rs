@@ -2092,6 +2092,21 @@ impl eframe::App for ArticaraApp {
                         );
                     });
                     ui.horizontal(|ui| {
+                        ui.label("measured:");
+                        ui.add_enabled(
+                            !self.viz.active(),
+                            egui::TextEdit::singleline(&mut self.viz.key_measured)
+                                .hint_text("empty = target only")
+                                .desired_width(170.0),
+                        );
+                    });
+                    if self.viz.measured_key_conflicts() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 140, 60),
+                            "⚠ same key as target — measured ignored",
+                        );
+                    }
+                    ui.horizontal(|ui| {
                         ui.label("endpoint:");
                         ui.add_enabled(
                             !self.viz.active(),
@@ -2100,11 +2115,43 @@ impl eframe::App for ArticaraApp {
                                 .desired_width(220.0),
                         );
                     });
+                    // Only needed when the measured stream comes from another
+                    // publisher (separate bridge / replay / another host).
+                    ui.horizontal(|ui| {
+                        ui.label("  ↳ measured:");
+                        ui.add_enabled(
+                            !self.viz.active(),
+                            egui::TextEdit::singleline(&mut self.viz.endpoint_measured)
+                                .hint_text("same as above")
+                                .desired_width(220.0),
+                        );
+                    });
+                    // Target (commanded) pose superimposed as a translucent
+                    // ghost over the measured one — only meaningful once the
+                    // measured stream is driving the model.
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.viz.overlay_target, "target ghost");
+                        ui.add_enabled(
+                            self.viz.overlay_target,
+                            egui::Slider::new(&mut self.viz.ghost_alpha, 0.05..=1.0)
+                                .text("alpha"),
+                        );
+                    });
                     if self.viz.active() {
-                        match self.viz.last_seq {
-                            Some(s) => ui.label(format!("● receiving — frame #{s}")),
-                            None => ui.label("● subscribed — waiting for frames…"),
-                        };
+                        // Either key may be empty (single-stream setups); only
+                        // report the streams actually subscribed to.
+                        if !self.viz.key.trim().is_empty() {
+                            match self.viz.last_seq {
+                                Some(s) => ui.label(format!("● target — frame #{s}")),
+                                None => ui.label("○ target — waiting for frames…"),
+                            };
+                        }
+                        if self.viz.measured_subscribed() {
+                            match self.viz.last_seq_measured {
+                                Some(s) => ui.label(format!("● measured — frame #{s}")),
+                                None => ui.label("○ measured — waiting for frames…"),
+                            };
+                        }
                     } else {
                         ui.label("off — run: go2-gait-runner run eth0 --viz");
                     }
@@ -2114,9 +2161,15 @@ impl eframe::App for ArticaraApp {
                     if self.viz.apply(model) {
                         self.needs_upload = true;
                     }
+                    let ghost = self.viz.ghost_transforms(model);
+                    let mut r = self.gl_renderer.lock().unwrap();
+                    r.ghost_alpha = self.viz.ghost_alpha;
+                    r.ghost_transforms = ghost;
                 }
                 // Keep repainting so newly arrived frames are applied promptly.
                 ctx.request_repaint();
+            } else {
+                self.gl_renderer.lock().unwrap().ghost_transforms = None;
             }
         }
 
