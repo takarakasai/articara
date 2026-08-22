@@ -56,7 +56,8 @@ pub enum GhostAnchor {
     /// the joint comparison.
     Commanded,
     /// Ghost takes the measured horizontal position and heading, keeps its own
-    /// height (and, once the wire carries them, roll/pitch).
+    /// height and attitude — so a trunk sagging or tilting away from the plan
+    /// shows, while the drift does not.
     #[default]
     Partial,
     /// Ghost takes the whole measured body pose: the bodies coincide and only
@@ -80,22 +81,26 @@ impl GhostAnchor {
     pub fn tooltip(self) -> &'static str {
         match self {
             Self::Commanded => {
-                "Ghost at its own commanded pose — shows where the plan went vs                  where the robot thinks it is. Joint differences get lost in the                  separation."
+                "Ghost at its own commanded pose — shows where the plan went vs \
+                 where the robot thinks it is. Joint differences get lost in the \
+                 separation."
             }
             Self::Partial => {
-                "Ghost anchored to the measured position and heading, free in                  height — hides the drift of the open-loop odometry, keeps a                  sagging or climbing trunk visible."
+                "Ghost anchored to the measured position and heading, free in \
+                 height and attitude — hides the drift of the open-loop \
+                 odometry, keeps a sagging or tilting trunk visible."
             }
             Self::Measured => {
-                "Ghost at the full measured pose — bodies coincide, so only the                  joint angles differ."
+                "Ghost at the full measured pose — bodies coincide, so only the \
+                 joint angles differ."
             }
         }
     }
 }
 
-/// Default Zenoh key for the **measured** (robot read-back) stream — the
-/// counterpart to [`quadruped_gait::viz::VIZ_KEY_PLANNED`], published by
-/// `go2-gait-runner` on a hardware run.
-pub const VIZ_KEY_MEASURED: &str = "go2/gait/measured";
+/// Default Zenoh key for the **measured** (robot read-back) stream. Re-exported
+/// from the wire crate, which owns both key names.
+pub const VIZ_KEY_MEASURED: &str = quadruped_gait::viz::VIZ_KEY_MEASURED;
 
 /// GUI-side state for the live gait feed. Holds the (optional) running
 /// subscribers and the editable Zenoh keys.
@@ -133,11 +138,11 @@ pub struct VizFeedState {
     /// Latest target frame, kept between repaints so the ghost persists even on
     /// repaints where no new frame arrived.
     target: Option<GaitVizFrame>,
-    /// Body pose `[x, y, z, yaw]` of the last measured frame — the anchor the
-    /// ghost is placed against. `Some` from the first measured frame onward
-    /// (never cleared while subscribed), which is also what decides that the
-    /// measured stream, not the target, drives the solid model.
-    measured_pose: Option<[f64; 4]>,
+    /// Last measured frame — the pose the ghost is anchored against. `Some`
+    /// from the first one onward (never cleared while subscribed), which is
+    /// also what decides that the measured stream, not the target, drives the
+    /// solid model.
+    measured: Option<GaitVizFrame>,
 }
 
 impl Default for VizFeedState {
@@ -155,7 +160,7 @@ impl Default for VizFeedState {
             ghost_alpha: 0.35,
             anchor: GhostAnchor::default(),
             target: None,
-            measured_pose: None,
+            measured: None,
         }
     }
 }
@@ -169,7 +174,7 @@ impl VizFeedState {
     /// Whether a measured stream is driving the model (so the target is drawn
     /// as a ghost rather than driving the model itself).
     pub fn has_measured(&self) -> bool {
-        self.measured_pose.is_some()
+        self.measured.is_some()
     }
 
     /// Whether the measured subscriber is actually running (its key was set
@@ -196,7 +201,7 @@ impl VizFeedState {
             self.last_seq = None;
             self.last_seq_measured = None;
             self.target = None;
-            self.measured_pose = None;
+            self.measured = None;
         } else {
             let ep = non_empty(&self.endpoint);
             // The measured stream may come from another publisher entirely, so
@@ -252,27 +257,29 @@ impl VizFeedState {
                 new_target = true;
             }
         }
-        let mut measured = None;
+        let mut new_measured = false;
         if let Some(sub) = &self.sub_meas {
             if let Some(frame) = sub.take_latest() {
                 self.last_seq_measured = Some(frame.seq);
-                self.measured_pose = Some(frame.pose);
-                measured = Some(frame);
+                self.measured = Some(frame);
+                new_measured = true;
             }
         }
         // Whoever drives the solid model: the measured frame when the robot is
         // reporting back, otherwise the target (offline `--viz`, no read-back).
         // Only a *newly arrived* frame re-poses the model — repaints in between
         // must not report a change (the caller re-uploads the model on `true`).
-        let solid = match (&measured, self.has_measured(), new_target) {
-            (Some(f), ..) => Some(f),
-            (None, false, true) => self.target.as_ref(),
-            _ => None,
+        let solid = if new_measured {
+            self.measured.as_ref()
+        } else if self.measured.is_none() && new_target {
+            self.target.as_ref()
+        } else {
+            None
         };
         let Some(frame) = solid else {
             return false;
         };
-        set_pose(model, &frame.joints, &frame.pose);
+        set_pose(model, &frame.joints, &frame.pose, &frame.pose_rp);
         model.rebuild_misarta_model();
         true
     }
@@ -290,18 +297,27 @@ impl VizFeedState {
         if !self.overlay_target {
             return None;
         }
-        let measured = self.measured_pose?;
+        let measured = self.measured.as_ref()?;
         let frame = self.target.as_ref()?;
-        let pose = match self.anchor {
-            GhostAnchor::Commanded => frame.pose,
-            GhostAnchor::Measured => measured,
-            // Height stays the ghost's own: it is measured by FK, not
-            // integrated, so a difference there is real tracking error.
-            GhostAnchor::Partial => [measured[0], measured[1], frame.pose[2], measured[3]],
+        let (pose, rp) = match self.anchor {
+            GhostAnchor::Commanded => (frame.pose, frame.pose_rp),
+            GhostAnchor::Measured => (measured.pose, measured.pose_rp),
+            // Height and attitude stay the ghost's own: both are read off the
+            // kinematics and the IMU rather than integrated, so a difference
+            // there is real tracking error, not drift.
+            GhostAnchor::Partial => (
+                [
+                    measured.pose[0],
+                    measured.pose[1],
+                    frame.pose[2],
+                    measured.pose[3],
+                ],
+                frame.pose_rp,
+            ),
         };
         let saved_q = model.joint_positions.clone();
         let saved_base = model.base_transform;
-        set_pose(model, &frame.joints, &pose);
+        set_pose(model, &frame.joints, &pose, &rp);
         let transforms = model.compute_transforms();
         model.joint_positions = saved_q;
         model.base_transform = saved_base;
@@ -314,11 +330,12 @@ fn non_empty(s: &str) -> Option<&str> {
     Some(s.trim()).filter(|s| !s.is_empty())
 }
 
-/// Write joint angles and a body pose `[x, y, z, yaw]` into `model` (no rebuild
+/// Write joint angles and a body pose (`[x, y, z, yaw]` plus `[roll, pitch]`)
+/// into `model` (no rebuild
 /// — `compute_transforms` reads `joint_positions` live). The pose is passed
 /// separately from the joints so the ghost can borrow one frame's joints and
 /// another's placement (see [`GhostAnchor`]).
-fn set_pose(model: &mut RobotModel, joints: &[f64; 12], pose: &[f64; 4]) {
+fn set_pose(model: &mut RobotModel, joints: &[f64; 12], pose: &[f64; 4], rp: &[f64; 2]) {
     for slot in 0..4 {
         for k in 0..3 {
             if let Some(&idx) = model.joint_map.get(VIZ_JOINT_NAMES[slot][k]) {
@@ -330,7 +347,7 @@ fn set_pose(model: &mut RobotModel, joints: &[f64; 12], pose: &[f64; 4]) {
     }
     model.base_transform = na::Isometry3::from_parts(
         na::Translation3::new(pose[0], pose[1], pose[2]),
-        na::UnitQuaternion::from_euler_angles(0.0, 0.0, pose[3]),
+        na::UnitQuaternion::from_euler_angles(rp[0], rp[1], pose[3]),
     );
 }
 
@@ -359,6 +376,7 @@ mod tests {
             seq,
             t_s: 0.0,
             pose,
+            pose_rp: [0.0, 0.0],
             joints,
             stance: [true; 4],
         }
@@ -371,13 +389,18 @@ mod tests {
     fn ghost_transforms_pose_the_target_without_touching_the_model() {
         let mut model = go2_model();
         let measured = frame(1, -1.8); // measured pose drives the model
+        set_pose(
+            &mut model,
+            &measured.joints,
+            &measured.pose,
+            &measured.pose_rp,
+        );
         let mut viz = VizFeedState {
             target: Some(frame(1, -1.2)),
-            measured_pose: Some(measured.pose),
+            measured: Some(measured),
             anchor: GhostAnchor::Measured,
             ..Default::default()
         };
-        set_pose(&mut model, &measured.joints, &measured.pose);
         model.rebuild_misarta_model();
         let solid = model.compute_transforms();
         let saved_q = model.joint_positions.clone();
@@ -400,7 +423,7 @@ mod tests {
         viz.overlay_target = false;
         assert!(viz.ghost_transforms(&mut model).is_none());
         viz.overlay_target = true;
-        viz.measured_pose = None;
+        viz.measured = None;
         assert!(viz.ghost_transforms(&mut model).is_none());
     }
 
@@ -412,14 +435,20 @@ mod tests {
     #[test]
     fn the_anchor_places_the_ghost_body() {
         let mut model = go2_model();
-        let measured = frame_at(1, -1.8, [1.0, 0.2, 0.25, 0.3]);
+        let mut measured = frame_at(1, -1.8, [1.0, 0.2, 0.25, 0.3]);
+        measured.pose_rp = [0.1, -0.05]; // the robot is tilted; the plan is level
+        set_pose(
+            &mut model,
+            &measured.joints,
+            &measured.pose,
+            &measured.pose_rp,
+        );
+        model.rebuild_misarta_model();
         let mut viz = VizFeedState {
             target: Some(frame_at(1, -1.2, [0.0, 0.0, 0.30, 0.0])),
-            measured_pose: Some(measured.pose),
+            measured: Some(measured),
             ..Default::default()
         };
-        set_pose(&mut model, &measured.joints, &measured.pose);
-        model.rebuild_misarta_model();
         let root = model.root_link.clone();
         let trunk = |t: &HashMap<String, na::Isometry3<f32>>| t[&root].translation.vector;
         let solid = trunk(&model.compute_transforms());
@@ -436,7 +465,13 @@ mod tests {
         );
 
         viz.anchor = GhostAnchor::Partial;
-        let g = trunk(&viz.ghost_transforms(&mut model).unwrap());
+        let ghost = viz.ghost_transforms(&mut model).unwrap();
+        let (roll, pitch, _) = ghost[&root].rotation.euler_angles();
+        assert!(
+            roll.abs() < 1e-6 && pitch.abs() < 1e-6,
+            "attitude stays the ghost's own (level), so the tilt reads as error"
+        );
+        let g = trunk(&ghost);
         assert!(
             (g.x - 1.0).abs() < 1e-6,
             "x follows the measured pose: {g:?}"
@@ -458,7 +493,7 @@ mod tests {
         let mut model = go2_model();
         let viz = VizFeedState {
             target: None,
-            measured_pose: Some([0.0, 0.0, 0.3, 0.0]),
+            measured: Some(frame(1, -1.8)),
             ..Default::default()
         };
         assert!(viz.ghost_transforms(&mut model).is_none());
