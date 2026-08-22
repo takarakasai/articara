@@ -200,6 +200,14 @@ pub struct GlRenderer {
     pub show_gravity_arrow: bool,
     /// Gravity (bias) direction (unit vector).
     pub gravity_dir: [f32; 3],
+    // --- Ghost overlay (second pose of the same model) ---
+    /// Link transforms for a translucent **ghost** pass: the same uploaded
+    /// meshes drawn a second time at another pose, after the solid pass, with
+    /// [`Self::ghost_alpha`]. `None` = no ghost. Used to superimpose e.g. a
+    /// commanded (target) pose over the measured one — see `viz_feed`.
+    pub ghost_transforms: Option<HashMap<String, na::Isometry3<f32>>>,
+    /// Alpha of the ghost pass (0 = invisible, 1 = opaque).
+    pub ghost_alpha: f32,
 }
 
 impl GlRenderer {
@@ -316,6 +324,8 @@ impl GlRenderer {
                 ground_plane_pitch: 0.0,
                 show_gravity_arrow: true,
                 gravity_dir: [0.0, 0.0, -1.0],
+                ghost_transforms: None,
+                ghost_alpha: 0.35,
             }
         }
     }
@@ -425,8 +435,63 @@ impl GlRenderer {
         self.transforms = transforms;
     }
 
-    /// Render the scene.
     /// Draw a single mesh entry with transform, lighting, and highlight.
+    ///
+    /// `transforms` selects the pose to draw at (the solid pass uses
+    /// [`Self::transforms`], the ghost pass [`Self::ghost_transforms`]) and
+    /// `alpha` overrides the entry colour's alpha when `Some` (transparent /
+    /// ghost draws).
+    unsafe fn draw_mesh_entry_at(
+        &self,
+        gl: &glow::Context,
+        entry: &GlMeshEntry,
+        vp: &na::Matrix4<f32>,
+        transforms: &HashMap<String, na::Isometry3<f32>>,
+        alpha: Option<f32>,
+    ) {
+        unsafe {
+            let world_tf = transforms
+                .get(&entry.link_name)
+                .copied()
+                .unwrap_or(na::Isometry3::identity());
+            let model_mat = (world_tf * entry.visual_origin).to_homogeneous();
+            let mvp = vp * model_mat;
+
+            gl.uniform_matrix_4_f32_slice(Some(&self.u_mvp), false, mvp.as_slice());
+
+            let model3 = model_mat.fixed_view::<3, 3>(0, 0).into_owned();
+            let normal_mat = model3
+                .try_inverse()
+                .map(|inv| inv.transpose())
+                .unwrap_or(na::Matrix3::identity());
+            gl.uniform_matrix_3_f32_slice(
+                Some(&self.u_normal_mat),
+                false,
+                normal_mat.as_slice(),
+            );
+
+            let a = alpha.unwrap_or(entry.color[3]);
+            // Highlight hovered/dragged link with a bright tint
+            let is_highlighted = self
+                .highlight_link
+                .as_ref()
+                .map(|h| h == &entry.link_name)
+                .unwrap_or(false);
+            let tint = if is_highlighted { 0.4 } else { 0.0 };
+            gl.uniform_4_f32(
+                Some(&self.u_color),
+                (entry.color[0] + tint).min(1.0),
+                (entry.color[1] + tint).min(1.0),
+                (entry.color[2] + tint).min(1.0),
+                a,
+            );
+
+            gl.bind_vertex_array(Some(entry.vao));
+            gl.draw_arrays(glow::TRIANGLES, 0, entry.num_vertices);
+        }
+    }
+
+    /// Draw a mesh entry at the current pose with the entry's own alpha.
     unsafe fn draw_mesh_entry(
         &self,
         gl: &glow::Context,
@@ -434,59 +499,11 @@ impl GlRenderer {
         vp: &na::Matrix4<f32>,
         _light_dir: &na::Vector3<f32>,
     ) {
-        unsafe {
-            let world_tf = self
-                .transforms
-                .get(&entry.link_name)
-                .copied()
-                .unwrap_or(na::Isometry3::identity());
-            let model_mat = (world_tf * entry.visual_origin).to_homogeneous();
-            let mvp = vp * model_mat;
-
-            gl.uniform_matrix_4_f32_slice(Some(&self.u_mvp), false, mvp.as_slice());
-
-            let model3 = model_mat.fixed_view::<3, 3>(0, 0).into_owned();
-            let normal_mat = model3
-                .try_inverse()
-                .map(|inv| inv.transpose())
-                .unwrap_or(na::Matrix3::identity());
-            gl.uniform_matrix_3_f32_slice(
-                Some(&self.u_normal_mat),
-                false,
-                normal_mat.as_slice(),
-            );
-
-            // Highlight hovered/dragged link with a bright tint
-            let is_highlighted = self
-                .highlight_link
-                .as_ref()
-                .map(|h| h == &entry.link_name)
-                .unwrap_or(false);
-            if is_highlighted {
-                let tint = 0.4;
-                gl.uniform_4_f32(
-                    Some(&self.u_color),
-                    (entry.color[0] + tint).min(1.0),
-                    (entry.color[1] + tint).min(1.0),
-                    (entry.color[2] + tint).min(1.0),
-                    entry.color[3],
-                );
-            } else {
-                gl.uniform_4_f32(
-                    Some(&self.u_color),
-                    entry.color[0],
-                    entry.color[1],
-                    entry.color[2],
-                    entry.color[3],
-                );
-            }
-
-            gl.bind_vertex_array(Some(entry.vao));
-            gl.draw_arrays(glow::TRIANGLES, 0, entry.num_vertices);
-        }
+        unsafe { self.draw_mesh_entry_at(gl, entry, vp, &self.transforms, None) }
     }
 
-    /// Draw a mesh entry in transparent mode (same as draw_mesh_entry but with reduced alpha).
+    /// Draw a mesh entry in transparent mode (same as [`Self::draw_mesh_entry`]
+    /// but with reduced alpha).
     unsafe fn draw_mesh_entry_transparent(
         &self,
         gl: &glow::Context,
@@ -494,58 +511,10 @@ impl GlRenderer {
         vp: &na::Matrix4<f32>,
         _light_dir: &na::Vector3<f32>,
     ) {
-        unsafe {
-            let world_tf = self
-                .transforms
-                .get(&entry.link_name)
-                .copied()
-                .unwrap_or(na::Isometry3::identity());
-            let model_mat = (world_tf * entry.visual_origin).to_homogeneous();
-            let mvp = vp * model_mat;
-
-            gl.uniform_matrix_4_f32_slice(Some(&self.u_mvp), false, mvp.as_slice());
-
-            let model3 = model_mat.fixed_view::<3, 3>(0, 0).into_owned();
-            let normal_mat = model3
-                .try_inverse()
-                .map(|inv| inv.transpose())
-                .unwrap_or(na::Matrix3::identity());
-            gl.uniform_matrix_3_f32_slice(
-                Some(&self.u_normal_mat),
-                false,
-                normal_mat.as_slice(),
-            );
-
-            let alpha = 0.4_f32;
-            let is_highlighted = self
-                .highlight_link
-                .as_ref()
-                .map(|h| h == &entry.link_name)
-                .unwrap_or(false);
-            if is_highlighted {
-                let tint = 0.4;
-                gl.uniform_4_f32(
-                    Some(&self.u_color),
-                    (entry.color[0] + tint).min(1.0),
-                    (entry.color[1] + tint).min(1.0),
-                    (entry.color[2] + tint).min(1.0),
-                    alpha,
-                );
-            } else {
-                gl.uniform_4_f32(
-                    Some(&self.u_color),
-                    entry.color[0],
-                    entry.color[1],
-                    entry.color[2],
-                    alpha,
-                );
-            }
-
-            gl.bind_vertex_array(Some(entry.vao));
-            gl.draw_arrays(glow::TRIANGLES, 0, entry.num_vertices);
-        }
+        unsafe { self.draw_mesh_entry_at(gl, entry, vp, &self.transforms, Some(0.4)) }
     }
 
+    /// Render the scene.
     pub fn render(&self, gl: &glow::Context, camera: &OrbitCamera, viewport: [i32; 4]) {
         let w = viewport[2].max(1);
         let h = viewport[3].max(1);
@@ -708,6 +677,34 @@ impl GlRenderer {
                     self.draw_mesh_entry(gl, entry, &vp, &light_dir);
                 }
             }
+            // Ghost pass: the same meshes drawn a second time at another
+            // pose (e.g. the commanded target over the measured state), always
+            // translucent. Drawn after the solid pass with depth *testing* on
+            // but depth *writes* off, so the ghost blends over whatever is in
+            // front of it without occluding later draws.
+            if let Some(ghost) = &self.ghost_transforms {
+                gl.polygon_mode(glow::FRONT_AND_BACK, glow::FILL);
+                gl.uniform_1_i32(Some(&self.u_flat), 0);
+                gl.enable(glow::BLEND);
+                gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+                gl.depth_mask(false);
+                for entry in &self.mesh_entries {
+                    let global_mode = match entry.kind {
+                        MeshKind::Visual => self.visual_mode,
+                        MeshKind::Collision => self.collision_mode,
+                    };
+                    let mode = self
+                        .link_display_modes
+                        .get(&(entry.link_name.clone(), entry.kind))
+                        .copied()
+                        .unwrap_or(global_mode);
+                    if mode == DisplayMode::Off {
+                        continue;
+                    }
+                    self.draw_mesh_entry_at(gl, entry, &vp, ghost, Some(self.ghost_alpha));
+                }
+            }
+
             // Ensure fill mode and state are restored
             gl.polygon_mode(glow::FRONT_AND_BACK, glow::FILL);
             gl.uniform_1_i32(Some(&self.u_flat), 0);
