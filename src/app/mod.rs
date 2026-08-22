@@ -2137,6 +2137,17 @@ impl eframe::App for ArticaraApp {
                                 .text("alpha"),
                         );
                     });
+                    // Where the ghost's body sits once the measured stream
+                    // carries real odometry and the two poses diverge.
+                    ui.horizontal(|ui| {
+                        ui.add_enabled_ui(self.viz.overlay_target, |ui| {
+                            ui.label("anchor:");
+                            for a in articara::viz_feed::GhostAnchor::ALL {
+                                ui.selectable_value(&mut self.viz.anchor, a, a.label())
+                                    .on_hover_text(a.tooltip());
+                            }
+                        });
+                    });
                     if self.viz.active() {
                         // Either key may be empty (single-stream setups); only
                         // report the streams actually subscribed to.
