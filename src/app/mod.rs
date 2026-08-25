@@ -2106,12 +2106,23 @@ impl eframe::App for ArticaraApp {
                             "⚠ same key as target — measured ignored",
                         );
                     }
+                    // Which end dials: the viewer (connect), the publisher
+                    // (listen), or neither (multicast discovery).
+                    ui.horizontal(|ui| {
+                        ui.add_enabled_ui(!self.viz.active(), |ui| {
+                            ui.label("mode:");
+                            for t in articara::viz_feed::FeedTopology::ALL {
+                                ui.selectable_value(&mut self.viz.topology, t, t.label())
+                                    .on_hover_text(t.tooltip());
+                            }
+                        });
+                    });
                     ui.horizontal(|ui| {
                         ui.label("endpoint:");
                         ui.add_enabled(
-                            !self.viz.active(),
+                            !self.viz.active() && self.viz.topology.needs_endpoint(),
                             egui::TextEdit::singleline(&mut self.viz.endpoint)
-                                .hint_text("auto (tcp/127.0.0.1:7447 for same PC)")
+                                .hint_text("tcp/127.0.0.1:7447 (comma-separated)")
                                 .desired_width(220.0),
                         );
                     });
@@ -2120,7 +2131,7 @@ impl eframe::App for ArticaraApp {
                     ui.horizontal(|ui| {
                         ui.label("  ↳ measured:");
                         ui.add_enabled(
-                            !self.viz.active(),
+                            !self.viz.active() && self.viz.topology.needs_endpoint(),
                             egui::TextEdit::singleline(&mut self.viz.endpoint_measured)
                                 .hint_text("same as above")
                                 .desired_width(220.0),

@@ -25,7 +25,8 @@ use std::collections::HashMap;
 
 use nalgebra as na;
 use quadruped_gait::viz::GaitVizFrame;
-use quadruped_gait::viz_sub::VizSubscriber;
+use quadruped_gait::viz_net::VizEndpoints;
+use quadruped_gait::viz_sub::{VizSession, VizSubscriber};
 
 use crate::robot::RobotModel;
 
@@ -98,6 +99,73 @@ impl GhostAnchor {
     }
 }
 
+/// How the viewer's Zenoh sessions reach the publisher.
+///
+/// Zenoh peers are symmetric, so the viewer doesn't have to be the one dialling
+/// out: when the robot's address is the one that moves, it is easier to let the
+/// viewer sit on a known port and have the robot connect in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum FeedTopology {
+    /// Multicast discovery — no address needed, but needs a LAN that carries it.
+    Auto,
+    /// Connect to the publisher's listen endpoint. The usual case.
+    #[default]
+    Connect,
+    /// Listen and let the publisher connect in.
+    Listen,
+}
+
+impl FeedTopology {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Connect, Self::Listen];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Connect => "connect",
+            Self::Listen => "listen",
+        }
+    }
+
+    pub fn tooltip(self) -> &'static str {
+        match self {
+            Self::Auto => {
+                "Find the publisher by multicast discovery — no address to type, \
+                 but the LAN has to carry multicast (same-host and WSL2 do not)."
+            }
+            Self::Connect => {
+                "Dial the publisher's listen endpoint (its --viz-endpoint). \
+                 Retries forever, so starting this side first is fine."
+            }
+            Self::Listen => {
+                "Wait here and let the publisher dial in (its --viz-connect). \
+                 Use when the robot's address is the one that moves."
+            }
+        }
+    }
+
+    /// Whether an address field applies to this mode.
+    pub fn needs_endpoint(self) -> bool {
+        self != Self::Auto
+    }
+
+    /// Build the session configuration for one stream's endpoint field.
+    fn endpoints(self, endpoint: &str) -> VizEndpoints {
+        let eps: Vec<&str> = endpoint
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        match self {
+            // An address typed while in auto mode is ignored rather than
+            // silently changing what the mode means.
+            Self::Auto => VizEndpoints::auto(),
+            _ if eps.is_empty() => VizEndpoints::auto(),
+            Self::Connect => VizEndpoints::connect(eps),
+            Self::Listen => VizEndpoints::listen(eps),
+        }
+    }
+}
+
 /// Default Zenoh key for the **measured** (robot read-back) stream. Re-exported
 /// from the wire crate, which owns both key names.
 pub const VIZ_KEY_MEASURED: &str = quadruped_gait::viz::VIZ_KEY_MEASURED;
@@ -114,15 +182,17 @@ pub struct VizFeedState {
     /// Zenoh key of the measured stream (editable while stopped); empty =
     /// target-only, and the target then drives the model solidly.
     pub key_measured: String,
-    /// Optional Zenoh **connect** endpoint (e.g. `tcp/127.0.0.1:7447`) for hosts
-    /// without multicast; connects to the publisher's `--viz-endpoint`. Empty =
-    /// auto multicast discovery.
+    /// How the sessions reach the publisher — dial out, wait, or discover.
+    pub topology: FeedTopology,
+    /// Endpoint(s) for [`Self::topology`], comma-separated (e.g.
+    /// `tcp/127.0.0.1:7447`). Empty falls back to multicast discovery.
     pub endpoint: String,
-    /// Connect endpoint for the measured stream when it comes from a *different*
+    /// Endpoint for the measured stream when it comes from a *different*
     /// publisher than the target (a separate state bridge, a replay, or a
     /// sim-vs-robot comparison across two hosts). Empty = same as
     /// [`Self::endpoint`], which is the usual one-runner case. Each subscriber
-    /// opens its own Zenoh session, so the two are independent.
+    /// opens its own Zenoh session, so the two are independent — though they
+    /// share [`Self::topology`].
     pub endpoint_measured: String,
     /// Sequence number of the last target frame (for a status read-out).
     pub last_seq: Option<u64>,
@@ -152,6 +222,7 @@ impl Default for VizFeedState {
             sub_meas: None,
             key: quadruped_gait::viz::VIZ_KEY_PLANNED.to_string(),
             key_measured: VIZ_KEY_MEASURED.to_string(),
+            topology: FeedTopology::default(),
             endpoint: String::new(),
             endpoint_measured: String::new(),
             last_seq: None,
@@ -203,15 +274,39 @@ impl VizFeedState {
             self.target = None;
             self.measured = None;
         } else {
-            let ep = non_empty(&self.endpoint);
+            let ep = self.topology.endpoints(&self.endpoint);
             // The measured stream may come from another publisher entirely, so
             // it gets its own endpoint; unset falls back to the target's.
-            let ep_meas = non_empty(&self.endpoint_measured).or(ep);
+            let ep_meas = match non_empty(&self.endpoint_measured) {
+                Some(e) => self.topology.endpoints(e),
+                None => ep.clone(),
+            };
+            // One session when both streams come from the same place. Two
+            // sessions listening on one endpoint would fight over the port —
+            // the second fails to bind — and connecting twice is just waste.
+            let session = match VizSession::open(&ep) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("viz-feed: {e}");
+                    return;
+                }
+            };
+            let session_meas = if ep_meas == ep {
+                Some(session.clone())
+            } else {
+                match VizSession::open(&ep_meas) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        eprintln!("viz-feed (measured): {e}");
+                        None
+                    }
+                }
+            };
             // Either key may be left empty: measured-only (watch the robot
             // alone) and target-only (offline `--viz`, no read-back) are both
             // valid — an empty key is skipped rather than subscribed to.
             if !self.key.trim().is_empty() {
-                match VizSubscriber::new(self.key.trim(), ep) {
+                match session.subscribe(self.key.trim()) {
                     Ok(s) => self.sub = Some(s),
                     Err(e) => eprintln!("viz-feed: {e}"),
                 }
@@ -224,9 +319,11 @@ impl VizFeedState {
                     self.key_measured.trim(),
                 );
             } else if !self.key_measured.trim().is_empty() {
-                match VizSubscriber::new(self.key_measured.trim(), ep_meas) {
-                    Ok(s) => self.sub_meas = Some(s),
-                    Err(e) => eprintln!("viz-feed (measured): {e}"),
+                if let Some(sm) = &session_meas {
+                    match sm.subscribe(self.key_measured.trim()) {
+                        Ok(s) => self.sub_meas = Some(s),
+                        Err(e) => eprintln!("viz-feed (measured): {e}"),
+                    }
                 }
             }
         }
@@ -523,6 +620,35 @@ mod tests {
             !target_only.measured_key_conflicts(),
             "an empty measured key is target-only, not a conflict"
         );
+    }
+
+    /// The topology decides which side dials; an address only means something
+    /// once it does. A typed address in `auto` is ignored rather than quietly
+    /// changing what the mode does.
+    #[test]
+    fn the_topology_decides_who_dials() {
+        let connect = FeedTopology::Connect.endpoints("tcp/127.0.0.1:7447");
+        assert_eq!(connect.connect, ["tcp/127.0.0.1:7447"]);
+        assert!(connect.listen.is_empty());
+        assert!(
+            !connect.multicast_enabled(),
+            "an address means discovery is off"
+        );
+
+        let listen = FeedTopology::Listen.endpoints(" tcp/0.0.0.0:7447 , tcp/[::]:7448 ");
+        assert_eq!(listen.listen, ["tcp/0.0.0.0:7447", "tcp/[::]:7448"]);
+        assert!(listen.connect.is_empty());
+
+        let auto = FeedTopology::Auto.endpoints("tcp/127.0.0.1:7447");
+        assert!(
+            !auto.is_explicit() && auto.multicast_enabled(),
+            "address ignored"
+        );
+        assert!(!FeedTopology::Auto.needs_endpoint());
+
+        // An empty field can't dial anywhere, so fall back to discovery rather
+        // than opening a session nothing can reach.
+        assert!(FeedTopology::Connect.endpoints("  ").multicast_enabled());
     }
 
     /// An empty key is skipped, not subscribed to — so a single-stream setup
