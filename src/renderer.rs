@@ -208,6 +208,12 @@ pub struct GlRenderer {
     pub ghost_transforms: Option<HashMap<String, na::Isometry3<f32>>>,
     /// Alpha of the ghost pass (0 = invisible, 1 = opaque).
     pub ghost_alpha: f32,
+    /// Per-link colour override, keyed by link name: replaces the entry's own
+    /// colour wherever it applies, keeping whatever alpha the pass is drawing
+    /// with. Used to call out links whose joint is at or past its limit; any
+    /// other per-link signal (tracking error, contact state) can ride the same
+    /// mechanism.
+    pub link_tints: HashMap<String, [f32; 4]>,
 }
 
 impl GlRenderer {
@@ -326,6 +332,7 @@ impl GlRenderer {
                 gravity_dir: [0.0, 0.0, -1.0],
                 ghost_transforms: None,
                 ghost_alpha: 0.35,
+                link_tints: HashMap::new(),
             }
         }
     }
@@ -471,6 +478,13 @@ impl GlRenderer {
             );
 
             let a = alpha.unwrap_or(entry.color[3]);
+            // A tinted link is being called out (joint at its limit, say), so
+            // its own colour is beside the point — take the tint's.
+            let base = self
+                .link_tints
+                .get(&entry.link_name)
+                .copied()
+                .unwrap_or(entry.color);
             // Highlight hovered/dragged link with a bright tint
             let is_highlighted = self
                 .highlight_link
@@ -480,9 +494,9 @@ impl GlRenderer {
             let tint = if is_highlighted { 0.4 } else { 0.0 };
             gl.uniform_4_f32(
                 Some(&self.u_color),
-                (entry.color[0] + tint).min(1.0),
-                (entry.color[1] + tint).min(1.0),
-                (entry.color[2] + tint).min(1.0),
+                (base[0] + tint).min(1.0),
+                (base[1] + tint).min(1.0),
+                (base[2] + tint).min(1.0),
                 a,
             );
 

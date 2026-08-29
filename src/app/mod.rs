@@ -1916,6 +1916,14 @@ impl eframe::App for ArticaraApp {
             r.update_transforms(transforms);
             r.show_com = self.view.show_com;
             r.show_joint_axes = self.view.show_joint_axes;
+            // Recomputed every frame: anything can move a joint (IK drag, a
+            // live feed, a script, a sim step), so there is no single place to
+            // hook that would catch them all.
+            r.link_tints = if self.view.highlight_joint_limits {
+                articara::joint_limits::link_tints(&articara::joint_limits::check(model))
+            } else {
+                std::collections::HashMap::new()
+            };
             r.show_ground_plane = self.view.show_ground_plane;
             r.ground_z = self.view.ground_z;
             r.ground_size = self.view.ground_size;
