@@ -239,6 +239,16 @@ impl ArticaraApp {
                          CoM stays inside the support polygon during the gait.",
                     );
                 ui.checkbox(&mut self.view.show_joint_axes, "Show Joint Axes");
+                ui.checkbox(
+                    &mut self.view.highlight_joint_limits,
+                    "Highlight Joint Limits",
+                )
+                .on_hover_text(
+                    "Tint a link amber when its joint rests on a limit, red when \
+                     it is past one. Only the sliders clamp — an IK drag, a live \
+                     feed or a script can all produce a pose the robot could not \
+                     hold, and it renders as a perfectly plausible one.",
+                );
                 ui.checkbox(&mut self.view.show_gravity_arrow, "Show Gravity Arrow");
                 if self.view.show_gravity_arrow {
                     ui.horizontal(|ui| {

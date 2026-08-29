@@ -32,6 +32,9 @@ pub mod usd_import;
 #[cfg(feature = "mujoco")]
 pub mod wbc_pipeline;
 
+/// Joint-limit checking for the loaded pose (see [`joint_limits::check`]).
+pub mod joint_limits;
+
 /// Live gait viewer: subscribe to a `go2-gait-runner --viz` Zenoh stream and
 /// drive the loaded model in real time. See [`viz_feed`].
 #[cfg(feature = "viz")]

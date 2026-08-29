@@ -22,6 +22,10 @@ pub(super) struct ViewState {
     pub show_support_polygon: bool,
     /// Show joint axis arrows in viewport.
     pub show_joint_axes: bool,
+    /// Tint links whose joint sits at, or past, its declared limit. On by
+    /// default: an out-of-range pose is otherwise indistinguishable from a
+    /// valid one, and nothing but the sliders clamps.
+    pub highlight_joint_limits: bool,
     /// Show a semi-transparent ground plane in the viewport.
     pub show_ground_plane: bool,
     /// Z height of the ground plane.
@@ -57,6 +61,7 @@ impl Default for ViewState {
             show_total_com: false,
             show_support_polygon: false,
             show_joint_axes: false,
+            highlight_joint_limits: true,
             show_ground_plane: false,
             ground_z: 0.0,
             ground_plane_roll: 0.0,

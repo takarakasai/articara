@@ -579,15 +579,57 @@ impl ArticaraApp {
                             continue;
                         }
                         let name = model.joints[i].name.clone();
+                        // A pose can arrive from anywhere (IK, a live feed, a
+                        // script) and land outside the declared range; say so
+                        // rather than letting it read as an ordinary value.
+                        let q = model.joint_positions[i];
+                        let over = (q - upper).max(lower - q);
+                        let state = if over > articara::joint_limits::AT_LIMIT_EPS {
+                            Some(articara::joint_limits::LimitState::Beyond)
+                        } else if over >= -articara::joint_limits::AT_LIMIT_EPS {
+                            Some(articara::joint_limits::LimitState::AtLimit)
+                        } else {
+                            None
+                        };
                         ui.horizontal(|ui| {
                             ui.set_min_width(200.0);
-                            ui.label(&name);
+                            match state {
+                                Some(s) => {
+                                    let [r, g, b, _] = s.color();
+                                    let c = egui::Color32::from_rgb(
+                                        (r * 255.0) as u8,
+                                        (g * 255.0) as u8,
+                                        (b * 255.0) as u8,
+                                    );
+                                    ui.label(egui::RichText::new(&name).color(c))
+                                        .on_hover_text(format!("range {lower:+.3} … {upper:+.3}"));
+                                    let note = match s {
+                                        articara::joint_limits::LimitState::Beyond => {
+                                            format!("⚠ {:.3} past limit", over)
+                                        }
+                                        articara::joint_limits::LimitState::AtLimit => {
+                                            "at limit".to_string()
+                                        }
+                                    };
+                                    ui.label(egui::RichText::new(note).color(c).size(11.0));
+                                }
+                                None => {
+                                    ui.label(&name);
+                                }
+                            }
                         });
                         // Slider operates on f64 (joint_positions is now Vec<f64>);
                         // egui natively supports f64 sliders.
+                        //
+                        // `SliderClamping::Never`: the default clamps the value
+                        // as a side effect of *drawing*, so an out-of-range pose
+                        // was silently pulled back into range by opening this
+                        // panel — destroying the very thing worth seeing. The
+                        // slider track still can't be dragged past a bound.
                         if ui
                             .add(
                                 egui::Slider::new(&mut model.joint_positions[i], lower..=upper)
+                                    .clamping(egui::SliderClamping::Never)
                                     .step_by(0.01)
                                     .text("rad"),
                             )
