@@ -152,7 +152,7 @@ fn main() {
             MjcfExportOptions {
                 extra_worldbody_xml: Some(ring.worldbody_xml(RING_HFIELD)),
                 extra_asset_xml: Some(
-                    ring.asset_xml(RING_HFIELD) + &articara::mjcf::scene_lighting_asset_xml(),
+                    ring.asset_xml(RING_HFIELD) + articara::mjcf::scene_lighting_asset_xml().as_str(),
                 ),
                 extra_visual_xml: Some(articara::mjcf::scene_lighting_visual_xml()),
                 base_xy: Some((

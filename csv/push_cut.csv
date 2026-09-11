@@ -1,0 +1,15 @@
+cell,stance,budget_ns,timing on safe,timing on fail,timing on speckle,timing cut safe,timing cut fail,timing cut speckle
+fwd ds,DS,1.81,1.350,1.550,2/3,1.350,1.550,2/3
+back ds,DS,1.81,0.750,0.800,0/0,0.750,0.800,0/0
+left ds,DS,0.70,0.550,,3/6,0.550,0.800,3/4
+right ds,DS,0.70,0.950,1.000,0/0,0.950,1.000,0/0
+diag ds,DS,1.00,0.550,0.700,1/2,0.550,0.700,1/2
+fwd ss,SS/R,1.81,1.350,1.600,3/4,1.350,1.600,3/4
+back ss,SS/R,1.81,0.900,1.050,1/2,0.900,1.050,1/2
+left ss,SS/R,0.70,0.750,0.800,0/0,0.750,0.800,0/0
+right ss,SS/R,0.70,0.800,,0/0,0.800,,0/0
+diag ss,SS/R,1.00,0.900,,0/0,0.900,,0/0
+left ds (mirror),DS,0.70,1.100,1.150,0/0,1.100,1.150,0/0
+left ss (mirror),SS/L,0.70,0.000,,8/9,0.000,,8/9
+right ds (mirror),DS,0.70,0.400,0.650,3/4,0.400,0.600,2/3
+right ss (mirror),SS/L,0.70,0.750,,0/0,0.750,,0/0

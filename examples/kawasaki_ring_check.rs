@@ -81,7 +81,7 @@ fn main() {
             -(ring.ring_m / 2.0 + pd / 2.0),
             -(ring.ring_m / 2.0 - pw / 2.0),
         )),
-        extra_asset_xml: Some(ring.asset_xml("kawasaki") + &articara::mjcf::scene_lighting_asset_xml()),
+        extra_asset_xml: Some(ring.asset_xml("kawasaki") + articara::mjcf::scene_lighting_asset_xml().as_str()),
         extra_visual_xml: Some(articara::mjcf::scene_lighting_visual_xml()),
         extra_worldbody_xml: Some(ring.worldbody_xml("kawasaki")),
         add_actuators: true,
@@ -133,7 +133,7 @@ fn main() {
         let mut robot2 = RobotModel::from_misa(&misa).expect("load namiashi");
         let opts2 = MjcfExportOptions {
             base_xy: Some((off, off)),
-            extra_asset_xml: Some(ring.asset_xml("kawasaki") + &articara::mjcf::scene_lighting_asset_xml()),
+            extra_asset_xml: Some(ring.asset_xml("kawasaki") + articara::mjcf::scene_lighting_asset_xml().as_str()),
         extra_visual_xml: Some(articara::mjcf::scene_lighting_visual_xml()),
             extra_worldbody_xml: Some(ring.worldbody_xml("kawasaki")),
             add_actuators: true,

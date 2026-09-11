@@ -35,7 +35,7 @@ use articara::wbc_pipeline::WbcPipeline;
 use nalgebra::Vector3;
 use quadruped_gait::wbc;
 use quadruped_gait::{
-    foot_jacobian_body, solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, GaitType,
+    foot_jacobian_body, forward_leg_kinematics, solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, GaitType,
     KinematicsConfig, LegIkSolution, PhaseErrorTracker, VelocityCmd,
 };
 use quadruped_gait::FullCentroidalMpcConfig;
@@ -323,6 +323,11 @@ struct WbcSample {
     /// from "turned around".
     yaw: f64,
     total_fz_world: f64,
+    /// Sec.5f19: total fore-aft (world x) contact force this tick, summed
+    /// over all feet. Paired with `total_fz_world` to measure the GRF
+    /// vector's inclination — i.e. how much of the ground reaction is
+    /// propulsive (horizontal) vs vertical (bounce/support).
+    total_fx_world: f64,
     /// True if any leg's contact-driven-corrected `is_stance`
     /// (`ContactDrivenPhase::apply_correction`, from real measured
     /// GRF) disagreed with the nominal open-loop schedule's
@@ -594,6 +599,36 @@ struct WbcParams {
     /// resolves the reversal. `None` keeps the real Go2 catalogue
     /// values (scale 1.0).
     actuator_effort_scale_override: Option<f64>,
+    /// Sec.5f14: scale every actuated (leg) joint's position-control
+    /// stiffness `actuator_kp` (and kv) by this factor after load. `< 1.0`
+    /// makes the legs COMPLIANT (they deflect under load like a series
+    /// spring), the missing ingredient for a front-foot-forward Bound: a
+    /// soft leg landing ahead of the hip absorbs/redirects the impact
+    /// instead of the rigid catch-and-tumble. `None` keeps the misa Kp.
+    leg_kp_scale: Option<f64>,
+    /// Sec.5f15: virtual axial leg-spring (SLIP). When `Some((k, b))`, each
+    /// STANCE leg gets an extra torque feed-forward realising an axial
+    /// spring-damper along the foot→hip line: `F_axial = k·(L0 − L) − b·L̇`,
+    /// clamped to ≥0 (a leg spring only pushes). `L0` is the nominal
+    /// foot-to-hip distance, so at the nominal leg length the spring force is
+    /// zero — it adds only a *deviation* around the WBC's operating point and
+    /// does NOT double-count the WBC's nominal stance GRF. The force is mapped
+    /// to joint torque via the analytic foot Jacobian and added on top of the
+    /// WBC `taus`. Pair with `leg_kp_scale < 1` so the soft position-PD lets
+    /// the spring, not the rigid position servo, govern stance compliance.
+    /// The intent: on a front-foot-forward landing the compressed spring
+    /// stores the braking energy and returns it as a vault (SLIP), instead of
+    /// the rigid catch-and-tumble that the friction cone forbids at μ=0.7.
+    leg_spring: Option<(f64, f64)>,
+    /// Sec.5f18: swing-leg retraction. Sets `GaitConfig::swing_touchdown_vz`
+    /// (world-frame vertical foot velocity, m/s, the swing NormalVelocity
+    /// reference targets at touchdown). `None`/`0.0` = land with zero
+    /// vertical velocity (unchanged). Positive = foot still rising at
+    /// touchdown so it settles instead of slamming — landing-shock
+    /// mitigation that, unlike the leg-spring, works WITH the WBC's swing
+    /// reference rather than fighting its stance-force solution. Only active
+    /// on the `legged_control_parity` full-centroidal path.
+    swing_touchdown_vz_override: Option<f64>,
     /// Override `MjcfExportOptions::default_friction`'s sliding
     /// component (default 0.7) — the REAL ground-foot friction MuJoCo
     /// simulates, as opposed to `friction_mu_override` (the WBC/MPC's
@@ -1063,6 +1098,11 @@ struct FullCentroidalOpts {
     /// `GaitController::set_bound_tabulated_reference`, so the MPC tracks
     /// a CONSISTENT feasible forward orbit. `None` keeps the flat/trim ref.
     bound_tabulated_reference_csv: Option<&'static str>,
+    /// P3-a: prescribed `(front, rear)` footholds from the trajopt orbit
+    /// (`GaitController::set_bound_prescribed_footholds`). When set, the
+    /// footstep planner follows the orbit's own footholds instead of
+    /// Raibert+deadbeat. `None` keeps the normal footstep.
+    bound_prescribed_footholds_override: Option<(f64, f64)>,
 }
 
 impl WbcParams {
@@ -1079,6 +1119,7 @@ impl WbcParams {
             max_step_length_rear_scale_override: None,
             duty_factor_rear_scale_override: None, full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, max_step_length_triangle: None, max_step_length_ramp_hold: None, duty_factor_ramp: None, cycle_period_ramp: None, rear_stride_scale_ramp: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
+                leg_kp_scale: None, leg_spring: None, swing_touchdown_vz_override: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
     }
@@ -1095,6 +1136,7 @@ impl WbcParams {
             max_step_length_rear_scale_override: None,
             duty_factor_rear_scale_override: None, full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, max_step_length_triangle: None, max_step_length_ramp_hold: None, duty_factor_ramp: None, cycle_period_ramp: None, rear_stride_scale_ramp: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
+                leg_kp_scale: None, leg_spring: None, swing_touchdown_vz_override: None,
             gait_type_override: None, duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
     }
@@ -1136,6 +1178,7 @@ impl WbcParams {
             duty_factor_rear_scale_override: None,
             full_centroidal: None,
             swing_pd_gain_override: None, friction_mu_override: None, pitch_pd_gain_override: None, yaw_pd_gain_override: None, actuator_effort_scale_override: None, ground_friction_override: None, cmd_vx_ramp_s: None, cmd_vx_step_increment: None, max_step_length_ramp_start_m: None, max_step_length_triangle: None, max_step_length_ramp_hold: None, duty_factor_ramp: None, cycle_period_ramp: None, rear_stride_scale_ramp: None, cycle_period_ramp_start_s: None, thrust_scale_ramp_start: None, post_ramp_settle_s: None, pll_accumulate_during_ramp: false, grf_smoothing_and_prox_override: None, sync_real_mass_inertia: false, bound_trim_reference: None, bound_trim_thrust_scale_override: None, bound_trim_velocity_ripple_fraction_override: None, adaptive_cycle_period: None, push_lateral: None,
+                leg_kp_scale: None, leg_spring: None, swing_touchdown_vz_override: None,
             gait_type_override: None,
             duty_factor_override: None, mpc_optimized_footstep_override: None, q_foot_xy_world_override: None, foot_xy_cost_body_frame_override: None, bound_symmetric_foothold_override: None, bound_trim_vertical_reference_override: None, bound_fx_thrust_bias_override: None,
         }
@@ -1256,9 +1299,9 @@ impl WbcParams {
                 legged_control_parity, use_mpc_predicted_footstep, dynamic_joint_q_reference,
                 mpc_override: None, task_space_joint_vel_weight: None,
                 true_centroidal_coupling: false, capture_point_gain_override: None,
-                base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None, max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                base_pos_xy_weight_override: None, max_normal_force_override: None,
+                base_pos_z_weight_override: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..Self::velocity_staircase_fine_misa_wbc(formulation, cfg)
         }
@@ -1479,9 +1522,9 @@ impl WbcParams {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             gait_type_override: Some(GaitType::Bound),
             duty_factor_override: Some(duty_factor),
@@ -1499,6 +1542,24 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         eprintln!("go2.misa missing at {} — skipping Go2 WBC test", path.display());
         return None;
     }
+    // Sec.5f13 (P3-b): the trajopt orbit's pitch(phase), loaded once, so the
+    // WBC's whole-body attitude PD (pitch_pd_gain) can TRACK the orbit's
+    // pitch trajectory (correcting deviations via GRF in stance + limb
+    // reaction in flight) instead of fighting it toward level.
+    let tab_pitch_ref: Option<Vec<[f64; 6]>> = params
+        .full_centroidal
+        .as_ref()
+        .and_then(|o| o.bound_tabulated_reference_csv)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|text| {
+            text.lines()
+                .skip(1)
+                .filter_map(|l| {
+                    let c: Vec<f64> = l.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                    (c.len() == 6).then(|| [c[0], c[1], c[2], c[3], c[4], c[5]])
+                })
+                .collect()
+        });
     let mut robot = RobotModel::from_misa(&path).expect("load go2.misa");
     if let Some(scale) = params.actuator_effort_scale_override {
         for joint in &mut robot.joints {
@@ -1508,6 +1569,20 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 eprintln!("[actuator] {} effort {:.2} -> {:.2} N·m", joint.name, before, joint.effort);
             }
         }
+    }
+    if let Some(scale) = params.leg_kp_scale {
+        // Sec.5f14: soften the position-control stiffness (leg compliance).
+        // The WBC torque feedforward still supplies the stance GRF; lowering
+        // Kp lets the leg deflect under load like a series spring.
+        let mut n = 0;
+        for joint in &mut robot.joints {
+            if joint.actuator_kp > 0.0 {
+                joint.actuator_kp *= scale;
+                joint.actuator_kv *= scale.sqrt().max(0.1); // keep damping ratio sane
+                n += 1;
+            }
+        }
+        eprintln!("[compliance] scaled actuator_kp x{scale} on {n} joints");
     }
 
     let mut kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS)
@@ -1612,6 +1687,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if let Some(bias) = params.bound_fx_thrust_bias_override {
         eprintln!("[gait] overriding bound_fx_thrust_bias -> {bias:.1} N");
         cfg.bound_fx_thrust_bias = bias;
+    }
+    if let Some(vz) = params.swing_touchdown_vz_override {
+        eprintln!("[gait] overriding swing_touchdown_vz (retraction) 0.0 -> {vz:+.3} m/s");
+        cfg.swing_touchdown_vz = vz;
     }
     if let Some(frac) = params.bound_fx_thrust_rear_frac_override {
         eprintln!(
@@ -1736,6 +1815,10 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             }
             eprintln!("[full-centroidal] tabulated reference: {} rows from {path}", table.len());
             gc.set_bound_tabulated_reference(Some(table));
+        }
+        if let Some((front, rear)) = opts.bound_prescribed_footholds_override {
+            eprintln!("[full-centroidal] prescribed footholds front={front:.3} rear={rear:.3}");
+            gc.set_bound_prescribed_footholds(Some((front, rear)));
         }
         if let Some(k) = opts.bound_fore_aft_placement_gain_override {
             eprintln!("[full-centroidal] bound_fore_aft_placement_gain -> {k:.3}");
@@ -1979,10 +2062,14 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     let mut pll_last_update_t = 0.0;
 
     let mut last_staircase_level: Option<usize> = None;
+    let mut tau_saturation_ticks: u64 = 0;
+    let mut tau_over_limit_ticks: u64 = 0;
     for k in 0..n_steps {
         let t = k as f64 * params.dt;
         let mut contact_phase_mismatch = false;
         let mut phase_error_sum_s = 0.0;
+        let mut max_abs_tau = 0.0_f64;
+        let mut mech_power_w = 0.0_f64;
 
         if k == 0 {
             gc.enable();
@@ -2109,8 +2196,30 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 // is `0.0` (hold straight) whenever wz=0, and tracks an
                 // actual turn command otherwise.
                 wbc_pipeline.yaw_ref = gc.world_yaw();
-                if let Some(trim_cfg) = &bound_trim_cfg {
-                    let cycle_phase = out.legs[0].phase.cycle_position;
+                let cycle_phase = out.legs[0].phase.cycle_position;
+                if let Some(tab) = &tab_pitch_ref {
+                    // P3-b: pitch_ref = orbit pitch(phase), linearly
+                    // interpolated with period wrap, so the whole-body
+                    // attitude PD tracks the pitching-bound orbit.
+                    let ph = cycle_phase.rem_euclid(1.0);
+                    let n = tab.len();
+                    let mut hi = n;
+                    for (i, row) in tab.iter().enumerate() {
+                        if row[0] > ph {
+                            hi = i;
+                            break;
+                        }
+                    }
+                    let (lo_i, hi_i, plo, phi) = if hi == 0 {
+                        (n - 1, 0, tab[n - 1][0] - 1.0, tab[0][0])
+                    } else if hi == n {
+                        (n - 1, 0, tab[n - 1][0], tab[0][0] + 1.0)
+                    } else {
+                        (hi - 1, hi, tab[hi - 1][0], tab[hi][0])
+                    };
+                    let f = ((ph - plo) / (phi - plo).max(1e-9)).clamp(0.0, 1.0);
+                    wbc_pipeline.pitch_ref = tab[lo_i][2] + f * (tab[hi_i][2] - tab[lo_i][2]);
+                } else if let Some(trim_cfg) = &bound_trim_cfg {
                     wbc_pipeline.pitch_ref = trim_cfg.sample(cycle_phase).pitch;
                 }
                 let f_grf_world =
@@ -2189,7 +2298,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         pll_last_update_t = t;
                     }
                 }
-                let taus = wbc_pipeline.solve(
+                let mut taus = wbc_pipeline.solve(
                     &robot,
                     &sim,
                     &out,
@@ -2218,7 +2327,87 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                         wbc_pipeline.pitch_ref, pitch_now,
                     );
                 }
+                // Sec.5f15: virtual axial leg-spring (SLIP). Add a compression
+                // spring-damper along each stance leg's foot→hip axis on top of
+                // the WBC torques. Zero at the nominal leg length, so it only
+                // adds a compliant deviation around the WBC operating point.
+                if let Some((k_spring, b_damp)) = params.leg_spring {
+                    let kin = gc.kinematics();
+                    let joint_indices = gc.joint_indices();
+                    let joint_signs = gc.joint_signs();
+                    for slot in 0..4 {
+                        if !contact_flag[slot] {
+                            continue;
+                        }
+                        let leg_kin = kin.legs()[slot];
+                        let mut q = [0.0_f64; 3];
+                        let mut qd = [0.0_f64; 3];
+                        for k in 0..3 {
+                            let ji = joint_indices[slot][k];
+                            let sign = joint_signs[slot][k];
+                            if let Some((q_urdf, qd_urdf)) =
+                                sim.joint_q_qd(&robot.joints[ji].name)
+                            {
+                                q[k] = sign * q_urdf;
+                                qd[k] = sign * qd_urdf;
+                            }
+                        }
+                        let foot_body = forward_leg_kinematics(leg_kin, q[0], q[1], q[2]);
+                        let hip = leg_kin.hip_offset;
+                        let leg_vec = foot_body - hip; // hip → foot
+                        let len = leg_vec.norm();
+                        if len < 1e-6 {
+                            continue;
+                        }
+                        let u = -leg_vec / len; // foot → hip (support / push-up direction)
+                        let l0 = (leg_kin.nominal_foot_body - hip).norm();
+                        let compression = l0 - len; // >0 when compressed below nominal
+                        let j = foot_jacobian_body(leg_kin, q[0], q[1], q[2]);
+                        let foot_vel_body = j * Vector3::new(qd[0], qd[1], qd[2]);
+                        let comp_rate = u.dot(&foot_vel_body); // ċ = û · ṗ_foot
+                        let mut f_axial = k_spring * compression + b_damp * comp_rate;
+                        if f_axial < 0.0 {
+                            f_axial = 0.0; // a leg spring only pushes
+                        }
+                        let f_grf_body = u * f_axial; // GRF on foot, foot → hip
+                        let tau_ik = -(j.transpose() * f_grf_body);
+                        for k in 0..3 {
+                            let ji = joint_indices[slot][k];
+                            let sign = joint_signs[slot][k];
+                            taus[ji] += sign * tau_ik[k];
+                        }
+                    }
+                    // HW constraint: Go2's geared motors saturate at the
+                    // per-joint effort limit. Clamp the spring-augmented
+                    // command so the sim can't demand a torque the real
+                    // actuator could never deliver (and count saturations so
+                    // an over-stiff spring shows up as clipped ticks).
+                    for ji in 0..taus.len() {
+                        let lim = robot.joints[ji].effort;
+                        if lim > 0.0 && taus[ji].abs() > lim {
+                            taus[ji] = taus[ji].clamp(-lim, lim);
+                            tau_saturation_ticks += 1;
+                        }
+                    }
+                }
                 let _ = torque_ff;
+                // Sec.5f16: landing-shock (max |τ|) + mechanical-power
+                // (Σ|τ·q̇|) proxies from the final commanded torques. Also
+                // count, report-only (no clamp here), how often the WBC
+                // *demands* past a Go2 effort limit -- the torque-limited
+                // symptom the duty sweep (§5f17) tracks.
+                for (ji, &tau) in taus.iter().enumerate() {
+                    let lim = robot.joints[ji].effort;
+                    if lim > 0.0 {
+                        max_abs_tau = max_abs_tau.max(tau.abs());
+                        if tau.abs() >= lim - 1e-6 {
+                            tau_over_limit_ticks += 1;
+                        }
+                        if let Some((_, qd)) = sim.joint_q_qd(&robot.joints[ji].name) {
+                            mech_power_w += (tau * qd).abs();
+                        }
+                    }
+                }
                 for (ji, &tau) in taus.iter().enumerate() {
                     sim.set_torque_feedforward(
                         ji,
@@ -2263,14 +2452,9 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         let (roll, pitch, yaw) = robot.base_transform.rotation.euler_angles();
         let contacts_now = sim.contacts();
         let total_fz_world: f64 = contacts_now.iter().map(|c| c.force_world[2]).sum();
-        // ---- validity-audit instrumentation (see WbcSample's fields) ----
+        let total_fx_world: f64 = contacts_now.iter().map(|c| c.force_world[0]).sum();
+        // ---- validity-audit foot instrumentation (see WbcSample fields) ----
         const AUDIT_FEET: [&str; 4] = ["FL_foot", "FR_foot", "RL_foot", "RR_foot"];
-        const AUDIT_JOINTS: [&str; 12] = [
-            "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
-            "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
-            "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
-            "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
-        ];
         let mut foot_xy = [[0.0_f64; 2]; 4];
         let mut foot_z = [0.0_f64; 4];
         let mut foot_fz = [0.0_f64; 4];
@@ -2279,8 +2463,6 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 foot_xy[fi] = [p[0], p[1]];
                 foot_z[fi] = p[2];
             }
-            // MJCF body names are lowercased in ContactInfo (see its doc), so
-            // match case-insensitively against both contact bodies.
             let lname = fname.to_lowercase();
             foot_fz[fi] = contacts_now
                 .iter()
@@ -2288,16 +2470,9 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 .map(|c| c.force_world[2].abs())
                 .sum();
         }
-        let mut max_abs_tau = 0.0_f64;
-        let mut mech_power_w = 0.0_f64;
-        for (jname, &tau) in AUDIT_JOINTS.iter().zip(audit_last_taus.iter()) {
-            max_abs_tau = max_abs_tau.max(tau.abs());
-            if let Some((_q, qd)) = sim.joint_q_qd(jname) {
-                mech_power_w += (tau * qd).abs();
-            }
-        }
         samples.push(WbcSample {
             t, body_x: tx.x, body_y: tx.y, body_z: tx.z, roll, pitch, yaw, total_fz_world,
+            total_fx_world,
             contact_phase_mismatch, phase_error_sum_s,
             cycle_period_s: gc.config().cycle_period_s,
             foot_xy, foot_z, foot_fz, max_abs_tau, mech_power_w,
@@ -2345,6 +2520,16 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     if let Some(path) = csv_out {
         std::fs::write(&path, csv_buf).expect("write WBC_WALK_CSV_OUT");
         eprintln!("wrote {path}");
+    }
+    if tau_saturation_ticks > 0 {
+        eprintln!(
+            "[hw] leg-spring torque saturated the Go2 effort limit on {tau_saturation_ticks} joint·ticks",
+        );
+    }
+    if tau_over_limit_ticks > 0 {
+        eprintln!(
+            "[hw] WBC demanded past a Go2 effort limit on {tau_over_limit_ticks} joint·ticks (report-only)",
+        );
     }
     if let Some(path) = joint_csv_out {
         std::fs::write(&path, joint_csv_buf).expect("write WBC_BOUND_JOINT_CSV_OUT");
@@ -3810,7 +3995,7 @@ fn go2_wbc_bound_baseline_survey() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg2)
     };
@@ -3833,7 +4018,7 @@ fn go2_wbc_bound_baseline_survey() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg3)
     };
@@ -3856,7 +4041,7 @@ fn go2_wbc_bound_baseline_survey() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg4)
     };
@@ -3893,7 +4078,7 @@ fn go2_wbc_bound_forward_walk_video_source() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -3934,9 +4119,9 @@ fn go2_wbc_bound_gentler_parameters_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -3975,7 +4160,7 @@ fn go2_wbc_bound_low_swing_video_source() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4017,9 +4202,9 @@ fn go2_wbc_bound_low_swing_max_step_length_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4052,9 +4237,9 @@ fn go2_wbc_bound_low_swing_cmd_vx_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4093,9 +4278,9 @@ fn go2_wbc_bound_max_normal_force_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: Some(max_normal_force),
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4138,9 +4323,9 @@ fn go2_wbc_bound_friction_mu_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4192,9 +4377,9 @@ fn go2_wbc_bound_true_coupling_sweep() {
                 true_centroidal_coupling: coupling,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4239,9 +4424,9 @@ fn go2_wbc_bound_pitch_pd_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4284,9 +4469,9 @@ fn go2_wbc_bound_actuator_effort_scale_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4328,9 +4513,9 @@ fn go2_wbc_bound_matched_friction_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4383,9 +4568,9 @@ fn go2_wbc_bound_cmd_vx_ramp_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4443,9 +4628,9 @@ fn go2_wbc_bound_grf_smoothing_and_prox_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4483,9 +4668,9 @@ fn go2_wbc_mass_inertia_fix_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4509,9 +4694,9 @@ fn go2_wbc_mass_inertia_fix_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4558,9 +4743,9 @@ fn go2_wbc_bound_template_reference_forward_walk() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4599,7 +4784,7 @@ fn go2_wbc_bound_template_reference_video_source() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -4661,9 +4846,9 @@ fn go2_wbc_bound_period_cmd_vx_screening() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4706,9 +4891,9 @@ fn go2_wbc_bound_cmd_vx_alone_curve() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4769,9 +4954,9 @@ fn go2_wbc_bound_pitch_pd_gain_at_shortened_period_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4816,9 +5001,9 @@ fn go2_wbc_bound_thrust_scale_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4861,9 +5046,9 @@ fn go2_wbc_bound_velocity_ripple_fraction_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4904,9 +5089,9 @@ fn go2_wbc_bound_faster_cmd_vx_at_best_config_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -4958,9 +5143,9 @@ fn go2_wbc_bound_flight_phase_at_best_config_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -5018,9 +5203,9 @@ fn go2_wbc_bound_flight_phase_cmd_vx_ceiling_sweep() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                    base_pos_z_weight_override: None,
                     max_normal_force_override: None,
-                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -5091,6 +5276,7 @@ fn go2_wbc_bound_thrust_scale_sweep_at_peak_speed() {
             base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -5142,6 +5328,7 @@ fn go2_wbc_bound_period_sweep_at_peak_speed() {
             base_pos_z_weight_override: None,
                 max_normal_force_override: None,
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -5191,6 +5378,7 @@ fn go2_wbc_bound_period_x_cmd_vx_grid() {
             base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -5285,6 +5473,7 @@ fn go2_wbc_bound_max_step_length_sweep_from_rl_feedback() {
             base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -5575,6 +5764,7 @@ fn go2_wbc_bound_cmaes_mode_h() {
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                 roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         }
@@ -5779,6 +5969,7 @@ fn go2_wbc_bound_continuation_ref_source() {
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
             bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -5880,6 +6071,7 @@ fn go2_wbc_bound_continuation_relevers() {
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                 roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -5949,6 +6141,7 @@ fn go2_wbc_bound_continuation_to_high_stride() {
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                 roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6013,6 +6206,7 @@ fn go2_wbc_bound_stride_hysteresis() {
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                 roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6079,6 +6273,7 @@ fn go2_wbc_bound_rear_duty_above_one() {
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                     bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -6163,6 +6358,7 @@ fn go2_wbc_bound_orbit_target_fine() {
                 roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: Some(table),
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6231,6 +6427,7 @@ fn go2_wbc_bound_vertical_force_budget() {
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                     bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -6306,6 +6503,7 @@ fn go2_wbc_bound_orbit_target_sweep() {
                 roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: table,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6382,6 +6580,7 @@ fn go2_wbc_bound_ceiling_with_orbit() {
                         roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                         bound_pitch_placement_dc_tau_override: None,
                         bound_tabulated_reference_csv: if use_table { Some(table) } else { None },
+                        bound_prescribed_footholds_override: None,
                     }),
                     ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
                 };
@@ -6496,6 +6695,7 @@ fn go2_wbc_bound_tabulated_bounce() {
                 roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: table,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6664,6 +6864,7 @@ fn go2_wbc_bound_dump_orbit() {
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
             bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -6772,6 +6973,7 @@ fn go2_wbc_bound_command_the_bounce() {
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                     bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -6862,6 +7064,7 @@ fn go2_wbc_bound_let_the_trunk_bounce() {
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                 roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -6942,6 +7145,7 @@ fn go2_wbc_bound_soft_landing() {
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                 roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -7037,6 +7241,7 @@ fn go2_wbc_bound_asymmetric_duty() {
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                     bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -7122,6 +7327,7 @@ fn go2_wbc_bound_asymmetric_stride() {
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                     bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -7192,6 +7398,7 @@ fn go2_wbc_bound_stride_ceiling_probe() {
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                     bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -7270,6 +7477,7 @@ fn go2_wbc_bound_rear_thrust() {
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                     bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -7349,6 +7557,7 @@ fn go2_wbc_bound_rear_gather() {
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                     bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -7400,6 +7609,7 @@ fn go2_wbc_bound_duty_video_source() {
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
             roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
             bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -7476,6 +7686,7 @@ fn go2_wbc_bound_duty_above_half() {
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                     bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -7590,6 +7801,7 @@ fn go2_wbc_bound_lateral_impulse_ladder() {
                 roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                 roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         }
@@ -7739,6 +7951,7 @@ fn go2_wbc_bound_honest_corner() {
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None,
                     roll_rate_weight_override: None, bound_pitch_placement_gain_override: None,
                     bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -7874,6 +8087,7 @@ fn go2_wbc_bound_friction_belief_vs_plant_audit() {
             base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -7934,6 +8148,7 @@ fn go2_wbc_bound_best_video_source_mu080() {
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -7971,6 +8186,7 @@ fn go2_wbc_bound_max_step_length_at_mu_080() {
             base_pos_z_weight_override: None,
                     max_normal_force_override: None,
                     roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -8019,6 +8235,7 @@ fn go2_wbc_bound_friction_mu_x_thrust_scale_from_rl_feedback() {
             base_pos_z_weight_override: None,
                         max_normal_force_override: None,
                         roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                        bound_prescribed_footholds_override: None,
                     }),
                     ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
                 };
@@ -8077,9 +8294,9 @@ fn go2_wbc_bound_faster_cmd_vx_at_ripple_fraction_config_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -8125,9 +8342,9 @@ fn go2_wbc_bound_cmd_vx_boundary_fine_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -8182,9 +8399,9 @@ fn go2_wbc_bound_adaptive_cycle_period_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -8234,7 +8451,7 @@ fn go2_wbc_bound_adaptive_cycle_period_video_source() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -8277,7 +8494,7 @@ fn go2_wbc_bound_adaptive_cycle_period_good_point_video_source() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -8321,9 +8538,9 @@ fn go2_wbc_bound_yaw_pd_gain_ramp_fix_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -8375,7 +8592,7 @@ fn go2_wbc_bound_adaptive_cycle_period_ramp_up_video_source() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -8419,9 +8636,9 @@ fn go2_wbc_bound_thrust_scale_with_pll_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -8463,9 +8680,9 @@ fn go2_wbc_bound_thrust_scale_0_5_with_pll_generalization_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -8510,9 +8727,9 @@ fn go2_wbc_bound_pll_gain_interval_grid_sweep() {
                     true_centroidal_coupling: false,
                     capture_point_gain_override: Some(0.0),
                     base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                    base_pos_z_weight_override: None,
                     max_normal_force_override: None,
-                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                    roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
                 }),
                 ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
             };
@@ -8571,9 +8788,9 @@ fn go2_wbc_bound_pitch_pd_gain_toward_zero_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -8621,9 +8838,9 @@ fn go2_wbc_bound_pitch_pd_gain_zero_generalization_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -8658,9 +8875,9 @@ fn go2_wbc_bound_cmd_vx_extreme_ceiling_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -8699,7 +8916,7 @@ fn go2_wbc_bound_thrust_scale_best_video_source() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -8745,6 +8962,7 @@ fn go2_wbc_bound_thrust_scale_best_video_source_long() {
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
             roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -8782,7 +9000,7 @@ fn go2_wbc_bound_thrust_scale_worst_video_source() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -8863,7 +9081,7 @@ fn go2_wbc_bound_flight_phase_duty_035_video_source() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -8918,9 +9136,9 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -8970,9 +9188,9 @@ fn go2_wbc_bound_flight_phase_duty035_cycle_period_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -9024,9 +9242,9 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_ceiling_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -9082,7 +9300,7 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_video_source() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -9139,6 +9357,126 @@ fn report_time_windowed_summary(label: &str, samples: &[WbcSample], window_s: f6
     }
 }
 
+/// Sec.5f16: landing-shock + efficiency summary for the leg-spring work.
+/// Reports, over the post-burn-in window: peak vertical GRF (landing shock),
+/// peak commanded joint torque (actuator stress), mean joint mechanical power,
+/// and the mechanical cost of transport `CoT = ∫Σ|τ·q̇|dt / (m·g·Δx)`. The
+/// leg-spring should lower the GRF/torque peaks (softer landings) and, if it
+/// recycles impact energy, the CoT too -- without regressing the forward speed.
+fn report_shock_efficiency(label: &str, samples: &[WbcSample], dt: f64, mass_kg: f64, burn_in_s: f64) {
+    let w: Vec<&WbcSample> = samples.iter().filter(|s| s.t >= burn_in_s).collect();
+    if w.len() < 2 {
+        eprintln!("[shock/eff {label}] too few samples");
+        return;
+    }
+    let peak_grf = w.iter().map(|s| s.total_fz_world).fold(0.0_f64, f64::max);
+    let peak_tau = w.iter().map(|s| s.max_abs_tau).fold(0.0_f64, f64::max);
+    let energy_j: f64 = w.iter().map(|s| s.mech_power_w * dt).sum();
+    let duration = (w.last().unwrap().t - w.first().unwrap().t).max(1e-6);
+    let mean_power = energy_j / duration;
+    let dx = w.last().unwrap().body_x - w.first().unwrap().body_x;
+    let cot = if dx.abs() > 1e-3 {
+        energy_j / (mass_kg * 9.81 * dx.abs())
+    } else {
+        f64::INFINITY
+    };
+    let vx = dx / duration;
+    // Realized flight fraction: ticks with essentially no vertical GRF (all
+    // feet off the ground), i.e. total_fz_world < 5% of body weight.
+    let mg = mass_kg * 9.81;
+    let flight_frac =
+        100.0 * w.iter().filter(|s| s.total_fz_world < 0.05 * mg).count() as f64 / w.len() as f64;
+    eprintln!(
+        "[shock/eff {label}] peak_GRF={peak_grf:>7.1}N peak_|tau|={peak_tau:>6.2}N·m \
+         mean_power={mean_power:>6.1}W CoT={cot:>6.3} flight={flight_frac:>4.1}% \
+         (vx={vx:+.3} m/s, Δx={dx:+.2} m over {duration:.1}s)",
+    );
+}
+
+/// Sec.5f19: propulsion-direction analysis. Answers "is the ground reaction
+/// vertically biased (bouncing) rather than propulsive (forward)?" over the
+/// post-burn-in window:
+///  - vertical vs |horizontal| GRF impulse (N·s), and the mean stance GRF
+///    inclination from vertical (deg) — how tilted the push is;
+///  - the split of GRF→CoM mechanical work into vertical (f_z·v_z, the
+///    bounce/support channel) vs horizontal (f_x·v_x, the propulsion
+///    channel), reported as the vertical work fraction;
+///  - the vertical CoM oscillation (RMS) vs the forward travel per cycle
+///    (bounce-to-stride ratio). CoM velocity is finite-differenced from the
+///    body trajectory.
+fn report_propulsion_direction(
+    label: &str,
+    samples: &[WbcSample],
+    dt: f64,
+    mass_kg: f64,
+    cycle_period_s: f64,
+    burn_in_s: f64,
+) {
+    let w: Vec<&WbcSample> = samples.iter().filter(|s| s.t >= burn_in_s).collect();
+    if w.len() < 3 {
+        eprintln!("[propulsion {label}] too few samples");
+        return;
+    }
+    let mut j_z = 0.0; // ∫ f_z dt
+    let mut j_x_net = 0.0; // ∫ f_x dt
+    let mut j_x_abs = 0.0; // ∫ |f_x| dt
+    let mg = mass_kg * 9.81;
+    // Stance-only GRF inclination + CoM work split (finite-difference vel).
+    let mut sum_fz_stance = 0.0;
+    let mut sum_fx_abs_stance = 0.0;
+    let mut n_stance = 0usize;
+    let mut work_vert = 0.0; // ∫ |f_z·v_z| dt
+    let mut work_horiz = 0.0; // ∫ |f_x·v_x| dt
+    let mut z_sum = 0.0;
+    let mut z_sq = 0.0;
+    for i in 0..w.len() {
+        let fz = w[i].total_fz_world;
+        let fx = w[i].total_fx_world;
+        j_z += fz * dt;
+        j_x_net += fx * dt;
+        j_x_abs += fx.abs() * dt;
+        z_sum += w[i].body_z;
+        z_sq += w[i].body_z * w[i].body_z;
+        // Stance = meaningful vertical support (> 20% body weight).
+        if fz > 0.2 * mg {
+            sum_fz_stance += fz;
+            sum_fx_abs_stance += fx.abs();
+            n_stance += 1;
+        }
+        if i > 0 {
+            let vz = (w[i].body_z - w[i - 1].body_z) / dt;
+            let vx = (w[i].body_x - w[i - 1].body_x) / dt;
+            work_vert += (fz * vz).abs() * dt;
+            work_horiz += (fx * vx).abs() * dt;
+        }
+    }
+    let dur = (w.last().unwrap().t - w.first().unwrap().t).max(1e-6);
+    let n = w.len() as f64;
+    let z_mean = z_sum / n;
+    let z_rms = (z_sq / n - z_mean * z_mean).max(0.0).sqrt(); // vertical oscillation RMS
+    let grf_incline_deg = if n_stance > 0 {
+        (sum_fx_abs_stance / n_stance as f64 / (sum_fz_stance / n_stance as f64).max(1e-6))
+            .atan()
+            .to_degrees()
+    } else {
+        0.0
+    };
+    let vert_work_frac = 100.0 * work_vert / (work_vert + work_horiz).max(1e-9);
+    let dx = w.last().unwrap().body_x - w.first().unwrap().body_x;
+    let stride = dx / (dur / cycle_period_s).max(1e-6); // forward travel per cycle
+    let bounce_to_stride = if stride.abs() > 1e-4 {
+        (2.0 * std::f64::consts::SQRT_2 * z_rms) / stride.abs() // ~peak-to-peak / stride
+    } else {
+        f64::INFINITY
+    };
+    eprintln!(
+        "[propulsion {label}] J_z={j_z:>6.1} (m·g·t={mgt:.1}) J_x|net|={j_x_net:>4.1} J_x|abs|={j_x_abs:>5.1} N·s | \
+         GRF_incline={grf_incline_deg:>4.1}° from vert | vert_work={vert_work_frac:>4.1}% | \
+         z_osc_rms={z_rms:>5.3}m stride={stride:>5.3}m bounce/stride={bounce_to_stride:>4.2}",
+        mgt = mg * dur,
+    );
+}
+
 /// Sec.5br's `duty=0.35, thrust_scale=1.0, cmd_vx=1.50` config matched
 /// `duty=0.50`'s ~0.99 m/s ceiling over a 3.0s run, but one probe
 /// extended to 4.5s came back degraded (`meas_vx` 0.985 -> 0.787,
@@ -9178,7 +9516,7 @@ fn go2_wbc_bound_flight_phase_duty035_thrust_scale_1_long_duration_stability() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -9228,7 +9566,7 @@ fn go2_wbc_bound_duty050_baseline_long_duration_stability() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -9288,7 +9626,7 @@ fn go2_wbc_bound_flight_phase_duty035_capture_point_reenabled_stability() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -9338,9 +9676,9 @@ fn go2_wbc_bound_flight_phase_duty035_pll_interval_stability_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -9389,9 +9727,9 @@ fn go2_wbc_bound_flight_phase_duty035_pll_interval_fine_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -9465,7 +9803,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_video_source() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -9525,9 +9863,9 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_stride_length_sweep() {
                 true_centroidal_coupling: false,
                 capture_point_gain_override: Some(0.0),
                 base_pos_xy_weight_override: None,
-            base_pos_z_weight_override: None,
+                base_pos_z_weight_override: None,
                 max_normal_force_override: None,
-                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+                roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -9583,7 +9921,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_tight_pll_clamp_stability() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -9644,7 +9982,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_smooth_startup() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -9694,7 +10032,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_cmd_vx_ramp_only() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -9748,7 +10086,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_cmd_vx_ramp_10s() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -9807,7 +10145,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_thrust_scale_ramp() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -9860,7 +10198,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_pll_settle_buffer() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -9910,7 +10248,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_longer_ramp() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -9964,7 +10302,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_longer_ramp_tighter_clamp() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -10018,7 +10356,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_longer_ramp_pll_warm() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -10072,7 +10410,7 @@ fn go2_wbc_bound_flight_phase_duty035_best_pattern_warm_centered_clamp() {
             base_pos_xy_weight_override: None,
             base_pos_z_weight_override: None,
             max_normal_force_override: None,
-            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None,
+            roll_pitch_weight_override: None, bound_fore_aft_placement_gain_override: None, roll_rate_weight_override: None, bound_pitch_placement_gain_override: None, bound_pitch_placement_dc_tau_override: None, bound_tabulated_reference_csv: None, bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -10132,6 +10470,7 @@ fn go2_wbc_bound_flight_phase_duty035_foot_placement_sweep() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -10197,6 +10536,7 @@ fn go2_wbc_bound_flight_phase_duty035_mpc_footstep() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -10260,6 +10600,7 @@ fn go2_wbc_bound_flight_phase_duty035_mpc_footstep_isolation() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -10321,6 +10662,7 @@ fn go2_wbc_bound_flight_phase_duty035_q_foot_sweep() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -10392,6 +10734,7 @@ fn go2_wbc_bound_flight_phase_duty035_footstep_body_frame() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -10463,6 +10806,7 @@ fn go2_wbc_bound_flight_phase_duty035_symmetric_foothold() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -10524,6 +10868,7 @@ fn go2_wbc_bound_flight_phase_duty035_vertical_reference_ab() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -10587,6 +10932,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_emergent_pitch() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -10640,6 +10986,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_video_source() {
             bound_pitch_placement_gain_override: None,
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -10692,6 +11039,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_weight_fine() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -10754,6 +11102,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_ramp_pll() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -10804,6 +11153,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_cmd_vx_ceiling() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -10858,6 +11208,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_highspeed_weight() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -10911,6 +11262,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_fx_bias() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -10973,6 +11325,7 @@ fn go2_wbc_bound_flight_phase_duty035_mit_startup() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -11039,6 +11392,7 @@ fn go2_wbc_bound_flight_phase_duty035_trim_startup() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -11100,6 +11454,7 @@ fn go2_wbc_bound_energetic_sweep() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -11153,6 +11508,7 @@ fn go2_wbc_bound_energetic_weight() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -11216,6 +11572,7 @@ fn go2_wbc_bound_energetic_trim() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -11272,6 +11629,7 @@ fn go2_wbc_bound_energetic_roll_rate_deadbeat() {
             bound_pitch_placement_gain_override: None,
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -11325,6 +11683,7 @@ fn go2_wbc_bound_energetic_stable_edge() {
             bound_pitch_placement_gain_override: None,
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -11377,6 +11736,7 @@ fn go2_wbc_bound_energetic_stable_window() {
             bound_pitch_placement_gain_override: None,
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -11434,6 +11794,7 @@ fn go2_wbc_bound_energetic_pitch_deadbeat_placement() {
                 bound_pitch_placement_gain_override: Some((0.0, k_rate)),
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -11487,6 +11848,7 @@ fn go2_wbc_bound_energetic_stable_video_source() {
             bound_pitch_placement_gain_override: Some((0.0, 0.045)),
         bound_pitch_placement_dc_tau_override: None,
         bound_tabulated_reference_csv: None,
+        bound_prescribed_footholds_override: None,
         }),
         ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
     };
@@ -11546,6 +11908,7 @@ fn go2_wbc_bound_energetic_forward() {
                 bound_pitch_placement_gain_override: Some((0.0, k_rate)),
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -11604,6 +11967,7 @@ fn go2_wbc_bound_energetic_forward_thrust() {
                 bound_pitch_placement_gain_override: Some((0.0, 0.045)),
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -11667,6 +12031,7 @@ fn go2_wbc_bound_energetic_hzd_forward() {
                 bound_pitch_placement_gain_override: Some((0.0, k_rate)),
             bound_pitch_placement_dc_tau_override: None,
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -11729,6 +12094,7 @@ fn go2_wbc_bound_energetic_hzd_dcblock() {
                 bound_pitch_placement_gain_override: Some((0.0, 0.045)),
                 bound_pitch_placement_dc_tau_override: Some(tau),
             bound_tabulated_reference_csv: None,
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -11790,6 +12156,7 @@ fn go2_wbc_bound_trajopt_forward() {
                 bound_pitch_placement_gain_override: None,
                 bound_pitch_placement_dc_tau_override: None,
                 bound_tabulated_reference_csv: Some("ref/scripts/bound_p0_orbit.csv"),
+            bound_prescribed_footholds_override: None,
             }),
             ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
         };
@@ -11798,6 +12165,1518 @@ fn go2_wbc_bound_trajopt_forward() {
                 &format!("TRAJOPT-REF pursue-fwd, q_px={q_px} q_rate={q_rate}, no-placement, cmd_vx=1.0, 12s"),
                 &samples, 1.0,
             );
+        }
+    }
+}
+
+/// Sec.5f9 (P1->P2): track the RUST-generated periodic orbit. The stage-1
+/// solver (quadruped_gait::solve_bound_orbit) produces a clean low-pitch
+/// forward orbit (pitch~0.02, vx=1.0, friction margin +0.31) -- a much
+/// EASIER reference to track than the higher-pitch P0 orbit. A low-pitch
+/// forward orbit needs little attitude authority in flight, so it may
+/// sidestep the §5f10 stabilize-vs-forward dilemma (which was driven by the
+/// pitch tumble + the backward-dragging pitch deadbeat). This test
+/// generates the orbit in-process, writes it to CSV, and tracks it with
+/// base_pos.x weight (pursue forward) + rate state-weight (stabilize),
+/// NO placement deadbeat (no backward drag).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p1_orbit_forward() {
+    // stage 1: generate the orbit in Rust and dump it to a CSV the harness
+    // can load (FullCentroidalOpts is Copy, so it can't carry the Vec).
+    let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.34);
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("P1 orbit");
+    let path = "ref/scripts/bound_p1_orbit.csv";
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!(
+            "{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]
+        ));
+    }
+    std::fs::write(path, csv).expect("write P1 orbit csv");
+    eprintln!(
+        "[P1] orbit periodicity={:.2e} friction={:.3} rows={}",
+        orbit.periodicity_residual, orbit.friction_margin, orbit.table.len()
+    );
+
+    for (q_px, q_rate) in [(30.0_f64, 150.0_f64), (30.0, 400.0)] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.00,
+            total_time_s: 12.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.34),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.18),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((q_px, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, q_rate)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+            bound_prescribed_footholds_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P1-ORBIT track, q_px={q_px} q_rate={q_rate}, cmd_vx=1.0, duty=0.34, 12s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
+
+/// Sec.5f9 (P3-a): FOLLOW THE ORBIT'S FOOTHOLDS. The core hypothesis: the
+/// trajopt orbit's own footholds are the placement that is forward-moving
+/// AND pitch-balanced by construction, so following them directly should
+/// give forward + stable where Raibert+deadbeat could not (§5f10: the two
+/// fought). Generates the P1 orbit, installs its base-state reference AND
+/// its prescribed (front,rear) footholds, no placement deadbeat. Rate
+/// state-weight kept modest for perturbation damping. cmd_vx = orbit speed.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3a_orbit_footholds() {
+    let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.34);
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("P3a orbit");
+    let path = "ref/scripts/bound_p1_orbit.csv";
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write(path, csv).expect("write orbit csv");
+    eprintln!("[P3a] footholds front={:.3} rear={:.3} friction={:.3}",
+        orbit.front_foothold, orbit.rear_foothold, orbit.friction_margin);
+
+    // P3-b: orbit foothold NEUTRAL + landing-reflex deadbeat correction.
+    // Pure open-loop foothold following (k_place=0) collapses immediately;
+    // the reflex (pitch-rate deadbeat around the forward orbit foothold)
+    // supplies the missing feedback. Sweep the reflex gain.
+    for k_place in [0.0_f64, 0.02, 0.045, 0.08] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.00,
+            total_time_s: 12.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.34),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: Some((0.0, k_place)),
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3b orbit-foothold+reflex, k_place={k_place}, cmd_vx=1.0, duty=0.34, 12s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
+
+/// Sec.5f9 (P3 confirm): the forward + stable Bound. P3-a found that
+/// following the trajopt orbit's own (reachability-clamped) footholds --
+/// with NO placement deadbeat (k_place=0) -- gives forward + stable, where
+/// every §5f bolt-on failed (the deadbeat itself was the backward-drag
+/// culprit). This confirms it over a longer 25s horizon and dumps a CSV
+/// for video. Guards against the §5f4-style premature "stable" claim.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; WBC_WALK_CSV_OUT video source for P3"]
+fn go2_wbc_bound_p3_forward_stable_confirm() {
+    let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.34);
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let p = WbcParams {
+        cmd_vx: 1.00,
+        total_time_s: 25.0,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.34),
+        gait_cycle_period_override: Some(0.30),
+        max_step_length_override: Some(0.22),
+        swing_height_override: Some(0.10),
+        bound_trim_reference: None,
+        sync_real_mass_inertia: true,
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: Some((20.0, 5.0)),
+            base_pos_z_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: Some((4.0, 25.0)),
+            bound_fore_aft_placement_gain_override: None,
+            roll_rate_weight_override: Some((100.0, 100.0)),
+            bound_pitch_placement_gain_override: None,
+            bound_pitch_placement_dc_tau_override: None,
+            bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+            bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    if let Some(samples) = run_wbc_sim(p) {
+        report_time_windowed_summary(
+            "P3 FORWARD+STABLE confirm (orbit footholds, no deadbeat), cmd_vx=1.0, 25s",
+            &samples, 1.0,
+        );
+    }
+}
+
+/// Sec.5f16: apply the virtual axial leg-spring (§5f15) to the ROBUST,
+/// forward-stable P3-a config (foot slightly behind the hip -- the config
+/// that already walks forward 25s) instead of the doomed front-foot-forward
+/// one. Goal: soften the landing (lower peak GRF / joint torque) and improve
+/// the mechanical cost of transport, WITHOUT regressing the 25s forward
+/// stability, while respecting the Go2 HW effort limit (the spring torque is
+/// clamped to `robot.joints[*].effort` and saturation ticks are counted).
+/// Sweeps a small (k, b) grid against the `None` baseline; `report_shock_
+/// efficiency` prints peak_GRF / peak_|tau| / mean_power / CoT for each.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3a_leg_spring_landing() {
+    let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.34);
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+
+    // baseline (no spring) + a small stiffness/damping grid, moderate leg
+    // compliance so the spring (not the rigid servo) governs the deflection.
+    // §5f16 sweep-1 showed a global kp softening kills forward drive. Here we
+    // ISOLATE the two levers: mild compliance alone (no spring) vs a gentle
+    // axial spring with the rigid servo intact, to find what softens the
+    // landing without regressing vx.
+    let configs: [(Option<(f64, f64)>, Option<f64>); 5] = [
+        (None, None),                        // P3-a baseline, as committed
+        (None, Some(0.85)),                  // mild compliance only
+        (None, Some(0.7)),                   // more compliance only
+        (Some((1500.0, 50.0)), None),        // gentle spring, rigid servo
+        (Some((1000.0, 40.0)), Some(0.8)),   // gentle spring + mild compliance
+    ];
+    for (leg_spring, kp_scale) in configs {
+        let tag = match leg_spring {
+            None => "baseline (no spring)".to_string(),
+            Some((k, b)) => format!("spring k={k} b={b} kp_scale={}", kp_scale.unwrap_or(1.0)),
+        };
+        eprintln!("\n[P3aLS] {tag}");
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.00,
+            total_time_s: 25.0,
+            burn_in_s: 0.5,
+            leg_spring,
+            leg_kp_scale: kp_scale,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.34),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(&format!("P3aLS {tag}, cmd_vx=1.0, 25s"), &samples, 5.0);
+            report_shock_efficiency(&tag, &samples, 0.002, 15.606, 0.5);
+        }
+    }
+}
+
+/// Sec.5f17 (本筋 / true flight phase): the P1 orbit already integrates a
+/// real flight phase (front stance | flight | rear stance | flight, solver
+/// requires duty < 0.5), and the committed P3-a runs duty=0.34. This sweeps
+/// the stance duty to map how the flight fraction trades against the landing
+/// shock the HW cares about: shorter stance (lower duty) packs the vertical
+/// impulse into less time -> higher peak GRF / calf torque; longer stance
+/// spreads it -> softer landing but less air. We measure realized flight %,
+/// peak GRF, peak |tau|, over-limit ticks (calf 45.43 N·m), CoT and vx to
+/// find the HW-friendly operating point. No leg-spring; the effort clamp is
+/// off so we see the true demanded torque (over-limit counted, report-only).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_duty_flight_landing_sweep() {
+    // duty=0.30 tumbles (~7s, too-short stance -> highest GRF); 0.34 is the
+    // committed 25s-stable point; 0.40 climbs to ~1.0 m/s then tumbles ~17s;
+    // 0.45 is a stable island -- durable 25s at ~0.87 m/s (peaks 1.02),
+    // cleanest attitude. Landing shock (peak GRF ~1.2 kN, calf saturated) is
+    // ~flat across the stable band: duty is NOT the landing-mitigation lever.
+    for duty in [0.30_f64, 0.34, 0.40, 0.45] {
+        let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, duty);
+        let orbit = match quadruped_gait::solve_bound_orbit(&params) {
+            Some(o) => o,
+            None => {
+                eprintln!("[P3dS] duty={duty}: orbit solve failed, skipping");
+                continue;
+            }
+        };
+        let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+        for r in &orbit.table {
+            csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+                r[0], r[1], r[2], r[3], r[4], r[5]));
+        }
+        std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+        let t_st = duty * 0.30;
+        let t_fl = 0.5 * 0.30 - t_st;
+        eprintln!("\n[P3dS] duty={duty} T_st={t_st:.3}s T_flight={t_fl:.3}s front={:.3} rear={:.3} friction={:.3}",
+            orbit.front_foothold, orbit.rear_foothold, orbit.friction_margin);
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.00,
+            total_time_s: 25.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(duty),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(&format!("P3dS duty={duty}, cmd_vx=1.0, 15s"), &samples, 5.0);
+            report_shock_efficiency(&format!("duty={duty}"), &samples, 0.002, 15.606, 0.5);
+            report_propulsion_direction(&format!("duty={duty}"), &samples, 0.002, 15.606, 0.30, 0.5);
+        }
+    }
+}
+
+/// Sec.5f17: confirm the duty=0.45 operating point the sweep singled out --
+/// durably 25s-stable at ~0.87 m/s (peaks 1.02), ~30% faster than the
+/// committed duty=0.34 (~0.67) with cleaner attitude and the same landing
+/// shock. Also the `WBC_WALK_CSV_OUT` video-capture source for Sec.5f17.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; also the WBC_WALK_CSV_OUT video-capture source for Sec.5f17"]
+fn go2_wbc_bound_duty045_forward_confirm() {
+    let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.45);
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let p = WbcParams {
+        cmd_vx: 1.00,
+        total_time_s: 25.0,
+        burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.45),
+        gait_cycle_period_override: Some(0.30),
+        max_step_length_override: Some(0.22),
+        swing_height_override: Some(0.10),
+        bound_trim_reference: None,
+        sync_real_mass_inertia: true,
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true,
+            use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false,
+            mpc_override: None,
+            task_space_joint_vel_weight: None,
+            true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: Some((20.0, 5.0)),
+            base_pos_z_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: Some((4.0, 25.0)),
+            bound_fore_aft_placement_gain_override: None,
+            roll_rate_weight_override: Some((100.0, 100.0)),
+            bound_pitch_placement_gain_override: None,
+            bound_pitch_placement_dc_tau_override: None,
+            bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+            bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    if let Some(samples) = run_wbc_sim(p) {
+        report_time_windowed_summary("Sec.5f17 duty=0.45 FORWARD confirm, cmd_vx=1.0, 25s", &samples, 5.0);
+        report_shock_efficiency("duty=0.45", &samples, 0.002, 15.606, 0.5);
+    }
+}
+
+/// Sec.5f18 (本命の着地緩和 / swing-leg retraction): §5f17 established the
+/// landing shock (peak GRF ~1.2 kN, calf saturated) is a floor that duty
+/// tuning can't lower. Retraction is the right lever: give the swing foot a
+/// small positive world-frame vertical velocity at touchdown so it SETTLES
+/// onto the ground instead of slamming, WITHOUT touching the WBC's stance-
+/// force solution (unlike the counterproductive leg-spring of §5f16). Sweeps
+/// `swing_touchdown_vz` on the duty=0.45 operating point and measures whether
+/// peak GRF / over-limit calf ticks drop while the 25s forward stability and
+/// speed hold.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_swing_retraction_sweep() {
+    let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.45);
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    // 0.0 = baseline (land at zero vertical velocity); positive = retract
+    // (foot still rising at touchdown -> settle, not slam).
+    for vz in [0.0_f64, 0.10, 0.20, 0.35] {
+        eprintln!("\n[P3ret] swing_touchdown_vz={vz:+.2} m/s (duty=0.45)");
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.00,
+            total_time_s: 25.0,
+            burn_in_s: 0.5,
+            swing_touchdown_vz_override: Some(vz),
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.45),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(&format!("P3ret vz={vz:+.2}, duty=0.45, 25s"), &samples, 5.0);
+            report_shock_efficiency(&format!("vz={vz:+.2}"), &samples, 0.002, 15.606, 0.5);
+            report_propulsion_direction(&format!("vz={vz:+.2}"), &samples, 0.002, 15.606, 0.30, 0.5);
+        }
+    }
+}
+
+/// Sec.5f20 (前傾推進項 / forward-tilt propulsion): §5f19 showed the Bound's
+/// GRF sits only ~8° off vertical (75% vertical work) while μ=0.7 permits up
+/// to 35° — the friction margin is barely used for propulsion. This adds a
+/// constant forward GRF feed-forward (`bound_fx_thrust_bias`, an existing
+/// knob that biases the stance GRF reference forward) on top of the best
+/// retraction config (duty=0.45, vz=+0.20) and measures whether it actually
+/// tilts the realised GRF forward (higher inclination, higher horizontal
+/// work fraction, faster) without destabilising the pitch.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_forward_thrust_sweep() {
+    let params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.45);
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    for fx in [0.0_f64, 20.0, 40.0, 60.0] {
+        eprintln!("\n[P3thr] bound_fx_thrust_bias={fx:.0} N (duty=0.45, retraction vz=+0.20)");
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.00,
+            total_time_s: 25.0,
+            burn_in_s: 0.5,
+            swing_touchdown_vz_override: Some(0.20),
+            bound_fx_thrust_bias_override: Some(fx),
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.45),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(&format!("P3thr fx={fx:.0}N, duty=0.45+retract, 25s"), &samples, 5.0);
+            report_shock_efficiency(&format!("fx={fx:.0}N"), &samples, 0.002, 15.606, 0.5);
+            report_propulsion_direction(&format!("fx={fx:.0}N"), &samples, 0.002, 15.606, 0.30, 0.5);
+        }
+    }
+}
+
+/// Sec.5f21: the PRINCIPLED forward lever. §5f20 showed a bolt-on forward GRF
+/// bias fails (F_x is pitch-locked). The pitch-consistent way to push forward
+/// is to regenerate the P1 orbit at a higher target speed — the solver
+/// recomputes the pitch-balancing F_x trim and footholds for that speed — and
+/// let cmd_vx match. Sweeps the orbit vx_target (with retraction vz=+0.20) to
+/// see how far the speed goes and whether the higher forward power lowers the
+/// vertical work fraction, staying stable.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_orbit_speed_sweep() {
+    for vx_t in [1.0_f64, 1.5, 2.0] {
+        let params = quadruped_gait::PeriodicBoundParams::go2(vx_t, 0.30, 0.45);
+        let orbit = match quadruped_gait::solve_bound_orbit(&params) {
+            Some(o) => o,
+            None => { eprintln!("[P3spd] vx_target={vx_t}: orbit failed"); continue; }
+        };
+        let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+        for r in &orbit.table {
+            csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+                r[0], r[1], r[2], r[3], r[4], r[5]));
+        }
+        std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+        eprintln!("\n[P3spd] orbit vx_target={vx_t} front={:.3} rear={:.3} friction={:.3}",
+            orbit.front_foothold, orbit.rear_foothold, orbit.friction_margin);
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: vx_t,
+            total_time_s: 25.0,
+            burn_in_s: 0.5,
+            swing_touchdown_vz_override: Some(0.20),
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.45),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(&format!("P3spd vx_target={vx_t}, duty=0.45+retract, 25s"), &samples, 5.0);
+            report_shock_efficiency(&format!("vx_t={vx_t}"), &samples, 0.002, 15.606, 0.5);
+            report_propulsion_direction(&format!("vx_t={vx_t}"), &samples, 0.002, 15.606, 0.30, 0.5);
+        }
+    }
+}
+
+/// Sec.5f22: Trot vs Bound propulsion-direction comparison. §5f19-5f21
+/// established the Bound is stuck at ~75% vertical GRF-work / ~8° GRF
+/// inclination because its fore-aft GRF is pitch-locked. A Trot has
+/// continuous diagonal support and no flight-phase pitch somersault, so its
+/// F_x is NOT pitch-locked — the prediction is a much lower vertical-work
+/// fraction (more of the ground reaction is propulsive). Runs a forward Trot
+/// on the SAME full-centroidal WBC at cmd_vx=1.0 and reports the identical
+/// shock / propulsion metrics for a like-for-like comparison.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_trot_propulsion_comparison() {
+    for cmd_vx in [0.6_f64, 1.0] {
+        eprintln!("\n[Trot] cmd_vx={cmd_vx} (full-centroidal, duty=0.5 default)");
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx,
+            total_time_s: 20.0,
+            burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Trot),
+            gait_cycle_period_override: Some(0.40),
+            max_step_length_override: Some(0.20),
+            swing_height_override: Some(0.08),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.05),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: None,
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(&format!("Trot cmd_vx={cmd_vx}, 20s"), &samples, 5.0);
+            report_shock_efficiency(&format!("trot vx={cmd_vx}"), &samples, 0.002, 15.606, 0.5);
+            report_propulsion_direction(&format!("trot vx={cmd_vx}"), &samples, 0.002, 15.606, 0.40, 0.5);
+        }
+    }
+}
+
+/// Sec.5f23: tune the Trot to speed to settle the F_x-propulsion hypothesis.
+/// §5f22's Trot topped out at 0.53 m/s because forward speed is stride-limited
+/// (v ≈ max_step / cycle_period ≈ 0.20/0.40). Raising cadence (shorter cycle)
+/// and stride (larger max_step) should lift the speed; the hypothesis is that
+/// as the Trot goes faster its GRF tilts forward (inclination rises well past
+/// the Bound's pitch-locked ~8°), demonstrating that in a continuous-support
+/// gait F_x IS a free propulsion channel. Reports the same metrics.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_trot_speed_tune() {
+    // Root cause of the 0.53 m/s cap (§5f23): the footstep neutral uses the
+    // COMMANDED velocity, so when cmd exceeds the actual speed the foot is
+    // over-placed forward and brakes. Fix = the measured-speed Raibert
+    // neutral + command-tracking feedback (`bound_fore_aft_placement_gain`,
+    // not gait-gated). Sweep that gain on a fixed fast cadence (cyc=0.30,
+    // step=0.30) at cmd_vx=1.2.
+    // The cmd-based neutral only MILDLY over-places, so a gentle ramp that
+    // keeps v_err small (no fore-aft regulator, which launches the trot) plus
+    // stronger position tracking to follow the advancing reference. Sweep the
+    // ramp time and base-position weight; target a modest 1.0 m/s.
+    let configs = [
+        (1.0_f64, 8.0_f64, (20.0_f64, 5.0_f64)),
+        (1.0, 8.0, (60.0, 8.0)),
+        (1.0, 14.0, (60.0, 8.0)),
+        (1.2, 14.0, (100.0, 10.0)),
+    ];
+    for (cmd_vx, ramp, (qx, qy)) in configs {
+        eprintln!("\n[TrotT] cmd_vx={cmd_vx} ramp={ramp}s base_pos_w=({qx},{qy}) cyc=0.30 step=0.30");
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx,
+            total_time_s: 25.0,
+            burn_in_s: 0.5,
+            cmd_vx_ramp_s: Some(ramp),
+            gait_type_override: Some(GaitType::Trot),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.30),
+            swing_height_override: Some(0.07),
+            bound_trim_reference: None,
+            sync_real_mass_inertia: true,
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true,
+                use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false,
+                mpc_override: None,
+                task_space_joint_vel_weight: None,
+                true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.05),
+                base_pos_xy_weight_override: Some((qx, qy)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: None,
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: None,
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: None,
+                bound_prescribed_footholds_override: None,
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(&format!("TrotT vx={cmd_vx} ramp={ramp} qxy=({qx},{qy}), 25s"), &samples, 5.0);
+            report_shock_efficiency(&format!("trot r{ramp} q{qx}"), &samples, 0.002, 15.606, 0.5);
+            report_propulsion_direction(&format!("trot r{ramp} q{qx}"), &samples, 0.002, 15.606, 0.30, 0.5);
+        }
+    }
+}
+
+/// Sec.5f13: sweep the Raibert-neutral foothold weight to find the
+/// LEAST-tucked front foot that stays stable. The reviewer flagged the
+/// front feet tucked behind the hip; the multi-model analysis said push
+/// them forward to Raibert-neutral -- but that drops friction margin
+/// (feet ahead of hip => more tangential propulsion force) and can
+/// destabilize. This maps front_foothold + friction_margin vs stability.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3_raibert_sweep() {
+    for w_rb in [0.0_f64, 0.15, 0.30, 0.45] {
+        let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.34);
+        params.raibert_weight = w_rb;
+        let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+        let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+        for r in &orbit.table {
+            csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+                r[0], r[1], r[2], r[3], r[4], r[5]));
+        }
+        std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+        let front_rel_hip = orbit.front_foothold - 0.19216;
+        eprintln!("[P3fix] w_rb={w_rb} front_foothold={:.3} (rel front hip {:+.3}) rear_foothold={:.3} friction={:.3} peak_pitch(orbit)={:.3}",
+            orbit.front_foothold, front_rel_hip, orbit.rear_foothold, orbit.friction_margin,
+            orbit.samples.iter().map(|s| s.pitch.abs()).fold(0.0_f64, f64::max));
+
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.00, total_time_s: 12.0, burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.34),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3fix Raibert sweep w_rb={w_rb}, cmd_vx=1.0, 12s"),
+                &samples, 1.0,
+            );
+        }
+    }
+}
+
+/// Sec.5f13: can a FEET-FORWARD orbit be stabilized by giving more friction
+/// headroom? Higher duty = more stance time = lower peak force = more
+/// friction margin + less flight (easier attitude). Lower speed = less
+/// propulsion. Tests the feet-forward orbit (w_rb=0.3, hip-reachability) at
+/// higher duty / lower speed to find a feet-forward + STABLE combination.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3_feetfwd_stable() {
+    for (duty, vx) in [(0.40_f64, 1.0_f64), (0.42, 1.0), (0.40, 0.7)] {
+        let mut params = quadruped_gait::PeriodicBoundParams::go2(vx, 0.30, duty);
+        params.raibert_weight = 0.3;
+        let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+        let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+        for r in &orbit.table {
+            csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+                r[0], r[1], r[2], r[3], r[4], r[5]));
+        }
+        std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+        eprintln!("[P3fix] duty={duty} vx={vx} front_foothold={:.3} (rel hip {:+.3}) rear={:.3} friction={:.3}",
+            orbit.front_foothold, orbit.front_foothold - 0.19216, orbit.rear_foothold, orbit.friction_margin);
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: vx, total_time_s: 15.0, burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(duty),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3fix feet-fwd duty={duty} vx={vx}, 15s"), &samples, 1.0);
+        }
+    }
+}
+
+/// Sec.5f13 (P3-b): stabilize a FEET-FORWARD (pitching) Bound with a
+/// landing-reflex foot-placement deadbeat keyed on the pitch DEVIATION
+/// from the tracked orbit. The feet-forward orbit (raibert_weight=0.3,
+/// front foot ~at the hip) is open-loop unstable (tumbles ~t=1-11s); the
+/// reflex adds the flight-attitude feedback it lacks. This is the P3-b
+/// attempt at "fast + feet-forward + stable" simultaneously. Sweep the
+/// reflex gain (pitch-rate deviation); k=0 is the open-loop baseline.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3b_pitching_reflex() {
+    let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.34);
+    params.raibert_weight = 0.3;
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    eprintln!("[P3b] feet-fwd orbit front={:.3}(rel hip {:+.3}) rear={:.3} friction={:.3}",
+        orbit.front_foothold, orbit.front_foothold - 0.19216, orbit.rear_foothold, orbit.friction_margin);
+
+    for (k_ang, k_rate) in [(0.0_f64, 0.0_f64), (0.0, 0.02), (0.05, 0.04), (0.1, 0.06)] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.0, total_time_s: 15.0, burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.34),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 25.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: Some((k_ang, k_rate)),
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3b pitching-reflex k_ang={k_ang} k_rate={k_rate}, feet-fwd, vx=1.0, 15s"),
+                &samples, 1.0);
+        }
+    }
+}
+
+/// Sec.5f13 (P3-b whole-body angular-momentum / attitude control): stabilize
+/// a FEET-FORWARD pitching Bound with the WBC's whole-body attitude PD
+/// (pitch_pd_gain) TRACKING the orbit's pitch(phase) -- realized by GRF in
+/// stance and by limb reaction in flight (base_accel task + floating-base
+/// EOM). NO foot-placement deadbeat (that dragged the body backward). Sweeps
+/// the attitude-PD gain; k=0 is the open-loop feet-forward baseline.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3b_wholebody_attitude() {
+    let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.34);
+    params.raibert_weight = 2.0;      // push feet forward (pitching orbit)
+    params.pitch_reg_weight = 0.05;   // allow pitch oscillation
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    let pk = orbit.samples.iter().map(|s| s.pitch.abs()).fold(0.0_f64, f64::max);
+    eprintln!("[P3b2] feet-fwd orbit front={:.3}(rel hip {:+.3}) rear={:.3} friction={:.3} peak_pitch={:.3}",
+        orbit.front_foothold, orbit.front_foothold - 0.19216, orbit.rear_foothold, orbit.friction_margin, pk);
+
+    for (pkp, pkd) in [(0.0_f64, 0.0_f64), (200.0, 20.0), (500.0, 40.0)] {
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.0, total_time_s: 12.0, burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.34),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            pitch_pd_gain_override: if pkp > 0.0 { Some((pkp, pkd)) } else { None },
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((20.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3b whole-body attitude pitch_pd=({pkp},{pkd}), feet-fwd, vx=1.0, 12s"),
+                &samples, 1.0);
+        }
+    }
+}
+
+/// Sec.5f13 (P3-b combined): feet-forward orbit with POSITIVE friction
+/// margin (moderate raibert + slightly higher duty) + whole-body attitude
+/// PD tracking the orbit pitch + stronger forward-position tracking. Aim:
+/// forward AND feet-forward AND stable simultaneously.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3b_combined() {
+    for (raib, duty, q_px) in [(1.0_f64, 0.36_f64, 40.0_f64), (0.8, 0.38, 40.0)] {
+        let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, duty);
+        params.raibert_weight = raib;
+        params.pitch_reg_weight = 0.08;
+        let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+        let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+        for r in &orbit.table {
+            csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+                r[0], r[1], r[2], r[3], r[4], r[5]));
+        }
+        std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+        eprintln!("[P3b3] raib={raib} duty={duty} front={:.3}(rel hip {:+.3}) rear={:.3} friction={:.3}",
+            orbit.front_foothold, orbit.front_foothold - 0.19216, orbit.rear_foothold, orbit.friction_margin);
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.0, total_time_s: 15.0, burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(duty),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            pitch_pd_gain_override: Some((200.0, 20.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((q_px, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3b combined raib={raib} duty={duty} q_px={q_px}, vx=1.0, 15s"),
+                &samples, 1.0);
+        }
+    }
+}
+
+/// Sec.5f13 (P3-b confirm): the forward + FEET-FORWARD + stable pitching
+/// Bound. raib=1.0/duty=0.36 with whole-body attitude PD tracking the orbit
+/// pitch gave forward ~0.5 m/s, front foot ~at the hip (-0.03, vs the P3-a
+/// tuck -0.08), REAL pitch oscillation, stable 15s. Confirm over 25s and
+/// dump a video CSV. Addresses the reviewer's front-foot concern.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; WBC_WALK_CSV_OUT video source"]
+fn go2_wbc_bound_p3b_forward_feetfwd_confirm() {
+    let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.36);
+    params.raibert_weight = 1.0;
+    params.pitch_reg_weight = 0.08;
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    eprintln!("[P3b] confirm front={:.3}(rel hip {:+.3}) rear={:.3} friction={:.3}",
+        orbit.front_foothold, orbit.front_foothold - 0.19216, orbit.rear_foothold, orbit.friction_margin);
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let p = WbcParams {
+        cmd_vx: 1.0, total_time_s: 25.0, burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.36),
+        gait_cycle_period_override: Some(0.30),
+        max_step_length_override: Some(0.22),
+        swing_height_override: Some(0.10),
+        bound_trim_reference: None, sync_real_mass_inertia: true,
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        pitch_pd_gain_override: Some((200.0, 20.0)),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true, use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false, mpc_override: None,
+            task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: Some((40.0, 5.0)),
+            base_pos_z_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: Some((4.0, 4.0)),
+            bound_fore_aft_placement_gain_override: None,
+            roll_rate_weight_override: Some((100.0, 100.0)),
+            bound_pitch_placement_gain_override: None,
+            bound_pitch_placement_dc_tau_override: None,
+            bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+            bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    if let Some(samples) = run_wbc_sim(p) {
+        report_time_windowed_summary(
+            "P3b FORWARD+FEET-FWD+STABLE confirm (whole-body attitude), vx=1.0, 25s",
+            &samples, 1.0);
+    }
+}
+
+/// Sec.5f13 (P3-b front-foot): push the FRONT foothold forward past the
+/// solver's friction-limited value, since the whole-body attitude control
+/// now carries the pitch (so the front foot no longer needs to sit back to
+/// null pitch torque). Prescribe the front foothold directly (sweep toward
+/// Raibert-neutral = front hip 0.192 + v*T_st/2 ≈ 0.246), keep the orbit's
+/// rear foothold + pitch reference + whole-body attitude PD. Does the
+/// front foot come UNDER/AHEAD of the hip while staying forward + stable?
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3b_front_forward() {
+    let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.36);
+    params.raibert_weight = 1.0;
+    params.pitch_reg_weight = 0.08;
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+
+    // front foothold rel CoM (front hip = +0.19216); sweep to Raibert-neutral.
+    for front in [0.161_f64, 0.200, 0.230, 0.246] {
+        eprintln!("[P3bF] front_foothold={front:.3} (rel front hip {:+.3})", front - 0.19216);
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.0, total_time_s: 12.0, burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.36),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            pitch_pd_gain_override: Some((200.0, 20.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((40.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((front, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3bF front={front:.3}(rel hip {:+.3}), vx=1.0, 12s", front - 0.19216),
+                &samples, 1.0);
+        }
+    }
+}
+
+/// Sec.5f13 (P3-b front-forward confirm): front foot at Raibert-neutral
+/// (+0.054 AHEAD of the hip) is stable -- addresses "front foot too far
+/// back". Confirm 25s + video. front=0.246 rel CoM (front hip 0.192).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; WBC_WALK_CSV_OUT video source"]
+fn go2_wbc_bound_p3b_front_raibert_confirm() {
+    let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.36);
+    params.raibert_weight = 1.0;
+    params.pitch_reg_weight = 0.08;
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    let front = 0.246_f64;  // front hip 0.192 + v*T_st/2 ≈ Raibert-neutral, AHEAD of hip
+    eprintln!("[P3bF] confirm front={front:.3} (rel front hip {:+.3}) rear={:.3}",
+        front - 0.19216, orbit.rear_foothold);
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let p = WbcParams {
+        cmd_vx: 1.0, total_time_s: 25.0, burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.36),
+        gait_cycle_period_override: Some(0.30),
+        max_step_length_override: Some(0.22),
+        swing_height_override: Some(0.10),
+        bound_trim_reference: None, sync_real_mass_inertia: true,
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        pitch_pd_gain_override: Some((200.0, 20.0)),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true, use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false, mpc_override: None,
+            task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: Some((40.0, 5.0)),
+            base_pos_z_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: Some((4.0, 4.0)),
+            bound_fore_aft_placement_gain_override: None,
+            roll_rate_weight_override: Some((100.0, 100.0)),
+            bound_pitch_placement_gain_override: None,
+            bound_pitch_placement_dc_tau_override: None,
+            bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+            bound_prescribed_footholds_override: Some((front, orbit.rear_foothold)),
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    if let Some(samples) = run_wbc_sim(p) {
+        report_time_windowed_summary(
+            "P3b front-Raibert confirm (front foot AHEAD of hip), vx=1.0, 25s", &samples, 1.0);
+    }
+}
+
+/// Sec.5f13 (P3-b robust front-forward): at LOWER speed (more friction
+/// margin) the front foot AHEAD of the hip should be ROBUSTLY stable, not
+/// just marginal. vx=0.7, duty=0.40, front foot at Raibert-neutral
+/// (0.192 + 0.7*0.12/2 = 0.234, +0.042 ahead of hip). 25s + video.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored; WBC_WALK_CSV_OUT video source"]
+fn go2_wbc_bound_p3b_robust_front_fwd() {
+    let mut params = quadruped_gait::PeriodicBoundParams::go2(0.7, 0.30, 0.40);
+    params.raibert_weight = 1.0;
+    params.pitch_reg_weight = 0.08;
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    let front = 0.234_f64;  // Raibert-neutral ahead of the front hip at 0.7 m/s
+    eprintln!("[P3bR] front={front:.3}(rel hip {:+.3}) rear={:.3} orbit_friction={:.3}",
+        front - 0.19216, orbit.rear_foothold, orbit.friction_margin);
+    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let p = WbcParams {
+        cmd_vx: 0.7, total_time_s: 25.0, burn_in_s: 0.5,
+        gait_type_override: Some(GaitType::Bound),
+        duty_factor_override: Some(0.40),
+        gait_cycle_period_override: Some(0.30),
+        max_step_length_override: Some(0.22),
+        swing_height_override: Some(0.10),
+        bound_trim_reference: None, sync_real_mass_inertia: true,
+        yaw_pd_gain_override: Some((10.0, 1.0)),
+        pitch_pd_gain_override: Some((200.0, 20.0)),
+        full_centroidal: Some(FullCentroidalOpts {
+            legged_control_parity: true, use_mpc_predicted_footstep: false,
+            dynamic_joint_q_reference: false, mpc_override: None,
+            task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+            capture_point_gain_override: Some(0.0),
+            base_pos_xy_weight_override: Some((40.0, 5.0)),
+            base_pos_z_weight_override: None,
+            max_normal_force_override: None,
+            roll_pitch_weight_override: Some((4.0, 4.0)),
+            bound_fore_aft_placement_gain_override: None,
+            roll_rate_weight_override: Some((100.0, 100.0)),
+            bound_pitch_placement_gain_override: None,
+            bound_pitch_placement_dc_tau_override: None,
+            bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+            bound_prescribed_footholds_override: Some((front, orbit.rear_foothold)),
+        }),
+        ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+    };
+    if let Some(samples) = run_wbc_sim(p) {
+        report_time_windowed_summary(
+            "P3b ROBUST front-forward (front ahead of hip, 0.7 m/s), 25s", &samples, 1.0);
+    }
+}
+
+/// Sec.5f13 (P3-b larger stride): a LONGER cycle T spreads the support
+/// impulse over more stance time -> lower peak forces -> more friction
+/// margin -> the front foot can sit forward (Raibert-neutral v*T_st/2, which
+/// also grows) without saturating the cone. Also a bigger fore-aft sweep
+/// (foot lands ahead of, sweeps behind, the hip). Tests larger T with the
+/// whole-body attitude control; reports the orbit's front foothold +
+/// friction and the MuJoCo stability/forward.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3b_larger_stride() {
+    for (t_cyc, duty, max_step) in [(0.40_f64, 0.40_f64, 0.30_f64), (0.45, 0.40, 0.34), (0.45, 0.44, 0.34)] {
+        let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, t_cyc, duty);
+        params.raibert_weight = 1.0;
+        params.pitch_reg_weight = 0.08;
+        let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+        let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+        for r in &orbit.table {
+            csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+                r[0], r[1], r[2], r[3], r[4], r[5]));
+        }
+        std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+        let t_st = duty * t_cyc;
+        eprintln!("[P3bS] T={t_cyc} duty={duty} T_st={t_st:.3} stride={:.2}m Raibert={:.3} | front={:.3}(rel hip {:+.3}) rear={:.3} friction={:.3}",
+            1.0 * t_cyc, 1.0 * t_st / 2.0,
+            orbit.front_foothold, orbit.front_foothold - 0.19216, orbit.rear_foothold, orbit.friction_margin);
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.0, total_time_s: 15.0, burn_in_s: 0.5,
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(duty),
+            gait_cycle_period_override: Some(t_cyc),
+            max_step_length_override: Some(max_step),
+            swing_height_override: Some(0.12),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            pitch_pd_gain_override: Some((200.0, 20.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((40.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((orbit.front_foothold, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3bS larger stride T={t_cyc} duty={duty}, vx=1.0, 15s"), &samples, 1.0);
+        }
+    }
+}
+
+/// Sec.5f13 (P3-b Raibert + whole-body attitude): the cleanest front-forward
+/// route. The controller's OWN Raibert footstep already places each foot at
+/// v*T_st/2 AHEAD of its hip (the neutral) -- exactly where the front foot
+/// should be. We abandoned it only because the pitch DEADBEAT added on top
+/// drifted backward. So: NO prescribed footholds, NO deadbeat, just Raibert
+/// footstep (feet forward) + whole-body attitude PD tracking the orbit pitch
+/// (stabilizes pitch WITHOUT foot placement). Startup via cmd_vx ramp +
+/// stride/step ramp so the larger strides establish gently.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3b_raibert_wholebody() {
+    for (t_cyc, duty) in [(0.30_f64, 0.36_f64), (0.40, 0.40)] {
+        let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, t_cyc, duty);
+        params.raibert_weight = 1.0;
+        params.pitch_reg_weight = 0.08;
+        let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+        let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+        for r in &orbit.table {
+            csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+                r[0], r[1], r[2], r[3], r[4], r[5]));
+        }
+        std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+        eprintln!("[P3bW] T={t_cyc} duty={duty} Raibert-neutral(front, ahead of hip)={:.3}", 1.0 * duty * t_cyc / 2.0);
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.0, total_time_s: 15.0, burn_in_s: 0.5,
+            cmd_vx_ramp_s: Some(2.5),
+            cycle_period_ramp_start_s: Some(0.24),
+            max_step_length_ramp_start_m: Some(0.12),
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(duty),
+            gait_cycle_period_override: Some(t_cyc),
+            max_step_length_override: Some(0.30),
+            swing_height_override: Some(0.12),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            pitch_pd_gain_override: Some((200.0, 20.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((40.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: None,   // <-- use Raibert (feet forward)
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3bW Raibert+wholebody T={t_cyc} duty={duty}, vx=1.0 (ramp), 15s"), &samples, 1.0);
+        }
+    }
+}
+
+/// Sec.5f14 (leg compliance): the model-level fix for a front-foot-forward
+/// Bound. §5f13 established that a forward front foot is unstable in the
+/// RIGID-leg WBC because the leg can't catch/redirect the landing impact.
+/// Softening the leg position-control stiffness (leg_kp_scale < 1) makes the
+/// leg deflect like a series spring, absorbing the forward-foot landing --
+/// what real bounding animals use. Tests the front-at-Raibert-neutral
+/// (+0.054 ahead of hip) config with a compliance sweep.
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3b_leg_compliance() {
+    let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.36);
+    params.raibert_weight = 1.0;
+    params.pitch_reg_weight = 0.08;
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    let front = 0.246_f64;  // Raibert-neutral, AHEAD of the front hip
+    for kp_scale in [1.0_f64, 0.5, 0.3, 0.15] {
+        eprintln!("[P3bC] leg_kp_scale={kp_scale} front={front:.3}(rel hip +0.054)");
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.0, total_time_s: 15.0, burn_in_s: 0.5,
+            leg_kp_scale: Some(kp_scale),
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.36),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            pitch_pd_gain_override: Some((200.0, 20.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((40.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((front, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3bC leg-compliance kp_scale={kp_scale}, front-fwd, vx=1.0, 15s"), &samples, 1.0);
+        }
+    }
+}
+
+/// Sec.5f15 (virtual axial leg-spring / SLIP): §5f14 showed a uniform Kp drop
+/// alone is not enough — an isotropic soft servo deflects in every direction,
+/// not specifically along the leg axis, so it neither stores the braking
+/// energy nor returns it as thrust. Here we add an explicit *axial* spring-
+/// damper (`leg_spring = (k, b)`) along each stance leg's foot→hip line, on top
+/// of a moderately soft position servo (`leg_kp_scale = 0.4`). The compressed
+/// spring on a front-foot-forward landing should store the impact and vault
+/// the body forward (SLIP), rather than the rigid catch-and-tumble the μ=0.7
+/// friction cone forbids. Sweeps stiffness with the front foot at
+/// Raibert-neutral (ahead of the hip).
+#[test]
+#[ignore = "exploratory stress test — run with --ignored"]
+fn go2_wbc_bound_p3b_leg_spring_slip() {
+    let mut params = quadruped_gait::PeriodicBoundParams::go2(1.0, 0.30, 0.36);
+    params.raibert_weight = 1.0;
+    params.pitch_reg_weight = 0.08;
+    let orbit = quadruped_gait::solve_bound_orbit(&params).expect("orbit");
+    let mut csv = String::from("phase,z,pitch,vx,vz,w\n");
+    for r in &orbit.table {
+        csv.push_str(&format!("{:.5},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            r[0], r[1], r[2], r[3], r[4], r[5]));
+    }
+    std::fs::write("ref/scripts/bound_p1_orbit.csv", csv).expect("csv");
+    let front = 0.246_f64; // Raibert-neutral, AHEAD of the front hip
+    // §5f15: k=5000 stabilised front-forward for 15s (roll never flipped) but
+    // the damping killed forward drive. Confirm 25s durability and probe
+    // whether lower damping returns the stored energy as a forward vault.
+    for (k_spring, b_damp) in [(5000.0_f64, 150.0_f64), (5000.0, 80.0), (5000.0, 40.0)] {
+        eprintln!("[P3bSLIP] leg_spring k={k_spring} b={b_damp} kp_scale=0.4 front={front:.3}(rel hip +0.054)");
+        let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+        let p = WbcParams {
+            cmd_vx: 1.0, total_time_s: 25.0, burn_in_s: 0.5,
+            leg_kp_scale: Some(0.4),
+            leg_spring: Some((k_spring, b_damp)),
+            gait_type_override: Some(GaitType::Bound),
+            duty_factor_override: Some(0.36),
+            gait_cycle_period_override: Some(0.30),
+            max_step_length_override: Some(0.22),
+            swing_height_override: Some(0.10),
+            bound_trim_reference: None, sync_real_mass_inertia: true,
+            yaw_pd_gain_override: Some((10.0, 1.0)),
+            pitch_pd_gain_override: Some((200.0, 20.0)),
+            full_centroidal: Some(FullCentroidalOpts {
+                legged_control_parity: true, use_mpc_predicted_footstep: false,
+                dynamic_joint_q_reference: false, mpc_override: None,
+                task_space_joint_vel_weight: None, true_centroidal_coupling: false,
+                capture_point_gain_override: Some(0.0),
+                base_pos_xy_weight_override: Some((40.0, 5.0)),
+                base_pos_z_weight_override: None,
+                max_normal_force_override: None,
+                roll_pitch_weight_override: Some((4.0, 4.0)),
+                bound_fore_aft_placement_gain_override: None,
+                roll_rate_weight_override: Some((100.0, 100.0)),
+                bound_pitch_placement_gain_override: None,
+                bound_pitch_placement_dc_tau_override: None,
+                bound_tabulated_reference_csv: Some("ref/scripts/bound_p1_orbit.csv"),
+                bound_prescribed_footholds_override: Some((front, orbit.rear_foothold)),
+            }),
+            ..WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg)
+        };
+        if let Some(samples) = run_wbc_sim(p) {
+            report_time_windowed_summary(
+                &format!("P3bSLIP axial-spring k={k_spring} b={b_damp}, front-fwd, vx=1.0, 15s"), &samples, 1.0);
         }
     }
 }

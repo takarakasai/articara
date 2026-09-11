@@ -39,9 +39,8 @@ use quadruped_gait::wbc::{
 };
 #[allow(unused_imports)] // re-exported for host use of `with_wbc_solver`
 pub use quadruped_gait::wbc::{Formulation, HqpStrategy, QpSolver, SolveConfig};
-use quadruped_gait::{ControllerOutput, KinematicsConfig, forward_leg_kinematics};
+use quadruped_gait::{ControllerOutput, KinematicsConfig, RobotStateSource, forward_leg_kinematics};
 
-use crate::mujoco_sim::MujocoSim;
 use crate::rbd::model::RobotModel;
 
 /// Stateful wrapper around a single sim-tick WBC solve. Carries the
@@ -228,6 +227,15 @@ pub struct WbcPipeline {
     /// walk-validated path — every existing test and host is
     /// unaffected. Set via [`Self::with_wbc_solver`].
     wbc_solver: Option<wbc::WbcSolver>,
+
+    /// **ChickenHead** world-frame head-attitude hold (see
+    /// [`crate::chicken_head`]). When `Some(cfg)` with `cfg.enabled`, the
+    /// head joint named by `cfg.joint_name` gets a joint-acceleration task
+    /// `q̈* = kp·(q*−q) + kd·(q̇*−q̇)` injected into the WBC's existing
+    /// per-actuator swing channel each tick, so the head stays level in the
+    /// world while the trunk pitches. `None` (the default) is an exact no-op
+    /// — the head actuator keeps receiving only `tau_gravity` as before.
+    pub chicken_head: Option<crate::chicken_head::ChickenHeadConfig>,
 }
 
 impl WbcPipeline {
@@ -295,6 +303,7 @@ impl WbcPipeline {
             weights: WbcWeights::default(),
             last_solution: None,
             wbc_solver: None,
+            chicken_head: None,
         }
     }
 
@@ -310,13 +319,13 @@ impl WbcPipeline {
     ///
     /// Returns a per-`robot.joints` torque vector. Entries for fixed
     /// joints stay at 0; entries for movable joints carry the WBC
-    /// solution. Call [`MujocoSim::set_wbc_torques`] with this result
+    /// solution. Call [`crate::mujoco_sim::MujocoSim::set_wbc_torques`] with this result
     /// (or `clear_wbc_torques` when the pipeline is disabled).
     #[allow(clippy::too_many_arguments)]
-    pub fn solve(
+    pub fn solve<S: RobotStateSource>(
         &mut self,
         robot: &RobotModel,
-        mj_sim: &MujocoSim,
+        mj_sim: &S,
         gait_out: &ControllerOutput,
         kin: &KinematicsConfig,
         joint_indices: [[usize; 3]; 4],
@@ -650,6 +659,41 @@ impl WbcPipeline {
                 if act_idx < na_count {
                     swing_q_ddot_des[act_idx] = q_ddot;
                     swing_actuator_flag[act_idx] = true;
+                }
+            }
+        }
+
+        // ── ChickenHead: world-frame head-attitude hold ────────────
+        // The head joint (namiashi's `arm_pitch_joint`) is a non-leg
+        // actuator the swing loop above never touches, so it otherwise
+        // receives only `tau_gravity`. When ChickenHead is enabled we
+        // inject a joint-acceleration task for it through the SAME
+        // per-actuator channel the swing legs use — no solver change.
+        // The reference `q̈* = kp·(q*−q) + kd·(q̇*−q̇)` counter-rotates the
+        // joint against the measured trunk pitch (`body_quat`) so the head
+        // stays level in the world. `None` / `!enabled` is a no-op.
+        if let Some(cfg) = self.chicken_head.as_ref().filter(|c| c.enabled) {
+            let ji = cfg.joint_idx;
+            let mi = self.a2m.get(ji).and_then(|&m| m);
+            if let Some(mi) = mi {
+                if self.model.joints[mi].joint_type.nv() == 1 {
+                    let vi = self.model.v_idx[mi];
+                    if vi >= 6 {
+                        let act_idx = vi - 6;
+                        if act_idx < na_count {
+                            let (q_meas, qd_meas) = mj_sim
+                                .joint_q_qd(&cfg.joint_name)
+                                .unwrap_or((0.0, 0.0));
+                            let q_ddot = cfg.target_accel(
+                                &body_quat,
+                                &omega_obs_body,
+                                q_meas,
+                                qd_meas,
+                            );
+                            swing_q_ddot_des[act_idx] = q_ddot;
+                            swing_actuator_flag[act_idx] = true;
+                        }
+                    }
                 }
             }
         }

@@ -26,7 +26,7 @@
 
 use nalgebra as na;
 
-use super::gait::{Footsteps, GaitPlan, Support};
+use super::gait::{FootstepPlan, Footsteps, GaitPlan, Support};
 
 pub const G: f64 = 9.81;
 
@@ -103,14 +103,27 @@ impl DcmPlan {
         z_com: f64,
         lateral_scale: f64,
     ) -> Self {
+        let fp = FootstepPlan::constant_stride(plan, steps, 0.0);
+        Self::from_footsteps(plan, &fp, z_com, lateral_scale)
+    }
+
+    /// The walking form: the pressure target comes from the footstep the
+    /// stance foot is standing on IN THAT SLICE, not from a fixed pair.
+    pub fn from_footsteps(
+        plan: &GaitPlan,
+        fp: &FootstepPlan,
+        z_com: f64,
+        lateral_scale: f64,
+    ) -> Self {
         let omega = (G / z_com).sqrt();
-        let mid = steps.mid_xy();
         // Pass 1: where the pressure sits during each SINGLE support phase,
         // and the resting point (mid-stance) for double support at the ends.
-        let target = |support: Support| -> Option<na::Vector2<f64>> {
-            match support {
+        let target = |i: usize| -> Option<na::Vector2<f64>> {
+            let st = fp.at_slice(i);
+            match plan.slices[i].support {
                 Support::Single { stance, .. } => {
-                    Some(mid + (steps.xy(stance) - mid) * lateral_scale)
+                    let mid = st.mid_xy();
+                    Some(mid + (st.xy(stance) - mid) * lateral_scale)
                 }
                 Support::Double => None,
             }
@@ -118,20 +131,25 @@ impl DcmPlan {
         let n = plan.slices.len();
         let mut segs: Vec<ZmpSeg> = Vec::with_capacity(n);
         for (i, s) in plan.slices.iter().enumerate() {
-            let (p0, p1) = match target(s.support) {
+            let (p0, p1) = match target(i) {
                 Some(p) => (p, p),
                 None => {
-                    // Interpolate between the neighbouring single-support
-                    // points, falling back to mid-stance at the ends.
-                    let prev = plan.slices[..i]
-                        .iter()
-                        .rev()
-                        .find_map(|s| target(s.support))
-                        .unwrap_or_else(|| steps.mid_xy());
-                    let next = plan.slices[i + 1..]
-                        .iter()
-                        .find_map(|s| target(s.support))
-                        .unwrap_or_else(|| steps.mid_xy());
+                    // Start where the previous segment ENDED, not at the last
+                    // single-support point. Between two steps the two are the
+                    // same thing, so mid-gait behaviour is unchanged; at the
+                    // END of the plan they are not, and searching backward for
+                    // a single support makes every trailing double-support
+                    // slice re-ramp from the last stance sole. With more than
+                    // one trailing slice that means ramping to mid-stance over
+                    // and over, each time across the full slice -- which is
+                    // how a 25 s tail turned into eleven seconds of standing
+                    // on one foot.
+                    let prev = segs
+                        .last()
+                        .map(|s: &ZmpSeg| s.p1)
+                        .unwrap_or_else(|| fp.at_slice(i).mid_xy());
+                    let next = (i + 1..n).find_map(target)
+                        .unwrap_or_else(|| fp.at_slice(i).mid_xy());
                     (prev, next)
                 }
             };
@@ -198,6 +216,36 @@ impl DcmPlan {
         let decay = (-self.omega * (s.duration - dt)).exp();
         let xi = p + v_over_w + (self.xi_eos[i] - s.p1 - v_over_w) * decay;
         DcmRef { xi, xi_dot: (xi - p) * self.omega, p }
+    }
+}
+
+impl DcmPlan {
+    /// The plan's DCM at the END of the segment covering `t`.
+    pub fn eos_at(&self, t: f64) -> na::Vector2<f64> {
+        self.xi_eos[self.index_at(t)]
+    }
+
+    /// Where the MEASURED DCM will be at the end of the current segment, if
+    /// the ZMP follows the plan from here.
+    ///
+    /// This is the quantity footstep adaptation steers on: the next foot
+    /// should land under where the DCM is actually going, not under where the
+    /// plan assumed it would go.
+    ///
+    /// The `exp(+omega dt)` here is honest -- it is a forward PREDICTION over
+    /// a shrinking horizon, not an evaluation of a stored coefficient
+    /// (contrast [`DcmPlan::reference`]). It is noisy at the start of a step,
+    /// where dt is a full single support and the factor is ~7, and exact at
+    /// touchdown, where dt is zero. Applying the correction continuously is
+    /// what makes that acceptable: it converges as the step runs out.
+    pub fn predict_eos(&self, t: f64, xi: &na::Vector2<f64>) -> na::Vector2<f64> {
+        let i = self.index_at(t);
+        let s = &self.segs[i];
+        let t_end = s.t0 + s.duration;
+        let dt_left = (t_end - t).max(0.0);
+        let v_over_w = s.slope() / self.omega;
+        s.at(t_end) + v_over_w
+            + (xi - s.at(t) - v_over_w) * (self.omega * dt_left).exp()
     }
 }
 
@@ -273,6 +321,39 @@ impl SupportBox {
         SupportBox { lo, hi }
     }
 
+    /// The support polygon with the soles ROTATED to their planned yaw.
+    ///
+    /// The axis-aligned version describes a footprint the robot does not have
+    /// the moment it turns: a 98 x 38 mm sole yawed by 30 degrees has an
+    /// axis-aligned hull 34 mm wider than the sole in y and 30 mm shorter in
+    /// x, so the clamp permits pressure the foot cannot deliver and forbids
+    /// pressure it can. Take the hull of the rotated corners instead. Still a
+    /// box, so the clamp stays a clamp -- but a box around the right shape.
+    pub fn from_stance_yawed(
+        steps: &Footsteps,
+        support: Support,
+        cop_half: (f64, f64),
+        margin: f64,
+    ) -> Self {
+        let mut lo = na::Vector2::new(f64::INFINITY, f64::INFINITY);
+        let mut hi = na::Vector2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
+        let (hx, hy) = (cop_half.0 * margin, cop_half.1 * margin);
+        for side in 0..2 {
+            if !support.is_stance(side) {
+                continue;
+            }
+            let c = steps.xy(side);
+            let (cs, sn) = (steps.yaw[side].cos(), steps.yaw[side].sin());
+            for (sx, sy) in [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)] {
+                let (dx, dy) = (sx * hx, sy * hy);
+                let p = na::Vector2::new(c.x + cs * dx - sn * dy, c.y + sn * dx + cs * dy);
+                lo = na::Vector2::new(lo.x.min(p.x), lo.y.min(p.y));
+                hi = na::Vector2::new(hi.x.max(p.x), hi.y.max(p.y));
+            }
+        }
+        SupportBox { lo, hi }
+    }
+
     /// Returns the clamped point and how far it had to move (0 = inside).
     pub fn clamp(&self, p: &na::Vector2<f64>) -> (na::Vector2<f64>, f64) {
         let c = na::Vector2::new(p.x.clamp(self.lo.x, self.hi.x), p.y.clamp(self.lo.y, self.hi.y));
@@ -291,6 +372,7 @@ mod tests {
                 na::Vector3::new(0.0, 0.0706, 0.0),
                 na::Vector3::new(0.0, -0.0706, 0.0),
             ],
+            yaw: [0.0, 0.0],
         }
     }
 
@@ -396,5 +478,126 @@ mod tests {
         let (c, moved) = ss.clamp(&s.xy(RIGHT));
         assert!(moved > 0.0);
         assert!(c.y >= ss.lo.y - 1e-12);
+    }
+}
+
+/// Step-timing adjustment: how long the current single support should still
+/// last so that the DCM arrives where the plan wanted it.
+///
+/// # Why timing and not placement
+///
+/// During single support the ZMP is parked at the stance sole, so the DCM
+/// obeys `xi(t) = p + (xi_0 - p) exp(omega t)` in closed form. Two knobs can
+/// steer where it ends up at touchdown: WHERE the next foot goes, and WHEN it
+/// gets there. Placement is [`crate::biped::gait::FootstepPlan`]'s adaptation
+/// (`ADAPT_STEP`), and on this machine it is measured harmful -- 26 grid
+/// points improved against 83 worsened over 672 runs (doc Sec.19.6). Timing
+/// has never been tried: `t_ss` is a constant, so a disturbed machine walks
+/// the same schedule as an undisturbed one and commits to the next stance
+/// foot at a time chosen before the push happened.
+///
+/// # The solve
+///
+/// Fix the footstep, target the plan's own end-of-segment DCM `xi_eos`, and
+/// invert the closed form for the remaining time:
+///
+/// ```text
+/// xi_eos = p + (xi_meas - p) exp(omega tau)
+/// tau    = ln((xi_eos - p) / (xi_meas - p)) / omega
+/// ```
+///
+/// This is a division and a log, not an optimisation -- there is no QP and no
+/// MPC here. The catch is that it is one equation per axis and only one
+/// unknown, so the two axes disagree; `axis` picks which one to honour.
+/// Lateral (`1`) is the default because that is the axis this machine falls
+/// on: the lateral CoP box is +-19 mm against +-49 mm fore-aft, and every
+/// failure traced in Sec.19 was the stance CoP pinned to the lateral edge.
+///
+/// The outcome of [`step_timing`], which is not always a time.
+///
+/// The distinction matters and measuring it changed the reading of the whole
+/// feature: on a run that falls, the solve reports [`Unreachable`] on 75 of 83
+/// ticks and returns a time on only 8, while runs that survive ask for a time
+/// once or not at all. So the timing adaptation, as first written, was silent
+/// on exactly the disturbance class that kills the machine -- its measured
+/// gain came from correcting steps that were merely late.
+///
+/// [`Unreachable`]: StepTiming::Unreachable
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StepTiming {
+    /// Remaining single-support time that lands the DCM on its target.
+    Time(f64),
+    /// The DCM is on the FAR SIDE of the ZMP from the target. During single
+    /// support the DCM only ever moves away from the ZMP, so no positive time
+    /// reaches the target: this step cannot be rescued by waiting. It can only
+    /// be ENDED -- which is what a reduced-step reflex does with this.
+    Unreachable,
+    /// One of the two gaps is too small to divide by; the ratio would be noise.
+    Degenerate,
+}
+
+/// Solve for the remaining single-support duration. See [`StepTiming`] for
+/// what the non-numeric outcomes mean; they are reported rather than folded
+/// into a `None` because "no answer" and "the answer is: stop waiting" call
+/// for opposite actions.
+pub fn step_timing(
+    xi_meas: &na::Vector2<f64>,
+    xi_target: &na::Vector2<f64>,
+    p: &na::Vector2<f64>,
+    omega: f64,
+    axis: usize,
+) -> StepTiming {
+    const MIN_GAP: f64 = 1e-4; // 0.1 mm; below this the ratio is noise
+    let now = xi_meas[axis] - p[axis];
+    let want = xi_target[axis] - p[axis];
+    if now.abs() < MIN_GAP || want.abs() < MIN_GAP {
+        return StepTiming::Degenerate;
+    }
+    let ratio = want / now;
+    if ratio <= 0.0 {
+        return StepTiming::Unreachable;
+    }
+    StepTiming::Time(ratio.ln() / omega)
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+
+    #[test]
+    fn timing_recovers_the_undisturbed_duration() {
+        // Roll the closed form forward by a known tau, then ask for it back.
+        let omega = 5.585;
+        let p = na::Vector2::new(0.0, -0.05);
+        let xi0 = na::Vector2::new(0.0, -0.02);
+        let tau: f64 = 0.23;
+        let xi_end = p + (xi0 - p) * (omega * tau).exp() as f64;
+        let StepTiming::Time(got) = step_timing(&xi0, &xi_end, &p, omega, 1) else {
+            panic!("expected a solvable time");
+        };
+        assert!((got - tau).abs() < 1e-9, "got {got}, want {tau}");
+    }
+
+    #[test]
+    fn a_dcm_that_ran_ahead_shortens_the_step() {
+        // Pushed toward the target: less time left than nominal.
+        let omega = 5.585;
+        let p = na::Vector2::new(0.0, -0.05);
+        let nominal = na::Vector2::new(0.0, -0.02);
+        let target = p + (nominal - p) * (omega * 0.30_f64).exp();
+        let ahead = na::Vector2::new(0.0, -0.005); // further from the ZMP
+        let StepTiming::Time(got) = step_timing(&ahead, &target, &p, omega, 1) else {
+            panic!("expected a solvable time");
+        };
+        assert!(got < 0.30, "expected a shorter step, got {got}");
+    }
+
+    #[test]
+    fn wrong_side_of_the_zmp_is_unsolvable() {
+        let omega = 5.585;
+        let p = na::Vector2::new(0.0, 0.0);
+        let xi = na::Vector2::new(0.0, 0.03);
+        let target = na::Vector2::new(0.0, -0.03);
+        assert_eq!(step_timing(&xi, &target, &p, omega, 1), StepTiming::Unreachable);
     }
 }

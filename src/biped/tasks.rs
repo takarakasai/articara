@@ -39,16 +39,45 @@ pub fn trunk(
     rp_ref: &[f64; 2],
     nv: usize,
 ) -> Task {
-    let mut j_rp = na::DMatrix::zeros(2, nv);
+    trunk_rpy(qddot, j_trunk, djv_trunk, rp_ref, None, nv)
+}
+
+/// [`trunk`] with an optional YAW row.
+///
+/// Roll and pitch alone leave the whole stack with nothing regulating
+/// rotation about the vertical. Measured on kyo46rs stepping in place: the
+/// swing leg twists (its own orientation being unconstrained), that injects
+/// vertical-axis angular momentum, and the base counter-rotates +-8 deg to
+/// conserve it while hip_yaw walks to its +-30 deg stop. Regulating the trunk's
+/// yaw asks for the quantity that matters and lets the QP decide which joints
+/// pay for it, rather than dictating a swing-foot angle.
+pub fn trunk_rpy(
+    qddot: &Affine,
+    j_trunk: &na::DMatrix<f64>,
+    djv_trunk: &na::DVector<f64>,
+    rp_ref: &[f64; 2],
+    yaw_ref: Option<f64>,
+    nv: usize,
+) -> Task {
+    let rows = if yaw_ref.is_some() { 3 } else { 2 };
+    let mut j_rp = na::DMatrix::zeros(rows, nv);
     for c in 0..nv {
         j_rp[(0, c)] = j_trunk[(0, c)];
         j_rp[(1, c)] = j_trunk[(1, c)];
+        if yaw_ref.is_some() {
+            j_rp[(2, c)] = j_trunk[(2, c)];
+        }
+    }
+    let (mut dj, mut r) = (vec![djv_trunk[0], djv_trunk[1]], vec![rp_ref[0], rp_ref[1]]);
+    if let Some(y) = yaw_ref {
+        dj.push(djv_trunk[2]);
+        r.push(y);
     }
     wt::cartesian_acceleration(
         qddot,
         &j_rp,
-        &na::DVector::from_vec(vec![djv_trunk[0], djv_trunk[1]]),
-        &na::DVector::from_vec(vec![rp_ref[0], rp_ref[1]]),
+        &na::DVector::from_vec(dj),
+        &na::DVector::from_vec(r),
     )
 }
 
@@ -81,6 +110,96 @@ pub fn trunk_rp_ref(
     ]
 }
 
+/// World-frame reference angular acceleration for [`trunk_rpy`], built from a
+/// rotation-vector error rather than from Euler components.
+///
+/// [`trunk_rp_ref`] feeds a ZYX roll/pitch error straight into the WORLD
+/// angular-acceleration rows, which is only the same thing at zero heading.
+/// A quarter turn later the body's roll axis points along world +y, so the
+/// roll correction comes out on the wrong axis; past 90 deg it is also
+/// wrong-signed. Measured on kyo46rs: every turn command fell after a fixed
+/// ACCUMULATED heading -- 120 deg at wz=0.10, 104 deg at 0.20, 90 deg at 0.40
+/// -- while tracking its commanded rate to ~90% right up to the fall.
+///
+/// `e = log(R_des * R^T)` is the world-frame rotation carrying the body to
+/// upright-at-`yaw_des`, so it is correct at any heading. When `yaw_ref` is
+/// `None` the desired heading is the current one and the z component is zero,
+/// which is what the caller drops.
+pub fn trunk_ori_ref(
+    r_body: &na::UnitQuaternion<f64>,
+    yaw_ref: Option<f64>,
+    omega_world: &[f64; 3],
+    gains: TrunkGains,
+) -> [f64; 3] {
+    let (_, _, yaw_now) = r_body.euler_angles();
+    let yaw_des = yaw_ref.unwrap_or(yaw_now);
+    let r_des = na::UnitQuaternion::from_euler_angles(0.0, 0.0, yaw_des);
+    let e = (r_des * r_body.inverse()).scaled_axis();
+    let dead = |v: f64| {
+        if v.abs() <= gains.deadband { 0.0 } else { v - gains.deadband * v.signum() }
+    };
+    [
+        gains.sign * (gains.kp * dead(e[0]) - gains.kd * omega_world[0]),
+        gains.sign * (gains.kp * dead(e[1]) - gains.kd * omega_world[1]),
+        gains.kp_yaw * e[2] + gains.kd_yaw * (gains.wz_ref - omega_world[2]),
+    ]
+}
+
+/// Gains for [`trunk_ori_ref`]. Roll/pitch and yaw keep separate gains because
+/// they are tuned against different things -- tilt rejection versus tracking a
+/// commanded turn.
+#[derive(Clone, Copy, Debug)]
+pub struct TrunkGains {
+    pub kp: f64,
+    pub kd: f64,
+    pub deadband: f64,
+    pub sign: f64,
+    pub kp_yaw: f64,
+    pub kd_yaw: f64,
+    /// Commanded yaw RATE, fed forward into the damping term.
+    pub wz_ref: f64,
+}
+
+/// Centroidal ANGULAR momentum, driven toward zero: `ḣ_ang = -kp · h_ang`.
+///
+/// `cmm` is misarta's `A_G` with `h = [h_ang; h_lin]`, so the angular rows are
+/// 0..3 -- the linear rows are deliberately not used, because `h_lin = m·ṗ_com`
+/// is the CoM task's variable and asking two levels for the same quantity only
+/// decides which one loses.
+///
+/// `axes` selects which of roll/pitch/yaw to regulate. Doc Sec.21.3 ruled this
+/// task out before implementing it, on two grounds: the roll component was
+/// architecturally zero (shoulder and elbow were both sagittal), and the `h_x`
+/// seen while falling reached 1.10 kg·m²/s against roughly 0.3 available from
+/// the arms. **The first ground died with the v6 shoulder roll; the second did
+/// not** -- 1.10 is the value `h_x` grows TO during a fall, while the value at
+/// single-support entry was 0.178, and that one is inside what the arms can
+/// produce. Which of the two numbers this task has to beat is exactly what
+/// was never measured.
+pub fn angular_momentum(
+    qddot: &Affine,
+    cmm: &na::DMatrix<f64>,
+    dcmm_v: &na::DVector<f64>,
+    h_now: &na::DVector<f64>,
+    kp: f64,
+    axes: [bool; 3],
+    nv: usize,
+) -> Option<Task> {
+    let rows: Vec<usize> = (0..3).filter(|&i| axes[i]).collect();
+    if rows.is_empty() {
+        return None;
+    }
+    let mut j = na::DMatrix::zeros(rows.len(), nv);
+    let mut bias = na::DVector::zeros(rows.len());
+    let mut href = na::DVector::zeros(rows.len());
+    for (r, &i) in rows.iter().enumerate() {
+        j.row_mut(r).copy_from(&cmm.row(i));
+        bias[r] = dcmm_v[i];
+        href[r] = -kp * h_now[i];
+    }
+    Some(wt::cartesian_acceleration(qddot, &j, &bias, &href))
+}
+
 /// P4: weak posture, so the null space does not wander.
 ///
 /// `actuated` is `(articara joint index, misarta v index)` as
@@ -105,6 +224,42 @@ pub fn posture(
     wt::cartesian_acceleration(qddot, &j_post, &na::DVector::zeros(na_count), &post_ref)
 }
 
+/// Joint position/velocity safety limits, as `misa_wbc::tasks::joint_limit_cbf`
+/// on the actuated rows. Not in any level by default -- only the torque box
+/// is enforced today, so a redundant leg can be commanded into a solution
+/// that is only realisable by running a joint past its physical stop
+/// (measured: ankle_roll pushed to 196% of its URDF limit while falling,
+/// doc Sec.18.5). See `JLIM` in kyo46rs_walk.rs for the level this feeds.
+///
+/// `limits` (gains and `q_min`/`q_max`/`v_max`/`a_max`) is built once by the
+/// caller from [`super::rig::BipedRig`]'s URDF-derived bounds. `q_act`/`v_act`
+/// are this tick's LIVE actuated-row position/velocity, read through
+/// `rig.model.q_idx`/`v_idx` off misarta's raw state.
+///
+/// The older wording here said `rig.robot.joint_positions` is "frozen at the
+/// burn-in seed pose and never updated" -- **that is wrong, and it cost a
+/// session's worth of chasing a bug that was not there.** `BipedRig::new`
+/// writes it once at the end of the settle, but the plant step also writes it
+/// every tick (`MujocoSim::step_n_frames` takes `&mut robot`), so it does
+/// track the joint. Both readings are live; use whichever the surrounding
+/// code already uses.
+pub fn joint_limits(
+    qddot: &Affine,
+    actuated: &[(usize, usize)],
+    q_act: &na::DVector<f64>,
+    v_act: &na::DVector<f64>,
+    limits: &wt::JointLimitCbf,
+    na_count: usize,
+    nv: usize,
+) -> Task {
+    let mut j_sel = na::DMatrix::zeros(na_count, nv);
+    for &(_, vi) in actuated {
+        j_sel[(vi - 6, vi)] = 1.0;
+    }
+    let qddot_act = &j_sel * qddot;
+    wt::joint_limit_cbf(&qddot_act, q_act, v_act, limits)
+}
+
 /// Which rows of the swing foot's linear Jacobian to constrain.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SwingAxes {
@@ -116,6 +271,25 @@ pub enum SwingAxes {
     /// Full 3-D tracking. What STEPPING wants: the target is a planned
     /// footstep that moves, so there is nothing to fight.
     Xyz,
+    /// Position plus YAW only, four rows.
+    ///
+    /// The middle ground, and usually the right one. Taking all six of the
+    /// foot's DoF leaves the swing leg no null space at all -- with the
+    /// stance contact already spending 6 rows and CoM + trunk another 5, a
+    /// six-row swing task drops the robot in one or two steps at every gain
+    /// tried. Yaw is the DoF that actually ran away.
+    XyzYaw,
+    /// Position AND orientation, six rows.
+    ///
+    /// Leaving the swing foot's three ROTATIONAL DoF unconstrained is the same
+    /// mistake as leaving its translation unconstrained, and it is less
+    /// obvious because nothing flies through the air -- the leg simply twists.
+    /// Measured on kyo46rs stepping in place with translation-only swing:
+    /// hip_yaw walked from 0.04 deg to its +-30 deg STOP over 16 steps, the
+    /// feet landed yawed by up to 31 deg, and the base yawed +-8 deg trying to
+    /// conserve the angular momentum the twisting legs kept injecting. The QP
+    /// was using the free leg's yaw as a null-space dumping ground.
+    Pose,
 }
 
 /// P3: swing-foot tracking. `kp_xy` is separate from `kp_z` because the two
@@ -136,6 +310,36 @@ pub fn swing(
     kd: f64,
     axes: SwingAxes,
 ) -> Task {
+    swing_with_pose(qddot, j_foot, djv, pos, vel, target, target_vel, kp_xy, kp_z, kd, axes, None)
+}
+
+/// [`swing`] with an optional orientation target for [`SwingAxes::Pose`].
+///
+/// `orientation` is `(R_current, R_target, omega, kp, kd)`. The target should
+/// come from the PLAN -- the orientation the foot is meant to land in -- not
+/// from where the foot happens to be, or the error it is meant to remove
+/// becomes the thing it tracks.
+#[allow(clippy::too_many_arguments)]
+pub fn swing_with_pose(
+    qddot: &Affine,
+    j_foot: &na::DMatrix<f64>,
+    djv: &na::DVector<f64>,
+    pos: &na::Vector3<f64>,
+    vel: &na::Vector3<f64>,
+    target: &na::Vector3<f64>,
+    target_vel: &na::Vector3<f64>,
+    kp_xy: f64,
+    kp_z: f64,
+    kd: f64,
+    axes: SwingAxes,
+    orientation: Option<(
+        na::Matrix3<f64>,
+        na::Matrix3<f64>,
+        na::Vector3<f64>,
+        f64,
+        f64,
+    )>,
+) -> Task {
     let a = na::Vector3::new(
         kp_xy * (target.x - pos.x) + kd * (target_vel.x - vel.x),
         kp_xy * (target.y - pos.y) + kd * (target_vel.y - vel.y),
@@ -154,6 +358,45 @@ pub fn swing(
             &na::DVector::from_vec(vec![djv[3], djv[4], djv[5]]),
             &na::DVector::from_vec(vec![a.x, a.y, a.z]),
         ),
+        SwingAxes::XyzYaw => {
+            let (rot, rot_tgt, omega, kp_r, kd_r) = orientation
+                .expect("SwingAxes::XyzYaw needs an orientation target");
+            let dr = rot_tgt * rot.transpose();
+            let e_yaw = (dr[(1, 0)] - dr[(0, 1)]) * 0.5;
+            let a_yaw = kp_r * e_yaw - kd_r * omega.z;
+            let mut j = na::DMatrix::zeros(4, j_foot.ncols());
+            for c in 0..j_foot.ncols() {
+                j[(0, c)] = j_foot[(2, c)];
+                for r in 0..3 {
+                    j[(1 + r, c)] = j_foot[(3 + r, c)];
+                }
+            }
+            wt::cartesian_acceleration(
+                qddot,
+                &j,
+                &na::DVector::from_vec(vec![djv[2], djv[3], djv[4], djv[5]]),
+                &na::DVector::from_vec(vec![a_yaw, a.x, a.y, a.z]),
+            )
+        }
+        SwingAxes::Pose => {
+            let (rot, rot_tgt, omega, kp_r, kd_r) = orientation
+                .expect("SwingAxes::Pose needs an orientation target");
+            // Same small-angle extraction the contact anchor uses: the skew
+            // part of R_target * R_current^T.
+            let dr = rot_tgt * rot.transpose();
+            let e = na::Vector3::new(
+                dr[(2, 1)] - dr[(1, 2)],
+                dr[(0, 2)] - dr[(2, 0)],
+                dr[(1, 0)] - dr[(0, 1)],
+            ) * 0.5;
+            let a_ang = e * kp_r - omega * kd_r;
+            wt::cartesian_acceleration(
+                qddot,
+                &j_foot.rows(0, 6).into_owned(),
+                &na::DVector::from_vec(vec![djv[0], djv[1], djv[2], djv[3], djv[4], djv[5]]),
+                &na::DVector::from_vec(vec![a_ang.x, a_ang.y, a_ang.z, a.x, a.y, a.z]),
+            )
+        }
     }
 }
 

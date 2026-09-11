@@ -1,15 +1,32 @@
-//! Live gait **viewer**: subscribe to a Zenoh stream of
+//! Live gait **viewer**: subscribe to Zenoh streams of
 //! [`quadruped_gait::viz::GaitVizFrame`] (published by `go2-gait-runner --viz`)
 //! and drive the loaded model's joints + trunk pose so the gait the runner
 //! generates can be watched in real time.
+//!
+//! Two streams are consumed, on separate keys:
+//!
+//! - **target** (`go2/gait/planned`) — the commanded joint angles the runner
+//!   sends to the robot;
+//! - **current** (`go2/gait/measured`) — the angles read back from the robot
+//!   (`LowState`), published only by a hardware run.
+//!
+//! When both are up, the *current* pose drives the model solidly and the
+//! *target* pose is superimposed as a translucent ghost (the renderer's
+//! `ghost_transforms` pass), so command vs. response is visible at a glance.
+//! With only the target stream (an offline `--viz` run) it drives the model
+//! itself, as before.
 //!
 //! The transport lives in [`quadruped_gait::viz_sub`] (Zenoh, pure Rust —
 //! no DDS/C toolchain); this module only applies received frames to the
 //! loaded model each repaint, via the same path as kinematic playback
 //! (`model.joint_positions` + `model.base_transform`). Feature-gated (`viz`).
 
+use std::collections::HashMap;
+
 use nalgebra as na;
-use quadruped_gait::viz_sub::VizSubscriber;
+use quadruped_gait::viz::GaitVizFrame;
+use quadruped_gait::viz_net::VizEndpoints;
+use quadruped_gait::viz_sub::{VizSession, VizSubscriber};
 
 use crate::robot::RobotModel;
 
@@ -23,80 +40,627 @@ const VIZ_JOINT_NAMES: [[&str; 3]; 4] = [
     ["RR_hip_joint", "RR_thigh_joint", "RR_calf_joint"],
 ];
 
+/// Where the ghost (the commanded pose) is placed relative to the solid
+/// (measured) one, once the measured stream carries real odometry and the two
+/// bodies no longer share a position.
+///
+/// The two errors mixed into that separation are not equally worth looking at:
+/// the horizontal drift is an *estimation* artifact (the runner integrates
+/// stance-foot velocity open-loop), while height and attitude are read
+/// directly off the kinematics and the IMU. [`Self::Partial`] anchors the
+/// former and frees the latter, which keeps the per-joint comparison legible
+/// without hiding real tracking error.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum GhostAnchor {
+    /// Ghost keeps its own commanded body pose. The bodies separate exactly as
+    /// the robot diverges from the plan — body-level tracking, at the cost of
+    /// the joint comparison.
+    Commanded,
+    /// Ghost takes the measured horizontal position and heading, keeps its own
+    /// height and attitude — so a trunk sagging or tilting away from the plan
+    /// shows, while the drift does not.
+    #[default]
+    Partial,
+    /// Ghost takes the whole measured body pose: the bodies coincide and only
+    /// the joint angles differ.
+    Measured,
+}
+
+impl GhostAnchor {
+    pub const ALL: [Self; 3] = [Self::Commanded, Self::Partial, Self::Measured];
+
+    /// Short label for the GUI selector.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Commanded => "world",
+            Self::Partial => "x,y,yaw",
+            Self::Measured => "full",
+        }
+    }
+
+    /// What the choice buys, for the selector's tooltip.
+    pub fn tooltip(self) -> &'static str {
+        match self {
+            Self::Commanded => {
+                "Ghost at its own commanded pose — shows where the plan went vs \
+                 where the robot thinks it is. Joint differences get lost in the \
+                 separation."
+            }
+            Self::Partial => {
+                "Ghost anchored to the measured position and heading, free in \
+                 height and attitude — hides the drift of the open-loop \
+                 odometry, keeps a sagging or tilting trunk visible."
+            }
+            Self::Measured => {
+                "Ghost at the full measured pose — bodies coincide, so only the \
+                 joint angles differ."
+            }
+        }
+    }
+}
+
+/// How the viewer's Zenoh sessions reach the publisher.
+///
+/// Zenoh peers are symmetric, so the viewer doesn't have to be the one dialling
+/// out: when the robot's address is the one that moves, it is easier to let the
+/// viewer sit on a known port and have the robot connect in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum FeedTopology {
+    /// Multicast discovery — no address needed, but needs a LAN that carries it.
+    Auto,
+    /// Connect to the publisher's listen endpoint. The usual case.
+    #[default]
+    Connect,
+    /// Listen and let the publisher connect in.
+    Listen,
+}
+
+impl FeedTopology {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Connect, Self::Listen];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Connect => "connect",
+            Self::Listen => "listen",
+        }
+    }
+
+    pub fn tooltip(self) -> &'static str {
+        match self {
+            Self::Auto => {
+                "Find the publisher by multicast discovery — no address to type, \
+                 but the LAN has to carry multicast (same-host and WSL2 do not)."
+            }
+            Self::Connect => {
+                "Dial the publisher's listen endpoint (its --viz-endpoint). \
+                 Retries forever, so starting this side first is fine."
+            }
+            Self::Listen => {
+                "Wait here and let the publisher dial in (its --viz-connect). \
+                 Use when the robot's address is the one that moves."
+            }
+        }
+    }
+
+    /// Whether an address field applies to this mode.
+    pub fn needs_endpoint(self) -> bool {
+        self != Self::Auto
+    }
+
+    /// Build the session configuration for one stream's endpoint field.
+    fn endpoints(self, endpoint: &str) -> VizEndpoints {
+        let eps: Vec<&str> = endpoint
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        match self {
+            // An address typed while in auto mode is ignored rather than
+            // silently changing what the mode means.
+            Self::Auto => VizEndpoints::auto(),
+            _ if eps.is_empty() => VizEndpoints::auto(),
+            Self::Connect => VizEndpoints::connect(eps),
+            Self::Listen => VizEndpoints::listen(eps),
+        }
+    }
+}
+
+/// Default Zenoh key for the **measured** (robot read-back) stream. Re-exported
+/// from the wire crate, which owns both key names.
+pub const VIZ_KEY_MEASURED: &str = quadruped_gait::viz::VIZ_KEY_MEASURED;
+
 /// GUI-side state for the live gait feed. Holds the (optional) running
-/// subscriber and the editable Zenoh key.
+/// subscribers and the editable Zenoh keys.
 pub struct VizFeedState {
+    /// Target (commanded) stream — the ghost when a measured stream is up.
     sub: Option<VizSubscriber>,
-    /// Zenoh key to subscribe to (editable while stopped).
+    /// Current (measured) stream; empty [`Self::key_measured`] = not subscribed.
+    sub_meas: Option<VizSubscriber>,
+    /// Zenoh key of the target stream (editable while stopped).
     pub key: String,
-    /// Optional Zenoh **connect** endpoint (e.g. `tcp/127.0.0.1:7447`) for hosts
-    /// without multicast; connects to the publisher's `--viz-endpoint`. Empty =
-    /// auto multicast discovery.
+    /// Zenoh key of the measured stream (editable while stopped); empty =
+    /// target-only, and the target then drives the model solidly.
+    pub key_measured: String,
+    /// How the sessions reach the publisher — dial out, wait, or discover.
+    pub topology: FeedTopology,
+    /// Endpoint(s) for [`Self::topology`], comma-separated (e.g.
+    /// `tcp/127.0.0.1:7447`). Empty falls back to multicast discovery.
     pub endpoint: String,
-    /// Sequence number of the last applied frame (for a status read-out).
+    /// Endpoint for the measured stream when it comes from a *different*
+    /// publisher than the target (a separate state bridge, a replay, or a
+    /// sim-vs-robot comparison across two hosts). Empty = same as
+    /// [`Self::endpoint`], which is the usual one-runner case. Each subscriber
+    /// opens its own Zenoh session, so the two are independent — though they
+    /// share [`Self::topology`].
+    pub endpoint_measured: String,
+    /// Sequence number of the last target frame (for a status read-out).
     pub last_seq: Option<u64>,
+    /// Sequence number of the last measured frame.
+    pub last_seq_measured: Option<u64>,
+    /// Superimpose the target pose as a translucent ghost over the measured one.
+    pub overlay_target: bool,
+    /// Alpha of that ghost (0 = invisible, 1 = opaque).
+    pub ghost_alpha: f32,
+    /// Where the ghost's body is placed once the measured stream carries real
+    /// odometry. See [`GhostAnchor`].
+    pub anchor: GhostAnchor,
+    /// Latest target frame, kept between repaints so the ghost persists even on
+    /// repaints where no new frame arrived.
+    target: Option<GaitVizFrame>,
+    /// Last measured frame — the pose the ghost is anchored against. `Some`
+    /// from the first one onward (never cleared while subscribed), which is
+    /// also what decides that the measured stream, not the target, drives the
+    /// solid model.
+    measured: Option<GaitVizFrame>,
 }
 
 impl Default for VizFeedState {
     fn default() -> Self {
         Self {
             sub: None,
+            sub_meas: None,
             key: quadruped_gait::viz::VIZ_KEY_PLANNED.to_string(),
+            key_measured: VIZ_KEY_MEASURED.to_string(),
+            topology: FeedTopology::default(),
             endpoint: String::new(),
+            endpoint_measured: String::new(),
             last_seq: None,
+            last_seq_measured: None,
+            overlay_target: true,
+            ghost_alpha: 0.35,
+            anchor: GhostAnchor::default(),
+            target: None,
+            measured: None,
         }
     }
 }
 
 impl VizFeedState {
-    /// Whether the subscriber is currently running.
+    /// Whether the subscribers are currently running.
     pub fn active(&self) -> bool {
-        self.sub.is_some()
+        self.sub.is_some() || self.sub_meas.is_some()
     }
 
-    /// Start the subscriber (if stopped) or stop it (if running).
+    /// Whether a measured stream is driving the model (so the target is drawn
+    /// as a ghost rather than driving the model itself).
+    pub fn has_measured(&self) -> bool {
+        self.measured.is_some()
+    }
+
+    /// Whether the measured subscriber is actually running (its key was set
+    /// and not in conflict with the target's).
+    pub fn measured_subscribed(&self) -> bool {
+        self.sub_meas.is_some()
+    }
+
+    /// Whether both keys name the **same** stream — a misconfiguration: the
+    /// two subscribers would receive the same frames, so the ghost would
+    /// coincide exactly with the solid model (invisible) and the pose would
+    /// flip between whichever sample landed last. The measured subscriber is
+    /// skipped in that case.
+    pub fn measured_key_conflicts(&self) -> bool {
+        let m = self.key_measured.trim();
+        !m.is_empty() && m == self.key.trim()
+    }
+
+    /// Start the subscribers (if stopped) or stop them (if running).
     pub fn toggle(&mut self) {
-        if self.sub.is_some() {
+        if self.active() {
             self.sub = None;
+            self.sub_meas = None;
             self.last_seq = None;
+            self.last_seq_measured = None;
+            self.target = None;
+            self.measured = None;
         } else {
-            let ep = if self.endpoint.trim().is_empty() {
-                None
-            } else {
-                Some(self.endpoint.trim())
+            let ep = self.topology.endpoints(&self.endpoint);
+            // The measured stream may come from another publisher entirely, so
+            // it gets its own endpoint; unset falls back to the target's.
+            let ep_meas = match non_empty(&self.endpoint_measured) {
+                Some(e) => self.topology.endpoints(e),
+                None => ep.clone(),
             };
-            match VizSubscriber::new(&self.key, ep) {
-                Ok(s) => self.sub = Some(s),
-                Err(e) => eprintln!("viz-feed: {e}"),
+            // One session when both streams come from the same place. Two
+            // sessions listening on one endpoint would fight over the port —
+            // the second fails to bind — and connecting twice is just waste.
+            let session = match VizSession::open(&ep) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("viz-feed: {e}");
+                    return;
+                }
+            };
+            let session_meas = if ep_meas == ep {
+                Some(session.clone())
+            } else {
+                match VizSession::open(&ep_meas) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        eprintln!("viz-feed (measured): {e}");
+                        None
+                    }
+                }
+            };
+            // Either key may be left empty: measured-only (watch the robot
+            // alone) and target-only (offline `--viz`, no read-back) are both
+            // valid — an empty key is skipped rather than subscribed to.
+            if !self.key.trim().is_empty() {
+                match session.subscribe(self.key.trim()) {
+                    Ok(s) => self.sub = Some(s),
+                    Err(e) => eprintln!("viz-feed: {e}"),
+                }
             }
-        }
-    }
-
-    /// Apply the latest received frame to `model` (joint angles + trunk pose),
-    /// rebuilding the render model. Returns `true` if a frame was applied.
-    pub fn apply(&mut self, model: &mut RobotModel) -> bool {
-        let Some(sub) = &self.sub else {
-            return false;
-        };
-        let Some(frame) = sub.take_latest() else {
-            return false;
-        };
-        for slot in 0..4 {
-            for k in 0..3 {
-                if let Some(&idx) = model.joint_map.get(VIZ_JOINT_NAMES[slot][k]) {
-                    if let Some(p) = model.joint_positions.get_mut(idx) {
-                        *p = frame.joints[3 * slot + k];
+            if self.measured_key_conflicts() {
+                eprintln!(
+                    "viz-feed: measured key '{}' is the same stream as the \
+                     target's — measured not subscribed (the two must \
+                     be distinct keys)",
+                    self.key_measured.trim(),
+                );
+            } else if !self.key_measured.trim().is_empty() {
+                if let Some(sm) = &session_meas {
+                    match sm.subscribe(self.key_measured.trim()) {
+                        Ok(s) => self.sub_meas = Some(s),
+                        Err(e) => eprintln!("viz-feed (measured): {e}"),
                     }
                 }
             }
         }
-        let p = frame.pose;
-        model.base_transform = na::Isometry3::from_parts(
-            na::Translation3::new(p[0], p[1], p[2]),
-            na::UnitQuaternion::from_euler_angles(0.0, 0.0, p[3]),
+    }
+
+    /// Apply the latest received frames to `model` (joint angles + trunk pose),
+    /// rebuilding the render model. The measured frame drives the model once
+    /// one has arrived; until then the target frame does. Returns `true` if a
+    /// frame was applied.
+    ///
+    /// Either stream alone is fine: target-only drives the model with the
+    /// target and draws no ghost, measured-only drives it with the measured
+    /// and likewise has nothing to ghost.
+    ///
+    /// A measured dropout **latches**: "a measured frame has arrived" is
+    /// sticky, so the model holds its last measured pose and simply stops
+    /// updating (the ghost keeps moving, which is what makes the dropout
+    /// visible) — it never snaps back to the target, which would hide it.
+    /// When the stream resumes it picks up at the newest frame:
+    /// [`VizSubscriber::take_latest`] keeps only the most recent sample, so
+    /// there is no backlog to replay.
+    pub fn apply(&mut self, model: &mut RobotModel) -> bool {
+        let mut new_target = false;
+        if let Some(sub) = &self.sub {
+            if let Some(frame) = sub.take_latest() {
+                self.last_seq = Some(frame.seq);
+                self.target = Some(frame);
+                new_target = true;
+            }
+        }
+        let mut new_measured = false;
+        if let Some(sub) = &self.sub_meas {
+            if let Some(frame) = sub.take_latest() {
+                self.last_seq_measured = Some(frame.seq);
+                self.measured = Some(frame);
+                new_measured = true;
+            }
+        }
+        // Whoever drives the solid model: the measured frame when the robot is
+        // reporting back, otherwise the target (offline `--viz`, no read-back).
+        // Only a *newly arrived* frame re-poses the model — repaints in between
+        // must not report a change (the caller re-uploads the model on `true`).
+        let solid = if new_measured {
+            self.measured.as_ref()
+        } else if self.measured.is_none() && new_target {
+            self.target.as_ref()
+        } else {
+            None
+        };
+        let Some(frame) = solid else {
+            return false;
+        };
+        set_pose(model, &frame.joints, &frame.pose, &frame.pose_rp);
+        model.rebuild_misarta_model();
+        true
+    }
+
+    /// Link transforms for the translucent target ghost, or `None` when the
+    /// overlay is off / there is nothing to overlay (no target frame yet, or
+    /// no measured stream — the target would coincide with the solid model).
+    ///
+    /// Computed by posing `model` at the target frame, running FK, and putting
+    /// the model's own pose straight back — the model is left untouched.
+    pub fn ghost_transforms(
+        &self,
+        model: &mut RobotModel,
+    ) -> Option<HashMap<String, na::Isometry3<f32>>> {
+        if !self.overlay_target {
+            return None;
+        }
+        let measured = self.measured.as_ref()?;
+        let frame = self.target.as_ref()?;
+        let (pose, rp) = match self.anchor {
+            GhostAnchor::Commanded => (frame.pose, frame.pose_rp),
+            GhostAnchor::Measured => (measured.pose, measured.pose_rp),
+            // Height and attitude stay the ghost's own: both are read off the
+            // kinematics and the IMU rather than integrated, so a difference
+            // there is real tracking error, not drift.
+            GhostAnchor::Partial => (
+                [
+                    measured.pose[0],
+                    measured.pose[1],
+                    frame.pose[2],
+                    measured.pose[3],
+                ],
+                frame.pose_rp,
+            ),
+        };
+        let saved_q = model.joint_positions.clone();
+        let saved_base = model.base_transform;
+        set_pose(model, &frame.joints, &pose, &rp);
+        let transforms = model.compute_transforms();
+        model.joint_positions = saved_q;
+        model.base_transform = saved_base;
+        Some(transforms)
+    }
+}
+
+/// A trimmed setting, or `None` when it is blank.
+fn non_empty(s: &str) -> Option<&str> {
+    Some(s.trim()).filter(|s| !s.is_empty())
+}
+
+/// Write joint angles and a body pose (`[x, y, z, yaw]` plus `[roll, pitch]`)
+/// into `model` (no rebuild
+/// — `compute_transforms` reads `joint_positions` live). The pose is passed
+/// separately from the joints so the ghost can borrow one frame's joints and
+/// another's placement (see [`GhostAnchor`]).
+fn set_pose(model: &mut RobotModel, joints: &[f64; 12], pose: &[f64; 4], rp: &[f64; 2]) {
+    for slot in 0..4 {
+        for k in 0..3 {
+            if let Some(&idx) = model.joint_map.get(VIZ_JOINT_NAMES[slot][k]) {
+                if let Some(p) = model.joint_positions.get_mut(idx) {
+                    *p = joints[3 * slot + k];
+                }
+            }
+        }
+    }
+    model.base_transform = na::Isometry3::from_parts(
+        na::Translation3::new(pose[0], pose[1], pose[2]),
+        na::UnitQuaternion::from_euler_angles(rp[0], rp[1], pose[3]),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn go2_model() -> RobotModel {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models/unitree_go2/go2.misa");
+        RobotModel::from_misa(&path).expect("load go2.misa")
+    }
+
+    fn frame(seq: u64, calf: f64) -> GaitVizFrame {
+        frame_at(seq, calf, [0.0, 0.0, 0.3, 0.0])
+    }
+
+    fn frame_at(seq: u64, calf: f64, pose: [f64; 4]) -> GaitVizFrame {
+        let mut joints = [0.0f64; 12];
+        for slot in 0..4 {
+            joints[3 * slot + 1] = 0.9;
+            joints[3 * slot + 2] = calf;
+        }
+        GaitVizFrame {
+            version: quadruped_gait::viz::VIZ_FORMAT_VERSION,
+            seq,
+            t_s: 0.0,
+            pose,
+            pose_rp: [0.0, 0.0],
+            joints,
+            stance: [true; 4],
+        }
+    }
+
+    /// The ghost is the *target* pose: it must differ from the model's own
+    /// (measured) pose and must leave the model exactly as it found it — the
+    /// solid render still comes from `model`.
+    #[test]
+    fn ghost_transforms_pose_the_target_without_touching_the_model() {
+        let mut model = go2_model();
+        let measured = frame(1, -1.8); // measured pose drives the model
+        set_pose(
+            &mut model,
+            &measured.joints,
+            &measured.pose,
+            &measured.pose_rp,
+        );
+        let mut viz = VizFeedState {
+            target: Some(frame(1, -1.2)),
+            measured: Some(measured),
+            anchor: GhostAnchor::Measured,
+            ..Default::default()
+        };
+        model.rebuild_misarta_model();
+        let solid = model.compute_transforms();
+        let saved_q = model.joint_positions.clone();
+
+        let ghost = viz.ghost_transforms(&mut model).expect("ghost");
+
+        assert_eq!(
+            model.joint_positions, saved_q,
+            "model must be left untouched"
+        );
+        assert_eq!(model.compute_transforms()["FL_calf"], solid["FL_calf"]);
+        assert_ne!(
+            ghost["FL_calf"], solid["FL_calf"],
+            "target calf differs from measured, so the ghost must too"
+        );
+        assert_eq!(ghost["FL_thigh"], solid["FL_thigh"], "thighs agree");
+
+        // Overlay off, or no measured stream (the target then *is* the solid
+        // model): nothing to ghost.
+        viz.overlay_target = false;
+        assert!(viz.ghost_transforms(&mut model).is_none());
+        viz.overlay_target = true;
+        viz.measured = None;
+        assert!(viz.ghost_transforms(&mut model).is_none());
+    }
+
+    /// Anchoring decides where the ghost's *body* goes; its joints always come
+    /// from the target frame. With the robot's odometry 1 m ahead of the plan,
+    /// `Commanded` leaves the ghost behind, `Measured` puts it exactly on the
+    /// solid model, and `Partial` follows the position while keeping its own
+    /// height — so a trunk 5 cm lower than commanded still reads as 5 cm.
+    #[test]
+    fn the_anchor_places_the_ghost_body() {
+        let mut model = go2_model();
+        let mut measured = frame_at(1, -1.8, [1.0, 0.2, 0.25, 0.3]);
+        measured.pose_rp = [0.1, -0.05]; // the robot is tilted; the plan is level
+        set_pose(
+            &mut model,
+            &measured.joints,
+            &measured.pose,
+            &measured.pose_rp,
         );
         model.rebuild_misarta_model();
-        self.last_seq = Some(frame.seq);
-        true
+        let mut viz = VizFeedState {
+            target: Some(frame_at(1, -1.2, [0.0, 0.0, 0.30, 0.0])),
+            measured: Some(measured),
+            ..Default::default()
+        };
+        let root = model.root_link.clone();
+        let trunk = |t: &HashMap<String, na::Isometry3<f32>>| t[&root].translation.vector;
+        let solid = trunk(&model.compute_transforms());
+
+        viz.anchor = GhostAnchor::Measured;
+        let g = trunk(&viz.ghost_transforms(&mut model).unwrap());
+        assert!((g - solid).norm() < 1e-6, "full anchor coincides: {g:?}");
+
+        viz.anchor = GhostAnchor::Commanded;
+        let g = trunk(&viz.ghost_transforms(&mut model).unwrap());
+        assert!(
+            (g.x - 0.0).abs() < 1e-6 && (g.y - 0.0).abs() < 1e-6,
+            "own pose: {g:?}"
+        );
+
+        viz.anchor = GhostAnchor::Partial;
+        let ghost = viz.ghost_transforms(&mut model).unwrap();
+        let (roll, pitch, _) = ghost[&root].rotation.euler_angles();
+        assert!(
+            roll.abs() < 1e-6 && pitch.abs() < 1e-6,
+            "attitude stays the ghost's own (level), so the tilt reads as error"
+        );
+        let g = trunk(&ghost);
+        assert!(
+            (g.x - 1.0).abs() < 1e-6,
+            "x follows the measured pose: {g:?}"
+        );
+        assert!(
+            (g.y - 0.2).abs() < 1e-6,
+            "y follows the measured pose: {g:?}"
+        );
+        assert!(
+            (g.z - solid.z - 0.05).abs() < 1e-6,
+            "height stays the ghost's own, 5 cm above the measured trunk: {g:?}"
+        );
+    }
+
+    /// Measured-only (nothing publishing the target): the measured stream
+    /// drives the model and there is simply nothing to ghost.
+    #[test]
+    fn measured_without_a_target_stream_ghosts_nothing() {
+        let mut model = go2_model();
+        let viz = VizFeedState {
+            target: None,
+            measured: Some(frame(1, -1.8)),
+            ..Default::default()
+        };
+        assert!(viz.ghost_transforms(&mut model).is_none());
+    }
+
+    /// Both keys naming one stream is a misconfiguration, not a valid setup:
+    /// the ghost would land exactly on the solid model and the pose would flip
+    /// between whichever sample arrived last.
+    #[test]
+    fn the_same_key_twice_is_a_conflict() {
+        let viz = VizFeedState {
+            key: "go2/gait/planned".into(),
+            key_measured: " go2/gait/planned ".into(), // whitespace must not hide it
+            ..Default::default()
+        };
+        assert!(viz.measured_key_conflicts());
+
+        let ok = VizFeedState::default();
+        assert_ne!(ok.key, ok.key_measured);
+        assert!(!ok.measured_key_conflicts());
+
+        let target_only = VizFeedState {
+            key_measured: String::new(),
+            ..Default::default()
+        };
+        assert!(
+            !target_only.measured_key_conflicts(),
+            "an empty measured key is target-only, not a conflict"
+        );
+    }
+
+    /// The topology decides which side dials; an address only means something
+    /// once it does. A typed address in `auto` is ignored rather than quietly
+    /// changing what the mode does.
+    #[test]
+    fn the_topology_decides_who_dials() {
+        let connect = FeedTopology::Connect.endpoints("tcp/127.0.0.1:7447");
+        assert_eq!(connect.connect, ["tcp/127.0.0.1:7447"]);
+        assert!(connect.listen.is_empty());
+        assert!(
+            !connect.multicast_enabled(),
+            "an address means discovery is off"
+        );
+
+        let listen = FeedTopology::Listen.endpoints(" tcp/0.0.0.0:7447 , tcp/[::]:7448 ");
+        assert_eq!(listen.listen, ["tcp/0.0.0.0:7447", "tcp/[::]:7448"]);
+        assert!(listen.connect.is_empty());
+
+        let auto = FeedTopology::Auto.endpoints("tcp/127.0.0.1:7447");
+        assert!(
+            !auto.is_explicit() && auto.multicast_enabled(),
+            "address ignored"
+        );
+        assert!(!FeedTopology::Auto.needs_endpoint());
+
+        // An empty field can't dial anywhere, so fall back to discovery rather
+        // than opening a session nothing can reach.
+        assert!(FeedTopology::Connect.endpoints("  ").multicast_enabled());
+    }
+
+    /// An empty key is skipped, not subscribed to — so a single-stream setup
+    /// (either one) still reports itself as active.
+    #[test]
+    fn an_empty_key_is_not_subscribed() {
+        let mut viz = VizFeedState {
+            key: String::new(),
+            key_measured: String::new(),
+            ..Default::default()
+        };
+        viz.toggle();
+        assert!(!viz.active(), "both keys empty: nothing to subscribe to");
     }
 }

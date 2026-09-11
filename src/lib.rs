@@ -3,6 +3,7 @@ pub use legged_estimation::attitude_estimator;
 pub mod attack;
 pub mod biped;
 pub mod camera;
+pub mod chicken_head;
 pub mod collision;
 pub mod dynamics;
 pub mod estimator;
@@ -23,6 +24,7 @@ pub mod rbd;
 pub mod robot;
 pub mod sdf;
 pub mod self_righting;
+pub mod standing_gesture;
 #[cfg(feature = "scripting")]
 pub mod scripting;
 #[cfg(feature = "scripting")]
@@ -37,6 +39,9 @@ pub mod wbc_harness;
 /// (`examples/namiashi_wbc_teleop.rs`, `examples/namiashi_rl_teleop.rs`).
 #[cfg(feature = "mujoco-viewer")]
 pub mod teleop;
+
+/// Joint-limit checking for the loaded pose (see [`joint_limits::check`]).
+pub mod joint_limits;
 
 /// Live gait viewer: subscribe to a `go2-gait-runner --viz` Zenoh stream and
 /// drive the loaded model in real time. See [`viz_feed`].

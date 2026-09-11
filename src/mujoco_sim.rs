@@ -936,21 +936,23 @@ impl MujocoSim {
     /// `τ = kp·(q_des − q) + kv·(q̇_des − q̇) + τ_ff`.
     ///
     /// Distinct from [`Self::set_velocity_target`], which drives the separate
-    /// Velocity actuator mode. Until now this slot was only writable by the
-    /// trajectory player, which left a WBC running in position/velocity form
-    /// no way to say "and I want this joint moving at this rate" -- without
-    /// it the PD damps against ZERO velocity and fights every commanded
-    /// motion.
-    pub fn set_position_target_velocity(&mut self, joint_idx: usize, qd: f64) {
-        if let Some(slot) = self.position_target_velocities.get_mut(joint_idx) {
-            *slot = qd;
-        }
-    }
-
     /// Set the velocity target (rad/s / m/s) for a joint by index.
     pub fn set_velocity_target(&mut self, joint_idx: usize, target: f64) {
         if let Some(slot) = self.velocity_targets.get_mut(joint_idx) {
             *slot = target;
+        }
+    }
+
+    /// Set the **position-mode velocity feed-forward** `q̇*` for a joint (the
+    /// `kv·(q̇* − q̇)` term in the Position / ComputedTorque PD). Distinct from
+    /// [`Self::set_velocity_target`], which drives the standalone Velocity
+    /// actuator mode. Use this to cancel a Position-mode joint's phase lag when
+    /// tracking a moving reference (e.g. the ChickenHead head-hold's
+    /// `q̇* = -sign·ω_body`). Normally maintained by the pose-transition player;
+    /// this exposes it for controllers that command a moving target directly.
+    pub fn set_position_target_velocity(&mut self, joint_idx: usize, qd: f64) {
+        if let Some(slot) = self.position_target_velocities.get_mut(joint_idx) {
+            *slot = qd;
         }
     }
 
@@ -2285,6 +2287,24 @@ impl MujocoSim {
                 }
             }
         }
+    }
+}
+
+/// The WBC runtime's read-side platform boundary
+/// ([`quadruped_gait::RobotStateSource`]), implemented against MuJoCo ground
+/// truth. Each method delegates to the identically-named inherent method
+/// above (inherent methods take resolution priority, so this is not
+/// recursive). This is what lets the same `WbcPipeline` drive both the
+/// simulator (here) and, on hardware, a `LowState`-backed adapter.
+impl quadruped_gait::RobotStateSource for MujocoSim {
+    fn body_world_position(&self, link: &str) -> Option<[f64; 3]> {
+        MujocoSim::body_world_position(self, link)
+    }
+    fn body_world_orientation(&self, link: &str) -> Option<nalgebra::UnitQuaternion<f64>> {
+        MujocoSim::body_world_orientation(self, link)
+    }
+    fn joint_q_qd(&self, joint: &str) -> Option<(f64, f64)> {
+        MujocoSim::joint_q_qd(self, joint)
     }
 }
 

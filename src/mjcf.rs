@@ -157,6 +157,17 @@ pub struct MjcfExportOptions {
     /// reach `<global offwidth>`, without which offscreen renders are capped
     /// at 640x480.
     pub extra_visual_xml: Option<String>,
+    /// `<option impratio="…">`: ratio of frictional-to-normal constraint
+    /// impedance. MuJoCo's default (1) makes tangential contacts as soft as
+    /// normal ones, so a loaded foot creeps along the ground under
+    /// tangential load — a stance foot on namiashi's trot skated forward at
+    /// 0.1–0.25 m/s. MuJoCo's own guidance for "no slip" is to raise this
+    /// (10 or more) together with `cone = "elliptic"`. `None` keeps the
+    /// default so existing results are reproducible.
+    pub impratio: Option<f64>,
+    /// `<option cone="…">`: `"pyramidal"` (MuJoCo default) or `"elliptic"`.
+    /// `impratio` only has its documented effect with the elliptic cone.
+    pub cone: Option<&'static str>,
 }
 
 impl Default for MjcfExportOptions {
@@ -177,6 +188,8 @@ impl Default for MjcfExportOptions {
             extra_asset_xml: None,
             extra_visual_xml: None,
             timestep: None,
+            impratio: None,
+            cone: None,
         }
     }
 }
@@ -810,15 +823,21 @@ pub fn export_mjcf_with_options(
     let integrator = opts
         .integrator
         .or(opts.native_velocity_servo.map(|_| "implicitfast"));
-    let xml = match (opts.timestep, integrator) {
-        (None, None) => xml,
-        (dt, ig) => {
+    let xml = match (opts.timestep, integrator, opts.impratio, opts.cone) {
+        (None, None, None, None) => xml,
+        (dt, ig, ir, cone) => {
             let mut attrs = String::new();
             if let Some(dt) = dt {
                 attrs.push_str(&format!(" timestep=\"{dt}\""));
             }
             if let Some(ig) = ig {
                 attrs.push_str(&format!(" integrator=\"{ig}\""));
+            }
+            if let Some(ir) = ir {
+                attrs.push_str(&format!(" impratio=\"{ir}\""));
+            }
+            if let Some(cone) = cone {
+                attrs.push_str(&format!(" cone=\"{cone}\""));
             }
             match xml.find('\n') {
                 Some(nl) => format!("{}\n  <option{attrs}/>{}", &xml[..nl], &xml[nl..]),

@@ -33,14 +33,30 @@ CAM_SCALE = float(os.environ.get("CAM_SCALE", 2.2 if os.environ.get("ROBOT", "")
 LEGEND_NOTE = (
     ["visual: full STL geometry", "collision: primitives only"]
     if os.environ.get("ROBOT", "").startswith("g1")
-    else ["EL05 46x44 mm, true size", "knee / hip_pitch: dual"]
+    # v6: hip_roll/knee are RS00 (57x51mm), everything else Edulite05
+    # (46x44mm), single motor each -- no more dual-motor joints (v3/v5
+    # retired the knee's and hip_pitch's boosters).
+    else ["Edulite05 46x44mm, RS00 57x51mm", "hip_roll/knee: RS00, no boosters"]
 )
 URDFS = {
     "kyo46rs": "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
+    "kyo46rs2": "/home/takara/work/dp/humanoid/kyo46rs2_description/urdf/kyo46rs2.urdf",
     "g1": "/home/takara/work/dp/articara/models/unitree_g1_src/robots/g1_description/g1_23dof.urdf",
     "g1_23dof": "/home/takara/work/dp/articara/models/unitree_g1_src/robots/g1_description/g1_23dof.urdf",
 }
-URDF = os.environ.get("URDF", URDFS.get(ROBOT, URDFS["kyo46rs"]))
+# No silent fallback. This defaulted to kyo46rs for ANY unknown ROBOT, so a
+# kyo46rs2 run rendered as v1 and looked plausible -- the two machines differ
+# by 8 mm of leg. A renderer that draws the wrong robot without saying so is
+# worse than one that refuses.
+if "URDF" in os.environ:
+    URDF = os.environ["URDF"]
+elif ROBOT in URDFS:
+    URDF = URDFS[ROBOT]
+else:
+    raise SystemExit(
+        f"ROBOT={ROBOT!r} has no URDF here. Known: {', '.join(sorted(URDFS))}. "
+        f"Pass URDF=<path> to override."
+    )
 FOOT_L = os.environ.get("FOOT_L", "left_ankle_roll_link" if ROBOT.startswith("g1") else "left_foot_link")
 W, H = int(os.environ.get("VID_W", 960)), 720
 FPS = 50
@@ -91,6 +107,9 @@ def load_stl(path):
 
 # Screen-space area, in px^2, below which a triangle is not worth drawing.
 MIN_TRI_PX = float(os.environ.get("MIN_TRI_PX", 1.0))
+# Restore one-sided rendering. Faster, and how every frame before 2026-08-03
+# was drawn -- kept so those can be reproduced, not because it is correct.
+CULL = os.environ.get("CULL", "0") != "0"
 _LIGHT = np.array([0.4, 0.7, 0.6])
 _LIGHT = _LIGHT / np.linalg.norm(_LIGHT)
 
@@ -113,7 +132,18 @@ def emit_mesh(faces, tri_world, cam, base):
     ln = np.linalg.norm(nrm, axis=1)
     keep &= ln > 1e-12
     nrm = nrm / np.maximum(ln, 1e-12)[:, None]
-    keep &= np.einsum("ij,ij->i", nrm, cam.eye - tri_world.mean(1)) > 0
+    # Two-sided. Back-face culling is only valid on a closed mesh with
+    # consistent winding, and these STLs are neither -- a motor barrel with no
+    # end caps loses its far wall and reads as see-through from behind, which
+    # is exactly how the ankle_roll cylinder looked. Instead of dropping the
+    # away-facing triangles, flip their normal toward the eye and shade them:
+    # with the painter's sort running far-to-near, the near surface paints
+    # over the far one and a closed shape still comes out solid.
+    facing = np.einsum("ij,ij->i", nrm, cam.eye - tri_world.mean(1))
+    if CULL:
+        keep &= facing > 0
+    else:
+        nrm = np.where(facing[:, None] < 0.0, -nrm, nrm)
 
     idx = np.nonzero(keep)[0]
     if not len(idx):
@@ -345,7 +375,11 @@ def draw_body(draw, links, pose, cam):
                 if (z < 0.05).any():
                     continue
                 side = [(i, (i + 1) % n, n + (i + 1) % n, n + i) for i in range(n)]
-                caps = [tuple(range(n)), tuple(range(n, 2 * n))]
+                # Both rings run counter-clockwise, so both cap normals come
+                # out as +z -- correct for the top, INWARD for the bottom, so
+                # the bottom cap was culled whenever it faced you and drawn
+                # when it did not. Reverse it.
+                caps = [tuple(reversed(range(n))), tuple(range(n, 2 * n))]
                 for f in side + caps:
                     quad = corners[list(f)]
                     nv_ = np.cross(quad[1] - quad[0], quad[2] - quad[0])
@@ -476,11 +510,94 @@ def draw_cop_panel(img, ox, oy, w, h, feet, box, trails):
     draw.text((ox + 138, ky - 3), "QP assumed", fill=(150, 158, 172), font=F_SMALL)
 
 
-def render_frame(links, joints, pose, cam, hud):
+def draw_push(draw, cam, origin, fxy, phase=1.0, dt_rel=None):
+    """The disturbance, drawn where it is applied and pointing where it pushes.
+
+    The force is read from the trajectory log (`push_fx` / `push_fy`, written
+    by the driver from the simulator's own live pulse list), so the arrow
+    cannot disagree with what the plant actually received -- a caption saying
+    "1.20 N*s to the left" can, and a viewer has no way to check it.
+
+    The pulse itself lasts 0.10 s, which at 50 fps is five frames and is over
+    before a viewer has found it. `phase` fades the same arrow in beforehand
+    and leaves it fading afterwards, so the eye has somewhere to be: a hollow
+    ghost while the push is coming, solid while it is applied, then a fading
+    trace of what was done. `dt_rel` (seconds relative to the pulse start)
+    drives the label.
+    """
+    f = np.array([fxy[0], fxy[1], 0.0])
+    mag = float(np.linalg.norm(f))
+    if mag < 1e-6 or phase <= 0.0:
+        return
+    scale = float(os.environ.get("PUSH_ARROW_SCALE", 0.020))
+    u = f / mag
+    length = 0.055 + mag * scale
+    # Start the shaft back from the body so the arrow reads as pushing INTO
+    # the robot rather than emerging from inside it, and lift it to chest
+    # height where nothing else is drawn.
+    tail = np.asarray(origin, float) + np.array([0.0, 0.0, 0.06]) - u * length
+    tip = tail + u * length
+    # Project the shaft, then build the head in SCREEN space. Doing it in 3D
+    # spreads the head along `cross(u, up)`, which for a sideways push is the
+    # fore-aft axis -- and this camera looks nearly along it, so the triangle
+    # collapsed to a line and the arrow had no readable direction at all.
+    (p2, _z) = cam.project(np.array([tail, tip]))
+    t0 = np.array([float(p2[0][0]), float(p2[0][1])])
+    t1 = np.array([float(p2[1][0]), float(p2[1][1])])
+    d = t1 - t0
+    n = float(np.linalg.norm(d))
+    if n < 1e-6:
+        return
+    d = d / n
+    perp = np.array([-d[1], d[0]])
+    head_px = max(18.0, min(46.0, 0.30 * n))
+    apex = t1
+    base = t1 - d * head_px
+    left = base + perp * head_px * 0.58
+    right = base - perp * head_px * 0.58
+    a = int(round(255 * max(0.0, min(1.0, phase))))
+    solid = phase >= 0.999
+    col = (255, 110, 80, a)
+    shaft = max(3, int(round(11 * phase)))
+    tri = [tuple(apex), tuple(left), tuple(right)]
+    if solid:
+        # A dark outline first: the arrow lands on the torso, and a bare
+        # orange triangle on grey plastic loses its edges.
+        draw.line([tuple(t0), tuple(base)], fill=(12, 14, 18, a), width=shaft + 6)
+        draw.polygon([tuple(apex + d * 5), tuple(left + (perp * 4 - d * 3)),
+                      tuple(right + (-perp * 4 - d * 3))], fill=(12, 14, 18, a))
+        draw.line([tuple(t0), tuple(base)], fill=col, width=shaft)
+        draw.polygon(tri, fill=col)
+    else:
+        draw.line([tuple(t0), tuple(base)], fill=col, width=max(2, shaft // 2))
+        draw.polygon(tri, outline=col)
+    lbl = f"PUSH  {mag:.0f} N"
+    imp = os.environ.get("PUSH_IMPULSE_LABEL")
+    if imp:
+        lbl += f"  ({imp} N*s)"
+    if dt_rel is not None:
+        if dt_rel < -1e-6:
+            lbl = f"PUSH in {-dt_rel:4.2f} s"
+        elif dt_rel > 0.105:
+            lbl = f"pushed {dt_rel - 0.10:4.2f} s ago"
+    # Above the shaft's midpoint: the tail sits over the CoM-height panel and
+    # the tip sits on the robot, so both ends are already busy.
+    mx = 0.5 * (t0[0] + t1[0])
+    my = 0.5 * (t0[1] + t1[1]) - 46
+    w = draw.textlength(lbl, font=F_BODY)
+    draw.rectangle([mx - w / 2 - 10, my - 6, mx + w / 2 + 10, my + 26],
+                   fill=(16, 18, 23, 232))
+    draw.text((mx - w / 2, my), lbl, fill=col, font=F_BODY)
+
+
+def render_frame(links, joints, pose, cam, hud, push=None, push_at=None,
+                 push_phase=1.0, push_dt=None):
     img = gradient_bg()
     draw = ImageDraw.Draw(img, "RGBA")
     draw_ground(draw, cam)
     draw_body(draw, links, pose, cam)
+    if push is not None and push_at is not None:
+        draw_push(draw, cam, push_at, push, push_phase, push_dt)
 
     # ── HUD ────────────────────────────────────────────────────────────
     (t, com_z, ref_z, tilt, hist, taus, tau_names, tau_lims, tau_total,
@@ -628,6 +745,11 @@ def main():
     tau_lims = [float(sel[0]["lim_" + c]) for c, _ in TAU_JOINTS]
     tau_names = [lbl for _, lbl in TAU_JOINTS]
     tau_hist = [[] for _ in TAU_JOINTS]
+    def _xyz(name):
+        v = os.environ.get(name)
+        return tuple(float(x) for x in v.split(",")) if v else None
+
+    FOLLOW = os.environ.get("CAM_FOLLOW", "0") != "0"
 
     if os.environ.get("ANKLE_CLOSEUP"):
         cam = Camera(eye=(0.30, -0.42, 0.16), target=(0.01, 0.0, 0.06), fov=34, y_shift=60)
@@ -638,6 +760,13 @@ def main():
         cam = (Camera(eye=(1.30 * k, -1.55 * k, 0.62 * k), target=(0.02, 0.0, 0.28 * k), fov=30, y_shift=-10)
                if os.environ.get("COMPACT")
                else Camera(eye=(1.15 * k, -1.38 * k, 0.62 * k), target=(0.02, 0.0, 0.30 * k), fov=33, y_shift=24))
+    # CAM_EYE / CAM_TARGET override the built-in framing, which is what makes
+    # a view from behind checkable at all -- the bug above only shows there.
+    if _xyz("CAM_EYE") or _xyz("CAM_TARGET"):
+        cam = Camera(eye=_xyz("CAM_EYE") or cam.eye,
+                     target=_xyz("CAM_TARGET") or (0.02, 0.0, 0.28),
+                     fov=float(os.environ.get("CAM_FOV", 33)))
+    base_eye = np.array(cam.eye, dtype=float)
     # Side column: frontal view on top, top-down CoP panel underneath.
     SIDE_W = 420
     FRONT_H = 350
@@ -647,6 +776,22 @@ def main():
     trails = [[], []]
 
     hist = []
+    # Pre-scan the WHOLE log (not the decimated frames) for the pulse, so the
+    # anticipation and decay windows are anchored on when it really happened
+    # rather than on whichever frame happened to catch it.
+    push_rows = [(float(x["t"]), float(x.get("push_fx", 0) or 0),
+                  float(x.get("push_fy", 0) or 0)) for x in rows
+                 if abs(float(x.get("push_fy", 0) or 0)) > 1e-9
+                 or abs(float(x.get("push_fx", 0) or 0)) > 1e-9]
+    push_t0 = push_rows[0][0] if push_rows else None
+    push_t1 = push_rows[-1][0] if push_rows else None
+    push_vec = (push_rows[0][1], push_rows[0][2]) if push_rows else (0.0, 0.0)
+    PUSH_PRE = float(os.environ.get("PUSH_PRE", 0.8))
+    PUSH_POST = float(os.environ.get("PUSH_POST", 2.0))
+    if push_t0 is not None:
+        print(f"push: {push_vec[1]:+.1f} N in y, t={push_t0:.3f}..{push_t1:.3f}, "
+              f"shown from -{PUSH_PRE}s to +{PUSH_POST}s")
+
     for i, r in enumerate(sel):
         q = {n: float(r[n]) for n in jnames}
         bp = np.array([float(r["x"]), float(r["y"]), float(r["z"])])
@@ -659,9 +804,35 @@ def main():
             [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
         ])
         pose = forward_kinematics(links, joints, root, bp, bR, q)
+        # Follow the robot along x. A forward walk leaves a fixed frame within
+        # a couple of seconds, and a robot that has walked out of shot cannot
+        # be judged. CAM_FOLLOW=0 keeps the old fixed camera, which is what a
+        # squat or a step in place wants -- there, motion relative to the
+        # ground is the thing being looked at.
+        if FOLLOW:
+            # Translating the eye along x is enough: the camera keeps only an
+            # orientation and a focal length, and both are invariant under a
+            # common translation of eye and target.
+            cam.eye = base_eye + np.array([bp[0], 0.0, 0.0])
         hist.append((float(r["com_z"]), float(r["com_ref_z"])))
         for k, (col, _) in enumerate(TAU_JOINTS):
             tau_hist[k].append(float(r["tau_" + col]))
+        # Show the arrow across a window around the pulse, not only while it
+        # is live: 0.10 s is five frames at 50 fps and is gone before the eye
+        # finds it.
+        push_xy, push_phase, push_dt = (0.0, 0.0), 0.0, None
+        if push_t0 is not None:
+            tt = float(r["t"])
+            push_dt = tt - push_t0
+            if -PUSH_PRE <= push_dt <= (push_t1 - push_t0) + PUSH_POST:
+                push_xy = push_vec
+                if push_dt < 0.0:
+                    push_phase = 0.15 + 0.55 * (1.0 + push_dt / PUSH_PRE)
+                elif tt <= push_t1 + 1e-9:
+                    push_phase = 1.0
+                else:
+                    decay = (tt - push_t1) / PUSH_POST
+                    push_phase = 0.75 * (1.0 - decay)
         img = render_frame(links, joints, pose, cam,
                            (float(r["t"]), float(r["com_z"]), float(r["com_ref_z"]),
                             float(r["tilt"]), hist[-260:],
@@ -673,7 +844,9 @@ def main():
                             bool(int(r.get("degraded", 0))),
                             sole_roll_deg(pose),
                             ("LEFT" if float(r.get("fz_mj_l", 0)) >= float(r.get("fz_mj_r", 0))
-                             else "RIGHT")))
+                             else "RIGHT")),
+                           push=push_xy, push_at=bp,
+                           push_phase=push_phase, push_dt=push_dt)
         if has_cop:
             feet = []
             for side in ("l", "r"):
