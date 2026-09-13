@@ -94,7 +94,7 @@ fn joint_world_pos(
 /// declares `rpy="0 0 π/2"` and `axis="1 0 0"` therefore rotates around
 /// the parent's **Y** axis, not X — and the auto-detect axis classifier
 /// needs to see the resolved body-frame direction, otherwise valid RPP
-/// URDFs that spell their pitch axes that way (keel does) get rejected.
+/// URDFs that spell their pitch axes that way (hayaashi does) get rejected.
 fn joint_axis_in_body(
     model: &RobotModel,
     joint_idx: usize,
