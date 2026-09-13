@@ -410,7 +410,7 @@ mod test_mjcf {
 
     /// Regression: MJCF `<body>` must emit URDF joint origin `rpy` as a
     /// `quat` attribute. Dropping it silently rotates every joint axis to
-    /// the parent's frame in MuJoCo's view, which on keel-style RPP layouts
+    /// the parent's frame in MuJoCo's view, which on hayaashi-style RPP layouts
     /// (`<joint origin rpy="0 0 π/2"/> <axis xyz="1 0 0"/>`) caused CHAMP
     /// forward commands to drive the body sideways (the axis MuJoCo saw was
     /// body +X, not the body +Y the IK assumed). Confirm a yawed joint
