@@ -1329,7 +1329,7 @@ fn write_mjcf_body(
         //
         // Dropping this rotation here was the root cause of the gait /
         // CHAMP "forward command produces lateral motion" bug on robots
-        // (keel, etc.) that spell their thigh pitch axis as
+        // (hayaashi, etc.) that spell their thigh pitch axis as
         // `<origin rpy="0 0 π/2"/> <axis xyz="1 0 0"/>` — without the
         // body quaternion, MuJoCo sees the joint axis in its local frame
         // (= body X) and rotates the thigh about body X instead of body Y.

@@ -34,7 +34,7 @@ articara の歩容生成（`quadruped-gait`）で確認した歩容を、articar
    これは `motion_switcher` RPC を **純 Rust（`unitree-rpc` クレート）で直接叩く**実装で、
    従来の C++ ヘルパ `go2_motion_ctrl` と等価。C++ 側も引き続き使用可:
    ```bash
-   ~/work/keel/unitree_sdk2/build/bin/go2_motion_ctrl release eth0
+   ~/work/hayaashi/unitree_sdk2/build/bin/go2_motion_ctrl release eth0
    ```
 
 詳細なブリングアップは [unitree-sdk-rs/doc/go2-bringup.md](../../unitree-sdk-rs/doc/go2-bringup.md) を参照。
@@ -44,7 +44,7 @@ articara の歩容生成（`quadruped-gait`）で確認した歩容を、articar
 ## 2. ビルド
 
 ```bash
-cd ~/work/keel/articara
+cd ~/work/hayaashi/articara
 cargo build -p go2-gait-runner            # デバッグ
 # cargo build -p go2-gait-runner --release  # 実機運用は release 推奨
 ```
@@ -102,7 +102,7 @@ cargo run -p go2-gait-runner -- intent --vx 0.02 --cycle 2.5 --four-support 0.9 
 
 ```bash
 # 0) sport_mode OFF（再掲）
-~/work/keel/unitree_sdk2/build/bin/go2_motion_ctrl release eth0
+~/work/hayaashi/unitree_sdk2/build/bin/go2_motion_ctrl release eth0
 
 # 1) まずは在地のみ（vx=0）で送信パス全体を立位静止で検証
 cargo run -p go2-gait-runner -- run eth0 --kp 200 --kd 6 --ff
