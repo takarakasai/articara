@@ -119,6 +119,11 @@ pub struct Input {
     pub previous: [Wrench; 2],
     /// `None` (the default) is the shipped problem with fixed contacts.
     pub landing: Option<Landing>,
+    /// Predicted CoM at the end of each node from the PREVIOUS solve
+    /// (`Solution::trajectory[k][0]`), used with `Config::arm_about_prior`
+    /// as the linearisation point of each node's moment arm. `None` keeps
+    /// the shipped arm about `target_com`.
+    pub prior_com: Option<Vec<na::Vector3<f64>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -158,6 +163,18 @@ pub struct Config {
     pub net_cop_equality: bool,
     /// Weight on the DCM residual (see `Input::reference_dcm_schedule`).
     /// 0 = off = the behaviour before 2026-09-25.
+    /// Take each node's moment arm about the previous solve's predicted CoM
+    /// for that node (`Input::prior_com`) instead of about `target_com`.
+    /// This is one SQP step per solve: with the arm frozen about the target,
+    /// the contact position enters only as a moment about a point the CoM
+    /// is not at, and (measured 2026-09-26, Sec.50) a landing variable then
+    /// only trades angular momentum. Off = shipped behaviour.
+    pub arm_about_prior: bool,
+    /// Weight on the node-to-node CHANGE of angular momentum, (L_{k+1} -
+    /// L_k)/dt. The shipped cost tracks L itself to zero, which a walk
+    /// cannot satisfy and which, weighted hard, broke the baseline
+    /// (Sec.50). 0 = off.
+    pub ldot_weight: f64,
     pub dcm_weight: f64,
     /// LIPM frequency sqrt(g/z) [1/s] for the DCM term. The term is skipped
     /// unless this and `dcm_weight` are both positive.
@@ -189,6 +206,8 @@ impl Default for Config {
             cop_weight: 0.0,
             net_cop_weight: 0.0,
             net_cop_equality: false,
+            arm_about_prior: false,
+            ldot_weight: 0.0,
             dcm_weight: 0.0,
             omega: 0.0,
             smooth_weight: 1e-3,
@@ -212,6 +231,8 @@ pub struct Solution {
     /// The landing offset the MPC chose (world x, y), when `Input::landing`
     /// was given.
     pub landing_shift: Option<na::Vector2<f64>>,
+    /// Predicted angular momentum at the END of each node, node 0 first.
+    pub momentum_trajectory: Vec<na::Vector3<f64>>,
     pub terminal_com: na::Vector3<f64>,
     pub terminal_momentum: na::Vector3<f64>,
 }
@@ -268,6 +289,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             cfg.net_cop_weight,
             cfg.dcm_weight,
             cfg.omega,
+            cfg.ldot_weight,
             cfg.smooth_weight,
         ]
         .iter()
@@ -282,6 +304,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             cfg.net_cop_weight,
             cfg.dcm_weight,
             cfg.omega,
+            cfg.ldot_weight,
             cfg.smooth_weight,
             cfg.torsion_mu,
         ]
@@ -371,8 +394,17 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
     };
     let gravity = na::Vector3::new(0.0, 0.0, -cfg.gravity);
     let mut node_maps: Vec<(na::DMatrix<f64>, na::DVector<f64>)> = Vec::with_capacity(n);
+    // Angular-momentum rows at the end of the previous node, for the L-dot
+    // residual. Before node 0 that is the measured momentum with no
+    // dependence on the decision vector.
+    let mut prev_mom: (na::DMatrix<f64>, na::DVector<f64>) =
+        (na::DMatrix::zeros(3, nu), bias.rows(6, 3).into_owned());
 
     for k in 0..n {
+        let arm_centre = match (&input.prior_com, cfg.arm_about_prior) {
+            (Some(prior), true) if k < prior.len() => prior[k],
+            _ => input.target_com,
+        };
         for axis in 0..3 {
             let old_c = map.row(axis).into_owned();
             let old_v = map.row(3 + axis).into_owned();
@@ -384,7 +416,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             let base = 12 * k + 6 * foot;
             let contact = &input.contacts[foot];
             let force_gain = contact.rotation / cfg.mass;
-            let torque_gain = skew(&(contact.position - input.target_com)) * contact.rotation;
+            let torque_gain = skew(&(contact.position - arm_centre)) * contact.rotation;
             for r in 0..3 {
                 for j in 0..3 {
                     map[(r, base + 3 + j)] += 0.5 * cfg.dt * cfg.dt * force_gain[(r, j)];
@@ -412,7 +444,16 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         }
 
         // State at the END of node k, with node k's own wrench included.
-        node_maps.push((map.rows(0, 6).into_owned(), bias.rows(0, 6).into_owned()));
+        node_maps.push((map.rows(0, 9).into_owned(), bias.rows(0, 9).into_owned()));
+        if cfg.ldot_weight > 0.0 {
+            for axis in 0..3 {
+                let coeff = (map.row(6 + axis).transpose() - prev_mom.0.row(axis).transpose())
+                    / cfg.dt;
+                let offset = (bias[6 + axis] - prev_mom.1[axis]) / cfg.dt;
+                add_residual(&mut rows, coeff, offset, cfg.ldot_weight);
+            }
+        }
+        prev_mom = (map.rows(6, 3).into_owned(), bias.rows(6, 3).into_owned());
 
         let frac = (k + 1) as f64 / n as f64;
         let ref_c = input.com + (input.target_com - input.com) * frac;
@@ -847,16 +888,20 @@ pub fn solve_with_workspace(
     ];
     let net_force = input.contacts[0].rotation * wrenches[0].fixed_rows::<3>(3)
         + input.contacts[1].rotation * wrenches[1].fixed_rows::<3>(3);
-    let trajectory = problem
-        .node_maps
+    let states: Vec<na::DVector<f64>> =
+        problem.node_maps.iter().map(|(m, b)| m * &result.x + b).collect();
+    let trajectory = states
         .iter()
-        .map(|(m, b)| {
-            let st = m * &result.x + b;
+        .map(|st| {
             [
                 na::Vector3::new(st[0], st[1], st[2]),
                 na::Vector3::new(st[3], st[4], st[5]),
             ]
         })
+        .collect();
+    let momentum_trajectory = states
+        .iter()
+        .map(|st| na::Vector3::new(st[6], st[7], st[8]))
         .collect();
     let landing_shift = input.landing.map(|_| {
         let n = cfg.horizon;
@@ -867,6 +912,7 @@ pub fn solve_with_workspace(
         acceleration: net_force / cfg.mass + gravity,
         trajectory,
         landing_shift,
+        momentum_trajectory,
         terminal_com: na::Vector3::new(bias[0], bias[1], bias[2])
             + na::Vector3::new(
                 (&map.row(0) * &result.x)[0],
@@ -1223,6 +1269,7 @@ mod tests {
                 reference_dcm_schedule: None,
                 previous: [Wrench::zeros(), Wrench::zeros()],
                 landing: None,
+                prior_com: None,
             },
             cfg,
         )
@@ -1343,6 +1390,52 @@ mod tests {
         let dp = sol.landing_shift.unwrap();
         assert!(dp.x < -1e-3, "expected the free foot to move back, got {dp:?}");
         assert!(dp.x.abs() <= 0.06 + 1e-9 && dp.y.abs() <= 0.03 + 1e-9, "box violated: {dp:?}");
+    }
+
+    /// A prior equal to the target at every node must reproduce the frozen
+    /// arm exactly, and a different prior must change the moment rows.
+    #[test]
+    fn an_arm_about_a_prior_equal_to_the_target_is_the_shipped_arm() {
+        let (mut input, mut cfg) = standing([0.0, 0.0]);
+        input.target_com.x += 0.03;
+        let fixed = solve(&input, &cfg).unwrap();
+        cfg.arm_about_prior = true;
+        input.prior_com = Some(vec![input.target_com; cfg.horizon]);
+        let same = solve(&input, &cfg).unwrap();
+        for foot in 0..2 {
+            for j in 0..6 {
+                assert_eq!(fixed.sole_wrenches[foot][j], same.sole_wrenches[foot][j]);
+            }
+        }
+        input.prior_com = Some(vec![input.target_com + na::Vector3::new(0.05, 0.0, 0.0); cfg.horizon]);
+        let moved = solve(&input, &cfg).unwrap();
+        let diff: f64 = (0..2)
+            .map(|f| (moved.sole_wrenches[f] - same.sole_wrenches[f]).norm())
+            .sum();
+        assert!(diff > 1e-6, "a moved prior must move the solution");
+    }
+
+    /// Penalising L-dot must make the predicted angular momentum change
+    /// less from node to node than the shipped cost does, on a robot asked
+    /// to pick up forward speed (which needs a pitch moment to be traded
+    /// off). The expected direction comes from what the term penalises.
+    #[test]
+    fn the_ldot_weight_smooths_the_predicted_angular_momentum() {
+        let (mut input, mut cfg) = standing([0.0, 0.0]);
+        input.target_velocity.x = 0.3;
+        cfg.momentum_weight = 0.0;
+        let free = solve(&input, &cfg).unwrap();
+        cfg.ldot_weight = 1e4;
+        let damped = solve(&input, &cfg).unwrap();
+        let jump = |m: &Vec<na::Vector3<f64>>| {
+            let mut worst = (m[0] - input.angular_momentum).norm();
+            for k in 1..m.len() {
+                worst = worst.max((m[k] - m[k - 1]).norm());
+            }
+            worst
+        };
+        let (jf, jd) = (jump(&free.momentum_trajectory), jump(&damped.momentum_trajectory));
+        assert!(jd < 0.5 * jf, "L-dot weight did not smooth: free {jf:.4} damped {jd:.4}");
     }
 
     #[test]

@@ -2351,6 +2351,10 @@ fn main() {
     // applies its shift -- `shift_next` (non-accumulating) and a rebuilt DCM
     // plan -- and the two are mutually exclusive: both on would be two
     // authorities over the same landing. Off by default.
+    // Step-4 body (doc/from_claude/20260926_sqp_mpc_design.md): 2a moment
+    // arm about the previous solve's predicted CoM, 2b penalise L-dot.
+    let mpc_arm_about_prior = flag("MPC_ARM_ABOUT_PRIOR", false);
+    let mpc_w_ldot = env_f64("MPC_W_LDOT", 0.0).max(0.0);
     let mpc_footstep = flag("MPC_FOOTSTEP", false);
     assert!(
         !(mpc_footstep && contact_plan_on),
@@ -6390,6 +6394,9 @@ fn main() {
                     min_fz_schedule,
                     previous,
                     landing,
+                    prior_com: (mpc_arm_about_prior)
+                        .then(|| wrench_mpc_traj.as_ref().map(|(_, _, _, tr)| tr.iter().map(|[c, _]| *c).collect()))
+                        .flatten(),
                 };
                 let mut config = articara::biped::wrench_mpc::Config {
                     horizon: stair_wrench_horizon,
@@ -6411,6 +6418,8 @@ fn main() {
                     wrench_weight: mpc_w_wrench,
                     dcm_weight: mpc_dcm_weight,
                     omega,
+                    arm_about_prior: mpc_arm_about_prior,
+                    ldot_weight: mpc_w_ldot,
                     smooth_weight: mpc_w_smooth,
                     cop_weight: mpc_cop_weight,
                     net_cop_weight: mpc_net_cop_weight,
