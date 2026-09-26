@@ -2322,6 +2322,26 @@ fn main() {
     // 0 = off; the MPC then has no opinion about the CoP (see wrench_mpc.rs).
     let mpc_cop_weight = env_f64("MPC_COP_W", 0.0).max(0.0);
     let mpc_net_cop_weight = env_f64("MPC_NET_COP_W", 0.0).max(0.0);
+    // Give the MPC the SAME pressure reference the WBC is executing.
+    //
+    // The net-CoP schedule below is read off the open-loop plan,
+    // `dcm_plan.reference(at).p`. The WBC does not track that: it tracks
+    // `p_cmd`, the plan plus DCM feedback, clamped to the real support.
+    // Measured 2026-09-25 the two differ by 5.6 mm (median, double support),
+    // and measured 2026-09-26 -- once the `wbc_cop` column's frame bias was
+    // fixed (Sec.43) -- the MPC's own pressure sits 9 mm ahead of `p_cmd` in
+    // double support while the WBC sits within 5 mm of it. Handing the MPC
+    // authority injects that 9 mm. This shifts the whole schedule by the
+    // current feedback offset (p_cmd - plan(t)) so node 0 asks for what the
+    // WBC is asking for; later nodes keep the plan's shape. 0 = off = the
+    // shipped schedule, bit-identical (adds an exact zero).
+    let mpc_cop_ref_cmd = flag("MPC_COP_REF_CMD", false);
+    // 0 = off, 1 = seed the FIRST solve from the measured load, 2 = anchor
+    // EVERY solve to the measured load (the stair-transfer ramp's rule, made
+    // general): the smoothness term then says "do not jump away from what the
+    // robot is actually carrying" instead of "do not jump away from what the
+    // MPC said last time", which is what makes it lag every load transfer.
+    let mpc_seed_previous = env_f64("MPC_SEED_PREVIOUS", 0.0) as i32;
     // Weight on tracking the PLAN'S DCM inside the MPC. Without it the MPC's
     // implied feedback law is not a DCM law -- measured 2026-09-25, against a
     // 49 mm divergence the shipped cost moves the pressure 2.7 mm, where a
@@ -6071,6 +6091,27 @@ fn main() {
                 );
                 let mut previous =
                     wrench_mpc_command.unwrap_or([articara::biped::wrench_mpc::Wrench::zeros(); 2]);
+                // MPC_SEED_PREVIOUS: start the smoothness anchor at the
+                // MEASURED load instead of at zero.
+                //
+                // The smoothness term penalises distance from `previous`, and
+                // on the first solve `previous` is zero. With the weight that
+                // kills the chatter (MPC_W_SMOOTH=10, 1e4x the default) the
+                // commanded wrench then ramps up at ~150 N/s: measured
+                // 2026-09-26, 148 N total at t=1.0 s and 113 N on the stance
+                // leg as the first single support began, against 353 N the
+                // WBC needed. Under MPC_SOLE_AUTHORITY that under-load IS the
+                // regulariser target; the welded robot absorbed it (151/192),
+                // the free-arm robot touched down early at 2.6 s and fell at
+                // 3.2 s in half the members. The stair-transfer ramp already
+                // seeds `previous` this way (`seed_previous`); this does the
+                // same for the first solve of a walk. Off = zero seed = the
+                // shipped behaviour.
+                if mpc_seed_previous == 2 || (mpc_seed_previous == 1 && wrench_mpc_command.is_none()) {
+                    for side in 0..2 {
+                        previous[side][5] = measured_pre[side].max(0.0);
+                    }
+                }
                 if let Some(ramp) = touchdown_load_ramp.as_mut()
                     && ramp.high == high
                     && ramp.seed_previous
@@ -6233,10 +6274,15 @@ fn main() {
                     reference_net_cop_schedule: (mpc_net_cop_weight > 0.0
                         || mpc_net_cop_eq)
                         .then(|| {
+                        let shift = if mpc_cop_ref_cmd {
+                            p_cmd - dcm_plan.reference(t).p
+                        } else {
+                            na::Vector2::zeros()
+                        };
                         (0..stair_wrench_horizon)
                             .map(|k| {
                                 let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
-                                dcm_plan.reference(at).p
+                                dcm_plan.reference(at).p + shift
                             })
                             .collect()
                     }),
@@ -7793,10 +7839,27 @@ fn main() {
                     // forces the WBC asked for, so the two are comparable
                     // against the commanded ZMP.
                     {
+                        // `cop_from_sole_wrench` gives the point in the SOLE
+                        // CENTRE frame, and `oMi` is the ankle. On G1 the sole
+                        // centre sits `sole_centre_x` = 35 mm ahead of the
+                        // ankle, so adding the two directly biased this column
+                        // by -35 mm in x -- which read as "the WBC puts its
+                        // pressure 32 mm behind the command" and was reported
+                        // that way on 2026-09-25 (mpc_in_the_loop.md Sec.29).
+                        // In single support the same column read -37.5 mm,
+                        // which a CoP confined to one sole cannot do; that is
+                        // how the bias was caught (2026-09-26). Same
+                        // construction as `Footsteps::from_fk`.
                         let pose = &data.oMi[mi];
                         let rot = misarta::se3::rotation_matrix(pose);
                         let origin = misarta::se3::translation(pose);
-                        let point = origin + rot * na::Vector3::new(cx, cy, 0.0);
+                        let point = origin
+                            + rot
+                                * na::Vector3::new(
+                                    prof.sole_centre_x + cx,
+                                    cy,
+                                    -prof.sole_below_origin,
+                                );
                         if !wbc_net_cop_acc[2].is_finite() {
                             wbc_net_cop_acc = [0.0; 3];
                         }
