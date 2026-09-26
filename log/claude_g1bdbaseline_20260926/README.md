@@ -48,3 +48,6 @@ URDF: `log/claude_g1arms_20260925/g1_23dof_arms_free.urdf`（質量 34.134 kg、
 
 ## v4.1（09-27）
 v4 + `STAIR_TOE_MARGIN=0` を `log/claude_g1champion_20260927v41/` に昇格。段 192/192 ×2 シード、低段 191/192、平地 bit 同一。
+
+2026-09-27: controls_v5_candidate_{C,D,D16}.json = 着地変数（MPC_FOOTSTEP）系の候補。D は std 押し +2.33／wide 押し +3.62 だが
+wide holdout 段 −2.50 で不採用（凍結門でも両立せず）。チャンピオンは v4.1 のまま。経緯は doc/from_claude/20260926_sqp_mpc_design.md。

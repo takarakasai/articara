@@ -183,6 +183,15 @@ pub struct Config {
     /// (design note Sec.8). Needs `Input::dcm_now`, `Input::landing`,
     /// `reference_net_cop_schedule`, `reference_dcm_schedule`, `omega`. 0 = off.
     pub landing_capture_weight: f64,
+    /// Let the landing offset enter the momentum rows and the net-CoP rows
+    /// as the extra moment `dp x F_k` (the 2026-09-26 coupling). Measured
+    /// 2026-09-27 (V5A i8_d0/m01): with it the landing jitters +-30-47 mm
+    /// during undisturbed steps while the DCM error stays within 5 mm -- the
+    /// optimiser trades the landing against angular momentum, not against
+    /// capture -- and the swing target lurches late in swing. `false` keeps
+    /// the landing in the capture rows and its own cost only.
+    /// true = shipped behaviour.
+    pub landing_moment_coupling: bool,
     pub arm_about_prior: bool,
     /// Weight on the node-to-node CHANGE of angular momentum, (L_{k+1} -
     /// L_k)/dt. The shipped cost tracks L itself to zero, which a walk
@@ -221,6 +230,7 @@ impl Default for Config {
             net_cop_weight: 0.0,
             net_cop_equality: false,
             landing_capture_weight: 0.0,
+            landing_moment_coupling: true,
             arm_about_prior: false,
             ldot_weight: 0.0,
             dcm_weight: 0.0,
@@ -445,6 +455,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             // Landing as a variable: the extra moment `dp x F_k` about the
             // target, linearised at the planned load (see `Landing`).
             if let Some(land) = input.landing
+                && cfg.landing_moment_coupling
                 && land.foot == foot
                 && k >= land.first_node
                 && input.contact_schedule[k][foot]
@@ -606,6 +617,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
                 let d = na::Vector3::new(p.x - c.x, p.y - c.y, p.z);
                 let cross = skew(&d) * rot;
                 if let Some(land) = input.landing
+                    && cfg.landing_moment_coupling
                     && land.foot == foot
                     && k >= land.first_node
                 {
@@ -1426,6 +1438,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// With the moment coupling off and no capture rows, the landing has
+    /// only its own cost: it must stay at zero and the wrenches must equal
+    /// the fixed-contact solution even with a wide box. (With the coupling
+    /// on, the same box lets the momentum cost move it -- see the next test.)
+    #[test]
+    fn without_moment_coupling_the_landing_only_moves_for_capture() {
+        let (mut input, mut cfg) = standing([0.0, 0.0]);
+        input.target_velocity.x = 0.3;
+        let fixed = solve(&input, &cfg).unwrap();
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05] });
+        cfg.landing_moment_coupling = false;
+        let free = solve(&input, &cfg).unwrap();
+        let dp = free.landing_shift.unwrap();
+        assert!(dp.norm() < 1e-7, "decoupled landing moved: {dp:?}");
+        for foot in 0..2 {
+            for j in 0..6 {
+                assert!(
+                    (fixed.sole_wrenches[foot][j] - free.sole_wrenches[foot][j]).abs() < 1e-5,
+                    "foot {foot} comp {j}: {} vs {}", fixed.sole_wrenches[foot][j], free.sole_wrenches[foot][j]
+                );
+            }
+        }
+        cfg.landing_moment_coupling = true;
+        let coupled = solve(&input, &cfg).unwrap();
+        assert!(coupled.landing_shift.unwrap().norm() > 1e-3, "coupling on must move it");
     }
 
     /// Asking for forward VELOCITY (target position unchanged, so the frozen
