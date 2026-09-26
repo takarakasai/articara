@@ -18,6 +18,26 @@ pub struct Contact {
     pub cop_half: (f64, f64),
 }
 
+/// A footstep the MPC may move: the landing of `foot`, active from node
+/// `first_node` on, as a decision variable `dp` in R^2 (world x, y).
+///
+/// The contact position enters the problem only through the angular-momentum
+/// rows and the net-CoP rows, both bilinear in (p, f); the friction, CoP-box,
+/// torsion and normal-force constraints live in the sole frame and do not
+/// see it. So one SQP step is enough to make the landing a variable: the
+/// cross term is linearised about a prior world force `F_k` per node,
+///     (p + dp - c) x F  =  (p - c) x F  +  dp x F_k  =  ...  - skew(F_k) dp,
+/// with `F_k = R [0, 0, fz_ref_k]`, the planned load -- already available per
+/// node, so no solution history is needed. `weight * |dp|^2` is the cost of
+/// moving the foot off the plan; `max` boxes it (reach comes later).
+#[derive(Clone, Copy, Debug)]
+pub struct Landing {
+    pub foot: usize,
+    pub first_node: usize,
+    pub weight: f64,
+    pub max: [f64; 2],
+}
+
 #[derive(Clone, Debug)]
 pub struct Input {
     pub com: na::Vector3<f64>,
@@ -97,6 +117,8 @@ pub struct Input {
     /// first sample that reports contact.
     pub min_fz_schedule: Vec<[f64; 2]>,
     pub previous: [Wrench; 2],
+    /// `None` (the default) is the shipped problem with fixed contacts.
+    pub landing: Option<Landing>,
 }
 
 #[derive(Clone, Debug)]
@@ -187,6 +209,9 @@ pub struct Solution {
     /// so a consumer that wants the MPC to steer the CoM takes the
     /// trajectory and keeps its own tracking law.
     pub trajectory: Vec<[na::Vector3<f64>; 2]>,
+    /// The landing offset the MPC chose (world x, y), when `Input::landing`
+    /// was given.
+    pub landing_shift: Option<na::Vector2<f64>>,
     pub terminal_com: na::Vector3<f64>,
     pub terminal_momentum: na::Vector3<f64>,
 }
@@ -222,7 +247,8 @@ pub struct DenseProblem {
 /// Assemble without running a solver; allocation time is separate from solve time.
 pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
     let n = cfg.horizon;
-    let nu = 12 * n;
+    let n_land = if input.landing.is_some() { 2 } else { 0 };
+    let nu = 12 * n + n_land;
     if n == 0
         || [
             cfg.dt,
@@ -367,6 +393,22 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
                     map[(6 + r, base + 3 + j)] += cfg.dt * torque_gain[(r, j)];
                 }
             }
+            // Landing as a variable: the extra moment `dp x F_k` about the
+            // target, linearised at the planned load (see `Landing`).
+            if let Some(land) = input.landing
+                && land.foot == foot
+                && k >= land.first_node
+                && input.contact_schedule[k][foot]
+            {
+                let f_prior = contact.rotation
+                    * na::Vector3::new(0.0, 0.0, input.reference_fz_schedule[k][foot]);
+                let gain = -skew(&f_prior);
+                for r in 0..3 {
+                    for j in 0..2 {
+                        map[(6 + r, 12 * n + j)] += cfg.dt * gain[(r, j)];
+                    }
+                }
+            }
         }
 
         // State at the END of node k, with node k's own wrench included.
@@ -505,6 +547,18 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
                 // World moment about `c`:  R m + (p - c) x (R f).
                 let d = na::Vector3::new(p.x - c.x, p.y - c.y, p.z);
                 let cross = skew(&d) * rot;
+                if let Some(land) = input.landing
+                    && land.foot == foot
+                    && k >= land.first_node
+                {
+                    let f_prior =
+                        rot * na::Vector3::new(0.0, 0.0, input.reference_fz_schedule[k][foot]);
+                    let gain = -skew(&f_prior);
+                    for j in 0..2 {
+                        rx[12 * n + j] += gain[(0, j)];
+                        ry[12 * n + j] += gain[(1, j)];
+                    }
+                }
                 for j in 0..3 {
                     rx[b + j] += rot[(0, j)];
                     ry[b + j] += rot[(1, j)];
@@ -532,6 +586,13 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         }
         (Some(a), Some(na::DVector::zeros(eq_rows.len())))
     };
+    if let Some(land) = input.landing {
+        for j in 0..2 {
+            let mut coeff = na::DVector::zeros(nu);
+            coeff[12 * n + j] = 1.0;
+            add_residual(&mut rows, coeff, 0.0, land.weight);
+        }
+    }
     let mut objective = na::DMatrix::zeros(rows.len(), nu);
     let mut offset = na::DVector::zeros(rows.len());
     for (r, (a, b)) in rows.into_iter().enumerate() {
@@ -543,8 +604,17 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
     let linear = objective.transpose() * offset;
 
     // Sole-frame friction, CoP, torsion, and normal-force constraints.
-    let mut d = na::DMatrix::zeros(24 * n, nu);
-    let mut rhs = na::DVector::zeros(24 * n);
+    let n_box = if input.landing.is_some() { 4 } else { 0 };
+    let mut d = na::DMatrix::zeros(24 * n + n_box, nu);
+    let mut rhs = na::DVector::zeros(24 * n + n_box);
+    if let Some(land) = input.landing {
+        for j in 0..2 {
+            d[(24 * n + 2 * j, 12 * n + j)] = 1.0;
+            rhs[24 * n + 2 * j] = land.max[j].max(0.0);
+            d[(24 * n + 2 * j + 1, 12 * n + j)] = -1.0;
+            rhs[24 * n + 2 * j + 1] = land.max[j].max(0.0);
+        }
+    }
     let mut row = 0;
     for k in 0..n {
         for foot in 0..2 {
@@ -788,10 +858,15 @@ pub fn solve_with_workspace(
             ]
         })
         .collect();
+    let landing_shift = input.landing.map(|_| {
+        let n = cfg.horizon;
+        na::Vector2::new(result.x[12 * n], result.x[12 * n + 1])
+    });
     Some(Solution {
         sole_wrenches: wrenches,
         acceleration: net_force / cfg.mass + gravity,
         trajectory,
+        landing_shift,
         terminal_com: na::Vector3::new(bias[0], bias[1], bias[2])
             + na::Vector3::new(
                 (&map.row(0) * &result.x)[0],
@@ -1147,6 +1222,7 @@ mod tests {
                 reference_net_cop_schedule: None,
                 reference_dcm_schedule: None,
                 previous: [Wrench::zeros(), Wrench::zeros()],
+                landing: None,
             },
             cfg,
         )
@@ -1225,6 +1301,48 @@ mod tests {
             assert!((c - input.com).norm() < 0.01, "node {k}: c={c:?} drifted from {:?}", input.com);
             assert!(v.norm() < 0.05, "node {k}: v={v:?} should be ~0 at rest");
         }
+    }
+
+    /// With the landing boxed to zero the problem must reproduce the
+    /// fixed-contact solution exactly: the extra variable cannot move, and
+    /// its rows contribute nothing.
+    #[test]
+    fn a_landing_boxed_to_zero_reproduces_the_fixed_contact_solution() {
+        let (mut input, cfg) = standing([0.0, 0.0]);
+        input.target_com.x += 0.05;
+        let fixed = solve(&input, &cfg).unwrap();
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.0, 0.0] });
+        let boxed = solve(&input, &cfg).unwrap();
+        let dp = boxed.landing_shift.unwrap();
+        assert!(dp.norm() < 1e-9, "{dp:?}");
+        for foot in 0..2 {
+            for j in 0..6 {
+                assert!(
+                    (fixed.sole_wrenches[foot][j] - boxed.sole_wrenches[foot][j]).abs() < 1e-6,
+                    "foot {foot} comp {j}: {} vs {}", fixed.sole_wrenches[foot][j], boxed.sole_wrenches[foot][j]
+                );
+            }
+        }
+    }
+
+    /// Asking for forward VELOCITY (target position unchanged, so the frozen
+    /// moment arm about the target has no x component) needs f_x > 0 at
+    /// ground level, which is a negative pitch angular momentum; the
+    /// momentum cost then wants the free foot BEHIND (dp.x < 0), because
+    /// dp x F_k with F_k upward gives -dp.x * fz in y. The expected sign is
+    /// derived from the LIPM here, not read off the rows. (A first draft put
+    /// the target 10 cm ahead as well; the arm term (p - c) x F then
+    /// dominates and the correct answer is the OPPOSITE sign -- the test was
+    /// wrong, not the code.)
+    #[test]
+    fn a_forward_target_moves_the_free_landing_back() {
+        let (mut input, cfg) = standing([0.0, 0.0]);
+        input.target_velocity.x = 0.3;
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.06, 0.03] });
+        let sol = solve(&input, &cfg).unwrap();
+        let dp = sol.landing_shift.unwrap();
+        assert!(dp.x < -1e-3, "expected the free foot to move back, got {dp:?}");
+        assert!(dp.x.abs() <= 0.06 + 1e-9 && dp.y.abs() <= 0.03 + 1e-9, "box violated: {dp:?}");
     }
 
     #[test]

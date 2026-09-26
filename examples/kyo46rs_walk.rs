@@ -1563,6 +1563,8 @@ fn main() {
         "wrench_mpc_fz_r",
         "mpc_cop_x",
         "mpc_cop_y",
+        "mpc_fs_x",
+        "mpc_fs_y",
         "wbc_cop_x",
         "wbc_cop_y",
         "wrench_mpc_solves",
@@ -2288,6 +2290,7 @@ fn main() {
     let stair_td_sole_frame = flag("STAIR_TD_SOLE_FRAME", false);
     // Keep the sole flat through a height-changing swing. See the use sites.
     let stair_rise_sole_pose = flag("STAIR_RISE_SOLE_POSE", false);
+    let stair_rise_sole_pose_min_dz = env_f64("STAIR_RISE_SOLE_POSE_MIN_DZ", 0.0).max(0.0);
     let stair_wrench_mpc = flag("STAIR_WRENCH_MPC", false);
     // Run the wrench MPC outside a stair transfer too.
     //
@@ -2342,6 +2345,22 @@ fn main() {
     // robot is actually carrying" instead of "do not jump away from what the
     // MPC said last time", which is what makes it lag every load transfer.
     let mpc_seed_previous = env_f64("MPC_SEED_PREVIOUS", 0.0) as i32;
+    // MPC_FOOTSTEP: the swing foot's landing becomes a decision variable of
+    // the wrench MPC (`wrench_mpc::Landing`, one SQP step about the planned
+    // load). The chosen offset is applied the way the contact_plan adjuster
+    // applies its shift -- `shift_next` (non-accumulating) and a rebuilt DCM
+    // plan -- and the two are mutually exclusive: both on would be two
+    // authorities over the same landing. Off by default.
+    let mpc_footstep = flag("MPC_FOOTSTEP", false);
+    assert!(
+        !(mpc_footstep && contact_plan_on),
+        "MPC_FOOTSTEP and the contact_plan adjuster are two authorities over the same landing; turn one off"
+    );
+    let mpc_footstep_w = env_f64("MPC_FOOTSTEP_W", 100.0).max(0.0);
+    let mpc_footstep_max = [
+        env_f64("MPC_FOOTSTEP_MAX_X", 0.06).max(0.0),
+        env_f64("MPC_FOOTSTEP_MAX_Y", 0.03).max(0.0),
+    ];
     // Weight on tracking the PLAN'S DCM inside the MPC. Without it the MPC's
     // implied feedback law is not a DCM law -- measured 2026-09-25, against a
     // 49 mm divergence the shipped cost moves the pressure 2.7 mm, where a
@@ -2919,6 +2938,12 @@ fn main() {
     // Preserve the physical origin/axes of the held MPC forecast for diagnostic shifts.
     let mut wrench_mpc_frames: Option<[articara::biped::wrench_mpc::Contact; 2]> = None;
     let mut wrench_mpc_acceleration = na::Vector3::zeros();
+    // MPC_FOOTSTEP bookkeeping: which slice's landing is being moved and how
+    // much of the MPC's offset has already been applied to it (the same
+    // non-ratcheting rule as `cp_applied`).
+    let mut mpc_fs_slice: Option<usize> = None;
+    let mut mpc_fs_applied = na::Vector2::zeros();
+    let mut mpc_fs_last = na::Vector2::zeros();
     // (solve time, CoM at solve, CoM velocity at solve, predicted [c, v] per node end)
     let mut wrench_mpc_traj: Option<(f64, na::Vector3<f64>, na::Vector3<f64>, Vec<[na::Vector3<f64>; 2]>)> = None;
     // Planned dh over the MPC horizon, held between MPC updates. Zero until
@@ -6216,6 +6241,31 @@ fn main() {
                 }
                 let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
                 let h = &cmm * v_dvec;
+                // MPC_FOOTSTEP: in single support, the swing foot's landing is
+                // a variable from the first node at which the schedule has it
+                // down.
+                let landing = if mpc_footstep
+                    && stair_transfer_cmd.is_none()
+                    && wrench_mpc_apply
+                    && let Support::Single { swing, .. } = support
+                {
+                    (0..stair_wrench_horizon)
+                        .find(|&k| {
+                            let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
+                            match gait.support_at(at) {
+                                Support::Double => true,
+                                Support::Single { swing: sw, .. } => sw != swing,
+                            }
+                        })
+                        .map(|first_node| articara::biped::wrench_mpc::Landing {
+                            foot: swing,
+                            first_node,
+                            weight: mpc_footstep_w,
+                            max: mpc_footstep_max,
+                        })
+                } else {
+                    None
+                };
                 let input = articara::biped::wrench_mpc::Input {
                     com,
                     velocity: com_vel,
@@ -6339,6 +6389,7 @@ fn main() {
                     }),
                     min_fz_schedule,
                     previous,
+                    landing,
                 };
                 let mut config = articara::biped::wrench_mpc::Config {
                     horizon: stair_wrench_horizon,
@@ -6446,6 +6497,29 @@ fn main() {
                         }
                         wrench_mpc_acceleration = solution.acceleration;
                         wrench_mpc_traj = Some((t, com, com_vel, solution.trajectory.clone()));
+                        if let Some(dp) = solution.landing_shift
+                            && let Some(land) = landing
+                        {
+                            let i = gait.index_at(t);
+                            if mpc_fs_slice != Some(i) {
+                                mpc_fs_slice = Some(i);
+                                mpc_fs_applied = na::Vector2::zeros();
+                            }
+                            let d = dp - mpc_fs_applied;
+                            mpc_fs_last = dp;
+                            if d.norm() > 1e-6 {
+                                footsteps.shift_next(i, land.foot, d);
+                                mpc_fs_applied = dp;
+                                dcm_plan = DcmPlan::from_footsteps_rolled(
+                                    &gait,
+                                    &footsteps,
+                                    z_lip,
+                                    zmp_lat_scale,
+                                    zmp_roll,
+                                );
+                                n_replan += 1;
+                            }
+                        }
                         if std::env::var("MPC_TRAJ_DEBUG").is_ok() && t < 2.0 {
                             let xi0 = com.xy() + com_vel.xy() / omega;
                             let r0 = dcm_plan.reference(t);
@@ -7220,7 +7294,16 @@ fn main() {
                         // the answer: `SWING_ROT=3` costs a row of null space
                         // the CEM-tuned gains do not have, and the same recipe
                         // then falls at 3.37 s on flat ground, two steps in.
-                        || (stair_rise_sole_pose && dz.abs() > 1e-9)
+                        // STAIR_RISE_SOLE_POSE_MIN_DZ: only pay the two extra
+                        // swing rows for a step that needs them. At a 1 cm
+                        // riser the free-arm recipe (arm hold above swing =
+                        // less null space) went 7/24 with this on and 18/24
+                        // with it off, while it is load-bearing for deep
+                        // treads (measured 2026-09-26, Sec.54). 0 = any dz,
+                        // the shipped behaviour.
+                        || (stair_rise_sole_pose
+                            && dz.abs() > 1e-9
+                            && dz.abs() >= stair_rise_sole_pose_min_dz)
                     {
                         // Full sole orientation is essential only for the deep
                         // stair transfer. Applying it to the approach made the
@@ -8733,6 +8816,8 @@ fn main() {
                 wrench_mpc_command.as_ref().map_or(0.0, |w| w[1][5]),
                 diag_mpc_net_cop[0],
                 diag_mpc_net_cop[1],
+                mpc_fs_last.x,
+                mpc_fs_last.y,
                 diag_wbc_net_cop[0],
                 diag_wbc_net_cop[1],
                 wrench_mpc_solves as f64,
