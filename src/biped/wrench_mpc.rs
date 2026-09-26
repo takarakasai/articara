@@ -180,6 +180,13 @@ impl Default for Config {
 pub struct Solution {
     pub sole_wrenches: [Wrench; 2],
     pub acceleration: na::Vector3<f64>,
+    /// Predicted CoM `[position, velocity]` at the END of each node, node 0
+    /// first. The node-0 acceleration alone proved unusable as a WBC
+    /// reference (a 50 ms average handed to a 5 ms loop; measured
+    /// 2026-09-26 it collapsed the robot through a vertical feedback loop),
+    /// so a consumer that wants the MPC to steer the CoM takes the
+    /// trajectory and keeps its own tracking law.
+    pub trajectory: Vec<[na::Vector3<f64>; 2]>,
     pub terminal_com: na::Vector3<f64>,
     pub terminal_momentum: na::Vector3<f64>,
 }
@@ -200,6 +207,11 @@ pub struct DenseProblem {
     pub objective_constant: f64,
     pub terminal_map: na::DMatrix<f64>,
     pub terminal_bias: na::DVector<f64>,
+    /// Per-node CoM position and velocity as affine functions of the
+    /// decision vector: `(rows 0..6 of the state map, bias 0..6)` at the END
+    /// of each node. Kept so a solution can report its predicted trajectory,
+    /// not just its terminal state (see `Solution::trajectory`).
+    pub node_maps: Vec<(na::DMatrix<f64>, na::DVector<f64>)>,
     /// Equality rows, when something asks for one (see
     /// `Config::net_cop_equality`). `None` keeps the shipped problem, which
     /// has inequalities only.
@@ -332,6 +344,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         }
     };
     let gravity = na::Vector3::new(0.0, 0.0, -cfg.gravity);
+    let mut node_maps: Vec<(na::DMatrix<f64>, na::DVector<f64>)> = Vec::with_capacity(n);
 
     for k in 0..n {
         for axis in 0..3 {
@@ -355,6 +368,9 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
                 }
             }
         }
+
+        // State at the END of node k, with node k's own wrench included.
+        node_maps.push((map.rows(0, 6).into_owned(), bias.rows(0, 6).into_owned()));
 
         let frac = (k + 1) as f64 / n as f64;
         let ref_c = input.com + (input.target_com - input.com) * frac;
@@ -588,6 +604,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         objective_constant,
         terminal_map: map,
         terminal_bias: bias,
+        node_maps,
         a_eq,
         b_eq,
     })
@@ -760,9 +777,21 @@ pub fn solve_with_workspace(
     ];
     let net_force = input.contacts[0].rotation * wrenches[0].fixed_rows::<3>(3)
         + input.contacts[1].rotation * wrenches[1].fixed_rows::<3>(3);
+    let trajectory = problem
+        .node_maps
+        .iter()
+        .map(|(m, b)| {
+            let st = m * &result.x + b;
+            [
+                na::Vector3::new(st[0], st[1], st[2]),
+                na::Vector3::new(st[3], st[4], st[5]),
+            ]
+        })
+        .collect();
     Some(Solution {
         sole_wrenches: wrenches,
         acceleration: net_force / cfg.mass + gravity,
+        trajectory,
         terminal_com: na::Vector3::new(bias[0], bias[1], bias[2])
             + na::Vector3::new(
                 (&map.row(0) * &result.x)[0],
@@ -1179,6 +1208,23 @@ mod tests {
             p_without < 0.2 * xi && p_harder > 0.8 * xi,
             "xi={xi:.4} without={p_without:.4} with={p_with:.4} harder={p_harder:.4}"
         );
+    }
+
+    /// The trajectory's last node must be the terminal state the solver
+    /// already reports, and a robot at rest asked to stay at rest must be
+    /// predicted to stay put. Expected values come from the inputs, not from
+    /// the node bookkeeping being tested.
+    #[test]
+    fn the_trajectory_ends_at_the_terminal_state_and_a_standing_robot_stays_put() {
+        let (input, cfg) = standing([0.0, 0.0]);
+        let sol = solve(&input, &cfg).unwrap();
+        assert_eq!(sol.trajectory.len(), cfg.horizon);
+        let last = sol.trajectory[cfg.horizon - 1][0];
+        assert!((last - sol.terminal_com).norm() < 1e-9, "{last:?} vs {:?}", sol.terminal_com);
+        for (k, [c, v]) in sol.trajectory.iter().enumerate() {
+            assert!((c - input.com).norm() < 0.01, "node {k}: c={c:?} drifted from {:?}", input.com);
+            assert!(v.norm() < 0.05, "node {k}: v={v:?} should be ~0 at rest");
+        }
     }
 
     #[test]

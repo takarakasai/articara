@@ -2370,6 +2370,21 @@ fn main() {
     let stair_touchdown_load_time = env_f64("STAIR_TOUCHDOWN_LOAD_TIME", 0.50).max(0.05);
     let stair_touchdown_high_share = env_f64("STAIR_TOUCHDOWN_HIGH_SHARE", 0.25).clamp(0.05, 0.45);
     let stair_wrench_accel = flag("STAIR_WRENCH_ACCEL", false);
+    let stair_wrench_accel_xy = flag("STAIR_WRENCH_ACCEL_XY", false);
+    // MPC_XI_REF: keep the WBC's DCM law, but take its REFERENCE (xi_ref,
+    // xi_dot_ref) from the MPC's predicted CoM trajectory instead of the
+    // open-loop DCM plan. This is the "WBC tracks the MPC trajectory" shape:
+    // the MPC decides where the CoM goes, the 200 Hz DCM law realises it.
+    // Handing over the node-0 acceleration directly did not work (Sec.47).
+    let mpc_xi_ref = flag("MPC_XI_REF", false);
+    // Look-ahead [s] into the MPC trajectory for the reference. At 0 the
+    // reference is the prediction AT t, which starts from the measured state
+    // and therefore equals it: the DCM law's error term vanishes and only the
+    // reference-rate term is left, which is positive feedback -- measured
+    // 2026-09-26 the standing robot ran away in 1.2 s with xi_ref == xi at
+    // every tick. Sampling one node or more ahead keeps the error term.
+    let mpc_xi_ref_lead = env_f64("MPC_XI_REF_LEAD", 0.0).max(0.0);
+    let mpc_xi_ref_transfer_plan = flag("MPC_XI_REF_TRANSFER_PLAN", false);
     let stair_wrench_floor = flag("STAIR_WRENCH_FLOOR", false);
     // (B) Do not hand the whole load to the high foot by the end of Capture.
     //
@@ -2904,6 +2919,8 @@ fn main() {
     // Preserve the physical origin/axes of the held MPC forecast for diagnostic shifts.
     let mut wrench_mpc_frames: Option<[articara::biped::wrench_mpc::Contact; 2]> = None;
     let mut wrench_mpc_acceleration = na::Vector3::zeros();
+    // (solve time, CoM at solve, CoM velocity at solve, predicted [c, v] per node end)
+    let mut wrench_mpc_traj: Option<(f64, na::Vector3<f64>, na::Vector3<f64>, Vec<[na::Vector3<f64>; 2]>)> = None;
     // Planned dh over the MPC horizon, held between MPC updates. Zero until
     // the first solution, so a tick before the MPC has run reproduces the
     // zero-reference behaviour exactly.
@@ -4682,6 +4699,32 @@ fn main() {
         // ---- P1: DCM-tracking CoM acceleration -------------------------
         let xi = dcm_of(&com, &com_vel, omega);
         let mut r = dcm_plan.reference_preview(t, dcm_preview_horizon);
+        // During a stair transfer the MPC's contact schedule falls back to
+        // "repeat the current stance" (see the Input construction), so its
+        // predicted trajectory is not a usable reference there: measured
+        // 2026-09-26, MPC_XI_REF walked the flat approach and fell at the
+        // step in 190/192 members. MPC_XI_REF_TRANSFER_PLAN hands the
+        // reference back to the plan for the transfer.
+        if mpc_xi_ref
+            && !(mpc_xi_ref_transfer_plan && stair_transfer_cmd.is_some())
+            && let Some((t0, c0, v0, ref traj)) = wrench_mpc_traj
+            && !traj.is_empty()
+        {
+            // Knots: k=0 is the measured state at the solve, k=i+1 is the
+            // MPC's prediction at the end of node i. Linear between knots.
+            let dtn = stair_wrench_preview_dt;
+            let tau = (t - t0 + mpc_xi_ref_lead).min(traj.len() as f64 * dtn);
+            if tau >= 0.0 {
+                let kf = ((tau / dtn).floor() as usize).min(traj.len() - 1);
+                let (ca, va) = if kf == 0 { (c0, v0) } else { (traj[kf - 1][0], traj[kf - 1][1]) };
+                let (cb, vb) = (traj[kf][0], traj[kf][1]);
+                let a = ((tau - kf as f64 * dtn) / dtn).clamp(0.0, 1.0);
+                let xi_a = ca.xy() + va.xy() / omega;
+                let xi_b = cb.xy() + vb.xy() / omega;
+                r.xi = xi_a * (1.0 - a) + xi_b * a;
+                r.xi_dot = (xi_b - xi_a) / dtn;
+            }
+        }
         let mut resume_ss_hold_active = false;
         if stair_resume_ss_dcm_hold && stair_transfer_completed > 0 && stair_transfer.is_none() {
             if resume_ss_dcm_hold.is_none()
@@ -6402,6 +6445,19 @@ fn main() {
                             wrench_mpc_frames = Some(input.contacts.clone());
                         }
                         wrench_mpc_acceleration = solution.acceleration;
+                        wrench_mpc_traj = Some((t, com, com_vel, solution.trajectory.clone()));
+                        if std::env::var("MPC_TRAJ_DEBUG").is_ok() && t < 2.0 {
+                            let xi0 = com.xy() + com_vel.xy() / omega;
+                            let r0 = dcm_plan.reference(t);
+                            print!("  [traj] t={t:.3} xi_meas=({:+.3},{:+.3}) xi_plan=({:+.3},{:+.3}) tgt=({:+.3},{:+.3}) |",
+                                xi0.x, xi0.y, r0.xi.x, r0.xi.y, target_com.x, target_com.y);
+                            for (k, [c, v]) in solution.trajectory.iter().enumerate() {
+                                let xi = c.xy() + v.xy() / omega;
+                                let rp = dcm_plan.reference(t + (k as f64 + 1.0) * stair_wrench_preview_dt);
+                                print!(" k{k}: pred({:+.3},{:+.3}) plan({:+.3},{:+.3})", xi.x, xi.y, rp.xi.x, rp.xi.y);
+                            }
+                            println!();
+                        }
                         // The horizon the terminal state sits at. `Solution`
                         // carries only the terminal momentum, not a per-node
                         // series, so the reference is the mean rate over it.
@@ -6419,7 +6475,27 @@ fn main() {
                 wrench_mpc_next = t + stair_wrench_dt;
             }
             if stair_wrench_accel && wrench_mpc_command.is_some() {
-                a_com = wrench_mpc_acceleration;
+                // STAIR_WRENCH_ACCEL_XY: take only the HORIZONTAL acceleration
+                // from the MPC and keep the WBC's own vertical reference.
+                //
+                // With MPC_SEED_PREVIOUS=2 the MPC's smoothness term is
+                // anchored to the MEASURED load. Handing its full acceleration
+                // to the CoM task closes a loop through the vertical axis:
+                // a touchdown transient lowers the measured load, the MPC
+                // (anchored to it) commands less total force, the CoM task
+                // now asks for that as a downward acceleration, the robot
+                // sinks, the measured load drops further. Measured
+                // 2026-09-26 on the v1 baseline: a_z reference -0.9 at
+                // 2.50 s, -9.9 m/s^2 (free fall) at 2.75 s with the MPC
+                // asking 157 N total, CoM height 0.68 -> 0.30 m at 2.95 s.
+                // The horizontal components carry the DCM-relevant content
+                // and have no such loop.
+                if stair_wrench_accel_xy {
+                    a_com.x = wrench_mpc_acceleration.x;
+                    a_com.y = wrench_mpc_acceleration.y;
+                } else {
+                    a_com = wrench_mpc_acceleration;
+                }
             }
         } else {
             wrench_mpc_command = None;
