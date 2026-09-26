@@ -2355,6 +2355,8 @@ fn main() {
     // arm about the previous solve's predicted CoM, 2b penalise L-dot.
     let mpc_arm_about_prior = flag("MPC_ARM_ABOUT_PRIOR", false);
     let mpc_w_ldot = env_f64("MPC_W_LDOT", 0.0).max(0.0);
+    // Step-4 body, stage 1 (design note Sec.9): the landing recaptures the DCM.
+    let mpc_landing_capture_w = env_f64("MPC_LANDING_CAPTURE_W", 0.0).max(0.0);
     let mpc_footstep = flag("MPC_FOOTSTEP", false);
     assert!(
         !(mpc_footstep && contact_plan_on),
@@ -6383,7 +6385,7 @@ fn main() {
                             })
                             .collect()
                     }),
-                    reference_dcm_schedule: (mpc_dcm_weight > 0.0).then(|| {
+                    reference_dcm_schedule: (mpc_dcm_weight > 0.0 || mpc_landing_capture_w > 0.0).then(|| {
                         (0..stair_wrench_horizon)
                             .map(|k| {
                                 let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
@@ -6394,6 +6396,7 @@ fn main() {
                     min_fz_schedule,
                     previous,
                     landing,
+                    dcm_now: (mpc_landing_capture_w > 0.0).then_some(xi),
                     prior_com: (mpc_arm_about_prior)
                         .then(|| wrench_mpc_traj.as_ref().map(|(_, _, _, tr)| tr.iter().map(|[c, _]| *c).collect()))
                         .flatten(),
@@ -6418,6 +6421,7 @@ fn main() {
                     wrench_weight: mpc_w_wrench,
                     dcm_weight: mpc_dcm_weight,
                     omega,
+                    landing_capture_weight: mpc_landing_capture_w,
                     arm_about_prior: mpc_arm_about_prior,
                     ldot_weight: mpc_w_ldot,
                     smooth_weight: mpc_w_smooth,

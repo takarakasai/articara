@@ -124,6 +124,9 @@ pub struct Input {
     /// as the linearisation point of each node's moment arm. `None` keeps
     /// the shipped arm about `target_com`.
     pub prior_com: Option<Vec<na::Vector3<f64>>>,
+    /// Measured DCM now (world x, y), for the landing-capture rows. `None`
+    /// disables them even when `Config::landing_capture_weight` is set.
+    pub dcm_now: Option<na::Vector2<f64>>,
 }
 
 #[derive(Clone, Debug)]
@@ -169,6 +172,17 @@ pub struct Config {
     /// the contact position enters only as a moment about a point the CoM
     /// is not at, and (measured 2026-09-26, Sec.50) a landing variable then
     /// only trades angular momentum. Off = shipped behaviour.
+    /// Weight on the LANDING-CAPTURE rows: the DCM propagated through the
+    /// horizon with the planned net CoP, where the CoP after the landing
+    /// moves rigidly with the landing offset `dp`,
+    ///     xi_{k+1} = xi_k + dt*omega*(xi_k - p_k),   p_k = p_bar_k (+ dp after touchdown)
+    /// tracked to `Input::reference_dcm_schedule`. This is what a footstep is
+    /// FOR in a LIPM -- the next pressure point that recaptures the DCM --
+    /// and it is what the moment-arm coupling alone cannot express: with only
+    /// that, the landing variable sat at its box regardless of weights
+    /// (design note Sec.8). Needs `Input::dcm_now`, `Input::landing`,
+    /// `reference_net_cop_schedule`, `reference_dcm_schedule`, `omega`. 0 = off.
+    pub landing_capture_weight: f64,
     pub arm_about_prior: bool,
     /// Weight on the node-to-node CHANGE of angular momentum, (L_{k+1} -
     /// L_k)/dt. The shipped cost tracks L itself to zero, which a walk
@@ -206,6 +220,7 @@ impl Default for Config {
             cop_weight: 0.0,
             net_cop_weight: 0.0,
             net_cop_equality: false,
+            landing_capture_weight: 0.0,
             arm_about_prior: false,
             ldot_weight: 0.0,
             dcm_weight: 0.0,
@@ -290,6 +305,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             cfg.dcm_weight,
             cfg.omega,
             cfg.ldot_weight,
+            cfg.landing_capture_weight,
             cfg.smooth_weight,
         ]
         .iter()
@@ -305,6 +321,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             cfg.dcm_weight,
             cfg.omega,
             cfg.ldot_weight,
+            cfg.landing_capture_weight,
             cfg.smooth_weight,
             cfg.torsion_mu,
         ]
@@ -632,6 +649,44 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             let mut coeff = na::DVector::zeros(nu);
             coeff[12 * n + j] = 1.0;
             add_residual(&mut rows, coeff, 0.0, land.weight);
+        }
+        // Landing capture: propagate the DCM through the horizon with the
+        // planned CoP, the CoP after touchdown moving with `dp`, and ask it
+        // to meet the plan's DCM. Affine in dp, so it is two extra columns.
+        if cfg.landing_capture_weight > 0.0
+            && cfg.omega > 0.0
+            && let (Some(xi0), Some(pbar), Some(xiref)) = (
+                input.dcm_now,
+                input.reference_net_cop_schedule.as_ref(),
+                input.reference_dcm_schedule.as_ref(),
+            )
+        {
+            let wdt = cfg.omega * cfg.dt;
+            let mut a = xi0; // xi_k as a constant part ...
+            let mut b = na::Matrix2::<f64>::zeros(); // ... plus b * dp
+            for k in 0..n {
+                let p = pbar.get(k).copied().unwrap_or_else(|| pbar[pbar.len() - 1]);
+                // xi_{k+1} = (1 + w dt) xi_k - w dt p_k, with p_k = p + dp after touchdown.
+                a = a * (1.0 + wdt) - p * wdt;
+                b *= 1.0 + wdt;
+                if k >= land.first_node {
+                    b -= na::Matrix2::identity() * wdt;
+                }
+                if k >= land.first_node && k + 1 <= n {
+                    let target = xiref.get(k).copied().unwrap_or_else(|| xiref[xiref.len() - 1]);
+                    for axis in 0..2 {
+                        let mut coeff = na::DVector::zeros(nu);
+                        coeff[12 * n] = b[(axis, 0)];
+                        coeff[12 * n + 1] = b[(axis, 1)];
+                        add_residual(
+                            &mut rows,
+                            coeff,
+                            a[axis] - target[axis],
+                            cfg.landing_capture_weight,
+                        );
+                    }
+                }
+            }
         }
     }
     let mut objective = na::DMatrix::zeros(rows.len(), nu);
@@ -1270,6 +1325,7 @@ mod tests {
                 previous: [Wrench::zeros(), Wrench::zeros()],
                 landing: None,
                 prior_com: None,
+                dcm_now: None,
             },
             cfg,
         )
@@ -1436,6 +1492,33 @@ mod tests {
         };
         let (jf, jd) = (jump(&free.momentum_trajectory), jump(&damped.momentum_trajectory));
         assert!(jd < 0.5 * jf, "L-dot weight did not smooth: free {jf:.4} damped {jd:.4}");
+    }
+
+    /// LIPM: xi_dot = omega (xi - p). A DCM that sits AHEAD of where the
+    /// plan wants it is brought back only by a pressure point ahead of it, so
+    /// the capture rows must move the free landing FORWARD (dp.x > 0). The
+    /// moment-arm coupling alone asks the opposite (see
+    /// `a_forward_target_moves_the_free_landing_back`), so this also checks
+    /// that the capture rows win when weighted. Weight 0 = bit-identical.
+    #[test]
+    fn the_capture_rows_move_the_landing_toward_the_escaping_dcm() {
+        let (mut input, mut cfg) = standing([0.0, 0.0]);
+        cfg.omega = (cfg.gravity / input.com.z).sqrt();
+        cfg.net_cop_weight = 1.0;
+        input.reference_net_cop_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
+        input.reference_dcm_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05] });
+        input.dcm_now = Some(na::Vector2::new(0.04, 0.0)); // DCM 4 cm ahead of the plan
+        let without = solve(&input, &cfg).unwrap();
+        cfg.landing_capture_weight = 1e4;
+        let with = solve(&input, &cfg).unwrap();
+        let (d0, d1) = (without.landing_shift.unwrap(), with.landing_shift.unwrap());
+        assert!(d1.x > 0.01, "capture must move the landing forward, got {d1:?} (without: {d0:?})");
+        assert!(d1.x > d0.x + 0.005, "capture must move it further forward than the moment coupling alone");
+        // Off = identical.
+        cfg.landing_capture_weight = 0.0;
+        let again = solve(&input, &cfg).unwrap();
+        assert_eq!(again.landing_shift.unwrap(), d0);
     }
 
     #[test]
