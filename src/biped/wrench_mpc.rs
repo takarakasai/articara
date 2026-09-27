@@ -42,6 +42,12 @@ pub struct Landing {
     /// total `prior + dp`. Zero = the shipped semantics (cost and box on
     /// `dp` itself), bit-identical.
     pub prior: [f64; 2],
+    /// Bound on the NEGATIVE side of each axis (|min| on `prior + dp` below
+    /// zero). Equal to `max` = the shipped symmetric box, bit-identical.
+    /// A stair landing uses a smaller backward bound: the MPC has no terrain
+    /// model and was measured pulling a first-tread landing 20 mm toward the
+    /// nosing (design note, 09-27 10:10).
+    pub min: [f64; 2],
 }
 
 #[derive(Clone, Debug)]
@@ -749,7 +755,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             d[(24 * n + 2 * j, 12 * n + j)] = 1.0;
             rhs[24 * n + 2 * j] = land.max[j].max(0.0) - land.prior[j];
             d[(24 * n + 2 * j + 1, 12 * n + j)] = -1.0;
-            rhs[24 * n + 2 * j + 1] = land.max[j].max(0.0) + land.prior[j];
+            rhs[24 * n + 2 * j + 1] = land.min[j].max(0.0) + land.prior[j];
         }
     }
     let mut row = 0;
@@ -1456,7 +1462,7 @@ mod tests {
         let (mut input, cfg) = standing([0.0, 0.0]);
         input.target_com.x += 0.05;
         let fixed = solve(&input, &cfg).unwrap();
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.0, 0.0], prior: [0.0; 2] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.0, 0.0], prior: [0.0; 2], min: [0.0, 0.0] });
         let boxed = solve(&input, &cfg).unwrap();
         let dp = boxed.landing_shift.unwrap();
         assert!(dp.norm() < 1e-9, "{dp:?}");
@@ -1479,7 +1485,7 @@ mod tests {
         let (mut input, mut cfg) = standing([0.0, 0.0]);
         input.target_velocity.x = 0.3;
         let fixed = solve(&input, &cfg).unwrap();
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05], prior: [0.0; 2] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05], prior: [0.0; 2], min: [0.10, 0.05] });
         cfg.landing_moment_coupling = false;
         let free = solve(&input, &cfg).unwrap();
         let dp = free.landing_shift.unwrap();
@@ -1510,7 +1516,7 @@ mod tests {
     fn a_forward_target_moves_the_free_landing_back() {
         let (mut input, cfg) = standing([0.0, 0.0]);
         input.target_velocity.x = 0.3;
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.06, 0.03], prior: [0.0; 2] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.06, 0.03], prior: [0.0; 2], min: [0.06, 0.03] });
         let sol = solve(&input, &cfg).unwrap();
         let dp = sol.landing_shift.unwrap();
         assert!(dp.x < -1e-3, "expected the free foot to move back, got {dp:?}");
@@ -1576,7 +1582,7 @@ mod tests {
         cfg.net_cop_weight = 1.0;
         input.reference_net_cop_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
         input.reference_dcm_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05], prior: [0.0; 2] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05], prior: [0.0; 2], min: [0.10, 0.05] });
         input.dcm_now = Some(na::Vector2::new(0.04, 0.0)); // DCM 4 cm ahead of the plan
         let without = solve(&input, &cfg).unwrap();
         cfg.landing_capture_weight = 1e4;
@@ -1604,7 +1610,7 @@ mod tests {
         input.reference_dcm_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
         // Landing late in the horizon: the shipped rows have a small b there
         // and ask for a shift the box has to clamp.
-        input.landing = Some(Landing { foot: 1, first_node: cfg.horizon - 2, weight: 1.0, max: [0.30, 0.30], prior: [0.0; 2] });
+        input.landing = Some(Landing { foot: 1, first_node: cfg.horizon - 2, weight: 1.0, max: [0.30, 0.30], prior: [0.0; 2], min: [0.30, 0.30] });
         input.dcm_now = Some(na::Vector2::new(0.02, 0.0));
         let plain = solve(&input, &cfg).unwrap().landing_shift.unwrap();
         input.reference_dcm_sensitivity = Some(vec![na::Matrix2::zeros(); cfg.horizon]);
@@ -1622,10 +1628,24 @@ mod tests {
     #[test]
     fn a_prior_offset_moves_the_box_and_the_cost_to_the_total() {
         let (mut input, cfg) = standing([0.0, 0.0]);
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1e6, max: [0.06, 0.03], prior: [0.06, -0.03] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1e6, max: [0.06, 0.03], prior: [0.06, -0.03], min: [0.06, 0.03] });
         let dp = solve(&input, &cfg).unwrap().landing_shift.unwrap();
         assert!(dp.x <= 1e-9 && dp.y >= -1e-9, "box on the total: {dp:?}");
         assert!((dp.x + 0.06).abs() < 1e-3 && (dp.y - 0.03).abs() < 1e-3, "cost on the total pulls it back to zero: {dp:?}");
+    }
+
+    /// A zero backward bound forbids dp.x < 0 even when the rest of the
+    /// problem pulls the landing back; the forward side is untouched.
+    #[test]
+    fn a_zero_backward_bound_keeps_the_landing_from_moving_back() {
+        let (mut input, cfg) = standing([0.0, 0.0]);
+        input.target_velocity.x = 0.3; // pulls the free landing back (see below)
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.06, 0.03], prior: [0.0; 2], min: [0.06, 0.03] });
+        let free = solve(&input, &cfg).unwrap().landing_shift.unwrap();
+        assert!(free.x < -1e-3, "premise: the free landing moves back, got {free:?}");
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.06, 0.03], prior: [0.0; 2], min: [0.0, 0.03] });
+        let held = solve(&input, &cfg).unwrap().landing_shift.unwrap();
+        assert!(held.x >= -1e-9, "backward bound 0: {held:?}");
     }
 
     #[test]

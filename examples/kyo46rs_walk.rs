@@ -2410,6 +2410,14 @@ fn main() {
     // next solve (code review 2026-09-27). 1 = apply it as an increment, with
     // the landing cost and box on the accumulated total. 0 = shipped.
     let mpc_footstep_increment = flag("MPC_FOOTSTEP_INCREMENT", false);
+    // Largest BACKWARD landing shift allowed when the landing is on a
+    // different level from the lift-off (a stair step, either direction).
+    // Measured 2026-09-27 (wide holdout 8 cm m33): the MPC moved the first
+    // tread landing 20 mm back, the heel overhung 35 mm instead of 15, and the
+    // robot fell backward in the next double support. A box, not a snap
+    // (CP_TREAD_BOX showed snapping to an edge is harmful). Default = the
+    // symmetric box (MPC_FOOTSTEP_MAX_X), bit-identical.
+    let mpc_footstep_stair_back = env_f64("MPC_FOOTSTEP_STAIR_BACK", f64::INFINITY).max(0.0);
     // The same gate for a RISING swing (the landing more than 5 mm above the
     // lift-off, i.e. a stair step). Stairs want an early freeze (the hover
     // above the tread), flat pushes want a late one (a push at 0.75 of the
@@ -6376,6 +6384,18 @@ fn main() {
                                 [mpc_fs_applied.x, mpc_fs_applied.y]
                             } else {
                                 [0.0; 2]
+                            },
+                            min: {
+                                let i = gait.index_at(t);
+                                let stair = (footsteps.at_slice(i).sole[swing].z
+                                    - footsteps.at_slice(i.saturating_sub(1)).sole[swing].z)
+                                    .abs()
+                                    > 0.005;
+                                if stair {
+                                    [mpc_footstep_max[0].min(mpc_footstep_stair_back), mpc_footstep_max[1]]
+                                } else {
+                                    mpc_footstep_max
+                                }
                             },
                         })
                 } else {
