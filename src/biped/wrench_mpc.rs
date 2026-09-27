@@ -211,6 +211,16 @@ pub struct Config {
     /// (design note Sec.8). Needs `Input::dcm_now`, `Input::landing`,
     /// `reference_net_cop_schedule`, `reference_dcm_schedule`, `omega`. 0 = off.
     pub landing_capture_weight: f64,
+    /// Decide the landing LEXICOGRAPHICALLY: first the offset that
+    /// minimises the capture residual inside the box (a 2-variable box QP,
+    /// solved exactly), then the wrench MPC with the landing fixed there.
+    /// This is the limit of `landing_capture_weight -> inf`: capture always
+    /// wins over the moment coupling and the landing cost, with no weight to
+    /// tune (measured 2026-09-27 on a 15/8 cm box: 1e4 falls at the first
+    /// step, 1e5 breaks stairs, 1e6 works, 1e7 kills everything). The landing
+    /// cost only breaks ties. Needs the same inputs as the capture rows.
+    /// false = shipped (penalty rows).
+    pub landing_lexicographic: bool,
     /// Let the landing offset enter the momentum rows and the net-CoP rows
     /// as the extra moment `dp x F_k` (the 2026-09-26 coupling). Measured
     /// 2026-09-27 (V5A i8_d0/m01): with it the landing jitters +-30-47 mm
@@ -258,6 +268,7 @@ impl Default for Config {
             net_cop_weight: 0.0,
             net_cop_equality: false,
             landing_capture_weight: 0.0,
+            landing_lexicographic: false,
             landing_moment_coupling: true,
             arm_about_prior: false,
             ldot_weight: 0.0,
@@ -319,7 +330,119 @@ pub struct DenseProblem {
 }
 
 /// Assemble without running a solver; allocation time is separate from solve time.
+/// Rows of the landing-capture residual, one 2x2 block per node from the
+/// landing on: residual_k = C_k dp + o_k (world x, y). Empty when the
+/// inputs it needs are missing. The arithmetic is exactly the one the
+/// penalty rows use, so both paths see the same numbers.
+fn capture_rows(input: &Input, cfg: &Config, land: &Landing) -> Vec<(na::Matrix2<f64>, na::Vector2<f64>)> {
+    let n = cfg.horizon;
+    let mut out = Vec::new();
+    if cfg.omega <= 0.0 {
+        return out;
+    }
+    let (Some(xi0), Some(pbar), Some(xiref)) = (
+        input.dcm_now,
+        input.reference_net_cop_schedule.as_ref(),
+        input.reference_dcm_schedule.as_ref(),
+    ) else {
+        return out;
+    };
+    let wdt = cfg.omega * cfg.dt;
+    let mut a = xi0;
+    let mut b = na::Matrix2::<f64>::zeros();
+    for k in 0..n {
+        let p = pbar.get(k).copied().unwrap_or_else(|| pbar[pbar.len() - 1]);
+        a = a * (1.0 + wdt) - p * wdt;
+        b *= 1.0 + wdt;
+        if k >= land.first_node {
+            b -= na::Matrix2::identity() * wdt;
+        }
+        if k >= land.first_node && k + 1 <= n {
+            let target = xiref.get(k).copied().unwrap_or_else(|| xiref[xiref.len() - 1]);
+            let jk = input
+                .reference_dcm_sensitivity
+                .as_ref()
+                .and_then(|s| s.get(k).or(s.last()))
+                .copied()
+                .unwrap_or_else(na::Matrix2::zeros);
+            out.push((b - jk, a - target));
+        }
+    }
+    out
+}
+
+/// Exact minimiser of 0.5 x'Hx + g'x over lo <= x <= hi in two variables
+/// (H symmetric positive definite): the optimum is the unconstrained point,
+/// a point on one edge with the other variable free, or a corner; take the
+/// best feasible candidate.
+fn box_qp_2d(h: &na::Matrix2<f64>, g: &na::Vector2<f64>, lo: [f64; 2], hi: [f64; 2]) -> na::Vector2<f64> {
+    let f = |x: &na::Vector2<f64>| 0.5 * x.dot(&(h * x)) + g.dot(x);
+    let inside = |x: &na::Vector2<f64>| (0..2).all(|j| x[j] >= lo[j] - 1e-12 && x[j] <= hi[j] + 1e-12);
+    let mut cands: Vec<na::Vector2<f64>> = Vec::new();
+    if let Some(inv) = h.try_inverse() {
+        cands.push(-(inv * g));
+    }
+    for j in 0..2 {
+        let o = 1 - j;
+        for v in [lo[j], hi[j]] {
+            // Fix x_j = v, minimise over x_o, then clamp.
+            let mut x = na::Vector2::zeros();
+            x[j] = v;
+            if h[(o, o)] > 0.0 {
+                x[o] = (-(g[o] + h[(o, j)] * v) / h[(o, o)]).clamp(lo[o], hi[o]);
+            } else {
+                x[o] = lo[o];
+            }
+            cands.push(x);
+        }
+    }
+    let mut best = na::Vector2::new(lo[0].max(hi[0].min(0.0)), lo[1].max(hi[1].min(0.0)));
+    let mut best_f = f(&best);
+    for c in cands {
+        if inside(&c) {
+            let v = f(&c);
+            if v < best_f {
+                best_f = v;
+                best = c;
+            }
+        }
+    }
+    best
+}
+
+/// The landing offset the lexicographic mode fixes (see
+/// `Config::landing_lexicographic`), or `None` when there is no landing or
+/// no capture rows.
+pub fn lexicographic_landing(input: &Input, cfg: &Config) -> Option<na::Vector2<f64>> {
+    let land = input.landing.as_ref()?;
+    let rows = capture_rows(input, cfg, land);
+    if rows.is_empty() {
+        return None;
+    }
+    let mut h = na::Matrix2::<f64>::zeros();
+    let mut g = na::Vector2::<f64>::zeros();
+    for (c, o) in &rows {
+        h += c.transpose() * c;
+        g += c.transpose() * o;
+    }
+    // Tie-break only: pull the TOTAL (prior + dp) toward zero with a weight
+    // far below the capture term, so a direction capture does not see stays
+    // at the nominal instead of drifting.
+    let rho = 1e-6 * (h.trace() * 0.5).max(1e-12);
+    let prior = na::Vector2::new(land.prior[0], land.prior[1]);
+    h += na::Matrix2::identity() * rho;
+    g += prior * rho;
+    let hi = [land.max[0].max(0.0) - land.prior[0], land.max[1].max(0.0) - land.prior[1]];
+    let lo = [-(land.min[0].max(0.0) + land.prior[0]), -(land.min[1].max(0.0) + land.prior[1])];
+    Some(box_qp_2d(&h, &g, lo, hi))
+}
+
 pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
+    let landing_fixed = if cfg.landing_lexicographic {
+        lexicographic_landing(input, cfg)
+    } else {
+        None
+    };
     let n = cfg.horizon;
     let n_land = if input.landing.is_some() { 2 } else { 0 };
     let nu = 12 * n + n_land;
@@ -675,6 +798,17 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         }
     }
 
+    // Right-hand sides of the equality rows (the net-CoP rows are all zero).
+    let mut eq_rhs = vec![0.0; eq_rows.len()];
+    if let (Some(fixed), Some(_)) = (landing_fixed, input.landing) {
+        // The landing is decided by the capture stage: dp = fixed.
+        for j in 0..2 {
+            let mut r = na::DVector::zeros(nu);
+            r[12 * n + j] = 1.0;
+            eq_rows.push(r);
+            eq_rhs.push(fixed[j]);
+        }
+    }
     let (a_eq, b_eq) = if eq_rows.is_empty() {
         (None, None)
     } else {
@@ -682,7 +816,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         for (i, r) in eq_rows.iter().enumerate() {
             a.row_mut(i).copy_from(&r.transpose());
         }
-        (Some(a), Some(na::DVector::zeros(eq_rows.len())))
+        (Some(a), Some(na::DVector::from_vec(eq_rhs)))
     };
     if let Some(land) = input.landing {
         for j in 0..2 {
@@ -694,6 +828,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         // planned CoP, the CoP after touchdown moving with `dp`, and ask it
         // to meet the plan's DCM. Affine in dp, so it is two extra columns.
         if cfg.landing_capture_weight > 0.0
+            && landing_fixed.is_none()
             && cfg.omega > 0.0
             && let (Some(xi0), Some(pbar), Some(xiref)) = (
                 input.dcm_now,
@@ -756,6 +891,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             rhs[24 * n + 2 * j] = land.max[j].max(0.0) - land.prior[j];
             d[(24 * n + 2 * j + 1, 12 * n + j)] = -1.0;
             rhs[24 * n + 2 * j + 1] = land.min[j].max(0.0) + land.prior[j];
+
         }
     }
     let mut row = 0;
@@ -1646,6 +1782,55 @@ mod tests {
         input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.06, 0.03], prior: [0.0; 2], min: [0.0, 0.03] });
         let held = solve(&input, &cfg).unwrap().landing_shift.unwrap();
         assert!(held.x >= -1e-9, "backward bound 0: {held:?}");
+    }
+
+    /// The 2-D box QP must match brute force on a grid, inside and on the
+    /// boundary.
+    #[test]
+    fn the_2d_box_qp_is_exact() {
+        let h = na::Matrix2::new(3.0, 1.2, 1.2, 2.0);
+        for g in [na::Vector2::new(-0.3, 0.1), na::Vector2::new(2.0, -3.0), na::Vector2::new(-5.0, -5.0)] {
+            let (lo, hi) = ([-0.5, -0.2], [0.4, 0.6]);
+            let x = box_qp_2d(&h, &g, lo, hi);
+            let f = |x: &na::Vector2<f64>| 0.5 * x.dot(&(h * x)) + g.dot(x);
+            let mut best = f64::INFINITY;
+            for i in 0..=400 {
+                for j in 0..=400 {
+                    let y = na::Vector2::new(lo[0] + (hi[0] - lo[0]) * i as f64 / 400.0, lo[1] + (hi[1] - lo[1]) * j as f64 / 400.0);
+                    best = best.min(f(&y));
+                }
+            }
+            assert!(f(&x) <= best + 1e-9, "g={g:?}: {} vs grid {best}", f(&x));
+            assert!((0..2).all(|k| x[k] >= lo[k] - 1e-12 && x[k] <= hi[k] + 1e-12));
+        }
+    }
+
+    /// Lexicographic mode = the limit of an infinite capture weight: it
+    /// must agree with a very large penalty weight (same sign, close), and
+    /// the solved landing must equal the fixed one. Off = bit-identical.
+    #[test]
+    fn the_lexicographic_landing_is_the_infinite_weight_limit() {
+        let (mut input, mut cfg) = standing([0.0, 0.0]);
+        cfg.omega = (cfg.gravity / input.com.z).sqrt();
+        cfg.net_cop_weight = 1.0;
+        input.reference_net_cop_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
+        input.reference_dcm_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05], prior: [0.0; 2], min: [0.10, 0.05] });
+        input.dcm_now = Some(na::Vector2::new(0.02, 0.01));
+        cfg.landing_capture_weight = 1e4;
+        let shipped = solve(&input, &cfg).unwrap();
+        cfg.landing_capture_weight = 1e9;
+        let heavy = solve(&input, &cfg).unwrap().landing_shift.unwrap();
+        cfg.landing_capture_weight = 1e4;
+        cfg.landing_lexicographic = true;
+        let fixed = lexicographic_landing(&input, &cfg).unwrap();
+        let lex = solve(&input, &cfg).unwrap();
+        let got = lex.landing_shift.unwrap();
+        assert!((got - fixed).norm() < 1e-5, "solved {got:?} vs fixed {fixed:?}");
+        assert!((fixed - heavy).norm() < 2e-3, "lex {fixed:?} vs 1e9 penalty {heavy:?}");
+        cfg.landing_lexicographic = false;
+        let again = solve(&input, &cfg).unwrap();
+        assert_eq!(again.landing_shift, shipped.landing_shift);
     }
 
     #[test]

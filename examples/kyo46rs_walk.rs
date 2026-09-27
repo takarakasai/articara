@@ -2365,6 +2365,11 @@ fn main() {
     let mpc_w_ldot = env_f64("MPC_W_LDOT", 0.0).max(0.0);
     // Step-4 body, stage 1 (design note Sec.9): the landing recaptures the DCM.
     let mpc_landing_capture_w = env_f64("MPC_LANDING_CAPTURE_W", 0.0).max(0.0);
+    // Decide the landing lexicographically (capture first, exactly, inside
+    // the box; then the wrench MPC with it fixed) instead of through the
+    // penalty weight above, which then only has to be > 0 to switch the
+    // capture inputs on. See wrench_mpc::Config::landing_lexicographic.
+    let mpc_landing_lex = flag("MPC_LANDING_LEX", false);
     // 1 = shipped: the landing offset also enters the momentum and net-CoP
     // rows as `dp x F`. 0 = capture rows and landing cost only (2026-09-27:
     // the moment coupling made the landing jitter +-30-47 mm on
@@ -6677,6 +6682,7 @@ fn main() {
                     dcm_weight: mpc_dcm_weight,
                     omega,
                     landing_capture_weight: mpc_landing_capture_w,
+                    landing_lexicographic: mpc_landing_lex,
                     landing_moment_coupling: mpc_footstep_moment,
                     arm_about_prior: mpc_arm_about_prior,
                     ldot_weight: mpc_w_ldot,
