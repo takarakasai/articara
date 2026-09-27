@@ -36,6 +36,12 @@ pub struct Landing {
     pub first_node: usize,
     pub weight: f64,
     pub max: [f64; 2],
+    /// Offset of this landing ALREADY applied to the plan the rest of the
+    /// input was built from (world x, y). The variable `dp` is then an
+    /// increment on top of it, and the landing cost and box act on the
+    /// total `prior + dp`. Zero = the shipped semantics (cost and box on
+    /// `dp` itself), bit-identical.
+    pub prior: [f64; 2],
 }
 
 #[derive(Clone, Debug)]
@@ -127,6 +133,22 @@ pub struct Input {
     /// Measured DCM now (world x, y), for the landing-capture rows. `None`
     /// disables them even when `Config::landing_capture_weight` is set.
     pub dcm_now: Option<na::Vector2<f64>>,
+    /// How the plan's OWN reference DCM at node k moves when the landing
+    /// moves: d xi_ref_k / d dp, one 2x2 per node (world x, y). The reference
+    /// is a backward recursion from the future footsteps, so shifting the
+    /// next landing by dp moves the reference of the current step by about
+    /// 0.65 dp (measured against the real recursion, see contact_plan
+    /// CP_J_AUTO). Without it the capture rows solve
+    ///     a + b dp = xi_ref
+    /// for a target that then moves under them once the shift is applied:
+    /// the next solve sees a residual -J dp and answers -J dp / b, a loop
+    /// with gain J/|b| that exceeds 1 whenever the landing is within ~3
+    /// nodes of the horizon end (b ~ -(1+w dt)^m + 1 is small there). That is
+    /// the 20 ms sign-alternating landing measured 2026-09-27 (design note).
+    /// With it the rows solve a + (b - J) dp = xi_ref, and |b - J| >= J
+    /// bounds the shift by the error over J -- the capture-point step
+    /// adjustment. `None` = the shipped rows (J = 0), bit-identical.
+    pub reference_dcm_sensitivity: Option<Vec<na::Matrix2<f64>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -660,7 +682,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         for j in 0..2 {
             let mut coeff = na::DVector::zeros(nu);
             coeff[12 * n + j] = 1.0;
-            add_residual(&mut rows, coeff, 0.0, land.weight);
+            add_residual(&mut rows, coeff, land.prior[j], land.weight);
         }
         // Landing capture: propagate the DCM through the horizon with the
         // planned CoP, the CoP after touchdown moving with `dp`, and ask it
@@ -686,10 +708,16 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
                 }
                 if k >= land.first_node && k + 1 <= n {
                     let target = xiref.get(k).copied().unwrap_or_else(|| xiref[xiref.len() - 1]);
+                    let jk = input
+                        .reference_dcm_sensitivity
+                        .as_ref()
+                        .and_then(|s| s.get(k).or(s.last()))
+                        .copied()
+                        .unwrap_or_else(na::Matrix2::zeros);
                     for axis in 0..2 {
                         let mut coeff = na::DVector::zeros(nu);
-                        coeff[12 * n] = b[(axis, 0)];
-                        coeff[12 * n + 1] = b[(axis, 1)];
+                        coeff[12 * n] = b[(axis, 0)] - jk[(axis, 0)];
+                        coeff[12 * n + 1] = b[(axis, 1)] - jk[(axis, 1)];
                         add_residual(
                             &mut rows,
                             coeff,
@@ -717,10 +745,11 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
     let mut rhs = na::DVector::zeros(24 * n + n_box);
     if let Some(land) = input.landing {
         for j in 0..2 {
+            // |prior + dp| <= max, written on dp.
             d[(24 * n + 2 * j, 12 * n + j)] = 1.0;
-            rhs[24 * n + 2 * j] = land.max[j].max(0.0);
+            rhs[24 * n + 2 * j] = land.max[j].max(0.0) - land.prior[j];
             d[(24 * n + 2 * j + 1, 12 * n + j)] = -1.0;
-            rhs[24 * n + 2 * j + 1] = land.max[j].max(0.0);
+            rhs[24 * n + 2 * j + 1] = land.max[j].max(0.0) + land.prior[j];
         }
     }
     let mut row = 0;
@@ -1338,6 +1367,7 @@ mod tests {
                 landing: None,
                 prior_com: None,
                 dcm_now: None,
+                reference_dcm_sensitivity: None,
             },
             cfg,
         )
@@ -1426,7 +1456,7 @@ mod tests {
         let (mut input, cfg) = standing([0.0, 0.0]);
         input.target_com.x += 0.05;
         let fixed = solve(&input, &cfg).unwrap();
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.0, 0.0] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.0, 0.0], prior: [0.0; 2] });
         let boxed = solve(&input, &cfg).unwrap();
         let dp = boxed.landing_shift.unwrap();
         assert!(dp.norm() < 1e-9, "{dp:?}");
@@ -1449,7 +1479,7 @@ mod tests {
         let (mut input, mut cfg) = standing([0.0, 0.0]);
         input.target_velocity.x = 0.3;
         let fixed = solve(&input, &cfg).unwrap();
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05], prior: [0.0; 2] });
         cfg.landing_moment_coupling = false;
         let free = solve(&input, &cfg).unwrap();
         let dp = free.landing_shift.unwrap();
@@ -1480,7 +1510,7 @@ mod tests {
     fn a_forward_target_moves_the_free_landing_back() {
         let (mut input, cfg) = standing([0.0, 0.0]);
         input.target_velocity.x = 0.3;
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.06, 0.03] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.06, 0.03], prior: [0.0; 2] });
         let sol = solve(&input, &cfg).unwrap();
         let dp = sol.landing_shift.unwrap();
         assert!(dp.x < -1e-3, "expected the free foot to move back, got {dp:?}");
@@ -1546,7 +1576,7 @@ mod tests {
         cfg.net_cop_weight = 1.0;
         input.reference_net_cop_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
         input.reference_dcm_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05], prior: [0.0; 2] });
         input.dcm_now = Some(na::Vector2::new(0.04, 0.0)); // DCM 4 cm ahead of the plan
         let without = solve(&input, &cfg).unwrap();
         cfg.landing_capture_weight = 1e4;
@@ -1558,6 +1588,44 @@ mod tests {
         cfg.landing_capture_weight = 0.0;
         let again = solve(&input, &cfg).unwrap();
         assert_eq!(again.landing_shift.unwrap(), d0);
+    }
+
+    /// With the plan's own sensitivity J in the rows, the same escaping DCM
+    /// asks for a SMALLER shift of the same sign: the rows now know that the
+    /// reference moves 0.65 dp with the landing, so the error is closed by
+    /// (b - J) dp instead of b dp. `None` must reproduce the rows exactly.
+    #[test]
+    fn the_plan_sensitivity_shrinks_the_capture_shift_without_changing_its_sign() {
+        let (mut input, mut cfg) = standing([0.0, 0.0]);
+        cfg.omega = (cfg.gravity / input.com.z).sqrt();
+        cfg.net_cop_weight = 1.0;
+        cfg.landing_capture_weight = 1e4;
+        input.reference_net_cop_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
+        input.reference_dcm_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
+        // Landing late in the horizon: the shipped rows have a small b there
+        // and ask for a shift the box has to clamp.
+        input.landing = Some(Landing { foot: 1, first_node: cfg.horizon - 2, weight: 1.0, max: [0.30, 0.30], prior: [0.0; 2] });
+        input.dcm_now = Some(na::Vector2::new(0.02, 0.0));
+        let plain = solve(&input, &cfg).unwrap().landing_shift.unwrap();
+        input.reference_dcm_sensitivity = Some(vec![na::Matrix2::zeros(); cfg.horizon]);
+        let zero_j = solve(&input, &cfg).unwrap().landing_shift.unwrap();
+        assert!((zero_j - plain).norm() < 1e-9, "J = 0 must reproduce the rows: {zero_j:?} vs {plain:?}");
+        input.reference_dcm_sensitivity = Some(vec![na::Matrix2::identity() * 0.65; cfg.horizon]);
+        let with_j = solve(&input, &cfg).unwrap().landing_shift.unwrap();
+        assert!(plain.x > 0.0 && with_j.x > 0.0, "same sign: {plain:?} vs {with_j:?}");
+        assert!(with_j.x < 0.5 * plain.x, "J must shrink the shift: {plain:?} -> {with_j:?}");
+    }
+
+    /// With an offset already applied, the box and cost act on the TOTAL:
+    /// a landing already at the box edge can only come back, and with no
+    /// other pull the increment returns it toward zero.
+    #[test]
+    fn a_prior_offset_moves_the_box_and_the_cost_to_the_total() {
+        let (mut input, cfg) = standing([0.0, 0.0]);
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1e6, max: [0.06, 0.03], prior: [0.06, -0.03] });
+        let dp = solve(&input, &cfg).unwrap().landing_shift.unwrap();
+        assert!(dp.x <= 1e-9 && dp.y >= -1e-9, "box on the total: {dp:?}");
+        assert!((dp.x + 0.06).abs() < 1e-3 && (dp.y - 0.03).abs() < 1e-3, "cost on the total pulls it back to zero: {dp:?}");
     }
 
     #[test]

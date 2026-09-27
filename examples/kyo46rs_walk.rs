@@ -2377,10 +2377,13 @@ fn main() {
     // has no timing freedom. Measured 2026-09-27 (design note, FX): the
     // landing variable matches v4.1 at 8 N.s but takes 0/24 at 11 N.s where
     // v4.1's adjuster shortens the single support (CP_T_FROM_X).
+    // CP_TREAD_BOX snaps the landing after the box clamp, so it can move the
+    // foot with every box at zero: not timing-only.
     let contact_plan_timing_only = contact_plan_on
         && contact_plan_cfg.max_x == 0.0
         && contact_plan_cfg.max_y == 0.0
-        && contact_plan_cfg.max_y_in == 0.0;
+        && contact_plan_cfg.max_y_in == 0.0
+        && !flag("CP_TREAD_BOX", false);
     assert!(
         !(mpc_footstep && contact_plan_on) || contact_plan_timing_only,
         "MPC_FOOTSTEP and the contact_plan adjuster are two authorities over the same landing; turn one off (or make the adjuster timing-only: CP_MAX_X=CP_MAX_Y=CP_MAX_Y_IN=0)"
@@ -2394,12 +2397,35 @@ fn main() {
     // its box (-54, +80 mm), pulling the foot off the nosing. The swing
     // cannot follow a late shift anyway. inf = off = shipped behaviour.
     let mpc_footstep_freeze_frac = env_f64("MPC_FOOTSTEP_FREEZE_FRAC", f64::INFINITY);
+    // Give the capture rows the plan's own sensitivity to the landing
+    // (`Input::reference_dcm_sensitivity`), differenced from the real DCM
+    // plan the way CP_J_AUTO does: shift the landing by 2 cm per axis,
+    // rebuild the rolled plan, read the reference DCM at every node. Off =
+    // the shipped rows, bit-identical.
+    let mpc_landing_capture_j = flag("MPC_LANDING_CAPTURE_J", false);
+    // The MPC is given the plan AFTER this slice's earlier landing shifts
+    // (forecast contact, net-CoP and DCM schedules), so its answer is an
+    // INCREMENT. The shipped application treats it as the total since the
+    // slice started (`d = dp - applied`), which retracts every shift on the
+    // next solve (code review 2026-09-27). 1 = apply it as an increment, with
+    // the landing cost and box on the accumulated total. 0 = shipped.
+    let mpc_footstep_increment = flag("MPC_FOOTSTEP_INCREMENT", false);
     // The same gate for a RISING swing (the landing more than 5 mm above the
     // lift-off, i.e. a stair step). Stairs want an early freeze (the hover
     // above the tread), flat pushes want a late one (a push at 0.75 of the
     // swing still needs the landing). Default = the flat value.
     let mpc_footstep_freeze_frac_rise =
         env_f64("MPC_FOOTSTEP_FREEZE_FRAC_RISE", mpc_footstep_freeze_frac);
+    let mpc_fs_debug = std::env::var("MPC_FS_DEBUG").is_ok();
+    // Arm the landing variable only once the DCM error of this single
+    // support reaches this value [m] (latched for the rest of the step), the
+    // rule the contact_plan adjuster uses (CP_TRIG): an undisturbed step
+    // then solves exactly the fixed-contact problem. Measured 2026-09-27:
+    // with the variable always present, D+J loses 6-8 cm wide-holdout
+    // stairs on two independent seeds (pooled 1 better / 10 worse) while
+    // the variable itself stays near 0 where the runs part -- the cost is
+    // its presence, not its choice. 0 = always armed = shipped.
+    let mpc_footstep_trig = env_f64("MPC_FOOTSTEP_TRIG", 0.0).max(0.0);
     let mpc_footstep_max = [
         env_f64("MPC_FOOTSTEP_MAX_X", 0.06).max(0.0),
         env_f64("MPC_FOOTSTEP_MAX_Y", 0.03).max(0.0),
@@ -2986,6 +3012,7 @@ fn main() {
     // non-ratcheting rule as `cp_applied`).
     let mut mpc_fs_slice: Option<usize> = None;
     let mut mpc_fs_applied = na::Vector2::zeros();
+    let mut mpc_fs_armed: Option<usize> = None;
     let mut mpc_fs_last = na::Vector2::zeros();
     // (solve time, CoM at solve, CoM velocity at solve, predicted [c, v] per node end)
     let mut wrench_mpc_traj: Option<(f64, na::Vector3<f64>, na::Vector3<f64>, Vec<[na::Vector3<f64>; 2]>)> = None;
@@ -6292,38 +6319,35 @@ fn main() {
                     && wrench_mpc_apply
                     && let Support::Single { swing, .. } = support
                     && {
-                        // The swing's OWN slice: past the nominal end of a
-                        // late-contact extension `index_at(t)` already
-                        // points at the double support that follows, so
-                        // step back to the single support (the schedule's
-                        // slice is what the landing-timing clock is keyed
-                        // on too). Its clock keeps running through the
-                        // extension, so the fraction passes 1 there.
-                        let i_now = gait.index_at(t);
-                        let i = if matches!(gait.slices[i_now].support, Support::Double) {
-                            i_now.saturating_sub(1)
-                        } else {
-                            i_now
-                        };
-                        let frac = landing_timing
+                        let i = gait.index_at(t);
+                        if mpc_footstep_trig > 0.0 && dcm_err >= mpc_footstep_trig {
+                            mpc_fs_armed = Some(i);
+                        }
+                        mpc_footstep_trig == 0.0 || mpc_fs_armed == Some(i)
+                    }
+                    && {
+                        // The single support's own clock. LandingTiming
+                        // extends this slice through a late contact (so
+                        // `index_at` stays on it) but keeps the clock's
+                        // NOMINAL duration, so the fraction passes 1 while
+                        // the foot hovers; a contact_plan retime SHORTENS the
+                        // live slice. The shorter of the two covers both.
+                        let i = gait.index_at(t);
+                        let sl = &gait.slices[i];
+                        let (start, duration) = landing_timing
                             .clock
                             .filter(|(k, _, _)| *k == i)
-                            .map(|(_, start, duration)| (t - start) / duration.max(1e-9))
-                            .unwrap_or_else(|| {
-                                let sl = &gait.slices[i];
-                                (t - sl.t0) / sl.duration().max(1e-9)
-                            });
-                        let rising = (footsteps.at_slice(i).sole[swing].z
-                            - footsteps.at_slice(i.saturating_sub(1)).sole[swing].z)
-                            .abs()
+                            .map(|(_, start, duration)| (start, duration.min(sl.t1 - start)))
+                            .unwrap_or((sl.t0, sl.duration()));
+                        let frac = (t - start) / duration.max(1e-9);
+                        // Upward only: the hover-above-the-tread case.
+                        let rising = footsteps.at_slice(i).sole[swing].z
+                            - footsteps.at_slice(i.saturating_sub(1)).sole[swing].z
                             > 0.005;
-                        if std::env::var("MPC_FS_DEBUG").is_ok() {
+                        if mpc_fs_debug {
                             println!(
-                                "  [fs-gate] t={t:.3} i_now={i_now} i={i} frac={frac:.3} rising={rising} clock={:?} z_i={:.3} z_prev={:.3} step={}",
-                                landing_timing.clock,
-                                footsteps.at_slice(i).sole[swing].z,
-                                footsteps.at_slice(i.saturating_sub(1)).sole[swing].z,
-                                gait.index_at(t)
+                                "  [fs-gate] t={t:.3} i={i} frac={frac:.3} rising={rising} clock={:?}",
+                                landing_timing.clock
                             );
                         }
                         frac < if rising {
@@ -6346,6 +6370,13 @@ fn main() {
                             first_node,
                             weight: mpc_footstep_w,
                             max: mpc_footstep_max,
+                            prior: if mpc_footstep_increment
+                                && mpc_fs_slice == Some(gait.index_at(t))
+                            {
+                                [mpc_fs_applied.x, mpc_fs_applied.y]
+                            } else {
+                                [0.0; 2]
+                            },
                         })
                 } else {
                     None
@@ -6481,6 +6512,39 @@ fn main() {
                     previous,
                     landing,
                     dcm_now: (mpc_landing_capture_w > 0.0).then_some(xi),
+                    reference_dcm_sensitivity: (mpc_landing_capture_j
+                        && mpc_landing_capture_w > 0.0)
+                        .then(|| landing)
+                        .flatten()
+                        .map(|land| {
+                            let i = gait.index_at(t);
+                            let du = 0.02;
+                            let mut cols = [Vec::new(), Vec::new()];
+                            for axis in 0..2 {
+                                let mut probe = footsteps.clone();
+                                let mut d = na::Vector2::zeros();
+                                d[axis] = du;
+                                probe.shift_next(i, land.foot, d);
+                                let moved = DcmPlan::from_footsteps_rolled(
+                                    &gait,
+                                    &probe,
+                                    z_lip,
+                                    zmp_lat_scale,
+                                    zmp_roll,
+                                );
+                                cols[axis] = (0..stair_wrench_horizon)
+                                    .map(|k| {
+                                        let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
+                                        (moved.reference(at).xi - dcm_plan.reference(at).xi) / du
+                                    })
+                                    .collect();
+                            }
+                            (0..stair_wrench_horizon)
+                                .map(|k| {
+                                    na::Matrix2::from_columns(&[cols[0][k], cols[1][k]])
+                                })
+                                .collect()
+                        }),
                     prior_com: (mpc_arm_about_prior)
                         .then(|| wrench_mpc_traj.as_ref().map(|(_, _, _, tr)| tr.iter().map(|[c, _]| *c).collect()))
                         .flatten(),
@@ -6603,11 +6667,15 @@ fn main() {
                                 mpc_fs_slice = Some(i);
                                 mpc_fs_applied = na::Vector2::zeros();
                             }
-                            let d = dp - mpc_fs_applied;
-                            mpc_fs_last = dp;
+                            let (d, total) = if mpc_footstep_increment {
+                                (dp, mpc_fs_applied + dp)
+                            } else {
+                                (dp - mpc_fs_applied, dp)
+                            };
+                            mpc_fs_last = total;
                             if d.norm() > 1e-6 {
                                 footsteps.shift_next(i, land.foot, d);
-                                mpc_fs_applied = dp;
+                                mpc_fs_applied = total;
                                 dcm_plan = DcmPlan::from_footsteps_rolled(
                                     &gait,
                                     &footsteps,
