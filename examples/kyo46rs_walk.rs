@@ -2425,6 +2425,33 @@ fn main() {
     // -19 -> -126 mm and the robot fell. Default = MPC_FOOTSTEP_MAX_Y
     // (symmetric box), bit-identical.
     let mpc_footstep_max_y_in = env_f64("MPC_FOOTSTEP_MAX_Y_IN", f64::INFINITY).max(0.0);
+    // Allow an inward (narrowing) landing shift only down to this lateral
+    // gap between the stance sole and the swing landing [m]. What the
+    // inward ban protects against is a narrow or crossing stance, so bound
+    // the gap itself rather than the shift. Measured 2026-09-27: the flat
+    // nominal gap is ~0.11 m. Combined with MPC_FOOTSTEP_MAX_Y_IN (the
+    // smaller inward bound wins). 0 = off (no width floor) = shipped.
+    let mpc_footstep_min_width = env_f64("MPC_FOOTSTEP_MIN_WIDTH", 0.0).max(0.0);
+    // Inward bound on a step the contact_plan timing adjuster has SHORTENED.
+    // Measured 2026-09-27 (v5, 11 N.s forward, 11 members): with inward
+    // allowed the pushed step lands 60-80 mm forward AND 20-35 mm inward and
+    // the next step needs only ~7 mm; v5 (inward 0) lands the same step
+    // straight ahead and the next one is thrown to the box edges. A shortened
+    // single support ends before the lateral DCM swings out, so the next
+    // support belongs inward. The harmful inward shift after a backward push
+    // was on the step AFTER the push, not a retimed one. This relaxes the
+    // inward bound to at least this value on retimed steps only.
+    // 0 = off = shipped.
+    let mpc_footstep_y_in_retimed = env_f64("MPC_FOOTSTEP_Y_IN_RETIMED", 0.0).max(0.0);
+    // Inward bound while the SAGITTAL DCM error is forward by at least
+    // MPC_FOOTSTEP_Y_IN_FWD_TRIG [m] (world x; the walk heads +x). Measured
+    // 2026-09-27: the inward shifts that save 11 N.s forward pushes happen
+    // at x error +10..+17 mm; the harmful ones after backward pushes at
+    // x error -16..-34 mm (push step) or ~0 with a large lateral error (the
+    // next step). The retimed-step rule above does not separate them (a
+    // backward push shortens steps too). 0 = off = shipped.
+    let mpc_footstep_y_in_fwd = env_f64("MPC_FOOTSTEP_Y_IN_FWD", 0.0).max(0.0);
+    let mpc_footstep_y_in_fwd_trig = env_f64("MPC_FOOTSTEP_Y_IN_FWD_TRIG", 0.005);
     // The same gate for a RISING swing (the landing more than 5 mm above the
     // lift-off, i.e. a stair step). Stairs want an early freeze (the hover
     // above the tread), flat pushes want a late one (a push at 0.75 of the
@@ -6338,6 +6365,33 @@ fn main() {
                 // MPC_FOOTSTEP: in single support, the swing foot's landing is
                 // a variable from the first node at which the schedule has it
                 // down.
+                // Inward (toward-stance) bound on the landing shift and which
+                // sign of y is inward: MPC_FOOTSTEP_MAX_Y_IN, and with
+                // MPC_FOOTSTEP_MIN_WIDTH also whatever keeps the NOMINAL
+                // landing (this slice's applied shift removed) that wide.
+                let inward_bound = |i: usize| -> (f64, bool) {
+                    let (gap, plus) = support
+                        .swing()
+                        .map(|sw| landing_inward(&footsteps, i, sw))
+                        .unwrap_or((0.0, true));
+                    let mut b = mpc_footstep_max_y_in;
+                    if mpc_footstep_min_width > 0.0 {
+                        let applied = if mpc_fs_slice == Some(i) { mpc_fs_applied.y } else { 0.0 };
+                        // Toward stance is +y when plus: the applied shift
+                        // already narrowed the gap by `applied` (signed).
+                        let nominal_gap = if plus { gap + applied } else { gap - applied };
+                        b = b.min((nominal_gap - mpc_footstep_min_width).max(0.0));
+                    }
+                    if mpc_footstep_y_in_retimed > 0.0 && cp_retimed_slice == Some(i) {
+                        b = b.max(mpc_footstep_y_in_retimed);
+                    }
+                    if mpc_footstep_y_in_fwd > 0.0
+                        && xi.x - dcm_plan.reference(t).xi.x >= mpc_footstep_y_in_fwd_trig
+                    {
+                        b = b.max(mpc_footstep_y_in_fwd);
+                    }
+                    (b, plus)
+                };
                 let landing = if mpc_footstep
                     && stair_transfer_cmd.is_none()
                     && wrench_mpc_apply
@@ -6399,10 +6453,11 @@ fn main() {
                             first_node,
                             weight: mpc_footstep_w,
                             max: {
-                                let (_, inward_is_plus) = landing_inward(&footsteps, gait.index_at(t), swing);
+                                let i = gait.index_at(t);
+                                let (inward, inward_is_plus) = inward_bound(i);
                                 let mut m = mpc_footstep_max;
                                 if inward_is_plus {
-                                    m[1] = m[1].min(mpc_footstep_max_y_in);
+                                    m[1] = m[1].min(inward);
                                 }
                                 m
                             },
@@ -6423,9 +6478,9 @@ fn main() {
                                 if stair {
                                     m[0] = m[0].min(mpc_footstep_stair_back);
                                 }
-                                let (_, inward_is_plus) = landing_inward(&footsteps, i, swing);
+                                let (inward, inward_is_plus) = inward_bound(i);
                                 if !inward_is_plus {
-                                    m[1] = m[1].min(mpc_footstep_max_y_in);
+                                    m[1] = m[1].min(inward);
                                 }
                                 m
                             },
