@@ -226,6 +226,33 @@ pub struct ContactInfo {
     pub body2: String,
 }
 
+/// Sum `pick(contact)` per foot, over contacts where exactly one side is the
+/// world body (self-collisions have two named bodies and are skipped).
+///
+/// Shared by [`MujocoSim::contact_force_per_foot`] and
+/// [`MujocoSim::contact_force_magnitude_per_foot`] so the two can only ever
+/// differ in what they read off a contact, never in which contacts they see.
+fn sum_per_foot(
+    contacts: &[ContactInfo],
+    foot_links: &[&str; 4],
+    pick: impl Fn(&ContactInfo) -> f64,
+) -> [f64; 4] {
+    let mut out = [0.0_f64; 4];
+    for c in contacts {
+        // ContactInfo leaves the world body's name empty, so exactly one side
+        // is empty for ground contacts.
+        let foot_name: &str = match (c.body1.is_empty(), c.body2.is_empty()) {
+            (true, false) => c.body2.as_str(),
+            (false, true) => c.body1.as_str(),
+            _ => continue,
+        };
+        if let Some(slot) = foot_links.iter().position(|l| *l == foot_name) {
+            out[slot] += pick(c);
+        }
+    }
+    out
+}
+
 impl ContactInfo {
     /// `true` when neither body is the world body (== both are robot links).
     /// Lets the renderer distinguish self-collision from ground/world
@@ -1303,26 +1330,38 @@ impl MujocoSim {
     /// trotting over uneven ground or when the MPC's phase clock
     /// drifts relative to the actual physics, and they're the typical
     /// failure mode of pure open-loop gait scheduling.
+    /// Per-foot contact force **magnitude** (N), summed over every contact
+    /// point on that foot.
+    ///
+    /// Use this, not [`Self::contact_force_per_foot`], to decide **whether a
+    /// foot is on the ground**. That one returns only the world-`z`
+    /// component, which equals the magnitude on flat ground (the normal
+    /// points up) but not on a staircase: on a riser or a step nosing the
+    /// normal tilts, and oppositely-signed components cancel, so a loaded
+    /// foot can report a near-zero vertical force and be missed.
+    ///
+    /// Measured on Go2 (2026-09-27, 20 cm × 10 steps, go2-runner
+    /// `policy --sim`): the `z`-component test saw 0.6–2.0 stance feet per
+    /// tick where the magnitude test saw 1.96, and the leg-odometry estimate
+    /// that averages over stance feet drifted by **−0.72 m/s**, which pushed
+    /// the blind stair policy out of distribution — it collapsed after ~5
+    /// steps. With the magnitude test the bias is **+0.01 m/s** and the same
+    /// policy climbs all ten steps.
+    ///
+    /// IsaacLab's contact sensor thresholds on `net_forces_w.norm()`, so this
+    /// also matches what a policy trained there was exposed to.
+    pub fn contact_force_magnitude_per_foot(&self, foot_links: &[&str; 4]) -> [f64; 4] {
+        sum_per_foot(&self.contacts(), foot_links, |c| c.force_mag)
+    }
+
+    /// Per-foot **vertical** (world-`z`) contact force (N).
+    ///
+    /// This is the load a foot carries against gravity, which is what callers
+    /// sizing a support wrench want. It is **not** a contact test: see
+    /// [`Self::contact_force_magnitude_per_foot`] for why the `z` component
+    /// misses feet on a staircase.
     pub fn contact_force_per_foot(&self, foot_links: &[&str; 4]) -> [f64; 4] {
-        let mut out = [0.0_f64; 4];
-        for c in self.contacts() {
-            // Pick the non-world side as the "robot body" — ContactInfo
-            // leaves the world body's name empty, so exactly one side is
-            // empty for ground contacts. Self-collisions (both non-empty)
-            // skip via the early `continue`.
-            let foot_name: &str = match (c.body1.is_empty(), c.body2.is_empty()) {
-                (true, false) => c.body2.as_str(),
-                (false, true) => c.body1.as_str(),
-                _ => continue,
-            };
-            for (slot, &link) in foot_links.iter().enumerate() {
-                if foot_name == link {
-                    out[slot] += c.force_world[2];
-                    break;
-                }
-            }
-        }
-        out
+        sum_per_foot(&self.contacts(), foot_links, |c| c.force_world[2])
     }
 
     /// MuJoCo's native physics timestep (s).
@@ -2008,4 +2047,80 @@ fn project_nv_to_joints(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod contact_sum_tests {
+    use super::{sum_per_foot, ContactInfo};
+
+    const FEET: [&str; 4] = ["FL_foot", "FR_foot", "RL_foot", "RR_foot"];
+
+    fn ground_contact(body: &str, f: [f64; 3]) -> ContactInfo {
+        ContactInfo {
+            pos: [0.0; 3],
+            force_mag: (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt(),
+            force_world: f,
+            // The world body has no name.
+            body1: String::new(),
+            body2: body.to_string(),
+        }
+    }
+
+    /// On flat ground the normal points up, so the two measures agree — which
+    /// is exactly why a `z`-only contact test looks correct until the terrain
+    /// tilts.
+    #[test]
+    fn a_vertical_normal_makes_the_two_measures_agree() {
+        let cs = [ground_contact("FL_foot", [0.0, 0.0, 40.0])];
+        let fz = sum_per_foot(&cs, &FEET, |c| c.force_world[2]);
+        let mag = sum_per_foot(&cs, &FEET, |c| c.force_mag);
+        assert_eq!(fz[0], 40.0);
+        assert_eq!(mag[0], 40.0);
+    }
+
+    /// **The staircase case.** A foot pressing on a riser carries a large
+    /// force whose vertical component is near zero. A contact test on the
+    /// `z` component drops the foot; one on the magnitude keeps it.
+    #[test]
+    fn a_horizontal_normal_hides_a_loaded_foot_from_the_vertical_measure() {
+        let cs = [ground_contact("FR_foot", [45.0, 0.0, 0.5])];
+        let fz = sum_per_foot(&cs, &FEET, |c| c.force_world[2]);
+        let mag = sum_per_foot(&cs, &FEET, |c| c.force_mag);
+        assert!(fz[1] < 5.0, "vertical component {} should look unloaded", fz[1]);
+        assert!(mag[1] > 40.0, "magnitude {} should look loaded", mag[1]);
+    }
+
+    /// **The step-nosing case.** Two contact points on one foot can have
+    /// opposing vertical components that cancel, while the magnitudes add.
+    #[test]
+    fn opposing_vertical_components_cancel_but_magnitudes_add() {
+        let cs = [
+            ground_contact("RL_foot", [0.0, 0.0, 30.0]),
+            ground_contact("RL_foot", [0.0, 0.0, -28.0]),
+        ];
+        let fz = sum_per_foot(&cs, &FEET, |c| c.force_world[2]);
+        let mag = sum_per_foot(&cs, &FEET, |c| c.force_mag);
+        assert!(fz[2] < 5.0, "cancelled vertical {} looks unloaded", fz[2]);
+        assert!(mag[2] > 55.0, "magnitudes should add, got {}", mag[2]);
+    }
+
+    /// Self-collisions (two named bodies) are not ground contacts.
+    #[test]
+    fn self_collisions_are_skipped() {
+        let cs = [ContactInfo {
+            pos: [0.0; 3],
+            force_mag: 99.0,
+            force_world: [0.0, 0.0, 99.0],
+            body1: "FL_calf".to_string(),
+            body2: "FL_foot".to_string(),
+        }];
+        assert_eq!(sum_per_foot(&cs, &FEET, |c| c.force_mag), [0.0; 4]);
+    }
+
+    /// Contacts on parts that are not feet do not count.
+    #[test]
+    fn non_foot_ground_contacts_are_skipped() {
+        let cs = [ground_contact("base", [0.0, 0.0, 200.0])];
+        assert_eq!(sum_per_foot(&cs, &FEET, |c| c.force_mag), [0.0; 4]);
+    }
 }
