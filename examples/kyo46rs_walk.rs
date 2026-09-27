@@ -2418,6 +2418,13 @@ fn main() {
     // (CP_TREAD_BOX showed snapping to an edge is harmful). Default = the
     // symmetric box (MPC_FOOTSTEP_MAX_X), bit-identical.
     let mpc_footstep_stair_back = env_f64("MPC_FOOTSTEP_STAIR_BACK", f64::INFINITY).max(0.0);
+    // Largest lateral shift TOWARD the stance foot (a narrower step). The
+    // contact_plan adjuster forbids it in v4.1 (CP_MAX_Y_IN=0); the MPC box
+    // allowed it. Measured 2026-09-27 (D+J+T, 11 N.s backward, m32): the
+    // landing moved 27 mm inward, the lateral DCM error then ran away
+    // -19 -> -126 mm and the robot fell. Default = MPC_FOOTSTEP_MAX_Y
+    // (symmetric box), bit-identical.
+    let mpc_footstep_max_y_in = env_f64("MPC_FOOTSTEP_MAX_Y_IN", f64::INFINITY).max(0.0);
     // The same gate for a RISING swing (the landing more than 5 mm above the
     // lift-off, i.e. a stair step). Stairs want an early freeze (the hover
     // above the tread), flat pushes want a late one (a push at 0.75 of the
@@ -2434,6 +2441,14 @@ fn main() {
     // the variable itself stays near 0 where the runs part -- the cost is
     // its presence, not its choice. 0 = always armed = shipped.
     let mpc_footstep_trig = env_f64("MPC_FOOTSTEP_TRIG", 0.0).max(0.0);
+    // Keep the variable armed for this many FOLLOWING steps once the trigger
+    // fires. Measured 2026-09-27 (D+J+T, 11 N.s backward, m32): the step
+    // after the push recovery starts below the threshold, the DCM error
+    // creeps +4 -> +9 mm, the trigger fires only at the end of the swing and
+    // the landing jumps 32 mm sideways at once; always-armed D+J corrects the
+    // same step continuously and survives. 0 = arm only the step that
+    // triggered = shipped.
+    let mpc_footstep_trig_hold = env_f64("MPC_FOOTSTEP_TRIG_HOLD", 0.0).max(0.0) as usize;
     let mpc_footstep_max = [
         env_f64("MPC_FOOTSTEP_MAX_X", 0.06).max(0.0),
         env_f64("MPC_FOOTSTEP_MAX_Y", 0.03).max(0.0),
@@ -3020,7 +3035,8 @@ fn main() {
     // non-ratcheting rule as `cp_applied`).
     let mut mpc_fs_slice: Option<usize> = None;
     let mut mpc_fs_applied = na::Vector2::zeros();
-    let mut mpc_fs_armed: Option<usize> = None;
+    // (first slice, last slice) the landing variable is armed for.
+    let mut mpc_fs_armed: Option<(usize, usize)> = None;
     let mut mpc_fs_last = na::Vector2::zeros();
     // (solve time, CoM at solve, CoM velocity at solve, predicted [c, v] per node end)
     let mut wrench_mpc_traj: Option<(f64, na::Vector3<f64>, na::Vector3<f64>, Vec<[na::Vector3<f64>; 2]>)> = None;
@@ -6328,10 +6344,15 @@ fn main() {
                     && let Support::Single { swing, .. } = support
                     && {
                         let i = gait.index_at(t);
-                        if mpc_footstep_trig > 0.0 && dcm_err >= mpc_footstep_trig {
-                            mpc_fs_armed = Some(i);
+                        if mpc_footstep_trig > 0.0
+                            && dcm_err >= mpc_footstep_trig
+                            && !mpc_fs_armed.is_some_and(|(a, u)| a <= i && i <= u)
+                        {
+                            // A step is two slices (single + double support).
+                            mpc_fs_armed = Some((i, i + 2 * mpc_footstep_trig_hold));
                         }
-                        mpc_footstep_trig == 0.0 || mpc_fs_armed == Some(i)
+                        mpc_footstep_trig == 0.0
+                            || mpc_fs_armed.is_some_and(|(a, u)| a <= i && i <= u)
                     }
                     && {
                         // The single support's own clock. LandingTiming
@@ -6377,7 +6398,14 @@ fn main() {
                             foot: swing,
                             first_node,
                             weight: mpc_footstep_w,
-                            max: mpc_footstep_max,
+                            max: {
+                                let (_, inward_is_plus) = landing_inward(&footsteps, gait.index_at(t), swing);
+                                let mut m = mpc_footstep_max;
+                                if inward_is_plus {
+                                    m[1] = m[1].min(mpc_footstep_max_y_in);
+                                }
+                                m
+                            },
                             prior: if mpc_footstep_increment
                                 && mpc_fs_slice == Some(gait.index_at(t))
                             {
@@ -6391,11 +6419,15 @@ fn main() {
                                     - footsteps.at_slice(i.saturating_sub(1)).sole[swing].z)
                                     .abs()
                                     > 0.005;
+                                let mut m = mpc_footstep_max;
                                 if stair {
-                                    [mpc_footstep_max[0].min(mpc_footstep_stair_back), mpc_footstep_max[1]]
-                                } else {
-                                    mpc_footstep_max
+                                    m[0] = m[0].min(mpc_footstep_stair_back);
                                 }
+                                let (_, inward_is_plus) = landing_inward(&footsteps, i, swing);
+                                if !inward_is_plus {
+                                    m[1] = m[1].min(mpc_footstep_max_y_in);
+                                }
+                                m
                             },
                         })
                 } else {
@@ -9561,4 +9593,18 @@ fn main() {
 fn main() {
     eprintln!("This example requires the `mujoco` feature. Run with:");
     eprintln!("  cargo run --features mujoco --example kyo46rs_walk");
+}
+
+/// Which lateral direction is "inward" (toward the stance foot) for the
+/// landing of `swing` planned at slice `i`: returns (lateral gap, true when
+/// inward is +y). The gap is |stance.y - landing.y| in world y.
+fn landing_inward(
+    footsteps: &articara::biped::gait::FootstepPlan,
+    i: usize,
+    swing: usize,
+) -> (f64, bool) {
+    let f = footsteps.at_slice(i);
+    let stance = 1 - swing;
+    let dy = f.sole[stance].y - f.sole[swing].y;
+    (dy.abs(), dy > 0.0)
 }
