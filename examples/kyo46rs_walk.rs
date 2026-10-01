@@ -423,6 +423,22 @@ fn main() {
 
     let f_max_scale = env_f64("F_MAX_SCALE", 2.3);
     let f_max_per_foot = env_f64("F_MAX", f_max_scale * total_mass * G);
+    // The wrench MPC's own per-foot ceiling, as a multiple of body weight.
+    // Default = the WBC's (F_MAX), bit-identical. Measured 2026-10-01
+    // (design note Sec.14): with the CoP-capture rows the MPC answers a
+    // backward push by loading the front foot to 445 N (1.3 x body weight)
+    // and unloading the rear -- the rows linearise the CoP at the reference
+    // fz, so excess vertical force buys an apparent heel-ward CoP for free,
+    // and the WBC's regulariser follows the front loading. 1.0 = no foot
+    // may carry more than the body weight.
+    let mpc_f_max_per_foot = {
+        let scale = env_f64("MPC_F_MAX_SCALE", f64::NAN);
+        if scale.is_finite() && scale > 0.0 {
+            scale * total_mass * G
+        } else {
+            f_max_per_foot
+        }
+    };
     assert!(
         f_max_per_foot >= total_mass * G,
         "f_max ({f_max_per_foot:.1} N) is below the single-support nominal ({:.1} N)",
@@ -2379,6 +2395,28 @@ fn main() {
     // node-0 net CoP (see the use site). Step 3 of the BD roadmap: the WBC
     // follows the MPC. 0 = off = shipped.
     let mpc_pcmd = env_f64("MPC_PCMD", 0.0).clamp(0.0, 1.0);
+    // With MPC_PCMD: BD's "plan + fast feedback". The MPC is solved every
+    // 20 ms and its node-0 CoP is otherwise held between solves, while the
+    // DCM law it replaces looked at xi every tick. Measured 2026-09-27
+    // (design note Sec.14, N=24): that hold loses the strong pushes
+    // (1e7: z=-3.13, backward 7->1). Here the solve-time DCM xi_s and the
+    // MPC's CoP p give the DCM the MPC expects now,
+    //     xi_pred(t) = p + (xi_s - p) exp(omega (t - t_s)),
+    // and the commanded pressure point corrects only the departure from it,
+    //     p_cmd = p + (1 + k_dcm) (xi_meas - xi_pred),
+    // which makes that departure decay as exp(-k_dcm omega t) (same gain
+    // as the DCM law, dcm::commanded_zmp). Off = the held CoP = shipped.
+    let mpc_pcmd_fb = flag("MPC_PCMD_FB", false);
+    // With MPC_PCMD: take the MPC's node-0 horizontal CoM ACCELERATION and
+    // hand the WBC the LIPM pressure point that produces it,
+    //     p = c - a_xy / omega^2,
+    // instead of the moment-based net CoP of the MPC's wrench. The DCM obeys
+    // the horizontal force, not the pressure point: with free horizontal
+    // forces and angular momentum the SRBD's CoP and its CoM acceleration
+    // are different things, and the CoP-capture rows were buying a heel-ward
+    // CoP with front-foot load while the acceleration stayed short
+    // (2026-10-01, design note Sec.14). Off = the net CoP = shipped.
+    let mpc_pcmd_from_acc = flag("MPC_PCMD_FROM_ACC", false);
     // 1 = shipped: the landing offset also enters the momentum and net-CoP
     // rows as `dp x F`. 0 = capture rows and landing cost only (2026-09-27:
     // the moment coupling made the landing jitter +-30-47 mm on
@@ -3046,6 +3084,8 @@ fn main() {
     // moves it too -- so it has to be computed where the wrenches and their
     // contact frames are both in hand.
     let mut diag_mpc_net_cop = [f64::NAN; 2];
+    // The measured DCM at the moment of that solve (MPC_PCMD_FB).
+    let mut diag_mpc_xi: Option<na::Vector2<f64>> = None;
     // The same quantity for the forces the WBC actually asked the robot for.
     let mut diag_wbc_net_cop = [f64::NAN; 2];
     // P2 opt-in: a held command belongs to one phase/contact topology.
@@ -5818,8 +5858,19 @@ fn main() {
             && diag_mpc_time.is_some_and(|last| t - last <= 2.0 * stair_wrench_dt + 1e-9)
             && diag_mpc_net_cop.iter().all(|v| v.is_finite())
         {
-            let m = na::Vector2::new(diag_mpc_net_cop[0], diag_mpc_net_cop[1]);
-            let m = sbox.clamp(&m).0;
+            let m = if mpc_pcmd_from_acc {
+                com.xy() - wrench_mpc_acceleration.xy() / (omega * omega)
+            } else {
+                na::Vector2::new(diag_mpc_net_cop[0], diag_mpc_net_cop[1])
+            };
+            let mut m = sbox.clamp(&m).0;
+            if mpc_pcmd_fb
+                && let (Some(xi_s), Some(t_s)) = (diag_mpc_xi, diag_mpc_time)
+            {
+                let xi_pred = m + (xi_s - m) * (omega * (t - t_s)).exp();
+                let e = dcm_of(&com, &com_vel, omega) - xi_pred;
+                m = sbox.clamp(&(m + e * (1.0 + k_dcm))).0;
+            }
             p_cmd += (m - p_cmd) * mpc_pcmd;
             n_mpc_pcmd += 1;
         }
@@ -6698,7 +6749,7 @@ fn main() {
                     friction_mu,
                     cop_half: contact_cfg.cop_half,
                     torsion_mu: contact_cfg.mu_torsion,
-                    max_fz: f_max_per_foot,
+                    max_fz: mpc_f_max_per_foot,
                     validate_solution: mpc_gate,
                     // The cost weights, so the ones that compete with the CoP
                     // term can be measured against it. Defaults are the
@@ -6777,6 +6828,7 @@ fn main() {
                         by_side.copy_from_slice(&solution.sole_wrenches);
                         diag_mpc_reference = input.reference_fz_schedule[0];
                         diag_mpc_time = Some(t);
+                        diag_mpc_xi = Some(dcm_of(&com, &com_vel, omega));
                         wrench_mpc_command = Some(by_side);
                         {
                             let (mut mx, mut my, mut fz) = (0.0, 0.0, 0.0);
