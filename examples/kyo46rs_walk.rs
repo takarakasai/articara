@@ -2391,6 +2391,20 @@ fn main() {
     // wrench_mpc::Config::capture_cop_weight. Needs MPC_LANDING_CAPTURE_W > 0
     // for the capture inputs. 0 = off = shipped.
     let mpc_capture_cop_w = env_f64("MPC_CAPTURE_COP_W", 0.0).max(0.0);
+    // Lexicographic CoP (`wrench_mpc::Config::capture_cop_lexicographic`):
+    // the net CoP is planned first as a LIPM recapture inside the box the
+    // scheduled split can reach, then held by equality. Replaces the penalty
+    // capture rows (MPC_CAPTURE_COP_W), which the MPC satisfied through the
+    // load split (2026-10-01, design note Sec.14). Off = shipped.
+    let mpc_capture_lex = flag("MPC_CAPTURE_LEX", false);
+    // The lexicographic CoP writes equality rows at every node. The default
+    // active-set backend reports Infeasible for those with any positive
+    // minimum load (wrench_mpc test
+    // `a_sideways_net_cop_equality_is_feasible_on_clarabel_but_not_the_active_set`),
+    // so this mode runs on Clarabel unless MPC_QP_BACKEND says otherwise.
+    let mpc_capture_lex_wp = env_f64("MPC_CAPTURE_LEX_WP", 0.1).max(0.0);
+    let mpc_capture_lex_ws = env_f64("MPC_CAPTURE_LEX_WS", 0.1).max(0.0);
+    let mpc_capture_lex_margin = env_f64("MPC_CAPTURE_LEX_MARGIN", 0.005).max(0.0);
     // Fraction of the WBC's commanded pressure point taken from the MPC's
     // node-0 net CoP (see the use site). Step 3 of the BD roadmap: the WBC
     // follows the MPC. 0 = off = shipped.
@@ -3130,6 +3144,7 @@ fn main() {
     let mut wrench_mpc_momentum_rate = na::Vector3::zeros();
     let mut wrench_mpc_solves = 0u32;
     let mut wrench_mpc_failures = 0u32;
+    let mut wrench_mpc_soft = 0u32;
     let mut contact_activation = [1.0_f64; 2];
     let mut contact_force_activation = [1.0_f64; 2];
     // FFDC state: the integrated relative-height correction, and the load
@@ -6695,7 +6710,10 @@ fn main() {
                             })
                             .collect()
                     }),
-                    reference_dcm_schedule: (mpc_dcm_weight > 0.0 || mpc_landing_capture_w > 0.0).then(|| {
+                    reference_dcm_schedule: (mpc_dcm_weight > 0.0
+                        || mpc_landing_capture_w > 0.0
+                        || mpc_capture_lex)
+                        .then(|| {
                         (0..stair_wrench_horizon)
                             .map(|k| {
                                 let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
@@ -6706,7 +6724,7 @@ fn main() {
                     min_fz_schedule,
                     previous,
                     landing,
-                    dcm_now: (mpc_landing_capture_w > 0.0).then_some(xi),
+                    dcm_now: (mpc_landing_capture_w > 0.0 || mpc_capture_lex).then_some(xi),
                     reference_dcm_sensitivity: (mpc_landing_capture_j
                         && mpc_landing_capture_w > 0.0)
                         .then(|| landing)
@@ -6768,6 +6786,14 @@ fn main() {
                     landing_lexicographic: mpc_landing_lex,
                     fz_split_equality: mpc_fz_split_eq,
                     capture_cop_weight: mpc_capture_cop_w,
+                    capture_cop_lexicographic: mpc_capture_lex,
+                    capture_cop_wp: mpc_capture_lex_wp,
+                    capture_cop_ws: mpc_capture_lex_ws,
+                    capture_cop_margin: mpc_capture_lex_margin,
+                    capture_cop_net_eq: flag("MPC_CAPTURE_LEX_NET_EQ", true),
+                    capture_cop_total_eq: flag("MPC_CAPTURE_LEX_TOTAL_EQ", true),
+                    capture_cop_box_ignores_min: flag("MPC_CAPTURE_LEX_IGNORE_MIN", false),
+                    capture_cop_force_margin: env_f64("MPC_CAPTURE_LEX_FMARGIN", 0.1),
                     landing_moment_coupling: mpc_footstep_moment,
                     arm_about_prior: mpc_arm_about_prior,
                     ldot_weight: mpc_w_ldot,
@@ -6778,6 +6804,12 @@ fn main() {
                     ..Default::default()
                 };
                 config.qp.absolute_gap = mpc_gate;
+                if mpc_capture_lex {
+                    config.qp.solver = misa_wbc::QpSolver::Clarabel;
+                }
+                // Interior-point solutions carry complementarity slack at the
+                // gap setting; the KKT gate's 1e-6 rejected every one.
+                config.kkt_complementarity_tolerance = env_f64("MPC_KKT_COMP_TOL", if mpc_capture_lex { 1e-2 } else { 1e-6 });
                 if let Some(backend) = mpc_backend_override {
                     config.qp.solver = backend;
                 }
@@ -6858,6 +6890,26 @@ fn main() {
                         }
                         wrench_mpc_acceleration = solution.acceleration;
                         wrench_mpc_traj = Some((t, com, com_vel, solution.trajectory.clone()));
+                        if solution.soft_fallback {
+                            wrench_mpc_soft += 1;
+                        }
+                        if let Ok(tw) = std::env::var("MPC_LEX_DEBUG_T")
+                            && let Ok(tw) = tw.parse::<f64>()
+                            && (t - tw).abs() < 0.011
+                            && let Some(plan) = solution.cop_plan.as_ref()
+                        {
+                            println!("  [lex] t={t:.3} xi0={:?} support={support:?}", input.dcm_now.map(|v| (v.x, v.y)));
+                            for k in 0..plan.len() {
+                                let xr = input.reference_dcm_schedule.as_ref().map(|v| v[k]);
+                                let pb = input.reference_net_cop_schedule.as_ref().map(|v| v[k]);
+                                println!(
+                                    "    k{k} contact={:?} ref_fz={:?} min={:?} xi_ref=({:.3},{:.3}) pbar=({:.3},{:.3}) plan=({:.3},{:.3}) pos=({:.3},{:.3})/({:.3},{:.3})",
+                                    input.contact_schedule[k], input.reference_fz_schedule[k], input.min_fz_schedule[k],
+                                    xr.map_or(0.0, |v| v.x), xr.map_or(0.0, |v| v.y), pb.map_or(0.0, |v| v.x), pb.map_or(0.0, |v| v.y),
+                                    plan[k].x, plan[k].y, input.contacts[0].position.x, input.contacts[0].position.y, input.contacts[1].position.x, input.contacts[1].position.y
+                                );
+                            }
+                        }
                         if let Some(dp) = solution.landing_shift
                             && let Some(land) = landing
                         {
@@ -9732,6 +9784,9 @@ fn main() {
             "samples": substep_samples, "nonfinite_values": substep_nonfinite,
             "passed": passed, "joints": joints});
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).expect("SUBSTEP_LIMIT_AUDIT_JSON");
+    }
+    if mpc_capture_lex {
+        println!("  mpc lex: {wrench_mpc_soft} solves fell back to the soft net-CoP rows");
     }
     if mpc_pcmd > 0.0 {
         println!("  mpc pcmd: {n_mpc_pcmd} ticks took the MPC pressure point (fraction {mpc_pcmd})");

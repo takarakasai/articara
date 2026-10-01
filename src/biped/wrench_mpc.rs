@@ -230,6 +230,43 @@ pub struct Config {
     /// the net CoP can only move through the sole moments, which is what
     /// the WBC can realise. false = shipped.
     pub fz_split_equality: bool,
+    /// Decide the net CoP FIRST, as a LIPM plan: per node, the pressure point
+    /// inside the box the scheduled load split can reach that recaptures the
+    /// DCM (`lexicographic_cop`), then hold the wrench MPC to it by equality
+    /// (net CoP at every contact node, and the TOTAL vertical force at every
+    /// node). Replaces the penalty capture rows, which the MPC satisfied with
+    /// excess vertical force on the front foot (2026-10-01, design note
+    /// Sec.14): with the total held, the net CoP can only be moved by the
+    /// split and the sole moments, both of which the WBC can realise. (A
+    /// per-foot split equality was tried first: it forbids the load transfer
+    /// a double support exists for and is infeasible from 0.7 s.) The CoP
+    /// plan's weights are `capture_cop_wp` (deviation from the plan's net
+    /// CoP) and `capture_cop_ws` (node-to-node change), both against a DCM
+    /// residual of weight 1 (x4 at the terminal node); `capture_cop_margin`
+    /// shrinks every box. false = shipped.
+    pub capture_cop_lexicographic: bool,
+    pub capture_cop_wp: f64,
+    pub capture_cop_ws: f64,
+    pub capture_cop_margin: f64,
+    /// Diagnostics for the lexicographic CoP: hold the net CoP by equality
+    /// (false = weighted residual, `net_cop_weight`) and hold the TOTAL
+    /// vertical force by equality (false = free). Both true = the design.
+    pub capture_cop_net_eq: bool,
+    pub capture_cop_total_eq: bool,
+    /// Build the reachable box as if every foot's minimum load were zero
+    /// (the touchdown-admission ramp in `min_fz_schedule` pulls the box's
+    /// rear edge forward through a double support, and the DCM law the WBC
+    /// runs ignores that ramp). The wrench stage keeps the real minimum; an
+    /// unreachable plan then falls back to the soft rows. false = exact box.
+    pub capture_cop_box_ignores_min: bool,
+    /// Keep the plan off the box's vertices: when the reachable range is
+    /// computed, each foot is assumed to need its minimum load PLUS this
+    /// fraction of the scheduled total. At a vertex the wrench stage must
+    /// hold one foot at its minimum and both sole moments at their limit at
+    /// once, and the interior-point solve of that equality fails (2026-10-02
+    /// 01:11: the plan sat at 0.872 = the vertex, the strict solve failed,
+    /// the soft retry answered 0.898 and the backward push was lost).
+    pub capture_cop_force_margin: f64,
     /// Weight on the DCM-capture rows built from the MPC's OWN net CoP:
     /// the DCM is propagated through the horizon with
     ///     p_k = p_bar_k + delta_p_k(u),  delta_p_k = (-M_y, M_x) / Fz_ref_k
@@ -267,6 +304,15 @@ pub struct Config {
     /// Opt-in common formal-status/KKT gate, including the default backend.
     /// Closed-loop comparisons enable this for baseline and candidates alike.
     pub validate_solution: bool,
+    /// Tolerances of that gate: all scaled KKT residuals must be below
+    /// `kkt_tolerance`, except complementarity, which must be below
+    /// `kkt_complementarity_tolerance`. An interior-point backend (Clarabel)
+    /// stops at its duality gap and leaves complementarity around 1e-5 to
+    /// 1e-3 at the walker's gap setting while feasibility and stationarity
+    /// sit at 1e-10 (2026-10-02): with both at 1e-6 every Clarabel solve was
+    /// rejected and the walker ran on its fallback. Defaults keep 1e-6.
+    pub kkt_tolerance: f64,
+    pub kkt_complementarity_tolerance: f64,
 }
 
 impl Default for Config {
@@ -291,6 +337,14 @@ impl Default for Config {
             landing_capture_weight: 0.0,
             landing_lexicographic: false,
             fz_split_equality: false,
+            capture_cop_lexicographic: false,
+            capture_cop_wp: 0.1,
+            capture_cop_ws: 0.1,
+            capture_cop_margin: 0.005,
+            capture_cop_net_eq: true,
+            capture_cop_total_eq: true,
+            capture_cop_box_ignores_min: false,
+            capture_cop_force_margin: 0.1,
             capture_cop_weight: 0.0,
             landing_moment_coupling: true,
             arm_about_prior: false,
@@ -300,6 +354,8 @@ impl Default for Config {
             smooth_weight: 1e-3,
             qp: QpConfig::default(),
             validate_solution: false,
+            kkt_tolerance: 1e-6,
+            kkt_complementarity_tolerance: 1e-6,
         }
     }
 }
@@ -318,6 +374,10 @@ pub struct Solution {
     /// The landing offset the MPC chose (world x, y), when `Input::landing`
     /// was given.
     pub landing_shift: Option<na::Vector2<f64>>,
+    /// The net-CoP plan the lexicographic CoP stage fixed, one per node.
+    pub cop_plan: Option<Vec<na::Vector2<f64>>>,
+    /// The strict CoP equality could not be met and this is the soft retry.
+    pub soft_fallback: bool,
     /// Predicted angular momentum at the END of each node, node 0 first.
     pub momentum_trajectory: Vec<na::Vector3<f64>>,
     pub terminal_com: na::Vector3<f64>,
@@ -350,6 +410,8 @@ pub struct DenseProblem {
     /// has inequalities only.
     pub a_eq: Option<na::DMatrix<f64>>,
     pub b_eq: Option<na::DVector<f64>>,
+    /// The net-CoP plan the lexicographic CoP stage fixed (see `Config`).
+    pub cop_plan: Option<Vec<na::Vector2<f64>>>,
 }
 
 /// Assemble without running a solver; allocation time is separate from solve time.
@@ -460,9 +522,237 @@ pub fn lexicographic_landing(input: &Input, cfg: &Config) -> Option<na::Vector2<
     Some(box_qp_2d(&h, &g, lo, hi))
 }
 
+/// Minimiser of 0.5 x'Hx + g'x over lo <= x <= hi (H symmetric positive
+/// definite, small n): active-set on the bounds. Starting free, solve the
+/// reduced Newton system, clamp what leaves the box and fix it there; once
+/// nothing moves, release any fixed variable whose gradient points back
+/// inside. Terminates: each pass either fixes a new variable or releases
+/// one with a strictly lower objective.
+fn box_qp(h: &na::DMatrix<f64>, g: &na::DVector<f64>, lo: &[f64], hi: &[f64]) -> na::DVector<f64> {
+    let n = g.len();
+    let mut x = na::DVector::zeros(n);
+    for i in 0..n {
+        x[i] = 0.0_f64.clamp(lo[i], hi[i]);
+    }
+    // -1 free, 0 at lower, 1 at upper
+    let mut state = vec![-1i8; n];
+    for _ in 0..4 * n + 4 {
+        let free: Vec<usize> = (0..n).filter(|&i| state[i] < 0).collect();
+        if !free.is_empty() {
+            let mut hf = na::DMatrix::zeros(free.len(), free.len());
+            let mut gf = na::DVector::zeros(free.len());
+            for (a, &i) in free.iter().enumerate() {
+                gf[a] = g[i];
+                for j in 0..n {
+                    if state[j] >= 0 {
+                        gf[a] += h[(i, j)] * x[j];
+                    }
+                }
+                for (b, &j) in free.iter().enumerate() {
+                    hf[(a, b)] = h[(i, j)];
+                }
+            }
+            let Some(sol) = hf.lu().solve(&(-gf)) else { break };
+            let mut clamped = false;
+            for (a, &i) in free.iter().enumerate() {
+                if sol[a] < lo[i] {
+                    x[i] = lo[i];
+                    state[i] = 0;
+                    clamped = true;
+                } else if sol[a] > hi[i] {
+                    x[i] = hi[i];
+                    state[i] = 1;
+                    clamped = true;
+                } else {
+                    x[i] = sol[a];
+                }
+            }
+            if clamped {
+                continue;
+            }
+        }
+        // Nothing left the box: release the worst bound-fixed variable whose
+        // gradient wants to move it inside.
+        let grad = h * &x + g;
+        let mut worst: Option<(usize, f64)> = None;
+        for i in 0..n {
+            let v = match state[i] {
+                0 => -grad[i],
+                1 => grad[i],
+                _ => continue,
+            };
+            if v > 1e-10 && worst.is_none_or(|(_, w)| v > w) {
+                worst = Some((i, v));
+            }
+        }
+        match worst {
+            Some((i, _)) => state[i] = -1,
+            None => break,
+        }
+    }
+    x
+}
+
+/// Stage one of the lexicographic CoP: the net-CoP plan over the horizon,
+/// or `None` when the inputs it needs are missing.
+///
+/// LIPM in the DCM, `xi_{k+1} = (1 + w dt) xi_k - w dt p_k`, from the
+/// measured `dcm_now`. Per node the pressure point is boxed to what the
+/// SCHEDULED load split can reach through the sole moments: the share-
+/// weighted sum of the soles' CoP boxes (their world-axis bounding boxes),
+/// shrunk by `capture_cop_margin`. That box is exactly the set the wrench
+/// stage can hit with the split held, so the equalities it then writes are
+/// feasible. The two axes decouple, so it is two small box QPs.
+pub fn lexicographic_cop(input: &Input, cfg: &Config) -> Option<Vec<na::Vector2<f64>>> {
+    let landing = if cfg.landing_lexicographic { lexicographic_landing(input, cfg) } else { None };
+    lexicographic_cop_with_landing(input, cfg, landing)
+}
+
+/// [`lexicographic_cop`] with the landing's decided offset: from the
+/// landing's first node on, that foot's box moves by `dp`.
+pub fn lexicographic_cop_with_landing(
+    input: &Input,
+    cfg: &Config,
+    landing_shift: Option<na::Vector2<f64>>,
+) -> Option<Vec<na::Vector2<f64>>> {
+    let n = cfg.horizon;
+    let xi0 = input.dcm_now?;
+    let xiref = input.reference_dcm_schedule.as_ref()?;
+    let pbar = input.reference_net_cop_schedule.as_ref()?;
+    if cfg.omega <= 0.0 || n == 0 {
+        return None;
+    }
+    let wdt = cfg.omega * cfg.dt;
+    // Boxes per node and axis.
+    let mut lo = vec![[0.0_f64; 2]; n];
+    let mut hi = vec![[0.0_f64; 2]; n];
+    let mut last: Option<([f64; 2], [f64; 2])> = None;
+    for k in 0..n {
+        let total: f64 = (0..2)
+            .filter(|&f| input.contact_schedule[k][f])
+            .map(|f| input.reference_fz_schedule[k][f].max(0.0))
+            .sum();
+        // The net CoP the wrench stage can reach at this node: every foot
+        // down carries at least `min_fz_schedule` of the scheduled total, the
+        // rest may go to either foot, and each sole's own CoP box (its
+        // world-axis bounding box, shrunk by the margin) bounds its pressure
+        // point. Per axis the extreme is reached by loading the foot whose
+        // box edge is furthest that way as much as the other foot's minimum
+        // allows.
+        let feet: Vec<usize> = (0..2).filter(|&f| input.contact_schedule[k][f]).collect();
+        let m = cfg.capture_cop_margin.max(0.0);
+        let mut lo_k = [0.0_f64; 2];
+        let mut hi_k = [0.0_f64; 2];
+        let any = !feet.is_empty();
+        if any {
+            let edge: Vec<([f64; 2], [f64; 2])> = feet
+                .iter()
+                .map(|&f| {
+                    let c = &input.contacts[f];
+                    let (hx, hy) = (c.cop_half.0, c.cop_half.1);
+                    let r = &c.rotation;
+                    // Axis-aligned extent of the yawed sole box through its
+                    // centre lines: along x it is hx / cos(yaw) (capped by
+                    // the bounding box), along y hy cos(yaw). The bounding
+                    // box over-reaches at the edges and made the equality
+                    // infeasible there; the inscribed box collapses in y for
+                    // this sole's aspect ratio (2026-10-02 01:15-01:17).
+                    let (c0, s0) = (r[(0, 0)].abs().max(1e-6), r[(0, 1)].abs());
+                    let ex = ((hx * c0 + hy * s0).min(hx / c0) - m).max(0.0);
+                    let ey = (hy * c0 - m).max(0.0);
+                    let shift = match (input.landing, landing_shift) {
+                        (Some(land), Some(dp)) if land.foot == f && k >= land.first_node => dp,
+                        _ => na::Vector2::zeros(),
+                    };
+                    let (px, py) = (c.position.x + shift.x, c.position.y + shift.y);
+                    ([px - ex, py - ey], [px + ex, py + ey])
+                })
+                .collect();
+            let total_ref: f64 = feet.iter().map(|&f| input.reference_fz_schedule[k][f].max(0.0)).sum();
+            for axis in 0..2 {
+                if feet.len() == 1 {
+                    lo_k[axis] = edge[0].0[axis];
+                    hi_k[axis] = edge[0].1[axis];
+                    continue;
+                }
+                let mins = if cfg.capture_cop_box_ignores_min {
+                    [0.0, 0.0]
+                } else {
+                    [
+                        input.min_fz_schedule[k][feet[0]].max(0.0),
+                        input.min_fz_schedule[k][feet[1]].max(0.0),
+                    ]
+                };
+                let f_tot = total_ref.max(mins[0] + mins[1]).max(1e-9);
+                let slack = cfg.capture_cop_force_margin.max(0.0) * f_tot;
+                // Largest share foot a can take while b keeps its minimum
+                // (plus the slack that keeps the plan off the vertex).
+                let share_max = |_a: usize, b: usize| ((f_tot - mins[b] - slack) / f_tot).clamp(0.0, 1.0);
+                // hi: load the foot with the larger upper edge.
+                let (a, b) = if edge[0].1[axis] >= edge[1].1[axis] { (0, 1) } else { (1, 0) };
+                let s = share_max(a, b);
+                hi_k[axis] = s * edge[a].1[axis] + (1.0 - s) * edge[b].1[axis];
+                // lo: load the foot with the smaller lower edge.
+                let (a, b) = if edge[0].0[axis] <= edge[1].0[axis] { (0, 1) } else { (1, 0) };
+                let s = share_max(a, b);
+                lo_k[axis] = s * edge[a].0[axis] + (1.0 - s) * edge[b].0[axis];
+            }
+        }
+        let box_k = if any {
+            (lo_k, hi_k)
+        } else {
+            last.unwrap_or(([pbar[0].x, pbar[0].y], [pbar[0].x, pbar[0].y]))
+        };
+        lo[k] = box_k.0;
+        hi[k] = box_k.1;
+        last = Some(box_k);
+    }
+    let mut plan = vec![na::Vector2::zeros(); n];
+    for axis in 0..2 {
+        // xi_{k+1} = a_{k+1} + sum_{j<=k} B[k+1][j] p_j
+        let mut h = na::DMatrix::zeros(n, n);
+        let mut g = na::DVector::zeros(n);
+        for k in 0..n {
+            let a = (1.0 + wdt).powi(k as i32 + 1) * xi0[axis];
+            let target = xiref.get(k).copied().unwrap_or_else(|| xiref[xiref.len() - 1])[axis];
+            let w = if k + 1 == n { 4.0 } else { 1.0 };
+            let mut row = na::DVector::zeros(n);
+            for j in 0..=k {
+                row[j] = -wdt * (1.0 + wdt).powi((k - j) as i32);
+            }
+            h += &row * row.transpose() * w;
+            g += &row * ((a - target) * w);
+        }
+        for k in 0..n {
+            let p = pbar.get(k).copied().unwrap_or_else(|| pbar[pbar.len() - 1])[axis];
+            h[(k, k)] += cfg.capture_cop_wp;
+            g[k] -= cfg.capture_cop_wp * p;
+            if k > 0 {
+                let ws = cfg.capture_cop_ws;
+                h[(k, k)] += ws;
+                h[(k - 1, k - 1)] += ws;
+                h[(k, k - 1)] -= ws;
+                h[(k - 1, k)] -= ws;
+            }
+        }
+        let lo_a: Vec<f64> = (0..n).map(|k| lo[k][axis]).collect();
+        let hi_a: Vec<f64> = (0..n).map(|k| hi[k][axis]).collect();
+        let x = box_qp(&h, &g, &lo_a, &hi_a);
+        for k in 0..n {
+            plan[k][axis] = x[k];
+        }
+    }
+    Some(plan)
+}
+
 pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
     let landing_fixed = if cfg.landing_lexicographic {
         lexicographic_landing(input, cfg)
+    } else {
+        None
+    };
+    let cop_fixed = if cfg.capture_cop_lexicographic {
+        lexicographic_cop_with_landing(input, cfg, landing_fixed)
     } else {
         None
     };
@@ -767,10 +1057,10 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         // Net CoP over both feet (see `reference_net_cop_schedule`). Two rows
         // per node, spanning both feet, so it constrains the SPLIT rather than
         // each foot's own pressure point.
-        if (cfg.net_cop_weight > 0.0 || cfg.net_cop_equality)
+        if (cfg.net_cop_weight > 0.0 || cfg.net_cop_equality || cop_fixed.is_some())
             && let Some(nets) = input.reference_net_cop_schedule.as_ref()
         {
-            let c = nets[k];
+            let c = cop_fixed.as_ref().map_or(nets[k], |plan| plan[k]);
             let mut rx = na::DVector::zeros(nu);
             let mut ry = na::DVector::zeros(nu);
             let mut any = false;
@@ -824,7 +1114,10 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
                 }
             }
             let both = input.contact_schedule[k][0] && input.contact_schedule[k][1];
-            if any && cfg.net_cop_equality && both {
+            if any
+                && ((cop_fixed.is_some() && cfg.capture_cop_net_eq)
+                    || (cfg.net_cop_equality && both))
+            {
                 eq_rows.push(rx.clone());
                 eq_rows.push(ry.clone());
             } else if any && cfg.net_cop_weight > 0.0 {
@@ -843,6 +1136,22 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             r[12 * n + j] = 1.0;
             eq_rows.push(r);
             eq_rhs.push(fixed[j]);
+        }
+    }
+    if cop_fixed.is_some() && cfg.capture_cop_total_eq {
+        for k in 0..n {
+            let feet: Vec<usize> = (0..2).filter(|&f| input.contact_schedule[k][f]).collect();
+            if feet.is_empty() {
+                continue;
+            }
+            let mut r = na::DVector::zeros(nu);
+            let mut total = 0.0;
+            for &foot in &feet {
+                r[12 * k + 6 * foot + 5] = 1.0;
+                total += input.reference_fz_schedule[k][foot];
+            }
+            eq_rows.push(r);
+            eq_rhs.push(total);
         }
     }
     if cfg.fz_split_equality {
@@ -1045,6 +1354,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         node_maps,
         a_eq,
         b_eq,
+        cop_plan: cop_fixed,
     })
 }
 
@@ -1154,6 +1464,35 @@ pub fn solve_with_workspace(
         ws.last_report = None;
     }
     let assembly_started = std::time::Instant::now();
+    // Lexicographic CoP: a plan that the wrench stage cannot meet exactly
+    // (a corner of the reachable box, a contact the schedule and the robot
+    // disagree about) must not cost the tick. Retry once with the net-CoP
+    // rows soft.
+    if cfg.capture_cop_lexicographic && cfg.capture_cop_net_eq {
+        let strict = solve_with_workspace_inner(input, cfg, workspace.as_deref_mut(), assembly_started);
+        if strict.is_some() {
+            return strict;
+        }
+        let mut soft = cfg.clone();
+        soft.capture_cop_net_eq = false;
+        if soft.net_cop_weight <= 0.0 {
+            soft.net_cop_weight = 10.0;
+        }
+        return solve_with_workspace_inner(input, &soft, workspace, std::time::Instant::now())
+            .map(|mut s| {
+                s.soft_fallback = true;
+                s
+            });
+    }
+    solve_with_workspace_inner(input, cfg, workspace, assembly_started)
+}
+
+fn solve_with_workspace_inner(
+    input: &Input,
+    cfg: &Config,
+    mut workspace: Option<&mut Workspace>,
+    assembly_started: std::time::Instant,
+) -> Option<Solution> {
     let problem = assemble(input, cfg)?;
     #[cfg(feature = "qp-hpipm")]
     let use_ocp = cfg.qp.solver == misa_wbc::qp::QpSolver::Hpipm;
@@ -1199,14 +1538,42 @@ pub fn solve_with_workspace(
         });
     }
     if (cfg.validate_solution || cfg.qp.solver != misa_wbc::qp::QpSolver::ActiveSet)
-        && (!result.formally_solved() || !residual.accepted(1e-6))
+        && (!result.formally_solved()
+            || !residual.accepted_with(cfg.kkt_tolerance, cfg.kkt_complementarity_tolerance))
     {
+        if std::env::var("MPC_FS_DEBUG").is_ok() {
+            eprintln!(
+                "  [mpc-gate] status={:?} formally={} iters={} feas={:.2e}/{:.2e} stat={:.2e}/{:.2e} comp={:.2e} dual={:.2e} eq_rows={} lambda_eq={}",
+                result.status, result.formally_solved(), result.iterations,
+                residual.feasibility, residual.normalized_feasibility,
+                residual.stationarity, residual.normalized_stationarity,
+                residual.complementarity, residual.dual_violation,
+                problem.a_eq.as_ref().map_or(0, |a| a.nrows()), result.lambda_eq.len()
+            );
+        }
         return None;
     }
     let map = &problem.terminal_map;
     let bias = &problem.terminal_bias;
     let gravity = na::Vector3::new(0.0, 0.0, -cfg.gravity);
     if result.status != QpStatus::Optimal || result.x.iter().any(|x| !x.is_finite()) {
+        if std::env::var("MPC_FS_DEBUG").is_ok() {
+            eprintln!(
+                "  [mpc-fail] status={:?} eq_rows={} cop_plan={:?}",
+                result.status,
+                problem.a_eq.as_ref().map_or(0, |a| a.nrows()),
+                problem.cop_plan.as_ref().map(|p| (p[0].x, p[0].y)),
+            );
+            for k in 0..cfg.horizon.min(3) {
+                eprintln!(
+                    "    k{k} contact={:?} act={:?} min={:?} ref={:?} pos0=({:.3},{:.3}) pos1=({:.3},{:.3}) cop_half={:?}/{:?}",
+                    input.contact_schedule[k], input.activation_schedule[k], input.min_fz_schedule[k],
+                    input.reference_fz_schedule[k], input.contacts[0].position.x, input.contacts[0].position.y,
+                    input.contacts[1].position.x, input.contacts[1].position.y,
+                    input.contacts[0].cop_half, input.contacts[1].cop_half
+                );
+            }
+        }
         return None;
     }
     let wrenches = [
@@ -1239,6 +1606,8 @@ pub fn solve_with_workspace(
         acceleration: net_force / cfg.mass + gravity,
         trajectory,
         landing_shift,
+        cop_plan: problem.cop_plan.clone(),
+        soft_fallback: false,
         momentum_trajectory,
         terminal_com: na::Vector3::new(bias[0], bias[1], bias[2])
             + na::Vector3::new(
@@ -1267,18 +1636,24 @@ pub struct Residuals {
 }
 impl Residuals {
     pub fn accepted(&self, tolerance: f64) -> bool {
-        [
-            self.normalized_feasibility,
-            self.normalized_stationarity,
-            self.complementarity,
-            self.dual_violation,
-        ]
-        .iter()
-        .all(|v| v.is_finite() && *v <= tolerance)
+        self.accepted_with(tolerance, tolerance)
+    }
+    pub fn accepted_with(&self, tolerance: f64, complementarity_tolerance: f64) -> bool {
+        [self.normalized_feasibility, self.normalized_stationarity, self.dual_violation]
+            .iter()
+            .all(|v| v.is_finite() && *v <= tolerance)
+            && self.complementarity.is_finite()
+            && self.complementarity <= complementarity_tolerance
     }
 }
 pub fn residuals(p: &DenseProblem, result: &QpSolution) -> Residuals {
-    let r = misa_wbc::qp_check::check(&p.h, &p.linear, None, Some((&p.d, &p.rhs)), result);
+    // The equality rows must be part of the KKT check: without them the
+    // stationarity residual carries the whole equality multiplier and every
+    // solution with an equality row is rejected (2026-10-02: every Clarabel
+    // solve of the lexicographic CoP, and of v5.2's own lexicographic
+    // landing on any non-active-set backend).
+    let eq = p.a_eq.as_ref().zip(p.b_eq.as_ref());
+    let r = misa_wbc::qp_check::check(&p.h, &p.linear, eq, Some((&p.d, &p.rhs)), result);
     let invalid = if r.finite { 0.0 } else { f64::INFINITY };
     Residuals {
         feasibility: r.primal_raw.max(invalid),
@@ -1947,6 +2322,119 @@ mod tests {
         cfg.capture_cop_weight = 0.0;
         let again = solve(&input, &cfg).unwrap();
         assert_eq!(again.sole_wrenches, off.sole_wrenches);
+    }
+
+    /// LIPM: a DCM AHEAD of the plan is recaptured only by a pressure point
+    /// ahead of it. The CoP plan must put node 0 ahead of the DCM, inside the
+    /// reachable box, and the wrench stage must then realise exactly that
+    /// net CoP at node 0 (equality). Off = the shipped problem, bit for bit.
+    #[test]
+    fn the_lexicographic_cop_recaptures_an_escaping_dcm_and_the_wrench_realises_it() {
+        let (mut input, mut cfg) = standing([0.0, 0.0]);
+        cfg.omega = (cfg.gravity / input.com.z).sqrt();
+        input.reference_net_cop_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
+        input.reference_dcm_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
+        input.dcm_now = Some(na::Vector2::new(0.02, 0.0));
+        let shipped = assemble(&input, &cfg).unwrap();
+        cfg.capture_cop_lexicographic = true;
+        let plan = lexicographic_cop(&input, &cfg).unwrap();
+        assert!(plan[0].x > 0.02, "p_0 must be ahead of the DCM: {:?}", plan[0]);
+        // Reachable box of a 50/50 split of two soles at y = +-0.08 with the
+        // test's cop_half: x within +-cop_half.0 - margin.
+        assert!(plan[0].x <= cfg.cop_half.0 - cfg.capture_cop_margin + 1e-9);
+        let sol = solve(&input, &cfg).unwrap();
+        assert_eq!(sol.cop_plan.as_ref().unwrap()[0], plan[0]);
+        // Net CoP of the solved node-0 wrench.
+        let (mut mx, mut my, mut fz) = (0.0, 0.0, 0.0);
+        for foot in 0..2 {
+            let c = &input.contacts[foot];
+            let w = sol.sole_wrenches[foot];
+            let m = c.rotation * na::Vector3::new(w[0], w[1], w[2]);
+            let f = c.rotation * na::Vector3::new(w[3], w[4], w[5]);
+            mx += m.x + c.position.y * f.z - c.position.z * f.y;
+            my += m.y - c.position.x * f.z + c.position.z * f.x;
+            fz += f.z;
+        }
+        let cop = na::Vector2::new(-my / fz, mx / fz);
+        assert!((cop - plan[0]).norm() < 2e-3, "wrench must realise the plan: {cop:?} vs {:?}", plan[0]);
+        // Total vertical force held to the schedule.
+        let total: f64 = (0..2).map(|f| input.reference_fz_schedule[0][f]).sum();
+        assert!((sol.sole_wrenches[0][5] + sol.sole_wrenches[1][5] - total).abs() < 1e-3);
+        cfg.capture_cop_lexicographic = false;
+        let again = assemble(&input, &cfg).unwrap();
+        assert_eq!(again.h, shipped.h);
+        assert_eq!(again.linear, shipped.linear);
+        assert!(again.cop_plan.is_none());
+    }
+
+    /// A large error saturates the plan at the box edge, never beyond.
+    #[test]
+    fn the_lexicographic_cop_stays_inside_the_reachable_box() {
+        let (mut input, mut cfg) = standing([0.0, 0.0]);
+        cfg.omega = (cfg.gravity / input.com.z).sqrt();
+        cfg.capture_cop_lexicographic = true;
+        input.reference_net_cop_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
+        input.reference_dcm_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
+        input.dcm_now = Some(na::Vector2::new(0.5, -0.5));
+        let plan = lexicographic_cop(&input, &cfg).unwrap();
+        let hx = cfg.cop_half.0 - cfg.capture_cop_margin;
+        for p in &plan {
+            assert!(p.x <= hx + 1e-9 && p.x >= -hx - 1e-9, "{p:?}");
+        }
+        assert!((plan[0].x - hx).abs() < 1e-9, "must sit at the forward edge: {:?}", plan[0]);
+        assert!(plan[0].y < 0.0, "must move toward the escaping side in y: {:?}", plan[0]);
+    }
+
+    /// The walker's standing input of 2026-10-02 00:55 that the lexicographic
+    /// CoP stage made "infeasible": a net CoP 3 cm to the side of mid-feet
+    /// with 20 N minimum per foot is reachable (load the near foot 55/45 and
+    /// use its sole moment), and Clarabel solves it. The active-set backend
+    /// reports Infeasible for the same problem with ANY positive minimum
+    /// load, so the lexicographic mode must not run on it.
+    #[test]
+    fn a_sideways_net_cop_equality_is_feasible_on_clarabel_but_not_the_active_set() {
+        let (mut input, mut cfg) = standing([0.0, 0.0]);
+        cfg.mass = 34.134;
+        cfg.max_fz = 2.3 * cfg.mass * cfg.gravity;
+        cfg.omega = (cfg.gravity / 0.683).sqrt();
+        cfg.net_cop_weight = 10.0;
+        cfg.net_cop_equality = true;
+        input.com = na::Vector3::new(0.0465, 0.003, 0.683);
+        input.target_com = input.com;
+        for foot in 0..2 {
+            input.contacts[foot].cop_half = (0.077590975, 0.02738505);
+        }
+        input.contacts[0].position = na::Vector3::new(0.041, 0.056, 0.0);
+        input.contacts[1].position = na::Vector3::new(0.052, -0.050, 0.0);
+        input.min_fz_schedule = vec![[20.091; 2]; cfg.horizon];
+        input.reference_fz_schedule = vec![[167.4266; 2]; cfg.horizon];
+        input.previous[0][5] = 167.4266;
+        input.previous[1][5] = 167.4266;
+        input.reference_net_cop_schedule = Some(vec![na::Vector2::new(0.0465, -0.03); cfg.horizon]);
+        let problem = assemble(&input, &cfg).unwrap();
+        cfg.qp.solver = misa_wbc::QpSolver::ActiveSet;
+        let active = solve_dense(&problem, &cfg.qp, None);
+        cfg.qp.solver = misa_wbc::QpSolver::Clarabel;
+        let clarabel = solve_dense(&problem, &cfg.qp, None);
+        assert_eq!(clarabel.status, QpStatus::Optimal, "{:?}", clarabel.status);
+        assert!(clarabel.x[11] > clarabel.x[5], "the near foot must carry more: {} vs {}", clarabel.x[11], clarabel.x[5]);
+        assert_ne!(active.status, QpStatus::Optimal, "if the active set now solves this, the lexicographic mode may use it");
+        // The lexicographic stage on Clarabel from a DCM 2.5 cm ahead and to
+        // the side: feasible, with the plan inside the reachable box.
+        cfg.net_cop_equality = false;
+        cfg.capture_cop_lexicographic = true;
+        input.reference_dcm_schedule = Some(vec![na::Vector2::new(0.0465, 0.003); cfg.horizon]);
+        input.reference_net_cop_schedule = Some(vec![na::Vector2::new(0.0465, 0.003); cfg.horizon]);
+        for xi in [(0.05, 0.0), (0.07, 0.0), (0.0465, -0.01), (0.07, -0.01)] {
+            input.dcm_now = Some(na::Vector2::new(xi.0, xi.1));
+            let plan = lexicographic_cop(&input, &cfg).unwrap();
+            let problem = assemble(&input, &cfg).unwrap();
+            let qp = solve_dense(&problem, &cfg.qp, None);
+            eprintln!("lex xi={xi:?} plan0=({:.4},{:.4}) status={:?}", plan[0].x, plan[0].y, qp.status);
+        }
+        input.dcm_now = Some(na::Vector2::new(0.05, 0.0));
+        let sol = solve(&input, &cfg);
+        assert!(sol.is_some(), "lexicographic CoP must solve on Clarabel");
     }
 
     #[test]
