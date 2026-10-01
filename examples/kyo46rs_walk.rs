@@ -8173,6 +8173,28 @@ fn main() {
             .solve(&levels, &cfg_now)
             .unwrap_or_else(|e| panic!("wbc solve failed at t={t:.3}: {e}"));
         let qp_solve_ns = qp_solve_start.elapsed().as_nanos();
+        // WBC_LEVEL_DEBUG_T=<t>: print each level's least-squares residual
+        // at the ticks within 11 ms of t (which task the solve could not
+        // satisfy, and by how much).
+        if let Ok(tw) = std::env::var("WBC_LEVEL_DEBUG_T")
+            && let Ok(tw) = tw.parse::<f64>()
+            && (t - tw).abs() < 0.011
+        {
+            let parts: Vec<String> = levels
+                .iter()
+                .enumerate()
+                .map(|(k, lv)| {
+                    let r = if lv.a.nrows() > 0 { (&lv.a * &sol.x - &lv.b).norm() } else { 0.0 };
+                    let viol = if lv.d.nrows() > 0 {
+                        (&lv.d * &sol.x - &lv.f).iter().fold(0.0_f64, |m, v| m.max(*v))
+                    } else {
+                        0.0
+                    };
+                    format!("{}={:.3e}/{:.1e}", level_names.get(k).copied().unwrap_or("?"), r, viol.max(0.0))
+                })
+                .collect();
+            println!("  [wbc-levels] t={t:.3} support={support:?} {}", parts.join(" "));
+        }
         let mut repair_applied = false;
         let mut repair_scaled_delta = 0.0_f64;
         let repair_start = std::time::Instant::now();
