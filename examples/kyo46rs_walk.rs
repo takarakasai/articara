@@ -6892,6 +6892,22 @@ fn main() {
                         wrench_mpc_traj = Some((t, com, com_vel, solution.trajectory.clone()));
                         if solution.soft_fallback {
                             wrench_mpc_soft += 1;
+                            if std::env::var("MPC_LEX_DEBUG_FB").is_ok() && wrench_mpc_soft <= 4 {
+                                let plan = solution.cop_plan.as_ref().map(|p| (p[0].x, p[0].y));
+                                println!(
+                                    "  [lex-soft] t={t:.3} support={support:?} plan0={plan:?} contact0={:?} pos=({:.3},{:.3})/({:.3},{:.3}) min={:?} ref={:?} land={:?}",
+                                    input.contact_schedule[0], input.contacts[0].position.x, input.contacts[0].position.y,
+                                    input.contacts[1].position.x, input.contacts[1].position.y, input.min_fz_schedule[0],
+                                    input.reference_fz_schedule[0], input.landing.map(|l| (l.foot, l.first_node))
+                                );
+                                if let Some(plan) = solution.cop_plan.as_ref() {
+                                    println!("    plan: {}", plan.iter().map(|p| format!("({:.3},{:.3})", p.x, p.y)).collect::<Vec<_>>().join(" "));
+                                    println!("    contact: {}", input.contact_schedule.iter().map(|c| format!("{}{}", c[0] as u8, c[1] as u8)).collect::<Vec<_>>().join(" "));
+                                    println!("    act: {}", input.activation_schedule.iter().map(|a| format!("{:.2}/{:.2}", a[0], a[1])).collect::<Vec<_>>().join(" "));
+                                    println!("    ref: {}", input.reference_fz_schedule.iter().map(|a| format!("{:.0}/{:.0}", a[0], a[1])).collect::<Vec<_>>().join(" "));
+                                    println!("    min: {}", input.min_fz_schedule.iter().map(|a| format!("{:.0}/{:.0}", a[0], a[1])).collect::<Vec<_>>().join(" "));
+                                }
+                            }
                         }
                         if let Ok(tw) = std::env::var("MPC_LEX_DEBUG_T")
                             && let Ok(tw) = tw.parse::<f64>()

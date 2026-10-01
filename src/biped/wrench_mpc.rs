@@ -522,77 +522,6 @@ pub fn lexicographic_landing(input: &Input, cfg: &Config) -> Option<na::Vector2<
     Some(box_qp_2d(&h, &g, lo, hi))
 }
 
-/// Minimiser of 0.5 x'Hx + g'x over lo <= x <= hi (H symmetric positive
-/// definite, small n): active-set on the bounds. Starting free, solve the
-/// reduced Newton system, clamp what leaves the box and fix it there; once
-/// nothing moves, release any fixed variable whose gradient points back
-/// inside. Terminates: each pass either fixes a new variable or releases
-/// one with a strictly lower objective.
-fn box_qp(h: &na::DMatrix<f64>, g: &na::DVector<f64>, lo: &[f64], hi: &[f64]) -> na::DVector<f64> {
-    let n = g.len();
-    let mut x = na::DVector::zeros(n);
-    for i in 0..n {
-        x[i] = 0.0_f64.clamp(lo[i], hi[i]);
-    }
-    // -1 free, 0 at lower, 1 at upper
-    let mut state = vec![-1i8; n];
-    for _ in 0..4 * n + 4 {
-        let free: Vec<usize> = (0..n).filter(|&i| state[i] < 0).collect();
-        if !free.is_empty() {
-            let mut hf = na::DMatrix::zeros(free.len(), free.len());
-            let mut gf = na::DVector::zeros(free.len());
-            for (a, &i) in free.iter().enumerate() {
-                gf[a] = g[i];
-                for j in 0..n {
-                    if state[j] >= 0 {
-                        gf[a] += h[(i, j)] * x[j];
-                    }
-                }
-                for (b, &j) in free.iter().enumerate() {
-                    hf[(a, b)] = h[(i, j)];
-                }
-            }
-            let Some(sol) = hf.lu().solve(&(-gf)) else { break };
-            let mut clamped = false;
-            for (a, &i) in free.iter().enumerate() {
-                if sol[a] < lo[i] {
-                    x[i] = lo[i];
-                    state[i] = 0;
-                    clamped = true;
-                } else if sol[a] > hi[i] {
-                    x[i] = hi[i];
-                    state[i] = 1;
-                    clamped = true;
-                } else {
-                    x[i] = sol[a];
-                }
-            }
-            if clamped {
-                continue;
-            }
-        }
-        // Nothing left the box: release the worst bound-fixed variable whose
-        // gradient wants to move it inside.
-        let grad = h * &x + g;
-        let mut worst: Option<(usize, f64)> = None;
-        for i in 0..n {
-            let v = match state[i] {
-                0 => -grad[i],
-                1 => grad[i],
-                _ => continue,
-            };
-            if v > 1e-10 && worst.is_none_or(|(_, w)| v > w) {
-                worst = Some((i, v));
-            }
-        }
-        match worst {
-            Some((i, _)) => state[i] = -1,
-            None => break,
-        }
-    }
-    x
-}
-
 /// Stage one of the lexicographic CoP: the net-CoP plan over the horizon,
 /// or `None` when the inputs it needs are missing.
 ///
@@ -623,126 +552,186 @@ pub fn lexicographic_cop_with_landing(
         return None;
     }
     let wdt = cfg.omega * cfg.dt;
-    // Boxes per node and axis.
-    let mut lo = vec![[0.0_f64; 2]; n];
-    let mut hi = vec![[0.0_f64; 2]; n];
-    let mut last: Option<([f64; 2], [f64; 2])> = None;
+    let m = cfg.capture_cop_margin.max(0.0);
+    // Reachable net-CoP polygon per node: the convex hull of
+    // `s * corner_a + (1 - s) * corner_b` over the corners of the two soles'
+    // (yawed) CoP boxes and the admissible shares s. The share is ONE
+    // number for both axes, which is what an axis-separable box got wrong
+    // (2026-10-02 01:28: x wanted 45% on the landed foot, y wanted 78% on
+    // the other; each alone reachable, together not). Half-planes are
+    // shifted inward by the margin. Single support: the yawed box itself.
+    let mut polys: Vec<Vec<(na::Vector2<f64>, f64)>> = Vec::with_capacity(n); // (normal, offset): n.p <= offset
+    let mut last_poly: Option<Vec<(na::Vector2<f64>, f64)>> = None;
+    let mut last_centre = na::Vector2::new(pbar[0].x, pbar[0].y);
     for k in 0..n {
-        let total: f64 = (0..2)
-            .filter(|&f| input.contact_schedule[k][f])
-            .map(|f| input.reference_fz_schedule[k][f].max(0.0))
-            .sum();
-        // The net CoP the wrench stage can reach at this node: every foot
-        // down carries at least `min_fz_schedule` of the scheduled total, the
-        // rest may go to either foot, and each sole's own CoP box (its
-        // world-axis bounding box, shrunk by the margin) bounds its pressure
-        // point. Per axis the extreme is reached by loading the foot whose
-        // box edge is furthest that way as much as the other foot's minimum
-        // allows.
         let feet: Vec<usize> = (0..2).filter(|&f| input.contact_schedule[k][f]).collect();
-        let m = cfg.capture_cop_margin.max(0.0);
-        let mut lo_k = [0.0_f64; 2];
-        let mut hi_k = [0.0_f64; 2];
-        let any = !feet.is_empty();
-        if any {
-            let edge: Vec<([f64; 2], [f64; 2])> = feet
-                .iter()
-                .map(|&f| {
-                    let c = &input.contacts[f];
-                    let (hx, hy) = (c.cop_half.0, c.cop_half.1);
-                    let r = &c.rotation;
-                    // Axis-aligned extent of the yawed sole box through its
-                    // centre lines: along x it is hx / cos(yaw) (capped by
-                    // the bounding box), along y hy cos(yaw). The bounding
-                    // box over-reaches at the edges and made the equality
-                    // infeasible there; the inscribed box collapses in y for
-                    // this sole's aspect ratio (2026-10-02 01:15-01:17).
-                    let (c0, s0) = (r[(0, 0)].abs().max(1e-6), r[(0, 1)].abs());
-                    let ex = ((hx * c0 + hy * s0).min(hx / c0) - m).max(0.0);
-                    let ey = (hy * c0 - m).max(0.0);
-                    let shift = match (input.landing, landing_shift) {
-                        (Some(land), Some(dp)) if land.foot == f && k >= land.first_node => dp,
-                        _ => na::Vector2::zeros(),
-                    };
-                    let (px, py) = (c.position.x + shift.x, c.position.y + shift.y);
-                    ([px - ex, py - ey], [px + ex, py + ey])
-                })
-                .collect();
+        if feet.is_empty() {
+            polys.push(last_poly.clone().unwrap_or_default());
+            continue;
+        }
+        let corners = |f: usize| -> [na::Vector2<f64>; 4] {
+            let c = &input.contacts[f];
+            let r = &c.rotation;
+            let ux = na::Vector2::new(r[(0, 0)], r[(1, 0)]);
+            let uy = na::Vector2::new(r[(0, 1)], r[(1, 1)]);
+            let shift = match (input.landing, landing_shift) {
+                (Some(land), Some(dp)) if land.foot == f && k >= land.first_node => dp,
+                _ => na::Vector2::zeros(),
+            };
+            let centre = na::Vector2::new(c.position.x, c.position.y) + shift;
+            let (hx, hy) = (c.cop_half.0.max(0.0), c.cop_half.1.max(0.0));
+            [
+                centre + ux * hx + uy * hy,
+                centre + ux * hx - uy * hy,
+                centre - ux * hx + uy * hy,
+                centre - ux * hx - uy * hy,
+            ]
+        };
+        let mut pts: Vec<na::Vector2<f64>> = Vec::new();
+        if feet.len() == 1 {
+            pts.extend_from_slice(&corners(feet[0]));
+        } else {
+            let (a, b) = (feet[0], feet[1]);
             let total_ref: f64 = feet.iter().map(|&f| input.reference_fz_schedule[k][f].max(0.0)).sum();
-            for axis in 0..2 {
-                if feet.len() == 1 {
-                    lo_k[axis] = edge[0].0[axis];
-                    hi_k[axis] = edge[0].1[axis];
-                    continue;
+            let mins = if cfg.capture_cop_box_ignores_min {
+                [0.0, 0.0]
+            } else {
+                [input.min_fz_schedule[k][a].max(0.0), input.min_fz_schedule[k][b].max(0.0)]
+            };
+            let f_tot = total_ref.max(mins[0] + mins[1]).max(1e-9);
+            let slack = cfg.capture_cop_force_margin.max(0.0) * f_tot;
+            let caps = [
+                cfg.max_fz * input.activation_schedule[k][a].clamp(0.0, 1.0),
+                cfg.max_fz * input.activation_schedule[k][b].clamp(0.0, 1.0),
+            ];
+            // share of foot a: at least its minimum (+slack), at most what b's
+            // minimum (+slack) and a's own ceiling allow.
+            let s_lo = ((mins[0] + slack) / f_tot).max(1.0 - (caps[1] - slack) / f_tot).clamp(0.0, 1.0);
+            let s_hi = ((f_tot - mins[1] - slack) / f_tot).min((caps[0] - slack) / f_tot).clamp(0.0, 1.0);
+            let (s_lo, s_hi) = if s_lo <= s_hi { (s_lo, s_hi) } else { (0.5, 0.5) };
+            let (ca, cb) = (corners(a), corners(b));
+            for &s in &[s_lo, s_hi] {
+                for pa in &ca {
+                    for pb in &cb {
+                        pts.push(pa * s + pb * (1.0 - s));
+                    }
                 }
-                let mins = if cfg.capture_cop_box_ignores_min {
-                    [0.0, 0.0]
-                } else {
-                    [
-                        input.min_fz_schedule[k][feet[0]].max(0.0),
-                        input.min_fz_schedule[k][feet[1]].max(0.0),
-                    ]
-                };
-                let f_tot = total_ref.max(mins[0] + mins[1]).max(1e-9);
-                let slack = cfg.capture_cop_force_margin.max(0.0) * f_tot;
-                // Largest share foot a can take while b keeps its minimum
-                // (plus the slack that keeps the plan off the vertex).
-                let share_max = |_a: usize, b: usize| ((f_tot - mins[b] - slack) / f_tot).clamp(0.0, 1.0);
-                // hi: load the foot with the larger upper edge.
-                let (a, b) = if edge[0].1[axis] >= edge[1].1[axis] { (0, 1) } else { (1, 0) };
-                let s = share_max(a, b);
-                hi_k[axis] = s * edge[a].1[axis] + (1.0 - s) * edge[b].1[axis];
-                // lo: load the foot with the smaller lower edge.
-                let (a, b) = if edge[0].0[axis] <= edge[1].0[axis] { (0, 1) } else { (1, 0) };
-                let s = share_max(a, b);
-                lo_k[axis] = s * edge[a].0[axis] + (1.0 - s) * edge[b].0[axis];
             }
         }
-        let box_k = if any {
-            (lo_k, hi_k)
+        let hull = convex_hull(&pts);
+        let centre = hull.iter().fold(na::Vector2::zeros(), |acc, p| acc + p) / hull.len().max(1) as f64;
+        let mut half: Vec<(na::Vector2<f64>, f64)> = Vec::new();
+        if hull.len() >= 3 {
+            for i in 0..hull.len() {
+                let a = hull[i];
+                let b = hull[(i + 1) % hull.len()];
+                let e = b - a;
+                let len = e.norm();
+                if len < 1e-9 {
+                    continue;
+                }
+                // Outward normal of a counter-clockwise polygon.
+                let nrm = na::Vector2::new(e.y, -e.x) / len;
+                half.push((nrm, nrm.dot(&a) - m));
+            }
         } else {
-            last.unwrap_or(([pbar[0].x, pbar[0].y], [pbar[0].x, pbar[0].y]))
-        };
-        lo[k] = box_k.0;
-        hi[k] = box_k.1;
-        last = Some(box_k);
+            // Degenerate (a point or a segment): a small box around it.
+            for (nrm, ext) in [
+                (na::Vector2::new(1.0, 0.0), 1e-3),
+                (na::Vector2::new(-1.0, 0.0), 1e-3),
+                (na::Vector2::new(0.0, 1.0), 1e-3),
+                (na::Vector2::new(0.0, -1.0), 1e-3),
+            ] {
+                half.push((nrm, nrm.dot(&centre) + ext));
+            }
+        }
+        last_centre = centre;
+        last_poly = Some(half.clone());
+        polys.push(half);
     }
-    let mut plan = vec![na::Vector2::zeros(); n];
+    let _ = last_centre;
+    // One QP in the 2n pressure points: DCM tracking through the LIPM,
+    // deviation from the plan's net CoP, node-to-node change; polygon rows.
+    let nv = 2 * n;
+    let mut h = na::DMatrix::zeros(nv, nv);
+    let mut g = na::DVector::zeros(nv);
     for axis in 0..2 {
-        // xi_{k+1} = a_{k+1} + sum_{j<=k} B[k+1][j] p_j
-        let mut h = na::DMatrix::zeros(n, n);
-        let mut g = na::DVector::zeros(n);
         for k in 0..n {
             let a = (1.0 + wdt).powi(k as i32 + 1) * xi0[axis];
             let target = xiref.get(k).copied().unwrap_or_else(|| xiref[xiref.len() - 1])[axis];
             let w = if k + 1 == n { 4.0 } else { 1.0 };
-            let mut row = na::DVector::zeros(n);
+            let mut row = na::DVector::zeros(nv);
             for j in 0..=k {
-                row[j] = -wdt * (1.0 + wdt).powi((k - j) as i32);
+                row[2 * j + axis] = -wdt * (1.0 + wdt).powi((k - j) as i32);
             }
             h += &row * row.transpose() * w;
             g += &row * ((a - target) * w);
         }
         for k in 0..n {
             let p = pbar.get(k).copied().unwrap_or_else(|| pbar[pbar.len() - 1])[axis];
-            h[(k, k)] += cfg.capture_cop_wp;
-            g[k] -= cfg.capture_cop_wp * p;
+            let i = 2 * k + axis;
+            h[(i, i)] += cfg.capture_cop_wp;
+            g[i] -= cfg.capture_cop_wp * p;
             if k > 0 {
                 let ws = cfg.capture_cop_ws;
-                h[(k, k)] += ws;
-                h[(k - 1, k - 1)] += ws;
-                h[(k, k - 1)] -= ws;
-                h[(k - 1, k)] -= ws;
+                let j = 2 * (k - 1) + axis;
+                h[(i, i)] += ws;
+                h[(j, j)] += ws;
+                h[(i, j)] -= ws;
+                h[(j, i)] -= ws;
             }
         }
-        let lo_a: Vec<f64> = (0..n).map(|k| lo[k][axis]).collect();
-        let hi_a: Vec<f64> = (0..n).map(|k| hi[k][axis]).collect();
-        let x = box_qp(&h, &g, &lo_a, &hi_a);
-        for k in 0..n {
-            plan[k][axis] = x[k];
+    }
+    let n_rows: usize = polys.iter().map(|p| p.len()).sum();
+    let mut d = na::DMatrix::zeros(n_rows, nv);
+    let mut rhs = na::DVector::zeros(n_rows);
+    let mut row = 0;
+    for (k, poly) in polys.iter().enumerate() {
+        for (nrm, off) in poly {
+            d[(row, 2 * k)] = nrm.x;
+            d[(row, 2 * k + 1)] = nrm.y;
+            rhs[row] = *off;
+            row += 1;
         }
     }
-    Some(plan)
+    let mut qp = QpConfig::default();
+    qp.solver = misa_wbc::QpSolver::Clarabel;
+    let sol = solve_qp(&h, &g, None, None, Some(&d), Some(&rhs), None, &qp);
+    if sol.status != QpStatus::Optimal || sol.x.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    Some((0..n).map(|k| na::Vector2::new(sol.x[2 * k], sol.x[2 * k + 1])).collect())
+}
+
+/// Convex hull (counter-clockwise, no repeated points) of a small point set.
+fn convex_hull(pts: &[na::Vector2<f64>]) -> Vec<na::Vector2<f64>> {
+    let mut p: Vec<na::Vector2<f64>> = pts.to_vec();
+    p.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap().then(a.y.partial_cmp(&b.y).unwrap()));
+    p.dedup_by(|a, b| (a.x - b.x).abs() < 1e-12 && (a.y - b.y).abs() < 1e-12);
+    if p.len() < 3 {
+        return p;
+    }
+    let cross = |o: &na::Vector2<f64>, a: &na::Vector2<f64>, b: &na::Vector2<f64>| {
+        (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+    };
+    let mut lower: Vec<na::Vector2<f64>> = Vec::new();
+    for q in &p {
+        while lower.len() >= 2 && cross(&lower[lower.len() - 2], &lower[lower.len() - 1], q) <= 1e-14 {
+            lower.pop();
+        }
+        lower.push(*q);
+    }
+    let mut upper: Vec<na::Vector2<f64>> = Vec::new();
+    for q in p.iter().rev() {
+        while upper.len() >= 2 && cross(&upper[upper.len() - 2], &upper[upper.len() - 1], q) <= 1e-14 {
+            upper.pop();
+        }
+        upper.push(*q);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
 }
 
 pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
@@ -755,6 +744,24 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         lexicographic_cop_with_landing(input, cfg, landing_fixed)
     } else {
         None
+    };
+    // With the landing decided before assembly, the lexicographic CoP mode
+    // puts it into the lever arms EXACTLY (position + dp from its first
+    // node) instead of the moment coupling linearised at the reference load:
+    // that coupling is exact only at fz = F_ref, and after a push the landed
+    // foot carries far more, so the strict net-CoP equality asked for a
+    // moment the sole could not give (2026-10-02 01:22, 54 soft fallbacks).
+    let exact_landing = if cfg.capture_cop_lexicographic { landing_fixed } else { None };
+    let foot_position = |k: usize, foot: usize| -> na::Vector3<f64> {
+        let mut p = input.contacts[foot].position;
+        if let (Some(land), Some(dp)) = (input.landing, exact_landing)
+            && land.foot == foot
+            && k >= land.first_node
+        {
+            p.x += dp.x;
+            p.y += dp.y;
+        }
+        p
     };
     let n = cfg.horizon;
     let n_land = if input.landing.is_some() { 2 } else { 0 };
@@ -910,7 +917,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             let base = 12 * k + 6 * foot;
             let contact = &input.contacts[foot];
             let force_gain = contact.rotation / cfg.mass;
-            let torque_gain = skew(&(contact.position - arm_centre)) * contact.rotation;
+            let torque_gain = skew(&(foot_position(k, foot) - arm_centre)) * contact.rotation;
             for r in 0..3 {
                 for j in 0..3 {
                     map[(r, base + 3 + j)] += 0.5 * cfg.dt * cfg.dt * force_gain[(r, j)];
@@ -923,6 +930,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             // target, linearised at the planned load (see `Landing`).
             if let Some(land) = input.landing
                 && cfg.landing_moment_coupling
+                && exact_landing.is_none()
                 && land.foot == foot
                 && k >= land.first_node
                 && input.contact_schedule[k][foot]
@@ -1070,7 +1078,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
                 }
                 any = true;
                 let contact = &input.contacts[foot];
-                let p = contact.position;
+                let p = foot_position(k, foot);
                 let rot = contact.rotation;
                 let b = 12 * k + 6 * foot;
                 // The wrench is in the SOLE's frame: the dynamics multiplies
@@ -1085,6 +1093,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
                 let cross = skew(&d) * rot;
                 if let Some(land) = input.landing
                     && cfg.landing_moment_coupling
+                    && exact_landing.is_none()
                     && land.foot == foot
                     && k >= land.first_node
                 {
@@ -1472,6 +1481,36 @@ pub fn solve_with_workspace(
         let strict = solve_with_workspace_inner(input, cfg, workspace.as_deref_mut(), assembly_started);
         if strict.is_some() {
             return strict;
+        }
+        if std::env::var("MPC_FS_DEBUG").is_ok() {
+            let dp = lexicographic_landing(input, cfg);
+            let plan = lexicographic_cop_with_landing(input, cfg, dp);
+            eprintln!(
+                "    [lex-diag] landing={:?} dp={:?} pos0=({:.3},{:.3}) pos1=({:.3},{:.3}) cop_half0={:?} cop_half1={:?}",
+                input.landing.map(|l| (l.foot, l.first_node, l.prior, l.max, l.min)),
+                dp.map(|d| (d.x, d.y)),
+                input.contacts[0].position.x, input.contacts[0].position.y,
+                input.contacts[1].position.x, input.contacts[1].position.y,
+                input.contacts[0].cop_half, input.contacts[1].cop_half
+            );
+            if let Some(plan) = plan {
+                eprintln!("    [lex-diag] plan: {}", plan.iter().map(|p| format!("({:.3},{:.3})", p.x, p.y)).collect::<Vec<_>>().join(" "));
+            }
+            // Which equality group breaks the strict problem?
+            for (label, net, total, lex_land) in [
+                ("net_eq off", false, true, true),
+                ("total_eq off", true, false, true),
+                ("both off", false, false, true),
+                ("landing free", true, true, false),
+                ("all off", false, false, false),
+            ] {
+                let mut c = cfg.clone();
+                c.capture_cop_net_eq = net;
+                c.capture_cop_total_eq = total;
+                c.landing_lexicographic = lex_land;
+                let st = assemble(input, &c).map(|p| solve_dense(&p, &c.qp, None).status);
+                eprintln!("    [lex-diag] {label}: {st:?}");
+            }
         }
         let mut soft = cfg.clone();
         soft.capture_cop_net_eq = false;
