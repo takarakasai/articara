@@ -2397,6 +2397,17 @@ fn main() {
     // capture rows (MPC_CAPTURE_COP_W), which the MPC satisfied through the
     // load split (2026-10-01, design note Sec.14). Off = shipped.
     let mpc_capture_lex = flag("MPC_CAPTURE_LEX", false);
+    // Step timing as a decision of the lexicographic landing
+    // (`wrench_mpc::Config::landing_timing`): the touchdown may be brought
+    // forward to MPC_LANDING_TMIN_FRAC of the single support, at a cost of
+    // MPC_LANDING_TIME_W per second^2 of shortening. The chosen time is
+    // applied through the same retime the contact_plan adjuster uses (so
+    // run with CONTACT_PLAN=0 to compare). Off = shipped.
+    let mpc_landing_time = flag("MPC_LANDING_TIME", false);
+    let mpc_landing_time_w = env_f64("MPC_LANDING_TIME_W", 1e-3).max(0.0);
+    let mpc_landing_tmin_frac = env_f64("MPC_LANDING_TMIN_FRAC", 0.5).clamp(0.0, 1.0);
+    let mut n_mpc_retime = 0u32;
+    let mut mpc_retimed_slice: Option<usize> = None;
     // The lexicographic CoP writes equality rows at every node. The default
     // active-set backend reports Infeasible for those with any positive
     // minimum load (wrench_mpc test
@@ -6554,6 +6565,19 @@ fn main() {
                         .map(|first_node| articara::biped::wrench_mpc::Landing {
                             foot: swing,
                             first_node,
+                            min_first_node: if mpc_landing_time {
+                                // Like the contact_plan: at least this
+                                // fraction of the REMAINING single support
+                                // (the swing has to come down).
+                                let i = gait.index_at(t);
+                                let sl = &gait.slices[i];
+                                let earliest = t + (sl.t1 - t).max(0.0) * mpc_landing_tmin_frac;
+                                let k = ((earliest - t) / stair_wrench_preview_dt - 0.5).ceil().max(1.0) as usize;
+                                k.min(first_node)
+                            } else {
+                                first_node
+                            },
+                            position: [contacts[swing].position.x, contacts[swing].position.y],
                             weight: mpc_footstep_w,
                             max: {
                                 let i = gait.index_at(t);
@@ -6784,6 +6808,10 @@ fn main() {
                     omega,
                     landing_capture_weight: mpc_landing_capture_w,
                     landing_lexicographic: mpc_landing_lex,
+                    landing_timing: mpc_landing_time,
+                    landing_time_weight: mpc_landing_time_w,
+                    landing_time_from_x: flag("MPC_LANDING_TIME_FROM_X", true),
+                    landing_time_gain_min: env_f64("MPC_LANDING_TIME_GAIN", 1e-3).max(0.0),
                     fz_split_equality: mpc_fz_split_eq,
                     capture_cop_weight: mpc_capture_cop_w,
                     capture_cop_lexicographic: mpc_capture_lex,
@@ -6890,6 +6918,25 @@ fn main() {
                         }
                         wrench_mpc_acceleration = solution.acceleration;
                         wrench_mpc_traj = Some((t, com, com_vel, solution.trajectory.clone()));
+                        // MPC_LANDING_TIME: the touchdown node the landing
+                        // stage chose, applied as a retime of this single
+                        // support (once per slice, like the contact_plan).
+                        if mpc_landing_time
+                            && let (Some(k_td), Some(land)) = (solution.landing_node, landing)
+                            && k_td < land.first_node
+                        {
+                            let i = gait.index_at(t);
+                            let ne = t + (k_td as f64 + 0.5) * stair_wrench_preview_dt;
+                            if ne > t + dt && mpc_retimed_slice != Some(i) && matches!(support, Support::Single { .. }) {
+                                gait.retime(i, ne);
+                                n_mpc_retime += 1;
+                                mpc_retimed_slice = Some(i);
+                                cp_retimed_slice = Some(i);
+                                landing_timing.max_extension = 0.0;
+                                dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
+                                n_replan += 1;
+                            }
+                        }
                         if solution.soft_fallback {
                             wrench_mpc_soft += 1;
                             if std::env::var("MPC_LEX_DEBUG_FB").is_ok() && wrench_mpc_soft <= 4 {
@@ -9825,6 +9872,9 @@ fn main() {
     }
     if mpc_capture_lex {
         println!("  mpc lex: {wrench_mpc_soft} solves fell back to the soft net-CoP rows");
+    }
+    if mpc_landing_time {
+        println!("  mpc landing time: {n_mpc_retime} steps shortened by the landing stage");
     }
     if mpc_pcmd > 0.0 {
         println!("  mpc pcmd: {n_mpc_pcmd} ticks took the MPC pressure point (fraction {mpc_pcmd})");

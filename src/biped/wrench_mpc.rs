@@ -48,6 +48,15 @@ pub struct Landing {
     /// model and was measured pulling a first-tread landing 20 mm toward the
     /// nosing (design note, 09-27 10:10).
     pub min: [f64; 2],
+    /// Earliest node the landing may be brought forward to (step timing as
+    /// a decision, `Config::landing_timing`). Equal to `first_node` = the
+    /// nominal timing only, bit-identical.
+    pub min_first_node: usize,
+    /// Planned landing position (world x, y), where the pressure goes from
+    /// an EARLIER touchdown on: before the nominal first node the plan's own
+    /// net CoP is still the stance foot's, so an early landing's capture is
+    /// modelled as `position + prior + dp` on those nodes.
+    pub position: [f64; 2],
 }
 
 #[derive(Clone, Debug)]
@@ -221,6 +230,28 @@ pub struct Config {
     /// cost only breaks ties. Needs the same inputs as the capture rows.
     /// false = shipped (penalty rows).
     pub landing_lexicographic: bool,
+    /// Step TIMING as a decision of the lexicographic landing stage: the
+    /// touchdown node is enumerated from `Landing::first_node` down to
+    /// `Landing::min_first_node`, each with its own capture box-QP, and the
+    /// (node, dp) of least capture residual plus `landing_time_weight` per
+    /// node of shortening wins (BD decides placement and timing together;
+    /// v5.2 took the timing from the contact_plan heuristic). Off = nominal
+    /// timing, bit-identical.
+    pub landing_timing: bool,
+    pub landing_time_weight: f64,
+    /// Judge the timing on the SAGITTAL capture residual only. The lateral
+    /// DCM needs the whole swing to come back; landing early on a lateral
+    /// error puts the foot down before it has, which is why the contact_plan
+    /// heuristic runs with CP_T_FROM_X (2026-10-02 01:42: with both axes the
+    /// stage shortened an undisturbed step by 100 ms on a 43 mm lateral
+    /// residual and fell). true = x only (default), false = both axes.
+    pub landing_time_from_x: bool,
+    /// Shorten only when it buys at least this much capture residual (m^2
+    /// summed over the nominal landing's nodes). The rolled plan and the
+    /// LIPM propagation disagree by ~25 mm RMS on an undisturbed step, and
+    /// without a dead band that bias alone made the stage shorten a quiet
+    /// step by 100 ms (2026-10-02 01:45).
+    pub landing_time_gain_min: f64,
     /// Fix each foot's vertical force to `Input::reference_fz_schedule` by
     /// an EQUALITY at every node where both feet are down. Measured
     /// 2026-10-01 (design note Sec.14): with the CoP-capture rows the MPC
@@ -336,6 +367,10 @@ impl Default for Config {
             net_cop_equality: false,
             landing_capture_weight: 0.0,
             landing_lexicographic: false,
+            landing_timing: false,
+            landing_time_weight: 1e-3,
+            landing_time_from_x: true,
+            landing_time_gain_min: 1e-3,
             fz_split_equality: false,
             capture_cop_lexicographic: false,
             capture_cop_wp: 0.1,
@@ -378,6 +413,9 @@ pub struct Solution {
     pub cop_plan: Option<Vec<na::Vector2<f64>>>,
     /// The strict CoP equality could not be met and this is the soft retry.
     pub soft_fallback: bool,
+    /// Touchdown node the timed lexicographic landing chose (`Config::
+    /// landing_timing`); equals `Landing::first_node` when unchanged.
+    pub landing_node: Option<usize>,
     /// Predicted angular momentum at the END of each node, node 0 first.
     pub momentum_trajectory: Vec<na::Vector3<f64>>,
     pub terminal_com: na::Vector3<f64>,
@@ -412,6 +450,8 @@ pub struct DenseProblem {
     pub b_eq: Option<na::DVector<f64>>,
     /// The net-CoP plan the lexicographic CoP stage fixed (see `Config`).
     pub cop_plan: Option<Vec<na::Vector2<f64>>>,
+    /// Touchdown node chosen by the timed landing stage.
+    pub landing_node: Option<usize>,
 }
 
 /// Assemble without running a solver; allocation time is separate from solve time.
@@ -420,6 +460,13 @@ pub struct DenseProblem {
 /// inputs it needs are missing. The arithmetic is exactly the one the
 /// penalty rows use, so both paths see the same numbers.
 fn capture_rows(input: &Input, cfg: &Config, land: &Landing) -> Vec<(na::Matrix2<f64>, na::Vector2<f64>)> {
+    capture_rows_at(input, cfg, land, land.first_node)
+}
+
+/// [`capture_rows`] with the touchdown brought forward to node `k_td`
+/// (<= `first_node`): on the nodes in between the pressure is the landing
+/// itself (`position + prior + dp`) instead of the plan's net CoP.
+fn capture_rows_at(input: &Input, cfg: &Config, land: &Landing, k_td: usize) -> Vec<(na::Matrix2<f64>, na::Vector2<f64>)> {
     let n = cfg.horizon;
     let mut out = Vec::new();
     if cfg.omega <= 0.0 {
@@ -435,14 +482,19 @@ fn capture_rows(input: &Input, cfg: &Config, land: &Landing) -> Vec<(na::Matrix2
     let wdt = cfg.omega * cfg.dt;
     let mut a = xi0;
     let mut b = na::Matrix2::<f64>::zeros();
+    let early = na::Vector2::new(land.position[0] + land.prior[0], land.position[1] + land.prior[1]);
     for k in 0..n {
-        let p = pbar.get(k).copied().unwrap_or_else(|| pbar[pbar.len() - 1]);
+        let p = if k >= k_td && k < land.first_node {
+            early
+        } else {
+            pbar.get(k).copied().unwrap_or_else(|| pbar[pbar.len() - 1])
+        };
         a = a * (1.0 + wdt) - p * wdt;
         b *= 1.0 + wdt;
-        if k >= land.first_node {
+        if k >= k_td {
             b -= na::Matrix2::identity() * wdt;
         }
-        if k >= land.first_node && k + 1 <= n {
+        if k >= k_td && k + 1 <= n {
             let target = xiref.get(k).copied().unwrap_or_else(|| xiref[xiref.len() - 1]);
             let jk = input
                 .reference_dcm_sensitivity
@@ -734,11 +786,84 @@ fn convex_hull(pts: &[na::Vector2<f64>]) -> Vec<na::Vector2<f64>> {
     lower
 }
 
+/// Capture box-QP for one touchdown node: (dp, residual cost).
+fn landing_at(input: &Input, cfg: &Config, land: &Landing, k_td: usize) -> Option<(na::Vector2<f64>, f64)> {
+    let rows = capture_rows_at(input, cfg, land, k_td);
+    if rows.is_empty() {
+        return None;
+    }
+    let mut h = na::Matrix2::<f64>::zeros();
+    let mut g = na::Vector2::<f64>::zeros();
+    let mut c0 = 0.0;
+    for (c, o) in &rows {
+        h += c.transpose() * c;
+        g += c.transpose() * o;
+        c0 += o.dot(o);
+    }
+    let rho = 1e-6 * (h.trace() * 0.5).max(1e-12);
+    let prior = na::Vector2::new(land.prior[0], land.prior[1]);
+    h += na::Matrix2::identity() * rho;
+    g += prior * rho;
+    let hi = [land.max[0].max(0.0) - land.prior[0], land.max[1].max(0.0) - land.prior[1]];
+    let lo = [-(land.min[0].max(0.0) + land.prior[0]), -(land.min[1].max(0.0) + land.prior[1])];
+    let dp = box_qp_2d(&h, &g, lo, hi);
+    // Residual on the NOMINAL landing's nodes only (k >= first_node, the
+    // last rows): an earlier touchdown has more rows, and summing them all
+    // would charge it for capturing sooner.
+    let n_nom = cfg.horizon.saturating_sub(land.first_node).min(rows.len());
+    let cost = rows[rows.len() - n_nom..]
+        .iter()
+        .map(|(c, o)| {
+            let r = c * dp + o;
+            if cfg.landing_time_from_x { r.x * r.x } else { r.norm_squared() }
+        })
+        .sum::<f64>();
+    let _ = c0;
+    Some((dp, cost))
+}
+
+/// The timed lexicographic landing: `(dp, touchdown node)`. With no timing
+/// freedom (`min_first_node >= first_node`) or timing off it is
+/// [`lexicographic_landing`] at the nominal node.
+pub fn lexicographic_landing_timed(input: &Input, cfg: &Config) -> Option<(na::Vector2<f64>, usize)> {
+    let land = input.landing.as_ref()?;
+    if !cfg.landing_timing || land.min_first_node >= land.first_node {
+        return lexicographic_landing(input, cfg).map(|dp| (dp, land.first_node));
+    }
+    let mut best: Option<(na::Vector2<f64>, usize, f64)> = None;
+    let debug = std::env::var("MPC_LANDING_TIME_DEBUG").is_ok();
+    let mut trace = String::new();
+    let nominal_cost = landing_at(input, cfg, land, land.first_node).map(|(_, c)| c);
+    for k_td in (land.min_first_node..=land.first_node).rev() {
+        let Some((dp, cost)) = landing_at(input, cfg, land, k_td) else { continue };
+        let shortened = (land.first_node - k_td) as f64 * cfg.dt;
+        let total = cost + cfg.landing_time_weight * shortened * shortened
+            + if k_td < land.first_node { cfg.landing_time_gain_min } else { 0.0 };
+        let _ = nominal_cost;
+        if debug {
+            trace.push_str(&format!(" k{k_td}:{:.2e}+{:.1e}", cost, total - cost));
+        }
+        if best.is_none_or(|(_, _, b)| total < b - 1e-15) {
+            best = Some((dp, k_td, total));
+        }
+    }
+    if debug && let Some((dp, k, _)) = best && k < land.first_node {
+        eprintln!(
+            "  [landing-time] first_node={} chosen={k} dp=({:+.3},{:+.3}) xi0={:?}{trace}",
+            land.first_node, dp.x, dp.y, input.dcm_now.map(|v| (v.x, v.y))
+        );
+    }
+    best.map(|(dp, k, _)| (dp, k))
+}
+
 pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
-    let landing_fixed = if cfg.landing_lexicographic {
-        lexicographic_landing(input, cfg)
+    let (landing_fixed, landing_node) = if cfg.landing_lexicographic {
+        match lexicographic_landing_timed(input, cfg) {
+            Some((dp, k)) => (Some(dp), Some(k)),
+            None => (None, None),
+        }
     } else {
-        None
+        (None, None)
     };
     let cop_fixed = if cfg.capture_cop_lexicographic {
         lexicographic_cop_with_landing(input, cfg, landing_fixed)
@@ -1364,6 +1489,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         a_eq,
         b_eq,
         cop_plan: cop_fixed,
+        landing_node,
     })
 }
 
@@ -1647,6 +1773,7 @@ fn solve_with_workspace_inner(
         landing_shift,
         cop_plan: problem.cop_plan.clone(),
         soft_fallback: false,
+        landing_node: problem.landing_node,
         momentum_trajectory,
         terminal_com: na::Vector3::new(bias[0], bias[1], bias[2])
             + na::Vector3::new(
@@ -2101,7 +2228,7 @@ mod tests {
         let (mut input, cfg) = standing([0.0, 0.0]);
         input.target_com.x += 0.05;
         let fixed = solve(&input, &cfg).unwrap();
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.0, 0.0], prior: [0.0; 2], min: [0.0, 0.0] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.0, 0.0], prior: [0.0; 2], min: [0.0, 0.0], min_first_node: 0, position: [0.0; 2] });
         let boxed = solve(&input, &cfg).unwrap();
         let dp = boxed.landing_shift.unwrap();
         assert!(dp.norm() < 1e-9, "{dp:?}");
@@ -2124,7 +2251,7 @@ mod tests {
         let (mut input, mut cfg) = standing([0.0, 0.0]);
         input.target_velocity.x = 0.3;
         let fixed = solve(&input, &cfg).unwrap();
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05], prior: [0.0; 2], min: [0.10, 0.05] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05], prior: [0.0; 2], min: [0.10, 0.05], min_first_node: 0, position: [0.0; 2] });
         cfg.landing_moment_coupling = false;
         let free = solve(&input, &cfg).unwrap();
         let dp = free.landing_shift.unwrap();
@@ -2155,7 +2282,7 @@ mod tests {
     fn a_forward_target_moves_the_free_landing_back() {
         let (mut input, cfg) = standing([0.0, 0.0]);
         input.target_velocity.x = 0.3;
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.06, 0.03], prior: [0.0; 2], min: [0.06, 0.03] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.06, 0.03], prior: [0.0; 2], min: [0.06, 0.03], min_first_node: 0, position: [0.0; 2] });
         let sol = solve(&input, &cfg).unwrap();
         let dp = sol.landing_shift.unwrap();
         assert!(dp.x < -1e-3, "expected the free foot to move back, got {dp:?}");
@@ -2221,7 +2348,7 @@ mod tests {
         cfg.net_cop_weight = 1.0;
         input.reference_net_cop_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
         input.reference_dcm_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05], prior: [0.0; 2], min: [0.10, 0.05] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05], prior: [0.0; 2], min: [0.10, 0.05], min_first_node: 0, position: [0.0; 2] });
         input.dcm_now = Some(na::Vector2::new(0.04, 0.0)); // DCM 4 cm ahead of the plan
         let without = solve(&input, &cfg).unwrap();
         cfg.landing_capture_weight = 1e4;
@@ -2249,7 +2376,7 @@ mod tests {
         input.reference_dcm_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
         // Landing late in the horizon: the shipped rows have a small b there
         // and ask for a shift the box has to clamp.
-        input.landing = Some(Landing { foot: 1, first_node: cfg.horizon - 2, weight: 1.0, max: [0.30, 0.30], prior: [0.0; 2], min: [0.30, 0.30] });
+        input.landing = Some(Landing { foot: 1, first_node: cfg.horizon - 2, weight: 1.0, max: [0.30, 0.30], prior: [0.0; 2], min: [0.30, 0.30], min_first_node: 0, position: [0.0; 2] });
         input.dcm_now = Some(na::Vector2::new(0.02, 0.0));
         let plain = solve(&input, &cfg).unwrap().landing_shift.unwrap();
         input.reference_dcm_sensitivity = Some(vec![na::Matrix2::zeros(); cfg.horizon]);
@@ -2267,7 +2394,7 @@ mod tests {
     #[test]
     fn a_prior_offset_moves_the_box_and_the_cost_to_the_total() {
         let (mut input, cfg) = standing([0.0, 0.0]);
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1e6, max: [0.06, 0.03], prior: [0.06, -0.03], min: [0.06, 0.03] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1e6, max: [0.06, 0.03], prior: [0.06, -0.03], min: [0.06, 0.03], min_first_node: 0, position: [0.0; 2] });
         let dp = solve(&input, &cfg).unwrap().landing_shift.unwrap();
         assert!(dp.x <= 1e-9 && dp.y >= -1e-9, "box on the total: {dp:?}");
         assert!((dp.x + 0.06).abs() < 1e-3 && (dp.y - 0.03).abs() < 1e-3, "cost on the total pulls it back to zero: {dp:?}");
@@ -2279,10 +2406,10 @@ mod tests {
     fn a_zero_backward_bound_keeps_the_landing_from_moving_back() {
         let (mut input, cfg) = standing([0.0, 0.0]);
         input.target_velocity.x = 0.3; // pulls the free landing back (see below)
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.06, 0.03], prior: [0.0; 2], min: [0.06, 0.03] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.06, 0.03], prior: [0.0; 2], min: [0.06, 0.03], min_first_node: 0, position: [0.0; 2] });
         let free = solve(&input, &cfg).unwrap().landing_shift.unwrap();
         assert!(free.x < -1e-3, "premise: the free landing moves back, got {free:?}");
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.06, 0.03], prior: [0.0; 2], min: [0.0, 0.03] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.06, 0.03], prior: [0.0; 2], min: [0.0, 0.03], min_first_node: 0, position: [0.0; 2] });
         let held = solve(&input, &cfg).unwrap().landing_shift.unwrap();
         assert!(held.x >= -1e-9, "backward bound 0: {held:?}");
     }
@@ -2318,7 +2445,7 @@ mod tests {
         cfg.net_cop_weight = 1.0;
         input.reference_net_cop_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
         input.reference_dcm_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
-        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05], prior: [0.0; 2], min: [0.10, 0.05] });
+        input.landing = Some(Landing { foot: 1, first_node: 0, weight: 1.0, max: [0.10, 0.05], prior: [0.0; 2], min: [0.10, 0.05], min_first_node: 0, position: [0.0; 2] });
         input.dcm_now = Some(na::Vector2::new(0.02, 0.01));
         cfg.landing_capture_weight = 1e4;
         let shipped = solve(&input, &cfg).unwrap();
@@ -2474,6 +2601,39 @@ mod tests {
         input.dcm_now = Some(na::Vector2::new(0.05, 0.0));
         let sol = solve(&input, &cfg);
         assert!(sol.is_some(), "lexicographic CoP must solve on Clarabel");
+    }
+
+    /// Step timing: a DCM far ahead of the plan with the nominal touchdown
+    /// 4 nodes away is captured better by landing earlier; with the timing
+    /// weight the stage must pick an earlier node and a lower capture
+    /// residual than the nominal one. Timing off = the nominal node.
+    #[test]
+    fn the_timed_landing_lands_earlier_when_the_dcm_runs_away() {
+        let (mut input, mut cfg) = standing([0.0, 0.0]);
+        cfg.omega = (cfg.gravity / input.com.z).sqrt();
+        cfg.landing_lexicographic = true;
+        cfg.net_cop_weight = 1.0;
+        input.reference_net_cop_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
+        input.reference_dcm_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
+        input.contact_schedule = (0..cfg.horizon).map(|k| [true, k >= 4]).collect();
+        input.landing = Some(Landing {
+            foot: 1, first_node: 4, weight: 1.0, max: [0.10, 0.05], prior: [0.0; 2], min: [0.10, 0.05],
+            min_first_node: 1, position: [0.0, -0.08],
+        });
+        input.dcm_now = Some(na::Vector2::new(0.08, 0.0));
+        let nominal = lexicographic_landing_timed(&input, &cfg).unwrap();
+        assert_eq!(nominal.1, 4, "timing off keeps the nominal node");
+        cfg.landing_timing = true;
+        cfg.landing_time_weight = 1e-3;
+        let timed = lexicographic_landing_timed(&input, &cfg).unwrap();
+        assert!(timed.1 < 4, "must land earlier: {:?}", timed);
+        let (_, c_nom) = landing_at(&input, &cfg, input.landing.as_ref().unwrap(), 4).unwrap();
+        let (_, c_timed) = landing_at(&input, &cfg, input.landing.as_ref().unwrap(), timed.1).unwrap();
+        assert!(c_timed < c_nom, "earlier landing must capture better: {c_timed} vs {c_nom}");
+        // A DCM on the plan keeps the nominal timing.
+        input.dcm_now = Some(na::Vector2::new(0.0, 0.0));
+        let calm = lexicographic_landing_timed(&input, &cfg).unwrap();
+        assert_eq!(calm.1, 4, "no error, no shortening: {:?}", calm);
     }
 
     #[test]
