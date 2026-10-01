@@ -221,6 +221,18 @@ pub struct Config {
     /// cost only breaks ties. Needs the same inputs as the capture rows.
     /// false = shipped (penalty rows).
     pub landing_lexicographic: bool,
+    /// Weight on the DCM-capture rows built from the MPC's OWN net CoP:
+    /// the DCM is propagated through the horizon with
+    ///     p_k = p_bar_k + delta_p_k(u),  delta_p_k = (-M_y, M_x) / Fz_ref_k
+    /// where M is the net moment about p_bar_k that the net-CoP rows already
+    /// write (linear in the wrenches and, through the moment coupling, in the
+    /// landing), linearised at the planned vertical load. Every node is a
+    /// row, landing or not: the MPC then uses the pressure point inside the
+    /// support (ankle strategy) and the landing for the same capture goal
+    /// instead of tracking a CoP schedule and a landing rule separately.
+    /// Needs the capture inputs (`dcm_now`, both reference schedules) and
+    /// `omega`. 0 = off = shipped.
+    pub capture_cop_weight: f64,
     /// Let the landing offset enter the momentum rows and the net-CoP rows
     /// as the extra moment `dp x F_k` (the 2026-09-26 coupling). Measured
     /// 2026-09-27 (V5A i8_d0/m01): with it the landing jitters +-30-47 mm
@@ -269,6 +281,7 @@ impl Default for Config {
             net_cop_equality: false,
             landing_capture_weight: 0.0,
             landing_lexicographic: false,
+            capture_cop_weight: 0.0,
             landing_moment_coupling: true,
             arm_about_prior: false,
             ldot_weight: 0.0,
@@ -565,6 +578,9 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
     );
     let mut rows: Vec<(na::DVector<f64>, f64)> = Vec::new();
     let mut eq_rows: Vec<na::DVector<f64>> = Vec::new();
+    // Per node: the map from the decision vector to the net-CoP offset
+    // (x, y) from the planned net CoP (see `Config::capture_cop_weight`).
+    let mut cop_maps: Vec<Option<(na::DVector<f64>, na::DVector<f64>)>> = vec![None; n];
     let add_residual = |rows: &mut Vec<_>, coeff: na::DVector<f64>, offset: f64, weight: f64| {
         if weight > 0.0 {
             rows.push((coeff * weight.sqrt(), offset * weight.sqrt()));
@@ -787,6 +803,16 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
                     ry[b + 3 + j] += cross[(1, j)];
                 }
             }
+            if cfg.capture_cop_weight > 0.0 && any {
+                let fz: f64 = (0..2)
+                    .filter(|&f| input.contact_schedule[k][f])
+                    .map(|f| input.reference_fz_schedule[k][f])
+                    .sum();
+                if fz > 1e-6 {
+                    // CoP offset from p_bar: (-M_y, M_x) / Fz.
+                    cop_maps[k] = Some((-ry.clone() / fz, rx.clone() / fz));
+                }
+            }
             let both = input.contact_schedule[k][0] && input.contact_schedule[k][1];
             if any && cfg.net_cop_equality && both {
                 eq_rows.push(rx.clone());
@@ -867,6 +893,46 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
                         );
                     }
                 }
+            }
+        }
+    }
+    if cfg.capture_cop_weight > 0.0
+        && cfg.omega > 0.0
+        && let (Some(xi0), Some(pbar), Some(xiref)) = (
+            input.dcm_now,
+            input.reference_net_cop_schedule.as_ref(),
+            input.reference_dcm_schedule.as_ref(),
+        )
+    {
+        let wdt = cfg.omega * cfg.dt;
+        let mut a = xi0;
+        let mut bx = na::DVector::<f64>::zeros(nu);
+        let mut by = na::DVector::<f64>::zeros(nu);
+        for k in 0..n {
+            let p = pbar.get(k).copied().unwrap_or_else(|| pbar[pbar.len() - 1]);
+            // xi_{k+1} = (1 + w dt) xi_k - w dt (p_bar_k + delta_p_k(u)).
+            a = a * (1.0 + wdt) - p * wdt;
+            bx *= 1.0 + wdt;
+            by *= 1.0 + wdt;
+            if let Some((dx, dy)) = cop_maps[k].as_ref() {
+                bx -= dx * wdt;
+                by -= dy * wdt;
+            }
+            let target = xiref.get(k).copied().unwrap_or_else(|| xiref[xiref.len() - 1]);
+            // The plan's own reference moves with the landing (J dp).
+            let jk = input
+                .landing
+                .and(input.reference_dcm_sensitivity.as_ref())
+                .and_then(|s| s.get(k).or(s.last()))
+                .copied()
+                .unwrap_or_else(na::Matrix2::zeros);
+            for (axis, b) in [(0, &bx), (1, &by)] {
+                let mut coeff = b.clone();
+                if input.landing.is_some() {
+                    coeff[12 * n] -= jk[(axis, 0)];
+                    coeff[12 * n + 1] -= jk[(axis, 1)];
+                }
+                add_residual(&mut rows, coeff, a[axis] - target[axis], cfg.capture_cop_weight);
             }
         }
     }
@@ -1831,6 +1897,33 @@ mod tests {
         cfg.landing_lexicographic = false;
         let again = solve(&input, &cfg).unwrap();
         assert_eq!(again.landing_shift, shipped.landing_shift);
+    }
+
+    /// LIPM: a DCM ahead of the plan is brought back only by a pressure
+    /// point ahead of it. With the capture rows built on the MPC's own CoP,
+    /// the solved net CoP (first node) must move FORWARD of the planned one
+    /// when the DCM runs ahead, and off must be bit-identical.
+    #[test]
+    fn the_capture_cop_rows_move_the_pressure_point_ahead_of_an_escaping_dcm() {
+        let (mut input, mut cfg) = standing([0.0, 0.0]);
+        cfg.omega = (cfg.gravity / input.com.z).sqrt();
+        cfg.net_cop_weight = 1.0;
+        input.reference_net_cop_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
+        input.reference_dcm_schedule = Some(vec![na::Vector2::zeros(); cfg.horizon]);
+        input.dcm_now = Some(na::Vector2::new(0.02, 0.0));
+        let net_cop_x = |sol: &Solution| {
+            // Net CoP x of node 0 from the sole wrenches: feet at x = 0, flat.
+            let fz: f64 = sol.sole_wrenches.iter().map(|w| w[5]).sum();
+            let my: f64 = sol.sole_wrenches.iter().map(|w| w[1]).sum();
+            -my / fz
+        };
+        let off = solve(&input, &cfg).unwrap();
+        cfg.capture_cop_weight = 1e3;
+        let on = solve(&input, &cfg).unwrap();
+        assert!(net_cop_x(&on) > net_cop_x(&off) + 0.005, "on {} off {}", net_cop_x(&on), net_cop_x(&off));
+        cfg.capture_cop_weight = 0.0;
+        let again = solve(&input, &cfg).unwrap();
+        assert_eq!(again.sole_wrenches, off.sole_wrenches);
     }
 
     #[test]

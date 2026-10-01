@@ -1769,6 +1769,7 @@ fn main() {
     let mut cp_retimed_slice: Option<usize> = None;
     let mut n_cp_shift = 0u32;
     let mut n_cp_retime = 0u32;
+    let mut n_mpc_pcmd = 0u64;
     let mut cp_retime_total = 0.0_f64;
     // Rebuild the plan continuously rather than only at touchdown.
     let adapt_live = flag("ADAPT_LIVE", true);
@@ -2370,6 +2371,14 @@ fn main() {
     // penalty weight above, which then only has to be > 0 to switch the
     // capture inputs on. See wrench_mpc::Config::landing_lexicographic.
     let mpc_landing_lex = flag("MPC_LANDING_LEX", false);
+    // DCM-capture rows on the MPC's own net CoP (every node), see
+    // wrench_mpc::Config::capture_cop_weight. Needs MPC_LANDING_CAPTURE_W > 0
+    // for the capture inputs. 0 = off = shipped.
+    let mpc_capture_cop_w = env_f64("MPC_CAPTURE_COP_W", 0.0).max(0.0);
+    // Fraction of the WBC's commanded pressure point taken from the MPC's
+    // node-0 net CoP (see the use site). Step 3 of the BD roadmap: the WBC
+    // follows the MPC. 0 = off = shipped.
+    let mpc_pcmd = env_f64("MPC_PCMD", 0.0).clamp(0.0, 1.0);
     // 1 = shipped: the landing offset also enters the momentum and net-CoP
     // rows as `dp x F`. 0 = capture rows and landing cost only (2026-09-27:
     // the moment coupling made the landing jitter +-30-47 mm on
@@ -5794,6 +5803,26 @@ fn main() {
                 ))
                 .0;
         }
+        // MPC_PCMD: the WBC's commanded pressure point comes from the MPC
+        // (its node-0 net CoP from the latest solve, clamped to the same
+        // support box as the DCM law) instead of the WBC's own DCM law -- the
+        // MPC then decides where the pressure is in single support too, and
+        // the WBC's CoM task realises it through c_ddot = w^2 (c - p). The
+        // value is blended in by this fraction, after every other branch.
+        // Not during a stair transfer or the post-walk settle (their own
+        // laws). Only a solve younger than 2 MPC periods is used; otherwise
+        // the DCM law stands. 0 = off = shipped.
+        if mpc_pcmd > 0.0
+            && stair_transfer.is_none()
+            && post_walk_settle.is_none()
+            && diag_mpc_time.is_some_and(|last| t - last <= 2.0 * stair_wrench_dt + 1e-9)
+            && diag_mpc_net_cop.iter().all(|v| v.is_finite())
+        {
+            let m = na::Vector2::new(diag_mpc_net_cop[0], diag_mpc_net_cop[1]);
+            let m = sbox.clamp(&m).0;
+            p_cmd += (m - p_cmd) * mpc_pcmd;
+            n_mpc_pcmd += 1;
+        }
         if matches!(support, Support::Single { .. }) {
             last_single_p_cmd = Some(p_cmd);
         }
@@ -6683,6 +6712,7 @@ fn main() {
                     omega,
                     landing_capture_weight: mpc_landing_capture_w,
                     landing_lexicographic: mpc_landing_lex,
+                    capture_cop_weight: mpc_capture_cop_w,
                     landing_moment_coupling: mpc_footstep_moment,
                     arm_about_prior: mpc_arm_about_prior,
                     ldot_weight: mpc_w_ldot,
@@ -9646,6 +9676,9 @@ fn main() {
             "samples": substep_samples, "nonfinite_values": substep_nonfinite,
             "passed": passed, "joints": joints});
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).expect("SUBSTEP_LIMIT_AUDIT_JSON");
+    }
+    if mpc_pcmd > 0.0 {
+        println!("  mpc pcmd: {n_mpc_pcmd} ticks took the MPC pressure point (fraction {mpc_pcmd})");
     }
     println!("  verdict: {}", if fell { "FELL" } else { "SURVIVED" });
 }
