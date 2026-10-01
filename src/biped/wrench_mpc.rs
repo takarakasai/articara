@@ -221,6 +221,15 @@ pub struct Config {
     /// cost only breaks ties. Needs the same inputs as the capture rows.
     /// false = shipped (penalty rows).
     pub landing_lexicographic: bool,
+    /// Fix each foot's vertical force to `Input::reference_fz_schedule` by
+    /// an EQUALITY at every node where both feet are down. Measured
+    /// 2026-10-01 (design note Sec.14): with the CoP-capture rows the MPC
+    /// satisfies a heel-ward net CoP by loading the front foot and leaving
+    /// the sole moments near zero; the WBC's regulariser then relaxes the
+    /// ankles exactly when a backward push needs them. With the split fixed
+    /// the net CoP can only move through the sole moments, which is what
+    /// the WBC can realise. false = shipped.
+    pub fz_split_equality: bool,
     /// Weight on the DCM-capture rows built from the MPC's OWN net CoP:
     /// the DCM is propagated through the horizon with
     ///     p_k = p_bar_k + delta_p_k(u),  delta_p_k = (-M_y, M_x) / Fz_ref_k
@@ -281,6 +290,7 @@ impl Default for Config {
             net_cop_equality: false,
             landing_capture_weight: 0.0,
             landing_lexicographic: false,
+            fz_split_equality: false,
             capture_cop_weight: 0.0,
             landing_moment_coupling: true,
             arm_about_prior: false,
@@ -833,6 +843,19 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             r[12 * n + j] = 1.0;
             eq_rows.push(r);
             eq_rhs.push(fixed[j]);
+        }
+    }
+    if cfg.fz_split_equality {
+        for k in 0..n {
+            if !(input.contact_schedule[k][0] && input.contact_schedule[k][1]) {
+                continue;
+            }
+            for foot in 0..2 {
+                let mut r = na::DVector::zeros(nu);
+                r[12 * k + 6 * foot + 5] = 1.0;
+                eq_rows.push(r);
+                eq_rhs.push(input.reference_fz_schedule[k][foot]);
+            }
         }
     }
     let (a_eq, b_eq) = if eq_rows.is_empty() {

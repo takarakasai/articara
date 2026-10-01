@@ -2417,6 +2417,9 @@ fn main() {
     // CoP with front-foot load while the acceleration stayed short
     // (2026-10-01, design note Sec.14). Off = the net CoP = shipped.
     let mpc_pcmd_from_acc = flag("MPC_PCMD_FROM_ACC", false);
+    // Fix the MPC's double-support vertical split to the schedule
+    // (`wrench_mpc::Config::fz_split_equality`). Off = shipped.
+    let mpc_fz_split_eq = flag("MPC_FZ_SPLIT_EQ", false);
     // 1 = shipped: the landing offset also enters the momentum and net-CoP
     // rows as `dp x F`. 0 = capture rows and landing cost only (2026-09-27:
     // the moment coupling made the landing jitter +-30-47 mm on
@@ -6763,6 +6766,7 @@ fn main() {
                     omega,
                     landing_capture_weight: mpc_landing_capture_w,
                     landing_lexicographic: mpc_landing_lex,
+                    fz_split_equality: mpc_fz_split_eq,
                     capture_cop_weight: mpc_capture_cop_w,
                     landing_moment_coupling: mpc_footstep_moment,
                     arm_about_prior: mpc_arm_about_prior,
