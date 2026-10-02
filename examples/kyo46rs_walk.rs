@@ -398,6 +398,12 @@ fn main() {
             None => wb,
         });
         o.spawn_z_offset = st.base();
+        // Extra spawn clearance [m] for a descent platform: the spawn height
+        // is probed in the neutral posture, and INIT_JITTER then lowers one
+        // sole into the platform box, which the spawn self-collision check
+        // rejects (2026-10-02: 36/48 descent members panicked at spawn).
+        // 0 = off = shipped.
+        o.spawn_z_offset += env_f64("SPAWN_Z_EXTRA", 0.0).max(0.0);
         println!(
             "stairs: n={} riser={:+.4} tread={:.4} start={:.2} (spawn platform {:.4})",
             st.n,
