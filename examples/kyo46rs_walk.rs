@@ -840,6 +840,12 @@ fn main() {
     // large request is one the solver cannot fill and will chase to the joint
     // limits; this bounds the ask rather than the gain.
     let mom_arm_dcm_max = env_f64("MOM_ARM_DCM_MAX", 20.0).max(0.0);
+    // Sagittal counterpart of MOM_ARM_DCM: a forward/backward DCM error asks
+    // for a PITCH angular-momentum rate (arms swinging in the sagittal
+    // plane), dh_ref[1] = MOM_ARM_DCM_X * (xi.x - xi_ref.x), clamped to
+    // MOM_ARM_DCM_X_MAX. Needs the pitch axis in MOM_AXES ("xy-"). 0 = off.
+    let mom_arm_dcm_x = env_f64("MOM_ARM_DCM_X", 0.0);
+    let mom_arm_dcm_x_max = env_f64("MOM_ARM_DCM_X_MAX", 20.0).max(0.0);
     let use_trunk = flag("TRUNK", true);
     let trunk_sign = env_f64("TRUNK_SIGN", 1.0);
     let trunk_dead = env_f64("TRUNK_DEAD", 0.0);
@@ -7366,6 +7372,10 @@ fn main() {
             if arms_neutral && mom_arm_dcm != 0.0 {
                 dh_ref[0] = (-mom_arm_dcm * (xi.y - r.xi.y))
                     .clamp(-mom_arm_dcm_max, mom_arm_dcm_max);
+            }
+            if arms_neutral && mom_arm_dcm_x != 0.0 {
+                dh_ref[1] = (mom_arm_dcm_x * (xi.x - r.xi.x))
+                    .clamp(-mom_arm_dcm_x_max, mom_arm_dcm_x_max);
             }
             let dh_ref = dh_ref;
             bt::angular_momentum(
