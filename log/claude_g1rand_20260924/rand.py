@@ -102,7 +102,9 @@ for case in CASES:
     for k in range(K0, K0 + N):
         t = (D / name / f'm{k:02d}' / 'run.log').read_text()
         if 'verdict: SURVIVED' in t:
-            surv += 1
+            m_steps = re.search(r'steps taken: (\d+)', t)
+            if MODE != 'flat' or int(os.environ.get('FLAT_MIN_STEPS', '0')) <= (int(m_steps.group(1)) if m_steps else 0):
+                surv += 1
         m = re.search(r'FELL at t=([0-9.]+)', t)
         if m:
             tf.append(float(m.group(1)))
