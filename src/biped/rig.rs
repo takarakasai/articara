@@ -9,6 +9,8 @@
 
 use nalgebra as na;
 use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::VecDeque;
 
 use super::profile::Profile;
 use crate::mjcf::{GroundPlaneCfg, MjcfExportOptions};
@@ -100,6 +102,10 @@ pub struct RigOptions {
     /// is not a fix -- it is how to measure what the stance foot's slip is
     /// costing, by removing the slip and nothing else.
     pub mu_ground: f64,
+    /// Optional MuJoCo impedance curve for collision geoms on both feet.
+    /// `None` preserves the model/default contact. This is a plant design
+    /// input for evaluating compliant soles, independent of the WBC cone.
+    pub foot_solimp: Option<[f64; 3]>,
     pub probe_z: f64,
     /// Extra `(joint, angle)` seeds applied on top of the crouch.
     ///
@@ -111,6 +117,13 @@ pub struct RigOptions {
     /// step needs closes it. Swinging the arm out of the frontal plane is the
     /// only free variable that fixes it.
     pub extra_seed: Vec<(&'static str, f64)>,
+    /// Seed offsets ADDED to whatever the posture already holds, applied
+    /// after [`Self::extra_seed`]. `extra_seed` assigns, which is what a
+    /// stance-width seed wants; a jitter on the initial condition has to add,
+    /// or it silently erases the profile's own posture (measured 2026-09-24:
+    /// assigning a 1e-9 "jitter" to the leg joints straightened the knees and
+    /// moved the foot inner-gap 22 mm).
+    pub extra_seed_delta: Vec<(&'static str, f64)>,
     /// DIAGNOSTIC: drop the collision geometry of these links entirely.
     ///
     /// Purpose is separation, not repair. When the robot fouls itself the
@@ -120,6 +133,23 @@ pub struct RigOptions {
     /// thing stopping this?" -- and answers nothing else. A run with this set
     /// is not a result; it is an experiment about which result to chase.
     pub uncollide_links: Vec<&'static str>,
+    /// Per-joint viscous damping overrides, matched by substring against the
+    /// joint name (e.g. `("elbow", 0.25)`), applied over the uniform
+    /// `joint_damping` and carried consistently into BOTH the MJCF export
+    /// (plant) and the QP's nonlinear-effects compensation. This is a DESIGN
+    /// input, not a tuning trick: the robot exists only in simulation, and a
+    /// torque-mode actuator's own back-EMF is a real viscous term of order
+    /// stall_torque / no_load_speed (XM430: 2.3 N*m / ~10 rad/s ~ 0.23),
+    /// where the uniform 0.15 was only ever a guess.
+    pub joint_damping_overrides: Vec<(String, f64)>,
+    /// Per-joint reflected rotor inertia, matched by joint-name substring.
+    /// The same value reaches the MuJoCo joint and the WBC mass diagonal.
+    pub joint_armature_overrides: Vec<(String, f64)>,
+    /// Added to the measured spawn height. The probe lift puts the soles on
+    /// the z=0 ground plane; a driver that starts the robot ON something --
+    /// a platform at the top of a descending staircase -- owes the spawn the
+    /// platform's height, because the probe knows only the plane.
+    pub spawn_z_offset: f64,
 }
 
 impl RigOptions {
@@ -141,9 +171,14 @@ impl RigOptions {
             ctrl_mode: CtrlMode::Torque,
             sim_dt: 0.001,
             mu_ground: 0.7,
+            foot_solimp: None,
             probe_z: p.probe_z,
             extra_seed: Vec::new(),
+            extra_seed_delta: Vec::new(),
             uncollide_links: Vec::new(),
+            joint_damping_overrides: Vec::new(),
+            joint_armature_overrides: Vec::new(),
+            spawn_z_offset: 0.0,
         }
     }
 }
@@ -180,6 +215,53 @@ pub struct BipedRig {
     pub spawn_z: f64,
     pub armature: f64,
     pub joint_damping: f64,
+    /// Joint-velocity magnitude the CONTROLLER is allowed to see (sync()
+    /// clamps the plant readback to this). Historically hardcoded at
+    /// 5 rad/s; measured on the four-step stair climb, leg joints really
+    /// move at 10-31 rad/s, so the QP's velocity feedback, Coriolis terms
+    /// and swing damping were computed from saturated readings exactly
+    /// during the fastest swings -- and the saturation is a hard
+    /// nonlinearity, which is one candidate for the knife-edge parameter
+    /// sensitivity. `QD_CLAMP` overrides; default keeps the old 5.0.
+    pub qd_clamp: f64,
+    /// Sensor corruption for benchmarks (all default off = the plant's truth,
+    /// bit-identical): `SENSE_DELAY_TICKS` holds every measurement that many
+    /// control ticks; `SENSE_NOISE_Q/QD/V/W` add white noise (std, in rad,
+    /// rad/s, m/s, rad/s) to joint positions, joint velocities, base linear
+    /// and base angular velocity; `SENSE_SEED` seeds it.
+    pub sense_delay: usize,
+    pub sense_noise: [f64; 4],
+    sense_rng: RefCell<u64>,
+    sense_buf: RefCell<VecDeque<RawSense>>,
+}
+
+#[derive(Clone)]
+struct RawSense {
+    body_pos: [f64; 3],
+    body_quat: na::UnitQuaternion<f64>,
+    v_lin_w: [f64; 3],
+    v_ang_w: [f64; 3],
+    joint_q: Vec<f64>,
+    joint_qd: Vec<Option<f64>>,
+}
+
+fn sense_env(k: &str, d: f64) -> f64 {
+    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+}
+
+/// xorshift64* -> standard normal (Box-Muller), no dependency.
+fn gauss(state: &mut u64) -> f64 {
+    let mut next = || {
+        let mut x = *state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        *state = x;
+        (x.wrapping_mul(0x2545F4914F6CDD1D) >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let u1 = next().max(1e-300);
+    let u2 = next();
+    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
 }
 
 /// One tick's worth of synchronised state: the plant read into misarta's
@@ -211,8 +293,8 @@ impl BipedRig {
         println!("robot: {}", prof.name);
 
         let urdf_path = std::path::Path::new(prof.urdf);
-        let mut robot = RobotModel::from_urdf(urdf_path)
-            .unwrap_or_else(|e| panic!("load {}: {e}", prof.urdf));
+        let mut robot =
+            RobotModel::from_urdf(urdf_path).unwrap_or_else(|e| panic!("load {}: {e}", prof.urdf));
         let crouch: Vec<(&str, f64)> = prof
             .sagittal
             .iter()
@@ -224,11 +306,16 @@ impl BipedRig {
             }
         }
         for (name, q) in o.extra_seed.iter().copied() {
-            let ji = *robot
-                .joint_map
-                .get(name)
-                .unwrap_or_else(|| panic!("extra_seed names {name}, which this robot does not have"));
+            let ji = *robot.joint_map.get(name).unwrap_or_else(|| {
+                panic!("extra_seed names {name}, which this robot does not have")
+            });
             robot.joint_positions[ji] = q;
+        }
+        for (name, dq) in o.extra_seed_delta.iter().copied() {
+            let ji = *robot.joint_map.get(name).unwrap_or_else(|| {
+                panic!("extra_seed_delta names {name}, which this robot does not have")
+            });
+            robot.joint_positions[ji] += dq;
         }
         if prof.collide_primitives_only {
             use crate::rbd::model::GeomData;
@@ -240,13 +327,37 @@ impl BipedRig {
                 dropped += before - link.collisions.len();
             }
             let kept: usize = robot.links.iter().map(|l| l.collisions.len()).sum();
-            println!("collision: dropped {dropped} mesh geoms, kept {kept} primitives (visual meshes untouched)");
-            assert!(kept > 0, "no primitive colliders left -- the feet would have nothing to stand on");
+            println!(
+                "collision: dropped {dropped} mesh geoms, kept {kept} primitives (visual meshes untouched)"
+            );
+            assert!(
+                kept > 0,
+                "no primitive colliders left -- the feet would have nothing to stand on"
+            );
+        }
+        if let Some(solimp) = o.foot_solimp {
+            let mut tuned = 0usize;
+            for link in robot.links.iter_mut() {
+                if prof.foot_links.contains(&link.name.as_str()) {
+                    for collision in &mut link.collisions {
+                        let physics = collision.physics.get_or_insert_with(Default::default);
+                        physics.solimp = Some(solimp);
+                        // Ensure the foot's impedance wins against the default
+                        // stair/ground geom when MuJoCo combines parameters.
+                        physics.priority = Some(1);
+                        tuned += 1;
+                    }
+                }
+            }
+            assert!(tuned > 0, "FOOT_SOLIMP found no foot collision geoms");
+            println!("foot contact solimp: {:?} on {tuned} geoms", solimp);
         }
         if !o.uncollide_links.is_empty() {
             let mut hit = 0usize;
             for link in robot.links.iter_mut() {
-                if o.uncollide_links.iter().any(|n| link.name.contains(n)) && !link.collisions.is_empty() {
+                if o.uncollide_links.iter().any(|n| link.name.contains(n))
+                    && !link.collisions.is_empty()
+                {
                     hit += link.collisions.len();
                     link.collisions.clear();
                 }
@@ -260,13 +371,45 @@ impl BipedRig {
         }
         robot.rebuild_misarta_model();
         let q_seed: Vec<f64> = robot.joint_positions.clone();
+        assert!(
+            o.armature.is_finite() && o.armature >= 0.0,
+            "uniform armature must be finite and nonnegative"
+        );
+        for (pat, val) in &o.joint_armature_overrides {
+            assert!(
+                !pat.is_empty() && robot.joints.iter().any(|j| j.name.contains(pat)),
+                "armature override pattern {pat:?} matches no joint"
+            );
+            assert!(
+                val.is_finite() && *val >= 0.0,
+                "armature override {pat:?} must be finite and nonnegative"
+            );
+        }
 
         for j in robot.joints.iter_mut() {
             j.actuator_mode = ActuatorMode::Position;
             j.actuator_kp = o.burnin_kp;
             j.actuator_kv = o.burnin_kv;
             j.joint_damping = o.joint_damping;
+            for (pat, val) in &o.joint_damping_overrides {
+                if j.name.contains(pat.as_str()) {
+                    j.joint_damping = *val;
+                }
+            }
             j.armature = o.armature;
+            for (pat, val) in &o.joint_armature_overrides {
+                if j.name.contains(pat.as_str()) {
+                    j.armature = *val;
+                    println!("  armature {} = {:.6} kg*m^2", j.name, j.armature);
+                }
+            }
+            // Scale the EFFORT ITSELF, so the MJCF export (plant forcerange)
+            // and the QP torque box below both see the scaled value. The
+            // previous form scaled only the QP box: above 1.0 the QP was
+            // allowed to command torque MuJoCo then clipped, so the
+            // "stronger motors" diagnostic measured nothing -- measured,
+            // TORQUE_SCALE=3 changed a stair-mount failure by 5 ms.
+            j.effort *= o.torque_scale;
         }
 
         // ── Spawn so the soles just touch: measured, not hand-derived ──
@@ -279,7 +422,12 @@ impl BipedRig {
         let make_opts = move |z: f64| MjcfExportOptions {
             base_pos: Some([0.0, 0.0, z]),
             extra_worldbody: extra_wb.clone(),
-            ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 2.0, roll: 0.0, pitch: 0.0 }),
+            ground_plane: Some(GroundPlaneCfg {
+                z: 0.0,
+                half_size: 2.0,
+                roll: 0.0,
+                pitch: 0.0,
+            }),
             timestep: Some(sim_dt),
             default_friction: [mu_ground, 0.005, 0.0001],
             // CTRL_MODE=servo hands the velocity loop to MuJoCo itself rather
@@ -291,7 +439,7 @@ impl BipedRig {
         let spawn_z = {
             let probe = MujocoSim::new(&robot, make_opts(o.probe_z)).expect("probe sim");
             let f = probe.body_world_position(prof.foot_links[0]).expect("foot")[2];
-            o.probe_z - ((f - prof.sole_below_origin) - SOLE_CLEARANCE)
+            o.probe_z - ((f - prof.sole_below_origin) - SOLE_CLEARANCE) + o.spawn_z_offset
         };
         {
             // Prove the base is genuinely FREE and the ground is real, rather
@@ -300,11 +448,20 @@ impl BipedRig {
             // [true; 6]) and it would be easy to confuse a suspended rig's
             // result for a standing one.
             let xml = crate::mjcf::export_mjcf_with_options(&robot, make_opts(spawn_z));
+            if let Ok(path) = std::env::var("RIG_MJCF_OUT") {
+                std::fs::write(path, &xml).expect("write runtime MJCF");
+            }
             let base_free = xml.contains("<freejoint/>");
             let has_ground = xml.contains(r#"type="plane""#);
             println!("rig check: freejoint={base_free}  ground_plane={has_ground}");
-            assert!(base_free, "base is NOT free -- this would be a suspended rig, not standing");
-            assert!(has_ground, "no ground plane -- the feet would have nothing to push on");
+            assert!(
+                base_free,
+                "base is NOT free -- this would be a suspended rig, not standing"
+            );
+            assert!(
+                has_ground,
+                "no ground plane -- the feet would have nothing to push on"
+            );
         }
         let sim = MujocoSim::new(&robot, make_opts(spawn_z)).expect("MujocoSim::new");
         let mj_dt = sim.timestep();
@@ -323,7 +480,12 @@ impl BipedRig {
                 .filter(|c| !c.body1.is_empty() && !c.body2.is_empty())
                 .map(|c| format!("{} <-> {}", c.body1, c.body2))
                 .collect();
-            assert!(hits.is_empty(), "self-collision at spawn ({}): {:?}", hits.len(), hits);
+            assert!(
+                hits.is_empty(),
+                "self-collision at spawn ({}): {:?}",
+                hits.len(),
+                hits
+            );
         }
 
         let (model, a2m, link_to_idx) = build_floating_base_model(&robot);
@@ -377,7 +539,8 @@ impl BipedRig {
             }
             let vi = model.v_idx[mi];
             if vi >= 6 {
-                torque_max[vi - 6] = robot.joints[ji].effort.max(1.0) * o.torque_scale;
+                // Effort already carries torque_scale (applied at build).
+                torque_max[vi - 6] = robot.joints[ji].effort.max(1.0);
                 q_min[vi - 6] = robot.joints[ji].lower;
                 q_max[vi - 6] = robot.joints[ji].upper;
                 v_max[vi - 6] = robot.joints[ji].velocity;
@@ -392,7 +555,11 @@ impl BipedRig {
                 .filter(|&i| !torque_max[i].is_finite())
                 .map(|i| format!("row {i}"))
                 .collect();
-            assert!(bad.is_empty(), "torque box left unset on: {}", bad.join(", "));
+            assert!(
+                bad.is_empty(),
+                "torque box left unset on: {}",
+                bad.join(", ")
+            );
             let mut lims: Vec<(String, f64)> = Vec::new();
             for ji in 0..robot.joints.len() {
                 let Some(mi) = a2m[ji] else { continue };
@@ -443,8 +610,11 @@ impl BipedRig {
             {
                 let fz0 = settle.body_world_position(prof.foot_links[0]).unwrap()[2];
                 let nc0 = settle.contacts().len();
-                println!("  burn-in t=0: foot z={:.4} (sole {:+.4} vs floor), contacts={nc0}",
-                         fz0, fz0 - prof.sole_below_origin);
+                println!(
+                    "  burn-in t=0: foot z={:.4} (sole {:+.4} vs floor), contacts={nc0}",
+                    fz0,
+                    fz0 - prof.sole_below_origin
+                );
                 // The free-base spawn has had a self-collision assert since
                 // the kyo46rs forearm/hip brace; this rig did not, and G1
                 // walked straight through the gap -- 241.9 kN of pelvis-cover
@@ -466,16 +636,30 @@ impl BipedRig {
             settle.step_n_frames(&mut settle_robot, (o.burnin_s / mj_dt) as u32, true);
             {
                 for c in settle.contacts().iter().take(12) {
-                    println!("      contact {:>28} <-> {:<28} |f|={:.1} N",
-                             if c.body1.is_empty() { "WORLD" } else { &c.body1 },
-                             if c.body2.is_empty() { "WORLD" } else { &c.body2 },
-                             c.force_mag);
+                    println!(
+                        "      contact {:>28} <-> {:<28} |f|={:.1} N",
+                        if c.body1.is_empty() {
+                            "WORLD"
+                        } else {
+                            &c.body1
+                        },
+                        if c.body2.is_empty() {
+                            "WORLD"
+                        } else {
+                            &c.body2
+                        },
+                        c.force_mag
+                    );
                 }
                 let fz1 = settle.body_world_position(prof.foot_links[0]).unwrap()[2];
                 let nc1 = settle.contacts().len();
                 let f: f64 = settle.contacts().iter().map(|c| c.force_world[2]).sum();
-                println!("  burn-in end: foot z={:.4} (sole {:+.4}), contacts={nc1}, sum fz={f:.1} N (weight {:.1} N)",
-                         fz1, fz1 - prof.sole_below_origin, total_mass * G);
+                println!(
+                    "  burn-in end: foot z={:.4} (sole {:+.4}), contacts={nc1}, sum fz={f:.1} N (weight {:.1} N)",
+                    fz1,
+                    fz1 - prof.sole_below_origin,
+                    total_mass * G
+                );
             }
             for ji in 0..robot.joints.len() {
                 robot.joint_positions[ji] = settle_robot.joint_positions[ji];
@@ -492,7 +676,12 @@ impl BipedRig {
                 o.burnin_s, robot.joints[wi].name
             );
             let mut moved: Vec<(f64, &str)> = (0..robot.joints.len())
-                .map(|ji| ((robot.joint_positions[ji] - q_seed[ji]).abs(), robot.joints[ji].name.as_str()))
+                .map(|ji| {
+                    (
+                        (robot.joint_positions[ji] - q_seed[ji]).abs(),
+                        robot.joints[ji].name.as_str(),
+                    )
+                })
                 .filter(|(d, _)| *d > 0.01)
                 .collect();
             moved.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
@@ -517,7 +706,11 @@ impl BipedRig {
             "actuation: mode={} kp={} kv={}",
             o.ctrl_mode.name(),
             if hybrid { o.run_kp } else { 0.0 },
-            if hybrid || o.ctrl_mode.is_velocity() { o.run_kv } else { 0.0 }
+            if hybrid || o.ctrl_mode.is_velocity() {
+                o.run_kv
+            } else {
+                0.0
+            }
         );
         // Re-spawn free-based at the settled pose, centred at the origin.
         let mut sim = MujocoSim::new(&robot, make_opts(spawn_z)).expect("MujocoSim::new (run)");
@@ -542,11 +735,17 @@ impl BipedRig {
             let hr = |n: &str| sim.joint_q_qd(n).map(|(q, _)| q).unwrap_or(f64::NAN);
             let lp = sim.body_world_position(prof.foot_links[0]).unwrap();
             let rp = sim.body_world_position(prof.foot_links[1]).unwrap();
-            let rpy = sim.body_world_orientation(&robot.root_link).unwrap().euler_angles();
+            let rpy = sim
+                .body_world_orientation(&robot.root_link)
+                .unwrap()
+                .euler_angles();
             println!(
                 "post-burn-in: rpy=({:+.3},{:+.3},{:+.3}) hip_roll=({:+.3},{:+.3}) foot inner-gap={:+.4}",
-                rpy.0, rpy.1, rpy.2,
-                hr(prof.hip_roll[0]), hr(prof.hip_roll[1]),
+                rpy.0,
+                rpy.1,
+                rpy.2,
+                hr(prof.hip_roll[0]),
+                hr(prof.hip_roll[1]),
                 (lp[1] - 0.019) - (rp[1] + 0.019),
             );
         }
@@ -575,6 +774,19 @@ impl BipedRig {
             spawn_z,
             armature: o.armature,
             joint_damping: o.joint_damping,
+            qd_clamp: std::env::var("QD_CLAMP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5.0),
+            sense_delay: sense_env("SENSE_DELAY_TICKS", 0.0).max(0.0) as usize,
+            sense_noise: [
+                sense_env("SENSE_NOISE_Q", 0.0).max(0.0),
+                sense_env("SENSE_NOISE_QD", 0.0).max(0.0),
+                sense_env("SENSE_NOISE_V", 0.0).max(0.0),
+                sense_env("SENSE_NOISE_W", 0.0).max(0.0),
+            ],
+            sense_rng: RefCell::new((sense_env("SENSE_SEED", 1.0) as u64).max(1) ^ 0x9E3779B97F4A7C15),
+            sense_buf: RefCell::new(VecDeque::new()),
         }
     }
 
@@ -616,7 +828,10 @@ impl BipedRig {
     /// world-frame landmark (sole centres for the ZMP plan) before t=0.
     pub fn fk_now(&self) -> misarta::data::Data<f64> {
         let p = self.sim.body_world_position(&self.robot.root_link).unwrap();
-        let qq = self.sim.body_world_orientation(&self.robot.root_link).unwrap();
+        let qq = self
+            .sim
+            .body_world_orientation(&self.robot.root_link)
+            .unwrap();
         let mut q = self.model.neutral_q();
         q[0] = p[0];
         q[1] = p[1];
@@ -644,10 +859,54 @@ impl BipedRig {
         let model = &self.model;
         let nv = self.nv;
 
-        let body_pos = sim.body_world_position(&robot.root_link).unwrap();
-        let body_quat = sim.body_world_orientation(&robot.root_link).unwrap();
-        let v_lin_w = sim.body_world_linear_velocity(&robot.root_link).unwrap();
-        let v_ang_w = sim.body_world_angular_velocity(&robot.root_link).unwrap();
+        let mut raw = RawSense {
+            body_pos: sim.body_world_position(&robot.root_link).unwrap(),
+            body_quat: sim.body_world_orientation(&robot.root_link).unwrap(),
+            v_lin_w: sim.body_world_linear_velocity(&robot.root_link).unwrap(),
+            v_ang_w: sim.body_world_angular_velocity(&robot.root_link).unwrap(),
+            joint_q: robot.joint_positions.clone(),
+            joint_qd: robot
+                .joints
+                .iter()
+                .map(|j| sim.joint_q_qd(&j.name).map(|(_, qd)| qd))
+                .collect(),
+        };
+        if self.sense_delay > 0 {
+            let mut buf = self.sense_buf.borrow_mut();
+            buf.push_back(raw.clone());
+            while buf.len() > self.sense_delay + 1 {
+                buf.pop_front();
+            }
+            raw = buf.front().cloned().unwrap_or(raw);
+        }
+        if self.sense_noise.iter().any(|s| *s > 0.0) {
+            let mut rng = self.sense_rng.borrow_mut();
+            let [nq, nqd, nv, nw] = self.sense_noise;
+            if nq > 0.0 {
+                for q in raw.joint_q.iter_mut() {
+                    *q += nq * gauss(&mut rng);
+                }
+            }
+            if nqd > 0.0 {
+                for qd in raw.joint_qd.iter_mut().flatten() {
+                    *qd += nqd * gauss(&mut rng);
+                }
+            }
+            if nv > 0.0 {
+                for c in raw.v_lin_w.iter_mut() {
+                    *c += nv * gauss(&mut rng);
+                }
+            }
+            if nw > 0.0 {
+                for c in raw.v_ang_w.iter_mut() {
+                    *c += nw * gauss(&mut rng);
+                }
+            }
+        }
+        let body_pos = raw.body_pos;
+        let body_quat = raw.body_quat;
+        let v_lin_w = raw.v_lin_w;
+        let v_ang_w = raw.v_ang_w;
         let r_wb = body_quat.to_rotation_matrix();
         let r_bw = r_wb.transpose();
         let v_lin_body = r_bw * na::Vector3::new(v_lin_w[0], v_lin_w[1], v_lin_w[2]);
@@ -674,11 +933,11 @@ impl BipedRig {
         for ji in 0..robot.joints.len() {
             let Some(mi) = self.a2m[ji] else { continue };
             if model.joints[mi].joint_type.nq() == 1 {
-                q[model.q_idx[mi]] = robot.joint_positions[ji];
+                q[model.q_idx[mi]] = raw.joint_q[ji];
             }
             if model.joints[mi].joint_type.nv() == 1 {
-                if let Some((_, qd)) = sim.joint_q_qd(&robot.joints[ji].name) {
-                    v[model.v_idx[mi]] = qd.clamp(-5.0, 5.0);
+                if let Some(qd) = raw.joint_qd[ji] {
+                    v[model.v_idx[mi]] = qd.clamp(-self.qd_clamp, self.qd_clamp);
                 }
             }
         }
@@ -701,8 +960,12 @@ impl BipedRig {
             if vi < 6 {
                 continue;
             }
-            mass[(vi, vi)] += self.armature;
-            h[vi] += self.joint_damping * v[vi];
+            mass[(vi, vi)] += robot.joints[ji].armature;
+            // Per-joint: the plant carries each joint's own damping (uniform
+            // value plus any name-matched override), so the compensation
+            // must read the same number or the two models diverge exactly
+            // on the joints being designed.
+            h[vi] += robot.joints[ji].joint_damping * v[vi];
         }
         let data = misarta::fk::forward_kinematics(model, &q);
 
@@ -719,11 +982,7 @@ impl BipedRig {
         for l in &self.mass_links {
             let rot = misarta::se3::rotation_matrix(&data.oMi[l.mi]);
             let r = rot * l.com_local;
-            let skew = na::Matrix3::new(
-                0.0, -r.z, r.y,
-                r.z, 0.0, -r.x,
-                -r.y, r.x, 0.0,
-            );
+            let skew = na::Matrix3::new(0.0, -r.z, r.y, r.z, 0.0, -r.x, -r.y, r.x, 0.0);
             let j = misarta::jacobian::compute_joint_jacobian_from_data(model, &q, &data, l.mi);
             let j_ang = j.rows(0, 3).into_owned();
             let j_lin = j.rows(3, 3).into_owned();

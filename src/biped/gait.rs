@@ -93,11 +93,96 @@ pub struct GaitPlan {
     pub slices: Vec<Slice>,
 }
 
+/// Contact confirmation around touchdown. Remember the active swing across
+/// its end boundary and capture the extension budget once per step.
+pub struct ContactPhase {
+    pub min_frac: f64,
+    pub load_threshold: f64,
+    pub confirm_ticks: u32,
+    pub extend_frac: f64,
+    active: Option<(usize, f64, f64)>, // slice, original end, duration
+    loaded_ticks: u32,
+}
+
+impl ContactPhase {
+    /// The swing's ORIGINAL clock for `slice`, if this phase is holding it
+    /// open: `(t0, duration)` as scheduled before any waiting. A late-contact
+    /// extension stretches the slice, and a swing fraction recomputed from
+    /// the stretched duration REWINDS -- measured on the one-step descent,
+    /// the foot 5 mm above the lower tread was pulled 50 mm back up to the
+    /// hold-phase height and the run tipped. The trajectory must keep its
+    /// own clock and simply HOLD at its endpoint while the schedule waits.
+    pub fn frozen_clock(&self, slice: usize) -> Option<(f64, f64)> {
+        self.active
+            .filter(|&(i, _, _)| i == slice)
+            .map(|(_, end, dur)| (end - dur, dur))
+    }
+}
+
+impl ContactPhase {
+    pub fn new(min_frac: f64, load_threshold: f64, confirm_ticks: u32, extend_frac: f64) -> Self {
+        Self {
+            min_frac,
+            load_threshold,
+            confirm_ticks: confirm_ticks.max(1),
+            extend_frac: extend_frac.max(0.0),
+            active: None,
+            loaded_ticks: 0,
+        }
+    }
+
+    /// Signed schedule shift: positive for early touchdown, negative for
+    /// waiting. Call before looking up this tick's support.
+    pub fn update(&mut self, gait: &mut GaitPlan, t: f64, dt: f64, fz: [f64; 2]) -> f64 {
+        if self.active.is_none() {
+            let i = gait.index_at(t);
+            if gait.slices[i].support.swing().is_some() {
+                let sl = gait.slices[i];
+                self.active = Some((i, sl.t1, sl.duration()));
+                self.loaded_ticks = 0;
+            }
+        }
+        let Some((i, original_end, duration)) = self.active else {
+            return 0.0;
+        };
+        let sl = gait.slices[i];
+        let swing = sl
+            .support
+            .swing()
+            .expect("active contact phase is single support");
+        let eligible = t >= original_end - duration * (1.0 - self.min_frac);
+        self.loaded_ticks = if eligible && fz[swing] > self.load_threshold {
+            self.loaded_ticks + 1
+        } else {
+            0
+        };
+        if self.loaded_ticks >= self.confirm_ticks {
+            self.active = None;
+            return gait.retime(i, t);
+        }
+        let deadline = original_end + duration * self.extend_frac;
+        if t >= deadline - 1e-9 {
+            self.active = None;
+            return 0.0;
+        }
+        // At t == t1 index_at(t) already points at double support. Use the
+        // remembered swing and keep its interval open beyond this tick.
+        if t >= sl.t1 - 1e-9 {
+            return gait.retime(i, (t + dt).min(deadline));
+        }
+        0.0
+    }
+}
+
 impl GaitPlan {
     pub fn new(p: &GaitParams) -> Self {
         let mut slices = Vec::with_capacity(2 * p.n_steps + 2);
         let mut t = 0.0;
-        slices.push(Slice { support: Support::Double, t0: t, t1: t + p.t_start });
+        slices.push(Slice {
+            support: Support::Double,
+            t0: t,
+            t1: t + p.t_start,
+        });
         t += p.t_start;
         let mut swing = p.first_swing;
         for _ in 0..p.n_steps {
@@ -108,7 +193,11 @@ impl GaitPlan {
                 t1: t + p.t_ss,
             });
             t += p.t_ss;
-            slices.push(Slice { support: Support::Double, t0: t, t1: t + p.t_ds });
+            slices.push(Slice {
+                support: Support::Double,
+                t0: t,
+                t1: t + p.t_ds,
+            });
             t += p.t_ds;
             swing = 1 - swing;
         }
@@ -124,7 +213,11 @@ impl GaitPlan {
         // the unloaded foot finally caught 18 N and knocked it over. The
         // settle has to have its own, bounded duration.
         if p.t_end > t {
-            slices.push(Slice { support: Support::Double, t0: t, t1: p.t_end });
+            slices.push(Slice {
+                support: Support::Double,
+                t0: t,
+                t1: p.t_end,
+            });
         }
         GaitPlan { slices }
     }
@@ -157,6 +250,73 @@ impl GaitPlan {
             s.t1 -= d;
         }
         d
+    }
+
+    /// Insert a separate constant-ZMP double-support hold between steps.
+    ///
+    /// The existing inter-step double-support slice transfers pressure from
+    /// the previous stance foot to the next one. Merely making that slice
+    /// longer also slows the transfer and changes the complete DCM plan. A
+    /// second consecutive double-support slice starts where the transfer
+    /// ended and has the same next target, so `DcmPlan` makes it a constant
+    /// segment. This lets a controller wait for the measured DCM and contact
+    /// load to settle without changing the transfer profile.
+    pub fn insert_ds_settles(&mut self, duration: f64, first_after_step: usize) -> usize {
+        assert!(duration.is_finite() && duration >= 0.0);
+        if duration <= 0.0 || self.slices.len() < 3 {
+            return 0;
+        }
+        let old = std::mem::take(&mut self.slices);
+        let mut out = Vec::with_capacity(old.len() * 2);
+        let mut t = old.first().map_or(0.0, |s| s.t0);
+        let mut inserted = 0;
+        let mut steps_seen = 0;
+        for (i, sl) in old.iter().copied().enumerate() {
+            if matches!(sl.support, Support::Single { .. }) {
+                steps_seen += 1;
+            }
+            let d = sl.duration();
+            let between_steps = matches!(sl.support, Support::Double)
+                && i > 0
+                && steps_seen >= first_after_step.max(1)
+                && matches!(old[i - 1].support, Support::Single { .. })
+                && old
+                    .get(i + 1)
+                    .is_some_and(|n| matches!(n.support, Support::Single { .. }));
+            if between_steps {
+                // Split the old direct stance-to-stance transfer in half.
+                // DcmPlan interprets this three-DS run as old stance ->
+                // mid-feet, constant mid-feet hold, mid-feet -> new stance.
+                out.push(Slice {
+                    support: Support::Double,
+                    t0: t,
+                    t1: t + 0.5 * d,
+                });
+                t += 0.5 * d;
+                out.push(Slice {
+                    support: Support::Double,
+                    t0: t,
+                    t1: t + duration,
+                });
+                t += duration;
+                out.push(Slice {
+                    support: Support::Double,
+                    t0: t,
+                    t1: t + 0.5 * d,
+                });
+                t += 0.5 * d;
+                inserted += 1;
+            } else {
+                out.push(Slice {
+                    support: sl.support,
+                    t0: t,
+                    t1: t + d,
+                });
+                t += d;
+            }
+        }
+        self.slices = out;
+        inserted
     }
 
     /// The slice covering `t`, clamped to the ends.
@@ -243,6 +403,7 @@ impl Footsteps {
 /// For a slice in single support the swing foot's entry is where it is GOING,
 /// i.e. its target at the end of the slice. For a double-support slice both
 /// entries are where the feet already are.
+#[derive(Clone)]
 pub struct FootstepPlan {
     pub at: Vec<Footsteps>,
     /// Where each foot started, kept so a stopped plan can be read back.
@@ -274,7 +435,10 @@ impl FootstepPlan {
                 Support::Double => at.push(cur),
             }
         }
-        FootstepPlan { at, initial: *initial }
+        FootstepPlan {
+            at,
+            initial: *initial,
+        }
     }
 
     /// A walk from a velocity command: forward/backward, sideways, and turning.
@@ -302,6 +466,25 @@ impl FootstepPlan {
         t_step: f64,
         ramp: usize,
     ) -> Self {
+        Self::velocity_with_change(plan, initial, vx, vy, wz, t_step, ramp, None)
+    }
+
+    /// [`Self::velocity`] with a commanded SPEED CHANGE: from step `at` on,
+    /// the forward speed ramps linearly from `vx` to `vx2` over `ramp2`
+    /// steps (`change = Some((at, vx2, ramp2))`). A benchmark for the
+    /// controller's response to a command step, which the fixed-speed plan
+    /// never exercises. `None` = [`Self::velocity`], bit for bit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn velocity_with_change(
+        plan: &GaitPlan,
+        initial: &Footsteps,
+        vx: f64,
+        vy: f64,
+        wz: f64,
+        t_step: f64,
+        ramp: usize,
+        change: Option<(usize, f64, usize)>,
+    ) -> Self {
         // The nominal offsets, read off the starting stance so a command of
         // zero reproduces exactly where the robot already is.
         let mid = initial.mid_xy();
@@ -324,9 +507,20 @@ impl FootstepPlan {
             .filter(|s| matches!(s.support, Support::Single { .. }))
             .count();
         for k in 0..=n_steps {
-            let f = if ramp == 0 { 1.0 } else { ((k + 1) as f64 / ramp as f64).min(1.0) };
+            let f = if ramp == 0 {
+                1.0
+            } else {
+                ((k + 1) as f64 / ramp as f64).min(1.0)
+            };
             let (c, s) = (th.cos(), th.sin());
-            p += na::Vector2::new(c * vx - s * vy, s * vx + c * vy) * (t_step * f);
+            let vx_k = match change {
+                Some((at, vx2, ramp2)) if k >= at => {
+                    let g = if ramp2 == 0 { 1.0 } else { ((k - at + 1) as f64 / ramp2 as f64).min(1.0) };
+                    vx + (vx2 - vx) * g
+                }
+                _ => vx,
+            };
+            p += na::Vector2::new(c * vx_k - s * vy, s * vx_k + c * vy) * (t_step * f);
             th += wz * t_step * f;
             pose.push((p, th));
         }
@@ -364,7 +558,10 @@ impl FootstepPlan {
                 Support::Double => at.push(cur),
             }
         }
-        FootstepPlan { at, initial: *initial }
+        FootstepPlan {
+            at,
+            initial: *initial,
+        }
     }
 
     /// Alternating-lead walk: the feet stay one stride apart and take turns
@@ -393,12 +590,7 @@ impl FootstepPlan {
     /// standing still cannot take a full step immediately -- the DCM has to
     /// already be moving at the walking rate the instant single support
     /// begins.
-    pub fn alternating(
-        plan: &GaitPlan,
-        initial: &Footsteps,
-        stride: f64,
-        ramp: usize,
-    ) -> Self {
+    pub fn alternating(plan: &GaitPlan, initial: &Footsteps, stride: f64, ramp: usize) -> Self {
         let n_steps = plan
             .slices
             .iter()
@@ -427,7 +619,10 @@ impl FootstepPlan {
                 Support::Double => at.push(cur),
             }
         }
-        FootstepPlan { at, initial: *initial }
+        FootstepPlan {
+            at,
+            initial: *initial,
+        }
     }
 
     /// Constant stride, reached over `ramp` steps from standing.
@@ -438,12 +633,7 @@ impl FootstepPlan {
     /// standing still to take a full-length step immediately, and the DCM has
     /// to be moving at the walking rate the moment single support begins.
     /// Ramping asks for it over several steps instead.
-    pub fn ramped_stride(
-        plan: &GaitPlan,
-        initial: &Footsteps,
-        stride: f64,
-        ramp: usize,
-    ) -> Self {
+    pub fn ramped_stride(plan: &GaitPlan, initial: &Footsteps, stride: f64, ramp: usize) -> Self {
         let mut cur = *initial;
         let mut at = Vec::with_capacity(plan.slices.len());
         let mut step = 0usize;
@@ -464,7 +654,10 @@ impl FootstepPlan {
                 Support::Double => at.push(cur),
             }
         }
-        FootstepPlan { at, initial: *initial }
+        FootstepPlan {
+            at,
+            initial: *initial,
+        }
     }
 
     /// Move one foot's planted position by `d`, from slice `from` onward.
@@ -474,6 +667,23 @@ impl FootstepPlan {
     /// nominal, every future segment is relative to where it actually is.
     pub fn shift_from(&mut self, from: usize, side: Side, d: na::Vector2<f64>) {
         for f in self.at.iter_mut().skip(from) {
+            f.sole[side].x += d.x;
+            f.sole[side].y += d.y;
+        }
+    }
+
+    /// Shift only the landing of `side` that slice `from` belongs to: every
+    /// slice from `from` on while that foot stays planted at the same place,
+    /// stopping at the first slice where the plan moves it again. Later
+    /// landings keep their planned positions (a second tread is not missed).
+    /// Announced to Codex in doc/from_claude/20260923_to_codex_shift_next.md.
+    pub fn shift_next(&mut self, from: usize, side: Side, d: na::Vector2<f64>) {
+        let Some(first) = self.at.get(from) else { return };
+        let anchor = first.sole[side];
+        for f in self.at.iter_mut().skip(from) {
+            if (f.sole[side] - anchor).norm() > 1e-9 {
+                break;
+            }
             f.sole[side].x += d.x;
             f.sole[side].y += d.y;
         }
@@ -520,6 +730,10 @@ pub struct ContactCorrection {
     on_count: [u32; 2],
     off_count: [u32; 2],
     state: [bool; 2],
+    previous_nominal: Option<Support>,
+    /// Re-admit a loaded scheduled stance foot immediately on every tick.
+    /// Opt-in replay of the 2026-09-12 contact rule for regression diagnosis.
+    pub scheduled_reentry: bool,
 }
 
 impl ContactCorrection {
@@ -532,21 +746,46 @@ impl ContactCorrection {
             on_count: [0; 2],
             off_count: [0; 2],
             state: [true; 2],
+            previous_nominal: None,
+            scheduled_reentry: false,
         }
     }
 
     /// Feed this tick's measured vertical load per foot and the scheduled
     /// support; returns the support set to actually solve against, plus the
     /// sides whose contact was newly established (they need a fresh anchor).
+    /// Admit `side` on the SCHEDULE's say-so, bypassing the load hysteresis.
+    /// Returns true when the contact is newly established (needs a fresh
+    /// anchor). Measured 2026-09-24 on G1 stairs: a foot confirmed on a
+    /// tread rests there carrying 2-25 N, under the 10% BW `on_n`, so the
+    /// QP never models it, never plans a force through it, and it never
+    /// loads -- the very loop this call breaks. The caller decides WHEN
+    /// (a confirmed landing entering its scheduled stance).
+    pub fn admit(&mut self, side: Side) -> bool {
+        let was = self.state[side];
+        self.state[side] = true;
+        self.on_count[side] = self.ticks;
+        self.off_count[side] = 0;
+        !was
+    }
+
     pub fn update(&mut self, nominal: Support, fz: [f64; 2]) -> (Vec<Side>, Vec<Side>) {
         let mut stance = Vec::with_capacity(2);
         let mut fresh = Vec::new();
         for side in 0..2 {
             let sched = nominal.is_stance(side);
+            let entering_stance = sched
+                && self
+                    .previous_nominal
+                    .is_none_or(|previous| !previous.is_stance(side));
             let loaded = fz[side] > self.on_n;
             let unloaded = fz[side] < self.off_n;
             self.on_count[side] = if loaded { self.on_count[side] + 1 } else { 0 };
-            self.off_count[side] = if unloaded { self.off_count[side] + 1 } else { 0 };
+            self.off_count[side] = if unloaded {
+                self.off_count[side] + 1
+            } else {
+                0
+            };
 
             // A commanded LIFT is not negotiable. The correction exists to
             // notice contacts the plan did not predict, not to veto the plan:
@@ -578,7 +817,7 @@ impl ContactCorrection {
             // The schedule still gets a vote at one moment: entering a phase
             // that calls a foot stance, with the foot already loaded, admits
             // it immediately rather than after the hysteresis.
-            let now = now || (sched && loaded);
+            let now = now || ((entering_stance || self.scheduled_reentry) && sched && loaded);
             self.state[side] = now;
             if now {
                 stance.push(side);
@@ -591,6 +830,7 @@ impl ContactCorrection {
         // problem has no way to hold the robot up at all, and the fallback
         // would be commanding a posture PD in free flight. Keep the foot the
         // schedule believes in.
+        self.previous_nominal = Some(nominal);
         if stance.is_empty() {
             let keep = match nominal {
                 Support::Single { stance, .. } => stance,
@@ -651,13 +891,186 @@ pub fn swing_velocity(
     v
 }
 
+/// Stair clearance trajectory, with analytic velocity and acceleration.
+/// Quintic phases start/end at rest with zero acceleration, including at the
+/// final hold. `from` and `to` are foot-link origins in world coordinates.
+pub fn stair_swing(
+    from: na::Vector3<f64>,
+    to: na::Vector3<f64>,
+    clearance: f64,
+    frac: f64,
+    duration: f64,
+) -> (na::Vector3<f64>, na::Vector3<f64>, na::Vector3<f64>) {
+    stair_swing_windows(
+        from,
+        to,
+        clearance,
+        frac,
+        duration,
+        [0.30, 0.25, 0.70, 0.60],
+    )
+}
+
+/// [`stair_swing_windows`] with the landing overdrive (how far below the
+/// surface the drop is COMMANDED to end) exposed. 4 mm was tuned when the
+/// swing tracked its target 25-45 mm loose; with the velocity-clamp fix the
+/// foot goes where it is told, and a 4 mm sink leaves the last of the drop
+/// unfinished at the slice end -- measured, the mount foot was still 20 mm
+/// up when double support started, bounced, and the run died two slices
+/// later.
+pub fn stair_swing_sink(
+    from: na::Vector3<f64>,
+    to: na::Vector3<f64>,
+    clearance: f64,
+    frac: f64,
+    duration: f64,
+    w: [f64; 4],
+    sink: f64,
+) -> (na::Vector3<f64>, na::Vector3<f64>, na::Vector3<f64>) {
+    stair_swing_impl(from, to, clearance, frac, duration, w, sink)
+}
+
+/// [`stair_swing`] with the phase windows exposed: `[rise_end,
+/// travel_start, travel_end, drop_start]` as fractions of the swing (the
+/// drop always ends at 0.95). The defaults reproduce `stair_swing`.
+/// Lengthening the rise is the lever that matters: the quintic's peak
+/// acceleration scales with 1/span^2, and the measured failure mode of a
+/// short rise is not the rise itself but its REACTION -- the hip flexion
+/// that lifts the foot at 15 m/s^2 sweeps it 45 mm backward first, which
+/// the weaker xy feedback then has to recover mid-swing.
+pub fn stair_swing_windows(
+    from: na::Vector3<f64>,
+    to: na::Vector3<f64>,
+    clearance: f64,
+    frac: f64,
+    duration: f64,
+    w: [f64; 4],
+) -> (na::Vector3<f64>, na::Vector3<f64>, na::Vector3<f64>) {
+    stair_swing_impl(from, to, clearance, frac, duration, w, 0.004)
+}
+
+fn stair_swing_impl(
+    from: na::Vector3<f64>,
+    to: na::Vector3<f64>,
+    clearance: f64,
+    frac: f64,
+    duration: f64,
+    w: [f64; 4],
+    sink: f64,
+) -> (na::Vector3<f64>, na::Vector3<f64>, na::Vector3<f64>) {
+    assert!(duration > 0.0);
+    let phase = |start: f64, span: f64| {
+        let u = ((frac - start) / span).clamp(0.0, 1.0);
+        let d = span * duration;
+        (
+            u.powi(3) * (10.0 + u * (-15.0 + 6.0 * u)),
+            30.0 * u.powi(2) * (1.0 - u).powi(2) / d,
+            60.0 * u * (1.0 - u) * (1.0 - 2.0 * u) / (d * d),
+        )
+    };
+    let (h, hd, hdd) = phase(w[1], (w[2] - w[1]).max(1e-6));
+    let (up, upd, updd) = phase(0.0, w[0].max(1e-6));
+    let (down, downd, downdd) = phase(w[3], (0.95 - w[3]).max(1e-6));
+    let top = from.z.max(to.z) + clearance;
+    let rise = top - from.z;
+    let drop = to.z - sink - top;
+    let delta = to - from;
+    (
+        na::Vector3::new(
+            from.x + delta.x * h,
+            from.y + delta.y * h,
+            from.z + rise * up + drop * down,
+        ),
+        na::Vector3::new(delta.x * hd, delta.y * hd, rise * upd + drop * downd),
+        na::Vector3::new(delta.x * hdd, delta.y * hdd, rise * updd + drop * downdd),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn stair_swing_derivatives_and_endpoints_for_both_directions() {
+        let from = na::Vector3::new(0.1, -0.05, 0.20);
+        for dz in [-0.104, 0.104] {
+            let to = from + na::Vector3::new(0.22, 0.01, dz);
+            let (p, v, a) = stair_swing(from, to, 0.02, 0.0, 0.45);
+            assert!((p - from).norm() < 1e-12);
+            assert!(v.norm() < 1e-12 && a.norm() < 1e-12);
+            let (p, v, a) = stair_swing(from, to, 0.02, 1.0, 0.45);
+            assert!((p - (to - na::Vector3::new(0.0, 0.0, 0.004))).norm() < 1e-12);
+            assert!(v.norm() < 1e-12 && a.norm() < 1e-12);
+            for f in [0.1, 0.27, 0.4, 0.65, 0.8] {
+                let eps = 1e-6;
+                let (_, v, a) = stair_swing(from, to, 0.02, f, 0.45);
+                let (pm, vm, _) = stair_swing(from, to, 0.02, f - eps, 0.45);
+                let (pp, vp, _) = stair_swing(from, to, 0.02, f + eps, 0.45);
+                assert!(((pp - pm) / (2.0 * eps * 0.45) - v).norm() < 1e-7);
+                assert!(((vp - vm) / (2.0 * eps * 0.45) - a).norm() < 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn late_contact_waits_across_boundary_but_has_fixed_deadline() {
+        let mut gait = GaitPlan::new(&GaitParams::default());
+        let mut phase = ContactPhase::new(0.75, 20.0, 3, 0.5);
+        let end = gait.slices[1].t1;
+        let limit = end + gait.slices[1].duration() * 0.5;
+        phase.update(&mut gait, 2.0, 0.005, [0.0; 2]);
+        assert!(phase.update(&mut gait, end, 0.005, [0.0; 2]) < 0.0);
+        assert!(matches!(gait.support_at(end), Support::Single { .. }));
+        for k in 1..=46 {
+            phase.update(&mut gait, end + k as f64 * 0.005, 0.005, [0.0; 2]);
+        }
+        assert!((gait.slices[1].t1 - limit).abs() < 1e-9);
+        assert_eq!(gait.support_at(limit + 1e-9), Support::Double);
+        assert!((gait.slices[2].duration() - 0.20).abs() < 1e-9);
+    }
+
+    #[test]
+    fn contact_confirmation_rejects_scuffs_and_finishes_late_swing() {
+        let mut gait = GaitPlan::new(&GaitParams::default());
+        let mut phase = ContactPhase::new(0.75, 20.0, 3, 0.5);
+        phase.update(&mut gait, 2.0, 0.005, [0.0, 40.0]);
+        for t in [2.10, 2.11, 2.12] {
+            assert_eq!(phase.update(&mut gait, t, 0.005, [0.0, 40.0]), 0.0);
+        }
+        let end = gait.slices[1].t1;
+        for (k, load) in [40.0, 0.0, 40.0, 40.0, 40.0].into_iter().enumerate() {
+            let t = end + k as f64 * 0.005;
+            phase.update(&mut gait, t, 0.005, [0.0, load]);
+            if k < 4 {
+                assert!(matches!(gait.support_at(t), Support::Single { .. }));
+            }
+        }
+        assert_eq!(gait.support_at(end + 0.020), Support::Double);
+    }
+
+    #[test]
+    fn early_contact_shifts_future_slices_without_changing_their_duration() {
+        let mut gait = GaitPlan::new(&GaitParams::default());
+        let mut phase = ContactPhase::new(0.75, 20.0, 3, 0.5);
+        phase.update(&mut gait, 2.0, 0.005, [0.0; 2]);
+        for t in [2.35, 2.355, 2.36] {
+            phase.update(&mut gait, t, 0.005, [0.0, 40.0]);
+        }
+        assert!((gait.slices[1].t1 - 2.36).abs() < 1e-9);
+        assert_eq!(gait.support_at(2.36), Support::Double);
+        assert!((gait.slices[3].duration() - 0.45).abs() < 1e-9);
+    }
+
+    #[test]
     fn plan_alternates_and_covers_the_timeline() {
-        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.4, n_steps: 3, first_swing: RIGHT, t_end: 10.0 };
+        let p = GaitParams {
+            t_start: 1.0,
+            t_ds: 0.2,
+            t_ss: 0.4,
+            n_steps: 3,
+            first_swing: RIGHT,
+            t_end: 10.0,
+        };
         let plan = GaitPlan::new(&p);
         // start DS, then (SS, DS) x 3, then the SETTLE slice. The settle is
         // separate on purpose -- stretching the last inter-step double support
@@ -668,9 +1081,27 @@ mod tests {
         // ...and the inter-step double support keeps its own short duration.
         assert!((plan.slices[6].duration() - 0.2).abs() < 1e-12);
         assert_eq!(plan.slices[0].support, Support::Double);
-        assert_eq!(plan.slices[1].support, Support::Single { stance: LEFT, swing: RIGHT });
-        assert_eq!(plan.slices[3].support, Support::Single { stance: RIGHT, swing: LEFT });
-        assert_eq!(plan.slices[5].support, Support::Single { stance: LEFT, swing: RIGHT });
+        assert_eq!(
+            plan.slices[1].support,
+            Support::Single {
+                stance: LEFT,
+                swing: RIGHT
+            }
+        );
+        assert_eq!(
+            plan.slices[3].support,
+            Support::Single {
+                stance: RIGHT,
+                swing: LEFT
+            }
+        );
+        assert_eq!(
+            plan.slices[5].support,
+            Support::Single {
+                stance: LEFT,
+                swing: RIGHT
+            }
+        );
         // contiguous, and the tail runs to t_end
         for w in plan.slices.windows(2) {
             assert!((w[0].t1 - w[1].t0).abs() < 1e-12);
@@ -681,7 +1112,12 @@ mod tests {
 
     #[test]
     fn no_steps_is_double_support_throughout() {
-        let p = GaitParams { n_steps: 0, t_start: 1.0, t_end: 5.0, ..Default::default() };
+        let p = GaitParams {
+            n_steps: 0,
+            t_start: 1.0,
+            t_end: 5.0,
+            ..Default::default()
+        };
         let plan = GaitPlan::new(&p);
         // The initial weight shift and the settle, both double support.
         assert_eq!(plan.slices.len(), 2);
@@ -691,12 +1127,74 @@ mod tests {
     }
 
     #[test]
-    fn alternating_keeps_the_feet_one_stride_apart_and_swaps_the_lead() {
-        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.35, n_steps: 8,
-                             first_swing: RIGHT, t_end: 20.0 };
+    fn settle_slices_are_separate_and_only_between_steps() {
+        let p = GaitParams {
+            n_steps: 3,
+            t_end: 8.0,
+            ..GaitParams::default()
+        };
+        let mut plan = GaitPlan::new(&p);
+        let old_duration: f64 = plan.slices.iter().map(Slice::duration).sum();
+        assert_eq!(plan.insert_ds_settles(0.15, 1), 2);
+        let new_duration: f64 = plan.slices.iter().map(Slice::duration).sum();
+        assert!((new_duration - old_duration - 0.30).abs() < 1e-12);
+        let consecutive = plan
+            .slices
+            .windows(2)
+            .filter(|w| {
+                matches!(w[0].support, Support::Double) && matches!(w[1].support, Support::Double)
+            })
+            .count();
+        // Each three-DS inter-step run has two consecutive pairs, plus the
+        // existing final settle pair.
+        assert_eq!(consecutive, 5);
+    }
+
+    #[test]
+    fn settle_insertion_can_start_after_approach_steps() {
+        let p = GaitParams {
+            n_steps: 4,
+            t_end: 8.0,
+            ..GaitParams::default()
+        };
+        let mut plan = GaitPlan::new(&p);
+        assert_eq!(plan.insert_ds_settles(0.15, 3), 1);
+    }
+
+    #[test]
+    fn a_speed_change_leaves_the_plan_identical_before_it_and_moves_further_after() {
+        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.35, n_steps: 10, first_swing: RIGHT, t_end: 20.0 };
         let plan = GaitPlan::new(&p);
         let init = Footsteps {
             sole: [na::Vector3::new(0.0, 0.05, 0.0), na::Vector3::new(0.0, -0.05, 0.0)],
+            yaw: [0.0, 0.0],
+        };
+        let t_step = p.t_ss + p.t_ds;
+        let a = FootstepPlan::velocity(&plan, &init, 0.2, 0.0, 0.0, t_step, 0);
+        let b = FootstepPlan::velocity_with_change(&plan, &init, 0.2, 0.0, 0.0, t_step, 0, Some((4, 0.4, 0)));
+        let singles: Vec<usize> = plan.slices.iter().enumerate()
+            .filter(|(_, s)| matches!(s.support, Support::Single { .. })).map(|(i, _)| i).collect();
+        let (i0, il) = (singles[0], *singles.last().unwrap());
+        assert!((a.at[i0].mid_xy().x - b.at[i0].mid_xy().x).abs() < 1e-12);
+        assert!(b.at[il].mid_xy().x > a.at[il].mid_xy().x + 0.1, "{} vs {}", b.at[il].mid_xy().x, a.at[il].mid_xy().x);
+    }
+
+    #[test]
+    fn alternating_keeps_the_feet_one_stride_apart_and_swaps_the_lead() {
+        let p = GaitParams {
+            t_start: 1.0,
+            t_ds: 0.2,
+            t_ss: 0.35,
+            n_steps: 8,
+            first_swing: RIGHT,
+            t_end: 20.0,
+        };
+        let plan = GaitPlan::new(&p);
+        let init = Footsteps {
+            sole: [
+                na::Vector3::new(0.0, 0.05, 0.0),
+                na::Vector3::new(0.0, -0.05, 0.0),
+            ],
             yaw: [0.0, 0.0],
         };
         let stride = 0.05;
@@ -725,7 +1223,10 @@ mod tests {
             );
         }
         // ...and the plan closes with the feet level.
-        assert!(gaps.last().unwrap().abs() < 1e-12, "the last step does not close the feet");
+        assert!(
+            gaps.last().unwrap().abs() < 1e-12,
+            "the last step does not close the feet"
+        );
 
         // The naive version is what this replaces: it alternates one stride
         // apart with dead level, which is a step-and-close.
@@ -741,14 +1242,58 @@ mod tests {
     }
 
     #[test]
+    fn contact_correction_requires_sustained_recontact_within_one_phase() {
+        let mut correction = ContactCorrection::new(100.0, 3);
+        for _ in 0..3 {
+            correction.update(Support::Double, [0.0, 20.0]);
+        }
+        assert_eq!(correction.state(), [false, true]);
+
+        for _ in 0..2 {
+            let (stance, fresh) = correction.update(Support::Double, [20.0, 20.0]);
+            assert!(!stance.contains(&LEFT));
+            assert!(fresh.is_empty());
+        }
+        let (stance, fresh) = correction.update(Support::Double, [20.0, 20.0]);
+        assert!(stance.contains(&LEFT));
+        assert_eq!(fresh, vec![LEFT]);
+    }
+
+    #[test]
+    fn contact_correction_admits_loaded_foot_on_phase_entry() {
+        let mut correction = ContactCorrection::new(100.0, 3);
+        for _ in 0..3 {
+            correction.update(
+                Support::Single {
+                    stance: RIGHT,
+                    swing: LEFT,
+                },
+                [0.0, 20.0],
+            );
+        }
+        let (stance, fresh) = correction.update(Support::Double, [20.0, 20.0]);
+        assert!(stance.contains(&LEFT));
+        assert_eq!(fresh, vec![LEFT]);
+    }
+
+    #[test]
     fn velocity_command_reproduces_the_x_only_plan() {
         // The generalisation has to be a strict superset, or every result
         // measured with `alternating` stops applying.
-        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.35, n_steps: 10,
-                             first_swing: RIGHT, t_end: 30.0 };
+        let p = GaitParams {
+            t_start: 1.0,
+            t_ds: 0.2,
+            t_ss: 0.35,
+            n_steps: 10,
+            first_swing: RIGHT,
+            t_end: 30.0,
+        };
         let plan = GaitPlan::new(&p);
         let init = Footsteps {
-            sole: [na::Vector3::new(0.0, 0.05, 0.0), na::Vector3::new(0.0, -0.05, 0.0)],
+            sole: [
+                na::Vector3::new(0.0, 0.05, 0.0),
+                na::Vector3::new(0.0, -0.05, 0.0),
+            ],
             yaw: [0.0, 0.0],
         };
         let t_step = p.t_ss + p.t_ds;
@@ -768,15 +1313,29 @@ mod tests {
 
     #[test]
     fn sideways_and_turning_keep_the_feet_on_their_own_sides() {
-        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.35, n_steps: 12,
-                             first_swing: RIGHT, t_end: 30.0 };
+        let p = GaitParams {
+            t_start: 1.0,
+            t_ds: 0.2,
+            t_ss: 0.35,
+            n_steps: 12,
+            first_swing: RIGHT,
+            t_end: 30.0,
+        };
         let plan = GaitPlan::new(&p);
         let init = Footsteps {
-            sole: [na::Vector3::new(0.0, 0.05, 0.0), na::Vector3::new(0.0, -0.05, 0.0)],
+            sole: [
+                na::Vector3::new(0.0, 0.05, 0.0),
+                na::Vector3::new(0.0, -0.05, 0.0),
+            ],
             yaw: [0.0, 0.0],
         };
         let t_step = p.t_ss + p.t_ds;
-        for (vx, vy, wz) in [(0.0, 0.05, 0.0), (0.0, -0.05, 0.0), (0.0, 0.0, 0.3), (0.05, 0.0, -0.3)] {
+        for (vx, vy, wz) in [
+            (0.0, 0.05, 0.0),
+            (0.0, -0.05, 0.0),
+            (0.0, 0.0, 0.3),
+            (0.05, 0.0, -0.3),
+        ] {
             let fp = FootstepPlan::velocity(&plan, &init, vx, vy, wz, t_step, 0);
             for i in 0..plan.slices.len() {
                 let f = fp.at_slice(i);
@@ -795,11 +1354,20 @@ mod tests {
 
     #[test]
     fn turning_rotates_the_footstep_yaw() {
-        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.35, n_steps: 10,
-                             first_swing: RIGHT, t_end: 30.0 };
+        let p = GaitParams {
+            t_start: 1.0,
+            t_ds: 0.2,
+            t_ss: 0.35,
+            n_steps: 10,
+            first_swing: RIGHT,
+            t_end: 30.0,
+        };
         let plan = GaitPlan::new(&p);
         let init = Footsteps {
-            sole: [na::Vector3::new(0.0, 0.05, 0.0), na::Vector3::new(0.0, -0.05, 0.0)],
+            sole: [
+                na::Vector3::new(0.0, 0.05, 0.0),
+                na::Vector3::new(0.0, -0.05, 0.0),
+            ],
             yaw: [0.0, 0.0],
         };
         let t_step = 0.55;
@@ -809,7 +1377,10 @@ mod tests {
         let turned = 0.5 * (last.yaw[LEFT] + last.yaw[RIGHT]);
         // Ten steps at 0.4 rad/s over 0.55 s each, the feet lag the body by
         // about half a step.
-        assert!(turned > 0.5 * 10.0 * wz * t_step, "only turned {turned:.3} rad");
+        assert!(
+            turned > 0.5 * 10.0 * wz * t_step,
+            "only turned {turned:.3} rad"
+        );
         assert!(turned <= 11.0 * wz * t_step + 1e-9);
     }
 
@@ -819,8 +1390,14 @@ mod tests {
         // made the ZMP ramp to mid-stance across the entire tail, so the robot
         // finished the walk standing on one foot for eleven seconds and then
         // fell over. The settle needs its own slice.
-        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.35, n_steps: 4,
-                             first_swing: RIGHT, t_end: 60.0 };
+        let p = GaitParams {
+            t_start: 1.0,
+            t_ds: 0.2,
+            t_ss: 0.35,
+            n_steps: 4,
+            first_swing: RIGHT,
+            t_end: 60.0,
+        };
         let plan = GaitPlan::new(&p);
         let last_step_end = plan
             .slices
@@ -849,5 +1426,31 @@ mod tests {
         // Touchdown vz is EXACTLY zero -- this is the property that matters.
         assert!(swing_velocity(a, b, 0.04, 1.0, 0.4).norm() < 1e-12);
         assert!(swing_velocity(a, b, 0.04, 0.0, 0.4).norm() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod shift_next_tests {
+    use super::*;
+    use nalgebra as na;
+
+    #[test]
+    fn shift_next_moves_one_landing_only() {
+        // Foot 0 planted at x=0 for slices 0..3, lands at x=1 for 3..6, then 2.
+        let mk = |x: f64| Footsteps {
+            sole: [na::Vector3::new(x, 0.1, 0.0), na::Vector3::new(0.5, -0.1, 0.0)],
+            yaw: [0.0; 2],
+        };
+        let mut fp = FootstepPlan {
+            initial: mk(0.0),
+            at: vec![mk(0.0), mk(0.0), mk(0.0), mk(1.0), mk(1.0), mk(1.0), mk(2.0)],
+        };
+        fp.shift_next(3, 0, na::Vector2::new(0.02, -0.01));
+        let xs: Vec<f64> = fp.at.iter().map(|f| f.sole[0].x).collect();
+        assert_eq!(xs, vec![0.0, 0.0, 0.0, 1.02, 1.02, 1.02, 2.0]);
+        assert!((fp.at[4].sole[0].y - 0.09).abs() < 1e-12);
+        assert!((fp.at[6].sole[0].y - 0.1).abs() < 1e-12);
+        // Foot 1 untouched.
+        assert!(fp.at.iter().all(|f| (f.sole[1].x - 0.5).abs() < 1e-12));
     }
 }

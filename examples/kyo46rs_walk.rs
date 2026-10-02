@@ -1142,8 +1142,14 @@ fn main() {
     // Steps over which the stride ramps in from standing.
     let stride_ramp = env_f64("STRIDE_RAMP", 6.0) as usize;
     // ALTERNATE=0 restores the step-and-close plan, for A/B.
+    // Speed-change benchmark: from step VX2_AT the forward speed ramps to
+    // VX2 over VX2_RAMP steps (gait::FootstepPlan::velocity_with_change).
+    // Unset = the fixed-speed plan, bit-identical.
+    let vx2_change = std::env::var("VX2").ok().and_then(|v| v.parse::<f64>().ok()).map(|vx2| {
+        (env_f64("VX2_AT", 8.0).max(0.0) as usize, vx2, env_f64("VX2_RAMP", 3.0).max(0.0) as usize)
+    });
     let mut footsteps = if flag("ALTERNATE", true) {
-        FootstepPlan::velocity(&gait, &steps, vx, vy, wz, t_step, stride_ramp)
+        FootstepPlan::velocity_with_change(&gait, &steps, vx, vy, wz, t_step, stride_ramp, vx2_change)
     } else {
         FootstepPlan::ramped_stride(&gait, &steps, vx * t_step, stride_ramp)
     };

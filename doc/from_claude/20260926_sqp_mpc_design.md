@@ -1243,3 +1243,27 @@ y=−0.026 に着いて 13.85 s に転倒（0.25／0.35 とも同じ）。**支�
 支持多角形の幅**で決まっており、着地位置・着地時間・荷重の規則の範囲では動かない。次に効き得るのはステップの枠外
 （足首ロールと足裏幅の設計、腰・腕の角運動量戦略、跳躍）か、歩容定数そのもの（遊脚時間 0.8 s を短く、歩幅・歩隔）の再設計で、
 いずれも「規則上の退行なし」で通すには段・平地の全バッテリを伴う別の計画が要る。チャンピオンは v5.2 のまま。
+
+## 25. 次の計画（10-02 18:30、ユーザ承認「それで進めて」）
+1. 歩容定数の CEM（v5.2 上、18 軸: T_SS／T_DS／STRIDE／STRIDE_RAMP／LIFT_H／HIP_ROLL_SEED／COM_LAND_EXTEND／COM_LAND_VXY／
+   COM_LAND_VZ／CP_T_MIN／MPC_FOOTSTEP_TRIG／K_DCM／KP_COM／KD_COM／KP_SWING／KD_SWING／COP_FRAC／KP_TRUNK）。
+   `log/claude_g1gaitcem_space.json`、`log/claude_g1gaitcem_cmd.sh`、出力 `/data/articara/log/claude_g1gaitcem_20261002`（symlink）。
+   目的関数は CEM8 と同じ（状況アンサンブル、段 4 段等重み 16 本＋押し 8 本、押しは弱点 3 機構を重く: 11@180×2、7@90×2、11@0×2、5@270、8@0）。
+   10 世代 × 20 個体 × 24 本、バイナリは v5.2 スナップショット。BEST は std＋wide＋低い段＋ホールドアウト N=48 で v5.2 と対応比較。
+2. 腰・腕の角運動量による横押し回復（本筋 4）。3. ベンチマーク拡張（降段・斜面・速度変更・遅延/雑音）。4. 実時間性と整理。
+
+### 計画 3（ベンチマーク拡張）の下調べ（18:40、CEM 実行中に並行）
+- 降段: `STAIRS` の負の段差で対応済み（台は start−0.55..start、spawn は台上）。start_x=2.0 だと spawn が台の外で即転倒するので
+  start 0.30〜0.45 を使う。v5.2: 1 段 −4 cm 生存（完走 x≈5.0）、1 段 −6 cm と 2 段 −4 cm は踏み下ろしで転倒。基準に余裕あり。
+- 斜面: 未対応（ノブなし）。地形は箱の積み重ねなので、斜面は MJCF の傾いた箱と地形トラックの拡張が要る → 後回し。
+- 速度変更: 足配置計画は `FootstepPlan::velocity` で run 開始時に固定。歩 K から vx を vx2 へランプする拡張を足す（`VX2`、`VX2_AT`、`VX2_RAMP`）。
+- センサ遅延・雑音: ノブなし。`Rig::sync` が真値を読む唯一の口なので、ここに遅延（tick）と白色雑音（関節角・関節速度・基底速度・基底角速度）を
+  既定 off で足す（`SENSE_DELAY_TICKS`、`SENSE_NOISE_Q/QD/V/W`、`SENSE_SEED`）。
+
+### 計画 3 の実装（18:45）── 既定 off でビット同一（v5.2 の押し・段の再生で確認、lib テスト 99 本）
+- 速度変更: `FootstepPlan::velocity_with_change`（歩 `VX2_AT` から `VX2` へ `VX2_RAMP` 歩でランプ）。単発: 0.18→0.35 m/s で転倒、→0 は生存。
+- センサ: `Rig::sync` に遅延（`SENSE_DELAY_TICKS`）と白色雑音（`SENSE_NOISE_Q/QD/V/W`、`SENSE_SEED`）。単発: 遅延 2 tick、雑音
+  （qd 0.05 rad/s、v 0.02 m/s、w 0.02 rad/s）とも 8 N·s 押しを生存。
+- ハーネス: `rand.py` に `MODE=flat`（CONDS を `KEY=VAL;…` の上書き列として適用）と `START_X`（降段用）を追加。
+- 基準バッテリ `log/claude_g1rand_20260925/bench_ext.sh <PREFIX> <controls>`: 降段 −2/−4/−6 cm、速度変更 4 条件、センサ 4 条件（各 N=48）。
+  v5.2 の基準（`B52`）は CEM 完了後に取る（CPU）。斜面は地形モデルの拡張が要るので今回は対象外。
