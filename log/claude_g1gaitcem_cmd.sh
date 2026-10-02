@@ -8,6 +8,6 @@ export CEM_PUSH_CONDS=11@180,11@180,7@90,7@90,11@0,11@0,5@270,8@0 CEM_PUSH_MEMBE
 # 歩容定数の CEM（計画 1）: v5.2 を中心に 18 軸。バイナリは v5.2 チャンピオンのスナップショット。同じ --out で再開可。
 python3 scripts/kyo46rs_cem_transfer.py \
   --base log/claude_g1champion_20260927v52/controls.json --binary log/claude_g1champion_20260927v52/kyo46rs_walk \
-  --out log/claude_g1gaitcem_20261002 --gens 10 --pop 20 --elite 6 --jobs 26 --ensemble 24 --aggregate mean --seed 20261002 \
+  --out log/claude_g1gaitcem_20261002 --gens 5 --pop 20 --elite 6 --jobs 26 --ensemble 24 --aggregate mean --seed 20261002 \
   --space-json log/claude_g1gaitcem_space.json --set STAIRS=1,0.020,0.211,2.00
 echo "#### GAITCEM_DONE"

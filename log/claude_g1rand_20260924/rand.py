@@ -79,8 +79,17 @@ def one(a):
         c['PUSH_SUPPORT'] = os.environ.get('PUSH_SUPPORT', 'ss')
     (d / 'controls.json').write_text(json.dumps(c, indent=1))
     e = dict(os.environ); e.update({k2: str(v) for k2, v in c.items()})
-    r = subprocess.run([str(BIN)], env=e, capture_output=True, text=True, timeout=1200)
-    lg.write_text(r.stdout + r.stderr)
+    try:
+        r = subprocess.run([str(BIN)], env=e, capture_output=True, text=True, timeout=1200)
+        lg.write_text(r.stdout + r.stderr)
+    except subprocess.TimeoutExpired as ex:
+        # A hung solve must not take the whole battery down (2026-10-02: one
+        # weighted-QP stair member ran 65 min, the executor re-raised and the
+        # summary never printed). Count it as a fall at the timeout.
+        out = (ex.stdout or b'') if isinstance(ex.stdout, bytes) else (ex.stdout or '')
+        if isinstance(out, bytes):
+            out = out.decode(errors='replace')
+        lg.write_text(out + f'\n  FELL at t=TIMEOUT (1200 s wall)\n  verdict: TIMEOUT\n')
 
 
 jobs = [(c, k) for c in CASES for k in range(K0, K0 + N)]
