@@ -2407,6 +2407,19 @@ fn main() {
     // applied through the same retime the contact_plan adjuster uses (so
     // run with CONTACT_PLAN=0 to compare). Off = shipped.
     let mpc_landing_time = flag("MPC_LANDING_TIME", false);
+    // Emergency touchdown for a push TOWARD the stance foot: when the lateral
+    // DCM error points at the stance side by more than this [m], the swing
+    // is brought down at CP_LAT_EMERGENCY_TMIN of its remaining time, once
+    // per step. Measured 2026-10-02 (design note Sec.18): 7 N.s toward the
+    // stance side fell 35/35 -- the sole's +-27 mm cannot hold a 54 mm
+    // capture-point shift and the swing foot was still 0.9 s from landing on
+    // its own side; no landing geometry and no x-driven retime changed a
+    // single run. A double support NOW is the only polygon that contains
+    // the CoM. 0 = off = shipped.
+    let cp_lat_emergency = env_f64("CP_LAT_EMERGENCY", 0.0).max(0.0);
+    let cp_lat_emergency_tmin = env_f64("CP_LAT_EMERGENCY_TMIN", 0.3).clamp(0.0, 1.0);
+    let mut lat_emg_slice: Option<usize> = None;
+    let mut n_lat_emg = 0u32;
     let mpc_landing_time_w = env_f64("MPC_LANDING_TIME_W", 1e-3).max(0.0);
     let mpc_landing_tmin_frac = env_f64("MPC_LANDING_TMIN_FRAC", 0.5).clamp(0.0, 1.0);
     let mut n_mpc_retime = 0u32;
@@ -2506,6 +2519,15 @@ fn main() {
     // squared distance outside the sole window of the surface the nominal
     // landing is over (minus MPC_FOOTSTEP_TERRAIN_MARGIN). 0 = off.
     let mpc_footstep_terrain_w = env_f64("MPC_FOOTSTEP_TERRAIN_W", 0.0).max(0.0);
+    // Capture FLOOR on the lexicographic landing (fraction of the sole
+    // half-length, 0 = off): predict the DCM at the end of the coming double
+    // support with the pressure held at the stance foot (the new foot's load
+    // is not admitted before that), and require the landing to put the sole
+    // under it -- behind it for a backward push, ahead for a forward one.
+    // The capture rows alone match the plan's DCM, which after a strong push
+    // early in swing asked for a step beside the stance foot (design note
+    // Sec.18: -106 mm where -230 was needed).
+    let mpc_footstep_capture_floor = env_f64("MPC_FOOTSTEP_CAPTURE_FLOOR", 0.0).max(0.0);
     let mpc_footstep_terrain_margin = env_f64("MPC_FOOTSTEP_TERRAIN_MARGIN", 0.01).max(0.0);
     // Largest lateral shift TOWARD the stance foot (a narrower step). The
     // contact_plan adjuster forbids it in v4.1 (CP_MAX_Y_IN=0); the MPC box
@@ -6632,6 +6654,37 @@ fn main() {
                                 m
                             },
                         })
+                        .map(|mut land| {
+                            if mpc_footstep_capture_floor > 0.0 {
+                                let i = gait.index_at(t);
+                                let sl = &gait.slices[i];
+                                let seg = &dcm_plan.segs[dcm_plan.index_at(t)];
+                                let rem = (sl.t1 - t).max(0.0);
+                                let p0 = seg.at(t);
+                                let pd = seg.slope();
+                                let v_over_w = pd / omega;
+                                let xi1 = p0 + pd * rem + v_over_w + (xi - p0 - v_over_w) * (omega * rem).exp();
+                                let p1 = p0 + pd * rem;
+                                let t_ds = gait.slices.get(i + 1).map_or(0.0, |n| n.duration());
+                                let xi2 = p1 + (xi1 - p1) * (omega * t_ds).exp();
+                                let reach = sole_half_l * mpc_footstep_capture_floor;
+                                let base = land.position[0] + land.prior[0];
+                                // Backward: the sole's front edge must reach back to xi2.
+                                let need_back = base - (xi2.x + reach);
+                                if need_back > 0.0 {
+                                    land.max[0] = land.max[0].min(-need_back);
+                                }
+                                // Forward: the sole's rear edge must reach xi2.
+                                let need_fwd = (xi2.x - reach) - base;
+                                if need_fwd > 0.0 {
+                                    land.min[0] = land.min[0].min(-need_fwd);
+                                }
+                                if std::env::var("MPC_FS_DEBUG_LANDING").is_ok() {
+                                    println!("  [fs-floor] t={t:.3} rem={rem:.3} t_ds={t_ds:.3} xi1={:.3} xi2={:.3} base={base:.3} need_back={need_back:+.3} need_fwd={need_fwd:+.3} max={:?} min={:?}", xi1.x, xi2.x, land.max, land.min);
+                                }
+                            }
+                            land
+                        })
                 } else {
                     None
                 };
@@ -6956,6 +7009,43 @@ fn main() {
                                 landing_timing.max_extension = 0.0;
                                 dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
                                 n_replan += 1;
+                            }
+                        }
+                        if cp_lat_emergency > 0.0
+                            && let Support::Single { swing, .. } = support
+                        {
+                            let i = gait.index_at(t);
+                            let (_, plus) = landing_inward(&footsteps, i, swing);
+                            let toward_stance = if plus { 1.0 } else { -1.0 };
+                            let e_y = (xi.y - dcm_plan.reference(t).xi.y) * toward_stance;
+                            let t1 = gait.slices[i].t1;
+                            let ne = t + (t1 - t).max(0.0) * cp_lat_emergency_tmin;
+                            if std::env::var("MPC_FS_DEBUG_LANDING").is_ok() && e_y > cp_lat_emergency {
+                                println!("  [lat-emergency?] t={t:.3} e_y={e_y:+.3} plus={plus} i={i} lat_emg_slice={lat_emg_slice:?} cp_retimed_slice={cp_retimed_slice:?} ne={ne:.3} t1={t1:.3}");
+                            }
+                            // An emergency may shorten a step the contact
+                            // plan already retimed; it only ever brings the
+                            // end closer.
+                            if e_y > cp_lat_emergency
+                                && lat_emg_slice != Some(i)
+                                && ne > t + dt
+                                && t1 - ne > 0.02
+                            {
+                                gait.retime(i, ne);
+                                n_lat_emg += 1;
+                                lat_emg_slice = Some(i);
+                                cp_retimed_slice = Some(i);
+                                // Unlike the planner's retime, keep the
+                                // landing extension: the foot must really
+                                // be down before the next step starts
+                                // (measured 2026-10-02 06:10: with the
+                                // extension zeroed the schedule moved on
+                                // with the swing still 35 mm up).
+                                dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
+                                n_replan += 1;
+                                if std::env::var("MPC_FS_DEBUG_LANDING").is_ok() {
+                                    println!("  [lat-emergency] t={t:.3} e_y_toward_stance={e_y:+.3} new_end={ne:.3} (was {t1:.3})");
+                                }
                             }
                         }
                         if solution.soft_fallback {
@@ -9903,6 +9993,9 @@ fn main() {
     }
     if mpc_landing_time {
         println!("  mpc landing time: {n_mpc_retime} steps shortened by the landing stage");
+    }
+    if cp_lat_emergency > 0.0 {
+        println!("  lateral emergency touchdown: {n_lat_emg} steps");
     }
     if mpc_pcmd > 0.0 {
         println!("  mpc pcmd: {n_mpc_pcmd} ticks took the MPC pressure point (fraction {mpc_pcmd})");
