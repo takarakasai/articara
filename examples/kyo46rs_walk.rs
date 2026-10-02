@@ -2128,6 +2128,13 @@ fn main() {
     // exists once a transfer has ARMED, and the transfer is exactly what fails
     // to arm here.
     let land_extend_rise = env_f64("COM_LAND_EXTEND_RISE", 0.0).max(0.0);
+    // Landing-deadline slack for a swing that steps DOWN. Default = the rise
+    // value (bit-identical). Measured 2026-10-03 on a 60 mm descent: the
+    // 1.08 s rise slack made the stepping-down foot hover on the lower
+    // surface unloaded while the body walked on (2 timeouts, 2.16 s net),
+    // and the next swing started with 22 N on the new stance -- a fall at
+    // 3/48. With 0 the same member walked out.
+    let land_extend_desc = env_f64("COM_LAND_EXTEND_DESC", land_extend_rise).max(0.0);
     landing_timing.max_extension = land_extend_base;
     landing_timing.speed_z = env_f64("COM_LAND_VZ", 0.20).max(0.01);
     landing_timing.speed_xy = env_f64("COM_LAND_VXY", 0.35).max(0.01);
@@ -3302,17 +3309,19 @@ fn main() {
             // more than 5 mm), so the slack applies to exactly the swings that
             // need it and to no others.
             let i = gait.index_at(t);
-            let rising = gait.slices[i].support.swing().is_some_and(|side| {
-                (footsteps.at_slice(i).sole[side].z
-                    - footsteps.at_slice(i.saturating_sub(1)).sole[side].z)
-                    .abs()
-                    > 0.005
+            let dz_swing = gait.slices[i].support.swing().map_or(0.0, |side| {
+                footsteps.at_slice(i).sole[side].z
+                    - footsteps.at_slice(i.saturating_sub(1)).sole[side].z
             });
+            let rising = dz_swing.abs() > 0.005;
+            let descending = dz_swing < -0.005;
             // The contact planner owns the end of a step it has retimed; the
             // landing extension must not re-open it (assigned every tick, so
             // the planner's own zeroing would be undone here otherwise).
             landing_timing.max_extension = if contact_plan_on && cp_retimed_slice == Some(i) {
                 0.0
+            } else if descending {
+                land_extend_desc
             } else if rising {
                 land_extend_rise
             } else {
