@@ -2382,6 +2382,9 @@ fn main() {
     let mpc_w_ldot = env_f64("MPC_W_LDOT", 0.0).max(0.0);
     // Step-4 body, stage 1 (design note Sec.9): the landing recaptures the DCM.
     let mpc_landing_capture_w = env_f64("MPC_LANDING_CAPTURE_W", 0.0).max(0.0);
+    // Longer horizon for the landing-capture rows only (nodes); the
+    // reference schedules are built this long. 0 = the wrench horizon.
+    let mpc_landing_capture_n = env_f64("MPC_LANDING_CAPTURE_N", 0.0).max(0.0) as usize;
     // Decide the landing lexicographically (capture first, exactly, inside
     // the box; then the wrench MPC with it fixed) instead of through the
     // penalty weight above, which then only has to be > 0 to switch the
@@ -2498,6 +2501,12 @@ fn main() {
     // (CP_TREAD_BOX showed snapping to an edge is harmful). Default = the
     // symmetric box (MPC_FOOTSTEP_MAX_X), bit-identical.
     let mpc_footstep_stair_back = env_f64("MPC_FOOTSTEP_STAIR_BACK", f64::INFINITY).max(0.0);
+    // Terrain as a COST in the lexicographic landing (`Landing::terrain_x`):
+    // on a staircase the landing's total x pays this weight times its
+    // squared distance outside the sole window of the surface the nominal
+    // landing is over (minus MPC_FOOTSTEP_TERRAIN_MARGIN). 0 = off.
+    let mpc_footstep_terrain_w = env_f64("MPC_FOOTSTEP_TERRAIN_W", 0.0).max(0.0);
+    let mpc_footstep_terrain_margin = env_f64("MPC_FOOTSTEP_TERRAIN_MARGIN", 0.01).max(0.0);
     // Largest lateral shift TOWARD the stance foot (a narrower step). The
     // contact_plan adjuster forbids it in v4.1 (CP_MAX_Y_IN=0); the MPC box
     // allowed it. Measured 2026-09-27 (D+J+T, 11 N.s backward, m32): the
@@ -6578,6 +6587,17 @@ fn main() {
                                 first_node
                             },
                             position: [contacts[swing].position.x, contacts[swing].position.y],
+                            terrain_x: (mpc_footstep_terrain_w > 0.0)
+                                .then(|| stairs.as_ref())
+                                .flatten()
+                                .and_then(|st| {
+                                    let prior = mpc_fs_applied.x;
+                                    let xn = contacts[swing].position.x + prior;
+                                    st.sole_window(xn, sole_half_l).map(|(lo, hi)| {
+                                        let m = mpc_footstep_terrain_margin.min((hi - lo) * 0.5);
+                                        (lo + m, hi - m, mpc_footstep_terrain_w)
+                                    })
+                                }),
                             weight: mpc_footstep_w,
                             max: {
                                 let i = gait.index_at(t);
@@ -6727,7 +6747,7 @@ fn main() {
                         } else {
                             na::Vector2::zeros()
                         };
-                        (0..stair_wrench_horizon)
+                        (0..stair_wrench_horizon.max(mpc_landing_capture_n))
                             .map(|k| {
                                 let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
                                 dcm_plan.reference(at).p + shift
@@ -6738,7 +6758,7 @@ fn main() {
                         || mpc_landing_capture_w > 0.0
                         || mpc_capture_lex)
                         .then(|| {
-                        (0..stair_wrench_horizon)
+                        (0..stair_wrench_horizon.max(mpc_landing_capture_n))
                             .map(|k| {
                                 let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
                                 dcm_plan.reference(at).xi
@@ -6769,14 +6789,14 @@ fn main() {
                                     zmp_lat_scale,
                                     zmp_roll,
                                 );
-                                cols[axis] = (0..stair_wrench_horizon)
+                                cols[axis] = (0..stair_wrench_horizon.max(mpc_landing_capture_n))
                                     .map(|k| {
                                         let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
                                         (moved.reference(at).xi - dcm_plan.reference(at).xi) / du
                                     })
                                     .collect();
                             }
-                            (0..stair_wrench_horizon)
+                            (0..stair_wrench_horizon.max(mpc_landing_capture_n))
                                 .map(|k| {
                                     na::Matrix2::from_columns(&[cols[0][k], cols[1][k]])
                                 })
@@ -6807,6 +6827,7 @@ fn main() {
                     dcm_weight: mpc_dcm_weight,
                     omega,
                     landing_capture_weight: mpc_landing_capture_w,
+                    landing_capture_horizon: mpc_landing_capture_n,
                     landing_lexicographic: mpc_landing_lex,
                     landing_timing: mpc_landing_time,
                     landing_time_weight: mpc_landing_time_w,
@@ -6987,6 +7008,13 @@ fn main() {
                                 (dp - mpc_fs_applied, dp)
                             };
                             mpc_fs_last = total;
+                            if std::env::var("MPC_FS_DEBUG_LANDING").is_ok() {
+                                println!(
+                                    "  [fs-decision] t={t:.3} first_node={} prior=({:+.3},{:+.3}) dp=({:+.3},{:+.3}) total=({:+.3},{:+.3}) max={:?} min={:?} xi-ref=({:+.3},{:+.3})",
+                                    land.first_node, land.prior[0], land.prior[1], dp.x, dp.y, total.x, total.y, land.max, land.min,
+                                    xi.x - dcm_plan.reference(t).xi.x, xi.y - dcm_plan.reference(t).xi.y
+                                );
+                            }
                             if d.norm() > 1e-6 {
                                 footsteps.shift_next(i, land.foot, d);
                                 mpc_fs_applied = total;
