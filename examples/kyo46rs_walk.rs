@@ -2466,6 +2466,9 @@ fn main() {
     // which makes that departure decay as exp(-k_dcm omega t) (same gain
     // as the DCM law, dcm::commanded_zmp). Off = the held CoP = shipped.
     let mpc_pcmd_fb = flag("MPC_PCMD_FB", false);
+    // Sensor-delay compensation of the DCM (see the use site). Seconds.
+    let dcm_lead_s = env_f64("DCM_LEAD_S", 0.0).max(0.0);
+    let mut prev_p_cmd: Option<na::Vector2<f64>> = None;
     // With MPC_PCMD: take the MPC's node-0 horizontal CoM ACCELERATION and
     // hand the WBC the LIPM pressure point that produces it,
     //     p = c - a_xy / omega^2,
@@ -4975,7 +4978,16 @@ fn main() {
         }
 
         // ---- P1: DCM-tracking CoM acceleration -------------------------
-        let xi = dcm_of(&com, &com_vel, omega);
+        let xi = {
+            // DCM_LEAD_S: compensate a measurement delay by propagating the
+            // measured DCM forward under the pressure point commanded last
+            // tick, xi(t+L) = p + (xi - p) e^{omega L}. 0 = off = shipped.
+            let raw = dcm_of(&com, &com_vel, omega);
+            match (dcm_lead_s > 0.0, prev_p_cmd) {
+                (true, Some(p)) => p + (raw - p) * (omega * dcm_lead_s).exp(),
+                _ => raw,
+            }
+        };
         let mut r = dcm_plan.reference_preview(t, dcm_preview_horizon);
         // During a stair transfer the MPC's contact schedule falls back to
         // "repeat the current stance" (see the Input construction), so its
@@ -5959,6 +5971,7 @@ fn main() {
         // constant-height omega is ~20% too stiff while the CoM is being
         // driven DOWN a riser. Gated so level and validated runs are bit-
         // identical (VH_DCM=0 restores the classic form).
+        prev_p_cmd = Some(p_cmd);
         let a_xy_raw = if stairs.is_some() && flag("VH_DCM", false) {
             // Height above the surface the pressure actually acts on, which
             // on a stair is the STANCE sole -- not the fixed `z_lip` omega

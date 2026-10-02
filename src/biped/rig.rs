@@ -233,6 +233,22 @@ pub struct BipedRig {
     pub sense_noise: [f64; 4],
     sense_rng: RefCell<u64>,
     sense_buf: RefCell<VecDeque<RawSense>>,
+    /// First-order low-pass on the measured VELOCITIES (joint rates, base
+    /// linear and angular velocity) after the corruption above: cut-off
+    /// `SENSE_FILTER_HZ` [Hz], sample time `SENSE_FILTER_DT` [s] (the control
+    /// period, default 5 ms). The estimator's first line of defence against
+    /// velocity noise. 0 = off = bit-identical.
+    pub sense_filter_hz: f64,
+    pub sense_filter_dt: f64,
+    /// `SENSE_DELAY_SCOPE`: "all" (default) delays every measurement;
+    /// "base" delays only the base pose and velocities (an IMU/estimator
+    /// lag) and keeps the joint encoders fresh, which is what a real stack
+    /// looks like.
+    pub sense_delay_base_only: bool,
+    /// `SENSE_DELAY_SCOPE=basevel`: delay only the base linear and angular
+    /// velocity (the IMU/fusion path); pose and joints stay fresh.
+    pub sense_delay_basevel_only: bool,
+    sense_filt: RefCell<Option<RawSense>>,
 }
 
 #[derive(Clone)]
@@ -787,6 +803,11 @@ impl BipedRig {
             ],
             sense_rng: RefCell::new((sense_env("SENSE_SEED", 1.0) as u64).max(1) ^ 0x9E3779B97F4A7C15),
             sense_buf: RefCell::new(VecDeque::new()),
+            sense_filter_hz: sense_env("SENSE_FILTER_HZ", 0.0).max(0.0),
+            sense_delay_base_only: std::env::var("SENSE_DELAY_SCOPE").map(|v| v == "base").unwrap_or(false),
+            sense_delay_basevel_only: std::env::var("SENSE_DELAY_SCOPE").map(|v| v == "basevel").unwrap_or(false),
+            sense_filter_dt: sense_env("SENSE_FILTER_DT", 0.005).max(1e-4),
+            sense_filt: RefCell::new(None),
         }
     }
 
@@ -877,7 +898,18 @@ impl BipedRig {
             while buf.len() > self.sense_delay + 1 {
                 buf.pop_front();
             }
-            raw = buf.front().cloned().unwrap_or(raw);
+            let delayed = buf.front().cloned().unwrap_or_else(|| raw.clone());
+            if self.sense_delay_basevel_only {
+                raw.v_lin_w = delayed.v_lin_w;
+                raw.v_ang_w = delayed.v_ang_w;
+            } else if self.sense_delay_base_only {
+                raw.body_pos = delayed.body_pos;
+                raw.body_quat = delayed.body_quat;
+                raw.v_lin_w = delayed.v_lin_w;
+                raw.v_ang_w = delayed.v_ang_w;
+            } else {
+                raw = delayed;
+            }
         }
         if self.sense_noise.iter().any(|s| *s > 0.0) {
             let mut rng = self.sense_rng.borrow_mut();
@@ -901,6 +933,30 @@ impl BipedRig {
                 for c in raw.v_ang_w.iter_mut() {
                     *c += nw * gauss(&mut rng);
                 }
+            }
+        }
+        if self.sense_filter_hz > 0.0 {
+            let tau = 1.0 / (2.0 * std::f64::consts::PI * self.sense_filter_hz);
+            let a = self.sense_filter_dt / (tau + self.sense_filter_dt);
+            let mut st = self.sense_filt.borrow_mut();
+            match st.as_mut() {
+                Some(f) => {
+                    for (x, y) in f.joint_qd.iter_mut().zip(raw.joint_qd.iter()) {
+                        if let (Some(xv), Some(yv)) = (x.as_mut(), y) {
+                            *xv += a * (yv - *xv);
+                        } else {
+                            *x = *y;
+                        }
+                    }
+                    for i in 0..3 {
+                        f.v_lin_w[i] += a * (raw.v_lin_w[i] - f.v_lin_w[i]);
+                        f.v_ang_w[i] += a * (raw.v_ang_w[i] - f.v_ang_w[i]);
+                    }
+                    raw.joint_qd = f.joint_qd.clone();
+                    raw.v_lin_w = f.v_lin_w;
+                    raw.v_ang_w = f.v_ang_w;
+                }
+                None => *st = Some(raw.clone()),
             }
         }
         let body_pos = raw.body_pos;
