@@ -1184,6 +1184,50 @@ fn main() {
     let vx2_change = std::env::var("VX2").ok().and_then(|v| v.parse::<f64>().ok()).map(|vx2| {
         (env_f64("VX2_AT", 8.0).max(0.0) as usize, vx2, env_f64("VX2_RAMP", 3.0).max(0.0) as usize)
     });
+    // VX2_STRIDE_MAX [m/step]: a speed the fixed step time would turn into a
+    // longer stride than this is reached by STEPPING FASTER instead -- the
+    // footfalls are planned at the capped stride and each step from VX2_AT
+    // on (its single support and the double support after it) is shortened
+    // by stride_max / (v * t_step). Measured 2026-10-03 on G1 v6.3 with the
+    // step time fixed at 1.21 s: 0.25 m/s 47/48, 0.30 m/s 12/48, 0.35 m/s
+    // 1/48 -- the stride grows to 0.36-0.42 m and the landing leg is at
+    // 99.8% of its length. VX2_TSCALE_MIN bounds the shortening. 0 = off.
+    let vx2_stride_max = env_f64("VX2_STRIDE_MAX", 0.0).max(0.0);
+    let vx2_tscale_min = env_f64("VX2_TSCALE_MIN", 0.4).clamp(0.1, 1.0);
+    let vx2_change = match vx2_change {
+        Some((at, vx2, ramp2)) if vx2_stride_max > 0.0 && vx2 * t_step > vx2_stride_max => {
+            // Per-step time scale along the ramp, then the capped plan speed.
+            let mut k = 0usize;
+            let mut i = 0usize;
+            while i < gait.slices.len() {
+                if matches!(gait.slices[i].support, Support::Single { .. }) {
+                    if k >= at {
+                        let g = if ramp2 == 0 { 1.0 } else { ((k - at + 1) as f64 / ramp2 as f64).min(1.0) };
+                        let v_k = vx + (vx2 - vx) * g;
+                        let scale = (vx2_stride_max / (v_k * t_step)).clamp(vx2_tscale_min, 1.0);
+                        // The single support and EVERY double-support slice
+                        // after it (transfer + DS_SETTLE hold).
+                        let mut j = i;
+                        while j < gait.slices.len()
+                            && (j == i || matches!(gait.slices[j].support, Support::Double))
+                        {
+                            let t0 = gait.slices[j].t0;
+                            let d = gait.slices[j].duration() * scale;
+                            gait.retime(j, t0 + d);
+                            j += 1;
+                        }
+                    }
+                    k += 1;
+                }
+                i += 1;
+            }
+            println!("speed change: stride capped at {vx2_stride_max:.3} m, steps from {at} shortened (>= x{vx2_tscale_min:.2})");
+            // The position plan advances `v * t_step` per step, so the capped
+            // stride is the speed stride_max / t_step in the plan's units.
+            Some((at, (vx2_stride_max / t_step).max(vx), ramp2))
+        }
+        other => other,
+    };
     let mut footsteps = if flag("ALTERNATE", true) {
         FootstepPlan::velocity_with_change(&gait, &steps, vx, vy, wz, t_step, stride_ramp, vx2_change)
     } else {

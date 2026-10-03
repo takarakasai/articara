@@ -29,6 +29,10 @@ MODE = os.environ.get('MODE', 'stairs')
 START_X = float(os.environ.get('START_X', '2.00'))
 # STAIR_N / STAIR_TREAD: flight length and tread depth of the stairs runs
 # (defaults reproduce the historical single 0.211 m step).
+# FLAT_START_X: where the zero-riser "stair" of MODE=flat sits. The stair
+# planner takes over the footfalls from its stand line on (fixed 0.199 m
+# strides), so a speed benchmark must put it out of reach (e.g. 30).
+FLAT_START_X = float(os.environ.get('FLAT_START_X', '2.00'))
 STAIR_N = os.environ.get('STAIR_N', '1'); STAIR_TREAD = os.environ.get('STAIR_TREAD', '0.211')
 c0 = json.load(open(os.environ['BASE']))
 for k in ('TRAJ_CSV', 'SUBSTEP_LIMIT_AUDIT_JSON'):
@@ -69,7 +73,7 @@ def one(a):
     if MODE == 'stairs':
         c['STAIRS'] = f"{STAIR_N},{case},{STAIR_TREAD},{START_X + s['dx']:.4f}"
     elif MODE == 'flat':
-        c['STAIRS'] = f"1,0.000,0.211,{2.00 + s['dx']:.4f}"
+        c['STAIRS'] = f"1,0.000,0.211,{FLAT_START_X + s['dx']:.4f}"
         for kv in case.split(';'):
             if kv:
                 kk, vv = kv.split('=', 1)
