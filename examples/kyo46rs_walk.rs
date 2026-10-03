@@ -332,7 +332,16 @@ fn main() {
     let stair_landing_len = env_f64("STAIR_LANDING_LEN", 0.60);
     let stairs: Option<Stairs> = std::env::var("STAIRS")
         .ok()
-        .map(|s| Stairs::parse(&s, stair_landing_len));
+        .map(|s| {
+            // STAIRS_DOWN=n2: an up-and-over course -- after the landing
+            // (STAIR_LANDING_LEN) a second flight of n2 steps descends with
+            // the same riser and tread. Ascending STAIRS only. 0 = off.
+            let mut st = Stairs::parse(&s, stair_landing_len);
+            if st.riser > 0.0 {
+                st.down_n = (env_f64("STAIRS_DOWN", 0.0).max(0.0) as usize).min(st.n);
+            }
+            st
+        });
     if let Some(st) = &stairs {
         let half_w = env_f64("STAIR_HALF_W", 0.30);
         let mut wb = String::new();
@@ -392,6 +401,21 @@ fn main() {
                 x1 + st.landing_len,
                 st.n as f64 * st.riser,
             );
+            // The descending flight of an up-and-over course, and the lower
+            // landing it ends on when it does not return to the ground.
+            let le = x1 + st.landing_len;
+            for k in 1..=st.down_n {
+                add_box(
+                    format!("stair_down_{k}"),
+                    le + (k - 1) as f64 * st.tread,
+                    le + k as f64 * st.tread,
+                    (st.n - k) as f64 * st.riser,
+                );
+            }
+            if st.down_n > 0 && st.down_n < st.n {
+                let x2 = le + st.down_n as f64 * st.tread;
+                add_box("stair_lower_landing".into(), x2, x2 + 4.0, (st.n - st.down_n) as f64 * st.riser);
+            }
         }
         o.extra_worldbody = Some(match o.extra_worldbody.take() {
             Some(s) => s + wb.as_str(),
@@ -1208,6 +1232,21 @@ fn main() {
         // tread is a 110 mm island and centre+45 is the nosing. Biasing the
         // TARGET rearward spends the sole's rear margin on the overshoot.
         let mut td_bias = env_f64("STAIR_TD_BIAS", 0.0);
+        // Descent-only rearward bias. Measured 2026-10-03 on G1 (v6.2, two
+        // steps down, 60 mm risers, 29/48): the step-down landing overshoots
+        // its goal by ~21 mm in x, a 170 mm sole on a 211 mm tread has 20 mm
+        // to spare, so the toe contact spheres land PAST the nosing and the
+        // stance foot pitches over the edge during the next swing. Default =
+        // STAIR_TD_BIAS, i.e. bit-identical.
+        // Applied only to treads that HAVE a nosing ahead (levels 1..n-1):
+        // the last level of a descent is the ground, and biasing it rearward
+        // walks the heel toward the riser face behind for nothing (measured:
+        // one step down 192 -> 188, 150 mm 18 -> 0 with the bias on it).
+        let td_bias_desc = if st.riser < 0.0 || st.down_n > 0 {
+            env_f64("STAIR_TD_BIAS_DESC", td_bias)
+        } else {
+            td_bias
+        };
         if flag("STAIR_FULL_SOLE", false) {
             let margin = env_f64("STAIR_SOLE_MARGIN", 0.002);
             let available = 0.5 * st.tread - sole_half_l - margin;
@@ -1241,7 +1280,8 @@ fn main() {
                 // landing, not on the stair.
                 land + (lvl - n - 1) as f64 * landing_step
             } else {
-                st.start + (lvl as f64 - 0.5) * st.tread - td_bias
+                st.start + (lvl as f64 - 0.5) * st.tread
+                    - if st.riser < 0.0 && lvl < n { td_bias_desc } else { td_bias }
             }
         };
         let lvl_of = |x: f64| -> i64 {
@@ -1282,6 +1322,44 @@ fn main() {
         // The knob exists so the trade (one short step vs one oversized one)
         // is a measured choice per robot rather than a constant.
         let align_stand_line = flag("STAIR_ALIGN_STAND_LINE", false);
+        // Up-and-over course (STAIRS_DOWN): the footfall positions by level,
+        // walked with explicit per-foot levels instead of the `lvl_of`
+        // inverse. Level 0 = stand line, 1..n = up treads, then the landing
+        // at `landing_step` strides up to a second stand line before the
+        // descending flight, the down treads (rearward bias on the ones with
+        // a nosing ahead), and the walk-out below.
+        let course: Option<Vec<f64>> = (st.down_n > 0).then(|| {
+            let le = st.landing_end();
+            // Stand line before the descending flight: the toe must stay
+            // short of the landing's edge. Measured 2026-10-03 (4 cm course,
+            // v6 and v6.2 alike): with the toe AT the edge (the ascent's
+            // STAIR_TOE_MARGIN=0 reused) the landing overshoots by 7 mm, the
+            // toe spheres hang over the edge and the sole centre sinks 20 mm.
+            let stand2 = le - sole_half_l - env_f64("STAIR_DESC_STAND_MARGIN", 0.03).max(0.0);
+            let mut v = vec![a_pos];
+            for k in 1..=n {
+                v.push(pos_of(k));
+            }
+            let mut x = land;
+            while x < stand2 - 0.5 * landing_step {
+                v.push(x);
+                x += landing_step;
+            }
+            v.push(stand2);
+            for k in 1..=st.down_n {
+                let nosing_ahead = k < st.down_n;
+                v.push(
+                    le + (k as f64 - 0.5) * st.tread
+                        - if nosing_ahead { td_bias_desc } else { td_bias },
+                );
+            }
+            let last = *v.last().unwrap();
+            for j in 1..=60 {
+                v.push(last + j as f64 * landing_step);
+            }
+            v
+        });
+        let mut course_lvl = [0usize; 2];
         let mut aligned = false;
         let mut cur = footsteps.initial;
         let mut ladder: Vec<(usize, f64, f64)> = Vec::new();
@@ -1317,6 +1395,10 @@ fn main() {
                     // tread rather than by where the approach grid landed.
                     aligned = true;
                     a_pos
+                } else if let Some(v) = &course {
+                    let l = (course_lvl[stance] + 1).min(v.len() - 1);
+                    course_lvl[swing] = l;
+                    v[l]
                 } else if stair_gait_pair {
                     let sk = lvl_of(cur.sole[stance].x);
                     let wk = lvl_of(cur.sole[swing].x);
@@ -2077,6 +2159,16 @@ fn main() {
     // BELOW the stance soles counts, so ascents and level walking are
     // bit-identical. Default 0 = off = shipped.
     let com_height_desc_lead = env_f64("COM_HEIGHT_DESC_LEAD", 0.0).clamp(0.0, 1.0);
+    // Geometric companion of the lead: cap the CoM height so that the LOWER
+    // landing a descent swing is heading for is within this fraction of the
+    // leg length at touchdown, with the CoM assumed midway between the
+    // stance sole and the landing. Measured 2026-10-03 on the up-and-over
+    // course (8 cm, 2/48): the stand line before the edge makes the
+    // step-down 3 cm longer than on the bare descent bench, the fixed half-
+    // riser lead leaves the leg at 0.99 at touchdown, the foot arrives
+    // unloaded and is dragged 16 cm. Only a landing below the stance soles
+    // counts, so ascents and level walking are bit-identical. 0 = off.
+    let com_height_desc_reach = env_f64("COM_HEIGHT_DESC_REACH", 0.0).clamp(0.0, 1.0);
     let stair_zone_crouch = env_f64("STAIR_ZONE_CROUCH", 0.0).clamp(0.0, 0.15);
     let stair_crouch_lead = env_f64("STAIR_ZONE_CROUCH_LEAD", 0.30).max(0.0);
     let stair_crouch_tail = env_f64("STAIR_ZONE_CROUCH_TAIL", 0.60).max(0.0);
@@ -2154,6 +2246,19 @@ fn main() {
     // and the next swing started with 22 N on the new stance -- a fall at
     // 3/48. With 0 the same member walked out.
     let land_extend_desc = env_f64("COM_LAND_EXTEND_DESC", land_extend_rise).max(0.0);
+    // xy tolerance of the landing confirmation for DESCENDING swings only.
+    // Measured 2026-10-03 on the up-and-over course (8 cm, 2/48): the long
+    // step-down swing overshoots its goal by ~23 mm in x, the 12 mm gate
+    // never confirms a foot that is flat on the ground, the swing times out
+    // and the MPC then moves the landing 15 cm while the foot is down and
+    // drags it. Unset = LAND_CONFIRM_XY (bit-identical).
+    let land_confirm_xy_desc_cp = flag("LAND_CONFIRM_XY_DESC_CP", false);
+    // z tolerance that goes with the wider xy one: the 10 mm default lets
+    // the confirmation fire on the HEEL STRIKE of a toe-up foot (sole centre
+    // still 8 mm high), 60 ms before the sole is flat (measured: 2 steps x
+    // 6 cm 46 -> 33 with the wide xy alone). Unset = LAND_CONFIRM_Z.
+    landing_timing.z_tol_override = std::env::var("LAND_CONFIRM_Z_DESC").ok().and_then(|v| v.parse().ok());
+    let land_confirm_xy_desc: Option<f64> = std::env::var("LAND_CONFIRM_XY_DESC").ok().and_then(|v| v.parse().ok());
     landing_timing.max_extension = land_extend_base;
     landing_timing.speed_z = env_f64("COM_LAND_VZ", 0.20).max(0.01);
     landing_timing.speed_xy = env_f64("COM_LAND_VXY", 0.35).max(0.01);
@@ -3334,6 +3439,18 @@ fn main() {
             });
             let rising = dz_swing.abs() > 0.005;
             let descending = dz_swing < -0.005;
+            // LAND_CONFIRM_XY_DESC_CP=1 restricts it to swings whose end the
+            // contact planner has retimed (no landing extension there, so a
+            // missed confirmation goes straight to the timeout). Measured:
+            // applied to every descending swing it removes the 0.25 s dwell
+            // the bare descents rely on (2 steps x 6 cm 46 -> 34).
+            landing_timing.xy_tol_override = if descending
+                && (!land_confirm_xy_desc_cp || (contact_plan_on && cp_retimed_slice == Some(i)))
+            {
+                land_confirm_xy_desc
+            } else {
+                None
+            };
             // The contact planner owns the end of a step it has retimed; the
             // landing extension must not re-open it (assigned every tick, so
             // the planner's own zeroing would be undone here otherwise).
@@ -6149,7 +6266,11 @@ fn main() {
             let crouch = match (&stairs, stair_zone_crouch > 0.0) {
                 (Some(st), true) => {
                     let x = steps.mid_xy().x;
-                    if x >= st.start - stair_crouch_lead && x <= st.landing_start() + stair_crouch_tail {
+                    if (x >= st.start - stair_crouch_lead && x <= st.landing_start() + stair_crouch_tail)
+                        || (st.down_n > 0
+                            && x >= st.landing_end() - stair_crouch_lead
+                            && x <= st.landing_end() + st.down_n as f64 * st.tread + stair_crouch_tail)
+                    {
                         stair_zone_crouch
                     } else {
                         0.0
@@ -6177,6 +6298,29 @@ fn main() {
             // The horizontal lever is measured from the CoM, and the leg hangs
             // from a hip roughly `hip_drop` below it, so the cap is written
             // about the hip and lifted back to the CoM. Default off.
+            if com_height_desc_reach > 0.0 && leg_reach.max > 0.0 {
+                let i = gait.index_at(t);
+                if let Some((j, sw)) = (i..gait.slices.len().min(i + 4))
+                    .find_map(|j| gait.slices[j].support.swing().map(|sw| (j, sw)))
+                {
+                    let landing = footsteps.at_slice(j).sole[sw];
+                    let stance = steps.sole[1 - sw];
+                    let hip_drop = hip_mi
+                        .map(|mis| {
+                            mis.iter()
+                                .map(|&mi| com.z - misarta::se3::translation(&data.oMi[mi]).z)
+                                .fold(f64::INFINITY, f64::min)
+                        })
+                        .unwrap_or(f64::NAN);
+                    if landing.z < stance.z - 0.005 && hip_drop.is_finite() {
+                        let d = 0.5 * (landing.xy() - stance.xy()).norm();
+                        let span = leg_reach.max * com_height_desc_reach;
+                        if d < span {
+                            target = target.min(landing.z + (span * span - d * d).sqrt() + hip_drop);
+                        }
+                    }
+                }
+            }
             if reach_height > 0.0 && leg_reach.max > 0.0 {
                 // The hip heights are computed later in the tick for the log;
                 // here the drop is read straight off the model.

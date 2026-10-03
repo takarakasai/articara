@@ -22,6 +22,10 @@ pub struct Stairs {
     /// measured 2026-09-23 on G1, every walk-out fell at exactly this edge
     /// (see doc/from_claude/20260923_landing_edge.md).
     pub landing_len: f64,
+    /// Steps of a DESCENDING flight (same |riser| and tread) that starts at
+    /// `landing_end()`: an up-and-over course. 0 = none (the historical
+    /// terrain, bit-identical). Only meaningful for an ascending `riser`.
+    pub down_n: usize,
 }
 
 impl Stairs {
@@ -42,6 +46,7 @@ impl Stairs {
             tread: v[2],
             start: v.get(3).copied().unwrap_or(0.25),
             landing_len,
+            down_n: 0,
         }
     }
 
@@ -60,6 +65,10 @@ impl Stairs {
     /// while the physical landing ends at `landing_end()`. Planners that place
     /// feet past the last tread must check `landing_span()` themselves.
     pub fn h(&self, x: f64) -> f64 {
+        if self.down_n > 0 && self.riser > 0.0 && x >= self.landing_end() {
+            let k2 = (((x - self.landing_end()) / self.tread) as i64 + 1).clamp(0, self.down_n as i64);
+            return (self.n as i64 - k2).max(0) as f64 * self.riser;
+        }
         let k = if x < self.start {
             0
         } else {
@@ -228,7 +237,7 @@ mod tests {
             (3, -0.052, 0.110, 0.30),
             (4, 0.080, 0.25, 1.0),
         ] {
-            let st = Stairs { n, riser, tread, start, landing_len: 0.60 };
+            let st = Stairs { n, riser, tread, start, landing_len: 0.60, down_n: 0 };
             let mut x = -0.5;
             while x < 6.0 {
                 assert_eq!(st.h(x).to_bits(), old_h(n, riser, tread, start, x).to_bits(), "x={x}");
@@ -245,5 +254,19 @@ mod tests {
         assert!(near(st.tread_span(3).1, st.landing_start()));
         assert!(near(st.landing_span().0, 1.6) && near(st.landing_span().1, 3.6));
         assert!(near(st.top(), 0.15));
+    }
+
+    #[test]
+    fn up_and_over_course_heights() {
+        let mut st = Stairs::parse("2,0.05,0.2,1.0", 1.0);
+        let flat = st;
+        st.down_n = 2;
+        // Up flight and landing are unchanged by the down flight.
+        for x in [0.5, 1.1, 1.3, 1.5, 2.39] {
+            assert_eq!(st.h(x), flat.h(x));
+        }
+        assert!((st.h(2.41) - 0.05).abs() < 1e-12); // landing_end = 2.4
+        assert!(st.h(2.61).abs() < 1e-12);
+        assert!(st.h(5.0).abs() < 1e-12);
     }
 }

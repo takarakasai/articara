@@ -27,6 +27,9 @@ MODE = os.environ.get('MODE', 'stairs')
 # situation draw (no push). START_X: stair start (default 2.00); a descent
 # needs ~0.40 so the platform reaches back under the spawn.
 START_X = float(os.environ.get('START_X', '2.00'))
+# STAIR_N / STAIR_TREAD: flight length and tread depth of the stairs runs
+# (defaults reproduce the historical single 0.211 m step).
+STAIR_N = os.environ.get('STAIR_N', '1'); STAIR_TREAD = os.environ.get('STAIR_TREAD', '0.211')
 c0 = json.load(open(os.environ['BASE']))
 for k in ('TRAJ_CSV', 'SUBSTEP_LIMIT_AUDIT_JSON'):
     c0.pop(k, None)
@@ -64,7 +67,7 @@ def one(a):
     c = dict(c0)
     c['INIT_JITTER'] = JIT; c['INIT_SEED'] = str(k + 1); c['MU_GROUND'] = str(s['mu'])
     if MODE == 'stairs':
-        c['STAIRS'] = f"1,{case},0.211,{START_X + s['dx']:.4f}"
+        c['STAIRS'] = f"{STAIR_N},{case},{STAIR_TREAD},{START_X + s['dx']:.4f}"
     elif MODE == 'flat':
         c['STAIRS'] = f"1,0.000,0.211,{2.00 + s['dx']:.4f}"
         for kv in case.split(';'):
