@@ -1588,3 +1588,6 @@ DCM 誤差 0.1→0.6）。0.5 では足裏が 6.7 s に平らに着き（かか�
 **`STAIR_TD_BIAS_ASC_MID`（既定＝`STAIR_TD_BIAS`、ビット同一）**: 先に蹴込みがある踏面（昇り段 1..n−1）だけ着地を後ろへ。単発 3 段: 15／25 mm 完走、35 mm 転倒。
 1 段昇段・押し・連続降段は `cmp` 一致。**v6.4 候補 = v6.3 + `STAIR_TD_BIAS_ASC_MID=0.02`**（`controls_v64_candidate_ascmid.json`、バイナリ `kyo46rs_walk_asc1`）。
 根治は遊脚 x の行き過ぎそのもの（追従遅れ）を消すこと ── 後退ノブ 2 本と確認許容はその対症療法。
+
+### v6.4 昇格（10-04、ユーザ判断）
+`log/claude_g1champion_20261004v64/`（controls・URDF・新バイナリ・README）。以降の基準は v6.4。
