@@ -1286,6 +1286,14 @@ fn main() {
         // the last level of a descent is the ground, and biasing it rearward
         // walks the heel toward the riser face behind for nothing (measured:
         // one step down 192 -> 188, 150 mm 18 -> 0 with the bias on it).
+        // Ascent twin of the descent bias: treads with a RISER AHEAD (levels
+        // 1..n-1 of a flight going up). Measured 2026-10-03 on G1 v6.3, three
+        // steps up: the landing overshoots by ~30 mm, the toe ends past the
+        // tread (20 mm to spare) and comes down ON the next step -- at 4 and
+        // 6 cm the sole rests half on it (centre 20 mm high, 0/48), at 8 cm
+        // the riser face stops the toe (48/48). Default = STAIR_TD_BIAS, so
+        // the one-step benches are bit-identical.
+        let td_bias_asc_mid = env_f64("STAIR_TD_BIAS_ASC_MID", td_bias);
         let td_bias_desc = if st.riser < 0.0 || st.down_n > 0 {
             env_f64("STAIR_TD_BIAS_DESC", td_bias)
         } else {
@@ -1325,7 +1333,13 @@ fn main() {
                 land + (lvl - n - 1) as f64 * landing_step
             } else {
                 st.start + (lvl as f64 - 0.5) * st.tread
-                    - if st.riser < 0.0 && lvl < n { td_bias_desc } else { td_bias }
+                    - if st.riser < 0.0 && lvl < n {
+                        td_bias_desc
+                    } else if st.riser > 0.0 && lvl < n {
+                        td_bias_asc_mid
+                    } else {
+                        td_bias
+                    }
             }
         };
         let lvl_of = |x: f64| -> i64 {
