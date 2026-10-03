@@ -2003,6 +2003,10 @@ fn main() {
     // champion's stair landings mostly end that way (retime median 2.16 s =
     // 1.0 s swing + 1.08 s extension) with the sole on the tread all along.
     let contact_admit_z = env_f64("CONTACT_ADMIT_Z", 0.010).max(0.0);
+    let contact_dump_t: Option<(f64, f64)> = std::env::var("CONTACT_DUMP_T").ok().and_then(|v| {
+        let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok());
+        Some((it.next()??, it.next()??))
+    });
     // Run the DS_FEASIBLE re-plan on a timeout end as well (it is keyed on a
     // non-zero retime, which a timeout never produces). Default off.
     let ds_feasible_on_timeout = flag("DS_FEASIBLE_ON_TIMEOUT", false);
@@ -2058,6 +2062,21 @@ fn main() {
     // The floor stops a pathological plan from folding the robot up.
     let reach_height = env_f64("REACH_HEIGHT", 0.0);
     let reach_height_floor = env_f64("REACH_HEIGHT_FLOOR", 0.45).max(0.1);
+    // Aim the CoM height at the LOWER level a descent is about to step
+    // onto, before the swing. Measured 2026-10-03 on G1 (v6 + descent
+    // extension, 80 mm step-down, 45 fallers of 48): the CoM reference
+    // follows the STANCE soles, so it stays at platform height through the
+    // whole step-down swing; the swing leg reaches 99.7-99.9% of its length
+    // and stops 15-20 mm above the lower surface; the schedule then admits
+    // the airborne foot, whose orientation is uncontrolled for ~80 ms while
+    // it is loaded, and the corner it happens to land on decides the run
+    // (heel-outer corner -> survives, toe-outer corner -> slides 12 cm
+    // forward on the toe and falls). Fraction of the drop to the coming
+    // landing that the height reference takes in advance: 1 = the full
+    // riser, through the usual COM_HEIGHT_TIME retarget. Only a landing
+    // BELOW the stance soles counts, so ascents and level walking are
+    // bit-identical. Default 0 = off = shipped.
+    let com_height_desc_lead = env_f64("COM_HEIGHT_DESC_LEAD", 0.0).clamp(0.0, 1.0);
     let stair_zone_crouch = env_f64("STAIR_ZONE_CROUCH", 0.0).clamp(0.0, 0.15);
     let stair_crouch_lead = env_f64("STAIR_ZONE_CROUCH_LEAD", 0.30).max(0.0);
     let stair_crouch_tail = env_f64("STAIR_ZONE_CROUCH_TAIL", 0.60).max(0.0);
@@ -3344,6 +3363,22 @@ fn main() {
         // all solve against this, so it is read before any of them.
         let measured_c = measure_contacts(&rig, data, friction_mu);
         let measured_pre = [measured_c.f_w[0][2], measured_c.f_w[1][2]];
+        // CONTACT_DUMP_T="t0,t1": print every MuJoCo contact (bodies, world
+        // position, world force) on the ticks inside the window. Diagnostic
+        // only; unset = nothing.
+        if let Some((d0, d1)) = contact_dump_t
+            && t >= d0
+            && t <= d1
+        {
+            for c in rig.sim.contacts() {
+                println!(
+                    "  [con] t={t:.3} {} <-> {} pos=({:+.4},{:+.4},{:+.4}) f=({:+.1},{:+.1},{:+.1})",
+                    if c.body1.is_empty() { "world" } else { c.body1.as_str() },
+                    if c.body2.is_empty() { "world" } else { c.body2.as_str() },
+                    c.pos[0], c.pos[1], c.pos[2], c.force_world[0], c.force_world[1], c.force_world[2]
+                );
+            }
+        }
         let measured_total = measured_pre[0].max(0.0) + measured_pre[1].max(0.0);
         let measured_left_share = if measured_total > 1e-6 {
             measured_pre[0].max(0.0) / measured_total
@@ -6096,6 +6131,20 @@ fn main() {
                         .sum::<f64>()
                         / stance_sides.len() as f64
                 }
+            };
+            let h = if com_height_desc_lead > 0.0 {
+                // The landing this swing is heading for, or -- in a double
+                // support -- the landing of the swing that follows it.
+                let i = gait.index_at(t);
+                let landing_z = (i..gait.slices.len().min(i + 4))
+                    .find_map(|j| gait.slices[j].support.swing().map(|sw| (j, sw)))
+                    .map(|(j, sw)| footsteps.at_slice(j).sole[sw].z);
+                match landing_z {
+                    Some(lz) if lz < h - 1e-6 => h - com_height_desc_lead * (h - lz),
+                    _ => h,
+                }
+            } else {
+                h
             };
             let crouch = match (&stairs, stair_zone_crouch > 0.0) {
                 (Some(st), true) => {
