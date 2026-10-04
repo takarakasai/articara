@@ -1118,7 +1118,12 @@ fn main() {
             "inter-step settle: {n_ds_settles} mid-foot holds x {ds_settle:.3}s, after step {ds_settle_after_step}"
         );
     }
-    let z_com = env_f64("Z_COM", com0.z);
+    // Z_COM_OFFSET [m]: the walking CoM height RELATIVE to the measured
+    // initial one. `Z_COM` is an absolute world height, which on a descent
+    // (spawn on a platform) silently adds the platform height to the crouch
+    // -- measured 2026-10-05: Z_COM=0.66 took every descent below 6 cm to
+    // 0/48. 0 = off = bit-identical.
+    let z_com = env_f64("Z_COM", com0.z + env_f64("Z_COM_OFFSET", 0.0));
     // Carry a centroidal DAMPING gain across robots by the LIPM timescale.
     //
     // Task-space gains here are absolute (1/s^2 for kp, 1/s for kd), so a
