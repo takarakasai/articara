@@ -424,6 +424,9 @@ pub struct LandingTiming {
     /// z tolerance that goes with `xy_tol_override` (applied only while that
     /// override is set). `None` = `LAND_CONFIRM_Z`.
     pub z_tol_override: Option<f64>,
+    /// Per-swing override of the confirmation's force gate [N] (the caller
+    /// sets it for the swing in progress). `None` = the constructor's value.
+    pub load_threshold_override: Option<f64>,
     pub min_fraction: f64,
     /// Confirm LEVEL swings too, not only ones that change height.
     ///
@@ -473,6 +476,7 @@ impl LandingTiming {
             max_extension: 0.25,
             xy_tol_override: None,
             z_tol_override: None,
+            load_threshold_override: None,
             min_fraction: 0.0,
             level_steps: false,
             speed_xy: 0.35,
@@ -548,7 +552,7 @@ impl LandingTiming {
             _ => z_tol,
         };
         let landed = t >= start + duration * confirm_fraction
-            && fz[sw] > self.load_threshold
+            && fz[sw] > self.load_threshold_override.unwrap_or(self.load_threshold)
             && match self.xy_tol_override {
                 // The override widens the FORWARD axis only (the swing's x
                 // overshoot); the lateral error keeps the normal tolerance.

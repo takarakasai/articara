@@ -2311,6 +2311,30 @@ fn main() {
     // and the MPC then moves the landing 15 cm while the foot is down and
     // drags it. Unset = LAND_CONFIRM_XY (bit-identical).
     let land_confirm_xy_desc_cp = flag("LAND_CONFIRM_XY_DESC_CP", false);
+    // Keep the descent extension on swings the contact planner retimed.
+    // Measured 2026-10-04 (course, swing feed-forward on): the step-down foot
+    // is 3 mm above the ground at the retimed deadline, the extension is 0
+    // there, the swing times out and the MPC moves the landing 4 cm under a
+    // foot that touches down 15 ms later. Default off = bit-identical.
+    // (A flag in the first version, which kept the whole 0.25 s; measured:
+    // 3 steps down 142 -> 133, the foot rests unloaded for the full wait.
+    // Now the extension itself, in seconds, for those swings only.)
+    let land_extend_desc_cp = env_f64("COM_LAND_EXTEND_DESC_CP", 0.0).max(0.0);
+    // Force gate of the confirmation for DESCENDING swings, as a fraction
+    // of body weight. Measured 2026-10-04 (3 steps down, feed-forward on):
+    // the foot sits flat on the tread within 5 mm of its goal carrying 12 N
+    // -- under the 17 N gate, because the swing task still holds the leg --
+    // and waits out the whole extension. Unset = LAND_CONFIRM_FZ_FRAC.
+    let land_confirm_fz_desc: Option<f64> = std::env::var("LAND_CONFIRM_FZ_DESC_FRAC").ok().and_then(|v| v.parse::<f64>().ok()).map(|f| f.max(0.0) * total_mass * G);
+    // Forward tolerance of the confirmation for RISING swings. Measured
+    // 2026-10-04: the champion's ascent never confirms a landing (the swing
+    // overshoots by 15-26 mm, outside the 12 mm gate) and so always waits out
+    // COM_LAND_EXTEND_RISE -- the CEM tuned that 1.08 s as a fixed dwell.
+    // With the swing feed-forward (TRACKING_CUBIC_FF) the landing is within
+    // 6 mm, confirms at once, double support starts 1 s early and the DCM
+    // error runs to 0.1 (1 step up 192 -> 114). 0 = never confirm a rising
+    // swing, i.e. keep that dwell explicitly. Unset = LAND_CONFIRM_XY.
+    let land_confirm_xy_rise: Option<f64> = std::env::var("LAND_CONFIRM_XY_RISE").ok().and_then(|v| v.parse().ok());
     // z tolerance that goes with the wider xy one: the 10 mm default lets
     // the confirmation fire on the HEEL STRIKE of a toe-up foot (sole centre
     // still 8 mm high), 60 ms before the sole is flat (measured: 2 steps x
@@ -3502,10 +3526,13 @@ fn main() {
             // missed confirmation goes straight to the timeout). Measured:
             // applied to every descending swing it removes the 0.25 s dwell
             // the bare descents rely on (2 steps x 6 cm 46 -> 34).
+            landing_timing.load_threshold_override = if descending { land_confirm_fz_desc } else { None };
             landing_timing.xy_tol_override = if descending
                 && (!land_confirm_xy_desc_cp || (contact_plan_on && cp_retimed_slice == Some(i)))
             {
                 land_confirm_xy_desc
+            } else if rising && !descending {
+                land_confirm_xy_rise
             } else {
                 None
             };
@@ -3513,7 +3540,7 @@ fn main() {
             // landing extension must not re-open it (assigned every tick, so
             // the planner's own zeroing would be undone here otherwise).
             landing_timing.max_extension = if contact_plan_on && cp_retimed_slice == Some(i) {
-                0.0
+                if descending { land_extend_desc_cp } else { 0.0 }
             } else if descending {
                 land_extend_desc
             } else if rising {
