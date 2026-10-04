@@ -1233,6 +1233,23 @@ fn main() {
         }
         other => other,
     };
+    // VX2_Z_DROP [m]: lower the walking CoM height by this much from one step
+    // before the speed change on. Measured 2026-10-05: the 0.45 m/s wall is
+    // leg reach (stance leg at 99%, the heel lifts and the foot slips), and
+    // 24 mm lower takes it from 7/48 to 48/48 -- but lowering the CoM for
+    // the whole run trades descents and lateral pushes away. Tied to the
+    // speed command it leaves every other bench bit-identical. 0 = off.
+    let vx2_z_drop = env_f64("VX2_Z_DROP", 0.0).max(0.0);
+    let mut vx2_z_track = 0.0_f64;
+    let vx2_z_from: Option<f64> = match vx2_change {
+        Some((at, _, _)) if vx2_z_drop > 0.0 => gait
+            .slices
+            .iter()
+            .filter(|sl| matches!(sl.support, Support::Single { .. }))
+            .nth(at.saturating_sub(1))
+            .map(|sl| sl.t0),
+        _ => None,
+    };
     let mut footsteps = if flag("ALTERNATE", true) {
         FootstepPlan::velocity_with_change(&gait, &steps, vx, vy, wz, t_step, stride_ramp, vx2_change)
     } else {
@@ -6491,6 +6508,15 @@ fn main() {
                 zd_terrain,
                 0.0,
             )
+        };
+        // VX2_Z_DROP: eased in at 50 mm/s on top of whichever height
+        // reference is live (the flat walk never enters the replan branch).
+        let (z_ref, zd_ref) = if vx2_z_from.is_some_and(|t0| t >= t0) {
+            let d = (vx2_z_drop - vx2_z_track).clamp(0.0, 0.05 * dt);
+            vx2_z_track += d;
+            (z_ref - vx2_z_track, zd_ref - d / dt)
+        } else {
+            (z_ref, zd_ref)
         };
         let a_z = zdd_ref + kp_com * (z_ref - com.z) + kd_com * (zd_ref - com_vel.z);
         let mut a_com = na::Vector3::new(a_xy.x, a_xy.y, a_z);
