@@ -2241,6 +2241,20 @@ fn main() {
     let mut confirmed_admit: [Option<usize>; 2] = [None; 2];
     let mut n_confirmed_admissions = 0u32;
     landing_timing.load_confirm = land_by_load;
+    // Event-driven contact (doc/from_claude/20261004_event_driven_contact_design.md):
+    // touchdown = measured load with the sole at its planned height (no xy
+    // gate), the plan is moved onto the foot, a descending swing ends at the
+    // event, a rising one keeps COM_LAND_EXTEND_RISE as an explicit dwell,
+    // and a swing that has not touched by its deadline probes down instead
+    // of timing out. Default off = bit-identical.
+    landing_timing.event_mode = flag("CONTACT_EVENT", false);
+    landing_timing.event_z_tol = env_f64("CONTACT_EVENT_Z", 0.003).max(0.0);
+    landing_timing.probe_speed = env_f64("CONTACT_PROBE_VZ", 0.05).max(0.0);
+    landing_timing.probe_max = env_f64("CONTACT_PROBE_MAX", 0.03).max(0.0);
+    let contact_event_shift = flag("CONTACT_EVENT_SHIFT", true);
+    // 0 = a descending swing keeps its extension as a dwell too (double
+    // support starts at the deadline, as the historical timeout did).
+    let contact_event_end_on_touch = flag("CONTACT_EVENT_END_ON_TOUCH", true);
     landing_timing.load_confirm_threshold = env_f64("LAND_BY_LOAD_FRAC", 0.20) * total_mass * G;
     landing_timing.load_confirm_ticks = env_f64("LAND_BY_LOAD_TICKS", 3.0).max(1.0) as u32;
     let mut n_land_by_load_shift = 0u32;
@@ -3527,6 +3541,7 @@ fn main() {
             // applied to every descending swing it removes the 0.25 s dwell
             // the bare descents rely on (2 steps x 6 cm 46 -> 34).
             landing_timing.load_threshold_override = if descending { land_confirm_fz_desc } else { None };
+            landing_timing.event_end_on_touch = descending && contact_event_end_on_touch;
             landing_timing.xy_tol_override = if descending
                 && (!land_confirm_xy_desc_cp || (contact_plan_on && cp_retimed_slice == Some(i)))
             {
@@ -3621,6 +3636,20 @@ fn main() {
                 if std::env::var("CONTACT_ADMIT_DEBUG").is_ok() {
                     println!("  [adm] t={t:.3} certificate side={sw} ds_slice={} (confirm={} timeout={})", ended + 1, landing_timing.touchdowns > touchdowns_before, landing_timed_out);
                 }
+            }
+            if let Some((li, lsw, err_xy)) = landing_timing.last_event.take()
+                && contact_event_shift
+                && err_xy.norm() > 1e-4
+            {
+                // plan - actual = err  ->  move the plan by -err onto the foot.
+                footsteps.shift_next(li, lsw, -err_xy);
+                dcm_plan = DcmPlan::from_footsteps_rolled(
+                    &gait,
+                    &footsteps,
+                    z_lip,
+                    zmp_lat_scale,
+                    zmp_roll,
+                );
             }
             if land_by_load
                 && let Some((li, lsw, err_xy)) = landing_timing.last_load_confirm.take()
@@ -5722,7 +5751,7 @@ fn main() {
             } else {
                 na::Vector2::zeros()
             };
-            if d.norm() > 1e-9 {
+            if d.norm() > 1e-9 && !landing_timing.landing_closed(i) {
                 // CP_SHIFT_NEXT: move THIS landing, not every later one.
                 //
                 // `shift_from` shifts the swing foot's landing in slice `i`
@@ -6896,11 +6925,15 @@ fn main() {
                                 landing_timing.clock
                             );
                         }
-                        frac < if rising {
-                            mpc_footstep_freeze_frac_rise
-                        } else {
-                            mpc_footstep_freeze_frac
-                        }
+                        // Event mode: no landing moves while the foot is
+                        // probing for the ground (measured 2026-10-04: the
+                        // goal moved 5-12 cm under a foot 2 cm from contact).
+                        !landing_timing.landing_closed(i)
+                            && frac < if rising {
+                                mpc_footstep_freeze_frac_rise
+                            } else {
+                                mpc_footstep_freeze_frac
+                            }
                     }
                 {
                     (0..stair_wrench_horizon)
@@ -7404,6 +7437,7 @@ fn main() {
                         }
                         if let Some(dp) = solution.landing_shift
                             && let Some(land) = landing
+                            && !landing_timing.landing_closed(gait.index_at(t))
                         {
                             let i = gait.index_at(t);
                             if mpc_fs_slice != Some(i) {
@@ -8179,6 +8213,11 @@ fn main() {
                     };
                 if resume_ss_dcm_hold.is_some_and(|(_, receiver, _, _)| receiver == side) {
                     tgt.z -= stair_resume_ss_sink;
+                }
+                if landing_timing.probe_depth > 0.0
+                    && landing_timing.clock.is_some_and(|(ci, _, _)| ci == slice_idx)
+                {
+                    tgt.z -= landing_timing.probe_depth;
                 }
                 swing_tgt = tgt;
                 swing_cmd_acc_z = tgt_a.z * tracking_ff_scale
@@ -10021,6 +10060,12 @@ fn main() {
     }
     if land_wait_hold {
         println!("  landing wait hold: {n_wait_hold} plan writes");
+    }
+    if landing_timing.event_mode {
+        println!(
+            "  contact events: {} touchdowns by event, {} probes, {} timeouts",
+            landing_timing.events, landing_timing.probes, landing_timing.timeouts
+        );
     }
     if land_by_load {
         println!("  landing by load: {} confirmed, {n_land_by_load_shift} plan shifts", landing_timing.load_confirm_count);

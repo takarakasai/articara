@@ -427,6 +427,26 @@ pub struct LandingTiming {
     /// Per-swing override of the confirmation's force gate [N] (the caller
     /// sets it for the swing in progress). `None` = the constructor's value.
     pub load_threshold_override: Option<f64>,
+    /// Event-driven contact (doc/from_claude/20261004_event_driven_contact_design.md).
+    /// Touchdown is the measured event "load above the gate with the sole
+    /// within `event_z_tol` of its planned height" -- the xy error is NOT a
+    /// gate. The event is reported once in `last_event` so the caller can
+    /// move the plan onto the foot. A swing with `event_end_on_touch` ends
+    /// at the event; otherwise it keeps its extension as an explicit dwell
+    /// and ends at the deadline. With no event by the deadline the swing is
+    /// kept open while the caller lowers the foot by `probe_depth`, and only
+    /// past `probe_max` does it time out. false = the historical machine.
+    pub event_mode: bool,
+    pub event_z_tol: f64,
+    pub event_end_on_touch: bool,
+    pub probe_speed: f64,
+    pub probe_max: f64,
+    /// How far below its target the caller should hold the swing foot [m].
+    pub probe_depth: f64,
+    event_slice: Option<usize>,
+    pub last_event: Option<(usize, usize, na::Vector2<f64>)>,
+    pub events: u32,
+    pub probes: u32,
     pub min_fraction: f64,
     /// Confirm LEVEL swings too, not only ones that change height.
     ///
@@ -477,6 +497,16 @@ impl LandingTiming {
             xy_tol_override: None,
             z_tol_override: None,
             load_threshold_override: None,
+            event_mode: false,
+            event_z_tol: 0.003,
+            event_end_on_touch: false,
+            probe_speed: 0.05,
+            probe_max: 0.03,
+            probe_depth: 0.0,
+            event_slice: None,
+            last_event: None,
+            events: 0,
+            probes: 0,
             min_fraction: 0.0,
             level_steps: false,
             speed_xy: 0.35,
@@ -517,6 +547,7 @@ impl LandingTiming {
                             println!("  [lt] t={t:.3} activate slice={i} sw={sw} z {from:.3} -> {:.3} t0={:.3} dur={:.3}", feet.at_slice(i).sole[sw].z, sl.t0, sl.duration());
                         }
                         self.active = Some(i);
+                        self.probe_depth = 0.0;
                         self.clock = Some((i, sl.t0, sl.duration()));
                         self.confirmations = 0;
                         self.load_confirmations = 0;
@@ -545,6 +576,9 @@ impl LandingTiming {
         // stance leg is held for another 2-3 s and the lateral DCM escapes.
         // The tolerances are the discriminator, so they are knobs; defaults
         // reproduce the constants.
+        if self.event_mode {
+            return self.update_event(gait, i, sw, error, fz[sw], start, duration, confirm_fraction, t, dt);
+        }
         let xy_tol: f64 = std::env::var("LAND_CONFIRM_XY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.012);
         let z_tol: f64 = std::env::var("LAND_CONFIRM_Z").ok().and_then(|v| v.parse().ok()).unwrap_or(0.010);
         let z_tol = match (self.xy_tol_override, self.z_tol_override) {
@@ -597,6 +631,107 @@ impl LandingTiming {
             self.finished = Some(i);
             return 0.0;
         }
+        let remaining =
+            (error.xy().norm() / self.speed_xy).max(error.z.abs() / self.speed_z) + 0.03;
+        let end = (t + remaining.max(dt)).min(deadline).max(gait.slices[i].t1);
+        if end > gait.slices[i].t1 + 1e-6 {
+            gait.retime(i, end)
+        } else {
+            0.0
+        }
+    }
+
+    /// Event mode: true once the swing of slice `i` has touched down or has
+    /// started probing -- from then on its landing must not be moved.
+    pub fn landing_closed(&self, i: usize) -> bool {
+        self.event_mode
+            && (self.event_slice == Some(i)
+                || (self.probe_depth > 0.0 && self.clock.is_some_and(|(ci, _, _)| ci == i)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_event(
+        &mut self,
+        gait: &mut super::gait::GaitPlan,
+        i: usize,
+        sw: usize,
+        error: na::Vector3<f64>,
+        fz: f64,
+        start: f64,
+        duration: f64,
+        confirm_fraction: f64,
+        t: f64,
+        dt: f64,
+    ) -> f64 {
+        let debug = std::env::var("LAND_TIMING_DEBUG").is_ok();
+        let deadline = start + duration + self.max_extension;
+        let touching = t >= start + duration * confirm_fraction
+            && fz > self.load_threshold_override.unwrap_or(self.load_threshold)
+            // While probing the target is BELOW the plan, so the sole may be
+            // lower than planned by up to the probe depth.
+            // (error = plan - actual: negative z = the sole is above plan.)
+            && error.z > -self.event_z_tol
+            && error.z < self.event_z_tol + self.probe_depth;
+        self.confirmations = if touching { self.confirmations + 1 } else { 0 };
+        if self.confirmations >= 2 && self.event_slice != Some(i) {
+            self.event_slice = Some(i);
+            self.last_event = Some((i, sw, error.xy()));
+            self.events += 1;
+            if debug {
+                println!("  [lt] t={t:.3} EVENT slice={i} sw={sw} fz={fz:.0} err=({:+.3},{:+.3},{:+.3}) probe={:.3}", error.x, error.y, error.z, self.probe_depth);
+            }
+        }
+        let evented = self.event_slice == Some(i);
+        if evented && (self.event_end_on_touch || t >= deadline - 1e-9) {
+            if debug {
+                println!("  [lt] t={t:.3} END slice={i} sw={sw} (event, {})", if t >= deadline - 1e-9 { "dwell over" } else { "on touch" });
+            }
+            self.active = None;
+            self.finished = Some(i);
+            self.probe_depth = 0.0;
+            if t >= deadline - 1e-9 {
+                // The dwell ran out exactly as the historical extension did;
+                // report it the same way so the caller's timeout path runs.
+                self.timeouts += 1;
+                return 0.0;
+            }
+            self.touchdowns += 1;
+            return gait.retime(i, t);
+        }
+        // The sole is at its planned height but carries less than the gate:
+        // it is resting on the surface with the swing task still holding the
+        // leg (measured 2026-10-04: 13 N against a 17 N gate, the wait ran to
+        // the deadline while the DCM error grew 0.02 -> 0.16). Press it down
+        // now rather than wait.
+        let resting = !evented
+            && t >= start + duration * confirm_fraction
+            && error.z.abs() < self.event_z_tol + self.probe_depth;
+        if (t >= deadline - 1e-9 || resting) && !evented {
+            // No contact by the deadline (or contact without load): probe
+            // down instead of declaring double support over a foot that is
+            // still in the air.
+            let depth = self.probe_depth + self.probe_speed * dt;
+            if depth > self.probe_max && t >= deadline - 1e-9 {
+                if debug {
+                    println!("  [lt] t={t:.3} TIMEOUT slice={i} sw={sw} fz={fz:.0} err=({:+.3},{:+.3},{:+.3}) after probe {:.3}", error.x, error.y, error.z, self.probe_depth);
+                }
+                self.timeouts += 1;
+                self.active = None;
+                self.finished = Some(i);
+                self.probe_depth = 0.0;
+                return 0.0;
+            }
+            if self.probe_depth == 0.0 {
+                self.probes += 1;
+                if debug {
+                    println!("  [lt] t={t:.3} PROBE slice={i} sw={sw} fz={fz:.0} err=({:+.3},{:+.3},{:+.3})", error.x, error.y, error.z);
+                }
+            }
+            self.probe_depth = depth.min(self.probe_max).max(1e-9);
+            let end = (t + 0.03_f64.max(dt)).max(gait.slices[i].t1);
+            return if end > gait.slices[i].t1 + 1e-6 { gait.retime(i, end) } else { 0.0 };
+        }
+        // Before the deadline: the historical rolling extension.
         let remaining =
             (error.xy().norm() / self.speed_xy).max(error.z.abs() / self.speed_z) + 0.03;
         let end = (t + remaining.max(dt)).min(deadline).max(gait.slices[i].t1);
