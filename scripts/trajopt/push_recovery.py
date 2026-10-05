@@ -28,6 +28,7 @@ p.add_argument('--nodes', type=str, default='10,4,10,6')
 p.add_argument('--tmin', type=str, default='0.20,0.05,0.25,0.20')
 p.add_argument('--tmax', type=str, default='0.80,0.40,0.80,0.80')
 p.add_argument('--vscale', type=float, default=1.0, help='fraction of the URDF joint velocity limits allowed')
+p.add_argument('--clear', type=float, default=0.11, help='leg-leg clearance between sampled centre-line points [m]')
 p.add_argument('--out', type=str, default='')
 p.add_argument('--max-iter', type=int, default=1500)
 args = p.parse_args()
@@ -44,6 +45,12 @@ f_sole = [ca.Function(f'sole{s}', [qs], [soles[s][1], soles[s][0]]) for s in (0,
 R_fr, p_fr = g.frames(qs)
 knee_id = [g.pin.getJointId(n) for n in ('left_knee_joint', 'right_knee_joint')]
 f_knee = ca.Function('knee', [qs], [p_fr[knee_id[0]], p_fr[knee_id[1]]])
+# Leg capsules as point chains: hip, mid-thigh, knee, mid-shank, ankle per leg.
+def _chain(side):
+    ids = [g.pin.getJointId(f'{side}_{n}_joint') for n in ('hip_pitch', 'knee', 'ankle_roll')]
+    h, k, a_ = (p_fr[i] for i in ids)
+    return [0.5 * (h + k), k, 0.67 * k + 0.33 * a_, 0.33 * k + 0.67 * a_, a_]
+f_legs = ca.Function('legs', [qs], [ca.horzcat(*_chain('left')), ca.horzcat(*_chain('right'))])
 corners = [np.array([sx * SOLE_HALF[0], sy * SOLE_HALF[1], 0.0]) for sx in (1, -1) for sy in (1, -1)]
 
 # ---- standing pose by a small NLP: both soles flat, CoM at height, arms 0 ----
@@ -94,7 +101,18 @@ for i, t in enumerate(T):
     o.subject_to(o.bounded(tmin[i], t, tmax[i]))
     o.set_initial(t, 0.5 * (tmin[i] + tmax[i]))
 
-v0 = np.zeros(nq); v0[1] = vy
+# Initial velocity: the push gives the CoM the lateral speed, but the stance
+# sole is on the ground and does not move. Minimum-norm generalised velocity
+# with (stance sole corners at rest) and (linear momentum = M * [0, vy, 0]).
+# (The first version moved the whole body, stance foot included, at vy -- an
+# impact at t = 0 that the MuJoCo replay exposed.)
+_pl, _Rl = soles[0][1], soles[0][0]
+_cs = ca.vertcat(*[_pl + ca.mtimes(_Rl, ca.DM(c)) for c in corners[:3]])
+_A = ca.Function('A', [qs], [ca.vertcat(ca.jacobian(_cs, qs), ca.jacobian(f_mom(qs, vs)[0:3], vs))])
+A0 = np.array(_A(q_init))
+v0 = np.linalg.pinv(A0) @ np.concatenate([np.zeros(9), [0.0, M * vy, 0.0]])
+print('initial velocity: |A v0 - b| = %.1e, base lin %s, max joint speed %.2f rad/s' % (
+    np.abs(A0 @ v0 - np.concatenate([np.zeros(9), [0.0, M * vy, 0.0]])).max(), np.round(v0[0:3], 3), np.abs(v0[6:]).max()))
 o.subject_to(Q[0] == q_init)
 o.subject_to(V[0] == v0)
 o.subject_to(V[N] == 0)
@@ -130,6 +148,12 @@ for k in range(N + 1):
     o.subject_to((d[0] / 0.20) ** 2 + (d[1] / 0.085) ** 2 >= 1.0)
     kl, kr = f_knee(q)
     o.subject_to(ca.sumsqr(kl - kr) >= 0.11 ** 2)
+    # Leg-leg clearance: every sampled point of one leg at least `--clear`
+    # from every sampled point of the other (thigh, knee, shank, ankle).
+    LL, RR = f_legs(q)
+    for i in range(5):
+        for j in range(5):
+            o.subject_to(ca.sumsqr(LL[:, i] - RR[:, j]) >= args.clear ** 2)
 
 for k in range(N):
     ph = phase_of[k]
