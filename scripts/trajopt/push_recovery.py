@@ -30,6 +30,9 @@ p.add_argument('--tmax', type=str, default='0.80,0.40,0.80,0.80')
 p.add_argument('--vscale', type=float, default=1.0, help='fraction of the URDF joint velocity limits allowed')
 p.add_argument('--clear', type=float, default=0.11, help='leg-leg clearance between sampled centre-line points [m]')
 p.add_argument('--tau-scale', type=float, default=0.9, help='joint torque bound as a fraction of the URDF effort limits (0 = no torque constraint)')
+p.add_argument('--swing-z', type=float, default=0.05, help='initial height of the swing (right) sole [m]')
+p.add_argument('--lmax', type=float, default=0.0, help='bound on |angular momentum| about the CoM [N m s] (0 = none)')
+p.add_argument('--swing-ymin', type=float, default=-9.0, help='lower bound on the swing (right) sole y during the first phase [m] (no outward wind-up)')
 p.add_argument('--vx', type=float, default=0.0, help='forward CoM speed at the push [m/s] (walking scenario)')
 p.add_argument('--swing-x', type=float, default=0.0, help='initial x of the swing (right) sole [m] (walking scenario: mid-swing ahead)')
 p.add_argument('--lbfgs', action='store_true', help='limited-memory Hessian in IPOPT (the exact Hessian of the torque constraints takes ~28 GB)')
@@ -89,7 +92,7 @@ def standing_pose(com_xy, right_z, right_x=0.0):
     return np.array(o.solve().value(q))
 
 w = args.width / 2
-q_init = standing_pose((0.0, w * 0.7), 0.05, args.swing_x)   # CoM mostly over the left (stance) foot
+q_init = standing_pose((0.0, w * 0.7), args.swing_z, args.swing_x)   # CoM mostly over the left (stance) foot
 q_stand = standing_pose((0.0, 0.0), 0.0)
 vy = args.impulse / M
 omega = np.sqrt(G / args.zcom)
@@ -155,6 +158,8 @@ for k in range(N + 1):
         else:
             o.subject_to(ps[2] >= 0.02)
             anchor.pop(s, None)
+    if args.swing_ymin > -1.0 and k <= n_ph[0]:
+        o.subject_to(sp[1][0][1] >= args.swing_ymin)
     # Self-collision, crude: the soles must not overlap in plan, the knees keep apart.
     d = sp[0][0] - sp[1][0]
     o.subject_to((d[0] / 0.20) ** 2 + (d[1] / 0.085) ** 2 >= 1.0)
@@ -195,6 +200,8 @@ for k in range(N):
         cost += dt * 1e-5 * ca.sumsqr(tau_k)
     o.subject_to(h1[0:3] == h0[0:3] + dt * (force + ca.DM([0, 0, -M * G])))
     o.subject_to(h1[3:6] == h0[3:6] + dt * moment)
+    if args.lmax > 0:
+        o.subject_to(ca.sumsqr(h1[3:6]) <= args.lmax ** 2)
     cost += dt * (1e-2 * ca.sumsqr(v1[6:]) + 1e-1 * ca.sumsqr(v1[3:6]) + 1e-3 * ca.sumsqr((v1 - v0_) / dt) * 1e-2)
     cost += dt * 1e-1 * ca.sumsqr(q1[6:] - q_stand[6:])
 

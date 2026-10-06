@@ -25,6 +25,91 @@
 //! ```
 
 #[cfg(feature = "mujoco")]
+#[cfg(feature = "mujoco")]
+use nalgebra as na;
+
+/// A recovery reference from scripts/trajopt/push_recovery.py (JSON): phase
+/// durations, node times, sole-centre trajectories and the CoM, all in the
+/// optimiser's frame (left foot stance at y = `stance_y0`, push toward +y).
+/// `REF_LIBRARY=<file>` loads one; see doc/from_claude/20261005_trajopt_reference_plan.md §9.
+#[cfg(feature = "mujoco")]
+#[derive(Clone)]
+struct RefLib {
+    phases: Vec<f64>,
+    swing_z0: f64,
+    t: Vec<f64>,
+    sole: [Vec<na::Vector3<f64>>; 2],
+    stance_y0: f64,
+}
+
+#[cfg(feature = "mujoco")]
+impl RefLib {
+    fn load(path: &str) -> RefLib {
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).expect("REF_LIBRARY file"))
+            .expect("REF_LIBRARY json");
+        let f = |x: &serde_json::Value| x.as_f64().unwrap();
+        let vec3 = |a: &serde_json::Value| {
+            a.as_array().unwrap().iter().map(|r| {
+                let r = r.as_array().unwrap();
+                na::Vector3::new(f(&r[0]), f(&r[1]), f(&r[2]))
+            }).collect::<Vec<_>>()
+        };
+        let sole_l = vec3(&v["sole_l"]);
+        let stance_y0 = sole_l[0].y;
+        let sole_r = vec3(&v["sole_r"]);
+        let swing_z0 = sole_r[0].z - sole_l[0].z;
+        RefLib {
+            swing_z0,
+            phases: v["T"].as_array().unwrap().iter().map(f).collect(),
+            t: v["t"].as_array().unwrap().iter().map(f).collect(),
+            sole: [sole_l, sole_r],
+            stance_y0,
+        }
+    }
+    fn total(&self) -> f64 {
+        self.phases.iter().sum()
+    }
+    /// Sole centre of reference foot `side` at reference time `tau`, linearly
+    /// interpolated between nodes and held at the ends.
+    fn sole_at(&self, side: usize, tau: f64) -> na::Vector3<f64> {
+        let t = &self.t;
+        if tau <= t[0] {
+            return self.sole[side][0];
+        }
+        for k in 0..t.len() - 1 {
+            if tau <= t[k + 1] {
+                let a = ((tau - t[k]) / (t[k + 1] - t[k]).max(1e-9)).clamp(0.0, 1.0);
+                return self.sole[side][k] * (1.0 - a) + self.sole[side][k + 1] * a;
+            }
+        }
+        *self.sole[side].last().unwrap()
+    }
+}
+
+/// An engaged reference: when it started, which walker foot plays the
+/// reference's LEFT (stance) foot, and the frame that maps the reference into
+/// the world (origin = measured stance sole at engagement, `mirror` = -1 when
+/// the stance is the walker's right foot).
+#[cfg(feature = "mujoco")]
+#[derive(Clone, Copy)]
+struct RefMode {
+    t0: f64,
+    stance: usize,
+    origin: na::Vector3<f64>,
+    mirror: f64,
+}
+
+#[cfg(feature = "mujoco")]
+impl RefMode {
+    fn world(&self, lib: &RefLib, p: na::Vector3<f64>) -> na::Vector3<f64> {
+        self.origin + na::Vector3::new(p.x, self.mirror * (p.y - lib.stance_y0), p.z)
+    }
+    /// Walker foot index that plays reference foot `ref_side` (0 = its stance).
+    fn foot(&self, ref_side: usize) -> usize {
+        if ref_side == 0 { self.stance } else { 1 - self.stance }
+    }
+}
+
 fn main() {
     use articara::biped::actuate::{
         CommandPolicy, DegradedTally, gravity_plus_posture, write_to_plant,
@@ -2269,6 +2354,29 @@ fn main() {
     // event, a rising one keeps COM_LAND_EXTEND_RISE as an explicit dwell,
     // and a swing that has not touched by its deadline probes down instead
     // of timing out. Default off = bit-identical.
+    // REF_LIBRARY: a push-recovery reference (scripts/trajopt). Engaged at
+    // the push (REF_TRIG_AT_PUSH=1, bench use) for its whole duration: the
+    // gait is retimed to the reference's phases, the next two footfalls are
+    // placed where it lands, the swing foot follows its sole trajectory, and
+    // landings are taken by measured contact (CONTACT_EVENT) meanwhile. The
+    // MPC and WBC otherwise run as usual on the re-planned DCM. Default
+    // unset = bit-identical.
+    // Several files (comma-separated) make a library: at the push the one
+    // whose initial swing-sole height is closest to the measured one is used
+    // (the phase of the swing is what the references differ in).
+    let ref_libs: Vec<RefLib> = std::env::var("REF_LIBRARY")
+        .ok()
+        .map(|p| p.split(',').filter(|x| !x.is_empty()).map(RefLib::load).collect())
+        .unwrap_or_default();
+    let mut ref_lib: Option<RefLib> = None;
+    let ref_any = !ref_libs.is_empty();
+    let ref_trig_at_push = flag("REF_TRIG_AT_PUSH", false);
+    let ref_swing = flag("REF_SWING", true);
+    let ref_reset_stance = flag("REF_RESET_STANCE", true);
+    let ref_post_hold = env_f64("REF_POST_HOLD", 0.0).max(0.0);
+    let mut ref_mode: Option<RefMode> = None;
+    let mut ref_engagements = 0u32;
+    let event_mode_cfg = flag("CONTACT_EVENT", false);
     landing_timing.event_mode = flag("CONTACT_EVENT", false);
     landing_timing.event_z_tol = env_f64("CONTACT_EVENT_Z", 0.003).max(0.0);
     landing_timing.probe_speed = env_f64("CONTACT_PROBE_VZ", 0.05).max(0.0);
@@ -5505,7 +5613,9 @@ fn main() {
                     } else {
                         None
                     };
-                    if let Some(ne) = new_end {
+                    if let Some(ne) = new_end
+                        && ref_mode.is_none()
+                    {
                         if (gait.slices[i].t1 - ne).abs() > 1e-4 {
                             let d = gait.retime(i, ne);
                             n_ds_retime += 1;
@@ -5640,6 +5750,7 @@ fn main() {
         // asked for and the support polygon refused. Move the next footstep
         // by it, and the next polygon contains what this one could not.
         if contact_plan_on
+            && ref_mode.is_none()
             && let Support::Single { swing, .. } = support
             && dcm_err >= contact_plan_trig
         {
@@ -6960,6 +7071,7 @@ fn main() {
                         // probing for the ground (measured 2026-10-04: the
                         // goal moved 5-12 cm under a foot 2 cm from contact).
                         !landing_timing.landing_closed(i)
+                            && ref_mode.is_none()
                             && frac < if rising {
                                 mpc_footstep_freeze_frac_rise
                             } else {
@@ -8159,7 +8271,7 @@ fn main() {
                 } else {
                     (swing_fraction, swing_duration)
                 };
-                let (mut tgt, tgt_v, tgt_a) =
+                let (mut tgt, mut tgt_v, tgt_a) =
                     if (dz.abs() > 1e-9 || stair_swing_profile) && stair_swing_ff {
                         articara::biped::gait::stair_swing_sink(
                             lift_off,
@@ -8244,6 +8356,22 @@ fn main() {
                     };
                 if resume_ss_dcm_hold.is_some_and(|(_, receiver, _, _)| receiver == side) {
                     tgt.z -= stair_resume_ss_sink;
+                }
+                if let Some(mode) = ref_mode
+                    && let Some(lib) = &ref_lib
+                    && ref_swing
+                {
+                    // Follow the reference's sole trajectory for this foot
+                    // (the reference's right foot is the one that swings
+                    // first). Ankle target = sole centre minus the sole offset.
+                    let ref_side = if side == mode.stance { 0 } else { 1 };
+                    let tau = t - mode.t0;
+                    let sole_w = mode.world(lib, lib.sole_at(ref_side, tau));
+                    let sole_w1 = mode.world(lib, lib.sole_at(ref_side, tau + dt));
+                    let offset = foot_rot_at(side, footsteps.at_slice(slice_idx).yaw[side])
+                        * na::Vector3::new(prof.sole_centre_x, 0.0, -prof.sole_below_origin);
+                    tgt = sole_w - offset;
+                    tgt_v = (sole_w1 - sole_w) / dt;
                 }
                 if landing_timing.probe_depth > 0.0
                     && landing_timing.clock.is_some_and(|(ci, _, _)| ci == slice_idx)
@@ -9535,7 +9663,112 @@ fn main() {
                 push_at_t = Some(t);
                 push_at_step = step_idx;
                 push_degraded_at = tally.n;
+                if ref_any
+                    && ref_trig_at_push
+                    && ref_mode.is_none()
+                    && let Support::Single { stance, swing } = support
+                {
+                    let actual = Footsteps::from_fk(data, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
+                    let z_sw = actual.sole[swing].z - actual.sole[stance].z;
+                    let pick = (0..ref_libs.len())
+                        .min_by(|&a, &b| (ref_libs[a].swing_z0 - z_sw).abs().partial_cmp(&(ref_libs[b].swing_z0 - z_sw).abs()).unwrap())
+                        .unwrap();
+                    ref_lib = Some(ref_libs[pick].clone());
+                    let lib = ref_lib.as_ref().unwrap();
+                    println!("  [ref] swing sole {z_sw:.3} m above stance -> reference {} (z0 {:.3})", pick, lib.swing_z0);
+                    let mode = RefMode { t0: t, stance, origin: actual.sole[stance], mirror: if stance == 0 { 1.0 } else { -1.0 } };
+                    // Phases: this single support ends after phases[0]; the
+                    // double support after it (every DS slice up to the next
+                    // single support) gets phases[1]; the next single support
+                    // phases[2]; the double support after that phases[3].
+                    let i0 = slice_idx;
+                    let mut j = i0;
+                    let mut ph = 0usize;
+                    let mut t_cursor = t;
+                    let mut first_ss_after: Option<usize> = None;
+                    while j < gait.slices.len() && ph < lib.phases.len() {
+                        let is_ss = matches!(gait.slices[j].support, Support::Single { .. });
+                        // Count the slices of this phase (DS phases may be split).
+                        let mut jend = j + 1;
+                        if !is_ss {
+                            while jend < gait.slices.len() && matches!(gait.slices[jend].support, Support::Double) {
+                                jend += 1;
+                            }
+                        }
+                        let n = (jend - j) as f64;
+                        for jj in j..jend {
+                            let end = t_cursor + lib.phases[ph] / n;
+                            gait.retime(jj, end);
+                            t_cursor = end;
+                        }
+                        if is_ss && j != i0 && first_ss_after.is_none() {
+                            first_ss_after = Some(j);
+                        }
+                        j = jend;
+                        ph += 1;
+                    }
+                    // Footfalls: the swing foot lands where the reference's
+                    // right foot lands (end of phase 0); the stance foot's
+                    // next landing is the reference's left-foot landing (end
+                    // of phase 2).
+                    let t_land1 = lib.phases[0];
+                    let t_land2 = lib.phases[0] + lib.phases[1] + lib.phases[2];
+                    let land1 = mode.world(lib, lib.sole_at(1, t_land1));
+                    let d1 = (land1 - footsteps.at_slice(i0).sole[swing]).xy();
+                    footsteps.shift_next(i0, swing, d1);
+                    if let Some(i2) = first_ss_after {
+                        let land2 = mode.world(lib, lib.sole_at(0, t_land2));
+                        let d2 = (land2 - footsteps.at_slice(i2).sole[stance]).xy();
+                        footsteps.shift_next(i2, stance, d2);
+                    }
+                    dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
+                    landing_timing.event_mode = true;
+                    ref_mode = Some(mode);
+                    ref_engagements += 1;
+                    println!(
+                        "  [ref] t={t:.3} engaged: stance={} mirror={:+.0} origin=({:.3},{:.3}) phases={:?} land1=({:.3},{:.3}) land2=({:.3},{:.3}) total={:.3}",
+                        stance, mode.mirror, mode.origin.x, mode.origin.y, lib.phases, land1.x, land1.y,
+                        mode.world(lib, lib.sole_at(0, t_land2)).x, mode.world(lib, lib.sole_at(0, t_land2)).y, lib.total()
+                    );
+                }
             }
+        }
+        if let Some(mode) = ref_mode
+            && let Some(lib) = &ref_lib
+            && t >= mode.t0 + lib.total()
+        {
+            ref_mode = None;
+            landing_timing.event_mode = event_mode_cfg;
+            // The reference leaves the feet where the recovery put them
+            // (in tandem, narrow). Every later footfall is re-centred on the
+            // feet as they are now, at the nominal stance width, so the gait
+            // that resumes is the nominal one and not a stride-0 echo of the
+            // recovery (measured: the echo fell 1.7 s after the reference).
+            if ref_reset_stance {
+                let i = gait.index_at(t);
+                let cur = *footsteps.at_slice(i);
+                let mid = 0.5 * (cur.sole[0].xy() + cur.sole[1].xy());
+                let half_w = 0.5 * (footsteps.initial.sole[0].y - footsteps.initial.sole[1].y).abs();
+                for side in 0..2 {
+                    let want = na::Vector2::new(mid.x, mid.y + if side == 0 { half_w } else { -half_w });
+                    if let Some(j) = (i + 1..gait.slices.len()).find(|&j| gait.slices[j].support.swing() == Some(side)) {
+                        let d = want - footsteps.at_slice(j).sole[side].xy();
+                        footsteps.shift_from(j, side, d);
+                    }
+                }
+                dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
+            }
+            // Let the DCM settle on the new (tandem) stance before stepping
+            // again: lengthen the first double support after the reference.
+            if ref_post_hold > 0.0 {
+                let i = gait.index_at(t);
+                if let Some(j) = (i..gait.slices.len()).find(|&j| matches!(gait.slices[j].support, Support::Double)) {
+                    let end = gait.slices[j].t1 + ref_post_hold;
+                    gait.retime(j, end);
+                    dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
+                }
+            }
+            println!("  [ref] t={t:.3} reference over, back to the gait");
         }
 
         support_prev = Some(support);
@@ -10091,6 +10324,9 @@ fn main() {
     }
     if land_wait_hold {
         println!("  landing wait hold: {n_wait_hold} plan writes");
+    }
+    if ref_any {
+        println!("  reference engagements: {ref_engagements}");
     }
     if landing_timing.event_mode {
         println!(
