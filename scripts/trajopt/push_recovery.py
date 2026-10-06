@@ -30,6 +30,9 @@ p.add_argument('--tmax', type=str, default='0.80,0.40,0.80,0.80')
 p.add_argument('--vscale', type=float, default=1.0, help='fraction of the URDF joint velocity limits allowed')
 p.add_argument('--clear', type=float, default=0.11, help='leg-leg clearance between sampled centre-line points [m]')
 p.add_argument('--tau-scale', type=float, default=0.9, help='joint torque bound as a fraction of the URDF effort limits (0 = no torque constraint)')
+p.add_argument('--vx', type=float, default=0.0, help='forward CoM speed at the push [m/s] (walking scenario)')
+p.add_argument('--swing-x', type=float, default=0.0, help='initial x of the swing (right) sole [m] (walking scenario: mid-swing ahead)')
+p.add_argument('--lbfgs', action='store_true', help='limited-memory Hessian in IPOPT (the exact Hessian of the torque constraints takes ~28 GB)')
 p.add_argument('--out', type=str, default='')
 p.add_argument('--max-iter', type=int, default=1500)
 args = p.parse_args()
@@ -62,13 +65,13 @@ _tau = g.inverse_dynamics(qs, vs, _as) - ca.mtimes(ca.jacobian(_cpos, qs).T, _fs
 f_tau = ca.Function('tau', [qs, vs, _as, _fs], [_tau[6:]])
 
 # ---- standing pose by a small NLP: both soles flat, CoM at height, arms 0 ----
-def standing_pose(com_xy, right_z):
+def standing_pose(com_xy, right_z, right_x=0.0):
     o = ca.Opti()
     q = o.variable(nq)
     w = args.width / 2
-    for s, (y, z) in enumerate([(w, 0.0), (-w, right_z)]):
+    for s, (x, y, z) in enumerate([(0.0, w, 0.0), (right_x, -w, right_z)]):
         ps, Rs = f_sole[s](q)
-        o.subject_to(ps == ca.DM([0.0, y, z]))
+        o.subject_to(ps == ca.DM([x, y, z]))
         o.subject_to(Rs[2, 0] == 0); o.subject_to(Rs[2, 1] == 0); o.subject_to(Rs[1, 0] == 0)
     c = f_com(q)
     o.subject_to(c == ca.DM([com_xy[0], com_xy[1], args.zcom]))
@@ -86,7 +89,7 @@ def standing_pose(com_xy, right_z):
     return np.array(o.solve().value(q))
 
 w = args.width / 2
-q_init = standing_pose((0.0, w * 0.7), 0.05)   # CoM mostly over the left (stance) foot
+q_init = standing_pose((0.0, w * 0.7), 0.05, args.swing_x)   # CoM mostly over the left (stance) foot
 q_stand = standing_pose((0.0, 0.0), 0.0)
 vy = args.impulse / M
 omega = np.sqrt(G / args.zcom)
@@ -118,9 +121,10 @@ _pl, _Rl = soles[0][1], soles[0][0]
 _cs = ca.vertcat(*[_pl + ca.mtimes(_Rl, ca.DM(c)) for c in corners[:3]])
 _A = ca.Function('A', [qs], [ca.vertcat(ca.jacobian(_cs, qs), ca.jacobian(f_mom(qs, vs)[0:3], vs))])
 A0 = np.array(_A(q_init))
-v0 = np.linalg.pinv(A0) @ np.concatenate([np.zeros(9), [0.0, M * vy, 0.0]])
+b0 = np.concatenate([np.zeros(9), [M * args.vx, M * vy, 0.0]])
+v0 = np.linalg.pinv(A0) @ b0
 print('initial velocity: |A v0 - b| = %.1e, base lin %s, max joint speed %.2f rad/s' % (
-    np.abs(A0 @ v0 - np.concatenate([np.zeros(9), [0.0, M * vy, 0.0]])).max(), np.round(v0[0:3], 3), np.abs(v0[6:]).max()))
+    np.abs(A0 @ v0 - b0).max(), np.round(v0[0:3], 3), np.abs(v0[6:]).max()))
 o.subject_to(Q[0] == q_init)
 o.subject_to(V[0] == v0)
 o.subject_to(V[N] == 0)
@@ -206,8 +210,10 @@ for k in range(N + 1):
     a = k / N
     o.set_initial(Q[k], (1 - a) * q_init + a * q_stand)
     o.set_initial(V[k], np.zeros(nq))
-o.solver('ipopt', {'print_time': False}, {'max_iter': args.max_iter, 'tol': 1e-5, 'acceptable_tol': 1e-3,
-                                         'acceptable_iter': 10, 'print_level': 3, 'linear_solver': 'mumps'})
+ipopt_opts = {'max_iter': args.max_iter, 'tol': 1e-5, 'acceptable_tol': 1e-3, 'acceptable_iter': 10, 'print_level': 3, 'linear_solver': 'mumps'}
+if args.lbfgs:
+    ipopt_opts['hessian_approximation'] = 'limited-memory'
+o.solver('ipopt', {'print_time': False}, ipopt_opts)
 t0 = time.time()
 try:
     sol = o.solve()
