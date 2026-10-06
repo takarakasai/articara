@@ -37,6 +37,8 @@ use nalgebra as na;
 struct RefLib {
     phases: Vec<f64>,
     swing_z0: f64,
+    /// Swing phase (fraction of the single support) this reference is meant for.
+    swing_phase: f64,
     t: Vec<f64>,
     sole: [Vec<na::Vector3<f64>>; 2],
     stance_y0: f64,
@@ -60,6 +62,7 @@ impl RefLib {
         let swing_z0 = sole_r[0].z - sole_l[0].z;
         RefLib {
             swing_z0,
+            swing_phase: v["swing_phase"].as_f64().unwrap_or(0.5),
             phases: v["T"].as_array().unwrap().iter().map(f).collect(),
             t: v["t"].as_array().unwrap().iter().map(f).collect(),
             sole: [sole_l, sole_r],
@@ -2373,6 +2376,9 @@ fn main() {
     let ref_trig_at_push = flag("REF_TRIG_AT_PUSH", false);
     let ref_swing = flag("REF_SWING", true);
     let ref_reset_stance = flag("REF_RESET_STANCE", true);
+    // No reference when the push lands this late in the swing (the walker
+    // copes on its own there; measured in-place 5 N s at phase 0.7: 3/3).
+    let ref_trig_max_frac = env_f64("REF_TRIG_MAX_FRAC", 1.0);
     let ref_post_hold = env_f64("REF_POST_HOLD", 0.0).max(0.0);
     let mut ref_mode: Option<RefMode> = None;
     let mut ref_engagements = 0u32;
@@ -9666,16 +9672,20 @@ fn main() {
                 if ref_any
                     && ref_trig_at_push
                     && ref_mode.is_none()
+                    && slice_frac <= ref_trig_max_frac
                     && let Support::Single { stance, swing } = support
                 {
                     let actual = Footsteps::from_fk(data, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
-                    let z_sw = actual.sole[swing].z - actual.sole[stance].z;
+                    // Pick the reference meant for the nearest swing phase.
+                    // (Selecting by the swing foot's height was tried first:
+                    // on the flat in-place gait the apex comes late, so the
+                    // height does not order the phases.)
                     let pick = (0..ref_libs.len())
-                        .min_by(|&a, &b| (ref_libs[a].swing_z0 - z_sw).abs().partial_cmp(&(ref_libs[b].swing_z0 - z_sw).abs()).unwrap())
+                        .min_by(|&a, &b| (ref_libs[a].swing_phase - slice_frac).abs().partial_cmp(&(ref_libs[b].swing_phase - slice_frac).abs()).unwrap())
                         .unwrap();
                     ref_lib = Some(ref_libs[pick].clone());
                     let lib = ref_lib.as_ref().unwrap();
-                    println!("  [ref] swing sole {z_sw:.3} m above stance -> reference {} (z0 {:.3})", pick, lib.swing_z0);
+                    println!("  [ref] swing phase {slice_frac:.2} -> reference {} (meant for {:.2})", pick, lib.swing_phase);
                     let mode = RefMode { t0: t, stance, origin: actual.sole[stance], mirror: if stance == 0 { 1.0 } else { -1.0 } };
                     // Phases: this single support ends after phases[0]; the
                     // double support after it (every DS slice up to the next

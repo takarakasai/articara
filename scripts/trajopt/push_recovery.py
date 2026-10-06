@@ -33,6 +33,7 @@ p.add_argument('--tau-scale', type=float, default=0.9, help='joint torque bound 
 p.add_argument('--swing-z', type=float, default=0.05, help='initial height of the swing (right) sole [m]')
 p.add_argument('--lmax', type=float, default=0.0, help='bound on |angular momentum| about the CoM [N m s] (0 = none)')
 p.add_argument('--swing-ymin', type=float, default=-9.0, help='lower bound on the swing (right) sole y during the first phase [m] (no outward wind-up)')
+p.add_argument('--phase', type=float, default=0.5, help='swing phase of the walker this reference is meant for (stored in the JSON for library selection)')
 p.add_argument('--vx', type=float, default=0.0, help='forward CoM speed at the push [m/s] (walking scenario)')
 p.add_argument('--swing-x', type=float, default=0.0, help='initial x of the swing (right) sole [m] (walking scenario: mid-swing ahead)')
 p.add_argument('--lbfgs', action='store_true', help='limited-memory Hessian in IPOPT (the exact Hessian of the torque constraints takes ~28 GB)')
@@ -256,6 +257,6 @@ if args.out:
         for s_ in (0, 1):
             if F[k][s_] is not None:
                 Fn[k, s_] = np.array([sol.value(fc) for fc in F[k][s_]])
-    json.dump({'ok': ok, 'impulse': args.impulse, 'T': Tn, 't': t.tolist(), 'q': Qn.tolist(), 'v': Vn.tolist(), 'f': Fn.tolist(),
+    json.dump({'ok': ok, 'impulse': args.impulse, 'swing_phase': args.phase, 'T': Tn, 't': t.tolist(), 'q': Qn.tolist(), 'v': Vn.tolist(), 'f': Fn.tolist(),
                'names': g.names, 'com': com.tolist(), 'sole_l': np.array(sole_xy[0]).tolist(), 'sole_r': np.array(sole_xy[1]).tolist()},
               open(args.out, 'w'))
