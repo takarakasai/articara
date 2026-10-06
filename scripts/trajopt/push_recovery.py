@@ -29,6 +29,7 @@ p.add_argument('--tmin', type=str, default='0.20,0.05,0.25,0.20')
 p.add_argument('--tmax', type=str, default='0.80,0.40,0.80,0.80')
 p.add_argument('--vscale', type=float, default=1.0, help='fraction of the URDF joint velocity limits allowed')
 p.add_argument('--clear', type=float, default=0.11, help='leg-leg clearance between sampled centre-line points [m]')
+p.add_argument('--tau-scale', type=float, default=0.9, help='joint torque bound as a fraction of the URDF effort limits (0 = no torque constraint)')
 p.add_argument('--out', type=str, default='')
 p.add_argument('--max-iter', type=int, default=1500)
 args = p.parse_args()
@@ -52,6 +53,13 @@ def _chain(side):
     return [0.5 * (h + k), k, 0.67 * k + 0.33 * a_, 0.33 * k + 0.67 * a_, a_]
 f_legs = ca.Function('legs', [qs], [ca.horzcat(*_chain('left')), ca.horzcat(*_chain('right'))])
 corners = [np.array([sx * SOLE_HALF[0], sy * SOLE_HALF[1], 0.0]) for sx in (1, -1) for sy in (1, -1)]
+# Joint torques of the full model: Lagrangian inverse dynamics minus the
+# contact forces mapped through the corner Jacobians (validated against
+# pinocchio's RNEA in g1_casadi_model.py).
+_as, _fs = ca.SX.sym('a', nq), ca.SX.sym('f', 24)
+_cpos = ca.vertcat(*[soles[s][1] + ca.mtimes(soles[s][0], ca.DM(c)) for s in (0, 1) for c in corners])
+_tau = g.inverse_dynamics(qs, vs, _as) - ca.mtimes(ca.jacobian(_cpos, qs).T, _fs)
+f_tau = ca.Function('tau', [qs, vs, _as, _fs], [_tau[6:]])
 
 # ---- standing pose by a small NLP: both soles flat, CoM at height, arms 0 ----
 def standing_pose(com_xy, right_z):
@@ -176,6 +184,11 @@ for k in range(N):
             force += fc
             moment += ca.cross(r - c1, fc)
             cost += 1e-5 * dt * ca.sumsqr(fc)
+    if args.tau_scale > 0:
+        fvec = ca.vertcat(*[(F[k][s_][j] if F[k][s_] is not None else ca.DM.zeros(3)) for s_ in (0, 1) for j in range(4)])
+        tau_k = f_tau(q1, v1, (v1 - v0_) / dt, fvec)
+        o.subject_to(o.bounded(-g.taumax * args.tau_scale, tau_k, g.taumax * args.tau_scale))
+        cost += dt * 1e-5 * ca.sumsqr(tau_k)
     o.subject_to(h1[0:3] == h0[0:3] + dt * (force + ca.DM([0, 0, -M * G])))
     o.subject_to(h1[3:6] == h0[3:6] + dt * moment)
     cost += dt * (1e-2 * ca.sumsqr(v1[6:]) + 1e-1 * ca.sumsqr(v1[3:6]) + 1e-3 * ca.sumsqr((v1 - v0_) / dt) * 1e-2)

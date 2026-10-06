@@ -15,6 +15,12 @@ from g1_casadi_model import G1Model, URDF, SOLE_OFFSET, SOLE_HALF, FOOT_LINKS
 d = json.load(open(sys.argv[1]))
 kp = float(os.environ.get('KP', 300)); kd = float(os.environ.get('KD', 10)); hold = float(os.environ.get('HOLD', 1.0))
 mu = float(os.environ.get('MU', 0.7))
+# Crude balance feedback (BAL_KP > 0): a virtual force on the CoM and a
+# torque on the pelvis, proportional to the error against the PLAN, pushed
+# through the stance leg(s) as joint torques (tau = -J_foot^T F). This is a
+# stand-in for a tracking controller, not the walker's WBC.
+bal_kp = float(os.environ.get('BAL_KP', 0)); bal_kd = float(os.environ.get('BAL_KD', 0))
+bal_kr = float(os.environ.get('BAL_KR', 0)); bal_kw = float(os.environ.get('BAL_KW', 0))
 g = G1Model(); pm = g.pin; pdata = pm.createData()
 Q, V, F, t = np.array(d['q']), np.array(d['v']), np.array(d['f']), np.array(d['t'])
 N = len(F)
@@ -71,6 +77,7 @@ for k in range(N):
                 tau -= (M.rotation @ (J[:3] - pin.skew(SOLE_OFFSET + corners[j]) @ J[3:])).T @ f
     tau_ff[k] = np.clip(tau[6:], -g.taumax, g.taumax)
 
+com_ref = np.array(d['com'])
 set_state(Q[0], V[0])
 mujoco.mj_forward(model, data)
 foot_body = [model.body(n.replace('_joint', '_link')).id for n in FOOT_LINKS]
@@ -86,7 +93,31 @@ while data.time < T_end:
     else:
         qr = Q[-1, 6:]; vr = np.zeros(g.nj); ff = tau_ff[-1]
     qj = np.array([data.qpos[i] for i in jadr]); vj = np.array([data.qvel[i] for i in dadr])
-    data.ctrl[:] = np.clip(ff + kp * (qr - qj) + kd * (vr - vj), -g.taumax, g.taumax)
+    tau_cmd = ff + kp * (qr - qj) + kd * (vr - vj)
+    if bal_kp > 0 and tt < t[-1] + hold:
+        kk = min(k, N - 1)
+        a_ = min(max((tt - t[kk]) / (t[kk + 1] - t[kk]), 0.0), 1.0) if tt < t[-1] else 1.0
+        c_ref = (1 - a_) * com_ref[kk] + a_ * com_ref[kk + 1] if tt < t[-1] else com_ref[-1]
+        cdot_ref = (com_ref[kk + 1] - com_ref[kk]) / (t[kk + 1] - t[kk]) if tt < t[-1] else np.zeros(3)
+        c = data.subtree_com[1].copy(); cdot = data.subtree_linvel[1].copy() if hasattr(data, 'subtree_linvel') else np.zeros(3)
+        Fv = bal_kp * (c_ref - c) + bal_kd * (cdot_ref - cdot)
+        rpy_ref = (1 - a_) * Q[kk, 3:6] + a_ * Q[kk + 1, 3:6] if tt < t[-1] else Q[-1, 3:6]
+        Rm = data.xmat[1].reshape(3, 3); Rr = np.array(pin.rpy.rpyToMatrix(*rpy_ref))
+        e_rot = pin.log3(Rr @ Rm.T)                       # world-frame rotation error
+        w_body = Rm @ data.qvel[3:6]
+        Mv = bal_kr * e_rot - bal_kw * w_body
+        # Stance feet = those the plan loads in this interval (both when standing).
+        stance = [s_ for s_ in (0, 1) if (tt >= t[-1]) or np.any(F[kk, s_])]
+        q_now = np.concatenate([data.qpos[0:3], np.zeros(3), qj]); 
+        qp_now = np.concatenate([data.qpos[0:3], data.qpos[4:7], data.qpos[3:4], qj])
+        pin.computeJointJacobians(pm, pdata, qp_now); pin.framesForwardKinematics(pm, pdata, qp_now)
+        for s_ in stance:
+            jid = pm.getJointId(FOOT_LINKS[s_]); Mf = pdata.oMi[jid]
+            J = pin.getJointJacobian(pm, pdata, jid, pin.ReferenceFrame.LOCAL)
+            Jw = np.vstack([Mf.rotation @ (J[:3] - pin.skew(SOLE_OFFSET) @ J[3:]), Mf.rotation @ J[3:]])  # world lin/ang of the sole
+            # A wrench on the body with the foot fixed = the opposite wrench applied at the foot.
+            tau_cmd -= (Jw[:, 6:].T @ np.concatenate([Fv, Mv])) / len(stance)
+    data.ctrl[:] = np.clip(tau_cmd, -g.taumax, g.taumax)
     mujoco.mj_step(model, data)
     for c in data.contact[:data.ncon]:
         b1, b2 = model.geom_bodyid[c.geom1], model.geom_bodyid[c.geom2]
@@ -98,7 +129,7 @@ while data.time < T_end:
         log.append((data.time, *data.subtree_com[1], np.degrees(np.arccos(np.clip(R[2, 2], -1, 1))),
                     *[data.xpos[b][2] for b in foot_body], *[data.xpos[b][1] for b in foot_body]))
 log = np.array(log)
-print('impulse %.0f N s, kp %.0f kd %.0f, friction %.2f' % (d['impulse'], kp, kd, mu))
+print('impulse %.0f N s, kp %.0f kd %.0f, friction %.2f, balance kp %.0f kd %.0f kr %.0f kw %.0f' % (d['impulse'], kp, kd, mu, bal_kp, bal_kd, bal_kr, bal_kw))
 print('   t    com_x  com_y  com_z  tilt[deg]  ankleL_z ankleR_z  ankleL_y ankleR_y')
 for row in log[::max(1, len(log) // 24)]:
     print('%5.2f  %6.3f %6.3f %6.3f  %6.1f     %6.3f   %6.3f   %6.3f   %6.3f' % tuple(row))

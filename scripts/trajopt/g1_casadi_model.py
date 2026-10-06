@@ -134,6 +134,33 @@ class G1Model:
             ang += I.mass * ca.cross(ci - c, vi - vc) + ca.mtimes(Iw, w[i])
         return lin, ang
 
+    def energies(self, q, v):
+        """(kinetic, potential) energy of the whole model."""
+        m = self.pin
+        R, p = self.frames(q)
+        w = [None] * m.njoints
+        w[1] = rpy_rate_to_omega(q[3:6], v[3:6])
+        for i in range(2, m.njoints):
+            w[i] = w[m.parents[i]] + ca.mtimes(R[i], ca.DM(self.axes[i - 2])) * v[6 + i - 2]
+        T = 0
+        U = 0
+        for i in range(1, m.njoints):
+            I = m.inertias[i]
+            ci = p[i] + ca.mtimes(R[i], ca.DM(I.lever))
+            vi = ca.jtimes(ci, q, v)
+            wl = ca.mtimes(R[i].T, w[i])
+            T += 0.5 * I.mass * ca.dot(vi, vi) + 0.5 * ca.dot(wl, ca.mtimes(ca.DM(I.inertia), wl))
+            U += I.mass * 9.81 * ci[2]
+        return T, U
+
+    def inverse_dynamics(self, q, v, a):
+        """Generalised forces of the unconstrained model for (q, v, a), by
+        Lagrange's equations on the energies: d/dt(dT/dv) - dT/dq + dU/dq.
+        The last `nj` entries are the joint torques (before contact forces)."""
+        T, U = self.energies(q, v)
+        mom = ca.gradient(T, v)
+        return ca.jtimes(mom, v, a) + ca.jtimes(mom, q, v) - ca.gradient(T, q) + ca.gradient(U, q)
+
     # -- conversion to pinocchio's coordinates (for validation) ----------------
     def to_pin(self, q, v):
         Rb = np.array(ca.DM(rpy_matrix(ca.DM(q[3:6]))))
@@ -173,6 +200,24 @@ def validate(n=20, seed=0):
             errs.append(max(np.abs(pn.ravel() - (M.translation + M.rotation @ SOLE_OFFSET)).max(),
                             np.abs(Rn - M.rotation).max()))
         worst = np.maximum(worst, errs)
+    # Inverse dynamics against pinocchio's RNEA (joint rows only: the base
+    # rows are conjugate to different coordinates).
+    acc = ca.SX.sym('a', g.nq)
+    f_id = ca.Function('id', [q, v, acc], [g.inverse_dynamics(q, v, acc)])
+    worst_tau = 0.0
+    for _ in range(5):
+        qn = np.concatenate([rng.uniform(-0.3, 0.3, 3) + [0, 0, 0.75], rng.uniform(-0.4, 0.4, 3),
+                             rng.uniform(g.lower, g.upper) * 0.6])
+        vn = rng.uniform(-1.0, 1.0, g.nq)
+        eps = 1e-6
+        an = rng.uniform(-3.0, 3.0, g.nq)
+        qp, vp = g.to_pin(qn, vn)
+        _, vp2 = g.to_pin(qn + eps * vn, vn + eps * an)     # pinocchio acceleration by finite difference
+        tau_pin = pin.rnea(m, d, qp, vp, (vp2 - vp) / eps)
+        tau = np.array(f_id(qn, vn, an)).ravel()
+        worst_tau = max(worst_tau, np.abs(tau[6:] - tau_pin[6:]).max())
+    print('max |joint torque error| vs pinocchio RNEA over 5 random states: %.2e N m' % worst_tau)
+    assert worst_tau < 1e-3, 'CasADi inverse dynamics disagrees with pinocchio'
     print(f'mass {g.mass:.3f} kg, nj {g.nj}')
     print('max |error| over %d random states: com %.2e m, lin %.2e, ang %.2e, sole L %.2e, sole R %.2e' % (n, *worst))
     assert worst.max() < 1e-9, 'CasADi model disagrees with pinocchio'
