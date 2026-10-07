@@ -35,6 +35,7 @@ p.add_argument('--lmax', type=float, default=0.0, help='bound on |angular moment
 p.add_argument('--swing-ymin', type=float, default=-9.0, help='lower bound on the swing (right) sole y during the first phase [m] (no outward wind-up)')
 p.add_argument('--phase', type=float, default=0.5, help='swing phase of the walker this reference is meant for (stored in the JSON for library selection)')
 p.add_argument('--end-width', type=float, default=0.0, help='end with the feet at this stance width and nearly side by side (0 = free), so the gait can resume from its nominal stance')
+p.add_argument('--cross', type=float, default=-9.0, help='force a crossover: the first landing of the swing (right) foot at least this far to the +y side of the stance foot [m]')
 p.add_argument('--vx', type=float, default=0.0, help='forward CoM speed at the push [m/s] (walking scenario)')
 p.add_argument('--swing-x', type=float, default=0.0, help='initial x of the swing (right) sole [m] (walking scenario: mid-swing ahead)')
 p.add_argument('--lbfgs', action='store_true', help='limited-memory Hessian in IPOPT (the exact Hessian of the torque constraints takes ~28 GB)')
@@ -211,6 +212,9 @@ for k in range(N):
 pl, _ = f_sole[0](Q[N]); pr, _ = f_sole[1](Q[N])
 cN = f_com(Q[N])
 o.subject_to(cN[0:2] == 0.5 * (pl[0:2] + pr[0:2]))
+if args.cross > -1.0:
+    pr1, _ = f_sole[1](Q[n_ph[0]])
+    o.subject_to(pr1[1] >= w + args.cross)
 if args.end_width > 0:
     # Hand back to the gait from its nominal stance: left foot a stance width
     # to the left of the right one and at most 8 cm ahead/behind it.
