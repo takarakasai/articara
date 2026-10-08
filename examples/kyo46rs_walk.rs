@@ -1380,6 +1380,12 @@ fn main() {
     // speed command it leaves every other bench bit-identical. 0 = off.
     let vx2_z_drop = env_f64("VX2_Z_DROP", 0.0).max(0.0);
     let mut vx2_z_track = 0.0_f64;
+    let push_z_drop = env_f64("PUSH_Z_DROP", 0.0).max(0.0);
+    let push_z_drop_trig = env_f64("PUSH_Z_DROP_TRIG", 0.03).max(0.0);
+    let push_z_drop_t = env_f64("PUSH_Z_DROP_T", 1.5).max(0.0);
+    let push_z_drop_lat_max = env_f64("PUSH_Z_DROP_LAT_MAX", 0.02).max(0.0);
+    let mut push_z_drop_until = f64::NEG_INFINITY;
+    let mut n_push_z_drop = 0u32;
     let vx2_z_from: Option<f64> = match vx2_change {
         Some((at, _, _)) if vx2_z_drop > 0.0 => gait
             .slices
@@ -5640,6 +5646,19 @@ fn main() {
             dcm_ref_prev_dot = Some(r.xi_dot);
         }
         let dcm_err = (xi - r.xi).norm();
+        // Backward-dominant only, and never under an engaged recovery
+        // reference (measured: firing on lateral pushes cost the lateral
+        // ladder 136 -> 129 while the reference was running).
+        if push_z_drop > 0.0
+            && (xi - r.xi).x < -push_z_drop_trig
+            && (xi - r.xi).y.abs() < push_z_drop_lat_max
+            && ref_mode.is_none()
+            && t >= push_z_drop_until
+        {
+            push_z_drop_until = t + push_z_drop_t;
+            n_push_z_drop += 1;
+            println!("  [zdrop] t={t:.3} backward DCM error {:+.3} m -> CoM {:.3} m lower for {push_z_drop_t:.2} s", (xi - r.xi).x, push_z_drop);
+        }
         // Engage a recovery reference: on request from the push harness
         // (REF_TRIG_AT_PUSH) or when the DCM error toward the STANCE side
         // exceeds REF_TRIG_DCM in single support (the detector).
@@ -5705,20 +5724,34 @@ fn main() {
                     j = jend;
                     ph += 1;
                 }
-                // Footfalls: the swing foot lands where the reference's
-                // right foot lands (end of phase 0); the stance foot's
-                // next landing is the reference's left-foot landing (end
-                // of phase 2).
-                let t_land1 = lib.phases[0];
-                let t_land2 = lib.phases[0] + lib.phases[1] + lib.phases[2];
-                let land1 = mode.world(lib, lib.sole_at(1, t_land1));
-                let d1 = (land1 - footsteps.at_slice(i0).sole[swing]).xy();
-                footsteps.shift_next(i0, swing, d1);
-                if let Some(i2) = first_ss_after {
-                    let land2 = mode.world(lib, lib.sole_at(0, t_land2));
-                    let d2 = (land2 - footsteps.at_slice(i2).sole[stance]).xy();
-                    footsteps.shift_next(i2, stance, d2);
+                // Footfalls: every single-support phase of the reference
+                // lands its swing foot (reference right, left, right, ...)
+                // where the reference puts it at the end of that phase.
+                let mut t_end = 0.0;
+                let mut jj = i0;
+                let mut ref_sw = 1usize;
+                let mut land1 = na::Vector3::zeros();
+                let mut land2 = na::Vector3::zeros();
+                for (ph, dur) in lib.phases.iter().enumerate() {
+                    t_end += dur;
+                    if ph % 2 == 0 {
+                        // find the single-support slice of this phase
+                        while jj < gait.slices.len() && gait.slices[jj].support.swing().is_none() {
+                            jj += 1;
+                        }
+                        if jj >= gait.slices.len() {
+                            break;
+                        }
+                        let foot = mode.foot(ref_sw);
+                        let land = mode.world(lib, lib.sole_at(ref_sw, t_end));
+                        let d = (land - footsteps.at_slice(jj).sole[foot]).xy();
+                        footsteps.shift_next(jj, foot, d);
+                        if ph == 0 { land1 = land; } else if ph == 2 { land2 = land; }
+                        ref_sw = 1 - ref_sw;
+                        jj += 1;
+                    }
                 }
+                let _ = first_ss_after;
                 dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
                 landing_timing.event_mode = true;
                 ref_mode = Some(mode);
@@ -5726,7 +5759,7 @@ fn main() {
                 println!(
                     "  [ref] t={t:.3} engaged: stance={} mirror={:+.0} origin=({:.3},{:.3}) phases={:?} land1=({:.3},{:.3}) land2=({:.3},{:.3}) total={:.3}",
                     stance, mode.mirror, mode.origin.x, mode.origin.y, lib.phases, land1.x, land1.y,
-                    mode.world(lib, lib.sole_at(0, t_land2)).x, mode.world(lib, lib.sole_at(0, t_land2)).y, lib.total()
+                    land2.x, land2.y, lib.total()
                 );
             
             }
@@ -6804,8 +6837,15 @@ fn main() {
         };
         // VX2_Z_DROP: eased in at 50 mm/s on top of whichever height
         // reference is live (the flat walk never enters the replan branch).
-        let (z_ref, zd_ref) = if vx2_z_from.is_some_and(|t0| t >= t0) {
-            let d = (vx2_z_drop - vx2_z_track).clamp(0.0, 0.05 * dt);
+        // PUSH_Z_DROP: lower the CoM for PUSH_Z_DROP_T after a BACKWARD
+        // push (DCM error behind the plan by more than PUSH_Z_DROP_TRIG).
+        // Measured 2026-10-05: 24 mm lower for the whole run doubles the
+        // backward-push survival (21 -> 43/48) but trades descents away;
+        // tied to the detection it leaves the other benches alone.
+        let z_drop_target = (if vx2_z_from.is_some_and(|t0| t >= t0) { vx2_z_drop } else { 0.0 })
+            .max(if t < push_z_drop_until { push_z_drop } else { 0.0 });
+        let (z_ref, zd_ref) = if z_drop_target > 0.0 || vx2_z_track > 0.0 {
+            let d = (z_drop_target - vx2_z_track).clamp(-0.05 * dt, 0.05 * dt);
             vx2_z_track += d;
             (z_ref - vx2_z_track, zd_ref - d / dt)
         } else {
@@ -10467,6 +10507,9 @@ fn main() {
     }
     if land_wait_hold {
         println!("  landing wait hold: {n_wait_hold} plan writes");
+    }
+    if push_z_drop > 0.0 {
+        println!("  push CoM drops: {n_push_z_drop}");
     }
     if ref_any {
         println!("  reference engagements: {ref_engagements}");
