@@ -41,6 +41,9 @@ struct RefLib {
     swing_phase: f64,
     t: Vec<f64>,
     sole: [Vec<na::Vector3<f64>>; 2],
+    /// CoM at the nodes, and the vertical force of each foot per interval.
+    com: Vec<na::Vector3<f64>>,
+    fz: [Vec<f64>; 2],
     stance_y0: f64,
 }
 
@@ -60,7 +63,15 @@ impl RefLib {
         let stance_y0 = sole_l[0].y;
         let sole_r = vec3(&v["sole_r"]);
         let swing_z0 = sole_r[0].z - sole_l[0].z;
+        let com = vec3(&v["com"]);
+        let fz: [Vec<f64>; 2] = {
+            let fa = v["f"].as_array().map(|a| a.to_vec()).unwrap_or_default();
+            let per = |side: usize| fa.iter().map(|k| k[side].as_array().unwrap().iter().map(|c| f(&c[2])).sum::<f64>()).collect::<Vec<f64>>();
+            [per(0), per(1)]
+        };
         RefLib {
+            com,
+            fz,
             swing_z0,
             swing_phase: v["swing_phase"].as_f64().unwrap_or(0.5),
             phases: v["T"].as_array().unwrap().iter().map(f).collect(),
@@ -71,6 +82,40 @@ impl RefLib {
     }
     fn total(&self) -> f64 {
         self.phases.iter().sum()
+    }
+    fn interp(&self, xs: &[na::Vector3<f64>], tau: f64) -> na::Vector3<f64> {
+        let t = &self.t;
+        if tau <= t[0] {
+            return xs[0];
+        }
+        for k in 0..t.len() - 1 {
+            if tau <= t[k + 1] {
+                let a = ((tau - t[k]) / (t[k + 1] - t[k]).max(1e-9)).clamp(0.0, 1.0);
+                return xs[k] * (1.0 - a) + xs[k + 1] * a;
+            }
+        }
+        *xs.last().unwrap()
+    }
+    /// Reference DCM (xy) at `tau`: c + c_dot / omega, c_dot by finite difference.
+    fn dcm_at(&self, tau: f64, omega: f64) -> na::Vector2<f64> {
+        let h = 0.01;
+        let c = self.interp(&self.com, tau);
+        let cd = (self.interp(&self.com, tau + h) - self.interp(&self.com, (tau - h).max(0.0))) / (h + (tau - (tau - h).max(0.0)));
+        (c + cd / omega).xy()
+    }
+    /// Reference net CoP (xy) at `tau`: the soles weighted by their vertical force.
+    fn cop_at(&self, tau: f64) -> na::Vector2<f64> {
+        let t = &self.t;
+        let mut k = 0usize;
+        while k + 1 < self.fz[0].len() && tau > t[k + 1] {
+            k += 1;
+        }
+        let (fl, fr) = (self.fz[0][k].max(0.0), self.fz[1][k].max(0.0));
+        let (pl, pr) = (self.sole_at(0, tau), self.sole_at(1, tau));
+        if fl + fr < 1.0 {
+            return (0.5 * (pl + pr)).xy();
+        }
+        ((pl * fl + pr * fr) / (fl + fr)).xy()
     }
     /// Sole centre of reference foot `side` at reference time `tau`, linearly
     /// interpolated between nodes and held at the ends.
@@ -109,6 +154,9 @@ struct RefMode {
 impl RefMode {
     fn world(&self, lib: &RefLib, p: na::Vector3<f64>) -> na::Vector3<f64> {
         self.origin + na::Vector3::new(p.x, self.mirror * (p.y - lib.stance_y0), p.z)
+    }
+    fn world_xy(&self, lib: &RefLib, p: na::Vector2<f64>) -> na::Vector2<f64> {
+        self.world(lib, na::Vector3::new(p.x, p.y, 0.0)).xy()
     }
     /// Walker foot index that plays reference foot `ref_side` (0 = its stance).
     fn foot(&self, ref_side: usize) -> usize {
@@ -2390,6 +2438,11 @@ fn main() {
     // 0 = enter the reference at its start even when the detector fired late
     // (for references solved with the detection delay in their initial state).
     let ref_delay_comp = flag("REF_DELAY_COMP", true);
+    // 1 = while a reference is engaged the MPC's DCM and net-CoP reference
+    // schedules come from the reference (its CoM and contact forces) instead
+    // of the re-planned LIPM.
+    let ref_mpc = flag("REF_MPC", false);
+    let ref_wbc = flag("REF_WBC", false);
     let mut ref_cooldown_until = f64::NEG_INFINITY;
     let mut ref_engage_pending: Option<f64> = None;
     let mut ref_lat_quiet_t = f64::NEG_INFINITY;
@@ -5417,6 +5470,21 @@ fn main() {
             }
         };
         let mut r = dcm_plan.reference_preview(t, dcm_preview_horizon);
+        // REF_WBC=1: while a reference is engaged the DCM law tracks the
+        // reference's own DCM and CoP (its CoM and contact forces) instead of
+        // the re-planned LIPM.
+        if let (Some(mode), Some(lib)) = (ref_mode, ref_lib.as_ref())
+            && ref_wbc
+        {
+            let tau = t - mode.t0 + mode.tau0;
+            if tau <= lib.total() {
+                let xi = mode.world_xy(lib, lib.dcm_at(tau, omega));
+                let xi1 = mode.world_xy(lib, lib.dcm_at(tau + 0.01, omega));
+                r.xi = xi;
+                r.xi_dot = (xi1 - xi) / 0.01;
+                r.p = mode.world_xy(lib, lib.cop_at(tau));
+            }
+        }
         // During a stair transfer the MPC's contact schedule falls back to
         // "repeat the current stance" (see the Input construction), so its
         // predicted trajectory is not a usable reference there: measured
@@ -7411,7 +7479,14 @@ fn main() {
                         (0..stair_wrench_horizon.max(mpc_landing_capture_n))
                             .map(|k| {
                                 let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
-                                dcm_plan.reference(at).p + shift
+                                if let (Some(mode), Some(lib)) = (ref_mode, ref_lib.as_ref())
+                                    && ref_mpc
+                                    && at - mode.t0 + mode.tau0 <= lib.total()
+                                {
+                                    mode.world_xy(lib, lib.cop_at(at - mode.t0 + mode.tau0))
+                                } else {
+                                    dcm_plan.reference(at).p + shift
+                                }
                             })
                             .collect()
                     }),
@@ -7422,7 +7497,14 @@ fn main() {
                         (0..stair_wrench_horizon.max(mpc_landing_capture_n))
                             .map(|k| {
                                 let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
-                                dcm_plan.reference(at).xi
+                                if let (Some(mode), Some(lib)) = (ref_mode, ref_lib.as_ref())
+                                    && ref_mpc
+                                    && at - mode.t0 + mode.tau0 <= lib.total()
+                                {
+                                    mode.world_xy(lib, lib.dcm_at(at - mode.t0 + mode.tau0, omega))
+                                } else {
+                                    dcm_plan.reference(at).xi
+                                }
                             })
                             .collect()
                     }),
