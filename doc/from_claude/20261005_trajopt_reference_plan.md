@@ -274,3 +274,48 @@ walker での実行（その場、位相 0.3／0.5 × μ 3 通り）: 1/6。た�
 「支持足側への 7 N·s」は 13→21 で、v5.2 以来「重み・着地幾何では届かない」としてきた 3 機構の 1 つが、軌道最適化の参照で初めて動いた。
 **v6.5 候補 = v6.4 + 上の 5 ノブ**（`controls_v65_candidate_ref.json`、バイナリ `kyo46rs_walk_ref13`）。残りの系統（ホールドアウト・低い段・wide ホールドアウト・
 降段 4 種・昇段 3〜4 段・往復 3 種）を同じ構成で測り中。
+
+### 残りの系統（10-08 22:00）と v6.5 昇格
+ホールドアウト 192、低い段 192、wide ホールドアウト 191、降段 1 段 191、深い 1 段 106、連続降段 142／142、昇段 3／4 段 144／144、往復 192×3 ── **すべて全個体一致**
+（検出器は横押し以外で発火しない）。合格条件（全区分で退行なし）を満たす。
+3 歩で公称姿勢へ戻る参照（引き継ぎ対策）: 4 本解けたが walker では 1/30 ── 第 3 歩が後ろへ下がる形で、否定。引き継ぎは 2 歩＋足場の置き直しのまま。
+**v6.5 昇格（ユーザ判断）**: `log/claude_g1champion_20261008v65/`（controls・URDF・参照 3 本・新バイナリ・README）。
+''')
+python3 - <<'EOF'
+p='doc/from_claude/STATUS.md'; s=open(p).read()
+open(p,'w').write('''> ## 【最重要・2026-10-08】チャンピオン v6.5 = v6.4 + 軌道最適化の回復参照（`REF_LIBRARY` 3 本）＋押しの検出（`REF_TRIG_DCM=0.036`）
+> - `log/claude_g1champion_20261008v65/`（バイナリ・参照も同梱）。押し std 252→262、wide 250→261、横段階化 126→136、悪化 0。
+>   支持足側 7 N·s 13→21。昇段・降段・往復・ホールドアウトは全個体一致（検出器は横押し以外で発火しない）。ユーザ判断で昇格。
+> - 作り方: `scripts/trajopt/push_recovery.py --delay 0.08 --cross 0.03 --cross-x 0.05 --end-width 0.105`（casadi＋pinocchio、`/data/articara/venv_trajopt`）。
+
+'''+s)
+m='/home/takara/.claude/projects/-home-takara-work-dp-articara/memory/'
+p=m+'bd-baseline-v1.md'; s=open(p).read()
+i=s.index('description: '); j=s.index('\n',i)
+s=s[:i]+'description: チャンピオン v6.5 = v6.4 + 軌道最適化の回復参照 REF_LIBRARY（3 本同梱）＋押しの検出 REF_TRIG_DCM=0.036（log/claude_g1champion_20261008v65/、バイナリも新しい）。v6.4 = v6.3 + STAIR_TD_BIAS_ASC_MID、v6.3 = v6.2 + 降段 3 ノブ、v6.2 = v6 + 降段 2 ノブ、v6 = v5.2 + 重み付き QP 全域。'+s[j:]
+k=s.index('---',s.index('---')+3)+4
+s=s[:k]+'\n**2026-10-08: チャンピオン v6.5** = v6.4 + `REF_LIBRARY`（歩行中の交差ステップ参照 3 本）+ `REF_TRIG_DCM=0.036` + `REF_DELAY_COMP=0` + `REF_TRIG_MAX_FRAC=0.65`。押し 252→262（悪化 0）、支持足側 7 N·s 13→21。段・降段・往復は全個体一致。\n'+s[k:]
+open(p,'w').write(s)
+open(m+'trajopt-reference-recipe.md','w').write('''---
+name: trajopt-reference-recipe
+description: G1 の押し回復参照の作り方と、walker で立つ解の条件（前越えの交差・公称幅で終わる・検出遅れを初期状態に・トルク 90%）。横踏み／後ろ越え／3 歩版は walker で 0
+metadata:
+  type: project
+---
+
+`scripts/trajopt/push_recovery.py`（`/data/articara/venv_trajopt`、casadi＋pinocchio、厳密ヘッセ行列 1 本 ~28 GB・15〜90 分、**同時に走らせない**。L-BFGS は失敗する）。
+walker（`REF_LIBRARY`）で立つ解の条件（2026-10-07〜08 に 1 つずつ測った）:
+- `--cross 0.03 --cross-x 0.05`: 第 1 歩が**支持足の前を越える**交差。横踏み・後ろ越えの解は数学的には存在するが walker では 0/15〜0/30。
+- `--end-width 0.105`: 公称の立ち幅で終わる（終端拘束なしだと参照後の歩行再開で 1.7 s 後に転倒）。
+- `--delay 0.08`: 検出遅れを初期状態に（遅れを後から補正する τ0／時間歪みは片方を直すと片方が崩れた）。
+- `--lmax 2.5 --swing-ymin -0.07`（7 N·s）: 遊脚の外振りで角運動量を稼ぐ解は WBC が追えない。
+- 3 歩で戻る参照（`--nodes 10,4,10,4,10,6`）は 1/30 で否定。参照は 2 歩＋`REF_RESET_STANCE`。
+- 参照の重心・CoP を MPC（`REF_MPC`）や WBC の DCM 則（`REF_WBC`）に直接与えるのは効かない／全滅。
+検出: `REF_TRIG_DCM=0.036`（4 N·s は歩容が自分で立つ、5 N·s から掛ける）、押しの向き＝支持足側のみ、`REF_TRIG_MAX_FRAC=0.65`。
+関連: [[bd-baseline-v1]]、[[push-failure-mechanisms]]。
+''')
+s=open(m+'MEMORY.md').read()
+old=[l for l in s.splitlines() if 'bd-baseline-v1.md' in l][0]
+s=s.replace(old,'- [チャンピオン v6.5 = v6.4 + 回復参照＋検出](bd-baseline-v1.md) — log/claude_g1champion_20261008v65/（バイナリ・参照同梱）。押し 252→262、支持足側 7 N·s 13→21')
+s=s.rstrip('\n')+'\n- [押し回復参照の作り方](trajopt-reference-recipe.md) — 前越え交差・公称幅で終わる・検出遅れ込み・トルク 90%。横踏み／後ろ越え／3 歩版／REF_MPC／REF_WBC は否定\n'
+open(m+'MEMORY.md','w').write(s)
