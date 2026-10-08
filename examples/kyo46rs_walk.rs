@@ -97,6 +97,9 @@ impl RefLib {
 #[derive(Clone, Copy)]
 struct RefMode {
     t0: f64,
+    /// Reference time already elapsed at engagement (the detector fires
+    /// some tens of ms after the push; the reference starts at the push).
+    tau0: f64,
     stance: usize,
     origin: na::Vector3<f64>,
     mirror: f64,
@@ -2376,6 +2379,20 @@ fn main() {
     let ref_trig_at_push = flag("REF_TRIG_AT_PUSH", false);
     let ref_swing = flag("REF_SWING", true);
     let ref_reset_stance = flag("REF_RESET_STANCE", true);
+    // Detector: lateral DCM error toward the stance side [m] that engages a
+    // reference (0 = off; the bench can trigger at the push instead).
+    let ref_trig_dcm = env_f64("REF_TRIG_DCM", 0.0).max(0.0);
+    // Bench trigger: only pushes toward the stance side of at least this
+    // impulse engage (pushes toward the swing side the gait absorbs itself:
+    // measured 24/24 at 3-6 N s, and a crossover there is the wrong move).
+    let ref_trig_min_imp = env_f64("REF_TRIG_MIN_IMPULSE", 4.5);
+    let ref_cooldown = env_f64("REF_COOLDOWN", 1.0).max(0.0);
+    // 0 = enter the reference at its start even when the detector fired late
+    // (for references solved with the detection delay in their initial state).
+    let ref_delay_comp = flag("REF_DELAY_COMP", true);
+    let mut ref_cooldown_until = f64::NEG_INFINITY;
+    let mut ref_engage_pending: Option<f64> = None;
+    let mut ref_lat_quiet_t = f64::NEG_INFINITY;
     // No reference when the push lands this late in the swing (the walker
     // copes on its own there; measured in-place 5 N s at phase 0.7: 3/3).
     let ref_trig_max_frac = env_f64("REF_TRIG_MAX_FRAC", 1.0);
@@ -5555,6 +5572,97 @@ fn main() {
             dcm_ref_prev_dot = Some(r.xi_dot);
         }
         let dcm_err = (xi - r.xi).norm();
+        // Engage a recovery reference: on request from the push harness
+        // (REF_TRIG_AT_PUSH) or when the DCM error toward the STANCE side
+        // exceeds REF_TRIG_DCM in single support (the detector).
+        if ref_any
+            && ref_mode.is_none()
+            && t >= ref_cooldown_until
+            && slice_frac <= ref_trig_max_frac
+            && let Support::Single { stance, swing } = support
+        {
+            let lateral = (xi - r.xi).y * if stance == 0 { 1.0 } else { -1.0 };
+            if lateral.abs() < 0.005 {
+                ref_lat_quiet_t = t;
+            }
+            let pending = ref_engage_pending.is_some_and(|tp| t - tp <= 0.2);
+            if pending || (ref_trig_dcm > 0.0 && lateral > ref_trig_dcm) {
+                ref_engage_pending = None;
+                // The push happened when the lateral error last was quiet;
+                // the reference is entered that far in.
+                let tau0 = if pending || !ref_delay_comp { 0.0 } else { (t - ref_lat_quiet_t).clamp(0.0, 0.3) };
+                println!("  [ref] t={t:.3} trigger: {} (lateral DCM error toward stance {lateral:+.3} m, tau0 {tau0:.3})", if pending { "push" } else { "dcm" });
+                let actual = Footsteps::from_fk(data, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
+                // Pick the reference meant for the nearest swing phase.
+                // (Selecting by the swing foot's height was tried first:
+                // on the flat in-place gait the apex comes late, so the
+                // height does not order the phases.)
+                // Phase AT THE PUSH (the detector fires tau0 later).
+                let frac_push = slice_frac - tau0 / gait.slices[slice_idx].duration().max(1e-6);
+                let pick = (0..ref_libs.len())
+                    .min_by(|&a, &b| (ref_libs[a].swing_phase - frac_push).abs().partial_cmp(&(ref_libs[b].swing_phase - frac_push).abs()).unwrap())
+                    .unwrap();
+                ref_lib = Some(ref_libs[pick].clone());
+                let lib = ref_lib.as_ref().unwrap();
+                println!("  [ref] swing phase {slice_frac:.2} -> reference {} (meant for {:.2})", pick, lib.swing_phase);
+                let mode = RefMode { t0: t, tau0, stance, origin: actual.sole[stance], mirror: if stance == 0 { 1.0 } else { -1.0 } };
+                // Phases: this single support ends after phases[0]; the
+                // double support after it (every DS slice up to the next
+                // single support) gets phases[1]; the next single support
+                // phases[2]; the double support after that phases[3].
+                let i0 = slice_idx;
+                let mut j = i0;
+                let mut ph = 0usize;
+                let mut t_cursor = t;
+                let mut first_ss_after: Option<usize> = None;
+                while j < gait.slices.len() && ph < lib.phases.len() {
+                    let is_ss = matches!(gait.slices[j].support, Support::Single { .. });
+                    // Count the slices of this phase (DS phases may be split).
+                    let mut jend = j + 1;
+                    if !is_ss {
+                        while jend < gait.slices.len() && matches!(gait.slices[jend].support, Support::Double) {
+                            jend += 1;
+                        }
+                    }
+                    let n = (jend - j) as f64;
+                    for jj in j..jend {
+                        let remaining = if ph == 0 { (lib.phases[0] - tau0).max(0.05) } else { lib.phases[ph] };
+                        let end = t_cursor + remaining / n;
+                        gait.retime(jj, end);
+                        t_cursor = end;
+                    }
+                    if is_ss && j != i0 && first_ss_after.is_none() {
+                        first_ss_after = Some(j);
+                    }
+                    j = jend;
+                    ph += 1;
+                }
+                // Footfalls: the swing foot lands where the reference's
+                // right foot lands (end of phase 0); the stance foot's
+                // next landing is the reference's left-foot landing (end
+                // of phase 2).
+                let t_land1 = lib.phases[0];
+                let t_land2 = lib.phases[0] + lib.phases[1] + lib.phases[2];
+                let land1 = mode.world(lib, lib.sole_at(1, t_land1));
+                let d1 = (land1 - footsteps.at_slice(i0).sole[swing]).xy();
+                footsteps.shift_next(i0, swing, d1);
+                if let Some(i2) = first_ss_after {
+                    let land2 = mode.world(lib, lib.sole_at(0, t_land2));
+                    let d2 = (land2 - footsteps.at_slice(i2).sole[stance]).xy();
+                    footsteps.shift_next(i2, stance, d2);
+                }
+                dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
+                landing_timing.event_mode = true;
+                ref_mode = Some(mode);
+                ref_engagements += 1;
+                println!(
+                    "  [ref] t={t:.3} engaged: stance={} mirror={:+.0} origin=({:.3},{:.3}) phases={:?} land1=({:.3},{:.3}) land2=({:.3},{:.3}) total={:.3}",
+                    stance, mode.mirror, mode.origin.x, mode.origin.y, lib.phases, land1.x, land1.y,
+                    mode.world(lib, lib.sole_at(0, t_land2)).x, mode.world(lib, lib.sole_at(0, t_land2)).y, lib.total()
+                );
+            
+            }
+        }
         max_dcm_err = max_dcm_err.max(dcm_err);
         // Post-push accumulation. The push fires late in the tick, after this
         // point, so the firing tick's error is still the undisturbed one and
@@ -8371,9 +8479,15 @@ fn main() {
                     // (the reference's right foot is the one that swings
                     // first). Ankle target = sole centre minus the sole offset.
                     let ref_side = if side == mode.stance { 0 } else { 1 };
-                    let tau = t - mode.t0;
+                    // The CoM dynamics ran on during the detection delay, but
+                    // the swing foot did not: compress the first swing's path
+                    // into the time that remains instead of skipping its start.
+                    let elapsed = t - mode.t0;
+                    let first = (lib.phases[0] - mode.tau0).max(0.05);
+                    let warp = if ref_side == 1 && elapsed < first { lib.phases[0] / first } else { 1.0 };
+                    let tau = if ref_side == 1 && elapsed < first { elapsed * warp } else { elapsed + mode.tau0 };
                     let sole_w = mode.world(lib, lib.sole_at(ref_side, tau));
-                    let sole_w1 = mode.world(lib, lib.sole_at(ref_side, tau + dt));
+                    let sole_w1 = mode.world(lib, lib.sole_at(ref_side, tau + dt * warp));
                     let offset = foot_rot_at(side, footsteps.at_slice(slice_idx).yaw[side])
                         * na::Vector3::new(prof.sole_centre_x, 0.0, -prof.sole_below_origin);
                     tgt = sole_w - offset;
@@ -9671,83 +9785,20 @@ fn main() {
                 push_degraded_at = tally.n;
                 if ref_any
                     && ref_trig_at_push
-                    && ref_mode.is_none()
-                    && slice_frac <= ref_trig_max_frac
-                    && let Support::Single { stance, swing } = support
+                    && push_imp >= ref_trig_min_imp
+                    && let Support::Single { stance, .. } = support
+                    && (fy > 0.0) == (stance == 0)
                 {
-                    let actual = Footsteps::from_fk(data, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
-                    // Pick the reference meant for the nearest swing phase.
-                    // (Selecting by the swing foot's height was tried first:
-                    // on the flat in-place gait the apex comes late, so the
-                    // height does not order the phases.)
-                    let pick = (0..ref_libs.len())
-                        .min_by(|&a, &b| (ref_libs[a].swing_phase - slice_frac).abs().partial_cmp(&(ref_libs[b].swing_phase - slice_frac).abs()).unwrap())
-                        .unwrap();
-                    ref_lib = Some(ref_libs[pick].clone());
-                    let lib = ref_lib.as_ref().unwrap();
-                    println!("  [ref] swing phase {slice_frac:.2} -> reference {} (meant for {:.2})", pick, lib.swing_phase);
-                    let mode = RefMode { t0: t, stance, origin: actual.sole[stance], mirror: if stance == 0 { 1.0 } else { -1.0 } };
-                    // Phases: this single support ends after phases[0]; the
-                    // double support after it (every DS slice up to the next
-                    // single support) gets phases[1]; the next single support
-                    // phases[2]; the double support after that phases[3].
-                    let i0 = slice_idx;
-                    let mut j = i0;
-                    let mut ph = 0usize;
-                    let mut t_cursor = t;
-                    let mut first_ss_after: Option<usize> = None;
-                    while j < gait.slices.len() && ph < lib.phases.len() {
-                        let is_ss = matches!(gait.slices[j].support, Support::Single { .. });
-                        // Count the slices of this phase (DS phases may be split).
-                        let mut jend = j + 1;
-                        if !is_ss {
-                            while jend < gait.slices.len() && matches!(gait.slices[jend].support, Support::Double) {
-                                jend += 1;
-                            }
-                        }
-                        let n = (jend - j) as f64;
-                        for jj in j..jend {
-                            let end = t_cursor + lib.phases[ph] / n;
-                            gait.retime(jj, end);
-                            t_cursor = end;
-                        }
-                        if is_ss && j != i0 && first_ss_after.is_none() {
-                            first_ss_after = Some(j);
-                        }
-                        j = jend;
-                        ph += 1;
-                    }
-                    // Footfalls: the swing foot lands where the reference's
-                    // right foot lands (end of phase 0); the stance foot's
-                    // next landing is the reference's left-foot landing (end
-                    // of phase 2).
-                    let t_land1 = lib.phases[0];
-                    let t_land2 = lib.phases[0] + lib.phases[1] + lib.phases[2];
-                    let land1 = mode.world(lib, lib.sole_at(1, t_land1));
-                    let d1 = (land1 - footsteps.at_slice(i0).sole[swing]).xy();
-                    footsteps.shift_next(i0, swing, d1);
-                    if let Some(i2) = first_ss_after {
-                        let land2 = mode.world(lib, lib.sole_at(0, t_land2));
-                        let d2 = (land2 - footsteps.at_slice(i2).sole[stance]).xy();
-                        footsteps.shift_next(i2, stance, d2);
-                    }
-                    dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
-                    landing_timing.event_mode = true;
-                    ref_mode = Some(mode);
-                    ref_engagements += 1;
-                    println!(
-                        "  [ref] t={t:.3} engaged: stance={} mirror={:+.0} origin=({:.3},{:.3}) phases={:?} land1=({:.3},{:.3}) land2=({:.3},{:.3}) total={:.3}",
-                        stance, mode.mirror, mode.origin.x, mode.origin.y, lib.phases, land1.x, land1.y,
-                        mode.world(lib, lib.sole_at(0, t_land2)).x, mode.world(lib, lib.sole_at(0, t_land2)).y, lib.total()
-                    );
+                    ref_engage_pending = Some(t);
                 }
             }
         }
         if let Some(mode) = ref_mode
             && let Some(lib) = &ref_lib
-            && t >= mode.t0 + lib.total()
+            && t >= mode.t0 + lib.total() - mode.tau0
         {
             ref_mode = None;
+            ref_cooldown_until = t + ref_cooldown;
             landing_timing.event_mode = event_mode_cfg;
             // The reference leaves the feet where the recovery put them
             // (in tandem, narrow). Every later footfall is re-centred on the
