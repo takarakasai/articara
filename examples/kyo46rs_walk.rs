@@ -1386,6 +1386,7 @@ fn main() {
     let push_z_drop_lat_max = env_f64("PUSH_Z_DROP_LAT_MAX", 0.02).max(0.0);
     let mut push_z_drop_until = f64::NEG_INFINITY;
     let mut n_push_z_drop = 0u32;
+    let mut push_back_hist: std::collections::VecDeque<(f64, f64)> = std::collections::VecDeque::new();
     let vx2_z_from: Option<f64> = match vx2_change {
         Some((at, _, _)) if vx2_z_drop > 0.0 => gait
             .slices
@@ -2452,6 +2453,8 @@ fn main() {
     let mut ref_cooldown_until = f64::NEG_INFINITY;
     let mut ref_engage_pending: Option<f64> = None;
     let mut ref_lat_quiet_t = f64::NEG_INFINITY;
+    let ref_trig_pred = env_f64("REF_TRIG_PRED", 0.0).max(0.0);
+    let mut ref_lat_hist: std::collections::VecDeque<(f64, f64)> = std::collections::VecDeque::new();
     // No reference when the push lands this late in the swing (the walker
     // copes on its own there; measured in-place 5 N s at phase 0.7: 3/3).
     let ref_trig_max_frac = env_f64("REF_TRIG_MAX_FRAC", 1.0);
@@ -5649,8 +5652,15 @@ fn main() {
         // Backward-dominant only, and never under an engaged recovery
         // reference (measured: firing on lateral pushes cost the lateral
         // ladder 136 -> 129 while the reference was running).
+        let back_err = (xi - r.xi).x;
+        push_back_hist.push_back((t, back_err));
+        while push_back_hist.len() > 1 && t - push_back_hist.front().unwrap().0 > 0.02 + 1e-9 {
+            push_back_hist.pop_front();
+        }
+        let back_rate = push_back_hist.front().map_or(0.0, |&(tp, bp)| if t - tp >= 0.015 { (back_err - bp) / (t - tp) } else { 0.0 });
+        let back_pred = if back_err < -0.6 * push_z_drop_trig { back_err + back_rate.min(0.0) * ref_trig_pred } else { back_err };
         if push_z_drop > 0.0
-            && (xi - r.xi).x < -push_z_drop_trig
+            && back_pred < -push_z_drop_trig
             && (xi - r.xi).y.abs() < push_z_drop_lat_max
             && ref_mode.is_none()
             && t >= push_z_drop_until
@@ -5669,11 +5679,25 @@ fn main() {
             && let Support::Single { stance, swing } = support
         {
             let lateral = (xi - r.xi).y * if stance == 0 { 1.0 } else { -1.0 };
+            // REF_TRIG_PRED: fire on the error predicted REF_TRIG_PRED
+            // seconds ahead (error + rate * horizon), the rate from a short
+            // finite difference. Cuts the detection delay at the cost of
+            // reacting to the error's slope.
+            // Rate over a 20 ms window (a single-tick difference of the
+            // measured DCM is noise: the first version fired on every push
+            // direction and took the lateral ladder 136 -> 67).
+            ref_lat_hist.push_back((t, lateral));
+            while ref_lat_hist.len() > 1 && t - ref_lat_hist.front().unwrap().0 > 0.02 + 1e-9 {
+                ref_lat_hist.pop_front();
+            }
+            let lateral_rate = ref_lat_hist.front().map_or(0.0, |&(tp, lp)| if t - tp >= 0.015 { (lateral - lp) / (t - tp) } else { 0.0 });
+            // The raw error must already be most of the way there.
+            let lateral_pred = if lateral > 0.6 * ref_trig_dcm { lateral + lateral_rate.max(0.0) * ref_trig_pred } else { lateral };
             if lateral.abs() < 0.005 {
                 ref_lat_quiet_t = t;
             }
             let pending = ref_engage_pending.is_some_and(|tp| t - tp <= 0.2);
-            if pending || (ref_trig_dcm > 0.0 && lateral > ref_trig_dcm) {
+            if pending || (ref_trig_dcm > 0.0 && lateral_pred > ref_trig_dcm) {
                 ref_engage_pending = None;
                 // The push happened when the lateral error last was quiet;
                 // the reference is entered that far in.
