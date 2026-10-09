@@ -39,6 +39,8 @@ struct RefLib {
     swing_z0: f64,
     /// Swing phase (fraction of the single support) this reference is meant for.
     swing_phase: f64,
+    /// Direction of the push this reference answers [deg]: 90 = toward the stance foot, 0 = forward.
+    impulse_deg: f64,
     t: Vec<f64>,
     sole: [Vec<na::Vector3<f64>>; 2],
     /// CoM at the nodes, and the vertical force of each foot per interval.
@@ -74,6 +76,7 @@ impl RefLib {
             fz,
             swing_z0,
             swing_phase: v["swing_phase"].as_f64().unwrap_or(0.5),
+            impulse_deg: v["impulse_deg"].as_f64().unwrap_or(90.0),
             phases: v["T"].as_array().unwrap().iter().map(f).collect(),
             t: v["t"].as_array().unwrap().iter().map(f).collect(),
             sole: [sole_l, sole_r],
@@ -2437,6 +2440,9 @@ fn main() {
     // Detector: lateral DCM error toward the stance side [m] that engages a
     // reference (0 = off; the bench can trigger at the push instead).
     let ref_trig_dcm = env_f64("REF_TRIG_DCM", 0.0).max(0.0);
+    // Forward-push detector: DCM error ahead of the plan [m] (0 = off);
+    // engages a reference solved for a forward push (`impulse_deg` 0).
+    let ref_trig_dcm_x = env_f64("REF_TRIG_DCM_X", 0.0).max(0.0);
     // Bench trigger: only pushes toward the stance side of at least this
     // impulse engage (pushes toward the swing side the gait absorbs itself:
     // measured 24/24 at 3-6 N s, and a crossover there is the wrong move).
@@ -5696,13 +5702,17 @@ fn main() {
             if lateral.abs() < 0.005 {
                 ref_lat_quiet_t = t;
             }
+            let forward = (xi - r.xi).x;
             let pending = ref_engage_pending.is_some_and(|tp| t - tp <= 0.2);
-            if pending || (ref_trig_dcm > 0.0 && lateral_pred > ref_trig_dcm) {
+            let lat_fire = ref_trig_dcm > 0.0 && lateral_pred > ref_trig_dcm && ref_libs.iter().any(|l| l.impulse_deg == 90.0);
+            let fwd_fire = ref_trig_dcm_x > 0.0 && forward > ref_trig_dcm_x && ref_libs.iter().any(|l| l.impulse_deg == 0.0);
+            if pending || lat_fire || fwd_fire {
+                let want_deg = if fwd_fire && !lat_fire { 0.0 } else { 90.0 };
                 ref_engage_pending = None;
                 // The push happened when the lateral error last was quiet;
                 // the reference is entered that far in.
                 let tau0 = if pending || !ref_delay_comp { 0.0 } else { (t - ref_lat_quiet_t).clamp(0.0, 0.3) };
-                println!("  [ref] t={t:.3} trigger: {} (lateral DCM error toward stance {lateral:+.3} m, tau0 {tau0:.3})", if pending { "push" } else { "dcm" });
+                println!("  [ref] t={t:.3} trigger: {} (lateral DCM error toward stance {lateral:+.3} m, forward {forward:+.3} m, dir {want_deg:.0}, tau0 {tau0:.3})", if pending { "push" } else if fwd_fire && !lat_fire { "dcm-x" } else { "dcm" });
                 let actual = Footsteps::from_fk(data, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
                 // Pick the reference meant for the nearest swing phase.
                 // (Selecting by the swing foot's height was tried first:
@@ -5711,8 +5721,9 @@ fn main() {
                 // Phase AT THE PUSH (the detector fires tau0 later).
                 let frac_push = slice_frac - tau0 / gait.slices[slice_idx].duration().max(1e-6);
                 let pick = (0..ref_libs.len())
+                    .filter(|&k| ref_libs[k].impulse_deg == want_deg)
                     .min_by(|&a, &b| (ref_libs[a].swing_phase - frac_push).abs().partial_cmp(&(ref_libs[b].swing_phase - frac_push).abs()).unwrap())
-                    .unwrap();
+                    .unwrap_or(0);
                 ref_lib = Some(ref_libs[pick].clone());
                 let lib = ref_lib.as_ref().unwrap();
                 println!("  [ref] swing phase {slice_frac:.2} -> reference {} (meant for {:.2})", pick, lib.swing_phase);

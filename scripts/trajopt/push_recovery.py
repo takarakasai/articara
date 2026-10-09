@@ -38,6 +38,7 @@ p.add_argument('--end-width', type=float, default=0.0, help='end with the feet a
 p.add_argument('--cross', type=float, default=-9.0, help='force a crossover: the first landing of the swing (right) foot at least this far to the +y side of the stance foot [m]')
 p.add_argument('--cross-x', type=float, default=-9.0, help='with --cross: the first landing also at least this far AHEAD of the stance foot [m] (cross in front, not behind)')
 p.add_argument('--delay', type=float, default=0.0, help='detection delay [s]: the reference starts this long after the push, with the CoM already displaced by vy * delay')
+p.add_argument('--impulse-deg', type=float, default=90.0, help='direction of the impulse in the horizontal plane [deg]: 90 = +y toward the stance (left) foot, 0 = forward')
 p.add_argument('--vx', type=float, default=0.0, help='forward CoM speed at the push [m/s] (walking scenario)')
 p.add_argument('--swing-x', type=float, default=0.0, help='initial x of the swing (right) sole [m] (walking scenario: mid-swing ahead)')
 p.add_argument('--lbfgs', action='store_true', help='limited-memory Hessian in IPOPT (the exact Hessian of the torque constraints takes ~28 GB)')
@@ -97,18 +98,20 @@ def standing_pose(com_xy, right_z, right_x=0.0):
     return np.array(o.solve().value(q))
 
 w = args.width / 2
-vy_pre = args.impulse / g.mass
-q_init = standing_pose((args.vx * args.delay, w * 0.7 + vy_pre * args.delay), args.swing_z, args.swing_x)   # CoM mostly over the left (stance) foot, plus the drift during the detection delay
+th = np.radians(args.impulse_deg)
+vx_imp, vy_pre = args.impulse / g.mass * np.cos(th), args.impulse / g.mass * np.sin(th)
+q_init = standing_pose(((args.vx + vx_imp) * args.delay, w * 0.7 + vy_pre * args.delay), args.swing_z, args.swing_x)   # CoM mostly over the left (stance) foot, plus the drift during the detection delay
 q_stand = standing_pose((0.0, 0.0), 0.0)
-vy = args.impulse / M
+vy = vy_pre
 omega = np.sqrt(G / args.zcom)
-print(f'impulse {args.impulse} N s -> dvy {vy:.3f} m/s; DCM y = {w*0.7 + vy/omega:.3f} m, stance outer edge {w + SOLE_HALF[1]:.3f} m')
+print(f'impulse {args.impulse} N s at {args.impulse_deg:.0f} deg -> dvx {vx_imp:.3f} dvy {vy:.3f} m/s; DCM y = {w*0.7 + vy/omega:.3f} m, stance outer edge {w + SOLE_HALF[1]:.3f} m')
 
 # ---- the trajectory optimisation -------------------------------------------
 n_ph = [int(x) for x in args.nodes.split(',')]
 tmin = [float(x) for x in args.tmin.split(',')]
 tmax = [float(x) for x in args.tmax.split(',')]
-contact = [(True, False), (True, True), (False, True), (True, True)]   # (left, right) per phase
+# (left, right) per phase: SS(left) -> DS -> SS(right) -> DS -> SS(left) -> DS ... (as many phases as --nodes gives)
+contact = [[(True, False), (True, True), (False, True), (True, True)][i % 4] for i in range(len(n_ph))]
 N = sum(n_ph)
 phase_of = sum(([i] * n for i, n in enumerate(n_ph)), [])
 
@@ -130,7 +133,7 @@ _pl, _Rl = soles[0][1], soles[0][0]
 _cs = ca.vertcat(*[_pl + ca.mtimes(_Rl, ca.DM(c)) for c in corners[:3]])
 _A = ca.Function('A', [qs], [ca.vertcat(ca.jacobian(_cs, qs), ca.jacobian(f_mom(qs, vs)[0:3], vs))])
 A0 = np.array(_A(q_init))
-b0 = np.concatenate([np.zeros(9), [M * args.vx, M * vy, 0.0]])
+b0 = np.concatenate([np.zeros(9), [M * (args.vx + vx_imp), M * vy, 0.0]])
 v0 = np.linalg.pinv(A0) @ b0
 print('initial velocity: |A v0 - b| = %.1e, base lin %s, max joint speed %.2f rad/s' % (
     np.abs(A0 @ v0 - b0).max(), np.round(v0[0:3], 3), np.abs(v0[6:]).max()))
@@ -255,6 +258,9 @@ print('phase durations [s]:', np.round(Tn, 3), 'total', round(sum(Tn), 3))
 sole_xy = [[np.array(f_sole[s](Qn[k])[0]).ravel() for k in range(N + 1)] for s in (0, 1)]
 k_td = n_ph[0]            # right foot touches down
 k_td2 = n_ph[0] + n_ph[1] + n_ph[2]   # left foot touches down
+if len(n_ph) >= 6:
+    k_td3 = sum(n_ph[:5])
+    print('right foot lands again at (x, y) = (%.3f, %.3f)' % tuple(np.array(f_sole[1](Qn[k_td3])[0]).ravel()[:2]))
 print('right foot lands at (x, y) = (%.3f, %.3f)  [left stance foot at (0, %.3f)]' % (*sole_xy[1][k_td][:2], w))
 print('left  foot lands at (x, y) = (%.3f, %.3f)' % tuple(sole_xy[0][k_td2][:2]))
 com = np.array([np.array(f_com(Qn[k])).ravel() for k in range(N + 1)])
@@ -272,6 +278,6 @@ if args.out:
         for s_ in (0, 1):
             if F[k][s_] is not None:
                 Fn[k, s_] = np.array([sol.value(fc) for fc in F[k][s_]])
-    json.dump({'ok': ok, 'impulse': args.impulse, 'swing_phase': args.phase, 'delay': args.delay, 'T': Tn, 't': t.tolist(), 'q': Qn.tolist(), 'v': Vn.tolist(), 'f': Fn.tolist(),
+    json.dump({'ok': ok, 'impulse': args.impulse, 'impulse_deg': args.impulse_deg, 'swing_phase': args.phase, 'delay': args.delay, 'T': Tn, 't': t.tolist(), 'q': Qn.tolist(), 'v': Vn.tolist(), 'f': Fn.tolist(),
                'names': g.names, 'com': com.tolist(), 'sole_l': np.array(sole_xy[0]).tolist(), 'sole_r': np.array(sole_xy[1]).tolist()},
               open(args.out, 'w'))
