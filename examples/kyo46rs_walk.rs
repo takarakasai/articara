@@ -2437,6 +2437,12 @@ fn main() {
     let ref_trig_at_push = flag("REF_TRIG_AT_PUSH", false);
     let ref_swing = flag("REF_SWING", true);
     let ref_reset_stance = flag("REF_RESET_STANCE", true);
+    // The re-centring after a reference skipped the swing already under way
+    // when the reference ended (the gait's first step then went to the
+    // pre-push plan: 0.38 m ahead, 0.28 m wide). With this on, that swing is
+    // re-centred too, landing REF_RESET_LEAD [m] ahead of the feet's midpoint.
+    let ref_reset_incl_current = flag("REF_RESET_INCL_CURRENT", false);
+    let ref_reset_lead = env_f64("REF_RESET_LEAD", 0.0);
     // Detector: lateral DCM error toward the stance side [m] that engages a
     // reference (0 = off; the bench can trigger at the push instead).
     let ref_trig_dcm = env_f64("REF_TRIG_DCM", 0.0).max(0.0);
@@ -9967,9 +9973,14 @@ fn main() {
                 let cur = *footsteps.at_slice(i);
                 let mid = 0.5 * (cur.sole[0].xy() + cur.sole[1].xy());
                 let half_w = 0.5 * (footsteps.initial.sole[0].y - footsteps.initial.sole[1].y).abs();
+                let j0 = if ref_reset_incl_current { i } else { i + 1 };
                 for side in 0..2 {
-                    let want = na::Vector2::new(mid.x, mid.y + if side == 0 { half_w } else { -half_w });
-                    if let Some(j) = (i + 1..gait.slices.len()).find(|&j| gait.slices[j].support.swing() == Some(side)) {
+                    let mut want = na::Vector2::new(mid.x, mid.y + if side == 0 { half_w } else { -half_w });
+                    if let Some(j) = (j0..gait.slices.len()).find(|&j| gait.slices[j].support.swing() == Some(side)) {
+                        if j == i {
+                            want.x += ref_reset_lead;
+                            println!("  [ref] t={t:.3} re-centre the swing under way: foot {side} -> ({:.3},{:.3})", want.x, want.y);
+                        }
                         let d = want - footsteps.at_slice(j).sole[side].xy();
                         footsteps.shift_from(j, side, d);
                     }
