@@ -3106,6 +3106,11 @@ fn main() {
     // the trailing one, and lowering there only speeds the divergence
     // (omega) the forward step has to catch. Negative = off (all feet).
     let mpc_reach_ahead = env_f64("MPC_REACH_AHEAD", -1.0);
+    // Measure the hip-to-sole distance along x only. Measured 2026-10-10
+    // (0.96 / ahead 0): the full distance took the lateral pushes 152 ->
+    // 141 (1/12) -- a sideways displacement lowered the CoM, and lowering
+    // costs the lateral recovery as it costs the forward one.
+    let mpc_reach_sagittal = flag("MPC_REACH_SAGITTAL", false);
     // How the WBC's vertical follows the cap: 1 = its PD tracks the MPC's
     // predicted height (measured 2026-10-10: the prediction is the measured
     // load continued -- the smoothness anchor outweighs the height cost by
@@ -7537,7 +7542,11 @@ fn main() {
                                     continue;
                                 }
                                 let (off, drop) = hips[f];
-                                let d = (c_xy + off - sole.xy()).norm();
+                                let d = if mpc_reach_sagittal {
+                                    (c_xy.x + off.x - sole.x).abs()
+                                } else {
+                                    (c_xy + off - sole.xy()).norm()
+                                };
                                 let span = (l_u * l_u - d * d).max(0.0).sqrt();
                                 cap = cap.min(sole.z + span + drop);
                             }
