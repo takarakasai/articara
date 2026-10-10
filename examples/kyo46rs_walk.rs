@@ -3098,6 +3098,14 @@ fn main() {
     // it the TRAILING leg at the end of every double support (0.2 m behind
     // the CoM, unloading, reach 0.97) pulled the height down 3 cm each step.
     let mpc_reach_min_load = env_f64("MPC_REACH_MIN_LOAD", 0.3).clamp(0.0, 1.0);
+    // Only a loaded foot AHEAD of the predicted CoM (by more than this
+    // [m] along +x) constrains the height. Measured 2026-10-10 (N=48,
+    // margin 0.95, PUSH_Z_DROP off): the cap on every loaded leg took the
+    // backward push 34 -> 44 but the forward push 36 -> 25 -- the same
+    // trade as lowering Z_COM outright. Behind the CoM a stretched leg is
+    // the trailing one, and lowering there only speeds the divergence
+    // (omega) the forward step has to catch. Negative = off (all feet).
+    let mpc_reach_ahead = env_f64("MPC_REACH_AHEAD", -1.0);
     // How the WBC's vertical follows the cap: 1 = its PD tracks the MPC's
     // predicted height (measured 2026-10-10: the prediction is the measured
     // load continued -- the smoothness anchor outweighs the height cost by
@@ -7521,13 +7529,14 @@ fn main() {
                             };
                             let mut cap = f64::INFINITY;
                             for f in 0..2 {
+                                let sole = contacts[f].position;
                                 if !down[f]
                                     || reference_fz_schedule[k][f] < mpc_reach_min_load * total_mass * G
+                                    || (mpc_reach_ahead >= 0.0 && sole.x - c_xy.x < mpc_reach_ahead)
                                 {
                                     continue;
                                 }
                                 let (off, drop) = hips[f];
-                                let sole = contacts[f].position;
                                 let d = (c_xy + off - sole.xy()).norm();
                                 let span = (l_u * l_u - d * d).max(0.0).sqrt();
                                 cap = cap.min(sole.z + span + drop);
