@@ -7541,7 +7541,11 @@ fn main() {
                                 let span = (l_u * l_u - d * d).max(0.0).sqrt();
                                 cap = cap.min(sole.z + span + drop);
                             }
-                            cap.max(z_ref_nominal - mpc_reach_max_drop)
+                            // A node with no qualifying foot has no cap; keep it
+                            // finite (the MPC rejects non-finite inputs -- measured
+                            // 2026-10-10: the ahead-only gate left such nodes at
+                            // +inf and every solve failed, 36 -> 0/48).
+                            cap.max(z_ref_nominal - mpc_reach_max_drop).min(z_ref_nominal + 1.0)
                         })
                         .collect::<Vec<f64>>()
                 });
