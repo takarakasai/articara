@@ -171,6 +171,16 @@ pub struct Input {
     /// bounds the shift by the error over J -- the capture-point step
     /// adjustment. `None` = the shipped rows (J = 0), bit-identical.
     pub reference_dcm_sensitivity: Option<Vec<na::Matrix2<f64>>>,
+    /// Upper bound on the predicted CoM height at the END of each node,
+    /// world z [m] -- what the legs can reach from the feet the schedule has
+    /// down at that node (`Config::reach_weight`). The bound is soft: node k
+    /// gets a slack `s_k >= 0` with `z_k - s_k <= cap_k` and `reach_weight *
+    /// s_k^2` in the cost, so a cap the dynamics cannot meet in time does
+    /// not make the problem infeasible. The leg's reach is a circle about
+    /// the sole, which is nonlinear in the horizontal CoM; the caller
+    /// linearises it at the previous solve's predicted trajectory (one SQP
+    /// step per replan, as the moment arm is). `None` = no rows, bit-identical.
+    pub com_z_max: Option<Vec<f64>>,
 }
 
 #[derive(Clone, Debug)]
@@ -359,6 +369,8 @@ pub struct Config {
     /// rejected and the walker ran on its fallback. Defaults keep 1e-6.
     pub kkt_tolerance: f64,
     pub kkt_complementarity_tolerance: f64,
+    /// Weight on the height-cap slack (see `Input::com_z_max`).
+    pub reach_weight: f64,
 }
 
 impl Default for Config {
@@ -407,6 +419,7 @@ impl Default for Config {
             validate_solution: false,
             kkt_tolerance: 1e-6,
             kkt_complementarity_tolerance: 1e-6,
+            reach_weight: 1e6,
         }
     }
 }
@@ -924,7 +937,9 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
     };
     let n = cfg.horizon;
     let n_land = if input.landing.is_some() { 2 } else { 0 };
-    let nu = 12 * n + n_land;
+    // Height-cap slacks, one per node, after the landing variables.
+    let n_reach = if input.com_z_max.as_ref().is_some_and(|c| c.len() >= n) { n } else { 0 };
+    let nu = 12 * n + n_land + n_reach;
     if n == 0
         || [
             cfg.dt,
@@ -986,6 +1001,10 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             .as_ref()
             .is_some_and(|c| c.len() < n)
         || input.min_fz_schedule.len() != n
+        || input
+            .com_z_max
+            .as_ref()
+            .is_some_and(|c| c.len() < n || c.iter().any(|z| !z.is_finite()))
         || input.contacts.iter().any(|c| {
             !c.cop_half.0.is_finite()
                 || !c.cop_half.1.is_finite()
@@ -1107,6 +1126,11 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
 
         // State at the END of node k, with node k's own wrench included.
         node_maps.push((map.rows(0, 9).into_owned(), bias.rows(0, 9).into_owned()));
+        if n_reach > 0 {
+            let mut coeff = na::DVector::zeros(nu);
+            coeff[12 * n + n_land + k] = 1.0;
+            add_residual(&mut rows, coeff, 0.0, cfg.reach_weight);
+        }
         if cfg.ldot_weight > 0.0 {
             for axis in 0..3 {
                 let coeff = (map.row(6 + axis).transpose() - prev_mom.0.row(axis).transpose())
@@ -1448,8 +1472,23 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
 
     // Sole-frame friction, CoP, torsion, and normal-force constraints.
     let n_box = if input.landing.is_some() { 4 } else { 0 };
-    let mut d = na::DMatrix::zeros(24 * n + n_box, nu);
-    let mut rhs = na::DVector::zeros(24 * n + n_box);
+    let mut d = na::DMatrix::zeros(24 * n + n_box + 2 * n_reach, nu);
+    let mut rhs = na::DVector::zeros(24 * n + n_box + 2 * n_reach);
+    if n_reach > 0 {
+        let caps = input.com_z_max.as_ref().unwrap();
+        for k in 0..n {
+            let r0 = 24 * n + n_box + 2 * k;
+            let sidx = 12 * n + n_land + k;
+            let (m, b) = &node_maps[k];
+            // z_k - s_k <= cap_k   (z_k = m.row(2) U + b[2])
+            d.row_mut(r0).copy_from(&m.row(2));
+            d[(r0, sidx)] = -1.0;
+            rhs[r0] = caps[k] - b[2];
+            // -s_k <= 0
+            d[(r0 + 1, sidx)] = -1.0;
+            rhs[r0 + 1] = 0.0;
+        }
+    }
     if let Some(land) = input.landing {
         for j in 0..2 {
             // |prior + dp| <= max, written on dp.
@@ -1508,6 +1547,14 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
                 initial[12 * k + 6 * foot + 5] = input.reference_fz_schedule[k][foot]
                     .clamp(input.min_fz_schedule[k][foot], cfg.max_fz);
             }
+        }
+    }
+    if n_reach > 0 {
+        let caps = input.com_z_max.as_ref().unwrap();
+        for k in 0..n {
+            let (m, b) = &node_maps[k];
+            let z = (m.row(2) * &initial)[0] + b[2];
+            initial[12 * n + n_land + k] = (z - caps[k]).max(0.0);
         }
     }
     Some(DenseProblem {
@@ -1869,6 +1916,10 @@ pub fn residuals(p: &DenseProblem, result: &QpSolution) -> Residuals {
 /// Augmentation expresses the wrench-rate cost without cross-stage couplings.
 pub fn assemble_ocp(input: &Input, cfg: &Config) -> Option<misa_wbc::ocp::OcpProblem> {
     use misa_wbc::ocp::{OcpProblem, OcpStage};
+    // The stage-wise form has no column for the height-cap slacks.
+    if input.com_z_max.is_some() {
+        return None;
+    }
     let dense = assemble(input, cfg)?;
     let mut initial = na::DVector::zeros(21);
     initial.rows_mut(0, 3).copy_from(&input.com);
@@ -2174,9 +2225,34 @@ mod tests {
                 prior_com: None,
                 dcm_now: None,
                 reference_dcm_sensitivity: None,
+                com_z_max: None,
             },
             cfg,
         )
+    }
+
+    #[test]
+    fn a_height_cap_lowers_the_predicted_com_and_a_loose_one_changes_nothing() {
+        let (input, cfg) = standing([0.0, 0.0]);
+        let plain = solve(&input, &cfg).expect("solves");
+        let mut loose = input.clone();
+        loose.com_z_max = Some(vec![10.0; cfg.horizon]);
+        let same = solve(&loose, &cfg).expect("solves");
+        for k in 0..cfg.horizon {
+            assert!((plain.trajectory[k][0].z - same.trajectory[k][0].z).abs() < 1e-6);
+        }
+        let cap = 0.58;
+        let mut capped = input.clone();
+        capped.com_z_max = Some(vec![cap; cfg.horizon]);
+        let low = solve(&capped, &cfg).expect("solves");
+        let last = cfg.horizon - 1;
+        assert!(
+            low.trajectory[last][0].z < plain.trajectory[last][0].z - 0.005,
+            "{} vs {}",
+            low.trajectory[last][0].z,
+            plain.trajectory[last][0].z
+        );
+        assert!(low.trajectory[last][0].z <= cap + 0.002, "{}", low.trajectory[last][0].z);
     }
 
     /// The stabilising pressure point for a LIPM must lie BEYOND the DCM,

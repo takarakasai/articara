@@ -3081,6 +3081,35 @@ fn main() {
     let mpc_w_wrench = env_f64("MPC_W_WRENCH", 2e-4).max(0.0);
     let mpc_w_smooth = env_f64("MPC_W_SMOOTH", 1e-3).max(0.0);
     let mpc_sole_authority = flag("MPC_SOLE_AUTHORITY", false);
+    // MPC_REACH: the CoM height becomes the MPC's to decide. Each node gets
+    // a cap = what the legs can reach from the feet the schedule has down
+    // (sole + sqrt(L^2 - d^2) + hip drop, L = MPC_REACH x the straight
+    // leg, d the horizontal hip-to-sole distance at the PREVIOUS solve's
+    // predicted CoM), the MPC's vertical target is the plan height itself
+    // (no PD extrapolation), and the WBC's vertical PD then tracks the
+    // MPC's predicted height (MPC_REACH_TRACK). The three height heuristics
+    // (COM_HEIGHT_DESC_LEAD, PUSH_Z_DROP, VX2_Z_DROP) are what this is
+    // meant to retire. 0 = off, bit-identical.
+    let mpc_reach = env_f64("MPC_REACH", 0.0).clamp(0.0, 1.0);
+    let mpc_reach_w = env_f64("MPC_REACH_W", 1e6).max(0.0);
+    let mpc_reach_max_drop = env_f64("MPC_REACH_MAX_DROP", 0.06).max(0.0);
+    // Only a foot scheduled to carry at least this fraction of the weight
+    // at a node constrains the height there. Measured 2026-10-10: without
+    // it the TRAILING leg at the end of every double support (0.2 m behind
+    // the CoM, unloading, reach 0.97) pulled the height down 3 cm each step.
+    let mpc_reach_min_load = env_f64("MPC_REACH_MIN_LOAD", 0.3).clamp(0.0, 1.0);
+    // How the WBC's vertical follows the cap: 1 = its PD tracks the MPC's
+    // predicted height (measured 2026-10-10: the prediction is the measured
+    // load continued -- the smoothness anchor outweighs the height cost by
+    // 1e5 -- so the PD had nothing to restore and the height wandered 3 cm
+    // per step); 2 = the height reference itself is lowered to the lowest
+    // cap in the horizon, slewed at MPC_REACH_SLEW [m/s] (default).
+    let mpc_reach_track = env_f64("MPC_REACH_TRACK", 2.0) as i32;
+    let mpc_reach_slew = env_f64("MPC_REACH_SLEW", 0.05).max(0.001);
+    // Lowest cap of the last solve, and the drop currently applied.
+    let mut mpc_reach_cap_min = f64::INFINITY;
+    let mut mpc_reach_drop = 0.0_f64;
+    let mpc_reach_debug = std::env::var("MPC_REACH_DEBUG").is_ok();
     let mpc_authority_ds_only = !flag("MPC_AUTHORITY_ALL", false);
     let ramp_frac_mpc = env_f64("LOAD_RAMP_FRAC", 0.6).clamp(0.05, 1.0);
     let stair_wrench_dt = env_f64("STAIR_WRENCH_DT", 0.02).max(dt);
@@ -6892,6 +6921,24 @@ fn main() {
         } else {
             (z_ref, zd_ref)
         };
+        let mpc_reach_on = mpc_reach > 0.0
+            && leg_reach.max > 0.0
+            && hip_mi.is_some()
+            && stair_transfer_cmd.is_none()
+            && wrench_mpc_apply;
+        let mut mpc_reach_z: Option<f64> = None;
+        // MPC_REACH_TRACK=2: lower the height reference to the lowest cap
+        // the last solve saw, slewed; the nominal is kept for the cap floor.
+        let z_ref_nominal = z_ref;
+        let (z_ref, zd_ref) = if mpc_reach_on && mpc_reach_track == 2 {
+            let want = (z_ref - mpc_reach_cap_min).max(0.0);
+            let d = (want - mpc_reach_drop).clamp(-mpc_reach_slew * dt, mpc_reach_slew * dt);
+            mpc_reach_drop += d;
+            (z_ref - mpc_reach_drop, zd_ref - d / dt)
+        } else {
+            mpc_reach_drop = 0.0;
+            (z_ref, zd_ref)
+        };
         let a_z = zdd_ref + kp_com * (z_ref - com.z) + kd_com * (zd_ref - com_vel.z);
         let mut a_com = na::Vector3::new(a_xy.x, a_xy.y, a_z);
 
@@ -6945,6 +6992,12 @@ fn main() {
                 let mut target_com =
                     com + com_vel * horizon_time + a_com * (0.5 * horizon_time * horizon_time);
                 let mut target_velocity = com_vel + a_com * horizon_time;
+                if mpc_reach_on {
+                    // The plan height itself: the MPC, not the WBC's PD,
+                    // decides how to get there.
+                    target_com.z = z_ref + zd_ref * horizon_time;
+                    target_velocity.z = zd_ref;
+                }
                 if mpc_target_preview
                     && let Some((t0, ref pc, ref pv)) = preview_traj
                 {
@@ -7445,13 +7498,65 @@ fn main() {
                 } else {
                     None
                 };
+                // MPC_REACH: per-node height cap from the feet the schedule
+                // has down at that node and the previous solve's CoM.
+                let com_z_max = mpc_reach_on.then(|| {
+                    let l_u = leg_reach.max * mpc_reach;
+                    let hips = hip_mi.unwrap().map(|mi| {
+                        let p = misarta::se3::translation(&data.oMi[mi]);
+                        (na::Vector2::new(p.x - com.x, p.y - com.y), com.z - p.z)
+                    });
+                    (0..stair_wrench_horizon)
+                        .map(|k| {
+                            let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
+                            let tau = (k as f64 + 1.0) * stair_wrench_preview_dt;
+                            let c_xy = wrench_mpc_traj
+                                .as_ref()
+                                .and_then(|(_, _, _, tr)| tr.get(k))
+                                .map(|[c, _]| c.xy())
+                                .unwrap_or_else(|| com.xy() + com_vel.xy() * tau);
+                            let down = match gait.support_at(at) {
+                                Support::Double => [true, true],
+                                Support::Single { swing, .. } => [swing != 0, swing != 1],
+                            };
+                            let mut cap = f64::INFINITY;
+                            for f in 0..2 {
+                                if !down[f]
+                                    || reference_fz_schedule[k][f] < mpc_reach_min_load * total_mass * G
+                                {
+                                    continue;
+                                }
+                                let (off, drop) = hips[f];
+                                let sole = contacts[f].position;
+                                let d = (c_xy + off - sole.xy()).norm();
+                                let span = (l_u * l_u - d * d).max(0.0).sqrt();
+                                cap = cap.min(sole.z + span + drop);
+                            }
+                            cap.max(z_ref_nominal - mpc_reach_max_drop)
+                        })
+                        .collect::<Vec<f64>>()
+                });
+                if let Some(c) = &com_z_max {
+                    mpc_reach_cap_min = c.iter().cloned().fold(f64::INFINITY, f64::min);
+                }
+                if mpc_reach_debug && let Some(c) = &com_z_max {
+                    let (k, m) = c.iter().enumerate().fold((0, f64::INFINITY), |a, (k, &v)| if v < a.1 { (k, v) } else { a });
+                    if m < z_ref - 0.003 {
+                        println!("  [reach] t={t:.3} cap min {m:.3} at node {k} (z_ref {z_ref:.3}, com {:.3}) caps {}", com.z, c.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>().join(" "));
+                    }
+                }
                 let input = articara::biped::wrench_mpc::Input {
                     com,
                     velocity: com_vel,
                     angular_momentum: na::Vector3::new(h[0], h[1], h[2]),
                     target_com,
                     target_velocity,
-                    target_acceleration: a_com,
+                    target_acceleration: if mpc_reach_on {
+                        na::Vector3::new(a_com.x, a_com.y, zdd_ref)
+                    } else {
+                        a_com
+                    },
+                    com_z_max,
                     contacts: [contacts[0].clone(), contacts[1].clone()],
                     // Walking branch: the contact SET over the horizon comes
                     // from the gait, node by node (lift-off and landing inside
@@ -7674,6 +7779,7 @@ fn main() {
                     cop_weight: mpc_cop_weight,
                     net_cop_weight: mpc_net_cop_weight,
                     net_cop_equality: mpc_net_cop_eq,
+                    reach_weight: mpc_reach_w,
                     ..Default::default()
                 };
                 config.qp.absolute_gap = mpc_gate;
@@ -7940,6 +8046,20 @@ fn main() {
                 } else {
                     a_com = wrench_mpc_acceleration;
                 }
+            }
+            // MPC_REACH_TRACK: the WBC's vertical PD follows the MPC's
+            // predicted height (position and velocity at the end of node 0,
+            // interpolated to now) instead of the heuristic reference.
+            if mpc_reach_on
+                && mpc_reach_track == 1
+                && let Some((t0, c0, v0, tr)) = wrench_mpc_traj.as_ref()
+                && let Some([c1, v1]) = tr.first()
+            {
+                let s = ((t - t0) / stair_wrench_preview_dt).clamp(0.0, 1.0);
+                let z_m = c0.z + (c1.z - c0.z) * s;
+                let zd_m = v0.z + (v1.z - v0.z) * s;
+                a_com.z = zdd_ref + kp_com * (z_m - com.z) + kd_com * (zd_m - com_vel.z);
+                mpc_reach_z = Some(z_m);
             }
         } else {
             wrench_mpc_command = None;
@@ -10331,7 +10451,7 @@ fn main() {
             let row = Row {
                 t,
                 com,
-                com_ref_z: z_ref,
+                com_ref_z: mpc_reach_z.unwrap_or(z_ref),
                 // The renderer's `com_ref_y` panel is the lateral reference;
                 // for a walk that is the DCM target, not a fixed point.
                 com_ref_y: r.xi.y,
