@@ -2314,6 +2314,10 @@ fn main() {
     // champion's stair landings mostly end that way (retime median 2.16 s =
     // 1.0 s swing + 1.08 s extension) with the sole on the tread all along.
     let contact_admit_z = env_f64("CONTACT_ADMIT_Z", 0.010).max(0.0);
+    let gait_dump_t: Option<(f64, f64)> = std::env::var("GAIT_DUMP_T").ok().and_then(|v| {
+        let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok());
+        Some((it.next()??, it.next()??))
+    });
     let contact_dump_t: Option<(f64, f64)> = std::env::var("CONTACT_DUMP_T").ok().and_then(|v| {
         let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok());
         Some((it.next()??, it.next()??))
@@ -2496,6 +2500,30 @@ fn main() {
     // box to bring xi to the plan's DS-end value (`dcm::step_timing`), taken
     // per axis and clamped to [nominal, DS_FEASIBLE_MAX]. Default OFF.
     let ds_feasible = flag("DS_FEASIBLE", false);
+    // DS_CAPTURE: end the double support EARLY when the DCM has left the
+    // double-support box along x (no pressure point inside it can hold
+    // it: 0-step capture is gone, only the next step can). Measured
+    // 2026-10-11 on the late-phase forward push (11 N*s at swing 0.63):
+    // the foot lands short, then the nominal 0.37 s double support runs
+    // while the CoM walks past the front foot, and the catch step comes
+    // 0.9 s after the push -- too late (12/12 falls). The DS end moves to
+    // `t0 + DS_CAPTURE_T_MIN` (not before the landed foot carries
+    // DS_CAPTURE_LOAD of the weight), once per slice; the next single
+    // support is then shortened by the contact_plan and its landing by
+    // the MPC as usual. DS_FEASIBLE (which only lengthens, when the DS
+    // pressure CAN still catch the DCM) is complementary. Default off.
+    let ds_capture = flag("DS_CAPTURE", false);
+    // "Hopeless": the time the DS pressure needs along x exceeds this
+    // multiple of the remaining double support.
+    let ds_capture_hopeless = env_f64("DS_CAPTURE_HOPELESS", 1.5).max(1.0);
+    // Only shorten when it saves at least this much [s].
+    let ds_capture_min_gain = env_f64("DS_CAPTURE_MIN_GAIN", 0.05).max(0.0);
+    let ds_capture_t_min = env_f64("DS_CAPTURE_T_MIN", 0.15).max(0.02);
+    let ds_capture_load = env_f64("DS_CAPTURE_LOAD", 0.4).clamp(0.0, 1.0);
+    let ds_capture_debug = std::env::var("DS_CAPTURE_DEBUG").is_ok();
+    let mut dsc_retimed_last: Option<usize> = None;
+    let mut n_ds_capture = 0u32;
+    let mut ds_capture_total = 0.0_f64;
     let ds_feasible_max = env_f64("DS_FEASIBLE_MAX", 1.5);
     // Also write the chosen pivot into the plan (see DcmPlan::set_segment_zmp).
     let ds_feasible_plan = flag("DS_FEASIBLE_PLAN", false);
@@ -4085,6 +4113,70 @@ fn main() {
                         }
                         if std::env::var("DS_FEASIBLE_DEBUG").is_ok() {
                             println!("  [dsf] t={t:.3} ds={ds} xi=({:.3},{:+.3}) target=({:.3},{:+.3}) p=({:.3},{:+.3}) need={need:.3} nominal={nominal:.3} -> {want:.3}", xi_meas.x, xi_meas.y, target.x, target.y, p.x, p.y);
+                        }
+                    }
+                }
+            }
+            if ds_capture {
+                let ds = gait.index_at(t + 1e-6);
+                let is_ds = |j: usize| matches!(gait.slices[j].support, Support::Double);
+                if is_ds(ds) && !dsc_retimed_last.is_some_and(|l| l >= ds) {
+                    // The whole run of double-support slices the clock is in
+                    // (a DS is split into ramp / hold / ramp slices).
+                    let mut first = ds;
+                    while first > 0 && is_ds(first - 1) {
+                        first -= 1;
+                    }
+                    let mut last = ds;
+                    while last + 1 < gait.slices.len() && is_ds(last + 1) {
+                        last += 1;
+                    }
+                    let t0_run = gait.slices[first].t0;
+                    let t1_run = gait.slices[last].t1;
+                    let remaining = t1_run - t;
+                    let xi_meas = dcm_of(&com, &com_vel, omega);
+                    let seg_last = dcm_plan.index_at(t1_run - 1e-6);
+                    let target = dcm_plan.xi_eos[seg_last];
+                    let ds_box = SupportBox::from_stance_yawed(
+                        &actual,
+                        Support::Double,
+                        (sole_half_l * cop_frac, sole_half_w * cop_frac),
+                        zmp_margin,
+                    );
+                    // The pivot that would bring the DCM to the DS-end target
+                    // in the remaining time, clamped to the box; the time it
+                    // then actually needs along x (DS_FEASIBLE's own test).
+                    let dcy = (-omega * remaining.max(1e-3)).exp();
+                    let p = ds_box.clamp(&((xi_meas - target * dcy) / (1.0 - dcy))).0;
+                    let need = match step_timing(&xi_meas, &target, &p, omega, 0) {
+                        StepTiming::Time(tt) => tt,
+                        _ => f64::INFINITY,
+                    };
+                    let hopeless = remaining > 1e-3 && need > remaining * ds_capture_hopeless;
+                    let prev_sw = first.checked_sub(1).and_then(|j| gait.slices[j].support.swing());
+                    let landed_load = prev_sw.map_or(0.0, |sw| fz_prev[sw]);
+                    let earliest = (t0_run + ds_capture_t_min).max(t + 2.0 * dt);
+                    if ds_capture_debug {
+                        println!(
+                            "  [dsc-cap?] t={t:.3} run {first}..{last} [{t0_run:.3},{t1_run:.3}] xi.x={:.3} target.x={:.3} p.x={:.3} need={need:.3} rem={remaining:.3} hopeless={hopeless} load={landed_load:.0} earliest={earliest:.3}",
+                            xi_meas.x, target.x, p.x
+                        );
+                    }
+                    if hopeless
+                        && landed_load >= ds_capture_load * total_mass * G
+                        && earliest < t1_run - ds_capture_min_gain
+                    {
+                        let f = (earliest - t) / remaining;
+                        let targets: Vec<(usize, f64)> =
+                            (ds..=last).map(|j| (j, t + (gait.slices[j].t1 - t) * f)).collect();
+                        for (j, nt) in targets {
+                            ds_capture_total += gait.retime(j, nt).abs();
+                        }
+                        dsc_retimed_last = Some(last);
+                        n_ds_capture += 1;
+                        dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
+                        if ds_capture_debug {
+                            println!("  [dsc-cap] t={t:.3} DS end {t1_run:.3} -> {earliest:.3}");
                         }
                     }
                 }
@@ -10470,6 +10562,19 @@ fn main() {
                     h[0]-h_arm[0],h[1]-h_arm[1],h[2]-h_arm[2],
                     measured.cop[0][2],measured.cop[1][2],cop_qp[0][2],cop_qp[1][2],nc).unwrap();
             }
+            // GAIT_DUMP_T="t0,t1": one line per tick with the gait slice the
+            // clock is on against the contact-driven stance set.
+            if let Some((d0, d1)) = gait_dump_t
+                && t >= d0
+                && t <= d1
+            {
+                let i = gait.index_at(t);
+                let sl = &gait.slices[i];
+                println!(
+                    "  [gait] t={t:.3} slice {i} {:?} [{:.3},{:.3}] stance={:?} fz=({:.0},{:.0}) xi.x={:.3} ref.x={:.3}",
+                    sl.support, sl.t0, sl.t1, stance_sides, fz_meas[0], fz_meas[1], xi.x, r.xi.x
+                );
+            }
             let row = Row {
                 t,
                 com,
@@ -10689,6 +10794,7 @@ fn main() {
     }
     if ds_feasible {
         println!("  ds feasible: {n_ds_feasible} retimes ({:.0} ms total)", ds_feasible_total * 1e3);
+        println!("  ds capture: {n_ds_capture} early ends ({:.0} ms total)", ds_capture_total * 1e3);
         if ds_feasible_continuous {
             println!("  ds continuous: {n_ds_continuous} plan writes");
         }
