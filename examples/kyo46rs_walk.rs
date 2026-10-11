@@ -2518,6 +2518,12 @@ fn main() {
     let ds_capture_hopeless = env_f64("DS_CAPTURE_HOPELESS", 1.5).max(1.0);
     // Only shorten when it saves at least this much [s].
     let ds_capture_min_gain = env_f64("DS_CAPTURE_MIN_GAIN", 0.05).max(0.0);
+    // Fire only when the DCM has run AHEAD of the DS-end target (a forward
+    // push). Measured 2026-10-11 (N=48, 4 conditions): without the gate the
+    // forward push went 36 -> 45 but the backward one 34 -> 32 -- stepping
+    // sooner backward does not help a leg that has no authority (the
+    // backward failure, design note 10-10). Default on.
+    let ds_capture_fwd_only = flag("DS_CAPTURE_FWD_ONLY", true);
     let ds_capture_t_min = env_f64("DS_CAPTURE_T_MIN", 0.15).max(0.02);
     let ds_capture_load = env_f64("DS_CAPTURE_LOAD", 0.4).clamp(0.0, 1.0);
     let ds_capture_debug = std::env::var("DS_CAPTURE_DEBUG").is_ok();
@@ -4120,7 +4126,8 @@ fn main() {
             if ds_capture {
                 let ds = gait.index_at(t + 1e-6);
                 let is_ds = |j: usize| matches!(gait.slices[j].support, Support::Double);
-                if is_ds(ds) && !dsc_retimed_last.is_some_and(|l| l >= ds) {
+                // Not while a recovery reference owns the phase durations.
+                if is_ds(ds) && ref_mode.is_none() && !dsc_retimed_last.is_some_and(|l| l >= ds) {
                     // The whole run of double-support slices the clock is in
                     // (a DS is split into ramp / hold / ramp slices).
                     let mut first = ds;
@@ -4152,7 +4159,9 @@ fn main() {
                         StepTiming::Time(tt) => tt,
                         _ => f64::INFINITY,
                     };
-                    let hopeless = remaining > 1e-3 && need > remaining * ds_capture_hopeless;
+                    let hopeless = remaining > 1e-3
+                        && need > remaining * ds_capture_hopeless
+                        && (!ds_capture_fwd_only || xi_meas.x > target.x);
                     let prev_sw = first.checked_sub(1).and_then(|j| gait.slices[j].support.swing());
                     let landed_load = prev_sw.map_or(0.0, |sw| fz_prev[sw]);
                     let earliest = (t0_run + ds_capture_t_min).max(t + 2.0 * dt);
