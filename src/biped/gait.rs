@@ -252,6 +252,19 @@ impl GaitPlan {
         d
     }
 
+    /// Insert one slice of `duration` right after slice `after`, sliding
+    /// every later slice back by that much. Returns the new slice's index.
+    /// Used by the re-step (doc/from_claude/20261012_restep_design.md).
+    pub fn insert_after(&mut self, after: usize, support: Support, duration: f64) -> usize {
+        let t0 = self.slices[after].t1;
+        for s in self.slices.iter_mut().skip(after + 1) {
+            s.t0 += duration;
+            s.t1 += duration;
+        }
+        self.slices.insert(after + 1, Slice { support, t0, t1: t0 + duration });
+        after + 1
+    }
+
     /// Insert a separate constant-ZMP double-support hold between steps.
     ///
     /// The existing inter-step double-support slice transfers pressure from
@@ -665,6 +678,12 @@ impl FootstepPlan {
     /// This is how a footstep adaptation becomes part of the plan rather than
     /// a per-tick override: once the foot has landed somewhere other than
     /// nominal, every future segment is relative to where it actually is.
+    /// Insert a footstep entry right after slice `after` (the plan is one
+    /// entry per gait slice; keep the two in step).
+    pub fn insert_after(&mut self, after: usize, fs: Footsteps) {
+        self.at.insert(after + 1, fs);
+    }
+
     pub fn shift_from(&mut self, from: usize, side: Side, d: na::Vector2<f64>) {
         for f in self.at.iter_mut().skip(from) {
             f.sole[side].x += d.x;

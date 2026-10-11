@@ -2513,6 +2513,36 @@ fn main() {
     // the MPC as usual. DS_FEASIBLE (which only lengthens, when the DS
     // pressure CAN still catch the DCM) is complementary. Default off.
     let ds_capture = flag("DS_CAPTURE", false);
+    // RESTEP: when the DCM has run past the LOADED foot's outer edge toward
+    // the stance side while the just-landed foot carries no load, the
+    // double support is wasted (the load never transfers) -- end it now and
+    // swing the landed foot again, across to the stance side (the cross
+    // step the recovery references take, for the late phases where no
+    // reference fires). Design: doc/from_claude/20261012_restep_design.md.
+    let restep = flag("RESTEP", false);
+    let restep_margin = env_f64("RESTEP_MARGIN", 0.0);
+    let restep_load_max = env_f64("RESTEP_LOAD_MAX", 0.15).clamp(0.0, 1.0);
+    let restep_t_ss = env_f64("RESTEP_T_SS", 0.30).max(0.1);
+    let restep_t_ds = env_f64("RESTEP_T_DS", 0.15).max(0.02);
+    let restep_x = env_f64("RESTEP_X", 0.05);
+    let restep_cross = env_f64("RESTEP_CROSS", 0.03);
+    let restep_debug = std::env::var("RESTEP_DEBUG").is_ok();
+    // Inward (toward-stance) landing bound allowed for the re-step and the
+    // RESTEP_Y_IN_STEPS single supports after it: the lateral DCM left over
+    // after the cross can only be caught by landing further inward, which
+    // the shipped ban (MPC_FOOTSTEP_MAX_Y_IN=0) forbids.
+    let restep_y_in = env_f64("RESTEP_Y_IN", 0.06).max(0.0);
+    // The step AFTER the re-step is shortened too (single support
+    // RESTEP_T_SS2, its double support RESTEP_T_DS): measured 2026-10-12,
+    // with the nominal 0.84 s swing the touchdown lies beyond the MPC's
+    // 0.4 s horizon, so no landing variable exists until the last 0.4 s
+    // and the lateral residual left by the cross is never caught.
+    let restep_t_ss2 = env_f64("RESTEP_T_SS2", 0.35).max(0.1);
+    // How many steps after the re-step get that shortening.
+    let restep_follow = env_f64("RESTEP_FOLLOW", 1.0).max(0.0) as usize;
+    let restep_y_in_steps = env_f64("RESTEP_Y_IN_STEPS", 2.0).max(0.0) as usize;
+    let mut restep_last: Option<usize> = None;
+    let mut n_restep = 0u32;
     // "Hopeless": the time the DS pressure needs along x exceeds this
     // multiple of the remaining double support.
     let ds_capture_hopeless = env_f64("DS_CAPTURE_HOPELESS", 1.5).max(1.0);
@@ -4121,6 +4151,108 @@ fn main() {
                         }
                         if std::env::var("DS_FEASIBLE_DEBUG").is_ok() {
                             println!("  [dsf] t={t:.3} ds={ds} xi=({:.3},{:+.3}) target=({:.3},{:+.3}) p=({:.3},{:+.3}) need={need:.3} nominal={nominal:.3} -> {want:.3}", xi_meas.x, xi_meas.y, target.x, target.y, p.x, p.y);
+                        }
+                    }
+                }
+            }
+            if restep && ref_mode.is_none() {
+                let ds = gait.index_at(t + 1e-6);
+                let is_ds = |j: usize| matches!(gait.slices[j].support, Support::Double);
+                if is_ds(ds) && !restep_last.is_some_and(|l| l >= ds) && ds > 0 {
+                    let mut first = ds;
+                    while first > 0 && is_ds(first - 1) {
+                        first -= 1;
+                    }
+                    let mut last = ds;
+                    while last + 1 < gait.slices.len() && is_ds(last + 1) {
+                        last += 1;
+                    }
+                    if let Some(landed) = first.checked_sub(1).and_then(|j| gait.slices[j].support.swing())
+                        && last + 1 < gait.slices.len()
+                    {
+                        let loaded = 1 - landed;
+                        let xi_meas = dcm_of(&com, &com_vel, omega);
+                        let sole = actual.sole[loaded];
+                        // Toward the loaded (stance) side is +y for the left foot.
+                        let sgn = if loaded == 0 { 1.0 } else { -1.0 };
+                        // Outer edge of the loaded sole's pressure box (ZMP_MARGIN
+                        // is a fraction, not metres: go through SupportBox).
+                        let sbox1 = SupportBox::from_stance_yawed(
+                            &actual,
+                            Support::Single { stance: loaded, swing: landed },
+                            (sole_half_l * cop_frac, sole_half_w * cop_frac),
+                            zmp_margin,
+                        );
+                        let edge = if loaded == 0 { sbox1.hi.y } else { sbox1.lo.y };
+                        let beyond = (xi_meas.y - edge) * sgn;
+                        let landed_load = fz_prev[landed];
+                        if restep_debug && beyond > -0.02 {
+                            println!("  [restep?] t={t:.3} ds run {first}..{last} loaded={loaded} xi.y={:+.3} edge={edge:+.3} beyond={beyond:+.3} landed load={landed_load:.0}", xi_meas.y);
+                        }
+                        if beyond > restep_margin && landed_load < restep_load_max * total_mass * G {
+                            // End the double support now.
+                            let t_end = t + 2.0 * dt;
+                            let remaining = (gait.slices[last].t1 - t).max(1e-6);
+                            let f = ((t_end - t) / remaining).min(1.0);
+                            let targets: Vec<(usize, f64)> =
+                                (ds..=last).map(|j| (j, t + (gait.slices[j].t1 - t) * f)).collect();
+                            for (j, nt) in targets {
+                                gait.retime(j, nt);
+                            }
+                            // Insert the re-step: the landed foot swings again
+                            // across to the stance side, then a short DS.
+                            let i_ss = gait.insert_after(last, Support::Single { stance: loaded, swing: landed }, restep_t_ss);
+                            let i_ds = gait.insert_after(i_ss, Support::Double, restep_t_ds);
+                            let cur = *footsteps.at_slice(last);
+                            let mut fs = cur;
+                            fs.sole[landed] = na::Vector3::new(sole.x + restep_x, sole.y + sgn * restep_cross, sole.z);
+                            footsteps.insert_after(last, fs);
+                            footsteps.insert_after(i_ss, fs);
+                            // Re-centre every later footfall on the feet as
+                            // they will be after the cross, at nominal width.
+                            let mid = 0.5 * (fs.sole[0].xy() + fs.sole[1].xy());
+                            let half_w = 0.5 * (footsteps.initial.sole[0].y - footsteps.initial.sole[1].y).abs();
+                            for side in 0..2 {
+                                let want = na::Vector2::new(mid.x, mid.y + if side == 0 { half_w } else { -half_w });
+                                if let Some(j) = (i_ds + 1..gait.slices.len()).find(|&j| gait.slices[j].support.swing() == Some(side)) {
+                                    let d = want - footsteps.at_slice(j).sole[side].xy();
+                                    footsteps.shift_from(j, side, d);
+                                }
+                            }
+                            // Shorten the following RESTEP_FOLLOW steps as well
+                            // (single support to RESTEP_T_SS2, their double
+                            // supports to RESTEP_T_DS).
+                            let mut j = i_ds + 1;
+                            for _ in 0..restep_follow {
+                                if j >= gait.slices.len() || !matches!(gait.slices[j].support, Support::Single { .. }) {
+                                    break;
+                                }
+                                let t0j = gait.slices[j].t0;
+                                gait.retime(j, t0j + restep_t_ss2);
+                                let k0 = j + 1;
+                                let mut k = k0;
+                                while k < gait.slices.len() && matches!(gait.slices[k].support, Support::Double) {
+                                    k += 1;
+                                }
+                                if k > k0 {
+                                    let tot = gait.slices[k - 1].t1 - gait.slices[k0].t0;
+                                    let f = restep_t_ds / tot.max(1e-6);
+                                    let base = gait.slices[k0].t0;
+                                    let targets: Vec<(usize, f64)> =
+                                        (k0..k).map(|q| (q, base + (gait.slices[q].t1 - base) * f)).collect();
+                                    for (q, nt) in targets {
+                                        gait.retime(q, nt);
+                                    }
+                                }
+                                j = k;
+                            }
+                            dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
+                            restep_last = Some(i_ds);
+                            n_restep += 1;
+                            println!(
+                                "  [restep] t={t:.3} foot {landed} re-steps across: DS ends {t_end:.3}, swing [{:.3},{:.3}] to ({:.3},{:+.3}), DS to {:.3}",
+                                gait.slices[i_ss].t0, gait.slices[i_ss].t1, fs.sole[landed].x, fs.sole[landed].y, gait.slices[i_ds].t1
+                            );
                         }
                     }
                 }
@@ -7455,6 +7587,14 @@ fn main() {
                     }
                     if mpc_footstep_y_in_retimed > 0.0 && cp_retimed_slice == Some(i) {
                         b = b.max(mpc_footstep_y_in_retimed);
+                    }
+                    // Around a re-step: its own swing (restep_last - 1) and the
+                    // next RESTEP_Y_IN_STEPS single supports (two slices each).
+                    if let Some(l) = restep_last
+                        && i + 1 >= l
+                        && i <= l + 2 * restep_y_in_steps
+                    {
+                        b = b.max(restep_y_in);
                     }
                     if mpc_footstep_y_in_fwd > 0.0
                         && xi.x - dcm_plan.reference(t).xi.x >= mpc_footstep_y_in_fwd_trig
@@ -10811,6 +10951,7 @@ fn main() {
     if ds_feasible {
         println!("  ds feasible: {n_ds_feasible} retimes ({:.0} ms total)", ds_feasible_total * 1e3);
         println!("  ds capture: {n_ds_capture} early ends ({:.0} ms total)", ds_capture_total * 1e3);
+        println!("  re-steps: {n_restep}");
         if ds_feasible_continuous {
             println!("  ds continuous: {n_ds_continuous} plan writes");
         }
