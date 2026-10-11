@@ -2524,6 +2524,8 @@ fn main() {
     // sooner backward does not help a leg that has no authority (the
     // backward failure, design note 10-10). Default on.
     let ds_capture_fwd_only = flag("DS_CAPTURE_FWD_ONLY", true);
+    // The forward excursion must exceed this [m] (noise floor).
+    let ds_capture_margin = env_f64("DS_CAPTURE_MARGIN", 0.01);
     let ds_capture_t_min = env_f64("DS_CAPTURE_T_MIN", 0.15).max(0.02);
     let ds_capture_load = env_f64("DS_CAPTURE_LOAD", 0.4).clamp(0.0, 1.0);
     let ds_capture_debug = std::env::var("DS_CAPTURE_DEBUG").is_ok();
@@ -4155,13 +4157,18 @@ fn main() {
                     // then actually needs along x (DS_FEASIBLE's own test).
                     let dcy = (-omega * remaining.max(1e-3)).exp();
                     let p = ds_box.clamp(&((xi_meas - target * dcy) / (1.0 - dcy))).0;
+                    // Degenerate = the DCM is already at the target (or the
+                    // pivot sits on it): nothing to do, NOT hopeless. Measured
+                    // 2026-10-11 (7@90 m19): a 0.1 mm gap was read as
+                    // unreachable and a healthy double support lost 300 ms.
                     let need = match step_timing(&xi_meas, &target, &p, omega, 0) {
                         StepTiming::Time(tt) => tt,
-                        _ => f64::INFINITY,
+                        StepTiming::Degenerate => 0.0,
+                        StepTiming::Unreachable => f64::INFINITY,
                     };
                     let hopeless = remaining > 1e-3
                         && need > remaining * ds_capture_hopeless
-                        && (!ds_capture_fwd_only || xi_meas.x > target.x);
+                        && (!ds_capture_fwd_only || xi_meas.x > target.x + ds_capture_margin);
                     let prev_sw = first.checked_sub(1).and_then(|j| gait.slices[j].support.swing());
                     let landed_load = prev_sw.map_or(0.0, |sw| fz_prev[sw]);
                     let earliest = (t0_run + ds_capture_t_min).max(t + 2.0 * dt);
