@@ -42,6 +42,10 @@ p.add_argument('--impulse-deg', type=float, default=90.0, help='direction of the
 p.add_argument('--vx', type=float, default=0.0, help='forward CoM speed at the push [m/s] (walking scenario)')
 p.add_argument('--swing-x', type=float, default=0.0, help='initial x of the swing (right) sole [m] (walking scenario: mid-swing ahead)')
 p.add_argument('--lbfgs', action='store_true', help='limited-memory Hessian in IPOPT (the exact Hessian of the torque constraints takes ~28 GB)')
+p.add_argument('--landed', action='store_true', help='the swing (right) foot starts ON the ground, unloaded, at (--swing-x, -width/2): the re-step case (doc/from_claude/20261012_restep_design.md). Needs --swing-z 0')
+p.add_argument('--com-x', type=float, default=None, help='override the initial CoM x [m] (default: (vx + dvx) * delay)')
+p.add_argument('--com-y', type=float, default=None, help='override the initial CoM y [m] (default: 0.7 * width/2 + dvy * delay)')
+p.add_argument('--vy', type=float, default=None, help='override the initial lateral CoM speed [m/s] (default: the impulse / mass)')
 p.add_argument('--out', type=str, default='')
 p.add_argument('--max-iter', type=int, default=1500)
 args = p.parse_args()
@@ -100,9 +104,12 @@ def standing_pose(com_xy, right_z, right_x=0.0):
 w = args.width / 2
 th = np.radians(args.impulse_deg)
 vx_imp, vy_pre = args.impulse / g.mass * np.cos(th), args.impulse / g.mass * np.sin(th)
-q_init = standing_pose(((args.vx + vx_imp) * args.delay, w * 0.7 + vy_pre * args.delay), args.swing_z, args.swing_x)   # CoM mostly over the left (stance) foot, plus the drift during the detection delay
+com0 = [(args.vx + vx_imp) * args.delay, w * 0.7 + vy_pre * args.delay]   # CoM mostly over the left (stance) foot, plus the drift during the detection delay
+if args.com_x is not None: com0[0] = args.com_x
+if args.com_y is not None: com0[1] = args.com_y
+q_init = standing_pose(com0, args.swing_z, args.swing_x)
 q_stand = standing_pose((0.0, 0.0), 0.0)
-vy = vy_pre
+vy = vy_pre if args.vy is None else args.vy
 omega = np.sqrt(G / args.zcom)
 print(f'impulse {args.impulse} N s at {args.impulse_deg:.0f} deg -> dvx {vx_imp:.3f} dvy {vy:.3f} m/s; DCM y = {w*0.7 + vy/omega:.3f} m, stance outer edge {w + SOLE_HALF[1]:.3f} m')
 
@@ -164,6 +171,9 @@ for k in range(N + 1):
                 o.subject_to(ps[0:2] == anchor[key][0][0:2])
                 o.subject_to(Rs[1, 0] == anchor[key][1][1, 0])
             anchor[key] = (ps, Rs, k)
+        elif args.landed and s == 1 and k == 0:
+            # Re-step: the foot starts on the ground (unloaded) and lifts.
+            anchor.pop(s, None)
         else:
             o.subject_to(ps[2] >= 0.02)
             anchor.pop(s, None)
@@ -278,6 +288,6 @@ if args.out:
         for s_ in (0, 1):
             if F[k][s_] is not None:
                 Fn[k, s_] = np.array([sol.value(fc) for fc in F[k][s_]])
-    json.dump({'ok': ok, 'impulse': args.impulse, 'impulse_deg': args.impulse_deg, 'swing_phase': args.phase, 'delay': args.delay, 'T': Tn, 't': t.tolist(), 'q': Qn.tolist(), 'v': Vn.tolist(), 'f': Fn.tolist(),
+    json.dump({'ok': ok, 'impulse': args.impulse, 'impulse_deg': args.impulse_deg, 'swing_phase': args.phase, 'delay': args.delay, 'landed': bool(args.landed), 'T': Tn, 't': t.tolist(), 'q': Qn.tolist(), 'v': Vn.tolist(), 'f': Fn.tolist(),
                'names': g.names, 'com': com.tolist(), 'sole_l': np.array(sole_xy[0]).tolist(), 'sole_r': np.array(sole_xy[1]).tolist()},
               open(args.out, 'w'))

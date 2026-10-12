@@ -41,6 +41,9 @@ struct RefLib {
     swing_phase: f64,
     /// Direction of the push this reference answers [deg]: 90 = toward the stance foot, 0 = forward.
     impulse_deg: f64,
+    /// Solved from the LANDED state (the swing foot on the ground, unloaded):
+    /// the re-step reference, engaged by RESTEP and never by the detectors.
+    landed: bool,
     t: Vec<f64>,
     sole: [Vec<na::Vector3<f64>>; 2],
     /// CoM at the nodes, and the vertical force of each foot per interval.
@@ -77,6 +80,7 @@ impl RefLib {
             swing_z0,
             swing_phase: v["swing_phase"].as_f64().unwrap_or(0.5),
             impulse_deg: v["impulse_deg"].as_f64().unwrap_or(90.0),
+            landed: v["landed"].as_bool().unwrap_or(false),
             phases: v["T"].as_array().unwrap().iter().map(f).collect(),
             t: v["t"].as_array().unwrap().iter().map(f).collect(),
             sole: [sole_l, sole_r],
@@ -2468,6 +2472,8 @@ fn main() {
     let ref_wbc = flag("REF_WBC", false);
     let mut ref_cooldown_until = f64::NEG_INFINITY;
     let mut ref_engage_pending: Option<f64> = None;
+    // The pending engagement wants a landed-state (re-step) reference.
+    let mut ref_want_landed = false;
     let mut ref_lat_quiet_t = f64::NEG_INFINITY;
     let ref_trig_pred = env_f64("REF_TRIG_PRED", 0.0).max(0.0);
     let mut ref_lat_hist: std::collections::VecDeque<(f64, f64)> = std::collections::VecDeque::new();
@@ -2540,6 +2546,10 @@ fn main() {
     let restep_t_ss2 = env_f64("RESTEP_T_SS2", 0.35).max(0.1);
     // How many steps after the re-step get that shortening.
     let restep_follow = env_f64("RESTEP_FOLLOW", 1.0).max(0.0) as usize;
+    // Drive the re-step with a landed-state reference from REF_LIBRARY
+    // (engaged through the pending path at the inserted single support)
+    // instead of the hand-made cross + re-centre.
+    let restep_ref = flag("RESTEP_REF", true) && ref_libs.iter().any(|l| l.landed);
     let restep_y_in_steps = env_f64("RESTEP_Y_IN_STEPS", 2.0).max(0.0) as usize;
     let mut restep_last: Option<usize> = None;
     let mut n_restep = 0u32;
@@ -4208,11 +4218,20 @@ fn main() {
                             fs.sole[landed] = na::Vector3::new(sole.x + restep_x, sole.y + sgn * restep_cross, sole.z);
                             footsteps.insert_after(last, fs);
                             footsteps.insert_after(i_ss, fs);
+                            if restep_ref {
+                                // The reference retimes the phases, sets both
+                                // landings and re-centres on exit.
+                                ref_engage_pending = Some(t);
+                                ref_want_landed = true;
+                            }
                             // Re-centre every later footfall on the feet as
                             // they will be after the cross, at nominal width.
                             let mid = 0.5 * (fs.sole[0].xy() + fs.sole[1].xy());
                             let half_w = 0.5 * (footsteps.initial.sole[0].y - footsteps.initial.sole[1].y).abs();
                             for side in 0..2 {
+                                if restep_ref {
+                                    break;
+                                }
                                 let want = na::Vector2::new(mid.x, mid.y + if side == 0 { half_w } else { -half_w });
                                 if let Some(j) = (i_ds + 1..gait.slices.len()).find(|&j| gait.slices[j].support.swing() == Some(side)) {
                                     let d = want - footsteps.at_slice(j).sole[side].xy();
@@ -4223,7 +4242,7 @@ fn main() {
                             // (single support to RESTEP_T_SS2, their double
                             // supports to RESTEP_T_DS).
                             let mut j = i_ds + 1;
-                            for _ in 0..restep_follow {
+                            for _ in 0..(if restep_ref { 0 } else { restep_follow }) {
                                 if j >= gait.slices.len() || !matches!(gait.slices[j].support, Support::Single { .. }) {
                                     break;
                                 }
@@ -6009,9 +6028,10 @@ fn main() {
                 // Phase AT THE PUSH (the detector fires tau0 later).
                 let frac_push = slice_frac - tau0 / gait.slices[slice_idx].duration().max(1e-6);
                 let pick = (0..ref_libs.len())
-                    .filter(|&k| ref_libs[k].impulse_deg == want_deg)
+                    .filter(|&k| ref_libs[k].impulse_deg == want_deg && ref_libs[k].landed == ref_want_landed)
                     .min_by(|&a, &b| (ref_libs[a].swing_phase - frac_push).abs().partial_cmp(&(ref_libs[b].swing_phase - frac_push).abs()).unwrap())
                     .unwrap_or(0);
+                ref_want_landed = false;
                 ref_lib = Some(ref_libs[pick].clone());
                 let lib = ref_lib.as_ref().unwrap();
                 println!("  [ref] swing phase {slice_frac:.2} -> reference {} (meant for {:.2})", pick, lib.swing_phase);
