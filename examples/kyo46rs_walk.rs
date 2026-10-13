@@ -1378,6 +1378,38 @@ fn main() {
     // 99.8% of its length. VX2_TSCALE_MIN bounds the shortening. 0 = off.
     let vx2_stride_max = env_f64("VX2_STRIDE_MAX", 0.0).max(0.0);
     let vx2_tscale_min = env_f64("VX2_TSCALE_MIN", 0.4).clamp(0.1, 1.0);
+    // VX2_SCHED: ONE speed schedule instead of the two hand-set knobs.
+    // Measured 2026-10-14 (doc/from_claude/20261014_speed_design.md): the
+    // swing's peak acceleration goes as v / T_step, so a speed is reached
+    // by the LONGEST stride the legs allow (cap VXS_STRIDE_MAX) and only
+    // then by cadence; a longer stride needs a lower CoM to stay within
+    // leg reach, z_drop = 0.024 + VXS_Z_SLOPE (stride - 0.35) above a
+    // 0.35 m stride, fading to 0 below 0.25 m. Reproduces the measured
+    // settings (0.35/0.024 to 0.50 m/s, 0.45/0.06 at 0.55). The swing
+    // acceleration bound v / T <= 0.7 then puts the ceiling at ~0.56 m/s
+    // with a 0.45 m stride. Unset = the two knobs, bit-identical.
+    let vx2_sched = flag("VX2_SCHED", false);
+    let (vx2_stride_max, vx2_z_drop_sched) = match vx2_change {
+        Some((_, vx2, _)) if vx2_sched => {
+            // The cap itself rises with speed: a 0.42 m stride at the
+            // nominal cadence (0.35 m/s) stretches the stance leg over a
+            // 0.84 s single support and falls even 5 cm lower, while the
+            // same stride at 0.55 m/s (0.82 s step) walks. 0.35 m up to
+            // VXS_V_LONG, then +VXS_CAP_SLOPE per m/s to VXS_STRIDE_MAX.
+            let cap_hi = env_f64("VXS_STRIDE_MAX", 0.45).max(0.05);
+            let cap = (0.35 + env_f64("VXS_CAP_SLOPE", 2.0) * (vx2 - env_f64("VXS_V_LONG", 0.45))).clamp(0.35, cap_hi);
+            let stride = (vx2 * t_step).min(cap);
+            let zd = if stride >= 0.35 {
+                0.024 + env_f64("VXS_Z_SLOPE", 0.36).max(0.0) * (stride - 0.35)
+            } else {
+                0.024 * ((stride - 0.25) / 0.10).clamp(0.0, 1.0)
+            }
+            .min(env_f64("VXS_Z_MAX", 0.08));
+            println!("speed schedule: v={vx2:.2} m/s -> stride {stride:.3} m (cap {cap:.2}), step {:.3} s, CoM drop {zd:.3} m", stride / vx2.max(1e-6));
+            (cap, Some(zd))
+        }
+        _ => (vx2_stride_max, None),
+    };
     // VX2_DS_SCALE: an extra factor on the DOUBLE-support slices of the
     // sped-up steps. Measured 2026-10-14 at 0.55 m/s with a 0.45 m stride
     // (mu 0.60): at the end of the double support the trailing foot is
@@ -1426,7 +1458,7 @@ fn main() {
     // 24 mm lower takes it from 7/48 to 48/48 -- but lowering the CoM for
     // the whole run trades descents and lateral pushes away. Tied to the
     // speed command it leaves every other bench bit-identical. 0 = off.
-    let vx2_z_drop = env_f64("VX2_Z_DROP", 0.0).max(0.0);
+    let vx2_z_drop = vx2_z_drop_sched.unwrap_or_else(|| env_f64("VX2_Z_DROP", 0.0).max(0.0));
     let mut vx2_z_track = 0.0_f64;
     let push_z_drop = env_f64("PUSH_Z_DROP", 0.0).max(0.0);
     let push_z_drop_trig = env_f64("PUSH_Z_DROP_TRIG", 0.03).max(0.0);
