@@ -1046,6 +1046,13 @@ fn main() {
     let mom_cmp_sign = env_f64("MOM_CMP_SIGN", 1.0);
     let mom_cmp_hmax = env_f64("MOM_CMP_HMAX", 0.0).max(0.0);
     let mom_cmp_kh = env_f64("MOM_CMP_KH", 0.0).max(0.0);
+    // Off inside a stair zone with a real riser (the flat harness's 0 mm
+    // stair does not count). Measured 2026-10-13 (N=48): the lean took the
+    // pushes 301 -> 326 but the descents 191 -> 166, 3-step 142 -> 101,
+    // the up-and-over 2/4 cm 48 -> 15 -- on a descent the pressure
+    // saturates by design and leaning on it breaks the step. Ascents and
+    // the flat were unchanged. true = lean on stairs too.
+    let mom_cmp_stairs = flag("MOM_CMP_STAIRS", false);
     let mut n_mom_cmp_ticks = 0u32;
     let mut mom_cmp_peak = 0.0_f64;
     let use_trunk = flag("TRUNK", true);
@@ -8598,8 +8605,19 @@ fn main() {
         };
 
         // ---- hip strategy: centroidal moment pivot (MOM_CMP) --------------
+        let in_stair_zone = match &stairs {
+            Some(st) if st.riser.abs() > 0.005 => {
+                let x = steps.mid_xy().x;
+                (x >= st.start - stair_crouch_lead && x <= st.landing_start() + stair_crouch_tail)
+                    || (st.down_n > 0
+                        && x >= st.landing_end() - stair_crouch_lead
+                        && x <= st.landing_end() + st.down_n as f64 * st.tread + stair_crouch_tail)
+            }
+            _ => false,
+        };
         let p_cmp = if mom_cmp > 0.0
             && (!mom_cmp_ref_only || ref_mode.is_some())
+            && (mom_cmp_stairs || !in_stair_zone)
             && zmp_deficit.norm() > mom_cmp_dead
         {
             let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
