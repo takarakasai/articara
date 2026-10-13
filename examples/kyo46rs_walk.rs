@@ -1389,6 +1389,16 @@ fn main() {
     // acceleration bound v / T <= 0.7 then puts the ceiling at ~0.56 m/s
     // with a 0.45 m stride. Unset = the two knobs, bit-identical.
     let vx2_sched = flag("VX2_SCHED", false);
+    // VX2_REANCHOR: at every entry into single support, translate the rest
+    // of the footstep plan so the stance foot's planned position is where
+    // the foot actually is. The plan is a position-vs-time schedule at the
+    // commanded speed; after a recovery stalls the robot it runs ahead and
+    // the next landings become lunges (measured 2026-10-14 at 0.30 m/s
+    // after a lateral-push reference: a 0.65 m step, then the fall). Only
+    // with a speed command (VX2); unset = bit-identical.
+    let vx2_reanchor = flag("VX2_REANCHOR", false);
+    let mut n_reanchor = 0u32;
+    let mut reanchor_total = 0.0_f64;
     let (vx2_stride_max, vx2_z_drop_sched) = match vx2_change {
         Some((_, vx2, _)) if vx2_sched => {
             // The cap itself rises with speed: a 0.42 m stride at the
@@ -4042,6 +4052,21 @@ fn main() {
                 prof.sole_centre_x,
                 prof.sole_below_origin,
             );
+            if vx2_reanchor
+                && vx2_change.is_some()
+                && ref_mode.is_none()
+                && let (Some(Support::Double), Support::Single { stance, swing }) = (support_prev, gait.support_at(t))
+            {
+                let i = gait.index_at(t);
+                let d = actual.sole[stance].xy() - footsteps.at_slice(i).sole[stance].xy();
+                if d.norm() > 0.002 {
+                    footsteps.shift_from(i, stance, d);
+                    footsteps.shift_from(i, swing, d);
+                    dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
+                    n_reanchor += 1;
+                    reanchor_total += d.norm();
+                }
+            }
             landing_timing.level_steps = land_confirm_level && stair_transfer_completed > 0;
             let touchdowns_before = landing_timing.touchdowns;
             let timeouts_before = landing_timing.timeouts;
@@ -11104,6 +11129,7 @@ fn main() {
         println!("  ds feasible: {n_ds_feasible} retimes ({:.0} ms total)", ds_feasible_total * 1e3);
         println!("  ds capture: {n_ds_capture} early ends ({:.0} ms total)", ds_capture_total * 1e3);
         println!("  re-steps: {n_restep}");
+        println!("  plan re-anchors: {n_reanchor} ({:.0} mm total)", reanchor_total * 1e3);
         println!("  hip strategy (MOM_CMP): {n_mom_cmp_ticks} ticks, peak rate {mom_cmp_peak:.1} N m");
         if ds_feasible_continuous {
             println!("  ds continuous: {n_ds_continuous} plan writes");
