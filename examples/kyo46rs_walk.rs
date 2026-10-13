@@ -1414,7 +1414,11 @@ fn main() {
             } else {
                 0.024 * ((stride - 0.25) / 0.10).clamp(0.0, 1.0)
             }
-            .min(env_f64("VXS_Z_MAX", 0.08));
+            .min(env_f64("VXS_Z_MAX", 0.08))
+            // VXS_Z_EXTRA: more drop on top of the schedule (the landing leg
+            // at speed is at 0.99 of its length and has no lateral authority
+            // against a push; measured 2026-10-14). 0 = the schedule alone.
+            + env_f64("VXS_Z_EXTRA", 0.0).max(0.0);
             println!("speed schedule: v={vx2:.2} m/s -> stride {stride:.3} m (cap {cap:.2}), step {:.3} s, CoM drop {zd:.3} m", stride / vx2.max(1e-6));
             (cap, Some(zd))
         }
@@ -3227,9 +3231,17 @@ fn main() {
     // same step continuously and survives. 0 = arm only the step that
     // triggered = shipped.
     let mpc_footstep_trig_hold = env_f64("MPC_FOOTSTEP_TRIG_HOLD", 0.0).max(0.0) as usize;
+    // VXS_BOX_GAIN [1/(m/s)]: with a speed command the landing box grows
+    // by (1 + gain * (v - 0.12)): a push at speed needs a capture step
+    // scaled with the stride (measured 2026-10-14, the 0.12 m/s box
+    // clipped every lateral recovery at 0.30-0.50 m/s). 0 = fixed box.
+    let vxs_box_scale = match vx2_change {
+        Some((_, v, _)) => 1.0 + env_f64("VXS_BOX_GAIN", 0.0).max(0.0) * (v - 0.12).max(0.0),
+        None => 1.0,
+    };
     let mpc_footstep_max = [
-        env_f64("MPC_FOOTSTEP_MAX_X", 0.06).max(0.0),
-        env_f64("MPC_FOOTSTEP_MAX_Y", 0.03).max(0.0),
+        env_f64("MPC_FOOTSTEP_MAX_X", 0.06).max(0.0) * vxs_box_scale,
+        env_f64("MPC_FOOTSTEP_MAX_Y", 0.03).max(0.0) * vxs_box_scale,
     ];
     // Weight on tracking the PLAN'S DCM inside the MPC. Without it the MPC's
     // implied feedback law is not a DCM law -- measured 2026-09-25, against a
