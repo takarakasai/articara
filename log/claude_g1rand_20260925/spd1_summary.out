@@ -1,0 +1,9 @@
+=== stride 0.35 zdrop 0.024 vs stride 0.25 zdrop 0.024 (v6.4-era baseline VZ0.024)
+ST35A_speed 対 VZ0.024_speed  （共通 0 本）
+  総合           0 →   0  改善  0 悪化  0  z=+0.00
+=== stride 0.35 zdrop 0.040
+ST35B_speed 対 VZ0.024_speed  （共通 0 本）
+  総合           0 →   0  改善  0 悪化  0  z=+0.00
+=== 0.55 with stride 0.25 (v6.9)
+VX20p55_VX2_AT8: 16/48
+#### SPD1_DONE
