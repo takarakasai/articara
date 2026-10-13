@@ -2470,6 +2470,12 @@ fn main() {
     // of the re-planned LIPM.
     let ref_mpc = flag("REF_MPC", false);
     let ref_wbc = flag("REF_WBC", false);
+    // For a LANDED (re-step) reference the WBC's DCM law follows the
+    // reference's DCM/CoP (as REF_WBC does for every reference). Measured
+    // 2026-10-13 on ld7_a: without it the walker's CoM x lagged the
+    // reference by 6 cm at the second landing and 12 cm at the end and the
+    // robot fell backward; with it the CoM tracks within 3 cm.
+    let ref_wbc_landed = flag("REF_WBC_LANDED", true);
     let mut ref_cooldown_until = f64::NEG_INFINITY;
     let mut ref_engage_pending: Option<f64> = None;
     // The pending engagement wants a landed-state (re-step) reference.
@@ -5796,7 +5802,7 @@ fn main() {
         // reference's own DCM and CoP (its CoM and contact forces) instead of
         // the re-planned LIPM.
         if let (Some(mode), Some(lib)) = (ref_mode, ref_lib.as_ref())
-            && ref_wbc
+            && (ref_wbc || (ref_wbc_landed && lib.landed))
         {
             let tau = t - mode.t0 + mode.tau0;
             if tau <= lib.total() {

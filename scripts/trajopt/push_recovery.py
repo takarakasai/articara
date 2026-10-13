@@ -47,6 +47,7 @@ p.add_argument('--com-x', type=float, default=None, help='override the initial C
 p.add_argument('--com-y', type=float, default=None, help='override the initial CoM y [m] (default: 0.7 * width/2 + dvy * delay)')
 p.add_argument('--vy', type=float, default=None, help='override the initial lateral CoM speed [m/s] (default: the impulse / mass)')
 p.add_argument('--land-xmax', type=float, default=-9.0, help='upper bound on the x of both landings relative to the stance foot [m] (keep the feet from running ahead of a CoM the walker will not push)')
+p.add_argument('--end-vx', type=float, default=None, help='forward CoM speed at the END [m/s] instead of coming to rest (hand back to a walking gait); the CoM then ends a little behind the feet midpoint')
 p.add_argument('--out', type=str, default='')
 p.add_argument('--max-iter', type=int, default=1500)
 args = p.parse_args()
@@ -147,7 +148,13 @@ print('initial velocity: |A v0 - b| = %.1e, base lin %s, max joint speed %.2f ra
     np.abs(A0 @ v0 - b0).max(), np.round(v0[0:3], 3), np.abs(v0[6:]).max()))
 o.subject_to(Q[0] == q_init)
 o.subject_to(V[0] == v0)
-o.subject_to(V[N] == 0)
+if args.end_vx is None:
+    o.subject_to(V[N] == 0)
+else:
+    # Joint velocities at rest, the base moving forward at --end-vx.
+    o.subject_to(V[N][6:] == 0)
+    o.subject_to(V[N][1:6] == 0)
+    o.subject_to(V[N][0] == args.end_vx)
 
 cost = 0
 anchor = {}   # (side, phase) -> (position, rotation) at the first node of that contact phase
@@ -228,7 +235,12 @@ for k in range(N):
 # End: at rest, CoM between the feet at standing height.
 pl, _ = f_sole[0](Q[N]); pr, _ = f_sole[1](Q[N])
 cN = f_com(Q[N])
-o.subject_to(cN[0:2] == 0.5 * (pl[0:2] + pr[0:2]))
+if args.end_vx is None:
+    o.subject_to(cN[0:2] == 0.5 * (pl[0:2] + pr[0:2]))
+else:
+    # Walking hand-back: the DCM (not the CoM) at the feet midpoint.
+    o.subject_to(cN[0] + args.end_vx / omega == 0.5 * (pl[0] + pr[0]))
+    o.subject_to(cN[1] == 0.5 * (pl[1] + pr[1]))
 if args.cross > -1.0:
     pr1, _ = f_sole[1](Q[n_ph[0]])
     o.subject_to(pr1[1] >= w + args.cross)
