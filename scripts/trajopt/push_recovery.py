@@ -48,6 +48,7 @@ p.add_argument('--com-y', type=float, default=None, help='override the initial C
 p.add_argument('--vy', type=float, default=None, help='override the initial lateral CoM speed [m/s] (default: the impulse / mass)')
 p.add_argument('--land-xmax', type=float, default=-9.0, help='upper bound on the x of both landings relative to the stance foot [m] (keep the feet from running ahead of a CoM the walker will not push)')
 p.add_argument('--end-vx', type=float, default=None, help='forward CoM speed at the END [m/s] instead of coming to rest (hand back to a walking gait); the CoM then ends a little behind the feet midpoint')
+p.add_argument('--end-over', type=int, default=None, help='end with the CoM over this foot (0 = left/stance, 1 = right) instead of the feet midpoint: the gait that resumes swings the OTHER foot first')
 p.add_argument('--out', type=str, default='')
 p.add_argument('--max-iter', type=int, default=1500)
 args = p.parse_args()
@@ -235,7 +236,12 @@ for k in range(N):
 # End: at rest, CoM between the feet at standing height.
 pl, _ = f_sole[0](Q[N]); pr, _ = f_sole[1](Q[N])
 cN = f_com(Q[N])
-if args.end_vx is None:
+if args.end_over is not None:
+    p_over = pl if args.end_over == 0 else pr
+    vx_end = 0.0 if args.end_vx is None else args.end_vx
+    o.subject_to(cN[0] + vx_end / omega == p_over[0])
+    o.subject_to(cN[1] == p_over[1])
+elif args.end_vx is None:
     o.subject_to(cN[0:2] == 0.5 * (pl[0:2] + pr[0:2]))
 else:
     # Walking hand-back: the DCM (not the CoM) at the feet midpoint.
