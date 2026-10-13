@@ -46,6 +46,7 @@ p.add_argument('--landed', action='store_true', help='the swing (right) foot sta
 p.add_argument('--com-x', type=float, default=None, help='override the initial CoM x [m] (default: (vx + dvx) * delay)')
 p.add_argument('--com-y', type=float, default=None, help='override the initial CoM y [m] (default: 0.7 * width/2 + dvy * delay)')
 p.add_argument('--vy', type=float, default=None, help='override the initial lateral CoM speed [m/s] (default: the impulse / mass)')
+p.add_argument('--land-xmax', type=float, default=-9.0, help='upper bound on the x of both landings relative to the stance foot [m] (keep the feet from running ahead of a CoM the walker will not push)')
 p.add_argument('--out', type=str, default='')
 p.add_argument('--max-iter', type=int, default=1500)
 args = p.parse_args()
@@ -233,6 +234,11 @@ if args.cross > -1.0:
     o.subject_to(pr1[1] >= w + args.cross)
     if args.cross_x > -1.0:
         o.subject_to(pr1[0] >= args.cross_x)
+if args.land_xmax > -1.0:
+    pr1, _ = f_sole[1](Q[n_ph[0]])
+    pl2, _ = f_sole[0](Q[n_ph[0] + n_ph[1] + n_ph[2]])
+    o.subject_to(pr1[0] <= args.land_xmax)
+    o.subject_to(pl2[0] <= args.land_xmax)
 if args.end_width > 0:
     # Hand back to the gait from its nominal stance: left foot a stance width
     # to the left of the right one and at most 8 cm ahead/behind it.
