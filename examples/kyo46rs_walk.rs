@@ -1022,6 +1022,32 @@ fn main() {
     // MOM_ARM_DCM_X_MAX. Needs the pitch axis in MOM_AXES ("xy-"). 0 = off.
     let mom_arm_dcm_x = env_f64("MOM_ARM_DCM_X", 0.0);
     let mom_arm_dcm_x_max = env_f64("MOM_ARM_DCM_X_MAX", 20.0).max(0.0);
+    // MOM_CMP: the hip strategy, written as the centroidal moment pivot.
+    // When the DCM law's pressure point saturates at the support edge, the
+    // deficit `p_raw - p_cmd` is pressure the polygon cannot give; the same
+    // horizontal force follows from an angular-momentum rate instead
+    // (CMP_y = CoP_y - h_dot_x / (m g), CMP_x = CoP_x + h_dot_y / (m g)).
+    // This asks the WHOLE body (unmasked CMM, roll and pitch) for
+    //     h_dot = MOM_CMP * m g * (-deficit_y, +deficit_x, 0),
+    // capped at MOM_CMP_MAX [N m], with no P term, as a weighted task in
+    // the centroidal level. The arms-only MOM_ARM_DCM task stays as it is.
+    // Design: doc/from_claude/20261012_restep_design.md Sec.6 (the WBC's
+    // lateral authority ends at the sole edge). 0 = off, bit-identical.
+    let mom_cmp = env_f64("MOM_CMP", 0.0).max(0.0);
+    let mom_cmp_max = env_f64("MOM_CMP_MAX", 20.0).max(0.0);
+    let mom_cmp_dead = env_f64("MOM_CMP_DEAD", 0.003).max(0.0);
+    let mom_cmp_w = env_f64("MOM_CMP_W", 1.0).max(0.0);
+    // Only while a recovery reference is engaged.
+    let mom_cmp_ref_only = flag("MOM_CMP_REF_ONLY", false);
+    // Sign check (+1 = the derivation above) and a cap on the angular
+    // momentum the strategy may build up [N m s]: a hip strategy is a
+    // transient -- past the cap the rate in that direction is cut to zero
+    // and a P term winds the momentum back (MOM_CMP_KH [1/s]).
+    let mom_cmp_sign = env_f64("MOM_CMP_SIGN", 1.0);
+    let mom_cmp_hmax = env_f64("MOM_CMP_HMAX", 0.0).max(0.0);
+    let mom_cmp_kh = env_f64("MOM_CMP_KH", 0.0).max(0.0);
+    let mut n_mom_cmp_ticks = 0u32;
+    let mut mom_cmp_peak = 0.0_f64;
     let use_trunk = flag("TRUNK", true);
     let trunk_sign = env_f64("TRUNK_SIGN", 1.0);
     let trunk_dead = env_f64("TRUNK_DEAD", 0.0);
@@ -6296,6 +6322,8 @@ fn main() {
             (p_raw, 0.0)
         };
         max_zmp_clamp = max_zmp_clamp.max(clamped);
+        // Pressure the polygon refused (world x, y), for MOM_CMP.
+        let zmp_deficit = p_raw - p_cmd;
 
         // ---- capture-point footstep adaptation --------------------------
         //
@@ -8569,6 +8597,43 @@ fn main() {
             None
         };
 
+        // ---- hip strategy: centroidal moment pivot (MOM_CMP) --------------
+        let p_cmp = if mom_cmp > 0.0
+            && (!mom_cmp_ref_only || ref_mode.is_some())
+            && zmp_deficit.norm() > mom_cmp_dead
+        {
+            let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
+            let dcmm_v = misarta::centroidal::compute_cmm_dot_times_v(&rig.model, q, v);
+            let h_now = &cmm * v_dvec;
+            let mg = total_mass * G;
+            let mut dh = [
+                (-mom_cmp_sign * mom_cmp * mg * zmp_deficit.y).clamp(-mom_cmp_max, mom_cmp_max),
+                (mom_cmp_sign * mom_cmp * mg * zmp_deficit.x).clamp(-mom_cmp_max, mom_cmp_max),
+                0.0,
+            ];
+            for a in 0..2 {
+                if mom_cmp_hmax > 0.0 && h_now[a].abs() > mom_cmp_hmax && dh[a] * h_now[a] > 0.0 {
+                    dh[a] = 0.0;
+                }
+                dh[a] -= mom_cmp_kh * h_now[a];
+            }
+            n_mom_cmp_ticks += 1;
+            mom_cmp_peak = mom_cmp_peak.max(dh[0].abs()).max(dh[1].abs());
+            bt::angular_momentum(
+                dyn_ctx.qddot(),
+                &cmm,
+                &na::DVector::from_row_slice(dcmm_v.as_slice()),
+                &h_now,
+                &[h_now[0], h_now[1], h_now[2]],
+                &dh,
+                0.0,
+                [true, true, false],
+                nv,
+            )
+        } else {
+            None
+        };
+
         // ---- arm hold ----------------------------------------------------
         //
         // Same task as posture, restricted to the arm rows. Rows outside the
@@ -9335,6 +9400,9 @@ fn main() {
                 p1_centroidal =
                     p1_centroidal + tasks::track(&expr, &target).weight(ds_fz_floor_weight);
             }
+        }
+        if let Some(pc) = p_cmp {
+            p1_centroidal = p1_centroidal + pc.weight(mom_cmp_w);
         }
         let trunk_couple_now = use_trunk
             && stair_trunk_couple > 0.0
@@ -10978,6 +11046,7 @@ fn main() {
         println!("  ds feasible: {n_ds_feasible} retimes ({:.0} ms total)", ds_feasible_total * 1e3);
         println!("  ds capture: {n_ds_capture} early ends ({:.0} ms total)", ds_capture_total * 1e3);
         println!("  re-steps: {n_restep}");
+        println!("  hip strategy (MOM_CMP): {n_mom_cmp_ticks} ticks, peak rate {mom_cmp_peak:.1} N m");
         if ds_feasible_continuous {
             println!("  ds continuous: {n_ds_continuous} plan writes");
         }
