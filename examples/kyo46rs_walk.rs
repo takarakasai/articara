@@ -1378,6 +1378,14 @@ fn main() {
     // 99.8% of its length. VX2_TSCALE_MIN bounds the shortening. 0 = off.
     let vx2_stride_max = env_f64("VX2_STRIDE_MAX", 0.0).max(0.0);
     let vx2_tscale_min = env_f64("VX2_TSCALE_MIN", 0.4).clamp(0.1, 1.0);
+    // VX2_DS_SCALE: an extra factor on the DOUBLE-support slices of the
+    // sped-up steps. Measured 2026-10-14 at 0.55 m/s with a 0.45 m stride
+    // (mu 0.60): at the end of the double support the trailing foot is
+    // 0.45 m behind the CoM, its force needs a shear/normal ratio of ~0.7,
+    // and it slips 5 cm backward at toe-off; the next landing then falls
+    // short. Unloading it sooner (a shorter DS) keeps the trailing force
+    // inside the cone. 1 = the shipped equal scaling, bit-identical.
+    let vx2_ds_scale = env_f64("VX2_DS_SCALE", 1.0).clamp(0.1, 1.0);
     let vx2_change = match vx2_change {
         Some((at, vx2, ramp2)) if vx2_stride_max > 0.0 && vx2 * t_step > vx2_stride_max => {
             // Per-step time scale along the ramp, then the capped plan speed.
@@ -1396,7 +1404,7 @@ fn main() {
                             && (j == i || matches!(gait.slices[j].support, Support::Double))
                         {
                             let t0 = gait.slices[j].t0;
-                            let d = gait.slices[j].duration() * scale;
+                            let d = gait.slices[j].duration() * scale * if j == i { 1.0 } else { vx2_ds_scale };
                             gait.retime(j, t0 + d);
                             j += 1;
                         }
