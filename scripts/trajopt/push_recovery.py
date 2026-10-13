@@ -312,6 +312,6 @@ if args.out:
         for s_ in (0, 1):
             if F[k][s_] is not None:
                 Fn[k, s_] = np.array([sol.value(fc) for fc in F[k][s_]])
-    json.dump({'ok': ok, 'impulse': args.impulse, 'impulse_deg': args.impulse_deg, 'swing_phase': args.phase, 'delay': args.delay, 'landed': bool(args.landed), 'T': Tn, 't': t.tolist(), 'q': Qn.tolist(), 'v': Vn.tolist(), 'f': Fn.tolist(),
+    json.dump({'ok': ok, 'impulse': args.impulse, 'impulse_deg': args.impulse_deg, 'swing_phase': args.phase, 'delay': args.delay, 'landed': bool(args.landed), 'vx': args.vx, 'T': Tn, 't': t.tolist(), 'q': Qn.tolist(), 'v': Vn.tolist(), 'f': Fn.tolist(),
                'names': g.names, 'com': com.tolist(), 'sole_l': np.array(sole_xy[0]).tolist(), 'sole_r': np.array(sole_xy[1]).tolist()},
               open(args.out, 'w'))

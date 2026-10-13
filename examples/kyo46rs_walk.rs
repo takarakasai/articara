@@ -44,6 +44,9 @@ struct RefLib {
     /// Solved from the LANDED state (the swing foot on the ground, unloaded):
     /// the re-step reference, engaged by RESTEP and never by the detectors.
     landed: bool,
+    /// Walking speed the reference was solved at [m/s] (0.12 = the nominal
+    /// gait; the library is picked by the nearest speed first, then phase).
+    vx: f64,
     t: Vec<f64>,
     sole: [Vec<na::Vector3<f64>>; 2],
     /// CoM at the nodes, and the vertical force of each foot per interval.
@@ -81,6 +84,7 @@ impl RefLib {
             swing_phase: v["swing_phase"].as_f64().unwrap_or(0.5),
             impulse_deg: v["impulse_deg"].as_f64().unwrap_or(90.0),
             landed: v["landed"].as_bool().unwrap_or(false),
+            vx: v["vx"].as_f64().unwrap_or(0.12),
             phases: v["T"].as_array().unwrap().iter().map(f).collect(),
             t: v["t"].as_array().unwrap().iter().map(f).collect(),
             sole: [sole_l, sole_r],
@@ -6143,9 +6147,19 @@ fn main() {
                 // height does not order the phases.)
                 // Phase AT THE PUSH (the detector fires tau0 later).
                 let frac_push = slice_frac - tau0 / gait.slices[slice_idx].duration().max(1e-6);
+                // Nearest walking speed first (the commanded speed once the
+                // speed change has ramped in, else the nominal), then phase.
+                let v_now = match vx2_change {
+                    Some((at, v2, ramp2)) if gait.steps_taken(t) >= at + ramp2 => v2,
+                    _ => vx,
+                };
                 let pick = (0..ref_libs.len())
                     .filter(|&k| ref_libs[k].impulse_deg == want_deg && ref_libs[k].landed == ref_want_landed)
-                    .min_by(|&a, &b| (ref_libs[a].swing_phase - frac_push).abs().partial_cmp(&(ref_libs[b].swing_phase - frac_push).abs()).unwrap())
+                    .min_by(|&a, &b| {
+                        let da = ((ref_libs[a].vx - v_now).abs() * 10.0, (ref_libs[a].swing_phase - frac_push).abs());
+                        let db = ((ref_libs[b].vx - v_now).abs() * 10.0, (ref_libs[b].swing_phase - frac_push).abs());
+                        (da.0 + da.1).partial_cmp(&(db.0 + db.1)).unwrap()
+                    })
                     .unwrap_or(0);
                 ref_want_landed = false;
                 ref_lib = Some(ref_libs[pick].clone());
