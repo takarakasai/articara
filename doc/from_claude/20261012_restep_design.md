@@ -87,3 +87,8 @@ DS を早く終えても、次に振れるのは**荷重のある左足**で、�
 - 残置（全て既定 off・ビット同一）: `RESTEP`（歩容列の挿入）、`RestLib.landed`／`RESTEP_REF`／`REF_WBC_LANDED`、`push_recovery.py --landed/--com-x/--com-y/--vy/--land-xmax/--end-vx/--end-over`、
   参照 `/data/articara/trajopt/ld7_{a,c,e,f,h}.json`。
 - 再開するなら、参照中の WBC に腰・体幹の角運動量（ヒップ戦略）を使わせて横の CoM 追従の 7 cm を埋めるのが唯一の筋。後ろ押し（脚の権限）と根が共通。
+
+## 7. MOM_CMP（v6.9）込みの再試行（10-13 深夜）
+再ステップ＋`ld7_e`／`ld7_f`＋`MOM_CMP`（v6.9 設定）: 12 本中 1 本（m07）。転倒は参照の**中**に早まった（押しの 0.9 s 後、参照終了前）──
+不足分で傾ける体幹が参照追従 WBC（REF_WBC_LANDED）と干渉する。MOM_CMP 単独（再ステップ無し、v6.9 バッテリ）も同じ 12 本で 1/12。
+結論は §6 のまま: 横の遅い位相は体幹の質量移動でも届かない。保留継続。
