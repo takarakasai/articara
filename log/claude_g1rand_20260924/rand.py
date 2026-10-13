@@ -80,9 +80,13 @@ def one(a):
                 c[kk] = vv
     else:
         # Flat = the stair recipe with a zero riser (see push.py).
-        c['STAIRS'] = f"1,0.000,0.211,{2.00 + s['dx']:.4f}"
+        # PUSH_STAIR_X moves the zero-riser stair (push-at-speed benches put
+        # it out of the way); PUSH_STEP_OFFSET shifts the sampled push step
+        # (the same member keeps its step, phase, mu and dx, so a battery at
+        # speed pairs with one at the nominal speed).
+        c['STAIRS'] = f"1,0.000,0.211,{float(os.environ.get('PUSH_STAIR_X', '2.00')) + s['dx']:.4f}"
         c['PUSH_IMPULSE'] = case[0]; c['PUSH_DEG'] = case[1]
-        c['PUSH_STEP'] = str(s['step']); c['PUSH_AT'] = str(s['at'])
+        c['PUSH_STEP'] = str(s['step'] + int(os.environ.get('PUSH_STEP_OFFSET', '0'))); c['PUSH_AT'] = str(s['at'])
         c['PUSH_SUPPORT'] = os.environ.get('PUSH_SUPPORT', 'ss')
     (d / 'controls.json').write_text(json.dumps(c, indent=1))
     e = dict(os.environ); e.update({k2: str(v) for k2, v in c.items()})
