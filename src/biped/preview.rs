@@ -418,6 +418,10 @@ pub fn forecast_feet(
 /// The trajectory clock remains nominal even when support is extended.
 pub struct LandingTiming {
     pub max_extension: f64,
+    /// Planned sole-height change above which a swing counts as a stair
+    /// swing (confirmed landing, extension). 0.005 = the shipped test; a
+    /// slope sets it higher so its 10-15 mm steps stay level steps.
+    pub dz_min: f64,
     /// Per-swing override of the confirmation's xy tolerance (the caller
     /// sets it for the swing in progress). `None` = `LAND_CONFIRM_XY`.
     pub xy_tol_override: Option<f64>,
@@ -493,6 +497,7 @@ pub struct LandingTiming {
 impl LandingTiming {
     pub fn new(load_threshold: f64) -> Self {
         Self {
+            dz_min: 0.005,
             max_extension: 0.25,
             xy_tol_override: None,
             z_tol_override: None,
@@ -541,7 +546,7 @@ impl LandingTiming {
             if self.finished != Some(i) {
                 if let Some(sw) = gait.slices[i].support.swing() {
                     let from = feet.at_slice(i.saturating_sub(1)).sole[sw].z;
-                    if self.level_steps || (feet.at_slice(i).sole[sw].z - from).abs() > 0.005 {
+                    if self.level_steps || (feet.at_slice(i).sole[sw].z - from).abs() > self.dz_min {
                         let sl = gait.slices[i];
                         if std::env::var("LAND_TIMING_DEBUG").is_ok() {
                             println!("  [lt] t={t:.3} activate slice={i} sw={sw} z {from:.3} -> {:.3} t0={:.3} dur={:.3}", feet.at_slice(i).sole[sw].z, sl.t0, sl.duration());

@@ -102,6 +102,8 @@ pub struct RigOptions {
     /// is not a fix -- it is how to measure what the stance foot's slip is
     /// costing, by removing the slip and nothing else.
     pub mu_ground: f64,
+    /// Plant-side `noslip_iterations` (see [`crate::mjcf::MjcfExportOptions::noslip_iterations`]).
+    pub noslip_iterations: Option<u32>,
     /// Optional MuJoCo impedance curve for collision geoms on both feet.
     /// `None` preserves the model/default contact. This is a plant design
     /// input for evaluating compliant soles, independent of the WBC cone.
@@ -171,6 +173,7 @@ impl RigOptions {
             ctrl_mode: CtrlMode::Torque,
             sim_dt: 0.001,
             mu_ground: 0.7,
+            noslip_iterations: None,
             foot_solimp: None,
             probe_z: p.probe_z,
             extra_seed: Vec::new(),
@@ -446,6 +449,7 @@ impl BipedRig {
             }),
             timestep: Some(sim_dt),
             default_friction: [mu_ground, 0.005, 0.0001],
+            noslip_iterations: o.noslip_iterations,
             // CTRL_MODE=servo hands the velocity loop to MuJoCo itself rather
             // than computing it in Rust, which is what lifts the kv ceiling.
             native_velocity_servo: if native_servo { Some(run_kv) } else { None },

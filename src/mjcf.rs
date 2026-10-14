@@ -142,6 +142,10 @@ pub struct MjcfExportOptions {
     /// `<option cone="…">`: `"pyramidal"` (MuJoCo default) or `"elliptic"`.
     /// `impratio` only has its documented effect with the elliptic cone.
     pub cone: Option<&'static str>,
+    /// `<option noslip_iterations="…">`: MuJoCo's post-pass that removes
+    /// the slow creep of a loaded contact under a sustained tangential
+    /// load (a foot on a slope). `None` keeps the solver default (0).
+    pub noslip_iterations: Option<u32>,
 }
 
 impl Default for MjcfExportOptions {
@@ -160,6 +164,7 @@ impl Default for MjcfExportOptions {
             timestep: None,
             impratio: None,
             cone: None,
+            noslip_iterations: None,
             extra_worldbody: None,
         }
     }
@@ -260,9 +265,9 @@ pub fn export_mjcf_with_options(
     let integrator = opts
         .integrator
         .or(opts.native_velocity_servo.map(|_| "implicitfast"));
-    let xml = match (opts.timestep, integrator, opts.impratio, opts.cone) {
-        (None, None, None, None) => xml,
-        (dt, ig, ir, cone) => {
+    let xml = match (opts.timestep, integrator, opts.impratio, opts.cone, opts.noslip_iterations) {
+        (None, None, None, None, None) => xml,
+        (dt, ig, ir, cone, noslip) => {
             let mut attrs = String::new();
             if let Some(dt) = dt {
                 attrs.push_str(&format!(" timestep=\"{dt}\""));
@@ -275,6 +280,9 @@ pub fn export_mjcf_with_options(
             }
             if let Some(cone) = cone {
                 attrs.push_str(&format!(" cone=\"{cone}\""));
+            }
+            if let Some(n) = noslip {
+                attrs.push_str(&format!(" noslip_iterations=\"{n}\""));
             }
             match xml.find('\n') {
                 Some(nl) => format!("{}\n  <option{attrs}/>{}", &xml[..nl], &xml[nl..]),

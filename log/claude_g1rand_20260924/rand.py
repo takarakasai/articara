@@ -74,6 +74,7 @@ def one(a):
         c['STAIRS'] = f"{STAIR_N},{case},{STAIR_TREAD},{START_X + s['dx']:.4f}"
     elif MODE == 'flat':
         c['STAIRS'] = f"1,0.000,0.211,{FLAT_START_X + s['dx']:.4f}"
+        c['TERRAIN_SEED'] = str(k + 1)
         for kv in case.split(';'):
             if kv:
                 kk, vv = kv.split('=', 1)

@@ -26,6 +26,12 @@ pub struct Stairs {
     /// `landing_end()`: an up-and-over course. 0 = none (the historical
     /// terrain, bit-identical). Only meaningful for an ascending `riser`.
     pub down_n: usize,
+    /// A SLOPE instead of a flight (`n == 0`): rise per metre of x from
+    /// `start` over a horizontal run of `slope_len`, flat beyond. Negative
+    /// descends from a platform `slope_len * |slope|` high. 0 = no slope,
+    /// bit-identical (doc/from_claude/20261015_terrain_bench.md).
+    pub slope: f64,
+    pub slope_len: f64,
 }
 
 impl Stairs {
@@ -47,12 +53,41 @@ impl Stairs {
             start: v.get(3).copied().unwrap_or(0.25),
             landing_len,
             down_n: 0,
+            slope: 0.0,
+            slope_len: 0.0,
+        }
+    }
+
+    /// A slope (`TERRAIN_SLOPE="deg[,start[,run]]"`): `n = 0`, rising
+    /// `tan(deg)` per metre over `run` metres of x from `start`.
+    pub fn slope(deg: f64, start: f64, run: f64, landing_len: f64) -> Self {
+        Stairs {
+            n: 0,
+            riser: 0.0,
+            tread: 0.211,
+            start,
+            landing_len,
+            down_n: 0,
+            slope: deg.to_radians().tan(),
+            slope_len: run.max(0.0),
+        }
+    }
+
+    /// Pitch of the walking surface at `x` [rad] (positive = rising ahead):
+    /// the slope's angle inside its run, 0 elsewhere (treads are level).
+    pub fn pitch_at(&self, x: f64) -> f64 {
+        if self.n == 0 && self.slope != 0.0 && x >= self.start && x <= self.start + self.slope_len {
+            self.slope.atan()
+        } else {
+            0.0
         }
     }
 
     /// Platform height the robot starts on (0 when ascending).
     pub fn base(&self) -> f64 {
-        if self.riser < 0.0 {
+        if self.n == 0 && self.slope < 0.0 {
+            self.slope_len * -self.slope
+        } else if self.riser < 0.0 {
             self.n as f64 * -self.riser
         } else {
             0.0
@@ -65,6 +100,9 @@ impl Stairs {
     /// while the physical landing ends at `landing_end()`. Planners that place
     /// feet past the last tread must check `landing_span()` themselves.
     pub fn h(&self, x: f64) -> f64 {
+        if self.n == 0 && self.slope != 0.0 {
+            return self.base() + self.slope * (x - self.start).clamp(0.0, self.slope_len);
+        }
         if self.down_n > 0 && self.riser > 0.0 && x >= self.landing_end() {
             let k2 = (((x - self.landing_end()) / self.tread) as i64 + 1).clamp(0, self.down_n as i64);
             return (self.n as i64 - k2).max(0) as f64 * self.riser;
@@ -113,6 +151,10 @@ impl Stairs {
     /// one, and the falls moved from the landing beyond the step (27.8 s) to
     /// the step itself (22.3 s).
     pub fn surface_span(&self, x: f64) -> (f64, f64) {
+        if self.n == 0 && self.slope != 0.0 {
+            // One continuous surface: no edges to keep a sole off.
+            return (f64::NEG_INFINITY, f64::INFINITY);
+        }
         if x < self.start {
             return (f64::NEG_INFINITY, self.start);
         }

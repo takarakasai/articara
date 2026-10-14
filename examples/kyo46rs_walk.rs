@@ -298,6 +298,11 @@ fn main() {
         CtrlMode::from_env_name(&std::env::var("CTRL_MODE").unwrap_or_else(|_| "torque".into()));
     o.sim_dt = env_f64("SIM_DT", 0.001);
     o.mu_ground = env_f64("MU_GROUND", 0.7);
+    // MJ_NOSLIP=N: MuJoCo's noslip post-pass. Measured 2026-10-15 on the
+    // slope bench: a loaded stance foot creeps 0.2-0.5 cm/s along a 3-5 deg
+    // slope with the default solver (flat: 0.03), which is the solver's
+    // soft-contact artefact, not the controller. Unset = plant unchanged.
+    o.noslip_iterations = std::env::var("MJ_NOSLIP").ok().and_then(|v| v.parse::<u32>().ok()).filter(|&n| n > 0);
     if let Ok(value) = std::env::var("FOOT_SOLIMP") {
         let values: Vec<f64> = value
             .split(',')
@@ -480,7 +485,13 @@ fn main() {
     // enough for the planned walk-out (>= 3.0 m for a 28-step plan). See
     // doc/from_claude/20260923_landing_edge.md.
     let stair_landing_len = env_f64("STAIR_LANDING_LEN", 0.60);
-    let stairs: Option<Stairs> = std::env::var("STAIRS")
+    // TERRAIN_SLOPE="deg[,start[,run]]": a known slope (in the planner's
+    // terrain model) instead of a flight. Takes precedence over STAIRS.
+    let terrain_slope: Option<Stairs> = std::env::var("TERRAIN_SLOPE").ok().map(|v| {
+        let f: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        Stairs::slope(f.first().copied().unwrap_or(0.0), f.get(1).copied().unwrap_or(1.0), f.get(2).copied().unwrap_or(5.0), stair_landing_len)
+    });
+    let stairs: Option<Stairs> = terrain_slope.or_else(|| std::env::var("STAIRS")
         .ok()
         .map(|s| {
             // STAIRS_DOWN=n2: an up-and-over course -- after the landing
@@ -491,10 +502,48 @@ fn main() {
                 st.down_n = (env_f64("STAIRS_DOWN", 0.0).max(0.0) as usize).min(st.n);
             }
             st
-        });
+        }));
     if let Some(st) = &stairs {
         let half_w = env_f64("STAIR_HALF_W", 0.30);
         let mut wb = String::new();
+        if st.n == 0 && st.slope != 0.0 {
+            // A rotated slab whose top surface starts at (start, base) and
+            // rises `slope` per metre over `slope_len`, then a flat landing.
+            let th = st.slope.atan();
+            let thick = 0.10;
+            let len = st.slope_len / th.cos();
+            let (cx, cz) = (
+                st.start + 0.5 * st.slope_len + 0.5 * thick * th.sin(),
+                st.base() + 0.5 * st.slope_len * st.slope - 0.5 * thick * th.cos(),
+            );
+            wb.push_str(&format!(
+                "\n    <body name=\"stair_slope\" pos=\"{cx:.4} 0 {cz:.4}\" euler=\"0 {:.4} 0\">\
+                 \n      <geom name=\"stair_slope_geom\" type=\"box\" size=\"{:.4} {half_w:.4} {:.4}\" rgba=\"0.55 0.57 0.62 1\"/>\n    </body>",
+                // The exporter declares `<compiler angle="radian"/>`, so
+                // euler is in radians (a degrees value here rotated the slab
+                // by -3 rad = -172 deg and put its surface nowhere, 2026-10-15).
+                -th, 0.5 * len, 0.5 * thick
+            ));
+            let top = st.base() + st.slope * st.slope_len;
+            let x1 = st.start + st.slope_len;
+            let mut add_flat = |name: &str, x0: f64, x1: f64, top: f64| {
+                if top > 1e-9 {
+                    wb.push_str(&format!(
+                        "\n    <body name=\"{name}\" pos=\"{:.4} 0 {:.4}\">\n      <geom name=\"{name}_geom\" type=\"box\" size=\"{:.4} {half_w:.4} {:.4}\" rgba=\"0.55 0.57 0.62 1\"/>\n    </body>",
+                        0.5 * (x0 + x1), 0.5 * top, 0.5 * (x1 - x0), 0.5 * top
+                    ));
+                }
+            };
+            add_flat("stair_slope_landing", x1, x1 + 4.0, top);
+            // The spawn platform reaches back under the spawn point (x ~ 0).
+            add_flat("stair_slope_platform", (st.start - 0.60).min(-1.0), st.start, st.base());
+            o.extra_worldbody = Some(match o.extra_worldbody.take() { Some(s) => s + wb.as_str(), None => wb.clone() });
+            if std::env::var("TERRAIN_DEBUG").is_ok() {
+                println!("terrain mjcf:{wb}");
+            }
+            o.spawn_z_offset = st.base() + env_f64("SPAWN_Z_EXTRA", 0.0).max(0.0);
+            println!("slope: {:+.2} deg from x={:.2} over {:.2} m (spawn platform {:.4})", th.to_degrees(), st.start, st.slope_len, st.base());
+        } else {
         let mut add_box = |name: String, x0: f64, x1: f64, top: f64| {
             if top <= 1e-9 {
                 return;
@@ -586,6 +635,43 @@ fn main() {
             st.start,
             st.base()
         );
+        }
+    }
+    // TERRAIN_BUMPS="n,h_max,len,x0,x1": n boxes of random height (0, h_max]
+    // and length len x (0.5..1.5), at random x in [x0, x1], full width, NOT
+    // in the planner's terrain model -- robustness to unmodelled ground.
+    // TERRAIN_SEED seeds the draw (the bench sets it per member).
+    if let Ok(v) = std::env::var("TERRAIN_BUMPS") {
+        let f: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        let (n, h_max, len, x0, x1) = (
+            f.first().copied().unwrap_or(0.0) as usize,
+            f.get(1).copied().unwrap_or(0.02),
+            f.get(2).copied().unwrap_or(0.25),
+            f.get(3).copied().unwrap_or(1.0),
+            f.get(4).copied().unwrap_or(4.0),
+        );
+        let half_w = env_f64("STAIR_HALF_W", 0.30);
+        let mut seed = (env_f64("TERRAIN_SEED", 1.0).max(1.0) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut wb = String::new();
+        let mut log = Vec::new();
+        for k in 0..n {
+            let h = h_max * (0.3 + 0.7 * rnd());
+            let l = len * (0.5 + rnd());
+            let xs = x0 + rnd() * (x1 - x0 - l).max(0.0);
+            wb.push_str(&format!(
+                "\n    <body name=\"stair_bump_{k}\" pos=\"{:.4} 0 {:.4}\">\n      <geom name=\"stair_bump_{k}_geom\" type=\"box\" size=\"{:.4} {half_w:.4} {:.4}\" rgba=\"0.62 0.55 0.50 1\"/>\n    </body>",
+                xs + 0.5 * l, 0.5 * h, 0.5 * l, 0.5 * h
+            ));
+            log.push(format!("[{xs:.2}+{l:.2} h{:.0}mm]", h * 1e3));
+        }
+        o.extra_worldbody = Some(match o.extra_worldbody.take() { Some(s) => s + wb.as_str(), None => wb });
+        println!("bumps (unmodelled): {}", log.join(" "));
     }
     let mut rig = BipedRig::build(prof, &o);
     // Model indices of the links the thighs hang from, for the reach columns.
@@ -2711,6 +2797,23 @@ fn main() {
     // exists once a transfer has ARMED, and the transfer is exactly what fails
     // to arm here.
     let land_extend_rise = env_f64("COM_LAND_EXTEND_RISE", 0.0).max(0.0);
+    // STEP_DZ_MIN: planned sole-height change above which a swing is a
+    // stair swing (rise/descent dwell and confirmation, stair landing box,
+    // landing-timing activation). 0.005 = shipped, bit-identical; a known
+    // slope (TERRAIN_SLOPE, 10-15 mm per step) sets ~0.03 so its steps are
+    // level steps (measured 2026-10-15: at 0.005 every step waited the
+    // 1.08 s rise dwell and the walk collapsed). STEP_DZ_SWING_MIN does the
+    // same for the swing PROFILE choice (stair quintic vs smoothstep).
+    let step_dz_min = env_f64("STEP_DZ_MIN", 0.005).max(0.0);
+    let step_dz_swing_min = env_f64("STEP_DZ_SWING_MIN", 1e-9).max(0.0);
+    // TERRAIN_PITCH=1: on a known slope the swing foot's orientation target
+    // is pitched to the surface at its landing (toe up on an upslope) and
+    // pitch is tracked (SwingAxes::XyzRollPitch). A level sole meets a 5 deg
+    // slope on its toe or heel only (measured 2026-10-15: the sole centre
+    // hovered 7 mm above the surface with no load, then the stance rolled).
+    // Off = shipped, bit-identical.
+    let terrain_pitch = flag("TERRAIN_PITCH", false);
+    landing_timing.dz_min = step_dz_min;
     // Landing-deadline slack for a swing that steps DOWN. Default = the rise
     // value (bit-identical). Measured 2026-10-03 on a 60 mm descent: the
     // 1.08 s rise slack made the stepping-down foot hover on the lower
@@ -3983,8 +4086,8 @@ fn main() {
                 footsteps.at_slice(i).sole[side].z
                     - footsteps.at_slice(i.saturating_sub(1)).sole[side].z
             });
-            let rising = dz_swing.abs() > 0.005;
-            let descending = dz_swing < -0.005;
+            let rising = dz_swing.abs() > step_dz_min;
+            let descending = dz_swing < -step_dz_min;
             // LAND_CONFIRM_XY_DESC_CP=1 restricts it to swings whose end the
             // contact planner has retimed (no landing extension there, so a
             // missed confirmation goes straight to the timeout). Measured:
@@ -4512,7 +4615,7 @@ fn main() {
                 && landing_timing.clock.is_some_and(|(i, _, _)| {
                     gait.slices[i].support.swing().is_some_and(|side|
                         (footsteps.at_slice(i).sole[side].z
-                            - footsteps.at_slice(i.saturating_sub(1)).sole[side].z).abs() > 0.005)
+                            - footsteps.at_slice(i.saturating_sub(1)).sole[side].z).abs() > step_dz_min)
                 })
                 && stair_transfer.is_none()
             {
@@ -7147,7 +7250,16 @@ fn main() {
             } else {
                 0.5 * (fs.sole[0].z + fs.sole[1].z)
             };
-            let rate = stair_climb_rate * st.riser.abs() / t_step.max(1e-6);
+            // A slope (TERRAIN_SLOPE) has no riser: its rise per step is
+            // the grade times the nominal stride, else the rate is zero and
+            // the height reference never leaves the spawn level (measured
+            // 2026-10-15 on +3 deg: CoM 0.683 absolute for the whole climb).
+            let riser_eff = if st.n == 0 && st.slope != 0.0 {
+                st.slope.abs() * (vx.abs() * t_step).max(0.10)
+            } else {
+                st.riser.abs()
+            };
+            let rate = stair_climb_rate * riser_eff / t_step.max(1e-6);
             let dh = (tgt_h - terrain_track).clamp(-rate * dt, rate * dt);
             terrain_track += dh;
             // The stair crouch (see STAIR_CROUCH above) eases in at 50 mm/s.
@@ -7789,7 +7901,7 @@ fn main() {
                         // Upward only: the hover-above-the-tread case.
                         let rising = footsteps.at_slice(i).sole[swing].z
                             - footsteps.at_slice(i.saturating_sub(1)).sole[swing].z
-                            > 0.005;
+                            > step_dz_min;
                         if mpc_fs_debug {
                             println!(
                                 "  [fs-gate] t={t:.3} i={i} frac={frac:.3} rising={rising} clock={:?}",
@@ -7865,7 +7977,7 @@ fn main() {
                                 let stair = (footsteps.at_slice(i).sole[swing].z
                                     - footsteps.at_slice(i.saturating_sub(1)).sole[swing].z)
                                     .abs()
-                                    > 0.005;
+                                    > step_dz_min;
                                 let mut m = mpc_footstep_max;
                                 if stair {
                                     m[0] = m[0].min(mpc_footstep_stair_back);
@@ -9139,7 +9251,7 @@ fn main() {
                     (swing_fraction, swing_duration)
                 };
                 let (mut tgt, mut tgt_v, tgt_a) =
-                    if (dz.abs() > 1e-9 || stair_swing_profile) && stair_swing_ff {
+                    if (dz.abs() > step_dz_swing_min || stair_swing_profile) && stair_swing_ff {
                         articara::biped::gait::stair_swing_sink(
                             lift_off,
                             touch_down,
@@ -9301,6 +9413,10 @@ fn main() {
                         // feet collide, while leaving roll free lets the swing
                         // ankle run to its stop and throws the foot sideways.
                         bt::SwingAxes::XyzRollPitch
+                    } else if terrain_pitch
+                        && stairs.as_ref().is_some_and(|st| st.pitch_at(footsteps.at_slice(plan_slice_idx).sole[side].x) != 0.0)
+                    {
+                        bt::SwingAxes::XyzRollPitch
                     } else {
                         match swing_rot_mode {
                             0 => bt::SwingAxes::Xyz,
@@ -9312,6 +9428,13 @@ fn main() {
                     {
                         let mut rot_tgt =
                             foot_rot_at(side, footsteps.at_slice(plan_slice_idx).yaw[side]);
+                        if terrain_pitch && let Some(st) = &stairs {
+                            let th = st.pitch_at(footsteps.at_slice(plan_slice_idx).sole[side].x);
+                            if th != 0.0 {
+                                // Toe up by the slope angle: rotate about world y by -th.
+                                rot_tgt = na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), -th).matrix() * rot_tgt;
+                            }
+                        }
                         if stair_desc_toe > 0.0 && dz < -1e-9 {
                             // Start the toe-down EARLY. Measured on the
                             // one-step descent: ramping it from the drop
