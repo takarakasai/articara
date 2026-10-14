@@ -2226,6 +2226,32 @@ fn main() {
     // of reach) and the sole rolls flat as load transfers, the way a person
     // steps down. 0 = off.
     let stair_desc_toe = env_f64("STAIR_DESC_TOE", 0.0);
+    // SWING_TOE_UP=rad: lift the swing foot's toe through the middle of
+    // EVERY swing (window SWING_TOE_UP_W="w0,w1" of the swing fraction,
+    // eased in and out over 20% of the window; level again before touchdown).
+    // Measured 2026-10-15 on the unmodelled-bump bench: the default XyzYaw
+    // swing leaves pitch free, the foot travels with its toe down at a 5 cm
+    // apex and the toe catches a 15 mm edge mid-swing (CoP at the toe with
+    // 10-60 N while airborne, the foot stalls and slides back) -- 20 mm bumps
+    // 3/48. The two extra rows are paid only inside the window. 0 = off.
+    let swing_toe_up = env_f64("SWING_TOE_UP", 0.0).clamp(0.0, 0.6);
+    let swing_toe_up_w: [f64; 2] = {
+        let v: Vec<f64> = std::env::var("SWING_TOE_UP_W")
+            .ok()
+            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+            .unwrap_or_default();
+        [v.first().copied().unwrap_or(0.15).clamp(0.0, 1.0), v.get(1).copied().unwrap_or(0.75).clamp(0.0, 1.0)]
+    };
+    // Smooth bump over [w0, w1]: 0 outside, 1 in the middle.
+    let toe_up_shape = move |f: f64| -> f64 {
+        let (w0, w1) = (swing_toe_up_w[0], swing_toe_up_w[1]);
+        if swing_toe_up <= 0.0 || w1 <= w0 || f < w0 || f > w1 {
+            return 0.0;
+        }
+        let ramp = (0.2 * (w1 - w0)).max(1e-6);
+        let ss = |u: f64| { let u = u.clamp(0.0, 1.0); u * u * (3.0 - 2.0 * u) };
+        ss((f - w0) / ramp) * (1.0 - ss((f - (w1 - ramp)) / ramp))
+    };
     // Anchor landings at the PLAN rotation (flat sole) instead of the
     // measured one. Needed for toe-first descent landings (a measured
     // anchor freezes the sole on its toe); breaks the validated ascent
@@ -5758,6 +5784,21 @@ fn main() {
             (None, None)
         };
         let ramp_frac = env_f64("LOAD_RAMP_FRAC", 0.6).clamp(0.05, 1.0);
+        // LOAD_RAMP_TD=1: the foot that has just landed may keep the share it
+        // is ALREADY carrying. The ramp below starts the landed foot at zero
+        // capacity; on flat ground the body still rests on it passively, but
+        // on a downslope the landed foot is the LOWER one, the QP stands on
+        // the higher trailing foot and the landed sole hovers unloaded for
+        // the first 0.3 s of double support. Measured 2026-10-15 on -5 deg:
+        // 135 N at touchdown -> 0 N, the lateral ZMP cannot move to it, the
+        // DCM lags 4 cm toward the trailing foot's outer edge, the plan
+        // moves the landing inward and the unloaded foot is dragged 13 cm
+        // across the other one. Unset = the ramp alone (bit-identical).
+        let load_ramp_td = flag("LOAD_RAMP_TD", false);
+        let measured_share = {
+            let tot = (measured_pre[0] + measured_pre[1]).max(1e-6);
+            [(measured_pre[0] / tot).clamp(0.0, 1.0), (measured_pre[1] / tot).clamp(0.0, 1.0)]
+        };
         let f_share = |side: usize| -> f64 {
             if soft_sides[side] {
                 // A capacity, not a target: the cone and CoP box shrink with
@@ -5787,7 +5828,8 @@ fn main() {
             }
             if let Some(l) = landing {
                 if l == side {
-                    return (slice_frac / ramp_frac).clamp(0.0, 1.0);
+                    let ramp = (slice_frac / ramp_frac).clamp(0.0, 1.0);
+                    return if load_ramp_td { ramp.max(measured_share[side]) } else { ramp };
                 }
             }
             if let Some(l) = lifting {
@@ -9417,6 +9459,8 @@ fn main() {
                         && stairs.as_ref().is_some_and(|st| st.pitch_at(footsteps.at_slice(plan_slice_idx).sole[side].x) != 0.0)
                     {
                         bt::SwingAxes::XyzRollPitch
+                    } else if toe_up_shape(swing_fraction) > 0.0 {
+                        bt::SwingAxes::XyzRollPitch
                     } else {
                         match swing_rot_mode {
                             0 => bt::SwingAxes::Xyz,
@@ -9434,6 +9478,13 @@ fn main() {
                                 // Toe up by the slope angle: rotate about world y by -th.
                                 rot_tgt = na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), -th).matrix() * rot_tgt;
                             }
+                        }
+                        let toe_up_s = toe_up_shape(swing_fraction);
+                        if toe_up_s > 0.0 {
+                            // Toe up: rotate about the foot's y axis by -angle.
+                            rot_tgt = rot_tgt
+                                * na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), -swing_toe_up * toe_up_s)
+                                    .into_inner();
                         }
                         if stair_desc_toe > 0.0 && dz < -1e-9 {
                             // Start the toe-down EARLY. Measured on the
