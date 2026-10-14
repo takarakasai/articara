@@ -2538,6 +2538,20 @@ fn main() {
     // champion's stair landings mostly end that way (retime median 2.16 s =
     // 1.0 s swing + 1.08 s extension) with the sole on the tread all along.
     let contact_admit_z = env_f64("CONTACT_ADMIT_Z", 0.010).max(0.0);
+    // CONTACT_ADMIT_LOADED="z_tol,fz_frac": a scheduled landing whose sole
+    // is OFF its planned height by more than CONTACT_ADMIT_Z but within
+    // z_tol, and which measures at least fz_frac of body weight, is admitted
+    // too, anchored at its MEASURED height. Measured 2026-10-15 on the
+    // unmodelled-bump bench: a foot landing on a 12 mm bump failed the 10 mm
+    // gate, carried 27 N (under the 10% BW hysteresis) for the whole double
+    // support while the QP balanced on the rear foot (n_stance = 1), the DCM
+    // error grew, the next swing was retimed to 0.2 s and stomped at 1860 N.
+    // Unset = the 10 mm gate alone (bit-identical).
+    let contact_admit_loaded: Option<(f64, f64)> = std::env::var("CONTACT_ADMIT_LOADED").ok().and_then(|v| {
+        let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok());
+        Some((it.next()??.max(0.0), it.next()??.max(0.0)))
+    });
+    let mut admit_measured_z: [Option<f64>; 2] = [None; 2];
     let gait_dump_t: Option<(f64, f64)> = std::env::var("GAIT_DUMP_T").ok().and_then(|v| {
         let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok());
         Some((it.next()??, it.next()??))
@@ -5504,9 +5518,21 @@ fn main() {
                 {
                     let mi = rig.foot_mi[landed];
                     let sole_z = misarta::se3::translation(&data.oMi[mi]).z - prof.sole_below_origin;
-                    if (sole_z - steps.sole[landed].z).abs() < contact_admit_z {
+                    let dz_plan = (sole_z - steps.sole[landed].z).abs();
+                    if dz_plan < contact_admit_z {
                         confirmed_admit[landed] = Some(now_slice);
                         last_scheduled_admit[landed] = Some(now_slice);
+                        admit_measured_z[landed] = None;
+                    } else if let Some((z_tol, fz_frac)) = contact_admit_loaded
+                        && dz_plan < z_tol
+                        && fz_meas[landed] >= fz_frac * total_mass * G
+                    {
+                        confirmed_admit[landed] = Some(now_slice);
+                        last_scheduled_admit[landed] = Some(now_slice);
+                        admit_measured_z[landed] = Some(sole_z);
+                        if std::env::var("CONTACT_ADMIT_DEBUG").is_ok() {
+                            println!("  [adm-loaded] t={t:.3} side={landed} sole_z={sole_z:.4} plan_z={:.4} fz={:.0}", steps.sole[landed].z, fz_meas[landed]);
+                        }
                     }
                 }
             }
@@ -5564,7 +5590,9 @@ fn main() {
                 // foot into a hovering one for the rest of the run.
                 let mi = rig.foot_mi[side];
                 let mut p = misarta::se3::translation(&data.oMi[mi]);
-                p.z = steps.sole[side].z + prof.sole_below_origin;
+                // A landing admitted on an unmodelled surface (see
+                // CONTACT_ADMIT_LOADED) is anchored where it actually is.
+                p.z = admit_measured_z[side].unwrap_or(steps.sole[side].z) + prof.sole_below_origin;
                 // Plan rotation for the same reason as the scheduled path
                 // above: a toe-first contact must not freeze the sole on
                 // its toe.
@@ -9389,7 +9417,17 @@ fn main() {
                             swing_duration,
                         );
                         let (pos_ship, vel_ship) = (pos0, vel0);
-                        if swing_z_hold {
+                        // Level swings only: a swing that changes height
+                        // (the shipped arc interpolates z linearly under its
+                        // bump) would hold the apex and drop the whole change
+                        // in the last 35% -- measured 2026-10-15, the 100 mm
+                        // descent stomped at 1376 N and fell on every member.
+                        // ... and only away from known stairs: inside the
+                        // stair zone the validated stair machinery (landing
+                        // clocks, descent lead) owns the swing; with the hold
+                        // active there the 100 mm descent started its swing
+                        // 20 cm ahead of the foot and fell on every member.
+                        if swing_z_hold && !in_stair_zone && (touch_down.z - lift_off.z).abs() < 0.02 {
                             // SWING_Z_HOLD: the three-phase z of
                             // STAIR_SWING_PROFILE (rise [0,0.30] to the apex,
                             // hold, drop [0.60,0.95]) with the SHIPPED xy.
