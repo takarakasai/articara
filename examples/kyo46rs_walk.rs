@@ -2234,6 +2234,23 @@ fn main() {
     // apex and the toe catches a 15 mm edge mid-swing (CoP at the toe with
     // 10-60 N while airborne, the foot stalls and slides back) -- 20 mm bumps
     // 3/48. The two extra rows are paid only inside the window. 0 = off.
+    let swing_xy_delay = env_f64("SWING_XY_DELAY", 0.0).clamp(0.0, 0.6);
+    let swing_z_hold = flag("SWING_Z_HOLD", false);
+    let swing_xy_end = env_f64("SWING_XY_END", 1.0).clamp(0.3, 1.0);
+    let swing_z_drop: [f64; 2] = {
+        let v: Vec<f64> = std::env::var("SWING_Z_DROP")
+            .ok()
+            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+            .unwrap_or_default();
+        [v.first().copied().unwrap_or(0.60).clamp(0.3, 0.95), v.get(1).copied().unwrap_or(0.95).clamp(0.5, 1.0)]
+    };
+    let swing_cautious_err: [f64; 2] = {
+        let v: Vec<f64> = std::env::var("SWING_CAUTIOUS_ERR")
+            .ok()
+            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+            .unwrap_or_default();
+        [v.first().copied().unwrap_or(0.0), v.get(1).copied().unwrap_or(0.0)]
+    };
     let swing_toe_up = env_f64("SWING_TOE_UP", 0.0).clamp(0.0, 0.6);
     let swing_toe_up_w: [f64; 2] = {
         let v: Vec<f64> = std::env::var("SWING_TOE_UP_W")
@@ -9358,22 +9375,91 @@ fn main() {
                             },
                         )
                     } else {
-                        (
-                            swing_position(
-                                lift_off,
-                                touch_down,
-                                lift_h_g.at(run_phase),
-                                swing_fraction,
-                            ),
-                            swing_velocity(
-                                lift_off,
-                                touch_down,
-                                lift_h_g.at(run_phase),
-                                swing_fraction,
-                                swing_duration,
-                            ),
-                            na::Vector3::zeros(),
-                        )
+                        let mut pos0 = swing_position(
+                            lift_off,
+                            touch_down,
+                            lift_h_g.at(run_phase),
+                            swing_fraction,
+                        );
+                        let mut vel0 = swing_velocity(
+                            lift_off,
+                            touch_down,
+                            lift_h_g.at(run_phase),
+                            swing_fraction,
+                            swing_duration,
+                        );
+                        let (pos_ship, vel_ship) = (pos0, vel0);
+                        if swing_z_hold {
+                            // SWING_Z_HOLD: the three-phase z of
+                            // STAIR_SWING_PROFILE (rise [0,0.30] to the apex,
+                            // hold, drop [0.60,0.95]) with the SHIPPED xy.
+                            // Measured 2026-10-15 on the unmodelled-bump bench
+                            // (joint-sum foot pitch): the swing foot hangs
+                            // 20 deg toe-down, so with the sin^2 lift the toe
+                            // is ~1 cm up when it reaches a 16 mm edge; the
+                            // three-phase lift is at 5 cm before x moves and
+                            // clears. Its compressed xy is what cost the push
+                            // family (326 -> 235), so only z is taken.
+                            let f = swing_fraction;
+                            let dur = swing_duration.max(1e-6);
+                            let ss = |u: f64| -> (f64, f64) {
+                                let u = u.clamp(0.0, 1.0);
+                                (u * u * (3.0 - 2.0 * u), 6.0 * u * (1.0 - u))
+                            };
+                            let z_max = lift_off.z.max(touch_down.z) + lift_h_g.at(run_phase);
+                            // SWING_Z_DROP="d0,d1": the drop window (default
+                            // 0.60..0.95 as in the three-phase profile; 1.0
+                            // lands on the slice end like the shipped arc).
+                            let (d0, d1) = (swing_z_drop[0], swing_z_drop[1].max(swing_z_drop[0] + 0.05));
+                            let (ru, dru) = ss(f / 0.30);
+                            let (du, ddu) = ss((f - d0) / (d1 - d0));
+                            pos0.z = lift_off.z + (z_max - lift_off.z) * ru + (touch_down.z - z_max) * du;
+                            vel0.z = (z_max - lift_off.z) * (dru / 0.30 / dur)
+                                + (touch_down.z - z_max) * (ddu / (d1 - d0) / dur);
+                        }
+                        if swing_xy_delay > 0.0 || swing_xy_end < 1.0 {
+                            // SWING_XY_END: the horizontal motion is complete
+                            // at this fraction and the last part of the swing
+                            // descends vertically (the three-phase profile
+                            // ends its travel at 0.70).
+                            // SWING_XY_DELAY: hold the horizontal motion for
+                            // the first `delay` of the swing while the shipped
+                            // sin^2 lift runs, then smoothstep the xy over the
+                            // rest. The unmodelled-bump bench measured the
+                            // toe catching a 15 mm edge as soon as the swing
+                            // starts (x advances before z has risen); the
+                            // three-phase STAIR_SWING_PROFILE fixes that but
+                            // costs the push family 326 -> 235 (2026-10-15).
+                            // This keeps the lift and landing timing as
+                            // shipped. 0 = off (bit-identical).
+                            let d = swing_xy_delay;
+                            let e = swing_xy_end.max(d + 0.05);
+                            let u = ((swing_fraction - d) / (e - d)).clamp(0.0, 1.0);
+                            let s_ = (3.0 - 2.0 * u) * u * u;
+                            let ds = 6.0 * u * (1.0 - u) / ((e - d) * swing_duration.max(1e-6));
+                            let dxy = touch_down.xy() - lift_off.xy();
+                            pos0.x = lift_off.x + dxy.x * s_;
+                            pos0.y = lift_off.y + dxy.y * s_;
+                            vel0.x = dxy.x * ds;
+                            vel0.y = dxy.y * ds;
+                        }
+                        // SWING_CAUTIOUS_ERR="e0,e1": the cautious shape above
+                        // is used in full while the DCM error is below e0 and
+                        // blended back to the shipped arc by e1. A push
+                        // retimes the swing shorter, and the compressed
+                        // horizontal window then doubles the swing velocity
+                        // and slips the stance foot: the 24 worst push
+                        // members went 23 -> 10 with the shape unconditional
+                        // (2026-10-15). The trip the shape prevents happens in
+                        // nominal walking, where the error is a few mm.
+                        if swing_cautious_err[1] > swing_cautious_err[0] {
+                            let w = ((swing_cautious_err[1] - dcm_err)
+                                / (swing_cautious_err[1] - swing_cautious_err[0]))
+                                .clamp(0.0, 1.0);
+                            pos0 = pos_ship + (pos0 - pos_ship) * w;
+                            vel0 = vel_ship + (vel0 - vel_ship) * w;
+                        }
+                        (pos0, vel0, na::Vector3::zeros())
                     };
                 if resume_ss_dcm_hold.is_some_and(|(_, receiver, _, _)| receiver == side) {
                     tgt.z -= stair_resume_ss_sink;
