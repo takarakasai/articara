@@ -2236,6 +2236,7 @@ fn main() {
     // 3/48. The two extra rows are paid only inside the window. 0 = off.
     let swing_xy_delay = env_f64("SWING_XY_DELAY", 0.0).clamp(0.0, 0.6);
     let swing_z_hold = flag("SWING_Z_HOLD", false);
+    let swing_z_hold_min_dur = env_f64("SWING_Z_HOLD_MIN_DUR", 0.0).clamp(0.0, 1.0);
     let swing_xy_end = env_f64("SWING_XY_END", 1.0).clamp(0.3, 1.0);
     let swing_z_drop: [f64; 2] = {
         let v: Vec<f64> = std::env::var("SWING_Z_DROP")
@@ -9427,7 +9428,18 @@ fn main() {
                         // clocks, descent lead) owns the swing; with the hold
                         // active there the 100 mm descent started its swing
                         // 20 cm ahead of the foot and fell on every member.
-                        if swing_z_hold && !in_stair_zone && (touch_down.z - lift_off.z).abs() < 0.02 {
+                        // ... and only for a swing on its NOMINAL clock: a
+                        // push retimes the swing shorter, and the held apex
+                        // then has to come down in the last 35% of a short
+                        // swing. Measured 2026-10-16 on the 24 worst backward
+                        // and lateral push members: hold unconditional 17 -> 11,
+                        // start delay alone 17 -> 17 (SWING_Z_HOLD_MIN_DUR,
+                        // fraction of the nominal single support; 0 = always).
+                        if swing_z_hold
+                            && !in_stair_zone
+                            && (touch_down.z - lift_off.z).abs() < 0.02
+                            && swing_duration >= swing_z_hold_min_dur * gp.t_ss
+                        {
                             // SWING_Z_HOLD: the three-phase z of
                             // STAIR_SWING_PROFILE (rise [0,0.30] to the apex,
                             // hold, drop [0.60,0.95]) with the SHIPPED xy.
