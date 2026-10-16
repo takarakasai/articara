@@ -1537,6 +1537,7 @@ fn main() {
     // 0.30 survive 133/192. 0 = off (bit-identical).
     let push_yield_v = env_f64("PUSH_YIELD_V", 0.0).max(0.0);
     let push_yield_trig = env_f64("PUSH_YIELD_TRIG", 0.03).max(0.0);
+    let push_yield_no_fwd = flag("PUSH_YIELD_NO_FWD", false);
     let mut push_yield_done = false;
     let vx2_cmd_speed: Option<f64> = vx2_change.map(|(_, v, _)| v);
     let vxs_cap_of = |v: f64| -> f64 {
@@ -6301,6 +6302,12 @@ fn main() {
             && v_hi > push_yield_v
             && vx2_z_from.is_some_and(|t0| t >= t0)
             && dcm_err > push_yield_trig
+            // PUSH_YIELD_NO_FWD=1: never yield on a FORWARD error. Measured
+            // 2026-10-16 at 0.50 m/s (N=48): yielding to 0.20 took the
+            // backward 11 N.s from 19 to 44 but the forward 11 N.s from 45
+            // to 34 -- slowing the plan under a forward push leaves the body
+            // ahead of it.
+            && !(push_yield_no_fwd && (xi.x - r.xi.x) > 0.5 * push_yield_trig)
         {
             push_yield_done = true;
             let v_lo = push_yield_v;
