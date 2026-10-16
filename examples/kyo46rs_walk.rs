@@ -1513,6 +1513,19 @@ fn main() {
     let mut ds_ffdc_window: Option<(usize, f64, f64)> = None;
     let ds_ffdc_clamp = env_f64("DS_FFDC_CLAMP", 0.02).max(0.0);
     let plan_reanchor_max = env_f64("PLAN_REANCHOR_MAX", 0.05).max(0.0);
+    // LAND_BIAS_ADAPT=k: pre-compensate the swing's landing error with the
+    // error MEASURED on the previous landings (EMA, LAND_BIAS_ADAPT_TAU
+    // landings), applied inside known stair zones. Measured 2026-10-19 on the
+    // 4-step ascent: the sole lands 14-35 mm AHEAD of its goal on the treads
+    // (flat: 3 mm behind), which is what the hand biases STAIR_TD_BIAS_ASC_MID
+    // / STAIR_TD_BIAS_DESC (20 mm back) have been compensating; without them
+    // the toe reaches past the next nosing on tread 3 and the run falls.
+    // 0 = off (bit-identical).
+    let land_bias_adapt = env_f64("LAND_BIAS_ADAPT", 0.0).clamp(0.0, 1.5);
+    let land_bias_adapt_tau = env_f64("LAND_BIAS_ADAPT_TAU", 3.0).max(1.0);
+    let land_bias_adapt_max = env_f64("LAND_BIAS_ADAPT_MAX", 0.04).max(0.0);
+    let mut land_err_ema = na::Vector2::zeros();
+    let mut land_err_seen: Option<usize> = None;
     let mut n_reanchor = 0u32;
     let mut reanchor_total = 0.0_f64;
     let (vx2_stride_max, vx2_z_drop_sched) = match vx2_change {
@@ -5927,6 +5940,18 @@ fn main() {
         } else {
             (None, None)
         };
+        if land_bias_adapt > 0.0
+            && let Some(l) = landing
+            && land_err_seen != Some(gait.index_at(t))
+        {
+            // One sample per double support: where the landed sole IS against
+            // where the plan put it.
+            land_err_seen = Some(gait.index_at(t));
+            let actual = Footsteps::from_fk(data, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
+            let e = actual.sole[l].xy() - steps.sole[l].xy();
+            let a = 1.0 / land_bias_adapt_tau;
+            land_err_ema += (e - land_err_ema) * a;
+        }
         let ramp_frac = env_f64("LOAD_RAMP_FRAC", 0.6).clamp(0.05, 1.0);
         // LOAD_RAMP_TD=1: the foot that has just landed may keep the share it
         // is ALREADY carrying. The ramp below starts the landed foot at zero
@@ -9444,6 +9469,11 @@ fn main() {
                     // every existing result bit-identical.
                     let mut td = na::Vector3::new(
                         plan_xy.x + extra.x, plan_xy.y + extra.y, lift_off.z + dz);
+                    if land_bias_adapt > 0.0 && in_stair_zone {
+                        let c = (land_err_ema * land_bias_adapt).map(|v| v.clamp(-land_bias_adapt_max, land_bias_adapt_max));
+                        td.x -= c.x;
+                        td.y -= c.y;
+                    }
                     if stair_td_sole_frame {
                         let off = foot_rot_at(side, footsteps.at_slice(plan_slice_idx).yaw[side])
                             * na::Vector3::new(prof.sole_centre_x, 0.0, 0.0);
