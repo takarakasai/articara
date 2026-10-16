@@ -1529,6 +1529,20 @@ fn main() {
     // short. Unloading it sooner (a shorter DS) keeps the trailing force
     // inside the cone. 1 = the shipped equal scaling, bit-identical.
     let vx2_ds_scale = env_f64("VX2_DS_SCALE", 1.0).clamp(0.1, 1.0);
+    // PUSH_YIELD_V [m/s]: when a push is detected during a speed command
+    // (DCM error above PUSH_YIELD_TRIG), re-plan the remaining steps at this
+    // lower speed with the schedule's stride cap and step time, once per
+    // run. Measured 2026-10-16: the pushes at 0.50 m/s are lost 2-3 steps
+    // after the push through the lateral authority, and the same pushes at
+    // 0.30 survive 133/192. 0 = off (bit-identical).
+    let push_yield_v = env_f64("PUSH_YIELD_V", 0.0).max(0.0);
+    let push_yield_trig = env_f64("PUSH_YIELD_TRIG", 0.03).max(0.0);
+    let mut push_yield_done = false;
+    let vx2_cmd_speed: Option<f64> = vx2_change.map(|(_, v, _)| v);
+    let vxs_cap_of = |v: f64| -> f64 {
+        let cap_hi = env_f64("VXS_STRIDE_MAX", 0.45).max(0.05);
+        (0.35 + env_f64("VXS_CAP_SLOPE", 2.0) * (v - env_f64("VXS_V_LONG", 0.45))).clamp(0.35, cap_hi)
+    };
     let vx2_change = match vx2_change {
         Some((at, vx2, ramp2)) if vx2_stride_max > 0.0 && vx2 * t_step > vx2_stride_max => {
             // Per-step time scale along the ramp, then the capped plan speed.
@@ -6280,6 +6294,48 @@ fn main() {
             dcm_ref_prev_dot = Some(r.xi_dot);
         }
         let dcm_err = (xi - r.xi).norm();
+        if push_yield_v > 0.0
+            && !push_yield_done
+            && vx2_sched
+            && let Some(v_hi) = vx2_cmd_speed
+            && v_hi > push_yield_v
+            && vx2_z_from.is_some_and(|t0| t >= t0)
+            && dcm_err > push_yield_trig
+        {
+            push_yield_done = true;
+            let v_lo = push_yield_v;
+            let stride_hi = (v_hi * t_step).min(vxs_cap_of(v_hi));
+            let stride_lo = (v_lo * t_step).min(vxs_cap_of(v_lo));
+            let scale_hi = (stride_hi / (v_hi * t_step)).clamp(vx2_tscale_min, 1.0);
+            let scale_lo = (stride_lo / (v_lo * t_step)).clamp(vx2_tscale_min, 1.0);
+            let ratio = scale_lo / scale_hi;
+            // Every future landing advances by stride_lo instead of
+            // stride_hi: the n-th future step is pulled back n * delta.
+            let delta = stride_hi - stride_lo;
+            let i_now = gait.index_at(t);
+            let mut n = 0usize;
+            let mut shift = [0.0_f64; 2];
+            for j in (i_now + 1)..gait.slices.len() {
+                if let Some(sw) = gait.slices[j].support.swing() {
+                    n += 1;
+                    shift[sw] = n as f64 * delta;
+                }
+                if j < footsteps.at.len() {
+                    for side in 0..2 {
+                        footsteps.at[j].sole[side].x -= shift[side];
+                    }
+                }
+            }
+            // And every future slice runs at the slower speed's duration.
+            for j in (i_now + 1)..gait.slices.len() {
+                let t0 = gait.slices[j].t0;
+                let d = gait.slices[j].duration() * ratio;
+                gait.retime(j, t0 + d);
+            }
+            dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
+            n_replan += 1;
+            println!("  [yield] t={t:.3} dcm_err={dcm_err:.3}: speed {v_hi:.2} -> {v_lo:.2} m/s, stride {stride_hi:.3} -> {stride_lo:.3}, slices x{ratio:.3}, {n} steps re-planned");
+        }
         // Backward-dominant only, and never under an engaged recovery
         // reference (measured: firing on lateral pushes cost the lateral
         // ladder 136 -> 129 while the reference was running).
