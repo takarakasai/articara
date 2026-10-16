@@ -1538,6 +1538,7 @@ fn main() {
     let push_yield_v = env_f64("PUSH_YIELD_V", 0.0).max(0.0);
     let push_yield_trig = env_f64("PUSH_YIELD_TRIG", 0.03).max(0.0);
     let push_yield_no_fwd = flag("PUSH_YIELD_NO_FWD", false);
+    let push_yield_vmin = env_f64("PUSH_YIELD_VMIN", 0.0).max(0.0);
     let mut push_yield_done = false;
     let vx2_cmd_speed: Option<f64> = vx2_change.map(|(_, v, _)| v);
     let vxs_cap_of = |v: f64| -> f64 {
@@ -6300,6 +6301,10 @@ fn main() {
             && vx2_sched
             && let Some(v_hi) = vx2_cmd_speed
             && v_hi > push_yield_v
+            // PUSH_YIELD_VMIN: only from this commanded speed up (at 0.30 m/s
+            // the lowering alone handles the pushes and the yield cost the
+            // backward 11 N.s 48 -> 46, 2026-10-16). 0 = any speed.
+            && v_hi >= push_yield_vmin
             && vx2_z_from.is_some_and(|t0| t >= t0)
             && dcm_err > push_yield_trig
             // PUSH_YIELD_NO_FWD=1: never yield on a FORWARD error. Measured
