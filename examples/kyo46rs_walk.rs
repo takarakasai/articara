@@ -1505,6 +1505,13 @@ fn main() {
                 0.024 * ((stride - 0.25) / 0.10).clamp(0.0, 1.0)
             }
             .min(env_f64("VXS_Z_MAX", 0.08))
+            // VXS_Z_MIN: a floor on the scheduled drop once a speed command
+            // is active. Measured 2026-10-16 (push x speed, N=48, v6.10):
+            // at 0.30 m/s the table drops 0.024 and the pushes go 77/192;
+            // +0.02 gives 122, +0.04 gives 127 (backward 11 N.s 14 -> 48).
+            // At 0.50 the table already drops 0.06 and more removes lateral
+            // margin (swing-side 5 N.s 11 -> 6). 0 = the table alone.
+            .max(env_f64("VXS_Z_MIN", 0.0).max(0.0))
             // VXS_Z_EXTRA: more drop on top of the schedule (the landing leg
             // at speed is at 0.99 of its length and has no lateral authority
             // against a push; measured 2026-10-14). 0 = the schedule alone.
