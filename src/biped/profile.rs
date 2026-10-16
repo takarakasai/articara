@@ -20,6 +20,16 @@ pub struct Profile {
     /// sits, and where its centre is fore/aft. MUST match the URDF -- the CoP
     /// box is described in this frame and a wrong centre silently describes a
     /// footprint the robot does not have.
+    /// Straight-leg distance from the hip pivot (the last link above the
+    /// thigh) to the SOLE PLANE [m]. 0 = not measured for this robot, which
+    /// disables every reach-aware feature rather than guessing a length.
+    /// G1: hip_yaw->knee 0.1939 + knee->ankle_pitch 0.3000 +
+    /// ankle_pitch->ankle_roll 0.0176 + sole 0.035 = 0.5465 (from the URDF
+    /// joint origins, 2026-09-24).
+    pub leg_reach: f64,
+    /// Links the thigh hangs from, [left, right]. `None` where they have not
+    /// been identified, which disables the reach logging with the length.
+    pub hip_links: Option<[&'static str; 2]>,
     pub sole_below_origin: f64,
     pub sole_centre_x: f64,
     /// CoP box half-extents (fore/aft, lateral).
@@ -84,11 +94,26 @@ pub const KYO46RS: Profile = Profile {
     root_link: "torso",
     foot_links: ["left_foot_link", "right_foot_link"],
     sagittal: [
-        ["left_hip_pitch_joint", "left_knee_joint", "left_ankle_pitch_joint"],
-        ["right_hip_pitch_joint", "right_knee_joint", "right_ankle_pitch_joint"],
+        [
+            "left_hip_pitch_joint",
+            "left_knee_joint",
+            "left_ankle_pitch_joint",
+        ],
+        [
+            "right_hip_pitch_joint",
+            "right_knee_joint",
+            "right_ankle_pitch_joint",
+        ],
     ],
     hip_roll: ["left_hip_roll_joint", "right_hip_roll_joint"],
     sole_below_origin: 0.035,
+    /// hip_pitch -> knee 0.112 + knee -> ankle_pitch 0.100 + ankle_pitch ->
+    /// foot 0.046 + foot origin -> sole 0.035, from the URDF (2026-10-18).
+    /// Measured against the thigh link (= the hip pitch joint), see
+    /// `hip_links`. Only the `reach_*` log columns and the opt-in reach caps
+    /// read it; the shipped kyo46rs recipe is otherwise unchanged.
+    leg_reach: 0.293,
+    hip_links: Some(["left_thigh_link", "right_thigh_link"]),
     sole_centre_x: 0.0,
     cop_half: (0.049, 0.019),
     probe_z: 0.47,
@@ -108,17 +133,29 @@ pub const KYO46RS: Profile = Profile {
     burnin_s: 1.2,
     friction_margin: 0.857, // 0.6 against a 0.7 plant, the measured pair
     log_joints: &[
-        "left_hip_yaw_joint", "left_hip_roll_joint", "left_hip_pitch_joint",
-        "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
-        "right_hip_yaw_joint", "right_hip_roll_joint", "right_hip_pitch_joint",
-        "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+        "left_hip_yaw_joint",
+        "left_hip_roll_joint",
+        "left_hip_pitch_joint",
+        "left_knee_joint",
+        "left_ankle_pitch_joint",
+        "left_ankle_roll_joint",
+        "right_hip_yaw_joint",
+        "right_hip_roll_joint",
+        "right_hip_pitch_joint",
+        "right_knee_joint",
+        "right_ankle_pitch_joint",
+        "right_ankle_roll_joint",
         // A joint missing from this list is not merely absent from the CSV:
         // the renderer defaults an unknown joint to 0.0, so it is DRAWN as
         // never having moved, and "it did not move" cannot be told apart from
         // "the log does not carry it". The v6 shoulder roll spent a session in
         // exactly that state.
-        "left_shoulder_roll_joint", "left_shoulder_pitch_joint", "left_elbow_joint",
-        "right_shoulder_roll_joint", "right_shoulder_pitch_joint", "right_elbow_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_pitch_joint",
+        "left_elbow_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_pitch_joint",
+        "right_elbow_joint",
     ],
 };
 
@@ -156,11 +193,21 @@ pub const G1_23DOF: Profile = Profile {
     root_link: "pelvis",
     foot_links: ["left_ankle_roll_link", "right_ankle_roll_link"],
     sagittal: [
-        ["left_hip_pitch_joint", "left_knee_joint", "left_ankle_pitch_joint"],
-        ["right_hip_pitch_joint", "right_knee_joint", "right_ankle_pitch_joint"],
+        [
+            "left_hip_pitch_joint",
+            "left_knee_joint",
+            "left_ankle_pitch_joint",
+        ],
+        [
+            "right_hip_pitch_joint",
+            "right_knee_joint",
+            "right_ankle_pitch_joint",
+        ],
     ],
     hip_roll: ["left_hip_roll_joint", "right_hip_roll_joint"],
     sole_below_origin: 0.035,
+    leg_reach: 0.5465,
+    hip_links: Some(["left_hip_yaw_link", "right_hip_yaw_link"]),
     sole_centre_x: 0.035,
     cop_half: (0.085, 0.030),
     probe_z: 0.90,
@@ -192,12 +239,29 @@ pub const G1_23DOF: Profile = Profile {
     burnin_s: 1.2,
     friction_margin: 0.857,
     log_joints: &[
-        "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
-        "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
-        "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
-        "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
-        "left_shoulder_pitch_joint", "left_elbow_joint",
-        "right_shoulder_pitch_joint", "right_elbow_joint",
+        "left_hip_pitch_joint",
+        "left_hip_roll_joint",
+        "left_hip_yaw_joint",
+        "left_knee_joint",
+        "left_ankle_pitch_joint",
+        "left_ankle_roll_joint",
+        "right_hip_pitch_joint",
+        "right_hip_roll_joint",
+        "right_hip_yaw_joint",
+        "right_knee_joint",
+        "right_ankle_pitch_joint",
+        "right_ankle_roll_joint",
+        "waist_yaw_joint",
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "left_wrist_roll_joint",
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_roll_joint",
     ],
 };
 
