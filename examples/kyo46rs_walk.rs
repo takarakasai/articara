@@ -1378,6 +1378,15 @@ fn main() {
     let land_kd_rot_boost = env_f64("LAND_KD_ROT_BOOST", 1.0);
     // 0 = translation, 1 = +yaw, 2 = full pose, 3 = XYZ+roll+pitch (no yaw).
     let stair_absolute_td = flag("STAIR_ABSOLUTE_TD", false);
+    // STAIR_ABSOLUTE_TD_DESC=1: the surveyed-tread touchdown height for
+    // DESCENDING swings only. Measured 2026-10-19 with the acceleration
+    // feedforward (which tracks the target to a few mm): a descent target
+    // built from the lift-off height sits 6 cm above the lower tread when
+    // the foot lifted off hovering, the precise swing then never touches and
+    // the 60 mm round trip falls; the absolute height fixes that, but on
+    // the 80 mm ascent's top landing it costs the run (foot lands 4-10 cm
+    // short, the 4-step 80 mm ascent 48 -> fall). Descent-only keeps both.
+    let stair_absolute_td_desc = flag("STAIR_ABSOLUTE_TD_DESC", false);
     let stair_swing_ff = flag("STAIR_SWING_FF", false);
     // Controlled ablation: retain the cubic profile and add its analytic acceleration.
     let tracking_cubic_ff = flag("TRACKING_CUBIC_FF", false);
@@ -9434,14 +9443,20 @@ fn main() {
                 // foot that started a few millimetres high keeps its offset
                 // instead of being driven into the tread. Flat ground makes
                 // dz zero and this is exactly the old `lift_off.z`.
-                let dz = if stair_absolute_td && stairs.is_some() {
+                // The plan's own height change decides "descending" for the
+                // descent-only absolute target (the measured-lift-off form
+                // of dz is what it replaces, so it cannot be read first).
+                let plan_dz_sign = stairs
+                    .as_ref()
+                    .map_or(0.0, |st| st.h(plan_xy.x + extra.x) - st.h(lift_off.x));
+                let dz = if (stair_absolute_td || (stair_absolute_td_desc && plan_dz_sign < -1e-9)) && stairs.is_some() {
                     plan_xy.z - footsteps.at_slice(plan_slice_idx.saturating_sub(1)).sole[side].z
                 } else {
                     stairs
                         .as_ref()
                         .map_or(0.0, |st| st.h(plan_xy.x + extra.x) - st.h(lift_off.x))
                 };
-                let touch_down = if stair_absolute_td && dz.abs() > 1e-9 {
+                let touch_down = if (stair_absolute_td || (stair_absolute_td_desc && dz < -1e-9)) && dz.abs() > 1e-9 {
                     // The target is a surveyed tread, not the measured height
                     // of the previous (possibly rocking) foot plus a riser.
                     let offset = foot_rot_at(side, footsteps.at_slice(plan_slice_idx).yaw[side])
