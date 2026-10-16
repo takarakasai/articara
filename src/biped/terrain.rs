@@ -279,7 +279,7 @@ mod tests {
             (3, -0.052, 0.110, 0.30),
             (4, 0.080, 0.25, 1.0),
         ] {
-            let st = Stairs { n, riser, tread, start, landing_len: 0.60, down_n: 0 };
+            let st = Stairs { n, riser, tread, start, landing_len: 0.60, down_n: 0, slope: 0.0, slope_len: 0.0 };
             let mut x = -0.5;
             while x < 6.0 {
                 assert_eq!(st.h(x).to_bits(), old_h(n, riser, tread, start, x).to_bits(), "x={x}");

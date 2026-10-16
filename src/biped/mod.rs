@@ -37,7 +37,13 @@ pub mod rig;
 pub mod contact;
 pub mod dcm;
 pub mod gait;
+pub mod preview;
+pub mod reach;
+pub mod height;
+pub mod terrain;
+pub mod contact_plan;
 pub mod tasks;
+pub mod wrench_mpc;
 
 #[cfg(feature = "mujoco")]
 pub mod actuate;
@@ -45,3 +51,6 @@ pub mod actuate;
 pub mod log;
 
 pub use profile::Profile;
+
+#[cfg(feature = "mujoco")]
+pub mod tick_audit;

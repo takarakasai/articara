@@ -107,11 +107,11 @@ pub const KYO46RS: Profile = Profile {
     ],
     hip_roll: ["left_hip_roll_joint", "right_hip_roll_joint"],
     sole_below_origin: 0.035,
-    /// hip_pitch -> knee 0.112 + knee -> ankle_pitch 0.100 + ankle_pitch ->
-    /// foot 0.046 + foot origin -> sole 0.035, from the URDF (2026-10-18).
-    /// Measured against the thigh link (= the hip pitch joint), see
-    /// `hip_links`. Only the `reach_*` log columns and the opt-in reach caps
-    /// read it; the shipped kyo46rs recipe is otherwise unchanged.
+    // hip_pitch -> knee 0.112 + knee -> ankle_pitch 0.100 + ankle_pitch ->
+    // foot 0.046 + foot origin -> sole 0.035, from the URDF (2026-10-18).
+    // Measured against the thigh link (= the hip pitch joint), see
+    // `hip_links`. Only the `reach_*` log columns and the opt-in reach caps
+    // read it; the shipped kyo46rs recipe is otherwise unchanged.
     leg_reach: 0.293,
     hip_links: Some(["left_thigh_link", "right_thigh_link"]),
     sole_centre_x: 0.0,

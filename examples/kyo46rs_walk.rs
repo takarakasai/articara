@@ -1612,7 +1612,7 @@ fn main() {
     // the whole run trades descents and lateral pushes away. Tied to the
     // speed command it leaves every other bench bit-identical. 0 = off.
     let vx2_z_drop = vx2_z_drop_sched.unwrap_or_else(|| env_f64("VX2_Z_DROP", 0.0).max(0.0));
-    let mut vx2_z_track = 0.0_f64;
+    let mut vx2_z_track = articara::biped::height::SlewedDrop::default();
     let push_z_drop = env_f64("PUSH_Z_DROP", 0.0).max(0.0);
     let push_z_drop_trig = env_f64("PUSH_Z_DROP_TRIG", 0.03).max(0.0);
     let push_z_drop_t = env_f64("PUSH_Z_DROP_T", 1.5).max(0.0);
@@ -7582,48 +7582,25 @@ fn main() {
             // to 1.2 m. COM_HEIGHT_DS_FRAC = 0 keeps the CoM at the lower
             // sole through double support and rises on the new foot. Unset =
             // the mean, computed exactly as before.
-            let h = match com_height_ds_frac {
-                Some(frac) if stance_sides.len() == 2 => {
-                    let z0 = steps.sole[stance_sides[0]].z;
-                    let z1 = steps.sole[stance_sides[1]].z;
-                    z0.min(z1) + frac * (z0.max(z1) - z0.min(z1))
-                }
-                _ => {
-                    stance_sides
-                        .iter()
-                        .map(|&side| steps.sole[side].z)
-                        .sum::<f64>()
-                        / stance_sides.len() as f64
-                }
-            };
-            let h = if com_height_desc_lead > 0.0 {
-                // The landing this swing is heading for, or -- in a double
-                // support -- the landing of the swing that follows it.
+            // All height rules live in src/biped/height.rs (one place for the
+            // stance level, the descent lead, the stair crouch, the reach
+            // caps and the slewed drops); the arithmetic is the one used
+            // inline before 2026-10-19, bit-identical.
+            use articara::biped::height as hr;
+            let soles_z: Vec<f64> = stance_sides.iter().map(|&side| steps.sole[side].z).collect();
+            let h = hr::stance_level(&soles_z, com_height_ds_frac);
+            // The landing this swing is heading for, or -- in a double
+            // support -- the landing of the swing that follows it.
+            let next_landing = {
                 let i = gait.index_at(t);
-                let landing_z = (i..gait.slices.len().min(i + 4))
+                (i..gait.slices.len().min(i + 4))
                     .find_map(|j| gait.slices[j].support.swing().map(|sw| (j, sw)))
-                    .map(|(j, sw)| footsteps.at_slice(j).sole[sw].z);
-                match landing_z {
-                    Some(lz) if lz < h - 1e-6 => h - com_height_desc_lead * (h - lz),
-                    _ => h,
-                }
-            } else {
-                h
+                    .map(|(j, sw)| (sw, footsteps.at_slice(j).sole[sw]))
             };
-            let crouch = match (&stairs, stair_zone_crouch > 0.0) {
-                (Some(st), true) => {
-                    let x = steps.mid_xy().x;
-                    if (x >= st.start - stair_crouch_lead && x <= st.landing_start() + stair_crouch_tail)
-                        || (st.down_n > 0
-                            && x >= st.landing_end() - stair_crouch_lead
-                            && x <= st.landing_end() + st.down_n as f64 * st.tread + stair_crouch_tail)
-                    {
-                        stair_zone_crouch
-                    } else {
-                        0.0
-                    }
-                }
-                _ => 0.0,
+            let h = hr::descent_lead(h, next_landing.map(|(_, l)| l.z), com_height_desc_lead);
+            let crouch = match &stairs {
+                Some(st) => hr::stair_zone_crouch(steps.mid_xy().x, st, stair_crouch_lead, stair_crouch_tail, stair_zone_crouch),
+                None => 0.0,
             };
             let mut target = if crouch > 0.0 {
                 z_com + h - terrain_base - crouch
@@ -7645,61 +7622,31 @@ fn main() {
             // The horizontal lever is measured from the CoM, and the leg hangs
             // from a hip roughly `hip_drop` below it, so the cap is written
             // about the hip and lifted back to the CoM. Default off.
+            // The hip hangs `hip_drop` below the CoM; read straight off the model.
+            let hip_drop = hip_mi
+                .map(|mis| {
+                    mis.iter()
+                        .map(|&mi| com.z - misarta::se3::translation(&data.oMi[mi]).z)
+                        .fold(f64::INFINITY, f64::min)
+                })
+                .unwrap_or(f64::NAN);
             if com_height_desc_reach > 0.0 && leg_reach.max > 0.0 {
-                let i = gait.index_at(t);
-                if let Some((j, sw)) = (i..gait.slices.len().min(i + 4))
-                    .find_map(|j| gait.slices[j].support.swing().map(|sw| (j, sw)))
-                {
-                    let landing = footsteps.at_slice(j).sole[sw];
+                if let Some((sw, landing)) = next_landing {
                     let stance = steps.sole[1 - sw];
-                    let hip_drop = hip_mi
-                        .map(|mis| {
-                            mis.iter()
-                                .map(|&mi| com.z - misarta::se3::translation(&data.oMi[mi]).z)
-                                .fold(f64::INFINITY, f64::min)
-                        })
-                        .unwrap_or(f64::NAN);
-                    if landing.z < stance.z - 0.005 && hip_drop.is_finite() {
-                        let d = 0.5 * (landing.xy() - stance.xy()).norm();
-                        let span = leg_reach.max * com_height_desc_reach;
-                        if d < span {
-                            target = target.min(landing.z + (span * span - d * d).sqrt() + hip_drop);
-                        }
-                    }
+                    target = hr::reach_cap_landing(target, &landing, &stance, leg_reach.max * com_height_desc_reach, hip_drop);
                 }
             }
             if reach_height > 0.0 && leg_reach.max > 0.0 {
-                // The hip heights are computed later in the tick for the log;
-                // here the drop is read straight off the model.
-                let hip_drop = hip_mi
-                    .map(|mis| {
-                        mis.iter()
-                            .map(|&mi| com.z - misarta::se3::translation(&data.oMi[mi]).z)
-                            .fold(f64::INFINITY, f64::min)
-                    })
-                    .unwrap_or(f64::NAN);
-                if hip_drop.is_finite() {
-                    let mut cap = f64::INFINITY;
-                    // Both feet the plan believes in now, plus the landing the
-                    // swing is heading for: the bound has to hold at touchdown,
-                    // not only at this instant.
-                    let i = gait.index_at(t);
-                    let next = footsteps.at_slice(i);
-                    for sole in stance_sides
-                        .iter()
-                        .map(|&s| steps.sole[s])
-                        .chain(gait.slices[i].support.swing().map(|s| next.sole[s]))
-                    {
-                        let d = (com.xy() - sole.xy()).norm();
-                        let span = leg_reach.usable();
-                        if d < span {
-                            cap = cap.min(sole.z + (span * span - d * d).sqrt() + hip_drop);
-                        }
-                    }
-                    if cap.is_finite() {
-                        target = target.min(cap).max(reach_height_floor);
-                    }
-                }
+                // Both feet the plan believes in now, plus the landing the
+                // swing is heading for: the bound has to hold at touchdown,
+                // not only at this instant.
+                let i = gait.index_at(t);
+                let next = footsteps.at_slice(i);
+                let soles = stance_sides
+                    .iter()
+                    .map(|&s| steps.sole[s])
+                    .chain(gait.slices[i].support.swing().map(|s| next.sole[s]));
+                target = hr::reach_cap_soles(target, &com.xy(), soles, leg_reach.usable(), hip_drop, reach_height_floor);
             }
             if (target - height_plan.target).abs() > 1e-6 {
                 height_plan.retarget(t, target, com_height_time);
@@ -7727,12 +7674,13 @@ fn main() {
         // Measured 2026-10-05: 24 mm lower for the whole run doubles the
         // backward-push survival (21 -> 43/48) but trades descents away;
         // tied to the detection it leaves the other benches alone.
-        let z_drop_target = (if vx2_z_from.is_some_and(|t0| t >= t0) { vx2_z_drop } else { 0.0 })
-            .max(if t < push_z_drop_until { push_z_drop } else { 0.0 });
-        let (z_ref, zd_ref) = if z_drop_target > 0.0 || vx2_z_track > 0.0 {
-            let d = (z_drop_target - vx2_z_track).clamp(-0.05 * dt, 0.05 * dt);
-            vx2_z_track += d;
-            (z_ref - vx2_z_track, zd_ref - d / dt)
+        let z_drop_target = articara::biped::height::drop_target(
+            if vx2_z_from.is_some_and(|t0| t >= t0) { vx2_z_drop } else { 0.0 },
+            if t < push_z_drop_until { push_z_drop } else { 0.0 },
+        );
+        let (z_ref, zd_ref) = if z_drop_target > 0.0 || vx2_z_track.track > 0.0 {
+            let d = vx2_z_track.step(z_drop_target, 0.05, dt);
+            (z_ref - vx2_z_track.track, zd_ref - d / dt)
         } else {
             (z_ref, zd_ref)
         };
