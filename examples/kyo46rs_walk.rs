@@ -196,6 +196,27 @@ fn main() {
     use std::f64::consts::PI;
     use std::io::Write;
 
+    // ROUGH_MODE=1: the rough-terrain preset for an operator who knows the
+    // ground is uneven. Lift fully before advancing (SWING_Z_HOLD with the
+    // drop starting at 0.50 so early landings still work), a 0.15 start
+    // delay, and an 8 cm apex. Measured 2026-10-16/17 (N=48, v6.10):
+    // unmodelled bumps 10/20/30 mm = 48/46/48 (champion 35/13/5), but the
+    // lateral pushes at 0.12 m/s go 157 -> 150, so it is not the default.
+    // The mode WINS over the four knobs (the champion's controls carry a
+    // CEM-tuned LIFT_H of 0.051, which the mode must replace); the apex is
+    // ROUGH_MODE_LIFT_H (0.08).
+    if std::env::var("ROUGH_MODE").map(|v| v == "1").unwrap_or(false) {
+        // On a KNOWN slope the 8 cm apex falls on +3 deg (measured
+        // 2026-10-17, LIFT_H=0.08 alone: 16.0 s), 6 cm walks: the mode
+        // uses 6 cm there unless ROUGH_MODE_LIFT_H says otherwise.
+        let lift = std::env::var("ROUGH_MODE_LIFT_H")
+            .unwrap_or_else(|_| if std::env::var("TERRAIN_SLOPE").is_ok() { "0.06".into() } else { "0.08".into() });
+        for (k, v) in [("SWING_Z_HOLD", "1"), ("SWING_Z_DROP", "0.50,1.0"), ("SWING_XY_DELAY", "0.15"), ("LIFT_H", lift.as_str())] {
+            // SAFETY: single-threaded here, before any reader of these.
+            unsafe { std::env::set_var(k, v) };
+        }
+        println!("rough mode: SWING_Z_HOLD=1 SWING_Z_DROP=0.50,1.0 SWING_XY_DELAY=0.15 LIFT_H={lift}");
+    }
     let env_f64 = |k: &str, d: f64| -> f64 {
         std::env::var(k)
             .ok()
@@ -1488,6 +1509,9 @@ fn main() {
     // with a speed command (VX2); unset = bit-identical.
     let vx2_reanchor = flag("VX2_REANCHOR", false);
     let plan_reanchor = flag("PLAN_REANCHOR", false);
+    let ds_ffdc = env_f64("DS_FFDC", 0.0).max(0.0);
+    let mut ds_ffdc_window: Option<(usize, f64, f64)> = None;
+    let ds_ffdc_clamp = env_f64("DS_FFDC_CLAMP", 0.02).max(0.0);
     let plan_reanchor_max = env_f64("PLAN_REANCHOR_MAX", 0.05).max(0.0);
     let mut n_reanchor = 0u32;
     let mut reanchor_total = 0.0_f64;
@@ -4248,6 +4272,22 @@ fn main() {
         let com = st.com;
         let com_vel = st.com_vel;
 
+        // DS_FFDC bookkeeping: the landed foot and the whole double support's
+        // time window, kept across its sub-slices.
+        if ds_ffdc > 0.0 {
+            match (support_prev, gait.support_at(t)) {
+                (Some(Support::Single { swing, .. }), Support::Double) => {
+                    let i = gait.index_at(t);
+                    let mut j = i;
+                    while j + 1 < gait.slices.len() && matches!(gait.slices[j + 1].support, Support::Double) {
+                        j += 1;
+                    }
+                    ds_ffdc_window = Some((swing, gait.slices[i].t0, gait.slices[j].t1));
+                }
+                (_, Support::Single { .. }) => ds_ffdc_window = None,
+                _ => {}
+            }
+        }
         // PLAN_REANCHOR=1: at every double->single transition translate the
         // rest of the plan (both feet) onto the ACTUAL stance foot, for any
         // walk. Measured 2026-10-17 on known slopes: the stance foot lands
@@ -5999,6 +6039,35 @@ fn main() {
             ffdc_dz = (ffdc_dz + stair_ffdc * err * dt).clamp(-stair_ffdc_clamp, stair_ffdc_clamp);
             anchors.bias_z[high] = -0.5 * ffdc_dz;
             anchors.bias_z[low] = 0.5 * ffdc_dz;
+        } else if ds_ffdc > 0.0
+            && stair_transfer_cmd.is_none()
+            && matches!(support, Support::Double)
+            && stance_sides.len() == 2
+            && let Some((front, ds_t0, ds_t1)) = ds_ffdc_window
+        {
+            // DS_FFDC: the same loop for EVERY double support, with the
+            // reference split taken from the load ramp the QP is given
+            // (landed foot share = slice_frac / LOAD_RAMP_FRAC). Measured
+            // 2026-10-17: on known slopes the landed foot sits 0-3 mm above
+            // the surface with 0 N through most of the double support
+            // (flat: 4 N at its start, then loaded passively); the lateral
+            // pressure then saturates on the rear foot. Pressing the
+            // under-loaded foot down is the only way a unilateral contact
+            // can be asked for load. 0 = off (bit-identical).
+            let rear = 1 - front;
+            // The WHOLE double support's clock: the contact plan splits a
+            // double support into up to three slices, and the first attempt
+            // (2026-10-17) read the first sub-slice's fraction (0.8 at
+            // 50 ms), pressed the landed foot for 100 ms and went idle.
+            let ds_frac = ((t - ds_t0) / (ds_t1 - ds_t0).max(1e-6)).clamp(0.0, 1.0);
+            let ramp = (ds_frac / ramp_frac).clamp(0.0, 1.0);
+            let ref_diff = (2.0 * ramp - 1.0) * total_mass * G;
+            let meas_diff = measured_pre[front].max(0.0) - measured_pre[rear].max(0.0);
+            let err = ref_diff - meas_diff;
+            ffdc_err_log = err;
+            ffdc_dz = (ffdc_dz + ds_ffdc * err * dt).clamp(-ds_ffdc_clamp, ds_ffdc_clamp);
+            anchors.bias_z[front] = -0.5 * ffdc_dz;
+            anchors.bias_z[rear] = 0.5 * ffdc_dz;
         } else {
             // Bleed back so a foot that leaves the transfer -- or lands for
             // the next step -- does not inherit a stale offset.
