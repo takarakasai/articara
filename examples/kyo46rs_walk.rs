@@ -2327,6 +2327,8 @@ fn main() {
     // Shrink the CoP box to the contact edge while a sole is pitched
     // (rolling contact). See contact_level's patch_mod. Opt-in.
     let stair_roll_patch = flag("STAIR_ROLL_PATCH", false);
+    let slope_heel_cut = env_f64("SLOPE_HEEL_CUT", 0.0).max(0.0);
+    let slope_heel_cut_max = env_f64("SLOPE_HEEL_CUT_MAX", 0.05).clamp(0.0, 0.08);
     // Damp the LOAD SPLIT between two stance feet. Measured on the fixed-arm
     // stair transfer: with both feet down at different heights the QP has a
     // redundant load distribution, and it oscillates -- fz went
@@ -6159,6 +6161,37 @@ fn main() {
                 }
             },
             &|_side: usize, rot: &na::Matrix3<f64>| {
+                // SLOPE_HEEL_CUT [m/deg]: on a known UPSLOPE, during double
+                // support, move the REAR foot's CoP box forward by
+                // cut * slope_deg and shrink it by the same, so its heel
+                // region is excluded. Measured 2026-10-17 (threshold table,
+                // terrain bench doc Sec.10): the rear foot's CoP goes to the
+                // heel in proportion to the slope (-12 mm/deg), reaches the
+                // heel edge at 5 deg and the foot lifts off 3/4 of the way
+                // through the double support. With the heel excluded the QP
+                // has to realise the same net CoP by loading the front
+                // foot, which is what the climb needs. 0 = off.
+                if slope_heel_cut > 0.0
+                    && matches!(support, Support::Double)
+                    && let Some(st) = &stairs
+                    && st.n == 0
+                    && st.slope > 0.0
+                    && lifting == Some(_side)
+                    // ... and only while that foot stands ON the slope (the
+                    // cut applied on the flat approach at 7 deg emptied the
+                    // box and fell at 3.3 s, 2026-10-17).
+                    && {
+                        let x = steps.sole[_side].x;
+                        x >= st.start && x <= st.start + st.slope_len
+                    }
+                {
+                    let deg = st.slope.atan().to_degrees();
+                    let d = (slope_heel_cut * deg).min(slope_heel_cut_max);
+                    return Some((
+                        [prof.sole_centre_x + d, 0.0, -prof.sole_below_origin],
+                        ((sole_half_l - d).max(0.005), contact_cfg.cop_half.1),
+                    ));
+                }
                 if !stair_roll_patch
                     && !(stair_wrench_mpc && stair_hybrid_contact && stair_transfer_cmd.is_some())
                 {
