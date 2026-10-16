@@ -1390,6 +1390,16 @@ fn main() {
     let stair_swing_ff = flag("STAIR_SWING_FF", false);
     // Controlled ablation: retain the cubic profile and add its analytic acceleration.
     let tracking_cubic_ff = flag("TRACKING_CUBIC_FF", false);
+    // TRACKING_FF_MIN_RISER [m]: apply the cubic acceleration feedforward
+    // only on a staircase whose riser is at least this (0 = every stair
+    // swing). Measured 2026-10-20: the feedforward takes the -150 mm descent
+    // from 18 to 41/48 but, applied to every stair swing, needs the hand
+    // retreat biases removed and then costs the 60/80 mm descents 3-7
+    // members (round trip 192 -> 185). The gate is the RISER, not the
+    // swing's height change: each foot climbs two risers per swing, so 60 mm
+    // stairs already give 0.12 while the one-step deep bench gives 0.10-0.15.
+    let tracking_ff_min_riser = env_f64("TRACKING_FF_MIN_RISER", 0.0).max(0.0);
+    let tracking_ff_riser_ok = stairs.as_ref().is_some_and(|st| st.riser.abs() >= tracking_ff_min_riser);
     let tracking_ff_scale = env_f64("TRACKING_FF_SCALE", 1.0);
     // Isolation experiment: use stair rise/hold/lower timing even on flat ground.
     // LIFT_H is the full rise above lift-off when both surfaces are level.
@@ -9588,7 +9598,7 @@ fn main() {
                         (
                             na::Vector3::new(xy.x, xy.y, z),
                             na::Vector3::new(vxy.x, vxy.y, vz),
-                            if tracking_cubic_ff {
+                            if tracking_cubic_ff && tracking_ff_riser_ok {
                                 // Exact second derivative of the unchanged cubic profile.
                                 let dd = |u: f64, span: f64| {
                                     if u > 0.0 && u < 1.0 {
