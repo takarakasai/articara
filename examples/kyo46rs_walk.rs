@@ -1487,6 +1487,8 @@ fn main() {
     // after a lateral-push reference: a 0.65 m step, then the fall). Only
     // with a speed command (VX2); unset = bit-identical.
     let vx2_reanchor = flag("VX2_REANCHOR", false);
+    let plan_reanchor = flag("PLAN_REANCHOR", false);
+    let plan_reanchor_max = env_f64("PLAN_REANCHOR_MAX", 0.05).max(0.0);
     let mut n_reanchor = 0u32;
     let mut reanchor_total = 0.0_f64;
     let (vx2_stride_max, vx2_z_drop_sched) = match vx2_change {
@@ -2952,6 +2954,7 @@ fn main() {
     // one AFTER the ascent, where every remaining step is level and nothing
     // confirms the landing at all. See `LandingTiming::level_steps`.
     let land_confirm_level = flag("LAND_CONFIRM_LEVEL", false);
+    let land_confirm_level_always = flag("LAND_CONFIRM_LEVEL_ALWAYS", false);
     // Contact-triggered stair transfer.  A confirmed landing opens one DS
     // phase and gives pressure, CoM height and vertical load the SAME clock.
     // It is opt-in while the fixed-arm staircase experiment is validated.
@@ -4245,6 +4248,29 @@ fn main() {
         let com = st.com;
         let com_vel = st.com_vel;
 
+        // PLAN_REANCHOR=1: at every double->single transition translate the
+        // rest of the plan (both feet) onto the ACTUAL stance foot, for any
+        // walk. Measured 2026-10-17 on known slopes: the stance foot lands
+        // 4-5 mm inward of its plan on +3/+4 deg (flat: 3 mm outward), the
+        // lateral ZMP command then sits 6-13 mm outside the sole centre for
+        // the whole single support (flat: at the centre), and on +6 deg the
+        // lateral pressure saturates and the foot slides. VX2_REANCHOR is the
+        // same move gated to a speed command. Unset = off (bit-identical).
+        if plan_reanchor
+            && ref_mode.is_none()
+            && let (Some(Support::Double), Support::Single { stance, swing }) = (support_prev, gait.support_at(t))
+        {
+            let actual = Footsteps::from_fk(data, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
+            let i = gait.index_at(t);
+            let d = actual.sole[stance].xy() - footsteps.at_slice(i).sole[stance].xy();
+            if d.norm() > 0.002 && d.norm() < plan_reanchor_max {
+                footsteps.shift_from(i, stance, d);
+                footsteps.shift_from(i, swing, d);
+                dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
+                n_reanchor += 1;
+                reanchor_total += d.norm();
+            }
+        }
         if com_replan {
             let actual = Footsteps::from_fk(
                 data,
@@ -4267,7 +4293,14 @@ fn main() {
                     reanchor_total += d.norm();
                 }
             }
-            landing_timing.level_steps = land_confirm_level && stair_transfer_completed > 0;
+            // LAND_CONFIRM_LEVEL_ALWAYS=1: confirm (and extend) every level
+            // swing from the start, without a completed stair transfer.
+            // Measured 2026-10-17 on +5 deg: with the 30 mm gate the slope
+            // swings that counted as stair swings were extended ~1 s each
+            // (11 timeouts) and 27/48 survived; with the 80 mm gate no swing
+            // is confirmed, the landing foot is unloaded at half the
+            // scheduled double-support starts, and 0/48 survive.
+            landing_timing.level_steps = land_confirm_level_always || (land_confirm_level && stair_transfer_completed > 0);
             let touchdowns_before = landing_timing.touchdowns;
             let timeouts_before = landing_timing.timeouts;
             let shift = landing_timing.update(&mut gait, &footsteps, &actual, measured_pre, t, dt);
