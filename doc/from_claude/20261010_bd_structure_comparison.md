@@ -103,5 +103,5 @@ BD は知覚（平面抽出）で足場を選ぶ。当方は知覚を対象外�
   行は「事前の梯子＋後退 2 本」のまま。得られた知見: 踏面の遊脚の行き過ぎ +3 cm は前置きで消せる／降段の着地目標は離地高さ由来（浮いた離地で踏面の 6 cm 上）／深い降段 −150 mm は前置きで 18→41。
   新設（既定 off・ビット同一）: `STAIR_ABSOLUTE_TD_DESC`、`LAND_BIAS_ADAPT`。`TRACKING_CUBIC_FF`・`LAND_CONFIRM_XY_RISE`・`STAIR_LAND_SINK` は既存。
 - **深い降段の利得だけを取る**（10-20）: 前置きを「段差（riser）が 10 cm 以上の階段だけ」に限る `TRACKING_FF_MIN_RISER=0.10`（新設、既定 0 = 全段）。門は遊脚の高さ差でなく riser ── 各足は 1 回の遊脚で 2 段分（60 mm 段で 0.12）動くので、高さ差の門では 60 mm 段も拾ってしまう（測定で判明、最初の版は 60 mm 昇段が同一にならなかった）。
-  riser 門では昇段 60 mm・往復 80 mm・降段 60 mm・平地が cmp でビット同一。深い降段（1 段 −100／−120／−150）N=48: 106→**129**（−150 mm 18→41、−120 は 44→43 の 1 本）。riser 門版で再測中（`ffriser.sh`）。
+  riser 門では昇段 60 mm・往復 80 mm・降段 60 mm・平地が cmp でビット同一。深い降段（1 段 −100／−120／−150）N=48: 106→**129**（−150 mm 18→41、−120 は 44→43 の 1 本）。riser 門版（`ffriser.sh`）も同じ 106→129（−150 mm 18→41、−120 は 1 本）。候補 controls: `log/claude_g1bdbaseline_20260926/controls_v611_candidate_ffdeep.json`。
   → **v6.11 候補** = v6.10 + `TRACKING_CUBIC_FF=1 TRACKING_FF_MIN_RISER=0.10`（他家族はビット同一、昇格はユーザ判断）。
