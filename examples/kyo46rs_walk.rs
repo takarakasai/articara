@@ -8296,6 +8296,19 @@ fn main() {
                 // sign of y is inward: MPC_FOOTSTEP_MAX_Y_IN, and with
                 // MPC_FOOTSTEP_MIN_WIDTH also whatever keeps the NOMINAL
                 // landing (this slice's applied shift removed) that wide.
+                // MPC_FOOTSTEP_SHIFT_REST under MPC_FOOTSTEP_BACK_ONLY: only
+                // while the DCM is behind its reference by more than 2 cm (the
+                // backward push it was added for); the sensitivity probe and
+                // the application below read the same flag.
+                // Backward-DOMINANT DCM error: behind its reference by > 2 cm
+                // and more than sideways (a lateral push can leave a small
+                // backward error too; measured 2026-10-21, two lateral
+                // members lost to the x floor and the plan shift).
+                let back_dominant = {
+                    let e = xi - dcm_plan.reference(t).xi;
+                    e.x < -0.02 && e.y.abs() < -e.x
+                };
+                let shift_rest_now = mpc_footstep_shift_rest && (!mpc_footstep_back_only || back_dominant);
                 // MPC_FOOTSTEP_CROSS_Y gate (see its declaration).
                 let cross_now: Option<(usize, bool)> = if mpc_footstep_cross_y > 0.0
                     && let Support::Single { swing: sw_c, .. } = support
@@ -8526,7 +8539,7 @@ fn main() {
                                     land.max[0] = land.max[0].max(need);
                                 }
                             }
-                            if mpc_footstep_capture_floor > 0.0 {
+                            if mpc_footstep_capture_floor > 0.0 && (!mpc_footstep_back_only || back_dominant) {
                                 let i = gait.index_at(t);
                                 let sl = &gait.slices[i];
                                 let seg = &dcm_plan.segs[dcm_plan.index_at(t)];
@@ -8783,7 +8796,7 @@ fn main() {
                                 // The sensitivity must describe the plan the shift
                                 // is actually applied to (MPC_FOOTSTEP_SHIFT_REST
                                 // moves the rest of the plan with the landing).
-                                if mpc_footstep_shift_rest {
+                                if shift_rest_now {
                                     probe.shift_rest(i, land.foot, d);
                                 } else {
                                     probe.shift_next(i, land.foot, d);
@@ -9097,7 +9110,7 @@ fn main() {
                                 );
                             }
                             if d.norm() > 1e-6 {
-                                if mpc_footstep_shift_rest {
+                                if shift_rest_now {
                                     footsteps.shift_rest(i, land.foot, d);
                                 } else {
                                     footsteps.shift_next(i, land.foot, d);
