@@ -3558,6 +3558,14 @@ fn main() {
     // recovery let the floor pull a landing 8 cm back. Default 0.02 = the
     // same gate as the other parts.
     let mpc_footstep_floor_back_err = env_f64("MPC_FOOTSTEP_FLOOR_BACK_ERR", 0.02).max(0.0);
+    // MPC_FOOTSTEP_BACK_VMAX [m/s]: under BACK_ONLY, keep the backward
+    // re-planning parts closed while a VX2 speed command above this is in
+    // force. Measured 2026-10-21 (v6.13, 11 N.s backward at speed): 0.30 m/s
+    // 48 -> 43 and 0.50 m/s 44 -> 13 against v6.12, where the speed yield
+    // (PUSH_YIELD_V) already re-plans the remaining steps. inf = off.
+    let mpc_footstep_back_vmax = env_f64("MPC_FOOTSTEP_BACK_VMAX", f64::INFINITY).max(0.0);
+    // The speed gate's last value, read by the swing-height hold too.
+    let mut back_parts_open = true;
     let mut back_dom_since: Option<f64> = None;
     let mut shift_rest_latched: Option<usize> = None;
     let mpc_fs_cross_debug = std::env::var("MPC_FS_CROSS_DEBUG").is_ok();
@@ -8320,7 +8328,11 @@ fn main() {
                 // and more than sideways (a lateral push can leave a small
                 // backward error too; measured 2026-10-21, two lateral
                 // members lost to the x floor and the plan shift).
-                let back_dominant = {
+                let back_speed_ok = !(vx2_sched
+                    && vx2_z_from.is_some_and(|t0| t >= t0)
+                    && vx2_cmd_speed.is_some_and(|v| v > mpc_footstep_back_vmax));
+                back_parts_open = back_speed_ok;
+                let back_dominant = back_speed_ok && {
                     let e = xi - dcm_plan.reference(t).xi;
                     let now = e.x < -0.02 && e.y.abs() < -e.x;
                     if now {
@@ -10070,7 +10082,7 @@ fn main() {
                         || (mpc_footstep_hold_shift > 0.0
                             && mpc_fs_slice == Some(slice_idx)
                             && if mpc_footstep_back_only {
-                                mpc_fs_applied.x < -mpc_footstep_hold_shift
+                                back_parts_open && mpc_fs_applied.x < -mpc_footstep_hold_shift
                             } else {
                                 mpc_fs_applied.norm() > mpc_footstep_hold_shift
                             }))
