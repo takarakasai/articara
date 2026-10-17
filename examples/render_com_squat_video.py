@@ -153,8 +153,7 @@ def emit_mesh(faces, tri_world, cam, base):
     # end caps loses its far wall and reads as see-through from behind, which
     # is exactly how the ankle_roll cylinder looked. Instead of dropping the
     # away-facing triangles, flip their normal toward the eye and shade them:
-    # with the painter's sort running far-to-near, the near surface paints
-    # over the far one and a closed shape still comes out solid.
+    # the depth buffer selects the near surface and a closed shape stays solid.
     facing = np.einsum("ij,ij->i", nrm, cam.eye - tri_world.mean(1))
     if CULL:
         keep &= facing > 0
@@ -166,10 +165,10 @@ def emit_mesh(faces, tri_world, cam, base):
         return
     d = 0.42 + 0.58 * np.clip(nrm[idx] @ _LIGHT, 0.0, None)
     cols = np.clip(np.asarray(base, float)[None, :] * d[:, None], 0, 255).astype(int)
-    zc = z[idx].mean(1)
+    depths = z[idx]
     pp = p2[idx]
     for k in range(len(idx)):
-        faces.append((zc[k],
+        faces.append((depths[k],
                       [(pp[k, 0, 0], pp[k, 0, 1]),
                        (pp[k, 1, 0], pp[k, 1, 1]),
                        (pp[k, 2, 0], pp[k, 2, 1])],
@@ -270,6 +269,11 @@ TAU_COLS = [(232, 168, 92), (120, 190, 235), (150, 205, 140)]  # hip / knee / an
 SOLE = (78, 168, 178)     # ground-contact plate
 OUTPUT = (235, 115, 33)   # driven face of a joint
 PALETTE = {
+    # the SPAR_WALL target, so a punch has something visible to land on
+    "target": (188, 78, 56),
+    # staircase treads -- mid grey, darker than the robot's housings so the
+    # silhouette still reads against them
+    "stair": (96, 102, 114),
     "dark": (58, 62, 70),
     "grey": (118, 124, 136),      # actuator housings
     "output": OUTPUT,             # driven face of each joint
@@ -356,7 +360,7 @@ def sole_roll_deg(pose):
 
 
 def draw_body(draw, links, pose, cam):
-    """Rasterise the visual primitives, painter's algorithm, back to front."""
+    """Rasterise visual primitives with per-pixel perspective-correct depth."""
     faces = []
     for lname, vis in links.items():
         if lname not in pose:
@@ -377,8 +381,7 @@ def draw_body(draw, links, pose, cam):
                 corners = wp + (BOX_CORNERS * size * 0.78) @ wR.T
             elif kind == "cyl":
                 r, l = size
-                # ring of prisms around the axis reads as a cylinder and keeps
-                # the painter's-algorithm face sort working unchanged
+                # Polygonal sides and caps use the same depth buffer as boxes.
                 n = 12
                 th = np.linspace(0, 2 * np.pi, n, endpoint=False)
                 ring = np.stack([r * np.cos(th), r * np.sin(th)], 1)
@@ -405,7 +408,7 @@ def draw_body(draw, links, pose, cam):
                     nv_ /= nn
                     if nv_ @ (cam.eye - quad.mean(0)) < 0:
                         continue
-                    faces.append((z[list(f)].mean(), [tuple(p2[i]) for i in f],
+                    faces.append((z[list(f)], [tuple(p2[i]) for i in f],
                                   shade(base, nv_), (28, 30, 36)))
                 continue
             elif kind == "mesh":
@@ -430,13 +433,60 @@ def draw_body(draw, links, pose, cam):
                 n /= nn
                 if n @ (cam.eye - quad.mean(0)) < 0:
                     continue  # backface
-                faces.append((z[list(f)].mean(), [tuple(p2[i]) for i in f], shade(base, n), (28, 30, 36)))
+                faces.append((z[list(f)], [tuple(p2[i]) for i in f], shade(base, n), (28, 30, 36)))
 
-    # Mesh faces carry outline=None. A decimated mesh has hundreds of small
-    # facets and stroking each one turns the whole link into a dark scribble;
-    # the primitives are few and large and read better with an edge.
-    for _, poly, col, edge in sorted(faces, key=lambda t: -t[0]):
-        draw.polygon(poly, fill=col, outline=edge)
+    rasterize_faces(draw._image, faces)
+
+
+def rasterize_faces(image, faces):
+    """Depth-test convex polygons, including large surfaces crossing small ones.
+
+    Screen-space barycentric weights interpolate reciprocal camera depth;
+    sorting by mean depth cannot resolve partially overlapping polygons.
+    Polygon edges participate in the same depth test as their surface.
+    """
+    pixels = np.array(image)
+    height, width = pixels.shape[:2]
+    inverse_depth = np.zeros((height, width), dtype=float)
+    for depths, polygon, color, edge in faces:
+        points = np.asarray(polygon, dtype=float)
+        depths = np.asarray(depths, dtype=float)
+        for i in range(1, len(points) - 1):
+            indices = [0, i, i + 1]
+            a, b, c = points[indices]
+            x0, y0 = np.maximum(np.floor(np.min([a, b, c], axis=0)), [0, 0]).astype(int)
+            x1, y1 = np.minimum(np.ceil(np.max([a, b, c], axis=0)), [width - 1, height - 1]).astype(int)
+            if x0 > x1 or y0 > y1:
+                continue
+            denominator = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
+            if abs(denominator) < 1e-10:
+                continue
+            yy, xx = np.mgrid[y0:y1 + 1, x0:x1 + 1]
+            xx, yy = xx + 0.5, yy + 0.5
+            wa = ((b[1] - c[1]) * (xx - c[0]) + (c[0] - b[0]) * (yy - c[1])) / denominator
+            wb = ((c[1] - a[1]) * (xx - c[0]) + (a[0] - c[0]) * (yy - c[1])) / denominator
+            wc = 1 - wa - wb
+            iz = wa / depths[0] + wb / depths[i] + wc / depths[i + 1]
+            region = inverse_depth[y0:y1 + 1, x0:x1 + 1]
+            visible = (wa >= -1e-9) & (wb >= -1e-9) & (wc >= -1e-9) & (iz > region)
+            if not visible.any():
+                continue
+            rgb = pixels[y0:y1 + 1, x0:x1 + 1]
+            rgb[visible] = color
+            region[visible] = iz[visible]
+            if edge is not None:
+                # Stroke only the polygon boundary, never the fan diagonals.
+                boundary = np.zeros_like(visible)
+                for start, end in zip(points, np.roll(points, -1, axis=0)):
+                    delta = end - start
+                    length2 = float(delta @ delta)
+                    if length2 < 1e-12:
+                        continue
+                    along = np.clip(((xx - start[0]) * delta[0] + (yy - start[1]) * delta[1]) / length2, 0, 1)
+                    distance2 = (xx - start[0] - along * delta[0]) ** 2 + (yy - start[1] - along * delta[1]) ** 2
+                    boundary |= distance2 < 0.36
+                rgb[visible & boundary] = edge
+    image.paste(Image.fromarray(pixels))
 
 
 COP_MJ = (240, 196, 72)    # what MuJoCo's contacts actually produce
@@ -607,9 +657,9 @@ def draw_push(draw, cam, origin, fxy, phase=1.0, dt_rel=None):
 
 
 def render_frame(links, joints, pose, cam, hud, push=None, push_at=None,
-                 push_phase=1.0, push_dt=None, draw_set=None):
+                 push_phase=1.0, push_dt=None, draw_set=None, hit=None):
     """`draw_set` overrides WHAT is rasterised without changing what the HUD
-    reads. Two robots are drawn from one merged dict so the painter's sort
+    reads. Two robots are drawn from one merged dict so the depth buffer
     orders them against each other, but every HUD panel below is about the
     logged robot and would read a prefixed key as a missing joint."""
     img = gradient_bg()
@@ -617,6 +667,38 @@ def render_frame(links, joints, pose, cam, hud, push=None, push_at=None,
     draw_ground(draw, cam)
     dl, dp = draw_set if draw_set else (links, pose)
     draw_body(draw, dl, dp, cam)
+    if hit is not None:
+        # What the punch is actually delivering, on the frame that delivers it.
+        # Peak is carried across frames by the caller through `hit_peak`.
+        f_now, imp_punch, imp_total = hit
+        live = f_now > 0.0
+        # Sits ABOVE the sagittal-torque strip (label from H-166, plot from
+        # H-140): the box below spans [y0-8, y0+118], so y0 = H-300 keeps an
+        # 8 px gap. At H-152 it landed inside the strip and neither was legible.
+        x0, y0 = 16, H - 300
+        draw.rectangle([x0 - 8, y0 - 8, x0 + 348, y0 + 118],
+                       fill=(16, 18, 23, 224))
+        draw.text((x0, y0), "force on target",
+                  fill=(226, 140, 92) if live else (120, 126, 138), font=F_SMALL)
+        draw.text((x0 + 170, y0), f"{max(f_now, 0.0):6.1f} N",
+                  fill=(255, 196, 96) if live else (120, 126, 138), font=F_BODY)
+        draw.text((x0, y0 + 30), "impulse, this punch", fill=(170, 178, 190), font=F_SMALL)
+        draw.text((x0 + 200, y0 + 30), f"{imp_punch:5.3f} N*s",
+                  fill=(255, 196, 96) if live else (150, 156, 168), font=F_SMALL)
+        draw.text((x0, y0 + 52), "impulse, run total", fill=(170, 178, 190), font=F_SMALL)
+        draw.text((x0 + 200, y0 + 52), f"{imp_total:6.3f} N*s",
+                  fill=(190, 196, 206), font=F_SMALL)
+        draw.text((x0, y0 + 76), "vs frontal topple threshold 0.6 N*s",
+                  fill=(150, 156, 168), font=F_SMALL)
+        # This punch's impulse against that threshold. Full width = 2x it, so a
+        # bar past the halfway tick is a hit that would put someone down.
+        bx, by, bw = x0, y0 + 98, 336
+        draw.rectangle([bx, by, bx + bw, by + 12], outline=(90, 96, 108))
+        w = int(min(imp_punch / 1.2, 1.0) * bw)
+        if w > 0:
+            draw.rectangle([bx, by, bx + w, by + 12],
+                           fill=(226, 96, 72) if imp_punch > 0.6 else (110, 190, 130))
+        draw.line([bx + bw // 2, by - 3, bx + bw // 2, by + 15], fill=(210, 214, 222))
     if push is not None and push_at is not None:
         draw_push(draw, cam, push_at, push, push_phase, push_dt)
 
@@ -662,7 +744,13 @@ def render_frame(links, joints, pose, cam, hud, push=None, push_at=None,
                   fill=(226, 140, 92), font=F_BODY)
     else:
         draw.text((W - 262, 48), "contact: both feet", fill=(126, 200, 140), font=F_BODY)
-
+    sub = os.environ.get("SUBTITLE")
+    if sub:
+        draw.rectangle([0, 84, W, 112], fill=(16, 18, 23, 180))
+        draw.text((22, 88), sub, fill=(200, 206, 216), font=F_SMALL)
+    if os.environ.get("NO_PANELS"):
+        # Summary videos: header only; the plan view carries the rest.
+        return img
 
     # colour key, upper right
     kx, ky = W - 244, 96
@@ -719,7 +807,11 @@ def render_frame(links, joints, pose, cam, hud, push=None, push_at=None,
     if len(hist) > 2:
         x0, y0, ww, hh = 22, 122, 250, 62
         draw.rectangle([x0 - 10, y0 - 26, x0 + ww + 10, y0 + hh + 10], fill=(16, 18, 23, 200))
-        lo, hi = 0.24, 0.33
+        # The band this trace is drawn against. The defaults are kyo46rs's
+        # squat range; G1 stands at 0.685 m, which is off the box entirely and
+        # renders as an empty panel, so the band is overridable per robot.
+        lo = float(os.environ.get("COM_PLOT_LO", 0.24))
+        hi = float(os.environ.get("COM_PLOT_HI", 0.33))
         def sc(i, v):
             return (x0 + ww * i / max(1, len(hist) - 1),
                     y0 + hh * (1 - (v - lo) / (hi - lo)))
@@ -727,6 +819,262 @@ def render_frame(links, joints, pose, cam, hud, push=None, push_at=None,
         draw.line([sc(i, c) for i, (c, _) in enumerate(hist)], fill=(232, 168, 92), width=2)
         draw.text((x0, y0 - 22), "CoM height vs commanded", fill=(150, 158, 172), font=F_SMALL)
     return img
+
+
+# ── planner overlay (TARGETS=1) ─────────────────────────────────────────
+# What the planners were aiming at, drawn in the 3D view on top of the body:
+#   PREVIEW_CSV  the LIPM bounded-ZMP CoM preview (COM_REPLAN): planned ZMP
+#                sequence and predicted CoM path of the latest solve
+#   MPC_CSV      the SRBD wrench MPC: predicted CoM at each node end, node-0
+#                net CoP, landing shift (G1 recipes; kyo46rs runs without it)
+# plus, from the trajectory CSV itself: DCM and its reference, the ZMP
+# reference, the CoM, the planned landing of the swing foot and the swing
+# target. Written by kyo46rs_walk.rs (PREVIEW_TRAJ_CSV / MPC_TRAJ_CSV).
+C_ZMP = (96, 210, 240)
+C_PCOM = (230, 120, 230)
+C_DCM = (255, 170, 60)
+C_COM = (240, 244, 250)
+C_LAND = (120, 220, 130)
+C_MPC = (250, 230, 90)
+
+
+def load_planner_csv(path, long_form):
+    """{t: rows} for the long-form preview file, or [(t, row)] for the MPC."""
+    if not path or not os.path.exists(path):
+        return None
+    with open(path) as f:
+        rows = list(csv.DictReader(f))
+    if long_form:
+        out = {}
+        for r in rows:
+            out.setdefault(float(r["t"]), []).append(r)
+        ts = sorted(out)
+        return ts, out
+    ts = [float(r["t"]) for r in rows]
+    return ts, rows
+
+
+def latest_at(store, t, max_age):
+    if store is None:
+        return None
+    ts, data = store
+    import bisect
+    i = bisect.bisect_right(ts, t + 1e-9) - 1
+    if i < 0 or t - ts[i] > max_age:
+        return None
+    return data[ts[i]] if isinstance(data, dict) else data[i]
+
+
+def _f(r, k):
+    try:
+        v = float(r[k])
+    except (KeyError, ValueError, TypeError):
+        return float("nan")
+    return v
+
+
+def draw_targets(img, cam, r, prev, mpc, foot_half, legend=True):
+    draw = ImageDraw.Draw(img, "RGBA")
+    fl, fr = _f(r, "fz_mj_l"), _f(r, "fz_mj_r")
+    zg = _f(r, "sole_l_z") if fl >= fr else _f(r, "sole_r_z")
+    if not math.isfinite(zg):
+        zg = 0.0
+    zg += 0.002
+
+    def px(pts):
+        p, z = cam.project(np.asarray(pts, float).reshape(-1, 3))
+        return [tuple(map(float, q)) for q in p], z
+
+    def dot(x, y, z, col, rad=6, ring=False, alpha=235):
+        if not all(map(math.isfinite, (x, y, z))):
+            return
+        (q,), _ = px([[x, y, z]])
+        bb = [q[0] - rad, q[1] - rad, q[0] + rad, q[1] + rad]
+        if ring:
+            draw.ellipse(bb, outline=col + (alpha,), width=3)
+        else:
+            draw.ellipse(bb, fill=col + (alpha,), outline=(20, 20, 24, 200))
+
+    def poly(pts, col, width=3, alpha=220):
+        pts = [p for p in pts if all(map(math.isfinite, p))]
+        if len(pts) < 2:
+            return
+        q, _ = px(pts)
+        draw.line(q, fill=col + (alpha,), width=width)
+
+    # planned landing of the swing foot (sole outline on its target surface)
+    sup = int(_f(r, "support")) if math.isfinite(_f(r, "support")) else 0
+    swing = {1: "r", 2: "l"}.get(sup)
+    if swing:
+        gx, gy, gz = _f(r, f"goal_{swing}_x"), _f(r, f"goal_{swing}_y"), _f(r, f"goal_{swing}_z")
+        if all(map(math.isfinite, (gx, gy, gz))) and (gx or gy):
+            hx, hy = foot_half
+            c = [[gx - hx, gy - hy, gz + 0.002], [gx + hx, gy - hy, gz + 0.002],
+                 [gx + hx, gy + hy, gz + 0.002], [gx - hx, gy + hy, gz + 0.002],
+                 [gx - hx, gy - hy, gz + 0.002]]
+            poly(c, C_LAND, width=3)
+        tx, ty, tz = _f(r, "swing_tgt_x"), _f(r, "swing_tgt_y"), _f(r, "swing_tgt_z")
+        if (tx or ty) and all(map(math.isfinite, (tx, ty, tz))):
+            (q,), _ = px([[tx, ty, tz]])
+            draw.line([q[0] - 7, q[1], q[0] + 7, q[1]], fill=C_LAND + (240,), width=3)
+            draw.line([q[0], q[1] - 7, q[0], q[1] + 7], fill=C_LAND + (240,), width=3)
+
+    # LIPM CoM preview: planned ZMP sequence on the ground, predicted CoM path
+    cz = _f(r, "com_z")
+    if prev:
+        zs = [[_f(p, "zmp_x"), _f(p, "zmp_y"), zg] for p in prev]
+        cs = [[_f(r, "com_x"), _f(r, "com_y"), cz]] + [[_f(p, "c_x"), _f(p, "c_y"), cz] for p in prev]
+        poly(zs, C_ZMP, width=2, alpha=200)
+        for k, z in enumerate(zs):
+            if k % 2 == 0:
+                dot(*z, C_ZMP, rad=3, alpha=210)
+        poly(cs, C_PCOM, width=3)
+    # SRBD wrench MPC: predicted CoM at node ends, node-0 net CoP
+    if mpc:
+        n = int(_f(mpc, "n_nodes")) if math.isfinite(_f(mpc, "n_nodes")) else 0
+        cs = [[_f(mpc, "com_x"), _f(mpc, "com_y"), _f(mpc, "com_z")]] + \
+             [[_f(mpc, f"c{k}_x"), _f(mpc, f"c{k}_y"), _f(mpc, f"c{k}_z")] for k in range(min(n, 16))]
+        poly(cs, C_MPC, width=3)
+        for c in cs[1:]:
+            dot(*c, C_MPC, rad=3)
+        dot(_f(mpc, "cop0_x"), _f(mpc, "cop0_y"), zg, C_MPC, rad=7, ring=True)
+    # references and state
+    dot(_f(r, "zmp_ref_x"), _f(r, "zmp_ref_y"), zg, C_ZMP, rad=7)
+    dot(_f(r, "xi_ref_x"), _f(r, "xi_ref_y"), zg, C_DCM, rad=8, ring=True)
+    dot(_f(r, "xi_x"), _f(r, "xi_y"), zg, C_DCM, rad=6)
+    dot(_f(r, "com_x"), _f(r, "com_y"), cz, C_COM, rad=6)
+    dot(_f(r, "com_x"), _f(r, "com_y"), zg, C_COM, rad=3, alpha=160)
+
+    if not legend:
+        return
+    # legend
+    items = [("CoM (and its ground point)", C_COM, "dot"),
+             ("DCM  (ring = reference)", C_DCM, "dot"),
+             ("ZMP reference", C_ZMP, "dot")]
+    if prev is not None:
+        items += [("preview: planned ZMP", C_ZMP, "line"), ("preview: predicted CoM", C_PCOM, "line")]
+    if mpc is not None:
+        items += [("wrench MPC: CoM nodes / CoP", C_MPC, "line")]
+    items += [("landing target / swing target", C_LAND, "line")]
+    x0, y0 = 14, img.size[1] - 18 - 22 * len(items)
+    draw.rectangle([x0 - 8, y0 - 10, x0 + 330, img.size[1] - 10], fill=(16, 18, 23, 200))
+    for k, (lbl, col, kind) in enumerate(items):
+        y = y0 + 22 * k
+        if kind == "dot":
+            draw.ellipse([x0, y + 3, x0 + 12, y + 15], fill=col + (240,))
+        else:
+            draw.line([x0, y + 9, x0 + 16, y + 9], fill=col + (240,), width=3)
+        draw.text((x0 + 24, y), lbl, fill=(214, 220, 230), font=F_SMALL)
+
+
+def draw_plan_panel(img, ox, oy, w, h, r, prev, mpc, foot_half, edges):
+    """Top-down world-frame view around the robot: soles, stair edges, the
+    planned landing, ZMP/DCM/CoM and the planners' predicted paths."""
+    draw = ImageDraw.Draw(img, "RGBA")
+    draw.rectangle([ox, oy, ox + w, oy + h], fill=(18, 20, 26))
+    draw.text((ox + 10, oy + 8), "plan view  (world, from above)", fill=(214, 220, 230), font=F_SMALL)
+    top = oy + 32
+    legend_h = 150
+    ph = h - 32 - legend_h
+    scale = float(os.environ.get("PLAN_SCALE", 900.0))  # px per metre
+    cx = _f(r, "com_x") + 0.06
+    cy = 0.0
+
+    def P(x, y):
+        return (ox + w / 2 + (x - cx) * scale, top + ph / 2 - (y - cy) * scale)
+
+    def inside(q):
+        return ox <= q[0] <= ox + w and top <= q[1] <= top + ph
+
+    # 5 cm grid
+    g0 = math.floor((cx - w / 2 / scale) / 0.05) * 0.05
+    x = g0
+    while x < cx + w / 2 / scale:
+        q = P(x, 0)
+        draw.line([q[0], top, q[0], top + ph], fill=(34, 38, 46), width=1)
+        x += 0.05
+    y = -0.2
+    while y <= 0.2 + 1e-9:
+        q = P(0, y)
+        if top <= q[1] <= top + ph:
+            draw.line([ox, q[1], ox + w, q[1]], fill=(34, 38, 46), width=1)
+        y += 0.05
+    for ex, lbl in edges:
+        q = P(ex, 0)
+        if ox <= q[0] <= ox + w:
+            draw.line([q[0], top, q[0], top + ph], fill=(200, 200, 210, 160), width=2)
+            draw.text((q[0] + 4, top + 4), lbl, fill=(170, 176, 188), font=F_SMALL)
+    hx, hy = foot_half
+    for side, fz in (("l", _f(r, "fz_mj_l")), ("r", _f(r, "fz_mj_r"))):
+        sx, sy = _f(r, f"sole_{side}_x"), _f(r, f"sole_{side}_y")
+        a, b = P(sx - hx, sy + hy), P(sx + hx, sy - hy)
+        if fz > 3.0:
+            draw.rectangle([a, b], fill=(60, 150, 160, 120), outline=(90, 190, 200), width=2)
+        else:
+            draw.rectangle([a, b], outline=(110, 116, 128), width=2)
+    sup = int(_f(r, "support")) if math.isfinite(_f(r, "support")) else 0
+    swing = {1: "r", 2: "l"}.get(sup)
+    if swing:
+        gx, gy = _f(r, f"goal_{swing}_x"), _f(r, f"goal_{swing}_y")
+        if math.isfinite(gx) and (gx or gy):
+            draw.rectangle([P(gx - hx, gy + hy), P(gx + hx, gy - hy)], outline=C_LAND + (255,), width=3)
+        tx, ty = _f(r, "swing_tgt_x"), _f(r, "swing_tgt_y")
+        if (tx or ty) and math.isfinite(tx):
+            q = P(tx, ty)
+            draw.line([q[0] - 7, q[1], q[0] + 7, q[1]], fill=C_LAND + (255,), width=3)
+            draw.line([q[0], q[1] - 7, q[0], q[1] + 7], fill=C_LAND + (255,), width=3)
+
+    def dot(x, y, col, rad=5, ring=False):
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return
+        q = P(x, y)
+        bb = [q[0] - rad, q[1] - rad, q[0] + rad, q[1] + rad]
+        if ring:
+            draw.ellipse(bb, outline=col + (255,), width=3)
+        else:
+            draw.ellipse(bb, fill=col + (255,), outline=(16, 16, 20))
+
+    def poly(pts, col, width=3):
+        pts = [P(x, y) for x, y in pts if math.isfinite(x) and math.isfinite(y)]
+        if len(pts) >= 2:
+            draw.line(pts, fill=col + (230,), width=width)
+
+    if prev:
+        poly([(_f(p, "zmp_x"), _f(p, "zmp_y")) for p in prev], C_ZMP, width=2)
+        for p in prev[::2]:
+            dot(_f(p, "zmp_x"), _f(p, "zmp_y"), C_ZMP, rad=3)
+        poly([(_f(r, "com_x"), _f(r, "com_y"))] + [(_f(p, "c_x"), _f(p, "c_y")) for p in prev], C_PCOM, width=3)
+    if mpc:
+        n = int(_f(mpc, "n_nodes")) if math.isfinite(_f(mpc, "n_nodes")) else 0
+        pts = [(_f(mpc, "com_x"), _f(mpc, "com_y"))] + [(_f(mpc, f"c{k}_x"), _f(mpc, f"c{k}_y")) for k in range(min(n, 16))]
+        poly(pts, C_MPC, width=3)
+        for x, y in pts[1:]:
+            dot(x, y, C_MPC, rad=3)
+        dot(_f(mpc, "cop0_x"), _f(mpc, "cop0_y"), C_MPC, rad=8, ring=True)
+    dot(_f(r, "zmp_ref_x"), _f(r, "zmp_ref_y"), C_ZMP, rad=6)
+    dot(_f(r, "xi_ref_x"), _f(r, "xi_ref_y"), C_DCM, rad=8, ring=True)
+    dot(_f(r, "xi_x"), _f(r, "xi_y"), C_DCM, rad=5)
+    dot(_f(r, "com_x"), _f(r, "com_y"), C_COM, rad=6)
+    # legend
+    items = [("CoM", C_COM, "dot"), ("DCM (ring = ref)", C_DCM, "dot"),
+             ("ZMP ref", C_ZMP, "dot"),
+             ("plan: ZMP", C_ZMP, "line"), ("plan: CoM", C_PCOM, "line")]
+    if mpc is not None or os.environ.get("MPC_CSV"):
+        items.append(("SRBD MPC: CoM", C_MPC, "line"))
+    items.append(("landing / swing tgt", C_LAND, "line"))
+    ly = oy + h - legend_h + 4
+    col_w = w // 2
+    for k, (lbl, col, kind) in enumerate(items):
+        x0 = ox + 10 + (k % 2) * col_w
+        y0 = ly + (k // 2) * 22
+        if kind == "dot":
+            draw.ellipse([x0, y0 + 3, x0 + 12, y0 + 15], fill=col + (255,))
+        else:
+            draw.line([x0, y0 + 9, x0 + 16, y0 + 9], fill=col + (255,), width=3)
+        draw.text((x0 + 20, y0), lbl, fill=(200, 206, 216), font=F_SMALL)
+    note = os.environ.get("PLAN_NOTE")
+    if note:
+        draw.text((ox + 10, oy + h - 24), note, fill=(150, 156, 168), font=F_SMALL)
 
 
 def main():
@@ -784,6 +1132,50 @@ def main():
     OPP_YAW = math.radians(float(os.environ.get("OPPONENT_YAW", 180.0)))
     opp_rows = list(csv.DictReader(open(OPP))) if OPP else None
 
+    # The thing the run was punching. `MujocoSim` has it via
+    # MjcfExportOptions::extra_worldbody, but this renderer builds the scene
+    # from the URDF alone and would draw the fist stopping in mid-air against
+    # nothing. SPAR_BOX="x,y,z,sx,sy,sz" (full extents, metres).
+    if os.environ.get("SPAR_BOX"):
+        v = [float(x) for x in os.environ["SPAR_BOX"].split(",")]
+        if len(v) != 6:
+            raise SystemExit("SPAR_BOX wants x,y,z,sx,sy,sz")
+        spar = (np.array(v[:3]), np.array(v[3:]))
+    else:
+        spar = None
+
+    # The staircase the run walked on. Same STAIRS string as the sim
+    # (`n,riser,tread[,start_x]`), and the geometry below has to mirror
+    # kyo46rs_walk.rs's worldbody builder box for box, or the feet visibly
+    # land in (or above) the drawn steps.
+    stair_geoms = []   # (centre xyz, FULL extents xyz)
+    if os.environ.get("STAIRS"):
+        v = [float(x) for x in os.environ["STAIRS"].split(",")]
+        n, riser, tread = int(v[0]), v[1], v[2]
+        start = v[3] if len(v) > 3 else 0.25
+        half_w = float(os.environ.get("STAIR_HALF_W", 0.30))
+        base = n * -riser if riser < 0 else 0.0
+
+        def _add(x0, x1, top):
+            if top > 1e-9:
+                stair_geoms.append((np.array([0.5 * (x0 + x1), 0.0, 0.5 * top]),
+                                    np.array([x1 - x0, 2 * half_w, top])))
+        if riser < 0:
+            _add(start - 0.55, start, base)
+        for k in range(1, n + 1):
+            _add(start + (k - 1) * tread, start + k * tread, base + k * riser)
+        if riser > 0:
+            # STAIR_LANDING_LEN / STAIRS_DOWN mirror the walker's knobs (the
+            # up-and-over course); unset = the historical 0.60 m landing.
+            land_len = float(os.environ.get("STAIR_LANDING_LEN", 0.60))
+            le = start + n * tread + land_len
+            _add(start + n * tread, le, n * riser)
+            down_n = min(int(float(os.environ.get("STAIRS_DOWN", 0))), n)
+            for k in range(1, down_n + 1):
+                _add(le + (k - 1) * tread, le + k * tread, (n - k) * riser)
+            if 0 < down_n < n:
+                _add(le + down_n * tread, le + down_n * tread + 4.0, (n - down_n) * riser)
+
     if os.environ.get("ANKLE_CLOSEUP"):
         cam = Camera(eye=(0.30, -0.42, 0.16), target=(0.01, 0.0, 0.06), fov=34, y_shift=60)
     else:
@@ -808,6 +1200,17 @@ def main():
     has_cop = "cop_mj_l_x" in sel[0]
     trails = [[], []]
 
+    PLAN_EDGES = []
+    if os.environ.get("STAIRS"):
+        v = [float(x) for x in os.environ["STAIRS"].split(",")]
+        if abs(v[1]) > 1e-9:
+            st0 = v[3] if len(v) > 3 else 0.25
+            for k in range(int(v[0]) + (0 if v[1] < 0 else 1)):
+                PLAN_EDGES.append((st0 + k * v[2], "edge" if k == 0 else ""))
+    PREV = load_planner_csv(os.environ.get("PREVIEW_CSV"), True)
+    MPCS = load_planner_csv(os.environ.get("MPC_CSV"), False)
+    FOOT_HALF = (float(os.environ.get("FOOT_HALF_X", sel[0].get("cop_lx", 0.049))),
+                 float(os.environ.get("FOOT_HALF_Y", 0.030)))
     hist = []
     # Pre-scan the WHOLE log (not the decimated frames) for the pulse, so the
     # anticipation and decay windows are anchored on when it really happened
@@ -838,6 +1241,18 @@ def main():
         ])
         pose = forward_kinematics(links, joints, root, bp, bR, q)
         links_draw, pose_draw = links, pose
+        hit = None
+        if spar is not None and "hit_f" in r:
+            hit = (float(r["hit_f"]), float(r["hit_imp_punch"]), float(r["hit_imp_total"]))
+        if spar is not None or stair_geoms:
+            links_draw = dict(links_draw)
+            pose_draw = dict(pose_draw)
+        if spar is not None:
+            links_draw["spar_target"] = [("box", np.zeros(3), np.eye(3), spar[1], "target")]
+            pose_draw["spar_target"] = (spar[0], np.eye(3))
+        for gi, (sc, ss) in enumerate(stair_geoms):
+            links_draw[f"stair_{gi}"] = [("box", np.zeros(3), np.eye(3), ss, "stair")]
+            pose_draw[f"stair_{gi}"] = (sc, np.eye(3))
         if opp_rows:
             # Same clock, clamped: the two runs need not be the same length.
             ro = opp_rows[min(int(i * len(opp_rows) / max(1, len(sel))), len(opp_rows) - 1)]
@@ -902,7 +1317,15 @@ def main():
                              else "RIGHT")),
                            push=push_xy, push_at=bp,
                            push_phase=push_phase, push_dt=push_dt,
-                           draw_set=(links_draw, pose_draw) if opp_rows else None)
+                           draw_set=(links_draw, pose_draw)
+                           if (opp_rows or spar or stair_geoms) else None,
+                           hit=hit)
+        if os.environ.get("TARGETS"):
+            tt = float(r["t"])
+            draw_targets(img, cam, r,
+                         latest_at(PREV, tt, 0.10) if PREV is not None else None,
+                         latest_at(MPCS, tt, 0.15) if MPCS is not None else None,
+                         FOOT_HALF, legend=not has_cop)
         if has_cop:
             feet = []
             for side in ("l", "r"):
@@ -923,7 +1346,14 @@ def main():
             canvas.paste(render_side_view(links, pose, SIDE_W, FRONT_H,
                                           "front view  (frontal plane)"),
                          (W, 0))
-            draw_cop_panel(canvas, W, FRONT_H, SIDE_W, COP_H, feet, box, trails)
+            if os.environ.get("TARGETS"):
+                tt = float(r["t"])
+                draw_plan_panel(canvas, W, FRONT_H, SIDE_W, COP_H, r,
+                                latest_at(PREV, tt, 0.10) if PREV is not None else None,
+                                latest_at(MPCS, tt, 0.15) if MPCS is not None else None,
+                                FOOT_HALF, PLAN_EDGES)
+            else:
+                draw_cop_panel(canvas, W, FRONT_H, SIDE_W, COP_H, feet, box, trails)
             img = canvas
 
         img.save(os.path.join(frame_dir, f"f{i:05d}.png"))

@@ -4116,6 +4116,39 @@ fn main() {
             });
     let mpc_warm = flag("MPC_QP_WARM", false);
     let mpc_diag_dir = std::env::var("MPC_DIAG_DIR").ok();
+    // PREVIEW_TRAJ_CSV=path: every accepted LIPM CoM-preview solve (the
+    // bounded-ZMP receding-horizon planner of COM_REPLAN, src/biped/preview.rs),
+    // one row per horizon sample: the planned ZMP, the predicted CoM at the
+    // sample end and the reference ZMP the plan was given. For the summary
+    // videos (MPC_CSV in examples/render_com_squat_video.py). Unset = no file.
+    let mut preview_traj_file = std::env::var("PREVIEW_TRAJ_CSV").ok().map(|p| {
+        let mut f = std::io::BufWriter::new(std::fs::File::create(&p).expect("PREVIEW_TRAJ_CSV"));
+        use std::io::Write as _;
+        writeln!(f, "t,k,dur,zmp_x,zmp_y,c_x,c_y,rzmp_x,rzmp_y,lo_x,lo_y,hi_x,hi_y").unwrap();
+        f
+    });
+    // MPC_TRAJ_CSV=path: one row per wrench-MPC solve with what the MPC
+    // planned -- the CoM it starts from and aims at, its predicted CoM at the
+    // end of every node, the net CoP of node 0 and the per-node net-CoP
+    // reference, each contact's origin and planned normal force, and the
+    // landing variable (foot, shift). For the summary videos (drawn by
+    // examples/render_com_squat_video.py with MPC_CSV). Unset = no file; the
+    // controller and TRAJ_CSV are untouched either way.
+    let mut mpc_traj_file = std::env::var("MPC_TRAJ_CSV").ok().map(|p| {
+        let mut f = std::io::BufWriter::new(std::fs::File::create(&p).expect("MPC_TRAJ_CSV"));
+        use std::io::Write as _;
+        let mut h = String::from("t,com_x,com_y,com_z,tgt_x,tgt_y,tgt_z");
+        for k in 0..16 {
+            h += &format!(",c{k}_x,c{k}_y,c{k}_z");
+        }
+        h += ",cop0_x,cop0_y";
+        for k in 0..16 {
+            h += &format!(",rcop{k}_x,rcop{k}_y");
+        }
+        h += ",pl_x,pl_y,pl_z,pr_x,pr_y,pr_z,fz_l,fz_r,on_l,on_r,land_foot,land_dx,land_dy,n_nodes";
+        writeln!(f, "{h}").unwrap();
+        f
+    });
     let mut mpc_diag_count = 0usize;
     let mut mpc_workspace = articara::biped::wrench_mpc::Workspace::default();
     let mut wrench_mpc_command: Option<[articara::biped::wrench_mpc::Wrench; 2]> = None;
@@ -7273,6 +7306,19 @@ fn main() {
                         // only horizontal plan in the stack is this one. See
                         // `mpc_target_preview` at the MPC input.
                         preview_traj = Some((t, plan.com.clone(), plan.velocity.clone()));
+                        if let Some(f) = preview_traj_file.as_mut() {
+                            use std::io::Write as _;
+                            for (k, smp) in samples.iter().enumerate() {
+                                let (Some(z), Some(c)) = (plan.zmp.get(k), plan.com.get(k)) else { break };
+                                writeln!(
+                                    f,
+                                    "{t:.4},{k},{:.4},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5}",
+                                    smp.duration, z.x, z.y, c.x, c.y, smp.zmp.x, smp.zmp.y,
+                                    smp.bounds.lo.x, smp.bounds.lo.y, smp.bounds.hi.x, smp.bounds.hi.y
+                                )
+                                .unwrap();
+                            }
+                        }
                     }
                     None => {
                         preview_p = current_box.clamp(&p_cmd).0;
@@ -8710,6 +8756,42 @@ fn main() {
                         }
                         wrench_mpc_acceleration = solution.acceleration;
                         wrench_mpc_traj = Some((t, com, com_vel, solution.trajectory.clone()));
+                        if let Some(f) = mpc_traj_file.as_mut() {
+                            use std::io::Write as _;
+                            let nan = f64::NAN;
+                            let mut row = format!(
+                                "{t:.4},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5}",
+                                com.x, com.y, com.z, input.target_com.x, input.target_com.y, input.target_com.z
+                            );
+                            for k in 0..16 {
+                                match solution.trajectory.get(k) {
+                                    Some(n) => row += &format!(",{:.5},{:.5},{:.5}", n[0].x, n[0].y, n[0].z),
+                                    None => row += &format!(",{nan},{nan},{nan}"),
+                                }
+                            }
+                            row += &format!(",{:.5},{:.5}", diag_mpc_net_cop[0], diag_mpc_net_cop[1]);
+                            for k in 0..16 {
+                                match input.reference_net_cop_schedule.as_ref().and_then(|v| v.get(k)) {
+                                    Some(c) => row += &format!(",{:.5},{:.5}", c.x, c.y),
+                                    None => row += &format!(",{nan},{nan}"),
+                                }
+                            }
+                            for foot in 0..2 {
+                                let p = input.contacts[foot].position;
+                                row += &format!(",{:.5},{:.5},{:.5}", p.x, p.y, p.z);
+                            }
+                            let on = input.contact_schedule.first().copied().unwrap_or([false; 2]);
+                            let (lf, ld) = match (&landing, solution.landing_shift) {
+                                (Some(l), Some(d)) => (l.foot as i64, d),
+                                (Some(l), None) => (l.foot as i64, na::Vector2::zeros()),
+                                _ => (-1, na::Vector2::zeros()),
+                            };
+                            row += &format!(
+                                ",{:.3},{:.3},{},{},{lf},{:.5},{:.5},{}",
+                                by_side[0][5], by_side[1][5], on[0] as u8, on[1] as u8, ld.x, ld.y, solution.trajectory.len()
+                            );
+                            writeln!(f, "{row}").unwrap();
+                        }
                         // MPC_LANDING_TIME: the touchdown node the landing
                         // stage chose, applied as a retime of this single
                         // support (once per slice, like the contact_plan).
