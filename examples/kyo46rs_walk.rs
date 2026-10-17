@@ -6770,7 +6770,26 @@ fn main() {
             let i = gait.index_at(t);
             let sl = gait.slices[i].clone();
             match sl.support {
-                Support::Single { swing, stance } if ref_mode.is_none() && stair_transfer_cmd.is_none() => {
+                Support::Single { swing, stance }
+                    if ref_mode.is_none()
+                        && stair_transfer_cmd.is_none()
+                        // Not on a known staircase (its zone, with the crouch
+                        // lead / tail): a deep step-down reads as a backward
+                        // error and the re-plan cost the -150 mm descent
+                        // 41 -> 30 (measured 2026-10-22).
+                        && !stairs.as_ref().is_some_and(|st| {
+                            // A zero-riser "stair" (the flat benches park one
+                            // at x = 2 m) is not a staircase.
+                            (st.riser.abs() > 1e-6 || st.down_n > 0)
+                                && articara::biped::height::stair_zone_crouch(
+                                footsteps.at_slice(i).mid_xy().x,
+                                st,
+                                stair_crouch_lead,
+                                stair_crouch_tail,
+                                1.0,
+                            ) > 0.0
+                        }) =>
+                {
                     // The plan in force when this single support began.
                     if push_replan_state.as_ref().is_none_or(|st| st.0 != i) {
                         let base = footsteps.at_slice(i).xy(swing);
