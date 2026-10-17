@@ -3474,6 +3474,49 @@ fn main() {
     // next step). The retimed-step rule above does not separate them (a
     // backward push shortens steps too). 0 = off = shipped.
     let mpc_footstep_y_in_fwd = env_f64("MPC_FOOTSTEP_Y_IN_FWD", 0.0).max(0.0);
+    // MPC_FOOTSTEP_CROSS_Y [m]: let the MPC landing CROSS the stance foot
+    // when the DCM has run out past the stance foot on the stance side. In
+    // single support, once the measured DCM is more than
+    // MPC_FOOTSTEP_CROSS_EX [m] beyond the stance sole centre AWAY from the
+    // swing foot, the inward bound and the inward side of the y box become
+    // this value for the rest of that single support (latched). The capture
+    // cost then picks the crossing landing. MPC_FOOTSTEP_CROSS_AHEAD [m]:
+    // while crossing, keep the landing at least this far ahead of the
+    // stance sole in x (the legs must pass in front, not through). Measured
+    // 2026-10-20 on G1 v6.11: 21 of 24 lateral-push falls are late-phase
+    // (0.58-0.75) pushes toward the stance foot, where the landing stays put
+    // with the DCM 9-11 cm past the new stance sole; the inward ban
+    // (MPC_FOOTSTEP_MAX_Y_IN=0, set after a backward-push runaway on 09-27)
+    // and the 0.08 m box leave the MPC no crossing step (doc
+    // 20261014_push_x_speed.md Sec.16). The gate keeps the ban for every
+    // other case. 0 = off = bit-identical.
+    let mpc_footstep_cross_y = env_f64("MPC_FOOTSTEP_CROSS_Y", 0.0).max(0.0);
+    let mpc_footstep_cross_ex = env_f64("MPC_FOOTSTEP_CROSS_EX", 0.02);
+    let mpc_footstep_cross_ahead = env_f64("MPC_FOOTSTEP_CROSS_AHEAD", 0.0).max(0.0);
+    // MPC_FOOTSTEP_CROSS_FLOOR [fraction of the sole half width]: while
+    // crossing, a lower bound on the inward shift from the LIPM: the DCM at
+    // the end of this single support, with the stance CoP held at the
+    // stance sole's outer edge (the best the ankle can do), must lie within
+    // this fraction of the half width of the landing sole. The y twin of
+    // MPC_FOOTSTEP_CAPTURE_FLOOR. Measured 2026-10-20: with only the bound
+    // opened the MPC lands at y +0.02..+0.04 for a DCM at +0.09 (stance
+    // sole +0.05) -- the SRBD model has no attitude and believes it can
+    // hold the excursion. 0 = off.
+    let mpc_footstep_cross_floor = env_f64("MPC_FOOTSTEP_CROSS_FLOOR", 0.0).max(0.0);
+    // MPC_FOOTSTEP_CROSS_HOLD_Z [m]: while crossing, hold the swing foot at
+    // least this high above its landing until it is within
+    // MPC_FOOTSTEP_CROSS_HOLD_XY [m] of the landing horizontally. Measured
+    // 2026-10-20: with the crossing landing fixed the foot still came down on
+    // the nominal clock 5 cm short of it (the lateral travel lags), touched
+    // at y +0.01 and slid. The landing check then extends the single support
+    // (LandingTiming) instead of the foot landing short. 0 = off.
+    let mpc_footstep_cross_hold_z = env_f64("MPC_FOOTSTEP_CROSS_HOLD_Z", 0.0).max(0.0);
+    let mpc_footstep_cross_hold_xy = env_f64("MPC_FOOTSTEP_CROSS_HOLD_XY", 0.02).max(0.0);
+    let mpc_fs_cross_debug = std::env::var("MPC_FS_CROSS_DEBUG").is_ok();
+    // (slice, inward is +y) latched when the crossing gate opens: once the
+    // landing has crossed, `landing_inward` would read the sign the other way.
+    let mut mpc_fs_cross_latched: Option<(usize, bool)> = None;
+    let mut n_mpc_fs_cross = 0u32;
     let mpc_footstep_y_in_fwd_trig = env_f64("MPC_FOOTSTEP_Y_IN_FWD_TRIG", 0.005);
     // The same gate for a RISING swing (the landing more than 5 mm above the
     // lift-off, i.e. a stair step). Stairs want an early freeze (the hover
@@ -8208,6 +8251,35 @@ fn main() {
                 // sign of y is inward: MPC_FOOTSTEP_MAX_Y_IN, and with
                 // MPC_FOOTSTEP_MIN_WIDTH also whatever keeps the NOMINAL
                 // landing (this slice's applied shift removed) that wide.
+                // MPC_FOOTSTEP_CROSS_Y gate (see its declaration).
+                let cross_now: Option<(usize, bool)> = if mpc_footstep_cross_y > 0.0
+                    && let Support::Single { swing: sw_c, .. } = support
+                {
+                    let i = gait.index_at(t);
+                    if let Some((li, lp)) = mpc_fs_cross_latched
+                        && li == i
+                    {
+                        Some((li, lp))
+                    } else {
+                        let stance_c = 1 - sw_c;
+                        let f = footsteps.at_slice(i);
+                        // The stance foot lies at +y of the swing foot.
+                        let plus = f.sole[stance_c].y > f.sole[sw_c].y;
+                        let ex = (xi.y - f.sole[stance_c].y) * if plus { 1.0 } else { -1.0 };
+                        if ex > mpc_footstep_cross_ex {
+                            mpc_fs_cross_latched = Some((i, plus));
+                            n_mpc_fs_cross += 1;
+                            if mpc_fs_cross_debug {
+                                println!("  [fs-cross] t={t:.3} slice {i} swing {sw_c} DCM {ex:+.3} m past the stance sole");
+                            }
+                            Some((i, plus))
+                        } else {
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
                 let inward_bound = |i: usize| -> (f64, bool) {
                     let (gap, plus) = support
                         .swing()
@@ -8236,6 +8308,11 @@ fn main() {
                         && xi.x - dcm_plan.reference(t).xi.x >= mpc_footstep_y_in_fwd_trig
                     {
                         b = b.max(mpc_footstep_y_in_fwd);
+                    }
+                    if let Some((ci, cplus)) = cross_now
+                        && ci == i
+                    {
+                        return (b.max(mpc_footstep_cross_y), cplus);
                     }
                     (b, plus)
                 };
@@ -8333,7 +8410,7 @@ fn main() {
                                 let (inward, inward_is_plus) = inward_bound(i);
                                 let mut m = mpc_footstep_max;
                                 if inward_is_plus {
-                                    m[1] = m[1].min(inward);
+                                    m[1] = if cross_now.is_some_and(|(ci, _)| ci == i) { inward } else { m[1].min(inward) };
                                 }
                                 m
                             },
@@ -8356,12 +8433,54 @@ fn main() {
                                 }
                                 let (inward, inward_is_plus) = inward_bound(i);
                                 if !inward_is_plus {
-                                    m[1] = m[1].min(inward);
+                                    m[1] = if cross_now.is_some_and(|(ci, _)| ci == i) { inward } else { m[1].min(inward) };
                                 }
                                 m
                             },
                         })
                         .map(|mut land| {
+                            // Crossing: the LIPM capture floor on the inward shift.
+                            if mpc_footstep_cross_floor > 0.0
+                                && let Some((ci, cplus)) = cross_now
+                                && ci == gait.index_at(t)
+                            {
+                                let sl = &gait.slices[ci];
+                                let rem = (sl.t1 - t).max(0.0);
+                                let sgn = if cplus { 1.0 } else { -1.0 };
+                                let stance_y = footsteps.at_slice(ci).sole[1 - land.foot].y;
+                                let edge = stance_y + sgn * sole_half_w;
+                                let xi_td = edge + (xi.y - edge) * (omega * rem).exp();
+                                // The ORIGINAL landing: the contact position already
+                                // carries the shift applied so far this slice, and
+                                // the box acts on the total shift from the original.
+                                let applied_y = if mpc_fs_slice == Some(ci) { mpc_fs_applied.y } else { 0.0 };
+                                let base = land.position[1] - applied_y;
+                                // Inward shift needed for the landing to come within
+                                // floor * half width of xi_td.
+                                let need = (xi_td - sgn * mpc_footstep_cross_floor * sole_half_w - base) * sgn;
+                                if need > 0.0 {
+                                    if cplus {
+                                        land.min[1] = land.min[1].min(-need);
+                                        land.max[1] = land.max[1].max(need);
+                                    } else {
+                                        land.max[1] = land.max[1].min(-need);
+                                        land.min[1] = land.min[1].max(need);
+                                    }
+                                }
+                                if mpc_fs_cross_debug {
+                                    println!("  [fs-cross-floor] t={t:.3} rem={rem:.3} xi.y={:+.3} xi_td={xi_td:+.3} base={base:+.3} need={need:+.3} max={:?} min={:?}", xi.y, land.max, land.min);
+                                }
+                            }
+                            // Crossing: the landing stays ahead of the stance sole.
+                            if mpc_footstep_cross_ahead > 0.0 && cross_now.is_some_and(|(ci, _)| ci == gait.index_at(t)) {
+                                let stance_x = footsteps.at_slice(gait.index_at(t)).sole[1 - land.foot].x;
+                                let base = land.position[0] + land.prior[0];
+                                let need = stance_x + mpc_footstep_cross_ahead - base;
+                                if need > 0.0 {
+                                    land.min[0] = land.min[0].min(-need);
+                                    land.max[0] = land.max[0].max(need);
+                                }
+                            }
                             if mpc_footstep_capture_floor > 0.0 {
                                 let i = gait.index_at(t);
                                 let sl = &gait.slices[i];
@@ -9844,6 +9963,18 @@ fn main() {
                     };
                 if resume_ss_dcm_hold.is_some_and(|(_, receiver, _, _)| receiver == side) {
                     tgt.z -= stair_resume_ss_sink;
+                }
+                if mpc_footstep_cross_hold_z > 0.0
+                    && mpc_fs_cross_latched.is_some_and(|(ci, _)| ci == slice_idx)
+                {
+                    let foot = misarta::se3::translation(&data.oMi[rig.foot_mi[side]]);
+                    if (touch_down.xy() - foot.xy()).norm() > mpc_footstep_cross_hold_xy {
+                        let hold = touch_down.z + mpc_footstep_cross_hold_z;
+                        if tgt.z < hold {
+                            tgt.z = hold;
+                            tgt_v.z = tgt_v.z.max(0.0);
+                        }
+                    }
                 }
                 if let Some(mode) = ref_mode
                     && let Some(lib) = &ref_lib
@@ -12116,6 +12247,9 @@ fn main() {
     }
     if mpc_pcmd > 0.0 {
         println!("  mpc pcmd: {n_mpc_pcmd} ticks took the MPC pressure point (fraction {mpc_pcmd})");
+    }
+    if mpc_footstep_cross_y > 0.0 {
+        println!("  mpc crossing gate: {n_mpc_fs_cross} single supports opened");
     }
     println!("  verdict: {}", if fell { "FELL" } else { "SURVIVED" });
 }

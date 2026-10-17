@@ -814,8 +814,14 @@ fn landing_at(input: &Input, cfg: &Config, land: &Landing, k_td: usize) -> Optio
     let prior = na::Vector2::new(land.prior[0], land.prior[1]);
     h += na::Matrix2::identity() * rho;
     g += prior * rho;
-    let hi = [land.max[0].max(0.0) - land.prior[0], land.max[1].max(0.0) - land.prior[1]];
-    let lo = [-(land.min[0].max(0.0) + land.prior[0]), -(land.min[1].max(0.0) + land.prior[1])];
+    // `max`/`min` may be NEGATIVE: a negative `min` is a lower bound above
+    // zero (a shift the landing MUST take, e.g. a capture floor) and a
+    // negative `max` an upper bound below zero. Clamping them to zero, as
+    // this did until 2026-10-20, silently dropped every such floor; for the
+    // non-negative bounds every recipe uses the result is unchanged.
+    let hi = [land.max[0] - land.prior[0], land.max[1] - land.prior[1]];
+    let lo = [-(land.min[0] + land.prior[0]), -(land.min[1] + land.prior[1])];
+    let lo = [lo[0].min(hi[0]), lo[1].min(hi[1])];
     let dp = match land.terrain_x {
         Some((wlo, whi, w)) if w > 0.0 && wlo <= whi => {
             // Convex piecewise quadratic in x: zero inside the window, a
@@ -1493,9 +1499,14 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         for j in 0..2 {
             // |prior + dp| <= max, written on dp.
             d[(24 * n + 2 * j, 12 * n + j)] = 1.0;
-            rhs[24 * n + 2 * j] = land.max[j].max(0.0) - land.prior[j];
+            // Signed bounds (see the lexicographic stage): a negative `min`
+            // is a floor above zero. Kept feasible: the floor never passes
+            // the ceiling.
+            let ub = land.max[j] - land.prior[j];
+            let lb = (-(land.min[j] + land.prior[j])).min(ub);
+            rhs[24 * n + 2 * j] = ub;
             d[(24 * n + 2 * j + 1, 12 * n + j)] = -1.0;
-            rhs[24 * n + 2 * j + 1] = land.min[j].max(0.0) + land.prior[j];
+            rhs[24 * n + 2 * j + 1] = -lb;
 
         }
     }
