@@ -708,6 +708,29 @@ impl FootstepPlan {
         }
     }
 
+    /// [`Self::shift_next`] plus everything the plan does AFTER that landing:
+    /// the landing foot's later positions and the other foot's positions once
+    /// it has left where it stands now. The walk then continues from the
+    /// moved landing instead of returning to the pre-shift ladder. The foot
+    /// standing at `from` is not moved.
+    pub fn shift_rest(&mut self, from: usize, side: Side, d: na::Vector2<f64>) {
+        let Some(first) = self.at.get(from).cloned() else { return };
+        let other = 1 - side;
+        let other_anchor = first.sole[other];
+        let mut other_left = false;
+        for f in self.at.iter_mut().skip(from) {
+            f.sole[side].x += d.x;
+            f.sole[side].y += d.y;
+            if !other_left && (f.sole[other] - other_anchor).norm() > 1e-9 {
+                other_left = true;
+            }
+            if other_left {
+                f.sole[other].x += d.x;
+                f.sole[other].y += d.y;
+            }
+        }
+    }
+
     pub fn at_slice(&self, i: usize) -> &Footsteps {
         &self.at[i.min(self.at.len() - 1)]
     }

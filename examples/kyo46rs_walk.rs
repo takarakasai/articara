@@ -1541,6 +1541,18 @@ fn main() {
     let mut ds_ffdc_window: Option<(usize, f64, f64)> = None;
     let ds_ffdc_clamp = env_f64("DS_FFDC_CLAMP", 0.02).max(0.0);
     let plan_reanchor_max = env_f64("PLAN_REANCHOR_MAX", 0.05).max(0.0);
+    // PLAN_REANCHOR_TD=max [m]: at TOUCHDOWN (single -> double support),
+    // move the plan so the landed foot's planned position is where it
+    // actually landed (`FootstepPlan::shift_rest`: the landed foot from now
+    // on, the other foot once it leaves), when the gap is below `max`, and
+    // rebuild the DCM reference. Measured 2026-10-20 (v6.12, 14 N.s
+    // backward): the swing landed 8 cm behind where the plan then put it
+    // (the MPC's last shift is not where the foot came down), the double
+    // support's ZMP and DCM references sat 8-12 cm ahead of the real feet,
+    // and the next step went forward. PLAN_REANCHOR does this only at the
+    // NEXT single support and below 5 cm. 0 = off = bit-identical.
+    let plan_reanchor_td = env_f64("PLAN_REANCHOR_TD", 0.0).max(0.0);
+    let mut n_reanchor_td = 0u32;
     // LAND_BIAS_ADAPT=k: pre-compensate the swing's landing error with the
     // error MEASURED on the previous landings (EMA, LAND_BIAS_ADAPT_TAU
     // landings), applied inside known stair zones. Measured 2026-10-19 on the
@@ -3503,6 +3515,14 @@ fn main() {
     // sole +0.05) -- the SRBD model has no attitude and believes it can
     // hold the excursion. 0 = off.
     let mpc_footstep_cross_floor = env_f64("MPC_FOOTSTEP_CROSS_FLOOR", 0.0).max(0.0);
+    // MPC_FOOTSTEP_SHIFT_REST=1: when the MPC moves a landing, move the rest
+    // of the footstep plan with it (`FootstepPlan::shift_rest`), so the walk
+    // continues from the moved landing. Measured 2026-10-20 (v6.12, 14 N.s
+    // backward): with the landing moved back far enough to hold the DCM over
+    // the rear foot, the NEXT step still went to the pre-push ladder (0.12 m
+    // ahead), the DCM reference stayed 0.17 m ahead of the measured DCM and
+    // the robot fell backward onto that step. 0 = off = `shift_next` only.
+    let mpc_footstep_shift_rest = flag("MPC_FOOTSTEP_SHIFT_REST", false);
     // MPC_FOOTSTEP_CROSS_HOLD_Z [m]: while crossing, hold the swing foot at
     // least this high above its landing until it is within
     // MPC_FOOTSTEP_CROSS_HOLD_XY [m] of the landing horizontally. Measured
@@ -4425,6 +4445,19 @@ fn main() {
         // the whole single support (flat: at the centre), and on +6 deg the
         // lateral pressure saturates and the foot slides. VX2_REANCHOR is the
         // same move gated to a speed command. Unset = off (bit-identical).
+        if plan_reanchor_td > 0.0
+            && ref_mode.is_none()
+            && let (Some(Support::Single { swing: landed, .. }), Support::Double) = (support_prev, gait.support_at(t))
+        {
+            let actual = Footsteps::from_fk(data, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
+            let i = gait.index_at(t);
+            let d = actual.sole[landed].xy() - footsteps.at_slice(i).sole[landed].xy();
+            if d.norm() > 0.002 && d.norm() < plan_reanchor_td {
+                footsteps.shift_rest(i, landed, d);
+                dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
+                n_reanchor_td += 1;
+            }
+        }
         if plan_reanchor
             && ref_mode.is_none()
             && let (Some(Support::Double), Support::Single { stance, swing }) = (support_prev, gait.support_at(t))
@@ -9045,7 +9078,11 @@ fn main() {
                                 );
                             }
                             if d.norm() > 1e-6 {
-                                footsteps.shift_next(i, land.foot, d);
+                                if mpc_footstep_shift_rest {
+                                    footsteps.shift_rest(i, land.foot, d);
+                                } else {
+                                    footsteps.shift_next(i, land.foot, d);
+                                }
                                 mpc_fs_applied = total;
                                 dcm_plan = DcmPlan::from_footsteps_rolled(
                                     &gait,
@@ -12250,6 +12287,9 @@ fn main() {
     }
     if mpc_footstep_cross_y > 0.0 {
         println!("  mpc crossing gate: {n_mpc_fs_cross} single supports opened");
+    }
+    if plan_reanchor_td > 0.0 {
+        println!("  plan re-anchored at touchdown: {n_reanchor_td}");
     }
     println!("  verdict: {}", if fell { "FELL" } else { "SURVIVED" });
 }
