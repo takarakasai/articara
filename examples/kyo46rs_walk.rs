@@ -3532,6 +3532,18 @@ fn main() {
     // (LandingTiming) instead of the foot landing short. 0 = off.
     let mpc_footstep_cross_hold_z = env_f64("MPC_FOOTSTEP_CROSS_HOLD_Z", 0.0).max(0.0);
     let mpc_footstep_cross_hold_xy = env_f64("MPC_FOOTSTEP_CROSS_HOLD_XY", 0.02).max(0.0);
+    // MPC_FOOTSTEP_HOLD_SHIFT [m]: the same height hold (CROSS_HOLD_Z, from
+    // CROSS_HOLD_XY) for ANY landing the MPC has moved by more than this
+    // this slice, not only a crossing one. Measured 2026-10-20 (14 N.s
+    // backward): the landing moved 15-25 cm back but the swing came down on
+    // its clock 7 cm short of it. 0 = off.
+    let mpc_footstep_hold_shift = env_f64("MPC_FOOTSTEP_HOLD_SHIFT", 0.0).max(0.0);
+    // MPC_FOOTSTEP_BACK_ONLY=1: the HOLD_SHIFT hold and the x capture
+    // floor (MPC_FOOTSTEP_CAPTURE_FLOOR) act on BACKWARD landings only (a
+    // shift with x below -HOLD_SHIFT; the floor's backward bound). Measured
+    // 2026-10-20: both were added for the 14 N.s backward push and, applied
+    // in every direction, cost the lateral 7 N.s 2-3 members. 0 = both ways.
+    let mpc_footstep_back_only = flag("MPC_FOOTSTEP_BACK_ONLY", false);
     let mpc_fs_cross_debug = std::env::var("MPC_FS_CROSS_DEBUG").is_ok();
     // (slice, inward is +y) latched when the crossing gate opens: once the
     // landing has crossed, `landing_inward` would read the sign the other way.
@@ -8535,7 +8547,7 @@ fn main() {
                                 }
                                 // Forward: the sole's rear edge must reach xi2.
                                 let need_fwd = (xi2.x - reach) - base;
-                                if need_fwd > 0.0 {
+                                if need_fwd > 0.0 && !mpc_footstep_back_only {
                                     land.min[0] = land.min[0].min(-need_fwd);
                                 }
                                 if std::env::var("MPC_FS_DEBUG_LANDING").is_ok() {
@@ -8768,7 +8780,14 @@ fn main() {
                                 let mut probe = footsteps.clone();
                                 let mut d = na::Vector2::zeros();
                                 d[axis] = du;
-                                probe.shift_next(i, land.foot, d);
+                                // The sensitivity must describe the plan the shift
+                                // is actually applied to (MPC_FOOTSTEP_SHIFT_REST
+                                // moves the rest of the plan with the landing).
+                                if mpc_footstep_shift_rest {
+                                    probe.shift_rest(i, land.foot, d);
+                                } else {
+                                    probe.shift_next(i, land.foot, d);
+                                }
                                 let moved = DcmPlan::from_footsteps_rolled(
                                     &gait,
                                     &probe,
@@ -10002,7 +10021,14 @@ fn main() {
                     tgt.z -= stair_resume_ss_sink;
                 }
                 if mpc_footstep_cross_hold_z > 0.0
-                    && mpc_fs_cross_latched.is_some_and(|(ci, _)| ci == slice_idx)
+                    && (mpc_fs_cross_latched.is_some_and(|(ci, _)| ci == slice_idx)
+                        || (mpc_footstep_hold_shift > 0.0
+                            && mpc_fs_slice == Some(slice_idx)
+                            && if mpc_footstep_back_only {
+                                mpc_fs_applied.x < -mpc_footstep_hold_shift
+                            } else {
+                                mpc_fs_applied.norm() > mpc_footstep_hold_shift
+                            }))
                 {
                     let foot = misarta::se3::translation(&data.oMi[rig.foot_mi[side]]);
                     if (touch_down.xy() - foot.xy()).norm() > mpc_footstep_cross_hold_xy {
