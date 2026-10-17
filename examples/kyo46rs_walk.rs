@@ -3587,6 +3587,14 @@ fn main() {
     let push_replan_cross = env_f64("PUSH_REPLAN_CROSS", 0.0).max(0.0);
     let push_replan_ahead = env_f64("PUSH_REPLAN_AHEAD", 0.10).max(0.0);
     let push_replan_hold = env_f64("PUSH_REPLAN_HOLD", 0.06).max(0.0);
+    // PUSH_REPLAN_BACK_ONLY=1: engage only on a backward-dominant error
+    // (behind, and more than sideways). PUSH_REPLAN_VMAX [m/s]: never while a
+    // VX2 speed command above this is in force (the speed yield re-plans
+    // there). Measured 2026-10-21 (tu42, all directions): backward 14 N.s
+    // 9 -> 42, but forward / lateral 3-5 members lost each and 0.50 m/s
+    // backward 44 -> 21.
+    let push_replan_back_only = flag("PUSH_REPLAN_BACK_ONLY", false);
+    let push_replan_vmax = env_f64("PUSH_REPLAN_VMAX", f64::INFINITY).max(0.0);
     // The current DCM error must also exceed this [m] (a 2 mm error at the
     // start of a long first support carried 0.8 s forward read as 4 cm).
     let push_replan_emin = env_f64("PUSH_REPLAN_EMIN", 0.015).max(0.0);
@@ -6788,26 +6796,37 @@ fn main() {
                                 dp + (e.y - dp) * grow
                             },
                         );
-                        if push_replan_slice == Some(i) || (d.norm() > push_replan_trig && e.norm() > push_replan_emin) {
+                        let dir_ok = !push_replan_back_only || (e.x < 0.0 && e.y.abs() < -e.x);
+                        let speed_ok = !(vx2_sched
+                            && vx2_z_from.is_some_and(|t0| t >= t0)
+                            && vx2_cmd_speed.is_some_and(|v| v > push_replan_vmax));
+                        if push_replan_slice == Some(i)
+                            || (dir_ok && speed_ok && d.norm() > push_replan_trig && e.norm() > push_replan_emin)
+                        {
                             let st = orig_fs.at_slice(i).xy(stance);
                             let mut l = *base + d;
                             l.x = l.x.clamp(st.x - push_replan_max_back, st.x + push_replan_max_fwd);
                             // Lateral: +1 when the swing foot normally lands at +y of the stance foot.
                             let side = if base.y > st.y { 1.0 } else { -1.0 };
                             let w = (l.y - st.y) * side;
+                            // Never widen beyond what the plan already had: the
+                            // floor is the smaller of MIN_W and the planned gap
+                            // (G1 walks at ~0.104 m; a 0.12 floor widened every
+                            // backward re-plan by 2 cm, measured 2026-10-21).
+                            let min_w = push_replan_min_w.min(((base.y - st.y) * side).max(0.0));
                             // Inward of the minimum gap with no crossing of our
                             // own: leave this landing to the MPC (its crossing
                             // gate, MPC_FOOTSTEP_CROSS_*) -- do not engage, and
                             // once engaged keep the last landing.
-                            let inward_skip = w < push_replan_min_w && push_replan_cross == 0.0;
-                            let w = if w >= push_replan_min_w {
+                            let inward_skip = w < 0.0 && push_replan_cross == 0.0;
+                            let w = if w >= min_w {
                                 w.min(push_replan_max_w)
                             } else if push_replan_cross > 0.0 && w < 0.0 {
                                 // Crossing: in front of the stance foot.
                                 l.x = l.x.max(st.x + push_replan_ahead);
                                 w.max(-push_replan_cross)
                             } else {
-                                push_replan_min_w
+                                min_w
                             };
                             l.y = st.y + side * w;
                             if !inward_skip && last.is_none_or(|p| (p - l).norm() > 0.005) {
