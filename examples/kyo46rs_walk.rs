@@ -2897,6 +2897,16 @@ fn main() {
     // sooner backward does not help a leg that has no authority (the
     // backward failure, design note 10-10). Default on.
     let ds_capture_fwd_only = flag("DS_CAPTURE_FWD_ONLY", true);
+    // DS_CAPTURE_LAT: the same test along y. Measured 2026-10-20 on G1 v6.11
+    // (lateral pushes toward the stance foot, 24 falls / 36 survivors
+    // re-run with traces): 21 of the 24 falls are late-phase pushes (swing
+    // 0.58-0.75) that the recovery library does not take; the swing lands
+    // where it was planned with the DCM 9-11 cm past the new stance sole,
+    // then the nominal 0.45 s double support runs and the stepping-out foot
+    // lands 1.1-1.2 s after the push with the DCM 30-45 cm out. Survivors
+    // (earlier phase, library engaged) spend 0.07 s in that double support.
+    // The x-only test above never fires for them. 0 = off = bit-identical.
+    let ds_capture_lat = flag("DS_CAPTURE_LAT", false);
     // The forward excursion must exceed this [m] (noise floor).
     let ds_capture_margin = env_f64("DS_CAPTURE_MARGIN", 0.01);
     let ds_capture_t_min = env_f64("DS_CAPTURE_T_MIN", 0.15).max(0.02);
@@ -4770,9 +4780,18 @@ fn main() {
                         StepTiming::Degenerate => 0.0,
                         StepTiming::Unreachable => f64::INFINITY,
                     };
-                    let hopeless = remaining > 1e-3
+                    let hopeless_x = remaining > 1e-3
                         && need > remaining * ds_capture_hopeless
                         && (!ds_capture_fwd_only || xi_meas.x > target.x + ds_capture_margin);
+                    let hopeless_y = ds_capture_lat
+                        && remaining > 1e-3
+                        && (xi_meas.y - target.y).abs() > ds_capture_margin
+                        && match step_timing(&xi_meas, &target, &p, omega, 1) {
+                            StepTiming::Time(tt) => tt > remaining * ds_capture_hopeless,
+                            StepTiming::Degenerate => false,
+                            StepTiming::Unreachable => true,
+                        };
+                    let hopeless = hopeless_x || hopeless_y;
                     let prev_sw = first.checked_sub(1).and_then(|j| gait.slices[j].support.swing());
                     let landed_load = prev_sw.map_or(0.0, |sw| fz_prev[sw]);
                     let earliest = (t0_run + ds_capture_t_min).max(t + 2.0 * dt);
