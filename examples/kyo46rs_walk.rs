@@ -3544,6 +3544,16 @@ fn main() {
     // 2026-10-20: both were added for the 14 N.s backward push and, applied
     // in every direction, cost the lateral 7 N.s 2-3 members. 0 = both ways.
     let mpc_footstep_back_only = flag("MPC_FOOTSTEP_BACK_ONLY", false);
+    // Under BACK_ONLY: the backward-dominant error must last this long [s]
+    // before the parts engage, and once SHIFT_REST has moved the plan in a
+    // single support it keeps moving it for the rest of that support.
+    // Measured 2026-10-21 (5 N.s support side, m06): one 20 ms tick read
+    // backward-dominant, the floor threw the landing 22 cm back and the plan
+    // with it, the next tick fell back to `shift_next` and pulled only the
+    // landing forward again -- the rest of the plan stayed 22 cm behind.
+    let mpc_footstep_back_persist = env_f64("MPC_FOOTSTEP_BACK_PERSIST", 0.04).max(0.0);
+    let mut back_dom_since: Option<f64> = None;
+    let mut shift_rest_latched: Option<usize> = None;
     let mpc_fs_cross_debug = std::env::var("MPC_FS_CROSS_DEBUG").is_ok();
     // (slice, inward is +y) latched when the crossing gate opens: once the
     // landing has crossed, `landing_inward` would read the sign the other way.
@@ -8306,9 +8316,21 @@ fn main() {
                 // members lost to the x floor and the plan shift).
                 let back_dominant = {
                     let e = xi - dcm_plan.reference(t).xi;
-                    e.x < -0.02 && e.y.abs() < -e.x
+                    let now = e.x < -0.02 && e.y.abs() < -e.x;
+                    if now {
+                        back_dom_since.get_or_insert(t);
+                    } else {
+                        back_dom_since = None;
+                    }
+                    now && back_dom_since.is_some_and(|t0| t - t0 >= mpc_footstep_back_persist - 1e-9)
                 };
-                let shift_rest_now = mpc_footstep_shift_rest && (!mpc_footstep_back_only || back_dominant);
+                let shift_rest_now = mpc_footstep_shift_rest
+                    && (!mpc_footstep_back_only
+                        || back_dominant
+                        || shift_rest_latched == Some(gait.index_at(t)));
+                if shift_rest_now && mpc_footstep_back_only {
+                    shift_rest_latched = Some(gait.index_at(t));
+                }
                 // MPC_FOOTSTEP_CROSS_Y gate (see its declaration).
                 let cross_now: Option<(usize, bool)> = if mpc_footstep_cross_y > 0.0
                     && let Support::Single { swing: sw_c, .. } = support
