@@ -3552,6 +3552,12 @@ fn main() {
     // with it, the next tick fell back to `shift_next` and pulled only the
     // landing forward again -- the rest of the plan stayed 22 cm behind.
     let mpc_footstep_back_persist = env_f64("MPC_FOOTSTEP_BACK_PERSIST", 0.04).max(0.0);
+    // The x capture floor under BACK_ONLY needs the backward error to exceed
+    // this [m] (the plan shift and the hold use 0.02). Measured 2026-10-21
+    // (wide 7 N.s lateral, m42): a 2 cm backward excursion during a lateral
+    // recovery let the floor pull a landing 8 cm back. Default 0.02 = the
+    // same gate as the other parts.
+    let mpc_footstep_floor_back_err = env_f64("MPC_FOOTSTEP_FLOOR_BACK_ERR", 0.02).max(0.0);
     let mut back_dom_since: Option<f64> = None;
     let mut shift_rest_latched: Option<usize> = None;
     let mpc_fs_cross_debug = std::env::var("MPC_FS_CROSS_DEBUG").is_ok();
@@ -8324,6 +8330,10 @@ fn main() {
                     }
                     now && back_dom_since.is_some_and(|t0| t - t0 >= mpc_footstep_back_persist - 1e-9)
                 };
+                let floor_back_ok = {
+                    let e = xi - dcm_plan.reference(t).xi;
+                    back_dominant && e.x < -mpc_footstep_floor_back_err
+                };
                 let shift_rest_now = mpc_footstep_shift_rest
                     && (!mpc_footstep_back_only
                         || back_dominant
@@ -8561,7 +8571,7 @@ fn main() {
                                     land.max[0] = land.max[0].max(need);
                                 }
                             }
-                            if mpc_footstep_capture_floor > 0.0 && (!mpc_footstep_back_only || back_dominant) {
+                            if mpc_footstep_capture_floor > 0.0 && (!mpc_footstep_back_only || floor_back_ok) {
                                 let i = gait.index_at(t);
                                 let sl = &gait.slices[i];
                                 let seg = &dcm_plan.segs[dcm_plan.index_at(t)];
