@@ -61,6 +61,7 @@ impl ZmpSeg {
 }
 
 /// A planned ZMP trajectory and the DCM trajectory that lands on it.
+#[derive(Clone)]
 pub struct DcmPlan {
     pub omega: f64,
     pub segs: Vec<ZmpSeg>,
@@ -115,15 +116,37 @@ impl DcmPlan {
         z_com: f64,
         lateral_scale: f64,
     ) -> Self {
+        Self::from_footsteps_rolled(plan, fp, z_com, lateral_scale, 0.0)
+    }
+
+    /// [`Self::from_footsteps`], with the single-support pressure ROLLING
+    /// heel-to-toe: it enters each stance `roll` metres behind the sole
+    /// centre (along the stance yaw) and leaves `roll` ahead, instead of
+    /// dwelling at the centre. A dwell plan advances the reference in jumps
+    /// of one footstep pitch; when the pitch is set by terrain (a staircase
+    /// tread) rather than by the commanded speed, those jumps outrun what
+    /// the sole can drive. Rolling spends the sole's own length on forward
+    /// travel -- 2*roll of every pitch happens inside the stance -- which is
+    /// what a human foot does. `roll` must stay inside the CoP box or the
+    /// reference asks for pressure off the sole.
+    pub fn from_footsteps_rolled(
+        plan: &GaitPlan,
+        fp: &FootstepPlan,
+        z_com: f64,
+        lateral_scale: f64,
+        roll: f64,
+    ) -> Self {
         let omega = (G / z_com).sqrt();
         // Pass 1: where the pressure sits during each SINGLE support phase,
         // and the resting point (mid-stance) for double support at the ends.
-        let target = |i: usize| -> Option<na::Vector2<f64>> {
+        let target = |i: usize| -> Option<(na::Vector2<f64>, na::Vector2<f64>)> {
             let st = fp.at_slice(i);
             match plan.slices[i].support {
                 Support::Single { stance, .. } => {
                     let mid = st.mid_xy();
-                    Some(mid + (st.xy(stance) - mid) * lateral_scale)
+                    let p = mid + (st.xy(stance) - mid) * lateral_scale;
+                    let u = na::Vector2::new(st.yaw[stance].cos(), st.yaw[stance].sin());
+                    Some((p - u * roll, p + u * roll))
                 }
                 Support::Double => None,
             }
@@ -132,7 +155,7 @@ impl DcmPlan {
         let mut segs: Vec<ZmpSeg> = Vec::with_capacity(n);
         for (i, s) in plan.slices.iter().enumerate() {
             let (p0, p1) = match target(i) {
-                Some(p) => (p, p),
+                Some(p) => p,
                 None => {
                     // Start where the previous segment ENDED, not at the last
                     // single-support point. Between two steps the two are the
@@ -148,12 +171,38 @@ impl DcmPlan {
                         .last()
                         .map(|s: &ZmpSeg| s.p1)
                         .unwrap_or_else(|| fp.at_slice(i).mid_xy());
-                    let next = (i + 1..n).find_map(target)
-                        .unwrap_or_else(|| fp.at_slice(i).mid_xy());
+                    let next_single = || {
+                        (i + 1..n)
+                            .find_map(target)
+                            .map(|(entry, _)| entry)
+                            .unwrap_or_else(|| fp.at_slice(i).mid_xy())
+                    };
+                    // `GaitPlan::insert_ds_settles` replaces an inter-step
+                    // DS with three consecutive DS slices. Route pressure to
+                    // mid-feet on the first, keep it there on the middle, and
+                    // route it to the new stance on the last. Other DS runs
+                    // retain the original direct-to-next-stance behaviour.
+                    let run_start = (0..i)
+                        .rev()
+                        .find(|&k| !matches!(plan.slices[k].support, Support::Double))
+                        .map_or(0, |k| k + 1);
+                    let run_end = (i + 1..n)
+                        .find(|&k| !matches!(plan.slices[k].support, Support::Double))
+                        .map_or(n - 1, |k| k - 1);
+                    let next = if run_end + 1 - run_start >= 3 && i < run_end {
+                        fp.at_slice(i).mid_xy()
+                    } else {
+                        next_single()
+                    };
                     (prev, next)
                 }
             };
-            segs.push(ZmpSeg { p0, p1, t0: s.t0, duration: s.duration() });
+            segs.push(ZmpSeg {
+                p0,
+                p1,
+                t0: s.t0,
+                duration: s.duration(),
+            });
         }
 
         // Pass 2: backward recursion for the DCM.
@@ -168,6 +217,20 @@ impl DcmPlan {
         // Anything else asks the robot to still be moving when the plan runs
         // out, and the exponential means that error is the LARGEST one at the
         // start of the plan, not the smallest.
+        let mut plan = DcmPlan {
+            omega,
+            segs,
+            xi_eos: Vec::new(),
+        };
+        plan.recompute_eos();
+        plan
+    }
+
+    /// Pass 2 as a method, so a plan whose segments were edited after
+    /// construction can be made consistent again.
+    pub fn recompute_eos(&mut self) {
+        let omega = self.omega;
+        let segs = &self.segs;
         let mut xi_eos = vec![na::Vector2::zeros(); segs.len()];
         let mut xi_end = segs.last().map(|s| s.p1).unwrap_or_else(na::Vector2::zeros);
         for i in (0..segs.len()).rev() {
@@ -176,8 +239,35 @@ impl DcmPlan {
             xi_eos[i] = xi_end;
             xi_end = s.p0 + v_over_w + (xi_end - s.p1 - v_over_w) * (-omega * s.duration).exp();
         }
+        self.xi_eos = xi_eos;
+    }
 
-        DcmPlan { omega, segs, xi_eos }
+    /// Replace segment `i`'s ZMP with the constant point `p` and make the plan
+    /// consistent again. Used after a landing cut: the double support that
+    /// follows is re-sized from the measured DCM (`step_timing` with a chosen
+    /// pivot), and the plan must then actually PLACE its ZMP at that pivot
+    /// for that long, or the reference it produces still starts at the rest
+    /// point and the controller is asked for the same infeasible jump.
+    /// Measured 2026-09-24 on G1: sizing the DS alone rescued 4 of 59
+    /// fallers; the reference stayed discontinuous because the plan did not
+    /// know about the pivot.
+    pub fn set_segment_zmp(&mut self, i: usize, p: na::Vector2<f64>) {
+        if let Some(s) = self.segs.get_mut(i) {
+            s.p0 = p;
+            s.p1 = p;
+            self.recompute_eos();
+        }
+    }
+
+    /// Like [`set_segment_zmp`] but the ZMP moves linearly from `p0` to `p1`
+    /// over the segment -- the pressure can only be where the LOAD is, and at
+    /// a landing cut the load is still on the old stance foot.
+    pub fn set_segment_zmp_ramp(&mut self, i: usize, p0: na::Vector2<f64>, p1: na::Vector2<f64>) {
+        if let Some(s) = self.segs.get_mut(i) {
+            s.p0 = p0;
+            s.p1 = p1;
+            self.recompute_eos();
+        }
     }
 
     pub fn index_at(&self, t: f64) -> usize {
@@ -215,7 +305,56 @@ impl DcmPlan {
         let p = s.at(t);
         let decay = (-self.omega * (s.duration - dt)).exp();
         let xi = p + v_over_w + (self.xi_eos[i] - s.p1 - v_over_w) * decay;
-        DcmRef { xi, xi_dot: (xi - p) * self.omega, p }
+        DcmRef {
+            xi,
+            xi_dot: (xi - p) * self.omega,
+            p,
+        }
+    }
+    /// A receding, finite-horizon DCM reference. The terminal DCM is set to
+    /// the planned ZMP at `t + horizon_s`; future footsteps beyond that point
+    /// cannot change the current reference. Evaluating backward over partial
+    /// segments keeps the reference continuous as the horizon slides.
+    /// A nonpositive horizon reproduces the full-plan reference exactly.
+    pub fn reference_preview(&self, t: f64, horizon_s: f64) -> DcmRef {
+        if !horizon_s.is_finite() || horizon_s <= 0.0 {
+            return self.reference(t);
+        }
+        let last = self.segs.last().expect("DCM plan has segments");
+        let plan_end = last.t0 + last.duration;
+        let start = t.clamp(self.segs[0].t0, plan_end);
+        let end = (start + horizon_s).min(plan_end);
+        let first_i = self.index_at(start);
+        let last_i = self.index_at(end);
+        let mut xi = self.segs[last_i].at(end);
+        for i in (first_i..=last_i).rev() {
+            let seg = &self.segs[i];
+            let a = if i == first_i { start } else { seg.t0 };
+            let b = if i == last_i {
+                end
+            } else {
+                seg.t0 + seg.duration
+            };
+            if b <= a {
+                continue;
+            }
+            let v_over_w = seg.slope() / self.omega;
+            xi = seg.at(a) + v_over_w + (xi - seg.at(b) - v_over_w) * (-self.omega * (b - a)).exp();
+        }
+        let p = self.segs[first_i].at(start);
+        // A moving terminal contributes to the derivative of the receding
+        // reference. Without this term xi_dot would describe the frozen
+        // terminal LIPM flow, not d(reference_preview)/dt.
+        let terminal_motion = if end < plan_end - 1e-12 {
+            self.segs[last_i].slope() * (-self.omega * (end - start)).exp()
+        } else {
+            na::Vector2::zeros()
+        };
+        DcmRef {
+            xi,
+            xi_dot: (xi - p) * self.omega + terminal_motion,
+            p,
+        }
     }
 }
 
@@ -244,8 +383,7 @@ impl DcmPlan {
         let t_end = s.t0 + s.duration;
         let dt_left = (t_end - t).max(0.0);
         let v_over_w = s.slope() / self.omega;
-        s.at(t_end) + v_over_w
-            + (xi - s.at(t) - v_over_w) * (self.omega * dt_left).exp()
+        s.at(t_end) + v_over_w + (xi - s.at(t) - v_over_w) * (self.omega * dt_left).exp()
     }
 }
 
@@ -281,6 +419,39 @@ pub fn com_accel_xy(
     omega: f64,
 ) -> na::Vector2<f64> {
     na::Vector2::new(com.x - p_cmd.x, com.y - p_cmd.y) * (omega * omega)
+}
+
+/// [`com_accel_xy`] without the constant-height assumption.
+///
+/// The exact centroidal relation for a single contact is
+/// `(c_xy - p) * (g + c_z_ddot) / (c_z - p_z)`; the LIPM drops `c_z_ddot`
+/// and fixes the height, which is right for level walking and wrong exactly
+/// when the CoM is being driven up or down a stair. Descending, `c_z_ddot`
+/// is NEGATIVE -- a 52 mm drop inside one step peaks near -2 m/s^2, so the
+/// true horizontal stiffness is ~20% BELOW what `omega^2` claims and every
+/// commanded ZMP overshoots. Ascending the sign flips and the error is
+/// conservative, which is why level and upward gaits survived it.
+///
+/// `zdd_ref` is the planned vertical CoM acceleration and `surface_z` the
+/// height of the contact the pressure acts on; passing zeros reproduces the
+/// classic form.
+pub fn com_accel_xy_vh(
+    com: &na::Vector3<f64>,
+    p_cmd: &na::Vector2<f64>,
+    omega: f64,
+    zdd_ref: f64,
+    surface_z: f64,
+) -> na::Vector2<f64> {
+    let dxy = na::Vector2::new(com.x - p_cmd.x, com.y - p_cmd.y);
+    let h = com.z - surface_z;
+    if h <= 0.05 || !h.is_finite() || !zdd_ref.is_finite() {
+        return dxy * (omega * omega);
+    }
+    // Keep the effective stiffness positive and bounded: a free-fall
+    // (zdd = -g) leaves the contact unable to steer at all, and anything
+    // past that is not a contact any more.
+    let k = ((G + zdd_ref) / h).clamp(0.1 * omega * omega, 4.0 * omega * omega);
+    dxy * k
 }
 
 /// Clamp the commanded ZMP into the current support polygon.
@@ -356,7 +527,10 @@ impl SupportBox {
 
     /// Returns the clamped point and how far it had to move (0 = inside).
     pub fn clamp(&self, p: &na::Vector2<f64>) -> (na::Vector2<f64>, f64) {
-        let c = na::Vector2::new(p.x.clamp(self.lo.x, self.hi.x), p.y.clamp(self.lo.y, self.hi.y));
+        let c = na::Vector2::new(
+            p.x.clamp(self.lo.x, self.hi.x),
+            p.y.clamp(self.lo.y, self.hi.y),
+        );
         (c, (c - p).norm())
     }
 }
@@ -378,12 +552,62 @@ mod tests {
 
     #[test]
     fn dcm_reference_is_continuous_across_segment_boundaries() {
-        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.4, n_steps: 4, first_swing: RIGHT, t_end: 6.0 };
+        let p = GaitParams {
+            t_start: 1.0,
+            t_ds: 0.2,
+            t_ss: 0.4,
+            n_steps: 4,
+            first_swing: RIGHT,
+            t_end: 6.0,
+        };
         let plan = DcmPlan::from_schedule(&GaitPlan::new(&p), &steps(), 0.315, 1.0);
         for s in plan.segs.iter().skip(1) {
             let before = plan.reference(s.t0 - 1e-7).xi;
             let after = plan.reference(s.t0 + 1e-7).xi;
-            assert!((before - after).norm() < 1e-5, "jump at t={}: {before:?} vs {after:?}", s.t0);
+            assert!(
+                (before - after).norm() < 1e-5,
+                "jump at t={}: {before:?} vs {after:?}",
+                s.t0
+            );
+        }
+    }
+
+    #[test]
+    fn finite_preview_ignores_distant_terminal_steps_and_stays_continuous() {
+        let make = |n_steps| {
+            let p = GaitParams {
+                t_start: 1.0,
+                t_ds: 0.2,
+                t_ss: 0.4,
+                n_steps,
+                first_swing: RIGHT,
+                t_end: 30.0,
+            };
+            let gait = GaitPlan::new(&p);
+            let fp = FootstepPlan::alternating(&gait, &steps(), 0.03, 0);
+            DcmPlan::from_footsteps(&gait, &fp, 0.315, 1.0)
+        };
+        let short = make(12);
+        let long = make(20);
+        for t in [1.5, 2.0, 3.0, 5.0] {
+            let a = short.reference_preview(t, 1.5);
+            let b = long.reference_preview(t, 1.5);
+            assert!((a.xi - b.xi).norm() < 1e-12, "preview differs at {t}");
+            assert!((a.p - b.p).norm() < 1e-12);
+            assert!((short.reference_preview(t, 0.0).xi - short.reference(t).xi).norm() < 1e-15);
+        }
+        let h = 1e-6;
+        for t in [1.25, 2.15, 3.05, 4.35] {
+            let rate = (short.reference_preview(t + h, 1.5).xi
+                - short.reference_preview(t - h, 1.5).xi)
+                / (2.0 * h);
+            let reported = short.reference_preview(t, 1.5).xi_dot;
+            assert!((rate - reported).norm() < 1e-5, "rate mismatch at {t}");
+        }
+        for seg in short.segs.iter().skip(1).take(15) {
+            let before = short.reference_preview(seg.t0 - 1e-7, 1.5).xi;
+            let after = short.reference_preview(seg.t0 + 1e-7, 1.5).xi;
+            assert!((before - after).norm() < 1e-5, "jump at {}", seg.t0);
         }
     }
 
@@ -397,7 +621,14 @@ mod tests {
         // multiplies any truncation error by e^16.7 ~ 2e7. An integration
         // test here fails on a correct plan, which is exactly what the first
         // version of this test did.
-        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.4, n_steps: 3, first_swing: RIGHT, t_end: 4.0 };
+        let p = GaitParams {
+            t_start: 1.0,
+            t_ds: 0.2,
+            t_ss: 0.4,
+            n_steps: 3,
+            first_swing: RIGHT,
+            t_end: 4.0,
+        };
         let plan = DcmPlan::from_schedule(&GaitPlan::new(&p), &steps(), 0.315, 1.0);
         let h = 1e-6;
         let mut worst: f64 = 0.0;
@@ -423,7 +654,14 @@ mod tests {
 
     #[test]
     fn plan_ends_at_rest_over_the_final_support() {
-        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.4, n_steps: 2, first_swing: RIGHT, t_end: 5.0 };
+        let p = GaitParams {
+            t_start: 1.0,
+            t_ds: 0.2,
+            t_ss: 0.4,
+            n_steps: 2,
+            first_swing: RIGHT,
+            t_end: 5.0,
+        };
         let plan = DcmPlan::from_schedule(&GaitPlan::new(&p), &steps(), 0.315, 1.0);
         let end = plan.reference(5.0);
         // At rest means xi == p, i.e. c_dot == 0.
@@ -434,13 +672,56 @@ mod tests {
 
     #[test]
     fn single_support_zmp_sits_on_the_stance_sole() {
-        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.4, n_steps: 2, first_swing: RIGHT, t_end: 5.0 };
+        let p = GaitParams {
+            t_start: 1.0,
+            t_ds: 0.2,
+            t_ss: 0.4,
+            n_steps: 2,
+            first_swing: RIGHT,
+            t_end: 5.0,
+        };
         let gait = GaitPlan::new(&p);
         let plan = DcmPlan::from_schedule(&gait, &steps(), 0.315, 1.0);
         // First SS: right swings, so the left foot carries the pressure.
         let mid_ss = 1.0 + 0.2;
-        assert!(matches!(gait.support_at(mid_ss), Support::Single { stance: LEFT, .. }));
+        assert!(matches!(
+            gait.support_at(mid_ss),
+            Support::Single { stance: LEFT, .. }
+        ));
         assert!((plan.reference(mid_ss).p - steps().xy(LEFT)).norm() < 1e-12);
+    }
+
+    #[test]
+    fn inserted_settle_routes_zmp_via_mid_feet() {
+        let p = GaitParams {
+            t_start: 1.0,
+            t_ds: 0.2,
+            t_ss: 0.4,
+            n_steps: 3,
+            first_swing: RIGHT,
+            t_end: 6.0,
+        };
+        let mut gait = GaitPlan::new(&p);
+        assert_eq!(gait.insert_ds_settles(0.15, 1), 2);
+        let fp = FootstepPlan::alternating(&gait, &steps(), 0.03, 0);
+        let plan = DcmPlan::from_footsteps(&gait, &fp, 0.315, 1.0);
+
+        // First inter-step DS run: transfer to the current mid-feet point,
+        // hold exactly there, then transfer to the next stance foot.
+        let first = 2;
+        let hold = 3;
+        let last = 4;
+        let next_ss = 5;
+        let mid = fp.at_slice(hold).mid_xy();
+        let next_stance = match gait.slices[next_ss].support {
+            Support::Single { stance, .. } => fp.at_slice(next_ss).xy(stance),
+            Support::Double => panic!("expected single support after settle"),
+        };
+        assert!((plan.segs[first].p1 - mid).norm() < 1e-12);
+        assert!((plan.segs[hold].p0 - mid).norm() < 1e-12);
+        assert!((plan.segs[hold].p1 - mid).norm() < 1e-12);
+        assert!((plan.segs[last].p0 - mid).norm() < 1e-12);
+        assert!((plan.segs[last].p1 - next_stance).norm() < 1e-12);
     }
 
     #[test]
@@ -451,7 +732,14 @@ mod tests {
         // on a coefficient that is pure cancellation. Bound the reference by
         // something physical: the DCM of a plan whose ZMP stays inside the
         // stance can never leave the stance by more than a few centimetres.
-        let p = GaitParams { t_start: 2.0, t_ds: 0.2, t_ss: 0.45, n_steps: 20, first_swing: RIGHT, t_end: 25.0 };
+        let p = GaitParams {
+            t_start: 2.0,
+            t_ds: 0.2,
+            t_ss: 0.45,
+            n_steps: 20,
+            first_swing: RIGHT,
+            t_end: 25.0,
+        };
         let plan = DcmPlan::from_schedule(&GaitPlan::new(&p), &steps(), 0.315, 1.0);
         let mut t = 0.0;
         while t <= 25.0 {
@@ -472,7 +760,15 @@ mod tests {
     fn support_box_shrinks_to_one_foot_in_single_support() {
         let s = steps();
         let ds = SupportBox::from_stance(&s, Support::Double, (0.049, 0.019), 1.0);
-        let ss = SupportBox::from_stance(&s, Support::Single { stance: LEFT, swing: RIGHT }, (0.049, 0.019), 1.0);
+        let ss = SupportBox::from_stance(
+            &s,
+            Support::Single {
+                stance: LEFT,
+                swing: RIGHT,
+            },
+            (0.049, 0.019),
+            1.0,
+        );
         assert!((ds.hi.y - ds.lo.y) > (ss.hi.y - ss.lo.y));
         // A command over the right foot is outside the left-foot-only box.
         let (c, moved) = ss.clamp(&s.xy(RIGHT));
@@ -598,6 +894,9 @@ mod timing_tests {
         let p = na::Vector2::new(0.0, 0.0);
         let xi = na::Vector2::new(0.0, 0.03);
         let target = na::Vector2::new(0.0, -0.03);
-        assert_eq!(step_timing(&xi, &target, &p, omega, 1), StepTiming::Unreachable);
+        assert_eq!(
+            step_timing(&xi, &target, &p, omega, 1),
+            StepTiming::Unreachable
+        );
     }
 }

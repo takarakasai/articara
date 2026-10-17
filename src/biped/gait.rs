@@ -731,6 +731,60 @@ impl FootstepPlan {
         }
     }
 
+    /// Re-plan from slice `from` (a single support with `swing` in the air):
+    /// the swing lands at `landing` (x, y; z kept), and every LATER step is
+    /// placed relative to the foot it steps past exactly as the ORIGINAL plan
+    /// placed it (so its stride / width / speed schedule is kept), except
+    /// that the first `stand_steps` later steps take no forward offset
+    /// (stepping in place) and the next `ramp_steps` grow back to it.
+    pub fn replan_from_landing(
+        &mut self,
+        plan: &GaitPlan,
+        from: usize,
+        swing: Side,
+        landing: na::Vector2<f64>,
+        stand_steps: usize,
+        ramp_steps: usize,
+    ) {
+        if from >= self.at.len() {
+            return;
+        }
+        let orig = self.at.clone();
+        let mut cur = self.at[from];
+        cur.sole[swing].x = landing.x;
+        cur.sole[swing].y = landing.y;
+        let mut in_first = true;
+        let mut k = 0usize;
+        for j in from..self.at.len().min(plan.slices.len()) {
+            match plan.slices[j].support {
+                Support::Double => {
+                    in_first = false;
+                    self.at[j] = cur;
+                }
+                Support::Single { swing: s, .. } => {
+                    if in_first {
+                        self.at[j] = cur;
+                        continue;
+                    }
+                    let o = &orig[j];
+                    let mut off = o.sole[s].xy() - o.sole[1 - s].xy();
+                    if k < stand_steps {
+                        off.x = 0.0;
+                    } else if k < stand_steps + ramp_steps {
+                        off.x *= (k - stand_steps + 1) as f64 / (ramp_steps + 1) as f64;
+                    }
+                    let mut next = cur;
+                    next.sole[s].x = cur.sole[1 - s].x + off.x;
+                    next.sole[s].y = cur.sole[1 - s].y + off.y;
+                    next.sole[s].z = o.sole[s].z;
+                    self.at[j] = next;
+                    cur = next;
+                    k += 1;
+                }
+            }
+        }
+    }
+
     pub fn at_slice(&self, i: usize) -> &Footsteps {
         &self.at[i.min(self.at.len() - 1)]
     }

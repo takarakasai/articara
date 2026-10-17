@@ -3564,6 +3564,56 @@ fn main() {
     // 48 -> 43 and 0.50 m/s 44 -> 13 against v6.12, where the speed yield
     // (PUSH_YIELD_V) already re-plans the remaining steps. inf = off.
     let mpc_footstep_back_vmax = env_f64("MPC_FOOTSTEP_BACK_VMAX", f64::INFINITY).max(0.0);
+    // PUSH_REPLAN=trig [m]: ONE re-planner for the step after a push
+    // (doc 20261014_push_x_speed.md Sec.20.3). In single support, the DCM
+    // error against the plan that was in force when the support began,
+    // carried to touchdown (x e^{omega rem}), is the landing shift the
+    // capture step needs; once it exceeds `trig` the re-planner owns this
+    // landing: original landing + that shift, clamped to the leg's reach
+    // (PUSH_REPLAN_MAX_FWD / _MAX_BACK, a lateral gap of at least
+    // PUSH_REPLAN_MIN_W, or a crossing of at most PUSH_REPLAN_CROSS placed
+    // PUSH_REPLAN_AHEAD in front of the stance foot), and the rest of the
+    // plan is re-laid from it (`FootstepPlan::replan_from_landing`:
+    // PUSH_REPLAN_STAND steps in place, then PUSH_REPLAN_RAMP steps back to
+    // the original stride). The MPC landing variable is off for that swing.
+    // Re-evaluated every tick until PUSH_REPLAN_FREEZE of the swing. 0 = off.
+    let push_replan_trig = env_f64("PUSH_REPLAN", 0.0).max(0.0);
+    let push_replan_stand = env_f64("PUSH_REPLAN_STAND", 2.0).max(0.0) as usize;
+    let push_replan_ramp = env_f64("PUSH_REPLAN_RAMP", 2.0).max(0.0) as usize;
+    let push_replan_freeze = env_f64("PUSH_REPLAN_FREEZE", 0.85);
+    let push_replan_max_fwd = env_f64("PUSH_REPLAN_MAX_FWD", 0.35).max(0.0);
+    let push_replan_max_back = env_f64("PUSH_REPLAN_MAX_BACK", 0.30).max(0.0);
+    let push_replan_min_w = env_f64("PUSH_REPLAN_MIN_W", 0.12).max(0.0);
+    let push_replan_cross = env_f64("PUSH_REPLAN_CROSS", 0.0).max(0.0);
+    let push_replan_ahead = env_f64("PUSH_REPLAN_AHEAD", 0.10).max(0.0);
+    let push_replan_hold = env_f64("PUSH_REPLAN_HOLD", 0.06).max(0.0);
+    // The current DCM error must also exceed this [m] (a 2 mm error at the
+    // start of a long first support carried 0.8 s forward read as 4 cm).
+    let push_replan_emin = env_f64("PUSH_REPLAN_EMIN", 0.015).max(0.0);
+    // Height the re-planned swing keeps above its landing until within
+    // MPC_FOOTSTEP_CROSS_HOLD_XY of it, when moved more than PUSH_REPLAN_HOLD.
+    let push_replan_hold_z = env_f64("PUSH_REPLAN_HOLD_Z", 0.05).max(0.0);
+    // Widest outward step [m] from the stance foot.
+    let push_replan_max_w = env_f64("PUSH_REPLAN_MAX_W", 0.40).max(0.0);
+    // PUSH_REPLAN_ANKLE="ax,ay": fraction of the sole's half length / width
+    // the ankle is credited with holding before the error is carried forward.
+    // Measured 2026-10-21: crediting the full 85 mm half length took the
+    // backward 14 N.s fallers from 8/12 to 0/12 (a heel CoP does not hold a
+    // backward push); laterally it keeps a small error from reading as a 1 m
+    // step. Default 0 / 1.
+    let push_replan_ankle: [f64; 2] = {
+        let v: Vec<f64> = std::env::var("PUSH_REPLAN_ANKLE")
+            .ok()
+            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+            .unwrap_or_default();
+        [v.first().copied().unwrap_or(0.0).clamp(0.0, 1.0), v.get(1).copied().unwrap_or(1.0).clamp(0.0, 1.0)]
+    };
+    let push_replan_debug = std::env::var("PUSH_REPLAN_DEBUG").is_ok();
+    // (slice, original footsteps, original DCM plan, original landing, last applied landing)
+    let mut push_replan_state: Option<(usize, FootstepPlan, DcmPlan, na::Vector2<f64>, Option<na::Vector2<f64>>)> = None;
+    let mut push_replan_slice: Option<usize> = None;
+    let mut push_replan_shift = 0.0_f64;
+    let mut n_push_replan = 0u32;
     // The speed gate's last value, read by the swing-height hold too.
     let mut back_parts_open = true;
     let mut back_dom_since: Option<f64> = None;
@@ -6708,6 +6758,80 @@ fn main() {
             n_replan += 1;
             println!("  [yield] t={t:.3} dcm_err={dcm_err:.3}: speed {v_hi:.2} -> {v_lo:.2} m/s, stride {stride_hi:.3} -> {stride_lo:.3}, slices x{ratio:.3}, {n} steps re-planned");
         }
+        if push_replan_trig > 0.0 {
+            let i = gait.index_at(t);
+            let sl = gait.slices[i].clone();
+            match sl.support {
+                Support::Single { swing, stance } if ref_mode.is_none() && stair_transfer_cmd.is_none() => {
+                    // The plan in force when this single support began.
+                    if push_replan_state.as_ref().is_none_or(|st| st.0 != i) {
+                        let base = footsteps.at_slice(i).xy(swing);
+                        push_replan_state = Some((i, footsteps.clone(), dcm_plan.clone(), base, None));
+                    }
+                    let frac = (t - sl.t0) / sl.duration().max(1e-9);
+                    let rem = (sl.t1 - t).clamp(0.0, gp.t_ss);
+                    if let Some((_, orig_fs, orig_plan, base, last)) = push_replan_state.as_mut()
+                        && frac < push_replan_freeze
+                    {
+                        let e = xi - orig_plan.reference(t).xi;
+                        // The ankle can hold an error up to the sole's half
+                        // size by moving the CoP; only the rest diverges.
+                        let half = na::Vector2::new(sole_half_l * push_replan_ankle[0], sole_half_w * push_replan_ankle[1]);
+                        let grow = (omega * rem).exp();
+                        let d = na::Vector2::new(
+                            {
+                                let dp = e.x.clamp(-half.x, half.x);
+                                dp + (e.x - dp) * grow
+                            },
+                            {
+                                let dp = e.y.clamp(-half.y, half.y);
+                                dp + (e.y - dp) * grow
+                            },
+                        );
+                        if push_replan_slice == Some(i) || (d.norm() > push_replan_trig && e.norm() > push_replan_emin) {
+                            let st = orig_fs.at_slice(i).xy(stance);
+                            let mut l = *base + d;
+                            l.x = l.x.clamp(st.x - push_replan_max_back, st.x + push_replan_max_fwd);
+                            // Lateral: +1 when the swing foot normally lands at +y of the stance foot.
+                            let side = if base.y > st.y { 1.0 } else { -1.0 };
+                            let w = (l.y - st.y) * side;
+                            // Inward of the minimum gap with no crossing of our
+                            // own: leave this landing to the MPC (its crossing
+                            // gate, MPC_FOOTSTEP_CROSS_*) -- do not engage, and
+                            // once engaged keep the last landing.
+                            let inward_skip = w < push_replan_min_w && push_replan_cross == 0.0;
+                            let w = if w >= push_replan_min_w {
+                                w.min(push_replan_max_w)
+                            } else if push_replan_cross > 0.0 && w < 0.0 {
+                                // Crossing: in front of the stance foot.
+                                l.x = l.x.max(st.x + push_replan_ahead);
+                                w.max(-push_replan_cross)
+                            } else {
+                                push_replan_min_w
+                            };
+                            l.y = st.y + side * w;
+                            if !inward_skip && last.is_none_or(|p| (p - l).norm() > 0.005) {
+                                let mut fs = orig_fs.clone();
+                                fs.replan_from_landing(&gait, i, swing, l, push_replan_stand, push_replan_ramp);
+                                footsteps = fs;
+                                dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
+                                if push_replan_slice != Some(i) {
+                                    n_push_replan += 1;
+                                    n_replan += 1;
+                                }
+                                push_replan_slice = Some(i);
+                                push_replan_shift = (l - *base).norm();
+                                if push_replan_debug {
+                                    println!("  [replan] t={t:.3} slice {i} frac={frac:.2} e=({:+.3},{:+.3}) d=({:+.3},{:+.3}) landing ({:.3},{:+.3}) -> ({:.3},{:+.3})", e.x, e.y, d.x, d.y, base.x, base.y, l.x, l.y);
+                                }
+                                *last = Some(l);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         // Backward-dominant only, and never under an engaged recovery
         // reference (measured: firing on lateral pushes cost the lateral
         // ladder 136 -> 129 while the reference was running).
@@ -8419,6 +8543,7 @@ fn main() {
                     (b, plus)
                 };
                 let landing = if mpc_footstep
+                    && push_replan_slice != Some(gait.index_at(t))
                     && stair_transfer_cmd.is_none()
                     && wrench_mpc_apply
                     && let Support::Single { swing, .. } = support
@@ -10077,8 +10202,13 @@ fn main() {
                 if resume_ss_dcm_hold.is_some_and(|(_, receiver, _, _)| receiver == side) {
                     tgt.z -= stair_resume_ss_sink;
                 }
-                if mpc_footstep_cross_hold_z > 0.0
-                    && (mpc_fs_cross_latched.is_some_and(|(ci, _)| ci == slice_idx)
+                let replan_hold = push_replan_trig > 0.0
+                    && push_replan_slice == Some(slice_idx)
+                    && push_replan_shift > push_replan_hold;
+                let hold_z = if replan_hold { push_replan_hold_z } else { mpc_footstep_cross_hold_z };
+                if hold_z > 0.0
+                    && (replan_hold
+                        || mpc_fs_cross_latched.is_some_and(|(ci, _)| ci == slice_idx)
                         || (mpc_footstep_hold_shift > 0.0
                             && mpc_fs_slice == Some(slice_idx)
                             && if mpc_footstep_back_only {
@@ -10089,7 +10219,7 @@ fn main() {
                 {
                     let foot = misarta::se3::translation(&data.oMi[rig.foot_mi[side]]);
                     if (touch_down.xy() - foot.xy()).norm() > mpc_footstep_cross_hold_xy {
-                        let hold = touch_down.z + mpc_footstep_cross_hold_z;
+                        let hold = touch_down.z + hold_z;
                         if tgt.z < hold {
                             tgt.z = hold;
                             tgt_v.z = tgt_v.z.max(0.0);
@@ -12373,6 +12503,9 @@ fn main() {
     }
     if plan_reanchor_td > 0.0 {
         println!("  plan re-anchored at touchdown: {n_reanchor_td}");
+    }
+    if push_replan_trig > 0.0 {
+        println!("  push re-plans: {n_push_replan}");
     }
     println!("  verdict: {}", if fell { "FELL" } else { "SURVIVED" });
 }
