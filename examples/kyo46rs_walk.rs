@@ -1405,6 +1405,15 @@ fn main() {
     // LIFT_H is the full rise above lift-off when both surfaces are level.
     let stair_swing_profile = flag("STAIR_SWING_PROFILE", false);
     let swing_rot_mode_g = phase_gain("SWING_ROT", env_f64("SWING_ROT", 1.0));
+    // STAIR_ZONE_SWING_ROT=mode: the SWING_ROT mode used only while the
+    // mid-feet point is inside a known staircase's zone (the same zone as
+    // STAIR_ZONE_CROUCH, including its lead/tail). Measured 2026-10-20 on
+    // kyo46rs (N=24): holding the swing foot's pitch (mode 3) is what lets
+    // it take the 0.13-0.16 m stair step (8 -> 12 of 12) and the 10 mm
+    // descent (1 -> 24 of 24 with the zone crouch), but applied everywhere
+    // it costs the 0.9 N.s forward push (21 -> 16). 0 = off = SWING_ROT
+    // everywhere, bit-identical.
+    let stair_zone_swing_rot = env_f64("STAIR_ZONE_SWING_ROT", 0.0).max(0.0) as u32;
     // Regulate the trunk's yaw as well as its roll and pitch.
     let trunk_yaw = flag("TRUNK_YAW", true);
     let kp_yaw = env_f64("KP_YAW", 200.0);
@@ -5520,6 +5529,14 @@ fn main() {
         // Everything below reads the footsteps for THIS slice. With stride 0
         // they are the same pair every time and this is the old behaviour.
         let steps = *footsteps.at_slice(slice_idx);
+        let swing_rot_mode = if stair_zone_swing_rot > 0
+            && stairs.as_ref().is_some_and(|st| {
+                articara::biped::height::stair_zone_crouch(steps.mid_xy().x, st, stair_crouch_lead, stair_crouch_tail, 1.0) > 0.0
+            }) {
+            stair_zone_swing_rot
+        } else {
+            swing_rot_mode
+        };
 
         // Touchdown and lift-off are the only two events that may edit an
         // anchor. Doing it on the schedule (rather than lazily, the way
