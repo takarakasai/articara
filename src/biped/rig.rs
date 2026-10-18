@@ -260,6 +260,30 @@ pub struct BipedRig {
     /// clean lateral pushes 157 -> 143. 0 = off = bit-identical.
     pub sense_filter_v_hz: f64,
     sense_filt_v: RefCell<Option<[f64; 3]>>,
+    /// `BASE_VEL_KIN=1`: contact-aided base linear velocity. A loaded foot
+    /// is assumed still, so its sole-centre velocity computed from the
+    /// measured state (J·v) is pure estimation error and is subtracted
+    /// from the base linear velocity, fz-weighted across both feet. That
+    /// replaces the base velocity sensor with joint rates + angular
+    /// velocity, the channels whose noise was measured harmless.
+    /// `BASE_VEL_KIN_FMIN` (N, default 30): per-foot load below which a
+    /// foot gets no weight; with neither foot loaded the sensor is used
+    /// as-is. Unset = off = bit-identical.
+    pub base_vel_kin: bool,
+    pub base_vel_kin_fmin: f64,
+    /// `BASE_VEL_FUSE_HZ`: complementary filter on the base linear
+    /// velocity -- an IMU accelerometer integrated between control ticks
+    /// carries the high band, the (noisy) velocity sensor corrects below
+    /// this crossover. The accelerometer is modelled as the plant's true
+    /// velocity increment per tick (a fast IMU integrated exactly) plus
+    /// `SENSE_NOISE_A` (m/s^2, white per tick) and `SENSE_ACC_BIAS`
+    /// ("bx,by,bz" m/s^2, constant). Unlike a low-pass it does not delay a
+    /// push: the push is in the acceleration. 0 = off = bit-identical.
+    pub base_vel_fuse_hz: f64,
+    pub sense_noise_a: f64,
+    pub sense_acc_bias: [f64; 3],
+    /// (true velocity at the previous tick, fused estimate)
+    base_vel_fuse: RefCell<Option<([f64; 3], [f64; 3])>>,
 }
 
 #[derive(Clone)]
@@ -822,6 +846,18 @@ impl BipedRig {
             sense_filt: RefCell::new(None),
             sense_filter_v_hz: sense_env("SENSE_FILTER_V_HZ", 0.0).max(0.0),
             sense_filt_v: RefCell::new(None),
+            base_vel_kin: std::env::var("BASE_VEL_KIN").map(|v| v == "1").unwrap_or(false),
+            base_vel_kin_fmin: sense_env("BASE_VEL_KIN_FMIN", 30.0).max(0.0),
+            base_vel_fuse_hz: sense_env("BASE_VEL_FUSE_HZ", 0.0).max(0.0),
+            sense_noise_a: sense_env("SENSE_NOISE_A", 0.0).max(0.0),
+            sense_acc_bias: std::env::var("SENSE_ACC_BIAS")
+                .ok()
+                .and_then(|v| {
+                    let p: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    (p.len() == 3).then(|| [p[0], p[1], p[2]])
+                })
+                .unwrap_or([0.0; 3]),
+            base_vel_fuse: RefCell::new(None),
         }
     }
 
@@ -925,6 +961,7 @@ impl BipedRig {
                 raw = delayed;
             }
         }
+        let v_lin_true = raw.v_lin_w;
         if self.sense_noise.iter().any(|s| *s > 0.0) {
             let mut rng = self.sense_rng.borrow_mut();
             let [nq, nqd, nv, nw] = self.sense_noise;
@@ -947,6 +984,28 @@ impl BipedRig {
                 for c in raw.v_ang_w.iter_mut() {
                     *c += nw * gauss(&mut rng);
                 }
+            }
+        }
+        if self.base_vel_fuse_hz > 0.0 {
+            let dt = self.sense_filter_dt;
+            let tau = 1.0 / (2.0 * std::f64::consts::PI * self.base_vel_fuse_hz);
+            let k = dt / (tau + dt);
+            let mut st = self.base_vel_fuse.borrow_mut();
+            match st.as_mut() {
+                Some((prev, est)) => {
+                    let mut rng = self.sense_rng.borrow_mut();
+                    for i in 0..3 {
+                        let mut acc = (v_lin_true[i] - prev[i]) / dt + self.sense_acc_bias[i];
+                        if self.sense_noise_a > 0.0 {
+                            acc += self.sense_noise_a * gauss(&mut rng);
+                        }
+                        est[i] += acc * dt;
+                        est[i] += k * (raw.v_lin_w[i] - est[i]);
+                    }
+                    *prev = v_lin_true;
+                    raw.v_lin_w = *est;
+                }
+                None => *st = Some((v_lin_true, raw.v_lin_w)),
             }
         }
         if self.sense_filter_hz > 0.0 {
@@ -1023,6 +1082,45 @@ impl BipedRig {
                 if let Some(qd) = raw.joint_qd[ji] {
                     v[model.v_idx[mi]] = qd.clamp(-self.qd_clamp, self.qd_clamp);
                 }
+            }
+        }
+        if self.base_vel_kin {
+            let mut fz = [0.0_f64; 2];
+            for c in sim.contacts() {
+                let side_of = |n: &str| self.prof.foot_links.iter().position(|l| *l == n);
+                let walkable = |n: &str| n.is_empty() || n.starts_with("stair");
+                let (side, sgn) = match (side_of(&c.body1), side_of(&c.body2)) {
+                    (Some(s), None) if walkable(&c.body2) => (s, -1.0),
+                    (None, Some(s)) if walkable(&c.body1) => (s, 1.0),
+                    _ => continue,
+                };
+                fz[side] += sgn * c.force_world[2];
+            }
+            let w = fz.map(|f| (f - self.base_vel_kin_fmin).max(0.0));
+            let wsum = w[0] + w[1];
+            if wsum > 0.0 {
+                let data = misarta::fk::forward_kinematics(model, &q);
+                let mut err = na::Vector3::zeros();
+                for side in 0..2 {
+                    if w[side] <= 0.0 {
+                        continue;
+                    }
+                    let mi = self.foot_mi[side];
+                    let j = misarta::jacobian::compute_joint_jacobian_from_data(model, &q, &data, mi);
+                    let vs = &j * na::DVector::from_column_slice(&v);
+                    let omega = na::Vector3::new(vs[0], vs[1], vs[2]);
+                    let v_o = na::Vector3::new(vs[3], vs[4], vs[5]);
+                    let rot = misarta::se3::rotation_matrix(&data.oMi[mi]);
+                    let lever = rot
+                        * na::Vector3::new(self.prof.sole_centre_x, 0.0, -self.prof.sole_below_origin);
+                    err += (w[side] / wsum) * (v_o + omega.cross(&lever));
+                }
+                // The base-linear columns of a world Jacobian are R_wb, so
+                // removing a world velocity e is v_body -= R_bw e.
+                let corr = r_bw * err;
+                v[3] -= corr.x;
+                v[4] -= corr.y;
+                v[5] -= corr.z;
             }
         }
         let v_dvec = na::DVector::from_column_slice(&v);
