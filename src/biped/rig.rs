@@ -280,6 +280,10 @@ pub struct BipedRig {
     /// ("bx,by,bz" m/s^2, constant). Unlike a low-pass it does not delay a
     /// push: the push is in the acceleration. 0 = off = bit-identical.
     pub base_vel_fuse_hz: f64,
+    /// `SENSE_VEL_BIAS_X/_Y/_Z` (m/s): constant error added to the measured
+    /// base linear velocity (world frame), after the noise. A probe for how
+    /// much velocity error the controller tolerates. 0 = off.
+    pub sense_vel_bias: [f64; 3],
     pub sense_noise_a: f64,
     pub sense_acc_bias: [f64; 3],
     /// (true velocity at the previous tick, fused estimate)
@@ -849,6 +853,11 @@ impl BipedRig {
             base_vel_kin: std::env::var("BASE_VEL_KIN").map(|v| v == "1").unwrap_or(false),
             base_vel_kin_fmin: sense_env("BASE_VEL_KIN_FMIN", 30.0).max(0.0),
             base_vel_fuse_hz: sense_env("BASE_VEL_FUSE_HZ", 0.0).max(0.0),
+            sense_vel_bias: [
+                sense_env("SENSE_VEL_BIAS_X", 0.0),
+                sense_env("SENSE_VEL_BIAS_Y", 0.0),
+                sense_env("SENSE_VEL_BIAS_Z", 0.0),
+            ],
             sense_noise_a: sense_env("SENSE_NOISE_A", 0.0).max(0.0),
             sense_acc_bias: std::env::var("SENSE_ACC_BIAS")
                 .ok()
@@ -984,6 +993,11 @@ impl BipedRig {
                 for c in raw.v_ang_w.iter_mut() {
                     *c += nw * gauss(&mut rng);
                 }
+            }
+        }
+        if self.sense_vel_bias.iter().any(|b| *b != 0.0) {
+            for i in 0..3 {
+                raw.v_lin_w[i] += self.sense_vel_bias[i];
             }
         }
         if self.base_vel_fuse_hz > 0.0 {

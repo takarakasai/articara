@@ -1323,6 +1323,11 @@ fn main() {
     let push_link = std::env::var("PUSH_LINK").unwrap_or_else(|_| prof.root_link.to_string());
 
     let ctrl_dt = env_f64("CTRL_DT", prof.ctrl_dt);
+    // DIAG_VZ_BIAS_MPC / DIAG_VZ_BIAS_HEIGHT (m/s): a vertical CoM velocity
+    // error seen by ONE consumer only -- the wrench MPC's initial state, or
+    // the CoM height PD. Diagnostic for where SENSE_VEL_BIAS_Z acts; 0 = off.
+    let diag_vz_bias_mpc = env_f64("DIAG_VZ_BIAS_MPC", 0.0);
+    let diag_vz_bias_height = env_f64("DIAG_VZ_BIAS_HEIGHT", 0.0);
     let mj_substeps = (ctrl_dt / mj_dt).round().max(1.0) as u32;
     let dt = mj_substeps as f64 * mj_dt;
     let n_ticks = (total_t / dt) as usize;
@@ -8132,7 +8137,7 @@ fn main() {
             mpc_reach_drop = 0.0;
             (z_ref, zd_ref)
         };
-        let a_z = zdd_ref + kp_com * (z_ref - com.z) + kd_com * (zd_ref - com_vel.z);
+        let a_z = zdd_ref + kp_com * (z_ref - com.z) + kd_com * (zd_ref - com_vel.z - diag_vz_bias_height);
         let mut a_com = na::Vector3::new(a_xy.x, a_xy.y, a_z);
 
         // Replan both sole wrenches from the measured centroidal state. The
@@ -8867,7 +8872,11 @@ fn main() {
                 }
                 let input = articara::biped::wrench_mpc::Input {
                     com,
-                    velocity: com_vel,
+                    velocity: if diag_vz_bias_mpc != 0.0 {
+                        com_vel + na::Vector3::new(0.0, 0.0, diag_vz_bias_mpc)
+                    } else {
+                        com_vel
+                    },
                     angular_momentum: na::Vector3::new(h[0], h[1], h[2]),
                     target_com,
                     target_velocity,
@@ -9425,7 +9434,7 @@ fn main() {
                 let s = ((t - t0) / stair_wrench_preview_dt).clamp(0.0, 1.0);
                 let z_m = c0.z + (c1.z - c0.z) * s;
                 let zd_m = v0.z + (v1.z - v0.z) * s;
-                a_com.z = zdd_ref + kp_com * (z_m - com.z) + kd_com * (zd_m - com_vel.z);
+                a_com.z = zdd_ref + kp_com * (z_m - com.z) + kd_com * (zd_m - com_vel.z - diag_vz_bias_height);
                 mpc_reach_z = Some(z_m);
             }
         } else {
