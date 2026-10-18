@@ -4300,6 +4300,8 @@ fn main() {
             });
     let mpc_warm = flag("MPC_QP_WARM", false);
     let mpc_diag_dir = std::env::var("MPC_DIAG_DIR").ok();
+    let act_delay_ticks = env_f64("ACT_DELAY_TICKS", 0.0).max(0.0) as usize;
+    let mut act_delay_buf: std::collections::VecDeque<Vec<f64>> = std::collections::VecDeque::new();
     // PREVIEW_TRAJ_CSV=path: every accepted LIPM CoM-preview solve (the
     // bounded-ZMP receding-horizon planner of COM_REPLAN, src/biped/preview.rs),
     // one row per horizon sample: the planned ZMP, the predicted CoM at the
@@ -11786,7 +11788,19 @@ fn main() {
                 writeln!(file).unwrap();
             }
         }
-        write_to_plant(&mut rig, ctrl_mode, &robot_taus, &extracted.qddot, v, dt);
+        // ACT_DELAY_TICKS=n: the plant receives the torques commanded n
+        // control ticks ago (actuation latency, model-mismatch bench).
+        // 0 = off = this tick's torques.
+        if act_delay_ticks > 0 {
+            act_delay_buf.push_back(robot_taus.clone());
+            while act_delay_buf.len() > act_delay_ticks + 1 {
+                act_delay_buf.pop_front();
+            }
+            let delayed = act_delay_buf.front().cloned().unwrap_or_else(|| robot_taus.clone());
+            write_to_plant(&mut rig, ctrl_mode, &delayed, &extracted.qddot, v, dt);
+        } else {
+            write_to_plant(&mut rig, ctrl_mode, &robot_taus, &extracted.qddot, v, dt);
+        }
         rig.step(mj_substeps);
         if substep_audit_path.is_some() {
             let tail = rig.sim.trace_len().saturating_sub(mj_substeps as usize);

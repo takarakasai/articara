@@ -457,7 +457,7 @@ impl BipedRig {
             ..MjcfExportOptions::default()
         };
         let spawn_z = {
-            let probe = MujocoSim::new(&robot, make_opts(o.probe_z)).expect("probe sim");
+            let probe = MujocoSim::new(&plant_robot(&robot), make_opts(o.probe_z)).expect("probe sim");
             let f = probe.body_world_position(prof.foot_links[0]).expect("foot")[2];
             o.probe_z - ((f - prof.sole_below_origin) - SOLE_CLEARANCE) + o.spawn_z_offset
         };
@@ -467,7 +467,7 @@ impl BipedRig {
             // examples deliberately weld the torso (base_locked_axes:
             // [true; 6]) and it would be easy to confuse a suspended rig's
             // result for a standing one.
-            let xml = crate::mjcf::export_mjcf_with_options(&robot, make_opts(spawn_z));
+            let xml = crate::mjcf::export_mjcf_with_options(&plant_robot(&robot), make_opts(spawn_z));
             if let Ok(path) = std::env::var("RIG_MJCF_OUT") {
                 std::fs::write(path, &xml).expect("write runtime MJCF");
             }
@@ -483,7 +483,7 @@ impl BipedRig {
                 "no ground plane -- the feet would have nothing to push on"
             );
         }
-        let sim = MujocoSim::new(&robot, make_opts(spawn_z)).expect("MujocoSim::new");
+        let sim = MujocoSim::new(&plant_robot(&robot), make_opts(spawn_z)).expect("MujocoSim::new");
         let mj_dt = sim.timestep();
 
         // The forearms used to sit geometrically INSIDE the hip blocks
@@ -623,7 +623,7 @@ impl BipedRig {
                 base_locked_axes: [true; 6],
                 ..make_opts(spawn_z)
             };
-            let mut settle = MujocoSim::new(&settle_robot, settle_opts).expect("settle sim");
+            let mut settle = MujocoSim::new(&plant_robot(&settle_robot), settle_opts).expect("settle sim");
             for ji in 0..settle_robot.joints.len() {
                 settle.set_position_target(ji, q_seed[ji]);
             }
@@ -733,7 +733,7 @@ impl BipedRig {
             }
         );
         // Re-spawn free-based at the settled pose, centred at the origin.
-        let mut sim = MujocoSim::new(&robot, make_opts(spawn_z)).expect("MujocoSim::new (run)");
+        let mut sim = MujocoSim::new(&plant_robot(&robot), make_opts(spawn_z)).expect("MujocoSim::new (run)");
         for ji in 0..robot.joints.len() {
             sim.set_position_target(ji, robot.joint_positions[ji]);
         }
@@ -1144,4 +1144,94 @@ impl BipedRig {
             "  sole centre that would put the CoM mid-footprint: x = {centred_cx:+.4} (currently {cx:+.4})"
         );
     }
+}
+
+
+/// The robot the SIMULATOR is built from, when it should differ from the one
+/// the controller models (model-mismatch benches). The controller keeps
+/// `robot` (its misarta model is built from it); only `MujocoSim::new` sees
+/// this copy. Unset = an identical clone (bit-identical runs).
+///   PLANT_MASS_SCALE=s        every link's mass and inertia x s
+///   PLANT_TORSO_MASS_SCALE=s  links named *torso* / *pelvis* only
+///   PLANT_PAYLOAD=kg,x,y,z    a point mass on the first *torso* link (else
+///                             the first *pelvis* link), at (x, y, z) in that
+///                             link's frame; mass, CoM and inertia combined
+pub fn plant_robot(robot: &crate::robot::RobotModel) -> crate::robot::RobotModel {
+    let mut r = robot.clone();
+    let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok());
+    let scale_link = |l: &mut crate::rbd::model::LinkData, s: f64| {
+        let i = &mut l.inertial;
+        i.mass *= s;
+        i.ixx *= s;
+        i.ixy *= s;
+        i.ixz *= s;
+        i.iyy *= s;
+        i.iyz *= s;
+        i.izz *= s;
+    };
+    if let Some(s) = env("PLANT_MASS_SCALE").filter(|s| s.is_finite() && *s > 0.0) {
+        for l in r.links.iter_mut() {
+            scale_link(l, s);
+        }
+    }
+    if let Some(s) = env("PLANT_TORSO_MASS_SCALE").filter(|s| s.is_finite() && *s > 0.0) {
+        for l in r.links.iter_mut() {
+            let n = l.name.to_lowercase();
+            if n.contains("torso") || n.contains("pelvis") {
+                scale_link(l, s);
+            }
+        }
+    }
+    // The same payload as four keys (PLANT_PAYLOAD_KG / _X / _Y / _Z), for
+    // benches whose condition strings cannot carry commas.
+    let payload_str = std::env::var("PLANT_PAYLOAD").ok().or_else(|| {
+        env("PLANT_PAYLOAD_KG").map(|kg| {
+            format!(
+                "{kg},{},{},{}",
+                env("PLANT_PAYLOAD_X").unwrap_or(0.0),
+                env("PLANT_PAYLOAD_Y").unwrap_or(0.0),
+                env("PLANT_PAYLOAD_Z").unwrap_or(0.0)
+            )
+        })
+    });
+    if let Some(v) = payload_str {
+        let p: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        if p.len() == 4 && p[0] > 0.0 {
+            let idx = r
+                .links
+                .iter()
+                .position(|l| l.name.to_lowercase().contains("torso"))
+                .or_else(|| r.links.iter().position(|l| l.name.to_lowercase().contains("pelvis")));
+            if let Some(li) = idx {
+                let i = &mut r.links[li].inertial;
+                let (m, mp) = (i.mass, p[0]);
+                let c = na::Vector3::new(
+                    i.origin.translation.vector.x as f64,
+                    i.origin.translation.vector.y as f64,
+                    i.origin.translation.vector.z as f64,
+                );
+                let rp = na::Vector3::new(p[1], p[2], p[3]);
+                let cn = (c * m + rp * mp) / (m + mp);
+                // Inertia about the new CoM, in the inertial frame's axes
+                // (the payload is a point mass; the original inertia is
+                // shifted by the parallel-axis term).
+                let shift = |d: na::Vector3<f64>, mm: f64| -> na::Matrix3<f64> {
+                    (na::Matrix3::identity() * d.dot(&d) - d * d.transpose()) * mm
+                };
+                let rot = i.origin.rotation.to_rotation_matrix().into_inner().cast::<f64>();
+                let i0 = na::Matrix3::new(i.ixx, i.ixy, i.ixz, i.ixy, i.iyy, i.iyz, i.ixz, i.iyz, i.izz);
+                let i_link = rot * i0 * rot.transpose() + shift(c - cn, m) + shift(rp - cn, mp);
+                let i_new = rot.transpose() * i_link * rot;
+                i.mass = m + mp;
+                i.origin.translation.vector = na::Vector3::new(cn.x as f32, cn.y as f32, cn.z as f32);
+                i.ixx = i_new[(0, 0)];
+                i.ixy = i_new[(0, 1)];
+                i.ixz = i_new[(0, 2)];
+                i.iyy = i_new[(1, 1)];
+                i.iyz = i_new[(1, 2)];
+                i.izz = i_new[(2, 2)];
+            }
+        }
+    }
+    r
 }
