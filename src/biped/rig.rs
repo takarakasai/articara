@@ -286,8 +286,13 @@ pub struct BipedRig {
     pub sense_vel_bias: [f64; 3],
     pub sense_noise_a: f64,
     pub sense_acc_bias: [f64; 3],
-    /// (true velocity at the previous tick, fused estimate)
-    base_vel_fuse: RefCell<Option<([f64; 3], [f64; 3])>>,
+    /// `BASE_VEL_FUSE_BIAS_T` (s): add an accelerometer-bias state to the
+    /// fusion, driven by the integral of the innovation (sensor - estimate),
+    /// so a constant bias leaves no steady velocity error. The bias settles
+    /// with roughly this time constant (gain 1 / (tau * T)). 0 = off.
+    pub base_vel_fuse_bias_t: f64,
+    /// (true velocity at the previous tick, fused estimate, bias estimate)
+    base_vel_fuse: RefCell<Option<([f64; 3], [f64; 3], [f64; 3])>>,
 }
 
 #[derive(Clone)]
@@ -867,6 +872,7 @@ impl BipedRig {
                 })
                 .unwrap_or([0.0; 3]),
             base_vel_fuse: RefCell::new(None),
+            base_vel_fuse_bias_t: sense_env("BASE_VEL_FUSE_BIAS_T", 0.0).max(0.0),
         }
     }
 
@@ -1006,20 +1012,24 @@ impl BipedRig {
             let k = dt / (tau + dt);
             let mut st = self.base_vel_fuse.borrow_mut();
             match st.as_mut() {
-                Some((prev, est)) => {
+                Some((prev, est, bias)) => {
                     let mut rng = self.sense_rng.borrow_mut();
                     for i in 0..3 {
                         let mut acc = (v_lin_true[i] - prev[i]) / dt + self.sense_acc_bias[i];
                         if self.sense_noise_a > 0.0 {
                             acc += self.sense_noise_a * gauss(&mut rng);
                         }
-                        est[i] += acc * dt;
-                        est[i] += k * (raw.v_lin_w[i] - est[i]);
+                        est[i] += (acc - bias[i]) * dt;
+                        let innov = raw.v_lin_w[i] - est[i];
+                        est[i] += k * innov;
+                        if self.base_vel_fuse_bias_t > 0.0 {
+                            bias[i] -= innov * dt / (tau * self.base_vel_fuse_bias_t);
+                        }
                     }
                     *prev = v_lin_true;
                     raw.v_lin_w = *est;
                 }
-                None => *st = Some((v_lin_true, raw.v_lin_w)),
+                None => *st = Some((v_lin_true, raw.v_lin_w, [0.0; 3])),
             }
         }
         if self.sense_filter_hz > 0.0 {
