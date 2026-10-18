@@ -252,6 +252,14 @@ pub struct BipedRig {
     /// velocity (the IMU/fusion path); pose and joints stay fresh.
     pub sense_delay_basevel_only: bool,
     sense_filt: RefCell<Option<RawSense>>,
+    /// `SENSE_FILTER_V_HZ`: the same first-order low-pass on the base LINEAR
+    /// velocity only (joint rates and angular velocity untouched). Measured
+    /// 2026-10-22 on G1 v6.14: weak noise on the base linear velocity alone
+    /// (0.03 m/s) fells 48/48, on joint rates or angular velocity none; a
+    /// 15 Hz filter on every velocity saves the noisy runs but costs the
+    /// clean lateral pushes 157 -> 143. 0 = off = bit-identical.
+    pub sense_filter_v_hz: f64,
+    sense_filt_v: RefCell<Option<[f64; 3]>>,
 }
 
 #[derive(Clone)]
@@ -812,6 +820,8 @@ impl BipedRig {
             sense_delay_basevel_only: std::env::var("SENSE_DELAY_SCOPE").map(|v| v == "basevel").unwrap_or(false),
             sense_filter_dt: sense_env("SENSE_FILTER_DT", 0.005).max(1e-4),
             sense_filt: RefCell::new(None),
+            sense_filter_v_hz: sense_env("SENSE_FILTER_V_HZ", 0.0).max(0.0),
+            sense_filt_v: RefCell::new(None),
         }
     }
 
@@ -961,6 +971,20 @@ impl BipedRig {
                     raw.v_ang_w = f.v_ang_w;
                 }
                 None => *st = Some(raw.clone()),
+            }
+        }
+        if self.sense_filter_v_hz > 0.0 {
+            let tau = 1.0 / (2.0 * std::f64::consts::PI * self.sense_filter_v_hz);
+            let a = self.sense_filter_dt / (tau + self.sense_filter_dt);
+            let mut st = self.sense_filt_v.borrow_mut();
+            match st.as_mut() {
+                Some(f) => {
+                    for i in 0..3 {
+                        f[i] += a * (raw.v_lin_w[i] - f[i]);
+                    }
+                    raw.v_lin_w = *f;
+                }
+                None => *st = Some(raw.v_lin_w),
             }
         }
         let body_pos = raw.body_pos;
