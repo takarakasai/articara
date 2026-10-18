@@ -86,6 +86,9 @@ def one(a):
         # (the same member keeps its step, phase, mu and dx, so a battery at
         # speed pairs with one at the nominal speed).
         c['STAIRS'] = f"1,0.000,0.211,{float(os.environ.get('PUSH_STAIR_X', '2.00')) + s['dx']:.4f}"
+        # Per-member terrain draw (read only when TERRAIN_BUMPS is set, so
+        # every existing push battery is unchanged).
+        c['TERRAIN_SEED'] = str(k + 1)
         c['PUSH_IMPULSE'] = case[0]; c['PUSH_DEG'] = case[1]
         c['PUSH_STEP'] = str(s['step'] + int(os.environ.get('PUSH_STEP_OFFSET', '0'))); c['PUSH_AT'] = str(s['at'])
         c['PUSH_SUPPORT'] = os.environ.get('PUSH_SUPPORT', 'ss')
