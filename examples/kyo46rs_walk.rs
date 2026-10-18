@@ -3595,6 +3595,23 @@ fn main() {
     // backward 44 -> 21.
     let push_replan_back_only = flag("PUSH_REPLAN_BACK_ONLY", false);
     let push_replan_vmax = env_f64("PUSH_REPLAN_VMAX", f64::INFINITY).max(0.0);
+    // PUSH_REPLAN_LAT=1: under BACK_ONLY, also engage on a LATERAL-dominant
+    // error when the capture step it asks for is OUTWARD (wider than the
+    // planned gap) -- a step out, never a crossing (that stays with the MPC
+    // crossing gate) and never a forward error. PUSH_REPLAN_LAT_VMAX [m/s]:
+    // its own speed ceiling (default inf: at any speed). Measured 2026-10-21
+    // with the direction gate off (tu42): the support-side 5 N.s at 0.30 /
+    // 0.50 m/s went 28 -> 40 / 13 -> 23, while forward and inward-lateral
+    // pushes lost 2-5 members each. 0 = off.
+    let push_replan_lat = flag("PUSH_REPLAN_LAT", false);
+    let push_replan_lat_vmax = env_f64("PUSH_REPLAN_LAT_VMAX", f64::INFINITY).max(0.0);
+    // PUSH_REPLAN_LAT_VMIN [m/s]: the lateral engagement only while a VX2
+    // speed command of at least this is in force. Measured 2026-10-22 (tu46,
+    // no floor): at the nominal 0.12 m/s it cost the backward 14 N.s 43 -> 39
+    // and the lateral 7 N.s 2 members, at 0.30 m/s the swing-side 7 N.s
+    // 14 -> 10; the gains were at speed (support side 5 N.s 28 -> 38 at 0.30,
+    // 13 -> 22 at 0.50). 0 = no floor.
+    let push_replan_lat_vmin = env_f64("PUSH_REPLAN_LAT_VMIN", 0.0).max(0.0);
     // The current DCM error must also exceed this [m] (a 2 mm error at the
     // start of a long first support carried 0.8 s forward read as 4 cm).
     let push_replan_emin = env_f64("PUSH_REPLAN_EMIN", 0.015).max(0.0);
@@ -6815,12 +6832,23 @@ fn main() {
                                 dp + (e.y - dp) * grow
                             },
                         );
-                        let dir_ok = !push_replan_back_only || (e.x < 0.0 && e.y.abs() < -e.x);
-                        let speed_ok = !(vx2_sched
-                            && vx2_z_from.is_some_and(|t0| t >= t0)
-                            && vx2_cmd_speed.is_some_and(|v| v > push_replan_vmax));
+                        let v_now = (vx2_sched && vx2_z_from.is_some_and(|t0| t >= t0))
+                            .then_some(vx2_cmd_speed)
+                            .flatten();
+                        let back_ok = (!push_replan_back_only || (e.x < 0.0 && e.y.abs() < -e.x))
+                            && !v_now.is_some_and(|v| v > push_replan_vmax);
+                        // Lateral-dominant and OUTWARD: the swing side lies at
+                        // (base - stance) in y; the error pushes that way.
+                        let lat_ok = push_replan_lat
+                            && e.y.abs() > e.x.abs()
+                            && {
+                                let st = orig_fs.at_slice(i).xy(stance);
+                                (base.y - st.y) * d.y > 0.0
+                            }
+                            && !v_now.is_some_and(|v| v > push_replan_lat_vmax)
+                            && (push_replan_lat_vmin <= 0.0 || v_now.is_some_and(|v| v >= push_replan_lat_vmin));
                         if push_replan_slice == Some(i)
-                            || (dir_ok && speed_ok && d.norm() > push_replan_trig && e.norm() > push_replan_emin)
+                            || ((back_ok || lat_ok) && d.norm() > push_replan_trig && e.norm() > push_replan_emin)
                         {
                             let st = orig_fs.at_slice(i).xy(stance);
                             let mut l = *base + d;
