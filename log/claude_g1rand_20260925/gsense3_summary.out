@@ -1,0 +1,26 @@
+noise f40   SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: 生存 10/48  転倒中央値 11.03s  転倒時刻の種類 38
+noise f80   SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: 生存 7/48  転倒中央値 7.72s  転倒時刻の種類 41
+noise f20   SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: 生存 41/48  転倒中央値 9.31s  転倒時刻の種類 7
+noise both_f40   SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: 生存 10/48  転倒中央値 22.10s  転倒時刻の種類 36
+noise both_f80   SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: 生存 19/48  転倒中央値 8.78s  転倒時刻の種類 26
+push f40   i11_d0: 生存 45/48  転倒中央値 14.63s  転倒時刻の種類 3 発火 48/48
+push f40   i11_d180: 生存 37/48  転倒中央値 14.44s  転倒時刻の種類 10 発火 48/48
+push f40   i7_d90: 生存 41/48  転倒中央値 13.80s  転倒時刻の種類 7 発火 48/48
+push f40   i5_d270: 生存 44/48  転倒中央値 15.15s  転倒時刻の種類 4 発火 48/48
+=== clean push v6.14 -> filter f40
+  i11_d0                                        47 →  45  改善  0 悪化  2  z=-1.41
+  i11_d180                                      40 →  37  改善  1 悪化  4  z=-1.34
+  i5_d270                                       48 →  44  改善  0 悪化  4  z=-2.00
+  i7_d90                                        40 →  41  改善  2 悪化  1  z=+0.58
+  総合                                           175 → 167  改善  3 悪化 11  z=-2.14
+push f80   i11_d0: 生存 47/48  転倒中央値 14.03s  転倒時刻の種類 1 発火 48/48
+push f80   i11_d180: 生存 43/48  転倒中央値 14.63s  転倒時刻の種類 5 発火 48/48
+push f80   i7_d90: 生存 42/48  転倒中央値 14.88s  転倒時刻の種類 6 発火 48/48
+push f80   i5_d270: 生存 46/48  転倒中央値 13.86s  転倒時刻の種類 2 発火 48/48
+=== clean push v6.14 -> filter f80
+  i11_d0                                        47 →  47  改善  1 悪化  1  z=+0.00
+  i11_d180                                      40 →  43  改善  4 悪化  1  z=+1.34
+  i5_d270                                       48 →  46  改善  0 悪化  2  z=-1.41
+  i7_d90                                        40 →  42  改善  3 悪化  1  z=+1.00
+  総合                                           175 → 178  改善  8 悪化  5  z=+0.83
+#### GSENSE3_DONE
