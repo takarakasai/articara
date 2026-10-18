@@ -4039,6 +4039,9 @@ fn main() {
     let mut max_adapt: f64 = 0.0;
     let mut n_adapt = 0u32;
     let mut n_replan = 0u32;
+    // DIAG_REPLAN=1: print each live replan with its site (diagnostic only).
+    let diag_replan = flag("DIAG_REPLAN", false);
+    let push_replan_slope_lead = env_f64("PUSH_REPLAN_SLOPE_LEAD", 0.0).max(0.0);
     let mut n_corrected = 0u32;
 
     // ankle_roll range of motion. The model review measured that holding the
@@ -6796,6 +6799,7 @@ fn main() {
             }
             dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
             n_replan += 1;
+            if diag_replan { println!("  [diag-replan] site 0 t={t:.3} (line 6798)"); }
             println!("  [yield] t={t:.3} dcm_err={dcm_err:.3}: speed {v_hi:.2} -> {v_lo:.2} m/s, stride {stride_hi:.3} -> {stride_lo:.3}, slices x{ratio:.3}, {n} steps re-planned");
         }
         if push_replan_trig > 0.0 {
@@ -6820,7 +6824,22 @@ fn main() {
                                 stair_crouch_tail,
                                 1.0,
                             ) > 0.0
-                        }) =>
+                        })
+                        // PUSH_REPLAN_SLOPE_LEAD (m): nor on a known slope,
+                        // from this far before its start to its end. The
+                        // zero-riser test above lets a slope through, and
+                        // there the re-plan costs the backward 11 N.s 18 -> 4
+                        // (measured 2026-10-19: the re-laid plan meets the
+                        // slope entry with a backward DCM error, and the
+                        // second firing steps back off the slope). 0 = off.
+                        && !(push_replan_slope_lead > 0.0
+                            && stairs.as_ref().is_some_and(|st| {
+                                let x = footsteps.at_slice(i).mid_xy().x;
+                                st.n == 0
+                                    && st.slope != 0.0
+                                    && x >= st.start - push_replan_slope_lead
+                                    && x <= st.start + st.slope_len
+                            })) =>
                 {
                     // The plan in force when this single support began.
                     if push_replan_state.as_ref().is_none_or(|st| st.0 != i) {
@@ -6899,6 +6918,7 @@ fn main() {
                                 if push_replan_slice != Some(i) {
                                     n_push_replan += 1;
                                     n_replan += 1;
+                                    if diag_replan { println!("  [diag-replan] site 1 t={t:.3} (line 6901)"); }
                                 }
                                 push_replan_slice = Some(i);
                                 push_replan_shift = (l - *base).norm();
@@ -7452,6 +7472,7 @@ fn main() {
                     zmp_roll,
                 );
                 n_replan += 1;
+                if diag_replan { println!("  [diag-replan] site 2 t={t:.3} (line 7454)"); }
             }
         }
         if !contact_plan_on && adapt && matches!(support, Support::Single { .. }) && clamped > 1e-6 {
@@ -7482,6 +7503,7 @@ fn main() {
                     );
                     adapt_applied = adapt_now;
                     n_replan += 1;
+                    if diag_replan { println!("  [diag-replan] site 3 t={t:.3} (line 7484)"); }
                 }
             }
         }
@@ -9266,6 +9288,7 @@ fn main() {
                                 landing_timing.max_extension = 0.0;
                                 dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
                                 n_replan += 1;
+                                if diag_replan { println!("  [diag-replan] site 4 t={t:.3} (line 9268)"); }
                             }
                         }
                         if cp_lat_emergency > 0.0
@@ -9300,6 +9323,7 @@ fn main() {
                                 // with the swing still 35 mm up).
                                 dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
                                 n_replan += 1;
+                                if diag_replan { println!("  [diag-replan] site 5 t={t:.3} (line 9302)"); }
                                 if std::env::var("MPC_FS_DEBUG_LANDING").is_ok() {
                                     println!("  [lat-emergency] t={t:.3} e_y_toward_stance={e_y:+.3} new_end={ne:.3} (was {t1:.3})");
                                 }
@@ -9378,6 +9402,7 @@ fn main() {
                                     zmp_roll,
                                 );
                                 n_replan += 1;
+                                if diag_replan { println!("  [diag-replan] site 6 t={t:.3} (line 9380)"); }
                             }
                         }
                         if std::env::var("MPC_TRAJ_DEBUG").is_ok() && t < 2.0 {
