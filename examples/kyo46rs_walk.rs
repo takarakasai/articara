@@ -1778,6 +1778,7 @@ fn main() {
         // `lvl_of` must read the SAME value or the grade and its inverse
         // disagree. The default keeps kyo46rs bit-identical.
         let landing_step = env_f64("STAIR_LANDING_FRAC", 0.5).max(1e-3) * st.tread;
+        let slope_keep_stride = flag("SLOPE_KEEP_STRIDE", false);
         let pos_of = |lvl: i64| -> f64 {
             if lvl <= 0 {
                 a_pos
@@ -1902,7 +1903,14 @@ fn main() {
                 // one lands short, high and late (dead-stretched leg waiting
                 // for the body), and the next lift-off inherits the mess.
                 // Pair-up halves the swing to ~110 mm.
-                let tx = if nom_x < a_pos - 1e-9 {
+                // SLOPE_KEEP_STRIDE=1: on a known slope (no treads) keep the
+                // velocity plan's stride and only lift each footfall to the
+                // surface. The tread grid otherwise re-lays every footfall at
+                // the landing stride (G1: 0.199 m vs the commanded 0.149, a
+                // 35% faster climb) -- measured 2026-10-19 as the root of the
+                // pushes-on-a-slope collapse (late, long, shortening steps).
+                let keep_nominal = nom_x < a_pos - 1e-9 || (slope_keep_stride && st.n == 0 && st.slope != 0.0);
+                let tx = if keep_nominal {
                     nom_x // flat approach: the velocity plan's own wish
                 } else if align_stand_line && !aligned {
                     // First swing that would overshoot the stand line: put it
@@ -1925,7 +1933,7 @@ fn main() {
                 };
                 cur.sole[swing].x = tx;
                 cur.sole[swing].y = footsteps.at[i].sole[swing].y
-                    + if nom_x < a_pos - 1e-9 {
+                    + if keep_nominal {
                         0.0
                     } else if swing == 0 {
                         y_out
