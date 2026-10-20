@@ -59,6 +59,31 @@ fn main() {
     o.sim_dt = env_f64("SIM_DT", 0.001);
     o.mu_ground = env_f64("MU_GROUND", 0.7);
     o.probe_z = env_f64("PROBE_Z", prof.probe_z);
+    // INIT_JITTER / INIT_SEED: the walker's per-member posture jitter (each
+    // leg joint of the build seed +- INIT_JITTER rad, SplitMix64/xorshift on
+    // INIT_SEED), so a battery's members are different situations. 0 = off.
+    let init_jitter = env_f64("INIT_JITTER", 0.0).abs();
+    if init_jitter > 0.0 {
+        let mut state = {
+            let mut z = (env_f64("INIT_SEED", 1.0) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            (z ^ (z >> 31)) | 1
+        };
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        for name in [
+            "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint",
+            "left_ankle_pitch_joint", "left_ankle_roll_joint", "right_hip_pitch_joint", "right_hip_roll_joint",
+            "right_hip_yaw_joint", "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+        ] {
+            o.extra_seed_delta.push((name, init_jitter * next()));
+        }
+    }
     let sole_half_l = env_f64("SOLE_HALF_L", prof.cop_half.0);
     let sole_half_w = env_f64("SOLE_HALF_W", prof.cop_half.1);
     let mu_ground = o.mu_ground;
@@ -104,6 +129,16 @@ fn main() {
     // is empty (the flight tasks take over) until a foot is loaded again
     // after both have left the ground.
     let jump_v = env_f64("JUMP_V", 0.0);
+    // JUMP_PUSH_R: the push acceleration falls linearly to R times its start
+    // value, keeping the push distance and the take-off speed (R = 1 = the
+    // constant acceleration). The leg's vertical authority falls as it
+    // straightens; a constant demand runs into that at the end of the push.
+    let jump_push_r = env_f64("JUMP_PUSH_R", 1.0).clamp(0.0, 1.0);
+    // JUMP_HEEL_CUT (m): during the push and release, move the heel edge of
+    // each sole's CoP box forward by this much (toe edge kept). Measured
+    // 2026-10-21: the CoP ran to the heel edge at the end of the push and
+    // the foot rolled back, leaving h_y = 3-5 kg m^2/s at take-off. 0 = off.
+    let jump_heel_cut = env_f64("JUMP_HEEL_CUT", 0.0).max(0.0);
     // MOM_TASK=1: in stance, drive the centroidal angular momentum to zero
     // (dh = -KP_MOM h, weight WBCW_MOMENTUM, default 0.1 as in the walker).
     // Measured 2026-10-21: the push-off without it left the jump with
@@ -125,6 +160,12 @@ fn main() {
     // jump in the first 25 ms.
     let jump_release = flag("JUMP_RELEASE", false);
     let jump_t_release = env_f64("JUMP_T_RELEASE", 0.08).max(0.0);
+    // JUMP_ABORT=1: if the release times out with a foot still loaded (the
+    // push was too weak to leave the ground), do not schedule flight -- stay
+    // in stance and absorb from the current state. Measured 2026-10-21: the
+    // scheduled flight on the ground, with no touchdown to end it, felled
+    // 44/48 of the JUMP_V=1.0 battery.
+    let jump_abort = flag("JUMP_ABORT", false);
     let mut release_t0: Option<(f64, f64, f64)> = None;
     let mut air_sched = false;
     let mut left_ground = false;
@@ -341,7 +382,14 @@ fn main() {
         } else {
             let p0 = bt::contact_level(
                 &dyn_ctx, tau_box, &j_contact, &dj_v, data, v_dvec, &stance, feet[0], &mut anchors,
-                &|_| 1.0, &contact_cfg, &|_| bt::ContactMode::Rigid, &|_, _| None,
+                &|_| 1.0, &contact_cfg, &|_| bt::ContactMode::Rigid,
+                &|_, _| {
+                    let in_push = jump_v > 0.0 && push_end.is_none() && t >= t_launch + jump_t_crouch + jump_t_hold;
+                    (in_push && jump_heel_cut > 0.0).then(|| {
+                        let c = jump_heel_cut.min(sole_half_l);
+                        ([prof.sole_centre_x + 0.5 * c, 0.0, -prof.sole_below_origin], ((sole_half_l - 0.5 * c).max(0.005), sole_half_w))
+                    })
+                },
             );
             levels.push(p0.task);
             names.push("contact+cones");
@@ -378,11 +426,25 @@ fn main() {
                     let s_push = s - jump_t_crouch - jump_t_hold;
                     if s_push > 0.0 {
                         let dz = stand_z + jump_z_to - z_low;
-                        let a = jump_v * jump_v / (2.0 * dz);
-                        let t_push = jump_v / a;
-                        z = z_low + 0.5 * a * s_push * s_push;
-                        vz = a * s_push;
-                        az = a;
+                        // a(s) = a0 (1 - (1 - r) s / T): v(T) = a0 T (1 + r) / 2,
+                        // z(T) = a0 T^2 (2 + r) / 6.
+                        let r = jump_push_r;
+                        let (t_push, a) = if r < 1.0 {
+                            let t_push = 3.0 * dz * (1.0 + r) / ((2.0 + r) * jump_v);
+                            let a0 = 2.0 * jump_v / ((1.0 + r) * t_push);
+                            let sp = s_push.min(t_push);
+                            let k = (1.0 - r) / t_push;
+                            z = z_low + a0 * (0.5 * sp * sp - k * sp.powi(3) / 6.0);
+                            vz = a0 * (sp - 0.5 * k * sp * sp);
+                            az = a0 * (1.0 - k * sp);
+                            (t_push, a0)
+                        } else {
+                            let a = jump_v * jump_v / (2.0 * dz);
+                            z = z_low + 0.5 * a * s_push * s_push;
+                            vz = a * s_push;
+                            az = a;
+                            (jump_v / a, a)
+                        };
                         if s_push >= t_push && jump_release {
                             let (t0, z0, v0) = *release_t0.get_or_insert((t, z, vz));
                             let sr = t - t0;
@@ -390,7 +452,11 @@ fn main() {
                             vz = v0 - G * sr;
                             az = -G;
                             let unloaded = measured.cop[0][2] <= f_on && measured.cop[1][2] <= f_on;
-                            if unloaded || sr >= jump_t_release {
+                            if !unloaded && sr >= jump_t_release && jump_abort {
+                                push_end = Some(t);
+                                land = Some((t, com, com_vel));
+                                println!("  [abort] t={t:.3} feet still loaded after {sr:.3} s: no flight, absorb in stance");
+                            } else if unloaded || sr >= jump_t_release {
                                 push_end = Some(t);
                                 air_sched = true;
                                 left_ground = false;
