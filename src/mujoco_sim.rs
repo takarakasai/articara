@@ -219,6 +219,9 @@ pub struct ContactInfo {
     pub force_mag: f64,
     /// Linear contact force expressed in world coordinates (N).
     pub force_world: [f64; 3],
+    /// Contact couple about `pos`, in world coordinates (N m), on body2.
+    /// Negate both force and torque when accumulating the wrench on body1.
+    pub torque_world: [f64; 3],
     /// Name of the first contact body (lowercase `body1` in MJCF). Empty
     /// string if the body has no name (e.g. world body 0).
     pub body1: String,
@@ -313,8 +316,7 @@ fn find_plugin_dir() -> Option<PathBuf> {
                 .unwrap_or_default()
         });
 
-    if let Some(crate::mujoco_version::CheckResult::Compatible(v)) =
-        crate::mujoco_version::cached()
+    if let Some(crate::mujoco_version::CheckResult::Compatible(v)) = crate::mujoco_version::cached()
     {
         let exact = base
             .join(format!("mujoco-{v}"))
@@ -970,7 +972,11 @@ impl MujocoSim {
                 }
             }
             let tau_full = misarta::rnea::rnea(&adapter.model, &q, &v, &a);
-            Some(project_nv_to_joints(&tau_full, &adapter, robot.joints.len()))
+            Some(project_nv_to_joints(
+                &tau_full,
+                &adapter,
+                robot.joints.len(),
+            ))
         } else {
             None
         };
@@ -1012,8 +1018,8 @@ impl MujocoSim {
                         .get(ji)
                         .copied()
                         .unwrap_or(0.0);
-                    let pd = joint.actuator_kp * (q_target - q)
-                        + joint.actuator_kv * (qd_target - qd);
+                    let pd =
+                        joint.actuator_kp * (q_target - q) + joint.actuator_kv * (qd_target - qd);
                     // Gravity feedforward: the PD now only has to correct
                     // tracking error, not also fight the joint's static
                     // load. This drops the static error from `τ_grav / Kp`
@@ -1037,8 +1043,7 @@ impl MujocoSim {
                     pd + grav + tau_ff
                 }
                 ActuatorMode::Velocity => {
-                    let mut qd_target =
-                        self.velocity_targets.get(ji).copied().unwrap_or(0.0);
+                    let mut qd_target = self.velocity_targets.get(ji).copied().unwrap_or(0.0);
                     if enforce_limits && joint.velocity > 0.0 {
                         // Clamp the velocity reference to the joint's rated
                         // q̇max so the controller doesn't ask for an
@@ -1065,15 +1070,14 @@ impl MujocoSim {
                     // The first two terms come from `computed_torque_ff` (one
                     // rnea call covers the whole robot); the PD residual
                     // corrects for modelling error and tracks pose deviations.
-                    let q_target =
-                        self.position_targets.get(ji).copied().unwrap_or(q);
+                    let q_target = self.position_targets.get(ji).copied().unwrap_or(q);
                     let qd_target = self
                         .position_target_velocities
                         .get(ji)
                         .copied()
                         .unwrap_or(0.0);
-                    let pd = joint.actuator_kp * (q_target - q)
-                        + joint.actuator_kv * (qd_target - qd);
+                    let pd =
+                        joint.actuator_kp * (q_target - q) + joint.actuator_kv * (qd_target - qd);
                     let ff = computed_torque_ff
                         .as_ref()
                         .and_then(|t| t.get(ji))
@@ -1276,11 +1280,17 @@ impl MujocoSim {
                 f_local[0] * n[1] + f_local[1] * t1[1] + f_local[2] * t2[1],
                 f_local[0] * n[2] + f_local[1] * t1[2] + f_local[2] * t2[2],
             ];
+            let tw = [
+                f_local[3] * n[0] + f_local[4] * t1[0] + f_local[5] * t2[0],
+                f_local[3] * n[1] + f_local[4] * t1[1] + f_local[5] * t2[1],
+                f_local[3] * n[2] + f_local[4] * t1[2] + f_local[5] * t2[2],
+            ];
             let mag = (fw[0] * fw[0] + fw[1] * fw[1] + fw[2] * fw[2]).sqrt();
             out.push(ContactInfo {
                 pos: [c.pos[0], c.pos[1], c.pos[2]],
                 force_mag: mag,
                 force_world: fw,
+                torque_world: tw,
                 body1: geom_to_body_name(c.geom1),
                 body2: geom_to_body_name(c.geom2),
             });
@@ -1325,11 +1335,22 @@ impl MujocoSim {
         out
     }
 
+    /// Plant ground truth for the centroidal momentum of the subtree rooted at
+    /// `body_link` (the whole robot for its root link): `(angular momentum
+    /// about the subtree CoM [kg m^2/s], subtree CoM velocity [m/s])`, from
+    /// `mj_subtreeVel`. For checking a controller model's own momentum.
+    pub fn subtree_momentum(&mut self, body_link: &str) -> Option<([f64; 3], [f64; 3])> {
+        let id = self.model.name_to_id(mujoco::prelude::MjtObj::mjOBJ_BODY, body_link)?;
+        self.data.subtree_vel();
+        let am = self.data.subtree_angmom()[id];
+        let lv = self.data.subtree_linvel()[id];
+        Some(([am[0], am[1], am[2]], [lv[0], lv[1], lv[2]]))
+    }
+
     /// MuJoCo's native physics timestep (s).
     pub fn timestep(&self) -> f64 {
         self.model.ffi().opt.timestep as f64
     }
-
 
     /// MuJoCo's generalised constraint force `qfrc_constraint` (length
     /// `nv`) — contacts, joint limits, equality constraints.
@@ -1381,11 +1402,7 @@ impl MujocoSim {
         // SAFETY: `dst` is exactly nv*nv long, which is what `mj_fullM`
         // writes for this model, and `qM` is MuJoCo's own live buffer.
         unsafe {
-            mujoco::mujoco_c::mj_fullM(
-                self.model.ffi(),
-                dst.as_mut_ptr(),
-                self.data.ffi().qM,
-            );
+            mujoco::mujoco_c::mj_fullM(self.model.ffi(), dst.as_mut_ptr(), self.data.ffi().qM);
         }
         dst
     }
@@ -1438,8 +1455,7 @@ impl MujocoSim {
         }
         let rate_hz = n_steps as f64 / wall_elapsed_s;
         let a = self.realized_step_rate_alpha;
-        self.realized_step_rate_hz_ema =
-            a * rate_hz + (1.0 - a) * self.realized_step_rate_hz_ema;
+        self.realized_step_rate_hz_ema = a * rate_hz + (1.0 - a) * self.realized_step_rate_hz_ema;
     }
 
     /// Observed world-frame linear velocity of `body_link` (m/s).
@@ -1542,10 +1558,7 @@ impl MujocoSim {
     /// the WBC pipeline to sync the misarta floating-base `q[3..7]`
     /// (so gravity-comp and Coriolis terms reflect the actual body
     /// tilt, not a synthetic identity orientation).
-    pub fn body_world_orientation(
-        &self,
-        body_link: &str,
-    ) -> Option<nalgebra::UnitQuaternion<f64>> {
+    pub fn body_world_orientation(&self, body_link: &str) -> Option<nalgebra::UnitQuaternion<f64>> {
         let id = self
             .model
             .name_to_id(mujoco::prelude::MjtObj::mjOBJ_BODY, body_link)?;
@@ -1565,8 +1578,8 @@ impl MujocoSim {
         let xquat = self.data.xquat();
         let q = &xquat[id];
         // yaw = atan2(2(w·z + x·y), 1 − 2(y² + z²)) (ZYX Euler).
-        let yaw = (2.0 * (q[0] * q[3] + q[1] * q[2]))
-            .atan2(1.0 - 2.0 * (q[2] * q[2] + q[3] * q[3]));
+        let yaw =
+            (2.0 * (q[0] * q[3] + q[1] * q[2])).atan2(1.0 - 2.0 * (q[2] * q[2] + q[3] * q[3]));
         Some(yaw)
     }
 
@@ -1832,7 +1845,9 @@ impl MujocoSim {
             // SAFETY: Writing the scalar `time` field on the FFI struct is a
             // simple memory store — no MuJoCo invariants depend on the value
             // beyond the next call to `data.forward()` below.
-            unsafe { self.data.ffi_mut().time = snap.time; }
+            unsafe {
+                self.data.ffi_mut().time = snap.time;
+            }
             popped += 1;
         }
         if popped > 0 {
@@ -1869,7 +1884,8 @@ impl MujocoSim {
             let translation = na::Translation3::new(view.xpos[0], view.xpos[1], view.xpos[2]);
             // MuJoCo stores quaternions in (w, x, y, z) order, matching
             // nalgebra's `Quaternion::new(w, i, j, k)` constructor.
-            let quat = na::Quaternion::new(view.xquat[0], view.xquat[1], view.xquat[2], view.xquat[3]);
+            let quat =
+                na::Quaternion::new(view.xquat[0], view.xquat[1], view.xquat[2], view.xquat[3]);
             let rotation = na::UnitQuaternion::from_quaternion(quat);
             robot.base_transform = na::Isometry3::from_parts(translation, rotation);
         }
@@ -1937,9 +1953,8 @@ pub fn save_peaks_csv(
 
     let mut f = std::fs::File::create(path).map_err(|e| format!("{e}"))?;
 
-    let mut header = String::from(
-        "time_s,base_px,base_py,base_pz,base_qw,base_qx,base_qy,base_qz,base_yaw",
-    );
+    let mut header =
+        String::from("time_s,base_px,base_py,base_pz,base_qw,base_qx,base_qy,base_qz,base_yaw");
     for (_, name) in &movable {
         header.push(',');
         header.push_str(&csv_field(&format!("q[{name}]")));
@@ -1958,8 +1973,7 @@ pub fn save_peaks_csv(
         let q = frame.base_quat.unwrap_or([f64::NAN; 4]);
         let yaw = match frame.base_quat {
             Some([qw, qx, qy, qz]) => {
-                (2.0 * (qw * qz + qx * qy))
-                    .atan2(1.0 - 2.0 * (qy * qy + qz * qz))
+                (2.0 * (qw * qz + qx * qy)).atan2(1.0 - 2.0 * (qy * qy + qz * qz))
             }
             None => f64::NAN,
         };

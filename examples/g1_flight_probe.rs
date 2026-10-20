@@ -129,6 +129,14 @@ fn main() {
     // is empty (the flight tasks take over) until a foot is loaded again
     // after both have left the ground.
     let jump_v = env_f64("JUMP_V", 0.0);
+    // DIAG_H=1: decompose the pitch angular momentum through the jump. The
+    // only thing that changes the total is the ground's moment about the
+    // CoM, M_y = -z_c f_x - (x_cop - x_c) f_z (horizontal force x height,
+    // CoP offset x vertical force), integrated from the crouch; and the CMM
+    // row split by joint group says which motions carry it.
+    let diag_h = flag("DIAG_H", false);
+    let mut h_int = [0.0_f64; 2]; // [horizontal-force part, CoP-offset part]
+    let mut h_start: Option<f64> = None;
     // JUMP_PUSH_R: the push acceleration falls linearly to R times its start
     // value, keeping the push distance and the take-off speed (R = 1 = the
     // constant acceleration). The leg's vertical authority falls as it
@@ -369,6 +377,48 @@ fn main() {
             println!("  [push] t={t:.3} com x {:+.4} z {:.4} vz {:+.3} h_y {:+.3} pitch {pch:+.4} cop_x L {:+.4} R {:+.4} fz {:.0} {:.0} foot x {fx:+.4}",
                 com.x, com.z, com_vel.z, h[1], measured.cop[0][0], measured.cop[1][0], measured.cop[0][2], measured.cop[1][2]);
         }
+        if diag_h && jump_v > 0.0 && t >= t_launch {
+            let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
+            let mut grp = [0.0_f64; 5]; // base, left leg, right leg, waist, arms
+            for c in 0..nv {
+                let g = if c < 6 {
+                    0
+                } else {
+                    let name = rig.actuated().iter().find(|&&(_, vi)| vi == c).map(|&(ji, _)| rig.robot.joints[ji].name.as_str()).unwrap_or("");
+                    if name.starts_with("left_") && (name.contains("hip") || name.contains("knee") || name.contains("ankle")) {
+                        1
+                    } else if name.starts_with("right_") && (name.contains("hip") || name.contains("knee") || name.contains("ankle")) {
+                        2
+                    } else if name.contains("waist") || name.contains("torso") {
+                        3
+                    } else {
+                        4
+                    }
+                };
+                grp[g] += cmm[(1, c)] * v[c];
+            }
+            let h_y: f64 = grp.iter().sum();
+            let (plant_h, plant_vx, plant_vz) = rig.sim.subtree_momentum(&rig.robot.root_link).map_or((f64::NAN, f64::NAN, f64::NAN), |(am, lv)| (am[1], lv[0], lv[2]));
+            let h0 = *h_start.get_or_insert(h_y);
+            if !flight {
+                for k in 0..2 {
+                    let f = measured.f_w[k];
+                    if f[2] > 0.0 {
+                        let px = measured.patch_w[k][0];
+                        h_int[0] += -com.z * f[0] * dt;
+                        h_int[1] += -(px - com.x) * f[2] * dt;
+                    }
+                }
+            }
+            if tick % 5 == 0 && push_end.map_or(true, |te| t < te + 0.05) && t >= t_launch + jump_t_crouch + jump_t_hold - 0.05 {
+                println!(
+                    "  [h] t={t:.3} {} h_y {:+.3} plant {plant_h:+.3} vcom model ({:+.3},{:+.3}) plant ({plant_vx:+.3},{plant_vz:+.3}) (d {:+.3}; ground int: fx*h {:+.3} cop*fz {:+.3} sum {:+.3}) | base {:+.3} Lleg {:+.3} Rleg {:+.3} waist {:+.3} arms {:+.3} | fz {:.0} {:.0} fx {:+.1} {:+.1}",
+                    if flight { "AIR" } else { "GND" }, h_y, com_vel.x, com_vel.z, h_y - h0, h_int[0], h_int[1], h_int[0] + h_int[1],
+                    grp[0], grp[1], grp[2], grp[3], grp[4],
+                    measured.f_w[0][2], measured.f_w[1][2], measured.f_w[0][0], measured.f_w[1][0]
+                );
+            }
+        }
         // ---- QP -------------------------------------------------------------
         let (j_contact, dj_v) = contact_jacobians(&rig.model, q, v, data, v_dvec, &stance, nv);
         let dyn_ctx = Dynamics::new(Formulation::Explicit, &st.mass, &st.h, &j_contact, na_count);
@@ -528,13 +578,17 @@ fn main() {
         if weighted {
             let nd = levels[0].n_decision();
             for (lvl, name) in levels.iter_mut().zip(&names).skip(1) {
+                // WBCW_TRUNK_PUSH: the trunk weight during the push and the
+                // release only (default = WBCW_TRUNK).
+                let in_push = jump_v > 0.0 && !flight && push_end.is_none() && t >= t_launch + jump_t_crouch + jump_t_hold;
                 let w = match *name {
-                    "com" => 1.0,
+                    "com" => env_f64("WBCW_COM", 1.0),
                     "flight feet" => flight_feet_w,
                     "momentum" => mom_w,
                     "contact+cones" => env_f64("WBCW_CONTACT", 0.1),
-                    "trunk" => 0.3,
-                    "posture" => 0.01,
+                    "trunk" if in_push => env_f64("WBCW_TRUNK_PUSH", env_f64("WBCW_TRUNK", 0.3)),
+                    "trunk" => env_f64("WBCW_TRUNK", 0.3),
+                    "posture" => env_f64("WBCW_POSTURE", 0.01),
                     "regularise" => 1e-4,
                     _ => 0.1,
                 };
