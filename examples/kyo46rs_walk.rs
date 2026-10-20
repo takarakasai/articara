@@ -4042,6 +4042,8 @@ fn main() {
     // DIAG_REPLAN=1: print each live replan with its site (diagnostic only).
     let diag_replan = flag("DIAG_REPLAN", false);
     let push_replan_slope_lead = env_f64("PUSH_REPLAN_SLOPE_LEAD", 0.0).max(0.0);
+    let ref_slope_gate = flag("REF_SLOPE_GATE", false);
+    let ref_slope_lead = env_f64("REF_SLOPE_LEAD", 0.0);
     let mut n_corrected = 0u32;
 
     // ankle_roll range of motion. The model review measured that holding the
@@ -6956,10 +6958,22 @@ fn main() {
         // Engage a recovery reference: on request from the push harness
         // (REF_TRIG_AT_PUSH) or when the DCM error toward the STANCE side
         // exceeds REF_TRIG_DCM in single support (the detector).
+        // REF_SLOPE_GATE=1: no recovery reference on a known slope (from
+        // REF_SLOPE_LEAD before its start to its end). The references are
+        // recorded on flat ground; measured 2026-10-20 on the +3 deg slope
+        // pushes, a reference engaged on the slope was followed by a fall in
+        // 49 of 52 members. 0 = off.
         if ref_any
             && ref_mode.is_none()
             && t >= ref_cooldown_until
             && slice_frac <= ref_trig_max_frac
+            && !(ref_slope_gate
+                && stairs.as_ref().is_some_and(|st| {
+                    st.n == 0
+                        && st.slope != 0.0
+                        && com.x >= st.start - ref_slope_lead
+                        && com.x <= st.start + st.slope_len
+                }))
             && let Support::Single { stance, swing } = support
         {
             let lateral = (xi - r.xi).y * if stance == 0 { 1.0 } else { -1.0 };
