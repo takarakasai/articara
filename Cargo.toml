@@ -20,6 +20,13 @@ scripting = ["dep:rhai"]
 # this adds no DDS/C toolchain dependency.
 viz = ["quadruped-gait/viz-sub"]
 policy-sim = ["dep:policy-runtime"]
+# Optional native solver benchmark integrations.
+qp-proxqp = ["misa-wbc/proxqp"]
+qp-eiquadprog = ["misa-wbc/eiquadprog"]
+qp-qpoases = ["misa-wbc/qpoases"]
+qp-osqp = ["misa-wbc/osqp"]
+qp-hpipm = ["misa-wbc/hpipm"]
+qp-native = ["qp-proxqp", "qp-eiquadprog", "qp-qpoases", "qp-osqp", "qp-hpipm"]
 
 # The GUI binary and several examples only build with specific features.
 # Declaring required-features lets `cargo build/test` with other feature
@@ -159,7 +166,7 @@ approx = "0.5"
 serde_json = "1"
 
 [workspace]
-members = [".", "xtask"]
+members = [".", "xtask", "vendor/misa-wbc"]
 
 
 [[example]]
@@ -169,3 +176,19 @@ required-features = ["mujoco"]
 [[example]]
 name = "kyo46rs_leg_conditioning"
 required-features = ["mujoco"]
+
+[[example]]
+name = "g1_reference_check"
+required-features = ["mujoco"]
+
+[[example]]
+name = "g1_reference_track"
+required-features = ["mujoco"]
+
+[[example]]
+name = "g1_flight_probe"
+required-features = ["mujoco"]
+
+# Isolated solver comparison copy; upstream base recorded in vendor/misa-wbc/UPSTREAM.md.
+[patch."https://github.com/takarakasai/misa-wbc.git"]
+misa-wbc = { path = "vendor/misa-wbc" }
