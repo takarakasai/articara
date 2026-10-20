@@ -1096,7 +1096,8 @@ def main():
     # log is 200 Hz; decimate to FPS
     stride = max(1, int(round((1.0 / 200) / (1.0 / FPS) ** -1 * 1)) )
     dt = float(rows[1]["t"]) - float(rows[0]["t"])
-    stride = max(1, int(round((1.0 / FPS) / dt)))
+    # SLOWMO=0.25 plays at quarter speed (more logged ticks per second of video).
+    stride = max(1, int(round((1.0 / FPS) / dt * float(os.environ.get("SLOWMO", 1.0)))))
     sel = rows[::stride]
     print(f"dt={dt:.4f}s -> stride {stride} -> {len(sel)} frames @ {FPS}fps")
 

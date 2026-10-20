@@ -29,7 +29,7 @@
 fn main() {
     use articara::biped::actuate::{CommandPolicy, DegradedTally, gravity_plus_posture, write_to_plant};
     use articara::biped::contact::{Anchors, contact_jacobians};
-    use articara::biped::log::measure_contacts;
+    use articara::biped::log::{Row, TrajLog, measure_contacts};
     use articara::biped::profile;
     use articara::biped::rig::{BipedRig, CtrlMode, G, RigOptions};
     use articara::biped::tasks as bt;
@@ -96,6 +96,38 @@ fn main() {
     let t_launch = env_f64("T_LAUNCH", 2.0);
     let launch_v = env_f64("LAUNCH_V", 1.0);
     let launch_dur = env_f64("LAUNCH_DUR", 0.10).max(1e-3);
+    // JUMP_V > 0: a self-propelled vertical jump instead of the pelvis force.
+    // From T_LAUNCH: crouch CROUCH m below the stand height over JUMP_T_CROUCH
+    // s (quintic), hold JUMP_T_HOLD s, then accelerate the CoM upward at a
+    // constant rate so that it reaches JUMP_V m/s at JUMP_Z_TO m relative to
+    // the stand height, and from that tick schedule flight: the contact set
+    // is empty (the flight tasks take over) until a foot is loaded again
+    // after both have left the ground.
+    let jump_v = env_f64("JUMP_V", 0.0);
+    // MOM_TASK=1: in stance, drive the centroidal angular momentum to zero
+    // (dh = -KP_MOM h, weight WBCW_MOMENTUM, default 0.1 as in the walker).
+    // Measured 2026-10-21: the push-off without it left the jump with
+    // h_y = +5.2 kg m^2/s, the body pitched forward in flight and landed on
+    // one foot 9 cm behind the CoM.
+    let mom_task = flag("MOM_TASK", false);
+    let kp_mom = env_f64("KP_MOM", 20.0);
+    let mom_w = env_f64("WBCW_MOMENTUM", 0.1);
+    let crouch = env_f64("CROUCH", 0.12);
+    let jump_t_crouch = env_f64("JUMP_T_CROUCH", 0.8).max(0.05);
+    let jump_t_hold = env_f64("JUMP_T_HOLD", 0.3).max(0.0);
+    let jump_z_to = env_f64("JUMP_Z_TO", 0.02);
+    let mut push_end: Option<f64> = None;
+    // JUMP_RELEASE=1: after the push reaches JUMP_V, command the CoM to fall
+    // at g (zero ground force) with the contact rows still in, and enter
+    // flight only when both feet are measured unloaded (or after
+    // JUMP_T_RELEASE s). Measured 2026-10-21: scheduling flight at the end of
+    // the push, with the feet still pressing, put h_y = +5 kg m^2/s into the
+    // jump in the first 25 ms.
+    let jump_release = flag("JUMP_RELEASE", false);
+    let jump_t_release = env_f64("JUMP_T_RELEASE", 0.08).max(0.0);
+    let mut release_t0: Option<(f64, f64, f64)> = None;
+    let mut air_sched = false;
+    let mut left_ground = false;
     let f_on = env_f64("F_ON", 0.05 * weight);
     let on_ticks = env_f64("ON_TICKS", 2.0) as u32;
     // Touchdown is admitted after LAND_TICKS loaded ticks (lift-off keeps
@@ -165,6 +197,8 @@ fn main() {
     let mut policy = CommandPolicy::new(rig.robot.joints.len(), 999, 8, false, 0);
     let mut tally = DegradedTally::new();
     let mut anchors = Anchors::new();
+    // TRAJ_CSV: the walker's trajectory format, for render_com_squat_video.py.
+    let mut log = TrajLog::create(std::env::var("TRAJ_CSV").ok(), prof.log_joints.to_vec(), &["flight", "com_vz"]);
 
     // Contact state from the measured load, with hysteresis per foot.
     let mut in_contact = [true, true];
@@ -193,7 +227,7 @@ fn main() {
         let com_vel = st.com_vel;
         let stand_z = *stand_z.get_or_insert(com.z);
 
-        if !launched && t >= t_launch {
+        if jump_v <= 0.0 && !launched && t >= t_launch {
             launched = true;
             let fz = weight + total_mass * launch_v / launch_dur;
             // MuJoCo applies xfrc_applied at the pelvis' own CoM, not the
@@ -233,6 +267,26 @@ fn main() {
                 flip_count[s] = 0;
             }
         }
+        if air_sched {
+            let unloaded = measured.cop[0][2] <= f_on && measured.cop[1][2] <= f_on;
+            left_ground |= unloaded;
+            let loaded = (0..2).any(|k| measured.cop[k][2] > f_on);
+            if left_ground && loaded {
+                air_sched = false;
+                for k in 0..2 {
+                    in_contact[k] = measured.cop[k][2] > f_on;
+                    flip_count[k] = 0;
+                }
+            } else {
+                for k in 0..2 {
+                    if in_contact[k] {
+                        anchors.release(k);
+                    }
+                    in_contact[k] = false;
+                    flip_count[k] = 0;
+                }
+            }
+        }
         let stance: Vec<usize> = (0..2).filter(|&s| in_contact[s]).map(|s| feet[s]).collect();
         let nc = stance.len();
         let flight = nc == 0;
@@ -242,7 +296,11 @@ fn main() {
                 h_ang0 = None;
                 feet_off = Some(std::array::from_fn(|k| misarta::se3::translation(&data.oMi[feet[k]]) - com));
                 let fx: Vec<String> = (0..2).map(|k| format!("{:+.3}", misarta::se3::translation(&data.oMi[feet[k]]).x)).collect();
-                println!("  [lift-off] t={t:.3} com ({:+.3}, z {:.4}) v ({:+.3}, {:+.3}), foot x {:?}", com.x, com.z, com_vel.x, com_vel.z, fx);
+                let fz: Vec<String> = (0..2).map(|k| format!("{:+.3}", misarta::se3::translation(&data.oMi[feet[k]]).z)).collect();
+                let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
+                let h = &cmm * v_dvec;
+                let (r, pch, _) = st.body_quat.euler_angles();
+                println!("  [lift-off] t={t:.3} com ({:+.3}, z {:.4}) v ({:+.3}, {:+.3}), foot x {:?} z {:?}, h_ang ({:+.3},{:+.3},{:+.3}), roll {r:+.3} pitch {pch:+.3}", com.x, com.z, com_vel.x, com_vel.z, fx, fz, h[0], h[1], h[2]);
             }
             (false, Some(t0)) => {
                 flight_spans.push((t0, t));
@@ -262,6 +320,14 @@ fn main() {
         }
         let c_ref = *com_ref.get_or_insert(com);
 
+        if verbose && jump_v > 0.0 && !flight && t >= t_launch && push_end.is_none() {
+            let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
+            let h = &cmm * v_dvec;
+            let (_, pch, _) = st.body_quat.euler_angles();
+            let fx = misarta::se3::translation(&data.oMi[feet[0]]).x;
+            println!("  [push] t={t:.3} com x {:+.4} z {:.4} vz {:+.3} h_y {:+.3} pitch {pch:+.4} cop_x L {:+.4} R {:+.4} fz {:.0} {:.0} foot x {fx:+.4}",
+                com.x, com.z, com_vel.z, h[1], measured.cop[0][0], measured.cop[1][0], measured.cop[0][2], measured.cop[1][2]);
+        }
         // ---- QP -------------------------------------------------------------
         let (j_contact, dj_v) = contact_jacobians(&rig.model, q, v, data, v_dvec, &stance, nv);
         let dyn_ctx = Dynamics::new(Formulation::Explicit, &st.mass, &st.h, &j_contact, na_count);
@@ -304,6 +370,41 @@ fn main() {
                     }
                     (c, cd, cdd)
                 }
+                None if jump_v > 0.0 && t >= t_launch && push_end.is_none() => {
+                    // crouch, hold, push off
+                    let z_low = stand_z - crouch;
+                    let s = t - t_launch;
+                    let (mut z, mut vz, mut az) = quintic(stand_z, 0.0, z_low, jump_t_crouch, s);
+                    let s_push = s - jump_t_crouch - jump_t_hold;
+                    if s_push > 0.0 {
+                        let dz = stand_z + jump_z_to - z_low;
+                        let a = jump_v * jump_v / (2.0 * dz);
+                        let t_push = jump_v / a;
+                        z = z_low + 0.5 * a * s_push * s_push;
+                        vz = a * s_push;
+                        az = a;
+                        if s_push >= t_push && jump_release {
+                            let (t0, z0, v0) = *release_t0.get_or_insert((t, z, vz));
+                            let sr = t - t0;
+                            z = z0 + v0 * sr - 0.5 * G * sr * sr;
+                            vz = v0 - G * sr;
+                            az = -G;
+                            let unloaded = measured.cop[0][2] <= f_on && measured.cop[1][2] <= f_on;
+                            if unloaded || sr >= jump_t_release {
+                                push_end = Some(t);
+                                air_sched = true;
+                                left_ground = false;
+                                println!("  [release] t={t:.3} after {sr:.3} s ({})", if unloaded { "feet unloaded" } else { "timeout" });
+                            }
+                        } else if s_push >= t_push {
+                            push_end = Some(t);
+                            air_sched = true;
+                            left_ground = false;
+                            println!("  [take-off] t={t:.3} scheduled flight: com z {:.4} vz {:+.3} (ref {:.4} {:+.3}), push {t_push:.3} s at {a:.2} m/s^2", com.z, com_vel.z, z, vz);
+                        }
+                    }
+                    (na::Vector3::new(c_ref.x, c_ref.y, z), na::Vector3::new(0.0, 0.0, vz), na::Vector3::new(0.0, 0.0, az))
+                }
                 None => (c_ref, na::Vector3::zeros(), na::Vector3::zeros()),
             };
             let a_com = cdd_ref + kd_com * (cd_ref - com_vel) + kp_com * (c_ref - com);
@@ -324,6 +425,17 @@ fn main() {
                 kp_post, kd_post, na_count, nv,
             ));
             names.push("posture");
+        }
+        if !flight && mom_task {
+            let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
+            let dcmm_v = misarta::centroidal::compute_cmm_dot_times_v(&rig.model, q, v);
+            let h_now = na::DVector::from_column_slice((&cmm * v_dvec).as_slice());
+            let dcmm_v = na::DVector::from_column_slice(dcmm_v.as_slice());
+            let cmm = na::DMatrix::from_column_slice(cmm.nrows(), cmm.ncols(), cmm.as_slice());
+            if let Some(tk) = bt::angular_momentum(dyn_ctx.qddot(), &cmm, &dcmm_v, &h_now, &[0.0; 3], &[0.0; 3], kp_mom, [true; 3], nv) {
+                levels.push(tk);
+                names.push("momentum");
+            }
         }
         if flight && flight_feet && let Some(off) = feet_off {
             for k in 0..2 {
@@ -353,6 +465,8 @@ fn main() {
                 let w = match *name {
                     "com" => 1.0,
                     "flight feet" => flight_feet_w,
+                    "momentum" => mom_w,
+                    "contact+cones" => env_f64("WBCW_CONTACT", 0.1),
                     "trunk" => 0.3,
                     "posture" => 0.01,
                     "regularise" => 1e-4,
@@ -366,6 +480,14 @@ fn main() {
         tally.observe(&sol.status, t, tick, nc, &names);
         let ex = dyn_ctx.extract(&sol.x);
 
+        if verbose && jump_v > 0.0 && !flight && t >= t_launch && push_end.is_none() && tick % 5 == 0 {
+            let mut use_j: Vec<(f64, String)> = rig.actuated().iter().map(|&(ji, vi)| {
+                let tm = rig.torque_max[vi - 6];
+                (if tm > 0.0 { ex.tau[vi - 6].abs() / tm } else { 0.0 }, format!("{}={:+.0}/{:.0}", rig.robot.joints[ji].name.replace("_joint", ""), ex.tau[vi - 6], tm))
+            }).collect();
+            use_j.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+            println!("  [tau] t={t:.3} {}", use_j.iter().take(4).map(|x| format!("{} ({:.2})", x.1, x.0)).collect::<Vec<_>>().join("  "));
+        }
         // ---- flight diagnostics --------------------------------------------
         // Stats only once the launch force is off: while it acts, the CoM is
         // not ballistic and the pelvis force puts a torque about the CoM.
@@ -439,6 +561,33 @@ fn main() {
             let tg = &tau_gravity;
             let fallback = move |out: &mut [f64]| gravity_plus_posture(rig_ref, tg, v, hold_kp, hold_kd, out);
             policy.apply(&sol.status, &mut robot_taus, t, dt, nc.max(1), &fallback);
+        }
+        if log.is_enabled() {
+            let foot_z = rig.sim.body_world_position(prof.foot_links[0]).unwrap()[2];
+            let swing_z = rig.sim.body_world_position(prof.foot_links[1]).unwrap()[2];
+            let row = Row {
+                t,
+                com,
+                com_ref_z: c_ref.z,
+                com_ref_y: c_ref.y,
+                tilt: roll.abs().max(pitch.abs()),
+                trunk_tilt: roll.abs().max(pitch.abs()),
+                n_stance: nc,
+                foot_z,
+                swing_z,
+                foot_vz: 0.0,
+                acc_dbg: [0.0; 2],
+                a_com: na::Vector3::zeros(),
+                rp_ref: [0.0; 2],
+                degraded: !matches!(sol.status, misa_wbc::SolveStatus::Optimal),
+                cop_box: (sole_half_l, sole_half_w),
+                cop_qp: [[0.0; 3]; 2],
+                f_qp_w: [[0.0; 3]; 2],
+                measured: &measured,
+                taus: &robot_taus,
+                extra: &[if flight { 1.0 } else { 0.0 }, com_vel.z],
+            };
+            log.write(&rig, &row);
         }
         write_to_plant(&mut rig, ctrl_mode, &robot_taus, &ex.qddot, v, dt);
         rig.step(mj_substeps);
