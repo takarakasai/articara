@@ -2998,6 +2998,7 @@ fn main() {
     // hovered 7 mm above the surface with no load, then the stance rolled).
     // Off = shipped, bit-identical.
     let terrain_pitch = flag("TERRAIN_PITCH", false);
+    let terrain_pitch_yaw = flag("TERRAIN_PITCH_YAW", false);
     landing_timing.dz_min = step_dz_min;
     // Landing-deadline slack for a swing that steps DOWN. Default = the rise
     // value (bit-identical). Measured 2026-10-03 on a 60 mm descent: the
@@ -10430,7 +10431,9 @@ fn main() {
                     } else if terrain_pitch
                         && stairs.as_ref().is_some_and(|st| st.pitch_at(footsteps.at_slice(plan_slice_idx).sole[side].x) != 0.0)
                     {
-                        bt::SwingAxes::XyzRollPitch
+                        // TERRAIN_PITCH_YAW=1: keep the walking default's yaw
+                        // and add pitch only, roll free (see SwingAxes::XyzYawPitch).
+                        if terrain_pitch_yaw { bt::SwingAxes::XyzYawPitch } else { bt::SwingAxes::XyzRollPitch }
                     } else if toe_up_shape(swing_fraction) > 0.0 {
                         bt::SwingAxes::XyzRollPitch
                     } else {

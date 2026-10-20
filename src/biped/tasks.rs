@@ -7,10 +7,10 @@
 //! and reference are built, so that two drivers (squat and walk) cannot drift
 //! apart in the details.
 
-use misa_wbc::{tasks as wt, AsAffine, Affine, Dynamics, Task};
+use misa_wbc::{Affine, AsAffine, Dynamics, Task, tasks as wt};
 use nalgebra as na;
 
-use super::contact::{sole_selection, Anchors};
+use super::contact::{Anchors, sole_selection};
 
 /// P1: track a CoM acceleration reference.
 pub fn com(
@@ -136,7 +136,11 @@ pub fn trunk_ori_ref(
     let r_des = na::UnitQuaternion::from_euler_angles(0.0, 0.0, yaw_des);
     let e = (r_des * r_body.inverse()).scaled_axis();
     let dead = |v: f64| {
-        if v.abs() <= gains.deadband { 0.0 } else { v - gains.deadband * v.signum() }
+        if v.abs() <= gains.deadband {
+            0.0
+        } else {
+            v - gains.deadband * v.signum()
+        }
     };
     [
         gains.sign * (gains.kp * dead(e[0]) - gains.kd * omega_world[0]),
@@ -176,11 +180,34 @@ pub struct TrunkGains {
 /// single-support entry was 0.178, and that one is inside what the arms can
 /// produce. Which of the two numbers this task has to beat is exactly what
 /// was never measured.
+/// `h_ref` is the angular momentum this task should TRACK, not suppress.
+///
+/// With `h_ref = 0` the task says "do not let angular momentum exist", which
+/// is what it said before this parameter was added, and which locomotion
+/// cannot satisfy: legs swinging produce angular momentum by construction, so
+/// the solver spends the cheapest joints it has -- the arms -- cancelling
+/// them. Measured on the free-arm G1 (doc/from_claude/20260920_bdi_task_structure.md):
+/// enabling this task at all took arm travel from 1.8 deg to 170-295 deg
+/// during a SQUAT, and sweeping `kp` over 60x did not change it, because the
+/// reference, not the gain, is what forbids the motion.
+///
+/// Boston Dynamics describe the opposite: angular momentum is a quantity their
+/// MPC plans, which is what lets Atlas "move its arms and legs to change its
+/// inertia" -- tuck to rotate faster, spread to slow down. That behaviour is
+/// only expressible if something asks for a particular h(t).
 pub fn angular_momentum(
     qddot: &Affine,
     cmm: &na::DMatrix<f64>,
     dcmm_v: &na::DVector<f64>,
     h_now: &na::DVector<f64>,
+    h_ref: &[f64; 3],
+    // Planned rate of change, fed FORWARD. `-K(h - h_ref)` alone can only
+    // correct an error that has already happened; a reference that moves needs
+    // the plan's own `dh`, or the task lags it by construction. Codex raised
+    // this against the h_ref-only form and they are right: their A2 reference
+    // carries `h` and `dh` at 5701 nodes precisely so both terms can be
+    // supplied. Zero here reproduces the P-only behaviour exactly.
+    dh_ref: &[f64; 3],
     kp: f64,
     axes: [bool; 3],
     nv: usize,
@@ -195,7 +222,7 @@ pub fn angular_momentum(
     for (r, &i) in rows.iter().enumerate() {
         j.row_mut(r).copy_from(&cmm.row(i));
         bias[r] = dcmm_v[i];
-        href[r] = -kp * h_now[i];
+        href[r] = dh_ref[i] - kp * (h_now[i] - h_ref[i]);
     }
     Some(wt::cartesian_acceleration(qddot, &j, &bias, &href))
 }
@@ -279,6 +306,16 @@ pub enum SwingAxes {
     /// six-row swing task drops the robot in one or two steps at every gain
     /// tried. Yaw is the DoF that actually ran away.
     XyzYaw,
+    /// Position plus roll and pitch, five rows. Stair climbing needs the sole
+    /// kept flat, while leaving yaw free preserves one leg redundancy.
+    XyzRollPitch,
+    /// Position plus yaw and pitch, five rows: the walking default (XyzYaw)
+    /// with the sole's pitch added, roll left free. For a known slope, where
+    /// the landing needs the sole pitched to the surface but the push
+    /// recovery was tuned with yaw held and roll free (measured 2026-10-20:
+    /// XyzRollPitch on the +3 deg slope pushes cost the forward 11 N.s
+    /// 44 -> 28 against no orientation tracking).
+    XyzYawPitch,
     /// Position AND orientation, six rows.
     ///
     /// Leaving the swing foot's three ROTATIONAL DoF unconstrained is the same
@@ -310,7 +347,9 @@ pub fn swing(
     kd: f64,
     axes: SwingAxes,
 ) -> Task {
-    swing_with_pose(qddot, j_foot, djv, pos, vel, target, target_vel, kp_xy, kp_z, kd, axes, None)
+    swing_with_pose(
+        qddot, j_foot, djv, pos, vel, target, target_vel, kp_xy, kp_z, kd, axes, None,
+    )
 }
 
 /// [`swing`] with an optional orientation target for [`SwingAxes::Pose`].
@@ -340,11 +379,54 @@ pub fn swing_with_pose(
         f64,
     )>,
 ) -> Task {
-    let a = na::Vector3::new(
-        kp_xy * (target.x - pos.x) + kd * (target_vel.x - vel.x),
-        kp_xy * (target.y - pos.y) + kd * (target_vel.y - vel.y),
-        kp_z * (target.z - pos.z) + kd * (target_vel.z - vel.z),
-    );
+    swing_with_pose_acceleration(
+        qddot,
+        j_foot,
+        djv,
+        pos,
+        vel,
+        target,
+        target_vel,
+        kp_xy,
+        kp_z,
+        kd,
+        axes,
+        orientation,
+        &na::Vector3::zeros(),
+    )
+}
+
+/// Pose tracking with a planned linear acceleration feedforward, in world
+/// coordinates. The acceleration is combined with feedback before building
+/// misa-wbc's Cartesian acceleration task.
+#[allow(clippy::too_many_arguments)]
+pub fn swing_with_pose_acceleration(
+    qddot: &Affine,
+    j_foot: &na::DMatrix<f64>,
+    djv: &na::DVector<f64>,
+    pos: &na::Vector3<f64>,
+    vel: &na::Vector3<f64>,
+    target: &na::Vector3<f64>,
+    target_vel: &na::Vector3<f64>,
+    kp_xy: f64,
+    kp_z: f64,
+    kd: f64,
+    axes: SwingAxes,
+    orientation: Option<(
+        na::Matrix3<f64>,
+        na::Matrix3<f64>,
+        na::Vector3<f64>,
+        f64,
+        f64,
+    )>,
+    target_acc: &na::Vector3<f64>,
+) -> Task {
+    let a = target_acc
+        + na::Vector3::new(
+            kp_xy * (target.x - pos.x) + kd * (target_vel.x - vel.x),
+            kp_xy * (target.y - pos.y) + kd * (target_vel.y - vel.y),
+            kp_z * (target.z - pos.z) + kd * (target_vel.z - vel.z),
+        );
     match axes {
         SwingAxes::ZOnly => wt::cartesian_acceleration(
             qddot,
@@ -359,8 +441,8 @@ pub fn swing_with_pose(
             &na::DVector::from_vec(vec![a.x, a.y, a.z]),
         ),
         SwingAxes::XyzYaw => {
-            let (rot, rot_tgt, omega, kp_r, kd_r) = orientation
-                .expect("SwingAxes::XyzYaw needs an orientation target");
+            let (rot, rot_tgt, omega, kp_r, kd_r) =
+                orientation.expect("SwingAxes::XyzYaw needs an orientation target");
             let dr = rot_tgt * rot.transpose();
             let e_yaw = (dr[(1, 0)] - dr[(0, 1)]) * 0.5;
             let a_yaw = kp_r * e_yaw - kd_r * omega.z;
@@ -378,9 +460,55 @@ pub fn swing_with_pose(
                 &na::DVector::from_vec(vec![a_yaw, a.x, a.y, a.z]),
             )
         }
+        SwingAxes::XyzRollPitch => {
+            let (rot, rot_tgt, omega, kp_r, kd_r) =
+                orientation.expect("SwingAxes::XyzRollPitch needs an orientation target");
+            let dr = rot_tgt * rot.transpose();
+            let e_roll = (dr[(2, 1)] - dr[(1, 2)]) * 0.5;
+            let e_pitch = (dr[(0, 2)] - dr[(2, 0)]) * 0.5;
+            let a_roll = kp_r * e_roll - kd_r * omega.x;
+            let a_pitch = kp_r * e_pitch - kd_r * omega.y;
+            let mut j = na::DMatrix::zeros(5, j_foot.ncols());
+            for c in 0..j_foot.ncols() {
+                j[(0, c)] = j_foot[(0, c)];
+                j[(1, c)] = j_foot[(1, c)];
+                for r in 0..3 {
+                    j[(2 + r, c)] = j_foot[(3 + r, c)];
+                }
+            }
+            wt::cartesian_acceleration(
+                qddot,
+                &j,
+                &na::DVector::from_vec(vec![djv[0], djv[1], djv[3], djv[4], djv[5]]),
+                &na::DVector::from_vec(vec![a_roll, a_pitch, a.x, a.y, a.z]),
+            )
+        }
+        SwingAxes::XyzYawPitch => {
+            let (rot, rot_tgt, omega, kp_r, kd_r) =
+                orientation.expect("SwingAxes::XyzYawPitch needs an orientation target");
+            let dr = rot_tgt * rot.transpose();
+            let e_pitch = (dr[(0, 2)] - dr[(2, 0)]) * 0.5;
+            let e_yaw = (dr[(1, 0)] - dr[(0, 1)]) * 0.5;
+            let a_pitch = kp_r * e_pitch - kd_r * omega.y;
+            let a_yaw = kp_r * e_yaw - kd_r * omega.z;
+            let mut j = na::DMatrix::zeros(5, j_foot.ncols());
+            for c in 0..j_foot.ncols() {
+                j[(0, c)] = j_foot[(1, c)];
+                j[(1, c)] = j_foot[(2, c)];
+                for r in 0..3 {
+                    j[(2 + r, c)] = j_foot[(3 + r, c)];
+                }
+            }
+            wt::cartesian_acceleration(
+                qddot,
+                &j,
+                &na::DVector::from_vec(vec![djv[1], djv[2], djv[3], djv[4], djv[5]]),
+                &na::DVector::from_vec(vec![a_pitch, a_yaw, a.x, a.y, a.z]),
+            )
+        }
         SwingAxes::Pose => {
-            let (rot, rot_tgt, omega, kp_r, kd_r) = orientation
-                .expect("SwingAxes::Pose needs an orientation target");
+            let (rot, rot_tgt, omega, kp_r, kd_r) =
+                orientation.expect("SwingAxes::Pose needs an orientation target");
             // Same small-angle extraction the contact anchor uses: the skew
             // part of R_target * R_current^T.
             let dr = rot_tgt * rot.transpose();
@@ -419,11 +547,7 @@ pub fn regulariser(
 
 /// Build `forces_nominal`: each stance foot's share of body weight, in the
 /// vertical row of its wrench block.
-pub fn force_nominal(
-    forces_size: usize,
-    shares: &[f64],
-    weight_n: f64,
-) -> na::DVector<f64> {
+pub fn force_nominal(forces_size: usize, shares: &[f64], weight_n: f64) -> na::DVector<f64> {
     let mut forces_nominal = na::DVector::zeros(forces_size);
     let share_tot: f64 = shares.iter().sum::<f64>().max(1e-6);
     for (slot, s) in shares.iter().enumerate() {
@@ -450,6 +574,19 @@ pub struct ContactCfg {
     /// binding.
     pub no_patch: bool,
     pub dt: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ContactMode {
+    Rigid,
+    /// Keep normal recovery authoritative while allowing a lightly loaded
+    /// sole to slide/rotate enough to re-establish a physical contact.
+    Managed {
+        tangent_weight: f64,
+        rotation_weight: f64,
+        normal_weight: f64,
+        normal_accel_max: f64,
+    },
 }
 
 pub struct ContactLevel {
@@ -480,6 +617,14 @@ pub fn contact_level(
     anchors: &mut Anchors,
     load_share: &dyn Fn(usize) -> f64,
     cfg: &ContactCfg,
+    contact_mode: &dyn Fn(usize) -> ContactMode,
+    // Per-foot override of (sole_offset_local, cop_half) from the MEASURED
+    // sole orientation, for ROLLING contact: a toe-first landing touches on
+    // a line at the leading edge, and keeping the full-sole CoP box lets
+    // the QP claim pressure the patch cannot carry -- measured on the
+    // descent, the heel then never comes down (ankle torque stays ~1 N*m of
+    // its 6) while the body vaults over the toe. None = the full sole.
+    patch_mod: &dyn Fn(usize, &na::Matrix3<f64>) -> Option<([f64; 3], (f64, f64))>,
 ) -> ContactLevel {
     let forces = dyn_ctx.forces();
     let mut p0 = base;
@@ -501,11 +646,56 @@ pub fn contact_level(
             acc_dbg = [acc_ref[5], anchors.lin_error(side, pos).z];
         }
 
-        let sel = sole_selection(&rot, cfg.sole_offset_local, forces.size(), slot);
+        let over = patch_mod(side, &rot);
+        let (off_local, cop_half) = match over {
+            Some((o, c)) => (o, c),
+            None => (cfg.sole_offset_local, cfg.cop_half),
+        };
+        let sel = sole_selection(&rot, off_local, forces.size(), slot);
         let w_sole = &sel * &forces.as_affine();
         sole_sel.push(sel);
 
-        p0 = p0 + wt::cartesian_acceleration(dyn_ctx.qddot(), &js, &djvs, &acc_ref);
+        p0 = p0
+            + match contact_mode(side) {
+                ContactMode::Rigid => {
+                    wt::cartesian_acceleration(dyn_ctx.qddot(), &js, &djvs, &acc_ref)
+                }
+                ContactMode::Managed {
+                    tangent_weight,
+                    rotation_weight,
+                    normal_weight,
+                    normal_accel_max,
+                } => {
+                    let subset = |rows: &[usize], reference: &na::DVector<f64>| {
+                        let mut j = na::DMatrix::zeros(rows.len(), js.ncols());
+                        let mut bias = na::DVector::zeros(rows.len());
+                        for (dst, &src) in rows.iter().enumerate() {
+                            j.row_mut(dst).copy_from(&js.row(src));
+                            bias[dst] = djvs[src];
+                        }
+                        wt::cartesian_acceleration(dyn_ctx.qddot(), &j, &bias, reference)
+                    };
+                    let rotation = subset(
+                        &[0, 1, 2],
+                        &na::DVector::from_iterator(3, (0..3).map(|i| acc_ref[i])),
+                    )
+                    .weight(rotation_weight);
+                    let tangent = subset(
+                        &[3, 4],
+                        &na::DVector::from_iterator(2, (3..5).map(|i| acc_ref[i])),
+                    )
+                    .weight(tangent_weight);
+                    let normal = subset(
+                        &[5],
+                        &na::DVector::from_element(
+                            1,
+                            acc_ref[5].clamp(-normal_accel_max, normal_accel_max),
+                        ),
+                    )
+                    .weight(normal_weight);
+                    rotation + tangent + normal
+                }
+            };
         if !cfg.no_patch {
             // f_max carries the load ramp. The CoP box is |m| <= L*fz, so
             // squeezing fz shrinks the box with it -- a foot that is being
@@ -514,7 +704,7 @@ pub fn contact_level(
             let share = load_share(foot_mi);
             let sole_patch = wt::ContactPatch {
                 mu: cfg.friction_mu,
-                cop_half: cfg.cop_half,
+                cop_half,
                 mu_torsion: cfg.mu_torsion,
                 f_max: (cfg.f_max_per_foot * share).max(0.5),
             };
@@ -522,5 +712,9 @@ pub fn contact_level(
         }
     }
 
-    ContactLevel { task: p0, sole_sel, acc_dbg }
+    ContactLevel {
+        task: p0,
+        sole_sel,
+        acc_dbg,
+    }
 }
