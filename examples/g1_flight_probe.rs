@@ -98,9 +98,49 @@ fn main() {
     let launch_dur = env_f64("LAUNCH_DUR", 0.10).max(1e-3);
     let f_on = env_f64("F_ON", 0.05 * weight);
     let on_ticks = env_f64("ON_TICKS", 2.0) as u32;
+    // Touchdown is admitted after LAND_TICKS loaded ticks (lift-off keeps
+    // ON_TICKS): every tick of a landing handled as flight is a tick of
+    // impact the QP does not see.
+    let land_ticks = env_f64("LAND_TICKS", 1.0) as u32;
+    // LAND_ABSORB=1: after touchdown the CoM follows a quintic from the
+    // touchdown state (position, velocity) to rest over LAND_T s (stopping
+    // distance v*T/2, peak deceleration 1.5 v/T), holds LAND_HOLD s, then
+    // rises to the stand height over LAND_RISE s -- with the reference's own
+    // velocity and acceleration fed forward. Off = the probe's original
+    // landing: hold (x, y, stand height) at rest from the first tick.
+    let land_absorb = flag("LAND_ABSORB", false);
+    let land_t = env_f64("LAND_T", 0.25).max(0.02);
+    let land_hold = env_f64("LAND_HOLD", 0.3).max(0.0);
+    let land_rise = env_f64("LAND_RISE", 1.0).max(0.05);
+    // quintic p0,v0 -> p1 at rest over T (a0 = a1 = 0): (p, v, a) at t
+    let quintic = |p0: f64, v0: f64, p1: f64, tt: f64, t: f64| -> (f64, f64, f64) {
+        let t = t.clamp(0.0, tt);
+        let h = p1 - p0;
+        let c3 = (20.0 * h - 12.0 * v0 * tt) / (2.0 * tt.powi(3));
+        let c4 = (-30.0 * h + 16.0 * v0 * tt) / (2.0 * tt.powi(4));
+        let c5 = (12.0 * h - 6.0 * v0 * tt) / (2.0 * tt.powi(5));
+        (
+            p0 + v0 * t + c3 * t.powi(3) + c4 * t.powi(4) + c5 * t.powi(5),
+            v0 + 3.0 * c3 * t.powi(2) + 4.0 * c4 * t.powi(3) + 5.0 * c5 * t.powi(4),
+            6.0 * c3 * t + 12.0 * c4 * t.powi(2) + 20.0 * c5 * t.powi(3),
+        )
+    };
+    let mut land: Option<(f64, na::Vector3<f64>, na::Vector3<f64>)> = None;
+    let mut min_com_z_after = f64::INFINITY;
+    let (mut peak_grf_after, mut peak_tau_after, mut td_vz) = (0.0_f64, 0.0_f64, 0.0_f64);
     let flight_trunk = flag("FLIGHT_TRUNK", true);
     let flight_post = flag("FLIGHT_POST", true);
     let flight_keep_com = flag("FLIGHT_KEEP_COM", false);
+    // FLIGHT_FEET=1: in flight, hold each foot at its lift-off offset from
+    // the CoM (position, Xyz rows, weight FLIGHT_FEET_W above the trunk's
+    // 0.3). Without it the trunk task keeps the trunk upright against any
+    // lift-off angular momentum and the legs take the rotation: measured
+    // 2026-10-21, both feet 175 mm behind the CoM at touchdown.
+    let flight_feet = flag("FLIGHT_FEET", false);
+    let flight_feet_w = env_f64("FLIGHT_FEET_W", 1.0);
+    let kp_ff = env_f64("KP_FLIGHT_FEET", 400.0);
+    let kd_ff = env_f64("KD_FLIGHT_FEET", 40.0);
+    let mut feet_off: Option<[na::Vector3<f64>; 2]> = None;
     let verbose = flag("VERBOSE", false);
 
     let ctrl_dt = env_f64("CTRL_DT", prof.ctrl_dt);
@@ -156,7 +196,23 @@ fn main() {
         if !launched && t >= t_launch {
             launched = true;
             let fz = weight + total_mass * launch_v / launch_dur;
-            rig.sim.apply_external_force(&rig.robot.root_link, [0.0, 0.0, fz], [0.0; 3], launch_dur);
+            // MuJoCo applies xfrc_applied at the pelvis' own CoM, not the
+            // robot's: LAUNCH_THRU_COM=1 (default) adds the couple that moves
+            // the line of action through the robot CoM, so the launch leaves
+            // no angular momentum and the probe measures the controller, not
+            // the harness (without it: 175 mm foot drift / forward fall).
+            let mut torque = [0.0; 3];
+            if flag("LAUNCH_THRU_COM", true) {
+                if let Some(l) = rig.mass_links.iter().find(|l| l.mi == 1) {
+                    let rot = misarta::se3::rotation_matrix(&data.oMi[1]);
+                    let pc = misarta::se3::translation(&data.oMi[1]) + rot * l.com_local;
+                    let d = com - pc;
+                    let tq = d.cross(&na::Vector3::new(0.0, 0.0, fz));
+                    torque = [tq.x, tq.y, tq.z];
+                    println!("  [launch] pelvis CoM offset from robot CoM ({:+.3},{:+.3},{:+.3}) -> couple ({:+.2},{:+.2},{:+.2}) N*m", -d.x, -d.y, -d.z, tq.x, tq.y, tq.z);
+                }
+            }
+            rig.sim.apply_external_force(&rig.robot.root_link, [0.0, 0.0, fz], torque, launch_dur);
             println!("  [launch] t={t:.3} pelvis force {fz:.1} N for {launch_dur:.3} s");
         }
 
@@ -166,7 +222,7 @@ fn main() {
             let loaded = measured.cop[s][2] > f_on;
             if loaded != in_contact[s] {
                 flip_count[s] += 1;
-                if flip_count[s] >= on_ticks {
+                if flip_count[s] >= if loaded { land_ticks } else { on_ticks } {
                     in_contact[s] = loaded;
                     flip_count[s] = 0;
                     if !loaded {
@@ -184,14 +240,23 @@ fn main() {
             (true, None) => {
                 flight_t0 = Some(t);
                 h_ang0 = None;
-                println!("  [lift-off] t={t:.3} com z {:.4} vz {:+.3}", com.z, com_vel.z);
+                feet_off = Some(std::array::from_fn(|k| misarta::se3::translation(&data.oMi[feet[k]]) - com));
+                let fx: Vec<String> = (0..2).map(|k| format!("{:+.3}", misarta::se3::translation(&data.oMi[feet[k]]).x)).collect();
+                println!("  [lift-off] t={t:.3} com ({:+.3}, z {:.4}) v ({:+.3}, {:+.3}), foot x {:?}", com.x, com.z, com_vel.x, com_vel.z, fx);
             }
             (false, Some(t0)) => {
                 flight_spans.push((t0, t));
                 flight_t0 = None;
+                if touchdown_t.is_none() {
+                    td_vz = com_vel.z;
+                }
                 touchdown_t.get_or_insert(t);
                 com_ref = Some(na::Vector3::new(com.x, com.y, stand_z));
-                println!("  [touchdown] t={t:.3} after {:.3} s, com z {:.4} vz {:+.3}, feet {:?}", t - t0, com.z, com_vel.z, in_contact);
+                if land_absorb {
+                    land = Some((t, com, com_vel));
+                }
+                let fx: Vec<String> = (0..2).map(|k| format!("{:+.3}", misarta::se3::translation(&data.oMi[feet[k]]).x)).collect();
+                println!("  [touchdown] t={t:.3} after {:.3} s, com ({:+.3}, z {:.4}) v ({:+.3}, {:+.3}), foot x {:?}, feet {:?}", t - t0, com.x, com.z, com_vel.x, com_vel.z, fx, in_contact);
             }
             _ => {}
         }
@@ -216,7 +281,32 @@ fn main() {
             names.push("contact+cones");
         }
         if !flight || flight_keep_com {
-            let a_com = kd_com * (-com_vel) + kp_com * (c_ref - com);
+            let (c_ref, cd_ref, cdd_ref) = match land {
+                Some((t0, c0, v0)) => {
+                    let s = t - t0;
+                    let mut c = na::Vector3::zeros();
+                    let mut cd = na::Vector3::zeros();
+                    let mut cdd = na::Vector3::zeros();
+                    for i in 0..3 {
+                        let p1 = c0[i] + 0.5 * v0[i] * land_t;
+                        let (p, vv, aa) = quintic(c0[i], v0[i], p1, land_t, s);
+                        c[i] = p;
+                        cd[i] = vv;
+                        cdd[i] = aa;
+                    }
+                    let s_rise = s - land_t - land_hold;
+                    if s_rise > 0.0 {
+                        let z_low = c0.z + 0.5 * v0.z * land_t;
+                        let (p, vv, aa) = quintic(z_low, 0.0, stand_z, land_rise, s_rise);
+                        c.z = p;
+                        cd.z = vv;
+                        cdd.z = aa;
+                    }
+                    (c, cd, cdd)
+                }
+                None => (c_ref, na::Vector3::zeros(), na::Vector3::zeros()),
+            };
+            let a_com = cdd_ref + kd_com * (cd_ref - com_vel) + kp_com * (c_ref - com);
             levels.push(bt::com(dyn_ctx.qddot(), &st.j_com, &st.djv_com, &a_com));
             names.push("com");
         }
@@ -235,6 +325,20 @@ fn main() {
             ));
             names.push("posture");
         }
+        if flight && flight_feet && let Some(off) = feet_off {
+            for k in 0..2 {
+                let jf = misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, feet[k]);
+                let djv = &misarta::jacobian::compute_joint_jacobian_time_derivative(&rig.model, q, v, feet[k]) * v_dvec;
+                let pos = misarta::se3::translation(&data.oMi[feet[k]]);
+                let vel3 = &jf.rows(3, 3).into_owned() * v_dvec;
+                let vel = na::Vector3::new(vel3[0], vel3[1], vel3[2]);
+                levels.push(bt::swing(
+                    dyn_ctx.qddot(), &jf, &djv, &pos, &vel, &(com + off[k]), &com_vel,
+                    kp_ff, kp_ff, kd_ff, bt::SwingAxes::Xyz,
+                ));
+                names.push("flight feet");
+            }
+        }
         let tau_gravity = rig.gravity_torque(q);
         let shares = vec![1.0; nc];
         let forces_nominal = bt::force_nominal(dyn_ctx.forces().size(), &shares, weight);
@@ -248,6 +352,7 @@ fn main() {
             for (lvl, name) in levels.iter_mut().zip(&names).skip(1) {
                 let w = match *name {
                     "com" => 1.0,
+                    "flight feet" => flight_feet_w,
                     "trunk" => 0.3,
                     "posture" => 0.01,
                     "regularise" => 1e-4,
@@ -341,6 +446,15 @@ fn main() {
         let tilt = roll.abs().max(pitch.abs());
         if touchdown_t.is_some() {
             max_tilt_after = max_tilt_after.max(tilt);
+            min_com_z_after = min_com_z_after.min(com.z);
+            if touchdown_t.is_some_and(|t0| t - t0 < 1.0) {
+                peak_grf_after = peak_grf_after.max(measured.cop[0][2] + measured.cop[1][2]);
+                for (i, tmax) in rig.torque_max.iter().enumerate() {
+                    if *tmax > 0.0 {
+                        peak_tau_after = peak_tau_after.max(ex.tau[i].abs() / tmax);
+                    }
+                }
+            }
         }
         if tick % 40 == 0 {
             println!("  t={t:6.3} nc={nc} com=({:+.3},{:+.3},{:+.4}) vz={:+.3} roll={roll:+.3} pitch={pitch:+.3} status={:?}", com.x, com.y, com.z, com_vel.z, sol.status);
@@ -361,7 +475,8 @@ fn main() {
     println!("  max |predicted d(h_ang)/dt| in flight:   {max_dh_pred:.4} N*m  (conservation if ~0)");
     println!("  max |h_ang - h_ang(lift-off)| measured:  {max_h_drift:.4} kg*m^2/s");
     println!("  max torque-box use in flight: {max_tau_use:.2}");
-    println!("  max tilt after touchdown: {max_tilt_after:.3} rad");
+    println!("  max tilt after touchdown: {max_tilt_after:.3} rad, min CoM z after touchdown {min_com_z_after:.3} (stand {:.3})", stand_z.unwrap_or(0.0));
+    println!("  first touchdown vz {td_vz:+.3} m/s, peak GRF in the first 1 s {:.2} x weight, peak torque-box use {peak_tau_after:.2}", peak_grf_after / weight);
     println!("  degraded solves (all): {}", tally.n);
     tally.report();
     println!("  verdict: {}", if fell { "FELL" } else if flight_spans.is_empty() { "NO FLIGHT" } else { "LANDED" });
