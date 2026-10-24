@@ -204,6 +204,10 @@ fn main() {
     // step to stop it. Off = bit-identical.
     let land_step = flag("LAND_STEP", false);
     let land_latch = flag("LAND_LATCH", false);
+    // DIAG_TD=1: after the first flight, print each foot's first loaded tick
+    // with both feet's sole height and roll / pitch (diagnostic only).
+    let diag_td = flag("DIAG_TD", false);
+    let mut first_load: [Option<f64>; 2] = [None, None];
     let land_step_t = env_f64("LAND_STEP_T", 0.35).max(0.1);
     let land_step_h = env_f64("LAND_STEP_H", 0.04).max(0.0);
     let land_step_margin = env_f64("LAND_STEP_MARGIN", 0.02);
@@ -244,6 +248,9 @@ fn main() {
     let flight_feet_w = env_f64("FLIGHT_FEET_W", 1.0);
     let kp_ff = env_f64("KP_FLIGHT_FEET", 400.0);
     let kd_ff = env_f64("KD_FLIGHT_FEET", 40.0);
+    let flight_feet_flat = flag("FLIGHT_FEET_FLAT", false);
+    let kp_ffr = env_f64("KP_FLIGHT_FEET_ROT", 400.0);
+    let kd_ffr = env_f64("KD_FLIGHT_FEET_ROT", 40.0);
     let mut feet_off: Option<[na::Vector3<f64>; 2]> = None;
     let verbose = flag("VERBOSE", false);
 
@@ -388,6 +395,21 @@ fn main() {
                 }
                 in_contact[sw] = false;
                 flip_count[sw] = 0;
+            }
+        }
+        if diag_td && (!flight_spans.is_empty() || flight_t0.is_some()) {
+            for k in 0..2 {
+                if first_load[k].is_none() && measured.cop[k][2] > f_on {
+                    first_load[k] = Some(t);
+                    let pose = |j: usize| {
+                        let m = misarta::se3::rotation_matrix(&data.oMi[feet[j]]);
+                        let (r, p, _) = na::Rotation3::from_matrix_unchecked(m).euler_angles();
+                        (misarta::se3::translation(&data.oMi[feet[j]]).z - prof.sole_below_origin, r, p, measured.cop[j][2])
+                    };
+                    let (z0, r0, p0, f0) = pose(0);
+                    let (z1, r1, p1, f1) = pose(1);
+                    println!("  [td-foot] {} first load t={t:.3} | L sole z {z0:+.4} roll {r0:+.3} pitch {p0:+.3} fz {f0:.0} | R sole z {z1:+.4} roll {r1:+.3} pitch {p1:+.3} fz {f1:.0}", if k == 0 { "L" } else { "R" });
+                }
             }
         }
         let stance: Vec<usize> = (0..2).filter(|&s| in_contact[s]).map(|s| feet[s]).collect();
@@ -654,10 +676,27 @@ fn main() {
                 let pos = misarta::se3::translation(&data.oMi[feet[k]]);
                 let vel3 = &jf.rows(3, 3).into_owned() * v_dvec;
                 let vel = na::Vector3::new(vel3[0], vel3[1], vel3[2]);
-                levels.push(bt::swing(
-                    dyn_ctx.qddot(), &jf, &djv, &pos, &vel, &(com + off[k]), &com_vel,
-                    kp_ff, kp_ff, kd_ff, bt::SwingAxes::Xyz,
-                ));
+                if flight_feet_flat {
+                    // FLIGHT_FEET_FLAT=1: also hold the sole level (roll and
+                    // pitch to 0, yaw as it is), so both feet meet the floor
+                    // flat. Measured 2026-10-24: with position-only feet they
+                    // touched down pitched 11-13 deg and rolled 6-8 deg.
+                    let rot = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
+                    let yaw = rot[(1, 0)].atan2(rot[(0, 0)]);
+                    let rot_tgt = *na::Rotation3::from_axis_angle(&na::Vector3::z_axis(), yaw).matrix();
+                    let w3 = &jf.rows(0, 3).into_owned() * v_dvec;
+                    let omega = na::Vector3::new(w3[0], w3[1], w3[2]);
+                    levels.push(bt::swing_with_pose(
+                        dyn_ctx.qddot(), &jf, &djv, &pos, &vel, &(com + off[k]), &com_vel,
+                        kp_ff, kp_ff, kd_ff, bt::SwingAxes::XyzRollPitch,
+                        Some((rot, rot_tgt, omega, kp_ffr, kd_ffr)),
+                    ));
+                } else {
+                    levels.push(bt::swing(
+                        dyn_ctx.qddot(), &jf, &djv, &pos, &vel, &(com + off[k]), &com_vel,
+                        kp_ff, kp_ff, kd_ff, bt::SwingAxes::Xyz,
+                    ));
+                }
                 names.push("flight feet");
             }
         }
