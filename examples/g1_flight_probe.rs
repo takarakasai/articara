@@ -193,6 +193,29 @@ fn main() {
     let land_t = env_f64("LAND_T", 0.25).max(0.02);
     let land_hold = env_f64("LAND_HOLD", 0.3).max(0.0);
     let land_rise = env_f64("LAND_RISE", 1.0).max(0.05);
+    // LAND_STEP=1: after touchdown, if the DCM (c + v/omega) leaves the
+    // feet's fore-aft support (within LAND_STEP_MARGIN of an edge), take one
+    // capture step: the foot farther from the DCM's lateral position swings
+    // for LAND_STEP_T s to where the DCM will be at its touchdown (CoP held
+    // at the stance sole centre), clamped to +-LAND_STEP_MAX from the stance
+    // foot; the CoM's horizontal reference follows the LIPM meanwhile.
+    // Measured 2026-10-21: jumps that land fall >1 s later, the backward
+    // velocity left at touchdown carrying the CoM out over the heels with no
+    // step to stop it. Off = bit-identical.
+    let land_step = flag("LAND_STEP", false);
+    let land_latch = flag("LAND_LATCH", false);
+    let land_step_t = env_f64("LAND_STEP_T", 0.35).max(0.1);
+    let land_step_h = env_f64("LAND_STEP_H", 0.04).max(0.0);
+    let land_step_margin = env_f64("LAND_STEP_MARGIN", 0.02);
+    let land_step_max = env_f64("LAND_STEP_MAX", 0.35).max(0.0);
+    let land_step_bx = env_f64("LAND_STEP_BX", 0.0);
+    let land_step_n = env_f64("LAND_STEP_N", 1.0).max(0.0) as usize;
+    let land_step_w = env_f64("LAND_STEP_W", 1.0);
+    let kp_ls = env_f64("KP_LAND_STEP", 400.0);
+    let kd_ls = env_f64("KD_LAND_STEP", 40.0);
+    // (swing side, start time, start position, target position, stance sole centre xy)
+    let mut step_st: Option<(usize, f64, na::Vector3<f64>, na::Vector3<f64>, na::Vector2<f64>)> = None;
+    let mut steps_done = 0usize;
     // quintic p0,v0 -> p1 at rest over T (a0 = a1 = 0): (p, v, a) at t
     let quintic = |p0: f64, v0: f64, p1: f64, tt: f64, t: f64| -> (f64, f64, f64) {
         let t = t.clamp(0.0, tt);
@@ -303,6 +326,17 @@ fn main() {
         let measured = measure_contacts(&rig, data, friction_mu);
         for s in 0..2 {
             let loaded = measured.cop[s][2] > f_on;
+            // LAND_LATCH=1: after the first touchdown a foot that has landed
+            // stays in the contact set when its load drops (unless it is the
+            // landing step's swing foot). Measured 2026-10-24: after landing
+            // the measured set chattered between one and two feet for
+            // seconds, and the unloaded foot had no task at all (flight feet
+            // only in flight) -- it wandered and the CoM rocked +-4 cm and
+            // drifted backward until the fall.
+            if land_latch && !loaded && in_contact[s] && touchdown_t.is_some() && step_st.is_none_or(|x| x.0 != s) {
+                flip_count[s] = 0;
+                continue;
+            }
             if loaded != in_contact[s] {
                 flip_count[s] += 1;
                 if flip_count[s] >= if loaded { land_ticks } else { on_ticks } {
@@ -334,6 +368,26 @@ fn main() {
                     in_contact[k] = false;
                     flip_count[k] = 0;
                 }
+            }
+        }
+        if let Some((sw, t0s, _, _, _)) = step_st {
+            // The swing foot is out of the contact set until it has swung
+            // half way and carries load again; then the step is over.
+            let sstep = (t - t0s) / land_step_t;
+            if sstep >= 0.5 && measured.cop[sw][2] > f_on {
+                in_contact[sw] = true;
+                flip_count[sw] = 0;
+                step_st = None;
+                steps_done += 1;
+                land = Some((t, com, com_vel));
+                let fx = misarta::se3::translation(&data.oMi[feet[sw]]);
+                println!("  [step-down] t={t:.3} after {:.3} s, foot ({:+.3},{:+.3}), com ({:+.3},{:+.3}) v ({:+.3},{:+.3})", t - t0s, fx.x, fx.y, com.x, com.y, com_vel.x, com_vel.y);
+            } else {
+                if in_contact[sw] {
+                    anchors.release(sw);
+                }
+                in_contact[sw] = false;
+                flip_count[sw] = 0;
             }
         }
         let stance: Vec<usize> = (0..2).filter(|&s| in_contact[s]).map(|s| feet[s]).collect();
@@ -368,6 +422,34 @@ fn main() {
             _ => {}
         }
         let c_ref = *com_ref.get_or_insert(com);
+        if land_step
+            && step_st.is_none()
+            && steps_done < land_step_n
+            && in_contact[0]
+            && in_contact[1]
+            && touchdown_t.is_some_and(|t0| t - t0 >= 0.05 && t - t0 <= 2.0)
+        {
+            let foot = |k: usize| misarta::se3::translation(&data.oMi[feet[k]]);
+            let centre = |k: usize| na::Vector2::new(foot(k).x + prof.sole_centre_x, foot(k).y);
+            let z_sole = 0.5 * (foot(0).z + foot(1).z) - prof.sole_below_origin;
+            let omega = (G / (com.z - z_sole).max(0.2)).sqrt();
+            let xi = com.xy() + com_vel.xy() / omega;
+            let lo = centre(0).x.min(centre(1).x) - sole_half_l;
+            let hi = centre(0).x.max(centre(1).x) + sole_half_l;
+            if xi.x < lo + land_step_margin || xi.x > hi - land_step_margin {
+                let st_side = if (centre(0).y - xi.y).abs() <= (centre(1).y - xi.y).abs() { 0 } else { 1 };
+                let sw = 1 - st_side;
+                let p_st = centre(st_side);
+                let xi_t = p_st + (xi - p_st) * (omega * land_step_t).exp();
+                let dx = (xi_t.x + land_step_bx - p_st.x).clamp(-land_step_max, land_step_max);
+                let p0 = foot(sw);
+                let p1 = na::Vector3::new(p_st.x + dx - prof.sole_centre_x, p0.y, p0.z);
+                anchors.release(sw);
+                in_contact[sw] = false;
+                step_st = Some((sw, t, p0, p1, p_st));
+                println!("  [step] t={t:.3} xi ({:+.3},{:+.3}) outside x [{lo:+.3},{hi:+.3}]: swing {} from x {:+.3} to {:+.3} (xi at T {:+.3}), stance centre ({:+.3},{:+.3})", xi.x, xi.y, if sw == 0 { "L" } else { "R" }, p0.x, p1.x, xi_t.x, p_st.x, p_st.y);
+            }
+        }
 
         if verbose && jump_v > 0.0 && !flight && t >= t_launch && push_end.is_none() {
             let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
@@ -445,7 +527,7 @@ fn main() {
             names.push("contact+cones");
         }
         if !flight || flight_keep_com {
-            let (c_ref, cd_ref, cdd_ref) = match land {
+            let (mut c_ref, mut cd_ref, mut cdd_ref) = match land {
                 Some((t0, c0, v0)) => {
                     let s = t - t0;
                     let mut c = na::Vector3::zeros();
@@ -523,6 +605,18 @@ fn main() {
                 }
                 None => (c_ref, na::Vector3::zeros(), na::Vector3::zeros()),
             };
+            if let Some((_, _, _, _, p_st)) = step_st {
+                // Single support on the stance sole: the CoM's horizontal
+                // motion is the LIPM's own (no feedback to fight the step).
+                let foot_z = misarta::se3::translation(&data.oMi[feet[0]]).z.min(misarta::se3::translation(&data.oMi[feet[1]]).z) - prof.sole_below_origin;
+                let w2 = G / (com.z - foot_z).max(0.2);
+                c_ref.x = com.x;
+                c_ref.y = com.y;
+                cd_ref.x = com_vel.x;
+                cd_ref.y = com_vel.y;
+                cdd_ref.x = w2 * (com.x - p_st.x);
+                cdd_ref.y = w2 * (com.y - p_st.y);
+            }
             let a_com = cdd_ref + kd_com * (cd_ref - com_vel) + kp_com * (c_ref - com);
             levels.push(bt::com(dyn_ctx.qddot(), &st.j_com, &st.djv_com, &a_com));
             names.push("com");
@@ -567,6 +661,22 @@ fn main() {
                 names.push("flight feet");
             }
         }
+        if let Some((sw, t0s, p0, p1, _)) = step_st {
+            let s = ((t - t0s) / land_step_t).clamp(0.0, 1.0);
+            let b = s * s * s * (10.0 - 15.0 * s + 6.0 * s * s);
+            let db = if (t - t0s) / land_step_t < 1.0 { 30.0 * s * s * (1.0 - s) * (1.0 - s) / land_step_t } else { 0.0 };
+            let lift = if s < 1.0 { land_step_h * (std::f64::consts::PI * s).sin() } else { -0.005 };
+            let dlift = if s < 1.0 { land_step_h * std::f64::consts::PI * (std::f64::consts::PI * s).cos() / land_step_t } else { 0.0 };
+            let tgt = p0 + (p1 - p0) * b + na::Vector3::new(0.0, 0.0, lift);
+            let tgt_v = (p1 - p0) * db + na::Vector3::new(0.0, 0.0, dlift);
+            let jf = misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, feet[sw]);
+            let djv = &misarta::jacobian::compute_joint_jacobian_time_derivative(&rig.model, q, v, feet[sw]) * v_dvec;
+            let pos = misarta::se3::translation(&data.oMi[feet[sw]]);
+            let vel3 = &jf.rows(3, 3).into_owned() * v_dvec;
+            let vel = na::Vector3::new(vel3[0], vel3[1], vel3[2]);
+            levels.push(bt::swing(dyn_ctx.qddot(), &jf, &djv, &pos, &vel, &tgt, &tgt_v, kp_ls, kp_ls, kd_ls, bt::SwingAxes::Xyz));
+            names.push("step swing");
+        }
         let tau_gravity = rig.gravity_torque(q);
         let shares = vec![1.0; nc];
         let forces_nominal = bt::force_nominal(dyn_ctx.forces().size(), &shares, weight);
@@ -584,6 +694,7 @@ fn main() {
                 let w = match *name {
                     "com" => env_f64("WBCW_COM", 1.0),
                     "flight feet" => flight_feet_w,
+                    "step swing" => land_step_w,
                     "momentum" => mom_w,
                     "contact+cones" => env_f64("WBCW_CONTACT", 0.1),
                     "trunk" if in_push => env_f64("WBCW_TRUNK_PUSH", env_f64("WBCW_TRUNK", 0.3)),
@@ -748,6 +859,7 @@ fn main() {
     println!("  first touchdown vz {td_vz:+.3} m/s, peak GRF in the first 1 s {:.2} x weight, peak torque-box use {peak_tau_after:.2}", peak_grf_after / weight);
     println!("  degraded solves (all): {}", tally.n);
     tally.report();
+    println!("  landing steps: {steps_done}");
     println!("  verdict: {}", if fell { "FELL" } else if flight_spans.is_empty() { "NO FLIGHT" } else { "LANDED" });
 }
 
