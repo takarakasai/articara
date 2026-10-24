@@ -249,6 +249,17 @@ fn main() {
     let kp_ff = env_f64("KP_FLIGHT_FEET", 400.0);
     let kd_ff = env_f64("KD_FLIGHT_FEET", 40.0);
     let flight_feet_flat = flag("FLIGHT_FEET_FLAT", false);
+    let flight_feet_level = flag("FLIGHT_FEET_LEVEL", false);
+    // FOOT_RESEAT=1: on the ground after the first touchdown, a foot that is
+    // out of the contact set (and not the landing step's swing foot) gets a
+    // task that brings it straight down, sole level, to the floor under
+    // where it left contact (5 mm below the standing foot height, so it
+    // presses), until the measured load puts it back in the contact set.
+    // Off = bit-identical.
+    let foot_reseat = flag("FOOT_RESEAT", false);
+    let foot_reseat_w = env_f64("FOOT_RESEAT_W", 1.0);
+    let mut reseat_xy: [Option<na::Vector2<f64>>; 2] = [None, None];
+    let mut foot_stand_z: Option<[f64; 2]> = None;
     let kp_ffr = env_f64("KP_FLIGHT_FEET_ROT", 400.0);
     let kd_ffr = env_f64("KD_FLIGHT_FEET_ROT", 40.0);
     let mut feet_off: Option<[na::Vector3<f64>; 2]> = None;
@@ -412,6 +423,14 @@ fn main() {
                 }
             }
         }
+        let fz_stand = *foot_stand_z.get_or_insert([misarta::se3::translation(&data.oMi[feet[0]]).z, misarta::se3::translation(&data.oMi[feet[1]]).z]);
+        for k in 0..2 {
+            if in_contact[k] || flight_t0.is_some() {
+                reseat_xy[k] = None;
+            } else if reseat_xy[k].is_none() {
+                reseat_xy[k] = Some(misarta::se3::translation(&data.oMi[feet[k]]).xy());
+            }
+        }
         let stance: Vec<usize> = (0..2).filter(|&s| in_contact[s]).map(|s| feet[s]).collect();
         let nc = stance.len();
         let flight = nc == 0;
@@ -420,6 +439,15 @@ fn main() {
                 flight_t0 = Some(t);
                 h_ang0 = None;
                 feet_off = Some(std::array::from_fn(|k| misarta::se3::translation(&data.oMi[feet[k]]) - com));
+                // FLIGHT_FEET_LEVEL=1: hold both feet at the LOWER foot's
+                // height below the CoM, so they meet a flat floor together.
+                // Measured 2026-10-24 (flat feet): the fallers touched down
+                // 70 ms apart (survivors 20 ms) with an 8.9 mm height gap.
+                if flight_feet_level && let Some(off) = feet_off.as_mut() {
+                    let zl = off[0].z.min(off[1].z);
+                    off[0].z = zl;
+                    off[1].z = zl;
+                }
                 let fx: Vec<String> = (0..2).map(|k| format!("{:+.3}", misarta::se3::translation(&data.oMi[feet[k]]).x)).collect();
                 let fz: Vec<String> = (0..2).map(|k| format!("{:+.3}", misarta::se3::translation(&data.oMi[feet[k]]).z)).collect();
                 let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
@@ -700,6 +728,31 @@ fn main() {
                 names.push("flight feet");
             }
         }
+        if foot_reseat && !flight && touchdown_t.is_some() && flight_t0.is_none() {
+            for k in 0..2 {
+                if in_contact[k] || step_st.is_some_and(|x| x.0 == k) {
+                    continue;
+                }
+                let Some(xy) = reseat_xy[k] else { continue };
+                let jf = misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, feet[k]);
+                let djv = &misarta::jacobian::compute_joint_jacobian_time_derivative(&rig.model, q, v, feet[k]) * v_dvec;
+                let pos = misarta::se3::translation(&data.oMi[feet[k]]);
+                let vel3 = &jf.rows(3, 3).into_owned() * v_dvec;
+                let vel = na::Vector3::new(vel3[0], vel3[1], vel3[2]);
+                let rot = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
+                let yaw = rot[(1, 0)].atan2(rot[(0, 0)]);
+                let rot_tgt = *na::Rotation3::from_axis_angle(&na::Vector3::z_axis(), yaw).matrix();
+                let w3 = &jf.rows(0, 3).into_owned() * v_dvec;
+                let omega = na::Vector3::new(w3[0], w3[1], w3[2]);
+                let tgt = na::Vector3::new(xy.x, xy.y, fz_stand[k] - 0.005);
+                levels.push(bt::swing_with_pose(
+                    dyn_ctx.qddot(), &jf, &djv, &pos, &vel, &tgt, &na::Vector3::zeros(),
+                    kp_ff, kp_ff, kd_ff, bt::SwingAxes::XyzRollPitch,
+                    Some((rot, rot_tgt, omega, kp_ffr, kd_ffr)),
+                ));
+                names.push("reseat");
+            }
+        }
         if let Some((sw, t0s, p0, p1, _)) = step_st {
             let s = ((t - t0s) / land_step_t).clamp(0.0, 1.0);
             let b = s * s * s * (10.0 - 15.0 * s + 6.0 * s * s);
@@ -734,6 +787,7 @@ fn main() {
                     "com" => env_f64("WBCW_COM", 1.0),
                     "flight feet" => flight_feet_w,
                     "step swing" => land_step_w,
+                    "reseat" => foot_reseat_w,
                     "momentum" => mom_w,
                     "contact+cones" => env_f64("WBCW_CONTACT", 0.1),
                     "trunk" if in_push => env_f64("WBCW_TRUNK_PUSH", env_f64("WBCW_TRUNK", 0.3)),
