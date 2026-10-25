@@ -137,6 +137,18 @@ fn main() {
     let diag_h = flag("DIAG_H", false);
     let mut h_int = [0.0_f64; 2]; // [horizontal-force part, CoP-offset part]
     let mut h_start: Option<f64> = None;
+    // DIAG_HX=1: the same for the ROLL momentum h_x, split by phase (crouch,
+    // hold, push, release, loaded after the release) and printed once at
+    // lift-off. The ground's roll moment about the CoM is
+    // M_x = sum_k (p_k,y - c_y) f_z,k + (c_z - p_k,z) f_y,k, split as
+    // [L/R vertical-force difference (sole centre about the feet's midpoint),
+    //  CoP inside the sole, CoM off the feet's midpoint, lateral force x
+    //  height]. Measured 2026-10-25: |h_x| at lift-off decides the falls.
+    let diag_hx = flag("DIAG_HX", false);
+    let mut hx_int = [[0.0_f64; 4]; 5];
+    let mut hx_at = [f64::NAN; 6];
+    let mut hx_fz = [[0.0_f64; 2]; 5]; // integral of (fz_L - fz_R) dt, and of dt
+    let mut hx_done = false;
     // JUMP_PUSH_R: the push acceleration falls linearly to R times its start
     // value, keeping the push distance and the take-off speed (R = 1 = the
     // constant acceleration). The leg's vertical authority falls as it
@@ -551,6 +563,76 @@ fn main() {
                     grp[0], grp[1], grp[2], grp[3], grp[4],
                     measured.f_w[0][2], measured.f_w[1][2], measured.f_w[0][0], measured.f_w[1][0]
                 );
+            }
+        }
+        if diag_hx && jump_v > 0.0 && t >= t_launch && !hx_done {
+            let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
+            let h_x: f64 = (0..nv).map(|c| cmm[(0, c)] * v[c]).sum();
+            if flight {
+                hx_at[5] = h_x;
+                hx_done = true;
+                let mut grp = [0.0_f64; 5]; // base, left leg, right leg, waist, arms
+                for c in 0..nv {
+                    let g = if c < 6 {
+                        0
+                    } else {
+                        let name = rig.actuated().iter().find(|&&(_, vi)| vi == c).map(|&(ji, _)| rig.robot.joints[ji].name.as_str()).unwrap_or("");
+                        if name.starts_with("left_") && (name.contains("hip") || name.contains("knee") || name.contains("ankle")) {
+                            1
+                        } else if name.starts_with("right_") && (name.contains("hip") || name.contains("knee") || name.contains("ankle")) {
+                            2
+                        } else if name.contains("waist") || name.contains("torso") {
+                            3
+                        } else {
+                            4
+                        }
+                    };
+                    grp[g] += cmm[(0, c)] * v[c];
+                }
+                println!("  [hx] lift-off h_x {h_x:+.3} | base {:+.3} Lleg {:+.3} Rleg {:+.3} waist {:+.3} arms {:+.3}", grp[0], grp[1], grp[2], grp[3], grp[4]);
+                for (ph, name) in ["crouch", "hold", "push", "release", "loaded"].iter().enumerate() {
+                    let d = hx_at[ph + 1..].iter().find(|x| x.is_finite()).copied().unwrap_or(h_x) - hx_at[ph];
+                    let m = &hx_int[ph];
+                    println!(
+                        "  [hx] {name:7} dt {:.3} dh_x {:+.3} ground {:+.3} = fzdiff {:+.3} cop {:+.3} com {:+.3} fy*h {:+.3} | mean fzL-fzR {:+.1}",
+                        hx_fz[ph][1], if hx_at[ph].is_finite() { d } else { f64::NAN }, m.iter().sum::<f64>(), m[0], m[1], m[2], m[3],
+                        hx_fz[ph][0] / hx_fz[ph][1].max(1e-9)
+                    );
+                }
+            } else {
+                let ph = if t < t_launch + jump_t_crouch {
+                    0
+                } else if t < t_launch + jump_t_crouch + jump_t_hold {
+                    1
+                } else if push_end.is_none() && release_t0.is_none() {
+                    2
+                } else if push_end.is_none() {
+                    3
+                } else {
+                    4
+                };
+                if !hx_at[ph].is_finite() {
+                    hx_at[ph] = h_x;
+                }
+                let sole = |k: usize| {
+                    let o = misarta::se3::translation(&data.oMi[feet[k]]);
+                    let r = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
+                    o + r * na::Vector3::new(prof.sole_centre_x, 0.0, -prof.sole_below_origin)
+                };
+                let s = [sole(0), sole(1)];
+                let y_mid = 0.5 * (s[0].y + s[1].y);
+                for k in 0..2 {
+                    let f = measured.f_w[k];
+                    if f[2] > 0.0 {
+                        let py = measured.patch_w[k][1];
+                        hx_int[ph][0] += (s[k].y - y_mid) * f[2] * dt;
+                        hx_int[ph][1] += (py - s[k].y) * f[2] * dt;
+                        hx_int[ph][2] += (y_mid - com.y) * f[2] * dt;
+                        hx_int[ph][3] += (com.z - s[k].z) * f[1] * dt;
+                    }
+                }
+                hx_fz[ph][0] += (measured.f_w[0][2] - measured.f_w[1][2]) * dt;
+                hx_fz[ph][1] += dt;
             }
         }
         // ---- QP -------------------------------------------------------------
