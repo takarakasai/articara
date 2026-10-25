@@ -193,6 +193,9 @@ fn main() {
     // made in the release, by the foot left on the ground pushing sideways;
     // releases under 25 ms fell 21/115, longer ones 50/93.
     let release_first_off = flag("RELEASE_FIRST_OFF", false);
+    let wbcw_contact = env_f64("WBCW_CONTACT", 0.1);
+    let wbcw_contact_rest = std::env::var("WBCW_CONTACT_REST").ok().and_then(|s| s.parse::<f64>().ok());
+    let wbcw_contact_rest_after = env_f64("WBCW_CONTACT_REST_AFTER", 0.5);
     let mut air_sched = false;
     let mut left_ground = false;
     let f_on = env_f64("F_ON", 0.05 * weight);
@@ -899,6 +902,16 @@ fn main() {
         levels.push(bt::regulariser(dyn_ctx.tau(), &tau_reg_target, &dyn_ctx.forces(), &forces_nominal));
         names.push("regularise");
 
+        // WBCW_CONTACT_REST: the contact weight outside the push and release
+        // and outside WBCW_CONTACT_REST_AFTER s from the first touchdown
+        // (default = WBCW_CONTACT). Measured 2026-10-25: with
+        // WBCW_CONTACT=1 the double-support stand rocks from one sole edge to
+        // the other (CoP y +-25 mm every ~40 ms, ankle roll +-0.08 rad) and
+        // after landing one foot unloads and the body topples; 0.1 stands
+        // still.
+        let in_jump = (jump_v > 0.0 && push_end.is_none() && t >= t_launch + jump_t_crouch + jump_t_hold)
+            || touchdown_t.is_some_and(|t0| t - t0 < wbcw_contact_rest_after);
+        let contact_rest = wbcw_contact_rest.is_some() && !in_jump;
         if weighted {
             let nd = levels[0].n_decision();
             for (lvl, name) in levels.iter_mut().zip(&names).skip(1) {
@@ -913,7 +926,8 @@ fn main() {
                     "momentum roll" => jump_mom_x_w,
                     "fz sym" => jump_fz_sym_w,
                     "momentum" => mom_w,
-                    "contact+cones" => env_f64("WBCW_CONTACT", 0.1),
+                    "contact+cones" if contact_rest => wbcw_contact_rest.unwrap_or(wbcw_contact),
+                    "contact+cones" => wbcw_contact,
                     "trunk" if in_push => env_f64("WBCW_TRUNK_PUSH", env_f64("WBCW_TRUNK", 0.3)),
                     "trunk" => env_f64("WBCW_TRUNK", 0.3),
                     "posture" => env_f64("WBCW_POSTURE", 0.01),
