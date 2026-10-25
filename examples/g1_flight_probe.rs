@@ -257,6 +257,8 @@ fn main() {
     // presses), until the measured load puts it back in the contact set.
     // Off = bit-identical.
     let foot_reseat = flag("FOOT_RESEAT", false);
+    let jump_mom_x_w = env_f64("JUMP_MOM_X_W", 0.0).max(0.0);
+    let jump_fz_sym_w = env_f64("JUMP_FZ_SYM_W", 0.0).max(0.0);
     let foot_reseat_w = env_f64("FOOT_RESEAT_W", 1.0);
     let mut reseat_xy: [Option<na::Vector2<f64>>; 2] = [None, None];
     let mut foot_stand_z: Option<[f64; 2]> = None;
@@ -696,6 +698,27 @@ fn main() {
                 levels.push(tk);
                 names.push("momentum");
             }
+            // JUMP_MOM_X_W: during the push only, an extra ROLL-only
+            // momentum task with this weight. Measured 2026-10-25: the roll
+            // momentum at lift-off decides the remaining falls (|h_x| median
+            // 0.18 survivors vs 0.51 falls; one foot then lands first).
+            let in_push_now = jump_v > 0.0 && push_end.is_none() && t >= t_launch + jump_t_crouch + jump_t_hold;
+            if jump_mom_x_w > 0.0 && in_push_now
+                && let Some(tk) = bt::angular_momentum(dyn_ctx.qddot(), &cmm, &dcmm_v, &h_now, &[0.0; 3], &[0.0; 3], kp_mom, [true, false, false], nv)
+            {
+                levels.push(tk);
+                names.push("momentum roll");
+            }
+        }
+        // JUMP_FZ_SYM_W: during the push only, with both feet in contact,
+        // ask for equal vertical forces on the two feet (fz_L - fz_R = 0,
+        // rows 5 and 11 of the stacked (m, f) wrenches) with this weight.
+        if jump_fz_sym_w > 0.0 && nc == 2 && jump_v > 0.0 && push_end.is_none() && t >= t_launch + jump_t_crouch + jump_t_hold {
+            let fa = misa_wbc::AsAffine::as_affine(&dyn_ctx.forces());
+            let a = (fa.m().row(5) - fa.m().row(11)).into_owned();
+            let b = -(fa.q()[5] - fa.q()[11]);
+            levels.push(misa_wbc::Task::equality(na::DMatrix::from_rows(&[a]), na::DVector::from_vec(vec![b])));
+            names.push("fz sym");
         }
         if flight && flight_feet && let Some(off) = feet_off {
             for k in 0..2 {
@@ -788,6 +811,8 @@ fn main() {
                     "flight feet" => flight_feet_w,
                     "step swing" => land_step_w,
                     "reseat" => foot_reseat_w,
+                    "momentum roll" => jump_mom_x_w,
+                    "fz sym" => jump_fz_sym_w,
                     "momentum" => mom_w,
                     "contact+cones" => env_f64("WBCW_CONTACT", 0.1),
                     "trunk" if in_push => env_f64("WBCW_TRUNK_PUSH", env_f64("WBCW_TRUNK", 0.3)),
