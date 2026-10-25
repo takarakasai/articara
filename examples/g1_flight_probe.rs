@@ -187,6 +187,12 @@ fn main() {
     // 44/48 of the JUMP_V=1.0 battery.
     let jump_abort = flag("JUMP_ABORT", false);
     let mut release_t0: Option<(f64, f64, f64)> = None;
+    // RELEASE_FIRST_OFF=1: end the release as soon as EITHER foot is
+    // unloaded (not both): the flight tasks then lift the other foot.
+    // Measured 2026-10-25 (DIAG_HX): 91% of the lift-off roll momentum is
+    // made in the release, by the foot left on the ground pushing sideways;
+    // releases under 25 ms fell 21/115, longer ones 50/93.
+    let release_first_off = flag("RELEASE_FIRST_OFF", false);
     let mut air_sched = false;
     let mut left_ground = false;
     let f_on = env_f64("F_ON", 0.05 * weight);
@@ -384,6 +390,11 @@ fn main() {
         }
         if air_sched {
             let unloaded = measured.cop[0][2] <= f_on && measured.cop[1][2] <= f_on;
+            if diag_hx && unloaded && !left_ground {
+                let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
+                let h = &cmm * v_dvec;
+                println!("  [airborne] t={t:.3} both feet unloaded: h_ang ({:+.3},{:+.3},{:+.3}) com vz {:+.3}", h[0], h[1], h[2], com_vel.z);
+            }
             left_ground |= unloaded;
             let loaded = (0..2).any(|k| measured.cop[k][2] > f_on);
             if left_ground && loaded {
@@ -718,7 +729,13 @@ fn main() {
                             vz = v0 - G * sr;
                             az = -G;
                             let unloaded = measured.cop[0][2] <= f_on && measured.cop[1][2] <= f_on;
-                            if !unloaded && sr >= jump_t_release && jump_abort {
+                            let one_off = release_first_off && !unloaded && (measured.cop[0][2] <= f_on || measured.cop[1][2] <= f_on);
+                            if one_off {
+                                push_end = Some(t);
+                                air_sched = true;
+                                left_ground = false;
+                                println!("  [release] t={t:.3} after {sr:.3} s (one foot unloaded: fz {:.0} {:.0})", measured.cop[0][2], measured.cop[1][2]);
+                            } else if !unloaded && sr >= jump_t_release && jump_abort {
                                 push_end = Some(t);
                                 land = Some((t, com, com_vel));
                                 println!("  [abort] t={t:.3} feet still loaded after {sr:.3} s: no flight, absorb in stance");
