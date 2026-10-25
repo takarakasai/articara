@@ -196,6 +196,22 @@ fn main() {
     let wbcw_contact = env_f64("WBCW_CONTACT", 0.1);
     let wbcw_contact_rest = std::env::var("WBCW_CONTACT_REST").ok().and_then(|s| s.parse::<f64>().ok());
     let wbcw_contact_rest_after = env_f64("WBCW_CONTACT_REST_AFTER", 0.5);
+    // WBCW_CONTACT_REST_SETTLE_V (m/s, 0 = off): after landing, switch to
+    // the rest weight only once the CoM speed is below this and the trunk
+    // roll and pitch below WBCW_CONTACT_REST_SETTLE_TILT rad (and at least
+    // WBCW_CONTACT_REST_AFTER s after touchdown); latched from then on.
+    // Measured 2026-10-25: a timed switch keeps JUMP_V 1.0/1.5 standing
+    // (47-48/48) but drops 2.0 38->9, whose recovery from the backward
+    // landing still needs the contact weight 1.
+    let rest_settle_v = env_f64("WBCW_CONTACT_REST_SETTLE_V", 0.0);
+    let rest_settle_tilt = env_f64("WBCW_CONTACT_REST_SETTLE_TILT", 0.03);
+    let mut rest_settled = false;
+    // WBCW_CONTACT_REST_LAUNCH=1: the jump's window (weight WBCW_CONTACT)
+    // starts at T_LAUNCH (the crouch) instead of the push. Measured
+    // 2026-10-25: the rest weight through the crouch and hold raises the
+    // take-off speed (JUMP_V 2.0: 1.23 -> 1.33 m/s) and the landing with it,
+    // and 2.0 fell 38 -> 20 whatever the switch after landing.
+    let rest_launch = flag("WBCW_CONTACT_REST_LAUNCH", false);
     let mut air_sched = false;
     let mut left_ground = false;
     let f_on = env_f64("F_ON", 0.05 * weight);
@@ -909,8 +925,20 @@ fn main() {
         // the other (CoP y +-25 mm every ~40 ms, ankle roll +-0.08 rad) and
         // after landing one foot unloads and the body topples; 0.1 stands
         // still.
-        let in_jump = (jump_v > 0.0 && push_end.is_none() && t >= t_launch + jump_t_crouch + jump_t_hold)
-            || touchdown_t.is_some_and(|t0| t - t0 < wbcw_contact_rest_after);
+        if rest_settle_v > 0.0 && !rest_settled && !flight
+            && touchdown_t.is_some_and(|t0| t - t0 >= wbcw_contact_rest_after)
+            && com_vel.norm() < rest_settle_v && roll.abs().max(pitch.abs()) < rest_settle_tilt
+        {
+            rest_settled = true;
+            println!("  [settled] t={t:.3} after {:.3} s: contact weight -> rest", t - touchdown_t.unwrap_or(t));
+        }
+        let landed_busy = if rest_settle_v > 0.0 {
+            touchdown_t.is_some() && !rest_settled
+        } else {
+            touchdown_t.is_some_and(|t0| t - t0 < wbcw_contact_rest_after)
+        };
+        let jump_from = if rest_launch { t_launch } else { t_launch + jump_t_crouch + jump_t_hold };
+        let in_jump = (jump_v > 0.0 && push_end.is_none() && t >= jump_from) || landed_busy;
         let contact_rest = wbcw_contact_rest.is_some() && !in_jump;
         if weighted {
             let nd = levels[0].n_decision();
