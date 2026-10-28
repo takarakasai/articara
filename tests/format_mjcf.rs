@@ -377,6 +377,7 @@ mod test_mjcf {
             default_friction: [0.7, 0.005, 0.0001],
             native_velocity_servo: None,
             integrator: None,
+            ..Default::default()
         };
         let xml = export_mjcf_with_options(&model, opts);
 
