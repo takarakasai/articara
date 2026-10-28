@@ -212,6 +212,13 @@ fn main() {
     // take-off speed (JUMP_V 2.0: 1.23 -> 1.33 m/s) and the landing with it,
     // and 2.0 fell 38 -> 20 whatever the switch after landing.
     let rest_launch = flag("WBCW_CONTACT_REST_LAUNCH", false);
+    // DIAG_LAND=1: for 3 s after the first touchdown, every 20 ms: CoM x
+    // (actual, reference, velocity), the CoM task's commanded x acceleration
+    // against the one the QP solved for, trunk pitch and rate, and per foot
+    // CoP x and load -- where the post-landing forward run comes from.
+    let diag_land = flag("DIAG_LAND", false);
+    let trunk_land_vz = env_f64("WBCW_TRUNK_LAND_VZ", 0.0);
+    let mut diag_com_cmd: Option<(na::Vector3<f64>, na::Vector3<f64>)> = None; // (ref, a_cmd)
     let mut air_sched = false;
     let mut left_ground = false;
     let f_on = env_f64("F_ON", 0.05 * weight);
@@ -788,6 +795,7 @@ fn main() {
                 cdd_ref.y = w2 * (com.y - p_st.y);
             }
             let a_com = cdd_ref + kd_com * (cd_ref - com_vel) + kp_com * (c_ref - com);
+            diag_com_cmd = Some((c_ref, a_com));
             levels.push(bt::com(dyn_ctx.qddot(), &st.j_com, &st.djv_com, &a_com));
             names.push("com");
         }
@@ -957,6 +965,18 @@ fn main() {
                     "contact+cones" if contact_rest => wbcw_contact_rest.unwrap_or(wbcw_contact),
                     "contact+cones" => wbcw_contact,
                     "trunk" if in_push => env_f64("WBCW_TRUNK_PUSH", env_f64("WBCW_TRUNK", 0.3)),
+                    // WBCW_TRUNK_LAND: the trunk weight from the first
+                    // touchdown on (default = WBCW_TRUNK). Measured
+                    // 2026-10-28 (DIAG_LAND): JUMP_V 2.0 lands pitched
+                    // 0.13 rad; righting the trunk at 0.3 overrules the CoM
+                    // task (commanded -16 m/s^2 back, solved -0.1), the CoM
+                    // runs 7 cm forward of its reference to the toe edge.
+                    // WBCW_TRUNK_LAND_VZ (m/s, 0 = always): only after a
+                    // landing faster than this. Measured 2026-10-28: 0.1
+                    // after every landing drops JUMP_V 1.0 38 -> 27.
+                    "trunk" if touchdown_t.is_some() && (trunk_land_vz <= 0.0 || td_vz < -trunk_land_vz) => {
+                        env_f64("WBCW_TRUNK_LAND", env_f64("WBCW_TRUNK", 0.3))
+                    }
                     "trunk" => env_f64("WBCW_TRUNK", 0.3),
                     "posture" => env_f64("WBCW_POSTURE", 0.01),
                     "regularise" => 1e-4,
@@ -969,6 +989,16 @@ fn main() {
         let sol = solver.solve(&levels, &cfg).unwrap_or_else(|e| panic!("wbc solve failed at t={t:.3} (nc={nc}): {e}"));
         tally.observe(&sol.status, t, tick, nc, &names);
         let ex = dyn_ctx.extract(&sol.x);
+        if diag_land && tick % 10 == 0 && let Some(t0) = touchdown_t && t - t0 <= 3.0 {
+            let a_sol = &st.j_com * &ex.qddot + st.djv_com;
+            let (cr, ac) = diag_com_cmd.unwrap_or((com, na::Vector3::zeros()));
+            let feet_x: Vec<f64> = (0..2).map(|k| misarta::se3::translation(&data.oMi[feet[k]]).x + prof.sole_centre_x).collect();
+            println!(
+                "  [land] t+{:.2} nc={nc} com x {:+.3} ref {:+.3} vx {:+.3} | ax cmd {:+.2} sol {:+.2} | pitch {:+.3} rate {:+.3} | sole x {:+.3} {:+.3} cop x {:+.3} {:+.3} fz {:.0} {:.0}",
+                t - t0, com.x, cr.x, com_vel.x, ac.x, a_sol[0], pitch, st.v_ang_w[1],
+                feet_x[0], feet_x[1], measured.cop[0][0], measured.cop[1][0], measured.cop[0][2], measured.cop[1][2]
+            );
+        }
 
         if verbose && jump_v > 0.0 && !flight && t >= t_launch && push_end.is_none() && tick % 5 == 0 {
             let mut use_j: Vec<(f64, String)> = rig.actuated().iter().map(|&(ji, vi)| {
