@@ -6321,6 +6321,15 @@ fn main() {
         // moves the landing inward and the unloaded foot is dragged 13 cm
         // across the other one. Unset = the ramp alone (bit-identical).
         let load_ramp_td = flag("LOAD_RAMP_TD", false);
+        // LOAD_RAMP_CONTACT_T [s]: the landed foot's capacity also ramps from
+        // the tick it ENTERED the contact set, not only from the start of the
+        // double-support slice. Measured 2026-10-28 on G1 v6.18 (backward
+        // 11 N*s at swing 0.26-0.39): the catch step lands ~0.1 s into the
+        // slice, so the slice ramp is already open; on its first contact
+        // tick the QP asks the unloaded foot for -100 N sideways (plant fz
+        // 0 N), the foot slides 1.6-4 cm inward and the DCM ends up past the
+        // new stance sole's outer edge. 0 = off = bit-identical.
+        let load_ramp_contact_t = env_f64("LOAD_RAMP_CONTACT_T", 0.0).max(0.0);
         let measured_share = {
             let tot = (measured_pre[0] + measured_pre[1]).max(1e-6);
             [(measured_pre[0] / tot).clamp(0.0, 1.0), (measured_pre[1] / tot).clamp(0.0, 1.0)]
@@ -6354,7 +6363,11 @@ fn main() {
             }
             if let Some(l) = landing {
                 if l == side {
-                    let ramp = (slice_frac / ramp_frac).clamp(0.0, 1.0);
+                    let mut ramp = (slice_frac / ramp_frac).clamp(0.0, 1.0);
+                    if load_ramp_contact_t > 0.0 {
+                        let since = touchdown_since[side].map_or(0.0, |t0| ((t - t0) / load_ramp_contact_t).clamp(0.0, 1.0));
+                        ramp = ramp.min(since);
+                    }
                     return if load_ramp_td { ramp.max(measured_share[side]) } else { ramp };
                 }
             }
