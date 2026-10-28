@@ -11,6 +11,8 @@ pub enum RobotFormat {
     IsaacUsd,
     /// articara/misarta native master format (TOML; `.misa`).
     Misa,
+    /// glTF 2.0 binary (`.glb`) / JSON (`.gltf`).
+    Gltf,
 }
 
 impl RobotFormat {
@@ -21,6 +23,7 @@ impl RobotFormat {
         RobotFormat::Sdf,
         RobotFormat::Mjcf,
         RobotFormat::IsaacUsd,
+        RobotFormat::Gltf,
     ];
 
     /// Whether this format supports import (loading).
@@ -33,6 +36,7 @@ impl RobotFormat {
                 | RobotFormat::Mjcf
                 | RobotFormat::IsaacUsd
                 | RobotFormat::Misa
+                | RobotFormat::Gltf
         )
     }
 
@@ -49,6 +53,7 @@ impl RobotFormat {
             RobotFormat::Mjcf => "MJCF",
             RobotFormat::IsaacUsd => "Isaac (USD ASCII)",
             RobotFormat::Misa => "Misa (native)",
+            RobotFormat::Gltf => "glTF (GLB)",
         }
     }
 
@@ -60,6 +65,7 @@ impl RobotFormat {
             RobotFormat::Mjcf => "xml",
             RobotFormat::IsaacUsd => "usda",
             RobotFormat::Misa => "misa",
+            RobotFormat::Gltf => "glb",
         }
     }
 
@@ -74,6 +80,7 @@ impl RobotFormat {
             "xml" | "mjcf" => Some(RobotFormat::Mjcf),
             "usda" | "usd" => Some(RobotFormat::IsaacUsd),
             "misa" => Some(RobotFormat::Misa),
+            "glb" | "gltf" => Some(RobotFormat::Gltf),
             _ => None,
         }
     }
@@ -101,6 +108,7 @@ impl RobotFormat {
             }
             "usda" | "usd" => Some(RobotFormat::IsaacUsd),
             "misa" => Some(RobotFormat::Misa),
+            "glb" | "gltf" => Some(RobotFormat::Gltf),
             _ => None,
         }
     }
@@ -334,7 +342,8 @@ impl FormatRegistry {
         Self { handlers: Vec::new() }
     }
 
-    /// Built-in registry covering Misa (native) / URDF / SDF / MJCF / USD.
+    /// Built-in registry covering Misa (native) / URDF / SDF / MJCF / USD /
+    /// glTF.
     pub fn default_registry() -> Self {
         let mut r = Self::new();
         r.register(Box::new(handlers::MisaHandler));
@@ -342,6 +351,7 @@ impl FormatRegistry {
         r.register(Box::new(handlers::SdfHandler));
         r.register(Box::new(handlers::MjcfHandler));
         r.register(Box::new(handlers::UsdHandler));
+        r.register(Box::new(handlers::GltfHandler));
         r
     }
 
@@ -574,6 +584,35 @@ mod handlers {
         ) -> Result<std::path::PathBuf, String> {
             let dir = path.parent().ok_or("USD export: invalid path")?;
             crate::usd::export_usda_to_dir(model, dir)
+        }
+    }
+
+    /// glTF 2.0 (.glb, .gltf). Geometry is plain glTF so any viewer can
+    /// open it; the full `.misa` description rides along in node
+    /// `extras`, so articara round-trips every feature.
+    pub struct GltfHandler;
+    impl FormatHandler for GltfHandler {
+        fn name(&self) -> &str { "glTF" }
+        fn extensions(&self) -> &[&'static str] { &["glb", "gltf"] }
+        fn capabilities(&self) -> FormatCapabilities {
+            FormatCapabilities {
+                mimic: true,
+                sensors: true,
+                collision_pairs: true,
+                closed_loops: true,
+                actuators: true,
+            }
+        }
+        fn import(&self, path: &Path) -> Result<crate::robot::RobotModel, String> {
+            crate::gltf_io::import_gltf(path)
+        }
+        fn export(
+            &self,
+            model: &crate::robot::RobotModel,
+            path: &Path,
+        ) -> Result<std::path::PathBuf, String> {
+            crate::gltf_io::export_gltf_to_file(model, path)?;
+            Ok(path.to_path_buf())
         }
     }
 }

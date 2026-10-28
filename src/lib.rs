@@ -8,6 +8,7 @@ pub mod dynamics;
 pub mod estimator;
 pub mod format;
 pub mod gait;
+pub mod gltf_io;
 pub mod history;
 pub mod isaac;
 pub use legged_estimation::leg_odometry;

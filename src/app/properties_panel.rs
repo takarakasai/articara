@@ -2538,6 +2538,7 @@ impl ArticaraApp {
                 let suffix = match fmt {
                     RobotFormat::Urdf | RobotFormat::Sdf => " (with meshes)",
                     RobotFormat::Misa => " (full state preserved — no sidecar needed)",
+                    RobotFormat::Gltf => " (meshes embedded, full state in extras)",
                     _ => "",
                 };
                 self.export_message =
@@ -2551,9 +2552,9 @@ impl ArticaraApp {
         // For non-Misa exports, also drop a `.misarta.toml` sidecar so
         // round-trips through that target format don't silently lose
         // articara-specific data (poses, sequences, actuator gains, etc).
-        // For Misa exports the sidecar is redundant — `.misa` already
-        // carries everything.
-        if fmt != RobotFormat::Misa {
+        // For Misa / glTF exports the sidecar is redundant — both already
+        // carry everything (glTF embeds the `.misa` in its extras).
+        if !matches!(fmt, RobotFormat::Misa | RobotFormat::Gltf) {
             let model_file = dir.join(&base_name);
             if let Err(e) = model.save_sidecar_config(&model_file) {
                 self.export_message += &format!(" (⚠ config: {e})");

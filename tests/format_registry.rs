@@ -47,6 +47,14 @@ mod test_format {
     }
 
     #[test]
+    fn detect_gltf_extensions() {
+        for name in ["robot.glb", "robot.gltf", "ROBOT.GLB"] {
+            let fmt = RobotFormat::detect_from_extension(Path::new(name));
+            assert_eq!(fmt, Some(RobotFormat::Gltf), "{name}");
+        }
+    }
+
+    #[test]
     fn detect_unknown_extension() {
         let fmt = RobotFormat::detect_from_extension(Path::new("image.png"));
         assert_eq!(fmt, None);
@@ -64,6 +72,7 @@ mod test_format {
         assert!(RobotFormat::Sdf.supports_import());
         assert!(RobotFormat::Mjcf.supports_import());
         assert!(RobotFormat::IsaacUsd.supports_import());
+        assert!(RobotFormat::Gltf.supports_import());
     }
 
     #[test]
@@ -74,9 +83,9 @@ mod test_format {
     }
 
     #[test]
-    fn all_contains_five() {
-        // Misa (native) + URDF + SDF + MJCF + USD
-        assert_eq!(RobotFormat::ALL.len(), 5);
+    fn all_contains_six() {
+        // Misa (native) + URDF + SDF + MJCF + USD + glTF
+        assert_eq!(RobotFormat::ALL.len(), 6);
     }
 
     #[test]
@@ -162,6 +171,39 @@ mod test_cross_format {
             let b = b.unwrap();
             assert!((a.inertial.mass - b.inertial.mass).abs() < 1e-3,
                 "Mass mismatch for {}: {} vs {}", a.name, a.inertial.mass, b.inertial.mass);
+        }
+    }
+
+    /// Load URDF, export to GLB through the registry, re-import → the
+    /// kinematics and the posed link transforms survive unchanged.
+    #[test]
+    fn urdf_to_glb_roundtrip() {
+        let mut model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
+        for (q, j) in model.joint_positions.iter_mut().zip(&model.joints) {
+            if j.joint_type != "fixed" {
+                *q = 0.3;
+            }
+        }
+        let registry = articara::format::FormatRegistry::default_registry();
+        let tmp = std::env::temp_dir().join("articara_urdf2glb.glb");
+        registry.export(&model, &tmp).expect("GLB export failed");
+        let model2 = registry.import(&tmp).expect("GLB re-import failed");
+        std::fs::remove_file(&tmp).ok();
+
+        assert_eq!(model.root_link, model2.root_link);
+        assert_eq!(model.links.len(), model2.links.len());
+        assert_eq!(model.joints.len(), model2.joints.len());
+        for a in &model.joints {
+            let b = model2.joints.iter().find(|j| j.name == a.name).unwrap();
+            assert_eq!(a.joint_type, b.joint_type);
+            assert_eq!((a.parent_link.as_str(), a.child_link.as_str()), (b.parent_link.as_str(), b.child_link.as_str()));
+            assert!((a.lower - b.lower).abs() < 1e-9 && (a.upper - b.upper).abs() < 1e-9);
+        }
+        let (tf1, tf2) = (model.compute_transforms(), model2.compute_transforms());
+        for (name, t1) in &tf1 {
+            let t2 = tf2[name];
+            assert!((t1.translation.vector - t2.translation.vector).norm() < 1e-5, "{name}");
+            assert!(t1.rotation.angle_to(&t2.rotation) < 1e-5, "{name}");
         }
     }
 
