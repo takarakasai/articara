@@ -218,6 +218,8 @@ fn main() {
     // CoP x and load -- where the post-landing forward run comes from.
     let diag_land = flag("DIAG_LAND", false);
     let trunk_land_vz = env_f64("WBCW_TRUNK_LAND_VZ", 0.0);
+    let kp_trunk_land = env_f64("KP_TRUNK_LAND", kp_trunk);
+    let kd_trunk_land = env_f64("KD_TRUNK_LAND", kd_trunk);
     let mut diag_com_cmd: Option<(na::Vector3<f64>, na::Vector3<f64>)> = None; // (ref, a_cmd)
     let mut air_sched = false;
     let mut left_ground = false;
@@ -803,7 +805,13 @@ fn main() {
         let djv_trunk = &misarta::jacobian::compute_joint_jacobian_time_derivative(&rig.model, q, v, rig.trunk_mi) * v_dvec;
         let (roll, pitch, _) = st.body_quat.euler_angles();
         if !flight || flight_trunk {
-            let rp_ref = bt::trunk_rp_ref(roll, pitch, &st.v_ang_w, kp_trunk, kd_trunk, 0.0, 1.0);
+            // KP/KD_TRUNK_LAND: the trunk gains after a landing faster than
+            // WBCW_TRUNK_LAND_VZ (default = KP/KD_TRUNK). Measured
+            // 2026-10-28: the weight 0.03 frees the CoM but lets the trunk
+            // pitch on from 0.12 to 0.52 rad in 0.5 s (13 of 15 2.0 falls).
+            let hard_land = touchdown_t.is_some() && (trunk_land_vz <= 0.0 || td_vz < -trunk_land_vz);
+            let (kp_t, kd_t) = if hard_land { (kp_trunk_land, kd_trunk_land) } else { (kp_trunk, kd_trunk) };
+            let rp_ref = bt::trunk_rp_ref(roll, pitch, &st.v_ang_w, kp_t, kd_t, 0.0, 1.0);
             levels.push(bt::trunk(dyn_ctx.qddot(), &j_trunk, &djv_trunk, &rp_ref, nv));
             names.push("trunk");
         }
