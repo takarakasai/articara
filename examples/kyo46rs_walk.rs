@@ -2937,6 +2937,23 @@ fn main() {
     let ds_capture_t_min = env_f64("DS_CAPTURE_T_MIN", 0.15).max(0.02);
     let ds_capture_load = env_f64("DS_CAPTURE_LOAD", 0.4).clamp(0.0, 1.0);
     let ds_capture_debug = std::env::var("DS_CAPTURE_DEBUG").is_ok();
+    // LIFT_GATE_FRAC: do not end a double support while the lateral DCM is
+    // still over the foot that is about to lift. Measured 2026-10-28 on G1
+    // v6.18 (late stance-side pushes, swing 0.69-0.75, 7 falls / 1 survivor
+    // re-run with traces): the swing lands where planned 0.22-0.27 s after
+    // the push, the DCM is 2 cm past the stance sole centre (the crossing
+    // gate needs 3 cm), the landed foot carries 0-26 N, and the double
+    // support ends on the clock with the DCM AT the lifting foot (fraction
+    // -0.22..0.18 of the way to the new stance foot; 0.97-1.05 in 168
+    // undisturbed lift-offs, 0.49 in the survivor). Each tick at the end of
+    // the run, while that fraction is below this value, the last DS slice is
+    // extended by one tick, at most LIFT_GATE_MAX [s] per run. 0 = off.
+    let lift_gate_frac = env_f64("LIFT_GATE_FRAC", 0.0);
+    let lift_gate_max = env_f64("LIFT_GATE_MAX", 0.4).max(0.0);
+    let lift_gate_debug = std::env::var("LIFT_GATE_DEBUG").is_ok();
+    let mut lift_gate_run: Option<(usize, f64)> = None;
+    let mut n_lift_gate = 0u32;
+    let mut lift_gate_total = 0.0_f64;
     let mut dsc_retimed_last: Option<usize> = None;
     let mut n_ds_capture = 0u32;
     let mut ds_capture_total = 0.0_f64;
@@ -5024,6 +5041,50 @@ fn main() {
                         dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
                         if ds_capture_debug {
                             println!("  [dsc-cap] t={t:.3} DS end {t1_run:.3} -> {earliest:.3}");
+                        }
+                    }
+                }
+            }
+            if lift_gate_frac > 0.0 {
+                let ds = gait.index_at(t + 1e-6);
+                let is_ds = |j: usize| matches!(gait.slices[j].support, Support::Double);
+                if is_ds(ds) && ref_mode.is_none() {
+                    let mut first = ds;
+                    while first > 0 && is_ds(first - 1) {
+                        first -= 1;
+                    }
+                    let mut last = ds;
+                    while last + 1 < gait.slices.len() && is_ds(last + 1) {
+                        last += 1;
+                    }
+                    let t1_run = gait.slices[last].t1;
+                    let used = match lift_gate_run {
+                        Some((f, e)) if f == first => e,
+                        _ => 0.0,
+                    };
+                    if t + dt >= t1_run
+                        && used < lift_gate_max
+                        && last + 1 < gait.slices.len()
+                        && let Some(lift) = gait.slices[last + 1].support.swing()
+                    {
+                        let xi_meas = dcm_of(&com, &com_vel, omega);
+                        let ly = actual.sole[lift].y;
+                        let sy = actual.sole[1 - lift].y;
+                        let frac = if (sy - ly).abs() > 1e-3 { (xi_meas.y - ly) / (sy - ly) } else { 1.0 };
+                        if frac < lift_gate_frac {
+                            let ext = dt.min(lift_gate_max - used);
+                            lift_gate_total += gait.retime(last, t1_run + ext).abs();
+                            if used == 0.0 {
+                                n_lift_gate += 1;
+                            }
+                            lift_gate_run = Some((first, used + ext));
+                            dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
+                            if lift_gate_debug && (used == 0.0 || (used / dt).round() as u64 % 10 == 0) {
+                                println!(
+                                    "  [lift-gate] t={t:.3} run {first}..{last} lift {lift} frac {frac:+.2} xi=({:.3},{:+.3}) held {:.3} s",
+                                    xi_meas.x, xi_meas.y, used + ext
+                                );
+                            }
                         }
                     }
                 }
@@ -12321,6 +12382,9 @@ fn main() {
         if ds_feasible_continuous {
             println!("  ds continuous: {n_ds_continuous} plan writes");
         }
+    }
+    if lift_gate_frac > 0.0 {
+        println!("  lift gate: {n_lift_gate} double supports held ({:.0} ms total)", lift_gate_total * 1e3);
     }
     if land_wait_hold {
         println!("  landing wait hold: {n_wait_hold} plan writes");
