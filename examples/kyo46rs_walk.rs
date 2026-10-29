@@ -2637,19 +2637,6 @@ fn main() {
     // penalty weight above, which then only has to be > 0 to switch the
     // capture inputs on. See wrench_mpc::Config::landing_lexicographic.
     let mpc_landing_lex = flag("MPC_LANDING_LEX", false);
-    // Emergency touchdown for a push TOWARD the stance foot: when the lateral
-    // DCM error points at the stance side by more than this [m], the swing
-    // is brought down at CP_LAT_EMERGENCY_TMIN of its remaining time, once
-    // per step. Measured 2026-10-02 (design note Sec.18): 7 N.s toward the
-    // stance side fell 35/35 -- the sole's +-27 mm cannot hold a 54 mm
-    // capture-point shift and the swing foot was still 0.9 s from landing on
-    // its own side; no landing geometry and no x-driven retime changed a
-    // single run. A double support NOW is the only polygon that contains
-    // the CoM. 0 = off = shipped.
-    let cp_lat_emergency = env_f64("CP_LAT_EMERGENCY", 0.0).max(0.0);
-    let cp_lat_emergency_tmin = env_f64("CP_LAT_EMERGENCY_TMIN", 0.3).clamp(0.0, 1.0);
-    let mut lat_emg_slice: Option<usize> = None;
-    let mut n_lat_emg = 0u32;
     // 1 = shipped: the landing offset also enters the momentum and net-CoP
     // rows as `dp x F`. 0 = capture rows and landing cost only (2026-09-27:
     // the moment coupling made the landing jitter +-30-47 mm on
@@ -2674,50 +2661,12 @@ fn main() {
         "MPC_FOOTSTEP and the contact_plan adjuster are two authorities over the same landing; turn one off (or make the adjuster timing-only: CP_MAX_X=CP_MAX_Y=CP_MAX_Y_IN=0)"
     );
     let mpc_footstep_w = env_f64("MPC_FOOTSTEP_W", 100.0).max(0.0);
-    // Freeze the landing variable once the swing clock passes this fraction
-    // of the single support (>1 = during a late-contact extension). Measured
-    // 2026-09-27 (design note, wide holdout 8 cm m01): while the foot hovers
-    // over the first tread waiting for contact, the schedule already has it
-    // down (first_node = 0) and the capture rows (1e6) throw the landing to
-    // its box (-54, +80 mm), pulling the foot off the nosing. The swing
-    // cannot follow a late shift anyway. inf = off = shipped behaviour.
-    let mpc_footstep_freeze_frac = env_f64("MPC_FOOTSTEP_FREEZE_FRAC", f64::INFINITY);
     // Give the capture rows the plan's own sensitivity to the landing
     // (`Input::reference_dcm_sensitivity`), differenced from the real DCM
     // plan the way CP_J_AUTO does: shift the landing by 2 cm per axis,
     // rebuild the rolled plan, read the reference DCM at every node. Off =
     // the shipped rows, bit-identical.
     let mpc_landing_capture_j = flag("MPC_LANDING_CAPTURE_J", false);
-    // The MPC is given the plan AFTER this slice's earlier landing shifts
-    // (forecast contact, net-CoP and DCM schedules), so its answer is an
-    // INCREMENT. The shipped application treats it as the total since the
-    // slice started (`d = dp - applied`), which retracts every shift on the
-    // next solve (code review 2026-09-27). 1 = apply it as an increment, with
-    // the landing cost and box on the accumulated total. 0 = shipped.
-    let mpc_footstep_increment = flag("MPC_FOOTSTEP_INCREMENT", false);
-    // Largest BACKWARD landing shift allowed when the landing is on a
-    // different level from the lift-off (a stair step, either direction).
-    // Measured 2026-09-27 (wide holdout 8 cm m33): the MPC moved the first
-    // tread landing 20 mm back, the heel overhung 35 mm instead of 15, and the
-    // robot fell backward in the next double support. A box, not a snap
-    // (CP_TREAD_BOX showed snapping to an edge is harmful). Default = the
-    // symmetric box (MPC_FOOTSTEP_MAX_X), bit-identical.
-    let mpc_footstep_stair_back = env_f64("MPC_FOOTSTEP_STAIR_BACK", f64::INFINITY).max(0.0);
-    // Terrain as a COST in the lexicographic landing (`Landing::terrain_x`):
-    // on a staircase the landing's total x pays this weight times its
-    // squared distance outside the sole window of the surface the nominal
-    // landing is over (minus MPC_FOOTSTEP_TERRAIN_MARGIN). 0 = off.
-    let mpc_footstep_terrain_w = env_f64("MPC_FOOTSTEP_TERRAIN_W", 0.0).max(0.0);
-    // Capture FLOOR on the lexicographic landing (fraction of the sole
-    // half-length, 0 = off): predict the DCM at the end of the coming double
-    // support with the pressure held at the stance foot (the new foot's load
-    // is not admitted before that), and require the landing to put the sole
-    // under it -- behind it for a backward push, ahead for a forward one.
-    // The capture rows alone match the plan's DCM, which after a strong push
-    // early in swing asked for a step beside the stance foot (design note
-    // Sec.18: -106 mm where -230 was needed).
-    let mpc_footstep_capture_floor = env_f64("MPC_FOOTSTEP_CAPTURE_FLOOR", 0.0).max(0.0);
-    let mpc_footstep_terrain_margin = env_f64("MPC_FOOTSTEP_TERRAIN_MARGIN", 0.01).max(0.0);
     // Largest lateral shift TOWARD the stance foot (a narrower step). The
     // contact_plan adjuster forbids it in v4.1 (CP_MAX_Y_IN=0); the MPC box
     // allowed it. Measured 2026-09-27 (D+J+T, 11 N.s backward, m32): the
@@ -2725,24 +2674,6 @@ fn main() {
     // -19 -> -126 mm and the robot fell. Default = MPC_FOOTSTEP_MAX_Y
     // (symmetric box), bit-identical.
     let mpc_footstep_max_y_in = env_f64("MPC_FOOTSTEP_MAX_Y_IN", f64::INFINITY).max(0.0);
-    // Allow an inward (narrowing) landing shift only down to this lateral
-    // gap between the stance sole and the swing landing [m]. What the
-    // inward ban protects against is a narrow or crossing stance, so bound
-    // the gap itself rather than the shift. Measured 2026-09-27: the flat
-    // nominal gap is ~0.11 m. Combined with MPC_FOOTSTEP_MAX_Y_IN (the
-    // smaller inward bound wins). 0 = off (no width floor) = shipped.
-    let mpc_footstep_min_width = env_f64("MPC_FOOTSTEP_MIN_WIDTH", 0.0).max(0.0);
-    // Inward bound on a step the contact_plan timing adjuster has SHORTENED.
-    // Measured 2026-09-27 (v5, 11 N.s forward, 11 members): with inward
-    // allowed the pushed step lands 60-80 mm forward AND 20-35 mm inward and
-    // the next step needs only ~7 mm; v5 (inward 0) lands the same step
-    // straight ahead and the next one is thrown to the box edges. A shortened
-    // single support ends before the lateral DCM swings out, so the next
-    // support belongs inward. The harmful inward shift after a backward push
-    // was on the step AFTER the push, not a retimed one. This relaxes the
-    // inward bound to at least this value on retimed steps only.
-    // 0 = off = shipped.
-    let mpc_footstep_y_in_retimed = env_f64("MPC_FOOTSTEP_Y_IN_RETIMED", 0.0).max(0.0);
     // Inward bound while the SAGITTAL DCM error is forward by at least
     // MPC_FOOTSTEP_Y_IN_FWD_TRIG [m] (world x; the walk heads +x). Measured
     // 2026-09-27: the inward shifts that save 11 N.s forward pushes happen
@@ -2757,9 +2688,7 @@ fn main() {
     // MPC_FOOTSTEP_CROSS_EX [m] beyond the stance sole centre AWAY from the
     // swing foot, the inward bound and the inward side of the y box become
     // this value for the rest of that single support (latched). The capture
-    // cost then picks the crossing landing. MPC_FOOTSTEP_CROSS_AHEAD [m]:
-    // while crossing, keep the landing at least this far ahead of the
-    // stance sole in x (the legs must pass in front, not through). Measured
+    // cost then picks the crossing landing. Measured
     // 2026-10-20 on G1 v6.11: 21 of 24 lateral-push falls are late-phase
     // (0.58-0.75) pushes toward the stance foot, where the landing stays put
     // with the DCM 9-11 cm past the new stance sole; the inward ban
@@ -2769,25 +2698,16 @@ fn main() {
     // other case. 0 = off = bit-identical.
     let mpc_footstep_cross_y = env_f64("MPC_FOOTSTEP_CROSS_Y", 0.0).max(0.0);
     let mpc_footstep_cross_ex = env_f64("MPC_FOOTSTEP_CROSS_EX", 0.02);
-    let mpc_footstep_cross_ahead = env_f64("MPC_FOOTSTEP_CROSS_AHEAD", 0.0).max(0.0);
     // MPC_FOOTSTEP_CROSS_FLOOR [fraction of the sole half width]: while
     // crossing, a lower bound on the inward shift from the LIPM: the DCM at
     // the end of this single support, with the stance CoP held at the
     // stance sole's outer edge (the best the ankle can do), must lie within
-    // this fraction of the half width of the landing sole. The y twin of
-    // MPC_FOOTSTEP_CAPTURE_FLOOR. Measured 2026-10-20: with only the bound
+    // this fraction of the half width of the landing sole. (Its x twin,
+    // MPC_FOOTSTEP_CAPTURE_FLOOR, is removed.) Measured 2026-10-20: with only the bound
     // opened the MPC lands at y +0.02..+0.04 for a DCM at +0.09 (stance
     // sole +0.05) -- the SRBD model has no attitude and believes it can
     // hold the excursion. 0 = off.
     let mpc_footstep_cross_floor = env_f64("MPC_FOOTSTEP_CROSS_FLOOR", 0.0).max(0.0);
-    // MPC_FOOTSTEP_SHIFT_REST=1: when the MPC moves a landing, move the rest
-    // of the footstep plan with it (`FootstepPlan::shift_rest`), so the walk
-    // continues from the moved landing. Measured 2026-10-20 (v6.12, 14 N.s
-    // backward): with the landing moved back far enough to hold the DCM over
-    // the rear foot, the NEXT step still went to the pre-push ladder (0.12 m
-    // ahead), the DCM reference stayed 0.17 m ahead of the measured DCM and
-    // the robot fell backward onto that step. 0 = off = `shift_next` only.
-    let mpc_footstep_shift_rest = flag("MPC_FOOTSTEP_SHIFT_REST", false);
     // MPC_FOOTSTEP_CROSS_HOLD_Z [m]: while crossing, hold the swing foot at
     // least this high above its landing until it is within
     // MPC_FOOTSTEP_CROSS_HOLD_XY [m] of the landing horizontally. Measured
@@ -2797,38 +2717,6 @@ fn main() {
     // (LandingTiming) instead of the foot landing short. 0 = off.
     let mpc_footstep_cross_hold_z = env_f64("MPC_FOOTSTEP_CROSS_HOLD_Z", 0.0).max(0.0);
     let mpc_footstep_cross_hold_xy = env_f64("MPC_FOOTSTEP_CROSS_HOLD_XY", 0.02).max(0.0);
-    // MPC_FOOTSTEP_HOLD_SHIFT [m]: the same height hold (CROSS_HOLD_Z, from
-    // CROSS_HOLD_XY) for ANY landing the MPC has moved by more than this
-    // this slice, not only a crossing one. Measured 2026-10-20 (14 N.s
-    // backward): the landing moved 15-25 cm back but the swing came down on
-    // its clock 7 cm short of it. 0 = off.
-    let mpc_footstep_hold_shift = env_f64("MPC_FOOTSTEP_HOLD_SHIFT", 0.0).max(0.0);
-    // MPC_FOOTSTEP_BACK_ONLY=1: the HOLD_SHIFT hold and the x capture
-    // floor (MPC_FOOTSTEP_CAPTURE_FLOOR) act on BACKWARD landings only (a
-    // shift with x below -HOLD_SHIFT; the floor's backward bound). Measured
-    // 2026-10-20: both were added for the 14 N.s backward push and, applied
-    // in every direction, cost the lateral 7 N.s 2-3 members. 0 = both ways.
-    let mpc_footstep_back_only = flag("MPC_FOOTSTEP_BACK_ONLY", false);
-    // Under BACK_ONLY: the backward-dominant error must last this long [s]
-    // before the parts engage, and once SHIFT_REST has moved the plan in a
-    // single support it keeps moving it for the rest of that support.
-    // Measured 2026-10-21 (5 N.s support side, m06): one 20 ms tick read
-    // backward-dominant, the floor threw the landing 22 cm back and the plan
-    // with it, the next tick fell back to `shift_next` and pulled only the
-    // landing forward again -- the rest of the plan stayed 22 cm behind.
-    let mpc_footstep_back_persist = env_f64("MPC_FOOTSTEP_BACK_PERSIST", 0.04).max(0.0);
-    // The x capture floor under BACK_ONLY needs the backward error to exceed
-    // this [m] (the plan shift and the hold use 0.02). Measured 2026-10-21
-    // (wide 7 N.s lateral, m42): a 2 cm backward excursion during a lateral
-    // recovery let the floor pull a landing 8 cm back. Default 0.02 = the
-    // same gate as the other parts.
-    let mpc_footstep_floor_back_err = env_f64("MPC_FOOTSTEP_FLOOR_BACK_ERR", 0.02).max(0.0);
-    // MPC_FOOTSTEP_BACK_VMAX [m/s]: under BACK_ONLY, keep the backward
-    // re-planning parts closed while a VX2 speed command above this is in
-    // force. Measured 2026-10-21 (v6.13, 11 N.s backward at speed): 0.30 m/s
-    // 48 -> 43 and 0.50 m/s 44 -> 13 against v6.12, where the speed yield
-    // (PUSH_YIELD_V) already re-plans the remaining steps. inf = off.
-    let mpc_footstep_back_vmax = env_f64("MPC_FOOTSTEP_BACK_VMAX", f64::INFINITY).max(0.0);
     // PUSH_REPLAN=trig [m]: ONE re-planner for the step after a push
     // (doc 20261014_push_x_speed.md Sec.20.3). In single support, the DCM
     // error against the plan that was in force when the support began,
@@ -2836,8 +2724,8 @@ fn main() {
     // capture step needs; once it exceeds `trig` the re-planner owns this
     // landing: original landing + that shift, clamped to the leg's reach
     // (PUSH_REPLAN_MAX_FWD / _MAX_BACK, a lateral gap of at least
-    // PUSH_REPLAN_MIN_W, or a crossing of at most PUSH_REPLAN_CROSS placed
-    // PUSH_REPLAN_AHEAD in front of the stance foot), and the rest of the
+    // PUSH_REPLAN_MIN_W; its own crossing, PUSH_REPLAN_CROSS / _AHEAD, was
+    // removed), and the rest of the
     // plan is re-laid from it (`FootstepPlan::replan_from_landing`:
     // PUSH_REPLAN_STAND steps in place, then PUSH_REPLAN_RAMP steps back to
     // the original stride). The MPC landing variable is off for that swing.
@@ -2849,8 +2737,6 @@ fn main() {
     let push_replan_max_fwd = env_f64("PUSH_REPLAN_MAX_FWD", 0.35).max(0.0);
     let push_replan_max_back = env_f64("PUSH_REPLAN_MAX_BACK", 0.30).max(0.0);
     let push_replan_min_w = env_f64("PUSH_REPLAN_MIN_W", 0.12).max(0.0);
-    let push_replan_cross = env_f64("PUSH_REPLAN_CROSS", 0.0).max(0.0);
-    let push_replan_ahead = env_f64("PUSH_REPLAN_AHEAD", 0.10).max(0.0);
     let push_replan_hold = env_f64("PUSH_REPLAN_HOLD", 0.06).max(0.0);
     // PUSH_REPLAN_BACK_ONLY=1: engage only on a backward-dominant error
     // (behind, and more than sideways). PUSH_REPLAN_VMAX [m/s]: never while a
@@ -2860,29 +2746,9 @@ fn main() {
     // backward 44 -> 21.
     let push_replan_back_only = flag("PUSH_REPLAN_BACK_ONLY", false);
     let push_replan_vmax = env_f64("PUSH_REPLAN_VMAX", f64::INFINITY).max(0.0);
-    // PUSH_REPLAN_LAT=1: under BACK_ONLY, also engage on a LATERAL-dominant
-    // error when the capture step it asks for is OUTWARD (wider than the
-    // planned gap) -- a step out, never a crossing (that stays with the MPC
-    // crossing gate) and never a forward error. PUSH_REPLAN_LAT_VMAX [m/s]:
-    // its own speed ceiling (default inf: at any speed). Measured 2026-10-21
-    // with the direction gate off (tu42): the support-side 5 N.s at 0.30 /
-    // 0.50 m/s went 28 -> 40 / 13 -> 23, while forward and inward-lateral
-    // pushes lost 2-5 members each. 0 = off.
-    let push_replan_lat = flag("PUSH_REPLAN_LAT", false);
-    let push_replan_lat_vmax = env_f64("PUSH_REPLAN_LAT_VMAX", f64::INFINITY).max(0.0);
-    // PUSH_REPLAN_LAT_VMIN [m/s]: the lateral engagement only while a VX2
-    // speed command of at least this is in force. Measured 2026-10-22 (tu46,
-    // no floor): at the nominal 0.12 m/s it cost the backward 14 N.s 43 -> 39
-    // and the lateral 7 N.s 2 members, at 0.30 m/s the swing-side 7 N.s
-    // 14 -> 10; the gains were at speed (support side 5 N.s 28 -> 38 at 0.30,
-    // 13 -> 22 at 0.50). 0 = no floor.
-    let push_replan_lat_vmin = env_f64("PUSH_REPLAN_LAT_VMIN", 0.0).max(0.0);
     // The current DCM error must also exceed this [m] (a 2 mm error at the
     // start of a long first support carried 0.8 s forward read as 4 cm).
     let push_replan_emin = env_f64("PUSH_REPLAN_EMIN", 0.015).max(0.0);
-    // Height the re-planned swing keeps above its landing until within
-    // MPC_FOOTSTEP_CROSS_HOLD_XY of it, when moved more than PUSH_REPLAN_HOLD.
-    let push_replan_hold_z = env_f64("PUSH_REPLAN_HOLD_Z", 0.05).max(0.0);
     // Widest outward step [m] from the stance foot.
     let push_replan_max_w = env_f64("PUSH_REPLAN_MAX_W", 0.40).max(0.0);
     // PUSH_REPLAN_ANKLE="ax,ay": fraction of the sole's half length / width
@@ -2904,23 +2770,12 @@ fn main() {
     let mut push_replan_slice: Option<usize> = None;
     let mut push_replan_shift = 0.0_f64;
     let mut n_push_replan = 0u32;
-    // The speed gate's last value, read by the swing-height hold too.
-    let mut back_parts_open = true;
-    let mut back_dom_since: Option<f64> = None;
-    let mut shift_rest_latched: Option<usize> = None;
     let mpc_fs_cross_debug = std::env::var("MPC_FS_CROSS_DEBUG").is_ok();
     // (slice, inward is +y) latched when the crossing gate opens: once the
     // landing has crossed, `landing_inward` would read the sign the other way.
     let mut mpc_fs_cross_latched: Option<(usize, bool)> = None;
     let mut n_mpc_fs_cross = 0u32;
     let mpc_footstep_y_in_fwd_trig = env_f64("MPC_FOOTSTEP_Y_IN_FWD_TRIG", 0.005);
-    // The same gate for a RISING swing (the landing more than 5 mm above the
-    // lift-off, i.e. a stair step). Stairs want an early freeze (the hover
-    // above the tread), flat pushes want a late one (a push at 0.75 of the
-    // swing still needs the landing). Default = the flat value.
-    let mpc_footstep_freeze_frac_rise =
-        env_f64("MPC_FOOTSTEP_FREEZE_FRAC_RISE", mpc_footstep_freeze_frac);
-    let mpc_fs_debug = std::env::var("MPC_FS_DEBUG").is_ok();
     // Arm the landing variable only once the DCM error of this single
     // support reaches this value [m] (latched for the rest of the step), the
     // rule the contact_plan adjuster uses (CP_TRIG): an undisturbed step
@@ -2930,25 +2785,11 @@ fn main() {
     // the variable itself stays near 0 where the runs part -- the cost is
     // its presence, not its choice. 0 = always armed = shipped.
     let mpc_footstep_trig = env_f64("MPC_FOOTSTEP_TRIG", 0.0).max(0.0);
-    // Keep the variable armed for this many FOLLOWING steps once the trigger
-    // fires. Measured 2026-09-27 (D+J+T, 11 N.s backward, m32): the step
-    // after the push recovery starts below the threshold, the DCM error
-    // creeps +4 -> +9 mm, the trigger fires only at the end of the swing and
-    // the landing jumps 32 mm sideways at once; always-armed D+J corrects the
-    // same step continuously and survives. 0 = arm only the step that
-    // triggered = shipped.
-    let mpc_footstep_trig_hold = env_f64("MPC_FOOTSTEP_TRIG_HOLD", 0.0).max(0.0) as usize;
-    // VXS_BOX_GAIN [1/(m/s)]: with a speed command the landing box grows
-    // by (1 + gain * (v - 0.12)): a push at speed needs a capture step
-    // scaled with the stride (measured 2026-10-14, the 0.12 m/s box
-    // clipped every lateral recovery at 0.30-0.50 m/s). 0 = fixed box.
-    let vxs_box_scale = match vx2_change {
-        Some((_, v, _)) => 1.0 + env_f64("VXS_BOX_GAIN", 0.0).max(0.0) * (v - 0.12).max(0.0),
-        None => 1.0,
-    };
+    // (MPC_FOOTSTEP_TRIG_HOLD, arming the following steps too, and
+    // VXS_BOX_GAIN, a box grown with the speed command, are removed.)
     let mpc_footstep_max = [
-        env_f64("MPC_FOOTSTEP_MAX_X", 0.06).max(0.0) * vxs_box_scale,
-        env_f64("MPC_FOOTSTEP_MAX_Y", 0.03).max(0.0) * vxs_box_scale,
+        env_f64("MPC_FOOTSTEP_MAX_X", 0.06).max(0.0),
+        env_f64("MPC_FOOTSTEP_MAX_Y", 0.03).max(0.0),
     ];
     let mpc_w_pos = env_f64("MPC_W_POS", 20.0).max(0.0);
     let mpc_w_vel = env_f64("MPC_W_VEL", 4.0).max(0.0);
@@ -4525,18 +4366,10 @@ fn main() {
                             .flatten();
                         let back_ok = (!push_replan_back_only || (e.x < 0.0 && e.y.abs() < -e.x))
                             && !v_now.is_some_and(|v| v > push_replan_vmax);
-                        // Lateral-dominant and OUTWARD: the swing side lies at
-                        // (base - stance) in y; the error pushes that way.
-                        let lat_ok = push_replan_lat
-                            && e.y.abs() > e.x.abs()
-                            && {
-                                let st = orig_fs.at_slice(i).xy(stance);
-                                (base.y - st.y) * d.y > 0.0
-                            }
-                            && !v_now.is_some_and(|v| v > push_replan_lat_vmax)
-                            && (push_replan_lat_vmin <= 0.0 || v_now.is_some_and(|v| v >= push_replan_lat_vmin));
+                        // (PUSH_REPLAN_LAT, the outward lateral step too, is
+                        // removed.)
                         if push_replan_slice == Some(i)
-                            || ((back_ok || lat_ok) && d.norm() > push_replan_trig && e.norm() > push_replan_emin)
+                            || (back_ok && d.norm() > push_replan_trig && e.norm() > push_replan_emin)
                         {
                             let st = orig_fs.at_slice(i).xy(stance);
                             let mut l = *base + d;
@@ -4549,17 +4382,13 @@ fn main() {
                             // (G1 walks at ~0.104 m; a 0.12 floor widened every
                             // backward re-plan by 2 cm, measured 2026-10-21).
                             let min_w = push_replan_min_w.min(((base.y - st.y) * side).max(0.0));
-                            // Inward of the minimum gap with no crossing of our
-                            // own: leave this landing to the MPC (its crossing
-                            // gate, MPC_FOOTSTEP_CROSS_*) -- do not engage, and
-                            // once engaged keep the last landing.
-                            let inward_skip = w < 0.0 && push_replan_cross == 0.0;
+                            // Inward of the minimum gap (a crossing): leave this
+                            // landing to the MPC (its crossing gate,
+                            // MPC_FOOTSTEP_CROSS_*) -- do not engage, and once
+                            // engaged keep the last landing.
+                            let inward_skip = w < 0.0;
                             let w = if w >= min_w {
                                 w.min(push_replan_max_w)
-                            } else if push_replan_cross > 0.0 && w < 0.0 {
-                                // Crossing: in front of the stance foot.
-                                l.x = l.x.max(st.x + push_replan_ahead);
-                                w.max(-push_replan_cross)
                             } else {
                                 min_w
                             };
@@ -5540,42 +5369,10 @@ fn main() {
                 // a variable from the first node at which the schedule has it
                 // down.
                 // Inward (toward-stance) bound on the landing shift and which
-                // sign of y is inward: MPC_FOOTSTEP_MAX_Y_IN, and with
-                // MPC_FOOTSTEP_MIN_WIDTH also whatever keeps the NOMINAL
-                // landing (this slice's applied shift removed) that wide.
-                // MPC_FOOTSTEP_SHIFT_REST under MPC_FOOTSTEP_BACK_ONLY: only
-                // while the DCM is behind its reference by more than 2 cm (the
-                // backward push it was added for); the sensitivity probe and
-                // the application below read the same flag.
-                // Backward-DOMINANT DCM error: behind its reference by > 2 cm
-                // and more than sideways (a lateral push can leave a small
-                // backward error too; measured 2026-10-21, two lateral
-                // members lost to the x floor and the plan shift).
-                let back_speed_ok = !(vx2_sched
-                    && vx2_z_from.is_some_and(|t0| t >= t0)
-                    && vx2_cmd_speed.is_some_and(|v| v > mpc_footstep_back_vmax));
-                back_parts_open = back_speed_ok;
-                let back_dominant = back_speed_ok && {
-                    let e = xi - dcm_plan.reference(t).xi;
-                    let now = e.x < -0.02 && e.y.abs() < -e.x;
-                    if now {
-                        back_dom_since.get_or_insert(t);
-                    } else {
-                        back_dom_since = None;
-                    }
-                    now && back_dom_since.is_some_and(|t0| t - t0 >= mpc_footstep_back_persist - 1e-9)
-                };
-                let floor_back_ok = {
-                    let e = xi - dcm_plan.reference(t).xi;
-                    back_dominant && e.x < -mpc_footstep_floor_back_err
-                };
-                let shift_rest_now = mpc_footstep_shift_rest
-                    && (!mpc_footstep_back_only
-                        || back_dominant
-                        || shift_rest_latched == Some(gait.index_at(t)));
-                if shift_rest_now && mpc_footstep_back_only {
-                    shift_rest_latched = Some(gait.index_at(t));
-                }
+                // sign of y is inward: MPC_FOOTSTEP_MAX_Y_IN. (The v6.13
+                // backward parts MPC_FOOTSTEP_SHIFT_REST / _BACK_ONLY /
+                // _BACK_PERSIST / _FLOOR_BACK_ERR / _BACK_VMAX / _HOLD_SHIFT /
+                // _CAPTURE_FLOOR went to PUSH_REPLAN in v6.14 and are removed.)
                 // MPC_FOOTSTEP_CROSS_Y gate (see its declaration).
                 let cross_now: Option<(usize, bool)> = if mpc_footstep_cross_y > 0.0
                     && let Support::Single { swing: sw_c, .. } = support
@@ -5606,21 +5403,11 @@ fn main() {
                     None
                 };
                 let inward_bound = |i: usize| -> (f64, bool) {
-                    let (gap, plus) = support
+                    let (_, plus) = support
                         .swing()
                         .map(|sw| landing_inward(&footsteps, i, sw))
                         .unwrap_or((0.0, true));
                     let mut b = mpc_footstep_max_y_in;
-                    if mpc_footstep_min_width > 0.0 {
-                        let applied = if mpc_fs_slice == Some(i) { mpc_fs_applied.y } else { 0.0 };
-                        // Toward stance is +y when plus: the applied shift
-                        // already narrowed the gap by `applied` (signed).
-                        let nominal_gap = if plus { gap + applied } else { gap - applied };
-                        b = b.min((nominal_gap - mpc_footstep_min_width).max(0.0));
-                    }
-                    if mpc_footstep_y_in_retimed > 0.0 && cp_retimed_slice == Some(i) {
-                        b = b.max(mpc_footstep_y_in_retimed);
-                    }
                     if mpc_footstep_y_in_fwd > 0.0
                         && xi.x - dcm_plan.reference(t).xi.x >= mpc_footstep_y_in_fwd_trig
                     {
@@ -5644,46 +5431,18 @@ fn main() {
                             && !mpc_fs_armed.is_some_and(|(a, u)| a <= i && i <= u)
                         {
                             // A step is two slices (single + double support).
-                            mpc_fs_armed = Some((i, i + 2 * mpc_footstep_trig_hold));
+                            mpc_fs_armed = Some((i, i));
                         }
                         mpc_footstep_trig == 0.0
                             || mpc_fs_armed.is_some_and(|(a, u)| a <= i && i <= u)
                     }
                     && {
-                        // The single support's own clock. LandingTiming
-                        // extends this slice through a late contact (so
-                        // `index_at` stays on it) but keeps the clock's
-                        // NOMINAL duration, so the fraction passes 1 while
-                        // the foot hovers; a contact_plan retime SHORTENS the
-                        // live slice. The shorter of the two covers both.
-                        let i = gait.index_at(t);
-                        let sl = &gait.slices[i];
-                        let (start, duration) = landing_timing
-                            .clock
-                            .filter(|(k, _, _)| *k == i)
-                            .map(|(_, start, duration)| (start, duration.min(sl.t1 - start)))
-                            .unwrap_or((sl.t0, sl.duration()));
-                        let frac = (t - start) / duration.max(1e-9);
-                        // Upward only: the hover-above-the-tread case.
-                        let rising = footsteps.at_slice(i).sole[swing].z
-                            - footsteps.at_slice(i.saturating_sub(1)).sole[swing].z
-                            > step_dz_min;
-                        if mpc_fs_debug {
-                            println!(
-                                "  [fs-gate] t={t:.3} i={i} frac={frac:.3} rising={rising} clock={:?}",
-                                landing_timing.clock
-                            );
-                        }
+                        // (The freeze by swing phase, MPC_FOOTSTEP_FREEZE_FRAC /
+                        // _RISE, defaulted to inf = never and is removed.)
                         // Event mode: no landing moves while the foot is
                         // probing for the ground (measured 2026-10-04: the
                         // goal moved 5-12 cm under a foot 2 cm from contact).
-                        !landing_timing.landing_closed(i)
-                            && ref_mode.is_none()
-                            && frac < if rising {
-                                mpc_footstep_freeze_frac_rise
-                            } else {
-                                mpc_footstep_freeze_frac
-                            }
+                        !landing_timing.landing_closed(gait.index_at(t)) && ref_mode.is_none()
                     }
                 {
                     (0..stair_wrench_horizon)
@@ -5699,17 +5458,8 @@ fn main() {
                             first_node,
                             min_first_node: first_node,
                             position: [contacts[swing].position.x, contacts[swing].position.y],
-                            terrain_x: (mpc_footstep_terrain_w > 0.0)
-                                .then(|| stairs.as_ref())
-                                .flatten()
-                                .and_then(|st| {
-                                    let prior = mpc_fs_applied.x;
-                                    let xn = contacts[swing].position.x + prior;
-                                    st.sole_window(xn, sole_half_l).map(|(lo, hi)| {
-                                        let m = mpc_footstep_terrain_margin.min((hi - lo) * 0.5);
-                                        (lo + m, hi - m, mpc_footstep_terrain_w)
-                                    })
-                                }),
+                            // MPC_FOOTSTEP_TERRAIN_W (terrain as a cost) removed.
+                            terrain_x: None,
                             weight: mpc_footstep_w,
                             max: {
                                 let i = gait.index_at(t);
@@ -5720,23 +5470,13 @@ fn main() {
                                 }
                                 m
                             },
-                            prior: if mpc_footstep_increment
-                                && mpc_fs_slice == Some(gait.index_at(t))
-                            {
-                                [mpc_fs_applied.x, mpc_fs_applied.y]
-                            } else {
-                                [0.0; 2]
-                            },
+                            // The answer is the total since the slice began
+                            // (MPC_FOOTSTEP_INCREMENT removed).
+                            prior: [0.0; 2],
                             min: {
                                 let i = gait.index_at(t);
-                                let stair = (footsteps.at_slice(i).sole[swing].z
-                                    - footsteps.at_slice(i.saturating_sub(1)).sole[swing].z)
-                                    .abs()
-                                    > step_dz_min;
+                                // (MPC_FOOTSTEP_STAIR_BACK, inf by default, removed.)
                                 let mut m = mpc_footstep_max;
-                                if stair {
-                                    m[0] = m[0].min(mpc_footstep_stair_back);
-                                }
                                 let (inward, inward_is_plus) = inward_bound(i);
                                 if !inward_is_plus {
                                     m[1] = if cross_now.is_some_and(|(ci, _)| ci == i) { inward } else { m[1].min(inward) };
@@ -5775,44 +5515,6 @@ fn main() {
                                 }
                                 if mpc_fs_cross_debug {
                                     println!("  [fs-cross-floor] t={t:.3} rem={rem:.3} xi.y={:+.3} xi_td={xi_td:+.3} base={base:+.3} need={need:+.3} max={:?} min={:?}", xi.y, land.max, land.min);
-                                }
-                            }
-                            // Crossing: the landing stays ahead of the stance sole.
-                            if mpc_footstep_cross_ahead > 0.0 && cross_now.is_some_and(|(ci, _)| ci == gait.index_at(t)) {
-                                let stance_x = footsteps.at_slice(gait.index_at(t)).sole[1 - land.foot].x;
-                                let base = land.position[0] + land.prior[0];
-                                let need = stance_x + mpc_footstep_cross_ahead - base;
-                                if need > 0.0 {
-                                    land.min[0] = land.min[0].min(-need);
-                                    land.max[0] = land.max[0].max(need);
-                                }
-                            }
-                            if mpc_footstep_capture_floor > 0.0 && (!mpc_footstep_back_only || floor_back_ok) {
-                                let i = gait.index_at(t);
-                                let sl = &gait.slices[i];
-                                let seg = &dcm_plan.segs[dcm_plan.index_at(t)];
-                                let rem = (sl.t1 - t).max(0.0);
-                                let p0 = seg.at(t);
-                                let pd = seg.slope();
-                                let v_over_w = pd / omega;
-                                let xi1 = p0 + pd * rem + v_over_w + (xi - p0 - v_over_w) * (omega * rem).exp();
-                                let p1 = p0 + pd * rem;
-                                let t_ds = gait.slices.get(i + 1).map_or(0.0, |n| n.duration());
-                                let xi2 = p1 + (xi1 - p1) * (omega * t_ds).exp();
-                                let reach = sole_half_l * mpc_footstep_capture_floor;
-                                let base = land.position[0] + land.prior[0];
-                                // Backward: the sole's front edge must reach back to xi2.
-                                let need_back = base - (xi2.x + reach);
-                                if need_back > 0.0 {
-                                    land.max[0] = land.max[0].min(-need_back);
-                                }
-                                // Forward: the sole's rear edge must reach xi2.
-                                let need_fwd = (xi2.x - reach) - base;
-                                if need_fwd > 0.0 && !mpc_footstep_back_only {
-                                    land.min[0] = land.min[0].min(-need_fwd);
-                                }
-                                if std::env::var("MPC_FS_DEBUG_LANDING").is_ok() {
-                                    println!("  [fs-floor] t={t:.3} rem={rem:.3} t_ds={t_ds:.3} xi1={:.3} xi2={:.3} base={base:.3} need_back={need_back:+.3} need_fwd={need_fwd:+.3} max={:?} min={:?}", xi1.x, xi2.x, land.max, land.min);
                                 }
                             }
                             land
@@ -5925,14 +5627,9 @@ fn main() {
                                 let mut probe = footsteps.clone();
                                 let mut d = na::Vector2::zeros();
                                 d[axis] = du;
-                                // The sensitivity must describe the plan the shift
-                                // is actually applied to (MPC_FOOTSTEP_SHIFT_REST
-                                // moves the rest of the plan with the landing).
-                                if shift_rest_now {
-                                    probe.shift_rest(i, land.foot, d);
-                                } else {
-                                    probe.shift_next(i, land.foot, d);
-                                }
+                                // The sensitivity describes the plan the shift
+                                // is actually applied to.
+                                probe.shift_next(i, land.foot, d);
                                 let moved = DcmPlan::from_footsteps_rolled(
                                     &gait,
                                     &probe,
@@ -6106,44 +5803,6 @@ fn main() {
                             );
                             writeln!(f, "{row}").unwrap();
                         }
-                        if cp_lat_emergency > 0.0
-                            && let Support::Single { swing, .. } = support
-                        {
-                            let i = gait.index_at(t);
-                            let (_, plus) = landing_inward(&footsteps, i, swing);
-                            let toward_stance = if plus { 1.0 } else { -1.0 };
-                            let e_y = (xi.y - dcm_plan.reference(t).xi.y) * toward_stance;
-                            let t1 = gait.slices[i].t1;
-                            let ne = t + (t1 - t).max(0.0) * cp_lat_emergency_tmin;
-                            if std::env::var("MPC_FS_DEBUG_LANDING").is_ok() && e_y > cp_lat_emergency {
-                                println!("  [lat-emergency?] t={t:.3} e_y={e_y:+.3} plus={plus} i={i} lat_emg_slice={lat_emg_slice:?} cp_retimed_slice={cp_retimed_slice:?} ne={ne:.3} t1={t1:.3}");
-                            }
-                            // An emergency may shorten a step the contact
-                            // plan already retimed; it only ever brings the
-                            // end closer.
-                            if e_y > cp_lat_emergency
-                                && lat_emg_slice != Some(i)
-                                && ne > t + dt
-                                && t1 - ne > 0.02
-                            {
-                                gait.retime(i, ne);
-                                n_lat_emg += 1;
-                                lat_emg_slice = Some(i);
-                                cp_retimed_slice = Some(i);
-                                // Unlike the planner's retime, keep the
-                                // landing extension: the foot must really
-                                // be down before the next step starts
-                                // (measured 2026-10-02 06:10: with the
-                                // extension zeroed the schedule moved on
-                                // with the swing still 35 mm up).
-                                dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
-                                n_replan += 1;
-                                if diag_replan { println!("  [diag-replan] site 5 t={t:.3} (line 9302)"); }
-                                if std::env::var("MPC_FS_DEBUG_LANDING").is_ok() {
-                                    println!("  [lat-emergency] t={t:.3} e_y_toward_stance={e_y:+.3} new_end={ne:.3} (was {t1:.3})");
-                                }
-                            }
-                        }
                         // (The lexicographic CoP's soft fallback and its
                         // MPC_LEX_DEBUG_* prints went with MPC_CAPTURE_LEX.)
                         if let Some(dp) = solution.landing_shift
@@ -6155,11 +5814,7 @@ fn main() {
                                 mpc_fs_slice = Some(i);
                                 mpc_fs_applied = na::Vector2::zeros();
                             }
-                            let (d, total) = if mpc_footstep_increment {
-                                (dp, mpc_fs_applied + dp)
-                            } else {
-                                (dp - mpc_fs_applied, dp)
-                            };
+                            let (d, total) = (dp - mpc_fs_applied, dp);
                             mpc_fs_last = total;
                             if std::env::var("MPC_FS_DEBUG_LANDING").is_ok() {
                                 println!(
@@ -6169,11 +5824,7 @@ fn main() {
                                 );
                             }
                             if d.norm() > 1e-6 {
-                                if shift_rest_now {
-                                    footsteps.shift_rest(i, land.foot, d);
-                                } else {
-                                    footsteps.shift_next(i, land.foot, d);
-                                }
+                                footsteps.shift_next(i, land.foot, d);
                                 mpc_fs_applied = total;
                                 dcm_plan = DcmPlan::from_footsteps_rolled(
                                     &gait,
@@ -6888,17 +6539,11 @@ fn main() {
                 let replan_hold = push_replan_trig > 0.0
                     && push_replan_slice == Some(slice_idx)
                     && push_replan_shift > push_replan_hold;
-                let hold_z = if replan_hold { push_replan_hold_z } else { mpc_footstep_cross_hold_z };
+                // 0.05: the default of PUSH_REPLAN_HOLD_Z (removed; the
+                // champion turns the hold off with PUSH_REPLAN_HOLD=10).
+                let hold_z = if replan_hold { 0.05 } else { mpc_footstep_cross_hold_z };
                 if hold_z > 0.0
-                    && (replan_hold
-                        || mpc_fs_cross_latched.is_some_and(|(ci, _)| ci == slice_idx)
-                        || (mpc_footstep_hold_shift > 0.0
-                            && mpc_fs_slice == Some(slice_idx)
-                            && if mpc_footstep_back_only {
-                                back_parts_open && mpc_fs_applied.x < -mpc_footstep_hold_shift
-                            } else {
-                                mpc_fs_applied.norm() > mpc_footstep_hold_shift
-                            }))
+                    && (replan_hold || mpc_fs_cross_latched.is_some_and(|(ci, _)| ci == slice_idx))
                 {
                     let foot = misarta::se3::translation(&data.oMi[rig.foot_mi[side]]);
                     if (touch_down.xy() - foot.xy()).norm() > mpc_footstep_cross_hold_xy {
@@ -8969,9 +8614,6 @@ fn main() {
             "samples": substep_samples, "nonfinite_values": substep_nonfinite,
             "passed": passed, "joints": joints});
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).expect("SUBSTEP_LIMIT_AUDIT_JSON");
-    }
-    if cp_lat_emergency > 0.0 {
-        println!("  lateral emergency touchdown: {n_lat_emg} steps");
     }
     if mpc_footstep_cross_y > 0.0 {
         println!("  mpc crossing gate: {n_mpc_fs_cross} single supports opened");
