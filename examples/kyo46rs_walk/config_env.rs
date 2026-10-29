@@ -42,6 +42,16 @@ pub fn rough_mode(get: &dyn Fn(&str) -> Option<String>) -> Option<[(&'static str
     ])
 }
 
+/// The robot's profile with its sole half-size read over it: `SOLE_HALF_L` /
+/// `SOLE_HALF_W` [m] replace `Profile::cop_half` (fore/aft, lateral), the
+/// sole the walker plans, clamps its CoP box and builds its contact model
+/// from. Unset = the profile's own.
+pub fn profile_from_kv(mut prof: Profile, get: &dyn Fn(&str) -> Option<String>) -> Profile {
+    let num = |k: &str, d: f64| -> f64 { get(k).and_then(|s| s.parse().ok()).unwrap_or(d) };
+    prof.cop_half = (num("SOLE_HALF_L", prof.cop_half.0), num("SOLE_HALF_W", prof.cop_half.1));
+    prof
+}
+
 /// Every walker knob from `get` (`|k| std::env::var(k).ok()` for the
 /// environment), with [`rough_mode`]'s values over its four knobs. Panics on
 /// an unsupported `WBC_STRATEGY` / `WBC_QP_BACKEND`.
@@ -565,6 +575,7 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
             mpc_traj: set("MPC_TRAJ_DEBUG"),
             replan: flag("DIAG_REPLAN", d.debug.replan),
             wbc_level_t: get("WBC_LEVEL_DEBUG_T").and_then(|v| v.parse::<f64>().ok()),
+            land_timing: set("LAND_TIMING_DEBUG"),
         }
     };
 

@@ -10,24 +10,23 @@
 //! `&mut`; the tick's `TickRecord` is still built once, in the loop, from the
 //! phases' outputs. The arithmetic, the order of the prints and the order of
 //! the plan's rebuilds are the loop's own (the runs are byte-identical).
-use super::{CtlState, DiagSinks, WalkerStats};
-use articara::biped::tasks as bt;
-use articara::biped::contact::cop_from_sole_wrench;
+use super::{CtlState, WalkerStats};
 use articara::biped::dcm::{DcmRef, SupportBox, StepTiming, com_accel_xy, commanded_zmp, dcm_of, step_timing};
 use articara::biped::gait::{Footsteps, GaitParams, Slice, Support, swing_position, swing_velocity};
-use articara::biped::rig::G;
+use misa_biped::dcm::G;
 use articara::biped::terrain::Stairs;
 use misa_biped::config::Config;
 use misa_biped::plan::Plan;
 use misa_biped::recovery::{RefLib, RefMode};
 use misa_biped::robot::{Estimate, Observation, RobotModel, RobotState};
+use misa_biped::sink::{LogSink, WalkerDiag};
 use misa_biped::wbc::{
     AnchorEvent, ArmRef, CmpRef, ContactMode, ContactParams, MomCmp, MomRef, MpcNominal, SwingAxes, SwingRef,
-    TrunkRef, WbcRequest, WbcSolution, WbcStack,
+    TrunkGains, TrunkRef, WbcRequest, WbcSolution, WbcStack, cop_from_sole_wrench, trunk_ori_ref,
 };
+use misa_biped::{errln, outln};
 use nalgebra as na;
 use std::f64::consts::PI;
-use std::io::Write;
 
 /// What the control reads that is fixed at start-up but is not a knob: the
 /// robot model, the realised control period, the planned LIPM's omega, the
@@ -236,6 +235,7 @@ pub(crate) fn phase_landing_clock(
     obs: &Observation,
     actual: &Footsteps,
     t: f64,
+    out: &mut dyn LogSink,
 ) {
     // ---- contact-driven phase transitions -----------------------------
     //
@@ -327,7 +327,7 @@ pub(crate) fn phase_landing_clock(
     if com_replan {
         let touchdowns_before = plan.landing.touchdowns;
         let timeouts_before = plan.landing.timeouts;
-        let shift = plan.landing.update(&mut plan.gait, &plan.footsteps, &actual, obs.contact_fz, t, dt);
+        let shift = plan.landing.update(&mut plan.gait, &plan.footsteps, &actual, obs.contact_fz, t, dt, out);
         let landing_timed_out = plan.landing.timeouts > timeouts_before;
         // The slice that just ended is the timer's clock slice, not
         // `gait.index_at(t)`: on a timeout tick the index already points
@@ -340,7 +340,7 @@ pub(crate) fn phase_landing_clock(
         {
             ctl.confirmed_admit[sw] = Some(ended + 1);
             if debug.contact_admit {
-                println!("  [adm] t={t:.3} certificate side={sw} ds_slice={} (confirm={} timeout={})", ended + 1, plan.landing.touchdowns > touchdowns_before, landing_timed_out);
+                outln!(out, "  [adm] t={t:.3} certificate side={sw} ds_slice={} (confirm={} timeout={})", ended + 1, plan.landing.touchdowns > touchdowns_before, landing_timed_out);
             }
         }
         if let Some((li, lsw, err_xy)) = plan.landing.last_event.take()
@@ -432,7 +432,7 @@ pub(crate) fn phase_landing_clock(
                         stats.n_ds_continuous += 1;
                         if debug.ds_feasible {
                             let r = plan.dcm.reference(plan.gait.slices[ds].t0 + 1e-6);
-                            println!("  [dsc] t={t:.3} ds={ds} xi=({:.3},{:+.3}) target=({:.3},{:+.3}) p=({:.3},{:+.3}) T={:.3} xi_ref(t0)=({:.3},{:+.3})", xi_meas.x, xi_meas.y, target.x, target.y, p_final.x, p_final.y, plan.gait.slices[ds].duration(), r.xi.x, r.xi.y);
+                            outln!(out, "  [dsc] t={t:.3} ds={ds} xi=({:.3},{:+.3}) target=({:.3},{:+.3}) p=({:.3},{:+.3}) T={:.3} xi_ref(t0)=({:.3},{:+.3})", xi_meas.x, xi_meas.y, target.x, target.y, p_final.x, p_final.y, plan.gait.slices[ds].duration(), r.xi.x, r.xi.y);
                         }
                     } else if want > nominal + 1e-3 {
                         let dd = plan.gait.retime(ds, plan.gait.slices[ds].t0 + want);
@@ -441,7 +441,7 @@ pub(crate) fn phase_landing_clock(
                         plan.rebuild_dcm();
                     }
                     if debug.ds_feasible {
-                        println!("  [dsf] t={t:.3} ds={ds} xi=({:.3},{:+.3}) target=({:.3},{:+.3}) p=({:.3},{:+.3}) need={need:.3} nominal={nominal:.3} -> {want:.3}", xi_meas.x, xi_meas.y, target.x, target.y, p.x, p.y);
+                        outln!(out, "  [dsf] t={t:.3} ds={ds} xi=({:.3},{:+.3}) target=({:.3},{:+.3}) p=({:.3},{:+.3}) need={need:.3} nominal={nominal:.3} -> {want:.3}", xi_meas.x, xi_meas.y, target.x, target.y, p.x, p.y);
                     }
                 }
             }
@@ -495,7 +495,7 @@ pub(crate) fn phase_landing_clock(
                 let landed_load = prev_sw.map_or(0.0, |sw| ctl.fz_prev[sw]);
                 let earliest = (t0_run + ds_capture_t_min).max(t + 2.0 * dt);
                 if debug.ds_capture {
-                    println!(
+                    outln!(out, 
                         "  [dsc-cap?] t={t:.3} run {first}..{last} [{t0_run:.3},{t1_run:.3}] xi.x={:.3} target.x={:.3} p.x={:.3} need={need:.3} rem={remaining:.3} hopeless={hopeless} load={landed_load:.0} earliest={earliest:.3}",
                         xi_meas.x, target.x, p.x
                     );
@@ -514,7 +514,7 @@ pub(crate) fn phase_landing_clock(
                     stats.n_ds_capture += 1;
                     plan.rebuild_dcm();
                     if debug.ds_capture {
-                        println!("  [dsc-cap] t={t:.3} DS end {t1_run:.3} -> {earliest:.3}");
+                        outln!(out, "  [dsc-cap] t={t:.3} DS end {t1_run:.3} -> {earliest:.3}");
                     }
                 }
             }
@@ -561,6 +561,7 @@ pub(crate) fn phase_support(
     k: &WalkerConsts,
     obs: &Observation,
     t: f64,
+    out: &mut dyn LogSink,
 ) -> SupportOut {
     let no_lift = cfg.gait.no_lift;
     let swing_rot_mode = cfg.swing.rot_mode;
@@ -658,7 +659,7 @@ pub(crate) fn phase_support(
                 let p_meas_z = p.z;
                 p.z = steps.sole[swing].z + prof.sole_below_origin;
                 if debug.anchor {
-                    eprintln!(
+                    errln!(out, 
                         "  [anchor] t={t:.3} swing {} touchdown: meas z {:.4} -> plan z {:.4}",
                         if swing == 0 { "L" } else { "R" },
                         p_meas_z,
@@ -732,6 +733,7 @@ pub(crate) fn phase_contacts(
     obs: &Observation,
     sup: &SupportOut,
     t: f64,
+    out: &mut dyn LogSink,
 ) -> ContactsOut {
     // Trigger Managed on the RATE of the normal force, not only its level.
     // Measured on the fixed-arm stair transfer: during the chatter fz swings
@@ -817,7 +819,7 @@ pub(crate) fn phase_contacts(
                     ctl.last_scheduled_admit[landed] = Some(now_slice);
                     ctl.admit_measured_z[landed] = Some(sole_z);
                     if debug.contact_admit {
-                        println!("  [adm-loaded] t={t:.3} side={landed} sole_z={sole_z:.4} plan_z={:.4} fz={:.0}", steps.sole[landed].z, fz_meas[landed]);
+                        outln!(out, "  [adm-loaded] t={t:.3} side={landed} sole_z={sole_z:.4} plan_z={:.4} fz={:.0}", steps.sole[landed].z, fz_meas[landed]);
                     }
                 }
             }
@@ -853,7 +855,7 @@ pub(crate) fn phase_contacts(
                     if debug.contact_admit {
                         let mi = robot.foot_mi[side];
                         let sole_z = misarta::se3::translation(&data.oMi[mi]).z - prof.sole_below_origin;
-                        println!(
+                        outln!(out, 
                             "  [adm] t={t:.3} side={side} sole_z={sole_z:.4} plan_z={:.4} fz=({:.0},{:.0}) support={support:?}",
                             steps.sole[side].z, fz_meas[0], fz_meas[1]
                         );
@@ -954,6 +956,7 @@ pub(crate) fn phase_dcm(
     actual: &Footsteps,
     sup: &SupportOut,
     t: f64,
+    out: &mut dyn LogSink,
 ) -> DcmOut {
     // PUSH_YIELD_V [m/s]: when a push is detected during a speed command
     // (DCM error above PUSH_YIELD_TRIG), re-plan the remaining steps at this
@@ -1097,8 +1100,8 @@ pub(crate) fn phase_dcm(
         }
         plan.rebuild_dcm();
         stats.n_replan += 1;
-        if debug.replan { println!("  [diag-replan] site 0 t={t:.3} (line 6798)"); }
-        println!("  [yield] t={t:.3} dcm_err={dcm_err:.3}: speed {v_hi:.2} -> {v_lo:.2} m/s, stride {stride_hi:.3} -> {stride_lo:.3}, slices x{ratio:.3}, {n} steps re-planned");
+        if debug.replan { outln!(out, "  [diag-replan] site 0 t={t:.3} (line 6798)"); }
+        outln!(out, "  [yield] t={t:.3} dcm_err={dcm_err:.3}: speed {v_hi:.2} -> {v_lo:.2} m/s, stride {stride_hi:.3} -> {stride_lo:.3}, slices x{ratio:.3}, {n} steps re-planned");
     }
     if push_replan_trig > 0.0 {
         let i = plan.gait.index_at(t);
@@ -1203,12 +1206,12 @@ pub(crate) fn phase_dcm(
                             if ctl.push_replan_slice != Some(i) {
                                 stats.n_push_replan += 1;
                                 stats.n_replan += 1;
-                                if debug.replan { println!("  [diag-replan] site 1 t={t:.3} (line 6901)"); }
+                                if debug.replan { outln!(out, "  [diag-replan] site 1 t={t:.3} (line 6901)"); }
                             }
                             ctl.push_replan_slice = Some(i);
                             ctl.push_replan_shift = (l - *base).norm();
                             if debug.push_replan {
-                                println!("  [replan] t={t:.3} slice {i} frac={frac:.2} e=({:+.3},{:+.3}) d=({:+.3},{:+.3}) landing ({:.3},{:+.3}) -> ({:.3},{:+.3})", e.x, e.y, d.x, d.y, base.x, base.y, l.x, l.y);
+                                outln!(out, "  [replan] t={t:.3} slice {i} frac={frac:.2} e=({:+.3},{:+.3}) d=({:+.3},{:+.3}) landing ({:.3},{:+.3}) -> ({:.3},{:+.3})", e.x, e.y, d.x, d.y, base.x, base.y, l.x, l.y);
                             }
                             *last = Some(l);
                         }
@@ -1232,7 +1235,7 @@ pub(crate) fn phase_dcm(
     {
         ctl.push_z_drop_until = t + push_z_drop_t;
         stats.n_push_z_drop += 1;
-        println!("  [zdrop] t={t:.3} backward DCM error {:+.3} m -> CoM {:.3} m lower for {push_z_drop_t:.2} s", (xi - r.xi).x, push_z_drop);
+        outln!(out, "  [zdrop] t={t:.3} backward DCM error {:+.3} m -> CoM {:.3} m lower for {push_z_drop_t:.2} s", (xi - r.xi).x, push_z_drop);
     }
     // Engage a recovery reference when the DCM error toward the STANCE
     // side exceeds REF_TRIG_DCM in single support (the detector).
@@ -1254,7 +1257,7 @@ pub(crate) fn phase_dcm(
             // The push happened when the lateral error last was quiet;
             // the reference is entered that far in.
             let tau0 = if !ref_delay_comp { 0.0 } else { (t - ctl.ref_lat_quiet_t).clamp(0.0, 0.3) };
-            println!("  [ref] t={t:.3} trigger: dcm (lateral DCM error toward stance {lateral:+.3} m, forward {forward:+.3} m, dir {want_deg:.0}, tau0 {tau0:.3})");
+            outln!(out, "  [ref] t={t:.3} trigger: dcm (lateral DCM error toward stance {lateral:+.3} m, forward {forward:+.3} m, dir {want_deg:.0}, tau0 {tau0:.3})");
             // Pick the reference meant for the nearest swing phase.
             // (Selecting by the swing foot's height was tried first:
             // on the flat in-place gait the apex comes late, so the
@@ -1277,7 +1280,7 @@ pub(crate) fn phase_dcm(
                 .unwrap_or(0);
             ctl.ref_lib = Some(ref_libs[pick].clone());
             let lib = ctl.ref_lib.as_ref().unwrap();
-            println!("  [ref] swing phase {slice_frac:.2} -> reference {} (meant for {:.2})", pick, lib.swing_phase);
+            outln!(out, "  [ref] swing phase {slice_frac:.2} -> reference {} (meant for {:.2})", pick, lib.swing_phase);
             let mode = RefMode { t0: t, tau0, stance, origin: actual.sole[stance], mirror: if stance == 0 { 1.0 } else { -1.0 } };
             // Phases: this single support ends after phases[0]; the
             // double support after it (every DS slice up to the next
@@ -1342,7 +1345,7 @@ pub(crate) fn phase_dcm(
             plan.landing.event_mode = true;
             ctl.ref_mode = Some(mode);
             stats.ref_engagements += 1;
-            println!(
+            outln!(out, 
                 "  [ref] t={t:.3} engaged: stance={} mirror={:+.0} origin=({:.3},{:.3}) phases={:?} land1=({:.3},{:.3}) land2=({:.3},{:.3}) total={:.3}",
                 stance, mode.mirror, mode.origin.x, mode.origin.y, lib.phases, land1.x, land1.y,
                 land2.x, land2.y, lib.total()
@@ -1373,6 +1376,7 @@ pub(crate) fn phase_cmd_zmp(
     sup: &SupportOut,
     dcm: &DcmOut,
     t: f64,
+    out: &mut dyn LogSink,
 ) -> CmdZmpOut {
     let k_dcm = cfg.dcm.k_dcm;
     let cop_frac = cfg.dcm.cop_frac;
@@ -1433,7 +1437,7 @@ pub(crate) fn phase_cmd_zmp(
         // adopted and are removed.)
         let dec = articara::biped::contact_plan::plan(&sit, &contact_plan_cfg);
         if debug.cp {
-            println!(
+            outln!(out, 
                 "  [cp] t={t:.3} slice={i} err={dcm_err:.4} xi=({:.3},{:+.3}) eos_plan=({:.3},{:+.3}) pred_nom=({:.3},{:+.3}) shift=({:+.3},{:+.3}) dT={:+.3} unmet={:.4} cost={:.3}",
                 xi.x, xi.y, sit.xi_eos_plan.x, sit.xi_eos_plan.y,
                 articara::biped::contact_plan::predict(&sit, (sit.nominal_end - t).max(0.0)).x,
@@ -1494,7 +1498,7 @@ pub(crate) fn phase_cmd_zmp(
         if rebuilt {
             plan.rebuild_dcm();
             stats.n_replan += 1;
-            if debug.replan { println!("  [diag-replan] site 2 t={t:.3} (line 7454)"); }
+            if debug.replan { outln!(out, "  [diag-replan] site 2 t={t:.3} (line 7454)"); }
         }
     }
     CmdZmpOut { p_cmd, clamped, zmp_deficit }
@@ -1509,7 +1513,7 @@ pub(crate) fn phase_preview(
     ctl: &mut CtlState,
     plan: &Plan,
     stats: &mut WalkerStats,
-    diag: &mut DiagSinks,
+    diag: &mut dyn WalkerDiag,
     cfg: &Config,
     k: &WalkerConsts,
     obs: &Observation,
@@ -1616,34 +1620,15 @@ pub(crate) fn phase_preview(
                     ctl.preview_v = plan.velocity[0];
                     stats.preview_error = plan.terminal_error;
                     stats.preview_count += 1;
-                    if let Some(f) = diag.preview_traj_file.as_mut() {
-                        use std::io::Write as _;
-                        for (k, smp) in samples.iter().enumerate() {
-                            let (Some(z), Some(c)) = (plan.zmp.get(k), plan.com.get(k)) else { break };
-                            writeln!(
-                                f,
-                                "{t:.4},{k},{:.4},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5}",
-                                smp.duration, z.x, z.y, c.x, c.y, smp.zmp.x, smp.zmp.y,
-                                smp.bounds.lo.x, smp.bounds.lo.y, smp.bounds.hi.x, smp.bounds.hi.y
-                            )
-                            .unwrap();
-                        }
-                    }
+                    diag.preview_solved(t, &samples, &plan);
                 }
                 None => {
                     ctl.preview_p = current_box.clamp(&p_cmd).0;
                     stats.preview_failures += 1;
                 }
             }
-            if let Some(writer) = &mut diag.com_preview_runtime {
-                writeln!(writer, "{t:.6},{preview_solve_ns},{},{},{:.9},{},{}",
-                    u8::from(preview_solve_ns > 50_000_000),
-                    u8::from(preview_accepted),
-                    stats.preview_error,
-                    0, // applied_lateral: COM_REPLAN_LATERAL (removed) was off
-                    com_preview_n,
-                ).unwrap();
-            }
+            // (applied_lateral: COM_REPLAN_LATERAL, removed, was off.)
+            diag.preview_runtime(t, preview_solve_ns, preview_accepted, stats.preview_error, com_preview_n);
             // (COM_PREVIEW_PHASE_LOCK, a discrete-clock update rate, is
             // removed.)
             ctl.preview_next = t + com_replan_dt;
@@ -1902,7 +1887,7 @@ pub(crate) fn phase_wrench_mpc(
     ctl: &mut CtlState,
     plan: &mut Plan,
     stats: &mut WalkerStats,
-    diag: &mut DiagSinks,
+    diag: &mut dyn WalkerDiag,
     cfg: &Config,
     k: &WalkerConsts,
     obs: &Observation,
@@ -1913,6 +1898,7 @@ pub(crate) fn phase_wrench_mpc(
     dcm: &DcmOut,
     a_com: &na::Vector3<f64>,
     t: f64,
+    out: &mut dyn LogSink,
 ) -> u128 {
     let stair_wrench_mpc = cfg.mpc.enabled;
     // Run the wrench MPC outside a stair transfer too.
@@ -2221,7 +2207,7 @@ pub(crate) fn phase_wrench_mpc(
                         ctl.mpc_fs_cross_latched = Some((i, plus));
                         stats.n_mpc_fs_cross += 1;
                         if debug.mpc_fs_cross {
-                            println!("  [fs-cross] t={t:.3} slice {i} swing {sw_c} DCM {ex:+.3} m past the stance sole");
+                            outln!(out, "  [fs-cross] t={t:.3} slice {i} swing {sw_c} DCM {ex:+.3} m past the stance sole");
                         }
                         Some((i, plus))
                     } else {
@@ -2343,7 +2329,7 @@ pub(crate) fn phase_wrench_mpc(
                                 }
                             }
                             if debug.mpc_fs_cross {
-                                println!("  [fs-cross-floor] t={t:.3} rem={rem:.3} xi.y={:+.3} xi_td={xi_td:+.3} base={base:+.3} need={need:+.3} max={:?} min={:?}", xi.y, land.max, land.min);
+                                outln!(out, "  [fs-cross-floor] t={t:.3} rem={rem:.3} xi.y={:+.3} xi_td={xi_td:+.3} base={base:+.3} need={need:+.3} max={:?} min={:?}", xi.y, land.max, land.min);
                             }
                         }
                         land
@@ -2502,30 +2488,9 @@ pub(crate) fn phase_wrench_mpc(
             if let Some(backend) = mpc_backend_override {
                 config.qp.solver = backend;
             }
-            if let Some(dir) = &diag.mpc_diag_dir {
+            if diag.wants_mpc_input() {
                 let capture_start = std::time::Instant::now();
-                let contacts: Vec<_> = input.contacts.iter().map(|c| serde_json::json!({
-                    "position":c.position.as_slice(),"rotation":c.rotation.as_slice(),"cop_half":c.cop_half})).collect();
-                // "phase" was the stair transfer's phase (removed); the walk
-                // always wrote its placeholder, `Capture`.
-                let dump = serde_json::json!({"schema":1,"t":t,"ctrl_dt":dt,"mpc_update_dt":stair_wrench_dt,
-                    "phase":"Capture","input":{
-                        "com":input.com.as_slice(),"velocity":input.velocity.as_slice(),"angular_momentum":input.angular_momentum.as_slice(),
-                        "target_com":input.target_com.as_slice(),"target_velocity":input.target_velocity.as_slice(),"target_acceleration":input.target_acceleration.as_slice(),
-                        "contacts":contacts,"contact_schedule":input.contact_schedule,"activation_schedule":input.activation_schedule,
-                        "reference_fz_schedule":input.reference_fz_schedule,"min_fz_schedule":input.min_fz_schedule,
-                        "previous":[input.previous[0].as_slice(),input.previous[1].as_slice()]},
-                    "config":{"horizon":config.horizon,"dt":config.dt,"mass":config.mass,"gravity":config.gravity,
-                        "friction_mu":config.friction_mu,"cop_half":config.cop_half,"torsion_mu":config.torsion_mu,"max_fz":config.max_fz,
-                        "position_weight":config.position_weight,"velocity_weight":config.velocity_weight,"momentum_weight":config.momentum_weight,
-                        "acceleration_weight":config.acceleration_weight,"wrench_weight":config.wrench_weight,"smooth_weight":config.smooth_weight,"validate_solution":config.validate_solution}});
-                std::fs::create_dir_all(dir).expect("MPC_DIAG_DIR");
-                std::fs::write(
-                    format!("{dir}/mpc_{:06}.json", diag.mpc_diag_count),
-                    serde_json::to_vec(&dump).unwrap(),
-                )
-                .expect("MPC snapshot");
-                diag.mpc_diag_count += 1;
+                diag.mpc_input(t, dt, stair_wrench_dt, &input, &config);
                 mpc_capture_ns = capture_start.elapsed().as_nanos();
             }
             let previous_age = ctl.diag_mpc_time.map_or(-1.0, |stamp| t - stamp);
@@ -2536,16 +2501,10 @@ pub(crate) fn phase_wrench_mpc(
                 None, // no warm start (MPC_QP_WARM removed)
             );
             let mpc_solve_ns = mpc_solve_start.elapsed().as_nanos();
-            if let Some(file) = &mut diag.mpc_runtime_log {
-                use std::io::Write;
+            {
                 let mask = u8::from(stance_sides.contains(&0))
                     | (u8::from(stance_sides.contains(&1)) << 1);
-                // Second column: the removed stair transfer's phase,
-                // `Capture` being the walk's placeholder.
-                writeln!(file, "{t:.9},Capture,{mask},{:?},{},{stair_wrench_dt:.9},{mpc_solve_ns},{},{},{previous_age:.9}",
-                    config.qp.solver, config.horizon,
-                    mpc_solve_ns > (stair_wrench_dt * 1e9) as u128,
-                    mpc_result.is_some()).unwrap();
+                diag.mpc_runtime(t, mask, &config, stair_wrench_dt, mpc_solve_ns, mpc_result.is_some(), previous_age);
             }
             match mpc_result {
                 Some(solution) => {
@@ -2573,45 +2532,10 @@ pub(crate) fn phase_wrench_mpc(
                             [f64::NAN; 2]
                         };
                     }
-                    if diag.qp_wrench_log.is_some() {
+                    if diag.keeps_mpc_frames() {
                         ctl.wrench_mpc_frames = Some(input.contacts.clone());
                     }
-                    if let Some(f) = diag.mpc_traj_file.as_mut() {
-                        use std::io::Write as _;
-                        let nan = f64::NAN;
-                        let mut row = format!(
-                            "{t:.4},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5}",
-                            com.x, com.y, com.z, input.target_com.x, input.target_com.y, input.target_com.z
-                        );
-                        for k in 0..16 {
-                            match solution.trajectory.get(k) {
-                                Some(n) => row += &format!(",{:.5},{:.5},{:.5}", n[0].x, n[0].y, n[0].z),
-                                None => row += &format!(",{nan},{nan},{nan}"),
-                            }
-                        }
-                        row += &format!(",{:.5},{:.5}", ctl.diag_mpc_net_cop[0], ctl.diag_mpc_net_cop[1]);
-                        for k in 0..16 {
-                            match input.reference_net_cop_schedule.as_ref().and_then(|v| v.get(k)) {
-                                Some(c) => row += &format!(",{:.5},{:.5}", c.x, c.y),
-                                None => row += &format!(",{nan},{nan}"),
-                            }
-                        }
-                        for foot in 0..2 {
-                            let p = input.contacts[foot].position;
-                            row += &format!(",{:.5},{:.5},{:.5}", p.x, p.y, p.z);
-                        }
-                        let on = input.contact_schedule.first().copied().unwrap_or([false; 2]);
-                        let (lf, ld) = match (&landing, solution.landing_shift) {
-                            (Some(l), Some(d)) => (l.foot as i64, d),
-                            (Some(l), None) => (l.foot as i64, na::Vector2::zeros()),
-                            _ => (-1, na::Vector2::zeros()),
-                        };
-                        row += &format!(
-                            ",{:.3},{:.3},{},{},{lf},{:.5},{:.5},{}",
-                            by_side[0][5], by_side[1][5], on[0] as u8, on[1] as u8, ld.x, ld.y, solution.trajectory.len()
-                        );
-                        writeln!(f, "{row}").unwrap();
-                    }
+                    diag.mpc_solved(t, &com, &input, &solution, ctl.diag_mpc_net_cop, landing.as_ref(), &by_side);
                     // (The lexicographic CoP's soft fallback and its
                     // MPC_LEX_DEBUG_* prints went with MPC_CAPTURE_LEX.)
                     if let Some(dp) = solution.landing_shift
@@ -2626,7 +2550,7 @@ pub(crate) fn phase_wrench_mpc(
                         let (d, total) = (dp - ctl.mpc_fs_applied, dp);
                         ctl.mpc_fs_last = total;
                         if debug.mpc_fs_landing {
-                            println!(
+                            outln!(out, 
                                 "  [fs-decision] t={t:.3} first_node={} prior=({:+.3},{:+.3}) dp=({:+.3},{:+.3}) total=({:+.3},{:+.3}) max={:?} min={:?} xi-ref=({:+.3},{:+.3})",
                                 land.first_node, land.prior[0], land.prior[1], dp.x, dp.y, total.x, total.y, land.max, land.min,
                                 xi.x - plan.dcm.reference(t).xi.x, xi.y - plan.dcm.reference(t).xi.y
@@ -2637,20 +2561,20 @@ pub(crate) fn phase_wrench_mpc(
                             ctl.mpc_fs_applied = total;
                             plan.rebuild_dcm();
                             stats.n_replan += 1;
-                            if debug.replan { println!("  [diag-replan] site 6 t={t:.3} (line 9380)"); }
+                            if debug.replan { outln!(out, "  [diag-replan] site 6 t={t:.3} (line 9380)"); }
                         }
                     }
                     if debug.mpc_traj && t < 2.0 {
                         let xi0 = com.xy() + com_vel.xy() / omega;
                         let r0 = plan.dcm.reference(t);
-                        print!("  [traj] t={t:.3} xi_meas=({:+.3},{:+.3}) xi_plan=({:+.3},{:+.3}) tgt=({:+.3},{:+.3}) |",
+                        let mut line = format!("  [traj] t={t:.3} xi_meas=({:+.3},{:+.3}) xi_plan=({:+.3},{:+.3}) tgt=({:+.3},{:+.3}) |",
                             xi0.x, xi0.y, r0.xi.x, r0.xi.y, target_com.x, target_com.y);
                         for (k, [c, v]) in solution.trajectory.iter().enumerate() {
                             let xi = c.xy() + v.xy() / omega;
                             let rp = plan.dcm.reference(t + (k as f64 + 1.0) * stair_wrench_preview_dt);
-                            print!(" k{k}: pred({:+.3},{:+.3}) plan({:+.3},{:+.3})", xi.x, xi.y, rp.xi.x, rp.xi.y);
+                            line += &format!(" k{k}: pred({:+.3},{:+.3}) plan({:+.3},{:+.3})", xi.x, xi.y, rp.xi.x, rp.xi.y);
                         }
-                        println!();
+                        out.line(&line);
                     }
                     stats.wrench_mpc_solves += 1;
                 }
@@ -3002,11 +2926,11 @@ pub(crate) fn phase_task_refs(
     // One world-frame rotation-vector error for all three rows. The
     // roll/pitch rows are frame-correct at any heading this way; the old
     // Euler form silently rotated its own correction away.
-    let ori = bt::trunk_ori_ref(
+    let ori = trunk_ori_ref(
         &trunk_quat,
         yaw_ref,
         &trunk_omega_w,
-        bt::TrunkGains {
+        TrunkGains {
             kp: kp_trunk,
             kd: kd_trunk,
             deadband: 0.0,
@@ -3655,6 +3579,7 @@ pub(crate) fn phase_wbc(
     a_com: &na::Vector3<f64>,
     refs: &TaskRefs,
     t: f64,
+    out: &mut dyn LogSink,
 ) -> WbcSolution {
     let stair_wrench_mpc = cfg.mpc.enabled;
     let stair_managed_contact = cfg.managed.on;
@@ -3764,7 +3689,7 @@ pub(crate) fn phase_wbc(
         swing: refs.swing.as_ref(),
         contact_fz: obs.contact_fz,
     };
-    stack.solve(&req)
+    stack.solve(&req, out)
 }
 
 /// What phase 12 measured on the solution: the swing level's residuals,
@@ -3941,7 +3866,7 @@ pub(crate) fn phase_solve_diag(
 /// Phase 13, the end of the tick (after the harness has fired its push): a
 /// recovery reference whose time is up hands the feet back to the gait,
 /// re-centring every later footfall on where the feet are now.
-pub(crate) fn phase_end_tick(ctl: &mut CtlState, plan: &mut Plan, cfg: &Config, t: f64) {
+pub(crate) fn phase_end_tick(ctl: &mut CtlState, plan: &mut Plan, cfg: &Config, t: f64, out: &mut dyn LogSink) {
     let ref_cooldown = cfg.recovery.cooldown;
     // CONTACT_EVENT (read once: the landing clock's `event_mode`, which a
     // reference turns on while it is engaged and its end restores to this).
@@ -3975,7 +3900,7 @@ pub(crate) fn phase_end_tick(ctl: &mut CtlState, plan: &mut Plan, cfg: &Config, 
                 let want = na::Vector2::new(mid.x, mid.y + if side == 0 { half_w } else { -half_w });
                 if let Some(j) = (j0..plan.gait.slices.len()).find(|&j| plan.gait.slices[j].support.swing() == Some(side)) {
                     if j == i {
-                        println!("  [ref] t={t:.3} re-centre the swing under way: foot {side} -> ({:.3},{:.3})", want.x, want.y);
+                        outln!(out, "  [ref] t={t:.3} re-centre the swing under way: foot {side} -> ({:.3},{:.3})", want.x, want.y);
                     }
                     let d = want - plan.footsteps.at_slice(j).sole[side].xy();
                     plan.footsteps.shift_from(j, side, d);
@@ -3983,6 +3908,6 @@ pub(crate) fn phase_end_tick(ctl: &mut CtlState, plan: &mut Plan, cfg: &Config, 
             }
             plan.rebuild_dcm();
         }
-        println!("  [ref] t={t:.3} reference over, back to the gait");
+        outln!(out, "  [ref] t={t:.3} reference over, back to the gait");
     }
 }

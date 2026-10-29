@@ -207,14 +207,6 @@ pub fn sole_selection(
     sel
 }
 
-/// Centre of pressure implied by a sole-frame wrench `w = [m(0..3); f(3..6)]`,
-/// as `(x, y, fz)`. `fz <= 0` means the foot is unsupported, and the CoP is
-/// undefined rather than zero.
-pub fn cop_from_sole_wrench(w: &na::DVector<f64>) -> Option<(f64, f64, f64)> {
-    let fz = w[5];
-    if fz.abs() < 1e-6 {
-        None
-    } else {
-        Some((-w[1] / fz, w[0] / fz, fz))
-    }
-}
+/// The CoP of a sole-frame wrench lives in misa-biped (the walker reads it
+/// from the stack's solution); re-exported under its old path.
+pub use misa_biped::wbc::cop_from_sole_wrench;

@@ -199,7 +199,7 @@ impl WbcStack for TaskStack {
         self.anchors.a[side]
     }
 
-    fn solve(&mut self, req: &WbcRequest) -> WbcSolution {
+    fn solve(&mut self, req: &WbcRequest, out: &mut dyn misa_biped::sink::LogSink) -> WbcSolution {
         // The anchor changes the walker decided this tick, in its order.
         for ev in req.anchor_events {
             match ev {
@@ -624,7 +624,7 @@ impl WbcStack for TaskStack {
                     format!("{}={:.3e}/{:.1e}", level_names.get(k).copied().unwrap_or("?"), r, viol.max(0.0))
                 })
                 .collect();
-            println!("  [wbc-levels] t={t:.3} support={support:?} {}", parts.join(" "));
+            misa_biped::outln!(out, "  [wbc-levels] t={t:.3} support={support:?} {}", parts.join(" "));
         }
         let qp_check_start = std::time::Instant::now();
         let mut qp_physical_violation = 0.0_f64;

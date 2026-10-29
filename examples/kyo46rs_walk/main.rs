@@ -944,6 +944,171 @@ impl DiagSinks {
     }
 }
 
+/// The walker's diagnostic records (`misa_biped::sink::WalkerDiag`), written
+/// to the CSV / JSON files above in the formats the control used to write
+/// them itself.
+#[cfg(feature = "mujoco")]
+impl misa_biped::sink::WalkerDiag for DiagSinks {
+    fn preview_solved(
+        &mut self,
+        t: f64,
+        samples: &[articara::biped::preview::PreviewSample],
+        plan: &articara::biped::preview::ComPreview,
+    ) {
+        if let Some(f) = self.preview_traj_file.as_mut() {
+            use std::io::Write as _;
+            for (k, smp) in samples.iter().enumerate() {
+                let (Some(z), Some(c)) = (plan.zmp.get(k), plan.com.get(k)) else { break };
+                writeln!(
+                    f,
+                    "{t:.4},{k},{:.4},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5}",
+                    smp.duration, z.x, z.y, c.x, c.y, smp.zmp.x, smp.zmp.y,
+                    smp.bounds.lo.x, smp.bounds.lo.y, smp.bounds.hi.x, smp.bounds.hi.y
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    fn preview_runtime(&mut self, t: f64, preview_solve_ns: u128, preview_accepted: bool, terminal_error: f64, com_preview_n: usize) {
+        if let Some(writer) = &mut self.com_preview_runtime {
+            use std::io::Write as _;
+            writeln!(writer, "{t:.6},{preview_solve_ns},{},{},{:.9},{},{}",
+                u8::from(preview_solve_ns > 50_000_000),
+                u8::from(preview_accepted),
+                terminal_error,
+                0, // applied_lateral: COM_REPLAN_LATERAL (removed) was off
+                com_preview_n,
+            ).unwrap();
+        }
+    }
+
+    fn wants_mpc_input(&self) -> bool {
+        self.mpc_diag_dir.is_some()
+    }
+
+    fn mpc_input(
+        &mut self,
+        t: f64,
+        dt: f64,
+        stair_wrench_dt: f64,
+        input: &articara::biped::wrench_mpc::Input,
+        config: &articara::biped::wrench_mpc::Config,
+    ) {
+        let Some(dir) = &self.mpc_diag_dir else { return };
+        let contacts: Vec<_> = input.contacts.iter().map(|c| serde_json::json!({
+            "position":c.position.as_slice(),"rotation":c.rotation.as_slice(),"cop_half":c.cop_half})).collect();
+        // "phase" was the stair transfer's phase (removed); the walk
+        // always wrote its placeholder, `Capture`.
+        let dump = serde_json::json!({"schema":1,"t":t,"ctrl_dt":dt,"mpc_update_dt":stair_wrench_dt,
+            "phase":"Capture","input":{
+                "com":input.com.as_slice(),"velocity":input.velocity.as_slice(),"angular_momentum":input.angular_momentum.as_slice(),
+                "target_com":input.target_com.as_slice(),"target_velocity":input.target_velocity.as_slice(),"target_acceleration":input.target_acceleration.as_slice(),
+                "contacts":contacts,"contact_schedule":input.contact_schedule,"activation_schedule":input.activation_schedule,
+                "reference_fz_schedule":input.reference_fz_schedule,"min_fz_schedule":input.min_fz_schedule,
+                "previous":[input.previous[0].as_slice(),input.previous[1].as_slice()]},
+            "config":{"horizon":config.horizon,"dt":config.dt,"mass":config.mass,"gravity":config.gravity,
+                "friction_mu":config.friction_mu,"cop_half":config.cop_half,"torsion_mu":config.torsion_mu,"max_fz":config.max_fz,
+                "position_weight":config.position_weight,"velocity_weight":config.velocity_weight,"momentum_weight":config.momentum_weight,
+                "acceleration_weight":config.acceleration_weight,"wrench_weight":config.wrench_weight,"smooth_weight":config.smooth_weight,"validate_solution":config.validate_solution}});
+        std::fs::create_dir_all(dir).expect("MPC_DIAG_DIR");
+        std::fs::write(
+            format!("{dir}/mpc_{:06}.json", self.mpc_diag_count),
+            serde_json::to_vec(&dump).unwrap(),
+        )
+        .expect("MPC snapshot");
+        self.mpc_diag_count += 1;
+    }
+
+    fn mpc_runtime(
+        &mut self,
+        t: f64,
+        mask: u8,
+        config: &articara::biped::wrench_mpc::Config,
+        stair_wrench_dt: f64,
+        mpc_solve_ns: u128,
+        accepted: bool,
+        previous_age: f64,
+    ) {
+        if let Some(file) = &mut self.mpc_runtime_log {
+            use std::io::Write;
+            // Second column: the removed stair transfer's phase,
+            // `Capture` being the walk's placeholder.
+            writeln!(file, "{t:.9},Capture,{mask},{:?},{},{stair_wrench_dt:.9},{mpc_solve_ns},{},{},{previous_age:.9}",
+                config.qp.solver, config.horizon,
+                mpc_solve_ns > (stair_wrench_dt * 1e9) as u128,
+                accepted).unwrap();
+        }
+    }
+
+    fn keeps_mpc_frames(&self) -> bool {
+        self.qp_wrench_log.is_some()
+    }
+
+    fn mpc_solved(
+        &mut self,
+        t: f64,
+        com: &na::Vector3<f64>,
+        input: &articara::biped::wrench_mpc::Input,
+        solution: &articara::biped::wrench_mpc::Solution,
+        net_cop: [f64; 2],
+        landing: Option<&articara::biped::wrench_mpc::Landing>,
+        by_side: &[articara::biped::wrench_mpc::Wrench; 2],
+    ) {
+        if let Some(f) = self.mpc_traj_file.as_mut() {
+            use std::io::Write as _;
+            let nan = f64::NAN;
+            let mut row = format!(
+                "{t:.4},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5}",
+                com.x, com.y, com.z, input.target_com.x, input.target_com.y, input.target_com.z
+            );
+            for k in 0..16 {
+                match solution.trajectory.get(k) {
+                    Some(n) => row += &format!(",{:.5},{:.5},{:.5}", n[0].x, n[0].y, n[0].z),
+                    None => row += &format!(",{nan},{nan},{nan}"),
+                }
+            }
+            row += &format!(",{:.5},{:.5}", net_cop[0], net_cop[1]);
+            for k in 0..16 {
+                match input.reference_net_cop_schedule.as_ref().and_then(|v| v.get(k)) {
+                    Some(c) => row += &format!(",{:.5},{:.5}", c.x, c.y),
+                    None => row += &format!(",{nan},{nan}"),
+                }
+            }
+            for foot in 0..2 {
+                let p = input.contacts[foot].position;
+                row += &format!(",{:.5},{:.5},{:.5}", p.x, p.y, p.z);
+            }
+            let on = input.contact_schedule.first().copied().unwrap_or([false; 2]);
+            let (lf, ld) = match (&landing, solution.landing_shift) {
+                (Some(l), Some(d)) => (l.foot as i64, d),
+                (Some(l), None) => (l.foot as i64, na::Vector2::zeros()),
+                _ => (-1, na::Vector2::zeros()),
+            };
+            row += &format!(
+                ",{:.3},{:.3},{},{},{lf},{:.5},{:.5},{}",
+                by_side[0][5], by_side[1][5], on[0] as u8, on[1] as u8, ld.x, ld.y, solution.trajectory.len()
+            );
+            writeln!(f, "{row}").unwrap();
+        }
+    }
+}
+
+/// The walker's log lines to this process's stdout / stderr (the run's log
+/// is taken with `2>&1`, so the two streams interleave as written).
+#[cfg(feature = "mujoco")]
+struct StdSink;
+
+#[cfg(feature = "mujoco")]
+impl misa_biped::sink::LogSink for StdSink {
+    fn line(&mut self, s: &str) {
+        println!("{s}");
+    }
+    fn err_line(&mut self, s: &str) {
+        eprintln!("{s}");
+    }
+}
+
 /// The controller's state carried from tick to tick (the planned
 /// schedule, footsteps and DCM aside, which are the plan). Each field is the
 /// `let` of the same name before the loop, which gives its initial value;
@@ -1394,8 +1559,9 @@ fn main() {
         max: env_f64("LEG_REACH", prof.leg_reach).max(0.0),
         margin: wcfg.descent.leg_reach_margin,
     };
-    let sole_half_l = env_f64("SOLE_HALF_L", prof.cop_half.0);
-    let sole_half_w = env_f64("SOLE_HALF_W", prof.cop_half.1);
+    // The sole's half-size (SOLE_HALF_L / SOLE_HALF_W over the profile's).
+    let prof = config_env::profile_from_kv(prof, &|k| std::env::var(k).ok());
+    let (sole_half_l, sole_half_w) = prof.cop_half;
     let mu_ground = o.mu_ground;
     let ctrl_mode = o.ctrl_mode;
 
@@ -2745,6 +2911,8 @@ fn main() {
         contact_cfg: &contact_cfg,
     };
 
+    // The walker's log lines go straight to stdout / stderr.
+    let mut out = StdSink;
     for tick in 0..n_ticks {
         let qp_control_start = std::time::Instant::now();
         let t = tick as f64 * dt;
@@ -2801,21 +2969,21 @@ fn main() {
 
         // ---- the walker's control, phase by phase (walker.rs). Phase 1
         // (the landing detector's settings) ran before the plant was read.
-        walker::phase_landing_clock(&mut ctl, &mut plan, &mut stats, &wcfg, &k, &obs, &actual_feet, t);
+        walker::phase_landing_clock(&mut ctl, &mut plan, &mut stats, &wcfg, &k, &obs, &actual_feet, t, &mut out);
         // The anchor changes phases 3 and 4 decide, in order (the stack
         // applies them in phase 11, before its contact level).
         let mut anchor_events: Vec<misa_biped::wbc::AnchorEvent> = Vec::new();
-        let ph3 = walker::phase_support(&mut ctl, &plan, &mut anchor_events, &wcfg, &k, &obs, t);
+        let ph3 = walker::phase_support(&mut ctl, &plan, &mut anchor_events, &wcfg, &k, &obs, t, &mut out);
 
-        let ph4 = walker::phase_contacts(&mut ctl, &plan, &mut stats, &mut anchor_events, &wcfg, &k, &obs, &ph3, t);
+        let ph4 = walker::phase_contacts(&mut ctl, &plan, &mut stats, &mut anchor_events, &wcfg, &k, &obs, &ph3, t, &mut out);
         let measured = measured_c;
         let walker::SupportOut { slice, slice_frac, support, step_idx, slice_idx, steps, .. } = ph3;
         let walker::ContactsOut { fz_meas, stance_sides, stance, nc, ramp } = ph4;
 
-        let ph5 = walker::phase_dcm(&mut ctl, &mut plan, &mut stats, &wcfg, &k, &obs, &actual_feet, &ph3, t);
+        let ph5 = walker::phase_dcm(&mut ctl, &mut plan, &mut stats, &wcfg, &k, &obs, &actual_feet, &ph3, t, &mut out);
 
         let walker::CmdZmpOut { p_cmd, clamped, zmp_deficit } =
-            walker::phase_cmd_zmp(&mut ctl, &mut plan, &mut stats, &wcfg, &k, &ph3, &ph5, t);
+            walker::phase_cmd_zmp(&mut ctl, &mut plan, &mut stats, &wcfg, &k, &ph3, &ph5, t, &mut out);
         let walker::DcmOut { xi, r, dcm_err } = ph5;
         let p_cmd = walker::phase_preview(
             &mut ctl, &plan, &mut stats, &mut diag, &wcfg, &k, &obs, &actual_feet, &stance_sides, p_cmd, t,
@@ -2825,7 +2993,7 @@ fn main() {
 
         let mpc_capture_ns = walker::phase_wrench_mpc(
             &mut ctl, &mut plan, &mut stats, &mut diag, &wcfg, &k, &obs, &actual_feet, &cent, &ph3, &stance_sides,
-            &ph5, &a_com, t,
+            &ph5, &a_com, t, &mut out,
         );
 
         // ---- the WBC: the levels' references (phase 10), the request and
@@ -2836,7 +3004,7 @@ fn main() {
         );
         let wbc = walker::phase_wbc(
             &mut stack, &ctl, &wcfg, &k, &obs, &cent, &ph3, &stance_sides, &stance, nc, &ramp, &anchor_events,
-            &a_com, &refs, t,
+            &a_com, &refs, t, &mut out,
         );
         let sd = walker::phase_solve_diag(&wcfg, &k, &obs, &stance, &refs, &wbc);
         let walker::TaskRefs { roll, pitch, rp_ref, tau_gravity, shares, swing_tgt, swing_cmd_acc_z, .. } = refs;
@@ -3358,7 +3526,7 @@ fn main() {
         }
         // The end of the tick for the walker (phase 13): a recovery
         // reference whose time is up hands the feet back to the gait.
-        walker::phase_end_tick(&mut ctl, &mut plan, &wcfg, t);
+        walker::phase_end_tick(&mut ctl, &mut plan, &wcfg, t, &mut out);
 
         m.support_prev = Some(rec.support);
         // What the disturbance is doing RIGHT NOW, for the replay to draw.
