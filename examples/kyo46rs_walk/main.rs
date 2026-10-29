@@ -27,7 +27,7 @@
 #[cfg(feature = "mujoco")]
 use nalgebra as na;
 #[cfg(feature = "mujoco")]
-use misa_biped::recovery::{RefLib, RefMode};
+use misa_biped::recovery::RefLib;
 
 #[cfg(feature = "mujoco")]
 mod config_env;
@@ -1109,182 +1109,6 @@ impl misa_biped::sink::LogSink for StdSink {
     }
 }
 
-/// The controller's state carried from tick to tick (the planned
-/// schedule, footsteps and DCM aside, which are the plan). Each field is the
-/// `let` of the same name before the loop, which gives its initial value;
-/// gathered here so what the controller remembers is one thing.
-#[cfg(feature = "mujoco")]
-struct CtlState {
-    /// PUSH_YIELD has slowed the walk (once per run).
-    push_yield_done: bool,
-    /// Speed-scheduled CoM drop, slewed.
-    vx2_z_track: articara::biped::height::SlewedDrop,
-    /// PUSH_Z_DROP holds the lowered CoM until this time.
-    push_z_drop_until: f64,
-    /// Measured-contact correction of the planned contact set.
-    correction: articara::biped::gait::ContactCorrection,
-    /// Terrain height under the support, slewed.
-    terrain_track: f64,
-    /// contact_plan: the landing shift applied to `cp_slice`, and the slice
-    /// whose end it has retimed (it then owns that end).
-    cp_applied: na::Vector2<f64>,
-    cp_slice: Option<usize>,
-    cp_retimed_slice: Option<usize>,
-    /// Contact admission: the last scheduled admit, the sole height measured
-    /// at it, and the double support each foot is certified for.
-    last_scheduled_admit: [Option<usize>; 2],
-    admit_measured_z: [Option<f64>; 2],
-    confirmed_admit: [Option<usize>; 2],
-    /// Push-recovery reference: the one picked, the cooldown, the lateral
-    /// quiet time, and the engaged reference's frame.
-    ref_lib: Option<RefLib>,
-    ref_cooldown_until: f64,
-    ref_lat_quiet_t: f64,
-    ref_mode: Option<RefMode>,
-    /// DS_CAPTURE retimes a double support once.
-    dsc_retimed_last: Option<usize>,
-    /// PUSH_REPLAN: (slice, original footsteps, original DCM plan, original
-    /// landing, last applied landing), the slice it owns, and the hold shift.
-    push_replan_state: Option<(
-        usize,
-        articara::biped::gait::FootstepPlan,
-        articara::biped::dcm::DcmPlan,
-        na::Vector2<f64>,
-        Option<na::Vector2<f64>>,
-    )>,
-    push_replan_slice: Option<usize>,
-    push_replan_shift: f64,
-    /// (slice, inward is +y) latched when the MPC crossing gate opens.
-    mpc_fs_cross_latched: Option<(usize, bool)>,
-    /// COM_REPLAN has started (the height plan was rebuilt).
-    replan_engaged: bool,
-    /// CoM preview: the reference ZMP, the predicted CoM and velocity, and
-    /// the time of the next solve.
-    preview_p: na::Vector2<f64>,
-    preview_c: na::Vector2<f64>,
-    preview_v: na::Vector2<f64>,
-    preview_next: f64,
-    /// Support of the previous tick (anchors are released and set on a change).
-    prev_support: articara::biped::gait::Support,
-    /// Where the swing sole left the ground.
-    swing_lift_off: Option<na::Vector3<f64>>,
-    /// Load-change rate per foot (the managed-contact trigger).
-    fz_prev: [f64; 2],
-    fz_rate_ema: [f64; 2],
-    managed_until: [f64; 2],
-    /// Last commanded horizontal CoM acceleration (COM_XY_JERK_MAX).
-    previous_a_xy: Option<na::Vector2<f64>>,
-    /// Wrench MPC: the time of the next solve and the held answer.
-    wrench_mpc_next: f64,
-    wrench_mpc_command: Option<[articara::biped::wrench_mpc::Wrench; 2]>,
-    /// MPC_FOOTSTEP: the slice whose landing is being moved, how much of the
-    /// MPC's offset is applied, the (first, last) slice it is armed for, and
-    /// the last total.
-    mpc_fs_slice: Option<usize>,
-    mpc_fs_applied: na::Vector2<f64>,
-    mpc_fs_armed: Option<(usize, usize)>,
-    mpc_fs_last: na::Vector2<f64>,
-    /// The held MPC answer's diagnostics, read only by the logs: the
-    /// reference vertical forces and the time it was solved at, the net
-    /// pressure point its wrenches imply, and their contact frames (kept
-    /// only for QP_WRENCH_CSV). Held across ticks with `wrench_mpc_command`.
-    diag_mpc_reference: [f64; 2],
-    diag_mpc_time: Option<f64>,
-    diag_mpc_net_cop: [f64; 2],
-    wrench_mpc_frames: Option<[articara::biped::wrench_mpc::Contact; 2]>,
-}
-
-/// What the controller computed this tick, for the harness to read: the
-/// trajectory CSV, the 40-tick print and the fall test read these instead of
-/// the control loop's locals. Built once per tick, after the solve and the
-/// per-foot CoP, from the values as they stand there (`z_ref` is the second
-/// binding, `p_cmd` the one after the preview's correction, `r` the DCM
-/// reference after the recovery reference's override).
-#[cfg(feature = "mujoco")]
-struct TickRecord {
-    /// The measured soles (FK), as the phases read them.
-    actual_feet: articara::biped::gait::Footsteps,
-    /// The schedule's slice now (by value), its index, and how far into it.
-    slice: articara::biped::gait::Slice,
-    slice_idx: usize,
-    slice_frac: f64,
-    /// Support from the schedule (`Double` throughout with NO_LIFT), steps
-    /// taken, and the planned soles of this slice.
-    support: articara::biped::gait::Support,
-    step_idx: usize,
-    steps: articara::biped::gait::Footsteps,
-    /// The feet the QP solved with as contacts, and how many.
-    stance_sides: Vec<usize>,
-    nc: usize,
-    /// Measured vertical force per foot, as the controller read it.
-    fz_meas: [f64; 2],
-    /// Measured DCM, its reference, and the distance between them.
-    xi: na::Vector2<f64>,
-    r: articara::biped::dcm::DcmRef,
-    dcm_err: f64,
-    /// Commanded ZMP after the support-box clamp (and how far it was moved).
-    p_cmd: na::Vector2<f64>,
-    clamped: f64,
-    /// CoM height reference and the commanded CoM acceleration.
-    z_ref: f64,
-    a_com: na::Vector3<f64>,
-    /// Load share per stance foot.
-    shares: Vec<f64>,
-    /// Trunk roll / pitch (the estimate), their reference, and what the
-    /// trunk task commanded and achieved [rad/s^2].
-    roll: f64,
-    pitch: f64,
-    rp_ref: [f64; 2],
-    trunk_cmd_rp: [f64; 2],
-    trunk_acc_rp: [f64; 2],
-    /// Swing-foot target and its tracking diagnostics.
-    swing_tgt: na::Vector3<f64>,
-    swing_cmd_acc_z: f64,
-    swing_achieved_acc_z: f64,
-    swing_res_z: f64,
-    swing_res_rows: f64,
-    swing_task_residual_rms: f64,
-    swing_pos_err_xy: f64,
-    swing_pos_err_z: f64,
-    /// CoM preview: whether it has engaged, its CoM and velocity.
-    replan_engaged: bool,
-    preview_c: na::Vector2<f64>,
-    preview_v: na::Vector2<f64>,
-    /// The held MPC answer, the net pressure point it implies, and the
-    /// landing offset it last asked for; its reference vertical forces, when
-    /// it was solved, and its contact frames (see `CtlState`).
-    wrench_mpc_command: Option<[articara::biped::wrench_mpc::Wrench; 2]>,
-    diag_mpc_net_cop: [f64; 2],
-    mpc_fs_last: na::Vector2<f64>,
-    diag_mpc_reference: [f64; 2],
-    diag_mpc_time: Option<f64>,
-    wrench_mpc_frames: Option<[articara::biped::wrench_mpc::Contact; 2]>,
-    /// The QP's levels by name, and the nominal contact forces it was
-    /// pulled toward (`force_nominal`, world axes per stance slot).
-    level_names: Vec<&'static str>,
-    forces_nominal: na::DVector<f64>,
-    /// QP timing [ns] (solve, physical check, QP_DIAG capture, MPC_DIAG
-    /// capture), the normalised physical violation, and whether the solver
-    /// was reset for a new QP structure.
-    qp_solve_ns: u128,
-    qp_check_ns: u128,
-    qp_capture_ns: u128,
-    mpc_capture_ns: u128,
-    qp_physical_violation: f64,
-    qp_reset: bool,
-    /// The QP's per-foot CoP (sole frame, with fz) and force (world), the
-    /// CoP utilisation, and the net pressure point of its forces.
-    cop_qp: [[f64; 3]; 2],
-    f_qp_w: [[f64; 3]; 2],
-    cop_use: f64,
-    diag_wbc_net_cop: [f64; 2],
-    acc_dbg: [f64; 2],
-    /// Leg reach used per side, hip heights, and the stride they allow now.
-    reach_used: [f64; 2],
-    hip_z: [f64; 2],
-    stride_max_now: f64,
-}
-
 /// Between the solve and the plant: the degraded-solve policy and whether a
 /// good command has been seen yet (harness side; see `CommandPolicy`).
 #[cfg(feature = "mujoco")]
@@ -1293,51 +1117,16 @@ struct CommandGuard {
     qp_has_good_command: bool,
 }
 
-/// The controller's counters, reported after the loop (`DegradedTally`, the
-/// harness's, stays apart). All start at zero.
-#[cfg(feature = "mujoco")]
-#[derive(Default)]
-struct WalkerStats {
-    n_mom_cmp_ticks: u32,
-    mom_cmp_peak: f64,
-    n_push_z_drop: u32,
-    n_cp_shift: u32,
-    n_cp_retime: u32,
-    cp_retime_total: f64,
-    n_confirmed_admissions: u32,
-    ref_engagements: u32,
-    n_ds_capture: u32,
-    ds_capture_total: f64,
-    n_ds_feasible: u32,
-    n_ds_continuous: u32,
-    ds_feasible_total: f64,
-    n_push_replan: u32,
-    n_mpc_fs_cross: u32,
-    preview_count: u32,
-    preview_failures: u32,
-    preview_error: f64,
-    landing_retimes: u32,
-    landing_delay: f64,
-    n_replan: u32,
-    n_corrected: u32,
-    wrench_mpc_solves: u32,
-    wrench_mpc_failures: u32,
-}
-
 #[cfg(feature = "mujoco")]
 fn main() {
     use articara::biped::actuate::{
         CommandPolicy, DegradedTally, gravity_plus_posture, write_to_plant,
     };
-    use articara::biped::dcm::DcmPlan;
-    use articara::biped::gait::{
-        ContactCorrection, FootstepPlan, Footsteps, GaitParams, GaitPlan, Support,
-    };
+    use articara::biped::gait::{GaitParams, Support};
     use articara::biped::log::{Row, TrajLog, measure_contacts};
     use articara::biped::profile;
     use articara::biped::rig::{BipedRig, CtrlMode, G, RigOptions};
     use articara::biped::wbc_stack::{StackDiag, TaskStack, TaskStackConfig};
-    use misa_biped::plan::Plan;
     use misa_biped::robot::{Estimate, Observation};
     use misa_biped::wbc::WbcStack;
     use misa_wbc::{SolveConfig, Solver, tasks};
@@ -1678,33 +1467,6 @@ fn main() {
     let hold_kd = wcfg.wbc.hold_kd;
     let hold_bridge = wcfg.wbc.hold_bridge;
     let fallback_max_level = wcfg.wbc.fallback_level;
-    let anchor_leak = wcfg.contact.anchor_leak;
-    // Contact-stabiliser (Baumgarte) gain. 1600 was picked for a two-foot
-    // stance and concentrated on one foot it kicks the robot off the ground --
-    // the same finding that fixed G1's single-leg stance (6ba64d2). Measured
-    // here, stepping in place at a 99.4 mm stance, T=40 / N_STEPS=40:
-    //
-    //   kp_c   60  100  120  150  180  220  250  400  600  1600
-    //   steps   9   16   17   25   10   13   17    9    6     3
-    //
-    // 150 is the DEFAULT, not a tuned value. The sweep is non-monotone and
-    // both neighbours drop hard, and the sensitivity is sharper than that:
-    // kd_c = 24 gives 25 steps where kd_c = 2*sqrt(150) = 24.495 gives 18.
-    // A 2% change in the damping is worth 7 steps, so no single number here
-    // is a result. What the data supports is "1600 is wrong and anything in
-    // 60-250 is several times better".
-    let kp_c = wcfg.contact.kp;
-    // Critically damped against kp_c. Moving the two independently is how the
-    // pair drifted apart in the first place: kp_c=400 with the old kd_c=80
-    // gives 4 steps, and the same kp_c with 2*sqrt(kp_c) gives 9.
-    let kd_c = wcfg.contact.kd();
-
-    let kp_sw_xy = wcfg.swing.kp_xy();
-
-    // DCM tracking. k is dimensionless: the DCM error decays as
-    // exp(-k_dcm * omega * t), so 2.0 is two e-folds per DCM time constant.
-    let k_dcm = wcfg.dcm.k_dcm;
-
     let total_t = env_f64("T", 25.0);
     let gp = GaitParams {
         t_start: wcfg.gait.t_start,
@@ -1714,10 +1476,6 @@ fn main() {
         first_swing: wcfg.gait.first_swing,
         t_end: total_t,
     };
-    // W1: run the schedule (so the ZMP reference moves) but never actually
-    // release a foot. Isolates "can the balance reference move at all" from
-    // everything that touchdown brings with it.
-    let no_lift = wcfg.gait.no_lift;
 
     // ---- disturbance: one rectangular push at a chosen gait phase --------
     // What is fired and when is `PushScenario`; the thresholds below are
@@ -1782,586 +1540,64 @@ fn main() {
 
     rig.report_footprint(sole_half_l);
 
-    // ── Plan, captured ONCE from the settled pose ──────────────────────
-    let d0 = rig.fk_now();
-    let com0 = robot.com_of(&d0);
-    let steps = Footsteps::from_fk(&d0, robot.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
-    // The orientation each foot is PLANNED to land in, captured once from the
-    // settled pose. Stepping in place does not turn, so this never changes --
-    // which is the point: it is a plan, not a measurement, and a swing foot
-    // that drifts is correcting toward it rather than tracking its own drift.
-    let foot_rot0: [na::Matrix3<f64>; 2] =
-        std::array::from_fn(|s| misarta::se3::rotation_matrix(&d0.oMi[robot.foot_mi[s]]));
-    // Swing orientation gains. Without this task the foot's three rotational
-    // DoF are free and the QP twists the leg: measured, hip_yaw walked to its
-    // +-30 deg stop over 16 steps and the feet landed yawed by up to 31 deg.
-    let _yaw0 = {
-        let q = rig
-            .sim
-            .body_world_orientation(&rig.robot.root_link)
-            .unwrap();
-        q.euler_angles().2
+    // ── The walker: its plan, captured ONCE from the settled pose, and
+    // its initial state (walker.rs; the plan's lines are printed here).
+    // The command, read here and woven into the plan at start-up.
+    let command = walker::CommandSchedule {
+        // STRIDE is kept as a shorthand for VX in m/step.
+        vx: env_f64("VX", wcfg.gait.stride / (wcfg.gait.t_ss + wcfg.gait.t_ds)),
+        vy: env_f64("VY", 0.0),
+        wz: env_f64("WZ", 0.0),
+        // Crouch/rise while doing it, to load the sagittal chain during
+        // locomotion rather than only when standing.
+        squat_amp: env_f64("SQUAT_AMP", 0.0),
+        squat_period: env_f64("SQUAT_PERIOD", 3.0),
+        // Speed-change benchmark: from step VX2_AT the forward speed ramps
+        // to VX2 over VX2_RAMP steps (gait::FootstepPlan::velocity_with_change).
+        // Unset = the fixed-speed plan, bit-identical.
+        vx2: std::env::var("VX2").ok().and_then(|v| v.parse::<f64>().ok()).map(|vx2| {
+            (env_f64("VX2_AT", 8.0).max(0.0) as usize, vx2, env_f64("VX2_RAMP", 3.0).max(0.0) as usize)
+        }),
+        jab,
+        jab_start,
+        jab_period,
+        jab_pattern: jab_pattern.clone(),
+        jab_pitch,
+        jab_elbow,
     };
-    // TRACKING_FF_MIN_RISER [m]: apply the cubic acceleration feedforward
-    // only on a staircase whose riser is at least this (0 = every stair
-    // swing). Measured 2026-10-20: the feedforward takes the -150 mm descent
-    // from 18 to 41/48 but, applied to every stair swing, needs the hand
-    // retreat biases removed and then costs the 60/80 mm descents 3-7
-    // members (round trip 192 -> 185). The gate is the RISER, not the
-    // swing's height change: each foot climbs two risers per swing, so 60 mm
-    // stairs already give 0.12 while the one-step deep bench gives 0.10-0.15.
-    let tracking_ff_min_riser = wcfg.swing.tracking_ff_min_riser;
-    let tracking_ff_riser_ok = stairs.as_ref().is_some_and(|st| st.riser.abs() >= tracking_ff_min_riser);
-    let mut gait = GaitPlan::new(&gp);
-    // A separate hold AFTER the normal inter-step pressure transfer. Extending
-    // T_DS itself changes the transfer slope and proved non-robust for fixed
-    // arms: 20 ms changes swapped survival between the 0.5/0.25 ms plants.
-    // Consecutive DS slices make this one a constant-ZMP segment, so it adds
-    // settling time without changing the validated transfer duration.
-    let ds_settle = wcfg.gait.ds_settle;
-    let ds_settle_after_step = wcfg.gait.ds_settle_after_step;
-    assert!(
-        ds_settle.is_finite() && ds_settle >= 0.0,
-        "DS_SETTLE must be finite and non-negative"
+    let (vx, vy, wz) = (command.vx, command.vy, command.wz);
+    // REF_LIBRARY: a push-recovery reference (scripts/trajopt). Engaged by
+    // the detector (REF_TRIG_DCM) for its whole duration: the
+    // gait is retimed to the reference's phases, the next two footfalls are
+    // placed where it lands, the swing foot follows its sole trajectory, and
+    // landings are taken by measured contact (CONTACT_EVENT) meanwhile. The
+    // MPC and WBC otherwise run as usual on the re-planned DCM. Default
+    // unset = bit-identical.
+    // Several files (comma-separated) make a library: at the push the one
+    // whose initial swing-sole height is closest to the measured one is used
+    // (the phase of the swing is what the references differ in).
+    let ref_libs: Vec<RefLib> = std::env::var("REF_LIBRARY")
+        .ok()
+        .map(|p| p.split(',').filter(|x| !x.is_empty()).map(load_ref_lib).collect())
+        .unwrap_or_default();
+    let ref_any = !ref_libs.is_empty();
+    let init = walker::WalkerInit::new(
+        wcfg.clone(),
+        robot,
+        walker::WalkerSetup {
+            dt,
+            t_end: total_t,
+            terrain: stairs,
+            command,
+            recovery_refs: ref_libs,
+            friction_mu,
+            init_fk: rig.fk_now(),
+            leg_reach,
+            hip_mi,
+        },
+        &mut StdSink,
     );
-    let n_ds_settles = gait.insert_ds_settles(ds_settle, ds_settle_after_step);
-    if n_ds_settles > 0 {
-        println!(
-            "inter-step settle: {n_ds_settles} mid-foot holds x {ds_settle:.3}s, after step {ds_settle_after_step}"
-        );
-    }
-    // Z_COM_OFFSET [m]: the walking CoM height RELATIVE to the measured
-    // initial one. `Z_COM` is an absolute world height, which on a descent
-    // (spawn on a platform) silently adds the platform height to the crouch
-    // -- measured 2026-10-05: Z_COM=0.66 took every descent below 6 cm to
-    // 0/48. 0 = off = bit-identical.
-    let z_com = wcfg.com_plan.z_com(com0.z);
-    // How far the ZMP is asked to travel laterally, as a fraction of the
-    // half stance width. 1.0 is true single support (all load on one sole);
-    // anything less is only reachable with both feet down, so it is a W1
-    // instrument, not a gait parameter.
-    let zmp_lat_scale = wcfg.dcm.zmp_lat_scale;
-    // Forward travel per step, in metres of BODY advance. 0 is stepping in
-    // place, which stays a special case of this rather than a separate path.
-    // A commanded speed maps to it as stride = v * (t_ss + t_ds).
-    // Velocity command. STRIDE is kept as a shorthand for VX in m/step.
-    let t_step = gp.t_ss + gp.t_ds;
-    let stride = wcfg.gait.stride;
-    let vx = env_f64("VX", stride / t_step);
-    let vy = env_f64("VY", 0.0);
-    let wz = env_f64("WZ", 0.0);
-    // Crouch/rise while doing it, to load the sagittal chain during locomotion
-    // rather than only when standing.
-    let squat_amp = env_f64("SQUAT_AMP", 0.0);
-    let squat_period = env_f64("SQUAT_PERIOD", 3.0);
-    // Steps over which the stride ramps in from standing.
-    let stride_ramp = wcfg.gait.stride_ramp;
-    // ALTERNATE=0 restores the step-and-close plan, for A/B.
-    // Speed-change benchmark: from step VX2_AT the forward speed ramps to
-    // VX2 over VX2_RAMP steps (gait::FootstepPlan::velocity_with_change).
-    // Unset = the fixed-speed plan, bit-identical.
-    let vx2_change = std::env::var("VX2").ok().and_then(|v| v.parse::<f64>().ok()).map(|vx2| {
-        (env_f64("VX2_AT", 8.0).max(0.0) as usize, vx2, env_f64("VX2_RAMP", 3.0).max(0.0) as usize)
-    });
-    // A speed the fixed step time would turn into a longer stride than the
-    // VX2_SCHED cap is reached by STEPPING FASTER instead -- the footfalls
-    // are planned at the capped stride and each step from VX2_AT on (its
-    // single support and the double support after it) is shortened by
-    // stride_max / (v * t_step). Measured 2026-10-03 on G1 v6.3 with the
-    // step time fixed at 1.21 s: 0.25 m/s 47/48, 0.30 m/s 12/48, 0.35 m/s
-    // 1/48 -- the stride grows to 0.36-0.42 m and the landing leg is at
-    // 99.8% of its length. VX2_TSCALE_MIN bounds the shortening. (The
-    // hand-set cap VX2_STRIDE_MAX is removed.)
-    let vx2_tscale_min = wcfg.speed.tscale_min;
-    // VX2_SCHED: ONE speed schedule instead of the two hand-set knobs.
-    // Measured 2026-10-14 (doc/from_claude/20261014_speed_design.md): the
-    // swing's peak acceleration goes as v / T_step, so a speed is reached
-    // by the LONGEST stride the legs allow (cap VXS_STRIDE_MAX) and only
-    // then by cadence; a longer stride needs a lower CoM to stay within
-    // leg reach, z_drop = 0.024 + VXS_Z_SLOPE (stride - 0.35) above a
-    // 0.35 m stride, fading to 0 below 0.25 m. Reproduces the measured
-    // settings (0.35/0.024 to 0.50 m/s, 0.45/0.06 at 0.55). The swing
-    // acceleration bound v / T <= 0.7 then puts the ceiling at ~0.56 m/s
-    // with a 0.45 m stride. (The two hand-set knobs, VX2_STRIDE_MAX and
-    // VX2_Z_DROP, are removed.) Unset = no cap and no drop.
-    let vx2_sched = wcfg.speed.sched;
-    // (VX2_REANCHOR, re-anchoring the plan on the stance foot at every
-    // single support under a speed command, is removed.)
-    let (vx2_stride_max, vx2_z_drop_sched) = match vx2_change {
-        Some((_, vx2, _)) if vx2_sched => {
-            // The cap itself rises with speed: a 0.42 m stride at the
-            // nominal cadence (0.35 m/s) stretches the stance leg over a
-            // 0.84 s single support and falls even 5 cm lower, while the
-            // same stride at 0.55 m/s (0.82 s step) walks. 0.35 m up to
-            // VXS_V_LONG, then +VXS_CAP_SLOPE per m/s to VXS_STRIDE_MAX.
-            let cap = wcfg.speed.stride_cap(vx2);
-            let stride = (vx2 * t_step).min(cap);
-            let zd = if stride >= 0.35 {
-                0.024 + wcfg.speed.z_slope * (stride - 0.35)
-            } else {
-                0.024 * ((stride - 0.25) / 0.10).clamp(0.0, 1.0)
-            }
-            .min(wcfg.speed.z_max)
-            // VXS_Z_MIN: a floor on the scheduled drop once a speed command
-            // is active. Measured 2026-10-16 (push x speed, N=48, v6.10):
-            // at 0.30 m/s the table drops 0.024 and the pushes go 77/192;
-            // +0.02 gives 122, +0.04 gives 127 (backward 11 N.s 14 -> 48).
-            // At 0.50 the table already drops 0.06 and more removes lateral
-            // margin (swing-side 5 N.s 11 -> 6). 0 = the table alone.
-            .max(wcfg.speed.z_min);
-            // (VXS_Z_EXTRA, more drop on top of the schedule, is removed.)
-            println!("speed schedule: v={vx2:.2} m/s -> stride {stride:.3} m (cap {cap:.2}), step {:.3} s, CoM drop {zd:.3} m", stride / vx2.max(1e-6));
-            (cap, Some(zd))
-        }
-        _ => (0.0, None),
-    };
-    let push_yield_done = false;
-    let vx2_cmd_speed: Option<f64> = vx2_change.map(|(_, v, _)| v);
-    let vx2_change = match vx2_change {
-        Some((at, vx2, ramp2)) if vx2_stride_max > 0.0 && vx2 * t_step > vx2_stride_max => {
-            // Per-step time scale along the ramp, then the capped plan speed.
-            let mut k = 0usize;
-            let mut i = 0usize;
-            while i < gait.slices.len() {
-                if matches!(gait.slices[i].support, Support::Single { .. }) {
-                    if k >= at {
-                        let g = if ramp2 == 0 { 1.0 } else { ((k - at + 1) as f64 / ramp2 as f64).min(1.0) };
-                        let v_k = vx + (vx2 - vx) * g;
-                        let scale = (vx2_stride_max / (v_k * t_step)).clamp(vx2_tscale_min, 1.0);
-                        // The single support and EVERY double-support slice
-                        // after it (transfer + DS_SETTLE hold).
-                        let mut j = i;
-                        while j < gait.slices.len()
-                            && (j == i || matches!(gait.slices[j].support, Support::Double))
-                        {
-                            let t0 = gait.slices[j].t0;
-                            // (VX2_DS_SCALE, an extra factor on the double
-                            // supports, defaulted to 1 and is removed.)
-                            let d = gait.slices[j].duration() * scale;
-                            gait.retime(j, t0 + d);
-                            j += 1;
-                        }
-                    }
-                    k += 1;
-                }
-                i += 1;
-            }
-            println!("speed change: stride capped at {vx2_stride_max:.3} m, steps from {at} shortened (>= x{vx2_tscale_min:.2})");
-            // The position plan advances `v * t_step` per step, so the capped
-            // stride is the speed stride_max / t_step in the plan's units.
-            Some((at, (vx2_stride_max / t_step).max(vx), ramp2))
-        }
-        other => other,
-    };
-    // Lower the walking CoM height by the schedule's drop from one step
-    // before the speed change on. Measured 2026-10-05: the 0.45 m/s wall is
-    // leg reach (stance leg at 99%, the heel lifts and the foot slips), and
-    // 24 mm lower takes it from 7/48 to 48/48 -- but lowering the CoM for
-    // the whole run trades descents and lateral pushes away. Tied to the
-    // speed command it leaves every other bench bit-identical. (The
-    // hand-set VX2_Z_DROP is removed.)
-    let vx2_z_drop = vx2_z_drop_sched.unwrap_or(0.0);
-    let vx2_z_track = articara::biped::height::SlewedDrop::default();
-    let push_z_drop = wcfg.push_crouch.drop;
-    let push_z_drop_until = f64::NEG_INFINITY;
-    let vx2_z_from: Option<f64> = match vx2_change {
-        Some((at, _, _)) if vx2_z_drop > 0.0 => gait
-            .slices
-            .iter()
-            .filter(|sl| matches!(sl.support, Support::Single { .. }))
-            .nth(at.saturating_sub(1))
-            .map(|sl| sl.t0),
-        _ => None,
-    };
-    let mut footsteps = if wcfg.gait.alternate {
-        FootstepPlan::velocity_with_change(&gait, &steps, vx, vy, wz, t_step, stride_ramp, vx2_change)
-    } else {
-        FootstepPlan::ramped_stride(&gait, &steps, vx * t_step, stride_ramp)
-    };
-    // Stairs: rebuild the flat-ground footstep plan at tread centres. Terrain
-    // enters the controller HERE and nowhere else -- the ZMP plan, the swing
-    // touchdown, the per-slice anchors and the support polygon all read this
-    // plan, so one edit moves all of them consistently.
-    if let Some(st) = &stairs {
-        // Rebuild the on-stairs part of the plan DETERMINISTICALLY instead
-        // of snapping the velocity plan's wishes to the tread grid. Snapping
-        // was tried first and quantised different nominal targets onto the
-        // same spot: the approach degenerated into stepping against the
-        // first riser and even a 20 mm riser fell. The sequence a stair
-        // wants is an approach followed by alternating feet on successive
-        // treads, with one riser of body advance per step.
-        // Toe margin to a riser face. 10 mm was not enough: the heel-to-toe
-        // pressure roll pushes the stance toe forward and it ground into the
-        // first riser at 46 N while the climb was being launched off it.
-        // The 20 mm default is 41% of kyo46rs's 49 mm sole half-length but only
-        // 24% of G1's 85 mm, so the same number means two different things.
-        // Measured 2026-09-20 on G1: the last approach footfall lands ON this
-        // stand line, which puts the swing toe 20 mm from the riser face -- the
-        // ankle advances 20 mm and the toe is already at the riser while the
-        // foot has barely left the ground. Touchdown was detected with the foot
-        // still RISING (td_vz +0.114), DCM error went 0.0042 -> 0.1857, cop_use
-        // saturated and fz nearly doubled. Overridable so a longer-footed robot
-        // can buy the clearance; the default keeps kyo46rs bit-identical.
-        let m = sole_half_l + wcfg.stair_plan.toe_margin;
-        let a_pos = st.start - m; // stand line: toes just clear of riser 1
-        // Widen the on-stairs footfalls. Foot-over-foot passes the swing
-        // shank beside the stance foot at tread height, and the measured
-        // clearance was negative: left_shank <-> right_foot at 75 N on the
-        // second climb. Walking a little wide opens it.
-        let y_out = wcfg.stair_plan.y_out;
-        let stair_gait_pair = wcfg.stair_plan.gait_pair;
-        let n = st.n as i64;
-        let land = st.start + st.n as f64 * st.tread + m;
-        // Aim tread landings BEHIND the centre. The measured touchdown
-        // overshoots its target by ~45 mm in x (travel-phase momentum); on
-        // the one-step case the tread and the landing form one continuous
-        // surface and the overshoot was harmless, but on a real flight each
-        // tread is a 110 mm island and centre+45 is the nosing. Biasing the
-        // TARGET rearward spends the sole's rear margin on the overshoot.
-        let mut td_bias = wcfg.stair_plan.td_bias;
-        // Descent-only rearward bias. Measured 2026-10-03 on G1 (v6.2, two
-        // steps down, 60 mm risers, 29/48): the step-down landing overshoots
-        // its goal by ~21 mm in x, a 170 mm sole on a 211 mm tread has 20 mm
-        // to spare, so the toe contact spheres land PAST the nosing and the
-        // stance foot pitches over the edge during the next swing. Default =
-        // STAIR_TD_BIAS, i.e. bit-identical.
-        // Applied only to treads that HAVE a nosing ahead (levels 1..n-1):
-        // the last level of a descent is the ground, and biasing it rearward
-        // walks the heel toward the riser face behind for nothing (measured:
-        // one step down 192 -> 188, 150 mm 18 -> 0 with the bias on it).
-        // Ascent twin of the descent bias: treads with a RISER AHEAD (levels
-        // 1..n-1 of a flight going up). Measured 2026-10-03 on G1 v6.3, three
-        // steps up: the landing overshoots by ~30 mm, the toe ends past the
-        // tread (20 mm to spare) and comes down ON the next step -- at 4 and
-        // 6 cm the sole rests half on it (centre 20 mm high, 0/48), at 8 cm
-        // the riser face stops the toe (48/48). Default = STAIR_TD_BIAS, so
-        // the one-step benches are bit-identical.
-        let td_bias_asc_mid = wcfg.stair_plan.td_bias_asc_mid();
-        let td_bias_desc = if st.riser < 0.0 || st.down_n > 0 {
-            wcfg.descent.td_bias_desc(&wcfg.stair_plan)
-        } else {
-            td_bias
-        };
-        if wcfg.stair_plan.full_sole {
-            let margin = wcfg.stair_plan.sole_margin;
-            let available = 0.5 * st.tread - sole_half_l - margin;
-            assert!(
-                margin.is_finite() && margin >= 0.0 && available >= 0.0,
-                "tread cannot contain the requested full sole and margin"
-            );
-            let requested = td_bias;
-            td_bias = td_bias.clamp(-available, available);
-            println!("full-sole plan: bias {requested:.6} -> {td_bias:.6} m, margin {margin:.4} m");
-        }
-        // Stride the walk-out takes on the landing, as a fraction of the tread.
-        // Half a tread is 1.31x kyo46rs's 42 mm cruise stride (an acceleration)
-        // but only 0.43x G1's 242 mm (a halving in one step). Measured
-        // 2026-09-20 on G1: with the stair itself removed (riser 0.000) the run
-        // still fell at 3.98 m -- on the landing, at exactly this deceleration
-        // -- while the same recipe without STAIRS walked 6.23 m. `pos_of` and
-        // `lvl_of` must read the SAME value or the grade and its inverse
-        // disagree. The default keeps kyo46rs bit-identical.
-        let landing_step = wcfg.stair_plan.landing_frac * st.tread;
-        let slope_keep_stride = wcfg.slope.keep_stride;
-        let pos_of = |lvl: i64| -> f64 {
-            if lvl <= 0 {
-                a_pos
-            } else if lvl > n {
-                // KEEP WALKING on the landing at half-tread strides instead
-                // of pinning both feet to one point. The pinned version made
-                // every run that reached the top fall THERE: the climb ends
-                // at ~0.15 m/s and a frozen dwell asks that momentum to die
-                // in one step -- measured, all eight one-step-ascent
-                // configurations fell at x = 0.43..0.49, i.e. on the
-                // landing, not on the stair.
-                land + (lvl - n - 1) as f64 * landing_step
-            } else {
-                st.start + (lvl as f64 - 0.5) * st.tread
-                    - if st.riser < 0.0 && lvl < n {
-                        td_bias_desc
-                    } else if st.riser > 0.0 && lvl < n {
-                        td_bias_asc_mid
-                    } else {
-                        td_bias
-                    }
-            }
-        };
-        let lvl_of = |x: f64| -> i64 {
-            // Landing positions grade upward too, or the walk-out targets
-            // would converge on one point and re-create the pinned stop.
-            if x >= st.start + st.n as f64 * st.tread {
-                // `pos_of` and this inverse must agree on the positions
-                // `pos_of` itself generates, and in floating point they do not:
-                // measured 2026-09-22, `pos_of(3)` produced a position whose
-                // `(x - land) / landing_step` evaluates to 0.999999999999999,
-                // so `floor` returned 0 and the point mapped back to level 2.
-                // The next swing then aimed at `pos_of(3)` again and BOTH feet
-                // were pinned to one x -- the walk-out stop this grading exists
-                // to prevent. Nudging by an epsilon before the floor makes the
-                // round trip exact for every level (verified 2..5).
-                return n + 1
-                    + (((x - land) / landing_step + 1e-9).floor() as i64).max(0);
-            }
-            if x < st.start - 0.5 * m {
-                0
-            } else if x >= st.start + st.n as f64 * st.tread {
-                n + 1
-            } else {
-                (((x - st.start) / st.tread) as i64 + 1).clamp(1, n)
-            }
-        };
-        // Land one foot ON the stand line before the first tread, instead of
-        // jumping to the tread from wherever the approach grid happens to stop.
-        //
-        // OPT-IN (default off): the comment below records that squaring up was
-        // measured to fell kyo46rs, and that result stands for kyo46rs's
-        // geometry, where the un-squared jump is already small. G1 is the case
-        // it was not measured on. Measured 2026-09-21: G1 cruises at 242 mm,
-        // its last approach footfall lands at 1.739 m and tread 1 sits at
-        // 2.106 m, so the un-squared jump is 367 mm -- half again the stride
-        // the machine has been shown to take (242 mm, 16/16 under the 0.5 ms
-        // audit). Squaring splits it into 141 mm and 226 mm, both inside that.
-        // The knob exists so the trade (one short step vs one oversized one)
-        // is a measured choice per robot rather than a constant.
-        let align_stand_line = wcfg.stair_plan.align_stand_line;
-        // Up-and-over course (STAIRS_DOWN): the footfall positions by level,
-        // walked with explicit per-foot levels instead of the `lvl_of`
-        // inverse. Level 0 = stand line, 1..n = up treads, then the landing
-        // at `landing_step` strides up to a second stand line before the
-        // descending flight, the down treads (rearward bias on the ones with
-        // a nosing ahead), and the walk-out below.
-        let course: Option<Vec<f64>> = (st.down_n > 0).then(|| {
-            let le = st.landing_end();
-            // Stand line before the descending flight: the toe must stay
-            // short of the landing's edge. Measured 2026-10-03 (4 cm course,
-            // v6 and v6.2 alike): with the toe AT the edge (the ascent's
-            // STAIR_TOE_MARGIN=0 reused) the landing overshoots by 7 mm, the
-            // toe spheres hang over the edge and the sole centre sinks 20 mm.
-            let stand2 = le - sole_half_l - wcfg.descent.stand_margin;
-            let mut v = vec![a_pos];
-            for k in 1..=n {
-                v.push(pos_of(k));
-            }
-            let mut x = land;
-            while x < stand2 - 0.5 * landing_step {
-                v.push(x);
-                x += landing_step;
-            }
-            v.push(stand2);
-            for k in 1..=st.down_n {
-                let nosing_ahead = k < st.down_n;
-                v.push(
-                    le + (k as f64 - 0.5) * st.tread
-                        - if nosing_ahead { td_bias_desc } else { td_bias },
-                );
-            }
-            let last = *v.last().unwrap();
-            for j in 1..=60 {
-                v.push(last + j as f64 * landing_step);
-            }
-            v
-        });
-        let mut course_lvl = [0usize; 2];
-        let mut aligned = false;
-        let mut cur = footsteps.initial;
-        let mut ladder: Vec<(usize, f64, f64)> = Vec::new();
-        for (i, sl) in gait.slices.iter().enumerate() {
-            if let Support::Single { swing, .. } = sl.support {
-                let stance = 1 - swing;
-                let nom_x = footsteps.at[i].sole[swing].x;
-                // FOOT OVER FOOT, with no pause at the bottom: the first
-                // swing whose nominal target would cross the stand line goes
-                // straight to tread 1, and every later one to the level
-                // above its stance foot -- alternate feet on alternate
-                // treads. Two gaits were tried and rejected first: pair-up
-                // (both feet per tread) alternates a 110 mm ZMP jump with a
-                // 0 mm one, a stop-and-go CoM shuttle whose amplitude does
-                // not fit on a 98 mm sole; and squaring both feet up on a
-                // stand line before the first riser inserts the same
-                // stop-start at the bottom -- measured, THAT is what felled
-                // even a 20 mm riser, height-independently.
-                // STAIR_GAIT=pair revisits the rejected gait WITH the tools
-                // that did not exist at rejection time: ZMP_ROLL bridges
-                // half the dwell jump inside the sole, and the measured
-                // killer of foot-over-foot is its 220-270 mm swings -- every
-                // one lands short, high and late (dead-stretched leg waiting
-                // for the body), and the next lift-off inherits the mess.
-                // Pair-up halves the swing to ~110 mm.
-                // SLOPE_KEEP_STRIDE=1: on a known slope (no treads) keep the
-                // velocity plan's stride and only lift each footfall to the
-                // surface. The tread grid otherwise re-lays every footfall at
-                // the landing stride (G1: 0.199 m vs the commanded 0.149, a
-                // 35% faster climb) -- measured 2026-10-19 as the root of the
-                // pushes-on-a-slope collapse (late, long, shortening steps).
-                let keep_nominal = nom_x < a_pos - 1e-9 || (slope_keep_stride && st.n == 0 && st.slope != 0.0);
-                let tx = if keep_nominal {
-                    nom_x // flat approach: the velocity plan's own wish
-                } else if align_stand_line && !aligned {
-                    // First swing that would overshoot the stand line: put it
-                    // ON the line. Only ever fires once; the next swing takes
-                    // the tread from a known start, so both halves of the
-                    // entry are bounded by the stand-line offset and half a
-                    // tread rather than by where the approach grid landed.
-                    aligned = true;
-                    a_pos
-                } else if let Some(v) = &course {
-                    let l = (course_lvl[stance] + 1).min(v.len() - 1);
-                    course_lvl[swing] = l;
-                    v[l]
-                } else if stair_gait_pair {
-                    let sk = lvl_of(cur.sole[stance].x);
-                    let wk = lvl_of(cur.sole[swing].x);
-                    if wk < sk { pos_of(sk) } else { pos_of(sk + 1) }
-                } else {
-                    pos_of(lvl_of(cur.sole[stance].x) + 1)
-                };
-                cur.sole[swing].x = tx;
-                cur.sole[swing].y = footsteps.at[i].sole[swing].y
-                    + if keep_nominal {
-                        0.0
-                    } else if swing == 0 {
-                        y_out
-                    } else {
-                        -y_out
-                    };
-                cur.sole[swing].z = st.h(tx);
-                cur.yaw[swing] = footsteps.at[i].yaw[swing];
-                ladder.push((swing, tx, cur.sole[swing].z));
-            }
-            footsteps.at[i] = cur;
-        }
-        let s: Vec<String> = ladder
-            .iter()
-            .map(|(sw, x, z)| format!("{}({:.3},{:.3})", if *sw == 0 { "L" } else { "R" }, x, z))
-            .collect();
-        println!("stairs footfalls: {}", s.join(" "));
-    }
-    // Reserve swing time before the approach DCM is generated. Waiting until
-    // touchdown to discover a longer step can already put the DCM beyond the
-    // stance sole's capture range. Optionally also reserve time for long
-    // same-height swings, including the transition onto the final landing.
-    if wcfg.com_plan.preplan() {
-        let vx_limit = wcfg.landing.speed_xy;
-        let vz_limit = wcfg.landing.speed_z;
-        let max_ss = wcfg.com_plan.stair_ss_max.max(gp.t_ss);
-        // (COM_DESC_DS / COM_DESC_XFER, the double supports before and
-        // after a descent swing stretched, are removed.)
-        let xy_min = wcfg.com_plan.preplan_xy_min;
-        for i in 1..gait.slices.len() {
-            if let Some(side) = gait.slices[i].support.swing() {
-                let delta = footsteps.at_slice(i).sole[side] - footsteps.at_slice(i - 1).sole[side];
-                if delta.z.abs() > 0.005 || delta.xy().norm() > xy_min {
-                    let duration =
-                        (delta.xy().norm() / vx_limit).max(delta.z.abs() / vz_limit) + 0.05;
-                    let new_t1 = gait.slices[i].t0 + duration.clamp(gp.t_ss, max_ss);
-                    // Say so. The landing-speed sweep that motivated this
-                    // line produced four bit-identical falls, and whether
-                    // the extension had fired at all was not observable.
-                    println!(
-                        "preplan: slice {i} swing {} d=({:.3},{:+.3}) SS {:.2} -> {:.2}s",
-                        if side == 0 { "L" } else { "R" },
-                        delta.xy().norm(),
-                        delta.z,
-                        gait.slices[i].duration(),
-                        new_t1 - gait.slices[i].t0
-                    );
-                    gait.retime(i, new_t1);
-                }
-            }
-        }
-    }
-    // The LIPM height is the CoM's height ABOVE THE WALKING SURFACE, which
-    // on a descent platform is not its world z.
-    // (STAIR_CROUCH, a fixed crouch on stairs that this height also took
-    // out, was opt-in and is removed; STAIR_ZONE_CROUCH is the one in use.)
-    // Heel-to-toe travel of the planned pressure inside each stance (see
-    // DcmPlan::from_footsteps_rolled). On for stairs by default: the tread
-    // pitch fixes the footstep pitch at ~2x what the commanded speed builds
-    // momentum for, and the sole's own length is where the difference has
-    // to come from. Must stay inside the CoP box (cop_half.0 * COP_FRAC).
-    // Both are `DcmConfig::params`.
-    let dcm_params = wcfg.dcm.params(z_com, stairs.as_ref().map(|st| st.base()));
-    // (DCM_PREVIEW_HORIZON, a finite DCM preview, and DCM_REF_BLEND_T / _MIN,
-    // a continuity guard that blended a jump of the DCM reference across a
-    // plan rebuild, were not adopted and are removed. Measured 2026-09-23
-    // on G1: a one-tick jump of xi_ref above 5 cm separated fallers from
-    // survivors at every riser -- the guard was the experiment on it.)
-    // The plan from here on: the schedule and footsteps built above, their
-    // DCM reference (built now), the CoM height plan (level at z_com until
-    // COM_REPLAN retargets it) and the landing clock with its knobs set
-    // (`Config::landing_timing`; the force on the swing sole that counts
-    // toward confirming a landing is LAND_CONFIRM_FZ_FRAC of the weight --
-    // historically 5% (17 N on G1). Measured 2026-09-24 on the stair swing:
-    // the foot rests on the tread for 1.4-2.8 s carrying a MEDIAN of 10 N,
-    // because the swing task still holds it 4 mm above where it physically
-    // sits (swing_pos_err_z = +4 mm) -- 10 N never reaches the 17 N gate,
-    // and only impact chatter (spikes to 464 N) does). Every later edit goes
-    // through it.
-    let mut plan = Plan::new(
-        gait,
-        footsteps,
-        dcm_params,
-        articara::biped::preview::HeightPlan::constant(z_com),
-        wcfg.landing_timing(total_mass, G),
-    );
-    let omega = plan.dcm.omega;
-    println!(
-        "gait: {} steps, DS {:.2}s / SS {:.2}s (start {:.2}s), first swing = {}",
-        gp.n_steps,
-        gp.t_ds,
-        gp.t_ss,
-        gp.t_start,
-        if gp.first_swing == 0 { "left" } else { "right" }
-    );
-    if zmp_lat_scale != 1.0 {
-        println!("ZMP_LAT_SCALE={zmp_lat_scale}: the plan does NOT reach true single support");
-    }
-    println!(
-        "lipm: z_com={z_com:.4} m  omega={omega:.3} rad/s (1/omega={:.3} s)  k_dcm={k_dcm}",
-        1.0 / omega
-    );
-    println!(
-        "footsteps (sole centres, world): L=({:+.4},{:+.4})  R=({:+.4},{:+.4})  stance width={:.1} mm",
-        steps.sole[0].x,
-        steps.sole[0].y,
-        steps.sole[1].x,
-        steps.sole[1].y,
-        (steps.sole[0].y - steps.sole[1].y).abs() * 1e3
-    );
-    if vx != 0.0 || vy != 0.0 || wz != 0.0 || squat_amp != 0.0 {
-        println!(
-            "command: vx={vx:+.3} vy={vy:+.3} m/s  wz={wz:+.3} rad/s  squat={:.0} mm @ {squat_period:.1} s",
-            squat_amp * 1e3
-        );
-    }
-    if stride != 0.0 {
-        println!(
-            "stride: {:.3} m/step -> {:.3} m/s commanded, {:.2} m of travel planned over {} steps",
-            stride,
-            stride / (gp.t_ss + gp.t_ds),
-            plan.footsteps.travel_x(),
-            gp.n_steps
-        );
-    }
-    if no_lift {
-        println!("NO_LIFT: the schedule drives the ZMP reference, but both feet stay in contact");
-    }
-
-    // The contact model: the walker's (the MPC plans against its CoP box and
-    // torsion) and the stack's (built from it).
-    let contact_cfg = misa_biped::wbc::ContactParams {
-        kp_c,
-        kd_c,
-        anchor_leak,
-        anchor_leak_rot: 0.0,
-        sole_offset_local: [prof.sole_centre_x, 0.0, -prof.sole_below_origin],
-        friction_mu,
-        cop_half: (sole_half_l * cop_frac, sole_half_w * cop_frac),
-        mu_torsion: 0.05,
-        f_max_per_foot,
-        no_patch: false,
-        dt,
-    };
+    let omega = init.plan().dcm.omega;
 
     let extra_cols = [
         "xi_x",
@@ -2491,13 +1727,6 @@ fn main() {
         0,     // blend_ticks (BLEND_TICKS, not adopted)
     );
     let mut tally = DegradedTally::new();
-    let mut correction = ContactCorrection::new(total_mass * G, wcfg.contact.ticks);
-    let contact_on_bw = wcfg.contact.on_bw;
-    assert!(
-        contact_on_bw.is_finite() && contact_on_bw > 0.02 && contact_on_bw <= 1.0,
-        "CONTACT_ON_BW must exceed the 0.02 BW release threshold and be <= 1"
-    );
-    correction.on_n = contact_on_bw * total_mass * G;
     // P2-1 contact planner (doc/from_claude/20260923_p2_contact_planner_design_v2.md).
     // Predictive replacement for ADAPT_STEP/ADAPT_TIME (both removed, never
     // adopted): picks the landing shift AND the end of the current single
@@ -2509,17 +1738,10 @@ fn main() {
     // Terrain height under the support, slewed (below) so the CoM height
     // reference climbs a riser over about a step instead of jumping at a
     // slice boundary. Starts at the spawn platform's height.
-    let terrain_track = stairs.as_ref().map_or(0.0, |st| st.base());
-    let terrain_base = terrain_track;
-    let cp_applied = na::Vector2::zeros();
-    let cp_slice: Option<usize> = None;
-    let cp_retimed_slice: Option<usize> = None;
     // FIX_*: the corrective-impulse probe (see `FixProbe`).
     let fix = FixProbe::from_env();
     let com_replan_forward_gain = wcfg.com_plan.replan_forward_gain;
     assert!(com_replan_forward_gain.is_finite() && (0.0..=1.0).contains(&com_replan_forward_gain));
-    let com_replan_dt = wcfg.com_plan.replan_dt.max(dt);
-    let com_preview_dt = wcfg.com_plan.preview_dt.max(dt);
     // (The confirmation's xy / z tolerances, LAND_CONFIRM_XY / _Z, are set
     // on the landing clock by `Config::landing_timing`; see
     // LandingTiming::update.)
@@ -2532,8 +1754,6 @@ fn main() {
     // load needs the QP to model the contact first. Default off = shipped.
     let contact_admit_confirmed = wcfg.contact.admit_confirmed;
     let contact_admit_scheduled = wcfg.contact.admit_scheduled;
-    let last_scheduled_admit: [Option<usize>; 2] = [None; 2];
-    let admit_measured_z: [Option<f64>; 2] = [None; 2];
     let gait_dump_t: Option<(f64, f64)> = std::env::var("GAIT_DUMP_T").ok().and_then(|v| {
         let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok());
         Some((it.next()??, it.next()??))
@@ -2557,35 +1777,15 @@ fn main() {
     // Per side: the DOUBLE-SUPPORT slice that follows a certified landing.
     // The foot is a planned contact for that slice and is re-admitted
     // whenever the load hysteresis drops it there; cleared afterwards.
-    let confirmed_admit: [Option<usize>; 2] = [None; 2];
     // Event-driven contact (doc/from_claude/20261004_event_driven_contact_design.md):
     // touchdown = measured load with the sole at its planned height (no xy
     // gate), the plan is moved onto the foot, a descending swing ends at the
     // event, a rising one keeps COM_LAND_EXTEND_RISE as an explicit dwell,
     // and a swing that has not touched by its deadline probes down instead
     // of timing out. Default off = bit-identical.
-    // REF_LIBRARY: a push-recovery reference (scripts/trajopt). Engaged by
-    // the detector (REF_TRIG_DCM) for its whole duration: the
-    // gait is retimed to the reference's phases, the next two footfalls are
-    // placed where it lands, the swing foot follows its sole trajectory, and
-    // landings are taken by measured contact (CONTACT_EVENT) meanwhile. The
-    // MPC and WBC otherwise run as usual on the re-planned DCM. Default
-    // unset = bit-identical.
-    // Several files (comma-separated) make a library: at the push the one
-    // whose initial swing-sole height is closest to the measured one is used
-    // (the phase of the swing is what the references differ in).
-    let ref_libs: Vec<RefLib> = std::env::var("REF_LIBRARY")
-        .ok()
-        .map(|p| p.split(',').filter(|x| !x.is_empty()).map(load_ref_lib).collect())
-        .unwrap_or_default();
-    let ref_lib: Option<RefLib> = None;
-    let ref_any = !ref_libs.is_empty();
     // (REF_MPC / REF_WBC, the MPC's and the WBC's references taken from
     // the reference library for every reference, were not adopted and are
     // removed.)
-    let ref_cooldown_until = f64::NEG_INFINITY;
-    let ref_lat_quiet_t = f64::NEG_INFINITY;
-    let ref_mode: Option<RefMode> = None;
     // P2-3': after a landing confirmation cuts the single support at `t`, the
     // double support that follows is the nominal 0.38 s no matter where the
     // DCM is. Measured 2026-09-23/24 (position gate, load gate, transfer,
@@ -2599,14 +1799,12 @@ fn main() {
     let ds_feasible = wcfg.double_support.feasible;
     // (LIFT_GATE_FRAC / _MAX, holding a double support while the lateral DCM
     // is still over the lifting foot, were not adopted and are removed.)
-    let dsc_retimed_last: Option<usize> = None;
     // Landing-deadline slack for a swing that steps DOWN. Default = the rise
     // value (bit-identical). Measured 2026-10-03 on a 60 mm descent: the
     // 1.08 s rise slack made the stepping-down foot hover on the lower
     // surface unloaded while the body walked on (2 timeouts, 2.16 s net),
     // and the next swing started with 22 N on the new stance -- a fall at
     // 3/48. With 0 the same member walked out.
-    let land_extend_desc = wcfg.descent.land_extend(&wcfg.landing);
     // ... and let its solution reach the WBC outside a transfer. Measured
     // 2026-09-24: every consumer of `wrench_mpc_command` (accel, coupled
     // level, forces_nominal blend, fz plan) is conditioned on a transfer, so
@@ -2614,7 +1812,6 @@ fn main() {
     // load-share change in the MPC input was bit-identical at the output.
     // With this on, the coupled regulariser level and the forces_nominal
     // blend follow the MPC whenever it has a fresh solution. Default off.
-    let wrench_mpc_apply = wcfg.mpc.applies();
     let mpc_footstep = wcfg.mpc_footstep.on;
     // The one combination allowed: the contact_plan adjuster with ALL its
     // position boxes at zero is a pure step-RETIMER (its shift is exactly
@@ -2659,15 +1856,8 @@ fn main() {
     // the original stride). The MPC landing variable is off for that swing.
     // Re-evaluated every tick until PUSH_REPLAN_FREEZE of the swing. 0 = off.
     let push_replan_trig = wcfg.push_replan.trig;
-    // (slice, original footsteps, original DCM plan, original landing, last applied landing)
-    let push_replan_state: Option<(usize, FootstepPlan, DcmPlan, na::Vector2<f64>, Option<na::Vector2<f64>>)> = None;
-    let push_replan_slice: Option<usize> = None;
-    let push_replan_shift = 0.0_f64;
     // (slice, inward is +y) latched when the crossing gate opens: once the
     // landing has crossed, `landing_inward` would read the sign the other way.
-    let mpc_fs_cross_latched: Option<(usize, bool)> = None;
-    let stair_wrench_dt = wcfg.mpc.dt.max(dt);
-    let stair_wrench_preview_dt = wcfg.mpc.preview_dt.max(dt);
     // Ramp a NEW contact in over this many seconds, on any ground, with no
     // stair transfer in sight. 0 = off = shipped behaviour.
     //
@@ -2684,13 +1874,8 @@ fn main() {
     // (TOUCHDOWN_RAMP, ramping a new contact in as a Managed one, and
     // SWING_CONTACT_SOFT / _ON / _CAP, admitting a loaded swing foot as a
     // weighted contact, were not adopted and are removed.)
-    let replan_engaged = false;
-    let preview_p = steps.mid_xy();
     // The CoM preview QP's horizontal trajectory, kept whole with the time it
     // was solved at, so the MPC can read its own horizon out of it.
-    let preview_c = com0.xy();
-    let preview_v = na::Vector2::zeros();
-    let preview_next = 0.0;
 
     // ankle_roll range of motion. The model review measured that holding the
     // sole flat already consumes 82% of the +-20 deg travel, and stepping
@@ -2717,8 +1902,6 @@ fn main() {
         ankle_roll_lim[1].to_degrees()
     );
 
-    let prev_support = plan.gait.support_at(0.0);
-    let swing_lift_off: Option<na::Vector3<f64>> = None;
     let p0_body = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
     let yaw0_body = rig
         .sim
@@ -2728,11 +1911,11 @@ fn main() {
         .2;
     // Time at which the last step ends, so achievement is measured over the
     // WALK and not diluted by the settle.
-    let t_walk_end = plan.gait
+    let t_walk_end = init.plan().gait
         .slices
         .iter()
         .rposition(|s| matches!(s.support, Support::Single { .. }))
-        .map(|i| plan.gait.slices[i].t1 + gp.t_ds)
+        .map(|i| init.plan().gait.slices[i].t1 + gp.t_ds)
         // No steps at all (a standing squat): the "walk" is the whole run, so
         // the achievement window is the whole run. Falling back to 0 made the
         // window 1 microsecond wide and turned a millimetre of drift into
@@ -2742,10 +1925,7 @@ fn main() {
     // standing. Including the ramp charges every case a fixed shortfall that
     // never recovers -- it read 91% for every forward speed, and 47% for a
     // turn that was in fact holding 0.195 of a commanded 0.200 rad/s.
-    let t_ramp_end = gp.t_start + (stride_ramp as f64) * t_step;
-    let fz_prev: [f64; 2] = [0.0; 2];
-    let fz_rate_ema: [f64; 2] = [0.0; 2];
-    let managed_until: [f64; 2] = [f64::NEG_INFINITY; 2];
+    let t_ramp_end = gp.t_start + (wcfg.gait.stride_ramp as f64) * (gp.t_ss + gp.t_ds);
     // What the run measured about itself (achievement, extremes, the
     // push response), for the report after the loop.
     let mut m = RunMetrics::new(rig.robot.joints.len(), p0_body, yaw0_body);
@@ -2759,7 +1939,6 @@ fn main() {
         com_xy_jerk_max.is_finite() && com_xy_jerk_max > 0.0 || com_xy_jerk_max == f64::INFINITY,
         "COM_XY_JERK_MAX must be positive"
     );
-    let previous_a_xy: Option<na::Vector2<f64>> = None;
     let ankle_cbf_indices = rig.actuated().into_iter().find_map(|(ji, vi)| {
         (rig.robot.joints[ji].name == "right_ankle_roll_joint").then(|| {
             (
@@ -2772,82 +1951,26 @@ fn main() {
             )
         })
     });
-    let diag_mpc_reference = [f64::NAN; 2];
-    let diag_mpc_time: Option<f64> = None;
     // Where the MPC's own answer puts the NET pressure of both feet, in
     // world. The split alone does not determine this -- each sole's own CoP
     // moves it too -- so it has to be computed where the wrenches and their
     // contact frames are both in hand.
-    let diag_mpc_net_cop = [f64::NAN; 2];
-    let wrench_mpc_next = 0.0;
     let act_delay_ticks = env_f64("ACT_DELAY_TICKS", 0.0).max(0.0) as usize;
     let mut act_delay_buf: std::collections::VecDeque<Vec<f64>> = std::collections::VecDeque::new();
-    let wrench_mpc_command: Option<[articara::biped::wrench_mpc::Wrench; 2]> = None;
     // Preserve the physical origin/axes of the held MPC forecast for diagnostic shifts.
-    let wrench_mpc_frames: Option<[articara::biped::wrench_mpc::Contact; 2]> = None;
     // MPC_FOOTSTEP bookkeeping: which slice's landing is being moved and how
     // much of the MPC's offset has already been applied to it (the same
     // non-ratcheting rule as `cp_applied`).
-    let mpc_fs_slice: Option<usize> = None;
-    let mpc_fs_applied = na::Vector2::zeros();
     // (first slice, last slice) the landing variable is armed for.
-    let mpc_fs_armed: Option<(usize, usize)> = None;
-    let mpc_fs_last = na::Vector2::zeros();
 
-    // The controller's state from here on (its initial values are the
-    // `let`s above, next to the knobs that configure them), the WBC's
-    // own, the command guard's, and the controller's counters.
-    let mut ctl = CtlState {
-        push_yield_done,
-        vx2_z_track,
-        push_z_drop_until,
-        correction,
-        terrain_track,
-        cp_applied,
-        cp_slice,
-        cp_retimed_slice,
-        last_scheduled_admit,
-        admit_measured_z,
-        confirmed_admit,
-        ref_lib,
-        ref_cooldown_until,
-        ref_lat_quiet_t,
-        ref_mode,
-        dsc_retimed_last,
-        push_replan_state,
-        push_replan_slice,
-        push_replan_shift,
-        mpc_fs_cross_latched,
-        replan_engaged,
-        preview_p,
-        preview_c,
-        preview_v,
-        preview_next,
-        prev_support,
-        swing_lift_off,
-        fz_prev,
-        fz_rate_ema,
-        managed_until,
-        previous_a_xy,
-        wrench_mpc_next,
-        wrench_mpc_command,
-        mpc_fs_slice,
-        mpc_fs_applied,
-        mpc_fs_armed,
-        mpc_fs_last,
-        diag_mpc_reference,
-        diag_mpc_time,
-        diag_mpc_net_cop,
-        wrench_mpc_frames,
-    };
     // The WBC: the stack of QP levels (the solver, its warm start and the
     // contact anchors are its own), with the QP_DIAG_DIR settings and
     // whether QP_RUNTIME_CSV wants the physical violation measured.
-    let mut stack = TaskStack::new(
+    let stack = TaskStack::new(
         TaskStackConfig::new(
             &wcfg,
             cfg,
-            &contact_cfg,
+            init.contact_params(),
             &jlim_cfg,
             total_mass,
             sole_half_l,
@@ -2863,53 +1986,8 @@ fn main() {
         policy,
         qp_has_good_command,
     };
-    let mut stats = WalkerStats::default();
+    let mut walker = init.with_stack(stack);
 
-    // What the phases read that start-up fixed (walker.rs).
-    let k = walker::WalkerConsts {
-        robot: &robot,
-        dt,
-        omega,
-        total_mass,
-        z_com,
-        terrain_base,
-        sole_half_l,
-        sole_half_w,
-        stairs: &stairs,
-        land_extend_desc,
-        vx,
-        t_step,
-        gp: &gp,
-        squat_amp,
-        squat_period,
-        vx2_change,
-        vx2_cmd_speed,
-        vx2_z_from,
-        vx2_z_drop,
-        ref_libs: &ref_libs,
-        contact_plan_cfg,
-        com_preview_dt,
-        com_replan_dt,
-        wz,
-        jab,
-        jab_start,
-        jab_period,
-        jab_pattern: &jab_pattern,
-        jab_pitch,
-        jab_elbow,
-        kp_sw_xy,
-        tracking_ff_riser_ok,
-        foot_rot0,
-        hip_mi,
-        leg_reach: &leg_reach,
-        f_max_per_foot,
-        friction_mu,
-        mpc_gate,
-        wrench_mpc_apply,
-        stair_wrench_dt,
-        stair_wrench_preview_dt,
-        contact_cfg: &contact_cfg,
-    };
 
     // The walker's log lines go straight to stdout / stderr.
     let mut out = StdSink;
@@ -2917,7 +1995,6 @@ fn main() {
         let qp_control_start = std::time::Instant::now();
         let t = tick as f64 * dt;
         m.t_last = t;
-        walker::phase_landing_setup(&ctl, &mut plan, &wcfg, &k, t);
         // Read before the push fires later in this tick, so the window opens
         // on the tick AFTER the impulse -- the same convention the whole-run
         // accumulators use.
@@ -2960,146 +2037,14 @@ fn main() {
             }
         }
         let com = st.com;
-        // The measured soles (FK), once per tick: the phases and the
-        // trajectory CSV read this one.
-        let actual_feet = Footsteps::from_fk(data, robot.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
-        // The centroidal momentum matrix (and its rate term), computed once
-        // per tick on first use (the MPC, the momentum task, MOM_CMP).
-        let cent = walker::Centroidal::new(&robot.model, q, v);
 
-        // ---- the walker's control, phase by phase (walker.rs). Phase 1
-        // (the landing detector's settings) ran before the plant was read.
-        walker::phase_landing_clock(&mut ctl, &mut plan, &mut stats, &wcfg, &k, &obs, &actual_feet, t, &mut out);
-        // The anchor changes phases 3 and 4 decide, in order (the stack
-        // applies them in phase 11, before its contact level).
-        let mut anchor_events: Vec<misa_biped::wbc::AnchorEvent> = Vec::new();
-        let ph3 = walker::phase_support(&mut ctl, &plan, &mut anchor_events, &wcfg, &k, &obs, t, &mut out);
-
-        let ph4 = walker::phase_contacts(&mut ctl, &plan, &mut stats, &mut anchor_events, &wcfg, &k, &obs, &ph3, t, &mut out);
+        // ---- the walker's control (walker.rs, phases 1-12): its lines are
+        // printed as they are decided, its records go to `diag`.
+        let walker::StepOutput {
+            command: walker::Command { sol, extracted, tau_gravity, rejected: qp_rejected, degraded },
+            record: rec,
+        } = walker.step(&obs, &mut out, &mut diag);
         let measured = measured_c;
-        let walker::SupportOut { slice, slice_frac, support, step_idx, slice_idx, steps, .. } = ph3;
-        let walker::ContactsOut { fz_meas, stance_sides, stance, nc, ramp } = ph4;
-
-        let ph5 = walker::phase_dcm(&mut ctl, &mut plan, &mut stats, &wcfg, &k, &obs, &actual_feet, &ph3, t, &mut out);
-
-        let walker::CmdZmpOut { p_cmd, clamped, zmp_deficit } =
-            walker::phase_cmd_zmp(&mut ctl, &mut plan, &mut stats, &wcfg, &k, &ph3, &ph5, t, &mut out);
-        let walker::DcmOut { xi, r, dcm_err } = ph5;
-        let p_cmd = walker::phase_preview(
-            &mut ctl, &plan, &mut stats, &mut diag, &wcfg, &k, &obs, &actual_feet, &stance_sides, p_cmd, t,
-        );
-        let walker::HeightOut { z_ref, a_com } =
-            walker::phase_height(&mut ctl, &mut plan, &wcfg, &k, &obs, &ph3, &stance_sides, &p_cmd, t);
-
-        let mpc_capture_ns = walker::phase_wrench_mpc(
-            &mut ctl, &mut plan, &mut stats, &mut diag, &wcfg, &k, &obs, &actual_feet, &cent, &ph3, &stance_sides,
-            &ph5, &a_com, t, &mut out,
-        );
-
-        // ---- the WBC: the levels' references (phase 10), the request and
-        // the stack's solve (phase 11), the solve's diagnostics (phase 12).
-        let refs = walker::phase_task_refs(
-            &ctl, &plan, &mut stats, &wcfg, &k, &obs, &cent, &ph3, &stance_sides, &stance, nc, &ramp, &ph5, &p_cmd,
-            &zmp_deficit, t,
-        );
-        let wbc = walker::phase_wbc(
-            &mut stack, &ctl, &wcfg, &k, &obs, &cent, &ph3, &stance_sides, &stance, nc, &ramp, &anchor_events,
-            &a_com, &refs, t, &mut out,
-        );
-        let sd = walker::phase_solve_diag(&wcfg, &k, &obs, &stance, &refs, &wbc);
-        let walker::TaskRefs { roll, pitch, rp_ref, tau_gravity, shares, swing_tgt, swing_cmd_acc_z, .. } = refs;
-        let misa_biped::wbc::WbcSolution {
-            sol,
-            extracted,
-            level_names,
-            forces_nominal,
-            acc_dbg,
-            trunk_acc_rp,
-            timings:
-                misa_biped::wbc::QpTimings { solve_ns: qp_solve_ns, check_ns: qp_check_ns, capture_ns: qp_capture_ns },
-            physical_violation: qp_physical_violation,
-            reset: qp_reset,
-            rejected: qp_rejected,
-            degraded,
-            ..
-        } = wbc;
-        // What the trunk task asked for (its roll / pitch reference).
-        let trunk_cmd_rp = rp_ref;
-        let walker::SolveDiag {
-            swing_task_residual_rms,
-            swing_res_z,
-            swing_res_rows,
-            reach_used,
-            hip_z,
-            stride_max_now,
-            swing_achieved_acc_z,
-            swing_pos_err_xy,
-            swing_pos_err_z,
-            cop_qp,
-            f_qp_w,
-            cop_use,
-            diag_wbc_net_cop,
-        } = sd;
-        // The tick's record: what the controller computed, for the logs and
-        // the measurements below (which read it from here on).
-        let rec = TickRecord {
-            actual_feet,
-            slice,
-            slice_idx,
-            slice_frac,
-            support,
-            step_idx,
-            steps,
-            stance_sides,
-            nc,
-            fz_meas,
-            xi,
-            r,
-            dcm_err,
-            p_cmd,
-            clamped,
-            z_ref,
-            a_com,
-            shares,
-            roll,
-            pitch,
-            rp_ref,
-            trunk_cmd_rp,
-            trunk_acc_rp,
-            swing_tgt,
-            swing_cmd_acc_z,
-            swing_achieved_acc_z,
-            swing_res_z,
-            swing_res_rows,
-            swing_task_residual_rms,
-            swing_pos_err_xy,
-            swing_pos_err_z,
-            replan_engaged: ctl.replan_engaged,
-            preview_c: ctl.preview_c,
-            preview_v: ctl.preview_v,
-            wrench_mpc_command: ctl.wrench_mpc_command,
-            diag_mpc_net_cop: ctl.diag_mpc_net_cop,
-            mpc_fs_last: ctl.mpc_fs_last,
-            diag_mpc_reference: ctl.diag_mpc_reference,
-            diag_mpc_time: ctl.diag_mpc_time,
-            wrench_mpc_frames: ctl.wrench_mpc_frames.clone(),
-            level_names,
-            forces_nominal,
-            qp_solve_ns,
-            qp_check_ns,
-            qp_capture_ns,
-            mpc_capture_ns,
-            qp_physical_violation,
-            qp_reset,
-            cop_qp,
-            f_qp_w,
-            cop_use,
-            diag_wbc_net_cop,
-            acc_dbg,
-            reach_used,
-            hip_z,
-            stride_max_now,
-        };
         tally.observe(&sol.status, t, tick, rec.nc, &rec.level_names);
         // Run measurements from the record (they were taken inside the
         // control before; the values are the same).
@@ -3160,7 +2105,7 @@ fn main() {
                 } else {
                     f64::NAN
                 },
-                stats.wrench_mpc_failures as f64,
+                walker.stats().wrench_mpc_failures as f64,
                 if mpc_valid {
                     rec.diag_mpc_reference[0]
                 } else {
@@ -3526,7 +2471,7 @@ fn main() {
         }
         // The end of the tick for the walker (phase 13): a recovery
         // reference whose time is up hands the feet back to the gait.
-        walker::phase_end_tick(&mut ctl, &mut plan, &wcfg, t, &mut out);
+        walker.end_tick(&mut out);
 
         m.support_prev = Some(rec.support);
         // What the disturbance is doing RIGHT NOW, for the replay to draw.
@@ -3549,7 +2494,7 @@ fn main() {
                 .saturating_sub(rec.mpc_capture_ns);
             writeln!(file, "{t:.9},{qp_solve_ns},{qp_check_ns},\"{:?}\",{qp_physical_violation:.12e},{qp_reset},{},{control_ns},{},{wrench_mpc_solves},{wrench_mpc_failures},{prefix_applied},{repair_applied},{repair_scaled_delta:.12e},{repair_ns}", sol.status,
                 control_ns > (dt * 1e9) as u128, rec.diag_mpc_time.map_or(-1.0, |stamp| t-stamp),
-                wrench_mpc_solves = stats.wrench_mpc_solves, wrench_mpc_failures = stats.wrench_mpc_failures,
+                wrench_mpc_solves = walker.stats().wrench_mpc_solves, wrench_mpc_failures = walker.stats().wrench_mpc_failures,
                 qp_solve_ns = rec.qp_solve_ns, qp_check_ns = rec.qp_check_ns,
                 qp_physical_violation = rec.qp_physical_violation, qp_reset = rec.qp_reset).unwrap();
         }
@@ -3731,8 +2676,8 @@ fn main() {
             let [gl, gr] = rec.steps.sole;
             let link_l = misarta::se3::translation(&data.oMi[rig.foot_mi[0]]);
             let link_r = misarta::se3::translation(&data.oMi[rig.foot_mi[1]]);
-            let anchor_l_y = stack.anchor(0).map_or(f64::NAN, |(p, _)| p.y);
-            let anchor_r_y = stack.anchor(1).map_or(f64::NAN, |(p, _)| p.y);
+            let anchor_l_y = walker.stack().anchor(0).map_or(f64::NAN, |(p, _)| p.y);
+            let anchor_r_y = walker.stack().anchor(1).map_or(f64::NAN, |(p, _)| p.y);
             let foot_v_l = rig
                 .sim
                 .body_world_linear_velocity(prof.foot_links[0])
@@ -3799,10 +2744,10 @@ fn main() {
                 rec.preview_c.y,
                 rec.preview_v.x,
                 rec.preview_v.y,
-                stats.preview_error,
-                stats.preview_count as f64,
-                stats.preview_failures as f64,
-                stats.landing_delay,
+                walker.stats().preview_error,
+                walker.stats().preview_count as f64,
+                walker.stats().preview_failures as f64,
+                walker.stats().landing_delay,
                 // stair_transfer / _phase / _alpha / _high: the removed
                 // three-phase transfer's columns, kept at its idle values so
                 // the column layout does not move.
@@ -3834,8 +2779,8 @@ fn main() {
                 rec.mpc_fs_last.y,
                 rec.diag_wbc_net_cop[0],
                 rec.diag_wbc_net_cop[1],
-                stats.wrench_mpc_solves as f64,
-                stats.wrench_mpc_failures as f64,
+                walker.stats().wrench_mpc_solves as f64,
+                walker.stats().wrench_mpc_failures as f64,
                 rec.swing_pos_err_xy,
                 rec.swing_pos_err_z,
                 rec.swing_task_residual_rms,
@@ -3874,8 +2819,8 @@ fn main() {
                 && t >= d0
                 && t <= d1
             {
-                let i = plan.gait.index_at(t);
-                let sl = &plan.gait.slices[i];
+                let i = walker.plan().gait.index_at(t);
+                let sl = &walker.plan().gait.slices[i];
                 println!(
                     "  [gait] t={t:.3} slice {i} {:?} [{:.3},{:.3}] stance={:?} fz=({:.0},{:.0}) xi.x={:.3} ref.x={:.3}",
                     sl.support, sl.t0, sl.t1, rec.stance_sides, rec.fz_meas[0], rec.fz_meas[1], rec.xi.x, rec.r.xi.x
@@ -3989,7 +2934,7 @@ fn main() {
             break;
         }
     }
-    let WalkerStats { n_mom_cmp_ticks, mom_cmp_peak, n_push_z_drop, n_cp_shift, n_cp_retime, cp_retime_total, n_confirmed_admissions, ref_engagements, n_ds_capture, ds_capture_total, n_ds_feasible, n_ds_continuous, ds_feasible_total, n_push_replan, n_mpc_fs_cross, preview_count, preview_failures, landing_retimes, landing_delay, n_replan, n_corrected, .. } = stats;
+    let walker::WalkerStats { n_mom_cmp_ticks, mom_cmp_peak, n_push_z_drop, n_cp_shift, n_cp_retime, cp_retime_total, n_confirmed_admissions, ref_engagements, n_ds_capture, ds_capture_total, n_ds_feasible, n_ds_continuous, ds_feasible_total, n_push_replan, n_mpc_fs_cross, preview_count, preview_failures, landing_retimes, landing_delay, n_replan, n_corrected, .. } = walker.stats().clone();
     let RunMetrics { step_stats, walk_end_state, ramp_end_state, last_state, travel, fell, min_z, max_tilt, max_dcm_err, max_cop_use, max_zmp_clamp, max_ankle_roll_use, n_open_loop, q_lo, q_hi, hit_ticks, hit_peak_f, hit_impulse, hit_first_t, hit_last_t, hit_episodes, n_selfcollide, max_selfcollide_f, push_at_t, push_at_step, push_dcm_err_max, push_tilt_max, push_degraded_at, push_cop_max, push_slip_wbc_max, push_slip_plant_max, push_slip_ticks, push_fz_total_min, push_fz_total_max, push_unloaded_ticks, win_dcm_err_max, win_tilt_max, win_cop_max, win_slip_plant_max, win_slip_ticks, win_fz_total_min, win_fz_total_max, win_unloaded_ticks, win_degraded_at, win_degraded_end, transfer_t, xfer_edge_ticks, xfer_ticks, xfer_leave_t, xfer_wrongfoot_ticks, xfer2_edge_ticks, xfer2_ticks, h_roll_max, h_roll_at_xfer, xfer_dcm_off, xfer_stance, push_ankle_max, push_exceeded, push_last_exceed, t_last, .. } = m;
 
     println!("\n=== Per-step ===");
@@ -4011,7 +2956,7 @@ fn main() {
 
     println!(
         "COM REPLAN: {preview_count} solves / {preview_failures} failures; {landing_retimes} landing retimes ({landing_delay:.3}s net), {} confirmed / {} timeouts",
-        plan.landing.touchdowns, plan.landing.timeouts
+        walker.plan().landing.touchdowns, walker.plan().landing.timeouts
     );
     // The three-phase stair transfer was removed (never adopted, off by
     // default); the line stays so existing log parsers keep their layout.
@@ -4101,16 +3046,16 @@ fn main() {
             println!("  ds continuous: {n_ds_continuous} plan writes");
         }
     }
-    if push_z_drop > 0.0 {
+    if wcfg.push_crouch.drop > 0.0 {
         println!("  push CoM drops: {n_push_z_drop}");
     }
     if ref_any {
         println!("  reference engagements: {ref_engagements}");
     }
-    if plan.landing.event_mode {
+    if walker.plan().landing.event_mode {
         println!(
             "  contact events: {} touchdowns by event, {} probes, {} timeouts",
-            plan.landing.events, plan.landing.probes, plan.landing.timeouts
+            walker.plan().landing.events, walker.plan().landing.probes, walker.plan().landing.timeouts
         );
     }
     println!("  step-timing adaptations: 0 ticks retimed, 0 ms total, largest single shift 0 ms");
@@ -4255,7 +3200,7 @@ fn main() {
                      transfer, peak |h_x| {h_roll_max:.4} in the first second"
                 );
                 let b_nom =
-                    (steps.sole[0].y - steps.sole[1].y).abs() / (1.0 + (omega * gp.t_ss).exp());
+                    (walker.initial_feet().sole[0].y - walker.initial_feet().sole[1].y).abs() / (1.0 + (omega * gp.t_ss).exp());
                 println!(
                     "    DCM offset from the committed stance foot: \
                      x {:+.1} mm, y {:+.1} mm (stance {}), nominal |b_y| = {:.1} mm",
@@ -4356,7 +3301,7 @@ fn main() {
                  last out-of-band tick, then under {:.0} mm for {settled_for:.2} s \
                  to the end of the run",
                 te - tp,
-                plan.gait.steps_taken(te.max(1e-9)).saturating_sub(push_at_step),
+                walker.plan().gait.steps_taken(te.max(1e-9)).saturating_sub(push_at_step),
                 push_recover_m * 1e3,
             );
         } else {
