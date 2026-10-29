@@ -371,6 +371,203 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
         }
     };
 
+    let contact_plan = {
+        let d = &d.contact_plan;
+        ContactPlanConfig {
+            on: flag("CONTACT_PLAN", d.on),
+            trig: num("CP_TRIG", d.trig),
+            t_min_frac: num("CP_T_MIN", d.t_min_frac),
+            t_max_frac: num("CP_T_MAX", d.t_max_frac),
+            dt_grid: num("CP_DT", d.dt_grid).max(0.001),
+            max_x: num("CP_MAX_X", d.max_x),
+            max_y: num("CP_MAX_Y", d.max_y),
+            max_y_in: opt("CP_MAX_Y_IN"),
+            timing_from_x: flag("CP_T_FROM_X", d.timing_from_x),
+            timing_lat_outward: flag("CP_T_LAT_OUT", d.timing_lat_outward),
+            j: num("CP_J", d.j).max(0.05),
+            w_shift: num("CP_W_SHIFT", d.w_shift).max(0.0),
+            w_u: num("CP_W_U", d.w_u),
+            w_t: num("CP_W_T", d.w_t),
+            w_res: num("CP_W_RES", d.w_res),
+            dead_u: num("CP_DEAD_U", d.dead_u),
+            dead_t: num("CP_DEAD_T", d.dead_t),
+        }
+    };
+
+    let double_support = {
+        let d = &d.double_support;
+        DoubleSupportConfig {
+            feasible: flag("DS_FEASIBLE", d.feasible),
+            feasible_on_timeout: flag("DS_FEASIBLE_ON_TIMEOUT", d.feasible_on_timeout),
+            feasible_continuous: flag("DS_FEASIBLE_CONTINUOUS", d.feasible_continuous),
+            feasible_ramp: flag("DS_FEASIBLE_RAMP", d.feasible_ramp),
+            feasible_max: num("DS_FEASIBLE_MAX", d.feasible_max),
+            feasible_box_stance: get("DS_FEASIBLE_BOX").map(|v| v == "stance").unwrap_or(d.feasible_box_stance),
+            capture: flag("DS_CAPTURE", d.capture),
+            capture_hopeless: num("DS_CAPTURE_HOPELESS", d.capture_hopeless).max(1.0),
+            capture_min_gain: num("DS_CAPTURE_MIN_GAIN", d.capture_min_gain).max(0.0),
+            capture_fwd_only: flag("DS_CAPTURE_FWD_ONLY", d.capture_fwd_only),
+            capture_margin: num("DS_CAPTURE_MARGIN", d.capture_margin),
+            capture_t_min: num("DS_CAPTURE_T_MIN", d.capture_t_min).max(0.02),
+            capture_load: num("DS_CAPTURE_LOAD", d.capture_load).clamp(0.0, 1.0),
+        }
+    };
+
+    let mpc = {
+        let d = &d.mpc;
+        WrenchMpcConfig {
+            enabled: flag("STAIR_WRENCH_MPC", d.enabled),
+            always: flag("WRENCH_MPC_ALWAYS", d.always),
+            apply: flag("WRENCH_MPC_APPLY", d.apply),
+            coupled: flag("STAIR_WRENCH_COUPLED", d.coupled),
+            node_centre: flag("MPC_NODE_CENTRE", d.node_centre),
+            net_cop_w: num("MPC_NET_COP_W", d.net_cop_w).max(0.0),
+            seed_previous: num("MPC_SEED_PREVIOUS", d.seed_previous as f64) as i32,
+            w_pos: num("MPC_W_POS", d.w_pos).max(0.0),
+            w_vel: num("MPC_W_VEL", d.w_vel).max(0.0),
+            w_mom: num("MPC_W_MOM", d.w_mom).max(0.0),
+            w_acc: num("MPC_W_ACC", d.w_acc).max(0.0),
+            w_wrench: num("MPC_W_WRENCH", d.w_wrench).max(0.0),
+            w_smooth: num("MPC_W_SMOOTH", d.w_smooth).max(0.0),
+            sole_authority: flag("MPC_SOLE_AUTHORITY", d.sole_authority),
+            dt: num("STAIR_WRENCH_DT", d.dt),
+            horizon: num("STAIR_WRENCH_N", d.horizon as f64).max(2.0) as usize,
+            preview_dt: num("STAIR_WRENCH_PREVIEW_DT", d.preview_dt),
+            low_min: num("STAIR_WRENCH_LOW_MIN", d.low_min).clamp(0.0, 0.45),
+            blend: num("STAIR_WRENCH_BLEND", d.blend).clamp(0.0, 1.0),
+            hybrid_contact: flag("STAIR_HYBRID_CONTACT", d.hybrid_contact),
+            backend: get("MPC_QP_BACKEND").map(|name| match name.as_str() {
+                "active_set" => misa_wbc::QpSolver::ActiveSet,
+                "clarabel" => misa_wbc::QpSolver::Clarabel,
+                "proxqp" => misa_wbc::QpSolver::Proxqp,
+                "osqp" => misa_wbc::QpSolver::Osqp,
+                "hpipm" => misa_wbc::QpSolver::Hpipm,
+                _ => panic!("unsupported MPC_QP_BACKEND: {name}"),
+            }),
+            kkt_comp_tol: num("MPC_KKT_COMP_TOL", d.kkt_comp_tol),
+            bench_gate: flag("MPC_BENCH_GATE", d.bench_gate),
+        }
+    };
+
+    let mpc_footstep = {
+        let d = &d.mpc_footstep;
+        MpcFootstepConfig {
+            on: flag("MPC_FOOTSTEP", d.on),
+            w: num("MPC_FOOTSTEP_W", d.w).max(0.0),
+            moment: flag("MPC_FOOTSTEP_MOMENT", d.moment),
+            trig: num("MPC_FOOTSTEP_TRIG", d.trig).max(0.0),
+            max: [
+                num("MPC_FOOTSTEP_MAX_X", d.max[0]).max(0.0),
+                num("MPC_FOOTSTEP_MAX_Y", d.max[1]).max(0.0),
+            ],
+            max_y_in: num("MPC_FOOTSTEP_MAX_Y_IN", d.max_y_in).max(0.0),
+            y_in_fwd: num("MPC_FOOTSTEP_Y_IN_FWD", d.y_in_fwd).max(0.0),
+            y_in_fwd_trig: num("MPC_FOOTSTEP_Y_IN_FWD_TRIG", d.y_in_fwd_trig),
+            capture_w: num("MPC_LANDING_CAPTURE_W", d.capture_w).max(0.0),
+            capture_j: flag("MPC_LANDING_CAPTURE_J", d.capture_j),
+            lex: flag("MPC_LANDING_LEX", d.lex),
+        }
+    };
+
+    let mpc_cross = {
+        let d = &d.mpc_cross;
+        MpcCrossConfig {
+            y: num("MPC_FOOTSTEP_CROSS_Y", d.y).max(0.0),
+            ex: num("MPC_FOOTSTEP_CROSS_EX", d.ex),
+            floor: num("MPC_FOOTSTEP_CROSS_FLOOR", d.floor).max(0.0),
+            hold_z: num("MPC_FOOTSTEP_CROSS_HOLD_Z", d.hold_z).max(0.0),
+            hold_xy: num("MPC_FOOTSTEP_CROSS_HOLD_XY", d.hold_xy).max(0.0),
+        }
+    };
+
+    let push_replan = {
+        let d = &d.push_replan;
+        PushReplanConfig {
+            trig: num("PUSH_REPLAN", d.trig).max(0.0),
+            emin: num("PUSH_REPLAN_EMIN", d.emin).max(0.0),
+            freeze: num("PUSH_REPLAN_FREEZE", d.freeze),
+            stand: num("PUSH_REPLAN_STAND", d.stand as f64).max(0.0) as usize,
+            ramp: num("PUSH_REPLAN_RAMP", d.ramp as f64).max(0.0) as usize,
+            max_fwd: num("PUSH_REPLAN_MAX_FWD", d.max_fwd).max(0.0),
+            max_back: num("PUSH_REPLAN_MAX_BACK", d.max_back).max(0.0),
+            min_w: num("PUSH_REPLAN_MIN_W", d.min_w).max(0.0),
+            max_w: num("PUSH_REPLAN_MAX_W", d.max_w).max(0.0),
+            hold: num("PUSH_REPLAN_HOLD", d.hold).max(0.0),
+            back_only: flag("PUSH_REPLAN_BACK_ONLY", d.back_only),
+            vmax: num("PUSH_REPLAN_VMAX", d.vmax).max(0.0),
+            ankle: {
+                let v: Vec<f64> = get("PUSH_REPLAN_ANKLE")
+                    .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+                    .unwrap_or_default();
+                [
+                    v.first().copied().unwrap_or(d.ankle[0]).clamp(0.0, 1.0),
+                    v.get(1).copied().unwrap_or(d.ankle[1]).clamp(0.0, 1.0),
+                ]
+            },
+            slope_lead: num("PUSH_REPLAN_SLOPE_LEAD", d.slope_lead).max(0.0),
+        }
+    };
+
+    let push_crouch = {
+        let d = &d.push_crouch;
+        PushCrouchConfig {
+            drop: num("PUSH_Z_DROP", d.drop).max(0.0),
+            trig: num("PUSH_Z_DROP_TRIG", d.trig).max(0.0),
+            t: num("PUSH_Z_DROP_T", d.t).max(0.0),
+            lat_max: num("PUSH_Z_DROP_LAT_MAX", d.lat_max).max(0.0),
+        }
+    };
+
+    let speed = {
+        let d = &d.speed;
+        SpeedScheduleConfig {
+            sched: flag("VX2_SCHED", d.sched),
+            tscale_min: num("VX2_TSCALE_MIN", d.tscale_min).clamp(0.1, 1.0),
+            stride_max: num("VXS_STRIDE_MAX", d.stride_max).max(0.05),
+            cap_slope: num("VXS_CAP_SLOPE", d.cap_slope),
+            v_long: num("VXS_V_LONG", d.v_long),
+            z_slope: num("VXS_Z_SLOPE", d.z_slope).max(0.0),
+            z_max: num("VXS_Z_MAX", d.z_max),
+            z_min: num("VXS_Z_MIN", d.z_min).max(0.0),
+            yield_v: num("PUSH_YIELD_V", d.yield_v).max(0.0),
+            yield_trig: num("PUSH_YIELD_TRIG", d.yield_trig).max(0.0),
+            yield_no_fwd: flag("PUSH_YIELD_NO_FWD", d.yield_no_fwd),
+            yield_vmin: num("PUSH_YIELD_VMIN", d.yield_vmin).max(0.0),
+        }
+    };
+
+    let recovery = {
+        let d = &d.recovery;
+        RecoveryRefConfig {
+            trig_dcm: num("REF_TRIG_DCM", d.trig_dcm).max(0.0),
+            trig_max_frac: num("REF_TRIG_MAX_FRAC", d.trig_max_frac),
+            delay_comp: flag("REF_DELAY_COMP", d.delay_comp),
+            swing: flag("REF_SWING", d.swing),
+            reset_stance: flag("REF_RESET_STANCE", d.reset_stance),
+            reset_incl_current: flag("REF_RESET_INCL_CURRENT", d.reset_incl_current),
+            cooldown: num("REF_COOLDOWN", d.cooldown).max(0.0),
+        }
+    };
+
+    // The debug prints: most are on when the key is SET (to anything),
+    // DEBUG_ANCHOR and DIAG_REPLAN are switches.
+    let debug = {
+        let set = |k: &str| get(k).is_some();
+        DebugFlags {
+            contact_admit: set("CONTACT_ADMIT_DEBUG"),
+            ds_feasible: set("DS_FEASIBLE_DEBUG"),
+            ds_capture: set("DS_CAPTURE_DEBUG"),
+            anchor: flag("DEBUG_ANCHOR", d.debug.anchor),
+            cp: set("CP_DEBUG"),
+            push_replan: set("PUSH_REPLAN_DEBUG"),
+            mpc_fs_cross: set("MPC_FS_CROSS_DEBUG"),
+            mpc_fs_landing: set("MPC_FS_DEBUG_LANDING"),
+            mpc_traj: set("MPC_TRAJ_DEBUG"),
+            replan: flag("DIAG_REPLAN", d.debug.replan),
+            wbc_level_t: get("WBC_LEVEL_DEBUG_T").and_then(|v| v.parse::<f64>().ok()),
+        }
+    };
+
     Config {
         wbc,
         joint_limit,
@@ -388,5 +585,15 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
         landing,
         com_plan,
         stair_zone,
+        contact_plan,
+        double_support,
+        mpc,
+        mpc_footstep,
+        mpc_cross,
+        push_replan,
+        push_crouch,
+        speed,
+        recovery,
+        debug,
     }
 }

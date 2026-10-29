@@ -85,56 +85,6 @@ fn flag(k: &str, d: bool) -> bool {
     std::env::var(k).map(|v| v != "0").unwrap_or(d)
 }
 
-/// The control loop's debug prints. Each was an environment read inside the
-/// tick (or a `let` scattered among the knobs); the environment does not
-/// change during a run, so reading them once is the same switch.
-#[cfg(feature = "mujoco")]
-struct DebugFlags {
-    /// CONTACT_ADMIT_DEBUG: the `[adm]` lines (admit certificates).
-    contact_admit: bool,
-    /// DS_FEASIBLE_DEBUG: the `[ds]`/`[dsf]` lines.
-    ds_feasible: bool,
-    /// DS_CAPTURE_DEBUG: the `[dsc-cap]` lines.
-    ds_capture: bool,
-    /// DEBUG_ANCHOR=1: the `[anchor]` lines (a switch: "0" = off).
-    anchor: bool,
-    /// CP_DEBUG: the `[cp]` lines (contact_plan).
-    cp: bool,
-    /// PUSH_REPLAN_DEBUG: the `[replan]` lines.
-    push_replan: bool,
-    /// MPC_FS_CROSS_DEBUG: the `[fs-cross]` lines (the crossing gate).
-    mpc_fs_cross: bool,
-    /// MPC_FS_DEBUG_LANDING: the `[fs-decision]` lines.
-    mpc_fs_landing: bool,
-    /// MPC_TRAJ_DEBUG: the `[traj]` lines (before t = 2 s).
-    mpc_traj: bool,
-    /// DIAG_REPLAN=1: print each live replan with its site (a switch).
-    replan: bool,
-    /// WBC_LEVEL_DEBUG_T=<t>: the `[wbc-levels]` lines within 11 ms of t.
-    /// Unparsable = None, as before (silently off).
-    wbc_level_t: Option<f64>,
-}
-
-#[cfg(feature = "mujoco")]
-impl DebugFlags {
-    fn from_env() -> Self {
-        let set = |k: &str| std::env::var(k).is_ok();
-        Self {
-            contact_admit: set("CONTACT_ADMIT_DEBUG"),
-            ds_feasible: set("DS_FEASIBLE_DEBUG"),
-            ds_capture: set("DS_CAPTURE_DEBUG"),
-            anchor: flag("DEBUG_ANCHOR", false),
-            cp: set("CP_DEBUG"),
-            push_replan: set("PUSH_REPLAN_DEBUG"),
-            mpc_fs_cross: set("MPC_FS_CROSS_DEBUG"),
-            mpc_fs_landing: set("MPC_FS_DEBUG_LANDING"),
-            mpc_traj: set("MPC_TRAJ_DEBUG"),
-            replan: flag("DIAG_REPLAN", false),
-            wbc_level_t: std::env::var("WBC_LEVEL_DEBUG_T").ok().and_then(|v| v.parse::<f64>().ok()),
-        }
-    }
-}
-
 /// WBCW_<NAME> read on the spot, for a level name the walker's table
 /// (`LevelWeights`, read once at start-up) does not list -- the stack below
 /// produces none today; kept so an unlisted level reads as it always did.
@@ -1499,7 +1449,7 @@ fn main() {
         !qp_gate || ctrl_mode == CtrlMode::Torque,
         "QP_BENCH_GATE requires torque control"
     );
-    let mpc_gate = qp_gate || flag("MPC_BENCH_GATE", false);
+    let mpc_gate = qp_gate || wcfg.mpc.bench_gate;
     assert!(
         !mpc_gate || ctrl_mode == CtrlMode::Torque,
         "MPC_BENCH_GATE requires torque control"
@@ -1963,7 +1913,7 @@ fn main() {
     // 1/48 -- the stride grows to 0.36-0.42 m and the landing leg is at
     // 99.8% of its length. VX2_TSCALE_MIN bounds the shortening. (The
     // hand-set cap VX2_STRIDE_MAX is removed.)
-    let vx2_tscale_min = env_f64("VX2_TSCALE_MIN", 0.4).clamp(0.1, 1.0);
+    let vx2_tscale_min = wcfg.speed.tscale_min;
     // VX2_SCHED: ONE speed schedule instead of the two hand-set knobs.
     // Measured 2026-10-14 (doc/from_claude/20261014_speed_design.md): the
     // swing's peak acceleration goes as v / T_step, so a speed is reached
@@ -1975,7 +1925,7 @@ fn main() {
     // acceleration bound v / T <= 0.7 then puts the ceiling at ~0.56 m/s
     // with a 0.45 m stride. (The two hand-set knobs, VX2_STRIDE_MAX and
     // VX2_Z_DROP, are removed.) Unset = no cap and no drop.
-    let vx2_sched = flag("VX2_SCHED", false);
+    let vx2_sched = wcfg.speed.sched;
     // (VX2_REANCHOR, re-anchoring the plan on the stance foot at every
     // single support under a speed command, is removed.)
     let (vx2_stride_max, vx2_z_drop_sched) = match vx2_change {
@@ -1985,22 +1935,21 @@ fn main() {
             // 0.84 s single support and falls even 5 cm lower, while the
             // same stride at 0.55 m/s (0.82 s step) walks. 0.35 m up to
             // VXS_V_LONG, then +VXS_CAP_SLOPE per m/s to VXS_STRIDE_MAX.
-            let cap_hi = env_f64("VXS_STRIDE_MAX", 0.45).max(0.05);
-            let cap = (0.35 + env_f64("VXS_CAP_SLOPE", 2.0) * (vx2 - env_f64("VXS_V_LONG", 0.45))).clamp(0.35, cap_hi);
+            let cap = wcfg.speed.stride_cap(vx2);
             let stride = (vx2 * t_step).min(cap);
             let zd = if stride >= 0.35 {
-                0.024 + env_f64("VXS_Z_SLOPE", 0.36).max(0.0) * (stride - 0.35)
+                0.024 + wcfg.speed.z_slope * (stride - 0.35)
             } else {
                 0.024 * ((stride - 0.25) / 0.10).clamp(0.0, 1.0)
             }
-            .min(env_f64("VXS_Z_MAX", 0.08))
+            .min(wcfg.speed.z_max)
             // VXS_Z_MIN: a floor on the scheduled drop once a speed command
             // is active. Measured 2026-10-16 (push x speed, N=48, v6.10):
             // at 0.30 m/s the table drops 0.024 and the pushes go 77/192;
             // +0.02 gives 122, +0.04 gives 127 (backward 11 N.s 14 -> 48).
             // At 0.50 the table already drops 0.06 and more removes lateral
             // margin (swing-side 5 N.s 11 -> 6). 0 = the table alone.
-            .max(env_f64("VXS_Z_MIN", 0.0).max(0.0));
+            .max(wcfg.speed.z_min);
             // (VXS_Z_EXTRA, more drop on top of the schedule, is removed.)
             println!("speed schedule: v={vx2:.2} m/s -> stride {stride:.3} m (cap {cap:.2}), step {:.3} s, CoM drop {zd:.3} m", stride / vx2.max(1e-6));
             (cap, Some(zd))
@@ -2013,16 +1962,13 @@ fn main() {
     // run. Measured 2026-10-16: the pushes at 0.50 m/s are lost 2-3 steps
     // after the push through the lateral authority, and the same pushes at
     // 0.30 survive 133/192. 0 = off (bit-identical).
-    let push_yield_v = env_f64("PUSH_YIELD_V", 0.0).max(0.0);
-    let push_yield_trig = env_f64("PUSH_YIELD_TRIG", 0.03).max(0.0);
-    let push_yield_no_fwd = flag("PUSH_YIELD_NO_FWD", false);
-    let push_yield_vmin = env_f64("PUSH_YIELD_VMIN", 0.0).max(0.0);
+    let push_yield_v = wcfg.speed.yield_v;
+    let push_yield_trig = wcfg.speed.yield_trig;
+    let push_yield_no_fwd = wcfg.speed.yield_no_fwd;
+    let push_yield_vmin = wcfg.speed.yield_vmin;
     let push_yield_done = false;
     let vx2_cmd_speed: Option<f64> = vx2_change.map(|(_, v, _)| v);
-    let vxs_cap_of = |v: f64| -> f64 {
-        let cap_hi = env_f64("VXS_STRIDE_MAX", 0.45).max(0.05);
-        (0.35 + env_f64("VXS_CAP_SLOPE", 2.0) * (v - env_f64("VXS_V_LONG", 0.45))).clamp(0.35, cap_hi)
-    };
+    let vxs_cap_of = |v: f64| -> f64 { wcfg.speed.stride_cap(v) };
     let vx2_change = match vx2_change {
         Some((at, vx2, ramp2)) if vx2_stride_max > 0.0 && vx2 * t_step > vx2_stride_max => {
             // Per-step time scale along the ramp, then the capped plan speed.
@@ -2068,10 +2014,10 @@ fn main() {
     // hand-set VX2_Z_DROP is removed.)
     let vx2_z_drop = vx2_z_drop_sched.unwrap_or(0.0);
     let vx2_z_track = articara::biped::height::SlewedDrop::default();
-    let push_z_drop = env_f64("PUSH_Z_DROP", 0.0).max(0.0);
-    let push_z_drop_trig = env_f64("PUSH_Z_DROP_TRIG", 0.03).max(0.0);
-    let push_z_drop_t = env_f64("PUSH_Z_DROP_T", 1.5).max(0.0);
-    let push_z_drop_lat_max = env_f64("PUSH_Z_DROP_LAT_MAX", 0.02).max(0.0);
+    let push_z_drop = wcfg.push_crouch.drop;
+    let push_z_drop_trig = wcfg.push_crouch.trig;
+    let push_z_drop_t = wcfg.push_crouch.t;
+    let push_z_drop_lat_max = wcfg.push_crouch.lat_max;
     let push_z_drop_until = f64::NEG_INFINITY;
     let vx2_z_from: Option<f64> = match vx2_change {
         Some((at, _, _)) if vx2_z_drop > 0.0 => gait
@@ -2616,33 +2562,14 @@ fn main() {
     // Predictive replacement for ADAPT_STEP/ADAPT_TIME (both removed, never
     // adopted): picks the landing shift AND the end of the current single
     // support so the predicted end-of-step DCM meets the plan's. Default OFF.
-    let contact_plan_on = flag("CONTACT_PLAN", false);
-    let contact_plan_cfg = articara::biped::contact_plan::Config {
-        t_min_frac: env_f64("CP_T_MIN", 0.5),
-        // v0.1: never EXTEND the single support -- a long single support is
-        // mechanism B itself. Measured v0 (T_max 1.5): the planner fired only
-        // in already-disturbed runs and then retimed every tick (median 139-479
-        // retimes per run); those runs all fell, the quiet ones survived ~95%.
-        t_max_frac: env_f64("CP_T_MAX", 1.0),
-        dt_grid: env_f64("CP_DT", 0.01).max(0.001),
-        // Defaults were ADAPT_MAX_X / ADAPT_MAX_Y (removed with ADAPT_STEP).
-        max_x: env_f64("CP_MAX_X", 0.06),
-        max_y: env_f64("CP_MAX_Y", 0.03),
-        max_y_in: env_f64("CP_MAX_Y_IN", env_f64("CP_MAX_Y", 0.03)),
-        timing_from_x: flag("CP_T_FROM_X", false),
-        timing_lat_outward: flag("CP_T_LAT_OUT", false),
-        j: env_f64("CP_J", 0.5).max(0.05),
-        w_shift: env_f64("CP_W_SHIFT", 0.0).max(0.0),
-        w_u: env_f64("CP_W_U", 1.0),
-        w_t: env_f64("CP_W_T", 1.0),
-        w_res: env_f64("CP_W_RES", 100.0),
-        dead_u: env_f64("CP_DEAD_U", 0.002),
-        dead_t: env_f64("CP_DEAD_T", 0.005),
-    };
+    // (Its knobs, CP_*, are `ContactPlanConfig`; T_max defaults to 1, never
+    // extending the single support.)
+    let contact_plan_on = wcfg.contact_plan.on;
+    let contact_plan_cfg = wcfg.contact_plan.planner();
     // Only plan when the DCM is actually off the plan (same reason as the
     // removed ADAPT_TIME_TRIG: the undisturbed gait must reproduce bit for
     // bit).
-    let contact_plan_trig = env_f64("CP_TRIG", 0.015);
+    let contact_plan_trig = wcfg.contact_plan.trig;
     // Terrain height under the support, slewed (below) so the CoM height
     // reference climbs a riser over about a step instead of jumping at a
     // slice boundary. Starts at the spawn platform's height.
@@ -2741,7 +2668,7 @@ fn main() {
     });
     // Run the DS_FEASIBLE re-plan on a timeout end as well (it is keyed on a
     // non-zero retime, which a timeout never produces). Default off.
-    let ds_feasible_on_timeout = flag("DS_FEASIBLE_ON_TIMEOUT", false);
+    let ds_feasible_on_timeout = wcfg.double_support.feasible_on_timeout;
     // Start the double support's DCM reference AT THE MEASURED DCM. The
     // plan's DS segment begins at the DCM the single support was supposed
     // to build up; a landing that ends early (confirmed while the plan's
@@ -2753,7 +2680,7 @@ fn main() {
     // clamped to the DS box; when the clamp binds, T is extended by the
     // closed-form step timing and p re-solved. Written into the plan on
     // every landing end (not only when a retime was needed). Default off.
-    let ds_feasible_continuous = flag("DS_FEASIBLE_CONTINUOUS", false);
+    let ds_feasible_continuous = wcfg.double_support.feasible_continuous;
     // Ramp variant: the double-support ZMP ramps from a solved p0 to the
     // next stance's own entry point p1, so the new foot takes load INSIDE
     // the double support. With the constant solve above the ZMP sits behind
@@ -2762,7 +2689,7 @@ fn main() {
     //     xi(0) = p0 A + p1 B + xi_eos e^{-wT},
     //     A = 1 - (1 - e^{-wT})/(wT),  B = (1 - e^{-wT})/(wT) - e^{-wT}
     // solved for p0 and clamped to the DS box. Default off.
-    let ds_feasible_ramp = flag("DS_FEASIBLE_RAMP", false);
+    let ds_feasible_ramp = wcfg.double_support.feasible_ramp;
     // (LAND_WAIT_HOLD, holding the DCM reference at the stance sole while a
     // stair landing waits, was not adopted and is removed.)
     // Lower the CoM height target while the feet are in the stair zone.
@@ -2822,23 +2749,23 @@ fn main() {
         .unwrap_or_default();
     let ref_lib: Option<RefLib> = None;
     let ref_any = !ref_libs.is_empty();
-    let ref_swing = flag("REF_SWING", true);
-    let ref_reset_stance = flag("REF_RESET_STANCE", true);
+    let ref_swing = wcfg.recovery.swing;
+    let ref_reset_stance = wcfg.recovery.reset_stance;
     // The re-centring after a reference skipped the swing already under way
     // when the reference ended (the gait's first step then went to the
     // pre-push plan: 0.38 m ahead, 0.28 m wide). With this on, that swing is
     // re-centred too, at the feet's midpoint (REF_RESET_LEAD, a lead ahead
     // of it, is removed).
-    let ref_reset_incl_current = flag("REF_RESET_INCL_CURRENT", false);
+    let ref_reset_incl_current = wcfg.recovery.reset_incl_current;
     // Detector: lateral DCM error toward the stance side [m] that engages a
     // reference (0 = off). (The bench trigger at the push, REF_TRIG_AT_PUSH /
     // REF_TRIG_MIN_IMPULSE -- an oracle a robot does not have -- and the
     // forward-push detector REF_TRIG_DCM_X are removed.)
-    let ref_trig_dcm = env_f64("REF_TRIG_DCM", 0.0).max(0.0);
-    let ref_cooldown = env_f64("REF_COOLDOWN", 1.0).max(0.0);
+    let ref_trig_dcm = wcfg.recovery.trig_dcm;
+    let ref_cooldown = wcfg.recovery.cooldown;
     // 0 = enter the reference at its start even when the detector fired late
     // (for references solved with the detection delay in their initial state).
-    let ref_delay_comp = flag("REF_DELAY_COMP", true);
+    let ref_delay_comp = wcfg.recovery.delay_comp;
     // (REF_MPC / REF_WBC, the MPC's and the WBC's references taken from
     // the reference library for every reference, were not adopted and are
     // removed.)
@@ -2846,7 +2773,7 @@ fn main() {
     let ref_lat_quiet_t = f64::NEG_INFINITY;
     // No reference when the push lands this late in the swing (the walker
     // copes on its own there; measured in-place 5 N s at phase 0.7: 3/3).
-    let ref_trig_max_frac = env_f64("REF_TRIG_MAX_FRAC", 1.0);
+    let ref_trig_max_frac = wcfg.recovery.trig_max_frac;
     let ref_mode: Option<RefMode> = None;
     // CONTACT_EVENT (read once: the landing clock's `event_mode`, which a
     // reference turns on while it is engaged and its end restores to this).
@@ -2865,7 +2792,7 @@ fn main() {
     // measured DCM: the closed-form time for a ZMP inside the double-support
     // box to bring xi to the plan's DS-end value (`dcm::step_timing`), taken
     // per axis and clamped to [nominal, DS_FEASIBLE_MAX]. Default OFF.
-    let ds_feasible = flag("DS_FEASIBLE", false);
+    let ds_feasible = wcfg.double_support.feasible;
     // DS_CAPTURE: end the double support EARLY when the DCM has left the
     // double-support box along x (no pressure point inside it can hold
     // it: 0-step capture is gone, only the next step can). Measured
@@ -2878,34 +2805,34 @@ fn main() {
     // support is then shortened by the contact_plan and its landing by
     // the MPC as usual. DS_FEASIBLE (which only lengthens, when the DS
     // pressure CAN still catch the DCM) is complementary. Default off.
-    let ds_capture = flag("DS_CAPTURE", false);
+    let ds_capture = wcfg.double_support.capture;
     // "Hopeless": the time the DS pressure needs along x exceeds this
     // multiple of the remaining double support.
-    let ds_capture_hopeless = env_f64("DS_CAPTURE_HOPELESS", 1.5).max(1.0);
+    let ds_capture_hopeless = wcfg.double_support.capture_hopeless;
     // Only shorten when it saves at least this much [s].
-    let ds_capture_min_gain = env_f64("DS_CAPTURE_MIN_GAIN", 0.05).max(0.0);
+    let ds_capture_min_gain = wcfg.double_support.capture_min_gain;
     // Fire only when the DCM has run AHEAD of the DS-end target (a forward
     // push). Measured 2026-10-11 (N=48, 4 conditions): without the gate the
     // forward push went 36 -> 45 but the backward one 34 -> 32 -- stepping
     // sooner backward does not help a leg that has no authority (the
     // backward failure, design note 10-10). Default on.
-    let ds_capture_fwd_only = flag("DS_CAPTURE_FWD_ONLY", true);
+    let ds_capture_fwd_only = wcfg.double_support.capture_fwd_only;
     // (DS_CAPTURE_LAT, the same test along y, was not adopted and is
     // removed.)
     // The forward excursion must exceed this [m] (noise floor).
-    let ds_capture_margin = env_f64("DS_CAPTURE_MARGIN", 0.01);
-    let ds_capture_t_min = env_f64("DS_CAPTURE_T_MIN", 0.15).max(0.02);
-    let ds_capture_load = env_f64("DS_CAPTURE_LOAD", 0.4).clamp(0.0, 1.0);
+    let ds_capture_margin = wcfg.double_support.capture_margin;
+    let ds_capture_t_min = wcfg.double_support.capture_t_min;
+    let ds_capture_load = wcfg.double_support.capture_load;
     // (LIFT_GATE_FRAC / _MAX, holding a double support while the lateral DCM
     // is still over the lifting foot, were not adopted and are removed.)
     let dsc_retimed_last: Option<usize> = None;
-    let ds_feasible_max = env_f64("DS_FEASIBLE_MAX", 1.5);
+    let ds_feasible_max = wcfg.double_support.feasible_max;
     // Pivot box for the DS sizing: "both" = the double-support box (the
     // historical choice), "stance" = the OLD stance sole only. At the cut the
     // new foot carries ~25% of the weight (measured), so a pivot under it is
     // not realisable until the load has moved; the stance-only box is what
     // the pressure can reach NOW.
-    let ds_feasible_box_stance = std::env::var("DS_FEASIBLE_BOX").map(|v| v == "stance").unwrap_or(false);
+    let ds_feasible_box_stance = wcfg.double_support.feasible_box_stance;
     // (COM_LAND_PREDICT_FRAC is the landing clock's `min_fraction`.)
     let land_extend_base = wcfg.landing.extend;
     // Extra landing-deadline slack for the swing that CHANGES HEIGHT, i.e. the
@@ -2968,7 +2895,7 @@ fn main() {
     // Command the swing to the ANKLE pose the footstep plan implies, rather
     // than to the sole pose directly. See the use site for the measurement.
     let stair_td_sole_frame = wcfg.swing.td_sole_frame;
-    let stair_wrench_mpc = flag("STAIR_WRENCH_MPC", false);
+    let stair_wrench_mpc = wcfg.mpc.enabled;
     // Run the wrench MPC outside a stair transfer too.
     //
     // The block below was gated on a running stair transfer (since removed),
@@ -2983,7 +2910,7 @@ fn main() {
     // Default OFF: the walking branch builds its own references (below) and
     // must be measured against the transfer-only lineage before it replaces
     // it.
-    let wrench_mpc_always = flag("WRENCH_MPC_ALWAYS", false);
+    let wrench_mpc_always = wcfg.mpc.always;
     // ... and let its solution reach the WBC outside a transfer. Measured
     // 2026-09-24: every consumer of `wrench_mpc_command` (accel, coupled
     // level, forces_nominal blend, fz plan) is conditioned on a transfer, so
@@ -2991,16 +2918,16 @@ fn main() {
     // load-share change in the MPC input was bit-identical at the output.
     // With this on, the coupled regulariser level and the forces_nominal
     // blend follow the MPC whenever it has a fresh solution. Default off.
-    let wrench_mpc_apply = flag("WRENCH_MPC_APPLY", false) && wrench_mpc_always;
+    let wrench_mpc_apply = wcfg.mpc.applies();
     // Align the fz schedules with `contact_schedule` (node centre).
-    let mpc_node_centre = flag("MPC_NODE_CENTRE", false);
-    let mpc_net_cop_weight = env_f64("MPC_NET_COP_W", 0.0).max(0.0);
+    let mpc_node_centre = wcfg.mpc.node_centre;
+    let mpc_net_cop_weight = wcfg.mpc.net_cop_w;
     // 0 = off, 1 = seed the FIRST solve from the measured load, 2 = anchor
     // EVERY solve to the measured load (the stair-transfer ramp's rule, made
     // general): the smoothness term then says "do not jump away from what the
     // robot is actually carrying" instead of "do not jump away from what the
     // MPC said last time", which is what makes it lag every load transfer.
-    let mpc_seed_previous = env_f64("MPC_SEED_PREVIOUS", 0.0) as i32;
+    let mpc_seed_previous = wcfg.mpc.seed_previous;
     // MPC_FOOTSTEP: the swing foot's landing becomes a decision variable of
     // the wrench MPC (`wrench_mpc::Landing`, one SQP step about the planned
     // load). The chosen offset is applied the way the contact_plan adjuster
@@ -3008,18 +2935,18 @@ fn main() {
     // plan -- and the two are mutually exclusive: both on would be two
     // authorities over the same landing. Off by default.
     // Step-4 body, stage 1 (design note Sec.9): the landing recaptures the DCM.
-    let mpc_landing_capture_w = env_f64("MPC_LANDING_CAPTURE_W", 0.0).max(0.0);
+    let mpc_landing_capture_w = wcfg.mpc_footstep.capture_w;
     // Decide the landing lexicographically (capture first, exactly, inside
     // the box; then the wrench MPC with it fixed) instead of through the
     // penalty weight above, which then only has to be > 0 to switch the
     // capture inputs on. See wrench_mpc::Config::landing_lexicographic.
-    let mpc_landing_lex = flag("MPC_LANDING_LEX", false);
+    let mpc_landing_lex = wcfg.mpc_footstep.lex;
     // 1 = shipped: the landing offset also enters the momentum and net-CoP
     // rows as `dp x F`. 0 = capture rows and landing cost only (2026-09-27:
     // the moment coupling made the landing jitter +-30-47 mm on
     // undisturbed steps, see the design note).
-    let mpc_footstep_moment = flag("MPC_FOOTSTEP_MOMENT", true);
-    let mpc_footstep = flag("MPC_FOOTSTEP", false);
+    let mpc_footstep_moment = wcfg.mpc_footstep.moment;
+    let mpc_footstep = wcfg.mpc_footstep.on;
     // The one combination allowed: the contact_plan adjuster with ALL its
     // position boxes at zero is a pure step-RETIMER (its shift is exactly
     // zero, so it never touches the landing), and the MPC landing variable
@@ -3034,20 +2961,20 @@ fn main() {
         !(mpc_footstep && contact_plan_on) || contact_plan_timing_only,
         "MPC_FOOTSTEP and the contact_plan adjuster are two authorities over the same landing; turn one off (or make the adjuster timing-only: CP_MAX_X=CP_MAX_Y=CP_MAX_Y_IN=0)"
     );
-    let mpc_footstep_w = env_f64("MPC_FOOTSTEP_W", 100.0).max(0.0);
+    let mpc_footstep_w = wcfg.mpc_footstep.w;
     // Give the capture rows the plan's own sensitivity to the landing
     // (`Input::reference_dcm_sensitivity`), differenced from the real DCM
     // plan the way CP_J_AUTO does: shift the landing by 2 cm per axis,
     // rebuild the rolled plan, read the reference DCM at every node. Off =
     // the shipped rows, bit-identical.
-    let mpc_landing_capture_j = flag("MPC_LANDING_CAPTURE_J", false);
+    let mpc_landing_capture_j = wcfg.mpc_footstep.capture_j;
     // Largest lateral shift TOWARD the stance foot (a narrower step). The
     // contact_plan adjuster forbids it in v4.1 (CP_MAX_Y_IN=0); the MPC box
     // allowed it. Measured 2026-09-27 (D+J+T, 11 N.s backward, m32): the
     // landing moved 27 mm inward, the lateral DCM error then ran away
     // -19 -> -126 mm and the robot fell. Default = MPC_FOOTSTEP_MAX_Y
     // (symmetric box), bit-identical.
-    let mpc_footstep_max_y_in = env_f64("MPC_FOOTSTEP_MAX_Y_IN", f64::INFINITY).max(0.0);
+    let mpc_footstep_max_y_in = wcfg.mpc_footstep.max_y_in;
     // Inward bound while the SAGITTAL DCM error is forward by at least
     // MPC_FOOTSTEP_Y_IN_FWD_TRIG [m] (world x; the walk heads +x). Measured
     // 2026-09-27: the inward shifts that save 11 N.s forward pushes happen
@@ -3055,7 +2982,7 @@ fn main() {
     // x error -16..-34 mm (push step) or ~0 with a large lateral error (the
     // next step). The retimed-step rule above does not separate them (a
     // backward push shortens steps too). 0 = off = shipped.
-    let mpc_footstep_y_in_fwd = env_f64("MPC_FOOTSTEP_Y_IN_FWD", 0.0).max(0.0);
+    let mpc_footstep_y_in_fwd = wcfg.mpc_footstep.y_in_fwd;
     // MPC_FOOTSTEP_CROSS_Y [m]: let the MPC landing CROSS the stance foot
     // when the DCM has run out past the stance foot on the stance side. In
     // single support, once the measured DCM is more than
@@ -3070,8 +2997,8 @@ fn main() {
     // and the 0.08 m box leave the MPC no crossing step (doc
     // 20261014_push_x_speed.md Sec.16). The gate keeps the ban for every
     // other case. 0 = off = bit-identical.
-    let mpc_footstep_cross_y = env_f64("MPC_FOOTSTEP_CROSS_Y", 0.0).max(0.0);
-    let mpc_footstep_cross_ex = env_f64("MPC_FOOTSTEP_CROSS_EX", 0.02);
+    let mpc_footstep_cross_y = wcfg.mpc_cross.y;
+    let mpc_footstep_cross_ex = wcfg.mpc_cross.ex;
     // MPC_FOOTSTEP_CROSS_FLOOR [fraction of the sole half width]: while
     // crossing, a lower bound on the inward shift from the LIPM: the DCM at
     // the end of this single support, with the stance CoP held at the
@@ -3081,7 +3008,7 @@ fn main() {
     // only the bound opened the MPC lands at y +0.02..+0.04 for a DCM at
     // +0.09 (stance sole +0.05) -- the SRBD model has no attitude and
     // believes it can hold the excursion. 0 = off.
-    let mpc_footstep_cross_floor = env_f64("MPC_FOOTSTEP_CROSS_FLOOR", 0.0).max(0.0);
+    let mpc_footstep_cross_floor = wcfg.mpc_cross.floor;
     // MPC_FOOTSTEP_CROSS_HOLD_Z [m]: while crossing, hold the swing foot at
     // least this high above its landing until it is within
     // MPC_FOOTSTEP_CROSS_HOLD_XY [m] of the landing horizontally. Measured
@@ -3089,8 +3016,8 @@ fn main() {
     // the nominal clock 5 cm short of it (the lateral travel lags), touched
     // at y +0.01 and slid. The landing check then extends the single support
     // (LandingTiming) instead of the foot landing short. 0 = off.
-    let mpc_footstep_cross_hold_z = env_f64("MPC_FOOTSTEP_CROSS_HOLD_Z", 0.0).max(0.0);
-    let mpc_footstep_cross_hold_xy = env_f64("MPC_FOOTSTEP_CROSS_HOLD_XY", 0.02).max(0.0);
+    let mpc_footstep_cross_hold_z = wcfg.mpc_cross.hold_z;
+    let mpc_footstep_cross_hold_xy = wcfg.mpc_cross.hold_xy;
     // PUSH_REPLAN=trig [m]: ONE re-planner for the step after a push
     // (doc 20261014_push_x_speed.md Sec.20.3). In single support, the DCM
     // error against the plan that was in force when the support began,
@@ -3104,40 +3031,34 @@ fn main() {
     // PUSH_REPLAN_STAND steps in place, then PUSH_REPLAN_RAMP steps back to
     // the original stride). The MPC landing variable is off for that swing.
     // Re-evaluated every tick until PUSH_REPLAN_FREEZE of the swing. 0 = off.
-    let push_replan_trig = env_f64("PUSH_REPLAN", 0.0).max(0.0);
-    let push_replan_stand = env_f64("PUSH_REPLAN_STAND", 2.0).max(0.0) as usize;
-    let push_replan_ramp = env_f64("PUSH_REPLAN_RAMP", 2.0).max(0.0) as usize;
-    let push_replan_freeze = env_f64("PUSH_REPLAN_FREEZE", 0.85);
-    let push_replan_max_fwd = env_f64("PUSH_REPLAN_MAX_FWD", 0.35).max(0.0);
-    let push_replan_max_back = env_f64("PUSH_REPLAN_MAX_BACK", 0.30).max(0.0);
-    let push_replan_min_w = env_f64("PUSH_REPLAN_MIN_W", 0.12).max(0.0);
-    let push_replan_hold = env_f64("PUSH_REPLAN_HOLD", 0.06).max(0.0);
+    let push_replan_trig = wcfg.push_replan.trig;
+    let push_replan_stand = wcfg.push_replan.stand;
+    let push_replan_ramp = wcfg.push_replan.ramp;
+    let push_replan_freeze = wcfg.push_replan.freeze;
+    let push_replan_max_fwd = wcfg.push_replan.max_fwd;
+    let push_replan_max_back = wcfg.push_replan.max_back;
+    let push_replan_min_w = wcfg.push_replan.min_w;
+    let push_replan_hold = wcfg.push_replan.hold;
     // PUSH_REPLAN_BACK_ONLY=1: engage only on a backward-dominant error
     // (behind, and more than sideways). PUSH_REPLAN_VMAX [m/s]: never while a
     // VX2 speed command above this is in force (the speed yield re-plans
     // there). Measured 2026-10-21 (tu42, all directions): backward 14 N.s
     // 9 -> 42, but forward / lateral 3-5 members lost each and 0.50 m/s
     // backward 44 -> 21.
-    let push_replan_back_only = flag("PUSH_REPLAN_BACK_ONLY", false);
-    let push_replan_vmax = env_f64("PUSH_REPLAN_VMAX", f64::INFINITY).max(0.0);
+    let push_replan_back_only = wcfg.push_replan.back_only;
+    let push_replan_vmax = wcfg.push_replan.vmax;
     // The current DCM error must also exceed this [m] (a 2 mm error at the
     // start of a long first support carried 0.8 s forward read as 4 cm).
-    let push_replan_emin = env_f64("PUSH_REPLAN_EMIN", 0.015).max(0.0);
+    let push_replan_emin = wcfg.push_replan.emin;
     // Widest outward step [m] from the stance foot.
-    let push_replan_max_w = env_f64("PUSH_REPLAN_MAX_W", 0.40).max(0.0);
+    let push_replan_max_w = wcfg.push_replan.max_w;
     // PUSH_REPLAN_ANKLE="ax,ay": fraction of the sole's half length / width
     // the ankle is credited with holding before the error is carried forward.
     // Measured 2026-10-21: crediting the full 85 mm half length took the
     // backward 14 N.s fallers from 8/12 to 0/12 (a heel CoP does not hold a
     // backward push); laterally it keeps a small error from reading as a 1 m
     // step. Default 0 / 1.
-    let push_replan_ankle: [f64; 2] = {
-        let v: Vec<f64> = std::env::var("PUSH_REPLAN_ANKLE")
-            .ok()
-            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-            .unwrap_or_default();
-        [v.first().copied().unwrap_or(0.0).clamp(0.0, 1.0), v.get(1).copied().unwrap_or(1.0).clamp(0.0, 1.0)]
-    };
+    let push_replan_ankle: [f64; 2] = wcfg.push_replan.ankle;
     // (slice, original footsteps, original DCM plan, original landing, last applied landing)
     let push_replan_state: Option<(usize, FootstepPlan, DcmPlan, na::Vector2<f64>, Option<na::Vector2<f64>>)> = None;
     let push_replan_slice: Option<usize> = None;
@@ -3145,7 +3066,7 @@ fn main() {
     // (slice, inward is +y) latched when the crossing gate opens: once the
     // landing has crossed, `landing_inward` would read the sign the other way.
     let mpc_fs_cross_latched: Option<(usize, bool)> = None;
-    let mpc_footstep_y_in_fwd_trig = env_f64("MPC_FOOTSTEP_Y_IN_FWD_TRIG", 0.005);
+    let mpc_footstep_y_in_fwd_trig = wcfg.mpc_footstep.y_in_fwd_trig;
     // Arm the landing variable only once the DCM error of this single
     // support reaches this value [m] (latched for the rest of the step), the
     // rule the contact_plan adjuster uses (CP_TRIG): an undisturbed step
@@ -3154,26 +3075,23 @@ fn main() {
     // stairs on two independent seeds (pooled 1 better / 10 worse) while
     // the variable itself stays near 0 where the runs part -- the cost is
     // its presence, not its choice. 0 = always armed = shipped.
-    let mpc_footstep_trig = env_f64("MPC_FOOTSTEP_TRIG", 0.0).max(0.0);
+    let mpc_footstep_trig = wcfg.mpc_footstep.trig;
     // (MPC_FOOTSTEP_TRIG_HOLD, arming the following steps too, and
     // VXS_BOX_GAIN, a box grown with the speed command, are removed.)
-    let mpc_footstep_max = [
-        env_f64("MPC_FOOTSTEP_MAX_X", 0.06).max(0.0),
-        env_f64("MPC_FOOTSTEP_MAX_Y", 0.03).max(0.0),
-    ];
-    let mpc_w_pos = env_f64("MPC_W_POS", 20.0).max(0.0);
-    let mpc_w_vel = env_f64("MPC_W_VEL", 4.0).max(0.0);
-    let mpc_w_mom = env_f64("MPC_W_MOM", 2.0).max(0.0);
-    let mpc_w_acc = env_f64("MPC_W_ACC", 6.0).max(0.0);
-    let mpc_w_wrench = env_f64("MPC_W_WRENCH", 2e-4).max(0.0);
-    let mpc_w_smooth = env_f64("MPC_W_SMOOTH", 1e-3).max(0.0);
-    let mpc_sole_authority = flag("MPC_SOLE_AUTHORITY", false);
-    let stair_wrench_dt = env_f64("STAIR_WRENCH_DT", 0.02).max(dt);
-    let stair_wrench_horizon = env_f64("STAIR_WRENCH_N", 8.0).max(2.0) as usize;
-    let stair_wrench_preview_dt = env_f64("STAIR_WRENCH_PREVIEW_DT", 0.05).max(dt);
-    let stair_wrench_low_min = env_f64("STAIR_WRENCH_LOW_MIN", 0.12).clamp(0.0, 0.45);
-    let stair_wrench_blend = env_f64("STAIR_WRENCH_BLEND", 0.25).clamp(0.0, 1.0);
-    let stair_wrench_coupled = flag("STAIR_WRENCH_COUPLED", true);
+    let mpc_footstep_max = wcfg.mpc_footstep.max;
+    let mpc_w_pos = wcfg.mpc.w_pos;
+    let mpc_w_vel = wcfg.mpc.w_vel;
+    let mpc_w_mom = wcfg.mpc.w_mom;
+    let mpc_w_acc = wcfg.mpc.w_acc;
+    let mpc_w_wrench = wcfg.mpc.w_wrench;
+    let mpc_w_smooth = wcfg.mpc.w_smooth;
+    let mpc_sole_authority = wcfg.mpc.sole_authority;
+    let stair_wrench_dt = wcfg.mpc.dt.max(dt);
+    let stair_wrench_horizon = wcfg.mpc.horizon;
+    let stair_wrench_preview_dt = wcfg.mpc.preview_dt.max(dt);
+    let stair_wrench_low_min = wcfg.mpc.low_min;
+    let stair_wrench_blend = wcfg.mpc.blend;
+    let stair_wrench_coupled = wcfg.mpc.coupled;
     let stair_managed_contact = wcfg.managed.on;
     let stair_managed_tangent = wcfg.managed.tangent;
     let stair_managed_rotation = wcfg.managed.rotation;
@@ -3191,7 +3109,7 @@ fn main() {
     // Couple the plant's measured contact set into both the horizon and WBC.
     // An absent foot is recovered kinematically and cannot provide a wrench
     // until ContactCorrection's load hysteresis admits it again.
-    let stair_hybrid_contact = flag("STAIR_HYBRID_CONTACT", true);
+    let stair_hybrid_contact = wcfg.mpc.hybrid_contact;
     // Ramp a NEW contact in over this many seconds, on any ground, with no
     // stair transfer in sight. 0 = off = shipped behaviour.
     //
@@ -3218,10 +3136,9 @@ fn main() {
     // (PHASE_BY_CONTACT / PHASE_EXTEND / PHASE_MIN_FRAC / PHASE_LOAD /
     // PHASE_TICKS, the phase clock advanced by measured contact, are removed;
     // its summary line keeps the zeros it printed when off.)
-    // The control loop's debug prints (`DIAG_REPLAN`, `*_DEBUG`, ...), read
-    // once here.
-    let debug = DebugFlags::from_env();
-    let push_replan_slope_lead = env_f64("PUSH_REPLAN_SLOPE_LEAD", 0.0).max(0.0);
+    // The control loop's debug prints (`DIAG_REPLAN`, `*_DEBUG`, ...).
+    let debug = wcfg.debug;
+    let push_replan_slope_lead = wcfg.push_replan.slope_lead;
 
     // ankle_roll range of motion. The model review measured that holding the
     // sole flat already consumes 82% of the +-20 deg travel, and stepping
@@ -3311,19 +3228,9 @@ fn main() {
     // contact frames are both in hand.
     let diag_mpc_net_cop = [f64::NAN; 2];
     let wrench_mpc_next = 0.0;
-    let mpc_backend_override =
-        std::env::var("MPC_QP_BACKEND")
-            .ok()
-            .map(|name| match name.as_str() {
-                "active_set" => misa_wbc::QpSolver::ActiveSet,
-                "clarabel" => misa_wbc::QpSolver::Clarabel,
-                "proxqp" => misa_wbc::QpSolver::Proxqp,
-                "osqp" => misa_wbc::QpSolver::Osqp,
-                "hpipm" => misa_wbc::QpSolver::Hpipm,
-                _ => panic!("unsupported MPC_QP_BACKEND: {name}"),
-            });
+    let mpc_backend_override = wcfg.mpc.backend;
     // KKT complementarity tolerance of the MPC's solution check (see its use).
-    let mpc_kkt_comp_tol = env_f64("MPC_KKT_COMP_TOL", 1e-6);
+    let mpc_kkt_comp_tol = wcfg.mpc.kkt_comp_tol;
     let act_delay_ticks = env_f64("ACT_DELAY_TICKS", 0.0).max(0.0) as usize;
     let mut act_delay_buf: std::collections::VecDeque<Vec<f64>> = std::collections::VecDeque::new();
     let wrench_mpc_command: Option<[articara::biped::wrench_mpc::Wrench; 2]> = None;
