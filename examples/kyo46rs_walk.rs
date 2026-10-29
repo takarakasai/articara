@@ -1000,6 +1000,166 @@ impl RunMetrics {
     }
 }
 
+/// Where the run writes, besides stdout: TRAJ_CSV (`traj`), and the opt-in
+/// diagnostics -- the `*_CSV` files, the QP / MPC snapshot directories and
+/// the physics-rate audit. Harness state: the controller writes into some of
+/// them on the way, but none of them is read back by it (except that
+/// `qp_runtime_log` / `qp_diag_dir` being set makes the solve keep its
+/// physical rows, see `qp_physical`). Opened together in `open`; a file that
+/// is not asked for is `None`.
+#[cfg(feature = "mujoco")]
+struct DiagSinks {
+    traj: articara::biped::log::TrajLog,
+    /// TICK_AUDIT_CSV: per-joint pre/post state around every plant step.
+    tick_audit: Option<articara::biped::tick_audit::TickAudit>,
+    /// QP_DIAG_DIR: capture immutable task stacks for offline numerical
+    /// diagnosis only (`tick_NNNNNN.json`, numbered by `qp_diag_count`).
+    qp_diag_dir: Option<String>,
+    qp_diag_count: usize,
+    /// QP_CAPTURE_*: opt-in continuous sampling; legacy failure-only capture
+    /// remains default.
+    qp_capture_all: bool,
+    qp_capture_start: f64,
+    qp_capture_end: f64,
+    qp_capture_stride: usize,
+    qp_capture_max: usize,
+    /// QP_RUNTIME_CSV: per tick, the WBC solve's timing and status.
+    qp_runtime_log: Option<Csv>,
+    /// MPC_RUNTIME_CSV: per MPC solve. The MPC update period and the 5 ms
+    /// WBC tick are separate deadlines.
+    mpc_runtime_log: Option<Csv>,
+    /// MOM_DIAG_CSV: opt-in centroidal diagnostic: the arm columns measure
+    /// momentum from arm joint motion, while base-motion inertia remains in
+    /// the total-minus-arm term.
+    mom_diag_log: Option<Csv>,
+    /// QP_WRENCH_CSV: six-axis instrumentation is additive; writes/conversions
+    /// are outside control_ns.
+    qp_wrench_log: Option<Csv>,
+    /// SUBSTEP_LIMIT_AUDIT_JSON: optional physics-rate audit. The normal
+    /// trajectory checks only WBC ticks; the simulator trace already contains
+    /// q, qdot and applied torque after every MuJoCo step, so no plant or
+    /// controller behavior needs to change.
+    substep_audit_path: Option<String>,
+    substep_max_excess: Vec<[f64; 3]>,
+    substep_extrema: Vec<[f64; 4]>,
+    substep_samples: usize,
+    substep_nonfinite: usize,
+    /// COM_PREVIEW_RUNTIME_CSV: per CoM-preview solve.
+    com_preview_runtime: Option<Csv>,
+    /// TRANSFER_DIAG_CSV: optional P0 diagnostic, sampled entirely before
+    /// stepping the plant. A command computed at t is compared with the
+    /// observation at t; its physical response must be evaluated at
+    /// subsequent observation times.
+    transfer_diag: Option<Csv>,
+    /// ANKLE_CBF_DIAG_CSV: opt-in acceleration-level audit at the right
+    /// ankle-roll stop. The CSV samples the state and QP decision in the same
+    /// tick; the plant response appears at later samples, so
+    /// command-vs-response causality stays clear.
+    ankle_cbf_diag: Option<Csv>,
+    /// PREVIEW_TRAJ_CSV: every accepted LIPM CoM-preview solve (the
+    /// bounded-ZMP receding-horizon planner of COM_REPLAN, src/biped/preview.rs),
+    /// one row per horizon sample: the planned ZMP, the predicted CoM at the
+    /// sample end and the reference ZMP the plan was given. For the summary
+    /// videos (MPC_CSV in examples/render_com_squat_video.py).
+    preview_traj_file: Option<Csv>,
+    /// MPC_TRAJ_CSV: one row per wrench-MPC solve with what the MPC
+    /// planned -- the CoM it starts from and aims at, its predicted CoM at the
+    /// end of every node, the net CoP of node 0 and the per-node net-CoP
+    /// reference, each contact's origin and planned normal force, and the
+    /// landing variable (foot, shift). For the summary videos (drawn by
+    /// examples/render_com_squat_video.py with MPC_CSV). The controller and
+    /// TRAJ_CSV are untouched either way.
+    mpc_traj_file: Option<Csv>,
+    /// MPC_DIAG_DIR: every MPC solve's input and config
+    /// (`mpc_NNNNNN.json`, numbered by `mpc_diag_count`).
+    mpc_diag_dir: Option<String>,
+    mpc_diag_count: usize,
+}
+
+/// One opt-in diagnostic CSV.
+#[cfg(feature = "mujoco")]
+type Csv = std::io::BufWriter<std::fs::File>;
+
+#[cfg(feature = "mujoco")]
+impl DiagSinks {
+    /// `traj` and `tick_audit` are made by the caller (TrajLog prints its
+    /// path at that point of the start-up log); the rest is opened here from
+    /// the environment, each CSV with its header line.
+    fn open(
+        traj: articara::biped::log::TrajLog,
+        tick_audit: Option<articara::biped::tick_audit::TickAudit>,
+        substep_audit_path: Option<String>,
+        n_joints: usize,
+    ) -> Self {
+        use std::io::Write;
+        let csv = |key: &str, what: &str, header: &dyn Fn(&mut Csv)| -> Option<Csv> {
+            std::env::var(key).ok().map(|path| {
+                let mut f = std::io::BufWriter::new(std::fs::File::create(path).expect(what));
+                header(&mut f);
+                f
+            })
+        };
+        Self {
+            traj,
+            tick_audit,
+            qp_diag_dir: std::env::var("QP_DIAG_DIR").ok(),
+            qp_diag_count: 0,
+            qp_capture_all: flag("QP_CAPTURE_ALL", false),
+            qp_capture_start: env_f64("QP_CAPTURE_START", 0.0),
+            qp_capture_end: env_f64("QP_CAPTURE_END", f64::INFINITY),
+            qp_capture_stride: env_f64("QP_CAPTURE_STRIDE", 1.0).max(1.0) as usize,
+            qp_capture_max: env_f64("QP_CAPTURE_MAX", 20000.0).max(1.0) as usize,
+            qp_runtime_log: csv("QP_RUNTIME_CSV", "QP_RUNTIME_CSV", &|f| {
+                writeln!(f, "t,solve_ns,check_ns,status,normalized_physical_violation,reset,deadline_miss,control_ns,mpc_age_s,mpc_solves,mpc_failures,prefix_applied,repair_applied,repair_scaled_delta,repair_ns").unwrap();
+            }),
+            mpc_runtime_log: csv("MPC_RUNTIME_CSV", "MPC_RUNTIME_CSV", &|f| {
+                writeln!(f, "t,phase,contact_mask,backend,horizon,update_period_s,solve_ns,deadline_miss,accepted,previous_age_s").unwrap();
+            }),
+            mom_diag_log: csv("MOM_DIAG_CSV", "MOM_DIAG_CSV", &|f| {
+                writeln!(f, "t,h_total_x,h_total_y,h_total_z,h_arm_joint_x,h_arm_joint_y,h_arm_joint_z,h_other_x,h_other_y,h_other_z,fz_measured_l,fz_measured_r,fz_qp_l,fz_qp_r,n_stance").unwrap();
+            }),
+            qp_wrench_log: csv("QP_WRENCH_CSV", "QP_WRENCH_CSV", &|f| {
+                write!(f, "t,side,planned_support,wbc_contact,mpc_valid,planned_valid,wbc_valid,measured_valid,wbc_degraded,mpc_age_s").unwrap();
+                for source in ["planned", "mpc", "wbc", "measured"] {
+                    for component in ["mx", "my", "mz", "fx", "fy", "fz"] { write!(f, ",{source}_{component}").unwrap(); }
+                }
+                writeln!(f).unwrap();
+            }),
+            substep_audit_path,
+            substep_max_excess: vec![[0.0_f64; 3]; n_joints],
+            substep_extrema: vec![[f64::INFINITY, f64::NEG_INFINITY, 0.0, 0.0]; n_joints],
+            substep_samples: 0,
+            substep_nonfinite: 0,
+            com_preview_runtime: csv("COM_PREVIEW_RUNTIME_CSV", "COM_PREVIEW_RUNTIME_CSV", &|f| {
+                writeln!(f, "t,solve_ns,deadline_miss_50ms,accepted,terminal_error_m,applied_lateral,horizon").unwrap();
+            }),
+            transfer_diag: csv("TRANSFER_DIAG_CSV", "transfer diagnostic CSV", &|f| {
+                writeln!(f, "t,dt,bw,phase,high,alpha,stance_mask,measured_mask,mpc_valid,mpc_age,mpc_failed,mpc_ref_l,mpc_ref_r,mpc_fz_l,mpc_fz_r,nominal_world_fz_l,nominal_world_fz_r,qp_world_fz_l,qp_world_fz_r,measured_world_fz_l,measured_world_fz_r,trunk_pitch,trunk_roll,qp_cop_l_x,qp_cop_r_x,measured_cop_l_x,measured_cop_r_x,degraded,ffdc_dz").unwrap();
+            }),
+            ankle_cbf_diag: csv("ANKLE_CBF_DIAG_CSV", "ankle CBF diagnostic CSV", &|f| {
+                writeln!(f, "t,q,v,q_max,cbf_upper,qp_qdd,measured_fz_r,qp_fx_r,qp_fy_r,qp_fz_r,measured_fx_r,measured_fy_r,post_q,post_v,mj_qacc,mj_qfrc_constraint,mj_qfrc_passive,mj_qfrc_actuator,command_tau").unwrap();
+            }),
+            preview_traj_file: csv("PREVIEW_TRAJ_CSV", "PREVIEW_TRAJ_CSV", &|f| {
+                writeln!(f, "t,k,dur,zmp_x,zmp_y,c_x,c_y,rzmp_x,rzmp_y,lo_x,lo_y,hi_x,hi_y").unwrap();
+            }),
+            mpc_traj_file: csv("MPC_TRAJ_CSV", "MPC_TRAJ_CSV", &|f| {
+                let mut h = String::from("t,com_x,com_y,com_z,tgt_x,tgt_y,tgt_z");
+                for k in 0..16 {
+                    h += &format!(",c{k}_x,c{k}_y,c{k}_z");
+                }
+                h += ",cop0_x,cop0_y";
+                for k in 0..16 {
+                    h += &format!(",rcop{k}_x,rcop{k}_y");
+                }
+                h += ",pl_x,pl_y,pl_z,pr_x,pr_y,pr_z,fz_l,fz_r,on_l,on_r,land_foot,land_dx,land_dy,n_nodes";
+                writeln!(f, "{h}").unwrap();
+            }),
+            mpc_diag_dir: std::env::var("MPC_DIAG_DIR").ok(),
+            mpc_diag_count: 0,
+        }
+    }
+}
+
 fn main() {
     use articara::biped::actuate::{
         CommandPolicy, DegradedTally, gravity_plus_posture, write_to_plant,
@@ -1273,15 +1433,6 @@ fn main() {
 
     // ── Control-law knobs ──────────────────────────────────────────────
     let mut solver = Solver::new();
-    // Capture immutable task stacks for offline numerical diagnosis only.
-    let qp_diag_dir = std::env::var("QP_DIAG_DIR").ok();
-    let mut qp_diag_count = 0usize;
-    // Opt-in continuous sampling; legacy failure-only capture remains default.
-    let qp_capture_all = flag("QP_CAPTURE_ALL", false);
-    let qp_capture_start = env_f64("QP_CAPTURE_START", 0.0);
-    let qp_capture_end = env_f64("QP_CAPTURE_END", f64::INFINITY);
-    let qp_capture_stride = env_f64("QP_CAPTURE_STRIDE", 1.0).max(1.0) as usize;
-    let qp_capture_max = env_f64("QP_CAPTURE_MAX", 20000.0).max(1.0) as usize;
     // Additional WBC backends must never bypass the independent acceptance gate.
     // QP_BENCH_GATE also enables the identical gate for existing baselines.
     let qp_gate = flag("QP_BENCH_GATE", false)
@@ -1300,38 +1451,6 @@ fn main() {
     );
     let mut qp_has_good_command = false;
     let mut qp_previous_structure: Option<(Vec<usize>, Vec<(usize, usize, usize)>)> = None;
-    let mut qp_runtime_log = std::env::var("QP_RUNTIME_CSV").ok().map(|p| {
-        use std::io::Write;
-        let mut f = std::io::BufWriter::new(std::fs::File::create(p).expect("QP_RUNTIME_CSV"));
-        writeln!(f, "t,solve_ns,check_ns,status,normalized_physical_violation,reset,deadline_miss,control_ns,mpc_age_s,mpc_solves,mpc_failures,prefix_applied,repair_applied,repair_scaled_delta,repair_ns").unwrap();
-        f
-    });
-    // The MPC update period and the 5 ms WBC tick are separate deadlines.
-    let mut mpc_runtime_log = std::env::var("MPC_RUNTIME_CSV").ok().map(|p| {
-        use std::io::Write;
-        let mut f = std::io::BufWriter::new(std::fs::File::create(p).expect("MPC_RUNTIME_CSV"));
-        writeln!(f, "t,phase,contact_mask,backend,horizon,update_period_s,solve_ns,deadline_miss,accepted,previous_age_s").unwrap();
-        f
-    });
-    // Opt-in centroidal diagnostic: the arm columns measure momentum from arm
-    // joint motion, while base-motion inertia remains in the total-minus-arm term.
-    let mut mom_diag_log = std::env::var("MOM_DIAG_CSV").ok().map(|p| {
-        use std::io::Write;
-        let mut f = std::io::BufWriter::new(std::fs::File::create(p).expect("MOM_DIAG_CSV"));
-        writeln!(f, "t,h_total_x,h_total_y,h_total_z,h_arm_joint_x,h_arm_joint_y,h_arm_joint_z,h_other_x,h_other_y,h_other_z,fz_measured_l,fz_measured_r,fz_qp_l,fz_qp_r,n_stance").unwrap();
-        f
-    });
-    // Six-axis instrumentation is additive; writes/conversions are outside control_ns.
-    let mut qp_wrench_log = std::env::var("QP_WRENCH_CSV").ok().map(|p| {
-        use std::io::Write;
-        let mut f = std::io::BufWriter::new(std::fs::File::create(p).expect("QP_WRENCH_CSV"));
-        write!(f, "t,side,planned_support,wbc_contact,mpc_valid,planned_valid,wbc_valid,measured_valid,wbc_degraded,mpc_age_s").unwrap();
-        for source in ["planned", "mpc", "wbc", "measured"] {
-            for component in ["mx", "my", "mz", "fx", "fy", "fz"] { write!(f, ",{source}_{component}").unwrap(); }
-        }
-        writeln!(f).unwrap();
-        f
-    });
     let feasibility_tol = env_f64("WBC_FEAS_TOL", SolveConfig::default().feasibility_tol);
     // WBCW_<NAME>: the weighted strategy's per-level weights.
     let level_weights = LevelWeights::from_env();
@@ -1682,10 +1801,6 @@ fn main() {
     // the simulator trace already contains q, qdot and applied torque after
     // every MuJoCo step, so no plant or controller behavior needs to change.
     let substep_audit_path = std::env::var("SUBSTEP_LIMIT_AUDIT_JSON").ok();
-    let mut substep_max_excess = vec![[0.0_f64; 3]; rig.robot.joints.len()];
-    let mut substep_extrema = vec![[f64::INFINITY, f64::NEG_INFINITY, 0.0, 0.0]; rig.robot.joints.len()];
-    let mut substep_samples = 0_usize;
-    let mut substep_nonfinite = 0_usize;
     if substep_audit_path.is_some() {
         rig.sim.set_trace_max(rig.sim.trace_len().max(mj_substeps as usize + 1));
     }
@@ -2429,14 +2544,16 @@ fn main() {
         "hip_r_z",
         "stride_max",
     ];
-    let mut log = TrajLog::create(
-        std::env::var("TRAJ_CSV").ok(),
-        prof.log_joints.to_vec(),
-        &extra_cols,
+    // Every output of the run but stdout: TRAJ_CSV, then the opt-in
+    // diagnostics (`DiagSinks`).
+    let mut diag = DiagSinks::open(
+        TrajLog::create(std::env::var("TRAJ_CSV").ok(), prof.log_joints.to_vec(), &extra_cols),
+        std::env::var("TICK_AUDIT_CSV")
+            .ok()
+            .map(|path| articara::biped::tick_audit::TickAudit::create(&path, &rig)),
+        substep_audit_path,
+        rig.robot.joints.len(),
     );
-    let mut tick_audit = std::env::var("TICK_AUDIT_CSV")
-        .ok()
-        .map(|path| articara::biped::tick_audit::TickAudit::create(&path, &rig));
     let mut policy = CommandPolicy::new(
         rig.robot.joints.len(),
         fallback_max_level,
@@ -3114,13 +3231,6 @@ fn main() {
     let mut preview_count = 0u32;
     let mut preview_failures = 0u32;
     let mut preview_error = 0.0;
-    let mut com_preview_runtime = std::env::var("COM_PREVIEW_RUNTIME_CSV").ok().map(|path| {
-        let mut writer = std::io::BufWriter::new(
-            std::fs::File::create(path).expect("COM_PREVIEW_RUNTIME_CSV"),
-        );
-        writeln!(writer, "t,solve_ns,deadline_miss_50ms,accepted,terminal_error_m,applied_lateral,horizon").unwrap();
-        writer
-    });
     let mut landing_retimes = 0u32;
     let mut landing_delay = 0.0;
     // (PHASE_BY_CONTACT / PHASE_EXTEND / PHASE_MIN_FRAC / PHASE_LOAD /
@@ -3201,24 +3311,6 @@ fn main() {
         "COM_XY_JERK_MAX must be positive"
     );
     let mut previous_a_xy: Option<na::Vector2<f64>> = None;
-    // Optional P0 diagnostic: sampled entirely before stepping the plant.
-    // A command computed at t is compared with the observation at t; its
-    // physical response must be evaluated at subsequent observation times.
-    let mut transfer_diag = std::env::var("TRANSFER_DIAG_CSV").ok().map(|path| {
-        let mut file = std::io::BufWriter::new(std::fs::File::create(path).expect("transfer diagnostic CSV"));
-        writeln!(file, "t,dt,bw,phase,high,alpha,stance_mask,measured_mask,mpc_valid,mpc_age,mpc_failed,mpc_ref_l,mpc_ref_r,mpc_fz_l,mpc_fz_r,nominal_world_fz_l,nominal_world_fz_r,qp_world_fz_l,qp_world_fz_r,measured_world_fz_l,measured_world_fz_r,trunk_pitch,trunk_roll,qp_cop_l_x,qp_cop_r_x,measured_cop_l_x,measured_cop_r_x,degraded,ffdc_dz").unwrap();
-        file
-    });
-    // Opt-in acceleration-level audit at the right ankle-roll stop. The CSV
-    // samples the state and QP decision in the same tick; the plant response
-    // appears at later samples, so command-vs-response causality stays clear.
-    let mut ankle_cbf_diag = std::env::var("ANKLE_CBF_DIAG_CSV").ok().map(|path| {
-        let mut file = std::io::BufWriter::new(
-            std::fs::File::create(path).expect("ankle CBF diagnostic CSV"),
-        );
-        writeln!(file, "t,q,v,q_max,cbf_upper,qp_qdd,measured_fz_r,qp_fx_r,qp_fy_r,qp_fz_r,measured_fx_r,measured_fy_r,post_q,post_v,mj_qacc,mj_qfrc_constraint,mj_qfrc_passive,mj_qfrc_actuator,command_tau").unwrap();
-        file
-    });
     let ankle_cbf_indices = rig.actuated().into_iter().find_map(|(ji, vi)| {
         (rig.robot.joints[ji].name == "right_ankle_roll_joint").then(|| {
             (
@@ -3252,45 +3344,10 @@ fn main() {
                 "hpipm" => misa_wbc::QpSolver::Hpipm,
                 _ => panic!("unsupported MPC_QP_BACKEND: {name}"),
             });
-    let mpc_diag_dir = std::env::var("MPC_DIAG_DIR").ok();
     // KKT complementarity tolerance of the MPC's solution check (see its use).
     let mpc_kkt_comp_tol = env_f64("MPC_KKT_COMP_TOL", 1e-6);
     let act_delay_ticks = env_f64("ACT_DELAY_TICKS", 0.0).max(0.0) as usize;
     let mut act_delay_buf: std::collections::VecDeque<Vec<f64>> = std::collections::VecDeque::new();
-    // PREVIEW_TRAJ_CSV=path: every accepted LIPM CoM-preview solve (the
-    // bounded-ZMP receding-horizon planner of COM_REPLAN, src/biped/preview.rs),
-    // one row per horizon sample: the planned ZMP, the predicted CoM at the
-    // sample end and the reference ZMP the plan was given. For the summary
-    // videos (MPC_CSV in examples/render_com_squat_video.py). Unset = no file.
-    let mut preview_traj_file = std::env::var("PREVIEW_TRAJ_CSV").ok().map(|p| {
-        let mut f = std::io::BufWriter::new(std::fs::File::create(&p).expect("PREVIEW_TRAJ_CSV"));
-        use std::io::Write as _;
-        writeln!(f, "t,k,dur,zmp_x,zmp_y,c_x,c_y,rzmp_x,rzmp_y,lo_x,lo_y,hi_x,hi_y").unwrap();
-        f
-    });
-    // MPC_TRAJ_CSV=path: one row per wrench-MPC solve with what the MPC
-    // planned -- the CoM it starts from and aims at, its predicted CoM at the
-    // end of every node, the net CoP of node 0 and the per-node net-CoP
-    // reference, each contact's origin and planned normal force, and the
-    // landing variable (foot, shift). For the summary videos (drawn by
-    // examples/render_com_squat_video.py with MPC_CSV). Unset = no file; the
-    // controller and TRAJ_CSV are untouched either way.
-    let mut mpc_traj_file = std::env::var("MPC_TRAJ_CSV").ok().map(|p| {
-        let mut f = std::io::BufWriter::new(std::fs::File::create(&p).expect("MPC_TRAJ_CSV"));
-        use std::io::Write as _;
-        let mut h = String::from("t,com_x,com_y,com_z,tgt_x,tgt_y,tgt_z");
-        for k in 0..16 {
-            h += &format!(",c{k}_x,c{k}_y,c{k}_z");
-        }
-        h += ",cop0_x,cop0_y";
-        for k in 0..16 {
-            h += &format!(",rcop{k}_x,rcop{k}_y");
-        }
-        h += ",pl_x,pl_y,pl_z,pr_x,pr_y,pr_z,fz_l,fz_r,on_l,on_r,land_foot,land_dx,land_dy,n_nodes";
-        writeln!(f, "{h}").unwrap();
-        f
-    });
-    let mut mpc_diag_count = 0usize;
     let mut wrench_mpc_command: Option<[articara::biped::wrench_mpc::Wrench; 2]> = None;
     // Preserve the physical origin/axes of the held MPC forecast for diagnostic shifts.
     let mut wrench_mpc_frames: Option<[articara::biped::wrench_mpc::Contact; 2]> = None;
@@ -4542,7 +4599,7 @@ fn main() {
                         preview_v = plan.velocity[0];
                         preview_error = plan.terminal_error;
                         preview_count += 1;
-                        if let Some(f) = preview_traj_file.as_mut() {
+                        if let Some(f) = diag.preview_traj_file.as_mut() {
                             use std::io::Write as _;
                             for (k, smp) in samples.iter().enumerate() {
                                 let (Some(z), Some(c)) = (plan.zmp.get(k), plan.com.get(k)) else { break };
@@ -4561,7 +4618,7 @@ fn main() {
                         preview_failures += 1;
                     }
                 }
-                if let Some(writer) = &mut com_preview_runtime {
+                if let Some(writer) = &mut diag.com_preview_runtime {
                     writeln!(writer, "{t:.6},{preview_solve_ns},{},{},{:.9},{},{}",
                         u8::from(preview_solve_ns > 50_000_000),
                         u8::from(preview_accepted),
@@ -5211,7 +5268,7 @@ fn main() {
                 if let Some(backend) = mpc_backend_override {
                     config.qp.solver = backend;
                 }
-                if let Some(dir) = &mpc_diag_dir {
+                if let Some(dir) = &diag.mpc_diag_dir {
                     let capture_start = std::time::Instant::now();
                     let contacts: Vec<_> = input.contacts.iter().map(|c| serde_json::json!({
                         "position":c.position.as_slice(),"rotation":c.rotation.as_slice(),"cop_half":c.cop_half})).collect();
@@ -5230,11 +5287,11 @@ fn main() {
                             "acceleration_weight":config.acceleration_weight,"wrench_weight":config.wrench_weight,"smooth_weight":config.smooth_weight,"validate_solution":config.validate_solution}});
                     std::fs::create_dir_all(dir).expect("MPC_DIAG_DIR");
                     std::fs::write(
-                        format!("{dir}/mpc_{mpc_diag_count:06}.json"),
+                        format!("{dir}/mpc_{:06}.json", diag.mpc_diag_count),
                         serde_json::to_vec(&dump).unwrap(),
                     )
                     .expect("MPC snapshot");
-                    mpc_diag_count += 1;
+                    diag.mpc_diag_count += 1;
                     mpc_capture_ns = capture_start.elapsed().as_nanos();
                 }
                 let previous_age = diag_mpc_time.map_or(-1.0, |stamp| t - stamp);
@@ -5245,7 +5302,7 @@ fn main() {
                     None, // no warm start (MPC_QP_WARM removed)
                 );
                 let mpc_solve_ns = mpc_solve_start.elapsed().as_nanos();
-                if let Some(file) = &mut mpc_runtime_log {
+                if let Some(file) = &mut diag.mpc_runtime_log {
                     use std::io::Write;
                     let mask = u8::from(stance_sides.contains(&0))
                         | (u8::from(stance_sides.contains(&1)) << 1);
@@ -5282,10 +5339,10 @@ fn main() {
                                 [f64::NAN; 2]
                             };
                         }
-                        if qp_wrench_log.is_some() {
+                        if diag.qp_wrench_log.is_some() {
                             wrench_mpc_frames = Some(input.contacts.clone());
                         }
-                        if let Some(f) = mpc_traj_file.as_mut() {
+                        if let Some(f) = diag.mpc_traj_file.as_mut() {
                             use std::io::Write as _;
                             let nan = f64::NAN;
                             let mut row = format!(
@@ -6181,7 +6238,7 @@ fn main() {
         let p_swing_diag = p_swing.clone();
         // Preserve original physical rows before task weighting / HQP slack.
         let qp_physical =
-            (qp_diag_dir.is_some() || qp_gate || qp_runtime_log.is_some()).then(|| {
+            (diag.qp_diag_dir.is_some() || qp_gate || diag.qp_runtime_log.is_some()).then(|| {
                 let mut units = vec!["N*m"; 2 * na_count];
                 let mut scales = vec![(total_mass * G * sole_half_l).max(1.0); 2 * na_count];
                 if jlim {
@@ -6432,17 +6489,17 @@ fn main() {
         }
         let degraded = !matches!(sol.status, misa_wbc::SolveStatus::Optimal);
         let qp_capture_timer = std::time::Instant::now();
-        if let Some(dir) = &qp_diag_dir {
+        if let Some(dir) = &diag.qp_diag_dir {
             let legacy_failure = t >= 2.0
-                && qp_diag_count < 8
+                && diag.qp_diag_count < 8
                 && matches!(sol.status,
                 misa_wbc::SolveStatus::Degraded { level, .. } if level_names.get(level) == Some(&"swing"));
-            let continuous = qp_capture_all
-                && t >= qp_capture_start
-                && t <= qp_capture_end
-                && tick % qp_capture_stride == 0
-                && qp_diag_count < qp_capture_max;
-            if continuous || (!qp_capture_all && legacy_failure) {
+            let continuous = diag.qp_capture_all
+                && t >= diag.qp_capture_start
+                && t <= diag.qp_capture_end
+                && tick % diag.qp_capture_stride == 0
+                && diag.qp_diag_count < diag.qp_capture_max;
+            if continuous || (!diag.qp_capture_all && legacy_failure) {
                 let matrix = |m: &na::DMatrix<f64>| serde_json::json!({"rows":m.nrows(),"cols":m.ncols(),"data":m.as_slice()});
                 let tasks: Vec<_> = levels.iter().zip(&level_names).map(|(task,name)| serde_json::json!({
                     "name":name,"a":matrix(&task.a),"b":task.b.as_slice(),"d":matrix(&task.d),"f":task.f.as_slice(),
@@ -6468,11 +6525,11 @@ fn main() {
                     "check_ns":qp_check_ns,"normalized_physical_violation":qp_physical_violation});
                 std::fs::create_dir_all(dir).expect("QP_DIAG_DIR");
                 std::fs::write(
-                    format!("{dir}/tick_{qp_diag_count:06}.json"),
+                    format!("{dir}/tick_{:06}.json", diag.qp_diag_count),
                     serde_json::to_vec(&dump).unwrap(),
                 )
                 .expect("write QP snapshot");
-                qp_diag_count += 1;
+                diag.qp_diag_count += 1;
             }
         }
         let qp_capture_ns = qp_capture_timer.elapsed().as_nanos();
@@ -6594,7 +6651,7 @@ fn main() {
         } else {
             [f64::NAN; 2]
         };
-        if let Some(file) = transfer_diag.as_mut() {
+        if let Some(file) = diag.transfer_diag.as_mut() {
             let mut nominal = [0.0; 2];
             let mut mask = 0u8;
             for (slot, &side) in stance_sides.iter().enumerate() {
@@ -7021,8 +7078,8 @@ fn main() {
             .find(|p| p.link_name == push.link)
             .map(|p| [p.force[0], p.force[1]])
             .unwrap_or([0.0, 0.0]);
-        let audit_pre = tick_audit.as_ref().map(|audit| audit.sample(&rig));
-        if let Some(file) = &mut qp_runtime_log {
+        let audit_pre = diag.tick_audit.as_ref().map(|audit| audit.sample(&rig));
+        if let Some(file) = &mut diag.qp_runtime_log {
             use std::io::Write;
             let control_ns = qp_control_start
                 .elapsed()
@@ -7032,7 +7089,7 @@ fn main() {
             writeln!(file, "{t:.9},{qp_solve_ns},{qp_check_ns},\"{:?}\",{qp_physical_violation:.12e},{qp_reset},{},{control_ns},{},{wrench_mpc_solves},{wrench_mpc_failures},{prefix_applied},{repair_applied},{repair_scaled_delta:.12e},{repair_ns}", sol.status,
                 control_ns > (dt * 1e9) as u128, diag_mpc_time.map_or(-1.0, |stamp| t-stamp)).unwrap();
         }
-        if let Some(file) = &mut qp_wrench_log {
+        if let Some(file) = &mut diag.qp_wrench_log {
             use articara::biped::log::contact_wrench_in_sole;
             use std::io::Write;
             // All four streams are expressed about the same current physical sole
@@ -7129,30 +7186,30 @@ fn main() {
             write_to_plant(&mut rig, ctrl_mode, &robot_taus, &extracted.qddot, v, dt);
         }
         rig.step(mj_substeps);
-        if substep_audit_path.is_some() {
+        if diag.substep_audit_path.is_some() {
             let tail = rig.sim.trace_len().saturating_sub(mj_substeps as usize);
             for frame in rig.sim.trace().skip(tail) {
-                substep_samples += 1;
+                diag.substep_samples += 1;
                 for (ji, joint) in rig.robot.joints.iter().enumerate() {
                     if joint.joint_type != "revolute" { continue; }
                     let (q, qd, tau) = (frame.q[ji], frame.qvel[ji], frame.tau[ji]);
                     if !q.is_finite() || !qd.is_finite() || !tau.is_finite() {
-                        substep_nonfinite += 1;
+                        diag.substep_nonfinite += 1;
                         continue;
                     }
-                    let extrema = &mut substep_extrema[ji];
+                    let extrema = &mut diag.substep_extrema[ji];
                     extrema[0] = extrema[0].min(q);
                     extrema[1] = extrema[1].max(q);
                     extrema[2] = extrema[2].max(qd.abs());
                     extrema[3] = extrema[3].max(tau.abs());
-                    let excess = &mut substep_max_excess[ji];
+                    let excess = &mut diag.substep_max_excess[ji];
                     excess[0] = excess[0].max((joint.lower - q).max(q - joint.upper).max(0.0));
                     excess[1] = excess[1].max((qd.abs() - joint.velocity).max(0.0));
                     excess[2] = excess[2].max((tau.abs() - joint.effort).max(0.0));
                 }
             }
         }
-        if let (Some(audit), Some(pre)) = (tick_audit.as_mut(), audit_pre.as_ref()) {
+        if let (Some(audit), Some(pre)) = (diag.tick_audit.as_mut(), audit_pre.as_ref()) {
             // step() refreshes MuJoCo with forward(): these are post-state
             // forces. Only f_w is used, independent of stale `data` CoP.
             let last = measure_contacts(&rig, data, friction_mu);
@@ -7168,7 +7225,7 @@ fn main() {
             );
         }
 
-        if let (Some(file), Some((mi, vi, ji, mjvi))) = (ankle_cbf_diag.as_mut(), ankle_cbf_indices)
+        if let (Some(file), Some((mi, vi, ji, mjvi))) = (diag.ankle_cbf_diag.as_mut(), ankle_cbf_indices)
         {
             let row = vi - 6;
             let position = q[rig.model.q_idx[mi]];
@@ -7193,7 +7250,7 @@ fn main() {
             ).unwrap();
         }
 
-        if log.is_enabled() {
+        if diag.traj.is_enabled() {
             let foot_z = rig.sim.body_world_position(prof.foot_links[0]).unwrap()[2];
             let foot_vz = rig
                 .sim
@@ -7335,7 +7392,7 @@ fn main() {
                 hip_z[1],
                 stride_max_now,
             ];
-            if let Some(file) = &mut mom_diag_log {
+            if let Some(file) = &mut diag.mom_diag_log {
                 use std::io::Write;
                 let ag = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, &st.q);
                 let h = &ag * v_dvec;
@@ -7389,7 +7446,7 @@ fn main() {
                 taus: &robot_taus,
                 extra: &extra,
             };
-            log.write(&rig, &row);
+            diag.traj.write(&rig, &row);
         }
 
         if !m.fell {
@@ -7850,24 +7907,24 @@ fn main() {
             );
         }
     }
-    if let Some(path) = substep_audit_path {
+    if let Some(path) = diag.substep_audit_path {
         let joints: Vec<_> = rig.robot.joints.iter().enumerate()
             .filter(|(_, joint)| joint.joint_type == "revolute")
             .map(|(ji, joint)| serde_json::json!({
                 "name": joint.name, "limits": {"lower_rad": joint.lower, "upper_rad": joint.upper,
                     "velocity_rad_s": joint.velocity, "effort_nm": joint.effort},
-                "observed": {"min_q_rad": substep_extrema[ji][0], "max_q_rad": substep_extrema[ji][1],
-                    "max_abs_qd_rad_s": substep_extrema[ji][2], "max_abs_tau_nm": substep_extrema[ji][3]},
-                "excess": {"position_rad": substep_max_excess[ji][0],
-                    "velocity_rad_s": substep_max_excess[ji][1], "effort_nm": substep_max_excess[ji][2]}
+                "observed": {"min_q_rad": diag.substep_extrema[ji][0], "max_q_rad": diag.substep_extrema[ji][1],
+                    "max_abs_qd_rad_s": diag.substep_extrema[ji][2], "max_abs_tau_nm": diag.substep_extrema[ji][3]},
+                "excess": {"position_rad": diag.substep_max_excess[ji][0],
+                    "velocity_rad_s": diag.substep_max_excess[ji][1], "effort_nm": diag.substep_max_excess[ji][2]}
             })).collect();
-        let passed = substep_nonfinite == 0 && substep_samples == n_ticks * mj_substeps as usize
+        let passed = diag.substep_nonfinite == 0 && diag.substep_samples == n_ticks * mj_substeps as usize
             && rig.robot.joints.iter().enumerate()
                 .filter(|(_, joint)| joint.joint_type == "revolute")
-                .all(|(ji, _)| substep_max_excess[ji] == [0.0; 3]);
+                .all(|(ji, _)| diag.substep_max_excess[ji] == [0.0; 3]);
         let report = serde_json::json!({"schema": 1, "scope": "MuJoCo physics-step trace after each step",
             "physics_dt_s": mj_dt, "expected_samples": n_ticks * mj_substeps as usize,
-            "samples": substep_samples, "nonfinite_values": substep_nonfinite,
+            "samples": diag.substep_samples, "nonfinite_values": diag.substep_nonfinite,
             "passed": passed, "joints": joints});
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).expect("SUBSTEP_LIMIT_AUDIT_JSON");
     }
