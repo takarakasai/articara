@@ -714,15 +714,6 @@ fn main() {
         !mpc_gate || ctrl_mode == CtrlMode::Torque,
         "MPC_BENCH_GATE requires torque control"
     );
-    // Experimental use of an independently checked prefix when only a
-    // lower-priority HQP refinement fails. The command policy still receives
-    // the true degraded status; FALLBACK_LEVEL decides whether to apply it.
-    let prefix_min_level = env_f64("WBC_PREFIX_MIN_LEVEL", 999.0).max(0.0) as usize;
-    let repair_original = flag("WBC_REPAIR_ORIGINAL", false);
-    assert!(
-        !repair_original || qp_gate,
-        "WBC_REPAIR_ORIGINAL requires QP_BENCH_GATE"
-    );
     let mut qp_has_good_command = false;
     let mut qp_previous_structure: Option<(Vec<usize>, Vec<(usize, usize, usize)>)> = None;
     let mut qp_runtime_log = std::env::var("QP_RUNTIME_CSV").ok().map(|p| {
@@ -757,29 +748,20 @@ fn main() {
         writeln!(f).unwrap();
         f
     });
-    // Optional objective term (prox_weight/2)*||x-x_previous||^2, default 0.
-    // This changes the mathematical objective; it is independent of pure
-    // workspace/primal-dual warm starts, which can be used with weight 0.
-    // Numerical comparisons and the independent original-QP gate require 0.
-    let prox_weight = env_f64("PROX_WEIGHT", 0.0);
-    let qp_reset_every_tick = flag("WBC_QP_RESET_EVERY_TICK", false);
     let feasibility_tol = env_f64("WBC_FEAS_TOL", SolveConfig::default().feasibility_tol);
     assert!(
         feasibility_tol.is_finite() && feasibility_tol > 0.0,
         "WBC_FEAS_TOL must be positive and finite"
     );
     let mut cfg = SolveConfig {
-        prox_weight,
         feasibility_tol,
         validation_tol: qp_gate.then_some(1e-6),
-        hard_first_inequalities: flag("WBC_HARD_PHYSICAL", false),
         ..SolveConfig::default()
     };
     // Priority resolution. Default = the strict null-space cascade (shipped).
     // `weighted` = one QP with level k>=1 weighted WBC_WEIGHT_RATIO^-(k-1),
     // level 0 hard (misa_wbc::HqpStrategy::WeightedQp) -- plan v2 P4.
     let weighted_levels = std::env::var("WBC_STRATEGY").as_deref() == Ok("weighted");
-    let weighted_off_stairs = flag("WBC_WEIGHTED_OFF_STAIRS", false);
     match std::env::var("WBC_STRATEGY").as_deref() {
         Ok("weighted") => {
             // Per-task weights are applied to the levels themselves (see
@@ -816,118 +798,36 @@ fn main() {
     let jlim_alpha2 = env_f64("JLIM_ALPHA2", 10.0);
     let jlim_alpha3 = env_f64("JLIM_ALPHA3", 10.0);
     let jlim_amax = env_f64("JLIM_AMAX", 50.0);
-    // Optional diagnostic operating envelope for shoulder pitch.  This uses
-    // the same hard CBF as the physical joint limits, but intersects the URDF
-    // range with a symmetric band around the spawn/posture seed.  It answers
-    // whether stair success actually requires the roughly 100 degree arm
-    // excursions seen in the unconstrained solution.  Zero keeps the old
-    // physical-limit-only behavior.
-    let arm_pitch_band = env_f64("ARM_PITCH_BAND", 0.0);
-    let arm_pitch_vmax = env_f64("ARM_PITCH_VMAX", 0.0);
-    let arm_pitch_amax = env_f64("ARM_PITCH_AMAX", 0.0);
-    assert!(
-        arm_pitch_band.is_finite() && arm_pitch_band >= 0.0,
-        "ARM_PITCH_BAND must be finite and non-negative"
-    );
-    assert!(
-        arm_pitch_vmax.is_finite() && arm_pitch_vmax >= 0.0,
-        "ARM_PITCH_VMAX must be finite and non-negative"
-    );
-    assert!(
-        arm_pitch_amax.is_finite() && arm_pitch_amax >= 0.0,
-        "ARM_PITCH_AMAX must be finite and non-negative"
-    );
-    let mut jlim_q_min = rig.q_min.clone();
-    let mut jlim_q_max = rig.q_max.clone();
     let mut jlim_v_max = rig.v_max.clone();
-    let mut jlim_a_max = na::DVector::from_element(na_count, jlim_amax);
-    // Operate the CBF INSIDE the mechanical limits, for EVERY joint. Without
-    // this, widening a joint's URDF range widens the safety constraint with
-    // it, so the machine gains permission rather than margin -- measured by
-    // the Codex thread, ankle_roll +-20 -> +-30 -> +-40 deg made the in-place
-    // test fall EARLIER at every widening. Reserving a band the controller
-    // will not enter is what makes a wider mechanism a SAFER one, and it is
-    // the prerequisite for the morphology study's wider ankle.
-    // (`ARM_PITCH_BAND` below narrows the shoulders further, and still wins.)
-    let jlim_q_margin = env_f64("JLIM_Q_MARGIN", 0.0).max(0.0);
+    // Slow the CBF's velocity limit below the mechanical one. (The position
+    // band JLIM_Q_MARGIN that shared this block was not adopted and is
+    // removed; the message keeps its 0 deg.)
     let jlim_v_frac = env_f64("JLIM_V_FRAC", 1.0).clamp(0.05, 1.0);
-    if jlim_q_margin > 0.0 || jlim_v_frac < 1.0 {
-        assert!(jlim, "JLIM_Q_MARGIN / JLIM_V_FRAC require JLIM=1");
+    if jlim_v_frac < 1.0 {
+        assert!(jlim, "JLIM_V_FRAC requires JLIM=1");
         for row in 0..na_count {
-            let mid = 0.5 * (jlim_q_min[row] + jlim_q_max[row]);
-            let m = jlim_q_margin.min(0.45 * (jlim_q_max[row] - jlim_q_min[row]));
-            jlim_q_min[row] = (jlim_q_min[row] + m).min(mid);
-            jlim_q_max[row] = (jlim_q_max[row] - m).max(mid);
             jlim_v_max[row] *= jlim_v_frac;
         }
         println!(
             "CBF operating band: {:.1} deg inside every position stop, v x{:.2}",
-            jlim_q_margin.to_degrees(),
+            0.0,
             jlim_v_frac
         );
     }
-    if arm_pitch_band > 0.0 || arm_pitch_vmax > 0.0 || arm_pitch_amax > 0.0 {
-        assert!(jlim, "shoulder operating limits require JLIM=1");
-        let mut narrowed = 0usize;
-        for (ji, vi) in rig.actuated() {
-            if rig.robot.joints[ji].name.ends_with("shoulder_pitch_joint") {
-                let row = vi - 6;
-                let centre = rig.q_seed[ji];
-                if arm_pitch_band > 0.0 {
-                    jlim_q_min[row] = jlim_q_min[row].max(centre - arm_pitch_band);
-                    jlim_q_max[row] = jlim_q_max[row].min(centre + arm_pitch_band);
-                }
-                if arm_pitch_vmax > 0.0 {
-                    jlim_v_max[row] = jlim_v_max[row].min(arm_pitch_vmax);
-                }
-                if arm_pitch_amax > 0.0 {
-                    jlim_a_max[row] = jlim_a_max[row].min(arm_pitch_amax);
-                }
-                assert!(
-                    jlim_q_min[row] < jlim_q_max[row],
-                    "ARM_PITCH_BAND leaves no range for {}",
-                    rig.robot.joints[ji].name
-                );
-                narrowed += 1;
-            }
-        }
-        assert!(
-            narrowed == 2,
-            "ARM_PITCH_BAND expected two shoulder pitch joints, found {narrowed}"
-        );
-        println!(
-            "shoulder pitch operating limits: band={} deg  vmax={} rad/s  amax={} rad/s^2",
-            if arm_pitch_band > 0.0 {
-                arm_pitch_band.to_degrees()
-            } else {
-                f64::INFINITY
-            },
-            if arm_pitch_vmax > 0.0 {
-                arm_pitch_vmax
-            } else {
-                f64::INFINITY
-            },
-            if arm_pitch_amax > 0.0 {
-                arm_pitch_amax
-            } else {
-                f64::INFINITY
-            }
-        );
-    }
     let jlim_cfg = tasks::JointLimitCbf {
-        q_min: jlim_q_min,
-        q_max: jlim_q_max,
+        q_min: rig.q_min.clone(),
+        q_max: rig.q_max.clone(),
         v_max: jlim_v_max,
-        a_max: jlim_a_max,
+        a_max: na::DVector::from_element(na_count, jlim_amax),
         alpha1: na::DVector::from_element(na_count, jlim_alpha1),
         alpha2: na::DVector::from_element(na_count, jlim_alpha2),
         alpha3: na::DVector::from_element(na_count, jlim_alpha3),
     };
     let friction_mu: f64 = env_f64("friction_mu", mu_ground * prof.friction_margin);
     let kp_com = env_f64("KP_COM", 300.0);
-    let mut kd_com = env_f64("KD_COM", 80.0);
+    let kd_com = env_f64("KD_COM", 80.0);
     let kp_trunk = env_f64("KP_TRUNK", 200.0);
-    let mut kd_trunk = env_f64("KD_TRUNK", 40.0);
+    let kd_trunk = env_f64("KD_TRUNK", 40.0);
     let kp_post = env_f64("KP_POST", 100.0);
     let kd_post = env_f64("KD_POST", 20.0);
     let use_post = flag("POST", true);
@@ -1118,18 +1018,13 @@ fn main() {
     let mut mom_cmp_peak = 0.0_f64;
     let use_trunk = flag("TRUNK", true);
     let trunk_sign = env_f64("TRUNK_SIGN", 1.0);
-    let trunk_dead = env_f64("TRUNK_DEAD", 0.0);
-    let trunk_late = flag("TRUNK_LATE", false);
     let eom_hard = flag("EOM_HARD", true);
     let cop_frac = env_f64("COP_FRAC", 1.0);
     let hold_kp = env_f64("HOLD_KP", prof.hold_kp);
     let hold_kd = env_f64("HOLD_KD", prof.hold_kd);
     let hold_bridge = env_f64("HOLD_BRIDGE", 8.0) as u32;
     let fallback_max_level = env_f64("FALLBACK_LEVEL", 999.0) as usize;
-    let hold_last = flag("HOLD_LAST", false);
-    let blend_ticks = env_f64("BLEND_TICKS", 0.0) as u32;
     let anchor_leak = env_f64("ANCHOR_LEAK", 0.2);
-    let anchor_leak_rot = env_f64("ANCHOR_LEAK_ROT", 0.0);
     // Contact-stabiliser (Baumgarte) gain. 1600 was picked for a two-foot
     // stance and concentrated on one foot it kicks the robot off the ground --
     // the same finding that fixed G1's single-leg stance (6ba64d2). Measured
@@ -1149,7 +1044,6 @@ fn main() {
     // pair drifted apart in the first place: kp_c=400 with the old kd_c=80
     // gives 4 steps, and the same kp_c with 2*sqrt(kp_c) gives 9.
     let kd_c = env_f64("KD_CONTACT", 2.0 * kp_c.sqrt());
-    let no_patch = flag("NO_PATCH", false);
 
     // Swing. kp is split by axis: z is clearance and must not scuff, x/y is
     // placement, and while the stance leg is paying the reaction for both it
@@ -1379,41 +1273,6 @@ fn main() {
     // -- measured 2026-10-05: Z_COM=0.66 took every descent below 6 cm to
     // 0/48. 0 = off = bit-identical.
     let z_com = env_f64("Z_COM", com0.z + env_f64("Z_COM_OFFSET", 0.0));
-    // Carry a centroidal DAMPING gain across robots by the LIPM timescale.
-    //
-    // Task-space gains here are absolute (1/s^2 for kp, 1/s for kd), so a
-    // recipe does not transfer: the kyo46rs gains put G1 on the floor in two
-    // steps. Setting `GAIN_OMEGA_REF` to the omega the gains were tuned at
-    // (kyo46rs: 5.379) scales kd by omega/omega_ref. 0 = off = shipped.
-    //
-    // Only the centroidal damping, because that is all the measurement
-    // supports. Against the G1 CEM optimum (doc/from_claude/
-    // 20260919_g1_transfer_probe.md), omega ratio 0.691:
-    //
-    //     KD_COM    predicted 55.3, found 54.5   (x0.99)
-    //     KD_TRUNK  predicted 27.6, found 24.4   (x0.88)
-    //     KD_SWING  predicted 27.6, found 45.0   (x1.63)  <- excluded
-    //     KP_COM    predicted 143,  found 355    (x2.48)  <- excluded
-    //     KP_SWING  predicted 191,  found 340    (x1.78)  <- excluded
-    //     KP_TRUNK  predicted 95,   found 185    (x1.94)  <- excluded
-    //
-    // The stiffnesses come out near their UNSCALED values, which reads as the
-    // realizable stiffness being set by torque over inertia rather than by the
-    // pendulum -- so scaling them by omega is not just unsupported, it is
-    // pointing the wrong way. One robot pair, one optimum: treat as a working
-    // rule, not a law.
-    let gain_omega_ref = env_f64("GAIN_OMEGA_REF", 0.0).max(0.0);
-    if gain_omega_ref > 0.0 {
-        let scale = (G / z_com).sqrt() / gain_omega_ref;
-        kd_com *= scale;
-        kd_trunk *= scale;
-        println!(
-            "GAIN_OMEGA_REF={gain_omega_ref}: omega={:.3}, centroidal kd x{scale:.3} \
-             (KD_COM {kd_com:.1}, KD_TRUNK {:.1})",
-            (G / z_com).sqrt(),
-            kd_trunk,
-        );
-    }
     // How far the ZMP is asked to travel laterally, as a fraction of the
     // half stance width. 1.0 is true single support (all load on one sole);
     // anything less is only reachable with both feet down, so it is a W1
@@ -2008,13 +1867,13 @@ fn main() {
         kp_c,
         kd_c,
         anchor_leak,
-        anchor_leak_rot,
+        anchor_leak_rot: 0.0,
         sole_offset_local: [prof.sole_centre_x, 0.0, -prof.sole_below_origin],
         friction_mu,
         cop_half: (sole_half_l * cop_frac, sole_half_w * cop_frac),
         mu_torsion: 0.05,
         f_max_per_foot,
-        no_patch,
+        no_patch: false,
         dt,
     };
 
@@ -2140,8 +1999,8 @@ fn main() {
         rig.robot.joints.len(),
         fallback_max_level,
         hold_bridge,
-        hold_last,
-        blend_ticks,
+        false, // hold_last (HOLD_LAST, not adopted)
+        0,     // blend_ticks (BLEND_TICKS, not adopted)
     );
     let mut tally = DegradedTally::new();
     let mut anchors = Anchors::new();
@@ -2530,10 +2389,6 @@ fn main() {
     let stair_zone_crouch = env_f64("STAIR_ZONE_CROUCH", 0.0).clamp(0.0, 0.15);
     let stair_crouch_lead = env_f64("STAIR_ZONE_CROUCH_LEAD", 0.30).max(0.0);
     let stair_crouch_tail = env_f64("STAIR_ZONE_CROUCH_TAIL", 0.60).max(0.0);
-    // How far past the landing start the STRICT cascade stays in charge
-    // under WBC_WEIGHTED_OFF_STAIRS. Defaults to the crouch tail (the
-    // behaviour measured first).
-    let weighted_zone_tail = env_f64("WBC_WEIGHTED_ZONE_TAIL", stair_crouch_tail).max(0.0);
     let mut n_wait_hold = 0u32;
     // Per side: the DOUBLE-SUPPORT slice that follows a certified landing.
     // The foot is a planned contact for that slice and is re-admitted
@@ -7067,7 +6922,7 @@ fn main() {
             bt::TrunkGains {
                 kp: kp_trunk,
                 kd: kd_trunk,
-                deadband: trunk_dead,
+                deadband: 0.0,
                 sign: trunk_sign,
                 kp_yaw,
                 kd_yaw,
@@ -7944,14 +7799,12 @@ fn main() {
                     units.extend(vec!["rad/s^2"; 2 * na_count]);
                     scales.extend(vec![1.0; 2 * na_count]);
                 }
-                if !contact_cfg.no_patch {
-                    for _ in &stance_sides {
-                        units.extend([
-                            "N", "N", "N", "N", "N", "N", "N*m", "N*m", "N*m", "N*m", "N*m", "N*m",
-                        ]);
-                        scales.extend(vec![(total_mass * G).max(1.0); 6]);
-                        scales.extend(vec![(total_mass * G * sole_half_l).max(1.0); 6]);
-                    }
+                for _ in &stance_sides {
+                    units.extend([
+                        "N", "N", "N", "N", "N", "N", "N*m", "N*m", "N*m", "N*m", "N*m", "N*m",
+                    ]);
+                    scales.extend(vec![(total_mass * G).max(1.0); 6]);
+                    scales.extend(vec![(total_mass * G * sole_half_l).max(1.0); 6]);
                 }
                 // Optional per-foot normal force floor follows the contact rows.
                 while units.len() < p0.task.d.nrows() {
@@ -8037,14 +7890,9 @@ fn main() {
             (false, false, true) => "com+arm",
             (false, false, false) => "com",
         });
-        let mut p2_late = None;
         if use_trunk && !(coupled_active && stair_wrench_trunk_coupled) {
-            if trunk_late {
-                p2_late = Some(p2);
-            } else {
-                levels.push(p2);
-                level_names.push("trunk");
-            }
+            levels.push(p2);
+            level_names.push("trunk");
         }
         let mut push_mom = |at: &str,
                             levels: &mut Vec<misa_wbc::Task>,
@@ -8103,10 +7951,6 @@ fn main() {
             &mut level_names,
             &mut mom_pending,
         );
-        if let Some(pt) = p2_late {
-            levels.push(pt);
-            level_names.push("trunk(late)");
-        }
         // Load-split damping (see CONTACT_FZ_RATE above). Row 5 of each
         // sole selection is that foot's normal force.
         if contact_fz_rate > 0.0 && stance.len() > 1 && !p0.sole_sel.is_empty() {
@@ -8138,22 +7982,10 @@ fn main() {
         // first step or before it). Override one with WBCW_<NAME> where NAME
         // is the level name upper-cased with non-alphanumerics as '_'
         // (e.g. WBCW_COM, WBCW_SWING, WBCW_POSTURE_MOMENTUM).
-        // WBC_WEIGHTED_OFF_STAIRS=1: the weighted QP only while the feet are
-        // outside the stair zone (the zone STAIR_ZONE_CROUCH uses); inside
-        // it the strict cascade the stair machinery was built on. Measured
-        // 2026-09-24: weighted everywhere = 112/112 on the flat push bench
-        // but 0/192 on the stairs.
-        let weighted_now = weighted_levels
-            && !(weighted_off_stairs
-                && stairs.as_ref().is_some_and(|st| {
-                    let x = steps.mid_xy().x;
-                    x >= st.start - stair_crouch_lead && x <= st.landing_start() + weighted_zone_tail
-                }));
-        let mut cfg_now = cfg.clone();
-        if weighted_levels && !weighted_now {
-            cfg_now.strategy = misa_wbc::HqpStrategy::NullSpace;
-        }
-        if weighted_now {
+        // (WBC_WEIGHTED_OFF_STAIRS, the strict cascade inside the stair
+        // zone, was not adopted: weighted everywhere = 112/112 on the flat
+        // push bench but 0/192 on the stairs, measured 2026-09-24; removed.)
+        if weighted_levels {
             for (k, lvl) in levels.iter_mut().enumerate().skip(1) {
                 let name = level_names.get(k).copied().unwrap_or("");
                 let key: String = name
@@ -8163,7 +7995,7 @@ fn main() {
                 let default = match name {
                     "com" | "com+momentum" | "com+arm" | "com+momentum+arm" | "com+momentum+wrench" => 1.0,
                     "swing" | "contact recovery" => 1.0,
-                    "trunk" | "trunk(late)" => 0.3,
+                    "trunk" => 0.3,
                     "momentum" => 0.1,
                     "posture" | "posture+momentum" => 0.01,
                     "regularise" => 1e-4,
@@ -8185,22 +8017,16 @@ fn main() {
         let qp_reset = qp_previous_structure
             .as_ref()
             .is_some_and(|old| old != &qp_structure);
-        // Drop the primal-dual warm start every tick.
-        //
         // The stateful solver keeps a workspace per level and only resets it
-        // when the QP STRUCTURE changes, so a working set from the previous
-        // tick is carried into a problem whose data has moved. Measured
-        // 2026-09-25: the HQP reports `Infeasible` on 5-56 ticks per run, and
-        // WHICH controller trips it predicts which one falls -- across 192
-        // paired members, the side with ~50 infeasible ticks is the side that
-        // goes down. This isolates the warm start as the cause, or clears it.
-        if qp_reset || qp_reset_every_tick {
+        // when the QP STRUCTURE changes. (WBC_QP_RESET_EVERY_TICK, dropping
+        // the warm start every tick, was an experiment and is removed.)
+        if qp_reset {
             solver.reset();
         }
         qp_previous_structure = Some(qp_structure);
         let qp_solve_start = std::time::Instant::now();
         let mut sol = solver
-            .solve(&levels, &cfg_now)
+            .solve(&levels, &cfg)
             .unwrap_or_else(|e| panic!("wbc solve failed at t={t:.3}: {e}"));
         let qp_solve_ns = qp_solve_start.elapsed().as_nanos();
         // WBC_LEVEL_DEBUG_T=<t>: print each level's least-squares residual
@@ -8225,79 +8051,12 @@ fn main() {
                 .collect();
             println!("  [wbc-levels] t={t:.3} support={support:?} {}", parts.join(" "));
         }
-        let mut repair_applied = false;
-        let mut repair_scaled_delta = 0.0_f64;
-        let repair_start = std::time::Instant::now();
-        if repair_original
-            && (matches!(sol.status, misa_wbc::SolveStatus::Optimal)
-                || matches!(sol.status, misa_wbc::SolveStatus::Degraded { level, .. }
-                if level >= prefix_min_level && prefix_min_level < 999))
-        {
-            if let Some((eom, d, f, _, scales)) = &qp_physical {
-                let iq_violation = (d * &sol.x - f)
-                    .iter()
-                    .zip(scales)
-                    .fold(0.0_f64, |max, (v, scale)| max.max(*v / scale));
-                if iq_violation > 1e-6 && iq_violation.is_finite() {
-                    let mut h = na::DMatrix::identity(sol.x.len(), sol.x.len());
-                    let mut variable_scales = vec![5.0_f64; sol.x.len()];
-                    let force_var = dyn_ctx.layout().var("f");
-                    for i in 0..force_var.size() {
-                        variable_scales[force_var.offset() + i] = if i % 6 < 3 {
-                            (total_mass * G * sole_half_l).max(1.0)
-                        } else {
-                            (total_mass * G).max(1.0)
-                        };
-                    }
-                    let tau_var = dyn_ctx.layout().var("tau");
-                    for i in 0..tau_var.size() {
-                        variable_scales[tau_var.offset() + i] = rig.torque_max[i].max(1.0);
-                    }
-                    for i in 0..sol.x.len() {
-                        h[(i, i)] = 1.0 / variable_scales[i].powi(2);
-                    }
-                    let c = -&h * &sol.x;
-                    let repair_cfg = misa_wbc::QpConfig {
-                        solver: misa_wbc::QpSolver::Clarabel,
-                        feasibility_tol: 1e-9,
-                        optimality_tol: 1e-8,
-                        absolute_gap: true,
-                        ..Default::default()
-                    };
-                    let repaired = misa_wbc::solve_qp(
-                        &h,
-                        &c,
-                        Some(&eom.a),
-                        Some(&eom.b),
-                        Some(d),
-                        Some(f),
-                        None,
-                        &repair_cfg,
-                    );
-                    let qualified = repaired.formally_solved()
-                        && misa_wbc::qp_check::check(
-                            &h,
-                            &c,
-                            Some((&eom.a, &eom.b)),
-                            Some((d, f)),
-                            &repaired,
-                        )
-                        .accepted(1e-6);
-                    if qualified {
-                        repair_scaled_delta = (&repaired.x - &sol.x)
-                            .iter()
-                            .zip(&variable_scales)
-                            .map(|(delta, scale)| (delta / scale).abs())
-                            .fold(0.0_f64, f64::max);
-                        if repair_scaled_delta <= 0.01 {
-                            sol.x = repaired.x;
-                            repair_applied = true;
-                        }
-                    }
-                }
-            }
-        }
-        let repair_ns = repair_start.elapsed().as_nanos();
+        // WBC_REPAIR_ORIGINAL / WBC_PREFIX_MIN_LEVEL (repair the failed QP,
+        // or command a checked prefix) were experiments and are removed;
+        // QP_RUNTIME_CSV keeps their columns at the off values.
+        let repair_applied = false;
+        let repair_scaled_delta = 0.0_f64;
+        let repair_ns = 0u128;
         let qp_check_start = std::time::Instant::now();
         let mut qp_physical_violation = 0.0_f64;
         if let Some((eom, d, f, _, scales)) = &qp_physical {
@@ -8329,21 +8088,9 @@ fn main() {
             .iter()
             .flatten()
             .any(|d| d.raw_status == "AlmostSolved");
-        let prefix_eligible = qp_gate
-            && (cfg.hard_first_inequalities || repair_original)
-            && prefix_min_level < 999
-            && qp_physical_violation <= 1e-6
-            && !raw_almost
-            && matches!(sol.status, misa_wbc::SolveStatus::Degraded { level, .. }
-                if level >= prefix_min_level)
-            && sol
-                .level_statuses
-                .iter()
-                .take(usize::from(eom_hard) + 1)
-                .all(|s| *s == misa_wbc::QpStatus::Optimal);
         let qp_rejected = qp_gate
             && (qp_physical_violation > 1e-6
-                || (!prefix_eligible && !matches!(sol.status, misa_wbc::SolveStatus::Optimal))
+                || !matches!(sol.status, misa_wbc::SolveStatus::Optimal)
                 || raw_almost);
         if qp_rejected {
             // Route through the existing degraded-control policy; no new fallback law.
@@ -8399,7 +8146,7 @@ fn main() {
                     "status":format!("{:?}",sol.status),"backend":format!("{:?}",cfg.backend),
                     "layer_statuses":sol.level_statuses.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>(),
                     "layer_raw_statuses":sol.level_diagnostics.iter().map(|d| d.as_ref().map(|d| &d.raw_status)).collect::<Vec<_>>(),
-                    "prox_weight":prox_weight,"tasks":tasks,"solution":sol.x.as_slice(),"variables":variables,
+                    "prox_weight":cfg.prox_weight,"tasks":tasks,"solution":sol.x.as_slice(),"variables":variables,
                     "contact_ids":stance_sides,"planned_support":format!("{:?}",support),"phase":"None",
                     "measured_fz_N":measured_pre,"physical_groups":physical,"solve_ns":qp_solve_ns,
                     "check_ns":qp_check_ns,"normalized_physical_violation":qp_physical_violation});
@@ -8834,14 +8581,14 @@ fn main() {
         for (ji, vi) in rig.actuated() {
             robot_taus[ji] = extracted.tau[vi - 6];
         }
-        let prefix_applied;
+        // The checked-prefix path (WBC_PREFIX_MIN_LEVEL) is removed.
+        let prefix_applied = false;
         {
             let rig_ref = &rig;
             let tg = &tau_gravity;
             let fallback =
                 move |out: &mut [f64]| gravity_plus_posture(rig_ref, tg, v, hold_kp, hold_kd, out);
-            let fallback_active = policy.apply(&sol.status, &mut robot_taus, t, dt, nc, &fallback);
-            prefix_applied = prefix_eligible && !fallback_active;
+            policy.apply(&sol.status, &mut robot_taus, t, dt, nc, &fallback);
             // Existing policy has no held command on its first failed tick.
             // Use its existing recomputed fallback instead of applying rejected QP torques.
             if qp_rejected && !qp_has_good_command {
