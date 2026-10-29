@@ -773,6 +773,13 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
   - rig.rs は今は他の人の差分が無い。作業中に差分が入ったら、ここで止めて調整する。
 - **確認**: 96＋14（`FAM_nh10_sense` と `mis_*` が要）。
 - **規模**: rig.rs から約 150 行を移し、walk.rs で約 60 か所を置換。
+- **実施（2026-10-29）**: 96＋14＋eqdiag＋FIX・JAB の単発で差 0（rig.rs だけを替えた途中の段でも差 0 を見てから walk.rs を替えた）。`cargo check --no-default-features --features mujoco --examples --tests` は前からの 2 つ（`wrench_mpc_bench`、`format_mjcf`）を除いて通り、警告も増えていない。
+  - `crates/misa-biped/src/robot.rs` を新設: `RobotModel`、`RobotState`、`StateEstimate`、`MassLink`（rig.rs から移し、rig は `pub use` で同じ名前を残す）、`Observation`／`Estimate`。
+  - `RobotModel::assemble(est, qd_clamp)` は `configuration(est, qd_clamp) -> (q, v)` と `state(q, v, est) -> RobotState` の 2 つに分けた。`BASE_VEL_KIN`（MuJoCo の接触を読む）は rig.sync がこの 2 つの間で `v` を直す。算術と反復の順は rig.rs のまま。
+  - `BipedRig` の公開フィールドは変えていない（他の example が使う。`kyo46rs_com_squat.rs` には他の人の差分がある）。代わりに build の最後で同じ値を写した `RobotModel` を内側に持ち、`sync`・`com_of`・`gravity_torque`・`actuated`・`side_of` はそこへ委ねる。`BipedRig::walker_model()` はその写しを返す。build の後に `robot.joints[].armature／joint_damping` を書き換える所は無いことを確かめた（植物と同じ値を読む前提）。
+  - `BipedState` は `RobotState` の別名。
+  - walk.rs: build の直後に `let robot = rig.walker_model();`。起動時の `nv`／`na`／`total_mass`／関節制限／`com_of`／`foot_mi` と、ループの `rig.sync()` から `tally.observe` までの制御の区画の `rig.x`（53 か所）を `robot.x` に置き換えた。その区画に残る `rig` は `sync`、`Observation` の植物の関節角、`CONTACT_DUMP_T` の `rig.sim.contacts()` だけ。
+  - 観測: `measured_pre` の直後に `Observation { tick, estimate: Estimate::State(&st), contact_fz: measured_pre, joint_pos_plant: &rig.robot.joint_positions }` を作り、制御の区画の `measured_pre` と植物の関節角はここから読む。`tally.observe` より後（ハーネスの計測・ログ）は `measured_pre` のまま。
 
 #### S11 tick の制御を相の関数に分ける（example の中）
 

@@ -1197,6 +1197,7 @@ fn main() {
     use articara::biped::rig::{BipedRig, CtrlMode, G, RigOptions};
     use articara::biped::tasks as bt;
     use misa_biped::plan::Plan;
+    use misa_biped::robot::{Estimate, Observation};
     use misa_wbc::{Dynamics, Formulation, SolveConfig, Solver, tasks};
     use nalgebra as na;
     use std::f64::consts::PI;
@@ -1426,6 +1427,9 @@ fn main() {
     // slope of the planner's terrain model, and the unmodelled bumps.
     let Scene { stairs, spar_wall } = build_scene(&mut o);
     let mut rig = BipedRig::build(prof, &o);
+    // The model the walker computes with (misa_biped::robot): the control
+    // reads it, the harness keeps the plant (`rig`).
+    let robot = rig.walker_model();
     // Model indices of the links the thighs hang from, for the reach columns.
     let hip_mi: Option<[usize; 2]> = prof.hip_links.map(|names| {
         names.map(|n| {
@@ -1434,10 +1438,10 @@ fn main() {
                 .unwrap_or_else(|| panic!("profile names hip link {n}, which this robot lacks"))
         })
     });
-    let nv = rig.nv;
-    let na_count = rig.na;
+    let nv = robot.nv;
+    let na_count = robot.na;
     let mj_dt = rig.mj_dt;
-    let total_mass = rig.total_mass;
+    let total_mass = robot.total_mass;
 
     let f_max_per_foot = wcfg.wbc.f_max_per_foot(total_mass, G);
     assert!(
@@ -1492,7 +1496,7 @@ fn main() {
     let jlim = wcfg.joint_limit.enabled;
     let [jlim_alpha1, jlim_alpha2, jlim_alpha3] = wcfg.joint_limit.alpha;
     let jlim_amax = wcfg.joint_limit.a_max;
-    let mut jlim_v_max = rig.v_max.clone();
+    let mut jlim_v_max = robot.v_max.clone();
     // Slow the CBF's velocity limit below the mechanical one. (The position
     // band JLIM_Q_MARGIN that shared this block was not adopted and is
     // removed; the message keeps its 0 deg.)
@@ -1509,8 +1513,8 @@ fn main() {
         );
     }
     let jlim_cfg = tasks::JointLimitCbf {
-        q_min: rig.q_min.clone(),
-        q_max: rig.q_max.clone(),
+        q_min: robot.q_min.clone(),
+        q_max: robot.q_max.clone(),
         v_max: jlim_v_max,
         a_max: na::DVector::from_element(na_count, jlim_amax),
         alpha1: na::DVector::from_element(na_count, jlim_alpha1),
@@ -1793,14 +1797,14 @@ fn main() {
 
     // ── Plan, captured ONCE from the settled pose ──────────────────────
     let d0 = rig.fk_now();
-    let com0 = rig.com_of(&d0);
-    let steps = Footsteps::from_fk(&d0, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
+    let com0 = robot.com_of(&d0);
+    let steps = Footsteps::from_fk(&d0, robot.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
     // The orientation each foot is PLANNED to land in, captured once from the
     // settled pose. Stepping in place does not turn, so this never changes --
     // which is the point: it is a plan, not a measurement, and a swing foot
     // that drifts is correcting toward it rather than tracking its own drift.
     let foot_rot0: [na::Matrix3<f64>; 2] =
-        std::array::from_fn(|s| misarta::se3::rotation_matrix(&d0.oMi[rig.foot_mi[s]]));
+        std::array::from_fn(|s| misarta::se3::rotation_matrix(&d0.oMi[robot.foot_mi[s]]));
     // Rotate the nominal foot orientation to a planned yaw. A turn moves the
     // footstep AND the direction the foot points; commanding the original
     // orientation would land the foot square to the world under a turned body.
@@ -3356,6 +3360,15 @@ fn main() {
         // all solve against this, so it is read before any of them.
         let measured_c = measure_contacts(&rig, data, friction_mu);
         let measured_pre = [measured_c.f_w[0][2], measured_c.f_w[1][2]];
+        // What the walker is given this tick: the state the rig assembled,
+        // the vertical contact forces, and the plant's joint angles (read by
+        // the posture levels; `misa_biped::robot::Observation`).
+        let obs = Observation {
+            tick,
+            estimate: Estimate::State(&st),
+            contact_fz: measured_pre,
+            joint_pos_plant: &rig.robot.joint_positions,
+        };
         // CONTACT_DUMP_T="t0,t1": print every MuJoCo contact (bodies, world
         // position, world force) on the ticks inside the window. Diagnostic
         // only; unset = nothing.
@@ -3378,13 +3391,13 @@ fn main() {
         if com_replan {
             let actual = Footsteps::from_fk(
                 data,
-                rig.foot_mi,
+                robot.foot_mi,
                 prof.sole_centre_x,
                 prof.sole_below_origin,
             );
             let touchdowns_before = plan.landing.touchdowns;
             let timeouts_before = plan.landing.timeouts;
-            let shift = plan.landing.update(&mut plan.gait, &plan.footsteps, &actual, measured_pre, t, dt);
+            let shift = plan.landing.update(&mut plan.gait, &plan.footsteps, &actual, obs.contact_fz, t, dt);
             let landing_timed_out = plan.landing.timeouts > timeouts_before;
             // The slice that just ended is the timer's clock slice, not
             // `gait.index_at(t)`: on a timeout tick the index already points
@@ -3628,7 +3641,7 @@ fn main() {
             match (ctl.prev_support, support) {
                 (Support::Double, Support::Single { swing, .. }) => {
                     wbc_state.anchors.release(swing);
-                    let p = misarta::se3::translation(&data.oMi[rig.foot_mi[swing]]);
+                    let p = misarta::se3::translation(&data.oMi[robot.foot_mi[swing]]);
                     ctl.swing_lift_off = Some(p);
                 }
                 (Support::Single { swing, .. }, Support::Double) => {
@@ -3645,7 +3658,7 @@ fn main() {
                     // drift from here, and seeding it with a position the
                     // foot is not at demands a force to close a gap that the
                     // contact cannot close.
-                    let mi = rig.foot_mi[swing];
+                    let mi = robot.foot_mi[swing];
                     let mut p = misarta::se3::translation(&data.oMi[mi]);
                     // Rotation from the PLAN (flat sole at the planned yaw),
                     // not from the measurement. The anchor's rotation is
@@ -3687,7 +3700,7 @@ fn main() {
             ctl.prev_support = support;
         }
 
-        let fz_meas = [measured_pre[0], measured_pre[1]];
+        let fz_meas = [obs.contact_fz[0], obs.contact_fz[1]];
         if stair_managed_rate > 0.0 {
             for side in 0..2 {
                 // EMA over ~4 ticks: one noisy sample must not trip it.
@@ -3721,7 +3734,7 @@ fn main() {
                     && !sides.contains(&landed)
                     && ctl.last_scheduled_admit[landed] != Some(now_slice)
                 {
-                    let mi = rig.foot_mi[landed];
+                    let mi = robot.foot_mi[landed];
                     let sole_z = misarta::se3::translation(&data.oMi[mi]).z - prof.sole_below_origin;
                     let dz_plan = (sole_z - steps.sole[landed].z).abs();
                     if dz_plan < contact_admit_z {
@@ -3770,7 +3783,7 @@ fn main() {
                         fresh.push(side);
                         stats.n_confirmed_admissions += 1;
                         if debug.contact_admit {
-                            let mi = rig.foot_mi[side];
+                            let mi = robot.foot_mi[side];
                             let sole_z = misarta::se3::translation(&data.oMi[mi]).z - prof.sole_below_origin;
                             println!(
                                 "  [adm] t={t:.3} side={side} sole_z={sole_z:.4} plan_z={:.4} fz=({:.0},{:.0}) support={support:?}",
@@ -3793,7 +3806,7 @@ fn main() {
                 // HOLD IT THERE at kp_c = 1600 while the QP plans a reaction
                 // that does not exist. Measured, that is what turned a landed
                 // foot into a hovering one for the rest of the run.
-                let mi = rig.foot_mi[side];
+                let mi = robot.foot_mi[side];
                 let mut p = misarta::se3::translation(&data.oMi[mi]);
                 // A landing admitted on an unmodelled surface (see
                 // CONTACT_ADMIT_LOADED) is anchored where it actually is.
@@ -3809,7 +3822,7 @@ fn main() {
         } else {
             (0..2).filter(|&s| support.is_stance(s)).collect()
         };
-        let stance: Vec<usize> = stance_sides.iter().map(|&s| rig.foot_mi[s]).collect();
+        let stance: Vec<usize> = stance_sides.iter().map(|&s| robot.foot_mi[s]).collect();
         let nc = stance.len();
 
         // Load ramps across double support. The foot that just landed takes
@@ -3845,13 +3858,13 @@ fn main() {
             }
             1.0
         };
-        let foot_mi = rig.foot_mi;
+        let foot_mi = robot.foot_mi;
         let load_share = move |mi: usize| -> f64 {
             let side = usize::from(mi != foot_mi[0]);
             f_share(side).max(0.02)
         };
 
-        let (j_contact, dj_v) = contact_jacobians(&rig.model, q, v, data, v_dvec, &stance, nv);
+        let (j_contact, dj_v) = contact_jacobians(&robot.model, q, v, data, v_dvec, &stance, nv);
         let dyn_ctx = Dynamics::new(Formulation::Explicit, &st.mass, &st.h, &j_contact, na_count);
         let forces = dyn_ctx.forces();
 
@@ -3859,18 +3872,18 @@ fn main() {
             .dynamics_task()
             .expect("Explicit keeps the EoM task");
         let base = if eom_hard {
-            tasks::box_bound(dyn_ctx.tau(), &rig.torque_max)
+            tasks::box_bound(dyn_ctx.tau(), &robot.torque_max)
         } else {
-            eom_task.clone() + tasks::box_bound(dyn_ctx.tau(), &rig.torque_max)
+            eom_task.clone() + tasks::box_bound(dyn_ctx.tau(), &robot.torque_max)
         };
         let base = if jlim {
             // Live actuated-row position/velocity, read through model indices.
-            let actuated = rig.actuated();
+            let actuated = robot.actuated();
             let mut q_act = na::DVector::zeros(na_count);
             let mut v_act = na::DVector::zeros(na_count);
             for &(ji, vi) in &actuated {
-                if let Some(mi) = rig.a2m[ji] {
-                    q_act[vi - 6] = q[rig.model.q_idx[mi]];
+                if let Some(mi) = robot.a2m[ji] {
+                    q_act[vi - 6] = q[robot.model.q_idx[mi]];
                 }
                 v_act[vi - 6] = v[vi];
             }
@@ -3894,7 +3907,7 @@ fn main() {
             data,
             v_dvec,
             &stance,
-            rig.foot_mi[0],
+            robot.foot_mi[0],
             &mut wbc_state.anchors,
             &load_share,
             &contact_cfg,
@@ -4186,7 +4199,7 @@ fn main() {
                 // the reference is entered that far in.
                 let tau0 = if !ref_delay_comp { 0.0 } else { (t - ctl.ref_lat_quiet_t).clamp(0.0, 0.3) };
                 println!("  [ref] t={t:.3} trigger: dcm (lateral DCM error toward stance {lateral:+.3} m, forward {forward:+.3} m, dir {want_deg:.0}, tau0 {tau0:.3})");
-                let actual = Footsteps::from_fk(data, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
+                let actual = Footsteps::from_fk(data, robot.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
                 // Pick the reference meant for the nearest swing phase.
                 // (Selecting by the swing foot's height was tried first:
                 // on the flat in-place gait the apex comes late, so the
@@ -4395,7 +4408,7 @@ fn main() {
         if ctl.replan_engaged {
             let actual = Footsteps::from_fk(
                 data,
-                rig.foot_mi,
+                robot.foot_mi,
                 prof.sole_centre_x,
                 prof.sole_below_origin,
             );
@@ -4763,7 +4776,7 @@ fn main() {
                 }
                 let actual = Footsteps::from_fk(
                     data,
-                    rig.foot_mi,
+                    robot.foot_mi,
                     prof.sole_centre_x,
                     prof.sole_below_origin,
                 );
@@ -4787,12 +4800,12 @@ fn main() {
                 // shipped behaviour.
                 if mpc_seed_previous == 2 || (mpc_seed_previous == 1 && ctl.wrench_mpc_command.is_none()) {
                     for side in 0..2 {
-                        previous[side][5] = measured_pre[side].max(0.0);
+                        previous[side][5] = obs.contact_fz[side].max(0.0);
                     }
                 }
                 let mut contacts: Vec<articara::biped::wrench_mpc::Contact> = Vec::with_capacity(2);
                 for side in 0..2 {
-                    let rotation = misarta::se3::rotation_matrix(&data.oMi[rig.foot_mi[side]]);
+                    let rotation = misarta::se3::rotation_matrix(&data.oMi[robot.foot_mi[side]]);
                     let s_pitch = -rotation[(2, 0)];
                     let rolling = stair_hybrid_contact && s_pitch.abs() >= 0.087;
                     let cop_half = if rolling {
@@ -4839,7 +4852,7 @@ fn main() {
                         }
                     }
                 }
-                let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
+                let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&robot.model, q);
                 let h = &cmm * v_dvec;
                 // MPC_FOOTSTEP: in single support, the swing foot's landing is
                 // a variable from the first node at which the schedule has it
@@ -5315,19 +5328,19 @@ fn main() {
 
         // ---- P2: trunk upright -----------------------------------------
         let j_trunk =
-            misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, rig.trunk_mi);
+            misarta::jacobian::compute_joint_jacobian_from_data(&robot.model, q, data, robot.trunk_mi);
         let dj_trunk = misarta::jacobian::compute_joint_jacobian_time_derivative(
-            &rig.model,
+            &robot.model,
             q,
             v,
-            rig.trunk_mi,
+            robot.trunk_mi,
         );
         let djv_trunk = &dj_trunk * v_dvec;
-        let (roll, pitch, trunk_quat, trunk_omega_w) = if rig.trunk_from_base {
+        let (roll, pitch, trunk_quat, trunk_omega_w) = if robot.trunk_from_base {
             let (r, p, _) = st.body_quat.euler_angles();
             (r, p, st.body_quat, st.v_ang_w)
         } else {
-            let rot = misarta::se3::rotation_matrix(&data.oMi[rig.trunk_mi]);
+            let rot = misarta::se3::rotation_matrix(&data.oMi[robot.trunk_mi]);
             let omega = j_trunk.rows(0, 3) * v_dvec;
             let rotation = na::Rotation3::from_matrix_unchecked(rot);
             (
@@ -5426,8 +5439,8 @@ fn main() {
             && ctl.wrench_mpc_command.is_some()
             && nc > 0;
         let p_mom = if use_mom || coupled_active {
-            let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
-            let dcmm_v = misarta::centroidal::compute_cmm_dot_times_v(&rig.model, q, v);
+            let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&robot.model, q);
+            let dcmm_v = misarta::centroidal::compute_cmm_dot_times_v(&robot.model, q, v);
             let h_now = &cmm * v_dvec;
             // arms_neutral: 「腕が角運動量を生むな。脚の分には触るな」。
             //
@@ -5442,7 +5455,7 @@ fn main() {
                 .actuated()
                 .into_iter()
                 .filter(|&(ji, _)| {
-                    let n = &rig.robot.joints[ji].name;
+                    let n = &robot.joint_names[ji];
                     n.contains("shoulder") || n.contains("elbow") || n.contains("wrist")
                 })
                 .map(|(_, vi)| vi)
@@ -5503,8 +5516,8 @@ fn main() {
             && !in_stair_zone
             && zmp_deficit.norm() > mom_cmp_dead
         {
-            let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
-            let dcmm_v = misarta::centroidal::compute_cmm_dot_times_v(&rig.model, q, v);
+            let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&robot.model, q);
+            let dcmm_v = misarta::centroidal::compute_cmm_dot_times_v(&robot.model, q, v);
             let h_now = &cmm * v_dvec;
             let mg = total_mass * G;
             let mut dh = [
@@ -5578,7 +5591,7 @@ fn main() {
                 .actuated()
                 .into_iter()
                 .filter(|&(ji, _)| {
-                    let n = rig.robot.joints[ji].name.as_str();
+                    let n = robot.joint_names[ji].as_str();
                     let base = match arm_hold_joints.as_str() {
                         "elbow" => n.contains("elbow"),
                         "shoulder" => n.contains("shoulder"),
@@ -5589,10 +5602,10 @@ fn main() {
                 .collect();
             // Reference = the seed, with the punching arm's two rows swept
             // toward the extended pose.
-            let mut q_ref = rig.q_seed.clone();
+            let mut q_ref = robot.q_seed.clone();
             if let Some((sh, el)) = jab_names {
                 for (name, target) in [(sh, jab_pitch), (el, jab_elbow)] {
-                    if let Some(&ji) = rig.robot.joint_map.get(name) {
+                    if let Some(&ji) = robot.joint_map.get(name) {
                         q_ref[ji] += jab_a * (target - q_ref[ji]);
                     }
                 }
@@ -5601,7 +5614,7 @@ fn main() {
                 bt::posture(
                     dyn_ctx.qddot(),
                     &arms,
-                    &rig.robot.joint_positions,
+                    obs.joint_pos_plant,
                     &q_ref,
                     v,
                     kp_arm,
@@ -5616,9 +5629,9 @@ fn main() {
         // ---- P4: posture ------------------------------------------------
         let p3 = bt::posture(
             dyn_ctx.qddot(),
-            &rig.actuated(),
-            &rig.robot.joint_positions,
-            &rig.q_seed,
+            &robot.actuated(),
+            obs.joint_pos_plant,
+            &robot.q_seed,
             v,
             kp_post,
             kd_post,
@@ -5627,7 +5640,7 @@ fn main() {
         );
 
         // ---- lowest: gravity comp + the load split the ZMP implies -------
-        let tau_gravity = rig.gravity_torque(q);
+        let tau_gravity = robot.gravity_torque(q);
         // Split the nominal load so that the net CoP lands where the DCM
         // controller asked for it. Projecting p_cmd onto the line between the
         // sole centres generalises the y-interpolation the standing version
@@ -5718,11 +5731,11 @@ fn main() {
             (Some(side), Some(lift_off))
                 if support.swing() == Some(side) =>
             {
-                let mi = rig.foot_mi[side];
+                let mi = robot.foot_mi[side];
                 let jf =
-                    misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, mi);
+                    misarta::jacobian::compute_joint_jacobian_from_data(&robot.model, q, data, mi);
                 let djf =
-                    misarta::jacobian::compute_joint_jacobian_time_derivative(&rig.model, q, v, mi);
+                    misarta::jacobian::compute_joint_jacobian_time_derivative(&robot.model, q, v, mi);
                 let djv = &djf * v_dvec;
                 let pos = misarta::se3::translation(&data.oMi[mi]);
                 let vel3 = &jf.rows(3, 3).into_owned() * v_dvec;
@@ -5970,7 +5983,7 @@ fn main() {
                 if hold_z > 0.0
                     && (replan_hold || ctl.mpc_fs_cross_latched.is_some_and(|(ci, _)| ci == slice_idx))
                 {
-                    let foot = misarta::se3::translation(&data.oMi[rig.foot_mi[side]]);
+                    let foot = misarta::se3::translation(&data.oMi[robot.foot_mi[side]]);
                     if (touch_down.xy() - foot.xy()).norm() > mpc_footstep_cross_hold_xy {
                         let hold = touch_down.z + hold_z;
                         if tgt.z < hold {
@@ -6067,11 +6080,11 @@ fn main() {
             // target is the foot LINK origin, which sits `sole_below_origin`
             // above the sole.
             (Some(side), _) => {
-                let mi = rig.foot_mi[side];
+                let mi = robot.foot_mi[side];
                 let jf =
-                    misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, mi);
+                    misarta::jacobian::compute_joint_jacobian_from_data(&robot.model, q, data, mi);
                 let djf =
-                    misarta::jacobian::compute_joint_jacobian_time_derivative(&rig.model, q, v, mi);
+                    misarta::jacobian::compute_joint_jacobian_time_derivative(&robot.model, q, v, mi);
                 let djv = &djf * v_dvec;
                 let pos = misarta::se3::translation(&data.oMi[mi]);
                 let vel3 = &jf.rows(3, 3).into_owned() * v_dvec;
@@ -6389,7 +6402,7 @@ fn main() {
                     "layer_raw_statuses":sol.level_diagnostics.iter().map(|d| d.as_ref().map(|d| &d.raw_status)).collect::<Vec<_>>(),
                     "prox_weight":cfg.prox_weight,"tasks":tasks,"solution":sol.x.as_slice(),"variables":variables,
                     "contact_ids":stance_sides,"planned_support":format!("{:?}",support),"phase":"None",
-                    "measured_fz_N":measured_pre,"physical_groups":physical,"solve_ns":qp_solve_ns,
+                    "measured_fz_N":obs.contact_fz,"physical_groups":physical,"solve_ns":qp_solve_ns,
                     "check_ns":qp_check_ns,"normalized_physical_violation":qp_physical_violation});
                 std::fs::create_dir_all(dir).expect("QP_DIAG_DIR");
                 std::fs::write(
@@ -6430,7 +6443,7 @@ fn main() {
             let mut soles = [na::Vector3::zeros(); 2];
             for side in 0..2 {
                 let hip = misarta::se3::translation(&data.oMi[mis[side]]);
-                let mut sole = misarta::se3::translation(&data.oMi[rig.foot_mi[side]]);
+                let mut sole = misarta::se3::translation(&data.oMi[robot.foot_mi[side]]);
                 sole.z -= prof.sole_below_origin;
                 reach_used[side] = leg_reach.used(&hip, &sole);
                 hip_z[side] = hip.z;
@@ -6444,7 +6457,7 @@ fn main() {
         // `swing_res_z = achieved - commanded`: misa-wbc Cartesian residual.
         let swing_achieved_acc_z = swing_cmd_acc_z + swing_res_z;
         let (swing_pos_err_xy, swing_pos_err_z) = free_side.map_or((0.0, 0.0), |side| {
-            let pos = misarta::se3::translation(&data.oMi[rig.foot_mi[side]]);
+            let pos = misarta::se3::translation(&data.oMi[robot.foot_mi[side]]);
             (
                 (pos.xy() - swing_tgt.xy()).norm(),
                 (pos.z - swing_tgt.z).abs(),
@@ -6457,7 +6470,7 @@ fn main() {
         let mut f_qp_w = [[0.0_f64; 3]; 2];
         let mut cop_use = 0.0_f64;
         for (slot, mi) in stance.iter().copied().enumerate() {
-            let side = rig.side_of(mi);
+            let side = robot.side_of(mi);
             let w = &p0.sole_sel[slot] * &extracted.forces;
             if let Some((cx, cy, fz)) = cop_from_sole_wrench(&w) {
                 if fz > 1e-6 {

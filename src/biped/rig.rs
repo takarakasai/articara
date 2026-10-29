@@ -1,7 +1,10 @@
 //! Model + plant bring-up for the biped WBC, and the per-tick state sync.
 //!
 //! Everything here happens once, before the control loop, except
-//! [`BipedRig::sync`]. Splitting it out is not cosmetic: the setup contains
+//! [`BipedRig::sync`], which reads the plant through the sensor model and
+//! hands the estimate to `misa_biped::robot::RobotModel::assemble` for the
+//! kinematics and dynamics (the model the walker computes with is
+//! [`BipedRig::walker_model`]). Splitting it out is not cosmetic: the setup contains
 //! three separate guards that each caught a bug which made a later
 //! measurement meaningless (self-collision at spawn, self-collision in the
 //! burn-in rig, and an unset torque-box row), and burying them inside a
@@ -21,13 +24,8 @@ use crate::wbc_pipeline::build_floating_base_model;
 
 pub const G: f64 = 9.81;
 
-/// A link that carries mass, paired with its misarta index and the CoM
-/// offset in the link frame -- everything `J_com` needs.
-pub struct MassLink {
-    pub mi: usize,
-    pub m: f64,
-    pub com_local: na::Vector3<f64>,
-}
+/// A link that carries mass (moved to misa-biped with the dynamics, S10).
+pub use misa_biped::robot::MassLink;
 
 /// How the WBC's answer reaches the plant.
 ///
@@ -293,6 +291,10 @@ pub struct BipedRig {
     pub base_vel_fuse_bias_t: f64,
     /// (true velocity at the previous tick, fused estimate, bias estimate)
     base_vel_fuse: RefCell<Option<([f64; 3], [f64; 3], [f64; 3])>>,
+    /// The fields above that the walker computes with, copied once at the
+    /// end of `build` (none of them changes after it): what `sync` assembles
+    /// the state with, and what [`BipedRig::walker_model`] hands out.
+    walker: misa_biped::robot::RobotModel,
 }
 
 #[derive(Clone)]
@@ -325,24 +327,9 @@ fn gauss(state: &mut u64) -> f64 {
 }
 
 /// One tick's worth of synchronised state: the plant read into misarta's
-/// coordinates, plus the dynamics quantities every task needs.
-pub struct BipedState {
-    pub q: Vec<f64>,
-    pub v: Vec<f64>,
-    pub v_dvec: na::DVector<f64>,
-    pub data: misarta::data::Data<f64>,
-    /// Mass matrix WITH reflected rotor inertia on the actuated diagonal.
-    pub mass: na::DMatrix<f64>,
-    /// Nonlinear effects WITH viscous joint damping.
-    pub h: na::DVector<f64>,
-    pub com: na::Vector3<f64>,
-    pub com_vel: na::Vector3<f64>,
-    pub j_com: na::DMatrix<f64>,
-    pub djv_com: na::Vector3<f64>,
-    pub body_pos: [f64; 3],
-    pub body_quat: na::UnitQuaternion<f64>,
-    pub v_ang_w: [f64; 3],
-}
+/// coordinates, plus the dynamics quantities every task needs. The walker's
+/// `RobotState`, which `sync` assembles.
+pub type BipedState = misa_biped::robot::RobotState;
 
 impl BipedRig {
     /// URDF -> crouch seed -> spawn probe -> welded burn-in -> free base.
@@ -811,6 +798,27 @@ impl BipedRig {
             );
         }
 
+        let walker = misa_biped::robot::RobotModel {
+            model: model.clone(),
+            prof,
+            joint_names: robot.joints.iter().map(|j| j.name.clone()).collect(),
+            joint_map: robot.joint_map.clone(),
+            a2m: a2m.clone(),
+            foot_mi: [left_foot_mi, right_foot_mi],
+            trunk_mi,
+            trunk_from_base,
+            mass_links: mass_links.clone(),
+            total_mass,
+            armature: robot.joints.iter().map(|j| j.armature).collect(),
+            joint_damping: robot.joints.iter().map(|j| j.joint_damping).collect(),
+            torque_max: torque_max.clone(),
+            q_min: q_min.clone(),
+            q_max: q_max.clone(),
+            v_max: v_max.clone(),
+            q_seed: q_seed.clone(),
+            nv,
+            na: na_count,
+        };
         BipedRig {
             prof,
             opts_ctrl_mode: o.ctrl_mode,
@@ -873,7 +881,13 @@ impl BipedRig {
                 .unwrap_or([0.0; 3]),
             base_vel_fuse: RefCell::new(None),
             base_vel_fuse_bias_t: sense_env("BASE_VEL_FUSE_BIAS_T", 0.0).max(0.0),
+            walker,
         }
+    }
+
+    /// The model the walker computes with (a copy; it does not change).
+    pub fn walker_model(&self) -> misa_biped::robot::RobotModel {
+        self.walker.clone()
     }
 
     /// Advance the plant `n` physics steps, keeping `robot`'s joint state in
@@ -891,7 +905,7 @@ impl BipedRig {
     }
     /// 0 = left, 1 = right.
     pub fn side_of(&self, foot_mi: usize) -> usize {
-        usize::from(foot_mi != self.foot_mi[0])
+        self.walker.side_of(foot_mi)
     }
     /// Weight in newtons.
     pub fn weight(&self) -> f64 {
@@ -900,13 +914,7 @@ impl BipedRig {
 
     /// World-frame CoM position from an FK snapshot.
     pub fn com_of(&self, data: &misarta::data::Data<f64>) -> na::Vector3<f64> {
-        let mut c = na::Vector3::zeros();
-        for l in &self.mass_links {
-            let r = misarta::se3::rotation_matrix(&data.oMi[l.mi]);
-            let o = misarta::se3::translation(&data.oMi[l.mi]);
-            c += l.m * (o + r * l.com_local);
-        }
-        c / self.total_mass
+        self.walker.com_of(data)
     }
 
     /// FK at the plant's CURRENT pose, without running a control tick. Used
@@ -943,7 +951,6 @@ impl BipedRig {
         let sim = &self.sim;
         let robot = &self.robot;
         let model = &self.model;
-        let nv = self.nv;
 
         let mut raw = RawSense {
             body_pos: sim.body_world_position(&robot.root_link).unwrap(),
@@ -1070,45 +1077,21 @@ impl BipedRig {
                 None => *st = Some(raw.v_lin_w),
             }
         }
-        let body_pos = raw.body_pos;
-        let body_quat = raw.body_quat;
-        let v_lin_w = raw.v_lin_w;
-        let v_ang_w = raw.v_ang_w;
-        let r_wb = body_quat.to_rotation_matrix();
-        let r_bw = r_wb.transpose();
-        let v_lin_body = r_bw * na::Vector3::new(v_lin_w[0], v_lin_w[1], v_lin_w[2]);
-        let v_ang_body = r_bw * na::Vector3::new(v_ang_w[0], v_ang_w[1], v_ang_w[2]);
-
-        let mut q = model.neutral_q();
-        q[0] = body_pos[0];
-        q[1] = body_pos[1];
-        q[2] = body_pos[2];
-        q[3] = body_quat.i;
-        q[4] = body_quat.j;
-        q[5] = body_quat.k;
-        q[6] = body_quat.w;
-        let mut v = vec![0.0_f64; nv];
-        // FreeFlyer motion subspace is I6 in the BODY frame with row order
-        // [angular; linear] (misarta joint.rs), so v[0..3] is omega_body and
-        // v[3..6] is v_body.
-        v[0] = v_ang_body.x;
-        v[1] = v_ang_body.y;
-        v[2] = v_ang_body.z;
-        v[3] = v_lin_body.x;
-        v[4] = v_lin_body.y;
-        v[5] = v_lin_body.z;
-        for ji in 0..robot.joints.len() {
-            let Some(mi) = self.a2m[ji] else { continue };
-            if model.joints[mi].joint_type.nq() == 1 {
-                q[model.q_idx[mi]] = raw.joint_q[ji];
-            }
-            if model.joints[mi].joint_type.nv() == 1 {
-                if let Some(qd) = raw.joint_qd[ji] {
-                    v[model.v_idx[mi]] = qd.clamp(-self.qd_clamp, self.qd_clamp);
-                }
-            }
-        }
+        // The estimate, and from here on no plant: q / v (QD_CLAMP), then
+        // M, h, FK and the centroidal Jacobian (misa_biped::robot).
+        let est = misa_biped::robot::StateEstimate {
+            base_pos: raw.body_pos,
+            base_quat: raw.body_quat,
+            base_lin_vel_w: raw.v_lin_w,
+            base_ang_vel_w: raw.v_ang_w,
+            joint_q: raw.joint_q,
+            joint_qd: raw.joint_qd,
+        };
+        let (q, mut v) = self.walker.configuration(&est, self.qd_clamp);
+        // BASE_VEL_KIN (not adopted) corrects the base velocity from the
+        // plant's contacts, between the configuration and the dynamics.
         if self.base_vel_kin {
+            let r_bw = est.base_quat.to_rotation_matrix().transpose();
             let mut fz = [0.0_f64; 2];
             for c in sim.contacts() {
                 let side_of = |n: &str| self.prof.foot_links.iter().position(|l| *l == n);
@@ -1147,100 +1130,12 @@ impl BipedRig {
                 v[5] -= corr.z;
             }
         }
-        let v_dvec = na::DVector::from_column_slice(&v);
-
-        let mut mass = misarta::crba::crba(model, &q);
-        let mut h = misarta::rnea::nonlinear_effects(model, &q, &v);
-        // misarta's dynamics Model carries no rotor inertia and no joint
-        // damping -- `armature`/`joint_damping` are MJCF export fields and
-        // reach the plant only. So the WBC has been solving a model that
-        // differs from the simulator on EVERY actuated joint. Reflected rotor
-        // inertia is a diagonal add to M; viscous damping is a velocity term
-        // in h. Add both at this boundary so the two agree.
-        for ji in 0..robot.joints.len() {
-            let Some(mi) = self.a2m[ji] else { continue };
-            if model.joints[mi].joint_type.nv() != 1 {
-                continue;
-            }
-            let vi = model.v_idx[mi];
-            if vi < 6 {
-                continue;
-            }
-            mass[(vi, vi)] += robot.joints[ji].armature;
-            // Per-joint: the plant carries each joint's own damping (uniform
-            // value plus any name-matched override), so the compensation
-            // must read the same number or the two models diverge exactly
-            // on the joints being designed.
-            h[vi] += robot.joints[ji].joint_damping * v[vi];
-        }
-        let data = misarta::fk::forward_kinematics(model, &q);
-
-        // ---- CoM position, Jacobian and bias, all world-frame ----------
-        // Per link: take its parent joint's world Jacobian (rows 0..3 =
-        // angular, 3..6 = linear, at the JOINT origin) and shift the linear
-        // part out to the link's own CoM,
-        //     v_c = v_o + omega x r      =>  J_lin_c = J_lin_o - [r]x J_ang
-        // then mass-average. The bias picks up the centripetal term:
-        //     dJv_lin_c = dJv_lin_o - [r]x dJv_ang + omega x (omega x r)
-        let com = self.com_of(&data);
-        let mut j_com = na::DMatrix::zeros(3, nv);
-        let mut djv_com = na::Vector3::zeros();
-        for l in &self.mass_links {
-            let rot = misarta::se3::rotation_matrix(&data.oMi[l.mi]);
-            let r = rot * l.com_local;
-            let skew = na::Matrix3::new(0.0, -r.z, r.y, r.z, 0.0, -r.x, -r.y, r.x, 0.0);
-            let j = misarta::jacobian::compute_joint_jacobian_from_data(model, &q, &data, l.mi);
-            let j_ang = j.rows(0, 3).into_owned();
-            let j_lin = j.rows(3, 3).into_owned();
-            let j_lin_c = &j_lin - &skew * &j_ang;
-            j_com += l.m * j_lin_c;
-
-            let dj = misarta::jacobian::compute_joint_jacobian_time_derivative(model, &q, &v, l.mi);
-            let djv = &dj * &v_dvec;
-            let djv_ang = na::Vector3::new(djv[0], djv[1], djv[2]);
-            let djv_lin = na::Vector3::new(djv[3], djv[4], djv[5]);
-            let omega = &j_ang * &v_dvec;
-            let omega = na::Vector3::new(omega[0], omega[1], omega[2]);
-            djv_com += l.m * (djv_lin - skew * djv_ang + omega.cross(&omega.cross(&r)));
-        }
-        j_com /= self.total_mass;
-        djv_com /= self.total_mass;
-
-        let com_vel = &j_com * &v_dvec;
-        let com_vel = na::Vector3::new(com_vel[0], com_vel[1], com_vel[2]);
-
-        BipedState {
-            q,
-            v,
-            v_dvec,
-            data,
-            mass,
-            h,
-            com,
-            com_vel,
-            j_com,
-            djv_com,
-            body_pos,
-            body_quat,
-            v_ang_w,
-        }
+        self.walker.state(q, v, &est)
     }
 
     /// Gravity-compensation torque on the actuated rows, at this state.
     pub fn gravity_torque(&self, q: &[f64]) -> na::DVector<f64> {
-        let g_full = misarta::rnea::compute_gravity(&self.model, q);
-        let mut tau_gravity = na::DVector::zeros(self.na);
-        for ji in 0..self.robot.joints.len() {
-            let Some(mi) = self.a2m[ji] else { continue };
-            if self.model.joints[mi].joint_type.nv() != 1 {
-                continue;
-            }
-            let vi = self.model.v_idx[mi];
-            if vi >= 6 {
-                tau_gravity[vi - 6] = g_full[vi];
-            }
-        }
-        tau_gravity
+        self.walker.gravity_torque(q)
     }
 
     /// Iterate `(articara joint index, actuated row index)` over the joints
@@ -1248,18 +1143,7 @@ impl BipedRig {
     /// controller that touches tau, qddot or the posture task walks exactly
     /// this set, and each open-coded copy was a chance to miss a row.
     pub fn actuated(&self) -> Vec<(usize, usize)> {
-        let mut out = Vec::with_capacity(self.na);
-        for ji in 0..self.robot.joints.len() {
-            let Some(mi) = self.a2m[ji] else { continue };
-            if self.model.joints[mi].joint_type.nv() != 1 {
-                continue;
-            }
-            let vi = self.model.v_idx[mi];
-            if vi >= 6 {
-                out.push((ji, vi));
-            }
-        }
-        out
+        self.walker.actuated()
     }
 
     /// Where the CoM sits inside the footprint, and how much CoP travel that
