@@ -809,6 +809,13 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
   - 荷重の傾斜の閉包 `f_share`／`load_share` は `LoadRamp::load_share(mi)`（同じ式）にした。ループは `move |mi| ramp.load_share(mi)` を `contact_level` と荷重の分け方に渡す。`lifting`（斜面の踵の CoP 箱）は `ramp.lifting`。
   - 係留点（`WbcState.anchors`）は相 3・4 に `&mut Anchors` で渡す。S12 で出来事の列にする（設置・解放の順は 相 3 → 相 4 の今の順）。
   - `Footsteps::from_fk` は tick に 1 回、`com_vel` の直後で `actual_feet` として作り、相 2 に渡す（今は `if com_replan` の中だったが、純関数で data は tick の中で不変なので、作る位置を前へ出しても値は同じ）。残りの 4 か所は S11b・S11c で置き換える。
+- **実施 S11b（2026-10-30）**: 96＋14＋eqdiag＋s1x で差 0。main.rs 7,344 → 6,542 行、walker.rs 806 → 1,786 行（移した別名の注釈を含む）。
+  - 相 5 `phase_dcm(ctl, plan, stats, cfg, k, obs, actual, &SupportOut, t) -> DcmOut { xi, r, dcm_err }`（DCM 参照と参照ライブラリの着地版の上書き、PUSH_YIELD、PUSH_REPLAN、PUSH_Z_DROP の検出、参照の作動）。
+  - 相 6 `phase_cmd_zmp(ctl, plan, stats, cfg, k, &SupportOut, &DcmOut, t) -> CmdZmpOut { p_cmd, clamped, zmp_deficit }`（指令 ZMP と支持の箱、contact_plan）。
+  - 相 7 `phase_preview(ctl, &plan, stats, diag, cfg, k, obs, actual, stance_sides, p_cmd, t) -> p_cmd`（予見の解き直しと x の補正）。`PREVIEW_TRAJ_CSV`／`COM_PREVIEW_RUNTIME_CSV` を書くので、当面 `&mut DiagSinks` を受ける（S13 で `WalkerDiag` のフックにする）。
+  - 相 8 `phase_height(ctl, plan, cfg, k, obs, &SupportOut, stance_sides, &p_cmd, t) -> HeightOut { z_ref, a_com }`（水平の加速度とジャーク制限、高さ参照、重心下げ、鉛直の PD）。`z_ref` は 2 度目の束縛（重心下げの後）を返す。
+  - `WalkerConsts` に指令とハーネス由来の値を足した: `vx`、`t_step`、`gp: &GaitParams`、`squat_amp`／`squat_period`、`vx2_change`（歩幅の上限で直した後のもの）、`vx2_cmd_speed`（直す前の VX2）、`vx2_z_from`、`vx2_z_drop`、`ref_libs: &[RefLib]`、`contact_plan_cfg`、`com_preview_dt`、`com_replan_dt`。`vxs_cap_of` の閉包は相 5 の中で `cfg.speed.stride_cap(v)` から作り直した（同じ式）。
+  - 参照の作動（相 5）と予見（相 7）の `Footsteps::from_fk` を `actual_feet` に置き換えた。
 
 #### S12 `WbcStack` と `TaskStack`
 
