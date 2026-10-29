@@ -2498,9 +2498,26 @@ fn main() {
     // plan rebuild, were not adopted and are removed. Measured 2026-09-23
     // on G1: a one-tick jump of xi_ref above 5 cm separated fallers from
     // survivors at every riser -- the guard was the experiment on it.)
-    let dcm_plan =
-        DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
-    let omega = dcm_plan.omega;
+    // Force on the swing sole that counts toward confirming a landing.
+    // Historically 5% of body weight (17 N on G1). Measured 2026-09-24 on the
+    // stair swing: the foot rests on the tread for 1.4-2.8 s carrying a
+    // MEDIAN of 10 N, because the swing task still holds it 4 mm above where
+    // it physically sits (swing_pos_err_z = +4 mm) -- 10 N never reaches the
+    // 17 N gate, and only impact chatter (spikes to 464 N) does. Default
+    // reproduces the constant.
+    let land_confirm_fz_frac = env_f64("LAND_CONFIRM_FZ_FRAC", 0.05).max(0.0);
+    // The plan from here on: the schedule and footsteps built above, their
+    // DCM reference (built now), the CoM height plan (level at z_com until
+    // COM_REPLAN retargets it) and the landing clock (its knobs are set
+    // below). Every later edit goes through it.
+    let mut plan = Plan::new(
+        gait,
+        footsteps,
+        DcmParams { z_lip, lat_scale: zmp_lat_scale, roll: zmp_roll },
+        articara::biped::preview::HeightPlan::constant(z_com),
+        articara::biped::preview::LandingTiming::new(land_confirm_fz_frac * total_mass * G),
+    );
+    let omega = plan.dcm.omega;
     println!(
         "gait: {} steps, DS {:.2}s / SS {:.2}s (start {:.2}s), first swing = {}",
         gp.n_steps,
@@ -2535,7 +2552,7 @@ fn main() {
             "stride: {:.3} m/step -> {:.3} m/s commanded, {:.2} m of travel planned over {} steps",
             stride,
             stride / (gp.t_ss + gp.t_ds),
-            footsteps.travel_x(),
+            plan.footsteps.travel_x(),
             gp.n_steps
         );
     }
@@ -2804,19 +2821,9 @@ fn main() {
     let com_preview_smooth = env_f64("COM_PREVIEW_SMOOTH", 0.1).max(0.0);
     let com_height_replan = flag("COM_HEIGHT_REPLAN", true);
     let com_height_time = env_f64("COM_HEIGHT_TIME", 0.60).max(0.10);
-    // Force on the swing sole that counts toward confirming a landing.
-    // Historically 5% of body weight (17 N on G1). Measured 2026-09-24 on the
-    // stair swing: the foot rests on the tread for 1.4-2.8 s carrying a
-    // MEDIAN of 10 N, because the swing task still holds it 4 mm above where
-    // it physically sits (swing_pos_err_z = +4 mm) -- 10 N never reaches the
-    // 17 N gate, and only impact chatter (spikes to 464 N) does. Default
-    // reproduces the constant.
-    let land_confirm_fz_frac = env_f64("LAND_CONFIRM_FZ_FRAC", 0.05).max(0.0);
-    let mut landing_timing =
-        articara::biped::preview::LandingTiming::new(land_confirm_fz_frac * total_mass * G);
     // The confirmation's xy / z tolerances (see LandingTiming::update).
-    landing_timing.xy_tol = env_f64("LAND_CONFIRM_XY", landing_timing.xy_tol);
-    landing_timing.z_tol = env_f64("LAND_CONFIRM_Z", landing_timing.z_tol);
+    plan.landing.xy_tol = env_f64("LAND_CONFIRM_XY", plan.landing.xy_tol);
+    plan.landing.z_tol = env_f64("LAND_CONFIRM_Z", plan.landing.z_tol);
     // (P2-2 LAND_BY_LOAD, confirming a landing on real load, was not
     // adopted and is removed.)
     // Admit a CONFIRMED landing to the contact set on the schedule instead
@@ -2964,10 +2971,10 @@ fn main() {
     let ref_trig_max_frac = env_f64("REF_TRIG_MAX_FRAC", 1.0);
     let ref_mode: Option<RefMode> = None;
     let event_mode_cfg = flag("CONTACT_EVENT", false);
-    landing_timing.event_mode = flag("CONTACT_EVENT", false);
-    landing_timing.event_z_tol = env_f64("CONTACT_EVENT_Z", 0.003).max(0.0);
-    landing_timing.probe_speed = env_f64("CONTACT_PROBE_VZ", 0.05).max(0.0);
-    landing_timing.probe_max = env_f64("CONTACT_PROBE_MAX", 0.03).max(0.0);
+    plan.landing.event_mode = flag("CONTACT_EVENT", false);
+    plan.landing.event_z_tol = env_f64("CONTACT_EVENT_Z", 0.003).max(0.0);
+    plan.landing.probe_speed = env_f64("CONTACT_PROBE_VZ", 0.05).max(0.0);
+    plan.landing.probe_max = env_f64("CONTACT_PROBE_MAX", 0.03).max(0.0);
     let contact_event_shift = flag("CONTACT_EVENT_SHIFT", true);
     // 0 = a descending swing keeps its extension as a dwell too (double
     // support starts at the deadline, as the historical timeout did).
@@ -3023,7 +3030,7 @@ fn main() {
     // not realisable until the load has moved; the stance-only box is what
     // the pressure can reach NOW.
     let ds_feasible_box_stance = std::env::var("DS_FEASIBLE_BOX").map(|v| v == "stance").unwrap_or(false);
-    landing_timing.min_fraction = env_f64("COM_LAND_PREDICT_FRAC", 0.0).clamp(0.0, 1.0);
+    plan.landing.min_fraction = env_f64("COM_LAND_PREDICT_FRAC", 0.0).clamp(0.0, 1.0);
     let land_extend_base = env_f64("COM_LAND_EXTEND", 0.25).max(0.0);
     // Extra landing-deadline slack for the swing that CHANGES HEIGHT, i.e. the
     // step onto a tread. Zero (the default) means "same as everywhere else".
@@ -3056,7 +3063,7 @@ fn main() {
     // Off = shipped, bit-identical.
     let terrain_pitch = flag("TERRAIN_PITCH", false);
     let terrain_pitch_yaw = flag("TERRAIN_PITCH_YAW", false);
-    landing_timing.dz_min = step_dz_min;
+    plan.landing.dz_min = step_dz_min;
     // Landing-deadline slack for a swing that steps DOWN. Default = the rise
     // value (bit-identical). Measured 2026-10-03 on a 60 mm descent: the
     // 1.08 s rise slack made the stepping-down foot hover on the lower
@@ -3079,11 +3086,11 @@ fn main() {
     // the confirmation fire on the HEEL STRIKE of a toe-up foot (sole centre
     // still 8 mm high), 60 ms before the sole is flat (measured: 2 steps x
     // 6 cm 46 -> 33 with the wide xy alone). Unset = LAND_CONFIRM_Z.
-    landing_timing.z_tol_override = std::env::var("LAND_CONFIRM_Z_DESC").ok().and_then(|v| v.parse().ok());
+    plan.landing.z_tol_override = std::env::var("LAND_CONFIRM_Z_DESC").ok().and_then(|v| v.parse().ok());
     let land_confirm_xy_desc: Option<f64> = std::env::var("LAND_CONFIRM_XY_DESC").ok().and_then(|v| v.parse().ok());
-    landing_timing.max_extension = land_extend_base;
-    landing_timing.speed_z = env_f64("COM_LAND_VZ", 0.20).max(0.01);
-    landing_timing.speed_xy = env_f64("COM_LAND_VXY", 0.35).max(0.01);
+    plan.landing.max_extension = land_extend_base;
+    plan.landing.speed_z = env_f64("COM_LAND_VZ", 0.20).max(0.01);
+    plan.landing.speed_xy = env_f64("COM_LAND_VXY", 0.35).max(0.01);
     // Full per-foot wrench MPC for the three-phase stair transfer.
     // Opt-in until the fixed-arm staircase benchmark has been revalidated.
     // Command the swing to the ANKLE pose the footstep plan implies, rather
@@ -3330,7 +3337,6 @@ fn main() {
     // SWING_CONTACT_SOFT / _ON / _CAP, admitting a loaded swing foot as a
     // weighted contact, were not adopted and are removed.)
     let replan_engaged = false;
-    let height_plan = articara::biped::preview::HeightPlan::constant(z_com);
     let preview_p = steps.mid_xy();
     // The CoM preview QP's horizontal trajectory, kept whole with the time it
     // was solved at, so the MPC can read its own horizon out of it.
@@ -3370,7 +3376,7 @@ fn main() {
         ankle_roll_lim[1].to_degrees()
     );
 
-    let prev_support = gait.support_at(0.0);
+    let prev_support = plan.gait.support_at(0.0);
     let swing_lift_off: Option<na::Vector3<f64>> = None;
     let p0_body = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
     let yaw0_body = rig
@@ -3381,11 +3387,11 @@ fn main() {
         .2;
     // Time at which the last step ends, so achievement is measured over the
     // WALK and not diluted by the settle.
-    let t_walk_end = gait
+    let t_walk_end = plan.gait
         .slices
         .iter()
         .rposition(|s| matches!(s.support, Support::Single { .. }))
-        .map(|i| gait.slices[i].t1 + gp.t_ds)
+        .map(|i| plan.gait.slices[i].t1 + gp.t_ds)
         // No steps at all (a standing squat): the "walk" is the whole run, so
         // the achievement window is the whole run. Falling back to 0 made the
         // window 1 microsecond wide and turned a millimetre of drift into
@@ -3516,16 +3522,6 @@ fn main() {
         qp_has_good_command,
     };
     let mut stats = WalkerStats::default();
-    // The plan: schedule, footsteps, DCM reference, height plan and landing
-    // clock, built above; from here on every edit goes through it.
-    let mut plan = Plan {
-        gait,
-        footsteps,
-        dcm: dcm_plan,
-        height: height_plan,
-        landing: landing_timing,
-        dcm_params: DcmParams { z_lip, lat_scale: zmp_lat_scale, roll: zmp_roll },
-    };
 
     for tick in 0..n_ticks {
         let qp_control_start = std::time::Instant::now();
