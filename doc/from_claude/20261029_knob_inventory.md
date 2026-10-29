@@ -1109,3 +1109,16 @@
   - **`COM_LAND_VZ`（採用 0.05）は G1 の段の高さでは効かない**: 着地前の CoM 再計画の時間が `max(xy/vx, z/vz)` で、80 mm の段でも xy の項が勝つ（1875）。構造としては生きている。
   - `DS_CAPTURE_MARGIN`、`STEP_DZ_SWING_MIN`、`VXS_Z_MAX`（分類 1・2）: 門の中の閾値で、見本の範囲では結果を変えない。構造としては生きているので残す。
 - 結論: 台帳の分類 1・2 は、`CP_TRACK` を除いて実行でも生きている（または生きている構造の中の閾値）。分類 3 は中立の既定 4 個の扱いを加えれば台帳どおりに削れる。
+
+## 6. 削除の結果（2026-10-29）
+
+kyo46rs_walk.rs は 12,747 → 7,583 行（−41%）。不採用のノブを 311 個とその分岐を消した（束 A・B: b08b77e、64d283a。束 1〜9: 875387c … dc4aa93）。各束で家族 76 本＋kyo46rs 20 本＋押しの難しい見本 14 本の TRAJ_CSV とログがバイト一致。TRAJ_CSV の列は 1 本も消していない（消した仕組みの列は off のときの値を書き続ける）。
+
+残した分類 3（22 個）と理由:
+- `STAIR_MANAGED_*` 6 個: 移行が無くても `STAIR_MANAGED_RATE` の引き金が届く。
+- `CP_W_SHIFT`、`CP_J`、`CP_W_U`、`CP_DEAD_U`: contact_plan のずらしの仕組みの一部。チャンピオンでは `CP_MAX_*=0` でずらしが常に 0。仕組みごと消すかは本体の切り出しのときに決める。
+- `SWING_XY_DELAY`、`SWING_Z_HOLD`、`SWING_Z_HOLD_MIN_DUR`、`SWING_Z_DROP`: `ROUGH_MODE=1` が `set_var` で入れる（rough30 で届く）。
+- `STAIR_ABSOLUTE_TD`、`Z_COM_OFFSET`: kyo46rs の v3 候補が入れる（台帳の「kyo46rs も 0」は v2 の話）。
+- 接触イベントの 6 個（`CONTACT_EVENT_Z`、`CONTACT_PROBE_VZ/_MAX`、`CONTACT_EVENT_SHIFT`、`CONTACT_EVENT_END_ON_TOUCH` ほか）: **参照ライブラリが作動すると `landing_timing.event_mode = true` を立てるので届く**（台帳の誤り）。
+
+既定のノブのままでも届いていた分類 3（削除し、元の既定値を埋め込んだ）: `PUSH_REPLAN_HOLD_Z`（0.05、保持の高さ）、`STAIR_WRENCH_*_WEIGHT`（連成段の重み、`STAIR_WRENCH_COUPLED` の既定 true で届く）、`REF_WBC_LANDED`（条件 `lib.landed` として）。
