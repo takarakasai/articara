@@ -776,6 +776,230 @@ impl FixProbe {
     }
 }
 
+/// Per-step accounting, printed at the end. A run-total hides the thing
+/// that matters, which is whether the steps are all alike -- a periodic
+/// orbit -- or drifting.
+#[cfg(feature = "mujoco")]
+struct StepStat {
+    idx: usize,
+    slice: usize,
+    t0: f64,
+    stance: usize,
+    dcm_err_max: f64,
+    cop_use_max: f64,
+    fz_peak: f64,
+    degraded: u32,
+    td_vz: f64,
+    swing_apex: f64,
+}
+
+/// What the run measures about itself: achievement, extremes, the target
+/// hits, the push response and the weight transfer after it. Harness state:
+/// written from the plant, the solve and the plan, read by the report after
+/// the loop, and never by the controller -- except `push_at_t`, which also
+/// gates the FIX probe and the push-window bookkeeping (both scenario).
+#[cfg(feature = "mujoco")]
+struct RunMetrics {
+    step_stats: Vec<StepStat>,
+    walk_end_state: Option<([f64; 3], f64, f64)>,
+    /// Pose at the end of the stride ramp (`t_ramp_end`): achievement is
+    /// measured from there.
+    ramp_end_state: Option<([f64; 3], f64, f64)>,
+    /// Last state before the loop ended, so a case that FELL reports the rate
+    /// it was actually holding rather than a post-fall pose divided by a
+    /// duration that never happened.
+    last_state: ([f64; 3], f64, f64),
+    /// Command tracking is integrated in the BODY frame, tick by tick, rather
+    /// than taken as a displacement in the start frame. Two reasons, both
+    /// measured: euler yaw wraps at +-pi, so a turn past 180 deg read as
+    /// -69% of its command; and a curved path's chord is not its arc, so
+    /// vx+wz together read 56% on a run whose speed was right.
+    travel: [f64; 3], // body-frame x, y, unwrapped yaw
+    prev_pose: Option<([f64; 3], f64)>,
+    fell: bool,
+    min_z: f64,
+    max_tilt: f64,
+    max_dcm_err: f64,
+    max_cop_use: f64,
+    max_zmp_clamp: f64,
+    max_ankle_roll_use: f64,
+    n_open_loop: u32,
+    /// Per-joint travel, so a joint that swings without hitting anything is
+    /// still visible. Sec.30 found the v6 arm at 111 deg peak-to-peak in a clip
+    /// that logged 44 self-collision ticks: the collision count is a count of
+    /// collisions, and it was being read as if it were a measure of behaviour.
+    q_lo: Vec<f64>,
+    q_hi: Vec<f64>,
+    /// Hits on `spar_target`, kept OUT of the self-collision tally: a contact
+    /// with the thing the robot is aiming at is not the QP solving against a
+    /// contact it has no model for, which is what that counter means.
+    hit_ticks: u32,
+    hit_peak_f: f64,
+    hit_impulse: f64,
+    hit_first_t: Option<f64>,
+    hit_last_t: f64,
+    /// Per-PUNCH, not per-run: the totals above sum every contact in the run,
+    /// and "how long does one punch stay on the target" is the question Sec.42.4
+    /// actually asked. An episode is a contiguous run of ticks in contact.
+    hit_episodes: Vec<(f64, f64)>, // (duration s, impulse N*s)
+    ep_t0: Option<f64>,
+    ep_imp: f64,
+    /// This tick's force on the target, hoisted so the CSV can carry it: a
+    /// replay that draws the punch should not have to be told separately
+    /// what it delivered (same reason `push_fx`/`push_fy` are logged).
+    hit_f_now: f64,
+    n_selfcollide: u32,
+    max_selfcollide_f: f64,
+    // ---- disturbance response ------------------------------------------
+    /// Whole-run maxima say nothing about a push: they are dominated by the
+    /// walk itself. Everything about the recovery has to be measured from the
+    /// moment of the push forward, which is what these hold.
+    push_at_t: Option<f64>,
+    push_at_step: usize,
+    push_dcm_err_max: f64,
+    push_tilt_max: f64,
+    push_degraded_at: u32,
+    push_cop_max: f64,
+    push_slip_wbc_max: f64,
+    push_slip_plant_max: f64,
+    push_slip_ticks: u32,
+    /// Landing impact and the unloading that follows it. Measured on the
+    /// straddling pair at 0.20 (fell) against 0.15 and 0.30 (both survived):
+    /// the faller spiked to 2.77x body weight and then spent 100 ms with the
+    /// two feet carrying less than half the robot's weight between them --
+    /// effectively ballistic -- while both survivors never dropped below 0.63x
+    /// and peaked at 1.22x / 1.41x. Neither friction use nor CoP use nor
+    /// ankle_roll range separated those three runs; this did.
+    push_fz_total_min: f64,
+    push_fz_total_max: f64,
+    push_unloaded_ticks: u32,
+    /// Early-window counterparts (see `push_window_s`).
+    win_dcm_err_max: f64,
+    win_tilt_max: f64,
+    win_cop_max: f64,
+    win_slip_plant_max: f64,
+    win_slip_ticks: u32,
+    win_fz_total_min: f64,
+    win_fz_total_max: f64,
+    win_unloaded_ticks: u32,
+    win_degraded_at: Option<u32>,
+    win_degraded_end: u32,
+    /// First support change after the push, and the CoP-edge accounting over
+    /// the `transfer_s` that follows it.
+    transfer_t: Option<f64>,
+    support_prev: Option<articara::biped::gait::Support>,
+    xfer_edge_ticks: u32,
+    xfer_ticks: u32,
+    xfer_leave_t: Option<f64>,
+    xfer_wrongfoot_ticks: u32,
+    /// Second single-support entry after the push. The first-window metric is
+    /// anchored to a transition that step-timing adaptation MOVES, so it scores
+    /// that intervention badly by construction (+27/-1 survivals against only
+    /// 36/29 on the metric). Measuring the next step too separates "the metric
+    /// is truncated" from "the intervention only helps survival".
+    transfer2_t: Option<f64>,
+    xfer2_edge_ticks: u32,
+    xfer2_ticks: u32,
+    /// Centroidal angular momentum about the roll axis. If damping it is going
+    /// to help, it has to be large and growing in runs that fall -- and the
+    /// arms are shoulder_pitch + elbow, both PITCH, so they cannot make roll
+    /// momentum at all. Measured before implementing the task, not after.
+    h_roll_max: f64,
+    h_roll_at_xfer: f64,
+    /// DCM offset relative to the foot the plan is about to commit to, at the
+    /// instant of commitment. The Khadiv/Englsberger nominal for a periodic
+    /// walk is b_y = l_p / (1 + exp(omega * t_ss)) with the sign alternating;
+    /// entering single support at the wrong sign or magnitude is the candidate
+    /// mechanism for the failures traced in Sec.19-21. Zero new machinery is
+    /// needed to check it -- the footstep plan and the measured DCM are both
+    /// already here.
+    xfer_dcm_off: [f64; 2],
+    xfer_stance: i32,
+    push_ankle_max: f64,
+    push_exceeded: bool,
+    push_last_exceed: Option<f64>,
+    t_last: f64,
+    /// The FIX probe fires at most once per run.
+    fix_fired: bool,
+}
+
+#[cfg(feature = "mujoco")]
+impl RunMetrics {
+    /// Everything zero / empty, except the joint-travel extremes (sized by
+    /// `n_joints`) and `last_state`, which starts at the spawn pose.
+    fn new(n_joints: usize, p0_body: [f64; 3], yaw0_body: f64) -> Self {
+        Self {
+            step_stats: Vec::new(),
+            walk_end_state: None,
+            ramp_end_state: None,
+            last_state: (p0_body, yaw0_body, 0.0),
+            travel: [0.0f64; 3],
+            prev_pose: None,
+            fell: false,
+            min_z: f64::INFINITY,
+            max_tilt: 0.0,
+            max_dcm_err: 0.0,
+            max_cop_use: 0.0,
+            max_zmp_clamp: 0.0,
+            max_ankle_roll_use: 0.0,
+            n_open_loop: 0,
+            q_lo: vec![f64::INFINITY; n_joints],
+            q_hi: vec![f64::NEG_INFINITY; n_joints],
+            hit_ticks: 0,
+            hit_peak_f: 0.0,
+            hit_impulse: 0.0,
+            hit_first_t: None,
+            hit_last_t: 0.0,
+            hit_episodes: Vec::new(),
+            ep_t0: None,
+            ep_imp: 0.0,
+            hit_f_now: 0.0,
+            n_selfcollide: 0,
+            max_selfcollide_f: 0.0,
+            push_at_t: None,
+            push_at_step: 0,
+            push_dcm_err_max: 0.0,
+            push_tilt_max: 0.0,
+            push_degraded_at: 0,
+            push_cop_max: 0.0,
+            push_slip_wbc_max: 0.0,
+            push_slip_plant_max: 0.0,
+            push_slip_ticks: 0,
+            push_fz_total_min: f64::INFINITY,
+            push_fz_total_max: 0.0,
+            push_unloaded_ticks: 0,
+            win_dcm_err_max: 0.0,
+            win_tilt_max: 0.0,
+            win_cop_max: 0.0,
+            win_slip_plant_max: 0.0,
+            win_slip_ticks: 0,
+            win_fz_total_min: f64::INFINITY,
+            win_fz_total_max: 0.0,
+            win_unloaded_ticks: 0,
+            win_degraded_at: None,
+            win_degraded_end: 0,
+            transfer_t: None,
+            support_prev: None,
+            xfer_edge_ticks: 0,
+            xfer_ticks: 0,
+            xfer_leave_t: None,
+            xfer_wrongfoot_ticks: 0,
+            transfer2_t: None,
+            xfer2_edge_ticks: 0,
+            xfer2_ticks: 0,
+            h_roll_max: 0.0,
+            h_roll_at_xfer: 0.0,
+            xfer_dcm_off: [0.0f64; 2],
+            xfer_stance: -1,
+            push_ankle_max: 0.0,
+            push_exceeded: false,
+            push_last_exceed: None,
+            t_last: 0.0,
+            fix_fired: false,
+        }
+    }
+}
+
 fn main() {
     use articara::biped::actuate::{
         CommandPolicy, DegradedTally, gravity_plus_posture, write_to_plant,
@@ -2325,7 +2549,6 @@ fn main() {
     let mut cp_retime_total = 0.0_f64;
     // FIX_*: the corrective-impulse probe (see `FixProbe`).
     let fix = FixProbe::from_env();
-    let mut fix_fired = false;
     // ---- contact-driven phase transitions -----------------------------
     //
     // The schedule says when the step ENDS; the ground says when it actually
@@ -2935,23 +3158,6 @@ fn main() {
         ankle_roll_lim[1].to_degrees()
     );
 
-    // Per-step accounting, printed at the end. A run-total hides the thing
-    // that matters, which is whether the steps are all alike -- a periodic
-    // orbit -- or drifting.
-    struct StepStat {
-        idx: usize,
-        slice: usize,
-        t0: f64,
-        stance: usize,
-        dcm_err_max: f64,
-        cop_use_max: f64,
-        fz_peak: f64,
-        degraded: u32,
-        td_vz: f64,
-        swing_apex: f64,
-    }
-    let mut step_stats: Vec<StepStat> = Vec::new();
-
     let mut prev_support = gait.support_at(0.0);
     let mut swing_lift_off: Option<na::Vector3<f64>> = None;
     let p0_body = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
@@ -2973,130 +3179,17 @@ fn main() {
         // window 1 microsecond wide and turned a millimetre of drift into
         // 56 m/s.
         .unwrap_or(total_t);
-    let mut walk_end_state: Option<([f64; 3], f64, f64)> = None;
     // Achievement is measured from the end of the stride ramp, not from
     // standing. Including the ramp charges every case a fixed shortfall that
     // never recovers -- it read 91% for every forward speed, and 47% for a
     // turn that was in fact holding 0.195 of a commanded 0.200 rad/s.
     let t_ramp_end = gp.t_start + (stride_ramp as f64) * t_step;
-    let mut ramp_end_state: Option<([f64; 3], f64, f64)> = None;
-    // Last state before the loop ended, so a case that FELL reports the rate
-    // it was actually holding rather than a post-fall pose divided by a
-    // duration that never happened.
-    let mut last_state: ([f64; 3], f64, f64) = (p0_body, yaw0_body, 0.0);
-    // Command tracking is integrated in the BODY frame, tick by tick, rather
-    // than taken as a displacement in the start frame. Two reasons, both
-    // measured: euler yaw wraps at +-pi, so a turn past 180 deg read as
-    // -69% of its command; and a curved path's chord is not its arc, so
-    // vx+wz together read 56% on a run whose speed was right.
-    let mut travel = [0.0f64; 3]; // body-frame x, y, unwrapped yaw
-    let mut prev_pose: Option<([f64; 3], f64)> = None;
-    let mut fell = false;
-    let mut min_z = f64::INFINITY;
-    let mut max_tilt: f64 = 0.0;
-    let mut max_dcm_err: f64 = 0.0;
-    let mut max_cop_use: f64 = 0.0;
-    let mut max_zmp_clamp: f64 = 0.0;
-    let mut max_ankle_roll_use: f64 = 0.0;
-    let mut n_open_loop = 0u32;
-    // Per-joint travel, so a joint that swings without hitting anything is
-    // still visible. Sec.30 found the v6 arm at 111 deg peak-to-peak in a clip
-    // that logged 44 self-collision ticks: the collision count is a count of
-    // collisions, and it was being read as if it were a measure of behaviour.
-    let mut q_lo: Vec<f64> = vec![f64::INFINITY; rig.robot.joints.len()];
-    let mut q_hi: Vec<f64> = vec![f64::NEG_INFINITY; rig.robot.joints.len()];
-    // Hits on `spar_target`, kept OUT of the self-collision tally: a contact
-    // with the thing the robot is aiming at is not the QP solving against a
-    // contact it has no model for, which is what that counter means.
-    let mut hit_ticks = 0u32;
-    let mut hit_peak_f: f64 = 0.0;
-    let mut hit_impulse: f64 = 0.0;
-    let mut hit_first_t: Option<f64> = None;
-    let mut hit_last_t: f64 = 0.0;
-    // Per-PUNCH, not per-run: the totals above sum every contact in the run,
-    // and "how long does one punch stay on the target" is the question Sec.42.4
-    // actually asked. An episode is a contiguous run of ticks in contact.
-    let mut hit_episodes: Vec<(f64, f64)> = Vec::new(); // (duration s, impulse N*s)
-    let mut ep_t0: Option<f64> = None;
-    let mut ep_imp: f64 = 0.0;
-    // This tick's force on the target, hoisted so the CSV can carry it: a
-    // replay that draws the punch should not have to be told separately
-    // what it delivered (same reason `push_fx`/`push_fy` are logged).
-    let mut hit_f_now: f64 = 0.0;
     let mut fz_prev: [f64; 2] = [0.0; 2];
     let mut fz_rate_ema: [f64; 2] = [0.0; 2];
     let mut managed_until: [f64; 2] = [f64::NEG_INFINITY; 2];
-    let mut n_selfcollide = 0u32;
-    let mut max_selfcollide_f: f64 = 0.0;
-    // ---- disturbance response ------------------------------------------
-    // Whole-run maxima say nothing about a push: they are dominated by the
-    // walk itself. Everything about the recovery has to be measured from the
-    // moment of the push forward, which is what these hold.
-    let mut push_at_t: Option<f64> = None;
-    let mut push_at_step: usize = 0;
-    let mut push_dcm_err_max: f64 = 0.0;
-    let mut push_tilt_max: f64 = 0.0;
-    let mut push_degraded_at: u32 = 0;
-    let mut push_cop_max: f64 = 0.0;
-    let mut push_slip_wbc_max: f64 = 0.0;
-    let mut push_slip_plant_max: f64 = 0.0;
-    let mut push_slip_ticks: u32 = 0;
-    // Landing impact and the unloading that follows it. Measured on the
-    // straddling pair at 0.20 (fell) against 0.15 and 0.30 (both survived):
-    // the faller spiked to 2.77x body weight and then spent 100 ms with the
-    // two feet carrying less than half the robot's weight between them --
-    // effectively ballistic -- while both survivors never dropped below 0.63x
-    // and peaked at 1.22x / 1.41x. Neither friction use nor CoP use nor
-    // ankle_roll range separated those three runs; this did.
-    let mut push_fz_total_min: f64 = f64::INFINITY;
-    let mut push_fz_total_max: f64 = 0.0;
-    let mut push_unloaded_ticks: u32 = 0;
-    // Early-window counterparts (see `push_window_s`).
-    let mut win_dcm_err_max: f64 = 0.0;
-    let mut win_tilt_max: f64 = 0.0;
-    let mut win_cop_max: f64 = 0.0;
-    let mut win_slip_plant_max: f64 = 0.0;
-    let mut win_slip_ticks: u32 = 0;
-    let mut win_fz_total_min: f64 = f64::INFINITY;
-    let mut win_fz_total_max: f64 = 0.0;
-    let mut win_unloaded_ticks: u32 = 0;
-    let mut win_degraded_at: Option<u32> = None;
-    let mut win_degraded_end: u32 = 0;
-    // First support change after the push, and the CoP-edge accounting over
-    // the `transfer_s` that follows it.
-    let mut transfer_t: Option<f64> = None;
-    let mut support_prev: Option<Support> = None;
-    let mut xfer_edge_ticks: u32 = 0;
-    let mut xfer_ticks: u32 = 0;
-    let mut xfer_leave_t: Option<f64> = None;
-    let mut xfer_wrongfoot_ticks: u32 = 0;
-    // Second single-support entry after the push. The first-window metric is
-    // anchored to a transition that step-timing adaptation MOVES, so it scores
-    // that intervention badly by construction (+27/-1 survivals against only
-    // 36/29 on the metric). Measuring the next step too separates "the metric
-    // is truncated" from "the intervention only helps survival".
-    let mut transfer2_t: Option<f64> = None;
-    let mut xfer2_edge_ticks: u32 = 0;
-    let mut xfer2_ticks: u32 = 0;
-    // Centroidal angular momentum about the roll axis. If damping it is going
-    // to help, it has to be large and growing in runs that fall -- and the
-    // arms are shoulder_pitch + elbow, both PITCH, so they cannot make roll
-    // momentum at all. Measured before implementing the task, not after.
-    let mut h_roll_max: f64 = 0.0;
-    let mut h_roll_at_xfer: f64 = 0.0;
-    // DCM offset relative to the foot the plan is about to commit to, at the
-    // instant of commitment. The Khadiv/Englsberger nominal for a periodic
-    // walk is b_y = l_p / (1 + exp(omega * t_ss)) with the sign alternating;
-    // entering single support at the wrong sign or magnitude is the candidate
-    // mechanism for the failures traced in Sec.19-21. Zero new machinery is
-    // needed to check it -- the footstep plan and the measured DCM are both
-    // already here.
-    let mut xfer_dcm_off = [0.0f64; 2];
-    let mut xfer_stance: i32 = -1;
-    let mut push_ankle_max: f64 = 0.0;
-    let mut push_exceeded = false;
-    let mut push_last_exceed: Option<f64> = None;
-    let mut t_last: f64 = 0.0;
+    // What the run measured about itself (achievement, extremes, the
+    // push response), for the report after the loop.
+    let mut m = RunMetrics::new(rig.robot.joints.len(), p0_body, yaw0_body);
     // Optional norm bound on the change in commanded horizontal CoM
     // acceleration.  The DCM/ZMP reference is acceleration-continuous, but
     // its piecewise-linear ZMP slope changes at support boundaries, producing
@@ -3218,7 +3311,7 @@ fn main() {
         let qp_control_start = std::time::Instant::now();
         let mut mpc_capture_ns = 0u128;
         let t = tick as f64 * dt;
-        t_last = t;
+        m.t_last = t;
         if land_extend_rise > 0.0 {
             // Same test the landing detector itself uses to decide a swing is
             // a stair swing (`preview.rs`: the planned sole height changes by
@@ -3249,12 +3342,12 @@ fn main() {
         // Read before the push fires later in this tick, so the window opens
         // on the tick AFTER the impulse -- the same convention the whole-run
         // accumulators use.
-        let in_push_window = push_at_t.map(|tp| t - tp <= push_window_s).unwrap_or(false);
+        let in_push_window = m.push_at_t.map(|tp| t - tp <= push_window_s).unwrap_or(false);
         if in_push_window {
-            if win_degraded_at.is_none() {
-                win_degraded_at = Some(tally.n);
+            if m.win_degraded_at.is_none() {
+                m.win_degraded_at = Some(tally.n);
             }
-            win_degraded_end = tally.n;
+            m.win_degraded_end = tally.n;
         }
         let st = rig.sync();
         let (q, v, v_dvec, data) = (&st.q, &st.v, &st.v_dvec, &st.data);
@@ -4212,15 +4305,15 @@ fn main() {
             
             }
         }
-        max_dcm_err = max_dcm_err.max(dcm_err);
+        m.max_dcm_err = m.max_dcm_err.max(dcm_err);
         // Post-push accumulation. The push fires late in the tick, after this
         // point, so the firing tick's error is still the undisturbed one and
         // the window starts one tick later -- which is what we want.
         if in_push_window {
-            win_dcm_err_max = win_dcm_err_max.max(dcm_err);
+            m.win_dcm_err_max = m.win_dcm_err_max.max(dcm_err);
         }
-        if push_at_t.is_some() {
-            push_dcm_err_max = push_dcm_err_max.max(dcm_err);
+        if m.push_at_t.is_some() {
+            m.push_dcm_err_max = m.push_dcm_err_max.max(dcm_err);
             // Recovery is decided BACKWARD from the end of the run, from the
             // LAST time the error was out of tolerance -- not forward from the
             // first time it dipped back in.
@@ -4234,8 +4327,8 @@ fn main() {
             // not monotonic on the way down and crosses the band on the way
             // past. Only "went under and STAYED under" is a recovery.
             if dcm_err >= push_recover_m {
-                push_exceeded = true;
-                push_last_exceed = Some(t);
+                m.push_exceeded = true;
+                m.push_last_exceed = Some(t);
             }
         }
 
@@ -4254,7 +4347,7 @@ fn main() {
         } else {
             (p_raw, 0.0)
         };
-        max_zmp_clamp = max_zmp_clamp.max(clamped);
+        m.max_zmp_clamp = m.max_zmp_clamp.max(clamped);
         // Pressure the polygon refused (world x, y), for MOM_CMP.
         let zmp_deficit = p_raw - p_cmd;
 
@@ -6567,9 +6660,9 @@ fn main() {
             }
             writeln!(file).unwrap();
         }
-        max_cop_use = max_cop_use.max(cop_use);
-        if push_at_t.is_some() {
-            push_cop_max = push_cop_max.max(cop_use);
+        m.max_cop_use = m.max_cop_use.max(cop_use);
+        if m.push_at_t.is_some() {
+            m.push_cop_max = m.push_cop_max.max(cop_use);
             // Friction utilisation, against BOTH denominators, because they
             // answer different questions and swapping them silently is how a
             // friction sweep comes to measure its own assumption.
@@ -6593,57 +6686,57 @@ fn main() {
             // of each sole rides its inner edge by construction. It is the
             // commitment to one foot that the disturbed machine either
             // completes or does not.
-            if transfer_t.is_none() {
-                if let (Some(Support::Double), Support::Single { .. }) = (support_prev, support) {
-                    transfer_t = Some(t);
-                    if fix.armed() && !fix_fired {
+            if m.transfer_t.is_none() {
+                if let (Some(Support::Double), Support::Single { .. }) = (m.support_prev, support) {
+                    m.transfer_t = Some(t);
+                    if fix.armed() && !m.fix_fired {
                         fix.fire(&mut rig.sim, &push.link, total_mass, t, true);
-                        fix_fired = true;
+                        m.fix_fired = true;
                     }
                     // 6-D centroidal momentum h = A_G * v; rows 0..3 are
                     // angular, and row 0 is the roll axis.
                     let ag =
                         misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, &st.q);
-                    h_roll_at_xfer = (&ag * v_dvec)[0];
+                    m.h_roll_at_xfer = (&ag * v_dvec)[0];
                     if let Support::Single { stance, .. } = support {
                         let u = steps.xy(stance);
-                        xfer_dcm_off = [xi.x - u.x, xi.y - u.y];
-                        xfer_stance = stance as i32;
+                        m.xfer_dcm_off = [xi.x - u.x, xi.y - u.y];
+                        m.xfer_stance = stance as i32;
                     }
                 }
-            } else if transfer2_t.is_none() && t > transfer_t.unwrap() + 1e-9 {
-                if let (Some(Support::Double), Support::Single { .. }) = (support_prev, support) {
-                    transfer2_t = Some(t);
+            } else if m.transfer2_t.is_none() && t > m.transfer_t.unwrap() + 1e-9 {
+                if let (Some(Support::Double), Support::Single { .. }) = (m.support_prev, support) {
+                    m.transfer2_t = Some(t);
                 }
             }
             // Time-triggered corrective impulse (see `fix_at_s`).
             if fix.at_s >= 0.0
-                && !fix_fired
+                && !m.fix_fired
                 && fix.armed()
-                && push_at_t.map(|tp0| t - tp0 >= fix.at_s).unwrap_or(false)
+                && m.push_at_t.map(|tp0| t - tp0 >= fix.at_s).unwrap_or(false)
             {
                 fix.fire(&mut rig.sim, &push.link, total_mass, t, false);
-                fix_fired = true;
+                m.fix_fired = true;
             }
-            if push_at_t.map(|tp0| t - tp0 <= 1.0).unwrap_or(false) {
+            if m.push_at_t.map(|tp0| t - tp0 <= 1.0).unwrap_or(false) {
                 let ag = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, &st.q);
-                h_roll_max = h_roll_max.max((&ag * v_dvec)[0].abs());
+                m.h_roll_max = m.h_roll_max.max((&ag * v_dvec)[0].abs());
             }
-            if let Some(t2) = transfer2_t {
+            if let Some(t2) = m.transfer2_t {
                 if t - t2 <= transfer_s {
-                    xfer2_ticks += 1;
+                    m.xfer2_ticks += 1;
                     let on_edge2 = (0..2).any(|side| {
                         measured.cop[side][2] > 0.1 * total_mass * G
                             && measured.cop[side][1].abs() >= edge_frac * sole_half_w
                     });
                     if on_edge2 {
-                        xfer2_edge_ticks += 1;
+                        m.xfer2_edge_ticks += 1;
                     }
                 }
             }
-            if let Some(t0) = transfer_t {
+            if let Some(t0) = m.transfer_t {
                 if t - t0 <= transfer_s {
-                    xfer_ticks += 1;
+                    m.xfer_ticks += 1;
                     let mut on_edge = false;
                     for side in 0..2 {
                         let fz = measured.cop[side][2];
@@ -6655,28 +6748,28 @@ fn main() {
                         }
                         // A foot the schedule says is swinging, carrying load.
                         if !support.is_stance(side) {
-                            xfer_wrongfoot_ticks += 1;
+                            m.xfer_wrongfoot_ticks += 1;
                         }
                     }
                     if on_edge {
-                        xfer_edge_ticks += 1;
-                    } else if xfer_leave_t.is_none() {
-                        xfer_leave_t = Some(t);
+                        m.xfer_edge_ticks += 1;
+                    } else if m.xfer_leave_t.is_none() {
+                        m.xfer_leave_t = Some(t);
                     }
                 }
             }
             let fz_total = measured.f_w[0][2] + measured.f_w[1][2];
-            push_fz_total_min = push_fz_total_min.min(fz_total);
-            push_fz_total_max = push_fz_total_max.max(fz_total);
+            m.push_fz_total_min = m.push_fz_total_min.min(fz_total);
+            m.push_fz_total_max = m.push_fz_total_max.max(fz_total);
             if fz_total < 0.5 * total_mass * G {
-                push_unloaded_ticks += 1;
+                m.push_unloaded_ticks += 1;
             }
             if in_push_window {
-                win_cop_max = win_cop_max.max(cop_use);
-                win_fz_total_min = win_fz_total_min.min(fz_total);
-                win_fz_total_max = win_fz_total_max.max(fz_total);
+                m.win_cop_max = m.win_cop_max.max(cop_use);
+                m.win_fz_total_min = m.win_fz_total_min.min(fz_total);
+                m.win_fz_total_max = m.win_fz_total_max.max(fz_total);
                 if fz_total < 0.5 * total_mass * G {
-                    win_unloaded_ticks += 1;
+                    m.win_unloaded_ticks += 1;
                 }
             }
             for side in 0..2 {
@@ -6685,12 +6778,12 @@ fn main() {
                     continue; // an unloaded foot has no meaningful ratio
                 }
                 let tan = (measured.f_w[side][0].powi(2) + measured.f_w[side][1].powi(2)).sqrt();
-                push_slip_wbc_max = push_slip_wbc_max.max(tan / (friction_mu * fz));
-                push_slip_plant_max = push_slip_plant_max.max(tan / (mu_ground * fz));
+                m.push_slip_wbc_max = m.push_slip_wbc_max.max(tan / (friction_mu * fz));
+                m.push_slip_plant_max = m.push_slip_plant_max.max(tan / (mu_ground * fz));
                 if in_push_window {
-                    win_slip_plant_max = win_slip_plant_max.max(tan / (mu_ground * fz));
+                    m.win_slip_plant_max = m.win_slip_plant_max.max(tan / (mu_ground * fz));
                     if tan >= 0.98 * mu_ground * fz {
-                        win_slip_ticks += 1;
+                        m.win_slip_ticks += 1;
                     }
                 }
                 // AT the cone, not past it: MuJoCo's contact solver never
@@ -6698,7 +6791,7 @@ fn main() {
                 // ever true by floating-point luck and counted 0 ticks on a
                 // run that slid for 150 ms. Riding the boundary IS sliding.
                 if tan >= 0.98 * mu_ground * fz {
-                    push_slip_ticks += 1;
+                    m.push_slip_ticks += 1;
                 }
             }
         }
@@ -6713,8 +6806,8 @@ fn main() {
         // in the logs from a control failure.
         for ji in 0..rig.robot.joints.len() {
             let qj = rig.robot.joint_positions[ji];
-            q_lo[ji] = q_lo[ji].min(qj);
-            q_hi[ji] = q_hi[ji].max(qj);
+            m.q_lo[ji] = m.q_lo[ji].min(qj);
+            m.q_hi[ji] = m.q_hi[ji].max(qj);
         }
         {
             let all: Vec<(String, String, f64)> = rig
@@ -6738,34 +6831,34 @@ fn main() {
                 .filter(|(a, b, _)| is_target(a, b))
                 .map(|(_, _, f)| *f)
                 .sum();
-            hit_f_now = f_hit;
+            m.hit_f_now = f_hit;
             if f_hit > 0.0 {
-                hit_ticks += 1;
-                hit_peak_f = hit_peak_f.max(f_hit);
-                hit_impulse += f_hit * dt;
-                hit_first_t.get_or_insert(t);
-                hit_last_t = t;
-                ep_t0.get_or_insert(t);
-                ep_imp += f_hit * dt;
-            } else if let Some(t0) = ep_t0.take() {
-                hit_episodes.push((t - t0, ep_imp));
-                ep_imp = 0.0;
+                m.hit_ticks += 1;
+                m.hit_peak_f = m.hit_peak_f.max(f_hit);
+                m.hit_impulse += f_hit * dt;
+                m.hit_first_t.get_or_insert(t);
+                m.hit_last_t = t;
+                m.ep_t0.get_or_insert(t);
+                m.ep_imp += f_hit * dt;
+            } else if let Some(t0) = m.ep_t0.take() {
+                m.hit_episodes.push((t - t0, m.ep_imp));
+                m.ep_imp = 0.0;
             }
             let hits: Vec<(String, String, f64)> = all
                 .into_iter()
                 .filter(|(a, b, _)| !is_target(a, b) && !is_stairs(a, b))
                 .collect();
             if !hits.is_empty() {
-                n_selfcollide += 1;
-                if n_selfcollide <= 8 {
+                m.n_selfcollide += 1;
+                if m.n_selfcollide <= 8 {
                     let d: Vec<String> = hits
                         .iter()
                         .map(|(a, b, f)| format!("{a} <-> {b} ({f:.1} N)"))
                         .collect();
                     println!("  [self-collision] t={t:6.3}  {}", d.join(", "));
                 }
-                max_selfcollide_f =
-                    max_selfcollide_f.max(hits.iter().map(|(_, _, f)| *f).fold(0.0, f64::max));
+                m.max_selfcollide_f =
+                    m.max_selfcollide_f.max(hits.iter().map(|(_, _, f)| *f).fold(0.0, f64::max));
             }
         }
 
@@ -6797,7 +6890,7 @@ fn main() {
             robot_taus[ji] = robot_taus[ji].clamp(-bound, bound);
         }
         if policy.consecutive_degraded() >= 10 {
-            n_open_loop += 1;
+            m.n_open_loop += 1;
         }
         let mut tau_use_max = 0.0_f64;
         let mut tau_saturated_count = 0usize;
@@ -6818,9 +6911,9 @@ fn main() {
         for i in 0..2 {
             if ankle_roll_lim[i].is_finite() && ankle_roll_lim[i] > 1e-6 {
                 let use_i = ankle_roll[i].abs() / ankle_roll_lim[i];
-                max_ankle_roll_use = max_ankle_roll_use.max(use_i);
-                if push_at_t.is_some() {
-                    push_ankle_max = push_ankle_max.max(use_i);
+                m.max_ankle_roll_use = m.max_ankle_roll_use.max(use_i);
+                if m.push_at_t.is_some() {
+                    m.push_ankle_max = m.push_ankle_max.max(use_i);
                 }
             }
         }
@@ -6831,8 +6924,8 @@ fn main() {
                 Support::Single { stance, .. } => stance,
                 Support::Double => unreachable!(),
             };
-            if step_stats.last().map(|s| s.slice) != Some(slice_idx) {
-                step_stats.push(StepStat {
+            if m.step_stats.last().map(|s| s.slice) != Some(slice_idx) {
+                m.step_stats.push(StepStat {
                     idx: step_idx,
                     slice: slice_idx,
                     t0: t,
@@ -6845,7 +6938,7 @@ fn main() {
                     swing_apex: 0.0,
                 });
             }
-            let s = step_stats.last_mut().unwrap();
+            let s = m.step_stats.last_mut().unwrap();
             s.dcm_err_max = s.dcm_err_max.max(dcm_err);
             s.cop_use_max = s.cop_use_max.max(cop_use);
             s.fz_peak = s.fz_peak.max(measured.f_w[0][2] + measured.f_w[1][2]);
@@ -6870,7 +6963,7 @@ fn main() {
         let trunk_tilt_pitch = (-trot[(2, 0)]).asin();
 
         // ---- disturbance: fire once, at the requested phase (`fire_push`).
-        if push_at_t.is_none()
+        if m.push_at_t.is_none()
             && fire_push(
                 &mut rig.sim,
                 &push,
@@ -6880,9 +6973,9 @@ fn main() {
                 jab.then_some(JabClock { start: jab_start, period: jab_period, pattern: &jab_pattern }),
             )
         {
-            push_at_t = Some(t);
-            push_at_step = step_idx;
-            push_degraded_at = tally.n;
+            m.push_at_t = Some(t);
+            m.push_at_step = step_idx;
+            m.push_degraded_at = tally.n;
         }
         if let Some(mode) = ref_mode
             && let Some(lib) = &ref_lib
@@ -6917,7 +7010,7 @@ fn main() {
             println!("  [ref] t={t:.3} reference over, back to the gait");
         }
 
-        support_prev = Some(support);
+        m.support_prev = Some(support);
         // What the disturbance is doing RIGHT NOW, for the replay to draw.
         // Read from the sim's own pulse list rather than recomputed here, so
         // the arrow cannot disagree with the force the plant actually saw.
@@ -7154,9 +7247,9 @@ fn main() {
                 ankle_roll[1],
                 push_now[0],
                 push_now[1],
-                hit_f_now,
-                ep_imp,
-                hit_impulse,
+                m.hit_f_now,
+                m.ep_imp,
+                m.hit_impulse,
                 al.x,
                 al.y,
                 al.z,
@@ -7299,7 +7392,7 @@ fn main() {
             log.write(&rig, &row);
         }
 
-        if !fell {
+        if !m.fell {
             let p = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
             let y = rig
                 .sim
@@ -7307,12 +7400,12 @@ fn main() {
                 .unwrap()
                 .euler_angles()
                 .2;
-            if let Some((pp, py)) = prev_pose {
+            if let Some((pp, py)) = m.prev_pose {
                 if t >= t_ramp_end {
                     let (dx, dy) = (p[0] - pp[0], p[1] - pp[1]);
                     let (c, sn) = (py.cos(), py.sin());
-                    travel[0] += dx * c + dy * sn;
-                    travel[1] += -dx * sn + dy * c;
+                    m.travel[0] += dx * c + dy * sn;
+                    m.travel[1] += -dx * sn + dy * c;
                     // Shortest-arc difference, so the accumulator never wraps.
                     let mut dy_aw = y - py;
                     while dy_aw > std::f64::consts::PI {
@@ -7321,13 +7414,13 @@ fn main() {
                     while dy_aw < -std::f64::consts::PI {
                         dy_aw += std::f64::consts::TAU;
                     }
-                    travel[2] += dy_aw;
+                    m.travel[2] += dy_aw;
                 }
             }
-            prev_pose = Some((p, y));
-            last_state = (p, y, t);
+            m.prev_pose = Some((p, y));
+            m.last_state = (p, y, t);
         }
-        if ramp_end_state.is_none() && t >= t_ramp_end {
+        if m.ramp_end_state.is_none() && t >= t_ramp_end {
             let p = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
             let y = rig
                 .sim
@@ -7335,9 +7428,9 @@ fn main() {
                 .unwrap()
                 .euler_angles()
                 .2;
-            ramp_end_state = Some((p, y, t));
+            m.ramp_end_state = Some((p, y, t));
         }
-        if walk_end_state.is_none() && t >= t_walk_end {
+        if m.walk_end_state.is_none() && t >= t_walk_end {
             let p = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
             let y = rig
                 .sim
@@ -7345,17 +7438,17 @@ fn main() {
                 .unwrap()
                 .euler_angles()
                 .2;
-            walk_end_state = Some((p, y, t));
+            m.walk_end_state = Some((p, y, t));
         }
         let cur_z = rig.sim.body_world_position(&rig.robot.root_link).unwrap()[2];
-        min_z = min_z.min(cur_z);
+        m.min_z = m.min_z.min(cur_z);
         let tilt = roll.abs().max(pitch.abs());
-        max_tilt = max_tilt.max(tilt);
-        if push_at_t.is_some() {
-            push_tilt_max = push_tilt_max.max(tilt);
+        m.max_tilt = m.max_tilt.max(tilt);
+        if m.push_at_t.is_some() {
+            m.push_tilt_max = m.push_tilt_max.max(tilt);
         }
         if in_push_window {
-            win_tilt_max = win_tilt_max.max(tilt);
+            m.win_tilt_max = m.win_tilt_max.max(tilt);
         }
         if tick % 40 == 0 {
             let sup = match support {
@@ -7375,10 +7468,11 @@ fn main() {
         let floor_z = stairs.as_ref().map_or(0.0, |st| st.h(com.x));
         if cur_z - floor_z < 0.30 || tilt > 0.52 {
             println!("  FELL at t={t:.3} (z={cur_z:.3}, floor={floor_z:.3}, tilt={tilt:.3})");
-            fell = true;
+            m.fell = true;
             break;
         }
     }
+    let RunMetrics { step_stats, walk_end_state, ramp_end_state, last_state, travel, fell, min_z, max_tilt, max_dcm_err, max_cop_use, max_zmp_clamp, max_ankle_roll_use, n_open_loop, q_lo, q_hi, hit_ticks, hit_peak_f, hit_impulse, hit_first_t, hit_last_t, hit_episodes, n_selfcollide, max_selfcollide_f, push_at_t, push_at_step, push_dcm_err_max, push_tilt_max, push_degraded_at, push_cop_max, push_slip_wbc_max, push_slip_plant_max, push_slip_ticks, push_fz_total_min, push_fz_total_max, push_unloaded_ticks, win_dcm_err_max, win_tilt_max, win_cop_max, win_slip_plant_max, win_slip_ticks, win_fz_total_min, win_fz_total_max, win_unloaded_ticks, win_degraded_at, win_degraded_end, transfer_t, xfer_edge_ticks, xfer_ticks, xfer_leave_t, xfer_wrongfoot_ticks, xfer2_edge_ticks, xfer2_ticks, h_roll_max, h_roll_at_xfer, xfer_dcm_off, xfer_stance, push_ankle_max, push_exceeded, push_last_exceed, t_last, .. } = m;
 
     println!("\n=== Per-step ===");
     println!("  step  t0     stance  dcm_err  cop_use  fz_peak  degraded  apex_mm  td_vz");
