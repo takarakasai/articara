@@ -665,22 +665,6 @@ fn main() {
 
     let f_max_scale = env_f64("F_MAX_SCALE", 2.3);
     let f_max_per_foot = env_f64("F_MAX", f_max_scale * total_mass * G);
-    // The wrench MPC's own per-foot ceiling, as a multiple of body weight.
-    // Default = the WBC's (F_MAX), bit-identical. Measured 2026-10-01
-    // (design note Sec.14): with the CoP-capture rows the MPC answers a
-    // backward push by loading the front foot to 445 N (1.3 x body weight)
-    // and unloading the rear -- the rows linearise the CoP at the reference
-    // fz, so excess vertical force buys an apparent heel-ward CoP for free,
-    // and the WBC's regulariser follows the front loading. 1.0 = no foot
-    // may carry more than the body weight.
-    let mpc_f_max_per_foot = {
-        let scale = env_f64("MPC_F_MAX_SCALE", f64::NAN);
-        if scale.is_finite() && scale > 0.0 {
-            scale * total_mass * G
-        } else {
-            f_max_per_foot
-        }
-    };
     assert!(
         f_max_per_foot >= total_mass * G,
         "f_max ({f_max_per_foot:.1} N) is below the single-support nominal ({:.1} N)",
@@ -2508,11 +2492,6 @@ fn main() {
     // the pressure can reach NOW. With DS_FEASIBLE_PLAN the plan's DS ZMP
     // then ramps from the stance-box pivot to the full-box pivot.
     let ds_feasible_box_stance = std::env::var("DS_FEASIBLE_BOX").map(|v| v == "stance").unwrap_or(false);
-    // Load share through double support as a time function for the wrench
-    // MPC (walking branch): from the MEASURED share at the tick to the share
-    // the next single support implies, smoothstep over the DS. Default off =
-    // the 0.5/0.5 constant.
-    let load_share_ramp = flag("LOAD_SHARE_RAMP", false);
     let mut n_ds_feasible = 0u32;
     let mut n_ds_continuous = 0u32;
     let mut ds_feasible_total = 0.0_f64;
@@ -2637,39 +2616,9 @@ fn main() {
     // With this on, the coupled regulariser level and the forces_nominal
     // blend follow the MPC whenever it has a fresh solution. Default off.
     let wrench_mpc_apply = flag("WRENCH_MPC_APPLY", false) && wrench_mpc_always;
-    let mpc_target_preview = flag("MPC_TARGET_PREVIEW", false);
-    // Show the MPC the same double-support load ramp the WBC applies.
-    let mpc_load_schedule = flag("MPC_LOAD_SCHEDULE", false);
     // Align the fz schedules with `contact_schedule` (node centre).
     let mpc_node_centre = flag("MPC_NODE_CENTRE", false);
-    // Give the MPC the CoP outright instead of averaging it with the DCM
-    // controller's (see the use site).
-    // Weight on "the pressure sits where the DCM plan says", inside the MPC.
-    // 0 = off; the MPC then has no opinion about the CoP (see wrench_mpc.rs).
-    let mpc_cop_weight = env_f64("MPC_COP_W", 0.0).max(0.0);
     let mpc_net_cop_weight = env_f64("MPC_NET_COP_W", 0.0).max(0.0);
-    // Give the MPC the SAME pressure reference the WBC is executing.
-    //
-    // The net-CoP schedule below is read off the open-loop plan,
-    // `dcm_plan.reference(at).p`. The WBC does not track that: it tracks
-    // `p_cmd`, the plan plus DCM feedback, clamped to the real support.
-    // Measured 2026-09-25 the two differ by 5.6 mm (median, double support),
-    // and measured 2026-09-26 -- once the `wbc_cop` column's frame bias was
-    // fixed (Sec.43) -- the MPC's own pressure sits 9 mm ahead of `p_cmd` in
-    // double support while the WBC sits within 5 mm of it. Handing the MPC
-    // authority injects that 9 mm. This shifts the whole schedule by the
-    // current feedback offset (p_cmd - plan(t)) so node 0 asks for what the
-    // WBC is asking for; later nodes keep the plan's shape. 0 = off = the
-    // shipped schedule, bit-identical (adds an exact zero).
-    let mpc_cop_ref_cmd = flag("MPC_COP_REF_CMD", false);
-    // Cap on that shift's length [m]. After a push p_cmd can sit 8 cm beyond
-    // the front toe; fed raw into the MPC's net-CoP reference it pins the CoP
-    // to the toe for the whole double support and over-brakes (2026-09-27,
-    // V5A i8_d0/m01: the DCM error reverses sign and the robot falls
-    // backwards in the next single support). The WBC's own use of p_cmd is
-    // clamped to the support polygon; this is the MPC-side analogue.
-    // inf = off = the raw shift, bit-identical.
-    let mpc_cop_ref_cmd_max = env_f64("MPC_COP_REF_CMD_MAX", f64::INFINITY).max(0.0);
     // 0 = off, 1 = seed the FIRST solve from the measured load, 2 = anchor
     // EVERY solve to the measured load (the stair-transfer ramp's rule, made
     // general): the smoothness term then says "do not jump away from what the
@@ -2682,37 +2631,13 @@ fn main() {
     // applies its shift -- `shift_next` (non-accumulating) and a rebuilt DCM
     // plan -- and the two are mutually exclusive: both on would be two
     // authorities over the same landing. Off by default.
-    // Step-4 body (doc/from_claude/20260926_sqp_mpc_design.md): 2a moment
-    // arm about the previous solve's predicted CoM, 2b penalise L-dot.
-    let mpc_arm_about_prior = flag("MPC_ARM_ABOUT_PRIOR", false);
-    let mpc_w_ldot = env_f64("MPC_W_LDOT", 0.0).max(0.0);
     // Step-4 body, stage 1 (design note Sec.9): the landing recaptures the DCM.
     let mpc_landing_capture_w = env_f64("MPC_LANDING_CAPTURE_W", 0.0).max(0.0);
-    // Longer horizon for the landing-capture rows only (nodes); the
-    // reference schedules are built this long. 0 = the wrench horizon.
-    let mpc_landing_capture_n = env_f64("MPC_LANDING_CAPTURE_N", 0.0).max(0.0) as usize;
     // Decide the landing lexicographically (capture first, exactly, inside
     // the box; then the wrench MPC with it fixed) instead of through the
     // penalty weight above, which then only has to be > 0 to switch the
     // capture inputs on. See wrench_mpc::Config::landing_lexicographic.
     let mpc_landing_lex = flag("MPC_LANDING_LEX", false);
-    // DCM-capture rows on the MPC's own net CoP (every node), see
-    // wrench_mpc::Config::capture_cop_weight. Needs MPC_LANDING_CAPTURE_W > 0
-    // for the capture inputs. 0 = off = shipped.
-    let mpc_capture_cop_w = env_f64("MPC_CAPTURE_COP_W", 0.0).max(0.0);
-    // Lexicographic CoP (`wrench_mpc::Config::capture_cop_lexicographic`):
-    // the net CoP is planned first as a LIPM recapture inside the box the
-    // scheduled split can reach, then held by equality. Replaces the penalty
-    // capture rows (MPC_CAPTURE_COP_W), which the MPC satisfied through the
-    // load split (2026-10-01, design note Sec.14). Off = shipped.
-    let mpc_capture_lex = flag("MPC_CAPTURE_LEX", false);
-    // Step timing as a decision of the lexicographic landing
-    // (`wrench_mpc::Config::landing_timing`): the touchdown may be brought
-    // forward to MPC_LANDING_TMIN_FRAC of the single support, at a cost of
-    // MPC_LANDING_TIME_W per second^2 of shortening. The chosen time is
-    // applied through the same retime the contact_plan adjuster uses (so
-    // run with CONTACT_PLAN=0 to compare). Off = shipped.
-    let mpc_landing_time = flag("MPC_LANDING_TIME", false);
     // Emergency touchdown for a push TOWARD the stance foot: when the lateral
     // DCM error points at the stance side by more than this [m], the swing
     // is brought down at CP_LAT_EMERGENCY_TMIN of its remaining time, once
@@ -2726,18 +2651,6 @@ fn main() {
     let cp_lat_emergency_tmin = env_f64("CP_LAT_EMERGENCY_TMIN", 0.3).clamp(0.0, 1.0);
     let mut lat_emg_slice: Option<usize> = None;
     let mut n_lat_emg = 0u32;
-    let mpc_landing_time_w = env_f64("MPC_LANDING_TIME_W", 1e-3).max(0.0);
-    let mpc_landing_tmin_frac = env_f64("MPC_LANDING_TMIN_FRAC", 0.5).clamp(0.0, 1.0);
-    let mut n_mpc_retime = 0u32;
-    let mut mpc_retimed_slice: Option<usize> = None;
-    // The lexicographic CoP writes equality rows at every node. The default
-    // active-set backend reports Infeasible for those with any positive
-    // minimum load (wrench_mpc test
-    // `a_sideways_net_cop_equality_is_feasible_on_clarabel_but_not_the_active_set`),
-    // so this mode runs on Clarabel unless MPC_QP_BACKEND says otherwise.
-    let mpc_capture_lex_wp = env_f64("MPC_CAPTURE_LEX_WP", 0.1).max(0.0);
-    let mpc_capture_lex_ws = env_f64("MPC_CAPTURE_LEX_WS", 0.1).max(0.0);
-    let mpc_capture_lex_margin = env_f64("MPC_CAPTURE_LEX_MARGIN", 0.005).max(0.0);
     // Fraction of the WBC's commanded pressure point taken from the MPC's
     // node-0 net CoP (see the use site). Step 3 of the BD roadmap: the WBC
     // follows the MPC. 0 = off = shipped.
@@ -2767,9 +2680,6 @@ fn main() {
     // CoP with front-foot load while the acceleration stayed short
     // (2026-10-01, design note Sec.14). Off = the net CoP = shipped.
     let mpc_pcmd_from_acc = flag("MPC_PCMD_FROM_ACC", false);
-    // Fix the MPC's double-support vertical split to the schedule
-    // (`wrench_mpc::Config::fz_split_equality`). Off = shipped.
-    let mpc_fz_split_eq = flag("MPC_FZ_SPLIT_EQ", false);
     // 1 = shipped: the landing offset also enters the momentum and net-CoP
     // rows as `dp x F`. 0 = capture rows and landing cost only (2026-09-27:
     // the moment coupling made the landing jitter +-30-47 mm on
@@ -3070,14 +2980,6 @@ fn main() {
         env_f64("MPC_FOOTSTEP_MAX_X", 0.06).max(0.0) * vxs_box_scale,
         env_f64("MPC_FOOTSTEP_MAX_Y", 0.03).max(0.0) * vxs_box_scale,
     ];
-    // Weight on tracking the PLAN'S DCM inside the MPC. Without it the MPC's
-    // implied feedback law is not a DCM law -- measured 2026-09-25, against a
-    // 49 mm divergence the shipped cost moves the pressure 2.7 mm, where a
-    // DCM law moves it past 49 mm -- so the MPC and the WBC were running
-    // different feedback on the same plant and their double-support force
-    // split would not close below 33 N. 0 = off = bit-identical.
-    let mpc_dcm_weight = env_f64("MPC_DCM_W", 0.0).max(0.0);
-    let mpc_net_cop_eq = flag("MPC_NET_COP_EQ", false);
     let mpc_w_pos = env_f64("MPC_W_POS", 20.0).max(0.0);
     let mpc_w_vel = env_f64("MPC_W_VEL", 4.0).max(0.0);
     let mpc_w_mom = env_f64("MPC_W_MOM", 2.0).max(0.0);
@@ -3128,11 +3030,7 @@ fn main() {
     let mut mpc_reach_drop = 0.0_f64;
     let mpc_reach_debug = std::env::var("MPC_REACH_DEBUG").is_ok();
     let mpc_authority_ds_only = !flag("MPC_AUTHORITY_ALL", false);
-    let ramp_frac_mpc = env_f64("LOAD_RAMP_FRAC", 0.6).clamp(0.05, 1.0);
     let stair_wrench_dt = env_f64("STAIR_WRENCH_DT", 0.02).max(dt);
-    // Optional age limit for a held MPC result after a failed update.
-    // Zero preserves the historical hold behavior; use with event replanning.
-    let stair_wrench_max_age = env_f64("STAIR_WRENCH_MAX_AGE", 0.0).max(0.0);
     let stair_wrench_horizon = env_f64("STAIR_WRENCH_N", 8.0).max(2.0) as usize;
     let stair_wrench_preview_dt = env_f64("STAIR_WRENCH_PREVIEW_DT", 0.05).max(dt);
     let stair_wrench_low_min = env_f64("STAIR_WRENCH_LOW_MIN", 0.12).clamp(0.0, 0.45);
@@ -3214,7 +3112,6 @@ fn main() {
     let mut preview_p = steps.mid_xy();
     // The CoM preview QP's horizontal trajectory, kept whole with the time it
     // was solved at, so the MPC can read its own horizon out of it.
-    let mut preview_traj: Option<(f64, Vec<na::Vector2<f64>>, Vec<na::Vector2<f64>>)> = None;
     let mut preview_c = com0.xy();
     let mut preview_v = na::Vector2::zeros();
     let mut preview_next = 0.0;
@@ -3526,7 +3423,6 @@ fn main() {
                 "hpipm" => misa_wbc::QpSolver::Hpipm,
                 _ => panic!("unsupported MPC_QP_BACKEND: {name}"),
             });
-    let mpc_warm = flag("MPC_QP_WARM", false);
     let mpc_diag_dir = std::env::var("MPC_DIAG_DIR").ok();
     let act_delay_ticks = env_f64("ACT_DELAY_TICKS", 0.0).max(0.0) as usize;
     let mut act_delay_buf: std::collections::VecDeque<Vec<f64>> = std::collections::VecDeque::new();
@@ -3564,7 +3460,6 @@ fn main() {
         f
     });
     let mut mpc_diag_count = 0usize;
-    let mut mpc_workspace = articara::biped::wrench_mpc::Workspace::default();
     let mut wrench_mpc_command: Option<[articara::biped::wrench_mpc::Wrench; 2]> = None;
     // Preserve the physical origin/axes of the held MPC forecast for diagnostic shifts.
     let mut wrench_mpc_frames: Option<[articara::biped::wrench_mpc::Contact; 2]> = None;
@@ -3581,7 +3476,6 @@ fn main() {
     let mut wrench_mpc_traj: Option<(f64, na::Vector3<f64>, na::Vector3<f64>, Vec<[na::Vector3<f64>; 2]>)> = None;
     let mut wrench_mpc_solves = 0u32;
     let mut wrench_mpc_failures = 0u32;
-    let mut wrench_mpc_soft = 0u32;
     let mut trunk_cmd_rp = [0.0_f64; 2];
     let mut trunk_acc_rp = [0.0_f64; 2];
 
@@ -5343,11 +5237,6 @@ fn main() {
                         preview_v = plan.velocity[0];
                         preview_error = plan.terminal_error;
                         preview_count += 1;
-                        // Keep the whole horizontal trajectory, not just its
-                        // first node: the wrench MPC needs a TARGET, and the
-                        // only horizontal plan in the stack is this one. See
-                        // `mpc_target_preview` at the MPC input.
-                        preview_traj = Some((t, plan.com.clone(), plan.velocity.clone()));
                         if let Some(f) = preview_traj_file.as_mut() {
                             use std::io::Write as _;
                             for (k, smp) in samples.iter().enumerate() {
@@ -5656,15 +5545,7 @@ fn main() {
         // This removes the old conflict where ZMP, height and load split were
         // generated by independent controllers.
         if stair_wrench_mpc && wrench_mpc_always {
-            if stair_wrench_max_age > 0.0
-                && wrench_mpc_command.is_some()
-                && diag_mpc_time.is_some_and(|last| t - last > stair_wrench_max_age + 1e-9)
-            {
-                wrench_mpc_command = None;
-                wrench_mpc_frames = None;
-                diag_mpc_time = None;
-                diag_mpc_reference = [f64::NAN; 2];
-            }
+            // A held result has no age limit (STAIR_WRENCH_MAX_AGE removed).
             if t + 1e-9 >= wrench_mpc_next {
                 let horizon_time = stair_wrench_preview_dt * stair_wrench_horizon as f64;
                 let weight = total_mass * G;
@@ -5676,12 +5557,8 @@ fn main() {
                 // An MPC given its own prediction has nothing to correct, and
                 // measured 2026-09-24 the walking branch's horizontal target
                 // carried no plan at all (only the height came from one).
-                //
-                // MPC_TARGET_PREVIEW takes the horizontal target from the CoM
-                // preview QP instead, which is the stack's actual horizontal
-                // plan: its nodes are the ZMP/CoM trajectory that satisfies
-                // the DCM reference inside the support polygons. The MPC then
-                // has something to disagree with.
+                // (MPC_TARGET_PREVIEW, the horizontal target from the CoM
+                // preview QP, was not adopted and is removed.)
                 let mut target_com =
                     com + com_vel * horizon_time + a_com * (0.5 * horizon_time * horizon_time);
                 let mut target_velocity = com_vel + a_com * horizon_time;
@@ -5690,18 +5567,6 @@ fn main() {
                     // decides how to get there.
                     target_com.z = z_ref + zd_ref * horizon_time;
                     target_velocity.z = zd_ref;
-                }
-                if mpc_target_preview
-                    && let Some((t0, ref pc, ref pv)) = preview_traj
-                {
-                    let k = ((t + horizon_time - t0) / com_preview_dt).round();
-                    if k >= 0.0 && (k as usize) < pc.len() {
-                        let k = k as usize;
-                        target_com.x = pc[k].x;
-                        target_com.y = pc[k].y;
-                        target_velocity.x = pv[k].x;
-                        target_velocity.y = pv[k].y;
-                    }
                 }
                 // `high` is the CURRENT stance foot, purely so the code below
                 // has a name for "the loaded side"; the schedules are built
@@ -5742,20 +5607,6 @@ fn main() {
                     let high_share = {
                         let idx = gait.index_at(t + stage_dt);
                         match gait.slices[idx].support.swing() {
-                            None if load_share_ramp => {
-                                let sl = gait.slices[idx];
-                                let total = (measured_pre[0] + measured_pre[1]).max(1e-6);
-                                let share0 = (measured_pre[high] / total).clamp(0.0, 1.0);
-                                // Where the DS is heading: 0 if `high` swings next, else 1.
-                                let share1 = gait
-                                    .slices
-                                    .get(idx + 1)
-                                    .and_then(|n| n.support.swing())
-                                    .map_or(0.5, |sw| if sw == high { 0.0 } else { 1.0 });
-                                let u = sl.frac(t + stage_dt);
-                                let a = u * u * (3.0 - 2.0 * u);
-                                share0 + (share1 - share0) * a
-                            }
                             None => 0.5,
                             Some(sw) => {
                                 if sw == high {
@@ -6021,18 +5872,7 @@ fn main() {
                         .map(|first_node| articara::biped::wrench_mpc::Landing {
                             foot: swing,
                             first_node,
-                            min_first_node: if mpc_landing_time {
-                                // Like the contact_plan: at least this
-                                // fraction of the REMAINING single support
-                                // (the swing has to come down).
-                                let i = gait.index_at(t);
-                                let sl = &gait.slices[i];
-                                let earliest = t + (sl.t1 - t).max(0.0) * mpc_landing_tmin_frac;
-                                let k = ((earliest - t) / stair_wrench_preview_dt - 0.5).ceil().max(1.0) as usize;
-                                k.min(first_node)
-                            } else {
-                                first_node
-                            },
+                            min_first_node: first_node,
                             position: [contacts[swing].position.x, contacts[swing].position.y],
                             terrain_x: (mpc_footstep_terrain_w > 0.0)
                                 .then(|| stairs.as_ref())
@@ -6252,52 +6092,10 @@ fn main() {
                         ]
                     },
                     // What fraction of its capacity each foot may use at
-                    // each node.
-                    //
-                    // This used to be a constant 1.0 while walking, i.e. the
-                    // MPC solved as if both feet were fully available for the
-                    // whole double support -- while the WBC was ramping them
-                    // through `LOAD_RAMP_FRAC` the entire time. Measured
-                    // 2026-09-24 with the MPC applied: at a landing the MPC
-                    // asked for 127/276 N and the QP produced 40/301, the
-                    // mismatch held for 0.5 s, and the run then took 782 N on
-                    // one foot and fell. The two were solving against
-                    // different contact models. MPC_LOAD_SCHEDULE gives the
-                    // MPC the WBC's own ramp.
-                    activation_schedule: if mpc_load_schedule {
-                        (0..stair_wrench_horizon)
-                            .map(|k| {
-                                let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
-                                let (sl, frac) = gait.at(at);
-                                match sl.support {
-                                    Support::Double => {
-                                        let i = gait.index_at(at);
-                                        let landed = i
-                                            .checked_sub(1)
-                                            .and_then(|j| gait.slices[j].support.swing());
-                                        let next =
-                                            gait.slices.get(i + 1).and_then(|s| s.support.swing());
-                                        let mut a = [1.0_f64; 2];
-                                        if let Some(l) = landed {
-                                            a[l] = (frac / ramp_frac_mpc).clamp(0.0, 1.0);
-                                        }
-                                        if let Some(l) = next {
-                                            a[l] = ((1.0 - frac) / ramp_frac_mpc).clamp(0.0, 1.0);
-                                        }
-                                        a
-                                    }
-                                    Support::Single { stance, swing } => {
-                                        let mut a = [0.0_f64; 2];
-                                        a[stance] = 1.0;
-                                        a[swing] = 0.0;
-                                        a
-                                    }
-                                }
-                            })
-                            .collect()
-                    } else {
-                        vec![[1.0; 2]; stair_wrench_horizon]
-                    },
+                    // each node: all of it. (MPC_LOAD_SCHEDULE, the WBC's
+                    // double-support load ramp shown to the MPC, was not
+                    // adopted and is removed.)
+                    activation_schedule: vec![[1.0; 2]; stair_wrench_horizon],
                     reference_fz_schedule,
                     // Where the walk wants the pressure, node by node, in
                     // each sole's own frame. Without it the MPC has no
@@ -6311,21 +6109,12 @@ fn main() {
                     // node by node, in world. This is what the DCM plan
                     // actually constrains; asking each sole for its own CoP
                     // made the disagreement worse (43 -> 63 N, 2026-09-25).
-                    reference_net_cop_schedule: (mpc_net_cop_weight > 0.0
-                        || mpc_net_cop_eq)
+                    // (MPC_COP_REF_CMD, the schedule shifted to the WBC's
+                    // p_cmd, was not adopted -- the champion sets 0 -- and is
+                    // removed; it added an exact zero when off.)
+                    reference_net_cop_schedule: (mpc_net_cop_weight > 0.0)
                         .then(|| {
-                        let shift = if mpc_cop_ref_cmd {
-                            let raw = p_cmd - dcm_plan.reference(t).p;
-                            let n = raw.norm();
-                            if n > mpc_cop_ref_cmd_max && n > 0.0 {
-                                raw * (mpc_cop_ref_cmd_max / n)
-                            } else {
-                                raw
-                            }
-                        } else {
-                            na::Vector2::zeros()
-                        };
-                        (0..stair_wrench_horizon.max(mpc_landing_capture_n))
+                        (0..stair_wrench_horizon)
                             .map(|k| {
                                 let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
                                 if let (Some(mode), Some(lib)) = (ref_mode, ref_lib.as_ref())
@@ -6334,16 +6123,14 @@ fn main() {
                                 {
                                     mode.world_xy(lib, lib.cop_at(at - mode.t0 + mode.tau0))
                                 } else {
-                                    dcm_plan.reference(at).p + shift
+                                    dcm_plan.reference(at).p
                                 }
                             })
                             .collect()
                     }),
-                    reference_dcm_schedule: (mpc_dcm_weight > 0.0
-                        || mpc_landing_capture_w > 0.0
-                        || mpc_capture_lex)
+                    reference_dcm_schedule: (mpc_landing_capture_w > 0.0)
                         .then(|| {
-                        (0..stair_wrench_horizon.max(mpc_landing_capture_n))
+                        (0..stair_wrench_horizon)
                             .map(|k| {
                                 let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
                                 if let (Some(mode), Some(lib)) = (ref_mode, ref_lib.as_ref())
@@ -6360,7 +6147,7 @@ fn main() {
                     min_fz_schedule,
                     previous,
                     landing,
-                    dcm_now: (mpc_landing_capture_w > 0.0 || mpc_capture_lex).then_some(xi),
+                    dcm_now: (mpc_landing_capture_w > 0.0).then_some(xi),
                     reference_dcm_sensitivity: (mpc_landing_capture_j
                         && mpc_landing_capture_w > 0.0)
                         .then(|| landing)
@@ -6388,22 +6175,21 @@ fn main() {
                                     zmp_lat_scale,
                                     zmp_roll,
                                 );
-                                cols[axis] = (0..stair_wrench_horizon.max(mpc_landing_capture_n))
+                                cols[axis] = (0..stair_wrench_horizon)
                                     .map(|k| {
                                         let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
                                         (moved.reference(at).xi - dcm_plan.reference(at).xi) / du
                                     })
                                     .collect();
                             }
-                            (0..stair_wrench_horizon.max(mpc_landing_capture_n))
+                            (0..stair_wrench_horizon)
                                 .map(|k| {
                                     na::Matrix2::from_columns(&[cols[0][k], cols[1][k]])
                                 })
                                 .collect()
                         }),
-                    prior_com: (mpc_arm_about_prior)
-                        .then(|| wrench_mpc_traj.as_ref().map(|(_, _, _, tr)| tr.iter().map(|[c, _]| *c).collect()))
-                        .flatten(),
+                    // MPC_ARM_ABOUT_PRIOR (removed) was the only user.
+                    prior_com: None,
                 };
                 let mut config = articara::biped::wrench_mpc::Config {
                     horizon: stair_wrench_horizon,
@@ -6413,52 +6199,36 @@ fn main() {
                     friction_mu,
                     cop_half: contact_cfg.cop_half,
                     torsion_mu: contact_cfg.mu_torsion,
-                    max_fz: mpc_f_max_per_foot,
+                    // (MPC_F_MAX_SCALE, a ceiling of its own, is removed:
+                    // its default NaN meant the WBC's.)
+                    max_fz: f_max_per_foot,
                     validate_solution: mpc_gate,
                     // The cost weights, so the ones that compete with the CoP
                     // term can be measured against it. Defaults are the
                     // shipped values, so leaving them alone is bit-identical.
+                    // The removed experiments (MPC_DCM_W, MPC_LANDING_CAPTURE_N,
+                    // MPC_LANDING_TIME*, MPC_FZ_SPLIT_EQ, MPC_CAPTURE_COP_W,
+                    // MPC_CAPTURE_LEX*, MPC_ARM_ABOUT_PRIOR, MPC_W_LDOT,
+                    // MPC_COP_W, MPC_NET_COP_EQ) keep `Config::default()`,
+                    // which is what their defaults were.
                     position_weight: mpc_w_pos,
                     velocity_weight: mpc_w_vel,
                     momentum_weight: mpc_w_mom,
                     acceleration_weight: mpc_w_acc,
                     wrench_weight: mpc_w_wrench,
-                    dcm_weight: mpc_dcm_weight,
                     omega,
                     landing_capture_weight: mpc_landing_capture_w,
-                    landing_capture_horizon: mpc_landing_capture_n,
                     landing_lexicographic: mpc_landing_lex,
-                    landing_timing: mpc_landing_time,
-                    landing_time_weight: mpc_landing_time_w,
-                    landing_time_from_x: flag("MPC_LANDING_TIME_FROM_X", true),
-                    landing_time_gain_min: env_f64("MPC_LANDING_TIME_GAIN", 1e-3).max(0.0),
-                    fz_split_equality: mpc_fz_split_eq,
-                    capture_cop_weight: mpc_capture_cop_w,
-                    capture_cop_lexicographic: mpc_capture_lex,
-                    capture_cop_wp: mpc_capture_lex_wp,
-                    capture_cop_ws: mpc_capture_lex_ws,
-                    capture_cop_margin: mpc_capture_lex_margin,
-                    capture_cop_net_eq: flag("MPC_CAPTURE_LEX_NET_EQ", true),
-                    capture_cop_total_eq: flag("MPC_CAPTURE_LEX_TOTAL_EQ", true),
-                    capture_cop_box_ignores_min: flag("MPC_CAPTURE_LEX_IGNORE_MIN", false),
-                    capture_cop_force_margin: env_f64("MPC_CAPTURE_LEX_FMARGIN", 0.1),
                     landing_moment_coupling: mpc_footstep_moment,
-                    arm_about_prior: mpc_arm_about_prior,
-                    ldot_weight: mpc_w_ldot,
                     smooth_weight: mpc_w_smooth,
-                    cop_weight: mpc_cop_weight,
                     net_cop_weight: mpc_net_cop_weight,
-                    net_cop_equality: mpc_net_cop_eq,
                     reach_weight: mpc_reach_w,
                     ..Default::default()
                 };
                 config.qp.absolute_gap = mpc_gate;
-                if mpc_capture_lex {
-                    config.qp.solver = misa_wbc::QpSolver::Clarabel;
-                }
                 // Interior-point solutions carry complementarity slack at the
                 // gap setting; the KKT gate's 1e-6 rejected every one.
-                config.kkt_complementarity_tolerance = env_f64("MPC_KKT_COMP_TOL", if mpc_capture_lex { 1e-2 } else { 1e-6 });
+                config.kkt_complementarity_tolerance = env_f64("MPC_KKT_COMP_TOL", 1e-6);
                 if let Some(backend) = mpc_backend_override {
                     config.qp.solver = backend;
                 }
@@ -6493,11 +6263,7 @@ fn main() {
                 let mpc_result = articara::biped::wrench_mpc::solve_with_workspace(
                     &input,
                     &config,
-                    if mpc_warm {
-                        Some(&mut mpc_workspace)
-                    } else {
-                        None
-                    },
+                    None, // no warm start (MPC_QP_WARM removed)
                 );
                 let mpc_solve_ns = mpc_solve_start.elapsed().as_nanos();
                 if let Some(file) = &mut mpc_runtime_log {
@@ -6579,26 +6345,6 @@ fn main() {
                             );
                             writeln!(f, "{row}").unwrap();
                         }
-                        // MPC_LANDING_TIME: the touchdown node the landing
-                        // stage chose, applied as a retime of this single
-                        // support (once per slice, like the contact_plan).
-                        if mpc_landing_time
-                            && let (Some(k_td), Some(land)) = (solution.landing_node, landing)
-                            && k_td < land.first_node
-                        {
-                            let i = gait.index_at(t);
-                            let ne = t + (k_td as f64 + 0.5) * stair_wrench_preview_dt;
-                            if ne > t + dt && mpc_retimed_slice != Some(i) && matches!(support, Support::Single { .. }) {
-                                gait.retime(i, ne);
-                                n_mpc_retime += 1;
-                                mpc_retimed_slice = Some(i);
-                                cp_retimed_slice = Some(i);
-                                landing_timing.max_extension = 0.0;
-                                dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
-                                n_replan += 1;
-                                if diag_replan { println!("  [diag-replan] site 4 t={t:.3} (line 9268)"); }
-                            }
-                        }
                         if cp_lat_emergency > 0.0
                             && let Support::Single { swing, .. } = support
                         {
@@ -6637,42 +6383,8 @@ fn main() {
                                 }
                             }
                         }
-                        if solution.soft_fallback {
-                            wrench_mpc_soft += 1;
-                            if std::env::var("MPC_LEX_DEBUG_FB").is_ok() && wrench_mpc_soft <= 4 {
-                                let plan = solution.cop_plan.as_ref().map(|p| (p[0].x, p[0].y));
-                                println!(
-                                    "  [lex-soft] t={t:.3} support={support:?} plan0={plan:?} contact0={:?} pos=({:.3},{:.3})/({:.3},{:.3}) min={:?} ref={:?} land={:?}",
-                                    input.contact_schedule[0], input.contacts[0].position.x, input.contacts[0].position.y,
-                                    input.contacts[1].position.x, input.contacts[1].position.y, input.min_fz_schedule[0],
-                                    input.reference_fz_schedule[0], input.landing.map(|l| (l.foot, l.first_node))
-                                );
-                                if let Some(plan) = solution.cop_plan.as_ref() {
-                                    println!("    plan: {}", plan.iter().map(|p| format!("({:.3},{:.3})", p.x, p.y)).collect::<Vec<_>>().join(" "));
-                                    println!("    contact: {}", input.contact_schedule.iter().map(|c| format!("{}{}", c[0] as u8, c[1] as u8)).collect::<Vec<_>>().join(" "));
-                                    println!("    act: {}", input.activation_schedule.iter().map(|a| format!("{:.2}/{:.2}", a[0], a[1])).collect::<Vec<_>>().join(" "));
-                                    println!("    ref: {}", input.reference_fz_schedule.iter().map(|a| format!("{:.0}/{:.0}", a[0], a[1])).collect::<Vec<_>>().join(" "));
-                                    println!("    min: {}", input.min_fz_schedule.iter().map(|a| format!("{:.0}/{:.0}", a[0], a[1])).collect::<Vec<_>>().join(" "));
-                                }
-                            }
-                        }
-                        if let Ok(tw) = std::env::var("MPC_LEX_DEBUG_T")
-                            && let Ok(tw) = tw.parse::<f64>()
-                            && (t - tw).abs() < 0.011
-                            && let Some(plan) = solution.cop_plan.as_ref()
-                        {
-                            println!("  [lex] t={t:.3} xi0={:?} support={support:?}", input.dcm_now.map(|v| (v.x, v.y)));
-                            for k in 0..plan.len() {
-                                let xr = input.reference_dcm_schedule.as_ref().map(|v| v[k]);
-                                let pb = input.reference_net_cop_schedule.as_ref().map(|v| v[k]);
-                                println!(
-                                    "    k{k} contact={:?} ref_fz={:?} min={:?} xi_ref=({:.3},{:.3}) pbar=({:.3},{:.3}) plan=({:.3},{:.3}) pos=({:.3},{:.3})/({:.3},{:.3})",
-                                    input.contact_schedule[k], input.reference_fz_schedule[k], input.min_fz_schedule[k],
-                                    xr.map_or(0.0, |v| v.x), xr.map_or(0.0, |v| v.y), pb.map_or(0.0, |v| v.x), pb.map_or(0.0, |v| v.y),
-                                    plan[k].x, plan[k].y, input.contacts[0].position.x, input.contacts[0].position.y, input.contacts[1].position.x, input.contacts[1].position.y
-                                );
-                            }
-                        }
+                        // (The lexicographic CoP's soft fallback and its
+                        // MPC_LEX_DEBUG_* prints went with MPC_CAPTURE_LEX.)
                         if let Some(dp) = solution.landing_shift
                             && let Some(land) = landing
                             && !landing_timing.landing_closed(gait.index_at(t))
@@ -9531,12 +9243,6 @@ fn main() {
             "samples": substep_samples, "nonfinite_values": substep_nonfinite,
             "passed": passed, "joints": joints});
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).expect("SUBSTEP_LIMIT_AUDIT_JSON");
-    }
-    if mpc_capture_lex {
-        println!("  mpc lex: {wrench_mpc_soft} solves fell back to the soft net-CoP rows");
-    }
-    if mpc_landing_time {
-        println!("  mpc landing time: {n_mpc_retime} steps shortened by the landing stage");
     }
     if cp_lat_emergency > 0.0 {
         println!("  lateral emergency touchdown: {n_lat_emg} steps");
