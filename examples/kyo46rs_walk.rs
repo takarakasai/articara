@@ -1232,15 +1232,15 @@ fn main() {
     let vx2_change = std::env::var("VX2").ok().and_then(|v| v.parse::<f64>().ok()).map(|vx2| {
         (env_f64("VX2_AT", 8.0).max(0.0) as usize, vx2, env_f64("VX2_RAMP", 3.0).max(0.0) as usize)
     });
-    // VX2_STRIDE_MAX [m/step]: a speed the fixed step time would turn into a
-    // longer stride than this is reached by STEPPING FASTER instead -- the
-    // footfalls are planned at the capped stride and each step from VX2_AT
-    // on (its single support and the double support after it) is shortened
-    // by stride_max / (v * t_step). Measured 2026-10-03 on G1 v6.3 with the
+    // A speed the fixed step time would turn into a longer stride than the
+    // VX2_SCHED cap is reached by STEPPING FASTER instead -- the footfalls
+    // are planned at the capped stride and each step from VX2_AT on (its
+    // single support and the double support after it) is shortened by
+    // stride_max / (v * t_step). Measured 2026-10-03 on G1 v6.3 with the
     // step time fixed at 1.21 s: 0.25 m/s 47/48, 0.30 m/s 12/48, 0.35 m/s
     // 1/48 -- the stride grows to 0.36-0.42 m and the landing leg is at
-    // 99.8% of its length. VX2_TSCALE_MIN bounds the shortening. 0 = off.
-    let vx2_stride_max = env_f64("VX2_STRIDE_MAX", 0.0).max(0.0);
+    // 99.8% of its length. VX2_TSCALE_MIN bounds the shortening. (The
+    // hand-set cap VX2_STRIDE_MAX is removed.)
     let vx2_tscale_min = env_f64("VX2_TSCALE_MIN", 0.4).clamp(0.1, 1.0);
     // VX2_SCHED: ONE speed schedule instead of the two hand-set knobs.
     // Measured 2026-10-14 (doc/from_claude/20261014_speed_design.md): the
@@ -1251,18 +1251,11 @@ fn main() {
     // 0.35 m stride, fading to 0 below 0.25 m. Reproduces the measured
     // settings (0.35/0.024 to 0.50 m/s, 0.45/0.06 at 0.55). The swing
     // acceleration bound v / T <= 0.7 then puts the ceiling at ~0.56 m/s
-    // with a 0.45 m stride. Unset = the two knobs, bit-identical.
+    // with a 0.45 m stride. (The two hand-set knobs, VX2_STRIDE_MAX and
+    // VX2_Z_DROP, are removed.) Unset = no cap and no drop.
     let vx2_sched = flag("VX2_SCHED", false);
-    // VX2_REANCHOR: at every entry into single support, translate the rest
-    // of the footstep plan so the stance foot's planned position is where
-    // the foot actually is. The plan is a position-vs-time schedule at the
-    // commanded speed; after a recovery stalls the robot it runs ahead and
-    // the next landings become lunges (measured 2026-10-14 at 0.30 m/s
-    // after a lateral-push reference: a 0.65 m step, then the fall). Only
-    // with a speed command (VX2); unset = bit-identical.
-    let vx2_reanchor = flag("VX2_REANCHOR", false);
-    let mut n_reanchor = 0u32;
-    let mut reanchor_total = 0.0_f64;
+    // (VX2_REANCHOR, re-anchoring the plan on the stance foot at every
+    // single support under a speed command, is removed.)
     let (vx2_stride_max, vx2_z_drop_sched) = match vx2_change {
         Some((_, vx2, _)) if vx2_sched => {
             // The cap itself rises with speed: a 0.42 m stride at the
@@ -1285,24 +1278,13 @@ fn main() {
             // +0.02 gives 122, +0.04 gives 127 (backward 11 N.s 14 -> 48).
             // At 0.50 the table already drops 0.06 and more removes lateral
             // margin (swing-side 5 N.s 11 -> 6). 0 = the table alone.
-            .max(env_f64("VXS_Z_MIN", 0.0).max(0.0))
-            // VXS_Z_EXTRA: more drop on top of the schedule (the landing leg
-            // at speed is at 0.99 of its length and has no lateral authority
-            // against a push; measured 2026-10-14). 0 = the schedule alone.
-            + env_f64("VXS_Z_EXTRA", 0.0).max(0.0);
+            .max(env_f64("VXS_Z_MIN", 0.0).max(0.0));
+            // (VXS_Z_EXTRA, more drop on top of the schedule, is removed.)
             println!("speed schedule: v={vx2:.2} m/s -> stride {stride:.3} m (cap {cap:.2}), step {:.3} s, CoM drop {zd:.3} m", stride / vx2.max(1e-6));
             (cap, Some(zd))
         }
-        _ => (vx2_stride_max, None),
+        _ => (0.0, None),
     };
-    // VX2_DS_SCALE: an extra factor on the DOUBLE-support slices of the
-    // sped-up steps. Measured 2026-10-14 at 0.55 m/s with a 0.45 m stride
-    // (mu 0.60): at the end of the double support the trailing foot is
-    // 0.45 m behind the CoM, its force needs a shear/normal ratio of ~0.7,
-    // and it slips 5 cm backward at toe-off; the next landing then falls
-    // short. Unloading it sooner (a shorter DS) keeps the trailing force
-    // inside the cone. 1 = the shipped equal scaling, bit-identical.
-    let vx2_ds_scale = env_f64("VX2_DS_SCALE", 1.0).clamp(0.1, 1.0);
     // PUSH_YIELD_V [m/s]: when a push is detected during a speed command
     // (DCM error above PUSH_YIELD_TRIG), re-plan the remaining steps at this
     // lower speed with the schedule's stride cap and step time, once per
@@ -1337,7 +1319,9 @@ fn main() {
                             && (j == i || matches!(gait.slices[j].support, Support::Double))
                         {
                             let t0 = gait.slices[j].t0;
-                            let d = gait.slices[j].duration() * scale * if j == i { 1.0 } else { vx2_ds_scale };
+                            // (VX2_DS_SCALE, an extra factor on the double
+                            // supports, defaulted to 1 and is removed.)
+                            let d = gait.slices[j].duration() * scale;
                             gait.retime(j, t0 + d);
                             j += 1;
                         }
@@ -1353,13 +1337,14 @@ fn main() {
         }
         other => other,
     };
-    // VX2_Z_DROP [m]: lower the walking CoM height by this much from one step
+    // Lower the walking CoM height by the schedule's drop from one step
     // before the speed change on. Measured 2026-10-05: the 0.45 m/s wall is
     // leg reach (stance leg at 99%, the heel lifts and the foot slips), and
     // 24 mm lower takes it from 7/48 to 48/48 -- but lowering the CoM for
     // the whole run trades descents and lateral pushes away. Tied to the
-    // speed command it leaves every other bench bit-identical. 0 = off.
-    let vx2_z_drop = vx2_z_drop_sched.unwrap_or_else(|| env_f64("VX2_Z_DROP", 0.0).max(0.0));
+    // speed command it leaves every other bench bit-identical. (The
+    // hand-set VX2_Z_DROP is removed.)
+    let vx2_z_drop = vx2_z_drop_sched.unwrap_or(0.0);
     let mut vx2_z_track = articara::biped::height::SlewedDrop::default();
     let push_z_drop = env_f64("PUSH_Z_DROP", 0.0).max(0.0);
     let push_z_drop_trig = env_f64("PUSH_Z_DROP_TRIG", 0.03).max(0.0);
@@ -1649,13 +1634,8 @@ fn main() {
         let vx_limit = env_f64("COM_LAND_VXY", 0.35).max(0.01);
         let vz_limit = env_f64("COM_LAND_VZ", 0.20).max(0.01);
         let max_ss = env_f64("COM_STAIR_SS_MAX", 0.80).max(gp.t_ss);
-        // Stretch the double support preceding each DESCENT swing to at
-        // least this many seconds (0 = off).
-        let com_desc_ds = env_f64("COM_DESC_DS", 0.0);
-        // Stretch the double support AFTER each descent swing: the toe has
-        // touched, and the ZMP transfer must crawl while the sole rolls
-        // flat under light load (0 = off).
-        let com_desc_xfer = env_f64("COM_DESC_XFER", 0.0);
+        // (COM_DESC_DS / COM_DESC_XFER, the double supports before and
+        // after a descent swing stretched, are removed.)
         let xy_min = env_f64("COM_PREPLAN_XY_MIN", f64::INFINITY);
         for i in 1..gait.slices.len() {
             if let Some(side) = gait.slices[i].support.swing() {
@@ -1676,32 +1656,6 @@ fn main() {
                         new_t1 - gait.slices[i].t0
                     );
                     gait.retime(i, new_t1);
-                    // A DESCENT swing also buys time in the DOUBLE support
-                    // BEFORE it: the pelvis pre-lowers a full riser there on
-                    // both knees (see the height reference's look-ahead),
-                    // and at the stock 0.35 s the rate limit only yields
-                    // ~17 mm of the 52. A person does the same thing --
-                    // pauses at the nosing, knees bending, then steps down.
-                    if delta.z < -0.005 && com_desc_xfer > 0.0 && i + 1 < gait.slices.len() {
-                        let next_end = gait.slices[i + 1].t0
-                            + gait.slices[i + 1].duration().max(com_desc_xfer);
-                        gait.retime(i + 1, next_end);
-                        println!(
-                            "preplan: slice {} DS after descent -> {:.2}s",
-                            i + 1,
-                            gait.slices[i + 1].duration()
-                        );
-                    }
-                    if delta.z < -0.005 && com_desc_ds > 0.0 && i >= 1 {
-                        let prev_end =
-                            gait.slices[i - 1].t0 + gait.slices[i - 1].duration().max(com_desc_ds);
-                        gait.retime(i - 1, prev_end);
-                        println!(
-                            "preplan: slice {} DS before descent -> {:.2}s",
-                            i - 1,
-                            gait.slices[i - 1].duration()
-                        );
-                    }
                 }
             }
         }
@@ -1717,32 +1671,11 @@ fn main() {
     // momentum for, and the sole's own length is where the difference has
     // to come from. Must stay inside the CoP box (cop_half.0 * COP_FRAC).
     let zmp_roll = env_f64("ZMP_ROLL", if stairs.is_some() { 0.030 } else { 0.0 });
-    // A finite DCM preview makes early walking references independent of the
-    // requested total step count. Zero retains the full terminal-rest plan.
-    let dcm_preview_horizon = env_f64("DCM_PREVIEW_HORIZON", 0.0);
-    // Continuity guard on the DCM reference across plan rebuilds.
-    //
-    // `dcm_plan` is rebuilt at a dozen sites (contact-driven retime, landing
-    // extension, footstep adaptation, transfer arming, ...). The rebuilt plan
-    // is continuous in its OWN timeline, but when the rebuild moves a slice
-    // boundary to before `now` the reference read at `now` switches from the
-    // old slice's value to the new slice's value in one tick. Measured
-    // 2026-09-23 on G1 (T=40, landing 3.0 m, N=48): at the tick the swing
-    // foot touched the tread the single support was cut by contact and
-    // `xi_ref` went from over the stance foot (1.896, +0.073) to the
-    // double-support rest point (1.998, +0.003) -- 12 cm in 5 ms. A one-tick
-    // jump above 5 cm separated fallers from survivors at every riser, with
-    // and without the stair transfer: 23/25 vs 0/23 at 40 mm (transfer off),
-    // 21/23 vs 2/25 (transfer on). `commanded_zmp` turns the jump into a
-    // saturated ZMP command and the DCM error never recovers.
-    //
-    // With `DCM_REF_BLEND_T > 0`, a jump larger than `DCM_REF_BLEND_MIN` is
-    // not applied at once: the reference is blended from the pre-jump value
-    // to the plan's value over that many seconds (smoothstep), and `p` is
-    // re-derived from the blended `xi`. Default 0 = off, every recipe
-    // reproduces bit for bit.
-    let dcm_ref_blend_t = env_f64("DCM_REF_BLEND_T", 0.0).max(0.0);
-    let dcm_ref_blend_min = env_f64("DCM_REF_BLEND_MIN", 0.02).max(0.0);
+    // (DCM_PREVIEW_HORIZON, a finite DCM preview, and DCM_REF_BLEND_T / _MIN,
+    // a continuity guard that blended a jump of the DCM reference across a
+    // plan rebuild, were not adopted and are removed. Measured 2026-09-23
+    // on G1: a one-tick jump of xi_ref above 5 cm separated fallers from
+    // survivors at every riser -- the guard was the experiment on it.)
     let dcm_plan =
         DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
     let omega = dcm_plan.omega;
@@ -2074,16 +2007,9 @@ fn main() {
     // "terminate swing foot motion controls when the swing foot touches the
     // ground earlier than anticipated").
     let com_replan = flag("COM_REPLAN", false);
-    let com_replan_lateral = flag("COM_REPLAN_LATERAL", false);
     let com_replan_forward_gain = env_f64("COM_REPLAN_FORWARD_GAIN", 1.0);
     assert!(com_replan_forward_gain.is_finite() && (0.0..=1.0).contains(&com_replan_forward_gain));
-    let com_replan_lateral_gain = env_f64("COM_REPLAN_LATERAL_GAIN", 1.0);
-    assert!(com_replan_lateral_gain.is_finite() && (0.0..=1.0).contains(&com_replan_lateral_gain));
-    let com_replan_always = flag("COM_REPLAN_ALWAYS", false);
     let com_replan_dt = env_f64("COM_REPLAN_DT", 0.02).max(dt);
-    // Preserve the requested mean update rate on a discrete control clock.
-    // Opt in to avoid changing existing stair timing experiments.
-    let com_preview_phase_lock = flag("COM_PREVIEW_PHASE_LOCK", false);
     let com_preview_dt = env_f64("COM_PREVIEW_DT", 0.05).max(dt);
     let com_preview_n = env_f64("COM_PREVIEW_N", 20.0).max(2.0) as usize;
     let com_preview_smooth = env_f64("COM_PREVIEW_SMOOTH", 0.1).max(0.0);
@@ -2112,10 +2038,6 @@ fn main() {
     let contact_admit_confirmed = flag("CONTACT_ADMIT_CONFIRMED", false);
     let contact_admit_scheduled = flag("CONTACT_ADMIT_SCHEDULED", false);
     let mut last_scheduled_admit: [Option<usize>; 2] = [None; 2];
-    let com_height_ds_frac: Option<f64> = std::env::var("COM_HEIGHT_DS_FRAC")
-        .ok()
-        .and_then(|v| v.parse::<f64>().ok())
-        .map(|f| f.clamp(0.0, 1.0));
     // A landing that ends by the extension TIMEOUT counts too when the sole
     // is within this of its planned tread height: measured 2026-09-24, the
     // champion's stair landings mostly end that way (retime median 2.16 s =
@@ -2179,13 +2101,9 @@ fn main() {
     // Zone: mid-feet x from `start - lead` to `landing_start + tail`. The
     // target moves through the usual `COM_HEIGHT_TIME` retarget, so it is
     // smooth. Default 0 = shipped height.
-    // (Distinct from the older global `STAIR_CROUCH`, which lowers the CoM
-    // from t=0 at 50 mm/s and rescales the LIPM height; measured 2026-09-24
-    // that one fells the flat approach at t=5 on G1.)
-    // Cap the CoM height by the leg reach (see the use site). 1 = on.
-    // The floor stops a pathological plan from folding the robot up.
-    let reach_height = env_f64("REACH_HEIGHT", 0.0);
-    let reach_height_floor = env_f64("REACH_HEIGHT_FLOOR", 0.45).max(0.1);
+    // (Distinct from the older global `STAIR_CROUCH` (removed), which
+    // lowered the CoM from t=0 at 50 mm/s and rescaled the LIPM height;
+    // measured 2026-09-24 that one fells the flat approach at t=5 on G1.)
     // Aim the CoM height at the LOWER level a descent is about to step
     // onto, before the swing. Measured 2026-10-03 on G1 (v6 + descent
     // extension, 80 mm step-down, 45 fallers of 48): the CoM reference
@@ -2201,16 +2119,6 @@ fn main() {
     // BELOW the stance soles counts, so ascents and level walking are
     // bit-identical. Default 0 = off = shipped.
     let com_height_desc_lead = env_f64("COM_HEIGHT_DESC_LEAD", 0.0).clamp(0.0, 1.0);
-    // Geometric companion of the lead: cap the CoM height so that the LOWER
-    // landing a descent swing is heading for is within this fraction of the
-    // leg length at touchdown, with the CoM assumed midway between the
-    // stance sole and the landing. Measured 2026-10-03 on the up-and-over
-    // course (8 cm, 2/48): the stand line before the edge makes the
-    // step-down 3 cm longer than on the bare descent bench, the fixed half-
-    // riser lead leaves the leg at 0.99 at touchdown, the foot arrives
-    // unloaded and is dragged 16 cm. Only a landing below the stance soles
-    // counts, so ascents and level walking are bit-identical. 0 = off.
-    let com_height_desc_reach = env_f64("COM_HEIGHT_DESC_REACH", 0.0).clamp(0.0, 1.0);
     let stair_zone_crouch = env_f64("STAIR_ZONE_CROUCH", 0.0).clamp(0.0, 0.15);
     let stair_crouch_lead = env_f64("STAIR_ZONE_CROUCH_LEAD", 0.30).max(0.0);
     let stair_crouch_tail = env_f64("STAIR_ZONE_CROUCH_TAIL", 0.60).max(0.0);
@@ -2509,10 +2417,10 @@ fn main() {
     // the end of this single support, with the stance CoP held at the
     // stance sole's outer edge (the best the ankle can do), must lie within
     // this fraction of the half width of the landing sole. (Its x twin,
-    // MPC_FOOTSTEP_CAPTURE_FLOOR, is removed.) Measured 2026-10-20: with only the bound
-    // opened the MPC lands at y +0.02..+0.04 for a DCM at +0.09 (stance
-    // sole +0.05) -- the SRBD model has no attitude and believes it can
-    // hold the excursion. 0 = off.
+    // MPC_FOOTSTEP_CAPTURE_FLOOR, is removed.) Measured 2026-10-20: with
+    // only the bound opened the MPC lands at y +0.02..+0.04 for a DCM at
+    // +0.09 (stance sole +0.05) -- the SRBD model has no attitude and
+    // believes it can hold the excursion. 0 = off.
     let mpc_footstep_cross_floor = env_f64("MPC_FOOTSTEP_CROSS_FLOOR", 0.0).max(0.0);
     // MPC_FOOTSTEP_CROSS_HOLD_Z [m]: while crossing, hold the swing foot at
     // least this high above its landing until it is within
@@ -2871,17 +2779,6 @@ fn main() {
         "COM_XY_JERK_MAX must be positive"
     );
     let mut previous_a_xy: Option<na::Vector2<f64>> = None;
-    // Preserve the command actually sent on the previous control tick so a
-    // contact-triggered transfer starts continuously from the live plan.
-    let mut dcm_ref_prev: Option<na::Vector2<f64>> = None;
-    // (pre-jump xi, plan xi at t0, t0). offset(s) = (pre - plan0) * (1 - smoothstep((s - t0)/T))
-    let mut dcm_ref_blend: Option<(na::Vector2<f64>, na::Vector2<f64>, f64)> = None;
-    // Same for the reference VELOCITY: (pre-jump xi_dot, plan xi_dot at t0).
-    // `commanded_zmp` feeds `-xi_dot_ref/omega` forward, and at the cut the
-    // rebuilt double-support segment carries a large xi_dot -- measured
-    // 2026-09-23: with only `xi` blended, p_cmd still went to the sole edge.
-    let mut dcm_ref_blend_dot: Option<(na::Vector2<f64>, na::Vector2<f64>)> = None;
-    let mut dcm_ref_prev_dot: Option<na::Vector2<f64>> = None;
     // Optional P0 diagnostic: sampled entirely before stepping the plant.
     // A command computed at t is compared with the observation at t; its
     // physical response must be evaluated at subsequent observation times.
@@ -3060,21 +2957,6 @@ fn main() {
                 prof.sole_centre_x,
                 prof.sole_below_origin,
             );
-            if vx2_reanchor
-                && vx2_change.is_some()
-                && ref_mode.is_none()
-                && let (Some(Support::Double), Support::Single { stance, swing }) = (support_prev, gait.support_at(t))
-            {
-                let i = gait.index_at(t);
-                let d = actual.sole[stance].xy() - footsteps.at_slice(i).sole[stance].xy();
-                if d.norm() > 0.002 {
-                    footsteps.shift_from(i, stance, d);
-                    footsteps.shift_from(i, swing, d);
-                    dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
-                    n_reanchor += 1;
-                    reanchor_total += d.norm();
-                }
-            }
             let touchdowns_before = landing_timing.touchdowns;
             let timeouts_before = landing_timing.timeouts;
             let shift = landing_timing.update(&mut gait, &footsteps, &actual, measured_pre, t, dt);
@@ -3293,32 +3175,10 @@ fn main() {
                     }
                 }
             }
-            if !replan_engaged && (com_replan_always || landing_timing.clock.is_some()) {
-                // The ZMP command is built from THIS reference, not from `r`
-                // below -- measured 2026-09-23: with the blend applied only to
-                // `r`, `xi_ref` in the log was smooth but `zmp_cmd` was
-                // identical to the digit with and without it. Apply the same
-                // continuity guard here, using last tick's state.
-                let mut cmd_ref = dcm_plan.reference_preview(t, dcm_preview_horizon);
-                if dcm_ref_blend_t > 0.0 {
-                    if let Some(prev) = dcm_ref_prev
-                        && dcm_ref_blend.is_none()
-                        && (cmd_ref.xi - prev).norm() > dcm_ref_blend_min
-                    {
-                        dcm_ref_blend = Some((prev, cmd_ref.xi, t));
-                        dcm_ref_blend_dot = dcm_ref_prev_dot.map(|pd| (pd, cmd_ref.xi_dot));
-                    }
-                    if let Some((from, plan0, t0)) = dcm_ref_blend {
-                        let u = ((t - t0) / dcm_ref_blend_t).clamp(0.0, 1.0);
-                        let a = u * u * (3.0 - 2.0 * u);
-                        let off = (from - plan0) * (1.0 - a);
-                        cmd_ref.xi += off;
-                        cmd_ref.p += off;
-                        if let Some((fd, pd0)) = dcm_ref_blend_dot {
-                            cmd_ref.xi_dot += (fd - pd0) * (1.0 - a);
-                        }
-                    }
-                }
+            // (COM_REPLAN_ALWAYS, engaging before the first landing clock, is
+            // removed.)
+            if !replan_engaged && landing_timing.clock.is_some() {
+                let cmd_ref = dcm_plan.reference(t);
                 preview_p = commanded_zmp(
                     &dcm_of(&com, &com_vel, omega),
                     &cmd_ref,
@@ -3696,7 +3556,7 @@ fn main() {
         // ---- P1: DCM-tracking CoM acceleration -------------------------
         // (DCM_LEAD_S, a sensor-delay lead on the measured DCM, is removed.)
         let xi = dcm_of(&com, &com_vel, omega);
-        let mut r = dcm_plan.reference_preview(t, dcm_preview_horizon);
+        let mut r = dcm_plan.reference(t);
         // For a LANDED (re-step) reference the DCM law tracks the
         // reference's own DCM and CoP (its CoM and contact forces) instead of
         // the re-planned LIPM. Measured 2026-10-13 on ld7_a: without it the
@@ -3716,31 +3576,6 @@ fn main() {
                 r.xi_dot = (xi1 - xi) / 0.01;
                 r.p = mode.world_xy(lib, lib.cop_at(tau));
             }
-        }
-        if dcm_ref_blend_t > 0.0 {
-            if let Some(prev) = dcm_ref_prev
-                && dcm_ref_blend.is_none()
-                && (r.xi - prev).norm() > dcm_ref_blend_min
-            {
-                dcm_ref_blend = Some((prev, r.xi, t));
-                dcm_ref_blend_dot = dcm_ref_prev_dot.map(|pd| (pd, r.xi_dot));
-            }
-            if let Some((from, plan0, t0)) = dcm_ref_blend {
-                let u = ((t - t0) / dcm_ref_blend_t).clamp(0.0, 1.0);
-                let a = u * u * (3.0 - 2.0 * u);
-                let off = (from - plan0) * (1.0 - a);
-                r.xi += off;
-                r.p += off;
-                if let Some((fd, pd0)) = dcm_ref_blend_dot {
-                    r.xi_dot += (fd - pd0) * (1.0 - a);
-                }
-                if u >= 1.0 {
-                    dcm_ref_blend = None;
-                    dcm_ref_blend_dot = None;
-                }
-            }
-            dcm_ref_prev = Some(r.xi);
-            dcm_ref_prev_dot = Some(r.xi_dot);
         }
         let dcm_err = (xi - r.xi).norm();
         if push_yield_v > 0.0
@@ -4255,49 +4090,16 @@ fn main() {
                             hi: current_box.hi,
                         };
                     }
-                    let (zmp_ref, xi_ref) = {
-                        // Continuity guard (DCM_REF_BLEND_T), applied to the
-                        // sample stream the CoM preview QP actually optimises
-                        // against -- measured 2026-09-23: blending `r` and
-                        // `preview_p` alone left `zmp_cmd` identical to the
-                        // digit, because THIS is the command path.
-                        let off_at = |s_at: f64| -> na::Vector2<f64> {
-                            match dcm_ref_blend {
-                                Some((from, plan0, t0)) if dcm_ref_blend_t > 0.0 => {
-                                    let u = ((s_at - t0) / dcm_ref_blend_t).clamp(0.0, 1.0);
-                                    (from - plan0) * (1.0 - u * u * (3.0 - 2.0 * u))
-                                }
-                                _ => na::Vector2::zeros(),
-                            }
-                        };
-                        (
-                            dcm_plan
-                                .reference_preview(
-                                    begin + 0.5 * com_preview_dt,
-                                    dcm_preview_horizon,
-                                )
-                                .p
-                                + off_at(begin + 0.5 * com_preview_dt),
-                            dcm_plan.reference_preview(end, dcm_preview_horizon).xi + off_at(end),
-                        )
-                    };
+                    let (zmp_ref, xi_ref) = (
+                        dcm_plan.reference(begin + 0.5 * com_preview_dt).p,
+                        dcm_plan.reference(end).xi,
+                    );
                     samples.push(articara::biped::preview::PreviewSample {
                         duration: com_preview_dt,
                         bounds,
                         zmp: zmp_ref,
                         xi: xi_ref,
                     });
-                }
-                if dcm_ref_blend_t > 0.0 && std::env::var("DCM_REF_BLEND_DEBUG").is_ok() {
-                    let (ba, bf, bp, bt) = match dcm_ref_blend {
-                        Some((f, p0, t0)) => (1, f, p0, t0),
-                        None => (0, na::Vector2::zeros(), na::Vector2::zeros(), 0.0),
-                    };
-                    println!(
-                        "  [blend] t={t:.3} active={ba} from=({:.3},{:+.3}) plan0=({:.3},{:+.3}) t0={bt:.3} s0.xi=({:.3},{:+.3}) s0.zmp=({:.3},{:+.3}) preview_p=({:.3},{:+.3}) p_cmd=({:.3},{:+.3})",
-                        bf.x, bf.y, bp.x, bp.y, samples[0].xi.x, samples[0].xi.y, samples[0].zmp.x, samples[0].zmp.y,
-                        preview_p.x, preview_p.y, p_cmd.x, p_cmd.y
-                    );
                 }
                 let preview_solve_start = std::time::Instant::now();
                 let preview_solution = articara::biped::preview::replan(
@@ -4341,21 +4143,17 @@ fn main() {
                         u8::from(preview_solve_ns > 50_000_000),
                         u8::from(preview_accepted),
                         preview_error,
-                        u8::from(com_replan_lateral),
+                        0, // applied_lateral: COM_REPLAN_LATERAL (removed) was off
                         com_preview_n,
                     ).unwrap();
                 }
-                preview_next = if com_preview_phase_lock {
-                    (preview_next + com_replan_dt).max(t + dt)
-                } else {
-                    t + com_replan_dt
-                };
+                // (COM_PREVIEW_PHASE_LOCK, a discrete-clock update rate, is
+                // removed.)
+                preview_next = t + com_replan_dt;
             }
             let optimized = current_box.clamp(&preview_p).0;
+            // Forward only (COM_REPLAN_LATERAL and its gain are removed).
             p_cmd.x += com_replan_forward_gain * (optimized.x - p_cmd.x);
-            if com_replan_lateral {
-                p_cmd.y += com_replan_lateral_gain * (optimized.y - p_cmd.y);
-            }
         }
         // Variable-height form when a stair is in the scene: the LIPM's
         // constant-height omega is ~20% too stiff while the CoM is being
@@ -4438,16 +4236,16 @@ fn main() {
             // the trailing leg has left the lower tread, that leg reaches
             // single support with its knee at 0.09 rad (champion: 0.34), and
             // the next swing task has no authority left -- the foot launches
-            // to 1.2 m. COM_HEIGHT_DS_FRAC = 0 keeps the CoM at the lower
-            // sole through double support and rises on the new foot. Unset =
-            // the mean, computed exactly as before.
+            // to 1.2 m. (COM_HEIGHT_DS_FRAC, keeping the CoM at the lower
+            // sole through double support, was not adopted and is removed;
+            // the level is the mean.)
             // All height rules live in src/biped/height.rs (one place for the
             // stance level, the descent lead, the stair crouch, the reach
             // caps and the slewed drops); the arithmetic is the one used
             // inline before 2026-10-19, bit-identical.
             use articara::biped::height as hr;
             let soles_z: Vec<f64> = stance_sides.iter().map(|&side| steps.sole[side].z).collect();
-            let h = hr::stance_level(&soles_z, com_height_ds_frac);
+            let h = hr::stance_level(&soles_z, None);
             // The landing this swing is heading for, or -- in a double
             // support -- the landing of the swing that follows it.
             let next_landing = {
@@ -4461,52 +4259,14 @@ fn main() {
                 Some(st) => hr::stair_zone_crouch(steps.mid_xy().x, st, stair_crouch_lead, stair_crouch_tail, stair_zone_crouch),
                 None => 0.0,
             };
-            let mut target = if crouch > 0.0 {
+            let target = if crouch > 0.0 {
                 z_com + h - terrain_base - crouch
             } else {
                 z_com + h - terrain_base
             };
-            // Cap the height by what the LEGS can reach (src/biped/reach.rs).
-            //
-            // Measured 2026-09-24 with the new `reach_*` columns: this robot
-            // walks with its legs 92-99% extended and is at 0.97-0.99 when it
-            // falls. A leg that straight has no vertical authority left, which
-            // is why the swing residual explodes at the knee singularity and
-            // why the fixed 4 cm stair crouch helped at all -- it was this
-            // cap, guessed as a constant. Here it is computed: the CoM may not
-            // sit higher than the point from which every sole the plan is
-            // standing on (or about to stand on) is still within `margin` of
-            // the leg's length.
-            //
-            // The horizontal lever is measured from the CoM, and the leg hangs
-            // from a hip roughly `hip_drop` below it, so the cap is written
-            // about the hip and lifted back to the CoM. Default off.
-            // The hip hangs `hip_drop` below the CoM; read straight off the model.
-            let hip_drop = hip_mi
-                .map(|mis| {
-                    mis.iter()
-                        .map(|&mi| com.z - misarta::se3::translation(&data.oMi[mi]).z)
-                        .fold(f64::INFINITY, f64::min)
-                })
-                .unwrap_or(f64::NAN);
-            if com_height_desc_reach > 0.0 && leg_reach.max > 0.0 {
-                if let Some((sw, landing)) = next_landing {
-                    let stance = steps.sole[1 - sw];
-                    target = hr::reach_cap_landing(target, &landing, &stance, leg_reach.max * com_height_desc_reach, hip_drop);
-                }
-            }
-            if reach_height > 0.0 && leg_reach.max > 0.0 {
-                // Both feet the plan believes in now, plus the landing the
-                // swing is heading for: the bound has to hold at touchdown,
-                // not only at this instant.
-                let i = gait.index_at(t);
-                let next = footsteps.at_slice(i);
-                let soles = stance_sides
-                    .iter()
-                    .map(|&s| steps.sole[s])
-                    .chain(gait.slices[i].support.swing().map(|s| next.sole[s]));
-                target = hr::reach_cap_soles(target, &com.xy(), soles, leg_reach.usable(), hip_drop, reach_height_floor);
-            }
+            // (REACH_HEIGHT / _FLOOR, the height capped by the legs' reach
+            // over every sole, and COM_HEIGHT_DESC_REACH, the same cap for
+            // the landing of a descent, were not adopted and are removed.)
             if (target - height_plan.target).abs() > 1e-6 {
                 height_plan.retarget(t, target, com_height_time);
             }
@@ -7499,7 +7259,8 @@ fn main() {
         println!("  ds capture: {n_ds_capture} early ends ({:.0} ms total)", ds_capture_total * 1e3);
         // RESTEP (removed, never adopted) re-stepped nothing by default.
         println!("  re-steps: 0");
-        println!("  plan re-anchors: {n_reanchor} ({:.0} mm total)", reanchor_total * 1e3);
+        // VX2_REANCHOR (removed) re-anchored nothing by default.
+        println!("  plan re-anchors: 0 (0 mm total)");
         println!("  hip strategy (MOM_CMP): {n_mom_cmp_ticks} ticks, peak rate {mom_cmp_peak:.1} N m");
         if ds_feasible_continuous {
             println!("  ds continuous: {n_ds_continuous} plan writes");
