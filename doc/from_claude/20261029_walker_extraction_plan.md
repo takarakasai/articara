@@ -822,6 +822,31 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
   - `WalkerConsts` に足したもの: `f_max_per_foot`、`friction_mu`、`mpc_gate`、`wrench_mpc_apply`、`stair_wrench_dt`、`stair_wrench_preview_dt`、`contact_cfg: &ContactCfg`（MPC の CoP 箱と捩り摩擦は WBC の接触設定から読む。S12 で Stack 側の値をどう Walker に見せるか決める）。
   - **CMM の重複を 1 回にした**: `walker::Centroidal`（`A_G(q)` と `Ȧ_G v` を `OnceCell` で最初に要る所で 1 回だけ計算）を tick ごとに作り、MPC の `h`、角運動量の段、MOM_CMP がそれを読む。3 か所の呼び出しの間に `q`／`v`（`st` の不変の借用）は変わらず、misarta の `compute_centroidal_momentum_matrix(model, q)`／`compute_cmm_dot_times_v(model, q, v)` は純関数なので、値は同じ。見本はすべて MPC・`MOM=1 MOM_REF=arms_neutral`・`MOM_CMP=1` なので、共有の経路は 96＋14 本で通っている。ハーネスの計測（押しの後の `h_roll`、2 か所と TRAJ_CSV の `MOM_DIAG`）は `rig.model` で別に計算していて、そのまま残した（計測はハーネスの責任。S13 で `walker.state()` に載せるかは未定）。
   - **`Footsteps::from_fk` の重複も 1 回にした**: 制御の 4 か所（着地の時計、参照の作動、予見、MPC）はすべて `actual_feet` を読む。TRAJ_CSV の 1 か所（ハーネス）は S11d で記録から読む。
+- **実施 S11d（2026-10-30）**: 96＋14＋eqdiag＋s1x で差 0。main.rs 5,801 → 4,247 行、walker.rs 2,620 → 4,554 行（S11 全体で main.rs は 7,946 → 4,247 行）。
+  - 相 10 `phase_task_refs(&ctl, &plan, stats, cfg, k, obs, &Centroidal, &SupportOut, stance_sides, stance, nc, &LoadRamp, &DcmOut, &p_cmd, &zmp_deficit, t) -> TaskRefs`。段を 1 つも作らずに、段の参照だけを計算する: 胴（推定の roll／pitch、計画のヨー、`trunk_ori_ref` の指令 `ori`、胴のヤコビアンとバイアス）、角運動量（`MomRef`: arms_neutral の CMM・バイアス・h・参照・利得・軸）、MOM_CMP（`CmpRef`。カウンタ `n_mom_cmp_ticks`／`mom_cmp_peak` もここ）、腕の保持（`ArmRef`: 行と突きを掃いた参照）、重力トルク、荷重の分け方 `shares`、遊脚（`SwingRef`）。
+  - **遊脚のほどき**: 段の構築の呼び出し `bt::swing_with_pose_acceleration(..)`／`bt::swing_with_pose(..)` の引数を、呼び出しが評価していた順に先に作る形にした。`axes`（TERRAIN_PITCH の分岐と `swing_rot_mode` の対応）、`rot`（測った回転、目標の回転＝`foot_rot_at` に斜面のピッチ、角速度、`kp_sw_rot`、`kd_sw_rot`）、`acc = tgt_a * tracking_ff_scale`（足に戻すだけの枝は `None` で、`swing_with_pose` を使う）。`tgt`・`tgt_v`・保持・参照の足裏の軌跡・探りの深さの式は今のまま。
+  - 相 11 `phase_wbc(wbc_state, diag, &ctl, wcfg, cfg: &SolveConfig, k, obs, &Centroidal, &SupportOut, stance_sides, stance, nc, &LoadRamp, &a_com, &TaskRefs, t) -> WbcOut`。今の 2 つの区画（動力学の文脈・トルク箱・関節制限・`contact_level`、と CoM・胴・角運動量・MOM_CMP・腕・姿勢・名目の力・正則化・遊脚・段の並べ方・解・門・QP_DIAG_DIR）を 1 つにした。
+    - `contact_jacobians`／`Dynamics::new`／`bt::contact_level` は、相 5〜9 の前から相 10 の後へ動いた。`contact_level` は係留点を漏らす（`&mut Anchors`）が、相 5〜10 は係留点も `contact_level` の出力も読まない（`p0.sole_sel` を読むのは名目の力の MPC の写しだけで、相 11 の中）ので値は変わらない。純粋な段の構築（`bt::com`、`trunk_rpy` など）も同じ。
+    - 返り値 `WbcOut { sol, extracted, level_names, forces_nominal, sole_sel, acc_dbg, p_swing_diag, trunk_cmd_rp, trunk_acc_rp, qp_solve_ns, qp_check_ns, qp_capture_ns, qp_physical_violation, qp_reset, qp_rejected, degraded }`。`dyn_ctx.extract(&sol.x)` は相 11 の終わりで行う。
+    - 名前の衝突: ループでは `cfg` が WBC の `SolveConfig`、`wcfg` が歩行の `Config`。相 11 だけ引数名をこの 2 つにそろえ、本体の文をそのまま使った。
+  - 相 12 `phase_solve_diag(cfg, k, obs, stance, &TaskRefs, &WbcOut) -> SolveDiag`（遊脚の残差、脚の届く範囲、遊脚の達成加速度と位置の誤差、足ごとの CoP・力、CoP の使用率、正味の CoP）。
+  - 相 13 `phase_end_tick(ctl, plan, cfg, t)`。押しの発火の後、今と同じ位置で呼ぶ。
+  - `TickRecord` はループの中で 1 回、今のリテラルの形で組み立てる（相の返り値を同名の局所へ分解してから）。足したのは `actual_feet`（tick に 1 回の FK の足裏）だけで、TRAJ_CSV はそれを読む。これで `Footsteps::from_fk` は tick に 1 回になった。
+  - `WalkerConsts` に足したもの: `wz`、`jab`／`jab_start`／`jab_period`／`jab_pattern`／`jab_pitch`／`jab_elbow`、`kp_sw_xy`、`tracking_ff_riser_ok`、`foot_rot0`（`foot_rot_at` の閉包は相 10 の中で同じ式で作る）、`jlim_cfg`、`qp_gate`、`weighted_levels`、`hip_mi`、`leg_reach`。
+  - 新しく見つけた漏れ（ハーネスの物を制御が読んでいた）: 角運動量の `arm_cols` と腕の保持の `arms` が `rig.actuated()` を読んでいた（S10 の置き換えの漏れ）。`robot.actuated()`（rig は同じ `RobotModel` の写しに委ねている）に替えた。値は同じ。
+- **S11 の後のループ（main.rs、5d06f20 の次のコミットの行）**: 2713 `WalkerConsts`、2761 `for tick`、2765 相 1、2817–2851 相 2〜12、2887 `TickRecord`、2945 `tally.observe`、3350 押しの発火、3371 相 13、3494 `rig.step`、3571 TRAJ_CSV の足裏。
+- **S12（`WbcStack`）への申し送り**
+  - 渡すものはそろった: 相 11 の引数のうち Stack の外から来るのは `&TaskRefs`（参照）、`a_com`、`stance_sides`／`stance`／`nc`、`LoadRamp`、`support`／`steps`（斜面の踵の CoP 箱）、`ctl.managed_until`（管理接触）、`ctl.wrench_mpc_command`（名目の力）、`obs`（`tick`、`contact_fz`＝QP_DIAG、`joint_pos_plant`＝姿勢と腕）。これが `WbcRequest` の中身。
+  - 係留点の出来事は相 3（解放・設置）→ 相 4（新しい接触の設置）→ 相 11 の `contact_level`（漏れ）の順。S12 では相 3・4 が出来事を記録し、相 11 の頭でその順に適用してから `contact_level` を呼ぶ。
+  - Stack が読んでいる起動時の値: `contact_cfg`、`jlim_cfg`、`SolveConfig`、`qp_gate`、`weighted_levels`、`total_mass`・`sole_half_l`（物理の行の尺度）。`contact_cfg.cop_half`・`mu_torsion` は相 9（MPC）も読む（`WalkerConsts.contact_cfg`）。Walker と Stack の両方が要るので、Walker の Config 側に置いて Stack へ渡す形がよい。
+  - 段の重み `WBCW_<名前>` は、Config に無い名前だと相 11 の中で毎 tick 環境変数を読む（`level_weight_from_env`）。Config の `level_weights` に全部入れてから Stack へ渡すこと。
+  - `qp_physical`（物理の行の控え）は `diag.qp_diag_dir`／`diag.qp_runtime_log` の有無でも計算される（§7 の 19）。`QP_DIAG_DIR` の捕獲と `WBC_LEVEL_DEBUG_T` は相 11 の中にある。
+- **S13（Walker を misa-biped へ）への申し送り**: 制御がまだハーネスから受けている値は `WalkerConsts` に全部集まった。
+  - シナリオ・指令: `stairs`（既知の地形）、`vx`・`wz`・`squat_*`・`vx2_change`／`vx2_cmd_speed`／`vx2_z_from`／`vx2_z_drop`（速度表）、`jab*`（突き）、`ref_libs`（REF_LIBRARY）、`gp`（`t_end = T` を含む）。→ `WalkerSetup`（`CommandSchedule`、`terrain`、`recovery_refs`）。
+  - 植物・ハーネスの真値: `friction_mu`（`MU_GROUND` 由来、§6.7）、`obs.joint_pos_plant`（姿勢・腕の保持、§6.6）、`foot_rot0`（起動時の `rig.fk_now()`＝植物の関節角からの FK）、`sole_half_l/w`（環境変数。S13 で Profile へ）、`leg_reach`（`LEG_REACH` を読む）と `hip_mi`（`rig.link_to_idx`）。
+  - 診断の出力先: 相 7（`PREVIEW_TRAJ_CSV`、`COM_PREVIEW_RUNTIME_CSV`）、相 9（`MPC_DIAG_DIR`、`MPC_RUNTIME_CSV`、`MPC_TRAJ_CSV`、`QP_WRENCH_CSV` の有無で `wrench_mpc_frames` を残す）、相 11（`QP_DIAG_DIR`、`QP_RUNTIME_CSV` の有無）が `&mut DiagSinks` を受ける。→ `WalkerDiag` のフック。
+  - 相の関数は main.rs の私的な型（`CtlState`、`WalkerStats`、`WbcState`、`DiagSinks`）と `level_weight_from_env` を `super::` で読む。misa-biped へ移すときはこれらを一緒に移すか、引数の trait にする。`articara::biped::{tasks, contact}` を使うのは相 11 と相 3・4（係留点）だけ。
+  - 相の関数のノブの別名（`let x = cfg.sub.x;`）は、関数の頭にまとめて残してある。測定の経緯の注釈は、main.rs から最初にそのノブを読む相の頭へ移した。
 
 #### S12 `WbcStack` と `TaskStack`
 

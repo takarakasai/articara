@@ -10,10 +10,13 @@
 //! `&mut`; the tick's `TickRecord` is still built once, in the loop, from the
 //! phases' outputs. The arithmetic, the order of the prints and the order of
 //! the plan's rebuilds are the loop's own (the runs are byte-identical).
-use super::{CtlState, DiagSinks, WalkerStats};
+use super::{CtlState, DiagSinks, WalkerStats, WbcState, level_weight_from_env};
+use articara::biped::tasks as bt;
+use articara::biped::contact::{contact_jacobians, cop_from_sole_wrench};
+use misa_wbc::{Dynamics, Formulation, SolveConfig, tasks};
 use articara::biped::contact::Anchors;
 use articara::biped::dcm::{DcmRef, SupportBox, StepTiming, com_accel_xy, commanded_zmp, dcm_of, step_timing};
-use articara::biped::gait::{Footsteps, GaitParams, Slice, Support};
+use articara::biped::gait::{Footsteps, GaitParams, Slice, Support, swing_position, swing_velocity};
 use articara::biped::rig::G;
 use articara::biped::terrain::Stairs;
 use misa_biped::config::Config;
@@ -81,6 +84,28 @@ pub(crate) struct WalkerConsts<'a> {
     pub stair_wrench_dt: f64,
     pub stair_wrench_preview_dt: f64,
     pub contact_cfg: &'a articara::biped::tasks::ContactCfg,
+    /// The levels' references: the turn rate (WZ), the jab's clock and pose
+    /// (JAB*), the swing's xy gain (`cfg.swing.kp_xy()`), whether this
+    /// staircase takes the swing's cubic feed-forward (TRACKING_FF_MIN_RISER
+    /// against the known riser), and the feet's orientation at start-up
+    /// (a planned yaw rotates it).
+    pub wz: f64,
+    pub jab: bool,
+    pub jab_start: f64,
+    pub jab_period: f64,
+    pub jab_pattern: &'a str,
+    pub jab_pitch: f64,
+    pub jab_elbow: f64,
+    pub kp_sw_xy: f64,
+    pub tracking_ff_riser_ok: bool,
+    pub foot_rot0: [na::Matrix3<f64>; 2],
+    /// The WBC (S12's Stack): the joint-limit CBF, QP_BENCH_GATE, whether the
+    /// levels are weighted, the hips (leg reach) and the reach model.
+    pub jlim_cfg: &'a misa_wbc::tasks::JointLimitCbf,
+    pub qp_gate: bool,
+    pub weighted_levels: bool,
+    pub hip_mi: Option<[usize; 2]>,
+    pub leg_reach: &'a articara::biped::reach::LegReach,
 }
 
 /// The centroidal momentum matrix `A_G(q)` and `Ȧ_G v`, computed once per
@@ -213,6 +238,17 @@ pub(crate) fn phase_landing_clock(
     actual: &Footsteps,
     t: f64,
 ) {
+    // ---- contact-driven phase transitions -----------------------------
+    //
+    // The schedule says when the step ENDS; the ground says when it actually
+    // ended. Measured on this robot, the swing foot lands about 30 ms early
+    // on a 0.35 s single support -- 8.6% of the phase, every step, same sign
+    // -- and a time-based schedule keeps commanding a swing that has already
+    // finished while the QP solves against a contact set that is a step
+    // behind. Terminating the swing on contact is what a passive-ankle biped
+    // does in hardware (Kim et al. 2019, arXiv:1901.08100: contact switches
+    // "terminate swing foot motion controls when the swing foot touches the
+    // ground earlier than anticipated").
     let com_replan = cfg.com_plan.replan;
     let contact_admit_confirmed = cfg.contact.admit_confirmed;
     // A landing that ends by the extension TIMEOUT counts too when the sole
@@ -220,6 +256,10 @@ pub(crate) fn phase_landing_clock(
     // champion's stair landings mostly end that way (retime median 2.16 s =
     // 1.0 s swing + 1.08 s extension) with the sole on the tread all along.
     let contact_admit_z = cfg.contact.admit_z;
+    // (PHASE_BY_CONTACT / PHASE_EXTEND / PHASE_MIN_FRAC / PHASE_LOAD /
+    // PHASE_TICKS, the phase clock advanced by measured contact, are removed;
+    // its summary line keeps the zeros it printed when off.)
+    // The control loop's debug prints (`DIAG_REPLAN`, `*_DEBUG`, ...).
     let debug = cfg.debug;
     let contact_event_shift = cfg.landing.event.shift;
     // Run the DS_FEASIBLE re-plan on a timeout end as well (it is keyed on a
@@ -540,6 +580,9 @@ pub(crate) fn phase_support(
     let prof = &robot.prof;
     let stairs = k.stairs;
     let data = &obs_state(obs).data;
+    // By value, not by reference: `Slice` is `Copy`, and holding a
+    // borrow on `gait` here is what stops the step-timing adaptation
+    // below from retiming it.
     let (slice, slice_frac) = {
         let (sl, f) = plan.gait.at(t);
         (*sl, f)
@@ -980,6 +1023,7 @@ pub(crate) fn phase_dcm(
     let st = obs_state(obs);
     let (com, com_vel) = (st.com, st.com_vel);
     let (support, slice_frac, slice_idx) = (sup.support, sup.slice_frac, sup.slice_idx);
+    // (DCM_LEAD_S, a sensor-delay lead on the measured DCM, is removed.)
     let xi = dcm_of(&com, &com_vel, omega);
     let mut r = plan.dcm.reference(t);
     // For a LANDED (re-step) reference the DCM law tracks the
@@ -1843,7 +1887,11 @@ pub(crate) fn phase_height(
 }
 
 /// Phase 9: the centroidal wrench MPC (STAIR_WRENCH_MPC with
-/// WRENCH_MPC_ALWAYS): on its own clock, build the input (load and contact
+/// WRENCH_MPC_ALWAYS). It replans both sole wrenches from the measured
+/// centroidal state; the first horizon command becomes the WBC's force
+/// regularisation target and its resultant acceleration the CoM task's
+/// reference, which removes the old conflict where ZMP, height and load
+/// split came from independent controllers. On its own clock, build the input (load and contact
 /// schedules, the contacts and their forecast landings, the crossing gate,
 /// the landing variable), solve, hold the answer in `ctl`, and move the
 /// swing's landing by the MPC's shift (MPC_FOOTSTEP). Writes MPC_DIAG_DIR,
@@ -2617,4 +2665,1890 @@ pub(crate) fn phase_wrench_mpc(
         ctl.wrench_mpc_next = t;
     }
     mpc_capture_ns
+}
+
+/// The momentum task's inputs (MOM, or the coupled level): the CMM it acts
+/// through (arm columns only for `arms_neutral`), its bias, the momentum now,
+/// the references, the gain and the axes.
+pub(crate) struct MomRef {
+    pub cmm: na::DMatrix<f64>,
+    pub bias: na::DVector<f64>,
+    pub h: na::DVector<f64>,
+    pub h_ref: [f64; 3],
+    pub dh_ref: [f64; 3],
+    pub kp: f64,
+    pub axes: [bool; 3],
+}
+
+/// MOM_CMP's inputs (the CMM itself is the tick's `Centroidal`): the bias,
+/// the momentum now, its reference (itself) and the asked rate.
+pub(crate) struct CmpRef {
+    pub bias: na::DVector<f64>,
+    pub h: na::DVector<f64>,
+    pub h_ref: [f64; 3],
+    pub dh: [f64; 3],
+}
+
+/// The arm hold's rows (actuated joint, velocity index) and its reference
+/// (the seed, with a jab swept in).
+pub(crate) struct ArmRef {
+    pub arms: Vec<(usize, usize)>,
+    pub q_ref: Vec<f64>,
+}
+
+/// The swing foot's task inputs: its Jacobian and bias, where it is and how
+/// fast, the target position and velocity, the gains, the axes, the
+/// orientation (measured, target, angular velocity, gains), and the
+/// feed-forward acceleration (`tgt_a * TRACKING_FF_SCALE`; `None` for a foot
+/// put back on its footstep, which has none).
+pub(crate) struct SwingRef {
+    pub jf: na::DMatrix<f64>,
+    pub djv: na::DVector<f64>,
+    pub pos: na::Vector3<f64>,
+    pub vel: na::Vector3<f64>,
+    pub tgt: na::Vector3<f64>,
+    pub tgt_v: na::Vector3<f64>,
+    pub kp_xy: f64,
+    pub kp_z: f64,
+    pub kd: f64,
+    pub axes: bt::SwingAxes,
+    pub rot: Option<(na::Matrix3<f64>, na::Matrix3<f64>, na::Vector3<f64>, f64, f64)>,
+    pub acc: Option<na::Vector3<f64>>,
+}
+
+/// What phase 10 computed for the levels: the trunk's Jacobian and bias,
+/// the trunk's roll and pitch (the estimate), their reference, the yaw
+/// reference and the full orientation command; whether the coupled level is
+/// on; the momentum, MOM_CMP and arm-hold inputs; the gravity torque and the
+/// load shares; the foot out of contact and its task inputs, target and
+/// commanded vertical acceleration (diagnostics).
+pub(crate) struct TaskRefs {
+    pub j_trunk: na::DMatrix<f64>,
+    pub djv_trunk: na::DVector<f64>,
+    pub roll: f64,
+    pub pitch: f64,
+    pub rp_ref: [f64; 2],
+    pub yaw_ref: Option<f64>,
+    pub ori: [f64; 3],
+    pub coupled_active: bool,
+    pub mom: Option<MomRef>,
+    pub cmp: Option<CmpRef>,
+    pub arm: Option<ArmRef>,
+    pub tau_gravity: na::DVector<f64>,
+    pub shares: Vec<f64>,
+    pub free_side: Option<usize>,
+    pub swing: Option<SwingRef>,
+    pub swing_tgt: na::Vector3<f64>,
+    pub swing_cmd_acc_z: f64,
+}
+
+/// Phase 10: the references of the WBC's levels, computed before any level
+/// is built: the trunk (roll / pitch estimate, the planned yaw, the
+/// orientation command), the centroidal momentum (MOM, arms_neutral), the
+/// hip strategy (MOM_CMP), the arm hold (with the jab), the gravity torque
+/// and the load split, and the swing foot's targets (the planned arc, the
+/// stair profiles, the holds, the recovery reference's sole path, the probe
+/// depth) with its axes and orientation target. The levels themselves are
+/// phase 11's.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn phase_task_refs(
+    ctl: &CtlState,
+    plan: &Plan,
+    stats: &mut WalkerStats,
+    cfg: &Config,
+    k: &WalkerConsts,
+    obs: &Observation,
+    cent: &Centroidal,
+    sup: &SupportOut,
+    stance_sides: &[usize],
+    stance: &[usize],
+    nc: usize,
+    ramp: &LoadRamp,
+    dcm: &DcmOut,
+    p_cmd: &na::Vector2<f64>,
+    zmp_deficit: &na::Vector2<f64>,
+    t: f64,
+) -> TaskRefs {
+    // TURN_IN_DS: the trunk turns toward a new heading during the double
+    // support, not the single support before it (see its use).
+    let turn_in_ds = cfg.gait.turn_in_ds;
+    // Regulate the trunk's yaw as well as its roll and pitch.
+    let trunk_yaw = cfg.gains.trunk_yaw;
+    let kp_trunk = cfg.gains.kp_trunk;
+    let kd_trunk = cfg.gains.kd_trunk;
+    let trunk_sign = cfg.gains.trunk_sign;
+    let kp_yaw = cfg.gains.kp_yaw;
+    let kd_yaw = cfg.gains.kd_yaw;
+    let stair_wrench_mpc = cfg.mpc.enabled;
+    let stair_wrench_coupled = cfg.mpc.coupled;
+    // Centroidal angular-momentum task (doc Sec.21.3, reopened by the v6
+    // shoulder roll -- see `bt::angular_momentum`). `MOM_AXES` is a 3-char
+    // mask over roll/pitch/yaw, e.g. "x--" for roll only. Default OFF: it
+    // costs two extra CMM evaluations a tick and has never been measured.
+    let use_mom = cfg.arm.mom;
+    // 角運動量タスクが「追従」する参照の作り方。
+    //   zero         : h_ref = 0 = 従来(抑制)。歩行と両立しないことを実測済み。
+    //   arms_neutral : h_ref = h - A_arms·v_arms、つまり残差が「腕の寄与そのもの」に
+    //                  なる。タスクは「腕の角運動量寄与をゼロに。脚の分には触るな」。
+    // 本来は A2 の可行な全身参照から h_ref(t) を取るべきで、これはその足場。
+    let mom_ref_mode = cfg.arm.mom_ref.clone();
+    // Ask the ARMS for roll angular momentum when the lateral DCM escapes.
+    //
+    // This is the eCMP/VRP mechanism (Englsberger IROS 2013) written as a task
+    // reference. The centroidal moment pivot is the ZMP displaced by the rate
+    // of change of angular momentum,
+    //
+    //     CMP_y = ZMP_y - h_dot_x / (m g)
+    //
+    // and the DCM is driven by the CMP, not the ZMP. So when the ZMP is pinned
+    // to the lateral sole edge -- measured as the terminal state of every
+    // 60 mm-riser fall, `zmp_y` clamped at -0.0919 for 2 s -- the only pivot
+    // left is angular momentum. Driving the DCM back toward its reference in
+    // +y needs CMP_y to move +y, hence h_dot_x NEGATIVE: the gain is applied
+    // with a minus sign below.
+    //
+    // Only meaningful with `MOM_REF=arms_neutral`, where the task's Jacobian
+    // is masked to the arm columns: the reference then says "the ARMS shall
+    // produce this roll momentum rate" and the legs' own momentum is left
+    // alone. With the unmasked CMM the same reference would instead forbid the
+    // legs the momentum they make by construction -- the failure measured
+    // 2026-09-20 (arm travel 1.8 -> 297 deg, unmoved by a 60x gain sweep).
+    //
+    // Default 0.0 = the zero reference, i.e. previous behaviour.
+    let mom_arm_dcm = cfg.arm.mom_arm_dcm;
+    // Ceiling on the requested rate. The arms are light and near the CoM, so a
+    // large request is one the solver cannot fill and will chase to the joint
+    // limits; this bounds the ask rather than the gain.
+    let mom_arm_dcm_max = cfg.arm.mom_arm_dcm_max;
+    let kp_mom = cfg.arm.kp_mom;
+    let mom_axes = cfg.arm.mom_axes;
+    let stair_crouch_lead = cfg.stair_zone.lead;
+    let stair_crouch_tail = cfg.stair_zone.tail;
+    // MOM_CMP: the hip strategy, written as the centroidal moment pivot.
+    // When the DCM law's pressure point saturates at the support edge, the
+    // deficit `p_raw - p_cmd` is pressure the polygon cannot give; the same
+    // horizontal force follows from an angular-momentum rate instead
+    // (CMP_y = CoP_y - h_dot_x / (m g), CMP_x = CoP_x + h_dot_y / (m g)).
+    // This asks the WHOLE body (unmasked CMM, roll and pitch) for
+    //     h_dot = MOM_CMP * m g * (-deficit_y, +deficit_x, 0),
+    // capped at MOM_CMP_MAX [N m], with no P term, as a weighted task in
+    // the centroidal level. The arms-only MOM_ARM_DCM task stays as it is.
+    // Design: doc/from_claude/20261012_restep_design.md Sec.6 (the WBC's
+    // lateral authority ends at the sole edge). 0 = off, bit-identical.
+    let mom_cmp = cfg.mom_cmp.gain;
+    let mom_cmp_dead = cfg.mom_cmp.dead;
+    // Sign check (+1 = the derivation above) and a cap on the angular
+    // momentum the strategy may build up [N m s]: a hip strategy is a
+    // transient -- past the cap the rate in that direction is cut to zero
+    // and a P term winds the momentum back (MOM_CMP_KH [1/s]).
+    let mom_cmp_sign = cfg.mom_cmp.sign;
+    let mom_cmp_max = cfg.mom_cmp.max;
+    let mom_cmp_hmax = cfg.mom_cmp.hmax;
+    let mom_cmp_kh = cfg.mom_cmp.kh;
+    // Hold the arms, at their own level ABOVE posture.
+    //
+    // Sec.29.6 measured the v6 arm swinging 111 deg peak-to-peak at the
+    // shoulder roll and dragging pitch and elbow to 64/26 deg with it, where
+    // every pre-v6 model and `v6fixed` sit at 2-10 deg. The posture level is
+    // the only thing regulating any of it, and it runs at one uniform gain
+    // BELOW swing -- for the legs that is harmless because the contact/CoM/
+    // swing tasks pin them anyway, and for an arm in every one of those
+    // tasks' null space it is the whole budget.
+    //
+    // NOT free, though it looked like it should be: the arms carry no load, so
+    // a level of their own reads like it can only take null space nothing else
+    // wanted. Measured (Sec.30.3), the same task on v4 -- a model with no
+    // shoulder roll and no problem -- costs 22/28 -> 16/28. On v6 it is a net
+    // win only because the flailing was costing more than the level does.
+    // Default OFF for that reason.
+    let arm_hold = cfg.arm.hold;
+    // WHICH arm rows to hold. Holding all of them keeps a commanded pose but
+    // costs the top lateral rung: at VY=0.073 the held arm survives 1 of 16
+    // probes where the free arm survives 16 (Sec.38). The free arm keeps the
+    // guard's SHAPE anyway -- measured, the elbow sits at -128 deg against a
+    // -130 seed and travels 23 deg, while the shoulder swings 132 deg about
+    // its seed. So the shoulder swing is what the walk wants and the elbow
+    // fold is what the guard wants, and they are separable.
+    //   all      -- shoulder + elbow (what Sec.30 measured)
+    //   elbow    -- fold held, shoulder free to swing
+    //   shoulder -- the opposite, for symmetry of the experiment
+    let arm_hold_joints = cfg.arm.hold_joints.clone();
+    // 0 = translation, 1 = +yaw, 2 = full pose, 3 = XYZ+roll+pitch (no yaw).
+    let stair_absolute_td = cfg.swing.absolute_td;
+    // STAIR_ABSOLUTE_TD_DESC=1: the surveyed-tread touchdown height for
+    // DESCENDING swings only. Measured 2026-10-19 with the acceleration
+    // feedforward (which tracks the target to a few mm): a descent target
+    // built from the lift-off height sits 6 cm above the lower tread when
+    // the foot lifted off hovering, the precise swing then never touches and
+    // the 60 mm round trip falls; the absolute height fixes that, but on
+    // the 80 mm ascent's top landing it costs the run (foot lands 4-10 cm
+    // short, the 4-step 80 mm ascent 48 -> fall). Descent-only keeps both.
+    let stair_absolute_td_desc = cfg.swing.absolute_td_desc;
+    // Full per-foot wrench MPC for the three-phase stair transfer.
+    // Opt-in until the fixed-arm staircase benchmark has been revalidated.
+    // Command the swing to the ANKLE pose the footstep plan implies, rather
+    // than to the sole pose directly. See the use site for the measurement.
+    let stair_td_sole_frame = cfg.swing.td_sole_frame;
+    let com_replan = cfg.com_plan.replan;
+    let step_dz_swing_min = cfg.swing.step_dz_min;
+    let stair_swing_ff = cfg.swing.stair_ff;
+    let lift_h = cfg.swing.lift_h;
+    // (CONTACT_FZ_RATE, a load-split damper on the measured normal force,
+    // was FALSIFIED -- worse than undamped at every weight -- and is
+    // removed, as is DS_FZ_FLOOR_WEIGHT / _BW, a soft double-support load
+    // floor that was not adopted.)
+    let stair_swing_windows = cfg.swing.stair_windows;
+    // (STAIR_DESC_MIN, riding the lower of the two soles down a descent, and
+    // STAIR_CROUCH, a fixed crouch on stairs, were opt-in and are removed.)
+    // Phase windows of the stair swing, `rise_end,travel_start,travel_end,
+    // drop_start` (see gait::stair_swing_windows). The default is the
+    // shipped profile.
+    // Landing overdrive of the stair swing (metres COMMANDED below the
+    // surface). See gait::stair_swing_sink.
+    let stair_td_sink = cfg.swing.td_sink;
+    let stair_land_sink = cfg.swing.land_sink;
+    // Controlled ablation: retain the cubic profile and add its analytic acceleration.
+    let tracking_cubic_ff = cfg.swing.tracking_cubic_ff;
+    let swing_z_hold = cfg.swing.z_hold;
+    let swing_z_hold_min_dur = cfg.swing.z_hold_min_dur;
+    let swing_z_drop = cfg.swing.z_drop;
+    // (STAIR_DESC_TOE, a toe-first descent landing, and SWING_TOE_UP / _W,
+    // the toe lifted through every swing, were not adopted and are removed.)
+    // SWING_XY_DELAY / SWING_Z_HOLD / SWING_Z_DROP: ROUGH_MODE sets them.
+    let swing_xy_delay = cfg.swing.xy_delay;
+    let push_replan_trig = cfg.push_replan.trig;
+    let push_replan_hold = cfg.push_replan.hold;
+    // MPC_FOOTSTEP_CROSS_HOLD_Z [m]: while crossing, hold the swing foot at
+    // least this high above its landing until it is within
+    // MPC_FOOTSTEP_CROSS_HOLD_XY [m] of the landing horizontally. Measured
+    // 2026-10-20: with the crossing landing fixed the foot still came down on
+    // the nominal clock 5 cm short of it (the lateral travel lags), touched
+    // at y +0.01 and slid. The landing check then extends the single support
+    // (LandingTiming) instead of the foot landing short. 0 = off.
+    let mpc_footstep_cross_hold_z = cfg.mpc_cross.hold_z;
+    let mpc_footstep_cross_hold_xy = cfg.mpc_cross.hold_xy;
+    let ref_swing = cfg.recovery.swing;
+    let tracking_ff_scale = cfg.swing.tracking_ff_scale;
+    // Swing. kp is split by axis: z is clearance and must not scuff, x/y is
+    // placement, and while the stance leg is paying the reaction for both it
+    // is x/y that can afford to be soft. Holding the swing foot's world x,y
+    // HARD is what toppled the single-leg experiment (section 4.2) -- there
+    // the target was frozen while the body translated 70 mm, which is a
+    // kinematic conflict. Here the target is a planned footstep, so the
+    // conflict is gone in principle; the split gain is how much that is
+    // trusted in practice.
+    let kp_sw_z = cfg.swing.kp;
+    let kd_sw = cfg.swing.kd;
+    // TERRAIN_PITCH=1: on a known slope the swing foot's orientation target
+    // is pitched to the surface at its landing (toe up on an upslope) and
+    // pitch is tracked (SwingAxes::XyzRollPitch). A level sole meets a 5 deg
+    // slope on its toe or heel only (measured 2026-10-15: the sole centre
+    // hovered 7 mm above the surface with no load, then the stance rolled).
+    // Off = shipped, bit-identical.
+    let terrain_pitch = cfg.slope.terrain_pitch;
+    let terrain_pitch_yaw = cfg.slope.terrain_pitch_yaw;
+    let kp_sw_rot = cfg.swing.kp_rot;
+    let kd_sw_rot = cfg.swing.kd_rot;
+    let (dt, total_mass) = (k.dt, k.total_mass);
+    let robot = k.robot;
+    let prof = &robot.prof;
+    let stairs = k.stairs;
+    let (wz, t_step, gp) = (k.wz, k.t_step, k.gp);
+    let wrench_mpc_apply = k.wrench_mpc_apply;
+    let (jab, jab_start, jab_period, jab_pattern) = (k.jab, k.jab_start, k.jab_period, k.jab_pattern);
+    let (jab_pitch, jab_elbow) = (k.jab_pitch, k.jab_elbow);
+    let (kp_sw_xy, tracking_ff_riser_ok) = (k.kp_sw_xy, k.tracking_ff_riser_ok);
+    // Rotate the nominal foot orientation to a planned yaw. A turn moves the
+    // footstep AND the direction the foot points; commanding the original
+    // orientation would land the foot square to the world under a turned body.
+    let foot_rot_at = |side: usize, yaw: f64| -> na::Matrix3<f64> {
+        let d = yaw - k.foot_rot0[side][(1, 0)].atan2(k.foot_rot0[side][(0, 0)]);
+        na::Rotation3::from_euler_angles(0.0, 0.0, d).matrix() * k.foot_rot0[side]
+    };
+    let st = obs_state(obs);
+    let (q, v, v_dvec, data) = (&st.q, &st.v, &st.v_dvec, &st.data);
+    let (support, slice, slice_frac, slice_idx) = (sup.support, sup.slice, sup.slice_frac, sup.slice_idx);
+    let (steps, swing_rot_mode) = (&sup.steps, sup.swing_rot_mode);
+    let (xi, r) = (dcm.xi, &dcm.r);
+    let (p_cmd, zmp_deficit) = (*p_cmd, *zmp_deficit);
+
+    // ---- P2: trunk upright -----------------------------------------
+    let j_trunk =
+        misarta::jacobian::compute_joint_jacobian_from_data(&robot.model, q, data, robot.trunk_mi);
+    let dj_trunk = misarta::jacobian::compute_joint_jacobian_time_derivative(
+        &robot.model,
+        q,
+        v,
+        robot.trunk_mi,
+    );
+    let djv_trunk = &dj_trunk * v_dvec;
+    let (roll, pitch, trunk_quat, trunk_omega_w) = if robot.trunk_from_base {
+        let (r, p, _) = st.body_quat.euler_angles();
+        (r, p, st.body_quat, st.v_ang_w)
+    } else {
+        let rot = misarta::se3::rotation_matrix(&data.oMi[robot.trunk_mi]);
+        let omega = j_trunk.rows(0, 3) * v_dvec;
+        let rotation = na::Rotation3::from_matrix_unchecked(rot);
+        (
+            rotation[(2, 1)].atan2(rotation[(2, 2)]),
+            (-rotation[(2, 0)]).asin(),
+            na::UnitQuaternion::from_rotation_matrix(&rotation),
+            [omega[0], omega[1], omega[2]],
+        )
+    };
+    let _ = (roll, pitch);
+    // Yaw error against the pose the plan was built in, not against the
+    // last tick: the reference is a fixed world direction.
+    // Trunk yaw follows the PLAN, not the initial heading.
+    //
+    // Regulating to `yaw0` with a zero rate reference is right for
+    // straight walking -- it is what stopped the legs twisting to their
+    // hip_yaw stops -- and it makes turning impossible, because the task
+    // then fights the commanded turn directly. Measured: every turn
+    // command in the benchmark fell, down to 0.05 rad/s. The planned
+    // heading is the mean of the two footstep yaws, which already carries
+    // the stride ramp.
+    // WHEN the body turns matters as much as how much.
+    //
+    // Yawing during SINGLE support has to be paid for out of the stance
+    // sole's torsional friction -- mu_torsion 0.05 against 65 N is
+    // 3.25 N*m, on a 38 mm-wide foot. Yawing during DOUBLE support is paid
+    // for by a couple between two feet 99.4 mm apart, which is a different
+    // order of authority. So hold the heading through single support and
+    // turn while both feet are down.
+    //
+    // `at_slice(i)` already has the swing foot at its LANDING yaw, so
+    // reading it during single support asks the trunk to rotate before the
+    // foot that will carry the rotation is even down.
+    let yaw_plan = {
+        let mean = |i: usize| {
+            let y = plan.footsteps.at_slice(i).yaw;
+            0.5 * (y[0] + y[1])
+        };
+        let prev = mean(slice_idx.saturating_sub(1));
+        if !turn_in_ds {
+            mean(slice_idx)
+        } else if matches!(support, Support::Single { .. }) {
+            prev
+        } else {
+            // Rotate across the double support.
+            prev + (mean(slice_idx) - prev) * slice_frac
+        }
+    };
+    // Rate reference follows the same shape as the heading: zero while a
+    // single foot is carrying the robot, the whole turn compressed into DS.
+    let wz_ref = if turn_in_ds {
+        if matches!(support, Support::Single { .. }) {
+            0.0
+        } else {
+            wz * (t_step / gp.t_ds.max(1e-6))
+        }
+    } else {
+        wz
+    };
+    // Now an absolute target heading -- trunk_ori_ref forms the error.
+    let yaw_ref = trunk_yaw.then_some(yaw_plan);
+    // One world-frame rotation-vector error for all three rows. The
+    // roll/pitch rows are frame-correct at any heading this way; the old
+    // Euler form silently rotated its own correction away.
+    let ori = bt::trunk_ori_ref(
+        &trunk_quat,
+        yaw_ref,
+        &trunk_omega_w,
+        bt::TrunkGains {
+            kp: kp_trunk,
+            kd: kd_trunk,
+            deadband: 0.0,
+            sign: trunk_sign,
+            kp_yaw,
+            kd_yaw,
+            wz_ref,
+        },
+    );
+    let rp_ref = [ori[0], ori[1]];
+
+    // ---- centroidal angular momentum --------------------------------
+    //
+    // `A_G` and `Ȧ_G v` are recomputed here rather than cached: the CMM is
+    // a function of q, and this loop's whole point is that q moves.
+    let coupled_active = stair_wrench_mpc
+        && stair_wrench_coupled
+        && wrench_mpc_apply
+        && ctl.wrench_mpc_command.is_some()
+        && nc > 0;
+    let mom = if use_mom || coupled_active {
+        let cmm = cent.cmm();
+        let dcmm_v = cent.dcmm_v();
+        let h_now = cmm * v_dvec;
+        // arms_neutral: 「腕が角運動量を生むな。脚の分には触るな」。
+        //
+        // 参照だけ差し替えるのでは表現できない ── ヤコビアンが全 CMM 行の
+        // ままだと、式は ḣ_total = -kp·h_arms という意味を成さない目的になる
+        // (実測: 腕の振れが 299.8 -> 318.2 deg と増えた)。腕の列だけを残した
+        // CMM を渡し、状態も腕の寄与だけにする。
+        //
+        // Ȧ·v の腕成分は直接得られないのでゼロとする。減衰型の目的としては
+        // 許容できる近似で、本来 A2 が h_ref(t) を供給すれば不要になる経路。
+        let arm_cols: Vec<usize> = robot
+            .actuated()
+            .into_iter()
+            .filter(|&(ji, _)| {
+                let n = &robot.joint_names[ji];
+                n.contains("shoulder") || n.contains("elbow") || n.contains("wrist")
+            })
+            .map(|(_, vi)| vi)
+            .collect();
+        let arms_neutral = mom_ref_mode == "arms_neutral" && !arm_cols.is_empty();
+        let (cmm_use, h_use, bias_use) = if arms_neutral {
+            let mut masked = na::DMatrix::zeros(cmm.nrows(), cmm.ncols());
+            for &vi in &arm_cols {
+                masked.set_column(vi, &cmm.column(vi));
+            }
+            let h_arm = &masked * v_dvec;
+            let zero = na::DVector::zeros(cmm.nrows());
+            (masked, h_arm, zero)
+        } else {
+            (
+                cmm.clone(),
+                h_now.clone(),
+                na::DVector::from_row_slice(dcmm_v.as_slice()),
+            )
+        };
+        // Zero references (MOM_REF_MPC, the MPC's planned rate as the
+        // reference, was not adopted and is removed); the arms-only DCM
+        // ask below is the one rate this task is given.
+        let h_ref = [0.0_f64; 3];
+        let mut dh_ref = [0.0_f64; 3];
+        if arms_neutral && mom_arm_dcm != 0.0 {
+            dh_ref[0] = (-mom_arm_dcm * (xi.y - r.xi.y))
+                .clamp(-mom_arm_dcm_max, mom_arm_dcm_max);
+        }
+        let dh_ref = dh_ref;
+        Some(MomRef {
+            cmm: cmm_use,
+            bias: bias_use,
+            h: h_use,
+            h_ref,
+            dh_ref,
+            kp: kp_mom,
+            axes: if coupled_active { [true; 3] } else { mom_axes },
+        })
+    } else {
+        None
+    };
+
+    // ---- hip strategy: centroidal moment pivot (MOM_CMP) --------------
+    let in_stair_zone = match &stairs {
+        Some(st) if st.riser.abs() > 0.005 => {
+            let x = steps.mid_xy().x;
+            (x >= st.start - stair_crouch_lead && x <= st.landing_start() + stair_crouch_tail)
+                || (st.down_n > 0
+                    && x >= st.landing_end() - stair_crouch_lead
+                    && x <= st.landing_end() + st.down_n as f64 * st.tread + stair_crouch_tail)
+        }
+        _ => false,
+    };
+    let cmp = if mom_cmp > 0.0
+        && !in_stair_zone
+        && zmp_deficit.norm() > mom_cmp_dead
+    {
+        let cmm = cent.cmm();
+        let dcmm_v = cent.dcmm_v();
+        let h_now = cmm * v_dvec;
+        let mg = total_mass * G;
+        let mut dh = [
+            (-mom_cmp_sign * mom_cmp * mg * zmp_deficit.y).clamp(-mom_cmp_max, mom_cmp_max),
+            (mom_cmp_sign * mom_cmp * mg * zmp_deficit.x).clamp(-mom_cmp_max, mom_cmp_max),
+            0.0,
+        ];
+        for a in 0..2 {
+            if mom_cmp_hmax > 0.0 && h_now[a].abs() > mom_cmp_hmax && dh[a] * h_now[a] > 0.0 {
+                dh[a] = 0.0;
+            }
+            dh[a] -= mom_cmp_kh * h_now[a];
+        }
+        stats.n_mom_cmp_ticks += 1;
+        stats.mom_cmp_peak = stats.mom_cmp_peak.max(dh[0].abs()).max(dh[1].abs());
+        Some(CmpRef {
+            bias: na::DVector::from_row_slice(dcmm_v.as_slice()),
+            h_ref: [h_now[0], h_now[1], h_now[2]],
+            h: h_now,
+            dh,
+        })
+    } else {
+        None
+    };
+
+    // ---- arm hold ----------------------------------------------------
+    //
+    // Same task as posture, restricted to the arm rows. Rows outside the
+    // filter stay all-zero with a zero reference, i.e. `0 = 0`, which the
+    // solver satisfies for free -- so this really is "posture, arms only,
+    // at its own gain".
+    // Jab. The arm-hold reference stops being the seed and becomes a
+    // function of time for ONE arm at a time, out and back along a raised
+    // cosine so the reversal has no corner.
+    //
+    // The punching arm needs its ELBOW driven too, and Sec.38 measured that
+    // holding both rows of both arms costs four cells. So the elbow is
+    // added to the held set only for the arm that is currently punching,
+    // and only while it is: the other arm keeps whatever
+    // `ARM_HOLD_JOINTS` asked for.
+    let (jab_side, jab_a) = if jab && t >= jab_start {
+        let ph = (t - jab_start) / jab_period;
+        let idx = ph.floor().max(0.0) as usize;
+        let side = if jab_pattern
+            .chars()
+            .nth(idx % jab_pattern.chars().count())
+            .is_some_and(|c| c.eq_ignore_ascii_case(&'l'))
+        {
+            0
+        } else {
+            1
+        };
+        (Some(side), 0.5 * (1.0 - (2.0 * PI * ph.fract()).cos()))
+    } else {
+        (None, 0.0)
+    };
+    let arm = if arm_hold {
+        let jab_names: Option<(&str, &str)> = jab_side.map(|s| {
+            if s == 0 {
+                ("left_shoulder_pitch_joint", "left_elbow_joint")
+            } else {
+                ("right_shoulder_pitch_joint", "right_elbow_joint")
+            }
+        });
+        let arms: Vec<(usize, usize)> = robot
+            .actuated()
+            .into_iter()
+            .filter(|&(ji, _)| {
+                let n = robot.joint_names[ji].as_str();
+                let base = match arm_hold_joints.as_str() {
+                    "elbow" => n.contains("elbow"),
+                    "shoulder" => n.contains("shoulder"),
+                    _ => n.contains("shoulder") || n.contains("elbow"),
+                };
+                base || jab_names.is_some_and(|(_, e)| n == e)
+            })
+            .collect();
+        // Reference = the seed, with the punching arm's two rows swept
+        // toward the extended pose.
+        let mut q_ref = robot.q_seed.clone();
+        if let Some((sh, el)) = jab_names {
+            for (name, target) in [(sh, jab_pitch), (el, jab_elbow)] {
+                if let Some(&ji) = robot.joint_map.get(name) {
+                    q_ref[ji] += jab_a * (target - q_ref[ji]);
+                }
+            }
+        }
+        (!arms.is_empty()).then(|| ArmRef { arms, q_ref })
+    } else {
+        None
+    };
+    // ---- lowest: gravity comp + the load split the ZMP implies -------
+    let tau_gravity = robot.gravity_torque(q);
+    // Split the nominal load so that the net CoP lands where the DCM
+    // controller asked for it. Projecting p_cmd onto the line between the
+    // sole centres generalises the y-interpolation the standing version
+    // used, and it is the same argument: an equal-share target makes the
+    // regulariser walk the CoP outward instead of transferring load.
+    let shares: Vec<f64> = match nc {
+        2 => {
+            let s0 = steps.xy(0);
+            let s1 = steps.xy(1);
+            let d = s0 - s1;
+            let a = if d.norm_squared() > 1e-12 {
+                ((p_cmd - s1).dot(&d) / d.norm_squared()).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            vec![a * ramp.load_share(stance[0]), (1.0 - a) * ramp.load_share(stance[1])]
+        }
+        _ => vec![1.0; nc],
+    };
+
+    // ---- P3: the foot that is NOT in contact ------------------------
+    //
+    // EVERY foot outside the contact set needs a Cartesian task. A foot
+    // that is in neither is unconstrained except by the weak posture
+    // level, and the QP will happily use the free leg as a reaction mass
+    // for the CoM task: measured, a foot that had just landed was flung
+    // to 80 mm and stayed there for a second while the robot toppled on
+    // the other leg. "The schedule says double support" is not a task.
+    let free_side: Option<usize> = (0..2).find(|s| !stance_sides.contains(s));
+    let mut swing_tgt = na::Vector3::zeros();
+    let mut swing_cmd_acc_z = 0.0_f64;
+    let swing = match (free_side, ctl.swing_lift_off) {
+        (None, _) => None,
+        // The scheduled swing, following its planned arc.
+        (Some(side), Some(lift_off))
+            if support.swing() == Some(side) =>
+        {
+            let mi = robot.foot_mi[side];
+            let jf =
+                misarta::jacobian::compute_joint_jacobian_from_data(&robot.model, q, data, mi);
+            let djf =
+                misarta::jacobian::compute_joint_jacobian_time_derivative(&robot.model, q, v, mi);
+            let djv = &djf * v_dvec;
+            let pos = misarta::se3::translation(&data.oMi[mi]);
+            let vel3 = &jf.rows(3, 3).into_owned() * v_dvec;
+            let vel = na::Vector3::new(vel3[0], vel3[1], vel3[2]);
+            // Land on the PLANNED footstep. Its z stays the lift-off z
+            // rather than the plan's: the ground is flat, so they agree to
+            // within a millimetre, and using the measured one keeps a foot
+            // that started slightly high from being driven into the floor.
+            // With stride 0 this is exactly "land where you took off".
+            let plan_xy = plan.footsteps.at_slice(slice_idx).sole[side];
+            // On stairs the surfaces differ in height; carry the CHANGE
+            // in surface height on top of the measured lift-off z, so a
+            // foot that started a few millimetres high keeps its offset
+            // instead of being driven into the tread. Flat ground makes
+            // dz zero and this is exactly the old `lift_off.z`.
+            // The plan's own height change decides "descending" for the
+            // descent-only absolute target (the measured-lift-off form
+            // of dz is what it replaces, so it cannot be read first).
+            let plan_dz_sign = stairs
+                .as_ref()
+                .map_or(0.0, |st| st.h(plan_xy.x) - st.h(lift_off.x));
+            let dz = if (stair_absolute_td || (stair_absolute_td_desc && plan_dz_sign < -1e-9)) && stairs.is_some() {
+                plan_xy.z - plan.footsteps.at_slice(slice_idx.saturating_sub(1)).sole[side].z
+            } else {
+                stairs
+                    .as_ref()
+                    .map_or(0.0, |st| st.h(plan_xy.x) - st.h(lift_off.x))
+            };
+            let touch_down = if (stair_absolute_td || (stair_absolute_td_desc && dz < -1e-9)) && dz.abs() > 1e-9 {
+                // The target is a surveyed tread, not the measured height
+                // of the previous (possibly rocking) foot plus a riser.
+                let offset = foot_rot_at(side, plan.footsteps.at_slice(slice_idx).yaw[side])
+                    * na::Vector3::new(prof.sole_centre_x, 0.0, -prof.sole_below_origin);
+                plan_xy - offset
+            } else {
+                // `plan_xy` is the SOLE centre; the swing task tracks the
+                // ANKLE. On a robot whose sole centre sits under the ankle
+                // the two coincide and the difference is exactly zero --
+                // kyo46rs has `sole_centre_x: 0.0`. G1 has 0.035, so the
+                // swing is commanded 35 mm beyond where the footstep plan
+                // wants the sole, and the landing check (which compares
+                // sole to sole, `preview.rs`) sees that as a miss it can
+                // never confirm: measured 2026-09-21, the sole lands 62 mm
+                // long against a 12 mm tolerance and the stair transfer
+                // therefore never arms.
+                //
+                // `STAIR_ABSOLUTE_TD` already subtracts this offset, but it
+                // also switches z from "lift-off height plus riser" to the
+                // surveyed tread, and that second change is what fells the
+                // G1 approach (measured: x = 0.21 m). This knob is the
+                // frame correction ALONE, in xy -- z is already an ankle
+                // height here, being lift-off plus a surface delta.
+                // OPT-IN: zero on kyo46rs either way, so the default keeps
+                // every existing result bit-identical.
+                let mut td = na::Vector3::new(plan_xy.x, plan_xy.y, lift_off.z + dz);
+                if stair_td_sole_frame {
+                    let off = foot_rot_at(side, plan.footsteps.at_slice(slice_idx).yaw[side])
+                        * na::Vector3::new(prof.sole_centre_x, 0.0, 0.0);
+                    td.x -= off.x;
+                    td.y -= off.y;
+                }
+                td
+            };
+            // Flat ground keeps the shipped arc. A stair swing cannot:
+            // its xy smoothstep advances while the sin^2 bump is still
+            // low, and the TOE (sole half-length ahead of the centre)
+            // reaches the riser FACE a few percent into the swing --
+            // watched in render, the toe slams the wall at ~5 mm of
+            // lift and the "climb" lands at the riser's base. So climb
+            // in phases instead: rise to clearance FIRST, translate at
+            // height, drop onto the tread last. Each phase edge uses
+            // smoothstep, so velocity is zero at every joint and the
+            // feedforward stays continuous.
+            let (swing_fraction, swing_duration) = if com_replan {
+                plan.landing
+                    .clock
+                    .filter(|(i, _, _)| *i == slice_idx)
+                    .map(|(_, start, duration)| {
+                        (((t - start) / duration).clamp(0.0, 1.0), duration)
+                    })
+                    .unwrap_or((slice_frac, slice.duration()))
+            } else {
+                (slice_frac, slice.duration())
+            };
+            let (mut tgt, mut tgt_v, tgt_a) =
+                if dz.abs() > step_dz_swing_min && stair_swing_ff {
+                    articara::biped::gait::stair_swing_sink(
+                        lift_off,
+                        touch_down,
+                        lift_h,
+                        swing_fraction,
+                        swing_duration,
+                        stair_swing_windows,
+                        stair_td_sink,
+                    )
+                } else if dz.abs() > 1e-9 {
+                    let f = swing_fraction;
+                    let dur = swing_duration;
+                    let ss = |u: f64| -> (f64, f64) {
+                        let u = u.clamp(0.0, 1.0);
+                        (u * u * (3.0 - 2.0 * u), 6.0 * u * (1.0 - u))
+                    };
+                    let z_max = lift_off.z.max(touch_down.z) + lift_h;
+                    // rise [0,0.30] -> travel [0.25,0.70] -> drop [0.60,0.95].
+                    // The drop OVERSHOOTS the surface by a few millimetres
+                    // and ends before the slice does: a profile that arrives
+                    // exactly at the tread with exactly zero velocity at
+                    // frac = 1.0 leaves no margin for tracking lag, and the
+                    // measured result was a foot still hovering when the
+                    // schedule declared double support -- the anchor then
+                    // slams it down (197 N spike) and the step after dies.
+                    // How far INTO the tread the default stair swing aims.
+                    // Historically 4 mm. Measured 2026-09-24: with 4 mm the
+                    // foot rests on the tread carrying a median of 10 N for
+                    // 1.4-2.8 s (the task still holds the leg's weight) and
+                    // the landing gate (17 N) is met only by impact chatter;
+                    // the feed-forward profile with 15 mm loaded it at
+                    // 102 N within 0.07 s. Knob so the depth can be set on
+                    // THIS profile; default reproduces the constant.
+                    let z_land = touch_down.z - stair_land_sink;
+                    let (su, dsu) = ss((f - 0.25) / 0.45);
+                    let (ru, dru) = ss(f / 0.30);
+                    let (du, ddu) = ss((f - 0.60) / 0.35);
+                    let xy = lift_off.xy() + (touch_down.xy() - lift_off.xy()) * su;
+                    let z = lift_off.z + (z_max - lift_off.z) * ru + (z_land - z_max) * du;
+                    let vxy = (touch_down.xy() - lift_off.xy()) * (dsu / 0.45 / dur);
+                    let vz = (z_max - lift_off.z) * (dru / 0.30 / dur)
+                        + (z_land - z_max) * (ddu / 0.35 / dur);
+                    (
+                        na::Vector3::new(xy.x, xy.y, z),
+                        na::Vector3::new(vxy.x, vxy.y, vz),
+                        if tracking_cubic_ff && tracking_ff_riser_ok {
+                            // Exact second derivative of the unchanged cubic profile.
+                            let dd = |u: f64, span: f64| {
+                                if u > 0.0 && u < 1.0 {
+                                    (6.0 - 12.0 * u) / (span * dur).powi(2)
+                                } else {
+                                    0.0
+                                }
+                            };
+                            let axy =
+                                (touch_down.xy() - lift_off.xy()) * dd((f - 0.25) / 0.45, 0.45);
+                            let az = (z_max - lift_off.z) * dd(f / 0.30, 0.30)
+                                + (z_land - z_max) * dd((f - 0.60) / 0.35, 0.35);
+                            na::Vector3::new(axy.x, axy.y, az)
+                        } else {
+                            na::Vector3::zeros()
+                        },
+                    )
+                } else {
+                    let mut pos0 = swing_position(
+                        lift_off,
+                        touch_down,
+                        lift_h,
+                        swing_fraction,
+                    );
+                    let mut vel0 = swing_velocity(
+                        lift_off,
+                        touch_down,
+                        lift_h,
+                        swing_fraction,
+                        swing_duration,
+                    );
+                    // Level swings only: a swing that changes height
+                    // (the shipped arc interpolates z linearly under its
+                    // bump) would hold the apex and drop the whole change
+                    // in the last 35% -- measured 2026-10-15, the 100 mm
+                    // descent stomped at 1376 N and fell on every member.
+                    // ... and only away from known stairs: inside the
+                    // stair zone the validated stair machinery (landing
+                    // clocks, descent lead) owns the swing; with the hold
+                    // active there the 100 mm descent started its swing
+                    // 20 cm ahead of the foot and fell on every member.
+                    // ... and only for a swing on its NOMINAL clock: a
+                    // push retimes the swing shorter, and the held apex
+                    // then has to come down in the last 35% of a short
+                    // swing. Measured 2026-10-16 on the 24 worst backward
+                    // and lateral push members: hold unconditional 17 -> 11,
+                    // start delay alone 17 -> 17 (SWING_Z_HOLD_MIN_DUR,
+                    // fraction of the nominal single support; 0 = always).
+                    if swing_z_hold
+                        && !in_stair_zone
+                        && (touch_down.z - lift_off.z).abs() < 0.02
+                        && swing_duration >= swing_z_hold_min_dur * gp.t_ss
+                    {
+                        // SWING_Z_HOLD: the three-phase z of
+                        // STAIR_SWING_PROFILE (rise [0,0.30] to the apex,
+                        // hold, drop [0.60,0.95]) with the SHIPPED xy.
+                        // Measured 2026-10-15 on the unmodelled-bump bench
+                        // (joint-sum foot pitch): the swing foot hangs
+                        // 20 deg toe-down, so with the sin^2 lift the toe
+                        // is ~1 cm up when it reaches a 16 mm edge; the
+                        // three-phase lift is at 5 cm before x moves and
+                        // clears. Its compressed xy is what cost the push
+                        // family (326 -> 235), so only z is taken.
+                        let f = swing_fraction;
+                        let dur = swing_duration.max(1e-6);
+                        let ss = |u: f64| -> (f64, f64) {
+                            let u = u.clamp(0.0, 1.0);
+                            (u * u * (3.0 - 2.0 * u), 6.0 * u * (1.0 - u))
+                        };
+                        let z_max = lift_off.z.max(touch_down.z) + lift_h;
+                        // SWING_Z_DROP="d0,d1": the drop window (default
+                        // 0.60..0.95 as in the three-phase profile; 1.0
+                        // lands on the slice end like the shipped arc).
+                        let (d0, d1) = (swing_z_drop[0], swing_z_drop[1].max(swing_z_drop[0] + 0.05));
+                        let (ru, dru) = ss(f / 0.30);
+                        let (du, ddu) = ss((f - d0) / (d1 - d0));
+                        pos0.z = lift_off.z + (z_max - lift_off.z) * ru + (touch_down.z - z_max) * du;
+                        vel0.z = (z_max - lift_off.z) * (dru / 0.30 / dur)
+                            + (touch_down.z - z_max) * (ddu / (d1 - d0) / dur);
+                    }
+                    if swing_xy_delay > 0.0 {
+                        // (SWING_XY_END, ending the horizontal motion
+                        // before 1, is removed.)
+                        // SWING_XY_DELAY: hold the horizontal motion for
+                        // the first `delay` of the swing while the shipped
+                        // sin^2 lift runs, then smoothstep the xy over the
+                        // rest. The unmodelled-bump bench measured the
+                        // toe catching a 15 mm edge as soon as the swing
+                        // starts (x advances before z has risen); the
+                        // three-phase STAIR_SWING_PROFILE fixes that but
+                        // costs the push family 326 -> 235 (2026-10-15).
+                        // This keeps the lift and landing timing as
+                        // shipped. 0 = off (bit-identical).
+                        let d = swing_xy_delay;
+                        let e = 1.0_f64.max(d + 0.05);
+                        let u = ((swing_fraction - d) / (e - d)).clamp(0.0, 1.0);
+                        let s_ = (3.0 - 2.0 * u) * u * u;
+                        let ds = 6.0 * u * (1.0 - u) / ((e - d) * swing_duration.max(1e-6));
+                        let dxy = touch_down.xy() - lift_off.xy();
+                        pos0.x = lift_off.x + dxy.x * s_;
+                        pos0.y = lift_off.y + dxy.y * s_;
+                        vel0.x = dxy.x * ds;
+                        vel0.y = dxy.y * ds;
+                    }
+                    (pos0, vel0, na::Vector3::zeros())
+                };
+            let replan_hold = push_replan_trig > 0.0
+                && ctl.push_replan_slice == Some(slice_idx)
+                && ctl.push_replan_shift > push_replan_hold;
+            // 0.05: the default of PUSH_REPLAN_HOLD_Z (removed; the
+            // champion turns the hold off with PUSH_REPLAN_HOLD=10).
+            let hold_z = if replan_hold { 0.05 } else { mpc_footstep_cross_hold_z };
+            if hold_z > 0.0
+                && (replan_hold || ctl.mpc_fs_cross_latched.is_some_and(|(ci, _)| ci == slice_idx))
+            {
+                let foot = misarta::se3::translation(&data.oMi[robot.foot_mi[side]]);
+                if (touch_down.xy() - foot.xy()).norm() > mpc_footstep_cross_hold_xy {
+                    let hold = touch_down.z + hold_z;
+                    if tgt.z < hold {
+                        tgt.z = hold;
+                        tgt_v.z = tgt_v.z.max(0.0);
+                    }
+                }
+            }
+            if let Some(mode) = ctl.ref_mode
+                && let Some(lib) = &ctl.ref_lib
+                && ref_swing
+            {
+                // Follow the reference's sole trajectory for this foot
+                // (the reference's right foot is the one that swings
+                // first). Ankle target = sole centre minus the sole offset.
+                let ref_side = if side == mode.stance { 0 } else { 1 };
+                // The CoM dynamics ran on during the detection delay, but
+                // the swing foot did not: compress the first swing's path
+                // into the time that remains instead of skipping its start.
+                let elapsed = t - mode.t0;
+                let first = (lib.phases[0] - mode.tau0).max(0.05);
+                let warp = if ref_side == 1 && elapsed < first { lib.phases[0] / first } else { 1.0 };
+                let tau = if ref_side == 1 && elapsed < first { elapsed * warp } else { elapsed + mode.tau0 };
+                let sole_w = mode.world(lib, lib.sole_at(ref_side, tau));
+                let sole_w1 = mode.world(lib, lib.sole_at(ref_side, tau + dt * warp));
+                let offset = foot_rot_at(side, plan.footsteps.at_slice(slice_idx).yaw[side])
+                    * na::Vector3::new(prof.sole_centre_x, 0.0, -prof.sole_below_origin);
+                tgt = sole_w - offset;
+                tgt_v = (sole_w1 - sole_w) / dt;
+            }
+            if plan.landing.probe_depth > 0.0
+                && plan.landing.clock.is_some_and(|(ci, _, _)| ci == slice_idx)
+            {
+                tgt.z -= plan.landing.probe_depth;
+            }
+            swing_tgt = tgt;
+            swing_cmd_acc_z = tgt_a.z * tracking_ff_scale
+                + kp_sw_z * (tgt.z - pos.z)
+                + kd_sw * (tgt_v.z - vel.z);
+            let om3 = &jf.rows(0, 3).into_owned() * v_dvec;
+            // The task itself is built with the other levels (phase 11);
+            // here its targets, axes and orientation target, in the
+            // order the call evaluated them.
+            // (STAIR_RISE_SOLE_POSE / _MIN_DZ, roll and pitch held
+            // through a height-changing swing, were opt-in -- the
+            // champion sets 0 -- and are removed.)
+            let axes = if terrain_pitch
+                && stairs.as_ref().is_some_and(|st| st.pitch_at(plan.footsteps.at_slice(slice_idx).sole[side].x) != 0.0)
+            {
+                // TERRAIN_PITCH_YAW=1: keep the walking default's yaw
+                // and add pitch only, roll free (see SwingAxes::XyzYawPitch).
+                if terrain_pitch_yaw { bt::SwingAxes::XyzYawPitch } else { bt::SwingAxes::XyzRollPitch }
+            } else {
+                match swing_rot_mode {
+                    0 => bt::SwingAxes::Xyz,
+                    2 => bt::SwingAxes::Pose,
+                    3 => bt::SwingAxes::XyzRollPitch,
+                    _ => bt::SwingAxes::XyzYaw,
+                }
+            };
+            let rot = {
+                let mut rot_tgt =
+                    foot_rot_at(side, plan.footsteps.at_slice(slice_idx).yaw[side]);
+                if terrain_pitch && let Some(st) = &stairs {
+                    let th = st.pitch_at(plan.footsteps.at_slice(slice_idx).sole[side].x);
+                    if th != 0.0 {
+                        // Toe up by the slope angle: rotate about world y by -th.
+                        rot_tgt = na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), -th).matrix() * rot_tgt;
+                    }
+                }
+                Some((
+                    misarta::se3::rotation_matrix(&data.oMi[mi]),
+                    rot_tgt,
+                    na::Vector3::new(om3[0], om3[1], om3[2]),
+                    kp_sw_rot,
+                    // (LAND_KD_ROT_BOOST, a multiplier through a stair
+                    // swing's drop phase, defaulted to 1 and is removed.)
+                    kd_sw_rot,
+                ))
+            };
+            let acc = tgt_a * tracking_ff_scale;
+            Some(SwingRef { jf, djv, pos, vel, tgt, tgt_v, kp_xy: kp_sw_xy, kp_z: kp_sw_z, kd: kd_sw, axes, rot, acc: Some(acc) })
+        }
+        // Out of contact for any other reason -- it has not re-established
+        // yet, or it bounced. Put it back on its planned footstep. The
+        // target is the foot LINK origin, which sits `sole_below_origin`
+        // above the sole.
+        (Some(side), _) => {
+            let mi = robot.foot_mi[side];
+            let jf =
+                misarta::jacobian::compute_joint_jacobian_from_data(&robot.model, q, data, mi);
+            let djf =
+                misarta::jacobian::compute_joint_jacobian_time_derivative(&robot.model, q, v, mi);
+            let djv = &djf * v_dvec;
+            let pos = misarta::se3::translation(&data.oMi[mi]);
+            let vel3 = &jf.rows(3, 3).into_owned() * v_dvec;
+            let vel = na::Vector3::new(vel3[0], vel3[1], vel3[2]);
+            let tgt = steps.sole[side] + na::Vector3::new(0.0, 0.0, prof.sole_below_origin);
+            swing_tgt = tgt;
+            swing_cmd_acc_z = kp_sw_z * (tgt.z - pos.z) - kd_sw * vel.z;
+            let om3 = &jf.rows(0, 3).into_owned() * v_dvec;
+            let axes = match swing_rot_mode {
+                0 => bt::SwingAxes::Xyz,
+                2 => bt::SwingAxes::Pose,
+                3 => bt::SwingAxes::XyzRollPitch,
+                _ => bt::SwingAxes::XyzYaw,
+            };
+            let rot = Some((
+                misarta::se3::rotation_matrix(&data.oMi[mi]),
+                foot_rot_at(side, plan.footsteps.at_slice(slice_idx).yaw[side]),
+                na::Vector3::new(om3[0], om3[1], om3[2]),
+                kp_sw_rot,
+                kd_sw_rot,
+            ));
+            Some(SwingRef { jf, djv, pos, vel, tgt, tgt_v: na::Vector3::zeros(), kp_xy: kp_sw_xy, kp_z: kp_sw_z, kd: kd_sw, axes, rot, acc: None })
+        }
+    };
+
+
+    TaskRefs {
+        j_trunk,
+        djv_trunk,
+        roll,
+        pitch,
+        rp_ref,
+        yaw_ref,
+        ori,
+        coupled_active,
+        mom,
+        cmp,
+        arm,
+        tau_gravity,
+        shares,
+        free_side,
+        swing,
+        swing_tgt,
+        swing_cmd_acc_z,
+    }
+}
+
+/// What phase 11 solved: the WBC's solution (its status set to `Degraded`
+/// when QP_BENCH_GATE rejected it) and its parts (`qddot`, the contact
+/// forces, the torques), the levels by name, the nominal contact forces, the
+/// contact level's per-slot sole selectors and its acceleration diagnostic,
+/// the swing level as solved (unweighted, for its residuals), what the trunk
+/// task asked for and got, and the QP's timing and checks.
+pub(crate) struct WbcOut {
+    pub sol: misa_wbc::Solution,
+    pub extracted: misa_wbc::Extracted,
+    pub level_names: Vec<&'static str>,
+    pub forces_nominal: na::DVector<f64>,
+    pub sole_sel: Vec<na::DMatrix<f64>>,
+    pub acc_dbg: [f64; 2],
+    pub p_swing_diag: Option<misa_wbc::Task>,
+    pub trunk_cmd_rp: [f64; 2],
+    pub trunk_acc_rp: [f64; 2],
+    pub qp_solve_ns: u128,
+    pub qp_check_ns: u128,
+    pub qp_capture_ns: u128,
+    pub qp_physical_violation: f64,
+    pub qp_reset: bool,
+    pub qp_rejected: bool,
+    pub degraded: bool,
+}
+
+/// Phase 11: the WBC's levels and the solve (S12 moves this to the
+/// `WbcStack`): the dynamics, the torque box, the joint-limit CBF, the
+/// contact level (managed contact, the slope heel cut; it bleeds the
+/// anchors), the CoM, trunk, momentum, MOM_CMP, arm hold, posture, the
+/// nominal forces (the MPC's wrenches through the contact selectors) and the
+/// regulariser, the swing; their order and weights; the solve, the physical
+/// gate, QP_DIAG_DIR. `wcfg` is the walker's Config, `cfg` the WBC's
+/// `SolveConfig`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn phase_wbc(
+    wbc_state: &mut WbcState,
+    diag: &mut DiagSinks,
+    ctl: &CtlState,
+    wcfg: &Config,
+    cfg: &SolveConfig,
+    k: &WalkerConsts,
+    obs: &Observation,
+    cent: &Centroidal,
+    sup: &SupportOut,
+    stance_sides: &Vec<usize>,
+    stance: &[usize],
+    nc: usize,
+    ramp: &LoadRamp,
+    a_com: &na::Vector3<f64>,
+    refs: &TaskRefs,
+    t: f64,
+) -> WbcOut {
+    let eom_hard = wcfg.wbc.eom_hard;
+    let jlim = wcfg.joint_limit.enabled;
+    let stair_wrench_mpc = wcfg.mpc.enabled;
+    let stair_managed_contact = wcfg.managed.on;
+    let stair_managed_tangent = wcfg.managed.tangent;
+    let stair_managed_rotation = wcfg.managed.rotation;
+    let stair_managed_az_max = wcfg.managed.az_max;
+    // (SWING_CAUTIOUS_ERR, STAIR_ANCHOR_FLAT and STAIR_ROLL_PATCH -- the
+    // latter two for the toe-first descent -- are removed.)
+    let slope_heel_cut = wcfg.slope.heel_cut;
+    let slope_heel_cut_max = wcfg.slope.heel_cut_max;
+    let kp_post = wcfg.gains.kp_post;
+    let kd_post = wcfg.gains.kd_post;
+    let mpc_sole_authority = wcfg.mpc.sole_authority;
+    let stair_wrench_blend = wcfg.mpc.blend;
+    let mom_cmp_w = wcfg.mom_cmp.w;
+    // Off inside a stair zone with a real riser (the flat harness's 0 mm
+    // stair does not count). Measured 2026-10-13 (N=48): the lean took the
+    // pushes 301 -> 326 but the descents 191 -> 166, 3-step 142 -> 101,
+    // the up-and-over 2/4 cm 48 -> 15 -- on a descent the pressure
+    // saturates by design and leaning on it breaks the step. Ascents and
+    // the flat were unchanged. (MOM_CMP_STAIRS, lean on stairs too, is
+    // removed.)
+    let use_trunk = wcfg.gains.trunk;
+    // Where the level sits in the stack. The task is an EQUALITY at its
+    // level, so `kp` does not control how much of the null space it takes --
+    // even `kp=0` still demands `ḣ_ang = 0`, i.e. "never change roll momentum",
+    // which a walk cannot honour. Placement is therefore the real knob:
+    //   `swing_before` / `swing_after` -- above posture, all authority
+    //   `post_after`                   -- below posture, only what is left
+    //   `post_merge`                   -- SAME level as posture, so the two
+    //                                     trade off inside one least-squares
+    //                                     instead of one strictly preceding
+    //                                     the other
+    let mom_level = wcfg.arm.mom_level.clone();
+    // Experimental priority: keep arm posture above swing (but below CoM/trunk).
+    // Default stays below swing; compare full closed-loop motion before adoption.
+    let arm_before_swing = wcfg.arm.before_swing;
+    let use_post = wcfg.gains.posture;
+    let debug = wcfg.debug;
+    let kp_arm = wcfg.arm.kp;
+    // (MOM_MERGE / ARM_MERGE, the momentum and arm tasks merged into the
+    // CoM level as weighted objectives in the BDI/IHMC manner, were not
+    // adopted: with the MPC's authority ARM_MERGE falls at once. Removed.)
+    let kd_arm = wcfg.arm.kd;
+    let (dt, total_mass) = (k.dt, k.total_mass);
+    let sole_half_l = k.sole_half_l;
+    let robot = k.robot;
+    let prof = &robot.prof;
+    let stairs = k.stairs;
+    let (nv, na_count) = (robot.nv, robot.na);
+    let (jlim_cfg, contact_cfg) = (k.jlim_cfg, k.contact_cfg);
+    let (qp_gate, weighted_levels, wrench_mpc_apply) = (k.qp_gate, k.weighted_levels, k.wrench_mpc_apply);
+    let tick = obs.tick;
+    let st = obs_state(obs);
+    let (q, v, v_dvec, data) = (&st.q, &st.v, &st.v_dvec, &st.data);
+    let (support, steps) = (sup.support, &sup.steps);
+    let lifting = ramp.lifting;
+    let load_share = |mi: usize| -> f64 { ramp.load_share(mi) };
+    let a_com = *a_com;
+    let (j_trunk, djv_trunk, rp_ref, yaw_ref, ori) = (&refs.j_trunk, &refs.djv_trunk, refs.rp_ref, refs.yaw_ref, refs.ori);
+    let coupled_active = refs.coupled_active;
+    let (tau_gravity, shares) = (&refs.tau_gravity, &refs.shares);
+
+    let (j_contact, dj_v) = contact_jacobians(&robot.model, q, v, data, v_dvec, &stance, nv);
+    let dyn_ctx = Dynamics::new(Formulation::Explicit, &st.mass, &st.h, &j_contact, na_count);
+    let forces = dyn_ctx.forces();
+
+    let eom_task = dyn_ctx
+        .dynamics_task()
+        .expect("Explicit keeps the EoM task");
+    let base = if eom_hard {
+        tasks::box_bound(dyn_ctx.tau(), &robot.torque_max)
+    } else {
+        eom_task.clone() + tasks::box_bound(dyn_ctx.tau(), &robot.torque_max)
+    };
+    let base = if jlim {
+        // Live actuated-row position/velocity, read through model indices.
+        let actuated = robot.actuated();
+        let mut q_act = na::DVector::zeros(na_count);
+        let mut v_act = na::DVector::zeros(na_count);
+        for &(ji, vi) in &actuated {
+            if let Some(mi) = robot.a2m[ji] {
+                q_act[vi - 6] = q[robot.model.q_idx[mi]];
+            }
+            v_act[vi - 6] = v[vi];
+        }
+        base + bt::joint_limits(
+            dyn_ctx.qddot(),
+            &actuated,
+            &q_act,
+            &v_act,
+            &jlim_cfg,
+            na_count,
+            nv,
+        )
+    } else {
+        base
+    };
+    let p0 = bt::contact_level(
+        &dyn_ctx,
+        base,
+        &j_contact,
+        &dj_v,
+        data,
+        v_dvec,
+        &stance,
+        robot.foot_mi[0],
+        &mut wbc_state.anchors,
+        &load_share,
+        &contact_cfg,
+        &|side: usize| {
+            if stair_wrench_mpc
+                && stair_managed_contact
+                // Rate trigger (see STAIR_MANAGED_RATE): the level
+                // test misses the chatter, which swings fz 15<->78 N.
+                && t < ctl.managed_until[side]
+            {
+                bt::ContactMode::Managed {
+                    tangent_weight: stair_managed_tangent,
+                    rotation_weight: stair_managed_rotation,
+                    normal_weight: 1.0,
+                    normal_accel_max: stair_managed_az_max,
+                }
+            } else {
+                bt::ContactMode::Rigid
+            }
+        },
+        &|_side: usize, _rot: &na::Matrix3<f64>| {
+            // SLOPE_HEEL_CUT [m/deg]: on a known UPSLOPE, during double
+            // support, move the REAR foot's CoP box forward by
+            // cut * slope_deg and shrink it by the same, so its heel
+            // region is excluded. Measured 2026-10-17 (threshold table,
+            // terrain bench doc Sec.10): the rear foot's CoP goes to the
+            // heel in proportion to the slope (-12 mm/deg), reaches the
+            // heel edge at 5 deg and the foot lifts off 3/4 of the way
+            // through the double support. With the heel excluded the QP
+            // has to realise the same net CoP by loading the front
+            // foot, which is what the climb needs. 0 = off.
+            if slope_heel_cut > 0.0
+                && matches!(support, Support::Double)
+                && let Some(st) = &stairs
+                && st.n == 0
+                && st.slope > 0.0
+                && lifting == Some(_side)
+                // ... and only while that foot stands ON the slope (the
+                // cut applied on the flat approach at 7 deg emptied the
+                // box and fell at 3.3 s, 2026-10-17).
+                && {
+                    let x = steps.sole[_side].x;
+                    x >= st.start && x <= st.start + st.slope_len
+                }
+            {
+                let deg = st.slope.atan().to_degrees();
+                let d = (slope_heel_cut * deg).min(slope_heel_cut_max);
+                return Some((
+                    [prof.sole_centre_x + d, 0.0, -prof.sole_below_origin],
+                    ((sole_half_l - d).max(0.005), contact_cfg.cop_half.1),
+                ));
+            }
+            // (STAIR_ROLL_PATCH, a narrow strip at the edge of a pitched
+            // sole, is removed.)
+            None
+        },
+    );
+
+    let p1 = bt::com(dyn_ctx.qddot(), &st.j_com, &st.djv_com, &a_com);
+
+    let p2 = bt::trunk_rpy(
+        dyn_ctx.qddot(),
+        &j_trunk,
+        &djv_trunk,
+        &rp_ref,
+        yaw_ref.map(|_| ori[2]),
+        nv,
+    );
+
+
+    // ---- the momentum task, MOM_CMP and the arm hold, from phase 10's inputs
+    let p_mom = refs.mom.as_ref().and_then(|m| {
+        bt::angular_momentum(dyn_ctx.qddot(), &m.cmm, &m.bias, &m.h, &m.h_ref, &m.dh_ref, m.kp, m.axes, nv)
+    });
+    let p_cmp = refs.cmp.as_ref().and_then(|c| {
+        bt::angular_momentum(dyn_ctx.qddot(), cent.cmm(), &c.bias, &c.h, &c.h_ref, &c.dh, 0.0, [true, true, false], nv)
+    });
+    let mut p_arm = refs.arm.as_ref().map(|a| {
+        bt::posture(dyn_ctx.qddot(), &a.arms, obs.joint_pos_plant, &a.q_ref, v, kp_arm, kd_arm, na_count, nv)
+    });
+    // ---- P4: posture ------------------------------------------------
+    let p3 = bt::posture(
+        dyn_ctx.qddot(),
+        &robot.actuated(),
+        obs.joint_pos_plant,
+        &robot.q_seed,
+        v,
+        kp_post,
+        kd_post,
+        na_count,
+        nv,
+    );
+
+
+    let mut forces_nominal = bt::force_nominal(forces.size(), &shares, total_mass * G);
+    if let Some(command) = ctl.wrench_mpc_command.as_ref() {
+        if wrench_mpc_apply && nc > 0 {
+            // contact_level's selector maps the native WBC wrench block
+            // to the sole-centre frame used by the MPC. Invert its 6x6
+            // slot block so the regulariser receives the same wrench.
+            for (slot, &side) in stance_sides.iter().enumerate() {
+                let selector = p0.sole_sel[slot].view((0, 6 * slot), (6, 6)).into_owned();
+                if let Some(native) = selector.lu().solve(&command[side]) {
+                    // MPC_SOLE_AUTHORITY: REPLACE the nominal instead of
+                    // blending into it.
+                    //
+                    // `forces_nominal` is not a neutral regulariser
+                    // target: it is built by splitting the load so the net
+                    // CoP lands where the DCM controller asked (see above).
+                    // Blending therefore averages TWO independent CoP
+                    // decisions and realises neither -- which is why every
+                    // blend fraction failed identically, down to 1/8 of
+                    // the shipped one, with the fall time unmoved
+                    // (measured 2026-09-25). BD and IHMC both keep one
+                    // authority over the CoP. This hands it to the MPC.
+                    //
+                    // Restricted to double support by default: in single
+                    // support the split is determined anyway (the two
+                    // agree to 0.3 N there), so there is nothing to win
+                    // and a failed MPC solve would have nowhere to fall
+                    // back to.
+                    // (MPC_AUTHORITY_ALL, authority in single support
+                    // too, is removed.)
+                    let authority = mpc_sole_authority && nc == 2;
+                    let w = if authority { 1.0 } else { stair_wrench_blend };
+                    let old = forces_nominal.rows(6 * slot, 6).into_owned();
+                    let blended = old * (1.0 - w) + native * w;
+                    forces_nominal.rows_mut(6 * slot, 6).copy_from(&blended);
+                }
+            }
+        }
+    }
+    let p_wrench_coupled = coupled_active.then(|| {
+        tasks::regularize(&dyn_ctx.forces(), &forces_nominal)
+            // 1.0: the default of STAIR_WRENCH_LEVEL_WEIGHT (removed).
+            .weight(1.0 / (total_mass * G).powi(2))
+    });
+    let p_reg = if coupled_active {
+        tasks::regularize(dyn_ctx.tau(), &tau_gravity)
+    } else {
+        bt::regulariser(
+            dyn_ctx.tau(),
+            &tau_gravity,
+            &dyn_ctx.forces(),
+            &forces_nominal,
+        )
+    };
+
+
+    // ---- the swing level, from phase 10's inputs
+    let p_swing = refs.swing.as_ref().map(|s| match s.acc {
+        Some(acc) => bt::swing_with_pose_acceleration(
+            dyn_ctx.qddot(),
+            &s.jf,
+            &s.djv,
+            &s.pos,
+            &s.vel,
+            &s.tgt,
+            &s.tgt_v,
+            s.kp_xy,
+            s.kp_z,
+            s.kd,
+            s.axes,
+            s.rot,
+            &acc,
+        ),
+        None => bt::swing_with_pose(
+            dyn_ctx.qddot(),
+            &s.jf,
+            &s.djv,
+            &s.pos,
+            &s.vel,
+            &s.tgt,
+            &s.tgt_v,
+            s.kp_xy,
+            s.kp_z,
+            s.kd,
+            s.axes,
+            s.rot,
+        ),
+    });
+
+    // Keep the unweighted task for post-solve diagnostics; `p_swing`
+    // itself is moved into the hierarchy below.
+    let p_swing_diag = p_swing.clone();
+    // Preserve original physical rows before task weighting / HQP slack.
+    let qp_physical =
+        (diag.qp_diag_dir.is_some() || qp_gate || diag.qp_runtime_log.is_some()).then(|| {
+            let mut units = vec!["N*m"; 2 * na_count];
+            let mut scales = vec![(total_mass * G * sole_half_l).max(1.0); 2 * na_count];
+            if jlim {
+                units.extend(vec!["rad/s^2"; 2 * na_count]);
+                scales.extend(vec![1.0; 2 * na_count]);
+            }
+            for _ in stance_sides {
+                units.extend([
+                    "N", "N", "N", "N", "N", "N", "N*m", "N*m", "N*m", "N*m", "N*m", "N*m",
+                ]);
+                scales.extend(vec![(total_mass * G).max(1.0); 6]);
+                scales.extend(vec![(total_mass * G * sole_half_l).max(1.0); 6]);
+            }
+            // Optional per-foot normal force floor follows the contact rows.
+            while units.len() < p0.task.d.nrows() {
+                units.push("N");
+                scales.push((total_mass * G).max(1.0));
+            }
+            assert_eq!(units.len(), p0.task.d.nrows(), "physical row metadata");
+            (
+                eom_task.clone(),
+                p0.task.d.clone(),
+                p0.task.f.clone(),
+                units,
+                scales,
+            )
+        });
+    let mut levels: Vec<misa_wbc::Task> = Vec::new();
+    let mut level_names: Vec<&str> = Vec::new();
+    if eom_hard {
+        levels.push(eom_task);
+        level_names.push("eom");
+    }
+    let nd = p0.task.n_decision();
+    levels.push(p0.task);
+    level_names.push(if eom_hard {
+        "contact+cones"
+    } else {
+        "dynamics+contact+cones"
+    });
+    // The coupled level's weights are the defaults of the removed
+    // STAIR_WRENCH_COM_WEIGHT (10) and STAIR_WRENCH_MOM_WEIGHT (0.2);
+    // STAIR_WRENCH_TRUNK_COUPLED (trunk merged too, default off) is gone.
+    let mut p1_centroidal = if coupled_active {
+        p1.weight(10.0)
+    } else {
+        p1
+    };
+    let mut mom_pending = p_mom;
+    if let Some(pw) = p_wrench_coupled {
+        p1_centroidal = p1_centroidal + pw;
+        if let Some(pm) = mom_pending.take() {
+            p1_centroidal = p1_centroidal + pm.weight(0.2);
+        }
+    }
+    if let Some(pc) = p_cmp {
+        p1_centroidal = p1_centroidal + pc.weight(mom_cmp_w);
+    }
+    levels.push(p1_centroidal);
+    level_names.push(if coupled_active { "com+momentum+wrench" } else { "com" });
+    if use_trunk {
+        levels.push(p2);
+        level_names.push("trunk");
+    }
+    let mut push_mom = |at: &str,
+                        levels: &mut Vec<misa_wbc::Task>,
+                        names: &mut Vec<&'static str>,
+                        pending: &mut Option<misa_wbc::Task>| {
+        if mom_level == at {
+            if let Some(pm) = pending.take() {
+                levels.push(pm);
+                names.push("momentum");
+            }
+        }
+    };
+    push_mom(
+        "swing_before",
+        &mut levels,
+        &mut level_names,
+        &mut mom_pending,
+    );
+    if arm_before_swing {
+        if let Some(pa) = p_arm.take() {
+            levels.push(pa);
+            level_names.push("arm hold(before swing)");
+        }
+    }
+    if let Some(ps) = p_swing {
+        levels.push(ps);
+        level_names.push("swing");
+    }
+    push_mom(
+        "swing_after",
+        &mut levels,
+        &mut level_names,
+        &mut mom_pending,
+    );
+    if let Some(pa) = p_arm {
+        levels.push(pa);
+        level_names.push("arm hold");
+    }
+    if use_post {
+        let merged = match (mom_level.as_str(), mom_pending.take()) {
+            ("post_merge", Some(pm)) => {
+                level_names.push("posture+momentum");
+                p3 + pm
+            }
+            (_, back) => {
+                mom_pending = back;
+                level_names.push("posture");
+                p3
+            }
+        };
+        levels.push(merged);
+    }
+    push_mom(
+        "post_after",
+        &mut levels,
+        &mut level_names,
+        &mut mom_pending,
+    );
+    levels.push(p_reg);
+    level_names.push("regularise");
+    // Weighted single QP (WBC_STRATEGY=weighted): each level below the
+    // hard physics level gets a PER-TASK weight, because a geometric
+    // ratio cannot express "swing as strong as the CoM, regularisation
+    // far weaker" (measured 2026-09-24: ratios 1..1000 all fell in the
+    // first step or before it). Override one with WBCW_<NAME> where NAME
+    // is the level name upper-cased with non-alphanumerics as '_'
+    // (e.g. WBCW_COM, WBCW_SWING, WBCW_POSTURE_MOMENTUM).
+    // (WBC_WEIGHTED_OFF_STAIRS, the strict cascade inside the stair
+    // zone, was not adopted: weighted everywhere = 112/112 on the flat
+    // push bench but 0/192 on the stairs, measured 2026-09-24; removed.)
+    if weighted_levels {
+        for (k, lvl) in levels.iter_mut().enumerate().skip(1) {
+            let name = level_names.get(k).copied().unwrap_or("");
+            let wk = wcfg.wbc.level_weights.get(name).unwrap_or_else(|| level_weight_from_env(name));
+            let taken = std::mem::replace(lvl, misa_wbc::Task::empty(nd));
+            *lvl = taken.weight(wk);
+        }
+    }
+
+    let qp_structure = (
+        stance_sides.clone(),
+        levels
+            .iter()
+            .map(|v| (v.a.ncols(), v.a.nrows(), v.d.nrows()))
+            .collect::<Vec<_>>(),
+    );
+    let qp_reset = wbc_state.qp_previous_structure
+        .as_ref()
+        .is_some_and(|old| old != &qp_structure);
+    // The stateful solver keeps a workspace per level and only resets it
+    // when the QP STRUCTURE changes. (WBC_QP_RESET_EVERY_TICK, dropping
+    // the warm start every tick, was an experiment and is removed.)
+    if qp_reset {
+        wbc_state.solver.reset();
+    }
+    wbc_state.qp_previous_structure = Some(qp_structure);
+    let qp_solve_start = std::time::Instant::now();
+    let mut sol = wbc_state.solver
+        .solve(&levels, &cfg)
+        .unwrap_or_else(|e| panic!("wbc solve failed at t={t:.3}: {e}"));
+    let qp_solve_ns = qp_solve_start.elapsed().as_nanos();
+    // WBC_LEVEL_DEBUG_T=<t>: print each level's least-squares residual
+    // at the ticks within 11 ms of t (which task the solve could not
+    // satisfy, and by how much).
+    if let Some(tw) = debug.wbc_level_t
+        && (t - tw).abs() < 0.011
+    {
+        let parts: Vec<String> = levels
+            .iter()
+            .enumerate()
+            .map(|(k, lv)| {
+                let r = if lv.a.nrows() > 0 { (&lv.a * &sol.x - &lv.b).norm() } else { 0.0 };
+                let viol = if lv.d.nrows() > 0 {
+                    (&lv.d * &sol.x - &lv.f).iter().fold(0.0_f64, |m, v| m.max(*v))
+                } else {
+                    0.0
+                };
+                format!("{}={:.3e}/{:.1e}", level_names.get(k).copied().unwrap_or("?"), r, viol.max(0.0))
+            })
+            .collect();
+        println!("  [wbc-levels] t={t:.3} support={support:?} {}", parts.join(" "));
+    }
+    let qp_check_start = std::time::Instant::now();
+    let mut qp_physical_violation = 0.0_f64;
+    if let Some((eom, d, f, _, scales)) = &qp_physical {
+        for (i, value) in (&eom.a * &sol.x - &eom.b).iter().enumerate() {
+            let scale = if i < 3 || i >= 6 {
+                total_mass * G * sole_half_l
+            } else {
+                total_mass * G
+            };
+            qp_physical_violation = if value.is_finite() {
+                qp_physical_violation.max(value.abs() / scale.max(1.0))
+            } else {
+                f64::INFINITY
+            };
+        }
+        for (value, scale) in (d * &sol.x - f).iter().zip(scales) {
+            qp_physical_violation = if value.is_finite() {
+                qp_physical_violation.max(*value / scale)
+            } else {
+                f64::INFINITY
+            };
+        }
+        if sol.x.iter().any(|v| !v.is_finite()) {
+            qp_physical_violation = f64::INFINITY;
+        }
+    }
+    let raw_almost = sol
+        .level_diagnostics
+        .iter()
+        .flatten()
+        .any(|d| d.raw_status == "AlmostSolved");
+    let qp_rejected = qp_gate
+        && (qp_physical_violation > 1e-6
+            || !matches!(sol.status, misa_wbc::SolveStatus::Optimal)
+            || raw_almost);
+    if qp_rejected {
+        // Route through the existing degraded-control policy; no new fallback law.
+        sol.status = misa_wbc::SolveStatus::Degraded {
+            level: 0,
+            status: misa_wbc::QpStatus::NumericalFailure,
+        };
+    }
+    let qp_check_ns = qp_check_start.elapsed().as_nanos();
+    // Did the trunk task actually get what it asked for?
+    //
+    // The pitch diverges at lambda = 29.4 /s while the trunk task commands
+    // an angular acceleration with kp=200, kd=40 -- poles at -5.9 and -34
+    // if the command is MET. So either the command is not met (a higher
+    // level is eating it) or the measured divergence is impossible. This
+    // separates the two without guessing.
+    let (trunk_cmd_rp, trunk_acc_rp) = {
+        let qdd = dyn_ctx.qddot().eval(&sol.x);
+        let jr = j_trunk.rows(0, 2).into_owned();
+        let acc = &jr * &qdd + djv_trunk.rows(0, 2).into_owned();
+        (rp_ref, [acc[0], acc[1]])
+    };
+    let degraded = !matches!(sol.status, misa_wbc::SolveStatus::Optimal);
+    let qp_capture_timer = std::time::Instant::now();
+    if let Some(dir) = &diag.qp_diag_dir {
+        let legacy_failure = t >= 2.0
+            && diag.qp_diag_count < 8
+            && matches!(sol.status,
+            misa_wbc::SolveStatus::Degraded { level, .. } if level_names.get(level) == Some(&"swing"));
+        let continuous = diag.qp_capture_all
+            && t >= diag.qp_capture_start
+            && t <= diag.qp_capture_end
+            && tick % diag.qp_capture_stride == 0
+            && diag.qp_diag_count < diag.qp_capture_max;
+        if continuous || (!diag.qp_capture_all && legacy_failure) {
+            let matrix = |m: &na::DMatrix<f64>| serde_json::json!({"rows":m.nrows(),"cols":m.ncols(),"data":m.as_slice()});
+            let tasks: Vec<_> = levels.iter().zip(&level_names).map(|(task,name)| serde_json::json!({
+                "name":name,"a":matrix(&task.a),"b":task.b.as_slice(),"d":matrix(&task.d),"f":task.f.as_slice(),
+                "equality_semantics":"lexicographic_least_squares", "inequality_semantics":"hierarchical_slack",
+                "row_units":"weighted_task_units", "stored_scale":1.0})).collect();
+            let variables: Vec<_> = dyn_ctx.layout().names().map(|name| {
+                let var=dyn_ctx.layout().var(name);
+                serde_json::json!({"name":name,"offset":var.offset(),"size":var.size(),
+                    "components":match name {"qddot"=>"base angular rad/s^2, base linear m/s^2, joints rad/s^2", "f"=>"world link-origin [mx,my,mz,fx,fy,fz] per contact", _=>"joint torque N*m"}})
+            }).collect();
+            let physical = qp_physical.as_ref().map(|(eom,d,f,units,scales)| serde_json::json!({
+                "eom":{"a":matrix(&eom.a),"b":eom.b.as_slice(),"units":"base moment N*m, base force N, joint moment N*m"},
+                "inequalities":{"d":matrix(d),"f":f.as_slice(),"units":units,"normalization_scales":scales,
+                    "semantics":"physical_hard_despite_hqp_slack","torque_rows":2*na_count,"cbf_rows":if jlim {2*na_count} else {0}},
+                "body_weight_N":total_mass*G,"reference_length_m":sole_half_l}));
+            let dump = serde_json::json!({"schema_version":2,"t":t,"tick":tick,"ctrl_dt":dt,
+                "status":format!("{:?}",sol.status),"backend":format!("{:?}",cfg.backend),
+                "layer_statuses":sol.level_statuses.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>(),
+                "layer_raw_statuses":sol.level_diagnostics.iter().map(|d| d.as_ref().map(|d| &d.raw_status)).collect::<Vec<_>>(),
+                "prox_weight":cfg.prox_weight,"tasks":tasks,"solution":sol.x.as_slice(),"variables":variables,
+                "contact_ids":stance_sides,"planned_support":format!("{:?}",support),"phase":"None",
+                "measured_fz_N":obs.contact_fz,"physical_groups":physical,"solve_ns":qp_solve_ns,
+                "check_ns":qp_check_ns,"normalized_physical_violation":qp_physical_violation});
+            std::fs::create_dir_all(dir).expect("QP_DIAG_DIR");
+            std::fs::write(
+                format!("{dir}/tick_{:06}.json", diag.qp_diag_count),
+                serde_json::to_vec(&dump).unwrap(),
+            )
+            .expect("write QP snapshot");
+            diag.qp_diag_count += 1;
+        }
+    }
+    let qp_capture_ns = qp_capture_timer.elapsed().as_nanos();
+    let extracted = dyn_ctx.extract(&sol.x);
+    WbcOut {
+        sol,
+        extracted,
+        level_names,
+        forces_nominal,
+        sole_sel: p0.sole_sel,
+        acc_dbg: p0.acc_dbg,
+        p_swing_diag,
+        trunk_cmd_rp,
+        trunk_acc_rp,
+        qp_solve_ns,
+        qp_check_ns,
+        qp_capture_ns,
+        qp_physical_violation,
+        qp_reset,
+        qp_rejected,
+        degraded,
+    }
+}
+
+/// What phase 12 measured on the solution: the swing level's residuals,
+/// the legs' reach, the swing foot's achieved acceleration and position
+/// error, and the QP's per-foot CoP and force, CoP use and net CoP.
+pub(crate) struct SolveDiag {
+    pub swing_task_residual_rms: f64,
+    pub swing_res_z: f64,
+    pub swing_res_rows: f64,
+    pub reach_used: [f64; 2],
+    pub hip_z: [f64; 2],
+    pub stride_max_now: f64,
+    pub swing_achieved_acc_z: f64,
+    pub swing_pos_err_xy: f64,
+    pub swing_pos_err_z: f64,
+    pub cop_qp: [[f64; 3]; 2],
+    pub f_qp_w: [[f64; 3]; 2],
+    pub cop_use: f64,
+    pub diag_wbc_net_cop: [f64; 2],
+}
+
+/// Phase 12: the diagnostics of the solve (read by the record only).
+pub(crate) fn phase_solve_diag(
+    cfg: &Config,
+    k: &WalkerConsts,
+    obs: &Observation,
+    stance: &[usize],
+    refs: &TaskRefs,
+    w: &WbcOut,
+) -> SolveDiag {
+    let cop_frac = cfg.dcm.cop_frac;
+    let (total_mass, sole_half_l, sole_half_w) = (k.total_mass, k.sole_half_l, k.sole_half_w);
+    let (hip_mi, leg_reach) = (k.hip_mi, k.leg_reach);
+    let robot = k.robot;
+    let prof = &robot.prof;
+    let data = &obs_state(obs).data;
+    let (sol, extracted, p_swing_diag) = (&w.sol, &w.extracted, &w.p_swing_diag);
+    let (free_side, swing_tgt, swing_cmd_acc_z) = (refs.free_side, refs.swing_tgt, refs.swing_cmd_acc_z);
+    let swing_task_residual_rms = p_swing_diag.as_ref().map_or(0.0, |task| {
+        if task.a.nrows() == 0 {
+            0.0
+        } else {
+            (&task.a * &sol.x - &task.b).norm() / (task.a.nrows() as f64).sqrt()
+        }
+    });
+    // Which ROW of the swing task is being refused. `z` is the last row
+    // in every `SwingAxes` layout, and after the ascent the step that
+    // never lands is exactly the one whose z target is descending.
+    let (swing_res_z, swing_res_rows) = p_swing_diag.as_ref().map_or((0.0, 0.0), |task| {
+        if task.a.nrows() == 0 {
+            (0.0, 0.0)
+        } else {
+            let r = &task.a * &sol.x - &task.b;
+            (r[r.len() - 1], task.a.nrows() as f64)
+        }
+    });
+    // Leg reach this tick. `steps.sole[side]` is the PLANNED sole, so the
+    // measured sole comes from FK like everywhere else in this loop.
+    let mut reach_used = [0.0_f64; 2];
+    let mut hip_z = [0.0_f64; 2];
+    let mut stride_max_now = 0.0_f64;
+    if let Some(mis) = hip_mi
+        && leg_reach.max > 0.0
+    {
+        let mut soles = [na::Vector3::zeros(); 2];
+        for side in 0..2 {
+            let hip = misarta::se3::translation(&data.oMi[mis[side]]);
+            let mut sole = misarta::se3::translation(&data.oMi[robot.foot_mi[side]]);
+            sole.z -= prof.sole_below_origin;
+            reach_used[side] = leg_reach.used(&hip, &sole);
+            hip_z[side] = hip.z;
+            soles[side] = sole;
+        }
+        // The stride the two legs allow at this instant, with the hip
+        // midway (see reach::max_stride).
+        let hip_mid = 0.5 * (hip_z[0] + hip_z[1]);
+        stride_max_now = leg_reach.max_stride(hip_mid, soles[0].z, soles[1].z);
+    }
+    // `swing_res_z = achieved - commanded`: misa-wbc Cartesian residual.
+    let swing_achieved_acc_z = swing_cmd_acc_z + swing_res_z;
+    let (swing_pos_err_xy, swing_pos_err_z) = free_side.map_or((0.0, 0.0), |side| {
+        let pos = misarta::se3::translation(&data.oMi[robot.foot_mi[side]]);
+        (
+            (pos.xy() - swing_tgt.xy()).norm(),
+            (pos.z - swing_tgt.z).abs(),
+        )
+    });
+
+    let mut cop_qp = [[0.0_f64; 3]; 2];
+    let mut wbc_net_cop_acc = [f64::NAN; 3];
+    let mut f_qp_w = [[0.0_f64; 3]; 2];
+    let mut cop_use = 0.0_f64;
+    for (slot, mi) in stance.iter().copied().enumerate() {
+        let side = robot.side_of(mi);
+        let w = &w.sole_sel[slot] * &extracted.forces;
+        if let Some((cx, cy, fz)) = cop_from_sole_wrench(&w) {
+            if fz > 1e-6 {
+                cop_qp[side] = [cx, cy, fz];
+                // Same net pressure point as `diag_mpc_net_cop`, for the
+                // forces the WBC asked for, so the two are comparable
+                // against the commanded ZMP.
+                {
+                    // `cop_from_sole_wrench` gives the point in the SOLE
+                    // CENTRE frame, and `oMi` is the ankle. On G1 the sole
+                    // centre sits `sole_centre_x` = 35 mm ahead of the
+                    // ankle, so adding the two directly biased this column
+                    // by -35 mm in x -- which read as "the WBC puts its
+                    // pressure 32 mm behind the command" and was reported
+                    // that way on 2026-09-25 (mpc_in_the_loop.md Sec.29).
+                    // In single support the same column read -37.5 mm,
+                    // which a CoP confined to one sole cannot do; that is
+                    // how the bias was caught (2026-09-26). Same
+                    // construction as `Footsteps::from_fk`.
+                    let pose = &data.oMi[mi];
+                    let rot = misarta::se3::rotation_matrix(pose);
+                    let origin = misarta::se3::translation(pose);
+                    let point = origin
+                        + rot
+                            * na::Vector3::new(
+                                prof.sole_centre_x + cx,
+                                cy,
+                                -prof.sole_below_origin,
+                            );
+                    if !wbc_net_cop_acc[2].is_finite() {
+                        wbc_net_cop_acc = [0.0; 3];
+                    }
+                    wbc_net_cop_acc[0] += point.x * fz;
+                    wbc_net_cop_acc[1] += point.y * fz;
+                    wbc_net_cop_acc[2] += fz;
+                }
+                // Only count a foot that is actually carrying something.
+                // A foot at 1 N with its CoP in the box corner is a
+                // 0.07 N*m wrench, and reporting that as a saturated
+                // constraint hides the one that matters.
+                if fz > 0.1 * total_mass * G {
+                    cop_use = cop_use.max(
+                        (cx.abs() / (sole_half_l * cop_frac))
+                            .max(cy.abs() / (sole_half_w * cop_frac)),
+                    );
+                }
+            }
+        }
+        for k in 0..3 {
+            f_qp_w[side][k] = extracted.forces[6 * slot + 3 + k];
+        }
+    }
+    // The same net pressure point as `diag_mpc_net_cop`, for the forces
+    // the WBC actually asked the robot for.
+    let diag_wbc_net_cop = if wbc_net_cop_acc[2] > 1.0 {
+        [
+            wbc_net_cop_acc[0] / wbc_net_cop_acc[2],
+            wbc_net_cop_acc[1] / wbc_net_cop_acc[2],
+        ]
+    } else {
+        [f64::NAN; 2]
+    };
+    SolveDiag {
+        swing_task_residual_rms,
+        swing_res_z,
+        swing_res_rows,
+        reach_used,
+        hip_z,
+        stride_max_now,
+        swing_achieved_acc_z,
+        swing_pos_err_xy,
+        swing_pos_err_z,
+        cop_qp,
+        f_qp_w,
+        cop_use,
+        diag_wbc_net_cop,
+    }
+}
+
+/// Phase 13, the end of the tick (after the harness has fired its push): a
+/// recovery reference whose time is up hands the feet back to the gait,
+/// re-centring every later footfall on where the feet are now.
+pub(crate) fn phase_end_tick(ctl: &mut CtlState, plan: &mut Plan, cfg: &Config, t: f64) {
+    let ref_cooldown = cfg.recovery.cooldown;
+    // CONTACT_EVENT (read once: the landing clock's `event_mode`, which a
+    // reference turns on while it is engaged and its end restores to this).
+    let event_mode_cfg = cfg.landing.event.on;
+    let ref_reset_stance = cfg.recovery.reset_stance;
+    // The re-centring after a reference skipped the swing already under way
+    // when the reference ended (the gait's first step then went to the
+    // pre-push plan: 0.38 m ahead, 0.28 m wide). With this on, that swing is
+    // re-centred too, at the feet's midpoint (REF_RESET_LEAD, a lead ahead
+    // of it, is removed).
+    let ref_reset_incl_current = cfg.recovery.reset_incl_current;
+    if let Some(mode) = ctl.ref_mode
+        && let Some(lib) = &ctl.ref_lib
+        && t >= mode.t0 + lib.total() - mode.tau0
+    {
+        ctl.ref_mode = None;
+        ctl.ref_cooldown_until = t + ref_cooldown;
+        plan.landing.event_mode = event_mode_cfg;
+        // The reference leaves the feet where the recovery put them
+        // (in tandem, narrow). Every later footfall is re-centred on the
+        // feet as they are now, at the nominal stance width, so the gait
+        // that resumes is the nominal one and not a stride-0 echo of the
+        // recovery (measured: the echo fell 1.7 s after the reference).
+        if ref_reset_stance {
+            let i = plan.gait.index_at(t);
+            let cur = *plan.footsteps.at_slice(i);
+            let mid = 0.5 * (cur.sole[0].xy() + cur.sole[1].xy());
+            let half_w = 0.5 * (plan.footsteps.initial.sole[0].y - plan.footsteps.initial.sole[1].y).abs();
+            let j0 = if ref_reset_incl_current { i } else { i + 1 };
+            for side in 0..2 {
+                let want = na::Vector2::new(mid.x, mid.y + if side == 0 { half_w } else { -half_w });
+                if let Some(j) = (j0..plan.gait.slices.len()).find(|&j| plan.gait.slices[j].support.swing() == Some(side)) {
+                    if j == i {
+                        println!("  [ref] t={t:.3} re-centre the swing under way: foot {side} -> ({:.3},{:.3})", want.x, want.y);
+                    }
+                    let d = want - plan.footsteps.at_slice(j).sole[side].xy();
+                    plan.footsteps.shift_from(j, side, d);
+                }
+            }
+            plan.rebuild_dcm();
+        }
+        println!("  [ref] t={t:.3} reference over, back to the gait");
+    }
 }
