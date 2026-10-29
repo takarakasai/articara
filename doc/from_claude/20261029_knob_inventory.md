@@ -1091,3 +1091,21 @@
 3. §2 のまとまりを Config のサブ構造体にし、名前を意味に付け替える（`STAIR_WRENCH_MPC`→`mpc.enabled`、`PUSH_REPLAN_HOLD=10`→保持なし、など）。環境変数→Config の対応表はハーネスに残す。
 4. 要確認 7 個（`ROUGH_MODE`、`ROUGH_MODE_LIFT_H`、`TERRAIN_PITCH`、`VX2_SCHED`、`STAIR_ABSOLUTE_TD_DESC`、`STAIR_SWING_FF`、`STAIR_ZONE_SWING_ROT`）は、地形の知覚・速度指令・kyo46rs v3 の判断と合わせて決める。
 
+
+## 5. 実行による確認（2026-10-29、tu60 = 束 A・B 削除後のバイナリ）
+
+方法: `log/claude_g1rand_20260925/knobprobe.py`。ノブを 1 つだけ既定と違う値にして見本を順に回し、TRAJ_CSV が振る前と 1 バイトでも違えば「効く」。分類 4・5 は振らない。結果は `log/claude_g1rand_20260924/KNOBPROBE_v619/results.tsv`（1 回目、見本 15 本、494 組）と `KNOBPROBE_v619b/results.tsv`（2 回目、押しの難しい見本 14 本＋1 回目の 15 本、値も振り直し、163 組）。
+
+### 5.1 1 回目の見かけの食い違い
+- 分類 1・2 の「効かない」55 個の大半は振り方の産物だった: 1 を on として使うスイッチを 1.5 にした（on のまま）、`PUSH_REPLAN_HOLD=10`→15（保持なしのまま）、押しの仕組み（`DS_CAPTURE`、`PUSH_REPLAN`、`REF_*`、MPC の交差）が m00 の押しでは発火しない。
+- 分類 3 の「効く」88 個のうち 84 個は既定 off のスイッチを on にしただけ（台帳どおり）。残り 4 個（`COM_REPLAN_LATERAL_GAIN`、`LAND_KD_ROT_BOOST`、`MPC_FOOTSTEP_FREEZE_FRAC`、`MPC_F_MAX_SCALE`）は既定が中立の値（倍率 1、∞、NaN）で、既定のままなら効かない。削るときは中立の定数に置き換える。`COM_REPLAN_LATERAL_GAIN=1.5` は範囲の assert で起動時に落ちていた（1 回目は異常終了を「効く」に数えた。2 回目から区別）。
+
+### 5.2 2 回目（押しの見本と値の振り直し）
+- 1 回目に効かなかった分類 1・2・6・1k・? の 64 個のうち **45 個が効く**（多くは `p/i11_d180/m06`、`hold/i5_d90/m15`、`p/i11_d0/m28` の押しで初めて発火）。**3 個は範囲外の値で異常終了**（`DS_FEASIBLE_MAX=0`、`STAIR_SOLE_MARGIN=0.006`、`VXS_STRIDE_MAX≤0.225`）で、到達はしている。
+- **なお効かない 16 個:**
+  - 説明のつくもの: `TERRAIN_PITCH`、`VX2_SCHED`、`STAIR_ZONE_SWING_ROT`（ベンチ・kyo46rs の設定が入れる）、`STAIR_FULL_SOLE`（kyo46rs だけ）、`HOLD_KP/KD`、`RUN_KP/KV`、`NO_ARM_COLLIDE`（機体・リグ側、G1 の歩行で効く場面が無い）、`MPC_KKT_COMP_TOL`（診断の許容）。
+  - **`CP_TRACK`（採用）は死に値**: contact_plan のずらしが `CP_MAX_*=0` で常に 0 なので、どちらの分岐も 0 を返す（5352–5362）。3d に移す。
+  - **`CONTACT_ADMIT_CONFIRMED`（採用）は 29 本のどれでも効かない**: 採用済みの `CONTACT_ADMIT_LOADED` が先に admit するので、確認の経路まで来ないと見ている（3902 の門）。外して家族で確かめる候補。
+  - **`COM_LAND_VZ`（採用 0.05）は G1 の段の高さでは効かない**: 着地前の CoM 再計画の時間が `max(xy/vx, z/vz)` で、80 mm の段でも xy の項が勝つ（1875）。構造としては生きている。
+  - `DS_CAPTURE_MARGIN`、`STEP_DZ_SWING_MIN`、`VXS_Z_MAX`（分類 1・2）: 門の中の閾値で、見本の範囲では結果を変えない。構造としては生きているので残す。
+- 結論: 台帳の分類 1・2 は、`CP_TRACK` を除いて実行でも生きている（または生きている構造の中の閾値）。分類 3 は中立の既定 4 個の扱いを加えれば台帳どおりに削れる。
