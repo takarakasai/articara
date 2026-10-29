@@ -1128,6 +1128,82 @@ struct CtlState {
     mpc_fs_applied: na::Vector2<f64>,
     mpc_fs_armed: Option<(usize, usize)>,
     mpc_fs_last: na::Vector2<f64>,
+    /// The held MPC answer's diagnostics, read only by the logs: the
+    /// reference vertical forces and the time it was solved at, the net
+    /// pressure point its wrenches imply, and their contact frames (kept
+    /// only for QP_WRENCH_CSV). Held across ticks with `wrench_mpc_command`.
+    diag_mpc_reference: [f64; 2],
+    diag_mpc_time: Option<f64>,
+    diag_mpc_net_cop: [f64; 2],
+    wrench_mpc_frames: Option<[articara::biped::wrench_mpc::Contact; 2]>,
+}
+
+/// What the controller computed this tick, for the harness to read: the
+/// trajectory CSV, the 40-tick print and the fall test read these instead of
+/// the control loop's locals. Built once per tick, after the solve and the
+/// per-foot CoP, from the values as they stand there (`z_ref` is the second
+/// binding, `p_cmd` the one after the preview's correction, `r` the DCM
+/// reference after the recovery reference's override).
+#[cfg(feature = "mujoco")]
+struct TickRecord {
+    /// Support from the schedule (`Double` throughout with NO_LIFT), steps
+    /// taken, and the planned soles of this slice.
+    support: articara::biped::gait::Support,
+    step_idx: usize,
+    steps: articara::biped::gait::Footsteps,
+    /// The feet the QP solved with as contacts, and how many.
+    stance_sides: Vec<usize>,
+    nc: usize,
+    /// Measured vertical force per foot, as the controller read it.
+    fz_meas: [f64; 2],
+    /// Measured DCM, its reference, and the distance between them.
+    xi: na::Vector2<f64>,
+    r: articara::biped::dcm::DcmRef,
+    dcm_err: f64,
+    /// Commanded ZMP after the support-box clamp (and how far it was moved).
+    p_cmd: na::Vector2<f64>,
+    clamped: f64,
+    /// CoM height reference and the commanded CoM acceleration.
+    z_ref: f64,
+    a_com: na::Vector3<f64>,
+    /// Load share per stance foot.
+    shares: Vec<f64>,
+    /// Trunk roll / pitch (the estimate), their reference, and what the
+    /// trunk task commanded and achieved [rad/s^2].
+    roll: f64,
+    pitch: f64,
+    rp_ref: [f64; 2],
+    trunk_cmd_rp: [f64; 2],
+    trunk_acc_rp: [f64; 2],
+    /// Swing-foot target and its tracking diagnostics.
+    swing_tgt: na::Vector3<f64>,
+    swing_cmd_acc_z: f64,
+    swing_achieved_acc_z: f64,
+    swing_res_z: f64,
+    swing_res_rows: f64,
+    swing_task_residual_rms: f64,
+    swing_pos_err_xy: f64,
+    swing_pos_err_z: f64,
+    /// CoM preview: whether it has engaged, its CoM and velocity.
+    replan_engaged: bool,
+    preview_c: na::Vector2<f64>,
+    preview_v: na::Vector2<f64>,
+    /// The held MPC answer, the net pressure point it implies, and the
+    /// landing offset it last asked for.
+    wrench_mpc_command: Option<[articara::biped::wrench_mpc::Wrench; 2]>,
+    diag_mpc_net_cop: [f64; 2],
+    mpc_fs_last: na::Vector2<f64>,
+    /// The QP's per-foot CoP (sole frame, with fz) and force (world), the
+    /// CoP utilisation, and the net pressure point of its forces.
+    cop_qp: [[f64; 3]; 2],
+    f_qp_w: [[f64; 3]; 2],
+    cop_use: f64,
+    diag_wbc_net_cop: [f64; 2],
+    acc_dbg: [f64; 2],
+    /// Leg reach used per side, hip heights, and the stride they allow now.
+    reach_used: [f64; 2],
+    hip_z: [f64; 2],
+    stride_max_now: f64,
 }
 
 /// The WBC's own state: the solver (warm data), the QP structure of the
@@ -3324,15 +3400,13 @@ fn main() {
             )
         })
     });
-    let mut diag_mpc_reference = [f64::NAN; 2];
-    let mut diag_mpc_time: Option<f64> = None;
+    let diag_mpc_reference = [f64::NAN; 2];
+    let diag_mpc_time: Option<f64> = None;
     // Where the MPC's own answer puts the NET pressure of both feet, in
     // world. The split alone does not determine this -- each sole's own CoP
     // moves it too -- so it has to be computed where the wrenches and their
     // contact frames are both in hand.
-    let mut diag_mpc_net_cop = [f64::NAN; 2];
-    // The same quantity for the forces the WBC actually asked the robot for.
-    let mut diag_wbc_net_cop = [f64::NAN; 2];
+    let diag_mpc_net_cop = [f64::NAN; 2];
     let wrench_mpc_next = 0.0;
     let mpc_backend_override =
         std::env::var("MPC_QP_BACKEND")
@@ -3351,7 +3425,7 @@ fn main() {
     let mut act_delay_buf: std::collections::VecDeque<Vec<f64>> = std::collections::VecDeque::new();
     let wrench_mpc_command: Option<[articara::biped::wrench_mpc::Wrench; 2]> = None;
     // Preserve the physical origin/axes of the held MPC forecast for diagnostic shifts.
-    let mut wrench_mpc_frames: Option<[articara::biped::wrench_mpc::Contact; 2]> = None;
+    let wrench_mpc_frames: Option<[articara::biped::wrench_mpc::Contact; 2]> = None;
     // MPC_FOOTSTEP bookkeeping: which slice's landing is being moved and how
     // much of the MPC's offset has already been applied to it (the same
     // non-ratcheting rule as `cp_applied`).
@@ -3360,8 +3434,6 @@ fn main() {
     // (first slice, last slice) the landing variable is armed for.
     let mpc_fs_armed: Option<(usize, usize)> = None;
     let mpc_fs_last = na::Vector2::zeros();
-    let mut trunk_cmd_rp = [0.0_f64; 2];
-    let mut trunk_acc_rp = [0.0_f64; 2];
 
     // The controller's state from here on (its initial values are the
     // `let`s above, next to the knobs that configure them), the WBC's
@@ -3404,6 +3476,10 @@ fn main() {
         mpc_fs_applied,
         mpc_fs_armed,
         mpc_fs_last,
+        diag_mpc_reference,
+        diag_mpc_time,
+        diag_mpc_net_cop,
+        wrench_mpc_frames,
     };
     let mut wbc_state = WbcState {
         solver,
@@ -5310,7 +5386,7 @@ fn main() {
                     diag.mpc_diag_count += 1;
                     mpc_capture_ns = capture_start.elapsed().as_nanos();
                 }
-                let previous_age = diag_mpc_time.map_or(-1.0, |stamp| t - stamp);
+                let previous_age = ctl.diag_mpc_time.map_or(-1.0, |stamp| t - stamp);
                 let mpc_solve_start = std::time::Instant::now();
                 let mpc_result = articara::biped::wrench_mpc::solve_with_workspace(
                     &input,
@@ -5333,8 +5409,8 @@ fn main() {
                     Some(solution) => {
                         let mut by_side = [articara::biped::wrench_mpc::Wrench::zeros(); 2];
                         by_side.copy_from_slice(&solution.sole_wrenches);
-                        diag_mpc_reference = input.reference_fz_schedule[0];
-                        diag_mpc_time = Some(t);
+                        ctl.diag_mpc_reference = input.reference_fz_schedule[0];
+                        ctl.diag_mpc_time = Some(t);
                         ctl.wrench_mpc_command = Some(by_side);
                         {
                             let (mut mx, mut my, mut fz) = (0.0, 0.0, 0.0);
@@ -5349,14 +5425,14 @@ fn main() {
                                 my += m.y - c.position.x * f.z + c.position.z * f.x;
                                 fz += f.z;
                             }
-                            diag_mpc_net_cop = if fz > 1.0 {
+                            ctl.diag_mpc_net_cop = if fz > 1.0 {
                                 [-my / fz, mx / fz]
                             } else {
                                 [f64::NAN; 2]
                             };
                         }
                         if diag.qp_wrench_log.is_some() {
-                            wrench_mpc_frames = Some(input.contacts.clone());
+                            ctl.wrench_mpc_frames = Some(input.contacts.clone());
                         }
                         if let Some(f) = diag.mpc_traj_file.as_mut() {
                             use std::io::Write as _;
@@ -5371,7 +5447,7 @@ fn main() {
                                     None => row += &format!(",{nan},{nan},{nan}"),
                                 }
                             }
-                            row += &format!(",{:.5},{:.5}", diag_mpc_net_cop[0], diag_mpc_net_cop[1]);
+                            row += &format!(",{:.5},{:.5}", ctl.diag_mpc_net_cop[0], ctl.diag_mpc_net_cop[1]);
                             for k in 0..16 {
                                 match input.reference_net_cop_schedule.as_ref().and_then(|v| v.get(k)) {
                                     Some(c) => row += &format!(",{:.5},{:.5}", c.x, c.y),
@@ -6490,13 +6566,12 @@ fn main() {
         // if the command is MET. So either the command is not met (a higher
         // level is eating it) or the measured divergence is impossible. This
         // separates the two without guessing.
-        {
+        let (trunk_cmd_rp, trunk_acc_rp) = {
             let qdd = dyn_ctx.qddot().eval(&sol.x);
             let jr = j_trunk.rows(0, 2).into_owned();
             let acc = &jr * &qdd + djv_trunk.rows(0, 2).into_owned();
-            trunk_cmd_rp = rp_ref;
-            trunk_acc_rp = [acc[0], acc[1]];
-        }
+            (rp_ref, [acc[0], acc[1]])
+        };
         let degraded = !matches!(sol.status, misa_wbc::SolveStatus::Optimal);
         let qp_capture_timer = std::time::Instant::now();
         if let Some(dir) = &diag.qp_diag_dir {
@@ -6653,7 +6728,9 @@ fn main() {
                 f_qp_w[side][k] = extracted.forces[6 * slot + 3 + k];
             }
         }
-        diag_wbc_net_cop = if wbc_net_cop_acc[2] > 1.0 {
+        // The same net pressure point as `diag_mpc_net_cop`, for the forces
+        // the WBC actually asked the robot for.
+        let diag_wbc_net_cop = if wbc_net_cop_acc[2] > 1.0 {
             [
                 wbc_net_cop_acc[0] / wbc_net_cop_acc[2],
                 wbc_net_cop_acc[1] / wbc_net_cop_acc[2],
@@ -6661,10 +6738,55 @@ fn main() {
         } else {
             [f64::NAN; 2]
         };
+        // The tick's record: what the controller computed, for the logs and
+        // the measurements below (which read it from here on).
+        let rec = TickRecord {
+            support,
+            step_idx,
+            steps,
+            stance_sides,
+            nc,
+            fz_meas,
+            xi,
+            r,
+            dcm_err,
+            p_cmd,
+            clamped,
+            z_ref,
+            a_com,
+            shares,
+            roll,
+            pitch,
+            rp_ref,
+            trunk_cmd_rp,
+            trunk_acc_rp,
+            swing_tgt,
+            swing_cmd_acc_z,
+            swing_achieved_acc_z,
+            swing_res_z,
+            swing_res_rows,
+            swing_task_residual_rms,
+            swing_pos_err_xy,
+            swing_pos_err_z,
+            replan_engaged: ctl.replan_engaged,
+            preview_c: ctl.preview_c,
+            preview_v: ctl.preview_v,
+            wrench_mpc_command: ctl.wrench_mpc_command,
+            diag_mpc_net_cop: ctl.diag_mpc_net_cop,
+            mpc_fs_last: ctl.mpc_fs_last,
+            cop_qp,
+            f_qp_w,
+            cop_use,
+            diag_wbc_net_cop,
+            acc_dbg: p0.acc_dbg,
+            reach_used,
+            hip_z,
+            stride_max_now,
+        };
         if let Some(file) = diag.transfer_diag.as_mut() {
             let mut nominal = [0.0; 2];
             let mut mask = 0u8;
-            for (slot, &side) in stance_sides.iter().enumerate() {
+            for (slot, &side) in rec.stance_sides.iter().enumerate() {
                 mask |= 1 << side;
                 // Native WBC force blocks use world axes (as f_qp_w above).
                 nominal[side] = forces_nominal[6 * slot + 5];
@@ -6687,18 +6809,18 @@ fn main() {
                 measured_mask as f64,
                 f64::from(mpc_valid),
                 if mpc_valid {
-                    diag_mpc_time.map_or(f64::NAN, |ts| t - ts)
+                    ctl.diag_mpc_time.map_or(f64::NAN, |ts| t - ts)
                 } else {
                     f64::NAN
                 },
                 stats.wrench_mpc_failures as f64,
                 if mpc_valid {
-                    diag_mpc_reference[0]
+                    ctl.diag_mpc_reference[0]
                 } else {
                     f64::NAN
                 },
                 if mpc_valid {
-                    diag_mpc_reference[1]
+                    ctl.diag_mpc_reference[1]
                 } else {
                     f64::NAN
                 },
@@ -7097,7 +7219,7 @@ fn main() {
                 .saturating_sub(qp_capture_ns)
                 .saturating_sub(mpc_capture_ns);
             writeln!(file, "{t:.9},{qp_solve_ns},{qp_check_ns},\"{:?}\",{qp_physical_violation:.12e},{qp_reset},{},{control_ns},{},{wrench_mpc_solves},{wrench_mpc_failures},{prefix_applied},{repair_applied},{repair_scaled_delta:.12e},{repair_ns}", sol.status,
-                control_ns > (dt * 1e9) as u128, diag_mpc_time.map_or(-1.0, |stamp| t-stamp),
+                control_ns > (dt * 1e9) as u128, ctl.diag_mpc_time.map_or(-1.0, |stamp| t-stamp),
                 wrench_mpc_solves = stats.wrench_mpc_solves, wrench_mpc_failures = stats.wrench_mpc_failures).unwrap();
         }
         if let Some(file) = &mut diag.qp_wrench_log {
@@ -7115,7 +7237,7 @@ fn main() {
                 let mut planned = na::SVector::<f64, 6>::zeros();
                 let mut wbc = na::SVector::<f64, 6>::zeros();
                 let mut mpc = na::SVector::<f64, 6>::repeat(f64::NAN);
-                let slot = stance_sides.iter().position(|s| *s == side);
+                let slot = rec.stance_sides.iter().position(|s| *s == side);
                 if let Some((position, orientation)) = &pose {
                     let rotation = orientation.to_rotation_matrix().into_inner();
                     let origin = na::Vector3::from_column_slice(position);
@@ -7139,7 +7261,7 @@ fn main() {
                         planned =
                             contact_wrench_in_sole(&origin, &force, &moment, &sole, &rotation);
                     }
-                    if let (Some(command), Some(frames)) = (&ctl.wrench_mpc_command, &wrench_mpc_frames)
+                    if let (Some(command), Some(frames)) = (&ctl.wrench_mpc_command, &ctl.wrench_mpc_frames)
                     {
                         let source = &frames[side];
                         let force = source.rotation * command[side].fixed_rows::<3>(3);
@@ -7167,7 +7289,7 @@ fn main() {
                     valid(&planned),
                     valid(&wbc),
                     measured_c.sole_wrench_valid[side],
-                    diag_mpc_time.map_or(-1.0, |stamp| t - stamp)
+                    ctl.diag_mpc_time.map_or(-1.0, |stamp| t - stamp)
                 )
                 .unwrap();
                 for wrench in [
@@ -7269,7 +7391,7 @@ fn main() {
                 .map(|v| v[2])
                 .unwrap_or(0.0);
             let swing_z = rig.sim.body_world_position(prof.foot_links[1]).unwrap()[2];
-            let support_code = match support {
+            let support_code = match rec.support {
                 Support::Double => 0.0,
                 Support::Single { stance, .. } => 1.0 + stance as f64,
             };
@@ -7280,7 +7402,7 @@ fn main() {
                 prof.sole_below_origin,
             );
             let [al, ar] = actual_feet.sole;
-            let [gl, gr] = steps.sole;
+            let [gl, gr] = rec.steps.sole;
             let link_l = misarta::se3::translation(&data.oMi[rig.foot_mi[0]]);
             let link_r = misarta::se3::translation(&data.oMi[rig.foot_mi[1]]);
             let anchor_l_y = wbc_state.anchors.a[0].map_or(f64::NAN, |(p, _)| p.y);
@@ -7294,23 +7416,23 @@ fn main() {
                 .body_world_linear_velocity(prof.foot_links[1])
                 .unwrap_or([0.0; 3]);
             let extra = [
-                xi.x,
-                xi.y,
-                r.xi.x,
-                r.xi.y,
-                r.p.x,
-                r.p.y,
-                p_cmd.x,
-                p_cmd.y,
-                clamped,
-                dcm_err,
+                rec.xi.x,
+                rec.xi.y,
+                rec.r.xi.x,
+                rec.r.xi.y,
+                rec.r.p.x,
+                rec.r.p.y,
+                rec.p_cmd.x,
+                rec.p_cmd.y,
+                rec.clamped,
+                rec.dcm_err,
                 support_code,
-                step_idx as f64,
-                *shares.first().unwrap_or(&0.0),
-                *shares.get(1).unwrap_or(&0.0),
-                swing_tgt.x,
-                swing_tgt.y,
-                swing_tgt.z,
+                rec.step_idx as f64,
+                *rec.shares.first().unwrap_or(&0.0),
+                *rec.shares.get(1).unwrap_or(&0.0),
+                rec.swing_tgt.x,
+                rec.swing_tgt.y,
+                rec.swing_tgt.z,
                 ankle_roll[0],
                 ankle_roll[1],
                 push_now[0],
@@ -7346,11 +7468,11 @@ fn main() {
                 gr.x,
                 gr.y,
                 gr.z,
-                if ctl.replan_engaged { 1.0 } else { 0.0 },
-                ctl.preview_c.x,
-                ctl.preview_c.y,
-                ctl.preview_v.x,
-                ctl.preview_v.y,
+                if rec.replan_engaged { 1.0 } else { 0.0 },
+                rec.preview_c.x,
+                rec.preview_c.y,
+                rec.preview_v.x,
+                rec.preview_v.y,
                 stats.preview_error,
                 stats.preview_count as f64,
                 stats.preview_failures as f64,
@@ -7368,40 +7490,40 @@ fn main() {
                 0.0,  // capture_tilt (removed stair transfer)
                 trunk_tilt_roll,
                 trunk_tilt_pitch,
-                trunk_cmd_rp[1],
-                trunk_acc_rp[1],
-                trunk_cmd_rp[0],
-                trunk_acc_rp[0],
+                rec.trunk_cmd_rp[1],
+                rec.trunk_acc_rp[1],
+                rec.trunk_cmd_rp[0],
+                rec.trunk_acc_rp[0],
                 -1.0, // transfer_guard (removed stair transfer)
-                if ctl.wrench_mpc_command.is_some() {
+                if rec.wrench_mpc_command.is_some() {
                     1.0
                 } else {
                     0.0
                 },
-                ctl.wrench_mpc_command.as_ref().map_or(0.0, |w| w[0][5]),
-                ctl.wrench_mpc_command.as_ref().map_or(0.0, |w| w[1][5]),
-                diag_mpc_net_cop[0],
-                diag_mpc_net_cop[1],
-                ctl.mpc_fs_last.x,
-                ctl.mpc_fs_last.y,
-                diag_wbc_net_cop[0],
-                diag_wbc_net_cop[1],
+                rec.wrench_mpc_command.as_ref().map_or(0.0, |w| w[0][5]),
+                rec.wrench_mpc_command.as_ref().map_or(0.0, |w| w[1][5]),
+                rec.diag_mpc_net_cop[0],
+                rec.diag_mpc_net_cop[1],
+                rec.mpc_fs_last.x,
+                rec.mpc_fs_last.y,
+                rec.diag_wbc_net_cop[0],
+                rec.diag_wbc_net_cop[1],
                 stats.wrench_mpc_solves as f64,
                 stats.wrench_mpc_failures as f64,
-                swing_pos_err_xy,
-                swing_pos_err_z,
-                swing_task_residual_rms,
-                swing_res_z,
-                swing_res_rows,
-                swing_cmd_acc_z,
-                swing_achieved_acc_z,
+                rec.swing_pos_err_xy,
+                rec.swing_pos_err_z,
+                rec.swing_task_residual_rms,
+                rec.swing_res_z,
+                rec.swing_res_rows,
+                rec.swing_cmd_acc_z,
+                rec.swing_achieved_acc_z,
                 tau_use_max,
                 tau_saturated_count as f64,
-                reach_used[0],
-                reach_used[1],
-                hip_z[0],
-                hip_z[1],
-                stride_max_now,
+                rec.reach_used[0],
+                rec.reach_used[1],
+                rec.hip_z[0],
+                rec.hip_z[1],
+                rec.stride_max_now,
             ];
             if let Some(file) = &mut diag.mom_diag_log {
                 use std::io::Write;
@@ -7418,7 +7540,7 @@ fn main() {
                 writeln!(file, "{t:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{}",
                     h[0],h[1],h[2],h_arm[0],h_arm[1],h_arm[2],
                     h[0]-h_arm[0],h[1]-h_arm[1],h[2]-h_arm[2],
-                    measured.cop[0][2],measured.cop[1][2],cop_qp[0][2],cop_qp[1][2],nc).unwrap();
+                    measured.cop[0][2],measured.cop[1][2],rec.cop_qp[0][2],rec.cop_qp[1][2],rec.nc).unwrap();
             }
             // GAIT_DUMP_T="t0,t1": one line per tick with the gait slice the
             // clock is on against the contact-driven stance set.
@@ -7430,29 +7552,29 @@ fn main() {
                 let sl = &plan.gait.slices[i];
                 println!(
                     "  [gait] t={t:.3} slice {i} {:?} [{:.3},{:.3}] stance={:?} fz=({:.0},{:.0}) xi.x={:.3} ref.x={:.3}",
-                    sl.support, sl.t0, sl.t1, stance_sides, fz_meas[0], fz_meas[1], xi.x, r.xi.x
+                    sl.support, sl.t0, sl.t1, rec.stance_sides, rec.fz_meas[0], rec.fz_meas[1], rec.xi.x, rec.r.xi.x
                 );
             }
             let row = Row {
                 t,
                 com,
-                com_ref_z: z_ref,
+                com_ref_z: rec.z_ref,
                 // The renderer's `com_ref_y` panel is the lateral reference;
                 // for a walk that is the DCM target, not a fixed point.
-                com_ref_y: r.xi.y,
-                tilt: roll.abs().max(pitch.abs()),
+                com_ref_y: rec.r.xi.y,
+                tilt: rec.roll.abs().max(rec.pitch.abs()),
                 trunk_tilt,
-                n_stance: nc,
+                n_stance: rec.nc,
                 foot_z,
                 swing_z,
                 foot_vz,
-                acc_dbg: p0.acc_dbg,
-                a_com,
-                rp_ref,
+                acc_dbg: rec.acc_dbg,
+                a_com: rec.a_com,
+                rp_ref: rec.rp_ref,
                 degraded,
                 cop_box: (sole_half_l * cop_frac, sole_half_w * cop_frac),
-                cop_qp,
-                f_qp_w,
+                cop_qp: rec.cop_qp,
+                f_qp_w: rec.f_qp_w,
                 measured: &measured,
                 taus: &robot_taus,
                 extra: &extra,
@@ -7510,7 +7632,7 @@ fn main() {
         }
         let cur_z = rig.sim.body_world_position(&rig.robot.root_link).unwrap()[2];
         m.min_z = m.min_z.min(cur_z);
-        let tilt = roll.abs().max(pitch.abs());
+        let tilt = rec.roll.abs().max(rec.pitch.abs());
         m.max_tilt = m.max_tilt.max(tilt);
         if m.push_at_t.is_some() {
             m.push_tilt_max = m.push_tilt_max.max(tilt);
@@ -7519,7 +7641,7 @@ fn main() {
             m.win_tilt_max = m.win_tilt_max.max(tilt);
         }
         if tick % 40 == 0 {
-            let sup = match support {
+            let sup = match rec.support {
                 Support::Double => "DS  ".to_string(),
                 Support::Single { stance, .. } => {
                     format!("SS{}", if stance == 0 { "L" } else { "R" })
@@ -7528,7 +7650,8 @@ fn main() {
             println!(
                 "  t={t:6.3} {sup} step={step_idx:3}  com=({:+.4},{:+.4},{:+.4})  \
                  xi=({:+.4},{:+.4}) err={:.4}  zmp=({:+.4},{:+.4})  cop_use={cop_use:.2}  {:?}",
-                com.x, com.y, com.z, xi.x, xi.y, dcm_err, p_cmd.x, p_cmd.y, sol.status
+                com.x, com.y, com.z, rec.xi.x, rec.xi.y, rec.dcm_err, rec.p_cmd.x, rec.p_cmd.y, sol.status,
+                step_idx = rec.step_idx, cop_use = rec.cop_use
             );
         }
         // Height is judged against the surface under the body, or a robot
