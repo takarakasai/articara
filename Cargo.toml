@@ -25,7 +25,7 @@ qp-proxqp = ["misa-wbc/proxqp"]
 qp-eiquadprog = ["misa-wbc/eiquadprog"]
 qp-qpoases = ["misa-wbc/qpoases"]
 qp-osqp = ["misa-wbc/osqp"]
-qp-hpipm = ["misa-wbc/hpipm"]
+qp-hpipm = ["misa-wbc/hpipm", "misa-mpc/qp-hpipm"]
 qp-native = ["qp-proxqp", "qp-eiquadprog", "qp-qpoases", "qp-osqp", "qp-hpipm"]
 
 # The GUI binary and several examples only build with specific features.
@@ -146,6 +146,9 @@ misarta-formats = { git = "https://github.com/takarakasai/misarta.git" }
 # (e.g. a biped) can call the generic task catalogue / Dynamics context
 # directly. See examples/kyo46rs_squat.rs.
 misa-wbc = { git = "https://github.com/takarakasai/misa-wbc.git" }
+# Biped planners and the wrench MPC, lifted out of `src/biped` (2026-10-29).
+misa-mpc = { path = "crates/misa-mpc" }
+misa-biped = { path = "crates/misa-biped" }
 quadruped-gait = { git = "https://github.com/takarakasai/quadruped-gait.git" }
 # Sim-deploy for the Go2 RL policy (`go2_policy_sim` example): the same
 # deploy-side ONNX runtime the hardware runner uses. Optional so the GUI
@@ -166,7 +169,7 @@ approx = "0.5"
 serde_json = "1"
 
 [workspace]
-members = [".", "xtask", "vendor/misa-wbc"]
+members = [".", "xtask", "vendor/misa-wbc", "crates/misa-mpc", "crates/misa-biped"]
 
 
 [[example]]

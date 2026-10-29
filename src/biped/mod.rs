@@ -11,14 +11,19 @@
 //!
 //! # Layout
 //!
-//! - [`profile`] -- per-machine constants (kyo46rs, Unitree G1).
+//! The simulator-free planners live in the `misa-biped` crate and the wrench
+//! MPC in `misa-mpc` (lifted out 2026-10-29); they are re-exported here under
+//! their old paths so `articara::biped::gait` etc. keep working.
+//!
+//! - [`profile`] -- per-machine constants (kyo46rs, Unitree G1). (misa-biped)
 //! - [`rig`]     -- URDF -> plant bring-up, and the per-tick state sync.
 //! - [`contact`] -- contact anchors, contact Jacobians, sole-wrench selection.
 //! - [`tasks`]   -- one builder per priority level of the hierarchical QP.
 //! - [`actuate`] -- degraded-solve policy, fallback PD, and the plant write.
 //! - [`log`]     -- the trajectory CSV the replay tooling reads.
-//! - [`gait`]    -- support schedule and swing-foot trajectory.
-//! - [`dcm`]     -- LIPM / divergent-component-of-motion balance reference.
+//! - [`gait`]    -- support schedule and swing-foot trajectory. (misa-biped)
+//! - [`dcm`]     -- LIPM / divergent-component-of-motion balance reference. (misa-biped)
+//! - [`wrench_mpc`] -- single-rigid-body wrench MPC. (misa-mpc)
 //!
 //! # Two things that must not be quietly removed
 //!
@@ -29,21 +34,14 @@
 //! tangential reaction the QP was planning against. See
 //! `doc/kyo46rs_biped_wbc.md`.
 
-pub mod profile;
+pub use misa_biped::{contact_plan, dcm, gait, height, preview, profile, reach, terrain};
+pub use misa_mpc::wrench_mpc;
 
 #[cfg(feature = "mujoco")]
 pub mod rig;
 
 pub mod contact;
-pub mod dcm;
-pub mod gait;
-pub mod preview;
-pub mod reach;
-pub mod height;
-pub mod terrain;
-pub mod contact_plan;
 pub mod tasks;
-pub mod wrench_mpc;
 
 #[cfg(feature = "mujoco")]
 pub mod actuate;

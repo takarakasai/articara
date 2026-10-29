@@ -751,7 +751,7 @@ impl LandingTiming {
 #[cfg(test)]
 mod landing_tests {
     use super::*;
-    use crate::biped::gait::{FootstepPlan, Footsteps, GaitParams, GaitPlan};
+    use crate::gait::{FootstepPlan, Footsteps, GaitParams, GaitPlan};
     fn setup(height: f64) -> (GaitPlan, FootstepPlan, Footsteps) {
         let gait = GaitPlan::new(&GaitParams::default());
         let actual = Footsteps {

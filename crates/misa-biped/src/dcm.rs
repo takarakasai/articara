@@ -538,7 +538,7 @@ impl SupportBox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::biped::gait::{GaitParams, GaitPlan, LEFT, RIGHT};
+    use crate::gait::{GaitParams, GaitPlan, LEFT, RIGHT};
 
     fn steps() -> Footsteps {
         Footsteps {
@@ -785,7 +785,7 @@ mod tests {
 /// During single support the ZMP is parked at the stance sole, so the DCM
 /// obeys `xi(t) = p + (xi_0 - p) exp(omega t)` in closed form. Two knobs can
 /// steer where it ends up at touchdown: WHERE the next foot goes, and WHEN it
-/// gets there. Placement is [`crate::biped::gait::FootstepPlan`]'s adaptation
+/// gets there. Placement is [`crate::gait::FootstepPlan`]'s adaptation
 /// (`ADAPT_STEP`), and on this machine it is measured harmful -- 26 grid
 /// points improved against 83 worsened over 672 runs (doc Sec.19.6). Timing
 /// has never been tried: `t_ss` is a constant, so a disturbed machine walks

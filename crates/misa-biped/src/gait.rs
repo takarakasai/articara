@@ -8,7 +8,7 @@
 
 use nalgebra as na;
 
-/// 0 = left, 1 = right, matching [`super::rig::BipedRig::foot_mi`].
+/// 0 = left, 1 = right, matching `BipedRig::foot_mi` (articara).
 pub type Side = usize;
 pub const LEFT: Side = 0;
 pub const RIGHT: Side = 1;

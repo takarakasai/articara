@@ -96,7 +96,9 @@ pub struct Input {
     /// gait actually constrains is the net, which is the force-weighted mean
     /// of the two -- and that is still linear in the wrench:
     ///
-    ///     sum_i [ m_i + (p_i - c) x f_i ]_z-free  =>  two rows
+    /// ```text
+    /// sum_i [ m_i + (p_i - c) x f_i ]_z-free  =>  two rows
+    /// ```
     ///
     /// written out, with `p_i` the contact origin and `c` the target:
     ///     sum_i ( m_x,i + (p_iy - c_y) f_z,i - (p_iz - c_z) f_y,i ) = 0
@@ -130,7 +132,9 @@ pub struct Input {
     /// and cannot be made into one by choosing the two weights, because a
     /// diagonal cost in (c, c_dot) has no cross term and the DCM cost
     ///
-    ///     |c + c_dot/omega - xi_ref|^2
+    /// ```text
+    /// |c + c_dot/omega - xi_ref|^2
+    /// ```
     ///
     /// is exactly a cross term. Meanwhile the WBC's commanded pressure point
     /// IS a DCM law. So the two ran different feedback on the same plant, and

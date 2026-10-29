@@ -2,7 +2,7 @@
 //!
 //! Everything in the controller that is a property of the ROBOT rather than
 //! of the control law. It was all inlined for kyo46rs, which is exactly how
-//! [`crate::wbc_pipeline::WbcPipeline`] ended up unusable for anything but a
+//! articara's `WbcPipeline` ended up unusable for anything but a
 //! quadruped -- the leg count was spelled `[String; 4]` in a dozen places.
 //! Adding a second machine is the moment to pay that off, not after.
 
