@@ -852,26 +852,10 @@ fn main() {
     // Default stays below swing; compare full closed-loop motion before adoption.
     let arm_before_swing = flag("ARM_BEFORE_SWING", false);
     let kp_arm = env_f64("KP_ARM", 400.0);
-    // BDI/IHMC 方式: 運動量と腕を、重心と「同じレベル」の重み付き目的として載せる。
-    //
-    // 現行の階層は 接触 -> 重心/体幹 -> 遊脚 -> 腕保持 -> 姿勢 で、腕保持は遊脚の
-    // null space の中でしか動けない。G1 自由腕で N=16 実測: `ARM_HOLD=1` かつ
-    // `KP_ARM=752` でも腕は 186-215 deg 振れ、`KP_ARM` を 4 倍にすると 202 deg へ
-    // 「増える」。慣性 40 倍・粘性 10 倍でも抑えられない
-    // (doc/from_claude/20260919_g1_free_arm.md)。優先度の下にある限り、腕は
-    // 最適化の対象ではなく上位タスクの副産物になる。
-    //
-    // Koolen らの Atlas は単一 QP の重み付き目的で、主タスクが運動量変化率、
-    // 骨盤高さ・胸姿勢・手先・腕配置は「同じ QP の重み項」。Boston Dynamics も
-    // パルクール期の「総重心と慣性だけ」から「全関節の運動・全リンクの運動量」へ
-    // モデルを広げ、腕脚で慣性を変える制御を単一の MPC 最適化に入れたと述べている。
-    //
-    // どちらも既定 0 = 従来の階層のまま。
-    let mom_merge = env_f64("MOM_MERGE", 0.0).max(0.0);
-    let arm_merge = env_f64("ARM_MERGE", 0.0).max(0.0);
+    // (MOM_MERGE / ARM_MERGE, the momentum and arm tasks merged into the
+    // CoM level as weighted objectives in the BDI/IHMC manner, were not
+    // adopted: with the MPC's authority ARM_MERGE falls at once. Removed.)
     let kd_arm = env_f64("KD_ARM", 40.0);
-    // kd-only damping on the elbow joints (0 = off). See the arm level.
-    let elbow_kd = env_f64("ELBOW_KD", 0.0);
     // WHICH arm rows to hold. Holding all of them keeps a commanded pose but
     // costs the top lateral rung: at VY=0.073 the held arm survives 1 of 16
     // probes where the free arm survives 16 (Sec.38). The free arm keeps the
@@ -909,29 +893,6 @@ fn main() {
             b.get(2).is_some_and(|c| *c == b'z'),
         ]
     };
-    // Take the momentum task's reference from the wrench MPC instead of zero.
-    //
-    // `bt::angular_momentum` says `J_ang qdd + bias = dh_ref - kp (h - h_ref)`.
-    // With both references zero it says "never change angular momentum", which
-    // a walk cannot honour: the legs change it by construction, so the solver
-    // spends the cheapest joints it owns -- the arms -- cancelling them.
-    // Measured 2026-09-20 on the free-arm G1 (doc/from_claude/20260920_bdi_task_structure.md):
-    // enabling the task took arm travel from 1.8 deg to 272-297 deg and
-    // sweeping `KP_MOM` over 60x did not move it, because the REFERENCE, not
-    // the gain, is what forbids the motion. That doc's conclusion was that a
-    // planner had to supply `h(t)` first, and that this example could not be
-    // connected to one because it runs its own DCM gait.
-    //
-    // The closed-loop wrench MPC (2026-09-22) is that planner, and it plans
-    // THIS gait: its centroidal state carries angular momentum, so its
-    // terminal value is the momentum this motion is heading for under the
-    // contact wrenches it just solved for. Setting `h_ref = h_now` cancels the
-    // P term and leaves `dh_ref` = the MPC's planned rate, i.e. "change
-    // angular momentum the way the plan says", which the legs can satisfy on
-    // their own -- so the arms are no longer asked to cancel anything.
-    //
-    // Default OFF, and inert unless `MOM` and `STAIR_WRENCH_MPC` are both on.
-    let mom_ref_mpc = flag("MOM_REF_MPC", false);
     // Where the level sits in the stack. The task is an EQUALITY at its
     // level, so `kp` does not control how much of the null space it takes --
     // even `kp=0` still demands `ḣ_ang = 0`, i.e. "never change roll momentum",
@@ -977,12 +938,6 @@ fn main() {
     // large request is one the solver cannot fill and will chase to the joint
     // limits; this bounds the ask rather than the gain.
     let mom_arm_dcm_max = env_f64("MOM_ARM_DCM_MAX", 20.0).max(0.0);
-    // Sagittal counterpart of MOM_ARM_DCM: a forward/backward DCM error asks
-    // for a PITCH angular-momentum rate (arms swinging in the sagittal
-    // plane), dh_ref[1] = MOM_ARM_DCM_X * (xi.x - xi_ref.x), clamped to
-    // MOM_ARM_DCM_X_MAX. Needs the pitch axis in MOM_AXES ("xy-"). 0 = off.
-    let mom_arm_dcm_x = env_f64("MOM_ARM_DCM_X", 0.0);
-    let mom_arm_dcm_x_max = env_f64("MOM_ARM_DCM_X_MAX", 20.0).max(0.0);
     // MOM_CMP: the hip strategy, written as the centroidal moment pivot.
     // When the DCM law's pressure point saturates at the support edge, the
     // deficit `p_raw - p_cmd` is pressure the polygon cannot give; the same
@@ -998,8 +953,6 @@ fn main() {
     let mom_cmp_max = env_f64("MOM_CMP_MAX", 20.0).max(0.0);
     let mom_cmp_dead = env_f64("MOM_CMP_DEAD", 0.003).max(0.0);
     let mom_cmp_w = env_f64("MOM_CMP_W", 1.0).max(0.0);
-    // Only while a recovery reference is engaged.
-    let mom_cmp_ref_only = flag("MOM_CMP_REF_ONLY", false);
     // Sign check (+1 = the derivation above) and a cap on the angular
     // momentum the strategy may build up [N m s]: a hip strategy is a
     // transient -- past the cap the rate in that direction is cut to zero
@@ -1012,8 +965,8 @@ fn main() {
     // pushes 301 -> 326 but the descents 191 -> 166, 3-step 142 -> 101,
     // the up-and-over 2/4 cm 48 -> 15 -- on a descent the pressure
     // saturates by design and leaning on it breaks the step. Ascents and
-    // the flat were unchanged. true = lean on stairs too.
-    let mom_cmp_stairs = flag("MOM_CMP_STAIRS", false);
+    // the flat were unchanged. (MOM_CMP_STAIRS, lean on stairs too, is
+    // removed.)
     let mut n_mom_cmp_ticks = 0u32;
     let mut mom_cmp_peak = 0.0_f64;
     let use_trunk = flag("TRUNK", true);
@@ -3626,10 +3579,6 @@ fn main() {
     let mut mpc_fs_last = na::Vector2::zeros();
     // (solve time, CoM at solve, CoM velocity at solve, predicted [c, v] per node end)
     let mut wrench_mpc_traj: Option<(f64, na::Vector3<f64>, na::Vector3<f64>, Vec<[na::Vector3<f64>; 2]>)> = None;
-    // Planned dh over the MPC horizon, held between MPC updates. Zero until
-    // the first solution, so a tick before the MPC has run reproduces the
-    // zero-reference behaviour exactly.
-    let mut wrench_mpc_momentum_rate = na::Vector3::zeros();
     let mut wrench_mpc_solves = 0u32;
     let mut wrench_mpc_failures = 0u32;
     let mut wrench_mpc_soft = 0u32;
@@ -6776,14 +6725,6 @@ fn main() {
                             }
                             println!();
                         }
-                        // The horizon the terminal state sits at. `Solution`
-                        // carries only the terminal momentum, not a per-node
-                        // series, so the reference is the mean rate over it.
-                        let horizon_t = stair_wrench_preview_dt
-                            * stair_wrench_horizon as f64;
-                        wrench_mpc_momentum_rate = (solution.terminal_momentum
-                            - input.angular_momentum)
-                            / horizon_t;
                         wrench_mpc_solves += 1;
                     }
                     None => {
@@ -6986,43 +6927,14 @@ fn main() {
                     na::DVector::from_row_slice(dcmm_v.as_slice()),
                 )
             };
-            // `h_ref = h_now` cancels the P term so only the planned rate
-            // remains; the masked `arms_neutral` mode keeps its own reference
-            // (there `h_use` is the ARMS' contribution alone, and zero is the
-            // right thing to ask of it).
-            // Only while the MPC is actually running and its solution is
-            // fresh. It runs only during a transfer (line ~4645), so outside
-            // one the stored rate is stale and the reference falls back to
-            // zero -- the previous behaviour -- rather than commanding a rate
-            // the plan no longer holds.
-            let use_mpc_ref = mom_ref_mpc
-                && !arms_neutral
-                && diag_mpc_time
-                    .is_some_and(|last| t - last <= stair_wrench_max_age + 1e-9);
-            let h_ref = if use_mpc_ref {
-                [h_use[0], h_use[1], h_use[2]]
-            } else {
-                [0.0_f64; 3]
-            };
-            // A2 の計画参照(`h`/`dh` 5701 節点)が差さる口。現状ゼロ = P 項のみで従来と同一。
-            // ここに時変参照を入れるには、この example が参照と同じ動作を実行している
-            // 必要がある(いまは自前の DCM/足運び歩容なので、そのままでは接続できない)。
-            let mut dh_ref = if use_mpc_ref {
-                [
-                    wrench_mpc_momentum_rate[0],
-                    wrench_mpc_momentum_rate[1],
-                    wrench_mpc_momentum_rate[2],
-                ]
-            } else {
-                [0.0_f64; 3]
-            };
+            // Zero references (MOM_REF_MPC, the MPC's planned rate as the
+            // reference, was not adopted and is removed); the arms-only DCM
+            // ask below is the one rate this task is given.
+            let h_ref = [0.0_f64; 3];
+            let mut dh_ref = [0.0_f64; 3];
             if arms_neutral && mom_arm_dcm != 0.0 {
                 dh_ref[0] = (-mom_arm_dcm * (xi.y - r.xi.y))
                     .clamp(-mom_arm_dcm_max, mom_arm_dcm_max);
-            }
-            if arms_neutral && mom_arm_dcm_x != 0.0 {
-                dh_ref[1] = (mom_arm_dcm_x * (xi.x - r.xi.x))
-                    .clamp(-mom_arm_dcm_x_max, mom_arm_dcm_x_max);
             }
             let dh_ref = dh_ref;
             bt::angular_momentum(
@@ -7052,8 +6964,7 @@ fn main() {
             _ => false,
         };
         let p_cmp = if mom_cmp > 0.0
-            && (!mom_cmp_ref_only || ref_mode.is_some())
-            && (mom_cmp_stairs || !in_stair_zone)
+            && !in_stair_zone
             && zmp_deficit.norm() > mom_cmp_dead
         {
             let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
@@ -7119,7 +7030,7 @@ fn main() {
         } else {
             (None, 0.0)
         };
-        let p_arm = if arm_hold {
+        let mut p_arm = if arm_hold {
             let jab_names: Option<(&str, &str)> = jab_side.map(|s| {
                 if s == 0 {
                     ("left_shoulder_pitch_joint", "left_elbow_joint")
@@ -7166,38 +7077,6 @@ fn main() {
         } else {
             None
         };
-        // Pure DAMPING on the elbows: kd only, kp = 0, merged into the arm
-        // level. The landing jerk of a stair swing whips the free forearm
-        // into its flexion stop (30-35 ms, 1.3-1.7 mrad past the URDF limit
-        // -- the last failing cell of the capability gate), and every
-        // position-holding cure re-broke the walk the way Sec.38 measured.
-        // A damping row asserts no target posture, so it has no null-space
-        // demand to steal; it only bleeds the jolt.
-        let mut p_arm = if elbow_kd > 0.0 {
-            let elbows: Vec<(usize, usize)> = rig
-                .actuated()
-                .into_iter()
-                .filter(|&(ji, _)| rig.robot.joints[ji].name.contains("elbow"))
-                .collect();
-            let damp = bt::posture(
-                dyn_ctx.qddot(),
-                &elbows,
-                &rig.robot.joint_positions,
-                &rig.q_seed,
-                v,
-                0.0,
-                elbow_kd,
-                na_count,
-                nv,
-            );
-            Some(match p_arm {
-                Some(pa) => pa + damp,
-                None => damp,
-            })
-        } else {
-            p_arm
-        };
-
         // ---- P4: posture ------------------------------------------------
         let p3 = bt::posture(
             dyn_ctx.qddot(),
@@ -7867,29 +7746,8 @@ fn main() {
         if let Some(pc) = p_cmp {
             p1_centroidal = p1_centroidal + pc.weight(mom_cmp_w);
         }
-        // 運動量と腕を重心レベルへ合流(BDI/IHMC 方式)。既定 0 で無効。
-        let mut merged_mom = false;
-        if mom_merge > 0.0 {
-            if let Some(pm) = mom_pending.take() {
-                p1_centroidal = p1_centroidal + pm.weight(mom_merge);
-                merged_mom = true;
-            }
-        }
-        let mut merged_arm = false;
-        if arm_merge > 0.0 {
-            if let Some(pa) = p_arm.take() {
-                p1_centroidal = p1_centroidal + pa.weight(arm_merge);
-                merged_arm = true;
-            }
-        }
         levels.push(p1_centroidal);
-        level_names.push(match (coupled_active, merged_mom, merged_arm) {
-            (true, _, _) => "com+momentum+wrench",
-            (false, true, true) => "com+momentum+arm",
-            (false, true, false) => "com+momentum",
-            (false, false, true) => "com+arm",
-            (false, false, false) => "com",
-        });
+        level_names.push(if coupled_active { "com+momentum+wrench" } else { "com" });
         if use_trunk && !(coupled_active && stair_wrench_trunk_coupled) {
             levels.push(p2);
             level_names.push("trunk");
@@ -7993,7 +7851,7 @@ fn main() {
                     .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
                     .collect();
                 let default = match name {
-                    "com" | "com+momentum" | "com+arm" | "com+momentum+arm" | "com+momentum+wrench" => 1.0,
+                    "com" | "com+momentum+wrench" => 1.0,
                     "swing" | "contact recovery" => 1.0,
                     "trunk" => 0.3,
                     "momentum" => 0.1,
