@@ -176,259 +176,34 @@ impl RefMode {
     }
 }
 
-fn main() {
-    use articara::biped::actuate::{
-        CommandPolicy, DegradedTally, gravity_plus_posture, write_to_plant,
-    };
-    use articara::biped::contact::{Anchors, contact_jacobians, cop_from_sole_wrench};
-    use articara::biped::dcm::{
-        DcmPlan, StepTiming, SupportBox, com_accel_xy, commanded_zmp, dcm_of, step_timing,
-    };
-    use articara::biped::gait::{
-        ContactCorrection, FootstepPlan, Footsteps, GaitParams, GaitPlan, Support,
-        swing_position, swing_velocity,
-    };
-    use articara::biped::log::{Row, TrajLog, measure_contacts};
-    use articara::biped::profile;
-    use articara::biped::rig::{BipedRig, CtrlMode, G, RigOptions};
-    use articara::biped::tasks as bt;
-    use misa_wbc::{Dynamics, Formulation, SolveConfig, Solver, tasks};
-    use nalgebra as na;
-    use std::f64::consts::PI;
-    use std::io::Write;
+/// Environment knobs: a number (unset or unparsable = `d`), and a switch
+/// (set to anything but "0" = on). Free functions rather than closures in
+/// `main`, so the scenario builders below read them the same way.
+#[cfg(feature = "mujoco")]
+fn env_f64(k: &str, d: f64) -> f64 {
+    std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d)
+}
+#[cfg(feature = "mujoco")]
+fn flag(k: &str, d: bool) -> bool {
+    std::env::var(k).map(|v| v != "0").unwrap_or(d)
+}
 
-    // ROUGH_MODE=1: the rough-terrain preset for an operator who knows the
-    // ground is uneven. Lift fully before advancing (SWING_Z_HOLD with the
-    // drop starting at 0.50 so early landings still work), a 0.15 start
-    // delay, and an 8 cm apex. Measured 2026-10-16/17 (N=48, v6.10):
-    // unmodelled bumps 10/20/30 mm = 48/46/48 (champion 35/13/5), but the
-    // lateral pushes at 0.12 m/s go 157 -> 150, so it is not the default.
-    // The mode WINS over the four knobs (the champion's controls carry a
-    // CEM-tuned LIFT_H of 0.051, which the mode must replace); the apex is
-    // ROUGH_MODE_LIFT_H (0.08).
-    if std::env::var("ROUGH_MODE").map(|v| v == "1").unwrap_or(false) {
-        // On a KNOWN slope the 8 cm apex falls on +3 deg (measured
-        // 2026-10-17, LIFT_H=0.08 alone: 16.0 s), 6 cm walks: the mode
-        // uses 6 cm there unless ROUGH_MODE_LIFT_H says otherwise.
-        let lift = std::env::var("ROUGH_MODE_LIFT_H")
-            .unwrap_or_else(|_| if std::env::var("TERRAIN_SLOPE").is_ok() { "0.06".into() } else { "0.08".into() });
-        for (k, v) in [("SWING_Z_HOLD", "1"), ("SWING_Z_DROP", "0.50,1.0"), ("SWING_XY_DELAY", "0.15"), ("LIFT_H", lift.as_str())] {
-            // SAFETY: single-threaded here, before any reader of these.
-            unsafe { std::env::set_var(k, v) };
-        }
-        println!("rough mode: SWING_Z_HOLD=1 SWING_Z_DROP=0.50,1.0 SWING_XY_DELAY=0.15 LIFT_H={lift}");
-    }
-    let env_f64 = |k: &str, d: f64| -> f64 {
-        std::env::var(k)
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(d)
-    };
-    let flag = |k: &str, d: bool| -> bool { std::env::var(k).map(|v| v != "0").unwrap_or(d) };
+/// What `build_scene` put into the world besides the robot. `stairs` is also
+/// the planner's terrain model; `spar_wall` (0 = none) is read back by the
+/// target-hit report.
+#[cfg(feature = "mujoco")]
+struct Scene {
+    stairs: Option<articara::biped::terrain::Stairs>,
+    spar_wall: f64,
+}
 
-    let prof = profile::by_name(&std::env::var("ROBOT").unwrap_or_default());
-
-    let mut o = RigOptions::from_profile(&prof);
-    o.knee = env_f64("KNEE", prof.knee_seed);
-    o.hip_pitch = env_f64("HIP_PITCH", -o.knee / 2.0);
-    o.ankle_pitch = env_f64("ANKLE_PITCH", -o.knee / 2.0);
-    o.joint_damping = env_f64("JOINT_DAMPING", prof.joint_damping);
-    // Per-joint viscous damping as a DESIGN input, e.g.
-    // DAMPING_OVERRIDES="elbow=0.25,ankle_pitch=0.4" (name substring = value,
-    // N*m*s/rad). Reaches plant and QP model consistently -- see RigOptions.
-    if let Ok(s) = std::env::var("DAMPING_OVERRIDES") {
-        for part in s.split(',').filter(|p| !p.trim().is_empty()) {
-            let (pat, val) = part
-                .split_once('=')
-                .expect("DAMPING_OVERRIDES wants name=value[,name=value]");
-            o.joint_damping_overrides.push((
-                pat.trim().to_string(),
-                val.trim().parse().expect("damping value"),
-            ));
-        }
-    }
-    o.armature = env_f64("ARMATURE", prof.armature);
-    // Override selected joints without changing the other motor groups.
-    // Example: ARMATURE_OVERRIDES="ankle_roll=0.005".
-    if let Ok(s) = std::env::var("ARMATURE_OVERRIDES") {
-        for part in s.split(',').filter(|p| !p.trim().is_empty()) {
-            let (pat, val) = part
-                .split_once('=')
-                .expect("ARMATURE_OVERRIDES wants name=value[,name=value]");
-            let value: f64 = val.trim().parse().expect("armature value");
-            assert!(
-                value.is_finite() && value >= 0.0,
-                "armature override must be finite and nonnegative"
-            );
-            o.joint_armature_overrides
-                .push((pat.trim().to_string(), value));
-        }
-    }
-    o.torque_scale = env_f64("TORQUE_SCALE", 1.0);
-    o.burnin_kp = env_f64("BURNIN_KP", prof.burnin_kp);
-    o.burnin_kv = env_f64("BURNIN_KV", prof.burnin_kv);
-    o.burnin_s = env_f64("BURNIN_S", prof.burnin_s);
-    o.run_kp = env_f64("RUN_KP", prof.burnin_kp);
-    o.run_kv = env_f64("RUN_KV", prof.burnin_kv);
-    o.ctrl_mode =
-        CtrlMode::from_env_name(&std::env::var("CTRL_MODE").unwrap_or_else(|_| "torque".into()));
-    o.sim_dt = env_f64("SIM_DT", 0.001);
-    o.mu_ground = env_f64("MU_GROUND", 0.7);
-    // MJ_NOSLIP=N: MuJoCo's noslip post-pass. Measured 2026-10-15 on the
-    // slope bench: a loaded stance foot creeps 0.2-0.5 cm/s along a 3-5 deg
-    // slope with the default solver (flat: 0.03), which is the solver's
-    // soft-contact artefact, not the controller. Unset = plant unchanged.
-    o.noslip_iterations = std::env::var("MJ_NOSLIP").ok().and_then(|v| v.parse::<u32>().ok()).filter(|&n| n > 0);
-    if let Ok(value) = std::env::var("FOOT_SOLIMP") {
-        let values: Vec<f64> = value
-            .split(',')
-            .map(|part| {
-                part.trim()
-                    .parse()
-                    .expect("FOOT_SOLIMP values must be numbers")
-            })
-            .collect();
-        assert!(values.len() == 3, "FOOT_SOLIMP wants d0,d_width,width");
-        assert!(
-            values[0] >= 0.0
-                && values[0] <= 1.0
-                && values[1] >= 0.0
-                && values[1] <= 1.0
-                && values[2] > 0.0,
-            "FOOT_SOLIMP requires d0,d_width in [0,1] and width > 0"
-        );
-        o.foot_solimp = Some([values[0], values[1], values[2]]);
-    }
-    o.probe_z = env_f64("PROBE_Z", prof.probe_z);
-    // Swing the arms out of the frontal plane. Measured: with the arms at
-    // zero the forearm collides with the hip block as soon as the robot rolls
-    // to step -- 301 ticks of it, peaking at 210 N, 3.2x body weight, all of
-    // it invisible to the QP. The spawn-time self-collision assert passes,
-    // because standing still is exactly the pose that clears.
-    if flag("NO_ARM_COLLIDE", false) {
-        o.uncollide_links = vec!["forearm", "upper_arm"];
-    }
-    // Narrow the stance by seeding hip roll. The lean the CoM must make to
-    // get over one sole is atan(half_stance / leg_length), and ankle_roll has
-    // to supply it while the sole stays flat -- so stance width and ankle_roll
-    // travel are the same constraint seen twice.
-    let hip_roll_seed = env_f64("HIP_ROLL_SEED", 0.0);
-    let arm_pitch = env_f64("ARM_PITCH", -1.40);
-    let elbow = env_f64("ELBOW", 0.0);
-    if arm_pitch != 0.0 || elbow != 0.0 {
-        o.extra_seed = vec![
-            ("left_shoulder_pitch_joint", arm_pitch),
-            ("right_shoulder_pitch_joint", arm_pitch),
-            ("left_elbow_joint", elbow),
-            ("right_elbow_joint", elbow),
-        ];
-    }
-    // Abduct the arms. The v6 shoulder roll exists precisely to open the
-    // forearm <-> hip_roll_block clearance Sec.10.4 measured at 2.5 mm, but
-    // nothing on the control side commands it -- the posture task only holds
-    // it near its seed, so at seed 0 the arm keeps the pitch-only geometry
-    // and now has a free axis to swing further in along. Positive is outward
-    // on the left, negative on the right (mirrored limits in the URDF).
-    // Setting it on a pre-v6 URDF panics in the rig, which is the honest
-    // outcome: the seed cannot be applied to a joint that does not exist.
-    let shoulder_roll_seed = env_f64("SHOULDER_ROLL", 0.0);
-    if shoulder_roll_seed != 0.0 {
-        o.extra_seed
-            .push(("left_shoulder_roll_joint", shoulder_roll_seed));
-        o.extra_seed
-            .push(("right_shoulder_roll_joint", -shoulder_roll_seed));
-    }
-    if hip_roll_seed != 0.0 {
-        // Signs mirror: both hips roll inward to bring the feet together, and
-        // the ankles roll back so the soles stay flat on the floor.
-        o.extra_seed.push((prof.hip_roll[0], -hip_roll_seed));
-        o.extra_seed.push((prof.hip_roll[1], hip_roll_seed));
-        o.extra_seed.push(("left_ankle_roll_joint", hip_roll_seed));
-        o.extra_seed
-            .push(("right_ankle_roll_joint", -hip_roll_seed));
-    }
-
-    // Seeded jitter on the INITIAL POSTURE of the twelve leg joints.
-    //
-    // The verification harnesses used to make their "members" by moving KD_COM
-    // by 1e-9, which samples the chaotic spread around ONE scenario rather
-    // than a distribution of situations. Measured 2026-09-24: under the
-    // weighted QP -- which is far less chaotic -- all sixteen members of a
-    // push condition then fell at the same millisecond, i.e. N=16 was really
-    // N=1. A jitter on the posture the robot is built in is a real initial
-    // condition, and it is the cheapest one that survives a controller that
-    // does not amplify rounding. INIT_JITTER = 0 (default) adds nothing and
-    // keeps every recipe bit-for-bit.
-    let init_jitter = env_f64("INIT_JITTER", 0.0).abs();
-    if init_jitter > 0.0 {
-        // A small deterministic generator, so a run is reproducible from
-        // (INIT_SEED, INIT_JITTER) alone and no RNG crate enters the example.
-        // SplitMix64 on the seed first: `seed | 1` would give 2 and 3 the
-        // same stream, which is how members 2/3, 4/5 and 6/7 came out
-        // identical on the first try.
-        let mut state = {
-            let mut z = (env_f64("INIT_SEED", 1.0) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            (z ^ (z >> 31)) | 1
-        };
-        let mut next = || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
-        };
-        // Added, never assigned: `extra_seed` would erase the profile's own
-        // posture (bent knees, hip pitch) as well as the stance-width seed.
-        for name in [
-            "left_hip_pitch_joint",
-            "left_hip_roll_joint",
-            "left_hip_yaw_joint",
-            "left_knee_joint",
-            "left_ankle_pitch_joint",
-            "left_ankle_roll_joint",
-            "right_hip_pitch_joint",
-            "right_hip_roll_joint",
-            "right_hip_yaw_joint",
-            "right_knee_joint",
-            "right_ankle_pitch_joint",
-            "right_ankle_roll_joint",
-        ] {
-            o.extra_seed_delta.push((name, init_jitter * next()));
-        }
-    }
-
-    // URDF override, for sweeping model variants without editing the shipped
-    // package. Leaked because Profile stores &'static str; this runs once.
-    let mut prof = prof;
-    if let Ok(u) = std::env::var("URDF") {
-        prof.urdf = Box::leak(u.into_boxed_str());
-        println!("URDF override: {}", prof.urdf);
-    }
-    // A variant that adds a waist splits `torso` into a pelvis carrying the
-    // legs and an upper body carrying the arms -- the same shape as G1, where
-    // the FreeFlyer is the pelvis and the thing held upright is above the
-    // waist. Both names have to move together or P2 regulates one body using
-    // another's Jacobian.
-    if let Ok(l) = std::env::var("ROOT_LINK") {
-        prof.root_link = Box::leak(l.into_boxed_str());
-    }
-    if let Ok(l) = std::env::var("TRUNK_LINK") {
-        prof.trunk_link = Some(Box::leak(l.into_boxed_str()));
-    }
-    // Leg reach (src/biped/reach.rs). `LEG_REACH` overrides the profile's
-    // measured length; the margin is what a PLAN may ask for. Used for the
-    // diagnostic columns always, and for the footstep bounds only when
-    // REACH_LIMIT is on.
-    let leg_reach = articara::biped::reach::LegReach {
-        max: env_f64("LEG_REACH", prof.leg_reach).max(0.0),
-        margin: env_f64("LEG_REACH_MARGIN", 0.95).clamp(0.1, 1.0),
-    };
-    let sole_half_l = env_f64("SOLE_HALF_L", prof.cop_half.0);
-    let sole_half_w = env_f64("SOLE_HALF_W", prof.cop_half.1);
-    let mu_ground = o.mu_ground;
-    let ctrl_mode = o.ctrl_mode;
-
+/// The scenario's scenery, as MJCF appended to `o.extra_worldbody` (and the
+/// spawn height it implies): `SPAR_WALL`, `TERRAIN_SLOPE` / `STAIRS`, then
+/// `TERRAIN_BUMPS`, in that order, printing as it goes. Kept out of `main` so
+/// the scenario (what the world is) reads apart from the controller (what the
+/// robot knows); only `stairs` reaches the controller.
+#[cfg(feature = "mujoco")]
+fn build_scene(o: &mut articara::biped::rig::RigOptions) -> Scene {
     // A thing to hit. `SPAR_WALL` is where its FRONT FACE goes, in metres
     // along +x; the body is welded to the world, which is the upper bound on
     // what a punch can transfer -- an opponent that gives way takes less.
@@ -649,6 +424,499 @@ fn main() {
         o.extra_worldbody = Some(match o.extra_worldbody.take() { Some(s) => s + wb.as_str(), None => wb });
         println!("bumps (unmodelled): {}", log.join(" "));
     }
+    Scene { stairs, spar_wall }
+}
+
+/// One rectangular push at a chosen gait phase (`PUSH_*`): the scenario's
+/// disturbance, fired once by `fire_push`. The measurement thresholds
+/// (`PUSH_RECOVER_*`, `PUSH_WINDOW_S`, ...) stay with the measurements.
+#[cfg(feature = "mujoco")]
+struct PushScenario {
+    /// Sized in IMPULSE (N*s), not force, because that is the quantity the
+    /// machine's recovery budget is denominated in: an ankle strategy can
+    /// absorb `m * omega * d_cop` of it and no more, which on this robot is
+    /// 6.63 * 5.585 * 0.019 = 0.70 N*s sideways against 1.8 N*s fore-aft.
+    /// Quoting a force instead hides the duration and makes two runs with the
+    /// same "10 N push" incomparable.
+    imp: f64,
+    /// Horizontal direction, degrees: 0 = +x (forward), 90 = +y (left). The
+    /// whole circle is reachable, so diagonals are one number rather than a
+    /// pair of components that have to be kept consistent with each other.
+    deg: f64,
+    /// Yaw impulse (N*m*s) about +z, independent of the linear one so a pure
+    /// twist is expressible.
+    yaw_imp: f64,
+    dt: f64,
+    /// WHEN. Not a wall-clock time: what the machine can absorb differs by
+    /// several times between double and single support, so a ladder that does
+    /// not pin the phase measures the phase as much as the impulse. Fire on
+    /// the first tick that is inside step `step`, in the requested
+    /// support, at or past `at` of the way through that slice.
+    step: usize,
+    at: f64,
+    /// "ds" | "ss" | "any" -- which support phase to catch.
+    support: String,
+    /// The link the push (and the FIX probe) is applied to.
+    link: String,
+}
+
+#[cfg(feature = "mujoco")]
+impl PushScenario {
+    fn from_env(root_link: &str) -> Self {
+        Self {
+            imp: env_f64("PUSH_IMPULSE", 0.0),
+            deg: env_f64("PUSH_DEG", 90.0),
+            yaw_imp: env_f64("PUSH_YAW_IMPULSE", 0.0),
+            dt: env_f64("PUSH_DT", 0.10).max(1e-6),
+            step: env_f64("PUSH_STEP", 5.0) as usize,
+            at: env_f64("PUSH_AT", 0.5).clamp(0.0, 1.0),
+            support: std::env::var("PUSH_SUPPORT").unwrap_or_else(|_| "ss".into()),
+            link: std::env::var("PUSH_LINK").unwrap_or_else(|_| root_link.to_string()),
+        }
+    }
+}
+
+/// Where the gait is on this tick, as far as the push trigger cares.
+#[cfg(feature = "mujoco")]
+struct PushTick {
+    t: f64,
+    step_idx: usize,
+    support: articara::biped::gait::Support,
+    slice_frac: f64,
+    /// End of the current slice (the pulse-spill warning).
+    slice_t1: f64,
+}
+
+/// The jab's own clock (`JAB_START`, `JAB_PERIOD`, `JAB_PATTERN`), for the
+/// push line that says where the jab was when the shove landed.
+#[cfg(feature = "mujoco")]
+struct JabClock<'a> {
+    start: f64,
+    period: f64,
+    pattern: &'a str,
+}
+
+/// Fire the scenario's push once, at the requested phase. Called after the
+/// plant write and before the plant step, so the push lands
+/// on the same tick boundary as the torques it has to fight, and the
+/// controller sees the consequence on the NEXT tick's measurement --
+/// which is the causal order a real shove has. The caller asks only while
+/// nothing has fired yet; true = fired on this tick (the caller records it).
+#[cfg(feature = "mujoco")]
+fn fire_push(
+    sim: &mut articara::mujoco_sim::MujocoSim,
+    push: &PushScenario,
+    tick: &PushTick,
+    total_mass: f64,
+    omega: f64,
+    jab: Option<JabClock>,
+) -> bool {
+    use articara::biped::gait::Support;
+    use std::f64::consts::PI;
+    let &PushScenario { imp: push_imp, deg: push_deg, yaw_imp: push_yaw_imp, dt: push_dt, step: push_step, at: push_at, .. } = push;
+    let &PushTick { t, step_idx, support, slice_frac, slice_t1 } = tick;
+    if !(push_imp.abs() > 0.0 || push_yaw_imp.abs() > 0.0) {
+        return false;
+    }
+    let phase_ok = match push.support.as_str() {
+        "ds" => matches!(support, Support::Double),
+        "ss" => matches!(support, Support::Single { .. }),
+        _ => true,
+    };
+    if step_idx == push_step && phase_ok && slice_frac >= push_at {
+        let th = push_deg.to_radians();
+        let f = push_imp / push_dt;
+        let (fx, fy) = (f * th.cos(), f * th.sin());
+        let tz = push_yaw_imp / push_dt;
+        sim.apply_external_force(&push.link, [fx, fy, 0.0], [0.0, 0.0, tz], push_dt);
+        let dv = push_imp / total_mass;
+        println!(
+            "  PUSH at t={t:.3} step={step_idx} {} frac={slice_frac:.2}: \
+             {push_imp:.3} N*s at {push_deg:.0} deg \
+             (F=[{fx:.1}, {fy:.1}] N for {push_dt:.3} s) -> dv={dv:.3} m/s, \
+             capture-point shift {:.1} mm",
+            match support {
+                Support::Double => "DS".to_string(),
+                Support::Single { stance, .. } =>
+                    format!("SS/{}", if stance == 0 { "L" } else { "R" }),
+            },
+            dv / omega * 1e3,
+        );
+        // Where the jab was when the shove landed. The jab runs on its
+        // own clock, unrelated to the gait, so without this line a
+        // push-vs-jab comparison is averaging over an unrecorded phase
+        // -- and "pushed at full extension" and "pushed back in guard"
+        // are not the same experiment.
+        if let Some(jab) = jab {
+            let ph = ((t - jab.start) / jab.period).max(0.0);
+            let side = if jab.pattern
+                .chars()
+                .nth(ph.floor() as usize % jab.pattern.chars().count())
+                .is_some_and(|c| c.eq_ignore_ascii_case(&'l'))
+            {
+                "L"
+            } else {
+                "R"
+            };
+            let a = 0.5 * (1.0 - (2.0 * PI * ph.fract()).cos());
+            println!(
+                "  PUSH JAB PHASE: side={side} phase={:.3} extension={a:.3} \
+                 (0 = in guard, 1 = fully extended)",
+                ph.fract()
+            );
+        }
+        // If the pulse outlives the slice it was fired into, the run
+        // is not measuring what the label says. Firing 0.10 s into a
+        // 0.20 s double-support at frac 0.5 puts the tail of the pulse
+        // exactly on liftoff, and the resulting "double support"
+        // number came out BELOW the single-support one -- the phase
+        // was being measured, not the impulse. Say so rather than
+        // letting the row be compared with the others.
+        let slice_left = slice_t1 - t;
+        if push_dt > slice_left {
+            println!(
+                "  PUSH WARNING: the {push_dt:.3} s pulse outlasts this \
+                 slice by {:.3} s, so it spills into the next support \
+                 phase. Lower PUSH_AT or PUSH_DT to keep the \
+                 disturbance inside one phase.",
+                push_dt - slice_left
+            );
+        }
+        return true;
+    }
+    false
+}
+
+/// The corrective impulse at the commitment instant (`FIX_*`).
+///
+/// A causal probe, not another correlate. Six quantities have now
+/// been found that separate survivors from fallers; the three that could be
+/// moved changed nothing (Sec.22.5). Separation cannot tell a cause you can
+/// act on from a symptom, because a trajectory heading for a fall departs
+/// from a healthy one in every quantity at once.
+///
+/// So intervene instead: at the instant the plan commits to one foot, add
+/// an impulse that changes the CoM velocity by a chosen amount along a
+/// chosen axis, and sweep it. If some value saves the run, that axis
+/// carries the fatal information and the control problem is to produce that
+/// velocity change. If no value on either axis saves it, the state at
+/// commitment is not where the cause lives, and the search moves on
+/// without another round of correlate-chasing.
+#[cfg(feature = "mujoco")]
+struct FixProbe {
+    dv: f64,
+    deg: f64,
+    dt: f64,
+    /// Angular version of the same probe. A linear impulse cannot touch the
+    /// attitude/angular-rate part of the state, and sweeping +-0.15 m/s of CoM
+    /// velocity -- five times the disturbance that caused the fall -- saved 1
+    /// of 4 runs. So the next place to look is the part a linear impulse
+    /// cannot reach. `tau` is an ANGULAR impulse [N*m*s] about the world
+    /// axis named by `tau_axis` (0 = roll, 1 = pitch, 2 = yaw).
+    tau: f64,
+    tau_axis: usize,
+    /// WHEN to apply the corrective impulse, as seconds after the push.
+    /// Negative (the default) means "at the commitment instant", which is where
+    /// the first two probes fired -- and neither +-0.15 m/s of CoM velocity nor
+    /// +-1.5 N*m*s of angular impulse saved 3 of the 4 runs there. By then it
+    /// is too late. Sweeping this backwards towards the push finds the boundary
+    /// of where it is still early enough, which is a control BANDWIDTH
+    /// requirement rather than another correlate.
+    at_s: f64,
+}
+
+#[cfg(feature = "mujoco")]
+impl FixProbe {
+    fn from_env() -> Self {
+        Self {
+            dv: env_f64("FIX_DV", 0.0),
+            deg: env_f64("FIX_DEG", 90.0),
+            dt: env_f64("FIX_DT", 0.02),
+            tau: env_f64("FIX_TAU", 0.0),
+            tau_axis: env_f64("FIX_TAU_AXIS", 0.0) as usize,
+            at_s: env_f64("FIX_AT_S", -1.0),
+        }
+    }
+
+    fn armed(&self) -> bool {
+        self.dv.abs() > 0.0 || self.tau.abs() > 0.0
+    }
+
+    /// Apply the impulse to `link` and print it; `at_commitment` picks which
+    /// of the two triggers fired (the two lines differ).
+    fn fire(&self, sim: &mut articara::mujoco_sim::MujocoSim, link: &str, total_mass: f64, t: f64, at_commitment: bool) {
+        let &FixProbe { dv: fix_dv, deg: fix_deg, dt: fix_dt, tau: fix_tau, tau_axis: fix_tau_axis, at_s: fix_at_s } = self;
+        let th = fix_deg.to_radians();
+        let f = total_mass * fix_dv / fix_dt;
+        let mut tq = [0.0; 3];
+        if fix_tau_axis < 3 {
+            tq[fix_tau_axis] = fix_tau / fix_dt;
+        }
+        sim.apply_external_force(link, [f * th.cos(), f * th.sin(), 0.0], tq, fix_dt);
+        if at_commitment {
+            println!(
+                "  FIX at t={t:.3} (commitment): dv={fix_dv:+.3} m/s at \
+                 {fix_deg:.0} deg, angular {fix_tau:+.4} N*m*s about axis \
+                 {fix_tau_axis}, over {fix_dt:.3} s"
+            );
+        } else {
+            println!(
+                "  FIX at t={t:.3} (+{fix_at_s:.2} s after the push): \
+                 dv={fix_dv:+.3} m/s at {fix_deg:.0} deg, angular {fix_tau:+.3}"
+            );
+        }
+    }
+}
+
+fn main() {
+    use articara::biped::actuate::{
+        CommandPolicy, DegradedTally, gravity_plus_posture, write_to_plant,
+    };
+    use articara::biped::contact::{Anchors, contact_jacobians, cop_from_sole_wrench};
+    use articara::biped::dcm::{
+        DcmPlan, StepTiming, SupportBox, com_accel_xy, commanded_zmp, dcm_of, step_timing,
+    };
+    use articara::biped::gait::{
+        ContactCorrection, FootstepPlan, Footsteps, GaitParams, GaitPlan, Support,
+        swing_position, swing_velocity,
+    };
+    use articara::biped::log::{Row, TrajLog, measure_contacts};
+    use articara::biped::profile;
+    use articara::biped::rig::{BipedRig, CtrlMode, G, RigOptions};
+    use articara::biped::tasks as bt;
+    use misa_wbc::{Dynamics, Formulation, SolveConfig, Solver, tasks};
+    use nalgebra as na;
+    use std::f64::consts::PI;
+    use std::io::Write;
+
+    // ROUGH_MODE=1: the rough-terrain preset for an operator who knows the
+    // ground is uneven. Lift fully before advancing (SWING_Z_HOLD with the
+    // drop starting at 0.50 so early landings still work), a 0.15 start
+    // delay, and an 8 cm apex. Measured 2026-10-16/17 (N=48, v6.10):
+    // unmodelled bumps 10/20/30 mm = 48/46/48 (champion 35/13/5), but the
+    // lateral pushes at 0.12 m/s go 157 -> 150, so it is not the default.
+    // The mode WINS over the four knobs (the champion's controls carry a
+    // CEM-tuned LIFT_H of 0.051, which the mode must replace); the apex is
+    // ROUGH_MODE_LIFT_H (0.08).
+    if std::env::var("ROUGH_MODE").map(|v| v == "1").unwrap_or(false) {
+        // On a KNOWN slope the 8 cm apex falls on +3 deg (measured
+        // 2026-10-17, LIFT_H=0.08 alone: 16.0 s), 6 cm walks: the mode
+        // uses 6 cm there unless ROUGH_MODE_LIFT_H says otherwise.
+        let lift = std::env::var("ROUGH_MODE_LIFT_H")
+            .unwrap_or_else(|_| if std::env::var("TERRAIN_SLOPE").is_ok() { "0.06".into() } else { "0.08".into() });
+        for (k, v) in [("SWING_Z_HOLD", "1"), ("SWING_Z_DROP", "0.50,1.0"), ("SWING_XY_DELAY", "0.15"), ("LIFT_H", lift.as_str())] {
+            // SAFETY: single-threaded here, before any reader of these.
+            unsafe { std::env::set_var(k, v) };
+        }
+        println!("rough mode: SWING_Z_HOLD=1 SWING_Z_DROP=0.50,1.0 SWING_XY_DELAY=0.15 LIFT_H={lift}");
+    }
+
+    let prof = profile::by_name(&std::env::var("ROBOT").unwrap_or_default());
+
+    let mut o = RigOptions::from_profile(&prof);
+    o.knee = env_f64("KNEE", prof.knee_seed);
+    o.hip_pitch = env_f64("HIP_PITCH", -o.knee / 2.0);
+    o.ankle_pitch = env_f64("ANKLE_PITCH", -o.knee / 2.0);
+    o.joint_damping = env_f64("JOINT_DAMPING", prof.joint_damping);
+    // Per-joint viscous damping as a DESIGN input, e.g.
+    // DAMPING_OVERRIDES="elbow=0.25,ankle_pitch=0.4" (name substring = value,
+    // N*m*s/rad). Reaches plant and QP model consistently -- see RigOptions.
+    if let Ok(s) = std::env::var("DAMPING_OVERRIDES") {
+        for part in s.split(',').filter(|p| !p.trim().is_empty()) {
+            let (pat, val) = part
+                .split_once('=')
+                .expect("DAMPING_OVERRIDES wants name=value[,name=value]");
+            o.joint_damping_overrides.push((
+                pat.trim().to_string(),
+                val.trim().parse().expect("damping value"),
+            ));
+        }
+    }
+    o.armature = env_f64("ARMATURE", prof.armature);
+    // Override selected joints without changing the other motor groups.
+    // Example: ARMATURE_OVERRIDES="ankle_roll=0.005".
+    if let Ok(s) = std::env::var("ARMATURE_OVERRIDES") {
+        for part in s.split(',').filter(|p| !p.trim().is_empty()) {
+            let (pat, val) = part
+                .split_once('=')
+                .expect("ARMATURE_OVERRIDES wants name=value[,name=value]");
+            let value: f64 = val.trim().parse().expect("armature value");
+            assert!(
+                value.is_finite() && value >= 0.0,
+                "armature override must be finite and nonnegative"
+            );
+            o.joint_armature_overrides
+                .push((pat.trim().to_string(), value));
+        }
+    }
+    o.torque_scale = env_f64("TORQUE_SCALE", 1.0);
+    o.burnin_kp = env_f64("BURNIN_KP", prof.burnin_kp);
+    o.burnin_kv = env_f64("BURNIN_KV", prof.burnin_kv);
+    o.burnin_s = env_f64("BURNIN_S", prof.burnin_s);
+    o.run_kp = env_f64("RUN_KP", prof.burnin_kp);
+    o.run_kv = env_f64("RUN_KV", prof.burnin_kv);
+    o.ctrl_mode =
+        CtrlMode::from_env_name(&std::env::var("CTRL_MODE").unwrap_or_else(|_| "torque".into()));
+    o.sim_dt = env_f64("SIM_DT", 0.001);
+    o.mu_ground = env_f64("MU_GROUND", 0.7);
+    // MJ_NOSLIP=N: MuJoCo's noslip post-pass. Measured 2026-10-15 on the
+    // slope bench: a loaded stance foot creeps 0.2-0.5 cm/s along a 3-5 deg
+    // slope with the default solver (flat: 0.03), which is the solver's
+    // soft-contact artefact, not the controller. Unset = plant unchanged.
+    o.noslip_iterations = std::env::var("MJ_NOSLIP").ok().and_then(|v| v.parse::<u32>().ok()).filter(|&n| n > 0);
+    if let Ok(value) = std::env::var("FOOT_SOLIMP") {
+        let values: Vec<f64> = value
+            .split(',')
+            .map(|part| {
+                part.trim()
+                    .parse()
+                    .expect("FOOT_SOLIMP values must be numbers")
+            })
+            .collect();
+        assert!(values.len() == 3, "FOOT_SOLIMP wants d0,d_width,width");
+        assert!(
+            values[0] >= 0.0
+                && values[0] <= 1.0
+                && values[1] >= 0.0
+                && values[1] <= 1.0
+                && values[2] > 0.0,
+            "FOOT_SOLIMP requires d0,d_width in [0,1] and width > 0"
+        );
+        o.foot_solimp = Some([values[0], values[1], values[2]]);
+    }
+    o.probe_z = env_f64("PROBE_Z", prof.probe_z);
+    // Swing the arms out of the frontal plane. Measured: with the arms at
+    // zero the forearm collides with the hip block as soon as the robot rolls
+    // to step -- 301 ticks of it, peaking at 210 N, 3.2x body weight, all of
+    // it invisible to the QP. The spawn-time self-collision assert passes,
+    // because standing still is exactly the pose that clears.
+    if flag("NO_ARM_COLLIDE", false) {
+        o.uncollide_links = vec!["forearm", "upper_arm"];
+    }
+    // Narrow the stance by seeding hip roll. The lean the CoM must make to
+    // get over one sole is atan(half_stance / leg_length), and ankle_roll has
+    // to supply it while the sole stays flat -- so stance width and ankle_roll
+    // travel are the same constraint seen twice.
+    let hip_roll_seed = env_f64("HIP_ROLL_SEED", 0.0);
+    let arm_pitch = env_f64("ARM_PITCH", -1.40);
+    let elbow = env_f64("ELBOW", 0.0);
+    if arm_pitch != 0.0 || elbow != 0.0 {
+        o.extra_seed = vec![
+            ("left_shoulder_pitch_joint", arm_pitch),
+            ("right_shoulder_pitch_joint", arm_pitch),
+            ("left_elbow_joint", elbow),
+            ("right_elbow_joint", elbow),
+        ];
+    }
+    // Abduct the arms. The v6 shoulder roll exists precisely to open the
+    // forearm <-> hip_roll_block clearance Sec.10.4 measured at 2.5 mm, but
+    // nothing on the control side commands it -- the posture task only holds
+    // it near its seed, so at seed 0 the arm keeps the pitch-only geometry
+    // and now has a free axis to swing further in along. Positive is outward
+    // on the left, negative on the right (mirrored limits in the URDF).
+    // Setting it on a pre-v6 URDF panics in the rig, which is the honest
+    // outcome: the seed cannot be applied to a joint that does not exist.
+    let shoulder_roll_seed = env_f64("SHOULDER_ROLL", 0.0);
+    if shoulder_roll_seed != 0.0 {
+        o.extra_seed
+            .push(("left_shoulder_roll_joint", shoulder_roll_seed));
+        o.extra_seed
+            .push(("right_shoulder_roll_joint", -shoulder_roll_seed));
+    }
+    if hip_roll_seed != 0.0 {
+        // Signs mirror: both hips roll inward to bring the feet together, and
+        // the ankles roll back so the soles stay flat on the floor.
+        o.extra_seed.push((prof.hip_roll[0], -hip_roll_seed));
+        o.extra_seed.push((prof.hip_roll[1], hip_roll_seed));
+        o.extra_seed.push(("left_ankle_roll_joint", hip_roll_seed));
+        o.extra_seed
+            .push(("right_ankle_roll_joint", -hip_roll_seed));
+    }
+
+    // Seeded jitter on the INITIAL POSTURE of the twelve leg joints.
+    //
+    // The verification harnesses used to make their "members" by moving KD_COM
+    // by 1e-9, which samples the chaotic spread around ONE scenario rather
+    // than a distribution of situations. Measured 2026-09-24: under the
+    // weighted QP -- which is far less chaotic -- all sixteen members of a
+    // push condition then fell at the same millisecond, i.e. N=16 was really
+    // N=1. A jitter on the posture the robot is built in is a real initial
+    // condition, and it is the cheapest one that survives a controller that
+    // does not amplify rounding. INIT_JITTER = 0 (default) adds nothing and
+    // keeps every recipe bit-for-bit.
+    let init_jitter = env_f64("INIT_JITTER", 0.0).abs();
+    if init_jitter > 0.0 {
+        // A small deterministic generator, so a run is reproducible from
+        // (INIT_SEED, INIT_JITTER) alone and no RNG crate enters the example.
+        // SplitMix64 on the seed first: `seed | 1` would give 2 and 3 the
+        // same stream, which is how members 2/3, 4/5 and 6/7 came out
+        // identical on the first try.
+        let mut state = {
+            let mut z = (env_f64("INIT_SEED", 1.0) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            (z ^ (z >> 31)) | 1
+        };
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        // Added, never assigned: `extra_seed` would erase the profile's own
+        // posture (bent knees, hip pitch) as well as the stance-width seed.
+        for name in [
+            "left_hip_pitch_joint",
+            "left_hip_roll_joint",
+            "left_hip_yaw_joint",
+            "left_knee_joint",
+            "left_ankle_pitch_joint",
+            "left_ankle_roll_joint",
+            "right_hip_pitch_joint",
+            "right_hip_roll_joint",
+            "right_hip_yaw_joint",
+            "right_knee_joint",
+            "right_ankle_pitch_joint",
+            "right_ankle_roll_joint",
+        ] {
+            o.extra_seed_delta.push((name, init_jitter * next()));
+        }
+    }
+
+    // URDF override, for sweeping model variants without editing the shipped
+    // package. Leaked because Profile stores &'static str; this runs once.
+    let mut prof = prof;
+    if let Ok(u) = std::env::var("URDF") {
+        prof.urdf = Box::leak(u.into_boxed_str());
+        println!("URDF override: {}", prof.urdf);
+    }
+    // A variant that adds a waist splits `torso` into a pelvis carrying the
+    // legs and an upper body carrying the arms -- the same shape as G1, where
+    // the FreeFlyer is the pelvis and the thing held upright is above the
+    // waist. Both names have to move together or P2 regulates one body using
+    // another's Jacobian.
+    if let Ok(l) = std::env::var("ROOT_LINK") {
+        prof.root_link = Box::leak(l.into_boxed_str());
+    }
+    if let Ok(l) = std::env::var("TRUNK_LINK") {
+        prof.trunk_link = Some(Box::leak(l.into_boxed_str()));
+    }
+    // Leg reach (src/biped/reach.rs). `LEG_REACH` overrides the profile's
+    // measured length; the margin is what a PLAN may ask for. Used for the
+    // diagnostic columns always, and for the footstep bounds only when
+    // REACH_LIMIT is on.
+    let leg_reach = articara::biped::reach::LegReach {
+        max: env_f64("LEG_REACH", prof.leg_reach).max(0.0),
+        margin: env_f64("LEG_REACH_MARGIN", 0.95).clamp(0.1, 1.0),
+    };
+    let sole_half_l = env_f64("SOLE_HALF_L", prof.cop_half.0);
+    let sole_half_w = env_f64("SOLE_HALF_W", prof.cop_half.1);
+    let mu_ground = o.mu_ground;
+    let ctrl_mode = o.ctrl_mode;
+
+    // The scene around the robot: the sparring target, the staircase or
+    // slope of the planner's terrain model, and the unmodelled bumps.
+    let Scene { stairs, spar_wall } = build_scene(&mut o);
     let mut rig = BipedRig::build(prof, &o);
     // Model indices of the links the thighs hang from, for the reach columns.
     let hip_mi: Option<[usize; 2]> = prof.hip_links.map(|names| {
@@ -1019,31 +1287,9 @@ fn main() {
     let no_lift = flag("NO_LIFT", false);
 
     // ---- disturbance: one rectangular push at a chosen gait phase --------
-    //
-    // Sized in IMPULSE (N*s), not force, because that is the quantity the
-    // machine's recovery budget is denominated in: an ankle strategy can
-    // absorb `m * omega * d_cop` of it and no more, which on this robot is
-    // 6.63 * 5.585 * 0.019 = 0.70 N*s sideways against 1.8 N*s fore-aft.
-    // Quoting a force instead hides the duration and makes two runs with the
-    // same "10 N push" incomparable.
-    let push_imp = env_f64("PUSH_IMPULSE", 0.0);
-    // Horizontal direction, degrees: 0 = +x (forward), 90 = +y (left). The
-    // whole circle is reachable, so diagonals are one number rather than a
-    // pair of components that have to be kept consistent with each other.
-    let push_deg = env_f64("PUSH_DEG", 90.0);
-    // Yaw impulse (N*m*s) about +z, independent of the linear one so a pure
-    // twist is expressible.
-    let push_yaw_imp = env_f64("PUSH_YAW_IMPULSE", 0.0);
-    let push_dt = env_f64("PUSH_DT", 0.10).max(1e-6);
-    // WHEN. Not a wall-clock time: what the machine can absorb differs by
-    // several times between double and single support, so a ladder that does
-    // not pin the phase measures the phase as much as the impulse. Fire on
-    // the first tick that is inside step `PUSH_STEP`, in the requested
-    // support, at or past `PUSH_AT` of the way through that slice.
-    let push_step = env_f64("PUSH_STEP", 5.0) as usize;
-    let push_at = env_f64("PUSH_AT", 0.5).clamp(0.0, 1.0);
-    // "ds" | "ss" | "any" -- which support phase to catch.
-    let push_support = std::env::var("PUSH_SUPPORT").unwrap_or_else(|_| "ss".into());
+    // What is fired and when is `PushScenario`; the thresholds below are
+    // what is measured about it.
+    let push = PushScenario::from_env(prof.root_link);
     // Recovery is declared when the DCM error comes back under this and
     // STAYS under it -- a single tick dipping below the line is the error
     // crossing zero on its way past, not a recovery.
@@ -1083,7 +1329,6 @@ fn main() {
     // clock, so the number is not contaminated by however the fall unfolds.
     let edge_frac = env_f64("PUSH_EDGE_FRAC", 0.9);
     let transfer_s = env_f64("PUSH_TRANSFER_S", 0.10);
-    let push_link = std::env::var("PUSH_LINK").unwrap_or_else(|_| prof.root_link.to_string());
 
     let ctrl_dt = env_f64("CTRL_DT", prof.ctrl_dt);
     // DIAG_VZ_BIAS_MPC / DIAG_VZ_BIAS_HEIGHT (m/s): a vertical CoM velocity
@@ -1960,40 +2205,8 @@ fn main() {
     let mut n_cp_shift = 0u32;
     let mut n_cp_retime = 0u32;
     let mut cp_retime_total = 0.0_f64;
-    // ---- corrective impulse at the commitment instant -------------------
-    //
-    // A causal probe, not another correlate. Six quantities have now been
-    // found that separate survivors from fallers; the three that could be
-    // moved changed nothing (Sec.22.5). Separation cannot tell a cause you can
-    // act on from a symptom, because a trajectory heading for a fall departs
-    // from a healthy one in every quantity at once.
-    //
-    // So intervene instead: at the instant the plan commits to one foot, add
-    // an impulse that changes the CoM velocity by a chosen amount along a
-    // chosen axis, and sweep it. If some value saves the run, that axis
-    // carries the fatal information and the control problem is to produce that
-    // velocity change. If no value on either axis saves it, the state at
-    // commitment is not where the cause lives, and the search moves on
-    // without another round of correlate-chasing.
-    let fix_dv = env_f64("FIX_DV", 0.0);
-    let fix_deg = env_f64("FIX_DEG", 90.0);
-    let fix_dt = env_f64("FIX_DT", 0.02);
-    // Angular version of the same probe. A linear impulse cannot touch the
-    // attitude/angular-rate part of the state, and sweeping +-0.15 m/s of CoM
-    // velocity -- five times the disturbance that caused the fall -- saved 1
-    // of 4 runs. So the next place to look is the part a linear impulse
-    // cannot reach. `FIX_TAU` is an ANGULAR impulse [N*m*s] about the world
-    // axis named by `FIX_TAU_AXIS` (0 = roll, 1 = pitch, 2 = yaw).
-    let fix_tau = env_f64("FIX_TAU", 0.0);
-    let fix_tau_axis = env_f64("FIX_TAU_AXIS", 0.0) as usize;
-    // WHEN to apply the corrective impulse, as seconds after the push.
-    // Negative (the default) means "at the commitment instant", which is where
-    // the first two probes fired -- and neither +-0.15 m/s of CoM velocity nor
-    // +-1.5 N*m*s of angular impulse saved 3 of the 4 runs there. By then it
-    // is too late. Sweeping this backwards towards the push finds the boundary
-    // of where it is still early enough, which is a control BANDWIDTH
-    // requirement rather than another correlate.
-    let fix_at_s = env_f64("FIX_AT_S", -1.0);
+    // FIX_*: the corrective-impulse probe (see `FixProbe`).
+    let fix = FixProbe::from_env();
     let mut fix_fired = false;
     // ---- contact-driven phase transitions -----------------------------
     //
@@ -6281,25 +6494,9 @@ fn main() {
             if transfer_t.is_none() {
                 if let (Some(Support::Double), Support::Single { .. }) = (support_prev, support) {
                     transfer_t = Some(t);
-                    if (fix_dv.abs() > 0.0 || fix_tau.abs() > 0.0) && !fix_fired {
-                        let th = fix_deg.to_radians();
-                        let f = total_mass * fix_dv / fix_dt;
-                        let mut tq = [0.0; 3];
-                        if fix_tau_axis < 3 {
-                            tq[fix_tau_axis] = fix_tau / fix_dt;
-                        }
-                        rig.sim.apply_external_force(
-                            &push_link,
-                            [f * th.cos(), f * th.sin(), 0.0],
-                            tq,
-                            fix_dt,
-                        );
+                    if fix.armed() && !fix_fired {
+                        fix.fire(&mut rig.sim, &push.link, total_mass, t, true);
                         fix_fired = true;
-                        println!(
-                            "  FIX at t={t:.3} (commitment): dv={fix_dv:+.3} m/s at \
-                             {fix_deg:.0} deg, angular {fix_tau:+.4} N*m*s about axis \
-                             {fix_tau_axis}, over {fix_dt:.3} s"
-                        );
                     }
                     // 6-D centroidal momentum h = A_G * v; rows 0..3 are
                     // angular, and row 0 is the roll axis.
@@ -6318,28 +6515,13 @@ fn main() {
                 }
             }
             // Time-triggered corrective impulse (see `fix_at_s`).
-            if fix_at_s >= 0.0
+            if fix.at_s >= 0.0
                 && !fix_fired
-                && (fix_dv.abs() > 0.0 || fix_tau.abs() > 0.0)
-                && push_at_t.map(|tp0| t - tp0 >= fix_at_s).unwrap_or(false)
+                && fix.armed()
+                && push_at_t.map(|tp0| t - tp0 >= fix.at_s).unwrap_or(false)
             {
-                let th = fix_deg.to_radians();
-                let f = total_mass * fix_dv / fix_dt;
-                let mut tq = [0.0; 3];
-                if fix_tau_axis < 3 {
-                    tq[fix_tau_axis] = fix_tau / fix_dt;
-                }
-                rig.sim.apply_external_force(
-                    &push_link,
-                    [f * th.cos(), f * th.sin(), 0.0],
-                    tq,
-                    fix_dt,
-                );
+                fix.fire(&mut rig.sim, &push.link, total_mass, t, false);
                 fix_fired = true;
-                println!(
-                    "  FIX at t={t:.3} (+{fix_at_s:.2} s after the push): \
-                     dv={fix_dv:+.3} m/s at {fix_deg:.0} deg, angular {fix_tau:+.3}"
-                );
             }
             if push_at_t.map(|tp0| t - tp0 <= 1.0).unwrap_or(false) {
                 let ag = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, &st.q);
@@ -6585,81 +6767,20 @@ fn main() {
         let trunk_tilt_roll = trot[(2, 1)].atan2(trot[(2, 2)]);
         let trunk_tilt_pitch = (-trot[(2, 0)]).asin();
 
-        // ---- disturbance: fire once, at the requested phase --------------
-        // After the plant write and before the plant step, so the push lands
-        // on the same tick boundary as the torques it has to fight, and the
-        // controller sees the consequence on the NEXT tick's measurement --
-        // which is the causal order a real shove has.
-        if push_at_t.is_none() && (push_imp.abs() > 0.0 || push_yaw_imp.abs() > 0.0) {
-            let phase_ok = match push_support.as_str() {
-                "ds" => matches!(support, Support::Double),
-                "ss" => matches!(support, Support::Single { .. }),
-                _ => true,
-            };
-            if step_idx == push_step && phase_ok && slice_frac >= push_at {
-                let th = push_deg.to_radians();
-                let f = push_imp / push_dt;
-                let (fx, fy) = (f * th.cos(), f * th.sin());
-                let tz = push_yaw_imp / push_dt;
-                rig.sim
-                    .apply_external_force(&push_link, [fx, fy, 0.0], [0.0, 0.0, tz], push_dt);
-                let dv = push_imp / total_mass;
-                println!(
-                    "  PUSH at t={t:.3} step={step_idx} {} frac={slice_frac:.2}: \
-                     {push_imp:.3} N*s at {push_deg:.0} deg \
-                     (F=[{fx:.1}, {fy:.1}] N for {push_dt:.3} s) -> dv={dv:.3} m/s, \
-                     capture-point shift {:.1} mm",
-                    match support {
-                        Support::Double => "DS".to_string(),
-                        Support::Single { stance, .. } =>
-                            format!("SS/{}", if stance == 0 { "L" } else { "R" }),
-                    },
-                    dv / omega * 1e3,
-                );
-                // Where the jab was when the shove landed. The jab runs on its
-                // own clock, unrelated to the gait, so without this line a
-                // push-vs-jab comparison is averaging over an unrecorded phase
-                // -- and "pushed at full extension" and "pushed back in guard"
-                // are not the same experiment.
-                if jab {
-                    let ph = ((t - jab_start) / jab_period).max(0.0);
-                    let side = if jab_pattern
-                        .chars()
-                        .nth(ph.floor() as usize % jab_pattern.chars().count())
-                        .is_some_and(|c| c.eq_ignore_ascii_case(&'l'))
-                    {
-                        "L"
-                    } else {
-                        "R"
-                    };
-                    let a = 0.5 * (1.0 - (2.0 * PI * ph.fract()).cos());
-                    println!(
-                        "  PUSH JAB PHASE: side={side} phase={:.3} extension={a:.3} \
-                         (0 = in guard, 1 = fully extended)",
-                        ph.fract()
-                    );
-                }
-                // If the pulse outlives the slice it was fired into, the run
-                // is not measuring what the label says. Firing 0.10 s into a
-                // 0.20 s double-support at frac 0.5 puts the tail of the pulse
-                // exactly on liftoff, and the resulting "double support"
-                // number came out BELOW the single-support one -- the phase
-                // was being measured, not the impulse. Say so rather than
-                // letting the row be compared with the others.
-                let slice_left = slice.t1 - t;
-                if push_dt > slice_left {
-                    println!(
-                        "  PUSH WARNING: the {push_dt:.3} s pulse outlasts this \
-                         slice by {:.3} s, so it spills into the next support \
-                         phase. Lower PUSH_AT or PUSH_DT to keep the \
-                         disturbance inside one phase.",
-                        push_dt - slice_left
-                    );
-                }
-                push_at_t = Some(t);
-                push_at_step = step_idx;
-                push_degraded_at = tally.n;
-            }
+        // ---- disturbance: fire once, at the requested phase (`fire_push`).
+        if push_at_t.is_none()
+            && fire_push(
+                &mut rig.sim,
+                &push,
+                &PushTick { t, step_idx, support, slice_frac, slice_t1: slice.t1 },
+                total_mass,
+                omega,
+                jab.then_some(JabClock { start: jab_start, period: jab_period, pattern: &jab_pattern }),
+            )
+        {
+            push_at_t = Some(t);
+            push_at_step = step_idx;
+            push_degraded_at = tally.n;
         }
         if let Some(mode) = ref_mode
             && let Some(lib) = &ref_lib
@@ -6702,7 +6823,7 @@ fn main() {
             .sim
             .external_force_pulses()
             .iter()
-            .find(|p| p.link_name == push_link)
+            .find(|p| p.link_name == push.link)
             .map(|p| [p.force[0], p.force[1]])
             .unwrap_or([0.0, 0.0]);
         let audit_pre = tick_audit.as_ref().map(|audit| audit.sample(&rig));
@@ -7343,6 +7464,7 @@ fn main() {
         "  self-collision ticks: {n_selfcollide}  (peak {max_selfcollide_f:.1} N)          -- any nonzero value means the QP was solving against a contact it has no model for"
     );
     if let Some(tp) = push_at_t {
+        let PushScenario { imp: push_imp, deg: push_deg, dt: push_dt, at: push_at, support: push_support, .. } = &push;
         println!("\n=== Disturbance ===");
         println!(
             "  push: {push_imp:.3} N*s at {push_deg:.0} deg, {push_dt:.3} s, \
