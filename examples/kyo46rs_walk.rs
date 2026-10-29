@@ -191,7 +191,7 @@ fn main() {
     use articara::biped::profile;
     use articara::biped::rig::{BipedRig, CtrlMode, G, RigOptions};
     use articara::biped::tasks as bt;
-    use misa_wbc::{AsAffine, Dynamics, Formulation, SolveConfig, Solver, Task, tasks};
+    use misa_wbc::{AsAffine, Dynamics, Formulation, SolveConfig, Solver, tasks};
     use nalgebra as na;
     use std::f64::consts::PI;
     use std::io::Write;
@@ -224,52 +224,6 @@ fn main() {
             .unwrap_or(d)
     };
     let flag = |k: &str, d: bool| -> bool { std::env::var(k).map(|v| v != "0").unwrap_or(d) };
-
-    // ---- phase-scoped gains ----------------------------------------------
-    //
-    // Every gain in this example is shared by the whole run, and the approach
-    // walk is tuned to their current values. Measured on the fixed-arm
-    // one-step, that made five separate hypotheses about the stair transfer
-    // untestable rather than false: raising `KP_TRUNK` to 600/1500 fell at
-    // 8.11/3.73 s, `COP_FRAC` 0.85/0.70 at 10.09/5.36 s, `JLIM_AMAX`
-    // 600/2000 at 3.79/3.78 s, `COM_LAND_PREDICT_FRAC` 0.5/0 at 12.22 s, and
-    // level landing confirmation at 5.66 s -- all of them BEFORE reaching the
-    // stair, so none of them was a verdict on the transfer.
-    //
-    // `NAME_XFER` applies while a stair transfer is running, `NAME_POST`
-    // after one has completed. Each defaults to `NAME`, so leaving them unset
-    // reproduces any existing recipe exactly.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum RunPhase {
-        Approach,
-        Transfer,
-        Post,
-    }
-    #[derive(Clone, Copy)]
-    struct PhaseGain {
-        base: f64,
-        xfer: f64,
-        post: f64,
-    }
-    impl PhaseGain {
-        fn at(&self, p: RunPhase) -> f64 {
-            match p {
-                RunPhase::Approach => self.base,
-                RunPhase::Transfer => self.xfer,
-                RunPhase::Post => self.post,
-            }
-        }
-        fn scoped(&self) -> bool {
-            self.xfer != self.base || self.post != self.base
-        }
-    }
-    let phase_gain = |name: &str, base: f64| -> PhaseGain {
-        PhaseGain {
-            base,
-            xfer: env_f64(&format!("{name}_XFER"), base),
-            post: env_f64(&format!("{name}_POST"), base),
-        }
-    };
 
     let prof = profile::by_name(&std::env::var("ROBOT").unwrap_or_default());
 
@@ -860,8 +814,7 @@ fn main() {
     let jlim_alpha1 = env_f64("JLIM_ALPHA1", 10.0);
     let jlim_alpha2 = env_f64("JLIM_ALPHA2", 10.0);
     let jlim_alpha3 = env_f64("JLIM_ALPHA3", 10.0);
-    let jlim_amax_g = phase_gain("JLIM_AMAX", env_f64("JLIM_AMAX", 50.0));
-    let jlim_amax = jlim_amax_g.base;
+    let jlim_amax = env_f64("JLIM_AMAX", 50.0);
     // Optional diagnostic operating envelope for shoulder pitch.  This uses
     // the same hard CBF as the physical joint limits, but intersects the URDF
     // range with a symmetric band around the spawn/posture seed.  It answers
@@ -895,11 +848,7 @@ fn main() {
     // will not enter is what makes a wider mechanism a SAFER one, and it is
     // the prerequisite for the morphology study's wider ankle.
     // (`ARM_PITCH_BAND` below narrows the shoulders further, and still wins.)
-    let jlim_q_margin_g = phase_gain("JLIM_Q_MARGIN", env_f64("JLIM_Q_MARGIN", 0.0));
-    let jlim_q_margin = jlim_q_margin_g.base.max(0.0);
-    if jlim_q_margin_g.scoped() {
-        assert!(jlim, "JLIM_Q_MARGIN_XFER / _POST require JLIM=1");
-    }
+    let jlim_q_margin = env_f64("JLIM_Q_MARGIN", 0.0).max(0.0);
     let jlim_v_frac = env_f64("JLIM_V_FRAC", 1.0).clamp(0.05, 1.0);
     if jlim_q_margin > 0.0 || jlim_v_frac < 1.0 {
         assert!(jlim, "JLIM_Q_MARGIN / JLIM_V_FRAC require JLIM=1");
@@ -964,7 +913,7 @@ fn main() {
             }
         );
     }
-    let mut jlim_cfg = tasks::JointLimitCbf {
+    let jlim_cfg = tasks::JointLimitCbf {
         q_min: jlim_q_min,
         q_max: jlim_q_max,
         v_max: jlim_v_max,
@@ -976,8 +925,8 @@ fn main() {
     let friction_mu: f64 = env_f64("friction_mu", mu_ground * prof.friction_margin);
     let kp_com = env_f64("KP_COM", 300.0);
     let mut kd_com = env_f64("KD_COM", 80.0);
-    let kp_trunk_g = phase_gain("KP_TRUNK", env_f64("KP_TRUNK", 200.0));
-    let mut kd_trunk_g = phase_gain("KD_TRUNK", env_f64("KD_TRUNK", 40.0));
+    let kp_trunk = env_f64("KP_TRUNK", 200.0);
+    let mut kd_trunk = env_f64("KD_TRUNK", 40.0);
     let kp_post = env_f64("KP_POST", 100.0);
     let kd_post = env_f64("KD_POST", 20.0);
     let use_post = flag("POST", true);
@@ -1171,8 +1120,7 @@ fn main() {
     let trunk_dead = env_f64("TRUNK_DEAD", 0.0);
     let trunk_late = flag("TRUNK_LATE", false);
     let eom_hard = flag("EOM_HARD", true);
-    let cop_frac_g = phase_gain("COP_FRAC", env_f64("COP_FRAC", 1.0));
-    let cop_frac = cop_frac_g.base;
+    let cop_frac = env_f64("COP_FRAC", 1.0);
     let hold_kp = env_f64("HOLD_KP", prof.hold_kp);
     let hold_kd = env_f64("HOLD_KD", prof.hold_kd);
     let hold_bridge = env_f64("HOLD_BRIDGE", 8.0) as u32;
@@ -1210,27 +1158,10 @@ fn main() {
     // kinematic conflict. Here the target is a planned footstep, so the
     // conflict is gone in principle; the split gain is how much that is
     // trusted in practice.
-    let kp_sw_z_g = phase_gain("KP_SWING", env_f64("KP_SWING", prof.kp_swing));
-    let kp_sw_xy_g = phase_gain("KP_SWING_XY", env_f64("KP_SWING_XY", 0.25 * kp_sw_z_g.base));
-    let kd_sw_g = phase_gain("KD_SWING", env_f64("KD_SWING", prof.kd_swing));
-    // Phase-scoped, because the step that follows the stair transfer wants a
-    // different one from the approach. Measured with N=16 ensembles
-    // (doc/from_claude/20260919_approach_reach_rate.md): in 6 of the 7 members
-    // that complete the transfer, the receiving sole sits exactly LIFT_H = 30 mm
-    // up -- at the apex of its own lift -- at the instant the CoM crosses the
-    // stance foot's lateral support edge. It is not that the contact fails to
-    // establish; the foot has not started down. But lowering LIFT_H globally
-    // takes transfer completion from 7/16 to 0/16, because the APPROACH needs
-    // that clearance. So scope it: LIFT_H_XFER / LIFT_H_POST.
-    let lift_h_g = phase_gain("LIFT_H", env_f64("LIFT_H", 0.5 * prof.lift_h));
-    // Shorten only the first LEVEL swing after a completed stair transfer.
-    // This changes the foot's clock, not the preplanned CoM/ZMP schedule.
-    // 1.0 keeps the original trajectory and contact confirmation unchanged.
-    let first_post_swing_fraction = env_f64("STAIR_FIRST_POST_SWING_FRACTION", 1.0);
-    assert!(
-        first_post_swing_fraction.is_finite() && (0.5..=1.0).contains(&first_post_swing_fraction),
-        "STAIR_FIRST_POST_SWING_FRACTION must be in [0.5, 1.0]"
-    );
+    let kp_sw_z = env_f64("KP_SWING", prof.kp_swing);
+    let kp_sw_xy = env_f64("KP_SWING_XY", 0.25 * kp_sw_z);
+    let kd_sw = env_f64("KD_SWING", prof.kd_swing);
+    let lift_h = env_f64("LIFT_H", 0.5 * prof.lift_h);
 
     // DCM tracking. k is dimensionless: the DCM error decays as
     // exp(-k_dcm * omega * t), so 2.0 is two e-folds per DCM time constant.
@@ -1377,8 +1308,8 @@ fn main() {
             .unwrap();
         q.euler_angles().2
     };
-    let kp_sw_rot_g = phase_gain("KP_SWING_ROT", env_f64("KP_SWING_ROT", 400.0));
-    let kd_sw_rot_g = phase_gain("KD_SWING_ROT", env_f64("KD_SWING_ROT", 40.0));
+    let kp_sw_rot = env_f64("KP_SWING_ROT", 400.0);
+    let kd_sw_rot = env_f64("KD_SWING_ROT", 40.0);
     // Multiplier on kd_sw_rot through a stair swing's drop phase (1 = off).
     let land_kd_rot_boost = env_f64("LAND_KD_ROT_BOOST", 1.0);
     // 0 = translation, 1 = +yaw, 2 = full pose, 3 = XYZ+roll+pitch (no yaw).
@@ -1409,7 +1340,7 @@ fn main() {
     // Isolation experiment: use stair rise/hold/lower timing even on flat ground.
     // LIFT_H is the full rise above lift-off when both surfaces are level.
     let stair_swing_profile = flag("STAIR_SWING_PROFILE", false);
-    let swing_rot_mode_g = phase_gain("SWING_ROT", env_f64("SWING_ROT", 1.0));
+    let swing_rot_mode = env_f64("SWING_ROT", 1.0) as u32;
     // STAIR_ZONE_SWING_ROT=mode: the SWING_ROT mode used only while the
     // mid-feet point is inside a known staircase's zone (the same zone as
     // STAIR_ZONE_CROUCH, including its lead/tail). Measured 2026-10-20 on
@@ -1474,22 +1405,19 @@ fn main() {
     if gain_omega_ref > 0.0 {
         let scale = (G / z_com).sqrt() / gain_omega_ref;
         kd_com *= scale;
-        kd_trunk_g.base *= scale;
-        kd_trunk_g.xfer *= scale;
-        kd_trunk_g.post *= scale;
+        kd_trunk *= scale;
         println!(
             "GAIN_OMEGA_REF={gain_omega_ref}: omega={:.3}, centroidal kd x{scale:.3} \
              (KD_COM {kd_com:.1}, KD_TRUNK {:.1})",
             (G / z_com).sqrt(),
-            kd_trunk_g.base,
+            kd_trunk,
         );
     }
     // How far the ZMP is asked to travel laterally, as a fraction of the
     // half stance width. 1.0 is true single support (all load on one sole);
     // anything less is only reachable with both feet down, so it is a W1
     // instrument, not a gait parameter.
-    let zmp_lat_scale_g = phase_gain("ZMP_LAT_SCALE", env_f64("ZMP_LAT_SCALE", 1.0));
-    let zmp_lat_scale = zmp_lat_scale_g.base;
+    let zmp_lat_scale = env_f64("ZMP_LAT_SCALE", 1.0);
     // Forward travel per step, in metres of BODY advance. 0 is stepping in
     // place, which stays a special case of this rather than a separate path.
     // A commanded speed maps to it as stride = v * (t_ss + t_ds).
@@ -2105,7 +2033,7 @@ fn main() {
         println!("NO_LIFT: the schedule drives the ZMP reference, but both feet stay in contact");
     }
 
-    let mut contact_cfg = bt::ContactCfg {
+    let contact_cfg = bt::ContactCfg {
         kp_c,
         kd_c,
         anchor_leak,
@@ -2333,7 +2261,7 @@ fn main() {
     // shipped profile.
     // Landing overdrive of the stair swing (metres COMMANDED below the
     // surface). See gait::stair_swing_sink.
-    let stair_td_sink_g = phase_gain("STAIR_TD_SINK", env_f64("STAIR_TD_SINK", 0.004));
+    let stair_td_sink = env_f64("STAIR_TD_SINK", 0.004);
     let stair_land_sink = env_f64("STAIR_LAND_SINK", 0.004).max(0.0);
     // Toe-first descent landing: pitch the swing sole toe-down by this many
     // radians through the DROP phase of a DESCENDING stair swing. The toe
@@ -2416,12 +2344,6 @@ fn main() {
     // A load-split damper needs a reference that is not built from measured
     // force differences -- a planned share, or a filtered state estimate.
     let contact_fz_rate = env_f64("CONTACT_FZ_RATE", 0.0).max(0.0);
-    // Planned load-split damping. Move the low-priority WBC fz target from
-    // the previous WBC solution toward the smooth MPC command by at most this
-    // fraction of body weight per tick. This uses neither a hard constraint
-    // nor a differentiated force sensor.
-    let contact_fz_plan_slew_bw = env_f64("CONTACT_FZ_PLAN_SLEW_BW", 0.0).max(0.0);
-    let contact_fz_plan_weight = env_f64("CONTACT_FZ_PLAN_WEIGHT", 0.0).max(0.0);
     // Opt-in soft load target for either sole during double support. This
     // changes the CoM-level objective; it is not a hard contact-force bound.
     let ds_fz_floor_weight = env_f64("DS_FZ_FLOOR_WEIGHT", 0.0).max(0.0);
@@ -2436,7 +2358,6 @@ fn main() {
         }
     };
     let mut dcm_plan = dcm_plan;
-    let mut dcm_plan_lat_scale = zmp_lat_scale;
     let mut adapt_now = na::Vector2::zeros();
     // How much of `adapt_now` is already committed to the footstep plan.
     //
@@ -2975,11 +2896,7 @@ fn main() {
     let mut n_ds_feasible = 0u32;
     let mut n_ds_continuous = 0u32;
     let mut ds_feasible_total = 0.0_f64;
-    let land_frac_g = phase_gain(
-        "COM_LAND_PREDICT_FRAC",
-        env_f64("COM_LAND_PREDICT_FRAC", 0.0),
-    );
-    landing_timing.min_fraction = land_frac_g.base.clamp(0.0, 1.0);
+    landing_timing.min_fraction = env_f64("COM_LAND_PREDICT_FRAC", 0.0).clamp(0.0, 1.0);
     let land_extend_base = env_f64("COM_LAND_EXTEND", 0.25).max(0.0);
     // Extra landing-deadline slack for the swing that CHANGES HEIGHT, i.e. the
     // step onto a tread. Zero (the default) means "same as everywhere else".
@@ -2994,10 +2911,6 @@ fn main() {
     // 1.075 / 0.500 / 0.260 / 0.035 s. With the default 0.25 it never reaches
     // the tread at all (0/16). The two ends of that trade want different
     // numbers, so they get different numbers.
-    //
-    // `RunPhase` cannot express this: it keys off `stair_transfer`, which only
-    // exists once a transfer has ARMED, and the transfer is exactly what fails
-    // to arm here.
     let land_extend_rise = env_f64("COM_LAND_EXTEND_RISE", 0.0).max(0.0);
     // STEP_DZ_MIN: planned sole-height change above which a swing is a
     // stair swing (rise/descent dwell and confirmation, stair landing box,
@@ -3064,194 +2977,17 @@ fn main() {
     landing_timing.max_extension = land_extend_base;
     landing_timing.speed_z = env_f64("COM_LAND_VZ", 0.20).max(0.01);
     landing_timing.speed_xy = env_f64("COM_LAND_VXY", 0.35).max(0.01);
-    // Confirm level landings, but only AFTER a stair transfer has finished.
-    //
-    // Enabling it for the whole run breaks the approach: the confirmation
-    // wants 12 mm of xy and 10 mm of z accuracy plus 5% of body weight, which
-    // an ordinary walking step does not reach inside its slice, so it times
-    // out repeatedly and drags the schedule -- measured, the approach fell at
-    // 5.66 s instead of reaching the stair. The gap it exists to close is the
-    // one AFTER the ascent, where every remaining step is level and nothing
-    // confirms the landing at all. See `LandingTiming::level_steps`.
-    let land_confirm_level = flag("LAND_CONFIRM_LEVEL", false);
+    // Confirm level landings for the whole run (`LandingTiming::level_steps`).
+    // (`LAND_CONFIRM_LEVEL`, the same only after a completed stair transfer,
+    // went with the transfer.) Measured with the transfer-era recipe: the
+    // confirmation wants 12 mm of xy and 10 mm of z accuracy plus 5% of body
+    // weight, which an ordinary walking step does not reach inside its slice,
+    // so it times out repeatedly and drags the schedule -- the approach fell
+    // at 5.66 s instead of reaching the stair.
     let land_confirm_level_always = flag("LAND_CONFIRM_LEVEL_ALWAYS", false);
-    // Contact-triggered stair transfer.  A confirmed landing opens one DS
-    // phase and gives pressure, CoM height and vertical load the SAME clock.
-    // It is opt-in while the fixed-arm staircase experiment is validated.
-    let stair_transfer_enabled = flag("STAIR_TRANSFER", false);
-    let stair_capture_time = env_f64("STAIR_CAPTURE_TIME", 0.80).max(0.10);
-    let stair_capture_from_xi = flag("STAIR_CAPTURE_FROM_XI", false);
-    // Capture phase tracks the MEASURED load instead of demanding pressure
-    // where there is none. At arming the newly landed (high) foot carries
-    // ~25% of the weight (measured 2026-09-24), yet the historical Capture
-    // moves the ZMP reference to the capture point at once and asks the MPC
-    // for a 50/50 split at once; every path that kept that demand (reference
-    // continuity, DS sizing, pivot in the plan) left 55-59 of 62 armed runs
-    // on the floor. With this on, the reference pressure point is
-    //     p_ref = p_low + (capture_target - p_low) * s
-    // where s is the (EMA-smoothed) share of weight on the high foot, and the
-    // MPC's Capture split goes from s to 0.5 over STAIR_CAPTURE_TIME instead
-    // of starting at 0.5. Default off.
-    let stair_capture_load_track = flag("STAIR_CAPTURE_LOAD_TRACK", false);
-    let stair_capture_share_tau = env_f64("STAIR_CAPTURE_SHARE_TAU", 0.08).max(1e-3);
-    // How far the Capture reference may LEAD the measured share. 0 = pure
-    // tracking (measured 2026-09-24: no drive, the load never moves, 0 of 67
-    // armed runs survived); 1 = the driven ramp alone. The reference share is
-    //     s_ref = min(ramp(t), s_meas + lead)
-    // so it pulls the load along but never asks for more than `lead` ahead
-    // of what is actually there.
-    let stair_capture_lead = env_f64("STAIR_CAPTURE_LEAD", 0.0).clamp(0.0, 1.0);
-    // How much of `dt` the transfer clock advances while a guard fails.
-    // Historically 0: the clock STOPS, so a Capture whose guards fail on
-    // 45% of ticks (measured 2026-09-22) barely progresses, and anything
-    // keyed to the clock -- the driven load ramp, `STAIR_CAPTURE_LEAD` --
-    // never fires (measured 2026-09-24: lead 0.15 and 0.30 bit-identical to
-    // no lead). The phase TRANSITIONS keep their guard conditions; only the
-    // drive keeps moving, at this fraction of speed. Default 0 = historical.
-    let stair_clock_guard_slow = env_f64("STAIR_CLOCK_GUARD_SLOW", 0.0).clamp(0.0, 1.0);
-    // Transfer state machine variant. "capture" = historical Capture -> Rise
-    // -> Commit. "rise_first" = skip Capture: rise immediately with BOTH feet
-    // down, the load share and the height driven by the phase clock, and
-    // release the low foot only once the high foot carries
-    // STAIR_RELEASE_SHARE of the weight. Rise -> Commit then judges the DCM
-    // against the DOUBLE-support box while the low foot is held.
-    //
-    // Why (measured 2026-09-24): Capture -> Rise requires the measured DCM
-    // to sit inside the HIGH foot's CoP box (capture_error <= 3 mm), i.e. the
-    // DCM must be fully captured over a foot that carries 9% of the weight
-    // at arming (median of 67 armed runs). Driving it there in a 0.4 s
-    // double support saturates the ZMP; not driving it (load tracking)
-    // times Capture out at 4 s. Neither can satisfy the gate. Lifting while
-    // the DCM is still between the feet removes the gate instead of fighting
-    // it. Default "capture" reproduces every existing recipe.
-    let stair_transfer_rise_first = std::env::var("STAIR_TRANSFER_MODE").map(|v| v == "rise_first").unwrap_or(false);
-    let stair_release_share = env_f64("STAIR_RELEASE_SHARE", 0.80).clamp(0.3, 1.0);
-    // The release must not fire on the landing impact transient (measured
-    // 2026-09-24: 98% on the landing foot 5 ms after arming, ~9% a few ticks
-    // later). Smooth the share with this time constant and require the
-    // transfer clock to have run at least STAIR_RELEASE_MIN_T.
-    let stair_release_tau = env_f64("STAIR_RELEASE_TAU", 0.10).max(1e-3);
-    let stair_release_min_t = env_f64("STAIR_RELEASE_MIN_T", 0.30).max(0.0);
-    let stair_rise_time = env_f64("STAIR_RISE_TIME", 1.50).max(0.10);
-    // Optional unload interval before Rise; zero preserves the baseline.
-    let stair_release_time = env_f64("STAIR_CAPTURE_RELEASE_TIME", 0.0).max(0.0);
-    let stair_release_guard = flag("STAIR_CAPTURE_RELEASE_GUARD", false);
-    let stair_commit_time = env_f64("STAIR_COMMIT_TIME", 0.40).max(0.10);
-    // Diagnostic separation of tread hold from the return to walking.
-    let stair_post_commit_hold = env_f64("STAIR_POST_COMMIT_HOLD", 0.0).max(0.0);
-    let stair_post_walk_settle = flag("STAIR_POST_WALK_SETTLE", false);
-    let stair_post_walk_terminal_step = flag("STAIR_POST_WALK_TERMINAL_STEP", false);
-    let stair_post_walk_terminal_gap = env_f64("STAIR_POST_WALK_TERMINAL_GAP", 0.065).max(0.060);
-    let stair_post_walk_settle_ramp = env_f64("STAIR_POST_WALK_SETTLE_RAMP", 1.00).max(dt);
-    let stair_post_walk_settle_capture_hold =
-        env_f64("STAIR_POST_WALK_SETTLE_CAPTURE_HOLD", 0.50).max(0.0);
-    let stair_post_walk_settle_steps =
-        env_f64("STAIR_POST_WALK_SETTLE_STEPS", 2.0).max(1.0) as usize;
-    let stair_post_walk_settle_load = env_f64("STAIR_POST_WALK_SETTLE_LOAD", 0.10).clamp(0.0, 0.40);
-    let stair_post_walk_settle_dwell = env_f64("STAIR_POST_WALK_SETTLE_DWELL", 0.05).max(0.0);
-    let stair_post_walk_settle_fz_weight =
-        env_f64("STAIR_POST_WALK_SETTLE_FZ_WEIGHT", 1.0).max(0.0);
-    let stair_trunk_post_time = env_f64("STAIR_TRUNK_POST_TIME", 0.0).max(0.0);
-    let stair_height_handover = flag("STAIR_HEIGHT_HANDOVER", false);
-    let stair_consume_rise_step = flag("STAIR_CONSUME_RISE_STEP", false);
-    // Crouch this far below the Commit terminal height when the transfer
-    // hands back to the gait.
-    //
-    // Measured on the fixed-arm one-step: the step after the ascent never
-    // lands. Its target descends 24 mm and the foot follows only 10 of them,
-    // swing task residual 3.9 (m/s^2 RMS) while the leg torques stay under
-    // 1 N*m of their 6-14 -- so it is not torque, and the residual falls to
-    // 1e-6 the moment the target stops moving. The knee is at 15 deg, about
-    // 99% of full extension: the swing leg is near its kinematic singularity
-    // and cannot put the foot down. Standing 52 mm taller on the landing
-    // than the gait's own nominal is what puts it there. 0 = off (identical
-    // to the shipped `STAIR_HEIGHT_HANDOVER` seed).
-    let stair_post_z = env_f64("STAIR_POST_Z", 0.0).clamp(0.0, 0.08);
-    // Post-transfer DS may release only after the next stance foot is loaded.
-    let stair_resume_contact_gate = flag("STAIR_RESUME_CONTACT_GATE", false);
-    // Hold the lateral DCM over the measured stance foot while a
-    // post-transfer single-support phase waits for its receiver to load.
-    let stair_resume_ss_dcm_hold = flag("STAIR_RESUME_SS_DCM_HOLD", false);
-    let stair_resume_ss_hold_max = env_f64("STAIR_RESUME_SS_HOLD_MAX", 1.0).max(dt);
-    let stair_resume_ss_hold_frac = env_f64("STAIR_RESUME_SS_HOLD_FRAC", 0.65).clamp(0.5, 1.0);
-    let stair_resume_ss_sink = env_f64("STAIR_RESUME_SS_SINK", 0.002).clamp(0.0, 0.010);
-    let stair_resume_ss_load = env_f64("STAIR_RESUME_SS_LOAD", 0.10).clamp(0.02, 0.80);
-    let stair_resume_ss_admit_load =
-        env_f64("STAIR_RESUME_SS_ADMIT_LOAD", 0.015).clamp(0.005, 0.10);
-    // Bridge the SS-held DCM to the ordinary DS plan from the measured state.
-    let stair_resume_ds_capture = flag("STAIR_RESUME_DS_CAPTURE", false);
-    let stair_resume_ds_capture_time = env_f64("STAIR_RESUME_DS_CAPTURE_TIME", 0.50).max(dt);
-    let stair_resume_ds_capture_after =
-        env_f64("STAIR_RESUME_DS_CAPTURE_AFTER", 2.0).max(1.0) as u32;
-    let stair_resume_gate_load = env_f64("STAIR_RESUME_GATE_LOAD", 0.65).clamp(0.05, 1.5);
-    let stair_resume_gate_tilt = env_f64("STAIR_RESUME_GATE_TILT", 0.08).max(0.01);
-    let stair_resume_gate_dwell = env_f64("STAIR_RESUME_GATE_DWELL", 0.05).max(dt);
-    let stair_resume_sole_pose = flag("STAIR_RESUME_SOLE_POSE", false);
-    let stair_resume_swing_priority = flag("STAIR_RESUME_SWING_PRIORITY", false);
-    let stair_resume_swing_couple = env_f64("STAIR_RESUME_SWING_COUPLE", 0.0).max(0.0);
-    let mut resume_gate_slice = None;
-    let mut resume_gate_confirmed_s = 0.0_f64;
-    let mut resume_gate_wait_started: Option<f64> = None;
-    // source slice, receiver, frozen lateral DCM, activation time
-    let mut resume_ss_dcm_hold: Option<(usize, usize, f64, f64)> = None;
-    let mut resume_ss_dcm_ready_s = 0.0_f64;
-    let mut resume_ss_contact_admitted: Option<(usize, usize)> = None;
-    let mut resume_ss_hold_finished_slice: Option<usize> = None;
-    // release time, measured lateral DCM at release
-    let mut resume_ds_capture: Option<(f64, f64)> = None;
-    let mut resume_ss_releases = 0_u32;
-    let mut stair_trunk_post_until = 0.0_f64;
-    let stair_capture_inboard = env_f64("STAIR_CAPTURE_INBOARD", 0.012).max(0.0);
-    let stair_capture_margin = env_f64("STAIR_CAPTURE_MARGIN", 0.70).clamp(0.1, 1.0);
-    let stair_capture_tol = env_f64("STAIR_CAPTURE_TOL", 0.003).max(0.0);
-    // Capacity the LOW foot keeps at the end of Capture. Measured on the
-    // fixed-arm one-step: through Capture the HIGH foot sits at 0-3 N for
-    // 250 ms and then takes everything in 40 ms -- total support falls to
-    // 0.65 mg (briefly falling), a 146 N slam follows, and it launches.
-    // Nothing asks the high foot to take load: `f_share` returns 1.0 for
-    // both feet during a transfer, and `TouchdownLoadRamp` serves the LOW
-    // foot's re-contact in Rise, not the high foot's initial loading here.
-    // Squeezing the low foot's CAPACITY is the existing handle (the CoP box
-    // is |m| <= L*fz). 1.0 = off (shipped behaviour).
-    let stair_capture_low_cap = env_f64("STAIR_CAPTURE_LOW_CAP", 1.0).clamp(0.05, 1.0);
-    // Foot force difference control (Caron, Kheddar, Tempier, ICRA 2019 --
-    // HRP-4 climbs 18.5 cm x 5 steps with it). Squeezing the low foot's
-    // capacity above, and the nominal-force reference below, are both OPEN
-    // LOOP: nothing checks whether the high foot actually took the load.
-    // Measured on the fixed-arm one-step, it does not -- the reference ramps
-    // for 220 ms at 0-1.6 N and then the whole handover happens in 15 ms.
-    //
-    // HRP-4 closes the loop on the RELATIVE FOOT HEIGHT, not on the force
-    // command, because a unilateral contact answers "push down" and ignores
-    // "please carry more". Their gain is A_dfz = 1e-4 m/(N*s) on a 39 kg
-    // robot; scale by mass when porting. Their law needs a separate 1 Hz
-    // vertical drift compensator; applying the correction as +-dz/2 keeps
-    // the mean foot height fixed by construction, so it does not.
-    //
-    // 0 = off (shipped behaviour).
-    let stair_ffdc = env_f64("STAIR_FFDC", 0.0).max(0.0);
-    let stair_ffdc_clamp = env_f64("STAIR_FFDC_CLAMP", 0.010).max(0.0);
-    // Rate at which the offset bleeds back to zero when FFDC is not driving,
-    // so a released foot does not inherit a stale bias.
+    // Rate at which the FFDC offset (DS_FFDC) bleeds back to zero when FFDC
+    // is not driving, so a released foot does not inherit a stale bias.
     let stair_ffdc_leak = env_f64("STAIR_FFDC_LEAK", 4.0).max(0.0);
-    let stair_capture_k = env_f64("STAIR_CAPTURE_K", 1.0).max(0.1);
-    let stair_transfer_latch = flag("STAIR_TRANSFER_LATCH", false);
-    let stair_transfer_timeout = env_f64("STAIR_TRANSFER_TIMEOUT", 4.0)
-        .max(stair_capture_time + stair_rise_time + stair_commit_time);
-    let stair_transfer_dcm_tol = env_f64("STAIR_TRANSFER_DCM", 0.025).max(0.001);
-    let stair_transfer_z_tol = env_f64("STAIR_TRANSFER_Z", 0.015).max(0.001);
-    let stair_rise_load = env_f64("STAIR_RISE_LOAD", 0.45).clamp(0.05, 0.95);
-    let stair_commit_load = env_f64("STAIR_COMMIT_LOAD", 0.80).clamp(0.05, 0.98);
-    // Fraction of the walk's DCM drift carried through a transfer. See the
-    // use site; 0 reproduces the historical behaviour exactly.
-    let stair_transfer_drift = env_f64("STAIR_TRANSFER_DRIFT", 0.0).clamp(0.0, 2.0);
-    // Finite double-support extension at transfer arm (0 = to end of run).
-    let stair_transfer_hold = env_f64("STAIR_TRANSFER_HOLD", 0.0).max(0.0);
-    // Keep the walking DCM plan through a transfer instead of rebuilding it.
-    let stair_transfer_keep_dcm = flag("STAIR_TRANSFER_KEEP_DCM", false);
-    let stair_transfer_tilt = env_f64("STAIR_TRANSFER_TILT", 0.12).max(0.01);
-    let stair_transfer_fz_guard = env_f64("STAIR_TRANSFER_FZ_GUARD", 1.60).max(1.0);
-    let stair_transfer_ticks = env_f64("STAIR_TRANSFER_TICKS", 4.0).max(1.0) as u32;
     // Full per-foot wrench MPC for the three-phase stair transfer.
     // Opt-in until the fixed-arm staircase benchmark has been revalidated.
     // Command the swing to the ANKLE pose the footstep plan implies, rather
@@ -3263,13 +2999,14 @@ fn main() {
     let stair_wrench_mpc = flag("STAIR_WRENCH_MPC", false);
     // Run the wrench MPC outside a stair transfer too.
     //
-    // The block below is gated on `stair_transfer_cmd.is_some()`, so the MPC
-    // solves only while a transfer is armed. Measured 2026-09-22: at 60 and
-    // 80 mm risers no transfer armed in 16 of 16 runs, i.e. the best
-    // high-riser figures of that day were obtained with the MPC executing
-    // ZERO ticks. A predictive layer that only runs during a hand-written
-    // primitive cannot carry a momentum reference or a foothold decision, so
-    // this is infrastructure for both rather than a result on its own.
+    // The block below was gated on a running stair transfer (since removed),
+    // so the MPC solved only while a transfer was armed. Measured
+    // 2026-09-22: at 60 and 80 mm risers no transfer armed in 16 of 16 runs,
+    // i.e. the best high-riser figures of that day were obtained with the
+    // MPC executing ZERO ticks. A predictive layer that only runs during a
+    // hand-written primitive cannot carry a momentum reference or a foothold
+    // decision, so this is infrastructure for both rather than a result on
+    // its own.
     //
     // Default OFF: the walking branch builds its own references (below) and
     // must be measured against the transfer-only lineage before it replaces
@@ -3782,9 +3519,6 @@ fn main() {
     let stair_wrench_horizon = env_f64("STAIR_WRENCH_N", 8.0).max(2.0) as usize;
     let stair_wrench_preview_dt = env_f64("STAIR_WRENCH_PREVIEW_DT", 0.05).max(dt);
     let stair_wrench_low_min = env_f64("STAIR_WRENCH_LOW_MIN", 0.12).clamp(0.0, 0.45);
-    let stair_wrench_high_min = env_f64("STAIR_WRENCH_HIGH_MIN", 0.05).clamp(0.0, 0.45);
-    let stair_touchdown_load_time = env_f64("STAIR_TOUCHDOWN_LOAD_TIME", 0.50).max(0.05);
-    let stair_touchdown_high_share = env_f64("STAIR_TOUCHDOWN_HIGH_SHARE", 0.25).clamp(0.05, 0.45);
     let stair_wrench_accel = flag("STAIR_WRENCH_ACCEL", false);
     let stair_wrench_accel_xy = flag("STAIR_WRENCH_ACCEL_XY", false);
     // MPC_XI_REF: keep the WBC's DCM law, but take its REFERENCE (xi_ref,
@@ -3800,57 +3534,6 @@ fn main() {
     // 2026-09-26 the standing robot ran away in 1.2 s with xi_ref == xi at
     // every tick. Sampling one node or more ahead keeps the error term.
     let mpc_xi_ref_lead = env_f64("MPC_XI_REF_LEAD", 0.0).max(0.0);
-    let mpc_xi_ref_transfer_plan = flag("MPC_XI_REF_TRANSFER_PLAN", false);
-    let stair_wrench_floor = flag("STAIR_WRENCH_FLOOR", false);
-    // (B) Do not hand the whole load to the high foot by the end of Capture.
-    //
-    // Measured: the trailing foot sits BEHIND and BELOW the centre of mass, so
-    // its vertical force is a nose-UP moment about the CoM. As Capture drives
-    // alpha past ~0.85 that force goes away, the high foot's CoP swings from
-    // its heel (-40 mm) to its toe (+46 mm of a +53 mm sole) to supply the
-    // moment alone, saturates, and the trunk pitches over the toe: 0.1 deg ->
-    // 25 deg in 0.28 s while the leg torques never exceed a quarter of their
-    // limit. It is CoP authority that runs out, not torque.
-    //
-    // The floor that fixes this already exists -- it is the minimum normal
-    // force of HRP-4's wrench distribution QP (Caron et al., ICRA 2019), and
-    // `STAIR_WRENCH_FLOOR` implements it -- but it is reachable only with
-    // `STAIR_WRENCH_MPC` on. This flag lets the floor run without the MPC.
-    let stair_capture_floor = flag("STAIR_CAPTURE_FLOOR", false);
-    // Ankle-moment regularisation, the second term of HRP-4's wrench
-    // distribution QP (weight 100, against 10000 for net-wrench tracking).
-    // Its job there is to remove the redundancy of splitting one net wrench
-    // between two soles. Measured here, that redundancy is not benign: on the
-    // non-coplanar double support the CoP of BOTH soles flips by 20-32 mm RMS
-    // every 5 ms IN THE PLANT (`cop_mj`, not just the QP's own solution),
-    // while the trunk pitch grows at lambda = 29.4 /s -- doubling every 24 ms,
-    // 5.4x the ankle-pivot inverted pendulum rate sqrt(g/h) = 5.4 /s. A body
-    // that topples does it at the pendulum rate; this is a closed-loop mode.
-    // Weight is in units of (m g L)^2. 0 = off.
-    let stair_ankle_reg = env_f64("STAIR_ANKLE_REG", 0.0).max(0.0);
-    // Let the trunk compete with the CoM instead of living under it.
-    //
-    // Measured on the fixed-arm one-step: up to t=12.550 the trunk task's
-    // residual is EXACTLY 0.00 -- the WBC delivers the commanded angular
-    // acceleration. From t=12.575 the task asks for -9, -23, -39, ... -132
-    // rad/s^2 (nose UP, correctly fighting the pitch) and the solution
-    // delivers +9, +13, +29, ... +14 -- the OPPOSITE SIGN, residual RMS 76.
-    // The trunk is not failing to be tracked; it is being overruled.
-    //
-    // The level above it is the CoM. With both soles rigidly anchored, the
-    // only way left to carry the CoM forward onto the tread is to lean: a
-    // 25 deg pitch of a trunk holding 27.4% of the mass moves the CoM about
-    // 17 mm, and the CoM command asks for 24 mm over that window. The
-    // hierarchy therefore spends the trunk to buy CoM tracking.
-    //
-    // `STAIR_WRENCH_TRUNK_COUPLED` already merges the two into one weighted
-    // level, but only with the wrench MPC on. This is the same merge for the
-    // transfer without it. Weight is relative to the CoM rows. 0 = off.
-    let stair_trunk_couple = env_f64("STAIR_TRUNK_COUPLE", 0.0).max(0.0);
-    // Low-foot floor during CAPTURE only, as a fraction of body weight.
-    // Negative = fall back to STAIR_WRENCH_LOW_MIN (so this is inert unless
-    // asked for).
-    let stair_capture_low_min = env_f64("STAIR_CAPTURE_LOW_MIN", -1.0).min(0.45);
     let stair_wrench_blend = env_f64("STAIR_WRENCH_BLEND", 0.25).clamp(0.0, 1.0);
     let stair_wrench_coupled = flag("STAIR_WRENCH_COUPLED", true);
     let stair_wrench_level_weight = env_f64("STAIR_WRENCH_LEVEL_WEIGHT", 1.0).max(0.0);
@@ -3859,8 +3542,6 @@ fn main() {
     let stair_wrench_trunk_weight = env_f64("STAIR_WRENCH_TRUNK_WEIGHT", 2.0).max(0.0);
     let stair_wrench_trunk_coupled = flag("STAIR_WRENCH_TRUNK_COUPLED", false);
     let stair_managed_contact = flag("STAIR_MANAGED_CONTACT", true);
-    let stair_managed_rise = flag("STAIR_MANAGED_RISE", false);
-    let stair_managed_fz = env_f64("STAIR_MANAGED_FZ", 0.20).clamp(0.0, 0.8);
     let stair_managed_tangent = env_f64("STAIR_MANAGED_TANGENT", 0.03).clamp(0.0, 1.0);
     let stair_managed_rotation = env_f64("STAIR_MANAGED_ROTATION", 0.05).clamp(0.0, 1.0);
     let stair_managed_az_max = env_f64("STAIR_MANAGED_AZ_MAX", 15.0).max(0.1);
@@ -3878,31 +3559,12 @@ fn main() {
     // An absent foot is recovered kinematically and cannot provide a wrench
     // until ContactCorrection's load hysteresis admits it again.
     let stair_hybrid_contact = flag("STAIR_HYBRID_CONTACT", true);
-    // Smooth the newly landed foot's authority instead of switching its full
-    // contact wrench and acceleration task on/off with every load sample.
-    let stair_continuous_contact = flag("STAIR_CONTINUOUS_CONTACT", false);
-    // Which foot the Commit phase settles the CoM onto.
-    //
-    // The default (false) settles onto `1 - high`, the trailing foot still on
-    // the lower surface. Measured 2026-09-22 on G1, riser 40 mm: `high` is the
-    // foot that just LANDED on the tread, and the gait's next single support
-    // is stance=high, swing=1-high -- so the default drives the CoM onto the
-    // very foot that lifts a tick later. Both runs that ever reached Commit
-    // (STAIR_CONTINUOUS_CONTACT=1, the first completions G1 has produced) fell
-    // sideways within 1.0 s of `complete`, CoM y running out to +0.27 m with
-    // the ZMP pinned at the stance sole's inner edge. Setting this true commits
-    // onto the high foot instead, which is the one that stays down.
-    //
-    // OPT-IN so kyo46rs stays bit-identical: kyo46rs has never completed a
-    // transfer either, so the default is untested rather than known-good, but
-    // changing it silently would move a robot this was not measured on.
-    let stair_commit_on_high = flag("STAIR_COMMIT_ON_HIGH", false);
     // Ramp a NEW contact in over this many seconds, on any ground, with no
     // stair transfer in sight. 0 = off = shipped behaviour.
     //
-    // Everything Managed above lives inside a stair transfer
-    // (`stair_wrench_mpc && stair_managed_contact && stair_transfer_cmd...`),
-    // so on flat ground every contact is admitted Rigid in a single tick.
+    // Apart from the rate trigger (`STAIR_MANAGED_RATE`), Managed contact
+    // lived inside the stair transfer (removed), so on flat ground every
+    // contact is admitted Rigid in a single tick.
     // Measured on the G1 bring-up (doc/from_claude/20260919_g1_transfer_probe.md):
     // at the 1 -> 2 contact-set change the QP's total vertical force collapsed
     // 1.03 -> 0.45 BW for one tick and took 50 ms to climb back, both feet flat
@@ -3910,7 +3572,7 @@ fn main() {
     // demand +15 m/s^2 -- 1.5 g upward -- and the QP paid for it with a 1.81 BW
     // slam that launched the swing leg to 0.82 m. kyo46rs never dips below
     // 0.85 BW walking on the flat, which is why this went unseen there.
-    let touchdown_ramp_g = phase_gain("TOUCHDOWN_RAMP", env_f64("TOUCHDOWN_RAMP", 0.0));
+    let touchdown_ramp = env_f64("TOUCHDOWN_RAMP", 0.0).max(0.0);
     // Show the QP a scheduled-SWING foot that is nevertheless carrying load.
     //
     // `ContactCorrection` drops a commanded swing foot from the contact set
@@ -3927,89 +3589,9 @@ fn main() {
     // usual weights, with a force capacity of `SWING_CONTACT_CAP`. Weak enough
     // to leave the swing its null space, present enough that the reaction is
     // in the model. 0 = off = shipped behaviour.
-    let swing_contact_soft_g = phase_gain("SWING_CONTACT_SOFT", env_f64("SWING_CONTACT_SOFT", 0.0));
-    let swing_contact_soft_after = env_f64("SWING_CONTACT_SOFT_AFTER", 0.0).max(0.0) as u32;
+    let swing_contact_soft = env_f64("SWING_CONTACT_SOFT", 0.0).clamp(0.0, 1.0);
     let swing_contact_on = env_f64("SWING_CONTACT_ON", 0.10).clamp(0.01, 1.0);
     let swing_contact_cap = env_f64("SWING_CONTACT_CAP", 0.30).clamp(0.02, 1.0);
-    // This ramp is planned from the touchdown event. It deliberately does not
-    // follow fz: feeding measured load back into its own capacity made a
-    // positive-feedback loop during contact chatter.
-    let stair_contact_activation_time = env_f64("STAIR_CONTACT_ACTIVATION_TIME", 0.40).max(dt);
-    let stair_contact_min = env_f64("STAIR_CONTACT_MIN", 0.03).clamp(0.0, 0.25);
-    // Rise may commit only after the measured left/right load split has
-    // settled. Zero disables this gate for baseline compatibility.
-    let stair_load_chatter_max = env_f64("STAIR_LOAD_CHATTER_MAX", 0.0).max(0.0);
-    let stair_load_chatter_tau = env_f64("STAIR_LOAD_CHATTER_TAU", 0.20).max(dt);
-    let stair_recontact_load = env_f64("STAIR_RECONTACT_LOAD", 0.05).clamp(0.01, 0.30);
-    let stair_recontact_alpha = env_f64("STAIR_RECONTACT_ALPHA", 0.80).clamp(0.50, 0.98);
-    let stair_recontact_z = env_f64("STAIR_RECONTACT_Z", 0.004).max(0.001);
-    let stair_recontact_angle = env_f64("STAIR_RECONTACT_ANGLE", 0.10).max(0.01);
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum StairTransferPhase {
-        Capture,
-        Rise,
-        Commit,
-    }
-    impl StairTransferPhase {
-        fn code(self) -> f64 {
-            match self {
-                Self::Capture => 1.0,
-                Self::Rise => 2.0,
-                Self::Commit => 3.0,
-            }
-        }
-    }
-    #[derive(Clone, Copy, Debug)]
-    struct TouchdownLoadRamp {
-        high: usize,
-        contact_t: f64,
-        start_share: [f64; 2],
-        support_target: na::Vector2<f64>,
-        seed_previous: bool,
-    }
-    struct ActiveStairTransfer {
-        ds_slice: usize,
-        high: usize,
-        phase: StairTransferPhase,
-        plan: articara::biped::preview::StairTransferPlan,
-        capture_target: na::Vector2<f64>,
-        /// DCM reference velocity the walk had at the moment this transfer
-        /// armed. See the `STAIR_TRANSFER_DRIFT` use site.
-        arm_xi_dot: na::Vector2<f64>,
-        target_z: f64,
-        clock: f64,
-        deadline: f64,
-        ready_ticks: u32,
-        paused_ticks: u32,
-        timed_out: bool,
-        hold_started: Option<f64>,
-        /// rise_first: the low foot is still anchored (not yet released).
-        low_held: bool,
-        /// rise_first: share of weight on the high foot at arming.
-        arm_share: f64,
-        /// rise_first: smoothed share of weight on the high foot.
-        share_ema: f64,
-    }
-    #[derive(Clone, Copy, Debug)]
-    struct PostWalkSettle {
-        start: f64,
-        start_xi: na::Vector2<f64>,
-        target: na::Vector2<f64>,
-        z: f64,
-    }
-    let mut stair_transfer: Option<ActiveStairTransfer> = None;
-    let mut touchdown_load_ramp: Option<TouchdownLoadRamp> = None;
-    let mut stair_capture_share: Option<f64> = None; // EMA of the high foot's share of weight
-    let mut stair_capture_p_prev: Option<na::Vector2<f64>> = None;
-    let mut stair_transfer_started = 0u32;
-    let mut stair_transfer_completed = 0u32;
-    let mut first_post_swing_slice: Option<usize> = None;
-    let mut stair_transfer_timeouts = 0u32;
-    let mut post_transfer_steps: Option<usize> = None;
-    let mut post_transfer_touchdowns: Option<u32> = None;
-    let mut post_walk_settle: Option<PostWalkSettle> = None;
-    let mut post_settle_contacts_latched = false;
-    let mut post_walk_settle_ready_s = 0.0_f64;
     let mut replan_engaged = false;
     let mut height_plan = articara::biped::preview::HeightPlan::constant(z_com);
     let mut preview_p = steps.mid_xy();
@@ -4179,7 +3761,6 @@ fn main() {
     let mut hit_f_now: f64 = 0.0;
     let mut fz_prev: [f64; 2] = [0.0; 2];
     let mut fz_prev2: [f64; 2] = [0.0; 2];
-    let mut wbc_fz_previous: [Option<f64>; 2] = [None; 2];
     let mut fz_rate_ema: [f64; 2] = [0.0; 2];
     let mut managed_until: [f64; 2] = [f64::NEG_INFINITY; 2];
     // When each side last ENTERED the contact set; None while it is out.
@@ -4268,7 +3849,6 @@ fn main() {
     let mut previous_a_xy: Option<na::Vector2<f64>> = None;
     // Preserve the command actually sent on the previous control tick so a
     // contact-triggered transfer starts continuously from the live plan.
-    let mut last_single_p_cmd: Option<na::Vector2<f64>> = None;
     let mut dcm_ref_prev: Option<na::Vector2<f64>> = None;
     // (pre-jump xi, plan xi at t0, t0). offset(s) = (pre - plan0) * (1 - smoothstep((s - t0)/T))
     let mut dcm_ref_blend: Option<(na::Vector2<f64>, na::Vector2<f64>, f64)> = None;
@@ -4319,9 +3899,6 @@ fn main() {
     let mut diag_mpc_xi: Option<na::Vector2<f64>> = None;
     // The same quantity for the forces the WBC actually asked the robot for.
     let mut diag_wbc_net_cop = [f64::NAN; 2];
-    // P2 opt-in: a held command belongs to one phase/contact topology.
-    let wrench_event_replan = flag("STAIR_WRENCH_EVENT_REPLAN", false);
-    let mut wrench_command_context: Option<(u8, u8, usize)> = None;
     let mut wrench_mpc_next = 0.0;
     let mpc_backend_override =
         std::env::var("MPC_QP_BACKEND")
@@ -4394,8 +3971,6 @@ fn main() {
     let mut wrench_mpc_solves = 0u32;
     let mut wrench_mpc_failures = 0u32;
     let mut wrench_mpc_soft = 0u32;
-    let mut contact_activation = [1.0_f64; 2];
-    let mut contact_force_activation = [1.0_f64; 2];
     // FFDC state: the integrated relative-height correction, and the load
     // split the QP was asked for on the PREVIOUS tick. HRP-4 feeds back the
     // distribution QP's own output; `forces_nominal` is built after the
@@ -4403,85 +3978,15 @@ fn main() {
     // tick (5 ms) old. That lag is far inside an admittance whose gain moves
     // the feet at millimetres per second.
     let mut ffdc_dz = 0.0_f64;
-    let mut ffdc_ref_share: Option<[f64; 2]> = None;
     let mut ffdc_err_log = 0.0_f64;
-    let mut transfer_pitch_previous: Option<f64> = None;
-    let mut capture_error_log = -1.0_f64;
-    let mut capture_tilt_log = 0.0_f64;
     let mut trunk_cmd_rp = [0.0_f64; 2];
     let mut trunk_acc_rp = [0.0_f64; 2];
-    let mut transfer_guard_log = -1.0_f64;
-    let mut load_share_previous = 0.5_f64;
-    let mut load_chatter_ema = 0.0_f64;
 
     for tick in 0..n_ticks {
         let qp_control_start = std::time::Instant::now();
         let mut mpc_capture_ns = 0u128;
         let t = tick as f64 * dt;
         t_last = t;
-        // Which window this tick belongs to. `stair_transfer` still holds
-        // last tick's state here, which is what "are we in a transfer" means.
-        let run_phase = if stair_transfer.is_some() {
-            RunPhase::Transfer
-        } else if stair_transfer_completed > 0 {
-            RunPhase::Post
-        } else {
-            RunPhase::Approach
-        };
-        // Shadow the scoped gains for the rest of the tick. Each branch is
-        // skipped entirely when nothing overrides it, so an unscoped run
-        // takes exactly the path it took before.
-        let cop_frac = cop_frac_g.at(run_phase);
-        let kp_sw_z = kp_sw_z_g.at(run_phase);
-        let kp_sw_xy = kp_sw_xy_g.at(run_phase);
-        let kd_sw = kd_sw_g.at(run_phase);
-        let kp_trunk = kp_trunk_g.at(run_phase);
-        let kd_trunk = kd_trunk_g.at(run_phase);
-        let kp_sw_rot = kp_sw_rot_g.at(run_phase);
-        let kd_sw_rot = kd_sw_rot_g.at(run_phase);
-        let swing_rot_mode = swing_rot_mode_g.at(run_phase) as u32;
-        let stair_td_sink = stair_td_sink_g.at(run_phase);
-        let touchdown_ramp = touchdown_ramp_g.at(run_phase).max(0.0);
-        let swing_contact_soft = if resume_ss_releases >= swing_contact_soft_after {
-            swing_contact_soft_g.at(run_phase).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let zmp_lat_scale = zmp_lat_scale_g.at(run_phase);
-        if zmp_lat_scale_g.scoped() && zmp_lat_scale != dcm_plan_lat_scale {
-            dcm_plan =
-                DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
-            dcm_plan_lat_scale = zmp_lat_scale;
-            preview_next = t;
-        }
-        if cop_frac_g.scoped() {
-            contact_cfg.cop_half = (sole_half_l * cop_frac, sole_half_w * cop_frac);
-        }
-        if jlim_amax_g.scoped() {
-            jlim_cfg.a_max.fill(jlim_amax_g.at(run_phase));
-        }
-        if jlim_q_margin_g.scoped() {
-            let margin = jlim_q_margin_g.at(run_phase).max(0.0);
-            for row in 0..na_count {
-                let mid = 0.5 * (rig.q_min[row] + rig.q_max[row]);
-                let m = margin.min(0.45 * (rig.q_max[row] - rig.q_min[row]));
-                jlim_cfg.q_min[row] = (rig.q_min[row] + m).min(mid);
-                jlim_cfg.q_max[row] = (rig.q_max[row] - m).max(mid);
-            }
-            if arm_pitch_band > 0.0 {
-                for (ji, vi) in rig.actuated() {
-                    if rig.robot.joints[ji].name.ends_with("shoulder_pitch_joint") {
-                        let row = vi - 6;
-                        let centre = rig.q_seed[ji];
-                        jlim_cfg.q_min[row] = jlim_cfg.q_min[row].max(centre - arm_pitch_band);
-                        jlim_cfg.q_max[row] = jlim_cfg.q_max[row].min(centre + arm_pitch_band);
-                    }
-                }
-            }
-        }
-        if land_frac_g.scoped() {
-            landing_timing.min_fraction = land_frac_g.at(run_phase).clamp(0.0, 1.0);
-        }
         if land_extend_rise > 0.0 {
             // Same test the landing detector itself uses to decide a swing is
             // a stair swing (`preview.rs`: the planned sole height changes by
@@ -4555,18 +4060,6 @@ fn main() {
                 );
             }
         }
-        let measured_total = measured_pre[0].max(0.0) + measured_pre[1].max(0.0);
-        let measured_left_share = if measured_total > 1e-6 {
-            measured_pre[0].max(0.0) / measured_total
-        } else {
-            load_share_previous
-        };
-        if touchdown_load_ramp.is_some() {
-            let change = (measured_left_share - load_share_previous).abs();
-            let alpha = (ctrl_dt / stair_load_chatter_tau).clamp(0.0, 1.0);
-            load_chatter_ema += alpha * (change - load_chatter_ema);
-        }
-        load_share_previous = measured_left_share;
         let com = st.com;
         let com_vel = st.com_vel;
 
@@ -4645,13 +4138,13 @@ fn main() {
                 }
             }
             // LAND_CONFIRM_LEVEL_ALWAYS=1: confirm (and extend) every level
-            // swing from the start, without a completed stair transfer.
+            // swing from the start.
             // Measured 2026-10-17 on +5 deg: with the 30 mm gate the slope
             // swings that counted as stair swings were extended ~1 s each
             // (11 timeouts) and 27/48 survived; with the 80 mm gate no swing
             // is confirmed, the landing foot is unloaded at half the
             // scheduled double-support starts, and 0/48 survive.
-            landing_timing.level_steps = land_confirm_level_always || (land_confirm_level && stair_transfer_completed > 0);
+            landing_timing.level_steps = land_confirm_level_always;
             let touchdowns_before = landing_timing.touchdowns;
             let timeouts_before = landing_timing.timeouts;
             let shift = landing_timing.update(&mut gait, &footsteps, &actual, measured_pre, t, dt);
@@ -5126,560 +4619,7 @@ fn main() {
                 );
                 replan_engaged = true;
             }
-            if stair_transfer_enabled
-                && stairs.is_some()
-                && landing_timing.touchdowns > touchdowns_before
-                // A same-height landing must not create another stair Rise.
-                && landing_timing.clock.is_some_and(|(i, _, _)| {
-                    gait.slices[i].support.swing().is_some_and(|side|
-                        (footsteps.at_slice(i).sole[side].z
-                            - footsteps.at_slice(i.saturating_sub(1)).sole[side].z).abs() > step_dz_min)
-                })
-                && stair_transfer.is_none()
-            {
-                let swing_slice = landing_timing
-                    .clock
-                    .expect("touchdown keeps its swing clock")
-                    .0;
-                let high = gait.slices[swing_slice]
-                    .support
-                    .swing()
-                    .expect("touchdown event belongs to single support");
-                let ds_slice = gait.index_at(t);
-                if matches!(gait.slices[ds_slice].support, Support::Double) {
-                    let low = 1 - high;
-                    let toward_low = actual.xy(low) - actual.xy(high);
-                    let capture_target = if toward_low.norm_squared() > 1e-12 {
-                        actual.xy(high)
-                            + toward_low.normalize() * stair_capture_inboard.min(toward_low.norm())
-                    } else {
-                        actual.xy(high)
-                    };
-                    let target_z = z_com + actual.sole[high].z - terrain_base;
-                    // Where the transfer's DCM reference STARTS.
-                    //
-                    // `plan.at()` feeds the feedback law as BOTH `xi` and `p`
-                    // (see `transfer_ref` below), so `p0` is not only the
-                    // first ZMP reference of the Capture phase but also the
-                    // first DCM reference. Historically it was the last
-                    // commanded ZMP of the single support, i.e. a point
-                    // between the feet -- and the walking DCM reference is
-                    // not there. Measured 2026-09-23 on G1 (T=40, landing
-                    // 3.0 m, 38 armed runs at 20/40 mm): at the arming tick
-                    // `xi_ref` jumped from (1.908, +0.071) to (1.998, +0.004),
-                    // 9 cm ahead and 7 cm across, while the real DCM stayed
-                    // put. `commanded_zmp` then asked for a 34-43 cm ZMP
-                    // displacement (clamped at the sole edge) and the error
-                    // grew to 0.43 m through a 4 s double-support hold; 59 of
-                    // the 67 armed runs fell, against 39 of 125 unarmed ones.
-                    // Every one of the 38 showed the same jump to the digit.
-                    //
-                    // OPT-IN: start the DCM reference from the WALK's own
-                    // reference at this instant, so the plan is continuous and
-                    // the capture target is approached over `stair_capture_time`
-                    // rather than demanded at once. Default keeps the ZMP
-                    // point so every existing recipe reproduces.
-                    let p0 = if stair_capture_from_xi {
-                        dcm_plan.reference(t).xi
-                    } else {
-                        last_single_p_cmd.unwrap_or_else(|| actual.xy(low))
-                    };
-                    let plan = articara::biped::preview::StairTransferPlan {
-                        start: 0.0,
-                        duration: stair_capture_time,
-                        p0,
-                        p1: capture_target,
-                        z0: com.z,
-                        z1: com.z,
-                    };
-                    // Keep both feet scheduled until the measured state says
-                    // the transfer is complete.  The deadline records a miss;
-                    // it does not release the low foot into an unsafe step.
-                    //
-                    // The default stretches the double-support slice to the END
-                    // OF THE RUN and rebuilds the DCM plan from it. A double
-                    // support holds its ZMP, so the rebuilt reference stops
-                    // advancing -- measured 2026-09-22 on G1, the DCM reference
-                    // went from +0.0311 m/s to +0.0098 m/s at the instant a
-                    // transfer armed, while the machine kept walking, and the
-                    // real DCM ran 135 mm past it within a second. The sole is
-                    // 85 mm half-length, so no ZMP inside the foot can pull
-                    // that back: every member that armed a transfer fell, and
-                    // every one that did not survived (6 and 10 of 16).
-                    //
-                    // kyo46rs does not see it. At 0.03 m/s and a 42 mm stride
-                    // its walking DCM barely moves, so "hold" and "keep
-                    // walking" are nearly the same instruction; at G1's
-                    // 0.15-0.18 m/s they are not.
-                    //
-                    // Two opt-in ways out, both defaulting to the historical
-                    // behaviour. The literature on this is about not freezing:
-                    // arXiv:2505.13715 makes step timing a decision variable
-                    // and switches the foot-timing schedule on tracking error,
-                    // and TOPP-MPC (arXiv:1609.04600) treats the timing itself
-                    // as the problem. BDI's public writing on Atlas describes
-                    // the prediction model but says nothing about contact
-                    // scheduling, so it is not evidence either way here.
-                    //
-                    // `STAIR_TRANSFER_HOLD`: extend the double support by a
-                    // FINITE amount rather than to the end of the run, so the
-                    // rebuilt plan still walks out of the transfer.
-                    let hold_until = if stair_transfer_hold > 0.0 {
-                        t + stair_transfer_hold
-                    } else {
-                        total_t
-                    };
-                    gait.retime(ds_slice, hold_until.max(t + stair_transfer_timeout + dt));
-                    // `STAIR_TRANSFER_KEEP_DCM`: leave the walking DCM plan
-                    // alone and let the transfer own only the load split. The
-                    // reference then keeps its forward motion and the transfer
-                    // stops being a step change in the CoM command.
-                    if !stair_transfer_keep_dcm {
-                        dcm_plan = DcmPlan::from_footsteps_rolled(
-                            &gait,
-                            &footsteps,
-                            z_lip,
-                            zmp_lat_scale,
-                            zmp_roll,
-                        );
-                    }
-                    preview_next = t;
-                    touchdown_load_ramp = None;
-                    let total_now = (measured_pre[0] + measured_pre[1]).max(1e-6);
-                    let arm_share = (measured_pre[high] / total_now).clamp(0.0, 1.0);
-                    let (phase, plan) = if stair_transfer_rise_first {
-                        (
-                            StairTransferPhase::Rise,
-                            articara::biped::preview::StairTransferPlan {
-                                start: 0.0,
-                                duration: stair_rise_time,
-                                // Continuous with the walk's own reference.
-                                p0: dcm_plan.reference(t).xi,
-                                p1: capture_target,
-                                z0: com.z,
-                                z1: target_z,
-                            },
-                        )
-                    } else {
-                        (StairTransferPhase::Capture, plan)
-                    };
-                    stair_transfer = Some(ActiveStairTransfer {
-                        ds_slice,
-                        high,
-                        phase,
-                        plan,
-                        capture_target,
-                        // The walk's DCM reference velocity at this instant.
-                        // `StairTransferPlan` interpolates to a capture point
-                        // and holds, which stops the reference dead; keeping
-                        // this lets `STAIR_TRANSFER_DRIFT` put the walk's own
-                        // motion back on top of it.
-                        arm_xi_dot: dcm_plan.reference(t).xi_dot,
-                        target_z,
-                        clock: 0.0,
-                        deadline: t + stair_transfer_timeout,
-                        ready_ticks: 0,
-                        paused_ticks: 0,
-                        timed_out: false,
-                        hold_started: None,
-                        low_held: stair_transfer_rise_first,
-                        arm_share,
-                        share_ema: arm_share,
-                    });
-                    stair_transfer_started += 1;
-                    println!(
-                        "  STAIR TRANSFER start t={t:.3} high={} capture=({:.3},{:.3}) z={:.3}->{:.3} phases={:.2}/{:.2}/{:.2}s",
-                        if high == 0 { "L" } else { "R" },
-                        capture_target.x,
-                        capture_target.y,
-                        com.z,
-                        target_z,
-                        stair_capture_time,
-                        stair_rise_time,
-                        stair_commit_time,
-                    );
-                }
-            }
         }
-
-        // The transfer has three causal phases. Its internal clock only
-        // advances while measured contact and the previous WBC solve are
-        // healthy, so an impact spike cannot advance the height trajectory.
-        let mut finish_transfer: Option<(usize, usize, f64, u32)> = None;
-        if let Some(active) = stair_transfer.as_mut() {
-            let actual = Footsteps::from_fk(
-                data,
-                rig.foot_mi,
-                prof.sole_centre_x,
-                prof.sole_below_origin,
-            );
-            let high_support = Support::Single {
-                stance: active.high,
-                swing: 1 - active.high,
-            };
-            let high_box = SupportBox::from_stance_yawed(
-                &actual,
-                high_support,
-                (sole_half_l * cop_frac, sole_half_w * cop_frac),
-                zmp_margin * stair_capture_margin,
-            );
-            let xi_now = dcm_of(&com, &com_vel, omega);
-            let capture_error = high_box.clamp(&xi_now).1;
-            capture_error_log = capture_error;
-            let next_support = 1 - active.high;
-            // The foot Commit settles onto; see STAIR_COMMIT_ON_HIGH.
-            let commit_side = if stair_commit_on_high {
-                active.high
-            } else {
-                next_support
-            };
-            let next_box = SupportBox::from_stance_yawed(
-                &actual,
-                Support::Single {
-                    stance: commit_side,
-                    swing: 1 - commit_side,
-                },
-                (sole_half_l * cop_frac, sole_half_w * cop_frac),
-                zmp_margin * stair_capture_margin,
-            );
-            let commit_error = next_box.clamp(&xi_now).1;
-            let trot_now = misarta::se3::rotation_matrix(&data.oMi[rig.trunk_mi]);
-            let transfer_tilt_now = trot_now[(2, 1)]
-                .atan2(trot_now[(2, 2)])
-                .abs()
-                .max((-trot_now[(2, 0)]).asin().abs());
-            let signed_pitch = (-trot_now[(2, 0)]).clamp(-1.0, 1.0).asin();
-            let pitch_rate = transfer_pitch_previous.map_or(0.0, |old| (signed_pitch - old) / dt);
-            transfer_pitch_previous = Some(signed_pitch);
-            let total_fz_now = measured_pre[0] + measured_pre[1];
-            let contact_pose_ok = |side: usize| {
-                let sole = actual.sole[side];
-                let surface_z = stairs.as_ref().map_or(0.0, |st| st.h(sole.x));
-                let rot = misarta::se3::rotation_matrix(&data.oMi[rig.foot_mi[side]]);
-                let sole_tilt = rot[(2, 1)]
-                    .atan2(rot[(2, 2)])
-                    .abs()
-                    .max((-rot[(2, 0)]).asin().abs());
-                measured_pre[side] >= stair_recontact_load * total_mass * G
-                    && (sole.z - surface_z).abs() <= stair_recontact_z
-                    && sole_tilt <= stair_recontact_angle
-            };
-            let phase_contacts_ok = match active.phase {
-                // Capture must be allowed to roll a newly landed sole flat.
-                // Rise waits for both rectangular support patches to exist.
-                StairTransferPhase::Capture => true,
-                StairTransferPhase::Rise => {
-                    if touchdown_load_ramp.is_some_and(|ramp| ramp.high == active.high) {
-                        contact_pose_ok(next_support)
-                    } else {
-                        contact_pose_ok(active.high)
-                    }
-                }
-                StairTransferPhase::Commit => {
-                    contact_pose_ok(active.high) && contact_pose_ok(next_support)
-                }
-            };
-            let guard_ok = transfer_tilt_now <= stair_transfer_tilt
-                && total_fz_now <= stair_transfer_fz_guard * total_mass * G
-                && policy.consecutive_degraded() == 0
-                && (!stair_hybrid_contact || phase_contacts_ok);
-            capture_tilt_log = transfer_tilt_now;
-            transfer_guard_log = f64::from(
-                u8::from(transfer_tilt_now <= stair_transfer_tilt)
-                    + 2 * u8::from(total_fz_now <= stair_transfer_fz_guard * total_mass * G)
-                    + 4 * u8::from(policy.consecutive_degraded() == 0)
-                    + 8 * u8::from(!stair_hybrid_contact || phase_contacts_ok),
-            );
-            if guard_ok {
-                active.clock += dt;
-            } else {
-                active.clock += dt * stair_clock_guard_slow;
-                active.paused_ticks += 1;
-            }
-            if active.low_held {
-                let total = (measured_pre[0] + measured_pre[1]).max(1e-6);
-                let sh = (measured_pre[active.high] / total).clamp(0.0, 1.0);
-                let al = (dt / stair_release_tau).clamp(0.0, 1.0);
-                active.share_ema += (sh - active.share_ema) * al;
-            }
-            if active.low_held
-                && active.phase == StairTransferPhase::Rise
-                && active.clock >= stair_release_min_t
-                && active.share_ema >= stair_release_share
-            {
-                let low = 1 - active.high;
-                anchors.release(low);
-                swing_lift_off = Some(misarta::se3::translation(&data.oMi[rig.foot_mi[low]]));
-                active.low_held = false;
-                println!(
-                    "  STAIR TRANSFER rise_first release t={t:.3} clock={:.3} high_share_ema={:.2}",
-                    active.clock, active.share_ema
-                );
-            }
-
-            let phase_done = active.clock >= active.plan.duration;
-            let phase_ready = match active.phase {
-                StairTransferPhase::Capture => {
-                    let unload_done = stair_release_time <= 0.0
-                        || active.clock >= active.plan.duration + stair_release_time;
-                    let release_ok = !stair_release_guard
-                        || (measured_pre[1 - active.high] <= 0.05 * total_mass * G
-                            && measured_pre[active.high] >= 0.80 * total_mass * G
-                            && transfer_tilt_now <= 0.10
-                            && pitch_rate.abs() <= 0.30
-                            && contact_pose_ok(active.high)
-                            && measured_c.cop[active.high][0].abs() <= 0.90 * sole_half_l);
-                    phase_done
-                        && unload_done
-                        && release_ok
-                        && capture_error <= stair_capture_tol
-                        && guard_ok
-                }
-                StairTransferPhase::Rise => {
-                    let low = 1 - active.high;
-                    let touchdown = touchdown_load_ramp.filter(|ramp| ramp.high == active.high);
-                    let support_target = touchdown
-                        .map_or_else(|| actual.xy(active.high), |ramp| ramp.support_target);
-                    // The event target is the convex pressure point implied
-                    // by the planned split, so it is inside double support.
-                    let support_error = if touchdown.is_some() {
-                        0.0
-                    } else if active.low_held {
-                        // rise_first with the low foot still down: the DCM
-                        // only has to be inside the DOUBLE-support box.
-                        let ds_box = SupportBox::from_stance_yawed(
-                            &actual,
-                            Support::Double,
-                            (sole_half_l * cop_frac, sole_half_w * cop_frac),
-                            zmp_margin,
-                        );
-                        ds_box.clamp(&xi_now).1
-                    } else {
-                        capture_error
-                    };
-                    let load_side = if touchdown.is_some() {
-                        low
-                    } else {
-                        active.high
-                    };
-                    phase_done
-                        && !active.low_held
-                        && (!stair_continuous_contact || contact_activation[low] >= 1.0 - 1e-6)
-                        && (stair_load_chatter_max <= 0.0
-                            || load_chatter_ema <= stair_load_chatter_max)
-                        && measured_pre[load_side] >= stair_rise_load * total_mass * G
-                        && contact_pose_ok(low)
-                        && support_error <= stair_capture_tol
-                        && (xi_now - support_target).norm() <= stair_transfer_dcm_tol
-                        && (com.z - active.target_z).abs() <= stair_transfer_z_tol
-                        && guard_ok
-                }
-                StairTransferPhase::Commit => {
-                    phase_done
-                        && measured_pre[commit_side] >= stair_commit_load * total_mass * G
-                        && commit_error <= stair_capture_tol
-                        && (xi_now.y - actual.xy(commit_side).y).abs() <= stair_transfer_dcm_tol
-                        && (com.z - active.target_z).abs() <= stair_transfer_z_tol
-                        && guard_ok
-                }
-            };
-            active.ready_ticks = if phase_ready {
-                active.ready_ticks + 1
-            } else {
-                0
-            };
-
-            if active.ready_ticks >= stair_transfer_ticks {
-                match active.phase {
-                    StairTransferPhase::Capture => {
-                        active.phase = StairTransferPhase::Rise;
-                        touchdown_load_ramp = None;
-                        active.plan = articara::biped::preview::StairTransferPlan {
-                            start: 0.0,
-                            duration: stair_rise_time,
-                            p0: active.capture_target,
-                            p1: active.capture_target,
-                            z0: com.z,
-                            z1: active.target_z,
-                        };
-                        active.clock = 0.0;
-                        active.ready_ticks = 0;
-                        let low = 1 - active.high;
-                        anchors.release(low);
-                        swing_lift_off =
-                            Some(misarta::se3::translation(&data.oMi[rig.foot_mi[low]]));
-                        preview_next = t;
-                        println!(
-                            "  STAIR TRANSFER capture->rise t={t:.3} dcm_box={capture_error:.4} load={:.2} tilt={transfer_tilt_now:.3}",
-                            measured_pre[active.high] / (total_mass * G),
-                        );
-                    }
-                    StairTransferPhase::Rise => {
-                        active.phase = StairTransferPhase::Commit;
-                        active.plan = articara::biped::preview::StairTransferPlan {
-                            start: 0.0,
-                            duration: stair_commit_time,
-                            // Where the ramp STARTS. The default reads the
-                            // capture target, i.e. where Capture asked the CoM
-                            // to be. Measured 2026-09-22 on G1 riser 40 mm, it
-                            // is not where the CoM IS: Capture's gate checks
-                            // that the DCM lies inside the high foot's support
-                            // box, which a CoM sitting midway between the feet
-                            // satisfies, and Rise then raises z without moving
-                            // y. At rise->commit the CoM was at y=-0.003 while
-                            // the capture target was y=-0.057, so the ramp
-                            // opened with a 54 mm step the body never took.
-                            // Committing onto the high foot starts from the
-                            // measured CoM instead, so the whole ramp is a move
-                            // the body is actually asked to make.
-                            p0: if stair_commit_on_high {
-                                com.xy()
-                            } else {
-                                touchdown_load_ramp
-                                    .filter(|ramp| ramp.high == active.high)
-                                    .map_or(active.capture_target, |ramp| ramp.support_target)
-                            },
-                            // The lead foot is the next swing foot. Commit
-                            // onto the newly landed trailing foot so the lead
-                            // foot is unloaded for the following tread.
-                            p1: actual.xy(commit_side),
-                            z0: active.target_z,
-                            z1: active.target_z,
-                        };
-                        active.clock = 0.0;
-                        active.ready_ticks = 0;
-                        preview_next = t;
-                        println!(
-                            "  STAIR TRANSFER rise->commit t={t:.3} zerr={:.4} next_load={:.2} tilt={transfer_tilt_now:.3}",
-                            (com.z - active.target_z).abs(),
-                            measured_pre[commit_side] / (total_mass * G),
-                        );
-                    }
-                    StairTransferPhase::Commit => {
-                        let hold_start = *active.hold_started.get_or_insert_with(|| {
-                            if stair_post_commit_hold > 0.0 {
-                                println!("  STAIR TRANSFER hold t={t:.3} duration={stair_post_commit_hold:.3}");
-                            }
-                            t
-                        });
-                        if t - hold_start >= stair_post_commit_hold {
-                            finish_transfer = Some((
-                                active.ds_slice,
-                                active.high,
-                                active.target_z,
-                                active.paused_ticks,
-                            ));
-                        }
-                    }
-                }
-            }
-
-            if !active.timed_out && t >= active.deadline {
-                active.timed_out = true;
-                stair_transfer_timeouts += 1;
-                println!(
-                    "  STAIR TRANSFER timeout t={t:.3} phase={:?} load={:.2} dcm_box={capture_error:.4} zerr={:.4} tilt={transfer_tilt_now:.3} pauses={}",
-                    active.phase,
-                    measured_pre[active.high] / (total_mass * G),
-                    (com.z - active.target_z).abs(),
-                    active.paused_ticks,
-                );
-            }
-        }
-        if let Some((ds_slice, high, target_z, paused_ticks)) = finish_transfer {
-            terrain_track = target_z - z_com + terrain_base;
-            if stair_height_handover {
-                // Commit ends at rest. Resume the ordinary height planner
-                // from that same reference, not its pre-Capture segment.
-                height_plan =
-                    articara::biped::preview::HeightPlan::constant(target_z - stair_post_z);
-            }
-            // Rise has already executed the following trailing-foot swing;
-            // Commit has executed its load transfer. Resume on the next
-            // leading-foot swing without changing footstep array indices.
-            let consumed = if stair_consume_rise_step
-                && stair_hybrid_contact
-                && gait
-                    .slices
-                    .get(ds_slice + 1)
-                    .is_some_and(|s| s.support.swing() == Some(1 - high))
-                && gait
-                    .slices
-                    .get(ds_slice + 2)
-                    .is_some_and(|s| s.support == Support::Double)
-            {
-                gait.slices[ds_slice + 1].duration() + gait.slices[ds_slice + 2].duration()
-            } else {
-                0.0
-            };
-            let shift = gait.retime(ds_slice, t - consumed);
-            if stair_post_walk_terminal_step {
-                let resume_i = gait.index_at(t + dt);
-                let terminal_side = gait
-                    .slices
-                    .iter()
-                    .skip(resume_i)
-                    .find_map(|slice| slice.support.swing())
-                    .unwrap_or(1 - high);
-                let stance_side = 1 - terminal_side;
-                let actual = Footsteps::from_fk(
-                    data,
-                    rig.foot_mi,
-                    prof.sole_centre_x,
-                    prof.sole_below_origin,
-                );
-                let desired_y = actual.sole[stance_side].y
-                    + if terminal_side == 0 {
-                        stair_post_walk_terminal_gap
-                    } else {
-                        -stair_post_walk_terminal_gap
-                    };
-                let dy = desired_y - footsteps.at_slice(resume_i).sole[terminal_side].y;
-                footsteps.shift_from(resume_i, terminal_side, na::Vector2::new(0.0, dy));
-                println!(
-                    "  STAIR TERMINAL STEP side={} y={desired_y:.3} shift={dy:+.3}",
-                    if terminal_side == 0 { "L" } else { "R" },
-                );
-            }
-            dcm_plan =
-                DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
-            preview_next = t;
-            stair_transfer_completed += 1;
-            first_post_swing_slice = if first_post_swing_fraction < 1.0 && !stair_swing_profile {
-                let next = gait.index_at(t + dt);
-                gait.slices
-                    .iter()
-                    .enumerate()
-                    .skip(next)
-                    .find_map(|(i, slice)| slice.support.swing().map(|side| (i, side)))
-                    .and_then(|(i, side)| {
-                        let dz = footsteps.at_slice(i).sole[side].z
-                            - footsteps.at_slice(i.saturating_sub(1)).sole[side].z;
-                        (dz.abs() <= 0.005).then_some(i)
-                    })
-            } else {
-                None
-            };
-            landing_timing.early_confirm_slice =
-                first_post_swing_slice.map(|i| (i, 0.65 * first_post_swing_fraction));
-            post_transfer_steps = Some(gait.steps_taken(t.max(1e-9)));
-            post_transfer_touchdowns = Some(landing_timing.touchdowns);
-            stair_trunk_post_until = t + stair_trunk_post_time;
-            println!(
-                "  STAIR TRANSFER complete t={t:.3} high={} shift={shift:+.3}s pauses={}",
-                if high == 0 { "L" } else { "R" },
-                paused_ticks,
-            );
-            stair_transfer = None;
-            touchdown_load_ramp = None;
-        }
-        if stair_transfer.is_none() {
-            stair_capture_share = None;
-            stair_capture_p_prev = None;
-        }
-        let stair_transfer_cmd = stair_transfer
-            .as_ref()
-            .map(|active| (active.high, active.phase, active.plan.at(active.clock)));
 
         // ---- contact-driven retiming, before anything reads the phase ---
         if phase_by_contact && !com_replan {
@@ -5701,137 +4641,6 @@ fn main() {
             }
         }
 
-        // Check before the schedule is read, including the last DS tick.
-        // Keep the original support foot until the receiver has carried
-        // load continuously for 50 ms with a flat sole on the surface.
-        if stair_resume_contact_gate && stair_transfer_completed > 0 && stair_transfer.is_none() {
-            let i = gait.index_at(t);
-            if gait.slices[i].support == Support::Double {
-                if let Some(Support::Single {
-                    stance: receiver, ..
-                }) = gait.slices.get(i + 1).map(|s| s.support)
-                {
-                    if resume_gate_slice != Some(i) {
-                        resume_gate_slice = Some(i);
-                        resume_gate_confirmed_s = 0.0;
-                        resume_gate_wait_started = None;
-                    }
-                    let actual = Footsteps::from_fk(
-                        data,
-                        rig.foot_mi,
-                        prof.sole_centre_x,
-                        prof.sole_below_origin,
-                    );
-                    let sole = actual.sole[receiver];
-                    let surface = stairs.as_ref().map_or(0.0, |st| st.h(sole.x));
-                    let rot = misarta::se3::rotation_matrix(&data.oMi[rig.foot_mi[receiver]]);
-                    let tilt = rot[(2, 1)]
-                        .atan2(rot[(2, 2)])
-                        .abs()
-                        .max((-rot[(2, 0)]).clamp(-1.0, 1.0).asin().abs());
-                    let ready = measured_pre[receiver] >= stair_resume_gate_load * total_mass * G
-                        && (sole.z - surface).abs() <= 0.004
-                        && tilt <= stair_resume_gate_tilt;
-                    resume_gate_confirmed_s = if ready {
-                        resume_gate_confirmed_s + dt
-                    } else {
-                        0.0
-                    };
-                    if t + dt >= gait.slices[i].t1 - 1e-9
-                        && resume_gate_confirmed_s < stair_resume_gate_dwell
-                    {
-                        let start = *resume_gate_wait_started.get_or_insert_with(|| {
-                            println!("  STAIR RESUME waiting t={t:.3} receiver={receiver} load={:.3} zerr={:.4} tilt={tilt:.3}", measured_pre[receiver]/(total_mass*G), sole.z-surface);
-                            t
-                        });
-                        if t - start >= 1.0 {
-                            println!("  STAIR RESUME failed: contact timeout t={t:.3}");
-                            break;
-                        }
-                        gait.retime(i, t + 2.0 * dt);
-                        dcm_plan = DcmPlan::from_footsteps_rolled(
-                            &gait,
-                            &footsteps,
-                            z_lip,
-                            zmp_lat_scale,
-                            zmp_roll,
-                        );
-                        preview_next = t;
-                    }
-                }
-            }
-        }
-
-        if stair_post_walk_settle
-            && post_walk_settle.is_none()
-            && stair_transfer_completed > 0
-            && stair_transfer.is_none()
-            && post_transfer_steps.map_or(false, |n| {
-                gait.steps_taken(t.max(1e-9)) >= n + stair_post_walk_settle_steps
-            })
-        {
-            let i = gait.index_at(t);
-            let both_loaded = measured_pre
-                .iter()
-                .all(|fz| *fz >= stair_post_walk_settle_load * total_mass * G)
-                && measured_total >= 0.80 * total_mass * G;
-            if gait.slices[i].support == Support::Double && both_loaded {
-                post_walk_settle_ready_s += dt;
-            } else {
-                post_walk_settle_ready_s = 0.0;
-            }
-            if gait.slices[i].support == Support::Double
-                && both_loaded
-                && post_walk_settle_ready_s + 1e-12 >= stair_post_walk_settle_dwell
-            {
-                let actual = Footsteps::from_fk(
-                    data,
-                    rig.foot_mi,
-                    prof.sole_centre_x,
-                    prof.sole_below_origin,
-                );
-                let target = 0.5 * (actual.xy(0) + actual.xy(1));
-                post_walk_settle = Some(PostWalkSettle {
-                    start: t,
-                    start_xi: dcm_of(&com, &com_vel, omega),
-                    target,
-                    z: com.z,
-                });
-                gait.retime(i, total_t);
-                dcm_plan = DcmPlan::from_footsteps_rolled(
-                    &gait,
-                    &footsteps,
-                    z_lip,
-                    zmp_lat_scale,
-                    zmp_roll,
-                );
-                preview_next = t;
-                println!(
-                    "  STAIR POST SETTLE start t={t:.3} target=({:.3},{:.3}) z={:.3} load={:.2}/{:.2}",
-                    target.x,
-                    target.y,
-                    com.z,
-                    measured_pre[0] / (total_mass * G),
-                    measured_pre[1] / (total_mass * G)
-                );
-            }
-        }
-
-        if let Some((source_slice, _, _, _)) = resume_ss_dcm_hold {
-            let hold_end = t + 2.0 * dt;
-            if gait.slices[source_slice].t1 < hold_end - 1e-9 {
-                gait.retime(source_slice, hold_end);
-                dcm_plan = DcmPlan::from_footsteps_rolled(
-                    &gait,
-                    &footsteps,
-                    z_lip,
-                    zmp_lat_scale,
-                    zmp_roll,
-                );
-                preview_next = t;
-            }
-        }
-
         // ---- schedule -> contact set -----------------------------------
         // By value, not by reference: `Slice` is `Copy`, and holding a
         // borrow on `gait` here is what stops the step-timing adaptation
@@ -5840,7 +4649,7 @@ fn main() {
             let (sl, f) = gait.at(t);
             (*sl, f)
         };
-        let support = if no_lift || post_walk_settle.is_some() {
+        let support = if no_lift {
             Support::Double
         } else {
             slice.support
@@ -6080,171 +4889,6 @@ fn main() {
         } else {
             (0..2).filter(|&s| support.is_stance(s)).collect()
         };
-        if (stair_transfer_latch
-            || (stair_wrench_mpc && stair_managed_contact && !stair_hybrid_contact))
-            && stair_transfer_cmd.is_some()
-        {
-            // Touchdown already passed force, position and height checks.
-            // Keep both feet in the contact model until Commit succeeds;
-            // otherwise unloading removes the low foot and collapses the
-            // support polygon before the controller can reload it.
-            stance_sides = vec![0, 1];
-        }
-        if let Some((high, StairTransferPhase::Rise, rf)) = stair_transfer_cmd
-            && stair_hybrid_contact
-        {
-            let low = 1 - high;
-            // Once capture has placed the body over the step, the trailing
-            // foot cannot remain on the lower floor through the body rise.
-            // Release it, follow the next planned stair swing, and admit it
-            // again only after late-swing measured contact.
-            let actual = Footsteps::from_fk(
-                data,
-                rig.foot_mi,
-                prof.sole_centre_x,
-                prof.sole_below_origin,
-            );
-            let sole = actual.sole[low];
-            let surface_z = stairs.as_ref().map_or(0.0, |st| st.h(sole.x));
-            let rotation = misarta::se3::rotation_matrix(&data.oMi[rig.foot_mi[low]]);
-            let sole_tilt = rotation[(2, 1)]
-                .atan2(rotation[(2, 2)])
-                .abs()
-                .max((-rotation[(2, 0)]).asin().abs());
-            if stair_continuous_contact {
-                contact_activation[high] = 1.0;
-                if let Some(ramp) = touchdown_load_ramp.filter(|ramp| ramp.high == high) {
-                    let x = ((t - ramp.contact_t) / stair_contact_activation_time).clamp(0.0, 1.0);
-                    let beta = x * x * (3.0 - 2.0 * x);
-                    contact_activation[low] =
-                        ramp.start_share[low] + (1.0 - ramp.start_share[low]) * beta;
-                } else {
-                    contact_activation[low] = 0.0;
-                }
-            }
-            let low_ready = rf.alpha >= stair_recontact_alpha
-                && measured_pre[low] >= stair_recontact_load * total_mass * G
-                && (sole.z - surface_z).abs() <= stair_recontact_z
-                && sole_tilt <= stair_recontact_angle;
-            let toe_contact = rf.alpha >= stair_recontact_alpha
-                && stance_sides.contains(&low)
-                && measured_pre[low] >= correction.on_n;
-            let measured_contact_admitted = low_ready || toe_contact;
-            if stair_continuous_contact {
-                contact_force_activation[high] = 1.0;
-                contact_force_activation[low] = if measured_contact_admitted {
-                    contact_activation[low]
-                } else {
-                    0.0
-                };
-            }
-            let continuously_active = stair_continuous_contact
-                && touchdown_load_ramp.is_some_and(|ramp| ramp.high == high)
-                && contact_activation[low] >= stair_contact_min;
-            if measured_contact_admitted || continuously_active {
-                // A measured toe/heel contact enters the dynamics immediately
-                // with a narrow patch. Keep a flat planned anchor so Managed
-                // contact rolls the remaining sole down instead of freezing
-                // the measured toe-first attitude.
-                let mut anchor = misarta::se3::translation(&data.oMi[rig.foot_mi[low]]);
-                anchor.z = surface_z + prof.sole_below_origin;
-                anchors.touchdown(low, anchor, foot_rot_at(low, steps.yaw[low]));
-                stance_sides = vec![high, low];
-                if touchdown_load_ramp.is_none() {
-                    let total = measured_pre[0].max(0.0) + measured_pre[1].max(0.0);
-                    let low_share = if total > 1e-6 {
-                        (measured_pre[low].max(0.0) / total).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-                    let mut start_share = [0.0; 2];
-                    start_share[low] = low_share;
-                    start_share[high] = 1.0 - low_share;
-                    if stair_continuous_contact {
-                        contact_activation[low] = low_share.max(stair_contact_min);
-                        contact_force_activation[low] = contact_activation[low];
-                    }
-                    load_share_previous = low_share;
-                    load_chatter_ema = 1.0;
-                    touchdown_load_ramp = Some(TouchdownLoadRamp {
-                        high,
-                        contact_t: t,
-                        start_share,
-                        support_target: actual.xy(high) * stair_touchdown_high_share
-                            + actual.xy(low) * (1.0 - stair_touchdown_high_share),
-                        seed_previous: true,
-                    });
-                    println!(
-                        "  STAIR TOUCHDOWN load-ramp t={t:.3} low={} measured={:.2}/{:.2}",
-                        if low == 0 { "L" } else { "R" },
-                        start_share[low],
-                        start_share[high],
-                    );
-                }
-            } else {
-                stance_sides = vec![high];
-            }
-        }
-        if let Some((high, StairTransferPhase::Commit, _)) = stair_transfer_cmd
-            && stair_hybrid_contact
-        {
-            // Rise exits only after both soles pass pose and load checks. A
-            // touchdown impulse can unload the high foot for a few samples;
-            // dropping it here makes WBC single-support on the low foot while
-            // the MPC still plans the high foot as primary support.
-            stance_sides = vec![high, 1 - high];
-        }
-        if post_walk_settle.is_some() {
-            post_settle_contacts_latched |= stance_sides.len() == 2;
-            if post_settle_contacts_latched {
-                stance_sides = vec![0, 1];
-            }
-        }
-        // A receiver admitted for the previous hold hands back to the normal
-        // scheduled/contact-driven path as soon as that hold releases.
-        if resume_ss_dcm_hold.is_none() {
-            resume_ss_contact_admitted = None;
-        }
-        // Break the landing catch-22: the receiver cannot reach the release
-        // load while it remains a swing task, but admitting it before it has
-        // made physical contact creates an imaginary support. A small,
-        // measured force plus the same sole-pose gate arms a compliant
-        // contact. From this point it is no longer a swing task.
-        if let Some((source_slice, receiver, _, _)) = resume_ss_dcm_hold {
-            let actual = Footsteps::from_fk(
-                data,
-                rig.foot_mi,
-                prof.sole_centre_x,
-                prof.sole_below_origin,
-            );
-            let sole = actual.sole[receiver];
-            let surface = stairs.as_ref().map_or(0.0, |st| st.h(sole.x));
-            let rot = misarta::se3::rotation_matrix(&data.oMi[rig.foot_mi[receiver]]);
-            let tilt = rot[(2, 1)]
-                .atan2(rot[(2, 2)])
-                .abs()
-                .max((-rot[(2, 0)]).clamp(-1.0, 1.0).asin().abs());
-            if resume_ss_contact_admitted.is_none()
-                && measured_pre[receiver] >= stair_resume_ss_admit_load * total_mass * G
-                && (sole.z - surface).abs() <= 0.004
-                && tilt <= stair_resume_gate_tilt
-            {
-                let mut anchor = misarta::se3::translation(&data.oMi[rig.foot_mi[receiver]]);
-                anchor.z = surface + prof.sole_below_origin;
-                anchors.touchdown(receiver, anchor, foot_rot_at(receiver, steps.yaw[receiver]));
-                resume_ss_contact_admitted = Some((source_slice, receiver));
-                println!(
-                    "  STAIR RESUME SS contact t={t:.3} receiver={receiver} load={:.3} zerr={:.4}",
-                    measured_pre[receiver] / (total_mass * G),
-                    sole.z - surface,
-                );
-            }
-            if resume_ss_contact_admitted == Some((source_slice, receiver))
-                && !stance_sides.contains(&receiver)
-            {
-                stance_sides.push(receiver);
-            }
-        }
         // Admit a loaded swing foot as a soft contact (SWING_CONTACT_SOFT).
         // Last, so every stair rule above still decides the real contact set.
         // The anchor is rewritten every tick at the foot's own position with z
@@ -6341,26 +4985,6 @@ fn main() {
                 // able to lean on the foot it is still trying to lift.
                 return swing_contact_cap;
             }
-            if let Some((high, phase, rf)) = stair_transfer_cmd {
-                if phase == StairTransferPhase::Capture
-                    && stair_capture_low_cap < 1.0
-                    && side == 1 - high
-                {
-                    // Hand the load over on a schedule instead of leaving the
-                    // split to the QP. See STAIR_CAPTURE_LOW_CAP above.
-                    return (1.0 - (1.0 - stair_capture_low_cap) * rf.alpha).max(0.02);
-                }
-            }
-            if stair_transfer_cmd.is_some() {
-                // This is a contact-force CAPACITY, not the desired split.
-                // With continuous contact the same estimator that weights the
-                // acceleration task also shrinks this foot's wrench cone.
-                return if stair_continuous_contact {
-                    contact_force_activation[side]
-                } else {
-                    1.0
-                };
-            }
             if let Some(l) = landing {
                 if l == side {
                     let mut ramp = (slice_frac / ramp_frac).clamp(0.0, 1.0);
@@ -6423,21 +5047,7 @@ fn main() {
         // dz_dot = A * [(f_hi - f_lo)_ref - (f_hi - f_lo)_meas], then the
         // anchors move +-dz/2 so the under-loaded foot is pressed down and
         // the mean foot height is untouched.
-        if stair_ffdc > 0.0
-            && let Some((high, _, _)) = stair_transfer_cmd
-            && let Some(ref_share) = ffdc_ref_share
-            && stance_sides.len() == 2
-        {
-            let low = 1 - high;
-            let meas_diff = measured_pre[high].max(0.0) - measured_pre[low].max(0.0);
-            let ref_diff = ref_share[high] - ref_share[low];
-            let err = ref_diff - meas_diff;
-            ffdc_err_log = err;
-            ffdc_dz = (ffdc_dz + stair_ffdc * err * dt).clamp(-stair_ffdc_clamp, stair_ffdc_clamp);
-            anchors.bias_z[high] = -0.5 * ffdc_dz;
-            anchors.bias_z[low] = 0.5 * ffdc_dz;
-        } else if ds_ffdc > 0.0
-            && stair_transfer_cmd.is_none()
+        if ds_ffdc > 0.0
             && matches!(support, Support::Double)
             && stance_sides.len() == 2
             && let Some((front, ds_t0, ds_t1)) = ds_ffdc_window
@@ -6475,7 +5085,7 @@ fn main() {
                 *b *= decay;
             }
         }
-        let mut p0 = bt::contact_level(
+        let p0 = bt::contact_level(
             &dyn_ctx,
             base,
             &j_contact,
@@ -6488,14 +5098,6 @@ fn main() {
             &load_share,
             &contact_cfg,
             &|side: usize| {
-                if resume_ss_contact_admitted.is_some_and(|(_, receiver)| receiver == side) {
-                    return bt::ContactMode::Managed {
-                        tangent_weight: stair_managed_tangent,
-                        rotation_weight: stair_managed_rotation,
-                        normal_weight: 1.0,
-                        normal_accel_max: stair_managed_az_max,
-                    };
-                }
                 // A soft-admitted swing foot: weighted down so the swing task
                 // keeps its null space (see SWING_CONTACT_SOFT).
                 if soft_sides[side] {
@@ -6523,32 +5125,16 @@ fn main() {
                         }
                     }
                 }
-                let managed_touchdown = stair_transfer_cmd.is_some_and(|(high, phase, rf)| {
-                    stair_hybrid_contact
-                        && (phase == StairTransferPhase::Commit
-                            || (phase == StairTransferPhase::Rise
-                                && rf.alpha >= stair_recontact_alpha))
-                        && side == 1 - high
-                });
                 if stair_wrench_mpc
                     && stair_managed_contact
-                    && (managed_touchdown
-                        || (stair_transfer_cmd.is_some_and(|(_, phase, _)| {
-                            phase == StairTransferPhase::Capture || stair_managed_rise
-                        }) && measured_pre[side] < stair_managed_fz * total_mass * G)
-                        // Rate trigger (see STAIR_MANAGED_RATE): the level
-                        // test misses the chatter, which swings fz 15<->78 N.
-                        || t < managed_until[side])
+                    // Rate trigger (see STAIR_MANAGED_RATE): the level
+                    // test misses the chatter, which swings fz 15<->78 N.
+                    && t < managed_until[side]
                 {
-                    let activation = if stair_continuous_contact {
-                        contact_activation[side]
-                    } else {
-                        1.0
-                    };
                     bt::ContactMode::Managed {
-                        tangent_weight: stair_managed_tangent * activation,
-                        rotation_weight: stair_managed_rotation * activation,
-                        normal_weight: activation,
+                        tangent_weight: stair_managed_tangent,
+                        rotation_weight: stair_managed_rotation,
+                        normal_weight: 1.0,
                         normal_accel_max: stair_managed_az_max,
                     }
                 } else {
@@ -6587,9 +5173,7 @@ fn main() {
                         ((sole_half_l - d).max(0.005), contact_cfg.cop_half.1),
                     ));
                 }
-                if !stair_roll_patch
-                    && !(stair_wrench_mpc && stair_hybrid_contact && stair_transfer_cmd.is_some())
-                {
+                if !stair_roll_patch {
                     return None;
                 }
                 // World pitch of the sole's forward axis: toe-down positive.
@@ -6608,41 +5192,6 @@ fn main() {
                 ))
             },
         );
-        if ((stair_wrench_mpc && stair_wrench_floor) || stair_capture_floor)
-            && stair_transfer_cmd.is_some()
-            && nc == 2
-        {
-            let (high, phase, rf) = stair_transfer_cmd.unwrap();
-            let low = 1 - high;
-            let capture_low = if stair_capture_low_min >= 0.0 {
-                stair_capture_low_min
-            } else {
-                stair_wrench_low_min
-            };
-            let low_min_share = match phase {
-                StairTransferPhase::Commit => stair_wrench_low_min * (1.0 - rf.alpha),
-                StairTransferPhase::Capture => capture_low,
-                _ => stair_wrench_low_min,
-            };
-            let mut force_floor = Task::empty(p0.task.n_decision());
-            for (slot, &side) in stance_sides.iter().enumerate() {
-                let sole = &p0.sole_sel[slot] * &dyn_ctx.forces().as_affine();
-                let mut pick_fz = na::DMatrix::zeros(1, 6);
-                pick_fz[(0, 5)] = 1.0;
-                let fz = &pick_fz * &sole;
-                let min_share = if side == low {
-                    low_min_share
-                } else {
-                    stair_wrench_high_min
-                };
-                force_floor = force_floor
-                    + Task::ge(
-                        &fz,
-                        &na::DVector::from_element(1, min_share * total_mass * G),
-                    );
-            }
-            p0.task = p0.task.clone() + force_floor;
-        }
 
         // ---- P1: DCM-tracking CoM acceleration -------------------------
         let xi = {
@@ -6671,14 +5220,7 @@ fn main() {
                 r.p = mode.world_xy(lib, lib.cop_at(tau));
             }
         }
-        // During a stair transfer the MPC's contact schedule falls back to
-        // "repeat the current stance" (see the Input construction), so its
-        // predicted trajectory is not a usable reference there: measured
-        // 2026-09-26, MPC_XI_REF walked the flat approach and fell at the
-        // step in 190/192 members. MPC_XI_REF_TRANSFER_PLAN hands the
-        // reference back to the plan for the transfer.
         if mpc_xi_ref
-            && !(mpc_xi_ref_transfer_plan && stair_transfer_cmd.is_some())
             && let Some((t0, c0, v0, ref traj)) = wrench_mpc_traj
             && !traj.is_empty()
         {
@@ -6695,109 +5237,6 @@ fn main() {
                 let xi_b = cb.xy() + vb.xy() / omega;
                 r.xi = xi_a * (1.0 - a) + xi_b * a;
                 r.xi_dot = (xi_b - xi_a) / dtn;
-            }
-        }
-        let mut resume_ss_hold_active = false;
-        if stair_resume_ss_dcm_hold && stair_transfer_completed > 0 && stair_transfer.is_none() {
-            if resume_ss_dcm_hold.is_none()
-                && resume_ss_hold_finished_slice != Some(slice_idx)
-                && post_transfer_touchdowns.is_some_and(|n| landing_timing.touchdowns > n)
-                && let Some((clock_i, start, duration)) = landing_timing.clock
-                && clock_i == slice_idx
-                && let Support::Single { stance, swing } = support
-                && t + 1e-9 >= start + duration * stair_resume_ss_hold_frac
-            {
-                let actual = Footsteps::from_fk(
-                    data,
-                    rig.foot_mi,
-                    prof.sole_centre_x,
-                    prof.sole_below_origin,
-                );
-                let stance_box = SupportBox::from_stance_yawed(
-                    &actual,
-                    Support::Single { stance, swing },
-                    (sole_half_l * cop_frac, sole_half_w * cop_frac),
-                    zmp_margin,
-                );
-                let hold_y = stance_box.clamp(&r.xi).0.y;
-                resume_ss_dcm_hold = Some((slice_idx, swing, hold_y, t));
-                resume_ss_dcm_ready_s = 0.0;
-                let sole = actual.sole[swing];
-                let surface = stairs.as_ref().map_or(0.0, |st| st.h(sole.x));
-                println!(
-                    "  STAIR RESUME SS DCM hold t={t:.3} receiver={} y={hold_y:.3} load={:.3} zerr={:.4}",
-                    swing,
-                    measured_pre[swing] / (total_mass * G),
-                    sole.z - surface,
-                );
-            }
-            if let Some((source_slice, receiver, hold_y, hold_start)) = resume_ss_dcm_hold {
-                let actual = Footsteps::from_fk(
-                    data,
-                    rig.foot_mi,
-                    prof.sole_centre_x,
-                    prof.sole_below_origin,
-                );
-                let sole = actual.sole[receiver];
-                let surface = stairs.as_ref().map_or(0.0, |st| st.h(sole.x));
-                let rot = misarta::se3::rotation_matrix(&data.oMi[rig.foot_mi[receiver]]);
-                let tilt = rot[(2, 1)]
-                    .atan2(rot[(2, 2)])
-                    .abs()
-                    .max((-rot[(2, 0)]).clamp(-1.0, 1.0).asin().abs());
-                let ready = measured_pre[receiver] >= stair_resume_ss_load * total_mass * G
-                    && (sole.z - surface).abs() <= 0.004
-                    && tilt <= stair_resume_gate_tilt;
-                resume_ss_dcm_ready_s = if ready {
-                    resume_ss_dcm_ready_s + dt
-                } else {
-                    0.0
-                };
-                if resume_ss_dcm_ready_s + 1e-12 >= stair_resume_gate_dwell {
-                    println!(
-                        "  STAIR RESUME SS DCM release t={t:.3} receiver={receiver} load={:.3}",
-                        measured_pre[receiver] / (total_mass * G),
-                    );
-                    resume_ss_hold_finished_slice = Some(source_slice);
-                    resume_ss_dcm_hold = None;
-                    resume_ss_releases += 1;
-                    if stair_resume_ds_capture
-                        && resume_ss_releases >= stair_resume_ds_capture_after
-                    {
-                        resume_ds_capture = Some((t, xi.y));
-                    }
-                } else if t - hold_start >= stair_resume_ss_hold_max {
-                    println!(
-                        "  STAIR RESUME SS DCM timeout t={t:.3} receiver={receiver} load={:.3}",
-                        measured_pre[receiver] / (total_mass * G),
-                    );
-                    resume_ss_hold_finished_slice = Some(source_slice);
-                    resume_ss_dcm_hold = None;
-                } else {
-                    r.xi.y = hold_y;
-                    r.xi_dot.y = 0.0;
-                    r.p.y = hold_y;
-                    resume_ss_hold_active = true;
-                }
-            }
-        } else {
-            resume_ss_dcm_hold = None;
-            resume_ss_dcm_ready_s = 0.0;
-        }
-        let mut resume_ds_capture_active = false;
-        if let Some((release_t, release_y)) = resume_ds_capture {
-            let elapsed = t - release_t;
-            if elapsed >= stair_resume_ds_capture_time {
-                resume_ds_capture = None;
-            } else if support == Support::Double {
-                let u = (elapsed / stair_resume_ds_capture_time).clamp(0.0, 1.0);
-                let blend = u * u * (3.0 - 2.0 * u);
-                let blend_rate = 6.0 * u * (1.0 - u) / stair_resume_ds_capture_time;
-                let nominal_y = r.xi.y;
-                r.xi.y = release_y + (nominal_y - release_y) * blend;
-                r.xi_dot.y = r.xi_dot.y * blend + (nominal_y - release_y) * blend_rate;
-                r.p.y = r.xi.y - r.xi_dot.y / omega;
-                resume_ds_capture_active = true;
             }
         }
         if dcm_ref_blend_t > 0.0 {
@@ -6885,7 +5324,6 @@ fn main() {
             match sl.support {
                 Support::Single { swing, stance }
                     if ref_mode.is_none()
-                        && stair_transfer_cmd.is_none()
                         // Not on a known staircase (its zone, with the crouch
                         // lead / tail): a deep step-down reads as a backward
                         // error and the re-plan cost the -150 mm descent
@@ -7661,32 +6099,7 @@ fn main() {
                             hi: current_box.hi,
                         };
                     }
-                    let (zmp_ref, xi_ref) = if let Some(active) = stair_transfer.as_ref() {
-                        // Receding-horizon transfer: the common contact clock
-                        // supplies the moving capture target, while the QP
-                        // chooses a feasible ZMP from the measured state.
-                        // Same drift as the feedback path below: the capture
-                        // plan holds a point, the walk does not. This is the
-                        // sample stream the CoM preview QP optimises against,
-                        // so leaving it un-drifted pins the whole horizon --
-                        // measured, the logged `xi_ref_x` advanced at
-                        // +0.0098 m/s during a transfer against +0.0542 m/s
-                        // without one, and correcting only the feedback law
-                        // left that number unchanged.
-                        let d0 = active.arm_xi_dot
-                            * (stair_transfer_drift
-                                * (active.clock + (begin - t) + 0.5 * com_preview_dt));
-                        let d1 =
-                            active.arm_xi_dot * (stair_transfer_drift * (active.clock + (end - t)));
-                        (
-                            active
-                                .plan
-                                .at(active.clock + (begin - t) + 0.5 * com_preview_dt)
-                                .p
-                                + d0,
-                            active.plan.at(active.clock + (end - t)).p + d1,
-                        )
-                    } else {
+                    let (zmp_ref, xi_ref) = {
                         // Continuity guard (DCM_REF_BLEND_T), applied to the
                         // sample stream the CoM preview QP actually optimises
                         // against -- measured 2026-09-23: blending `r` and
@@ -7793,211 +6206,15 @@ fn main() {
                 p_cmd.y += com_replan_lateral_gain * (optimized.y - p_cmd.y);
             }
         }
-        if resume_ss_hold_active || resume_ds_capture_active {
-            let actual = Footsteps::from_fk(
-                data,
-                rig.foot_mi,
-                prof.sole_centre_x,
-                prof.sole_below_origin,
-            );
-            let measured_support = if stance_sides.len() == 2 {
-                Support::Double
-            } else {
-                let stance = stance_sides[0];
-                Support::Single {
-                    stance,
-                    swing: 1 - stance,
-                }
-            };
-            let hold_box = SupportBox::from_stance_yawed(
-                &actual,
-                measured_support,
-                (sole_half_l * cop_frac, sole_half_w * cop_frac),
-                zmp_margin,
-            );
-            p_cmd.y = hold_box.clamp(&commanded_zmp(&xi, &r, omega, k_dcm)).0.y;
-        }
-        if let Some((_high, _phase, _rf)) = stair_transfer_cmd {
-            // The transfer plan was created from measured foot positions at
-            // touchdown.  Clamp once more against the measured support box,
-            // then use it for both DCM acceleration and force allocation.
-            let actual = Footsteps::from_fk(
-                data,
-                rig.foot_mi,
-                prof.sole_centre_x,
-                prof.sole_below_origin,
-            );
-            let measured_support = if stance_sides.len() == 2 {
-                Support::Double
-            } else {
-                let side = stance_sides[0];
-                Support::Single {
-                    stance: side,
-                    swing: 1 - side,
-                }
-            };
-            let transfer_box = SupportBox::from_stance_yawed(
-                &actual,
-                measured_support,
-                (sole_half_l * cop_frac, sole_half_w * cop_frac),
-                zmp_margin,
-            );
-            p_cmd = if let Some(active) = stair_transfer.as_ref() {
-                // Use one feedback law across Capture, Rise and Commit.
-                // Switching back to the generic preview at Capture->Rise
-                // produced a measured 60 mm ZMP command jump.
-                let rf = active.plan.at(active.clock);
-                let rf_next = active.plan.at(active.clock + ctrl_dt);
-                let event_p = |base: na::Vector2<f64>, at: f64| {
-                    if active.phase == StairTransferPhase::Rise
-                        && let Some(ramp) =
-                            touchdown_load_ramp.filter(|ramp| ramp.high == active.high)
-                    {
-                        let x = ((at - ramp.contact_t) / stair_touchdown_load_time).clamp(0.0, 1.0);
-                        let beta = x * x * (3.0 - 2.0 * x);
-                        active.capture_target + (ramp.support_target - active.capture_target) * beta
-                    } else {
-                        base
-                    }
-                };
-                let mut p_ref = event_p(rf.p, t);
-                let mut p_ref_next = event_p(rf_next.p, t + ctrl_dt);
-                if stair_capture_load_track && active.phase == StairTransferPhase::Capture {
-                    let total = (measured_pre[0] + measured_pre[1]).max(1e-6);
-                    let s_meas = (measured_pre[active.high] / total).clamp(0.0, 1.0);
-                    let a = (ctrl_dt / stair_capture_share_tau).clamp(0.0, 1.0);
-                    let sh = match stair_capture_share {
-                        Some(prev) => prev + (s_meas - prev) * a,
-                        None => s_meas,
-                    };
-                    stair_capture_share = Some(sh);
-                    let p_low = actual.xy(1 - active.high);
-                    // Driven ramp from the share at arming toward 0.5 over the
-                    // capture time, limited to `lead` ahead of the measurement.
-                    let u = (active.clock / stair_capture_time).clamp(0.0, 1.0);
-                    let mut ramp = sh.min(0.5) + (0.5 - sh.min(0.5)) * (u * u * (3.0 - 2.0 * u));
-                    // Past the capture time the historical release moves the
-                    // load to 0.95 on the high foot (Capture->Rise needs low
-                    // <= 0.05 mg and high >= 0.80 mg). The reference must go
-                    // there too: capped at 0.5 it contradicted the load
-                    // schedule and Capture timed out at 4 s in every armed run
-                    // (measured 2026-09-24, s_ref pinned at 0.500 while the
-                    // measured share reached 1.0).
-                    if stair_release_time > 0.0 {
-                        let w = ((active.clock - stair_capture_time) / stair_release_time).clamp(0.0, 1.0);
-                        ramp += (0.95 - ramp) * (w * w * (3.0 - 2.0 * w));
-                    }
-                    let s_ref = ramp.max(sh).min(sh + stair_capture_lead).clamp(0.0, 1.0);
-                    let tracked = p_low + (active.capture_target - p_low) * s_ref;
-                    if std::env::var("STAIR_CAPTURE_DEBUG").is_ok() {
-                        println!("  [cap] t={t:.3} clock={:.3} s_meas={s_meas:.3} sh={sh:.3} ramp={ramp:.3} s_ref={s_ref:.3} lead={stair_capture_lead:.2}", active.clock);
-                    }
-                    p_ref_next = tracked + (tracked - stair_capture_p_prev.unwrap_or(tracked));
-                    p_ref = tracked;
-                    stair_capture_p_prev = Some(tracked);
-                }
-                // Carry the walk's own DCM drift through the transfer.
-                //
-                // `plan.at()` interpolates from where the CoM was at arming to
-                // a capture target and then holds, so `xi_dot` decays to zero
-                // while the machine is still walking forward. `commanded_zmp`
-                // uses only `xi` and `xi_dot`, so the reference simply stops.
-                //
-                // Measured 2026-09-22 on G1 (20 mm riser, CEM15): without a
-                // transfer the DCM reference advances at +0.0542 m/s; with one
-                // it advances at +0.0098 m/s, a factor of 5.5. The real DCM
-                // keeps going, so the error runs 0.0006 -> 0.0122 -> 0.1143 ->
-                // 0.1346 m within a second -- past the 85 mm sole half-length,
-                // i.e. beyond what any ZMP inside the foot can pull back. Every
-                // member that armed a transfer fell; every member that did not
-                // survived (6 and 10 of 16).
-                //
-                // kyo46rs does not see this: at 0.03 m/s and a 42 mm stride its
-                // walking DCM barely moves, so "hold the capture point" and
-                // "keep walking" are nearly the same instruction. At G1's
-                // 0.15-0.18 m/s they are not.
-                //
-                // OPT-IN via `STAIR_TRANSFER_DRIFT` (0 = the historical
-                // behaviour, so every existing recipe is unchanged). The drift
-                // is the DCM reference velocity the walk had when the transfer
-                // armed, applied for the transfer's own elapsed time.
-                let drift = if stair_transfer_drift > 0.0 {
-                    active.arm_xi_dot * (stair_transfer_drift * active.clock)
-                } else {
-                    na::Vector2::zeros()
-                };
-                let transfer_ref = articara::biped::dcm::DcmRef {
-                    xi: p_ref + drift,
-                    xi_dot: (p_ref_next - p_ref) / ctrl_dt
-                        + active.arm_xi_dot * stair_transfer_drift,
-                    p: p_ref + drift,
-                };
-                let transfer_p = commanded_zmp(
-                    &dcm_of(&com, &com_vel, omega),
-                    &transfer_ref,
-                    omega,
-                    stair_capture_k,
-                );
-                transfer_box.clamp(&transfer_p).0
-            } else {
-                transfer_box.clamp(&preview_p).0
-            };
-        }
-        if let Some(settle) = post_walk_settle {
-            let u = ((t - settle.start - stair_post_walk_settle_capture_hold)
-                / stair_post_walk_settle_ramp)
-                .clamp(0.0, 1.0);
-            let alpha = u * u * (3.0 - 2.0 * u);
-            let alpha_dot = 6.0 * u * (1.0 - u) / stair_post_walk_settle_ramp;
-            let xi_ref = settle.start_xi + (settle.target - settle.start_xi) * alpha;
-            let xi_dot = (settle.target - settle.start_xi) * alpha_dot;
-            let settle_ref = articara::biped::dcm::DcmRef {
-                xi: xi_ref,
-                xi_dot,
-                p: xi_ref - xi_dot / omega,
-            };
-            let actual = Footsteps::from_fk(
-                data,
-                rig.foot_mi,
-                prof.sole_centre_x,
-                prof.sole_below_origin,
-            );
-            let settle_support = if stance_sides.len() == 2 {
-                Support::Double
-            } else {
-                let side = stance_sides[0];
-                Support::Single {
-                    stance: side,
-                    swing: 1 - side,
-                }
-            };
-            let settle_box = SupportBox::from_stance_yawed(
-                &actual,
-                settle_support,
-                (sole_half_l * cop_frac, sole_half_w * cop_frac),
-                zmp_margin,
-            );
-            p_cmd = settle_box
-                .clamp(&commanded_zmp(
-                    &dcm_of(&com, &com_vel, omega),
-                    &settle_ref,
-                    omega,
-                    k_dcm,
-                ))
-                .0;
-        }
         // MPC_PCMD: the WBC's commanded pressure point comes from the MPC
         // (its node-0 net CoP from the latest solve, clamped to the same
         // support box as the DCM law) instead of the WBC's own DCM law -- the
         // MPC then decides where the pressure is in single support too, and
         // the WBC's CoM task realises it through c_ddot = w^2 (c - p). The
         // value is blended in by this fraction, after every other branch.
-        // Not during a stair transfer or the post-walk settle (their own
-        // laws). Only a solve younger than 2 MPC periods is used; otherwise
-        // the DCM law stands. 0 = off = shipped.
+        // Only a solve younger than 2 MPC periods is used; otherwise the DCM
+        // law stands. 0 = off = shipped.
         if mpc_pcmd > 0.0
-            && stair_transfer.is_none()
-            && post_walk_settle.is_none()
             && diag_mpc_time.is_some_and(|last| t - last <= 2.0 * stair_wrench_dt + 1e-9)
             && diag_mpc_net_cop.iter().all(|v| v.is_finite())
         {
@@ -8016,9 +6233,6 @@ fn main() {
             }
             p_cmd += (m - p_cmd) * mpc_pcmd;
             n_mpc_pcmd += 1;
-        }
-        if matches!(support, Support::Single { .. }) {
-            last_single_p_cmd = Some(p_cmd);
         }
         // Variable-height form when a stair is in the scene: the LIPM's
         // constant-height omega is ~20% too stiff while the CoM is being
@@ -8121,11 +6335,7 @@ fn main() {
         } else {
             0.0
         };
-        let (z_ref, zd_ref, zdd_ref) = if let Some(settle) = post_walk_settle {
-            (settle.z, 0.0, 0.0)
-        } else if let Some((_high, _phase, rf)) = stair_transfer_cmd {
-            (rf.z, rf.zd, rf.zdd)
-        } else if replan_engaged && com_height_replan && landing_timing.clock.is_some() {
+        let (z_ref, zd_ref, zdd_ref) = if replan_engaged && com_height_replan && landing_timing.clock.is_some() {
             // Where the CoM height aims while BOTH feet count: historically
             // the mean sole height. Measured 2026-09-24 on the 80 mm riser
             // with the landed foot admitted at the start of double support
@@ -8241,7 +6451,6 @@ fn main() {
         let mpc_reach_on = mpc_reach > 0.0
             && leg_reach.max > 0.0
             && hip_mi.is_some()
-            && stair_transfer_cmd.is_none()
             && wrench_mpc_apply;
         let mut mpc_reach_z: Option<f64> = None;
         // MPC_REACH_TRACK=2: lower the height reference to the lowest cap
@@ -8264,7 +6473,7 @@ fn main() {
         // its resultant acceleration also becomes the CoM task reference.
         // This removes the old conflict where ZMP, height and load split were
         // generated by independent controllers.
-        if stair_wrench_mpc && (stair_transfer_cmd.is_some() || wrench_mpc_always) {
+        if stair_wrench_mpc && wrench_mpc_always {
             if stair_wrench_max_age > 0.0
                 && wrench_mpc_command.is_some()
                 && diag_mpc_time.is_some_and(|last| t - last > stair_wrench_max_age + 1e-9)
@@ -8273,21 +6482,6 @@ fn main() {
                 wrench_mpc_frames = None;
                 diag_mpc_time = None;
                 diag_mpc_reference = [f64::NAN; 2];
-            }
-            if wrench_event_replan && stair_transfer_cmd.is_some() {
-                let (high, phase, _) = stair_transfer_cmd.unwrap();
-                let mask = u8::from(stance_sides.contains(&0))
-                    | (u8::from(stance_sides.contains(&1)) << 1);
-                let context = (phase.code() as u8, mask, high);
-                if wrench_command_context != Some(context) {
-                    // Never reuse a wrench from the old support set if the
-                    // new solve fails; generic WBC remains the fallback.
-                    wrench_mpc_command = None;
-                    diag_mpc_time = None;
-                    diag_mpc_reference = [f64::NAN; 2];
-                    wrench_mpc_next = t;
-                    wrench_command_context = Some(context);
-                }
             }
             if t + 1e-9 >= wrench_mpc_next {
                 let horizon_time = stair_wrench_preview_dt * stair_wrench_horizon as f64;
@@ -8327,52 +6521,15 @@ fn main() {
                         target_velocity.y = pv[k].y;
                     }
                 }
-                // The walking branch takes `high` as the CURRENT stance foot
-                // purely so the shared code below has a name for "the loaded
-                // side"; with no transfer there is no high/low step, and the
-                // schedules are rebuilt from the gait instead (see the `else`
-                // arm of `reference_fz_schedule` below).
-                let (high, phase, rf) = match stair_transfer_cmd {
-                    Some(cmd) => cmd,
-                    None => (
-                        usize::from(!stance_sides.contains(&0)),
-                        StairTransferPhase::Capture,
-                        articara::biped::preview::StairTransferRef {
-                            alpha: 0.0,
-                            p: com.xy(),
-                            z: com.z,
-                            zd: 0.0,
-                            zdd: 0.0,
-                        },
-                    ),
-                };
-                let rf_horizon = stair_transfer
-                    .as_ref()
-                    .map(|active| active.plan.at(active.clock + horizon_time))
-                    .unwrap_or(rf);
-                if stair_transfer_cmd.is_some() {
-                    // Horizontal motion comes from the DCM acceleration. The
-                    // transfer plan's p is a capture/ZMP target, not a CoM
-                    // target. Height is the exception: it is the shared causal
-                    // reference.
-                    target_com.z = rf_horizon.z;
-                    target_velocity.z = rf_horizon.zd;
-                } else {
-                    // No transfer: the height reference is the walk's own.
-                    let (hz, hzd, _) = height_plan.at(t + horizon_time);
-                    target_com.z = hz;
-                    target_velocity.z = hzd;
-                }
+                // `high` is the CURRENT stance foot, purely so the code below
+                // has a name for "the loaded side"; the schedules are built
+                // from the gait.
+                let high = usize::from(!stance_sides.contains(&0));
+                // The height reference is the walk's own.
+                let (hz, hzd, _) = height_plan.at(t + horizon_time);
+                target_com.z = hz;
+                target_velocity.z = hzd;
                 let low = 1 - high;
-                let phase_clock = stair_transfer.as_ref().map_or(0.0, |active| active.clock);
-                let active_rise_first_share = stair_transfer
-                    .as_ref()
-                    .filter(|a| a.low_held || stair_transfer_rise_first)
-                    .map(|a| a.arm_share);
-                let smoothstep = |x: f64| {
-                    let x = x.clamp(0.0, 1.0);
-                    x * x * (3.0 - 2.0 * x)
-                };
                 let mut reference_fz_schedule = Vec::with_capacity(stair_wrench_horizon);
                 let mut min_fz_schedule = Vec::with_capacity(stair_wrench_horizon);
                 for k in 0..stair_wrench_horizon {
@@ -8395,12 +6552,12 @@ fn main() {
                     } else {
                         k as f64 * stair_wrench_preview_dt
                     };
-                    // No transfer: the load split is the GAIT's, read forward
-                    // along the horizon. Double support is an even split;
-                    // single support puts the whole weight on the stance sole.
-                    // This is the schedule the walk is already executing, so
-                    // the MPC predicts the motion rather than a primitive.
-                    let walking_share = stair_transfer_cmd.is_none().then(|| {
+                    // The load split is the GAIT's, read forward along the
+                    // horizon. Double support is an even split; single
+                    // support puts the whole weight on the stance sole. This
+                    // is the schedule the walk is already executing, so the
+                    // MPC predicts the motion rather than a primitive.
+                    let high_share = {
                         let idx = gait.index_at(t + stage_dt);
                         match gait.slices[idx].support.swing() {
                             None if load_share_ramp => {
@@ -8426,113 +6583,15 @@ fn main() {
                                 }
                             }
                         }
-                    });
-                    let (high_share, touchdown_beta): (f64, f64) =
-                        if let Some(sh) = walking_share {
-                            (sh, 1.0)
-                        } else {
-                        match phase {
-                        StairTransferPhase::Capture => {
-                            // Keep the pre-touchdown controller identical to
-                            // the validated baseline. The event ramp begins
-                            // only after physical contact is admitted.
-                            if stair_capture_load_track {
-                                // From the measured share toward 0.5 over the
-                                // capture time, then the historical release.
-                                let sh = stair_capture_share.unwrap_or(0.5);
-                                let u = smoothstep((phase_clock + stage_dt) / stair_capture_time);
-                                let base = (sh + (0.5 - sh) * u).min(sh + stair_capture_lead).max(sh.min(0.5));
-                                if stair_release_time > 0.0 {
-                                    let duration = stair_transfer.as_ref().unwrap().plan.duration;
-                                    let beta = smoothstep(
-                                        (phase_clock + stage_dt - duration) / stair_release_time,
-                                    );
-                                    (base + (0.95 - base) * beta, 1.0)
-                                } else {
-                                    (base, 1.0)
-                                }
-                            } else if stair_release_time > 0.0 {
-                                let duration = stair_transfer.as_ref().unwrap().plan.duration;
-                                let beta = smoothstep(
-                                    (phase_clock + stage_dt - duration) / stair_release_time,
-                                );
-                                (0.50 + 0.05 * rf.alpha + 0.45 * beta, 1.0)
-                            } else {
-                                (0.50 + 0.05 * rf.alpha, 1.0)
-                            }
-                        }
-                        StairTransferPhase::Rise => {
-                            if let Some(ramp) = touchdown_load_ramp.filter(|ramp| ramp.high == high)
-                            {
-                                let beta = smoothstep(
-                                    (t + stage_dt - ramp.contact_t) / stair_touchdown_load_time,
-                                );
-                                (
-                                    ramp.start_share[high]
-                                        + (stair_touchdown_high_share - ramp.start_share[high])
-                                            * beta,
-                                    beta,
-                                )
-                            } else if active_rise_first_share.is_some() {
-                                // rise_first: the split follows the phase
-                                // clock from the share at arming to all on the
-                                // high foot; the low foot's floor fades with it.
-                                let s0 = active_rise_first_share.unwrap();
-                                let u = smoothstep((phase_clock + stage_dt) / stair_rise_time);
-                                (s0 + (1.0 - s0) * u, 1.0 - u)
-                            } else {
-                                (1.0, 0.0)
-                            }
-                        }
-                        StairTransferPhase::Commit => {
-                            // Rise already moved support directly to the new
-                            // foot; Commit only finishes the last 5% unload.
-                            let alpha = smoothstep((phase_clock + stage_dt) / stair_commit_time);
-                            (
-                                stair_touchdown_high_share
-                                    + (0.10 - stair_touchdown_high_share) * alpha,
-                                1.0,
-                            )
-                        }
-                        }
-                        };
+                    };
                     let mut reference = [0.0; 2];
                     let mut minimum = [0.0; 2];
                     reference[high] = high_share * weight;
                     reference[low] = (1.0 - high_share) * weight;
-                    if let Some(sh) = walking_share {
-                        minimum[high] = stair_wrench_low_min * weight * sh;
-                        minimum[low] = stair_wrench_low_min * weight * (1.0 - sh);
-                    } else {
-                        match phase {
-                        StairTransferPhase::Capture => {
-                            minimum[high] = stair_wrench_high_min * weight;
-                            let beta = if stair_release_time > 0.0 {
-                                let duration = stair_transfer.as_ref().unwrap().plan.duration;
-                                smoothstep((phase_clock + stage_dt - duration) / stair_release_time)
-                            } else {
-                                0.0
-                            };
-                            minimum[low] = stair_wrench_low_min * weight * (1.0 - beta);
-                        }
-                        StairTransferPhase::Rise => {
-                            minimum[high] = stair_wrench_high_min * weight;
-                            minimum[low] = stair_wrench_low_min * touchdown_beta * weight;
-                        }
-                        StairTransferPhase::Commit => {
-                            let alpha = smoothstep((phase_clock + stage_dt) / stair_commit_time);
-                            minimum[high] = stair_wrench_low_min * (1.0 - alpha) * weight;
-                            minimum[low] = stair_wrench_low_min * weight;
-                        }
-                        }
-                    }
+                    minimum[high] = stair_wrench_low_min * weight * high_share;
+                    minimum[low] = stair_wrench_low_min * weight * (1.0 - high_share);
                     for side in 0..2 {
-                        let activation = if stair_continuous_contact {
-                            contact_force_activation[side]
-                        } else {
-                            1.0
-                        };
-                        let capacity = f_max_per_foot * activation;
+                        let capacity = f_max_per_foot;
                         minimum[side] = minimum[side].min(capacity);
                         reference[side] = reference[side].max(minimum[side]).min(capacity);
                     }
@@ -8568,16 +6627,6 @@ fn main() {
                         previous[side][5] = measured_pre[side].max(0.0);
                     }
                 }
-                if let Some(ramp) = touchdown_load_ramp.as_mut()
-                    && ramp.high == high
-                    && ramp.seed_previous
-                {
-                    previous = [articara::biped::wrench_mpc::Wrench::zeros(); 2];
-                    for side in 0..2 {
-                        previous[side][5] = measured_pre[side].max(0.0);
-                    }
-                    ramp.seed_previous = false;
-                }
                 let mut contacts: Vec<articara::biped::wrench_mpc::Contact> = Vec::with_capacity(2);
                 for side in 0..2 {
                     let rotation = misarta::se3::rotation_matrix(&data.oMi[rig.foot_mi[side]]);
@@ -8607,7 +6656,7 @@ fn main() {
                 // A foot in the air now but scheduled to be in contact within
                 // the horizon: place its MPC contact at the forecast landing
                 // rather than where it is mid-swing.
-                if stair_transfer_cmd.is_none() && wrench_mpc_apply {
+                if wrench_mpc_apply {
                     let end = t + stair_wrench_horizon as f64 * stair_wrench_preview_dt;
                     let fc = articara::biped::preview::forecast_feet(
                         &gait,
@@ -8736,7 +6785,6 @@ fn main() {
                 };
                 let landing = if mpc_footstep
                     && push_replan_slice != Some(gait.index_at(t))
-                    && stair_transfer_cmd.is_none()
                     && wrench_mpc_apply
                     && let Support::Single { swing, .. } = support
                     && {
@@ -9013,7 +7061,7 @@ fn main() {
                     // -- the historical construction, kept for transfers --
                     // gave a solution that, once applied (WRENCH_MPC_APPLY),
                     // could not walk at all (0/192, measured 2026-09-24).
-                    contact_schedule: if stair_transfer_cmd.is_none() && wrench_mpc_apply {
+                    contact_schedule: if wrench_mpc_apply {
                         (0..stair_wrench_horizon)
                             .map(|k| {
                                 let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
@@ -9042,7 +7090,7 @@ fn main() {
                     // one foot and fell. The two were solving against
                     // different contact models. MPC_LOAD_SCHEDULE gives the
                     // MPC the WBC's own ramp.
-                    activation_schedule: if mpc_load_schedule && stair_transfer_cmd.is_none() {
+                    activation_schedule: if mpc_load_schedule {
                         (0..stair_wrench_horizon)
                             .map(|k| {
                                 let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
@@ -9074,14 +7122,7 @@ fn main() {
                             })
                             .collect()
                     } else {
-                        vec![
-                            if stair_continuous_contact {
-                                contact_force_activation
-                            } else {
-                                [1.0; 2]
-                            };
-                            stair_wrench_horizon
-                        ]
+                        vec![[1.0; 2]; stair_wrench_horizon]
                     },
                     reference_fz_schedule,
                     // Where the walk wants the pressure, node by node, in
@@ -9251,8 +7292,10 @@ fn main() {
                     let capture_start = std::time::Instant::now();
                     let contacts: Vec<_> = input.contacts.iter().map(|c| serde_json::json!({
                         "position":c.position.as_slice(),"rotation":c.rotation.as_slice(),"cop_half":c.cop_half})).collect();
+                    // "phase" was the stair transfer's phase (removed); the walk
+                    // always wrote its placeholder, `Capture`.
                     let dump = serde_json::json!({"schema":1,"t":t,"ctrl_dt":dt,"mpc_update_dt":stair_wrench_dt,
-                        "phase":format!("{phase:?}"),"input":{
+                        "phase":"Capture","input":{
                             "com":input.com.as_slice(),"velocity":input.velocity.as_slice(),"angular_momentum":input.angular_momentum.as_slice(),
                             "target_com":input.target_com.as_slice(),"target_velocity":input.target_velocity.as_slice(),"target_acceleration":input.target_acceleration.as_slice(),
                             "contacts":contacts,"contact_schedule":input.contact_schedule,"activation_schedule":input.activation_schedule,
@@ -9287,7 +7330,9 @@ fn main() {
                     use std::io::Write;
                     let mask = u8::from(stance_sides.contains(&0))
                         | (u8::from(stance_sides.contains(&1)) << 1);
-                    writeln!(file, "{t:.9},{phase:?},{mask},{:?},{},{stair_wrench_dt:.9},{mpc_solve_ns},{},{},{previous_age:.9}",
+                    // Second column: the removed stair transfer's phase,
+                    // `Capture` being the walk's placeholder.
+                    writeln!(file, "{t:.9},Capture,{mask},{:?},{},{stair_wrench_dt:.9},{mpc_solve_ns},{},{},{previous_age:.9}",
                         config.qp.solver, config.horizon,
                         mpc_solve_ns > (stair_wrench_dt * 1e9) as u128,
                         mpc_result.is_some()).unwrap();
@@ -9561,7 +7606,6 @@ fn main() {
             }
         } else {
             wrench_mpc_command = None;
-            wrench_command_context = None;
             wrench_mpc_next = t;
         }
         let p1 = bt::com(dyn_ctx.qddot(), &st.j_com, &st.djv_com, &a_com);
@@ -9676,7 +7720,7 @@ fn main() {
         // a function of q, and this loop's whole point is that q moves.
         let coupled_active = stair_wrench_mpc
             && stair_wrench_coupled
-            && (stair_transfer_cmd.is_some() || wrench_mpc_apply)
+            && wrench_mpc_apply
             && wrench_mpc_command.is_some()
             && nc > 0;
         let p_mom = if use_mom || coupled_active {
@@ -9965,7 +8009,7 @@ fn main() {
         };
         let mut forces_nominal = bt::force_nominal(forces.size(), &shares, total_mass * G);
         if let Some(command) = wrench_mpc_command.as_ref() {
-            if (stair_transfer_cmd.is_some() || wrench_mpc_apply) && nc > 0 {
+            if wrench_mpc_apply && nc > 0 {
                 // contact_level's selector maps the native WBC wrench block
                 // to the sole-centre frame used by the MPC. Invert its 6x6
                 // slot block so the regulariser receives the same wrench.
@@ -10000,63 +8044,10 @@ fn main() {
                 }
             }
         }
-        // Hand this tick's requested split to the FFDC loop, which runs
-        // before the contact level on the next tick.
-        if stair_ffdc > 0.0 {
-            let mut share = [0.0_f64; 2];
-            for (slot, &side) in stance_sides.iter().enumerate() {
-                if 6 * slot + 5 < forces_nominal.len() {
-                    share[side] = forces_nominal[6 * slot + 5];
-                }
-            }
-            ffdc_ref_share = (stance_sides.len() == 2).then_some(share);
-        }
         let p_wrench_coupled = coupled_active.then(|| {
             tasks::regularize(&dyn_ctx.forces(), &forces_nominal)
                 .weight(stair_wrench_level_weight / (total_mass * G).powi(2))
         });
-        let p_fz_plan_coupled = if contact_fz_plan_weight > 0.0
-            && contact_fz_plan_slew_bw > 0.0
-            && touchdown_load_ramp.is_some()
-            && nc == 2
-            && let Some(command) = wrench_mpc_command.as_ref()
-        {
-            let body_weight = total_mass * G;
-            let delta = contact_fz_plan_slew_bw * body_weight;
-            let mut sel_fz = na::DMatrix::zeros(p0.sole_sel.len(), forces.size());
-            let mut ref_fz = na::DVector::zeros(p0.sole_sel.len());
-            for (slot, sel) in p0.sole_sel.iter().enumerate() {
-                for j in 0..forces.size() {
-                    sel_fz[(slot, j)] = sel[(5, j)] / body_weight;
-                }
-                let side = usize::from(stance[slot] != rig.foot_mi[0]);
-                let desired = command[side][5].max(0.0);
-                let target = wbc_fz_previous[side].map_or(desired, |previous| {
-                    previous + (desired - previous).clamp(-delta, delta)
-                });
-                ref_fz[slot] = target / body_weight;
-            }
-            let expr = &sel_fz * &forces.as_affine();
-            Some(tasks::track(&expr, &ref_fz).weight(contact_fz_plan_weight))
-        } else {
-            None
-        };
-        let p_post_settle_fz =
-            if post_walk_settle.is_some() && nc == 2 && stair_post_walk_settle_fz_weight > 0.0 {
-                let body_weight = total_mass * G;
-                let mut sel_fz = na::DMatrix::zeros(2, forces.size());
-                let mut ref_fz = na::DVector::zeros(2);
-                for (slot, sel) in p0.sole_sel.iter().enumerate() {
-                    for j in 0..forces.size() {
-                        sel_fz[(slot, j)] = sel[(5, j)] / body_weight;
-                    }
-                    ref_fz[slot] = forces_nominal[6 * slot + 5] / body_weight;
-                }
-                let expr = &sel_fz * &forces.as_affine();
-                Some(tasks::track(&expr, &ref_fz).weight(stair_post_walk_settle_fz_weight))
-            } else {
-                None
-            };
         let p_reg = if coupled_active {
             tasks::regularize(dyn_ctx.tau(), &tau_gravity)
         } else {
@@ -10077,17 +8068,13 @@ fn main() {
         // to 80 mm and stayed there for a second while the robot toppled on
         // the other leg. "The schedule says double support" is not a task.
         let free_side: Option<usize> = (0..2).find(|s| !stance_sides.contains(s));
-        let transfer_swing = stair_transfer_cmd.and_then(|(high, phase, rf)| {
-            (phase == StairTransferPhase::Rise).then_some((1 - high, rf))
-        });
         let mut swing_tgt = na::Vector3::zeros();
         let mut swing_cmd_acc_z = 0.0_f64;
-        let mut p_swing = match (free_side, swing_lift_off) {
+        let p_swing = match (free_side, swing_lift_off) {
             (None, _) => None,
             // The scheduled swing, following its planned arc.
             (Some(side), Some(lift_off))
-                if support.swing() == Some(side)
-                    || transfer_swing.is_some_and(|(transfer_side, _)| transfer_side == side) =>
+                if support.swing() == Some(side) =>
             {
                 let mi = rig.foot_mi[side];
                 let jf =
@@ -10106,17 +8093,7 @@ fn main() {
                 // Read the plan, which already carries the adaptation when
                 // ADAPT_LIVE is on. Adding `adapt_now` on top of a plan that
                 // has been shifted would apply it twice.
-                let plan_slice_idx = if transfer_swing.is_some_and(|(s, _)| s == side) {
-                    gait.slices
-                        .iter()
-                        .enumerate()
-                        .skip(slice_idx + 1)
-                        .find(|(_, future)| future.support.swing() == Some(side))
-                        .map_or(slice_idx, |(i, _)| i)
-                } else {
-                    slice_idx
-                };
-                let plan_xy = footsteps.at_slice(plan_slice_idx).sole[side];
+                let plan_xy = footsteps.at_slice(slice_idx).sole[side];
                 let extra = if adapt_live {
                     na::Vector2::zeros()
                 } else {
@@ -10134,7 +8111,7 @@ fn main() {
                     .as_ref()
                     .map_or(0.0, |st| st.h(plan_xy.x + extra.x) - st.h(lift_off.x));
                 let dz = if (stair_absolute_td || (stair_absolute_td_desc && plan_dz_sign < -1e-9)) && stairs.is_some() {
-                    plan_xy.z - footsteps.at_slice(plan_slice_idx.saturating_sub(1)).sole[side].z
+                    plan_xy.z - footsteps.at_slice(slice_idx.saturating_sub(1)).sole[side].z
                 } else {
                     stairs
                         .as_ref()
@@ -10143,7 +8120,7 @@ fn main() {
                 let touch_down = if (stair_absolute_td || (stair_absolute_td_desc && dz < -1e-9)) && dz.abs() > 1e-9 {
                     // The target is a surveyed tread, not the measured height
                     // of the previous (possibly rocking) foot plus a riser.
-                    let offset = foot_rot_at(side, footsteps.at_slice(plan_slice_idx).yaw[side])
+                    let offset = foot_rot_at(side, footsteps.at_slice(slice_idx).yaw[side])
                         * na::Vector3::new(prof.sole_centre_x, 0.0, -prof.sole_below_origin);
                     plan_xy + na::Vector3::new(extra.x, extra.y, 0.0) - offset
                 } else {
@@ -10174,7 +8151,7 @@ fn main() {
                         td.y -= c.y;
                     }
                     if stair_td_sole_frame {
-                        let off = foot_rot_at(side, footsteps.at_slice(plan_slice_idx).yaw[side])
+                        let off = foot_rot_at(side, footsteps.at_slice(slice_idx).yaw[side])
                             * na::Vector3::new(prof.sole_centre_x, 0.0, 0.0);
                         td.x -= off.x;
                         td.y -= off.y;
@@ -10191,12 +8168,7 @@ fn main() {
                 // height, drop onto the tread last. Each phase edge uses
                 // smoothstep, so velocity is zero at every joint and the
                 // feedforward stays continuous.
-                let (swing_fraction, swing_duration) = if let Some((transfer_side, rf)) =
-                    transfer_swing
-                    && transfer_side == side
-                {
-                    (rf.alpha, stair_rise_time)
-                } else if com_replan {
+                let (swing_fraction, swing_duration) = if com_replan {
                     landing_timing
                         .clock
                         .filter(|(i, _, _)| *i == slice_idx)
@@ -10212,25 +8184,12 @@ fn main() {
                 } else {
                     (slice_frac, slice.duration())
                 };
-                let (swing_fraction, swing_duration) = if first_post_swing_slice == Some(slice_idx)
-                    && first_post_swing_fraction < 1.0
-                    && dz.abs() <= 0.005
-                    && !stair_swing_profile
-                    && transfer_swing.is_none()
-                {
-                    (
-                        (swing_fraction / first_post_swing_fraction).min(1.0),
-                        swing_duration * first_post_swing_fraction,
-                    )
-                } else {
-                    (swing_fraction, swing_duration)
-                };
                 let (mut tgt, mut tgt_v, tgt_a) =
                     if (dz.abs() > step_dz_swing_min || stair_swing_profile) && stair_swing_ff {
                         articara::biped::gait::stair_swing_sink(
                             lift_off,
                             touch_down,
-                            lift_h_g.at(run_phase),
+                            lift_h,
                             swing_fraction,
                             swing_duration,
                             stair_swing_windows,
@@ -10243,7 +8202,7 @@ fn main() {
                             let u = u.clamp(0.0, 1.0);
                             (u * u * (3.0 - 2.0 * u), 6.0 * u * (1.0 - u))
                         };
-                        let z_max = lift_off.z.max(touch_down.z) + lift_h_g.at(run_phase);
+                        let z_max = lift_off.z.max(touch_down.z) + lift_h;
                         // rise [0,0.30] -> travel [0.25,0.70] -> drop [0.60,0.95].
                         // The drop OVERSHOOTS the surface by a few millimetres
                         // and ends before the slice does: a profile that arrives
@@ -10294,13 +8253,13 @@ fn main() {
                         let mut pos0 = swing_position(
                             lift_off,
                             touch_down,
-                            lift_h_g.at(run_phase),
+                            lift_h,
                             swing_fraction,
                         );
                         let mut vel0 = swing_velocity(
                             lift_off,
                             touch_down,
-                            lift_h_g.at(run_phase),
+                            lift_h,
                             swing_fraction,
                             swing_duration,
                         );
@@ -10343,7 +8302,7 @@ fn main() {
                                 let u = u.clamp(0.0, 1.0);
                                 (u * u * (3.0 - 2.0 * u), 6.0 * u * (1.0 - u))
                             };
-                            let z_max = lift_off.z.max(touch_down.z) + lift_h_g.at(run_phase);
+                            let z_max = lift_off.z.max(touch_down.z) + lift_h;
                             // SWING_Z_DROP="d0,d1": the drop window (default
                             // 0.60..0.95 as in the three-phase profile; 1.0
                             // lands on the slice end like the shipped arc).
@@ -10398,9 +8357,6 @@ fn main() {
                         }
                         (pos0, vel0, na::Vector3::zeros())
                     };
-                if resume_ss_dcm_hold.is_some_and(|(_, receiver, _, _)| receiver == side) {
-                    tgt.z -= stair_resume_ss_sink;
-                }
                 let replan_hold = push_replan_trig > 0.0
                     && push_replan_slice == Some(slice_idx)
                     && push_replan_shift > push_replan_hold;
@@ -10468,34 +8424,31 @@ fn main() {
                     kp_sw_xy,
                     kp_sw_z,
                     kd_sw,
-                    if transfer_swing.is_some_and(|(transfer_side, _)| transfer_side == side)
-                        || (stair_resume_sole_pose && stair_transfer_completed > 0)
-                        // A swing that CHANGES HEIGHT -- the step onto a tread
-                        // -- whether or not a transfer ever armed.
-                        //
-                        // OPT-IN. Measured 2026-09-22 on G1 with the default
-                        // four-row `XyzYaw` swing: the foot reaches the tread
-                        // with its heel 33 mm past the nosing and nothing
-                        // holding its pitch, so the heel becomes a pivot --
-                        // ankle pitch runs -18 to -43 deg in 700 ms, the
-                        // measured CoP sits at -87 mm on an 85 mm half-sole
-                        // (off the heel), the load never exceeds 90 N of a
-                        // 334 N body, and the landing check correctly refuses
-                        // to confirm a foot that is not on the surface.
-                        // Constraining roll and pitch for EVERY swing is not
-                        // the answer: `SWING_ROT=3` costs a row of null space
-                        // the CEM-tuned gains do not have, and the same recipe
-                        // then falls at 3.37 s on flat ground, two steps in.
-                        // STAIR_RISE_SOLE_POSE_MIN_DZ: only pay the two extra
-                        // swing rows for a step that needs them. At a 1 cm
-                        // riser the free-arm recipe (arm hold above swing =
-                        // less null space) went 7/24 with this on and 18/24
-                        // with it off, while it is load-bearing for deep
-                        // treads (measured 2026-09-26, Sec.54). 0 = any dz,
-                        // the shipped behaviour.
-                        || (stair_rise_sole_pose
-                            && dz.abs() > 1e-9
-                            && dz.abs() >= stair_rise_sole_pose_min_dz)
+                    // A swing that CHANGES HEIGHT -- the step onto a tread.
+                    //
+                    // OPT-IN. Measured 2026-09-22 on G1 with the default
+                    // four-row `XyzYaw` swing: the foot reaches the tread
+                    // with its heel 33 mm past the nosing and nothing
+                    // holding its pitch, so the heel becomes a pivot --
+                    // ankle pitch runs -18 to -43 deg in 700 ms, the
+                    // measured CoP sits at -87 mm on an 85 mm half-sole
+                    // (off the heel), the load never exceeds 90 N of a
+                    // 334 N body, and the landing check correctly refuses
+                    // to confirm a foot that is not on the surface.
+                    // Constraining roll and pitch for EVERY swing is not
+                    // the answer: `SWING_ROT=3` costs a row of null space
+                    // the CEM-tuned gains do not have, and the same recipe
+                    // then falls at 3.37 s on flat ground, two steps in.
+                    // STAIR_RISE_SOLE_POSE_MIN_DZ: only pay the two extra
+                    // swing rows for a step that needs them. At a 1 cm
+                    // riser the free-arm recipe (arm hold above swing =
+                    // less null space) went 7/24 with this on and 18/24
+                    // with it off, while it is load-bearing for deep
+                    // treads (measured 2026-09-26, Sec.54). 0 = any dz,
+                    // the shipped behaviour.
+                    if stair_rise_sole_pose
+                        && dz.abs() > 1e-9
+                        && dz.abs() >= stair_rise_sole_pose_min_dz
                     {
                         // Full sole orientation is essential only for the deep
                         // stair transfer. Applying it to the approach made the
@@ -10503,7 +8456,7 @@ fn main() {
                         // ankle run to its stop and throws the foot sideways.
                         bt::SwingAxes::XyzRollPitch
                     } else if terrain_pitch
-                        && stairs.as_ref().is_some_and(|st| st.pitch_at(footsteps.at_slice(plan_slice_idx).sole[side].x) != 0.0)
+                        && stairs.as_ref().is_some_and(|st| st.pitch_at(footsteps.at_slice(slice_idx).sole[side].x) != 0.0)
                     {
                         // TERRAIN_PITCH_YAW=1: keep the walking default's yaw
                         // and add pitch only, roll free (see SwingAxes::XyzYawPitch).
@@ -10520,9 +8473,9 @@ fn main() {
                     },
                     {
                         let mut rot_tgt =
-                            foot_rot_at(side, footsteps.at_slice(plan_slice_idx).yaw[side]);
+                            foot_rot_at(side, footsteps.at_slice(slice_idx).yaw[side]);
                         if terrain_pitch && let Some(st) = &stairs {
-                            let th = st.pitch_at(footsteps.at_slice(plan_slice_idx).sole[side].x);
+                            let th = st.pitch_at(footsteps.at_slice(slice_idx).sole[side].x);
                             if th != 0.0 {
                                 // Toe up by the slope angle: rotate about world y by -th.
                                 rot_tgt = na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), -th).matrix() * rot_tgt;
@@ -10606,21 +8559,11 @@ fn main() {
                     kp_sw_xy,
                     kp_sw_z,
                     kd_sw,
-                    if transfer_swing.is_some_and(|(transfer_side, _)| transfer_side == side)
-                        || (stair_resume_sole_pose && stair_transfer_completed > 0)
-                    {
-                        // Full sole orientation is essential only for the deep
-                        // stair transfer. Applying it to the approach made the
-                        // feet collide, while leaving roll free lets the swing
-                        // ankle run to its stop and throws the foot sideways.
-                        bt::SwingAxes::XyzRollPitch
-                    } else {
-                        match swing_rot_mode {
-                            0 => bt::SwingAxes::Xyz,
-                            2 => bt::SwingAxes::Pose,
-                            3 => bt::SwingAxes::XyzRollPitch,
-                            _ => bt::SwingAxes::XyzYaw,
-                        }
+                    match swing_rot_mode {
+                        0 => bt::SwingAxes::Xyz,
+                        2 => bt::SwingAxes::Pose,
+                        3 => bt::SwingAxes::XyzRollPitch,
+                        _ => bt::SwingAxes::XyzYaw,
                     },
                     Some((
                         misarta::se3::rotation_matrix(&data.oMi[mi]),
@@ -10633,9 +8576,8 @@ fn main() {
             }
         };
 
-        // Keep the unweighted task for post-solve diagnostics. `p_swing` may
-        // be moved into an earlier recovery level below, so retain a clone
-        // before assembling the hierarchy.
+        // Keep the unweighted task for post-solve diagnostics; `p_swing`
+        // itself is moved into the hierarchy below.
         let p_swing_diag = p_swing.clone();
         // Preserve original physical rows before task weighting / HQP slack.
         let qp_physical =
@@ -10682,20 +8624,6 @@ fn main() {
         } else {
             "dynamics+contact+cones"
         });
-        let managed_recovery = (stair_wrench_mpc
-            && stair_managed_contact
-            && stair_transfer_cmd.is_some()
-            && free_side.is_some())
-            || (stair_resume_swing_priority
-                && stair_transfer_completed > 0
-                && stair_transfer_cmd.is_none()
-                && free_side.is_some());
-        if managed_recovery {
-            if let Some(ps) = p_swing.take() {
-                levels.push(ps);
-                level_names.push("contact recovery");
-            }
-        }
         let mut p1_centroidal = if coupled_active {
             p1.weight(stair_wrench_com_weight)
         } else {
@@ -10710,12 +8638,6 @@ fn main() {
             if use_trunk && stair_wrench_trunk_coupled {
                 p1_centroidal = p1_centroidal + p2.clone().weight(stair_wrench_trunk_weight);
             }
-        }
-        if let Some(pf) = p_fz_plan_coupled {
-            p1_centroidal = p1_centroidal + pf;
-        }
-        if let Some(pf) = p_post_settle_fz {
-            p1_centroidal = p1_centroidal + pf;
         }
         if ds_fz_floor_weight > 0.0 && nc == 2 {
             let body_weight = total_mass * G;
@@ -10735,22 +8657,6 @@ fn main() {
         }
         if let Some(pc) = p_cmp {
             p1_centroidal = p1_centroidal + pc.weight(mom_cmp_w);
-        }
-        let trunk_couple_now = use_trunk
-            && stair_trunk_couple > 0.0
-            && (stair_transfer_cmd.is_some() || t < stair_trunk_post_until)
-            && !(coupled_active && stair_wrench_trunk_coupled);
-        if trunk_couple_now {
-            p1_centroidal = p1_centroidal + p2.clone().weight(stair_trunk_couple);
-        }
-        if stair_resume_swing_couple > 0.0
-            && stair_transfer_completed > 0
-            && stair_transfer_cmd.is_none()
-            && free_side.is_some()
-        {
-            if let Some(ps) = p_swing.take() {
-                p1_centroidal = p1_centroidal + ps.weight(stair_resume_swing_couple);
-            }
         }
         // 運動量と腕を重心レベルへ合流(BDI/IHMC 方式)。既定 0 で無効。
         let mut merged_mom = false;
@@ -10776,7 +8682,7 @@ fn main() {
             (false, false, false) => "com",
         });
         let mut p2_late = None;
-        if use_trunk && !(coupled_active && stair_wrench_trunk_coupled) && !trunk_couple_now {
+        if use_trunk && !(coupled_active && stair_wrench_trunk_coupled) {
             if trunk_late {
                 p2_late = Some(p2);
             } else {
@@ -10866,22 +8772,6 @@ fn main() {
             let expr = &sel_fz * &forces.as_affine();
             levels.push(tasks::track(&expr, &ref_fz));
             level_names.push("load split");
-        }
-        if stair_ankle_reg > 0.0 && stair_transfer_cmd.is_some() && nc > 0 {
-            // Drive the sole-frame roll/pitch moments toward zero, i.e. ask
-            // for the CoP at the sole centre, and let everything above
-            // override it where balance actually needs the moment.
-            let mut pick = na::DMatrix::zeros(2, 6);
-            pick[(0, 0)] = 1.0;
-            pick[(1, 1)] = 1.0;
-            let mut ankle = Task::empty(nd);
-            for slot in 0..stance_sides.len() {
-                let sole = &p0.sole_sel[slot] * &forces.as_affine();
-                ankle = ankle + Task::soft_eq(&(&pick * &sole));
-            }
-            let scale = (total_mass * G * sole_half_l).powi(2).max(1e-9);
-            levels.push(ankle.weight(stair_ankle_reg / scale));
-            level_names.push("ankle moment");
         }
         levels.push(p_reg);
         level_names.push("regularise");
@@ -11154,7 +9044,7 @@ fn main() {
                     "layer_statuses":sol.level_statuses.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>(),
                     "layer_raw_statuses":sol.level_diagnostics.iter().map(|d| d.as_ref().map(|d| &d.raw_status)).collect::<Vec<_>>(),
                     "prox_weight":prox_weight,"tasks":tasks,"solution":sol.x.as_slice(),"variables":variables,
-                    "contact_ids":stance_sides,"planned_support":format!("{:?}",support),"phase":format!("{:?}",stair_transfer_cmd.map(|(_,p,_)|p)),
+                    "contact_ids":stance_sides,"planned_support":format!("{:?}",support),"phase":"None",
                     "measured_fz_N":measured_pre,"physical_groups":physical,"solve_ns":qp_solve_ns,
                     "check_ns":qp_check_ns,"normalized_physical_violation":qp_physical_violation});
                 std::fs::create_dir_all(dir).expect("QP_DIAG_DIR");
@@ -11222,14 +9112,10 @@ fn main() {
         let mut cop_qp = [[0.0_f64; 3]; 2];
         let mut wbc_net_cop_acc = [f64::NAN; 3];
         let mut f_qp_w = [[0.0_f64; 3]; 2];
-        let mut wbc_fz_now: [Option<f64>; 2] = [None; 2];
         let mut cop_use = 0.0_f64;
         for (slot, mi) in stance.iter().copied().enumerate() {
             let side = rig.side_of(mi);
             let w = &p0.sole_sel[slot] * &extracted.forces;
-            if w[5].is_finite() {
-                wbc_fz_now[side] = Some(w[5].max(0.0));
-            }
             if let Some((cx, cy, fz)) = cop_from_sole_wrench(&w) {
                 if fz > 1e-6 {
                     cop_qp[side] = [cx, cy, fz];
@@ -11307,9 +9193,10 @@ fn main() {
                 t,
                 dt,
                 bw,
-                stair_transfer_cmd.map_or(0.0, |(_, phase, _)| phase.code()),
-                stair_transfer_cmd.map_or(-1.0, |(high, _, _)| high as f64),
-                stair_transfer_cmd.map_or(0.0, |(_, _, rf)| rf.alpha),
+                // phase / high / alpha of the removed stair transfer (idle).
+                0.0,
+                -1.0,
+                0.0,
                 mask as f64,
                 measured_mask as f64,
                 f64::from(mpc_valid),
@@ -11354,7 +9241,6 @@ fn main() {
             }
             writeln!(file).unwrap();
         }
-        wbc_fz_previous = wbc_fz_now;
         max_cop_use = max_cop_use.max(cop_use);
         if push_at_t.is_some() {
             push_cop_max = push_cop_max.max(cop_use);
@@ -12070,11 +9956,14 @@ fn main() {
                 foot_v_l[1],
                 foot_v_r[0],
                 foot_v_r[1],
-                contact_activation[0],
-                contact_activation[1],
-                contact_force_activation[0],
-                contact_force_activation[1],
-                load_chatter_ema,
+                // contact_activation_l/r, contact_force_activation_l/r,
+                // load_chatter_ema: written only by the removed stair
+                // transfer; these are the values it left them at.
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                0.0,
                 gl.x,
                 gl.y,
                 gl.z,
@@ -12090,25 +9979,24 @@ fn main() {
                 preview_count as f64,
                 preview_failures as f64,
                 landing_delay,
-                if stair_transfer_cmd.is_some() {
-                    1.0
-                } else {
-                    0.0
-                },
-                stair_transfer_cmd.map_or(0.0, |(_, phase, _)| phase.code()),
-                stair_transfer_cmd.map_or(0.0, |(_, _, rf)| rf.alpha),
-                stair_transfer_cmd.map_or(-1.0, |(high, _, _)| high as f64),
+                // stair_transfer / _phase / _alpha / _high: the removed
+                // three-phase transfer's columns, kept at its idle values so
+                // the column layout does not move.
+                0.0,
+                0.0,
+                0.0,
+                -1.0,
                 ffdc_dz,
                 ffdc_err_log,
-                capture_error_log,
-                capture_tilt_log,
+                -1.0, // capture_error (removed stair transfer)
+                0.0,  // capture_tilt (removed stair transfer)
                 trunk_tilt_roll,
                 trunk_tilt_pitch,
                 trunk_cmd_rp[1],
                 trunk_acc_rp[1],
                 trunk_cmd_rp[0],
                 trunk_acc_rp[0],
-                transfer_guard_log,
+                -1.0, // transfer_guard (removed stair transfer)
                 if wrench_mpc_command.is_some() {
                     1.0
                 } else {
@@ -12269,15 +10157,7 @@ fn main() {
         }
         // Height is judged against the surface under the body, or a robot
         // that WALKED down a staircase would be scored as having fallen it.
-        let floor_z = if let Some((_high, _phase, rf)) = stair_transfer_cmd {
-            // While the feet straddle two levels, the terrain under CoM.x is
-            // already the upper tread even though the common transfer clock
-            // deliberately raises the body gradually.  Judge clearance from
-            // that same clock; at alpha=1 this equals the upper tread.
-            terrain_base + (rf.z - z_com)
-        } else {
-            stairs.as_ref().map_or(0.0, |st| st.h(com.x))
-        };
+        let floor_z = stairs.as_ref().map_or(0.0, |st| st.h(com.x));
         if cur_z - floor_z < 0.30 || tilt > 0.52 {
             println!("  FELL at t={t:.3} (z={cur_z:.3}, floor={floor_z:.3}, tilt={tilt:.3})");
             fell = true;
@@ -12306,10 +10186,9 @@ fn main() {
         "COM REPLAN: {preview_count} solves / {preview_failures} failures; {landing_retimes} landing retimes ({landing_delay:.3}s net), {} confirmed / {} timeouts",
         landing_timing.touchdowns, landing_timing.timeouts
     );
-    println!(
-        "STAIR TRANSFER: {stair_transfer_started} started / {stair_transfer_completed} completed / {stair_transfer_timeouts} timeouts / {} active",
-        usize::from(stair_transfer.is_some()),
-    );
+    // The three-phase stair transfer was removed (never adopted, off by
+    // default); the line stays so existing log parsers keep their layout.
+    println!("STAIR TRANSFER: 0 started / 0 completed / 0 timeouts / 0 active");
     println!("\n=== Result (walk) ===");
     println!("  steps taken: {}", step_stats.len());
     {
