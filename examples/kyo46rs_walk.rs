@@ -188,6 +188,114 @@ fn flag(k: &str, d: bool) -> bool {
     std::env::var(k).map(|v| v != "0").unwrap_or(d)
 }
 
+/// The control loop's debug prints. Each was an environment read inside the
+/// tick (or a `let` scattered among the knobs); the environment does not
+/// change during a run, so reading them once is the same switch.
+#[cfg(feature = "mujoco")]
+struct DebugFlags {
+    /// CONTACT_ADMIT_DEBUG: the `[adm]` lines (admit certificates).
+    contact_admit: bool,
+    /// DS_FEASIBLE_DEBUG: the `[ds]`/`[dsf]` lines.
+    ds_feasible: bool,
+    /// DS_CAPTURE_DEBUG: the `[dsc-cap]` lines.
+    ds_capture: bool,
+    /// DEBUG_ANCHOR=1: the `[anchor]` lines (a switch: "0" = off).
+    anchor: bool,
+    /// CP_DEBUG: the `[cp]` lines (contact_plan).
+    cp: bool,
+    /// PUSH_REPLAN_DEBUG: the `[replan]` lines.
+    push_replan: bool,
+    /// MPC_FS_CROSS_DEBUG: the `[fs-cross]` lines (the crossing gate).
+    mpc_fs_cross: bool,
+    /// MPC_FS_DEBUG_LANDING: the `[fs-decision]` lines.
+    mpc_fs_landing: bool,
+    /// MPC_TRAJ_DEBUG: the `[traj]` lines (before t = 2 s).
+    mpc_traj: bool,
+    /// DIAG_REPLAN=1: print each live replan with its site (a switch).
+    replan: bool,
+    /// WBC_LEVEL_DEBUG_T=<t>: the `[wbc-levels]` lines within 11 ms of t.
+    /// Unparsable = None, as before (silently off).
+    wbc_level_t: Option<f64>,
+}
+
+#[cfg(feature = "mujoco")]
+impl DebugFlags {
+    fn from_env() -> Self {
+        let set = |k: &str| std::env::var(k).is_ok();
+        Self {
+            contact_admit: set("CONTACT_ADMIT_DEBUG"),
+            ds_feasible: set("DS_FEASIBLE_DEBUG"),
+            ds_capture: set("DS_CAPTURE_DEBUG"),
+            anchor: flag("DEBUG_ANCHOR", false),
+            cp: set("CP_DEBUG"),
+            push_replan: set("PUSH_REPLAN_DEBUG"),
+            mpc_fs_cross: set("MPC_FS_CROSS_DEBUG"),
+            mpc_fs_landing: set("MPC_FS_DEBUG_LANDING"),
+            mpc_traj: set("MPC_TRAJ_DEBUG"),
+            replan: flag("DIAG_REPLAN", false),
+            wbc_level_t: std::env::var("WBC_LEVEL_DEBUG_T").ok().and_then(|v| v.parse::<f64>().ok()),
+        }
+    }
+}
+
+/// WBCW_<NAME>: the weighted strategy's weight of one WBC level, NAME being
+/// the level name upper-cased with non-alphanumerics as '_' (e.g. WBCW_COM,
+/// WBCW_SWING, WBCW_POSTURE_MOMENTUM). The default depends on the level.
+#[cfg(feature = "mujoco")]
+fn level_weight_from_env(name: &str) -> f64 {
+    let key: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+        .collect();
+    let default = match name {
+        "com" | "com+momentum+wrench" => 1.0,
+        "swing" | "contact recovery" => 1.0,
+        "trunk" => 0.3,
+        "momentum" => 0.1,
+        "posture" | "posture+momentum" => 0.01,
+        "regularise" => 1e-4,
+        _ => 0.1,
+    };
+    env_f64(&format!("WBCW_{key}"), default)
+}
+
+/// The per-level weights of the weighted strategy, read once for every level
+/// name the stack in `main` produces (they were read every tick). An array,
+/// not a map, so a lookup cannot depend on an iteration order; a name not in
+/// the table is read on the spot, as before.
+#[cfg(feature = "mujoco")]
+struct LevelWeights([(&'static str, f64); 13]);
+
+#[cfg(feature = "mujoco")]
+impl LevelWeights {
+    const NAMES: [&'static str; 13] = [
+        "eom",
+        "contact+cones",
+        "dynamics+contact+cones",
+        "com",
+        "com+momentum+wrench",
+        "trunk",
+        "momentum",
+        "arm hold(before swing)",
+        "swing",
+        "arm hold",
+        "posture",
+        "posture+momentum",
+        "regularise",
+    ];
+
+    fn from_env() -> Self {
+        Self(Self::NAMES.map(|name| (name, level_weight_from_env(name))))
+    }
+
+    fn get(&self, name: &str) -> f64 {
+        self.0
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map_or_else(|| level_weight_from_env(name), |&(_, w)| w)
+    }
+}
+
 /// What `build_scene` put into the world besides the robot. `stairs` is also
 /// the planner's terrain model; `spar_wall` (0 = none) is read back by the
 /// target-hit report.
@@ -1001,6 +1109,8 @@ fn main() {
         f
     });
     let feasibility_tol = env_f64("WBC_FEAS_TOL", SolveConfig::default().feasibility_tol);
+    // WBCW_<NAME>: the weighted strategy's per-level weights.
+    let level_weights = LevelWeights::from_env();
     assert!(
         feasibility_tol.is_finite() && feasibility_tol > 0.0,
         "WBC_FEAS_TOL must be positive and finite"
@@ -1266,6 +1376,8 @@ fn main() {
     // DCM tracking. k is dimensionless: the DCM error decays as
     // exp(-k_dcm * omega * t), so 2.0 is two e-folds per DCM time constant.
     let k_dcm = env_f64("K_DCM", 2.0);
+    // VH_DCM=1: the height-varying DCM law on a modelled terrain (see its use).
+    let vh_dcm = flag("VH_DCM", false);
     // Keep the commanded ZMP inside the support polygon, shrunk by this
     // factor. Riding the exact edge means the next disturbance makes P0
     // infeasible outright.
@@ -1285,6 +1397,9 @@ fn main() {
     // release a foot. Isolates "can the balance reference move at all" from
     // everything that touchdown brings with it.
     let no_lift = flag("NO_LIFT", false);
+    // TURN_IN_DS: the trunk turns toward a new heading during the double
+    // support, not the single support before it (see its use).
+    let turn_in_ds = flag("TURN_IN_DS", true);
 
     // ---- disturbance: one rectangular push at a chosen gait phase --------
     // What is fired and when is `PushScenario`; the thresholds below are
@@ -2113,6 +2228,9 @@ fn main() {
     let mut correction =
         ContactCorrection::new(total_mass * G, env_f64("CONTACT_TICKS", 2.0) as u32);
     let contact_on_bw = env_f64("CONTACT_ON_BW", 0.10);
+    // Double-support load ramp: the fraction of the double support over
+    // which the landed foot takes the load.
+    let ramp_frac = env_f64("LOAD_RAMP_FRAC", 0.6).clamp(0.05, 1.0);
     assert!(
         contact_on_bw.is_finite() && contact_on_bw > 0.02 && contact_on_bw <= 1.0,
         "CONTACT_ON_BW must exceed the 0.02 BW release threshold and be <= 1"
@@ -2439,7 +2557,6 @@ fn main() {
     let ds_capture_margin = env_f64("DS_CAPTURE_MARGIN", 0.01);
     let ds_capture_t_min = env_f64("DS_CAPTURE_T_MIN", 0.15).max(0.02);
     let ds_capture_load = env_f64("DS_CAPTURE_LOAD", 0.4).clamp(0.0, 1.0);
-    let ds_capture_debug = std::env::var("DS_CAPTURE_DEBUG").is_ok();
     // (LIFT_GATE_FRAC / _MAX, holding a double support while the lateral DCM
     // is still over the lifting foot, were not adopted and are removed.)
     let mut dsc_retimed_last: Option<usize> = None;
@@ -2691,13 +2808,11 @@ fn main() {
             .unwrap_or_default();
         [v.first().copied().unwrap_or(0.0).clamp(0.0, 1.0), v.get(1).copied().unwrap_or(1.0).clamp(0.0, 1.0)]
     };
-    let push_replan_debug = std::env::var("PUSH_REPLAN_DEBUG").is_ok();
     // (slice, original footsteps, original DCM plan, original landing, last applied landing)
     let mut push_replan_state: Option<(usize, FootstepPlan, DcmPlan, na::Vector2<f64>, Option<na::Vector2<f64>>)> = None;
     let mut push_replan_slice: Option<usize> = None;
     let mut push_replan_shift = 0.0_f64;
     let mut n_push_replan = 0u32;
-    let mpc_fs_cross_debug = std::env::var("MPC_FS_CROSS_DEBUG").is_ok();
     // (slice, inward is +y) latched when the crossing gate opens: once the
     // landing has crossed, `landing_inward` would read the sign the other way.
     let mut mpc_fs_cross_latched: Option<(usize, bool)> = None;
@@ -2789,8 +2904,9 @@ fn main() {
     // PHASE_TICKS, the phase clock advanced by measured contact, are removed;
     // its summary line keeps the zeros it printed when off.)
     let mut n_replan = 0u32;
-    // DIAG_REPLAN=1: print each live replan with its site (diagnostic only).
-    let diag_replan = flag("DIAG_REPLAN", false);
+    // The control loop's debug prints (`DIAG_REPLAN`, `*_DEBUG`, ...), read
+    // once here.
+    let debug = DebugFlags::from_env();
     let push_replan_slope_lead = env_f64("PUSH_REPLAN_SLOPE_LEAD", 0.0).max(0.0);
     let mut n_corrected = 0u32;
 
@@ -3044,6 +3160,8 @@ fn main() {
                 _ => panic!("unsupported MPC_QP_BACKEND: {name}"),
             });
     let mpc_diag_dir = std::env::var("MPC_DIAG_DIR").ok();
+    // KKT complementarity tolerance of the MPC's solution check (see its use).
+    let mpc_kkt_comp_tol = env_f64("MPC_KKT_COMP_TOL", 1e-6);
     let act_delay_ticks = env_f64("ACT_DELAY_TICKS", 0.0).max(0.0) as usize;
     let mut act_delay_buf: std::collections::VecDeque<Vec<f64>> = std::collections::VecDeque::new();
     // PREVIEW_TRAJ_CSV=path: every accepted LIPM CoM-preview solve (the
@@ -3184,7 +3302,7 @@ fn main() {
                 && (footsteps.at_slice(ended).sole[sw].z - actual.sole[sw].z).abs() < contact_admit_z
             {
                 confirmed_admit[sw] = Some(ended + 1);
-                if std::env::var("CONTACT_ADMIT_DEBUG").is_ok() {
+                if debug.contact_admit {
                     println!("  [adm] t={t:.3} certificate side={sw} ds_slice={} (confirm={} timeout={})", ended + 1, landing_timing.touchdowns > touchdowns_before, landing_timed_out);
                 }
             }
@@ -3293,7 +3411,7 @@ fn main() {
                                 p
                             };
                             n_ds_continuous += 1;
-                            if std::env::var("DS_FEASIBLE_DEBUG").is_ok() {
+                            if debug.ds_feasible {
                                 let r = dcm_plan.reference(gait.slices[ds].t0 + 1e-6);
                                 println!("  [dsc] t={t:.3} ds={ds} xi=({:.3},{:+.3}) target=({:.3},{:+.3}) p=({:.3},{:+.3}) T={:.3} xi_ref(t0)=({:.3},{:+.3})", xi_meas.x, xi_meas.y, target.x, target.y, p_final.x, p_final.y, gait.slices[ds].duration(), r.xi.x, r.xi.y);
                             }
@@ -3309,7 +3427,7 @@ fn main() {
                                 zmp_roll,
                             );
                         }
-                        if std::env::var("DS_FEASIBLE_DEBUG").is_ok() {
+                        if debug.ds_feasible {
                             println!("  [dsf] t={t:.3} ds={ds} xi=({:.3},{:+.3}) target=({:.3},{:+.3}) p=({:.3},{:+.3}) need={need:.3} nominal={nominal:.3} -> {want:.3}", xi_meas.x, xi_meas.y, target.x, target.y, p.x, p.y);
                         }
                     }
@@ -3363,7 +3481,7 @@ fn main() {
                     let prev_sw = first.checked_sub(1).and_then(|j| gait.slices[j].support.swing());
                     let landed_load = prev_sw.map_or(0.0, |sw| fz_prev[sw]);
                     let earliest = (t0_run + ds_capture_t_min).max(t + 2.0 * dt);
-                    if ds_capture_debug {
+                    if debug.ds_capture {
                         println!(
                             "  [dsc-cap?] t={t:.3} run {first}..{last} [{t0_run:.3},{t1_run:.3}] xi.x={:.3} target.x={:.3} p.x={:.3} need={need:.3} rem={remaining:.3} hopeless={hopeless} load={landed_load:.0} earliest={earliest:.3}",
                             xi_meas.x, target.x, p.x
@@ -3382,7 +3500,7 @@ fn main() {
                         dsc_retimed_last = Some(last);
                         n_ds_capture += 1;
                         dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
-                        if ds_capture_debug {
+                        if debug.ds_capture {
                             println!("  [dsc-cap] t={t:.3} DS end {t1_run:.3} -> {earliest:.3}");
                         }
                     }
@@ -3483,7 +3601,7 @@ fn main() {
                     // before the boundary".
                     let p_meas_z = p.z;
                     p.z = steps.sole[swing].z + prof.sole_below_origin;
-                    if flag("DEBUG_ANCHOR", false) {
+                    if debug.anchor {
                         eprintln!(
                             "  [anchor] t={t:.3} swing {} touchdown: meas z {:.4} -> plan z {:.4}",
                             if swing == 0 { "L" } else { "R" },
@@ -3547,7 +3665,7 @@ fn main() {
                         confirmed_admit[landed] = Some(now_slice);
                         last_scheduled_admit[landed] = Some(now_slice);
                         admit_measured_z[landed] = Some(sole_z);
-                        if std::env::var("CONTACT_ADMIT_DEBUG").is_ok() {
+                        if debug.contact_admit {
                             println!("  [adm-loaded] t={t:.3} side={landed} sole_z={sole_z:.4} plan_z={:.4} fz={:.0}", steps.sole[landed].z, fz_meas[landed]);
                         }
                     }
@@ -3581,7 +3699,7 @@ fn main() {
                         sides.sort_unstable();
                         fresh.push(side);
                         n_confirmed_admissions += 1;
-                        if std::env::var("CONTACT_ADMIT_DEBUG").is_ok() {
+                        if debug.contact_admit {
                             let mi = rig.foot_mi[side];
                             let sole_z = misarta::se3::translation(&data.oMi[mi]).z - prof.sole_below_origin;
                             println!(
@@ -3641,7 +3759,6 @@ fn main() {
         } else {
             (None, None)
         };
-        let ramp_frac = env_f64("LOAD_RAMP_FRAC", 0.6).clamp(0.05, 1.0);
         // (LOAD_RAMP_TD, keeping the share the landed foot already carries,
         // and LOAD_RAMP_CONTACT_T, ramping from the contact-entry tick too,
         // were not adopted and are removed.)
@@ -3841,7 +3958,7 @@ fn main() {
             }
             dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
             n_replan += 1;
-            if diag_replan { println!("  [diag-replan] site 0 t={t:.3} (line 6798)"); }
+            if debug.replan { println!("  [diag-replan] site 0 t={t:.3} (line 6798)"); }
             println!("  [yield] t={t:.3} dcm_err={dcm_err:.3}: speed {v_hi:.2} -> {v_lo:.2} m/s, stride {stride_hi:.3} -> {stride_lo:.3}, slices x{ratio:.3}, {n} steps re-planned");
         }
         if push_replan_trig > 0.0 {
@@ -3947,11 +4064,11 @@ fn main() {
                                 if push_replan_slice != Some(i) {
                                     n_push_replan += 1;
                                     n_replan += 1;
-                                    if diag_replan { println!("  [diag-replan] site 1 t={t:.3} (line 6901)"); }
+                                    if debug.replan { println!("  [diag-replan] site 1 t={t:.3} (line 6901)"); }
                                 }
                                 push_replan_slice = Some(i);
                                 push_replan_shift = (l - *base).norm();
-                                if push_replan_debug {
+                                if debug.push_replan {
                                     println!("  [replan] t={t:.3} slice {i} frac={frac:.2} e=({:+.3},{:+.3}) d=({:+.3},{:+.3}) landing ({:.3},{:+.3}) -> ({:.3},{:+.3})", e.x, e.y, d.x, d.y, base.x, base.y, l.x, l.y);
                                 }
                                 *last = Some(l);
@@ -4167,7 +4284,7 @@ fn main() {
             // CP_TOUCHDOWN, planning for the DCM at touchdown, were not
             // adopted and are removed.)
             let dec = articara::biped::contact_plan::plan(&sit, &contact_plan_cfg);
-            if std::env::var("CP_DEBUG").is_ok() {
+            if debug.cp {
                 println!(
                     "  [cp] t={t:.3} slice={i} err={dcm_err:.4} xi=({:.3},{:+.3}) eos_plan=({:.3},{:+.3}) pred_nom=({:.3},{:+.3}) shift=({:+.3},{:+.3}) dT={:+.3} unmet={:.4} cost={:.3}",
                     xi.x, xi.y, sit.xi_eos_plan.x, sit.xi_eos_plan.y,
@@ -4235,7 +4352,7 @@ fn main() {
                     zmp_roll,
                 );
                 n_replan += 1;
-                if diag_replan { println!("  [diag-replan] site 2 t={t:.3} (line 7454)"); }
+                if debug.replan { println!("  [diag-replan] site 2 t={t:.3} (line 7454)"); }
             }
         }
         if replan_engaged {
@@ -4372,7 +4489,7 @@ fn main() {
         // constant-height omega is ~20% too stiff while the CoM is being
         // driven DOWN a riser. Gated so level and validated runs are bit-
         // identical (VH_DCM=0 restores the classic form).
-        let a_xy_raw = if stairs.is_some() && flag("VH_DCM", false) {
+        let a_xy_raw = if stairs.is_some() && vh_dcm {
             // Height above the surface the pressure actually acts on, which
             // on a stair is the STANCE sole -- not the fixed `z_lip` omega
             // was built from. Measured on a descent: omega^2 claims 32.9
@@ -4713,7 +4830,7 @@ fn main() {
                         if ex > mpc_footstep_cross_ex {
                             mpc_fs_cross_latched = Some((i, plus));
                             n_mpc_fs_cross += 1;
-                            if mpc_fs_cross_debug {
+                            if debug.mpc_fs_cross {
                                 println!("  [fs-cross] t={t:.3} slice {i} swing {sw_c} DCM {ex:+.3} m past the stance sole");
                             }
                             Some((i, plus))
@@ -4835,7 +4952,7 @@ fn main() {
                                         land.min[1] = land.min[1].max(need);
                                     }
                                 }
-                                if mpc_fs_cross_debug {
+                                if debug.mpc_fs_cross {
                                     println!("  [fs-cross-floor] t={t:.3} rem={rem:.3} xi.y={:+.3} xi_td={xi_td:+.3} base={base:+.3} need={need:+.3} max={:?} min={:?}", xi.y, land.max, land.min);
                                 }
                             }
@@ -4997,7 +5114,7 @@ fn main() {
                 config.qp.absolute_gap = mpc_gate;
                 // Interior-point solutions carry complementarity slack at the
                 // gap setting; the KKT gate's 1e-6 rejected every one.
-                config.kkt_complementarity_tolerance = env_f64("MPC_KKT_COMP_TOL", 1e-6);
+                config.kkt_complementarity_tolerance = mpc_kkt_comp_tol;
                 if let Some(backend) = mpc_backend_override {
                     config.qp.solver = backend;
                 }
@@ -5124,7 +5241,7 @@ fn main() {
                             }
                             let (d, total) = (dp - mpc_fs_applied, dp);
                             mpc_fs_last = total;
-                            if std::env::var("MPC_FS_DEBUG_LANDING").is_ok() {
+                            if debug.mpc_fs_landing {
                                 println!(
                                     "  [fs-decision] t={t:.3} first_node={} prior=({:+.3},{:+.3}) dp=({:+.3},{:+.3}) total=({:+.3},{:+.3}) max={:?} min={:?} xi-ref=({:+.3},{:+.3})",
                                     land.first_node, land.prior[0], land.prior[1], dp.x, dp.y, total.x, total.y, land.max, land.min,
@@ -5142,10 +5259,10 @@ fn main() {
                                     zmp_roll,
                                 );
                                 n_replan += 1;
-                                if diag_replan { println!("  [diag-replan] site 6 t={t:.3} (line 9380)"); }
+                                if debug.replan { println!("  [diag-replan] site 6 t={t:.3} (line 9380)"); }
                             }
                         }
-                        if std::env::var("MPC_TRAJ_DEBUG").is_ok() && t < 2.0 {
+                        if debug.mpc_traj && t < 2.0 {
                             let xi0 = com.xy() + com_vel.xy() / omega;
                             let r0 = dcm_plan.reference(t);
                             print!("  [traj] t={t:.3} xi_meas=({:+.3},{:+.3}) xi_plan=({:+.3},{:+.3}) tgt=({:+.3},{:+.3}) |",
@@ -5219,7 +5336,6 @@ fn main() {
         // `at_slice(i)` already has the swing foot at its LANDING yaw, so
         // reading it during single support asks the trunk to rotate before the
         // foot that will carry the rotation is even down.
-        let turn_in_ds = flag("TURN_IN_DS", true);
         let yaw_plan = {
             let mean = |i: usize| {
                 let y = footsteps.at_slice(i).yaw;
@@ -6109,20 +6225,7 @@ fn main() {
         if weighted_levels {
             for (k, lvl) in levels.iter_mut().enumerate().skip(1) {
                 let name = level_names.get(k).copied().unwrap_or("");
-                let key: String = name
-                    .chars()
-                    .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
-                    .collect();
-                let default = match name {
-                    "com" | "com+momentum+wrench" => 1.0,
-                    "swing" | "contact recovery" => 1.0,
-                    "trunk" => 0.3,
-                    "momentum" => 0.1,
-                    "posture" | "posture+momentum" => 0.01,
-                    "regularise" => 1e-4,
-                    _ => 0.1,
-                };
-                let wk = env_f64(&format!("WBCW_{key}"), default);
+                let wk = level_weights.get(name);
                 let taken = std::mem::replace(lvl, misa_wbc::Task::empty(nd));
                 *lvl = taken.weight(wk);
             }
@@ -6153,8 +6256,7 @@ fn main() {
         // WBC_LEVEL_DEBUG_T=<t>: print each level's least-squares residual
         // at the ticks within 11 ms of t (which task the solve could not
         // satisfy, and by how much).
-        if let Ok(tw) = std::env::var("WBC_LEVEL_DEBUG_T")
-            && let Ok(tw) = tw.parse::<f64>()
+        if let Some(tw) = debug.wbc_level_t
             && (t - tw).abs() < 0.011
         {
             let parts: Vec<String> = levels
