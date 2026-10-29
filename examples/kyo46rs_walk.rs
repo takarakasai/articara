@@ -1160,6 +1160,131 @@ impl DiagSinks {
     }
 }
 
+/// The controller's state carried from tick to tick (the planned
+/// schedule, footsteps and DCM aside, which are the plan). Each field is the
+/// `let` of the same name before the loop, which gives its initial value;
+/// gathered here so what the controller remembers is one thing.
+#[cfg(feature = "mujoco")]
+struct CtlState {
+    /// PUSH_YIELD has slowed the walk (once per run).
+    push_yield_done: bool,
+    /// Speed-scheduled CoM drop, slewed.
+    vx2_z_track: articara::biped::height::SlewedDrop,
+    /// PUSH_Z_DROP holds the lowered CoM until this time.
+    push_z_drop_until: f64,
+    /// Measured-contact correction of the planned contact set.
+    correction: articara::biped::gait::ContactCorrection,
+    /// Terrain height under the support, slewed.
+    terrain_track: f64,
+    /// contact_plan: the landing shift applied to `cp_slice`, and the slice
+    /// whose end it has retimed (it then owns that end).
+    cp_applied: na::Vector2<f64>,
+    cp_slice: Option<usize>,
+    cp_retimed_slice: Option<usize>,
+    /// Contact admission: the last scheduled admit, the sole height measured
+    /// at it, and the double support each foot is certified for.
+    last_scheduled_admit: [Option<usize>; 2],
+    admit_measured_z: [Option<f64>; 2],
+    confirmed_admit: [Option<usize>; 2],
+    /// Push-recovery reference: the one picked, the cooldown, the lateral
+    /// quiet time, and the engaged reference's frame.
+    ref_lib: Option<RefLib>,
+    ref_cooldown_until: f64,
+    ref_lat_quiet_t: f64,
+    ref_mode: Option<RefMode>,
+    /// DS_CAPTURE retimes a double support once.
+    dsc_retimed_last: Option<usize>,
+    /// PUSH_REPLAN: (slice, original footsteps, original DCM plan, original
+    /// landing, last applied landing), the slice it owns, and the hold shift.
+    push_replan_state: Option<(
+        usize,
+        articara::biped::gait::FootstepPlan,
+        articara::biped::dcm::DcmPlan,
+        na::Vector2<f64>,
+        Option<na::Vector2<f64>>,
+    )>,
+    push_replan_slice: Option<usize>,
+    push_replan_shift: f64,
+    /// (slice, inward is +y) latched when the MPC crossing gate opens.
+    mpc_fs_cross_latched: Option<(usize, bool)>,
+    /// COM_REPLAN has started (the height plan was rebuilt).
+    replan_engaged: bool,
+    /// CoM preview: the reference ZMP, the predicted CoM and velocity, and
+    /// the time of the next solve.
+    preview_p: na::Vector2<f64>,
+    preview_c: na::Vector2<f64>,
+    preview_v: na::Vector2<f64>,
+    preview_next: f64,
+    /// Support of the previous tick (anchors are released and set on a change).
+    prev_support: articara::biped::gait::Support,
+    /// Where the swing sole left the ground.
+    swing_lift_off: Option<na::Vector3<f64>>,
+    /// Load-change rate per foot (the managed-contact trigger).
+    fz_prev: [f64; 2],
+    fz_rate_ema: [f64; 2],
+    managed_until: [f64; 2],
+    /// Last commanded horizontal CoM acceleration (COM_XY_JERK_MAX).
+    previous_a_xy: Option<na::Vector2<f64>>,
+    /// Wrench MPC: the time of the next solve and the held answer.
+    wrench_mpc_next: f64,
+    wrench_mpc_command: Option<[articara::biped::wrench_mpc::Wrench; 2]>,
+    /// MPC_FOOTSTEP: the slice whose landing is being moved, how much of the
+    /// MPC's offset is applied, the (first, last) slice it is armed for, and
+    /// the last total.
+    mpc_fs_slice: Option<usize>,
+    mpc_fs_applied: na::Vector2<f64>,
+    mpc_fs_armed: Option<(usize, usize)>,
+    mpc_fs_last: na::Vector2<f64>,
+}
+
+/// The WBC's own state: the solver (warm data), the QP structure of the
+/// last tick (a change resets the solver) and the contact anchors.
+#[cfg(feature = "mujoco")]
+struct WbcState {
+    solver: misa_wbc::Solver,
+    qp_previous_structure: Option<(Vec<usize>, Vec<(usize, usize, usize)>)>,
+    anchors: articara::biped::contact::Anchors,
+}
+
+/// Between the solve and the plant: the degraded-solve policy and whether a
+/// good command has been seen yet (harness side; see `CommandPolicy`).
+#[cfg(feature = "mujoco")]
+struct CommandGuard {
+    policy: articara::biped::actuate::CommandPolicy,
+    qp_has_good_command: bool,
+}
+
+/// The controller's counters, reported after the loop (`DegradedTally`, the
+/// harness's, stays apart). All start at zero.
+#[cfg(feature = "mujoco")]
+#[derive(Default)]
+struct WalkerStats {
+    n_mom_cmp_ticks: u32,
+    mom_cmp_peak: f64,
+    n_push_z_drop: u32,
+    n_cp_shift: u32,
+    n_cp_retime: u32,
+    cp_retime_total: f64,
+    n_confirmed_admissions: u32,
+    ref_engagements: u32,
+    n_ds_capture: u32,
+    ds_capture_total: f64,
+    n_ds_feasible: u32,
+    n_ds_continuous: u32,
+    ds_feasible_total: f64,
+    n_push_replan: u32,
+    n_mpc_fs_cross: u32,
+    preview_count: u32,
+    preview_failures: u32,
+    preview_error: f64,
+    landing_retimes: u32,
+    landing_delay: f64,
+    n_replan: u32,
+    n_corrected: u32,
+    wrench_mpc_solves: u32,
+    wrench_mpc_failures: u32,
+}
+
 fn main() {
     use articara::biped::actuate::{
         CommandPolicy, DegradedTally, gravity_plus_posture, write_to_plant,
@@ -1432,7 +1557,7 @@ fn main() {
     );
 
     // ── Control-law knobs ──────────────────────────────────────────────
-    let mut solver = Solver::new();
+    let solver = Solver::new();
     // Additional WBC backends must never bypass the independent acceptance gate.
     // QP_BENCH_GATE also enables the identical gate for existing baselines.
     let qp_gate = flag("QP_BENCH_GATE", false)
@@ -1449,8 +1574,8 @@ fn main() {
         !mpc_gate || ctrl_mode == CtrlMode::Torque,
         "MPC_BENCH_GATE requires torque control"
     );
-    let mut qp_has_good_command = false;
-    let mut qp_previous_structure: Option<(Vec<usize>, Vec<(usize, usize, usize)>)> = None;
+    let qp_has_good_command = false;
+    let qp_previous_structure: Option<(Vec<usize>, Vec<(usize, usize, usize)>)> = None;
     let feasibility_tol = env_f64("WBC_FEAS_TOL", SolveConfig::default().feasibility_tol);
     // WBCW_<NAME>: the weighted strategy's per-level weights.
     let level_weights = LevelWeights::from_env();
@@ -1672,8 +1797,6 @@ fn main() {
     // saturates by design and leaning on it breaks the step. Ascents and
     // the flat were unchanged. (MOM_CMP_STAIRS, lean on stairs too, is
     // removed.)
-    let mut n_mom_cmp_ticks = 0u32;
-    let mut mom_cmp_peak = 0.0_f64;
     let use_trunk = flag("TRUNK", true);
     let trunk_sign = env_f64("TRUNK_SIGN", 1.0);
     let eom_hard = flag("EOM_HARD", true);
@@ -1994,7 +2117,7 @@ fn main() {
     let push_yield_trig = env_f64("PUSH_YIELD_TRIG", 0.03).max(0.0);
     let push_yield_no_fwd = flag("PUSH_YIELD_NO_FWD", false);
     let push_yield_vmin = env_f64("PUSH_YIELD_VMIN", 0.0).max(0.0);
-    let mut push_yield_done = false;
+    let push_yield_done = false;
     let vx2_cmd_speed: Option<f64> = vx2_change.map(|(_, v, _)| v);
     let vxs_cap_of = |v: f64| -> f64 {
         let cap_hi = env_f64("VXS_STRIDE_MAX", 0.45).max(0.05);
@@ -2044,13 +2167,12 @@ fn main() {
     // speed command it leaves every other bench bit-identical. (The
     // hand-set VX2_Z_DROP is removed.)
     let vx2_z_drop = vx2_z_drop_sched.unwrap_or(0.0);
-    let mut vx2_z_track = articara::biped::height::SlewedDrop::default();
+    let vx2_z_track = articara::biped::height::SlewedDrop::default();
     let push_z_drop = env_f64("PUSH_Z_DROP", 0.0).max(0.0);
     let push_z_drop_trig = env_f64("PUSH_Z_DROP_TRIG", 0.03).max(0.0);
     let push_z_drop_t = env_f64("PUSH_Z_DROP_T", 1.5).max(0.0);
     let push_z_drop_lat_max = env_f64("PUSH_Z_DROP_LAT_MAX", 0.02).max(0.0);
-    let mut push_z_drop_until = f64::NEG_INFINITY;
-    let mut n_push_z_drop = 0u32;
+    let push_z_drop_until = f64::NEG_INFINITY;
     let vx2_z_from: Option<f64> = match vx2_change {
         Some((at, _, _)) if vx2_z_drop > 0.0 => gait
             .slices
@@ -2554,7 +2676,7 @@ fn main() {
         substep_audit_path,
         rig.robot.joints.len(),
     );
-    let mut policy = CommandPolicy::new(
+    let policy = CommandPolicy::new(
         rig.robot.joints.len(),
         fallback_max_level,
         hold_bridge,
@@ -2562,7 +2684,7 @@ fn main() {
         0,     // blend_ticks (BLEND_TICKS, not adopted)
     );
     let mut tally = DegradedTally::new();
-    let mut anchors = Anchors::new();
+    let anchors = Anchors::new();
     // Solve against the contact set the FEET report, not the one the schedule
     // assumes. CONTACT_DRIVEN=0 restores the schedule-only behaviour for A/B.
     let contact_driven = flag("CONTACT_DRIVEN", true);
@@ -2612,7 +2734,7 @@ fn main() {
     // Terrain height under the support, slewed (below) so the CoM height
     // reference climbs a riser over about a step instead of jumping at a
     // slice boundary. Starts at the spawn platform's height.
-    let mut terrain_track = stairs.as_ref().map_or(0.0, |st| st.base());
+    let terrain_track = stairs.as_ref().map_or(0.0, |st| st.base());
     let terrain_base = terrain_track;
     // Risers per step the height reference is allowed to move. Small spreads
     // one riser's climb over several steps; large finishes it within the
@@ -2658,12 +2780,9 @@ fn main() {
         }
     };
     let mut dcm_plan = dcm_plan;
-    let mut cp_applied = na::Vector2::zeros();
-    let mut cp_slice: Option<usize> = None;
-    let mut cp_retimed_slice: Option<usize> = None;
-    let mut n_cp_shift = 0u32;
-    let mut n_cp_retime = 0u32;
-    let mut cp_retime_total = 0.0_f64;
+    let cp_applied = na::Vector2::zeros();
+    let cp_slice: Option<usize> = None;
+    let cp_retimed_slice: Option<usize> = None;
     // FIX_*: the corrective-impulse probe (see `FixProbe`).
     let fix = FixProbe::from_env();
     // ---- contact-driven phase transitions -----------------------------
@@ -2708,7 +2827,7 @@ fn main() {
     // load needs the QP to model the contact first. Default off = shipped.
     let contact_admit_confirmed = flag("CONTACT_ADMIT_CONFIRMED", false);
     let contact_admit_scheduled = flag("CONTACT_ADMIT_SCHEDULED", false);
-    let mut last_scheduled_admit: [Option<usize>; 2] = [None; 2];
+    let last_scheduled_admit: [Option<usize>; 2] = [None; 2];
     // A landing that ends by the extension TIMEOUT counts too when the sole
     // is within this of its planned tread height: measured 2026-09-24, the
     // champion's stair landings mostly end that way (retime median 2.16 s =
@@ -2727,7 +2846,7 @@ fn main() {
         let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok());
         Some((it.next()??.max(0.0), it.next()??.max(0.0)))
     });
-    let mut admit_measured_z: [Option<f64>; 2] = [None; 2];
+    let admit_measured_z: [Option<f64>; 2] = [None; 2];
     let gait_dump_t: Option<(f64, f64)> = std::env::var("GAIT_DUMP_T").ok().and_then(|v| {
         let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok());
         Some((it.next()??, it.next()??))
@@ -2796,8 +2915,7 @@ fn main() {
     // Per side: the DOUBLE-SUPPORT slice that follows a certified landing.
     // The foot is a planned contact for that slice and is re-admitted
     // whenever the load hysteresis drops it there; cleared afterwards.
-    let mut confirmed_admit: [Option<usize>; 2] = [None; 2];
-    let mut n_confirmed_admissions = 0u32;
+    let confirmed_admit: [Option<usize>; 2] = [None; 2];
     // Event-driven contact (doc/from_claude/20261004_event_driven_contact_design.md):
     // touchdown = measured load with the sole at its planned height (no xy
     // gate), the plan is moved onto the foot, a descending swing ends at the
@@ -2818,7 +2936,7 @@ fn main() {
         .ok()
         .map(|p| p.split(',').filter(|x| !x.is_empty()).map(RefLib::load).collect())
         .unwrap_or_default();
-    let mut ref_lib: Option<RefLib> = None;
+    let ref_lib: Option<RefLib> = None;
     let ref_any = !ref_libs.is_empty();
     let ref_swing = flag("REF_SWING", true);
     let ref_reset_stance = flag("REF_RESET_STANCE", true);
@@ -2840,13 +2958,12 @@ fn main() {
     // (REF_MPC / REF_WBC, the MPC's and the WBC's references taken from
     // the reference library for every reference, were not adopted and are
     // removed.)
-    let mut ref_cooldown_until = f64::NEG_INFINITY;
-    let mut ref_lat_quiet_t = f64::NEG_INFINITY;
+    let ref_cooldown_until = f64::NEG_INFINITY;
+    let ref_lat_quiet_t = f64::NEG_INFINITY;
     // No reference when the push lands this late in the swing (the walker
     // copes on its own there; measured in-place 5 N s at phase 0.7: 3/3).
     let ref_trig_max_frac = env_f64("REF_TRIG_MAX_FRAC", 1.0);
-    let mut ref_mode: Option<RefMode> = None;
-    let mut ref_engagements = 0u32;
+    let ref_mode: Option<RefMode> = None;
     let event_mode_cfg = flag("CONTACT_EVENT", false);
     landing_timing.event_mode = flag("CONTACT_EVENT", false);
     landing_timing.event_z_tol = env_f64("CONTACT_EVENT_Z", 0.003).max(0.0);
@@ -2899,9 +3016,7 @@ fn main() {
     let ds_capture_load = env_f64("DS_CAPTURE_LOAD", 0.4).clamp(0.0, 1.0);
     // (LIFT_GATE_FRAC / _MAX, holding a double support while the lateral DCM
     // is still over the lifting foot, were not adopted and are removed.)
-    let mut dsc_retimed_last: Option<usize> = None;
-    let mut n_ds_capture = 0u32;
-    let mut ds_capture_total = 0.0_f64;
+    let dsc_retimed_last: Option<usize> = None;
     let ds_feasible_max = env_f64("DS_FEASIBLE_MAX", 1.5);
     // Pivot box for the DS sizing: "both" = the double-support box (the
     // historical choice), "stance" = the OLD stance sole only. At the cut the
@@ -2909,9 +3024,6 @@ fn main() {
     // not realisable until the load has moved; the stance-only box is what
     // the pressure can reach NOW.
     let ds_feasible_box_stance = std::env::var("DS_FEASIBLE_BOX").map(|v| v == "stance").unwrap_or(false);
-    let mut n_ds_feasible = 0u32;
-    let mut n_ds_continuous = 0u32;
-    let mut ds_feasible_total = 0.0_f64;
     landing_timing.min_fraction = env_f64("COM_LAND_PREDICT_FRAC", 0.0).clamp(0.0, 1.0);
     let land_extend_base = env_f64("COM_LAND_EXTEND", 0.25).max(0.0);
     // Extra landing-deadline slack for the swing that CHANGES HEIGHT, i.e. the
@@ -3149,14 +3261,12 @@ fn main() {
         [v.first().copied().unwrap_or(0.0).clamp(0.0, 1.0), v.get(1).copied().unwrap_or(1.0).clamp(0.0, 1.0)]
     };
     // (slice, original footsteps, original DCM plan, original landing, last applied landing)
-    let mut push_replan_state: Option<(usize, FootstepPlan, DcmPlan, na::Vector2<f64>, Option<na::Vector2<f64>>)> = None;
-    let mut push_replan_slice: Option<usize> = None;
-    let mut push_replan_shift = 0.0_f64;
-    let mut n_push_replan = 0u32;
+    let push_replan_state: Option<(usize, FootstepPlan, DcmPlan, na::Vector2<f64>, Option<na::Vector2<f64>>)> = None;
+    let push_replan_slice: Option<usize> = None;
+    let push_replan_shift = 0.0_f64;
     // (slice, inward is +y) latched when the crossing gate opens: once the
     // landing has crossed, `landing_inward` would read the sign the other way.
-    let mut mpc_fs_cross_latched: Option<(usize, bool)> = None;
-    let mut n_mpc_fs_cross = 0u32;
+    let mpc_fs_cross_latched: Option<(usize, bool)> = None;
     let mpc_footstep_y_in_fwd_trig = env_f64("MPC_FOOTSTEP_Y_IN_FWD_TRIG", 0.005);
     // Arm the landing variable only once the DCM error of this single
     // support reaches this value [m] (latched for the rest of the step), the
@@ -3220,28 +3330,21 @@ fn main() {
     // (TOUCHDOWN_RAMP, ramping a new contact in as a Managed one, and
     // SWING_CONTACT_SOFT / _ON / _CAP, admitting a loaded swing foot as a
     // weighted contact, were not adopted and are removed.)
-    let mut replan_engaged = false;
+    let replan_engaged = false;
     let mut height_plan = articara::biped::preview::HeightPlan::constant(z_com);
-    let mut preview_p = steps.mid_xy();
+    let preview_p = steps.mid_xy();
     // The CoM preview QP's horizontal trajectory, kept whole with the time it
     // was solved at, so the MPC can read its own horizon out of it.
-    let mut preview_c = com0.xy();
-    let mut preview_v = na::Vector2::zeros();
-    let mut preview_next = 0.0;
-    let mut preview_count = 0u32;
-    let mut preview_failures = 0u32;
-    let mut preview_error = 0.0;
-    let mut landing_retimes = 0u32;
-    let mut landing_delay = 0.0;
+    let preview_c = com0.xy();
+    let preview_v = na::Vector2::zeros();
+    let preview_next = 0.0;
     // (PHASE_BY_CONTACT / PHASE_EXTEND / PHASE_MIN_FRAC / PHASE_LOAD /
     // PHASE_TICKS, the phase clock advanced by measured contact, are removed;
     // its summary line keeps the zeros it printed when off.)
-    let mut n_replan = 0u32;
     // The control loop's debug prints (`DIAG_REPLAN`, `*_DEBUG`, ...), read
     // once here.
     let debug = DebugFlags::from_env();
     let push_replan_slope_lead = env_f64("PUSH_REPLAN_SLOPE_LEAD", 0.0).max(0.0);
-    let mut n_corrected = 0u32;
 
     // ankle_roll range of motion. The model review measured that holding the
     // sole flat already consumes 82% of the +-20 deg travel, and stepping
@@ -3268,8 +3371,8 @@ fn main() {
         ankle_roll_lim[1].to_degrees()
     );
 
-    let mut prev_support = gait.support_at(0.0);
-    let mut swing_lift_off: Option<na::Vector3<f64>> = None;
+    let prev_support = gait.support_at(0.0);
+    let swing_lift_off: Option<na::Vector3<f64>> = None;
     let p0_body = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
     let yaw0_body = rig
         .sim
@@ -3294,9 +3397,9 @@ fn main() {
     // never recovers -- it read 91% for every forward speed, and 47% for a
     // turn that was in fact holding 0.195 of a commanded 0.200 rad/s.
     let t_ramp_end = gp.t_start + (stride_ramp as f64) * t_step;
-    let mut fz_prev: [f64; 2] = [0.0; 2];
-    let mut fz_rate_ema: [f64; 2] = [0.0; 2];
-    let mut managed_until: [f64; 2] = [f64::NEG_INFINITY; 2];
+    let fz_prev: [f64; 2] = [0.0; 2];
+    let fz_rate_ema: [f64; 2] = [0.0; 2];
+    let managed_until: [f64; 2] = [f64::NEG_INFINITY; 2];
     // What the run measured about itself (achievement, extremes, the
     // push response), for the report after the loop.
     let mut m = RunMetrics::new(rig.robot.joints.len(), p0_body, yaw0_body);
@@ -3310,7 +3413,7 @@ fn main() {
         com_xy_jerk_max.is_finite() && com_xy_jerk_max > 0.0 || com_xy_jerk_max == f64::INFINITY,
         "COM_XY_JERK_MAX must be positive"
     );
-    let mut previous_a_xy: Option<na::Vector2<f64>> = None;
+    let previous_a_xy: Option<na::Vector2<f64>> = None;
     let ankle_cbf_indices = rig.actuated().into_iter().find_map(|(ji, vi)| {
         (rig.robot.joints[ji].name == "right_ankle_roll_joint").then(|| {
             (
@@ -3332,7 +3435,7 @@ fn main() {
     let mut diag_mpc_net_cop = [f64::NAN; 2];
     // The same quantity for the forces the WBC actually asked the robot for.
     let mut diag_wbc_net_cop = [f64::NAN; 2];
-    let mut wrench_mpc_next = 0.0;
+    let wrench_mpc_next = 0.0;
     let mpc_backend_override =
         std::env::var("MPC_QP_BACKEND")
             .ok()
@@ -3348,21 +3451,72 @@ fn main() {
     let mpc_kkt_comp_tol = env_f64("MPC_KKT_COMP_TOL", 1e-6);
     let act_delay_ticks = env_f64("ACT_DELAY_TICKS", 0.0).max(0.0) as usize;
     let mut act_delay_buf: std::collections::VecDeque<Vec<f64>> = std::collections::VecDeque::new();
-    let mut wrench_mpc_command: Option<[articara::biped::wrench_mpc::Wrench; 2]> = None;
+    let wrench_mpc_command: Option<[articara::biped::wrench_mpc::Wrench; 2]> = None;
     // Preserve the physical origin/axes of the held MPC forecast for diagnostic shifts.
     let mut wrench_mpc_frames: Option<[articara::biped::wrench_mpc::Contact; 2]> = None;
     // MPC_FOOTSTEP bookkeeping: which slice's landing is being moved and how
     // much of the MPC's offset has already been applied to it (the same
     // non-ratcheting rule as `cp_applied`).
-    let mut mpc_fs_slice: Option<usize> = None;
-    let mut mpc_fs_applied = na::Vector2::zeros();
+    let mpc_fs_slice: Option<usize> = None;
+    let mpc_fs_applied = na::Vector2::zeros();
     // (first slice, last slice) the landing variable is armed for.
-    let mut mpc_fs_armed: Option<(usize, usize)> = None;
-    let mut mpc_fs_last = na::Vector2::zeros();
-    let mut wrench_mpc_solves = 0u32;
-    let mut wrench_mpc_failures = 0u32;
+    let mpc_fs_armed: Option<(usize, usize)> = None;
+    let mpc_fs_last = na::Vector2::zeros();
     let mut trunk_cmd_rp = [0.0_f64; 2];
     let mut trunk_acc_rp = [0.0_f64; 2];
+
+    // The controller's state from here on (its initial values are the
+    // `let`s above, next to the knobs that configure them), the WBC's
+    // own, the command guard's, and the controller's counters.
+    let mut ctl = CtlState {
+        push_yield_done,
+        vx2_z_track,
+        push_z_drop_until,
+        correction,
+        terrain_track,
+        cp_applied,
+        cp_slice,
+        cp_retimed_slice,
+        last_scheduled_admit,
+        admit_measured_z,
+        confirmed_admit,
+        ref_lib,
+        ref_cooldown_until,
+        ref_lat_quiet_t,
+        ref_mode,
+        dsc_retimed_last,
+        push_replan_state,
+        push_replan_slice,
+        push_replan_shift,
+        mpc_fs_cross_latched,
+        replan_engaged,
+        preview_p,
+        preview_c,
+        preview_v,
+        preview_next,
+        prev_support,
+        swing_lift_off,
+        fz_prev,
+        fz_rate_ema,
+        managed_until,
+        previous_a_xy,
+        wrench_mpc_next,
+        wrench_mpc_command,
+        mpc_fs_slice,
+        mpc_fs_applied,
+        mpc_fs_armed,
+        mpc_fs_last,
+    };
+    let mut wbc_state = WbcState {
+        solver,
+        qp_previous_structure,
+        anchors,
+    };
+    let mut guard = CommandGuard {
+        policy,
+        qp_has_good_command,
+    };
+    let mut stats = WalkerStats::default();
 
     for tick in 0..n_ticks {
         let qp_control_start = std::time::Instant::now();
@@ -3386,7 +3540,7 @@ fn main() {
             // The contact planner owns the end of a step it has retimed; the
             // landing extension must not re-open it (assigned every tick, so
             // the planner's own zeroing would be undone here otherwise).
-            landing_timing.max_extension = if contact_plan_on && cp_retimed_slice == Some(i) {
+            landing_timing.max_extension = if contact_plan_on && ctl.cp_retimed_slice == Some(i) {
                 0.0
             } else if descending {
                 land_extend_desc
@@ -3451,7 +3605,7 @@ fn main() {
                 && let Some(sw) = gait.slices[ended].support.swing()
                 && (footsteps.at_slice(ended).sole[sw].z - actual.sole[sw].z).abs() < contact_admit_z
             {
-                confirmed_admit[sw] = Some(ended + 1);
+                ctl.confirmed_admit[sw] = Some(ended + 1);
                 if debug.contact_admit {
                     println!("  [adm] t={t:.3} certificate side={sw} ds_slice={} (confirm={} timeout={})", ended + 1, landing_timing.touchdowns > touchdowns_before, landing_timed_out);
                 }
@@ -3472,8 +3626,8 @@ fn main() {
             }
             if shift != 0.0 || (ds_feasible_on_timeout && landing_timed_out) {
                 if shift != 0.0 {
-                    landing_retimes += 1;
-                    landing_delay += -shift;
+                    stats.landing_retimes += 1;
+                    stats.landing_delay += -shift;
                 }
                 dcm_plan = DcmPlan::from_footsteps_rolled(
                     &gait,
@@ -3482,7 +3636,7 @@ fn main() {
                     zmp_lat_scale,
                     zmp_roll,
                 );
-                preview_next = t;
+                ctl.preview_next = t;
                 if ds_feasible {
                     let ds = gait.index_at(t + 1e-6);
                     if matches!(gait.slices[ds].support, Support::Double) {
@@ -3534,8 +3688,8 @@ fn main() {
                         if ds_feasible_continuous {
                             if want > nominal + 1e-3 {
                                 let dd = gait.retime(ds, gait.slices[ds].t0 + want);
-                                n_ds_feasible += 1;
-                                ds_feasible_total += dd.abs();
+                                stats.n_ds_feasible += 1;
+                                stats.ds_feasible_total += dd.abs();
                                 dcm_plan = DcmPlan::from_footsteps_rolled(
                                     &gait,
                                     &footsteps,
@@ -3560,15 +3714,15 @@ fn main() {
                                 dcm_plan.set_segment_zmp(seg_ds, p);
                                 p
                             };
-                            n_ds_continuous += 1;
+                            stats.n_ds_continuous += 1;
                             if debug.ds_feasible {
                                 let r = dcm_plan.reference(gait.slices[ds].t0 + 1e-6);
                                 println!("  [dsc] t={t:.3} ds={ds} xi=({:.3},{:+.3}) target=({:.3},{:+.3}) p=({:.3},{:+.3}) T={:.3} xi_ref(t0)=({:.3},{:+.3})", xi_meas.x, xi_meas.y, target.x, target.y, p_final.x, p_final.y, gait.slices[ds].duration(), r.xi.x, r.xi.y);
                             }
                         } else if want > nominal + 1e-3 {
                             let dd = gait.retime(ds, gait.slices[ds].t0 + want);
-                            n_ds_feasible += 1;
-                            ds_feasible_total += dd.abs();
+                            stats.n_ds_feasible += 1;
+                            stats.ds_feasible_total += dd.abs();
                             dcm_plan = DcmPlan::from_footsteps_rolled(
                                 &gait,
                                 &footsteps,
@@ -3587,7 +3741,7 @@ fn main() {
                 let ds = gait.index_at(t + 1e-6);
                 let is_ds = |j: usize| matches!(gait.slices[j].support, Support::Double);
                 // Not while a recovery reference owns the phase durations.
-                if is_ds(ds) && ref_mode.is_none() && !dsc_retimed_last.is_some_and(|l| l >= ds) {
+                if is_ds(ds) && ctl.ref_mode.is_none() && !ctl.dsc_retimed_last.is_some_and(|l| l >= ds) {
                     // The whole run of double-support slices the clock is in
                     // (a DS is split into ramp / hold / ramp slices).
                     let mut first = ds;
@@ -3629,7 +3783,7 @@ fn main() {
                         && (!ds_capture_fwd_only || xi_meas.x > target.x + ds_capture_margin);
                     let hopeless = hopeless_x;
                     let prev_sw = first.checked_sub(1).and_then(|j| gait.slices[j].support.swing());
-                    let landed_load = prev_sw.map_or(0.0, |sw| fz_prev[sw]);
+                    let landed_load = prev_sw.map_or(0.0, |sw| ctl.fz_prev[sw]);
                     let earliest = (t0_run + ds_capture_t_min).max(t + 2.0 * dt);
                     if debug.ds_capture {
                         println!(
@@ -3645,10 +3799,10 @@ fn main() {
                         let targets: Vec<(usize, f64)> =
                             (ds..=last).map(|j| (j, t + (gait.slices[j].t1 - t) * f)).collect();
                         for (j, nt) in targets {
-                            ds_capture_total += gait.retime(j, nt).abs();
+                            stats.ds_capture_total += gait.retime(j, nt).abs();
                         }
-                        dsc_retimed_last = Some(last);
-                        n_ds_capture += 1;
+                        ctl.dsc_retimed_last = Some(last);
+                        stats.n_ds_capture += 1;
                         dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
                         if debug.ds_capture {
                             println!("  [dsc-cap] t={t:.3} DS end {t1_run:.3} -> {earliest:.3}");
@@ -3658,18 +3812,18 @@ fn main() {
             }
             // (COM_REPLAN_ALWAYS, engaging before the first landing clock, is
             // removed.)
-            if !replan_engaged && landing_timing.clock.is_some() {
+            if !ctl.replan_engaged && landing_timing.clock.is_some() {
                 let cmd_ref = dcm_plan.reference(t);
-                preview_p = commanded_zmp(
+                ctl.preview_p = commanded_zmp(
                     &dcm_of(&com, &com_vel, omega),
                     &cmd_ref,
                     omega,
                     k_dcm,
                 );
                 height_plan = articara::biped::preview::HeightPlan::constant(
-                    z_com + terrain_track - terrain_base,
+                    z_com + ctl.terrain_track - terrain_base,
                 );
-                replan_engaged = true;
+                ctl.replan_engaged = true;
             }
         }
 
@@ -3704,12 +3858,12 @@ fn main() {
         // anchor. Doing it on the schedule (rather than lazily, the way
         // standing did with get_or_insert) is what makes a foot that has been
         // somewhere else since stop arguing for where it used to be.
-        if support != prev_support {
-            match (prev_support, support) {
+        if support != ctl.prev_support {
+            match (ctl.prev_support, support) {
                 (Support::Double, Support::Single { swing, .. }) => {
-                    anchors.release(swing);
+                    wbc_state.anchors.release(swing);
                     let p = misarta::se3::translation(&data.oMi[rig.foot_mi[swing]]);
-                    swing_lift_off = Some(p);
+                    ctl.swing_lift_off = Some(p);
                 }
                 (Support::Single { swing, .. }, Support::Double) => {
                     // The foot has landed somewhere other than nominal, so
@@ -3759,29 +3913,29 @@ fn main() {
                             p.z
                         );
                     }
-                    anchors.touchdown(swing, p, r);
-                    swing_lift_off = None;
+                    wbc_state.anchors.touchdown(swing, p, r);
+                    ctl.swing_lift_off = None;
                 }
                 _ => {}
             }
-            prev_support = support;
+            ctl.prev_support = support;
         }
 
         let fz_meas = [measured_pre[0], measured_pre[1]];
         if stair_managed_rate > 0.0 {
             for side in 0..2 {
                 // EMA over ~4 ticks: one noisy sample must not trip it.
-                let r = (fz_meas[side] - fz_prev[side]).abs() / dt.max(1e-9);
-                fz_rate_ema[side] += 0.25 * (r - fz_rate_ema[side]);
-                if fz_rate_ema[side] > stair_managed_rate {
-                    managed_until[side] = t + stair_managed_latch;
+                let r = (fz_meas[side] - ctl.fz_prev[side]).abs() / dt.max(1e-9);
+                ctl.fz_rate_ema[side] += 0.25 * (r - ctl.fz_rate_ema[side]);
+                if ctl.fz_rate_ema[side] > stair_managed_rate {
+                    ctl.managed_until[side] = t + stair_managed_latch;
                 }
             }
         }
-        fz_prev = fz_meas;
+        ctl.fz_prev = fz_meas;
         let measured = measured_c;
         let stance_sides: Vec<usize> = if contact_driven {
-            let (mut sides, mut fresh) = correction.update(support, fz_meas);
+            let (mut sides, mut fresh) = ctl.correction.update(support, fz_meas);
             // Planned admission on ANY scheduled touchdown, flat included:
             // entering a double support, a foot the schedule now calls
             // stance whose sole is within CONTACT_ADMIT_Z of its planned
@@ -3797,24 +3951,24 @@ fn main() {
                 let now_slice = gait.index_at(t);
                 if let Some(prev) = now_slice.checked_sub(1)
                     && let Some(landed) = gait.slices[prev].support.swing()
-                    && confirmed_admit[landed].is_none()
+                    && ctl.confirmed_admit[landed].is_none()
                     && !sides.contains(&landed)
-                    && last_scheduled_admit[landed] != Some(now_slice)
+                    && ctl.last_scheduled_admit[landed] != Some(now_slice)
                 {
                     let mi = rig.foot_mi[landed];
                     let sole_z = misarta::se3::translation(&data.oMi[mi]).z - prof.sole_below_origin;
                     let dz_plan = (sole_z - steps.sole[landed].z).abs();
                     if dz_plan < contact_admit_z {
-                        confirmed_admit[landed] = Some(now_slice);
-                        last_scheduled_admit[landed] = Some(now_slice);
-                        admit_measured_z[landed] = None;
+                        ctl.confirmed_admit[landed] = Some(now_slice);
+                        ctl.last_scheduled_admit[landed] = Some(now_slice);
+                        ctl.admit_measured_z[landed] = None;
                     } else if let Some((z_tol, fz_frac)) = contact_admit_loaded
                         && dz_plan < z_tol
                         && fz_meas[landed] >= fz_frac * total_mass * G
                     {
-                        confirmed_admit[landed] = Some(now_slice);
-                        last_scheduled_admit[landed] = Some(now_slice);
-                        admit_measured_z[landed] = Some(sole_z);
+                        ctl.confirmed_admit[landed] = Some(now_slice);
+                        ctl.last_scheduled_admit[landed] = Some(now_slice);
+                        ctl.admit_measured_z[landed] = Some(sole_z);
                         if debug.contact_admit {
                             println!("  [adm-loaded] t={t:.3} side={landed} sole_z={sole_z:.4} plan_z={:.4} fz={:.0}", steps.sole[landed].z, fz_meas[landed]);
                         }
@@ -3824,10 +3978,10 @@ fn main() {
             if contact_admit_confirmed || contact_admit_scheduled {
                 let now_slice = gait.index_at(t);
                 for side in 0..2 {
-                    let Some(ds_slice) = confirmed_admit[side] else { continue };
+                    let Some(ds_slice) = ctl.confirmed_admit[side] else { continue };
                     if now_slice > ds_slice {
                         // The double support after the landing is over.
-                        confirmed_admit[side] = None;
+                        ctl.confirmed_admit[side] = None;
                         continue;
                     }
                     // Only inside that double support (not on the confirm
@@ -3843,12 +3997,12 @@ fn main() {
                     if now_slice == ds_slice
                         && support.is_stance(side)
                         && !sides.contains(&side)
-                        && correction.admit(side)
+                        && ctl.correction.admit(side)
                     {
                         sides.push(side);
                         sides.sort_unstable();
                         fresh.push(side);
-                        n_confirmed_admissions += 1;
+                        stats.n_confirmed_admissions += 1;
                         if debug.contact_admit {
                             let mi = rig.foot_mi[side];
                             let sole_z = misarta::se3::translation(&data.oMi[mi]).z - prof.sole_below_origin;
@@ -3877,13 +4031,13 @@ fn main() {
                 let mut p = misarta::se3::translation(&data.oMi[mi]);
                 // A landing admitted on an unmodelled surface (see
                 // CONTACT_ADMIT_LOADED) is anchored where it actually is.
-                p.z = admit_measured_z[side].unwrap_or(steps.sole[side].z) + prof.sole_below_origin;
+                p.z = ctl.admit_measured_z[side].unwrap_or(steps.sole[side].z) + prof.sole_below_origin;
                 let rr = misarta::se3::rotation_matrix(&data.oMi[mi]);
-                anchors.touchdown(side, p, rr);
+                wbc_state.anchors.touchdown(side, p, rr);
             }
             let sched: Vec<usize> = (0..2).filter(|&s| support.is_stance(s)).collect();
             if sides != sched {
-                n_corrected += 1;
+                stats.n_corrected += 1;
             }
             sides
         } else {
@@ -3975,7 +4129,7 @@ fn main() {
             v_dvec,
             &stance,
             rig.foot_mi[0],
-            &mut anchors,
+            &mut wbc_state.anchors,
             &load_share,
             &contact_cfg,
             &|side: usize| {
@@ -3983,7 +4137,7 @@ fn main() {
                     && stair_managed_contact
                     // Rate trigger (see STAIR_MANAGED_RATE): the level
                     // test misses the chatter, which swings fz 15<->78 N.
-                    && t < managed_until[side]
+                    && t < ctl.managed_until[side]
                 {
                     bt::ContactMode::Managed {
                         tangent_weight: stair_managed_tangent,
@@ -4045,7 +4199,7 @@ fn main() {
         // tracks within 3 cm. (REF_WBC_LANDED, default on, is removed with
         // REF_WBC; the detectors only pick a landed reference when the
         // library has no other.)
-        if let (Some(mode), Some(lib)) = (ref_mode, ref_lib.as_ref())
+        if let (Some(mode), Some(lib)) = (ctl.ref_mode, ctl.ref_lib.as_ref())
             && lib.landed
         {
             let tau = t - mode.t0 + mode.tau0;
@@ -4059,7 +4213,7 @@ fn main() {
         }
         let dcm_err = (xi - r.xi).norm();
         if push_yield_v > 0.0
-            && !push_yield_done
+            && !ctl.push_yield_done
             && vx2_sched
             && let Some(v_hi) = vx2_cmd_speed
             && v_hi > push_yield_v
@@ -4076,7 +4230,7 @@ fn main() {
             // ahead of it.
             && !(push_yield_no_fwd && (xi.x - r.xi.x) > 0.5 * push_yield_trig)
         {
-            push_yield_done = true;
+            ctl.push_yield_done = true;
             let v_lo = push_yield_v;
             let stride_hi = (v_hi * t_step).min(vxs_cap_of(v_hi));
             let stride_lo = (v_lo * t_step).min(vxs_cap_of(v_lo));
@@ -4107,7 +4261,7 @@ fn main() {
                 gait.retime(j, t0 + d);
             }
             dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
-            n_replan += 1;
+            stats.n_replan += 1;
             if debug.replan { println!("  [diag-replan] site 0 t={t:.3} (line 6798)"); }
             println!("  [yield] t={t:.3} dcm_err={dcm_err:.3}: speed {v_hi:.2} -> {v_lo:.2} m/s, stride {stride_hi:.3} -> {stride_lo:.3}, slices x{ratio:.3}, {n} steps re-planned");
         }
@@ -4116,7 +4270,7 @@ fn main() {
             let sl = gait.slices[i].clone();
             match sl.support {
                 Support::Single { swing, stance }
-                    if ref_mode.is_none()
+                    if ctl.ref_mode.is_none()
                         // Not on a known staircase (its zone, with the crouch
                         // lead / tail): a deep step-down reads as a backward
                         // error and the re-plan cost the -150 mm descent
@@ -4150,13 +4304,13 @@ fn main() {
                             })) =>
                 {
                     // The plan in force when this single support began.
-                    if push_replan_state.as_ref().is_none_or(|st| st.0 != i) {
+                    if ctl.push_replan_state.as_ref().is_none_or(|st| st.0 != i) {
                         let base = footsteps.at_slice(i).xy(swing);
-                        push_replan_state = Some((i, footsteps.clone(), dcm_plan.clone(), base, None));
+                        ctl.push_replan_state = Some((i, footsteps.clone(), dcm_plan.clone(), base, None));
                     }
                     let frac = (t - sl.t0) / sl.duration().max(1e-9);
                     let rem = (sl.t1 - t).clamp(0.0, gp.t_ss);
-                    if let Some((_, orig_fs, orig_plan, base, last)) = push_replan_state.as_mut()
+                    if let Some((_, orig_fs, orig_plan, base, last)) = ctl.push_replan_state.as_mut()
                         && frac < push_replan_freeze
                     {
                         let e = xi - orig_plan.reference(t).xi;
@@ -4181,7 +4335,7 @@ fn main() {
                             && !v_now.is_some_and(|v| v > push_replan_vmax);
                         // (PUSH_REPLAN_LAT, the outward lateral step too, is
                         // removed.)
-                        if push_replan_slice == Some(i)
+                        if ctl.push_replan_slice == Some(i)
                             || (back_ok && d.norm() > push_replan_trig && e.norm() > push_replan_emin)
                         {
                             let st = orig_fs.at_slice(i).xy(stance);
@@ -4211,13 +4365,13 @@ fn main() {
                                 fs.replan_from_landing(&gait, i, swing, l, push_replan_stand, push_replan_ramp);
                                 footsteps = fs;
                                 dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
-                                if push_replan_slice != Some(i) {
-                                    n_push_replan += 1;
-                                    n_replan += 1;
+                                if ctl.push_replan_slice != Some(i) {
+                                    stats.n_push_replan += 1;
+                                    stats.n_replan += 1;
                                     if debug.replan { println!("  [diag-replan] site 1 t={t:.3} (line 6901)"); }
                                 }
-                                push_replan_slice = Some(i);
-                                push_replan_shift = (l - *base).norm();
+                                ctl.push_replan_slice = Some(i);
+                                ctl.push_replan_shift = (l - *base).norm();
                                 if debug.push_replan {
                                     println!("  [replan] t={t:.3} slice {i} frac={frac:.2} e=({:+.3},{:+.3}) d=({:+.3},{:+.3}) landing ({:.3},{:+.3}) -> ({:.3},{:+.3})", e.x, e.y, d.x, d.y, base.x, base.y, l.x, l.y);
                                 }
@@ -4238,25 +4392,25 @@ fn main() {
         if push_z_drop > 0.0
             && back_err < -push_z_drop_trig
             && (xi - r.xi).y.abs() < push_z_drop_lat_max
-            && ref_mode.is_none()
-            && t >= push_z_drop_until
+            && ctl.ref_mode.is_none()
+            && t >= ctl.push_z_drop_until
         {
-            push_z_drop_until = t + push_z_drop_t;
-            n_push_z_drop += 1;
+            ctl.push_z_drop_until = t + push_z_drop_t;
+            stats.n_push_z_drop += 1;
             println!("  [zdrop] t={t:.3} backward DCM error {:+.3} m -> CoM {:.3} m lower for {push_z_drop_t:.2} s", (xi - r.xi).x, push_z_drop);
         }
         // Engage a recovery reference when the DCM error toward the STANCE
         // side exceeds REF_TRIG_DCM in single support (the detector).
         // (REF_SLOPE_GATE, no reference on a known slope, is removed.)
         if ref_any
-            && ref_mode.is_none()
-            && t >= ref_cooldown_until
+            && ctl.ref_mode.is_none()
+            && t >= ctl.ref_cooldown_until
             && slice_frac <= ref_trig_max_frac
             && let Support::Single { stance, swing } = support
         {
             let lateral = (xi - r.xi).y * if stance == 0 { 1.0 } else { -1.0 };
             if lateral.abs() < 0.005 {
-                ref_lat_quiet_t = t;
+                ctl.ref_lat_quiet_t = t;
             }
             let forward = (xi - r.xi).x;
             // The library's lateral-push references (`impulse_deg` 90).
@@ -4264,7 +4418,7 @@ fn main() {
             if ref_trig_dcm > 0.0 && lateral > ref_trig_dcm && ref_libs.iter().any(|l| l.impulse_deg == want_deg) {
                 // The push happened when the lateral error last was quiet;
                 // the reference is entered that far in.
-                let tau0 = if !ref_delay_comp { 0.0 } else { (t - ref_lat_quiet_t).clamp(0.0, 0.3) };
+                let tau0 = if !ref_delay_comp { 0.0 } else { (t - ctl.ref_lat_quiet_t).clamp(0.0, 0.3) };
                 println!("  [ref] t={t:.3} trigger: dcm (lateral DCM error toward stance {lateral:+.3} m, forward {forward:+.3} m, dir {want_deg:.0}, tau0 {tau0:.3})");
                 let actual = Footsteps::from_fk(data, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
                 // Pick the reference meant for the nearest swing phase.
@@ -4287,8 +4441,8 @@ fn main() {
                         (da.0 + da.1).partial_cmp(&(db.0 + db.1)).unwrap()
                     })
                     .unwrap_or(0);
-                ref_lib = Some(ref_libs[pick].clone());
-                let lib = ref_lib.as_ref().unwrap();
+                ctl.ref_lib = Some(ref_libs[pick].clone());
+                let lib = ctl.ref_lib.as_ref().unwrap();
                 println!("  [ref] swing phase {slice_frac:.2} -> reference {} (meant for {:.2})", pick, lib.swing_phase);
                 let mode = RefMode { t0: t, tau0, stance, origin: actual.sole[stance], mirror: if stance == 0 { 1.0 } else { -1.0 } };
                 // Phases: this single support ends after phases[0]; the
@@ -4352,8 +4506,8 @@ fn main() {
                 let _ = first_ss_after;
                 dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
                 landing_timing.event_mode = true;
-                ref_mode = Some(mode);
-                ref_engagements += 1;
+                ctl.ref_mode = Some(mode);
+                stats.ref_engagements += 1;
                 println!(
                     "  [ref] t={t:.3} engaged: stance={} mirror={:+.0} origin=({:.3},{:.3}) phases={:?} land1=({:.3},{:.3}) land2=({:.3},{:.3}) total={:.3}",
                     stance, mode.mirror, mode.origin.x, mode.origin.y, lib.phases, land1.x, land1.y,
@@ -4410,14 +4564,14 @@ fn main() {
 
         // ---- contact plan (CONTACT_PLAN) --------------------------------
         if contact_plan_on
-            && ref_mode.is_none()
+            && ctl.ref_mode.is_none()
             && let Support::Single { swing, .. } = support
             && dcm_err >= contact_plan_trig
         {
             let i = gait.index_at(t);
-            if cp_slice != Some(i) {
-                cp_slice = Some(i);
-                cp_applied = na::Vector2::zeros();
+            if ctl.cp_slice != Some(i) {
+                ctl.cp_slice = Some(i);
+                ctl.cp_applied = na::Vector2::zeros();
             }
             let seg = &dcm_plan.segs[dcm_plan.index_at(t)];
             let sit = articara::biped::contact_plan::Situation {
@@ -4461,8 +4615,8 @@ fn main() {
             // following the current decision instead, is removed: with the
             // champion's CP_MAX_*=0 the shift is always zero and both rules
             // give zero.)
-            let d = if dec.shift.norm() > cp_applied.norm() {
-                dec.shift - cp_applied
+            let d = if dec.shift.norm() > ctl.cp_applied.norm() {
+                dec.shift - ctl.cp_applied
             } else {
                 na::Vector2::zeros()
             };
@@ -4475,18 +4629,18 @@ fn main() {
                 // median against a 30 mm limit). CP_SHIFT_NEXT, moving only
                 // this landing, was not adopted and is removed.
                 footsteps.shift_from(i, swing, d);
-                cp_applied = dec.shift;
-                n_cp_shift += 1;
+                ctl.cp_applied = dec.shift;
+                stats.n_cp_shift += 1;
                 rebuilt = true;
             }
             if let Some(ne) = dec.new_end
                 && ne > t + dt
-                && cp_retimed_slice != Some(i)
+                && ctl.cp_retimed_slice != Some(i)
             {
                 let dd = gait.retime(i, ne);
-                n_cp_retime += 1;
-                cp_retime_total += dd.abs();
-                cp_retimed_slice = Some(i);
+                stats.n_cp_retime += 1;
+                stats.cp_retime_total += dd.abs();
+                ctl.cp_retimed_slice = Some(i);
                 // The planner has now set this step's end; the landing
                 // extension must not move it again (the two would fight
                 // over the same boundary, and extension IS mechanism B).
@@ -4501,11 +4655,11 @@ fn main() {
                     zmp_lat_scale,
                     zmp_roll,
                 );
-                n_replan += 1;
+                stats.n_replan += 1;
                 if debug.replan { println!("  [diag-replan] site 2 t={t:.3} (line 7454)"); }
             }
         }
-        if replan_engaged {
+        if ctl.replan_engaged {
             let actual = Footsteps::from_fk(
                 data,
                 rig.foot_mi,
@@ -4527,7 +4681,7 @@ fn main() {
                 (sole_half_l * cop_frac, sole_half_w * cop_frac),
                 zmp_margin,
             );
-            if t + 1e-9 >= preview_next {
+            if t + 1e-9 >= ctl.preview_next {
                 let mut samples = Vec::with_capacity(com_preview_n);
                 for k in 0..com_preview_n {
                     let begin = t + k as f64 * com_preview_dt;
@@ -4586,7 +4740,7 @@ fn main() {
                     omega,
                     com.xy(),
                     com_vel.xy(),
-                    preview_p,
+                    ctl.preview_p,
                     &samples,
                     com_preview_smooth,
                 );
@@ -4594,11 +4748,11 @@ fn main() {
                 let preview_accepted = preview_solution.is_some();
                 match preview_solution {
                     Some(plan) => {
-                        preview_p = plan.zmp[0];
-                        preview_c = plan.com[0];
-                        preview_v = plan.velocity[0];
-                        preview_error = plan.terminal_error;
-                        preview_count += 1;
+                        ctl.preview_p = plan.zmp[0];
+                        ctl.preview_c = plan.com[0];
+                        ctl.preview_v = plan.velocity[0];
+                        stats.preview_error = plan.terminal_error;
+                        stats.preview_count += 1;
                         if let Some(f) = diag.preview_traj_file.as_mut() {
                             use std::io::Write as _;
                             for (k, smp) in samples.iter().enumerate() {
@@ -4614,24 +4768,24 @@ fn main() {
                         }
                     }
                     None => {
-                        preview_p = current_box.clamp(&p_cmd).0;
-                        preview_failures += 1;
+                        ctl.preview_p = current_box.clamp(&p_cmd).0;
+                        stats.preview_failures += 1;
                     }
                 }
                 if let Some(writer) = &mut diag.com_preview_runtime {
                     writeln!(writer, "{t:.6},{preview_solve_ns},{},{},{:.9},{},{}",
                         u8::from(preview_solve_ns > 50_000_000),
                         u8::from(preview_accepted),
-                        preview_error,
+                        stats.preview_error,
                         0, // applied_lateral: COM_REPLAN_LATERAL (removed) was off
                         com_preview_n,
                     ).unwrap();
                 }
                 // (COM_PREVIEW_PHASE_LOCK, a discrete-clock update rate, is
                 // removed.)
-                preview_next = t + com_replan_dt;
+                ctl.preview_next = t + com_replan_dt;
             }
-            let optimized = current_box.clamp(&preview_p).0;
+            let optimized = current_box.clamp(&ctl.preview_p).0;
             // Forward only (COM_REPLAN_LATERAL and its gain are removed).
             p_cmd.x += com_replan_forward_gain * (optimized.x - p_cmd.x);
         }
@@ -4655,7 +4809,7 @@ fn main() {
         } else {
             com_accel_xy(&com, &p_cmd, omega)
         };
-        let a_xy = if let Some(previous) = previous_a_xy {
+        let a_xy = if let Some(previous) = ctl.previous_a_xy {
             let delta = a_xy_raw - previous;
             let max_delta = com_xy_jerk_max * dt;
             if delta.norm() > max_delta {
@@ -4666,7 +4820,7 @@ fn main() {
         } else {
             a_xy_raw
         };
-        previous_a_xy = Some(a_xy);
+        ctl.previous_a_xy = Some(a_xy);
         // z stays a PD on the nominal height: the LIPM says nothing about it,
         // and a constant-height assumption is exactly what makes omega a
         // constant in the first place.
@@ -4702,13 +4856,13 @@ fn main() {
                 st.riser.abs()
             };
             let rate = stair_climb_rate * riser_eff / t_step.max(1e-6);
-            let dh = (tgt_h - terrain_track).clamp(-rate * dt, rate * dt);
-            terrain_track += dh;
+            let dh = (tgt_h - ctl.terrain_track).clamp(-rate * dt, rate * dt);
+            ctl.terrain_track += dh;
             dh / dt
         } else {
             0.0
         };
-        let (z_ref, zd_ref, zdd_ref) = if replan_engaged && com_height_replan && landing_timing.clock.is_some() {
+        let (z_ref, zd_ref, zdd_ref) = if ctl.replan_engaged && com_height_replan && landing_timing.clock.is_some() {
             // Where the CoM height aims while BOTH feet count: historically
             // the mean sole height. Measured 2026-09-24 on the 80 mm riser
             // with the landed foot admitted at the start of double support
@@ -4761,7 +4915,7 @@ fn main() {
             )
         } else {
             (
-                z_com + (terrain_track - terrain_base),
+                z_com + (ctl.terrain_track - terrain_base),
                 zd_terrain,
                 0.0,
             )
@@ -4775,11 +4929,11 @@ fn main() {
         // tied to the detection it leaves the other benches alone.
         let z_drop_target = articara::biped::height::drop_target(
             if vx2_z_from.is_some_and(|t0| t >= t0) { vx2_z_drop } else { 0.0 },
-            if t < push_z_drop_until { push_z_drop } else { 0.0 },
+            if t < ctl.push_z_drop_until { push_z_drop } else { 0.0 },
         );
-        let (z_ref, zd_ref) = if z_drop_target > 0.0 || vx2_z_track.track > 0.0 {
-            let d = vx2_z_track.step(z_drop_target, 0.05, dt);
-            (z_ref - vx2_z_track.track, zd_ref - d / dt)
+        let (z_ref, zd_ref) = if z_drop_target > 0.0 || ctl.vx2_z_track.track > 0.0 {
+            let d = ctl.vx2_z_track.step(z_drop_target, 0.05, dt);
+            (z_ref - ctl.vx2_z_track.track, zd_ref - d / dt)
         } else {
             (z_ref, zd_ref)
         };
@@ -4795,7 +4949,7 @@ fn main() {
         // generated by independent controllers.
         if stair_wrench_mpc && wrench_mpc_always {
             // A held result has no age limit (STAIR_WRENCH_MAX_AGE removed).
-            if t + 1e-9 >= wrench_mpc_next {
+            if t + 1e-9 >= ctl.wrench_mpc_next {
                 let horizon_time = stair_wrench_preview_dt * stair_wrench_horizon as f64;
                 let weight = total_mass * G;
                 // Where the MPC is asked to be at the end of its horizon.
@@ -4881,7 +5035,7 @@ fn main() {
                     prof.sole_below_origin,
                 );
                 let mut previous =
-                    wrench_mpc_command.unwrap_or([articara::biped::wrench_mpc::Wrench::zeros(); 2]);
+                    ctl.wrench_mpc_command.unwrap_or([articara::biped::wrench_mpc::Wrench::zeros(); 2]);
                 // MPC_SEED_PREVIOUS: start the smoothness anchor at the
                 // MEASURED load instead of at zero.
                 //
@@ -4898,7 +5052,7 @@ fn main() {
                 // seeds `previous` this way (`seed_previous`); this does the
                 // same for the first solve of a walk. Off = zero seed = the
                 // shipped behaviour.
-                if mpc_seed_previous == 2 || (mpc_seed_previous == 1 && wrench_mpc_command.is_none()) {
+                if mpc_seed_previous == 2 || (mpc_seed_previous == 1 && ctl.wrench_mpc_command.is_none()) {
                     for side in 0..2 {
                         previous[side][5] = measured_pre[side].max(0.0);
                     }
@@ -4967,7 +5121,7 @@ fn main() {
                     && let Support::Single { swing: sw_c, .. } = support
                 {
                     let i = gait.index_at(t);
-                    if let Some((li, lp)) = mpc_fs_cross_latched
+                    if let Some((li, lp)) = ctl.mpc_fs_cross_latched
                         && li == i
                     {
                         Some((li, lp))
@@ -4978,8 +5132,8 @@ fn main() {
                         let plus = f.sole[stance_c].y > f.sole[sw_c].y;
                         let ex = (xi.y - f.sole[stance_c].y) * if plus { 1.0 } else { -1.0 };
                         if ex > mpc_footstep_cross_ex {
-                            mpc_fs_cross_latched = Some((i, plus));
-                            n_mpc_fs_cross += 1;
+                            ctl.mpc_fs_cross_latched = Some((i, plus));
+                            stats.n_mpc_fs_cross += 1;
                             if debug.mpc_fs_cross {
                                 println!("  [fs-cross] t={t:.3} slice {i} swing {sw_c} DCM {ex:+.3} m past the stance sole");
                             }
@@ -5010,20 +5164,20 @@ fn main() {
                     (b, plus)
                 };
                 let landing = if mpc_footstep
-                    && push_replan_slice != Some(gait.index_at(t))
+                    && ctl.push_replan_slice != Some(gait.index_at(t))
                     && wrench_mpc_apply
                     && let Support::Single { swing, .. } = support
                     && {
                         let i = gait.index_at(t);
                         if mpc_footstep_trig > 0.0
                             && dcm_err >= mpc_footstep_trig
-                            && !mpc_fs_armed.is_some_and(|(a, u)| a <= i && i <= u)
+                            && !ctl.mpc_fs_armed.is_some_and(|(a, u)| a <= i && i <= u)
                         {
                             // A step is two slices (single + double support).
-                            mpc_fs_armed = Some((i, i));
+                            ctl.mpc_fs_armed = Some((i, i));
                         }
                         mpc_footstep_trig == 0.0
-                            || mpc_fs_armed.is_some_and(|(a, u)| a <= i && i <= u)
+                            || ctl.mpc_fs_armed.is_some_and(|(a, u)| a <= i && i <= u)
                     }
                     && {
                         // (The freeze by swing phase, MPC_FOOTSTEP_FREEZE_FRAC /
@@ -5031,7 +5185,7 @@ fn main() {
                         // Event mode: no landing moves while the foot is
                         // probing for the ground (measured 2026-10-04: the
                         // goal moved 5-12 cm under a foot 2 cm from contact).
-                        !landing_timing.landing_closed(gait.index_at(t)) && ref_mode.is_none()
+                        !landing_timing.landing_closed(gait.index_at(t)) && ctl.ref_mode.is_none()
                     }
                 {
                     (0..stair_wrench_horizon)
@@ -5088,7 +5242,7 @@ fn main() {
                                 // The ORIGINAL landing: the contact position already
                                 // carries the shift applied so far this slice, and
                                 // the box acts on the total shift from the original.
-                                let applied_y = if mpc_fs_slice == Some(ci) { mpc_fs_applied.y } else { 0.0 };
+                                let applied_y = if ctl.mpc_fs_slice == Some(ci) { ctl.mpc_fs_applied.y } else { 0.0 };
                                 let base = land.position[1] - applied_y;
                                 // Inward shift needed for the landing to come within
                                 // floor * half width of xi_td.
@@ -5319,7 +5473,7 @@ fn main() {
                         by_side.copy_from_slice(&solution.sole_wrenches);
                         diag_mpc_reference = input.reference_fz_schedule[0];
                         diag_mpc_time = Some(t);
-                        wrench_mpc_command = Some(by_side);
+                        ctl.wrench_mpc_command = Some(by_side);
                         {
                             let (mut mx, mut my, mut fz) = (0.0, 0.0, 0.0);
                             for foot in 0..2 {
@@ -5385,12 +5539,12 @@ fn main() {
                             && !landing_timing.landing_closed(gait.index_at(t))
                         {
                             let i = gait.index_at(t);
-                            if mpc_fs_slice != Some(i) {
-                                mpc_fs_slice = Some(i);
-                                mpc_fs_applied = na::Vector2::zeros();
+                            if ctl.mpc_fs_slice != Some(i) {
+                                ctl.mpc_fs_slice = Some(i);
+                                ctl.mpc_fs_applied = na::Vector2::zeros();
                             }
-                            let (d, total) = (dp - mpc_fs_applied, dp);
-                            mpc_fs_last = total;
+                            let (d, total) = (dp - ctl.mpc_fs_applied, dp);
+                            ctl.mpc_fs_last = total;
                             if debug.mpc_fs_landing {
                                 println!(
                                     "  [fs-decision] t={t:.3} first_node={} prior=({:+.3},{:+.3}) dp=({:+.3},{:+.3}) total=({:+.3},{:+.3}) max={:?} min={:?} xi-ref=({:+.3},{:+.3})",
@@ -5400,7 +5554,7 @@ fn main() {
                             }
                             if d.norm() > 1e-6 {
                                 footsteps.shift_next(i, land.foot, d);
-                                mpc_fs_applied = total;
+                                ctl.mpc_fs_applied = total;
                                 dcm_plan = DcmPlan::from_footsteps_rolled(
                                     &gait,
                                     &footsteps,
@@ -5408,7 +5562,7 @@ fn main() {
                                     zmp_lat_scale,
                                     zmp_roll,
                                 );
-                                n_replan += 1;
+                                stats.n_replan += 1;
                                 if debug.replan { println!("  [diag-replan] site 6 t={t:.3} (line 9380)"); }
                             }
                         }
@@ -5424,17 +5578,17 @@ fn main() {
                             }
                             println!();
                         }
-                        wrench_mpc_solves += 1;
+                        stats.wrench_mpc_solves += 1;
                     }
                     None => {
-                        wrench_mpc_failures += 1;
+                        stats.wrench_mpc_failures += 1;
                     }
                 }
-                wrench_mpc_next = t + stair_wrench_dt;
+                ctl.wrench_mpc_next = t + stair_wrench_dt;
             }
         } else {
-            wrench_mpc_command = None;
-            wrench_mpc_next = t;
+            ctl.wrench_mpc_command = None;
+            ctl.wrench_mpc_next = t;
         }
         let p1 = bt::com(dyn_ctx.qddot(), &st.j_com, &st.djv_com, &a_com);
 
@@ -5548,7 +5702,7 @@ fn main() {
         let coupled_active = stair_wrench_mpc
             && stair_wrench_coupled
             && wrench_mpc_apply
-            && wrench_mpc_command.is_some()
+            && ctl.wrench_mpc_command.is_some()
             && nc > 0;
         let p_mom = if use_mom || coupled_active {
             let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
@@ -5643,8 +5797,8 @@ fn main() {
                 }
                 dh[a] -= mom_cmp_kh * h_now[a];
             }
-            n_mom_cmp_ticks += 1;
-            mom_cmp_peak = mom_cmp_peak.max(dh[0].abs()).max(dh[1].abs());
+            stats.n_mom_cmp_ticks += 1;
+            stats.mom_cmp_peak = stats.mom_cmp_peak.max(dh[0].abs()).max(dh[1].abs());
             bt::angular_momentum(
                 dyn_ctx.qddot(),
                 &cmm,
@@ -5773,7 +5927,7 @@ fn main() {
             _ => vec![1.0; nc],
         };
         let mut forces_nominal = bt::force_nominal(forces.size(), &shares, total_mass * G);
-        if let Some(command) = wrench_mpc_command.as_ref() {
+        if let Some(command) = ctl.wrench_mpc_command.as_ref() {
             if wrench_mpc_apply && nc > 0 {
                 // contact_level's selector maps the native WBC wrench block
                 // to the sole-centre frame used by the MPC. Invert its 6x6
@@ -5837,7 +5991,7 @@ fn main() {
         let free_side: Option<usize> = (0..2).find(|s| !stance_sides.contains(s));
         let mut swing_tgt = na::Vector3::zeros();
         let mut swing_cmd_acc_z = 0.0_f64;
-        let p_swing = match (free_side, swing_lift_off) {
+        let p_swing = match (free_side, ctl.swing_lift_off) {
             (None, _) => None,
             // The scheduled swing, following its planned arc.
             (Some(side), Some(lift_off))
@@ -6087,13 +6241,13 @@ fn main() {
                         (pos0, vel0, na::Vector3::zeros())
                     };
                 let replan_hold = push_replan_trig > 0.0
-                    && push_replan_slice == Some(slice_idx)
-                    && push_replan_shift > push_replan_hold;
+                    && ctl.push_replan_slice == Some(slice_idx)
+                    && ctl.push_replan_shift > push_replan_hold;
                 // 0.05: the default of PUSH_REPLAN_HOLD_Z (removed; the
                 // champion turns the hold off with PUSH_REPLAN_HOLD=10).
                 let hold_z = if replan_hold { 0.05 } else { mpc_footstep_cross_hold_z };
                 if hold_z > 0.0
-                    && (replan_hold || mpc_fs_cross_latched.is_some_and(|(ci, _)| ci == slice_idx))
+                    && (replan_hold || ctl.mpc_fs_cross_latched.is_some_and(|(ci, _)| ci == slice_idx))
                 {
                     let foot = misarta::se3::translation(&data.oMi[rig.foot_mi[side]]);
                     if (touch_down.xy() - foot.xy()).norm() > mpc_footstep_cross_hold_xy {
@@ -6104,8 +6258,8 @@ fn main() {
                         }
                     }
                 }
-                if let Some(mode) = ref_mode
-                    && let Some(lib) = &ref_lib
+                if let Some(mode) = ctl.ref_mode
+                    && let Some(lib) = &ctl.ref_lib
                     && ref_swing
                 {
                     // Follow the reference's sole trajectory for this foot
@@ -6388,18 +6542,18 @@ fn main() {
                 .map(|v| (v.a.ncols(), v.a.nrows(), v.d.nrows()))
                 .collect::<Vec<_>>(),
         );
-        let qp_reset = qp_previous_structure
+        let qp_reset = wbc_state.qp_previous_structure
             .as_ref()
             .is_some_and(|old| old != &qp_structure);
         // The stateful solver keeps a workspace per level and only resets it
         // when the QP STRUCTURE changes. (WBC_QP_RESET_EVERY_TICK, dropping
         // the warm start every tick, was an experiment and is removed.)
         if qp_reset {
-            solver.reset();
+            wbc_state.solver.reset();
         }
-        qp_previous_structure = Some(qp_structure);
+        wbc_state.qp_previous_structure = Some(qp_structure);
         let qp_solve_start = std::time::Instant::now();
-        let mut sol = solver
+        let mut sol = wbc_state.solver
             .solve(&levels, &cfg)
             .unwrap_or_else(|e| panic!("wbc solve failed at t={t:.3}: {e}"));
         let qp_solve_ns = qp_solve_start.elapsed().as_nanos();
@@ -6664,7 +6818,7 @@ fn main() {
             let measured_mask = u8::from(measured_pre[0] > 0.05 * bw)
                 | (u8::from(measured_pre[1] > 0.05 * bw) << 1);
             let rot = misarta::se3::rotation_matrix(&data.oMi[rig.trunk_mi]);
-            let mpc_valid = wrench_mpc_command.is_some();
+            let mpc_valid = ctl.wrench_mpc_command.is_some();
             let values = [
                 t,
                 dt,
@@ -6681,7 +6835,7 @@ fn main() {
                 } else {
                     f64::NAN
                 },
-                wrench_mpc_failures as f64,
+                stats.wrench_mpc_failures as f64,
                 if mpc_valid {
                     diag_mpc_reference[0]
                 } else {
@@ -6692,8 +6846,8 @@ fn main() {
                 } else {
                     f64::NAN
                 },
-                wrench_mpc_command.as_ref().map_or(f64::NAN, |w| w[0][5]),
-                wrench_mpc_command.as_ref().map_or(f64::NAN, |w| w[1][5]),
+                ctl.wrench_mpc_command.as_ref().map_or(f64::NAN, |w| w[0][5]),
+                ctl.wrench_mpc_command.as_ref().map_or(f64::NAN, |w| w[1][5]),
                 nominal[0],
                 nominal[1],
                 f_qp_w[0][2],
@@ -6930,14 +7084,14 @@ fn main() {
             let tg = &tau_gravity;
             let fallback =
                 move |out: &mut [f64]| gravity_plus_posture(rig_ref, tg, v, hold_kp, hold_kd, out);
-            policy.apply(&sol.status, &mut robot_taus, t, dt, nc, &fallback);
+            guard.policy.apply(&sol.status, &mut robot_taus, t, dt, nc, &fallback);
             // Existing policy has no held command on its first failed tick.
             // Use its existing recomputed fallback instead of applying rejected QP torques.
-            if qp_rejected && !qp_has_good_command {
+            if qp_rejected && !guard.qp_has_good_command {
                 fallback(&mut robot_taus);
             }
             if matches!(sol.status, misa_wbc::SolveStatus::Optimal) {
-                qp_has_good_command = true;
+                guard.qp_has_good_command = true;
             }
         }
         // The fallback bypasses the QP torque box. Match the plant's
@@ -6946,7 +7100,7 @@ fn main() {
             let bound = rig.torque_max[vi - 6];
             robot_taus[ji] = robot_taus[ji].clamp(-bound, bound);
         }
-        if policy.consecutive_degraded() >= 10 {
+        if guard.policy.consecutive_degraded() >= 10 {
             m.n_open_loop += 1;
         }
         let mut tau_use_max = 0.0_f64;
@@ -7034,12 +7188,12 @@ fn main() {
             m.push_at_step = step_idx;
             m.push_degraded_at = tally.n;
         }
-        if let Some(mode) = ref_mode
-            && let Some(lib) = &ref_lib
+        if let Some(mode) = ctl.ref_mode
+            && let Some(lib) = &ctl.ref_lib
             && t >= mode.t0 + lib.total() - mode.tau0
         {
-            ref_mode = None;
-            ref_cooldown_until = t + ref_cooldown;
+            ctl.ref_mode = None;
+            ctl.ref_cooldown_until = t + ref_cooldown;
             landing_timing.event_mode = event_mode_cfg;
             // The reference leaves the feet where the recovery put them
             // (in tandem, narrow). Every later footfall is re-centred on the
@@ -7087,7 +7241,8 @@ fn main() {
                 .saturating_sub(qp_capture_ns)
                 .saturating_sub(mpc_capture_ns);
             writeln!(file, "{t:.9},{qp_solve_ns},{qp_check_ns},\"{:?}\",{qp_physical_violation:.12e},{qp_reset},{},{control_ns},{},{wrench_mpc_solves},{wrench_mpc_failures},{prefix_applied},{repair_applied},{repair_scaled_delta:.12e},{repair_ns}", sol.status,
-                control_ns > (dt * 1e9) as u128, diag_mpc_time.map_or(-1.0, |stamp| t-stamp)).unwrap();
+                control_ns > (dt * 1e9) as u128, diag_mpc_time.map_or(-1.0, |stamp| t-stamp),
+                wrench_mpc_solves = stats.wrench_mpc_solves, wrench_mpc_failures = stats.wrench_mpc_failures).unwrap();
         }
         if let Some(file) = &mut diag.qp_wrench_log {
             use articara::biped::log::contact_wrench_in_sole;
@@ -7128,7 +7283,7 @@ fn main() {
                         planned =
                             contact_wrench_in_sole(&origin, &force, &moment, &sole, &rotation);
                     }
-                    if let (Some(command), Some(frames)) = (&wrench_mpc_command, &wrench_mpc_frames)
+                    if let (Some(command), Some(frames)) = (&ctl.wrench_mpc_command, &wrench_mpc_frames)
                     {
                         let source = &frames[side];
                         let force = source.rotation * command[side].fixed_rows::<3>(3);
@@ -7272,8 +7427,8 @@ fn main() {
             let [gl, gr] = steps.sole;
             let link_l = misarta::se3::translation(&data.oMi[rig.foot_mi[0]]);
             let link_r = misarta::se3::translation(&data.oMi[rig.foot_mi[1]]);
-            let anchor_l_y = anchors.a[0].map_or(f64::NAN, |(p, _)| p.y);
-            let anchor_r_y = anchors.a[1].map_or(f64::NAN, |(p, _)| p.y);
+            let anchor_l_y = wbc_state.anchors.a[0].map_or(f64::NAN, |(p, _)| p.y);
+            let anchor_r_y = wbc_state.anchors.a[1].map_or(f64::NAN, |(p, _)| p.y);
             let foot_v_l = rig
                 .sim
                 .body_world_linear_velocity(prof.foot_links[0])
@@ -7335,15 +7490,15 @@ fn main() {
                 gr.x,
                 gr.y,
                 gr.z,
-                if replan_engaged { 1.0 } else { 0.0 },
-                preview_c.x,
-                preview_c.y,
-                preview_v.x,
-                preview_v.y,
-                preview_error,
-                preview_count as f64,
-                preview_failures as f64,
-                landing_delay,
+                if ctl.replan_engaged { 1.0 } else { 0.0 },
+                ctl.preview_c.x,
+                ctl.preview_c.y,
+                ctl.preview_v.x,
+                ctl.preview_v.y,
+                stats.preview_error,
+                stats.preview_count as f64,
+                stats.preview_failures as f64,
+                stats.landing_delay,
                 // stair_transfer / _phase / _alpha / _high: the removed
                 // three-phase transfer's columns, kept at its idle values so
                 // the column layout does not move.
@@ -7362,21 +7517,21 @@ fn main() {
                 trunk_cmd_rp[0],
                 trunk_acc_rp[0],
                 -1.0, // transfer_guard (removed stair transfer)
-                if wrench_mpc_command.is_some() {
+                if ctl.wrench_mpc_command.is_some() {
                     1.0
                 } else {
                     0.0
                 },
-                wrench_mpc_command.as_ref().map_or(0.0, |w| w[0][5]),
-                wrench_mpc_command.as_ref().map_or(0.0, |w| w[1][5]),
+                ctl.wrench_mpc_command.as_ref().map_or(0.0, |w| w[0][5]),
+                ctl.wrench_mpc_command.as_ref().map_or(0.0, |w| w[1][5]),
                 diag_mpc_net_cop[0],
                 diag_mpc_net_cop[1],
-                mpc_fs_last.x,
-                mpc_fs_last.y,
+                ctl.mpc_fs_last.x,
+                ctl.mpc_fs_last.y,
                 diag_wbc_net_cop[0],
                 diag_wbc_net_cop[1],
-                wrench_mpc_solves as f64,
-                wrench_mpc_failures as f64,
+                stats.wrench_mpc_solves as f64,
+                stats.wrench_mpc_failures as f64,
                 swing_pos_err_xy,
                 swing_pos_err_z,
                 swing_task_residual_rms,
@@ -7529,6 +7684,7 @@ fn main() {
             break;
         }
     }
+    let WalkerStats { n_mom_cmp_ticks, mom_cmp_peak, n_push_z_drop, n_cp_shift, n_cp_retime, cp_retime_total, n_confirmed_admissions, ref_engagements, n_ds_capture, ds_capture_total, n_ds_feasible, n_ds_continuous, ds_feasible_total, n_push_replan, n_mpc_fs_cross, preview_count, preview_failures, landing_retimes, landing_delay, n_replan, n_corrected, .. } = stats;
     let RunMetrics { step_stats, walk_end_state, ramp_end_state, last_state, travel, fell, min_z, max_tilt, max_dcm_err, max_cop_use, max_zmp_clamp, max_ankle_roll_use, n_open_loop, q_lo, q_hi, hit_ticks, hit_peak_f, hit_impulse, hit_first_t, hit_last_t, hit_episodes, n_selfcollide, max_selfcollide_f, push_at_t, push_at_step, push_dcm_err_max, push_tilt_max, push_degraded_at, push_cop_max, push_slip_wbc_max, push_slip_plant_max, push_slip_ticks, push_fz_total_min, push_fz_total_max, push_unloaded_ticks, win_dcm_err_max, win_tilt_max, win_cop_max, win_slip_plant_max, win_slip_ticks, win_fz_total_min, win_fz_total_max, win_unloaded_ticks, win_degraded_at, win_degraded_end, transfer_t, xfer_edge_ticks, xfer_ticks, xfer_leave_t, xfer_wrongfoot_ticks, xfer2_edge_ticks, xfer2_ticks, h_roll_max, h_roll_at_xfer, xfer_dcm_off, xfer_stance, push_ankle_max, push_exceeded, push_last_exceed, t_last, .. } = m;
 
     println!("\n=== Per-step ===");
