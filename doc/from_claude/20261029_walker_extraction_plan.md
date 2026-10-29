@@ -747,6 +747,18 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
   - S9b の ROUGH_MODE は `rough30` の見本 2 本が要。
 - **確認**: 各回 96＋14＋eqdiag。S9c の後で `WALKER_CONFIG_DUMP=path`（Config の `Debug` を書き出す、opt-in）を足し、チャンピオンの controls で書き出した内容を S17 の照合に使う。
 - **規模**: config.rs 約 600 行、config_env.rs 約 500 行、main.rs 約 700 行の削除と置換。
+- **実施（2026-10-29、37ccb32・4529b7e・ffb029c と S9d）**: 4 回に分けた（S9d はプリセットと試験）。各回 96＋14＋eqdiag＋FIX・JAB の単発で差 0。設計と違えた点と、決めた細部は次のとおり。
+  - **既定は misa-biped に 1 か所**。`Config::code_defaults(&Profile)` が持ち、`config_from_kv` は `num("KEY", d.field)` の形でそこから上書きする。値は読みの後処理（`.max`／`.clamp`／`as usize`）の後で持つ。実現した周期や他のサブ構造体のノブとの比較（`COM_REPLAN_DT.max(dt)`、`COM_STAIR_SS_MAX.max(T_SS)`、`STAIR_WRENCH_DT`／`_PREVIEW_DT`、`COM_PREVIEW_DT`）は使う場所に残した。
+  - **§4.2 の `resolve(&ResolveCtx)` は、Option のフィールドと小さなメソッドにした**。他のノブ由来の既定（`KD_CONTACT`、`KP_SWING_XY`、`CP_MAX_Y_IN`、`STAIR_TD_BIAS_ASC_MID`／`_DESC`、`COM_PREPLAN`、`COM_LAND_EXTEND_DESC`）はサブ構造体のメソッド、文脈由来の既定は引数を取るメソッド（`WbcConfig::friction_mu(mu_ground, margin)`、`f_max_per_foot(m, g)`、`ComPlanConfig::z_com(com0_z)`、`DcmConfig::params(z_com, terrain_base) -> DcmParams`）。起動時のどこで値が決まるかが今と同じ位置に残るので、assert と印字の順が動かない。
+  - **着地の時計**: `Config::landing_timing(m, g)` が設定済みの `LandingTiming` を作って `Plan::new` に渡す。起動時に `plan.landing.x = …` で散っていた 11 か所が消えた。
+  - **2 度読み**: 一覧の 4 つに加え、`CONTACT_EVENT`（`event_mode_cfg` と `plan.landing.event_mode`）と `VXS_STRIDE_MAX`／`VXS_CAP_SLOPE`／`VXS_V_LONG`（速度表と `vxs_cap_of`、`SpeedScheduleConfig::stride_cap`）も 1 つにした。
+  - **ROUGH_MODE**: `config_env::rough_mode(get)` が今までの 4 つの文字列を返し、`config_from_kv` はその 4 キーの読みを差し替える。`set_var` は無くなった。
+  - **`LevelWeights`** は misa-biped へ。表に無い段の名前は `get` が None を返し、ハーネスがその場で環境変数を読む（今のスタックは表に無い名前を作らない）。
+  - **Config に入れなかったもの**: §4.1 の除外に加えて `GAIT_DUMP_T`／`CONTACT_DUMP_T`（ハーネスの印字なので DebugFlags ではなく main に残した）、`REF_LIBRARY`。`STRIDE` は §4.1 どおり `GaitConfig` に入れた（`VX` の既定はハーネスがそこから作る）。
+  - 文字列のノブ（`ARM_HOLD_JOINTS`、`MOM_LEVEL`、`MOM_REF`）は今の比較を保つため `String` のまま。列挙型にするのは Walker が入った後。
+  - 不正な `WBC_STRATEGY`／`WBC_QP_BACKEND`／`MPC_QP_BACKEND` の panic は読みの時点（起動の最初）に移った。違うのは不正な値のときだけ。
+  - **プリセットは S17 から S9d へ前倒し**した（§4.3）。`Config::g1_v619()` と `Config::kyo46rs_v2()`。試験は `crates/misa-biped/tests/presets.rs` で、ハーネスの表（`examples/kyo46rs_walk/config_env.rs`）を `#[path]` で取り込み、controls.json をその表に通したものとプリセットが一致すること、キーが無ければ `code_defaults` になること、ROUGH_MODE がノブに勝つことを見る。JSON は平らな文字列の辞書なので、試験の中の 20 行の読みで済ませ、serde_json は足していない（Cargo.lock を変えないため）。`WALKER_CONFIG_DUMP=path` も S9d で足した（標準出力には何も出さない）。
+  - mujoco 抜きのビルド（既定の機能）: `fn main` に `#[cfg(feature = "mujoco")]` が無く、先頭の属性が 2 重で `use nalgebra` に付いていた。直した後は「MuJoCo が要る」と案内するだけの 434 KB のバイナリになる。
 
 #### S10 `RobotModel`／`RobotState` を misa-biped へ（`rig.sync` の分割）
 
@@ -764,7 +776,8 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
 
 #### S11 tick の制御を相の関数に分ける（example の中）
 
-- **何を**: 次の相を `fn phase_x(ctl: &mut CtlState, plan: &mut Plan, cfg: &Config, k: &WalkerConsts, obs: &Observation, rec: &mut TickRecord, out: &mut dyn LogSink)` の形の関数にする。
+- **何を**: 次の相を `fn phase_x(ctl: &mut CtlState, plan: &mut Plan, cfg: &Config, k: &WalkerConsts, obs: &Observation, out: &mut dyn LogSink) -> PhaseXOut` の形の関数にする。
+  - **（ユーザー判断 2026-10-29）相の関数は自分の出力を返し、`TickRecord` は step の最後に 1 回、今のリテラルの形のまま組み立てる。** 相が `&mut TickRecord` に書き込む形にはしない（S8 の「値の確定後に写す」が、相の返り値を集めた所で 1 回だけ起きる）。
 
   | 回 | 相 |
   |---|---|
@@ -986,7 +999,7 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
 | 10 | `PUSH_REPLAN_HOLD=10`（実質「保持なし」） | 台帳 §2.20 | `hold: Option<f64>`。プリセットは None。`10` を読んだら None として扱うのは挙動同一（`push_replan_shift > 10` は起きない）だが、環境変数の意味を変えるので明示して決める | ユーザー |
 | 11 | `ROUGH_MODE` の形 | 上書き（S9b） | 当面は上書き。モード（列挙型）にして Walker が実行中に切り替えられるようにするかは、地形の知覚の設計と合わせて決める | ユーザー |
 | 12 | 要確認 7 個（`ROUGH_MODE`、`ROUGH_MODE_LIFT_H`、`TERRAIN_PITCH`、`VX2_SCHED`、`STAIR_ABSOLUTE_TD_DESC`、`STAIR_SWING_FF`、`STAIR_ZONE_SWING_ROT`）と kyo の v3 候補が使う `STAIR_ABSOLUTE_TD`・`Z_COM_OFFSET` | 台帳 §4.4 の 4 | Config には全部入れる（一致のため）。既定やプリセットの値は kyo46rs v3 の採否と合わせて決める | ユーザー |
-| 13 | `RefLib` の JSON の読み込み | misa-biped は serde_json に依存していない | misa-biped に `serde_json` を足す（軽い。articara はすでに dev 依存で使っている） | 実装者（S7） |
+| 13 | `RefLib` の JSON の読み込み | misa-biped は serde_json に依存していない | **確定（ユーザー、2026-10-29）: (b)**。JSON の読み込みは misa-biped に入れない。依存は misarta・misa-wbc・nalgebra だけ。参照の読み込みはハーネスの `load_ref_lib`（S7）、プリセットの試験の JSON は試験の中で読む（S9d） | 済 |
 | 14 | `BASE_VEL_KIN*`（不採用、rig.rs） | S14 で推定と運動学を分ける妨げ | S14 の前に消す（挙動同一。分類 3 で見本に入っていない） | ユーザー |
 | 15 | ライブラリ内の `*_DEBUG` の環境変数の読み（preview.rs、wrench_mpc.rs） | 毎回 `env::var` を読む | `DebugFlags` を引数で渡す形にする。misa-mpc の公開 API が変わるので、他の利用者（namiashi 系）と調整する | ユーザー |
 | 16 | 印字の順の固定をいつやめるか | §2.5 で今の順を保つ | Walker が落ち着いたら、印字を `TickRecord` の出来事の列にして、ハーネスが tick の終わりにまとめて出す形にしてよい。その 1 回はログの差（CSV は同一）を明示したコミットにする | ユーザー |

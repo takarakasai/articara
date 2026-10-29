@@ -1214,6 +1214,12 @@ fn main() {
     // environment through the table in config_env.rs. The rest of this
     // start-up reads the rig, the scenario, the command and the diagnostics.
     let wcfg = config_env::config_from_kv(&prof, &|k| std::env::var(k).ok());
+    // WALKER_CONFIG_DUMP=<path>: write the Config as read (`{:#?}`), for
+    // checking a controls file against a preset. Opt-in and silent: the log
+    // is compared byte for byte.
+    if let Ok(path) = std::env::var("WALKER_CONFIG_DUMP") {
+        std::fs::write(&path, format!("{wcfg:#?}\n")).expect("WALKER_CONFIG_DUMP");
+    }
 
     let mut o = RigOptions::from_profile(&prof);
     o.knee = env_f64("KNEE", prof.knee_seed);
