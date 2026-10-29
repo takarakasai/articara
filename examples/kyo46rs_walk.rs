@@ -1146,6 +1146,10 @@ struct CtlState {
 /// reference after the recovery reference's override).
 #[cfg(feature = "mujoco")]
 struct TickRecord {
+    /// The schedule's slice now (by value), its index, and how far into it.
+    slice: articara::biped::gait::Slice,
+    slice_idx: usize,
+    slice_frac: f64,
     /// Support from the schedule (`Double` throughout with NO_LIFT), steps
     /// taken, and the planned soles of this slice.
     support: articara::biped::gait::Support,
@@ -1189,10 +1193,27 @@ struct TickRecord {
     preview_c: na::Vector2<f64>,
     preview_v: na::Vector2<f64>,
     /// The held MPC answer, the net pressure point it implies, and the
-    /// landing offset it last asked for.
+    /// landing offset it last asked for; its reference vertical forces, when
+    /// it was solved, and its contact frames (see `CtlState`).
     wrench_mpc_command: Option<[articara::biped::wrench_mpc::Wrench; 2]>,
     diag_mpc_net_cop: [f64; 2],
     mpc_fs_last: na::Vector2<f64>,
+    diag_mpc_reference: [f64; 2],
+    diag_mpc_time: Option<f64>,
+    wrench_mpc_frames: Option<[articara::biped::wrench_mpc::Contact; 2]>,
+    /// The QP's levels by name, and the nominal contact forces it was
+    /// pulled toward (`force_nominal`, world axes per stance slot).
+    level_names: Vec<&'static str>,
+    forces_nominal: na::DVector<f64>,
+    /// QP timing [ns] (solve, physical check, QP_DIAG capture, MPC_DIAG
+    /// capture), the normalised physical violation, and whether the solver
+    /// was reset for a new QP structure.
+    qp_solve_ns: u128,
+    qp_check_ns: u128,
+    qp_capture_ns: u128,
+    mpc_capture_ns: u128,
+    qp_physical_violation: f64,
+    qp_reset: bool,
     /// The QP's per-foot CoP (sole frame, with fz) and force (world), the
     /// CoP utilisation, and the net pressure point of its forces.
     cop_qp: [[f64; 3]; 2],
@@ -4466,32 +4487,6 @@ fn main() {
             
             }
         }
-        m.max_dcm_err = m.max_dcm_err.max(dcm_err);
-        // Post-push accumulation. The push fires late in the tick, after this
-        // point, so the firing tick's error is still the undisturbed one and
-        // the window starts one tick later -- which is what we want.
-        if in_push_window {
-            m.win_dcm_err_max = m.win_dcm_err_max.max(dcm_err);
-        }
-        if m.push_at_t.is_some() {
-            m.push_dcm_err_max = m.push_dcm_err_max.max(dcm_err);
-            // Recovery is decided BACKWARD from the end of the run, from the
-            // LAST time the error was out of tolerance -- not forward from the
-            // first time it dipped back in.
-            //
-            // Both cheaper definitions are wrong, and each was measured wrong
-            // here before this comment existed. Counting the first N ticks
-            // under the line credits recovery 5 ms after the shove, because
-            // the impulse has not reached the CoM yet. Counting the first
-            // N-tick dwell after the error exceeds the line credits recovery
-            // at 5.150 s to a robot that fell at 5.915 s, because the error is
-            // not monotonic on the way down and crosses the band on the way
-            // past. Only "went under and STAYED under" is a recovery.
-            if dcm_err >= push_recover_m {
-                m.push_exceeded = true;
-                m.push_last_exceed = Some(t);
-            }
-        }
 
         // ---- commanded ZMP ----------------------------------------------
         let p_raw = commanded_zmp(&xi, &r, omega, k_dcm);
@@ -4508,7 +4503,6 @@ fn main() {
         } else {
             (p_raw, 0.0)
         };
-        m.max_zmp_clamp = m.max_zmp_clamp.max(clamped);
         // Pressure the polygon refused (world x, y), for MOM_CMP.
         let zmp_deficit = p_raw - p_cmd;
 
@@ -6510,12 +6504,6 @@ fn main() {
                 .collect();
             println!("  [wbc-levels] t={t:.3} support={support:?} {}", parts.join(" "));
         }
-        // WBC_REPAIR_ORIGINAL / WBC_PREFIX_MIN_LEVEL (repair the failed QP,
-        // or command a checked prefix) were experiments and are removed;
-        // QP_RUNTIME_CSV keeps their columns at the off values.
-        let repair_applied = false;
-        let repair_scaled_delta = 0.0_f64;
-        let repair_ns = 0u128;
         let qp_check_start = std::time::Instant::now();
         let mut qp_physical_violation = 0.0_f64;
         if let Some((eom, d, f, _, scales)) = &qp_physical {
@@ -6667,7 +6655,6 @@ fn main() {
                 (pos.z - swing_tgt.z).abs(),
             )
         });
-        tally.observe(&sol.status, t, tick, nc, &level_names);
         let extracted = dyn_ctx.extract(&sol.x);
 
         let mut cop_qp = [[0.0_f64; 3]; 2];
@@ -6741,6 +6728,9 @@ fn main() {
         // The tick's record: what the controller computed, for the logs and
         // the measurements below (which read it from here on).
         let rec = TickRecord {
+            slice,
+            slice_idx,
+            slice_frac,
             support,
             step_idx,
             steps,
@@ -6774,6 +6764,17 @@ fn main() {
             wrench_mpc_command: ctl.wrench_mpc_command,
             diag_mpc_net_cop: ctl.diag_mpc_net_cop,
             mpc_fs_last: ctl.mpc_fs_last,
+            diag_mpc_reference: ctl.diag_mpc_reference,
+            diag_mpc_time: ctl.diag_mpc_time,
+            wrench_mpc_frames: ctl.wrench_mpc_frames.clone(),
+            level_names,
+            forces_nominal,
+            qp_solve_ns,
+            qp_check_ns,
+            qp_capture_ns,
+            mpc_capture_ns,
+            qp_physical_violation,
+            qp_reset,
             cop_qp,
             f_qp_w,
             cop_use,
@@ -6783,20 +6784,50 @@ fn main() {
             hip_z,
             stride_max_now,
         };
+        tally.observe(&sol.status, t, tick, rec.nc, &rec.level_names);
+        // Run measurements from the record (they were taken inside the
+        // control before; the values are the same).
+        m.max_dcm_err = m.max_dcm_err.max(rec.dcm_err);
+        // Post-push accumulation. The push fires late in the tick, after this
+        // point, so the firing tick's error is still the undisturbed one and
+        // the window starts one tick later -- which is what we want.
+        if in_push_window {
+            m.win_dcm_err_max = m.win_dcm_err_max.max(rec.dcm_err);
+        }
+        if m.push_at_t.is_some() {
+            m.push_dcm_err_max = m.push_dcm_err_max.max(rec.dcm_err);
+            // Recovery is decided BACKWARD from the end of the run, from the
+            // LAST time the error was out of tolerance -- not forward from the
+            // first time it dipped back in.
+            //
+            // Both cheaper definitions are wrong, and each was measured wrong
+            // here before this comment existed. Counting the first N ticks
+            // under the line credits recovery 5 ms after the shove, because
+            // the impulse has not reached the CoM yet. Counting the first
+            // N-tick dwell after the error exceeds the line credits recovery
+            // at 5.150 s to a robot that fell at 5.915 s, because the error is
+            // not monotonic on the way down and crosses the band on the way
+            // past. Only "went under and STAYED under" is a recovery.
+            if rec.dcm_err >= push_recover_m {
+                m.push_exceeded = true;
+                m.push_last_exceed = Some(t);
+            }
+        }
+        m.max_zmp_clamp = m.max_zmp_clamp.max(rec.clamped);
         if let Some(file) = diag.transfer_diag.as_mut() {
             let mut nominal = [0.0; 2];
             let mut mask = 0u8;
             for (slot, &side) in rec.stance_sides.iter().enumerate() {
                 mask |= 1 << side;
                 // Native WBC force blocks use world axes (as f_qp_w above).
-                nominal[side] = forces_nominal[6 * slot + 5];
+                nominal[side] = rec.forces_nominal[6 * slot + 5];
             }
             let bw = total_mass * G;
             // Load threshold is evidence of support, not a contact detector.
             let measured_mask = u8::from(measured_pre[0] > 0.05 * bw)
                 | (u8::from(measured_pre[1] > 0.05 * bw) << 1);
             let rot = misarta::se3::rotation_matrix(&data.oMi[rig.trunk_mi]);
-            let mpc_valid = ctl.wrench_mpc_command.is_some();
+            let mpc_valid = rec.wrench_mpc_command.is_some();
             let values = [
                 t,
                 dt,
@@ -6809,33 +6840,33 @@ fn main() {
                 measured_mask as f64,
                 f64::from(mpc_valid),
                 if mpc_valid {
-                    ctl.diag_mpc_time.map_or(f64::NAN, |ts| t - ts)
+                    rec.diag_mpc_time.map_or(f64::NAN, |ts| t - ts)
                 } else {
                     f64::NAN
                 },
                 stats.wrench_mpc_failures as f64,
                 if mpc_valid {
-                    ctl.diag_mpc_reference[0]
+                    rec.diag_mpc_reference[0]
                 } else {
                     f64::NAN
                 },
                 if mpc_valid {
-                    ctl.diag_mpc_reference[1]
+                    rec.diag_mpc_reference[1]
                 } else {
                     f64::NAN
                 },
-                ctl.wrench_mpc_command.as_ref().map_or(f64::NAN, |w| w[0][5]),
-                ctl.wrench_mpc_command.as_ref().map_or(f64::NAN, |w| w[1][5]),
+                rec.wrench_mpc_command.as_ref().map_or(f64::NAN, |w| w[0][5]),
+                rec.wrench_mpc_command.as_ref().map_or(f64::NAN, |w| w[1][5]),
                 nominal[0],
                 nominal[1],
-                f_qp_w[0][2],
-                f_qp_w[1][2],
+                rec.f_qp_w[0][2],
+                rec.f_qp_w[1][2],
                 measured_pre[0],
                 measured_pre[1],
                 (-rot[(2, 0)]).clamp(-1.0, 1.0).asin(),
                 rot[(2, 1)].atan2(rot[(2, 2)]),
-                cop_qp[0][0],
-                cop_qp[1][0],
+                rec.cop_qp[0][0],
+                rec.cop_qp[1][0],
                 measured_c.cop[0][0],
                 measured_c.cop[1][0],
                 f64::from(degraded),
@@ -6849,9 +6880,9 @@ fn main() {
             }
             writeln!(file).unwrap();
         }
-        m.max_cop_use = m.max_cop_use.max(cop_use);
+        m.max_cop_use = m.max_cop_use.max(rec.cop_use);
         if m.push_at_t.is_some() {
-            m.push_cop_max = m.push_cop_max.max(cop_use);
+            m.push_cop_max = m.push_cop_max.max(rec.cop_use);
             // Friction utilisation, against BOTH denominators, because they
             // answer different questions and swapping them silently is how a
             // friction sweep comes to measure its own assumption.
@@ -6876,7 +6907,7 @@ fn main() {
             // commitment to one foot that the disturbed machine either
             // completes or does not.
             if m.transfer_t.is_none() {
-                if let (Some(Support::Double), Support::Single { .. }) = (m.support_prev, support) {
+                if let (Some(Support::Double), Support::Single { .. }) = (m.support_prev, rec.support) {
                     m.transfer_t = Some(t);
                     if fix.armed() && !m.fix_fired {
                         fix.fire(&mut rig.sim, &push.link, total_mass, t, true);
@@ -6887,14 +6918,14 @@ fn main() {
                     let ag =
                         misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, &st.q);
                     m.h_roll_at_xfer = (&ag * v_dvec)[0];
-                    if let Support::Single { stance, .. } = support {
-                        let u = steps.xy(stance);
-                        m.xfer_dcm_off = [xi.x - u.x, xi.y - u.y];
+                    if let Support::Single { stance, .. } = rec.support {
+                        let u = rec.steps.xy(stance);
+                        m.xfer_dcm_off = [rec.xi.x - u.x, rec.xi.y - u.y];
                         m.xfer_stance = stance as i32;
                     }
                 }
             } else if m.transfer2_t.is_none() && t > m.transfer_t.unwrap() + 1e-9 {
-                if let (Some(Support::Double), Support::Single { .. }) = (m.support_prev, support) {
+                if let (Some(Support::Double), Support::Single { .. }) = (m.support_prev, rec.support) {
                     m.transfer2_t = Some(t);
                 }
             }
@@ -6936,7 +6967,7 @@ fn main() {
                             on_edge = true;
                         }
                         // A foot the schedule says is swinging, carrying load.
-                        if !support.is_stance(side) {
+                        if !rec.support.is_stance(side) {
                             m.xfer_wrongfoot_ticks += 1;
                         }
                     }
@@ -6954,7 +6985,7 @@ fn main() {
                 m.push_unloaded_ticks += 1;
             }
             if in_push_window {
-                m.win_cop_max = m.win_cop_max.max(cop_use);
+                m.win_cop_max = m.win_cop_max.max(rec.cop_use);
                 m.win_fz_total_min = m.win_fz_total_min.min(fz_total);
                 m.win_fz_total_max = m.win_fz_total_max.max(fz_total);
                 if fz_total < 0.5 * total_mass * G {
@@ -7055,14 +7086,19 @@ fn main() {
         for (ji, vi) in rig.actuated() {
             robot_taus[ji] = extracted.tau[vi - 6];
         }
-        // The checked-prefix path (WBC_PREFIX_MIN_LEVEL) is removed.
+        // WBC_REPAIR_ORIGINAL / WBC_PREFIX_MIN_LEVEL (repair the failed QP,
+        // or command a checked prefix) were experiments and are removed;
+        // QP_RUNTIME_CSV keeps their columns at the off values.
         let prefix_applied = false;
+        let repair_applied = false;
+        let repair_scaled_delta = 0.0_f64;
+        let repair_ns = 0u128;
         {
             let rig_ref = &rig;
             let tg = &tau_gravity;
             let fallback =
                 move |out: &mut [f64]| gravity_plus_posture(rig_ref, tg, v, hold_kp, hold_kd, out);
-            guard.policy.apply(&sol.status, &mut robot_taus, t, dt, nc, &fallback);
+            guard.policy.apply(&sol.status, &mut robot_taus, t, dt, rec.nc, &fallback);
             // Existing policy has no held command on its first failed tick.
             // Use its existing recomputed fallback instead of applying rejected QP torques.
             if qp_rejected && !guard.qp_has_good_command {
@@ -7108,15 +7144,15 @@ fn main() {
         }
 
         // Per-step accounting, keyed on the single-support phases.
-        if matches!(support, Support::Single { .. }) {
-            let stance_side = match support {
+        if matches!(rec.support, Support::Single { .. }) {
+            let stance_side = match rec.support {
                 Support::Single { stance, .. } => stance,
                 Support::Double => unreachable!(),
             };
-            if m.step_stats.last().map(|s| s.slice) != Some(slice_idx) {
+            if m.step_stats.last().map(|s| s.slice) != Some(rec.slice_idx) {
                 m.step_stats.push(StepStat {
-                    idx: step_idx,
-                    slice: slice_idx,
+                    idx: rec.step_idx,
+                    slice: rec.slice_idx,
                     t0: t,
                     stance: stance_side,
                     dcm_err_max: 0.0,
@@ -7128,11 +7164,11 @@ fn main() {
                 });
             }
             let s = m.step_stats.last_mut().unwrap();
-            s.dcm_err_max = s.dcm_err_max.max(dcm_err);
-            s.cop_use_max = s.cop_use_max.max(cop_use);
+            s.dcm_err_max = s.dcm_err_max.max(rec.dcm_err);
+            s.cop_use_max = s.cop_use_max.max(rec.cop_use);
             s.fz_peak = s.fz_peak.max(measured.f_w[0][2] + measured.f_w[1][2]);
             s.degraded += u32::from(degraded);
-            if let Some(sw) = support.swing() {
+            if let Some(sw) = rec.support.swing() {
                 let z = rig.sim.body_world_position(prof.foot_links[sw]).unwrap()[2];
                 s.swing_apex = s.swing_apex.max(z - prof.sole_below_origin);
                 s.td_vz = rig
@@ -7156,14 +7192,20 @@ fn main() {
             && fire_push(
                 &mut rig.sim,
                 &push,
-                &PushTick { t, step_idx, support, slice_frac, slice_t1: slice.t1 },
+                &PushTick {
+                    t,
+                    step_idx: rec.step_idx,
+                    support: rec.support,
+                    slice_frac: rec.slice_frac,
+                    slice_t1: rec.slice.t1,
+                },
                 total_mass,
                 omega,
                 jab.then_some(JabClock { start: jab_start, period: jab_period, pattern: &jab_pattern }),
             )
         {
             m.push_at_t = Some(t);
-            m.push_at_step = step_idx;
+            m.push_at_step = rec.step_idx;
             m.push_degraded_at = tally.n;
         }
         if let Some(mode) = ctl.ref_mode
@@ -7199,7 +7241,7 @@ fn main() {
             println!("  [ref] t={t:.3} reference over, back to the gait");
         }
 
-        m.support_prev = Some(support);
+        m.support_prev = Some(rec.support);
         // What the disturbance is doing RIGHT NOW, for the replay to draw.
         // Read from the sim's own pulse list rather than recomputed here, so
         // the arrow cannot disagree with the force the plant actually saw.
@@ -7216,11 +7258,13 @@ fn main() {
             let control_ns = qp_control_start
                 .elapsed()
                 .as_nanos()
-                .saturating_sub(qp_capture_ns)
-                .saturating_sub(mpc_capture_ns);
+                .saturating_sub(rec.qp_capture_ns)
+                .saturating_sub(rec.mpc_capture_ns);
             writeln!(file, "{t:.9},{qp_solve_ns},{qp_check_ns},\"{:?}\",{qp_physical_violation:.12e},{qp_reset},{},{control_ns},{},{wrench_mpc_solves},{wrench_mpc_failures},{prefix_applied},{repair_applied},{repair_scaled_delta:.12e},{repair_ns}", sol.status,
-                control_ns > (dt * 1e9) as u128, ctl.diag_mpc_time.map_or(-1.0, |stamp| t-stamp),
-                wrench_mpc_solves = stats.wrench_mpc_solves, wrench_mpc_failures = stats.wrench_mpc_failures).unwrap();
+                control_ns > (dt * 1e9) as u128, rec.diag_mpc_time.map_or(-1.0, |stamp| t-stamp),
+                wrench_mpc_solves = stats.wrench_mpc_solves, wrench_mpc_failures = stats.wrench_mpc_failures,
+                qp_solve_ns = rec.qp_solve_ns, qp_check_ns = rec.qp_check_ns,
+                qp_physical_violation = rec.qp_physical_violation, qp_reset = rec.qp_reset).unwrap();
         }
         if let Some(file) = &mut diag.qp_wrench_log {
             use articara::biped::log::contact_wrench_in_sole;
@@ -7253,15 +7297,15 @@ fn main() {
                         );
                         wbc = contact_wrench_in_sole(&origin, &force, &moment, &sole, &rotation);
                         let force = na::Vector3::from_column_slice(
-                            &forces_nominal.as_slice()[6 * slot + 3..6 * slot + 6],
+                            &rec.forces_nominal.as_slice()[6 * slot + 3..6 * slot + 6],
                         );
                         let moment = na::Vector3::from_column_slice(
-                            &forces_nominal.as_slice()[6 * slot..6 * slot + 3],
+                            &rec.forces_nominal.as_slice()[6 * slot..6 * slot + 3],
                         );
                         planned =
                             contact_wrench_in_sole(&origin, &force, &moment, &sole, &rotation);
                     }
-                    if let (Some(command), Some(frames)) = (&ctl.wrench_mpc_command, &ctl.wrench_mpc_frames)
+                    if let (Some(command), Some(frames)) = (&rec.wrench_mpc_command, &rec.wrench_mpc_frames)
                     {
                         let source = &frames[side];
                         let force = source.rotation * command[side].fixed_rows::<3>(3);
@@ -7277,7 +7321,7 @@ fn main() {
                 }
                 let valid =
                     |w: &na::SVector<f64, 6>| pose.is_some() && w.iter().all(|v| v.is_finite());
-                let planned_support = match support {
+                let planned_support = match rec.support {
                     Support::Double => true,
                     Support::Single { stance, .. } => stance == side,
                 };
@@ -7289,7 +7333,7 @@ fn main() {
                     valid(&planned),
                     valid(&wbc),
                     measured_c.sole_wrench_valid[side],
-                    ctl.diag_mpc_time.map_or(-1.0, |stamp| t - stamp)
+                    rec.diag_mpc_time.map_or(-1.0, |stamp| t - stamp)
                 )
                 .unwrap();
                 for wrench in [
@@ -7353,7 +7397,7 @@ fn main() {
                 pre,
                 &robot_taus,
                 measured_pre,
-                [f_qp_w[0][2], f_qp_w[1][2]],
+                [rec.f_qp_w[0][2], rec.f_qp_w[1][2]],
                 [last.f_w[0][2], last.f_w[1][2]],
             );
         }
@@ -7376,7 +7420,7 @@ fn main() {
             writeln!(file,
                 "{t:.6},{position:.9},{velocity:.9},{:.9},{upper:.9},{:.9},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{post_q:.9},{post_v:.9},{:.9},{:.9},{:.9},{:.9},{:.9}",
                 jlim_cfg.q_max[row], extracted.qddot[vi], measured_pre[1],
-                f_qp_w[1][0], f_qp_w[1][1], f_qp_w[1][2],
+                rec.f_qp_w[1][0], rec.f_qp_w[1][1], rec.f_qp_w[1][2],
                 measured_c.f_w[1][0], measured_c.f_w[1][1],
                 rig.sim.qacc()[mjvi], rig.sim.qfrc_constraint()[mjvi],
                 rig.sim.qfrc_passive()[mjvi], rig.sim.qfrc_actuator()[mjvi], robot_taus[ji],
