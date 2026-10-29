@@ -31,6 +31,25 @@ pub struct MeasuredContact {
     pub patch_w: [[f64; 2]; 2],
     /// World-frame contact force per foot, directly comparable with the QP's.
     pub f_w: [[f64; 3]; 2],
+    /// Full ground-contact wrench [mx,my,mz,fx,fy,fz] at the sole centre,
+    /// expressed in the actual MuJoCo foot frame. Includes contact couples.
+    /// Unlike legacy CoP fields, no stale kinematic `data` pose is used here.
+    pub sole_wrench: [[f64; 6]; 2],
+    pub sole_wrench_valid: [bool; 2],
+}
+
+/// Shift a world contact wrench to a sole origin, then rotate both parts.
+pub fn contact_wrench_in_sole(
+    contact_position: &na::Vector3<f64>,
+    force: &na::Vector3<f64>,
+    torque: &na::Vector3<f64>,
+    sole_origin: &na::Vector3<f64>,
+    sole_rotation: &na::Matrix3<f64>,
+) -> na::SVector<f64, 6> {
+    let moment =
+        sole_rotation.transpose() * (torque + (contact_position - sole_origin).cross(force));
+    let force = sole_rotation.transpose() * force;
+    na::SVector::<f64, 6>::new(moment.x, moment.y, moment.z, force.x, force.y, force.z)
 }
 
 /// Force-weighted mean of the ground contact points on each foot, plus the
@@ -42,16 +61,75 @@ pub fn measure_contacts(
     friction_mu: f64,
 ) -> MeasuredContact {
     let mut out = MeasuredContact::default();
+    let sole_frames: [Option<(na::Vector3<f64>, na::Matrix3<f64>)>; 2] =
+        std::array::from_fn(|side| {
+            let link = rig.prof.foot_links[side];
+            let position = rig.sim.body_world_position(link)?;
+            let rotation = rig
+                .sim
+                .body_world_orientation(link)?
+                .to_rotation_matrix()
+                .into_inner();
+            let origin = na::Vector3::from_column_slice(&position)
+                + rotation
+                    * na::Vector3::new(rig.prof.sole_centre_x, 0.0, -rig.prof.sole_below_origin);
+            origin
+                .iter()
+                .chain(rotation.iter())
+                .all(|v| v.is_finite())
+                .then_some((origin, rotation))
+        });
+    out.sole_wrench_valid = sole_frames.each_ref().map(Option::is_some);
     let mut acc = [[0.0_f64; 4]; 2]; // [sum fz*x, fz*y, fz*z, sum fz]
     let mut ft = [[0.0_f64; 2]; 2];
     for c in rig.sim.contacts() {
-        let name = if c.body1.is_empty() { &c.body2 } else { &c.body1 };
-        let side = match name.as_str() {
-            n if n == rig.prof.foot_links[0] => 0,
-            n if n == rig.prof.foot_links[1] => 1,
+        // A stance contact is foot <-> walkable surface. The surface used to
+        // be only the ground PLANE (empty body name); scenery boxes welded
+        // to the world -- staircase treads, a spawn platform -- are named
+        // bodies, and the old "one side is empty" test silently dropped
+        // every contact with them: a foot standing on a tread measured zero
+        // force, no CoP, no slip. Identify the foot by name on EITHER side
+        // and require the other side to be walkable; a foot touching a
+        // robot link (a kicked shin) stays excluded as before.
+        let foot_of = |n: &str| -> Option<usize> {
+            if n == rig.prof.foot_links[0] {
+                Some(0)
+            } else if n == rig.prof.foot_links[1] {
+                Some(1)
+            } else {
+                None
+            }
+        };
+        let walkable = |n: &str| n.is_empty() || n.starts_with("stair");
+        let (side, foot_is_first) = match (foot_of(&c.body1), foot_of(&c.body2)) {
+            (Some(s), None) if walkable(&c.body2) => (s, true),
+            (None, Some(s)) if walkable(&c.body1) => (s, false),
             _ => continue,
         };
-        let fz = c.force_world[2];
+        // The plane path always had the foot as body2; keep that force
+        // convention, flipping when the foot is on the other end.
+        let sgn = if foot_is_first { -1.0 } else { 1.0 };
+        let fw = [
+            sgn * c.force_world[0],
+            sgn * c.force_world[1],
+            sgn * c.force_world[2],
+        ];
+        if let Some((origin, rotation)) = &sole_frames[side] {
+            let force = na::Vector3::from_column_slice(&fw);
+            let torque = na::Vector3::from_column_slice(&c.torque_world) * sgn;
+            let wrench = contact_wrench_in_sole(
+                &na::Vector3::from_column_slice(&c.pos),
+                &force,
+                &torque,
+                origin,
+                rotation,
+            );
+            for j in 0..6 {
+                out.sole_wrench[side][j] += wrench[j];
+            }
+            out.sole_wrench_valid[side] &= out.sole_wrench[side].iter().all(|v| v.is_finite());
+        }
+        let fz = fw[2];
         if fz <= 0.0 {
             continue;
         }
@@ -59,8 +137,8 @@ pub fn measure_contacts(
             acc[side][k] += fz * c.pos[k];
         }
         acc[side][3] += fz;
-        ft[side][0] += c.force_world[0];
-        ft[side][1] += c.force_world[1];
+        ft[side][0] += fw[0];
+        ft[side][1] += fw[1];
     }
     for side in 0..2 {
         let fz = acc[side][3];
@@ -161,7 +239,11 @@ impl TrajLog {
             println!("logging trajectory to {path}");
             f
         });
-        TrajLog { file, joints, n_extra: extra.len() }
+        TrajLog {
+            file,
+            joints,
+            n_extra: extra.len(),
+        }
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -171,7 +253,10 @@ impl TrajLog {
     pub fn write(&mut self, rig: &BipedRig, r: &Row) {
         let Some(f) = self.file.as_mut() else { return };
         let p = rig.sim.body_world_position(&rig.robot.root_link).unwrap();
-        let qq = rig.sim.body_world_orientation(&rig.robot.root_link).unwrap();
+        let qq = rig
+            .sim
+            .body_world_orientation(&rig.robot.root_link)
+            .unwrap();
         let t = r.t;
         let z_ref = r.com_ref_z;
         let y_ref = r.com_ref_y;
@@ -179,21 +264,40 @@ impl TrajLog {
         write!(
             f,
             "{t:.4},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{z_ref:.5},{:.5}",
-            p[0], p[1], p[2], qq.w, qq.i, qq.j, qq.k,
-            r.com.x, r.com.y, r.com.z,
-            r.tilt
+            p[0], p[1], p[2], qq.w, qq.i, qq.j, qq.k, r.com.x, r.com.y, r.com.z, r.tilt
         )
         .unwrap();
         write!(
             f,
             ",{y_ref:.5},{nc},{:.5},{:.5},{:.6},{:.5},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}",
-            r.swing_z, r.trunk_tilt, r.foot_z, r.foot_vz,
-            r.acc_dbg[0], r.acc_dbg[1], r.a_com.x, r.a_com.y, r.a_com.z, r.rp_ref[0], r.rp_ref[1]
+            r.swing_z,
+            r.trunk_tilt,
+            r.foot_z,
+            r.foot_vz,
+            r.acc_dbg[0],
+            r.acc_dbg[1],
+            r.a_com.x,
+            r.a_com.y,
+            r.a_com.z,
+            r.rp_ref[0],
+            r.rp_ref[1]
         )
         .unwrap();
-        write!(f, ",{},{:.5},{:.5}", u8::from(r.degraded), r.cop_box.0, r.cop_box.1).unwrap();
+        write!(
+            f,
+            ",{},{:.5},{:.5}",
+            u8::from(r.degraded),
+            r.cop_box.0,
+            r.cop_box.1
+        )
+        .unwrap();
         write!(f, ",{:.4},{:.4}", r.measured.slip[0], r.measured.slip[1]).unwrap();
-        write!(f, ",{:.6},{:.6}", r.measured.patch_w[0][0], r.measured.patch_w[0][1]).unwrap();
+        write!(
+            f,
+            ",{:.6},{:.6}",
+            r.measured.patch_w[0][0], r.measured.patch_w[0][1]
+        )
+        .unwrap();
         for side in 0..2 {
             for src in [&r.f_qp_w, &r.measured.f_w] {
                 let v = src[side];
@@ -207,15 +311,30 @@ impl TrajLog {
             }
         }
         for n in &self.joints {
-            let a = rig.robot.joint_map.get(*n).map(|&ji| rig.robot.joint_positions[ji]).unwrap_or(0.0);
+            let a = rig
+                .robot
+                .joint_map
+                .get(*n)
+                .map(|&ji| rig.robot.joint_positions[ji])
+                .unwrap_or(0.0);
             write!(f, ",{a:.5}").unwrap();
         }
         for n in &self.joints {
-            let tq = rig.robot.joint_map.get(*n).map(|&ji| r.taus[ji]).unwrap_or(0.0);
+            let tq = rig
+                .robot
+                .joint_map
+                .get(*n)
+                .map(|&ji| r.taus[ji])
+                .unwrap_or(0.0);
             write!(f, ",{tq:.5}").unwrap();
         }
         for n in &self.joints {
-            let lm = rig.robot.joint_map.get(*n).map(|&ji| rig.robot.joints[ji].effort).unwrap_or(0.0);
+            let lm = rig
+                .robot
+                .joint_map
+                .get(*n)
+                .map(|&ji| rig.robot.joints[ji].effort)
+                .unwrap_or(0.0);
             write!(f, ",{lm:.3}").unwrap();
         }
         assert_eq!(
@@ -227,5 +346,47 @@ impl TrajLog {
             write!(f, ",{x:.6}").unwrap();
         }
         writeln!(f).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod wrench_tests {
+    use super::*;
+    #[test]
+    fn contact_wrench_translation_rotation_and_body_reversal() {
+        let rotation =
+            na::Rotation3::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_2).into_inner();
+        let origin = na::Vector3::new(1.0, 2.0, 3.0);
+        let point = origin + na::Vector3::new(1.0, 0.0, 0.0);
+        let force = na::Vector3::new(0.0, 2.0, 3.0);
+        let torque = na::Vector3::new(4.0, 5.0, 6.0);
+        // World moment = [4,2,8]; a 90 degree sole yaw maps it to [2,-4,8].
+        let actual = contact_wrench_in_sole(&point, &force, &torque, &origin, &rotation);
+        let expected = na::SVector::<f64, 6>::new(2.0, -4.0, 8.0, 2.0, 0.0, 3.0);
+        assert!((actual - expected).amax() < 1e-12);
+        let reversed = contact_wrench_in_sole(&point, &(-force), &(-torque), &origin, &rotation);
+        assert!((reversed + actual).amax() < 1e-12);
+    }
+    #[test]
+    fn separated_contacts_and_free_moments_accumulate_about_same_origin() {
+        let origin = na::Vector3::zeros();
+        let rotation = na::Matrix3::identity();
+        let force = na::Vector3::new(0.0, 0.0, 10.0);
+        let torque = na::Vector3::new(0.0, 0.0, 0.2);
+        let a = contact_wrench_in_sole(
+            &na::Vector3::new(0.1, 0.0, 0.0),
+            &force,
+            &torque,
+            &origin,
+            &rotation,
+        );
+        let b = contact_wrench_in_sole(
+            &na::Vector3::new(-0.1, 0.0, 0.0),
+            &force,
+            &torque,
+            &origin,
+            &rotation,
+        );
+        assert!((a + b - na::SVector::<f64, 6>::new(0.0, 0.0, 0.4, 0.0, 0.0, 20.0)).amax() < 1e-12);
     }
 }

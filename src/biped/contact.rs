@@ -24,6 +24,15 @@ pub type AnchorPose = (na::Vector3<f64>, na::Matrix3<f64>);
 #[derive(Default, Clone)]
 pub struct Anchors {
     pub a: [Option<AnchorPose>; 2],
+    /// Vertical offset added to the anchor when the Baumgarte error is formed,
+    /// in metres, positive up. The anchor itself is left alone so that
+    /// [`Anchors::leak`] keeps tracking the real foot.
+    ///
+    /// This is the actuation channel for foot force difference control: with a
+    /// unilateral contact the only way to ask a foot for more normal force is
+    /// to ask it to go down. Zero everywhere unless a caller sets it, which
+    /// makes the whole mechanism inert by default.
+    pub bias_z: [f64; 2],
 }
 
 impl Anchors {
@@ -112,7 +121,8 @@ impl Anchors {
             dr[(0, 2)] - dr[(2, 0)],
             dr[(1, 0)] - dr[(0, 1)],
         ) * 0.5;
-        let e_lin = p0 - pos;
+        let mut e_lin = p0 - pos;
+        e_lin.z += self.bias_z[side];
         let mut acc_ref = na::DVector::zeros(6);
         for k in 0..3 {
             acc_ref[k] = kp * e_ang[k] - kd * vel[k];
@@ -124,7 +134,11 @@ impl Anchors {
     /// Linear part of the pose error against the anchor, for logging.
     pub fn lin_error(&self, side: usize, pos: na::Vector3<f64>) -> na::Vector3<f64> {
         match self.a[side] {
-            Some((p0, _)) => p0 - pos,
+            Some((p0, _)) => {
+                let mut e = p0 - pos;
+                e.z += self.bias_z[side];
+                e
+            }
             None => na::Vector3::zeros(),
         }
     }
@@ -180,11 +194,7 @@ pub fn sole_selection(
             sole_offset_local[2],
         );
     let rt = rot.transpose();
-    let skew = na::Matrix3::new(
-        0.0, -r_w.z, r_w.y,
-        r_w.z, 0.0, -r_w.x,
-        -r_w.y, r_w.x, 0.0,
-    );
+    let skew = na::Matrix3::new(0.0, -r_w.z, r_w.y, r_w.z, 0.0, -r_w.x, -r_w.y, r_w.x, 0.0);
     let top_right = -(rt * skew);
     let mut sel = na::DMatrix::zeros(6, forces_size);
     for i in 0..3 {

@@ -31,10 +31,21 @@ impl Default for DegradedTally {
 
 impl DegradedTally {
     pub fn new() -> Self {
-        DegradedTally { n: 0, by_level: vec![0; 12], final_level_names: Vec::new() }
+        DegradedTally {
+            n: 0,
+            by_level: vec![0; 12],
+            final_level_names: Vec::new(),
+        }
     }
 
-    pub fn observe(&mut self, status: &SolveStatus, t: f64, tick: usize, nc: usize, level_names: &[&str]) {
+    pub fn observe(
+        &mut self,
+        status: &SolveStatus,
+        t: f64,
+        tick: usize,
+        nc: usize,
+        level_names: &[&str],
+    ) {
         self.final_level_names = level_names.iter().map(|s| s.to_string()).collect();
         if matches!(status, SolveStatus::Optimal) {
             return;
@@ -47,7 +58,9 @@ impl DegradedTally {
         }
         if self.n <= 6 || tick % 200 == 0 {
             let nm = match status {
-                SolveStatus::Degraded { level, .. } => level_names.get(*level).copied().unwrap_or("?"),
+                SolveStatus::Degraded { level, .. } => {
+                    level_names.get(*level).copied().unwrap_or("?")
+                }
                 _ => "-",
             };
             println!("    [degraded] t={t:6.3} nc={nc} level={nm} status={status:?}");
@@ -62,7 +75,13 @@ impl DegradedTally {
             .enumerate()
             .filter(|(_, c)| **c > 0)
             .map(|(i, c)| {
-                format!("{}={c}", self.final_level_names.get(i).map(|s| s.as_str()).unwrap_or("?"))
+                format!(
+                    "{}={c}",
+                    self.final_level_names
+                        .get(i)
+                        .map(|s| s.as_str())
+                        .unwrap_or("?")
+                )
             })
             .collect();
         if !parts.is_empty() {
@@ -112,7 +131,13 @@ pub struct CommandPolicy {
 }
 
 impl CommandPolicy {
-    pub fn new(n_joints: usize, fallback_max_level: usize, hold_bridge: u32, hold_last: bool, blend_ticks: u32) -> Self {
+    pub fn new(
+        n_joints: usize,
+        fallback_max_level: usize,
+        hold_bridge: u32,
+        hold_last: bool,
+        blend_ticks: u32,
+    ) -> Self {
         CommandPolicy {
             fallback_max_level,
             hold_bridge,
@@ -166,16 +191,25 @@ impl CommandPolicy {
                 // with the torque columns byte-identical throughout.)
                 if self.consec_degraded == 10 {
                     let src = if self.hold_last {
-                        format!("still commanding the torque from t={:.3}", t - self.consec_degraded as f64 * dt)
+                        format!(
+                            "still commanding the torque from t={:.3}",
+                            t - self.consec_degraded as f64 * dt
+                        )
                     } else {
                         "running on gravity comp + posture PD".to_string()
                     };
-                    println!("  [OPEN LOOP] t={t:6.3} nc={nc}: {} consecutive degraded solves, {src}", self.consec_degraded);
+                    println!(
+                        "  [OPEN LOOP] t={t:6.3} nc={nc}: {} consecutive degraded solves, {src}",
+                        self.consec_degraded
+                    );
                 }
             }
             _ => {
                 if self.consec_degraded >= 10 {
-                    println!("  [recovered] t={t:6.3} after {} degraded ticks", self.consec_degraded);
+                    println!(
+                        "  [recovered] t={t:6.3} after {} degraded ticks",
+                        self.consec_degraded
+                    );
                 }
                 self.consec_degraded = 0;
                 // Only a clean solve becomes the held command. A level-3
@@ -266,7 +300,8 @@ pub fn write_to_plant(
                 let qdd = qddot[vi];
                 let q_now = rig.robot.joint_positions[ji];
                 let qd_now = v[vi];
-                rig.sim.set_position_target(ji, q_now + qd_now * dt + 0.5 * qdd * dt * dt);
+                rig.sim
+                    .set_position_target(ji, q_now + qd_now * dt + 0.5 * qdd * dt * dt);
                 rig.sim.set_position_target_velocity(ji, qd_now + qdd * dt);
                 rig.sim.set_torque_feedforward(ji, robot_taus[ji]);
             }
