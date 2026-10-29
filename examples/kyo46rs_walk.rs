@@ -185,14 +185,14 @@ fn main() {
         DcmPlan, StepTiming, SupportBox, com_accel_xy, commanded_zmp, dcm_of, step_timing,
     };
     use articara::biped::gait::{
-        ContactCorrection, ContactPhase, FootstepPlan, Footsteps, GaitParams, GaitPlan, Support,
+        ContactCorrection, FootstepPlan, Footsteps, GaitParams, GaitPlan, Support,
         swing_position, swing_velocity,
     };
     use articara::biped::log::{Row, TrajLog, measure_contacts};
     use articara::biped::profile;
     use articara::biped::rig::{BipedRig, CtrlMode, G, RigOptions};
     use articara::biped::tasks as bt;
-    use misa_wbc::{AsAffine, Dynamics, Formulation, SolveConfig, Solver, tasks};
+    use misa_wbc::{Dynamics, Formulation, SolveConfig, Solver, tasks};
     use nalgebra as na;
     use std::f64::consts::PI;
     use std::io::Write;
@@ -1951,7 +1951,6 @@ fn main() {
         "CONTACT_ON_BW must exceed the 0.02 BW release threshold and be <= 1"
     );
     correction.on_n = contact_on_bw * total_mass * G;
-    correction.scheduled_reentry = flag("CONTACT_SCHEDULED_REENTRY", false);
     // P2-1 contact planner (doc/from_claude/20260923_p2_contact_planner_design_v2.md).
     // Predictive replacement for ADAPT_STEP/ADAPT_TIME (both removed, never
     // adopted): picks the landing shift AND the end of the current single
@@ -2075,31 +2074,10 @@ fn main() {
     let stair_roll_patch = flag("STAIR_ROLL_PATCH", false);
     let slope_heel_cut = env_f64("SLOPE_HEEL_CUT", 0.0).max(0.0);
     let slope_heel_cut_max = env_f64("SLOPE_HEEL_CUT_MAX", 0.05).clamp(0.0, 0.08);
-    // Damp the LOAD SPLIT between two stance feet. Measured on the fixed-arm
-    // stair transfer: with both feet down at different heights the QP has a
-    // redundant load distribution, and it oscillates -- fz went
-    // 15/55 -> 79/17 -> 26/67 N on a ~50 ms period, the CoM stopped rising
-    // and the robot toppled. Free arms damp this implicitly (load-share
-    // changes 3.6%/tick vs 9.0%/tick fixed), which is what the arms were
-    // really doing for stairs. The split lives in the NULL SPACE of the
-    // contact/CoM tasks, so a term just above the regulariser reaches it
-    // without competing with them. Reference is the previous tick's MEASURED
-    // normal force, so it damps rather than commands.
-    //
-    // FALSIFIED, kept only so the experiment is not repeated. Both forms are
-    // WORSE than undamped at every weight tried (0.05 / 0.2 / 0.5):
-    //   - first difference (track the previous fz): resists the INTENDED
-    //     transfer too; fell at 2.9-7.9 s against a 13.0 s baseline.
-    //   - second difference (track 2*fz_prev - fz_prev2, so a steady ramp is
-    //     free): differentiating a measured contact force twice amplifies its
-    //     noise; weight 0.5 could not even stand (fell at 0.5 s).
-    // A load-split damper needs a reference that is not built from measured
-    // force differences -- a planned share, or a filtered state estimate.
-    let contact_fz_rate = env_f64("CONTACT_FZ_RATE", 0.0).max(0.0);
-    // Opt-in soft load target for either sole during double support. This
-    // changes the CoM-level objective; it is not a hard contact-force bound.
-    let ds_fz_floor_weight = env_f64("DS_FZ_FLOOR_WEIGHT", 0.0).max(0.0);
-    let ds_fz_floor_bw = env_f64("DS_FZ_FLOOR_BW", 0.12).max(0.0);
+    // (CONTACT_FZ_RATE, a load-split damper on the measured normal force,
+    // was FALSIFIED -- worse than undamped at every weight -- and is
+    // removed, as is DS_FZ_FLOOR_WEIGHT / _BW, a soft double-support load
+    // floor that was not adopted.)
     let stair_swing_windows: [f64; 4] = {
         let s = std::env::var("STAIR_SWING_WINDOWS").unwrap_or_default();
         let v: Vec<f64> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
@@ -2191,11 +2169,8 @@ fn main() {
     // The confirmation's xy / z tolerances (see LandingTiming::update).
     landing_timing.xy_tol = env_f64("LAND_CONFIRM_XY", landing_timing.xy_tol);
     landing_timing.z_tol = env_f64("LAND_CONFIRM_Z", landing_timing.z_tol);
-    // P2-2: confirm a landing on real load (see LandingTiming::load_confirm).
-    // Default OFF. When it confirms, the plan is moved onto the actual foot
-    // for THIS landing only (`shift_next`), so the xy error is absorbed by
-    // the plan instead of being waited out.
-    let land_by_load = flag("LAND_BY_LOAD", false);
+    // (P2-2 LAND_BY_LOAD, confirming a landing on real load, was not
+    // adopted and is removed.)
     // Admit a CONFIRMED landing to the contact set on the schedule instead
     // of waiting for the 10% BW load hysteresis (`ContactCorrection::admit`).
     // The landing gate already certified the sole on its tread (xy/z within
@@ -2203,7 +2178,6 @@ fn main() {
     // load needs the QP to model the contact first. Default off = shipped.
     let contact_admit_confirmed = flag("CONTACT_ADMIT_CONFIRMED", false);
     let contact_admit_scheduled = flag("CONTACT_ADMIT_SCHEDULED", false);
-    let contact_admit_scheduled_off_stairs = flag("CONTACT_ADMIT_SCHEDULED_OFF_STAIRS", false);
     let mut last_scheduled_admit: [Option<usize>; 2] = [None; 2];
     let com_height_ds_frac: Option<f64> = std::env::var("COM_HEIGHT_DS_FRAC")
         .ok()
@@ -2260,20 +2234,8 @@ fn main() {
     //     A = 1 - (1 - e^{-wT})/(wT),  B = (1 - e^{-wT})/(wT) - e^{-wT}
     // solved for p0 and clamped to the DS box. Default off.
     let ds_feasible_ramp = flag("DS_FEASIBLE_RAMP", false);
-    // While a stair landing WAITS on one leg, hold the DCM reference at the
-    // stance sole instead of pre-loading it toward the next foot. The plan's
-    // backward recursion makes the swing's end DCM whatever the following
-    // double support needs to reach the next stance -- 50-100 mm ahead of
-    // the stance sole -- so a 2.1 s extended stance ends with the CoP on the
-    // toe and the ankle pitch at its 35 N.m limit (measured 2026-09-24 on
-    // the champion at 80 mm: xi tracked xi_ref to within 5 mm all the way
-    // to the toe, then the swing leg was thrown up as the QP's hip strategy
-    // and the run fell at 27.4 s). With the hold, the double support's ZMP
-    // is solved so the swing's end DCM equals the stance's rolled end point
-    // (xi_dot = 0 there), clamped to the planned two-foot box; the carry to
-    // the next foot then happens inside the double support, where two feet
-    // can pay for it. Default off = shipped plan.
-    let land_wait_hold = flag("LAND_WAIT_HOLD", false);
+    // (LAND_WAIT_HOLD, holding the DCM reference at the stance sole while a
+    // stair landing waits, was not adopted and is removed.)
     // Lower the CoM height target while the feet are in the stair zone.
     // Measured 2026-09-24 on G1: the second step onto an 80 mm riser puts
     // the swing sole 0.20 m ahead of the stance sole with the CoM 0.684 m
@@ -2319,13 +2281,11 @@ fn main() {
     let stair_zone_crouch = env_f64("STAIR_ZONE_CROUCH", 0.0).clamp(0.0, 0.15);
     let stair_crouch_lead = env_f64("STAIR_ZONE_CROUCH_LEAD", 0.30).max(0.0);
     let stair_crouch_tail = env_f64("STAIR_ZONE_CROUCH_TAIL", 0.60).max(0.0);
-    let mut n_wait_hold = 0u32;
     // Per side: the DOUBLE-SUPPORT slice that follows a certified landing.
     // The foot is a planned contact for that slice and is re-admitted
     // whenever the load hysteresis drops it there; cleared afterwards.
     let mut confirmed_admit: [Option<usize>; 2] = [None; 2];
     let mut n_confirmed_admissions = 0u32;
-    landing_timing.load_confirm = land_by_load;
     // Event-driven contact (doc/from_claude/20261004_event_driven_contact_design.md):
     // touchdown = measured load with the sole at its planned height (no xy
     // gate), the plan is moved onto the foot, a descending swing ends at the
@@ -2384,9 +2344,6 @@ fn main() {
     // 0 = a descending swing keeps its extension as a dwell too (double
     // support starts at the deadline, as the historical timeout did).
     let contact_event_end_on_touch = flag("CONTACT_EVENT_END_ON_TOUCH", true);
-    landing_timing.load_confirm_threshold = env_f64("LAND_BY_LOAD_FRAC", 0.20) * total_mass * G;
-    landing_timing.load_confirm_ticks = env_f64("LAND_BY_LOAD_TICKS", 3.0).max(1.0) as u32;
-    let mut n_land_by_load_shift = 0u32;
     // P2-3': after a landing confirmation cuts the single support at `t`, the
     // double support that follows is the nominal 0.38 s no matter where the
     // DCM is. Measured 2026-09-23/24 (position gate, load gate, transfer,
@@ -2491,31 +2448,11 @@ fn main() {
     // never confirms a foot that is flat on the ground, the swing times out
     // and the MPC then moves the landing 15 cm while the foot is down and
     // drags it. Unset = LAND_CONFIRM_XY (bit-identical).
-    let land_confirm_xy_desc_cp = flag("LAND_CONFIRM_XY_DESC_CP", false);
-    // Keep the descent extension on swings the contact planner retimed.
-    // Measured 2026-10-04 (course, swing feed-forward on): the step-down foot
-    // is 3 mm above the ground at the retimed deadline, the extension is 0
-    // there, the swing times out and the MPC moves the landing 4 cm under a
-    // foot that touches down 15 ms later. Default off = bit-identical.
-    // (A flag in the first version, which kept the whole 0.25 s; measured:
-    // 3 steps down 142 -> 133, the foot rests unloaded for the full wait.
-    // Now the extension itself, in seconds, for those swings only.)
-    let land_extend_desc_cp = env_f64("COM_LAND_EXTEND_DESC_CP", 0.0).max(0.0);
-    // Force gate of the confirmation for DESCENDING swings, as a fraction
-    // of body weight. Measured 2026-10-04 (3 steps down, feed-forward on):
-    // the foot sits flat on the tread within 5 mm of its goal carrying 12 N
-    // -- under the 17 N gate, because the swing task still holds the leg --
-    // and waits out the whole extension. Unset = LAND_CONFIRM_FZ_FRAC.
-    let land_confirm_fz_desc: Option<f64> = std::env::var("LAND_CONFIRM_FZ_DESC_FRAC").ok().and_then(|v| v.parse::<f64>().ok()).map(|f| f.max(0.0) * total_mass * G);
-    // Forward tolerance of the confirmation for RISING swings. Measured
-    // 2026-10-04: the champion's ascent never confirms a landing (the swing
-    // overshoots by 15-26 mm, outside the 12 mm gate) and so always waits out
-    // COM_LAND_EXTEND_RISE -- the CEM tuned that 1.08 s as a fixed dwell.
-    // With the swing feed-forward (TRACKING_CUBIC_FF) the landing is within
-    // 6 mm, confirms at once, double support starts 1 s early and the DCM
-    // error runs to 0.1 (1 step up 192 -> 114). 0 = never confirm a rising
-    // swing, i.e. keep that dwell explicitly. Unset = LAND_CONFIRM_XY.
-    let land_confirm_xy_rise: Option<f64> = std::env::var("LAND_CONFIRM_XY_RISE").ok().and_then(|v| v.parse().ok());
+    // (LAND_CONFIRM_XY_DESC_CP, COM_LAND_EXTEND_DESC_CP and
+    // LAND_CONFIRM_FZ_DESC_FRAC -- variants of the descent confirmation --
+    // and LAND_CONFIRM_XY_RISE -- confirming rising swings, which ended the
+    // CEM's 1.08 s ascent dwell (1 step up 192 -> 114) -- were not adopted
+    // and are removed.)
     // z tolerance that goes with the wider xy one: the 10 mm default lets
     // the confirmation fire on the HEEL STRIKE of a toe-up foot (sole centre
     // still 8 mm high), 60 ms before the sole is flat (measured: 2 steps x
@@ -2525,14 +2462,6 @@ fn main() {
     landing_timing.max_extension = land_extend_base;
     landing_timing.speed_z = env_f64("COM_LAND_VZ", 0.20).max(0.01);
     landing_timing.speed_xy = env_f64("COM_LAND_VXY", 0.35).max(0.01);
-    // Confirm level landings for the whole run (`LandingTiming::level_steps`).
-    // (`LAND_CONFIRM_LEVEL`, the same only after a completed stair transfer,
-    // went with the transfer.) Measured with the transfer-era recipe: the
-    // confirmation wants 12 mm of xy and 10 mm of z accuracy plus 5% of body
-    // weight, which an ordinary walking step does not reach inside its slice,
-    // so it times out repeatedly and drags the schedule -- the approach fell
-    // at 5.66 s instead of reaching the stair.
-    let land_confirm_level_always = flag("LAND_CONFIRM_LEVEL_ALWAYS", false);
     // Full per-foot wrench MPC for the three-phase stair transfer.
     // Opt-in until the fixed-arm staircase benchmark has been revalidated.
     // Command the swing to the ANKLE pose the footstep plan implies, rather
@@ -2782,26 +2711,9 @@ fn main() {
     // demand +15 m/s^2 -- 1.5 g upward -- and the QP paid for it with a 1.81 BW
     // slam that launched the swing leg to 0.82 m. kyo46rs never dips below
     // 0.85 BW walking on the flat, which is why this went unseen there.
-    let touchdown_ramp = env_f64("TOUCHDOWN_RAMP", 0.0).max(0.0);
-    // Show the QP a scheduled-SWING foot that is nevertheless carrying load.
-    //
-    // `ContactCorrection` drops a commanded swing foot from the contact set
-    // unconditionally, and for good reason -- keeping it as a rigid contact
-    // pins it and the swing task never runs (20 steps became a shuffle, apex
-    // 0.2-1.2 mm). But the QP then solves as if the foot were free while the
-    // plant pushes back through it. Measured on the G1 bring-up: at t=3.050
-    // the left sole carried 0.361 BW with `n_stance == 1`, and the tick the
-    // QP solved against that missing reaction is the tick total support
-    // collapsed 1.03 -> 0.45 BW.
-    //
-    // So admit it, but only as a WEIGHTED contact (ContactMode::Managed is a
-    // weighted objective, not a constraint), at `SWING_CONTACT_SOFT` x the
-    // usual weights, with a force capacity of `SWING_CONTACT_CAP`. Weak enough
-    // to leave the swing its null space, present enough that the reaction is
-    // in the model. 0 = off = shipped behaviour.
-    let swing_contact_soft = env_f64("SWING_CONTACT_SOFT", 0.0).clamp(0.0, 1.0);
-    let swing_contact_on = env_f64("SWING_CONTACT_ON", 0.10).clamp(0.01, 1.0);
-    let swing_contact_cap = env_f64("SWING_CONTACT_CAP", 0.30).clamp(0.02, 1.0);
+    // (TOUCHDOWN_RAMP, ramping a new contact in as a Managed one, and
+    // SWING_CONTACT_SOFT / _ON / _CAP, admitting a loaded swing foot as a
+    // weighted contact, were not adopted and are removed.)
     let mut replan_engaged = false;
     let mut height_plan = articara::biped::preview::HeightPlan::constant(z_com);
     let mut preview_p = steps.mid_xy();
@@ -2822,29 +2734,9 @@ fn main() {
     });
     let mut landing_retimes = 0u32;
     let mut landing_delay = 0.0;
-    let phase_by_contact = flag("PHASE_BY_CONTACT", false);
-    // A late foot gets the step extended rather than the contact set being
-    // told a lie, but not forever -- past this the swing is not coming down
-    // and holding the phase would only stall the robot in single support.
-    let phase_extend_max = env_f64("PHASE_EXTEND", 0.5);
-    // A touchdown is only believed in the last part of the swing. The naive
-    // version -- "any load above 10% of body weight ends the step" -- fires on
-    // a mid-swing scuff, and measured, it cut 61 ms off every 350 ms step and
-    // took the gait from 200 steps to 46. The foot brushing the ground on its
-    // way past is not the end of the step.
-    let phase_min_frac = env_f64("PHASE_MIN_FRAC", 0.75);
-    // ...and it has to be a real load, held for a few ticks, not a graze.
-    let phase_load_frac = env_f64("PHASE_LOAD", 0.30);
-    let phase_ticks = env_f64("PHASE_TICKS", 3.0) as u32;
-    let mut contact_phase = ContactPhase::new(
-        phase_min_frac,
-        phase_load_frac * total_mass * G,
-        phase_ticks,
-        phase_extend_max,
-    );
-    let mut n_early = 0u32;
-    let mut n_late = 0u32;
-    let mut retime_total = 0.0_f64;
+    // (PHASE_BY_CONTACT / PHASE_EXTEND / PHASE_MIN_FRAC / PHASE_LOAD /
+    // PHASE_TICKS, the phase clock advanced by measured contact, are removed;
+    // its summary line keeps the zeros it printed when off.)
     let mut n_replan = 0u32;
     // DIAG_REPLAN=1: print each live replan with its site (diagnostic only).
     let diag_replan = flag("DIAG_REPLAN", false);
@@ -2965,11 +2857,8 @@ fn main() {
     // what it delivered (same reason `push_fx`/`push_fy` are logged).
     let mut hit_f_now: f64 = 0.0;
     let mut fz_prev: [f64; 2] = [0.0; 2];
-    let mut fz_prev2: [f64; 2] = [0.0; 2];
     let mut fz_rate_ema: [f64; 2] = [0.0; 2];
     let mut managed_until: [f64; 2] = [f64::NEG_INFINITY; 2];
-    // When each side last ENTERED the contact set; None while it is out.
-    let mut touchdown_since: [Option<f64>; 2] = [None; 2];
     let mut n_selfcollide = 0u32;
     let mut max_selfcollide_f: f64 = 0.0;
     // ---- disturbance response ------------------------------------------
@@ -3184,27 +3073,13 @@ fn main() {
             });
             let rising = dz_swing.abs() > step_dz_min;
             let descending = dz_swing < -step_dz_min;
-            // LAND_CONFIRM_XY_DESC_CP=1 restricts it to swings whose end the
-            // contact planner has retimed (no landing extension there, so a
-            // missed confirmation goes straight to the timeout). Measured:
-            // applied to every descending swing it removes the 0.25 s dwell
-            // the bare descents rely on (2 steps x 6 cm 46 -> 34).
-            landing_timing.load_threshold_override = if descending { land_confirm_fz_desc } else { None };
             landing_timing.event_end_on_touch = descending && contact_event_end_on_touch;
-            landing_timing.xy_tol_override = if descending
-                && (!land_confirm_xy_desc_cp || (contact_plan_on && cp_retimed_slice == Some(i)))
-            {
-                land_confirm_xy_desc
-            } else if rising && !descending {
-                land_confirm_xy_rise
-            } else {
-                None
-            };
+            landing_timing.xy_tol_override = if descending { land_confirm_xy_desc } else { None };
             // The contact planner owns the end of a step it has retimed; the
             // landing extension must not re-open it (assigned every tick, so
             // the planner's own zeroing would be undone here otherwise).
             landing_timing.max_extension = if contact_plan_on && cp_retimed_slice == Some(i) {
-                if descending { land_extend_desc_cp } else { 0.0 }
+                0.0
             } else if descending {
                 land_extend_desc
             } else if rising {
@@ -3270,14 +3145,6 @@ fn main() {
                     reanchor_total += d.norm();
                 }
             }
-            // LAND_CONFIRM_LEVEL_ALWAYS=1: confirm (and extend) every level
-            // swing from the start.
-            // Measured 2026-10-17 on +5 deg: with the 30 mm gate the slope
-            // swings that counted as stair swings were extended ~1 s each
-            // (11 timeouts) and 27/48 survived; with the 80 mm gate no swing
-            // is confirmed, the landing foot is unloaded at half the
-            // scheduled double-support starts, and 0/48 survive.
-            landing_timing.level_steps = land_confirm_level_always;
             let touchdowns_before = landing_timing.touchdowns;
             let timeouts_before = landing_timing.timeouts;
             let shift = landing_timing.update(&mut gait, &footsteps, &actual, measured_pre, t, dt);
@@ -3310,29 +3177,6 @@ fn main() {
                     zmp_roll,
                 );
             }
-            if land_by_load
-                && let Some((li, lsw, err_xy)) = landing_timing.last_load_confirm.take()
-                && err_xy.norm() > 1e-4
-            {
-                if std::env::var("LAND_BY_LOAD_DEBUG").is_ok() {
-                    let pl = footsteps.at_slice(li).sole[lsw];
-                    let ac = actual.sole[lsw];
-                    println!(
-                        "  [lbl] t={t:.3} slice={li} side={lsw} plan=({:.3},{:+.3},{:+.3}) actual=({:.3},{:+.3},{:+.3}) err_xy=({:+.3},{:+.3}) fz=({:.0},{:.0})",
-                        pl.x, pl.y, pl.z, ac.x, ac.y, ac.z, err_xy.x, err_xy.y, measured_pre[0], measured_pre[1]
-                    );
-                }
-                // plan - actual = err  ->  move the plan by -err onto the foot.
-                footsteps.shift_next(li, lsw, -err_xy);
-                dcm_plan = DcmPlan::from_footsteps_rolled(
-                    &gait,
-                    &footsteps,
-                    z_lip,
-                    zmp_lat_scale,
-                    zmp_roll,
-                );
-                n_land_by_load_shift += 1;
-            }
             if shift != 0.0 || (ds_feasible_on_timeout && landing_timed_out) {
                 if shift != 0.0 {
                     landing_retimes += 1;
@@ -3346,28 +3190,6 @@ fn main() {
                     zmp_roll,
                 );
                 preview_next = t;
-                if land_wait_hold
-                    && let Some((li, _, _)) = landing_timing.clock
-                    && gait.index_at(t) == li
-                    && gait.slices[li].support.swing().is_some()
-                    && li + 1 < gait.slices.len()
-                    && matches!(gait.slices[li + 1].support, Support::Double)
-                    && li + 1 < dcm_plan.segs.len()
-                {
-                    let seg_ds = li + 1;
-                    let hold = dcm_plan.segs[li].p1;
-                    let d = (-omega * dcm_plan.segs[seg_ds].duration).exp();
-                    let target = dcm_plan.xi_eos[seg_ds];
-                    let ds_box = SupportBox::from_stance_yawed(
-                        footsteps.at_slice(seg_ds),
-                        Support::Double,
-                        (sole_half_l * cop_frac, sole_half_w * cop_frac),
-                        zmp_margin,
-                    );
-                    let p = ds_box.clamp(&((hold - target * d) / (1.0 - d))).0;
-                    dcm_plan.set_segment_zmp(seg_ds, p);
-                    n_wait_hold += 1;
-                }
                 if ds_feasible {
                     let ds = gait.index_at(t + 1e-6);
                     if matches!(gait.slices[ds].support, Support::Double) {
@@ -3580,26 +3402,6 @@ fn main() {
             }
         }
 
-        // ---- contact-driven retiming, before anything reads the phase ---
-        if phase_by_contact && !com_replan {
-            let shift = contact_phase.update(&mut gait, t, dt, measured_pre);
-            if shift != 0.0 {
-                retime_total += shift.abs();
-                if shift > 0.0 {
-                    n_early += 1;
-                } else {
-                    n_late += 1;
-                }
-                dcm_plan = DcmPlan::from_footsteps_rolled(
-                    &gait,
-                    &footsteps,
-                    z_lip,
-                    zmp_lat_scale,
-                    zmp_roll,
-                );
-            }
-        }
-
         // ---- schedule -> contact set -----------------------------------
         // By value, not by reference: `Slice` is `Copy`, and holding a
         // borrow on `gait` here is what stops the step-timing adaptation
@@ -3708,10 +3510,9 @@ fn main() {
                 }
             }
         }
-        fz_prev2 = fz_prev;
         fz_prev = fz_meas;
         let measured = measured_c;
-        let mut stance_sides: Vec<usize> = if contact_driven {
+        let stance_sides: Vec<usize> = if contact_driven {
             let (mut sides, mut fresh) = correction.update(support, fz_meas);
             // Planned admission on ANY scheduled touchdown, flat included:
             // entering a double support, a foot the schedule now calls
@@ -3720,14 +3521,9 @@ fn main() {
             // 2026-09-24 under the weighted QP: a gentle flat touchdown
             // carried 5 N, stayed under the 10% BW hysteresis for the whole
             // double support, and the QP balanced on the rear foot alone.
-            // CONTACT_ADMIT_SCHEDULED_OFF_STAIRS=1: only outside the stair
-            // zone (the stair landings have their own certificate path).
-            let in_stair_zone = stairs.as_ref().is_some_and(|st| {
-                let x = steps.mid_xy().x;
-                x >= st.start - stair_crouch_lead && x <= st.landing_start() + stair_crouch_tail
-            });
+            // (CONTACT_ADMIT_SCHEDULED_OFF_STAIRS, only outside the stair
+            // zone, is removed.)
             if contact_admit_scheduled
-                && !(contact_admit_scheduled_off_stairs && in_stair_zone)
                 && matches!(support, Support::Double)
             {
                 let now_slice = gait.index_at(t);
@@ -3832,38 +3628,6 @@ fn main() {
         } else {
             (0..2).filter(|&s| support.is_stance(s)).collect()
         };
-        // Admit a loaded swing foot as a soft contact (SWING_CONTACT_SOFT).
-        // Last, so every stair rule above still decides the real contact set.
-        // The anchor is rewritten every tick at the foot's own position with z
-        // on the plan surface: a soft contact is here to tell the QP a
-        // reaction exists, not to pull the foot anywhere, and a stale anchor
-        // is exactly what strands a foot in mid-air at kp_c = 1600.
-        let mut soft_sides = [false; 2];
-        if swing_contact_soft > 0.0 {
-            for side in 0..2 {
-                if support.swing() == Some(side)
-                    && !stance_sides.contains(&side)
-                    && fz_meas[side] >= swing_contact_on * total_mass * G
-                {
-                    let mi = rig.foot_mi[side];
-                    let mut p = misarta::se3::translation(&data.oMi[mi]);
-                    p.z = steps.sole[side].z + prof.sole_below_origin;
-                    anchors.touchdown(side, p, foot_rot_at(side, steps.yaw[side]));
-                    stance_sides.push(side);
-                    soft_sides[side] = true;
-                }
-            }
-        }
-        // Touchdown ramp bookkeeping, after `stance_sides` is final for the
-        // tick. A side that leaves the set forgets its clock, so a foot that
-        // chatters in and out re-ramps each time rather than latching admitted.
-        for side in 0..2 {
-            if stance_sides.contains(&side) {
-                touchdown_since[side].get_or_insert(t);
-            } else {
-                touchdown_since[side] = None;
-            }
-        }
         let stance: Vec<usize> = stance_sides.iter().map(|&s| rig.foot_mi[s]).collect();
         let nc = stance.len();
 
@@ -3885,45 +3649,13 @@ fn main() {
             (None, None)
         };
         let ramp_frac = env_f64("LOAD_RAMP_FRAC", 0.6).clamp(0.05, 1.0);
-        // LOAD_RAMP_TD=1: the foot that has just landed may keep the share it
-        // is ALREADY carrying. The ramp below starts the landed foot at zero
-        // capacity; on flat ground the body still rests on it passively, but
-        // on a downslope the landed foot is the LOWER one, the QP stands on
-        // the higher trailing foot and the landed sole hovers unloaded for
-        // the first 0.3 s of double support. Measured 2026-10-15 on -5 deg:
-        // 135 N at touchdown -> 0 N, the lateral ZMP cannot move to it, the
-        // DCM lags 4 cm toward the trailing foot's outer edge, the plan
-        // moves the landing inward and the unloaded foot is dragged 13 cm
-        // across the other one. Unset = the ramp alone (bit-identical).
-        let load_ramp_td = flag("LOAD_RAMP_TD", false);
-        // LOAD_RAMP_CONTACT_T [s]: the landed foot's capacity also ramps from
-        // the tick it ENTERED the contact set, not only from the start of the
-        // double-support slice. Measured 2026-10-28 on G1 v6.18 (backward
-        // 11 N*s at swing 0.26-0.39): the catch step lands ~0.1 s into the
-        // slice, so the slice ramp is already open; on its first contact
-        // tick the QP asks the unloaded foot for -100 N sideways (plant fz
-        // 0 N), the foot slides 1.6-4 cm inward and the DCM ends up past the
-        // new stance sole's outer edge. 0 = off = bit-identical.
-        let load_ramp_contact_t = env_f64("LOAD_RAMP_CONTACT_T", 0.0).max(0.0);
-        let measured_share = {
-            let tot = (measured_pre[0] + measured_pre[1]).max(1e-6);
-            [(measured_pre[0] / tot).clamp(0.0, 1.0), (measured_pre[1] / tot).clamp(0.0, 1.0)]
-        };
+        // (LOAD_RAMP_TD, keeping the share the landed foot already carries,
+        // and LOAD_RAMP_CONTACT_T, ramping from the contact-entry tick too,
+        // were not adopted and are removed.)
         let f_share = |side: usize| -> f64 {
-            if soft_sides[side] {
-                // A capacity, not a target: the cone and CoP box shrink with
-                // it, so the QP can account for a reaction here without being
-                // able to lean on the foot it is still trying to lift.
-                return swing_contact_cap;
-            }
             if let Some(l) = landing {
                 if l == side {
-                    let mut ramp = (slice_frac / ramp_frac).clamp(0.0, 1.0);
-                    if load_ramp_contact_t > 0.0 {
-                        let since = touchdown_since[side].map_or(0.0, |t0| ((t - t0) / load_ramp_contact_t).clamp(0.0, 1.0));
-                        ramp = ramp.min(since);
-                    }
-                    return if load_ramp_td { ramp.max(measured_share[side]) } else { ramp };
+                    return (slice_frac / ramp_frac).clamp(0.0, 1.0);
                 }
             }
             if let Some(l) = lifting {
@@ -3987,33 +3719,6 @@ fn main() {
             &load_share,
             &contact_cfg,
             &|side: usize| {
-                // A soft-admitted swing foot: weighted down so the swing task
-                // keeps its null space (see SWING_CONTACT_SOFT).
-                if soft_sides[side] {
-                    return bt::ContactMode::Managed {
-                        tangent_weight: stair_managed_tangent * swing_contact_soft,
-                        rotation_weight: stair_managed_rotation * swing_contact_soft,
-                        normal_weight: swing_contact_soft,
-                        normal_accel_max: stair_managed_az_max,
-                    };
-                }
-                // Ramp a fresh contact in regardless of terrain. Ahead of the
-                // stair branch because it is the general case; `TOUCHDOWN_RAMP`
-                // defaults to 0, which skips this entirely.
-                if touchdown_ramp > 0.0 {
-                    if let Some(since) = touchdown_since[side] {
-                        let u = ((t - since) / touchdown_ramp).clamp(0.0, 1.0);
-                        if u < 1.0 {
-                            let a = u * u * (3.0 - 2.0 * u);
-                            return bt::ContactMode::Managed {
-                                tangent_weight: stair_managed_tangent * a,
-                                rotation_weight: stair_managed_rotation * a,
-                                normal_weight: a,
-                                normal_accel_max: stair_managed_az_max,
-                            };
-                        }
-                    }
-                }
                 if stair_wrench_mpc
                     && stair_managed_contact
                     // Rate trigger (see STAIR_MANAGED_RATE): the level
@@ -6106,11 +5811,6 @@ fn main() {
                             (((t - start) / duration).clamp(0.0, 1.0), duration)
                         })
                         .unwrap_or((slice_frac, slice.duration()))
-                } else if let Some((t0, dur)) = contact_phase.frozen_clock(slice_idx) {
-                    // A late-contact extension must not rewind the swing:
-                    // keep the ORIGINAL clock and hold at the endpoint
-                    // (frac clamps to 1) while the schedule waits for load.
-                    ((((t - t0) / dur).clamp(0.0, 1.0)), dur)
                 } else {
                     (slice_frac, slice.duration())
                 };
@@ -6561,22 +6261,6 @@ fn main() {
                 p1_centroidal = p1_centroidal + pm.weight(0.2);
             }
         }
-        if ds_fz_floor_weight > 0.0 && nc == 2 {
-            let body_weight = total_mass * G;
-            for slot in 0..2 {
-                if forces_nominal[6 * slot + 5] >= ds_fz_floor_bw * body_weight {
-                    continue;
-                }
-                let mut selector = na::DMatrix::zeros(1, forces.size());
-                for j in 0..forces.size() {
-                    selector[(0, j)] = p0.sole_sel[slot][(5, j)] / body_weight;
-                }
-                let target = na::DVector::from_element(1, ds_fz_floor_bw);
-                let expr = &selector * &forces.as_affine();
-                p1_centroidal =
-                    p1_centroidal + tasks::track(&expr, &target).weight(ds_fz_floor_weight);
-            }
-        }
         if let Some(pc) = p_cmp {
             p1_centroidal = p1_centroidal + pc.weight(mom_cmp_w);
         }
@@ -6643,28 +6327,6 @@ fn main() {
             &mut level_names,
             &mut mom_pending,
         );
-        // Load-split damping (see CONTACT_FZ_RATE above). Row 5 of each
-        // sole selection is that foot's normal force.
-        if contact_fz_rate > 0.0 && stance.len() > 1 && !p0.sole_sel.is_empty() {
-            let mut sel_fz = na::DMatrix::zeros(p0.sole_sel.len(), forces.size());
-            let mut ref_fz = na::DVector::zeros(p0.sole_sel.len());
-            for (slot, sel) in p0.sole_sel.iter().enumerate() {
-                for j in 0..forces.size() {
-                    sel_fz[(slot, j)] = sel[(5, j)] * contact_fz_rate;
-                }
-                let side = usize::from(stance[slot] != rig.foot_mi[0]);
-                // SECOND difference, not first: the reference is the linear
-                // extrapolation of the last two ticks, so a steady load
-                // ramp costs nothing and only a CHANGE of rate is damped.
-                // Tracking fz_prev directly (first difference) was tried and
-                // resisted the intended transfer -- every weight fell
-                // EARLIER than the undamped baseline.
-                ref_fz[slot] = (2.0 * fz_prev[side] - fz_prev2[side]).max(0.0) * contact_fz_rate;
-            }
-            let expr = &sel_fz * &forces.as_affine();
-            levels.push(tasks::track(&expr, &ref_fz));
-            level_names.push("load split");
-        }
         levels.push(p_reg);
         level_names.push("regularise");
         // Weighted single QP (WBC_STRATEGY=weighted): each level below the
@@ -8026,10 +7688,8 @@ fn main() {
     println!(
         "  contact-set corrections: {n_corrected} ticks where the feet disagreed with the schedule"
     );
-    println!(
-        "  phase retimed by contact: {n_early} early / {n_late} late ticks, {:.0} ms total",
-        retime_total * 1e3
-    );
+    // PHASE_BY_CONTACT is removed; the line keeps its off values.
+    println!("  phase retimed by contact: 0 early / 0 late ticks, 0 ms total");
     if contact_admit_confirmed || contact_admit_scheduled {
         println!("  confirmed-landing admissions: {n_confirmed_admissions}");
     }
@@ -8051,9 +7711,6 @@ fn main() {
             println!("  ds continuous: {n_ds_continuous} plan writes");
         }
     }
-    if land_wait_hold {
-        println!("  landing wait hold: {n_wait_hold} plan writes");
-    }
     if push_z_drop > 0.0 {
         println!("  push CoM drops: {n_push_z_drop}");
     }
@@ -8065,9 +7722,6 @@ fn main() {
             "  contact events: {} touchdowns by event, {} probes, {} timeouts",
             landing_timing.events, landing_timing.probes, landing_timing.timeouts
         );
-    }
-    if land_by_load {
-        println!("  landing by load: {} confirmed, {n_land_by_load_shift} plan shifts", landing_timing.load_confirm_count);
     }
     println!("  step-timing adaptations: 0 ticks retimed, 0 ms total, largest single shift 0 ms");
     println!("  reduced-step cuts: 0 ticks (unreachable -> end the step now)");
