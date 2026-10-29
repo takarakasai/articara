@@ -800,6 +800,15 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
   - 遊脚の区画の目標と段のほどき（5361–5755）が一番大きい。段の構築に渡す値（`tgt`、`tgt_v`、`tgt_a × tracking_ff_scale`、軸、回転の目標）を、今と同じ式で先に作る。
 - **確認**: 各回 96＋14＋eqdiag。
 - **規模**: 各回 300〜800 行の移動。
+- **実施 S11a（2026-10-30）**: 96＋14＋eqdiag＋s1x（FIX・JAB）で差 0。main.rs 7,946 → 7,344 行、新設 `examples/kyo46rs_walk/walker.rs` 806 行。
+  - 置き場は example の中の `walker.rs`（`mod walker;`）。相の関数は main.rs の私的な型（`CtlState`、`WalkerStats`）を `super::` で読む。
+  - 形: 相の関数の本体は**ループの文をそのまま**移し、読むノブは関数の頭で `let x = cfg.sub.x;` と束縛し直した（S9 の別名と同じ右辺）。main.rs で使われなくなった別名は、その真上の説明の注釈ごと、最初にそれを読む相の頭へ移した（測定の経緯の注釈を失わないため）。直参照 `cfg.sub.x` への書き換えはしていない（影の付け直しで取り違える危険を避けた）。
+  - 起動時の定数は `WalkerConsts<'a>`（`robot: &RobotModel`、`dt`、`omega`、`total_mass`、`z_com`、`terrain_base`、`sole_half_l/w`、`stairs: &Option<Stairs>`、`land_extend_desc`）。`prof` は `robot.prof`（`Profile` は Copy で、rig が持つものと main の `prof` は同値）を読む。
+  - 状態は `obs_state(&obs) -> &RobotState`（`Estimate::State` を開く）から読む。
+  - 相 1 `phase_landing_setup(&ctl, &mut plan, cfg, k, t)`（rig.sync の前、今と同じ位置）、相 2 `phase_landing_clock(ctl, plan, stats, cfg, k, obs, actual, t)`、相 3 `phase_support(ctl, &plan, anchors, cfg, k, obs, t) -> SupportOut { slice, slice_frac, support, step_idx, slice_idx, steps, swing_rot_mode }`、相 4 `phase_contacts(ctl, &plan, stats, anchors, cfg, k, obs, &SupportOut, t) -> ContactsOut { fz_meas, stance_sides, stance, nc, ramp: LoadRamp }`。
+  - 荷重の傾斜の閉包 `f_share`／`load_share` は `LoadRamp::load_share(mi)`（同じ式）にした。ループは `move |mi| ramp.load_share(mi)` を `contact_level` と荷重の分け方に渡す。`lifting`（斜面の踵の CoP 箱）は `ramp.lifting`。
+  - 係留点（`WbcState.anchors`）は相 3・4 に `&mut Anchors` で渡す。S12 で出来事の列にする（設置・解放の順は 相 3 → 相 4 の今の順）。
+  - `Footsteps::from_fk` は tick に 1 回、`com_vel` の直後で `actual_feet` として作り、相 2 に渡す（今は `if com_replan` の中だったが、純関数で data は tick の中で不変なので、作る位置を前へ出しても値は同じ）。残りの 4 か所は S11b・S11c で置き換える。
 
 #### S12 `WbcStack` と `TaskStack`
 
