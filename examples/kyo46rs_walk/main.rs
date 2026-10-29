@@ -28,8 +28,6 @@
 use nalgebra as na;
 #[cfg(feature = "mujoco")]
 use misa_biped::recovery::{RefLib, RefMode};
-#[cfg(feature = "mujoco")]
-use misa_biped::config::LevelWeights;
 
 #[cfg(feature = "mujoco")]
 mod config_env;
@@ -85,14 +83,6 @@ fn env_f64(k: &str, d: f64) -> f64 {
 #[cfg(feature = "mujoco")]
 fn flag(k: &str, d: bool) -> bool {
     std::env::var(k).map(|v| v != "0").unwrap_or(d)
-}
-
-/// WBCW_<NAME> read on the spot, for a level name the walker's table
-/// (`LevelWeights`, read once at start-up) does not list -- the stack below
-/// produces none today; kept so an unlisted level reads as it always did.
-#[cfg(feature = "mujoco")]
-fn level_weight_from_env(name: &str) -> f64 {
-    env_f64(&LevelWeights::key(name), LevelWeights::default_for(name))
 }
 
 /// What `build_scene` put into the world besides the robot. `stairs` is also
@@ -802,26 +792,19 @@ impl RunMetrics {
 /// Where the run writes, besides stdout: TRAJ_CSV (`traj`), and the opt-in
 /// diagnostics -- the `*_CSV` files, the QP / MPC snapshot directories and
 /// the physics-rate audit. Harness state: the controller writes into some of
-/// them on the way, but none of them is read back by it (except that
-/// `qp_runtime_log` / `qp_diag_dir` being set makes the solve keep its
-/// physical rows, see `qp_physical`). Opened together in `open`; a file that
-/// is not asked for is `None`.
+/// them on the way, but none of them is read back by it. Opened together in
+/// `open`; a file that is not asked for is `None`. The QP_DIAG_DIR settings
+/// are handed to the `TaskStack`, which writes the snapshots (and keeps the
+/// physical rows for them, or for QP_RUNTIME_CSV's violation column, without
+/// changing the solve).
 #[cfg(feature = "mujoco")]
 struct DiagSinks {
     traj: articara::biped::log::TrajLog,
     /// TICK_AUDIT_CSV: per-joint pre/post state around every plant step.
     tick_audit: Option<articara::biped::tick_audit::TickAudit>,
-    /// QP_DIAG_DIR: capture immutable task stacks for offline numerical
-    /// diagnosis only (`tick_NNNNNN.json`, numbered by `qp_diag_count`).
-    qp_diag_dir: Option<String>,
-    qp_diag_count: usize,
-    /// QP_CAPTURE_*: opt-in continuous sampling; legacy failure-only capture
-    /// remains default.
-    qp_capture_all: bool,
-    qp_capture_start: f64,
-    qp_capture_end: f64,
-    qp_capture_stride: usize,
-    qp_capture_max: usize,
+    /// QP_DIAG_DIR / QP_CAPTURE_*: the task-stack snapshots (taken by the
+    /// `TaskStack` when it is built).
+    qp_dump: articara::biped::wbc_stack::QpDump,
     /// QP_RUNTIME_CSV: per tick, the WBC solve's timing and status.
     qp_runtime_log: Option<Csv>,
     /// MPC_RUNTIME_CSV: per MPC solve. The MPC update period and the 5 ms
@@ -901,13 +884,15 @@ impl DiagSinks {
         Self {
             traj,
             tick_audit,
-            qp_diag_dir: std::env::var("QP_DIAG_DIR").ok(),
-            qp_diag_count: 0,
-            qp_capture_all: flag("QP_CAPTURE_ALL", false),
-            qp_capture_start: env_f64("QP_CAPTURE_START", 0.0),
-            qp_capture_end: env_f64("QP_CAPTURE_END", f64::INFINITY),
-            qp_capture_stride: env_f64("QP_CAPTURE_STRIDE", 1.0).max(1.0) as usize,
-            qp_capture_max: env_f64("QP_CAPTURE_MAX", 20000.0).max(1.0) as usize,
+            qp_dump: articara::biped::wbc_stack::QpDump {
+                dir: std::env::var("QP_DIAG_DIR").ok(),
+                count: 0,
+                capture_all: flag("QP_CAPTURE_ALL", false),
+                start: env_f64("QP_CAPTURE_START", 0.0),
+                end: env_f64("QP_CAPTURE_END", f64::INFINITY),
+                stride: env_f64("QP_CAPTURE_STRIDE", 1.0).max(1.0) as usize,
+                max: env_f64("QP_CAPTURE_MAX", 20000.0).max(1.0) as usize,
+            },
             qp_runtime_log: csv("QP_RUNTIME_CSV", "QP_RUNTIME_CSV", &|f| {
                 writeln!(f, "t,solve_ns,check_ns,status,normalized_physical_violation,reset,deadline_miss,control_ns,mpc_age_s,mpc_solves,mpc_failures,prefix_applied,repair_applied,repair_scaled_delta,repair_ns").unwrap();
             }),
@@ -1135,15 +1120,6 @@ struct TickRecord {
     stride_max_now: f64,
 }
 
-/// The WBC's own state: the solver (warm data), the QP structure of the
-/// last tick (a change resets the solver) and the contact anchors.
-#[cfg(feature = "mujoco")]
-struct WbcState {
-    solver: misa_wbc::Solver,
-    qp_previous_structure: Option<(Vec<usize>, Vec<(usize, usize, usize)>)>,
-    anchors: articara::biped::contact::Anchors,
-}
-
 /// Between the solve and the plant: the degraded-solve policy and whether a
 /// good command has been seen yet (harness side; see `CommandPolicy`).
 #[cfg(feature = "mujoco")]
@@ -1188,7 +1164,6 @@ fn main() {
     use articara::biped::actuate::{
         CommandPolicy, DegradedTally, gravity_plus_posture, write_to_plant,
     };
-    use articara::biped::contact::Anchors;
     use articara::biped::dcm::DcmPlan;
     use articara::biped::gait::{
         ContactCorrection, FootstepPlan, Footsteps, GaitParams, GaitPlan, Support,
@@ -1196,9 +1171,10 @@ fn main() {
     use articara::biped::log::{Row, TrajLog, measure_contacts};
     use articara::biped::profile;
     use articara::biped::rig::{BipedRig, CtrlMode, G, RigOptions};
-    use articara::biped::tasks as bt;
+    use articara::biped::wbc_stack::{StackDiag, TaskStack, TaskStackConfig};
     use misa_biped::plan::Plan;
     use misa_biped::robot::{Estimate, Observation};
+    use misa_biped::wbc::WbcStack;
     use misa_wbc::{SolveConfig, Solver, tasks};
     use nalgebra as na;
     use std::io::Write;
@@ -1464,7 +1440,6 @@ fn main() {
         "MPC_BENCH_GATE requires torque control"
     );
     let qp_has_good_command = false;
-    let qp_previous_structure: Option<(Vec<usize>, Vec<(usize, usize, usize)>)> = None;
     let feasibility_tol = wcfg.wbc.feas_tol;
     assert!(
         feasibility_tol.is_finite() && feasibility_tol > 0.0,
@@ -1478,8 +1453,8 @@ fn main() {
     // Priority resolution. Default = the strict null-space cascade (shipped).
     // `weighted` = one QP with level k>=1 weighted WBC_WEIGHT_RATIO^-(k-1),
     // level 0 hard (misa_wbc::HqpStrategy::WeightedQp) -- plan v2 P4.
-    // (Per-task weights are applied to the levels themselves, WBCW_*.)
-    let weighted_levels = matches!(wcfg.wbc.strategy, misa_wbc::HqpStrategy::WeightedQp { .. });
+    // (Per-task weights are applied to the levels themselves, WBCW_*; the
+    // `TaskStack` reads the strategy and the weights from `wcfg`.)
     cfg.strategy = wcfg.wbc.strategy;
     if let Some(backend) = wcfg.wbc.backend {
         cfg.backend = backend;
@@ -2206,7 +2181,9 @@ fn main() {
         println!("NO_LIFT: the schedule drives the ZMP reference, but both feet stay in contact");
     }
 
-    let contact_cfg = bt::ContactCfg {
+    // The contact model: the walker's (the MPC plans against its CoP box and
+    // torsion) and the stack's (built from it).
+    let contact_cfg = misa_biped::wbc::ContactParams {
         kp_c,
         kd_c,
         anchor_leak,
@@ -2348,7 +2325,6 @@ fn main() {
         0,     // blend_ticks (BLEND_TICKS, not adopted)
     );
     let mut tally = DegradedTally::new();
-    let anchors = Anchors::new();
     let mut correction = ContactCorrection::new(total_mass * G, wcfg.contact.ticks);
     let contact_on_bw = wcfg.contact.on_bw;
     assert!(
@@ -2698,11 +2674,25 @@ fn main() {
         diag_mpc_net_cop,
         wrench_mpc_frames,
     };
-    let mut wbc_state = WbcState {
+    // The WBC: the stack of QP levels (the solver, its warm start and the
+    // contact anchors are its own), with the QP_DIAG_DIR settings and
+    // whether QP_RUNTIME_CSV wants the physical violation measured.
+    let mut stack = TaskStack::new(
+        TaskStackConfig::new(
+            &wcfg,
+            cfg,
+            &contact_cfg,
+            &jlim_cfg,
+            total_mass,
+            sole_half_l,
+            dt,
+            StackDiag {
+                measure_violation: diag.qp_runtime_log.is_some(),
+                dump: std::mem::take(&mut diag.qp_dump),
+            },
+        ),
         solver,
-        qp_previous_structure,
-        anchors,
-    };
+    );
     let mut guard = CommandGuard {
         policy,
         qp_has_good_command,
@@ -2744,9 +2734,6 @@ fn main() {
         kp_sw_xy,
         tracking_ff_riser_ok,
         foot_rot0,
-        jlim_cfg: &jlim_cfg,
-        qp_gate,
-        weighted_levels,
         hip_mi,
         leg_reach: &leg_reach,
         f_max_per_foot,
@@ -2815,9 +2802,12 @@ fn main() {
         // ---- the walker's control, phase by phase (walker.rs). Phase 1
         // (the landing detector's settings) ran before the plant was read.
         walker::phase_landing_clock(&mut ctl, &mut plan, &mut stats, &wcfg, &k, &obs, &actual_feet, t);
-        let ph3 = walker::phase_support(&mut ctl, &plan, &mut wbc_state.anchors, &wcfg, &k, &obs, t);
+        // The anchor changes phases 3 and 4 decide, in order (the stack
+        // applies them in phase 11, before its contact level).
+        let mut anchor_events: Vec<misa_biped::wbc::AnchorEvent> = Vec::new();
+        let ph3 = walker::phase_support(&mut ctl, &plan, &mut anchor_events, &wcfg, &k, &obs, t);
 
-        let ph4 = walker::phase_contacts(&mut ctl, &plan, &mut stats, &mut wbc_state.anchors, &wcfg, &k, &obs, &ph3, t);
+        let ph4 = walker::phase_contacts(&mut ctl, &plan, &mut stats, &mut anchor_events, &wcfg, &k, &obs, &ph3, t);
         let measured = measured_c;
         let walker::SupportOut { slice, slice_frac, support, step_idx, slice_idx, steps, .. } = ph3;
         let walker::ContactsOut { fz_meas, stance_sides, stance, nc, ramp } = ph4;
@@ -2838,35 +2828,35 @@ fn main() {
             &ph5, &a_com, t,
         );
 
-        // ---- the WBC: the levels' references (phase 10), the levels and
-        // the solve (phase 11), the solve's diagnostics (phase 12).
+        // ---- the WBC: the levels' references (phase 10), the request and
+        // the stack's solve (phase 11), the solve's diagnostics (phase 12).
         let refs = walker::phase_task_refs(
             &ctl, &plan, &mut stats, &wcfg, &k, &obs, &cent, &ph3, &stance_sides, &stance, nc, &ramp, &ph5, &p_cmd,
             &zmp_deficit, t,
         );
         let wbc = walker::phase_wbc(
-            &mut wbc_state, &mut diag, &ctl, &wcfg, &cfg, &k, &obs, &cent, &ph3, &stance_sides, &stance, nc, &ramp,
+            &mut stack, &ctl, &wcfg, &k, &obs, &cent, &ph3, &stance_sides, &stance, nc, &ramp, &anchor_events,
             &a_com, &refs, t,
         );
         let sd = walker::phase_solve_diag(&wcfg, &k, &obs, &stance, &refs, &wbc);
         let walker::TaskRefs { roll, pitch, rp_ref, tau_gravity, shares, swing_tgt, swing_cmd_acc_z, .. } = refs;
-        let walker::WbcOut {
+        let misa_biped::wbc::WbcSolution {
             sol,
             extracted,
             level_names,
             forces_nominal,
             acc_dbg,
-            trunk_cmd_rp,
             trunk_acc_rp,
-            qp_solve_ns,
-            qp_check_ns,
-            qp_capture_ns,
-            qp_physical_violation,
-            qp_reset,
-            qp_rejected,
+            timings:
+                misa_biped::wbc::QpTimings { solve_ns: qp_solve_ns, check_ns: qp_check_ns, capture_ns: qp_capture_ns },
+            physical_violation: qp_physical_violation,
+            reset: qp_reset,
+            rejected: qp_rejected,
             degraded,
             ..
         } = wbc;
+        // What the trunk task asked for (its roll / pitch reference).
+        let trunk_cmd_rp = rp_ref;
         let walker::SolveDiag {
             swing_task_residual_rms,
             swing_res_z,
@@ -3573,8 +3563,8 @@ fn main() {
             let [gl, gr] = rec.steps.sole;
             let link_l = misarta::se3::translation(&data.oMi[rig.foot_mi[0]]);
             let link_r = misarta::se3::translation(&data.oMi[rig.foot_mi[1]]);
-            let anchor_l_y = wbc_state.anchors.a[0].map_or(f64::NAN, |(p, _)| p.y);
-            let anchor_r_y = wbc_state.anchors.a[1].map_or(f64::NAN, |(p, _)| p.y);
+            let anchor_l_y = stack.anchor(0).map_or(f64::NAN, |(p, _)| p.y);
+            let anchor_r_y = stack.anchor(1).map_or(f64::NAN, |(p, _)| p.y);
             let foot_v_l = rig
                 .sim
                 .body_world_linear_velocity(prof.foot_links[0])

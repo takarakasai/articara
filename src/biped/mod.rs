@@ -19,6 +19,8 @@
 //! - [`rig`]     -- URDF -> plant bring-up, and the per-tick state sync.
 //! - [`contact`] -- contact anchors, contact Jacobians, sole-wrench selection.
 //! - [`tasks`]   -- one builder per priority level of the hierarchical QP.
+//! - [`wbc_stack`] -- the `TaskStack`: the levels above, ordered, weighted and
+//!   solved behind misa-biped's `WbcStack` trait.
 //! - [`actuate`] -- degraded-solve policy, fallback PD, and the plant write.
 //! - [`log`]     -- the trajectory CSV the replay tooling reads.
 //! - [`gait`]    -- support schedule and swing-foot trajectory. (misa-biped)
@@ -42,6 +44,7 @@ pub mod rig;
 
 pub mod contact;
 pub mod tasks;
+pub mod wbc_stack;
 
 #[cfg(feature = "mujoco")]
 pub mod actuate;

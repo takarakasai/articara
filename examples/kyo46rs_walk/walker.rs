@@ -10,11 +10,9 @@
 //! `&mut`; the tick's `TickRecord` is still built once, in the loop, from the
 //! phases' outputs. The arithmetic, the order of the prints and the order of
 //! the plan's rebuilds are the loop's own (the runs are byte-identical).
-use super::{CtlState, DiagSinks, WalkerStats, WbcState, level_weight_from_env};
+use super::{CtlState, DiagSinks, WalkerStats};
 use articara::biped::tasks as bt;
-use articara::biped::contact::{contact_jacobians, cop_from_sole_wrench};
-use misa_wbc::{Dynamics, Formulation, SolveConfig, tasks};
-use articara::biped::contact::Anchors;
+use articara::biped::contact::cop_from_sole_wrench;
 use articara::biped::dcm::{DcmRef, SupportBox, StepTiming, com_accel_xy, commanded_zmp, dcm_of, step_timing};
 use articara::biped::gait::{Footsteps, GaitParams, Slice, Support, swing_position, swing_velocity};
 use articara::biped::rig::G;
@@ -23,6 +21,10 @@ use misa_biped::config::Config;
 use misa_biped::plan::Plan;
 use misa_biped::recovery::{RefLib, RefMode};
 use misa_biped::robot::{Estimate, Observation, RobotModel, RobotState};
+use misa_biped::wbc::{
+    AnchorEvent, ArmRef, CmpRef, ContactMode, ContactParams, MomCmp, MomRef, MpcNominal, SwingAxes, SwingRef,
+    TrunkRef, WbcRequest, WbcSolution, WbcStack,
+};
 use nalgebra as na;
 use std::f64::consts::PI;
 use std::io::Write;
@@ -75,15 +77,16 @@ pub(crate) struct WalkerConsts<'a> {
     /// coefficient (`cfg.wbc.friction_mu(MU_GROUND, ..)` -- built from the
     /// PLANT's friction, §6.7), whether the solution is validated
     /// (QP_BENCH_GATE or MPC_BENCH_GATE), `cfg.mpc.applies()`, its update and
-    /// node periods (`.max(dt)`), and the WBC's contact configuration (the
-    /// MPC's CoP box and torsion coefficient are the WBC's).
+    /// node periods (`.max(dt)`), and the contact model (the MPC's CoP box
+    /// and torsion coefficient are the WBC's; the stack is built from the
+    /// same one).
     pub f_max_per_foot: f64,
     pub friction_mu: f64,
     pub mpc_gate: bool,
     pub wrench_mpc_apply: bool,
     pub stair_wrench_dt: f64,
     pub stair_wrench_preview_dt: f64,
-    pub contact_cfg: &'a articara::biped::tasks::ContactCfg,
+    pub contact_cfg: &'a ContactParams,
     /// The levels' references: the turn rate (WZ), the jab's clock and pose
     /// (JAB*), the swing's xy gain (`cfg.swing.kp_xy()`), whether this
     /// staircase takes the swing's cubic feed-forward (TRACKING_FF_MIN_RISER
@@ -99,11 +102,7 @@ pub(crate) struct WalkerConsts<'a> {
     pub kp_sw_xy: f64,
     pub tracking_ff_riser_ok: bool,
     pub foot_rot0: [na::Matrix3<f64>; 2],
-    /// The WBC (S12's Stack): the joint-limit CBF, QP_BENCH_GATE, whether the
-    /// levels are weighted, the hips (leg reach) and the reach model.
-    pub jlim_cfg: &'a misa_wbc::tasks::JointLimitCbf,
-    pub qp_gate: bool,
-    pub weighted_levels: bool,
+    /// The hips (leg reach) and the reach model (phase 12's diagnostics).
     pub hip_mi: Option<[usize; 2]>,
     pub leg_reach: &'a articara::biped::reach::LegReach,
 }
@@ -552,11 +551,12 @@ pub(crate) struct SupportOut {
 }
 
 /// Phase 3: the schedule -> the support, and the contact anchors released at
-/// a lift-off and set at a touchdown.
+/// a lift-off and set at a touchdown (recorded in `anchor_events`; the stack
+/// applies them before its contact level).
 pub(crate) fn phase_support(
     ctl: &mut CtlState,
     plan: &Plan,
-    anchors: &mut Anchors,
+    anchor_events: &mut Vec<AnchorEvent>,
     cfg: &Config,
     k: &WalkerConsts,
     obs: &Observation,
@@ -613,7 +613,7 @@ pub(crate) fn phase_support(
     if support != ctl.prev_support {
         match (ctl.prev_support, support) {
             (Support::Double, Support::Single { swing, .. }) => {
-                anchors.release(swing);
+                anchor_events.push(AnchorEvent::Release(swing));
                 let p = misarta::se3::translation(&data.oMi[robot.foot_mi[swing]]);
                 ctl.swing_lift_off = Some(p);
             }
@@ -665,7 +665,7 @@ pub(crate) fn phase_support(
                         p.z
                     );
                 }
-                anchors.touchdown(swing, p, r);
+                anchor_events.push(AnchorEvent::Touchdown { side: swing, pos: p, rot: r });
                 ctl.swing_lift_off = None;
             }
             _ => {}
@@ -726,7 +726,7 @@ pub(crate) fn phase_contacts(
     ctl: &mut CtlState,
     plan: &Plan,
     stats: &mut WalkerStats,
-    anchors: &mut Anchors,
+    anchor_events: &mut Vec<AnchorEvent>,
     cfg: &Config,
     k: &WalkerConsts,
     obs: &Observation,
@@ -880,7 +880,7 @@ pub(crate) fn phase_contacts(
             // CONTACT_ADMIT_LOADED) is anchored where it actually is.
             p.z = ctl.admit_measured_z[side].unwrap_or(steps.sole[side].z) + prof.sole_below_origin;
             let rr = misarta::se3::rotation_matrix(&data.oMi[mi]);
-            anchors.touchdown(side, p, rr);
+            anchor_events.push(AnchorEvent::Touchdown { side, pos: p, rot: rr });
         }
         let sched: Vec<usize> = (0..2).filter(|&s| support.is_stance(s)).collect();
         if sides != sched {
@@ -2667,55 +2667,6 @@ pub(crate) fn phase_wrench_mpc(
     mpc_capture_ns
 }
 
-/// The momentum task's inputs (MOM, or the coupled level): the CMM it acts
-/// through (arm columns only for `arms_neutral`), its bias, the momentum now,
-/// the references, the gain and the axes.
-pub(crate) struct MomRef {
-    pub cmm: na::DMatrix<f64>,
-    pub bias: na::DVector<f64>,
-    pub h: na::DVector<f64>,
-    pub h_ref: [f64; 3],
-    pub dh_ref: [f64; 3],
-    pub kp: f64,
-    pub axes: [bool; 3],
-}
-
-/// MOM_CMP's inputs (the CMM itself is the tick's `Centroidal`): the bias,
-/// the momentum now, its reference (itself) and the asked rate.
-pub(crate) struct CmpRef {
-    pub bias: na::DVector<f64>,
-    pub h: na::DVector<f64>,
-    pub h_ref: [f64; 3],
-    pub dh: [f64; 3],
-}
-
-/// The arm hold's rows (actuated joint, velocity index) and its reference
-/// (the seed, with a jab swept in).
-pub(crate) struct ArmRef {
-    pub arms: Vec<(usize, usize)>,
-    pub q_ref: Vec<f64>,
-}
-
-/// The swing foot's task inputs: its Jacobian and bias, where it is and how
-/// fast, the target position and velocity, the gains, the axes, the
-/// orientation (measured, target, angular velocity, gains), and the
-/// feed-forward acceleration (`tgt_a * TRACKING_FF_SCALE`; `None` for a foot
-/// put back on its footstep, which has none).
-pub(crate) struct SwingRef {
-    pub jf: na::DMatrix<f64>,
-    pub djv: na::DVector<f64>,
-    pub pos: na::Vector3<f64>,
-    pub vel: na::Vector3<f64>,
-    pub tgt: na::Vector3<f64>,
-    pub tgt_v: na::Vector3<f64>,
-    pub kp_xy: f64,
-    pub kp_z: f64,
-    pub kd: f64,
-    pub axes: bt::SwingAxes,
-    pub rot: Option<(na::Matrix3<f64>, na::Matrix3<f64>, na::Vector3<f64>, f64, f64)>,
-    pub acc: Option<na::Vector3<f64>>,
-}
-
 /// What phase 10 computed for the levels: the trunk's Jacobian and bias,
 /// the trunk's roll and pitch (the estimate), their reference, the yaw
 /// reference and the full orientation command; whether the coupled level is
@@ -3588,13 +3539,13 @@ pub(crate) fn phase_task_refs(
             {
                 // TERRAIN_PITCH_YAW=1: keep the walking default's yaw
                 // and add pitch only, roll free (see SwingAxes::XyzYawPitch).
-                if terrain_pitch_yaw { bt::SwingAxes::XyzYawPitch } else { bt::SwingAxes::XyzRollPitch }
+                if terrain_pitch_yaw { SwingAxes::XyzYawPitch } else { SwingAxes::XyzRollPitch }
             } else {
                 match swing_rot_mode {
-                    0 => bt::SwingAxes::Xyz,
-                    2 => bt::SwingAxes::Pose,
-                    3 => bt::SwingAxes::XyzRollPitch,
-                    _ => bt::SwingAxes::XyzYaw,
+                    0 => SwingAxes::Xyz,
+                    2 => SwingAxes::Pose,
+                    3 => SwingAxes::XyzRollPitch,
+                    _ => SwingAxes::XyzYaw,
                 }
             };
             let rot = {
@@ -3639,10 +3590,10 @@ pub(crate) fn phase_task_refs(
             swing_cmd_acc_z = kp_sw_z * (tgt.z - pos.z) - kd_sw * vel.z;
             let om3 = &jf.rows(0, 3).into_owned() * v_dvec;
             let axes = match swing_rot_mode {
-                0 => bt::SwingAxes::Xyz,
-                2 => bt::SwingAxes::Pose,
-                3 => bt::SwingAxes::XyzRollPitch,
-                _ => bt::SwingAxes::XyzYaw,
+                0 => SwingAxes::Xyz,
+                2 => SwingAxes::Pose,
+                3 => SwingAxes::XyzRollPitch,
+                _ => SwingAxes::XyzYaw,
             };
             let rot = Some((
                 misarta::se3::rotation_matrix(&data.oMi[mi]),
@@ -3677,660 +3628,143 @@ pub(crate) fn phase_task_refs(
     }
 }
 
-/// What phase 11 solved: the WBC's solution (its status set to `Degraded`
-/// when QP_BENCH_GATE rejected it) and its parts (`qddot`, the contact
-/// forces, the torques), the levels by name, the nominal contact forces, the
-/// contact level's per-slot sole selectors and its acceleration diagnostic,
-/// the swing level as solved (unweighted, for its residuals), what the trunk
-/// task asked for and got, and the QP's timing and checks.
-pub(crate) struct WbcOut {
-    pub sol: misa_wbc::Solution,
-    pub extracted: misa_wbc::Extracted,
-    pub level_names: Vec<&'static str>,
-    pub forces_nominal: na::DVector<f64>,
-    pub sole_sel: Vec<na::DMatrix<f64>>,
-    pub acc_dbg: [f64; 2],
-    pub p_swing_diag: Option<misa_wbc::Task>,
-    pub trunk_cmd_rp: [f64; 2],
-    pub trunk_acc_rp: [f64; 2],
-    pub qp_solve_ns: u128,
-    pub qp_check_ns: u128,
-    pub qp_capture_ns: u128,
-    pub qp_physical_violation: f64,
-    pub qp_reset: bool,
-    pub qp_rejected: bool,
-    pub degraded: bool,
-}
-
-/// Phase 11: the WBC's levels and the solve (S12 moves this to the
-/// `WbcStack`): the dynamics, the torque box, the joint-limit CBF, the
-/// contact level (managed contact, the slope heel cut; it bleeds the
-/// anchors), the CoM, trunk, momentum, MOM_CMP, arm hold, posture, the
-/// nominal forces (the MPC's wrenches through the contact selectors) and the
-/// regulariser, the swing; their order and weights; the solve, the physical
-/// gate, QP_DIAG_DIR. `wcfg` is the walker's Config, `cfg` the WBC's
-/// `SolveConfig`.
+/// Phase 11: the WBC request, and the solve by the stack (S12: the levels,
+/// their order and weights, the solve, the gate and QP_DIAG_DIR are the
+/// stack's, `articara::biped::wbc_stack::TaskStack`). The walker hands it
+/// phase 10's references and the contact request: the feet, the anchor
+/// events of phases 3 and 4 (in order), the load share per side, rigid or
+/// managed contact per side (STAIR_MANAGED_*), the slope's heel cut as a
+/// moved CoP box per side (SLOPE_HEEL_CUT), and the MPC's wrenches when they
+/// apply (MPC_SOLE_AUTHORITY, STAIR_WRENCH_BLEND). The per-side values are
+/// the closures the contact level used to call, evaluated for both sides
+/// (they are pure).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn phase_wbc(
-    wbc_state: &mut WbcState,
-    diag: &mut DiagSinks,
+    stack: &mut impl WbcStack,
     ctl: &CtlState,
-    wcfg: &Config,
-    cfg: &SolveConfig,
+    cfg: &Config,
     k: &WalkerConsts,
     obs: &Observation,
     cent: &Centroidal,
     sup: &SupportOut,
-    stance_sides: &Vec<usize>,
+    stance_sides: &[usize],
     stance: &[usize],
     nc: usize,
     ramp: &LoadRamp,
+    anchor_events: &[AnchorEvent],
     a_com: &na::Vector3<f64>,
     refs: &TaskRefs,
     t: f64,
-) -> WbcOut {
-    let eom_hard = wcfg.wbc.eom_hard;
-    let jlim = wcfg.joint_limit.enabled;
-    let stair_wrench_mpc = wcfg.mpc.enabled;
-    let stair_managed_contact = wcfg.managed.on;
-    let stair_managed_tangent = wcfg.managed.tangent;
-    let stair_managed_rotation = wcfg.managed.rotation;
-    let stair_managed_az_max = wcfg.managed.az_max;
+) -> WbcSolution {
+    let stair_wrench_mpc = cfg.mpc.enabled;
+    let stair_managed_contact = cfg.managed.on;
+    let stair_managed_tangent = cfg.managed.tangent;
+    let stair_managed_rotation = cfg.managed.rotation;
+    let stair_managed_az_max = cfg.managed.az_max;
     // (SWING_CAUTIOUS_ERR, STAIR_ANCHOR_FLAT and STAIR_ROLL_PATCH -- the
     // latter two for the toe-first descent -- are removed.)
-    let slope_heel_cut = wcfg.slope.heel_cut;
-    let slope_heel_cut_max = wcfg.slope.heel_cut_max;
-    let kp_post = wcfg.gains.kp_post;
-    let kd_post = wcfg.gains.kd_post;
-    let mpc_sole_authority = wcfg.mpc.sole_authority;
-    let stair_wrench_blend = wcfg.mpc.blend;
-    let mom_cmp_w = wcfg.mom_cmp.w;
-    // Off inside a stair zone with a real riser (the flat harness's 0 mm
-    // stair does not count). Measured 2026-10-13 (N=48): the lean took the
-    // pushes 301 -> 326 but the descents 191 -> 166, 3-step 142 -> 101,
-    // the up-and-over 2/4 cm 48 -> 15 -- on a descent the pressure
-    // saturates by design and leaning on it breaks the step. Ascents and
-    // the flat were unchanged. (MOM_CMP_STAIRS, lean on stairs too, is
-    // removed.)
-    let use_trunk = wcfg.gains.trunk;
-    // Where the level sits in the stack. The task is an EQUALITY at its
-    // level, so `kp` does not control how much of the null space it takes --
-    // even `kp=0` still demands `ḣ_ang = 0`, i.e. "never change roll momentum",
-    // which a walk cannot honour. Placement is therefore the real knob:
-    //   `swing_before` / `swing_after` -- above posture, all authority
-    //   `post_after`                   -- below posture, only what is left
-    //   `post_merge`                   -- SAME level as posture, so the two
-    //                                     trade off inside one least-squares
-    //                                     instead of one strictly preceding
-    //                                     the other
-    let mom_level = wcfg.arm.mom_level.clone();
-    // Experimental priority: keep arm posture above swing (but below CoM/trunk).
-    // Default stays below swing; compare full closed-loop motion before adoption.
-    let arm_before_swing = wcfg.arm.before_swing;
-    let use_post = wcfg.gains.posture;
-    let debug = wcfg.debug;
-    let kp_arm = wcfg.arm.kp;
-    // (MOM_MERGE / ARM_MERGE, the momentum and arm tasks merged into the
-    // CoM level as weighted objectives in the BDI/IHMC manner, were not
-    // adopted: with the MPC's authority ARM_MERGE falls at once. Removed.)
-    let kd_arm = wcfg.arm.kd;
-    let (dt, total_mass) = (k.dt, k.total_mass);
+    let slope_heel_cut = cfg.slope.heel_cut;
+    let slope_heel_cut_max = cfg.slope.heel_cut_max;
+    let mpc_sole_authority = cfg.mpc.sole_authority;
+    let stair_wrench_blend = cfg.mpc.blend;
     let sole_half_l = k.sole_half_l;
     let robot = k.robot;
     let prof = &robot.prof;
     let stairs = k.stairs;
-    let (nv, na_count) = (robot.nv, robot.na);
-    let (jlim_cfg, contact_cfg) = (k.jlim_cfg, k.contact_cfg);
-    let (qp_gate, weighted_levels, wrench_mpc_apply) = (k.qp_gate, k.weighted_levels, k.wrench_mpc_apply);
-    let tick = obs.tick;
-    let st = obs_state(obs);
-    let (q, v, v_dvec, data) = (&st.q, &st.v, &st.v_dvec, &st.data);
+    let contact_cfg = k.contact_cfg;
+    let wrench_mpc_apply = k.wrench_mpc_apply;
     let (support, steps) = (sup.support, &sup.steps);
     let lifting = ramp.lifting;
-    let load_share = |mi: usize| -> f64 { ramp.load_share(mi) };
-    let a_com = *a_com;
-    let (j_trunk, djv_trunk, rp_ref, yaw_ref, ori) = (&refs.j_trunk, &refs.djv_trunk, refs.rp_ref, refs.yaw_ref, refs.ori);
-    let coupled_active = refs.coupled_active;
-    let (tau_gravity, shares) = (&refs.tau_gravity, &refs.shares);
-
-    let (j_contact, dj_v) = contact_jacobians(&robot.model, q, v, data, v_dvec, &stance, nv);
-    let dyn_ctx = Dynamics::new(Formulation::Explicit, &st.mass, &st.h, &j_contact, na_count);
-    let forces = dyn_ctx.forces();
-
-    let eom_task = dyn_ctx
-        .dynamics_task()
-        .expect("Explicit keeps the EoM task");
-    let base = if eom_hard {
-        tasks::box_bound(dyn_ctx.tau(), &robot.torque_max)
-    } else {
-        eom_task.clone() + tasks::box_bound(dyn_ctx.tau(), &robot.torque_max)
-    };
-    let base = if jlim {
-        // Live actuated-row position/velocity, read through model indices.
-        let actuated = robot.actuated();
-        let mut q_act = na::DVector::zeros(na_count);
-        let mut v_act = na::DVector::zeros(na_count);
-        for &(ji, vi) in &actuated {
-            if let Some(mi) = robot.a2m[ji] {
-                q_act[vi - 6] = q[robot.model.q_idx[mi]];
+    let contact_mode = [0, 1].map(|side: usize| {
+        if stair_wrench_mpc
+            && stair_managed_contact
+            // Rate trigger (see STAIR_MANAGED_RATE): the level
+            // test misses the chatter, which swings fz 15<->78 N.
+            && t < ctl.managed_until[side]
+        {
+            ContactMode::Managed {
+                tangent_weight: stair_managed_tangent,
+                rotation_weight: stair_managed_rotation,
+                normal_weight: 1.0,
+                normal_accel_max: stair_managed_az_max,
             }
-            v_act[vi - 6] = v[vi];
+        } else {
+            ContactMode::Rigid
         }
-        base + bt::joint_limits(
-            dyn_ctx.qddot(),
-            &actuated,
-            &q_act,
-            &v_act,
-            &jlim_cfg,
-            na_count,
-            nv,
-        )
-    } else {
-        base
-    };
-    let p0 = bt::contact_level(
-        &dyn_ctx,
-        base,
-        &j_contact,
-        &dj_v,
-        data,
-        v_dvec,
-        &stance,
-        robot.foot_mi[0],
-        &mut wbc_state.anchors,
-        &load_share,
-        &contact_cfg,
-        &|side: usize| {
-            if stair_wrench_mpc
-                && stair_managed_contact
-                // Rate trigger (see STAIR_MANAGED_RATE): the level
-                // test misses the chatter, which swings fz 15<->78 N.
-                && t < ctl.managed_until[side]
-            {
-                bt::ContactMode::Managed {
-                    tangent_weight: stair_managed_tangent,
-                    rotation_weight: stair_managed_rotation,
-                    normal_weight: 1.0,
-                    normal_accel_max: stair_managed_az_max,
-                }
-            } else {
-                bt::ContactMode::Rigid
+    });
+    let cop_patch = [0, 1].map(|_side: usize| {
+        // SLOPE_HEEL_CUT [m/deg]: on a known UPSLOPE, during double
+        // support, move the REAR foot's CoP box forward by
+        // cut * slope_deg and shrink it by the same, so its heel
+        // region is excluded. Measured 2026-10-17 (threshold table,
+        // terrain bench doc Sec.10): the rear foot's CoP goes to the
+        // heel in proportion to the slope (-12 mm/deg), reaches the
+        // heel edge at 5 deg and the foot lifts off 3/4 of the way
+        // through the double support. With the heel excluded the QP
+        // has to realise the same net CoP by loading the front
+        // foot, which is what the climb needs. 0 = off.
+        if slope_heel_cut > 0.0
+            && matches!(support, Support::Double)
+            && let Some(st) = &stairs
+            && st.n == 0
+            && st.slope > 0.0
+            && lifting == Some(_side)
+            // ... and only while that foot stands ON the slope (the
+            // cut applied on the flat approach at 7 deg emptied the
+            // box and fell at 3.3 s, 2026-10-17).
+            && {
+                let x = steps.sole[_side].x;
+                x >= st.start && x <= st.start + st.slope_len
             }
+        {
+            let deg = st.slope.atan().to_degrees();
+            let d = (slope_heel_cut * deg).min(slope_heel_cut_max);
+            return Some((
+                [prof.sole_centre_x + d, 0.0, -prof.sole_below_origin],
+                ((sole_half_l - d).max(0.005), contact_cfg.cop_half.1),
+            ));
+        }
+        // (STAIR_ROLL_PATCH, a narrow strip at the edge of a pitched
+        // sole, is removed.)
+        None
+    });
+    let req = WbcRequest {
+        t,
+        tick: obs.tick,
+        robot,
+        state: obs_state(obs),
+        support,
+        stance_sides,
+        stance,
+        anchor_events,
+        load_share: [0, 1].map(|side| ramp.load_share(robot.foot_mi[side])),
+        contact_mode,
+        cop_patch,
+        a_com: *a_com,
+        trunk: TrunkRef {
+            j: &refs.j_trunk,
+            djv: &refs.djv_trunk,
+            rp_ref: refs.rp_ref,
+            yaw: refs.yaw_ref.map(|_| refs.ori[2]),
         },
-        &|_side: usize, _rot: &na::Matrix3<f64>| {
-            // SLOPE_HEEL_CUT [m/deg]: on a known UPSLOPE, during double
-            // support, move the REAR foot's CoP box forward by
-            // cut * slope_deg and shrink it by the same, so its heel
-            // region is excluded. Measured 2026-10-17 (threshold table,
-            // terrain bench doc Sec.10): the rear foot's CoP goes to the
-            // heel in proportion to the slope (-12 mm/deg), reaches the
-            // heel edge at 5 deg and the foot lifts off 3/4 of the way
-            // through the double support. With the heel excluded the QP
-            // has to realise the same net CoP by loading the front
-            // foot, which is what the climb needs. 0 = off.
-            if slope_heel_cut > 0.0
-                && matches!(support, Support::Double)
-                && let Some(st) = &stairs
-                && st.n == 0
-                && st.slope > 0.0
-                && lifting == Some(_side)
-                // ... and only while that foot stands ON the slope (the
-                // cut applied on the flat approach at 7 deg emptied the
-                // box and fell at 3.3 s, 2026-10-17).
-                && {
-                    let x = steps.sole[_side].x;
-                    x >= st.start && x <= st.start + st.slope_len
-                }
-            {
-                let deg = st.slope.atan().to_degrees();
-                let d = (slope_heel_cut * deg).min(slope_heel_cut_max);
-                return Some((
-                    [prof.sole_centre_x + d, 0.0, -prof.sole_below_origin],
-                    ((sole_half_l - d).max(0.005), contact_cfg.cop_half.1),
-                ));
-            }
-            // (STAIR_ROLL_PATCH, a narrow strip at the edge of a pitched
-            // sole, is removed.)
-            None
-        },
-    );
-
-    let p1 = bt::com(dyn_ctx.qddot(), &st.j_com, &st.djv_com, &a_com);
-
-    let p2 = bt::trunk_rpy(
-        dyn_ctx.qddot(),
-        &j_trunk,
-        &djv_trunk,
-        &rp_ref,
-        yaw_ref.map(|_| ori[2]),
-        nv,
-    );
-
-
-    // ---- the momentum task, MOM_CMP and the arm hold, from phase 10's inputs
-    let p_mom = refs.mom.as_ref().and_then(|m| {
-        bt::angular_momentum(dyn_ctx.qddot(), &m.cmm, &m.bias, &m.h, &m.h_ref, &m.dh_ref, m.kp, m.axes, nv)
-    });
-    let p_cmp = refs.cmp.as_ref().and_then(|c| {
-        bt::angular_momentum(dyn_ctx.qddot(), cent.cmm(), &c.bias, &c.h, &c.h_ref, &c.dh, 0.0, [true, true, false], nv)
-    });
-    let mut p_arm = refs.arm.as_ref().map(|a| {
-        bt::posture(dyn_ctx.qddot(), &a.arms, obs.joint_pos_plant, &a.q_ref, v, kp_arm, kd_arm, na_count, nv)
-    });
-    // ---- P4: posture ------------------------------------------------
-    let p3 = bt::posture(
-        dyn_ctx.qddot(),
-        &robot.actuated(),
-        obs.joint_pos_plant,
-        &robot.q_seed,
-        v,
-        kp_post,
-        kd_post,
-        na_count,
-        nv,
-    );
-
-
-    let mut forces_nominal = bt::force_nominal(forces.size(), &shares, total_mass * G);
-    if let Some(command) = ctl.wrench_mpc_command.as_ref() {
-        if wrench_mpc_apply && nc > 0 {
-            // contact_level's selector maps the native WBC wrench block
-            // to the sole-centre frame used by the MPC. Invert its 6x6
-            // slot block so the regulariser receives the same wrench.
-            for (slot, &side) in stance_sides.iter().enumerate() {
-                let selector = p0.sole_sel[slot].view((0, 6 * slot), (6, 6)).into_owned();
-                if let Some(native) = selector.lu().solve(&command[side]) {
-                    // MPC_SOLE_AUTHORITY: REPLACE the nominal instead of
-                    // blending into it.
-                    //
-                    // `forces_nominal` is not a neutral regulariser
-                    // target: it is built by splitting the load so the net
-                    // CoP lands where the DCM controller asked (see above).
-                    // Blending therefore averages TWO independent CoP
-                    // decisions and realises neither -- which is why every
-                    // blend fraction failed identically, down to 1/8 of
-                    // the shipped one, with the fall time unmoved
-                    // (measured 2026-09-25). BD and IHMC both keep one
-                    // authority over the CoP. This hands it to the MPC.
-                    //
-                    // Restricted to double support by default: in single
-                    // support the split is determined anyway (the two
-                    // agree to 0.3 N there), so there is nothing to win
-                    // and a failed MPC solve would have nowhere to fall
-                    // back to.
-                    // (MPC_AUTHORITY_ALL, authority in single support
-                    // too, is removed.)
-                    let authority = mpc_sole_authority && nc == 2;
-                    let w = if authority { 1.0 } else { stair_wrench_blend };
-                    let old = forces_nominal.rows(6 * slot, 6).into_owned();
-                    let blended = old * (1.0 - w) + native * w;
-                    forces_nominal.rows_mut(6 * slot, 6).copy_from(&blended);
-                }
-            }
-        }
-    }
-    let p_wrench_coupled = coupled_active.then(|| {
-        tasks::regularize(&dyn_ctx.forces(), &forces_nominal)
-            // 1.0: the default of STAIR_WRENCH_LEVEL_WEIGHT (removed).
-            .weight(1.0 / (total_mass * G).powi(2))
-    });
-    let p_reg = if coupled_active {
-        tasks::regularize(dyn_ctx.tau(), &tau_gravity)
-    } else {
-        bt::regulariser(
-            dyn_ctx.tau(),
-            &tau_gravity,
-            &dyn_ctx.forces(),
-            &forces_nominal,
-        )
+        coupled: refs.coupled_active,
+        momentum: refs.mom.as_ref(),
+        mom_cmp: refs.cmp.as_ref().map(|r| MomCmp { cmm: cent.cmm(), r }),
+        arm_hold: refs.arm.as_ref(),
+        joint_pos: obs.joint_pos_plant,
+        tau_gravity: &refs.tau_gravity,
+        shares: &refs.shares,
+        // The MPC's wrenches replace (MPC_SOLE_AUTHORITY, double support
+        // only) or blend into the load split's nominal forces.
+        mpc: ctl
+            .wrench_mpc_command
+            .as_ref()
+            .filter(|_| wrench_mpc_apply && nc > 0)
+            .map(|wrench| MpcNominal { wrench, authority: mpc_sole_authority && nc == 2, blend: stair_wrench_blend }),
+        swing: refs.swing.as_ref(),
+        contact_fz: obs.contact_fz,
     };
-
-
-    // ---- the swing level, from phase 10's inputs
-    let p_swing = refs.swing.as_ref().map(|s| match s.acc {
-        Some(acc) => bt::swing_with_pose_acceleration(
-            dyn_ctx.qddot(),
-            &s.jf,
-            &s.djv,
-            &s.pos,
-            &s.vel,
-            &s.tgt,
-            &s.tgt_v,
-            s.kp_xy,
-            s.kp_z,
-            s.kd,
-            s.axes,
-            s.rot,
-            &acc,
-        ),
-        None => bt::swing_with_pose(
-            dyn_ctx.qddot(),
-            &s.jf,
-            &s.djv,
-            &s.pos,
-            &s.vel,
-            &s.tgt,
-            &s.tgt_v,
-            s.kp_xy,
-            s.kp_z,
-            s.kd,
-            s.axes,
-            s.rot,
-        ),
-    });
-
-    // Keep the unweighted task for post-solve diagnostics; `p_swing`
-    // itself is moved into the hierarchy below.
-    let p_swing_diag = p_swing.clone();
-    // Preserve original physical rows before task weighting / HQP slack.
-    let qp_physical =
-        (diag.qp_diag_dir.is_some() || qp_gate || diag.qp_runtime_log.is_some()).then(|| {
-            let mut units = vec!["N*m"; 2 * na_count];
-            let mut scales = vec![(total_mass * G * sole_half_l).max(1.0); 2 * na_count];
-            if jlim {
-                units.extend(vec!["rad/s^2"; 2 * na_count]);
-                scales.extend(vec![1.0; 2 * na_count]);
-            }
-            for _ in stance_sides {
-                units.extend([
-                    "N", "N", "N", "N", "N", "N", "N*m", "N*m", "N*m", "N*m", "N*m", "N*m",
-                ]);
-                scales.extend(vec![(total_mass * G).max(1.0); 6]);
-                scales.extend(vec![(total_mass * G * sole_half_l).max(1.0); 6]);
-            }
-            // Optional per-foot normal force floor follows the contact rows.
-            while units.len() < p0.task.d.nrows() {
-                units.push("N");
-                scales.push((total_mass * G).max(1.0));
-            }
-            assert_eq!(units.len(), p0.task.d.nrows(), "physical row metadata");
-            (
-                eom_task.clone(),
-                p0.task.d.clone(),
-                p0.task.f.clone(),
-                units,
-                scales,
-            )
-        });
-    let mut levels: Vec<misa_wbc::Task> = Vec::new();
-    let mut level_names: Vec<&str> = Vec::new();
-    if eom_hard {
-        levels.push(eom_task);
-        level_names.push("eom");
-    }
-    let nd = p0.task.n_decision();
-    levels.push(p0.task);
-    level_names.push(if eom_hard {
-        "contact+cones"
-    } else {
-        "dynamics+contact+cones"
-    });
-    // The coupled level's weights are the defaults of the removed
-    // STAIR_WRENCH_COM_WEIGHT (10) and STAIR_WRENCH_MOM_WEIGHT (0.2);
-    // STAIR_WRENCH_TRUNK_COUPLED (trunk merged too, default off) is gone.
-    let mut p1_centroidal = if coupled_active {
-        p1.weight(10.0)
-    } else {
-        p1
-    };
-    let mut mom_pending = p_mom;
-    if let Some(pw) = p_wrench_coupled {
-        p1_centroidal = p1_centroidal + pw;
-        if let Some(pm) = mom_pending.take() {
-            p1_centroidal = p1_centroidal + pm.weight(0.2);
-        }
-    }
-    if let Some(pc) = p_cmp {
-        p1_centroidal = p1_centroidal + pc.weight(mom_cmp_w);
-    }
-    levels.push(p1_centroidal);
-    level_names.push(if coupled_active { "com+momentum+wrench" } else { "com" });
-    if use_trunk {
-        levels.push(p2);
-        level_names.push("trunk");
-    }
-    let mut push_mom = |at: &str,
-                        levels: &mut Vec<misa_wbc::Task>,
-                        names: &mut Vec<&'static str>,
-                        pending: &mut Option<misa_wbc::Task>| {
-        if mom_level == at {
-            if let Some(pm) = pending.take() {
-                levels.push(pm);
-                names.push("momentum");
-            }
-        }
-    };
-    push_mom(
-        "swing_before",
-        &mut levels,
-        &mut level_names,
-        &mut mom_pending,
-    );
-    if arm_before_swing {
-        if let Some(pa) = p_arm.take() {
-            levels.push(pa);
-            level_names.push("arm hold(before swing)");
-        }
-    }
-    if let Some(ps) = p_swing {
-        levels.push(ps);
-        level_names.push("swing");
-    }
-    push_mom(
-        "swing_after",
-        &mut levels,
-        &mut level_names,
-        &mut mom_pending,
-    );
-    if let Some(pa) = p_arm {
-        levels.push(pa);
-        level_names.push("arm hold");
-    }
-    if use_post {
-        let merged = match (mom_level.as_str(), mom_pending.take()) {
-            ("post_merge", Some(pm)) => {
-                level_names.push("posture+momentum");
-                p3 + pm
-            }
-            (_, back) => {
-                mom_pending = back;
-                level_names.push("posture");
-                p3
-            }
-        };
-        levels.push(merged);
-    }
-    push_mom(
-        "post_after",
-        &mut levels,
-        &mut level_names,
-        &mut mom_pending,
-    );
-    levels.push(p_reg);
-    level_names.push("regularise");
-    // Weighted single QP (WBC_STRATEGY=weighted): each level below the
-    // hard physics level gets a PER-TASK weight, because a geometric
-    // ratio cannot express "swing as strong as the CoM, regularisation
-    // far weaker" (measured 2026-09-24: ratios 1..1000 all fell in the
-    // first step or before it). Override one with WBCW_<NAME> where NAME
-    // is the level name upper-cased with non-alphanumerics as '_'
-    // (e.g. WBCW_COM, WBCW_SWING, WBCW_POSTURE_MOMENTUM).
-    // (WBC_WEIGHTED_OFF_STAIRS, the strict cascade inside the stair
-    // zone, was not adopted: weighted everywhere = 112/112 on the flat
-    // push bench but 0/192 on the stairs, measured 2026-09-24; removed.)
-    if weighted_levels {
-        for (k, lvl) in levels.iter_mut().enumerate().skip(1) {
-            let name = level_names.get(k).copied().unwrap_or("");
-            let wk = wcfg.wbc.level_weights.get(name).unwrap_or_else(|| level_weight_from_env(name));
-            let taken = std::mem::replace(lvl, misa_wbc::Task::empty(nd));
-            *lvl = taken.weight(wk);
-        }
-    }
-
-    let qp_structure = (
-        stance_sides.clone(),
-        levels
-            .iter()
-            .map(|v| (v.a.ncols(), v.a.nrows(), v.d.nrows()))
-            .collect::<Vec<_>>(),
-    );
-    let qp_reset = wbc_state.qp_previous_structure
-        .as_ref()
-        .is_some_and(|old| old != &qp_structure);
-    // The stateful solver keeps a workspace per level and only resets it
-    // when the QP STRUCTURE changes. (WBC_QP_RESET_EVERY_TICK, dropping
-    // the warm start every tick, was an experiment and is removed.)
-    if qp_reset {
-        wbc_state.solver.reset();
-    }
-    wbc_state.qp_previous_structure = Some(qp_structure);
-    let qp_solve_start = std::time::Instant::now();
-    let mut sol = wbc_state.solver
-        .solve(&levels, &cfg)
-        .unwrap_or_else(|e| panic!("wbc solve failed at t={t:.3}: {e}"));
-    let qp_solve_ns = qp_solve_start.elapsed().as_nanos();
-    // WBC_LEVEL_DEBUG_T=<t>: print each level's least-squares residual
-    // at the ticks within 11 ms of t (which task the solve could not
-    // satisfy, and by how much).
-    if let Some(tw) = debug.wbc_level_t
-        && (t - tw).abs() < 0.011
-    {
-        let parts: Vec<String> = levels
-            .iter()
-            .enumerate()
-            .map(|(k, lv)| {
-                let r = if lv.a.nrows() > 0 { (&lv.a * &sol.x - &lv.b).norm() } else { 0.0 };
-                let viol = if lv.d.nrows() > 0 {
-                    (&lv.d * &sol.x - &lv.f).iter().fold(0.0_f64, |m, v| m.max(*v))
-                } else {
-                    0.0
-                };
-                format!("{}={:.3e}/{:.1e}", level_names.get(k).copied().unwrap_or("?"), r, viol.max(0.0))
-            })
-            .collect();
-        println!("  [wbc-levels] t={t:.3} support={support:?} {}", parts.join(" "));
-    }
-    let qp_check_start = std::time::Instant::now();
-    let mut qp_physical_violation = 0.0_f64;
-    if let Some((eom, d, f, _, scales)) = &qp_physical {
-        for (i, value) in (&eom.a * &sol.x - &eom.b).iter().enumerate() {
-            let scale = if i < 3 || i >= 6 {
-                total_mass * G * sole_half_l
-            } else {
-                total_mass * G
-            };
-            qp_physical_violation = if value.is_finite() {
-                qp_physical_violation.max(value.abs() / scale.max(1.0))
-            } else {
-                f64::INFINITY
-            };
-        }
-        for (value, scale) in (d * &sol.x - f).iter().zip(scales) {
-            qp_physical_violation = if value.is_finite() {
-                qp_physical_violation.max(*value / scale)
-            } else {
-                f64::INFINITY
-            };
-        }
-        if sol.x.iter().any(|v| !v.is_finite()) {
-            qp_physical_violation = f64::INFINITY;
-        }
-    }
-    let raw_almost = sol
-        .level_diagnostics
-        .iter()
-        .flatten()
-        .any(|d| d.raw_status == "AlmostSolved");
-    let qp_rejected = qp_gate
-        && (qp_physical_violation > 1e-6
-            || !matches!(sol.status, misa_wbc::SolveStatus::Optimal)
-            || raw_almost);
-    if qp_rejected {
-        // Route through the existing degraded-control policy; no new fallback law.
-        sol.status = misa_wbc::SolveStatus::Degraded {
-            level: 0,
-            status: misa_wbc::QpStatus::NumericalFailure,
-        };
-    }
-    let qp_check_ns = qp_check_start.elapsed().as_nanos();
-    // Did the trunk task actually get what it asked for?
-    //
-    // The pitch diverges at lambda = 29.4 /s while the trunk task commands
-    // an angular acceleration with kp=200, kd=40 -- poles at -5.9 and -34
-    // if the command is MET. So either the command is not met (a higher
-    // level is eating it) or the measured divergence is impossible. This
-    // separates the two without guessing.
-    let (trunk_cmd_rp, trunk_acc_rp) = {
-        let qdd = dyn_ctx.qddot().eval(&sol.x);
-        let jr = j_trunk.rows(0, 2).into_owned();
-        let acc = &jr * &qdd + djv_trunk.rows(0, 2).into_owned();
-        (rp_ref, [acc[0], acc[1]])
-    };
-    let degraded = !matches!(sol.status, misa_wbc::SolveStatus::Optimal);
-    let qp_capture_timer = std::time::Instant::now();
-    if let Some(dir) = &diag.qp_diag_dir {
-        let legacy_failure = t >= 2.0
-            && diag.qp_diag_count < 8
-            && matches!(sol.status,
-            misa_wbc::SolveStatus::Degraded { level, .. } if level_names.get(level) == Some(&"swing"));
-        let continuous = diag.qp_capture_all
-            && t >= diag.qp_capture_start
-            && t <= diag.qp_capture_end
-            && tick % diag.qp_capture_stride == 0
-            && diag.qp_diag_count < diag.qp_capture_max;
-        if continuous || (!diag.qp_capture_all && legacy_failure) {
-            let matrix = |m: &na::DMatrix<f64>| serde_json::json!({"rows":m.nrows(),"cols":m.ncols(),"data":m.as_slice()});
-            let tasks: Vec<_> = levels.iter().zip(&level_names).map(|(task,name)| serde_json::json!({
-                "name":name,"a":matrix(&task.a),"b":task.b.as_slice(),"d":matrix(&task.d),"f":task.f.as_slice(),
-                "equality_semantics":"lexicographic_least_squares", "inequality_semantics":"hierarchical_slack",
-                "row_units":"weighted_task_units", "stored_scale":1.0})).collect();
-            let variables: Vec<_> = dyn_ctx.layout().names().map(|name| {
-                let var=dyn_ctx.layout().var(name);
-                serde_json::json!({"name":name,"offset":var.offset(),"size":var.size(),
-                    "components":match name {"qddot"=>"base angular rad/s^2, base linear m/s^2, joints rad/s^2", "f"=>"world link-origin [mx,my,mz,fx,fy,fz] per contact", _=>"joint torque N*m"}})
-            }).collect();
-            let physical = qp_physical.as_ref().map(|(eom,d,f,units,scales)| serde_json::json!({
-                "eom":{"a":matrix(&eom.a),"b":eom.b.as_slice(),"units":"base moment N*m, base force N, joint moment N*m"},
-                "inequalities":{"d":matrix(d),"f":f.as_slice(),"units":units,"normalization_scales":scales,
-                    "semantics":"physical_hard_despite_hqp_slack","torque_rows":2*na_count,"cbf_rows":if jlim {2*na_count} else {0}},
-                "body_weight_N":total_mass*G,"reference_length_m":sole_half_l}));
-            let dump = serde_json::json!({"schema_version":2,"t":t,"tick":tick,"ctrl_dt":dt,
-                "status":format!("{:?}",sol.status),"backend":format!("{:?}",cfg.backend),
-                "layer_statuses":sol.level_statuses.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>(),
-                "layer_raw_statuses":sol.level_diagnostics.iter().map(|d| d.as_ref().map(|d| &d.raw_status)).collect::<Vec<_>>(),
-                "prox_weight":cfg.prox_weight,"tasks":tasks,"solution":sol.x.as_slice(),"variables":variables,
-                "contact_ids":stance_sides,"planned_support":format!("{:?}",support),"phase":"None",
-                "measured_fz_N":obs.contact_fz,"physical_groups":physical,"solve_ns":qp_solve_ns,
-                "check_ns":qp_check_ns,"normalized_physical_violation":qp_physical_violation});
-            std::fs::create_dir_all(dir).expect("QP_DIAG_DIR");
-            std::fs::write(
-                format!("{dir}/tick_{:06}.json", diag.qp_diag_count),
-                serde_json::to_vec(&dump).unwrap(),
-            )
-            .expect("write QP snapshot");
-            diag.qp_diag_count += 1;
-        }
-    }
-    let qp_capture_ns = qp_capture_timer.elapsed().as_nanos();
-    let extracted = dyn_ctx.extract(&sol.x);
-    WbcOut {
-        sol,
-        extracted,
-        level_names,
-        forces_nominal,
-        sole_sel: p0.sole_sel,
-        acc_dbg: p0.acc_dbg,
-        p_swing_diag,
-        trunk_cmd_rp,
-        trunk_acc_rp,
-        qp_solve_ns,
-        qp_check_ns,
-        qp_capture_ns,
-        qp_physical_violation,
-        qp_reset,
-        qp_rejected,
-        degraded,
-    }
+    stack.solve(&req)
 }
 
 /// What phase 12 measured on the solution: the swing level's residuals,
@@ -4359,7 +3793,7 @@ pub(crate) fn phase_solve_diag(
     obs: &Observation,
     stance: &[usize],
     refs: &TaskRefs,
-    w: &WbcOut,
+    w: &WbcSolution,
 ) -> SolveDiag {
     let cop_frac = cfg.dcm.cop_frac;
     let (total_mass, sole_half_l, sole_half_w) = (k.total_mass, k.sole_half_l, k.sole_half_w);
@@ -4367,24 +3801,25 @@ pub(crate) fn phase_solve_diag(
     let robot = k.robot;
     let prof = &robot.prof;
     let data = &obs_state(obs).data;
-    let (sol, extracted, p_swing_diag) = (&w.sol, &w.extracted, &w.p_swing_diag);
+    let extracted = &w.extracted;
     let (free_side, swing_tgt, swing_cmd_acc_z) = (refs.free_side, refs.swing_tgt, refs.swing_cmd_acc_z);
-    let swing_task_residual_rms = p_swing_diag.as_ref().map_or(0.0, |task| {
-        if task.a.nrows() == 0 {
+    // The swing level's residual `A x - b` (the stack computed it on the
+    // unweighted task), one value per row.
+    let swing_task_residual_rms = w.swing_residual.as_ref().map_or(0.0, |r| {
+        if r.len() == 0 {
             0.0
         } else {
-            (&task.a * &sol.x - &task.b).norm() / (task.a.nrows() as f64).sqrt()
+            r.norm() / (r.len() as f64).sqrt()
         }
     });
     // Which ROW of the swing task is being refused. `z` is the last row
     // in every `SwingAxes` layout, and after the ascent the step that
     // never lands is exactly the one whose z target is descending.
-    let (swing_res_z, swing_res_rows) = p_swing_diag.as_ref().map_or((0.0, 0.0), |task| {
-        if task.a.nrows() == 0 {
+    let (swing_res_z, swing_res_rows) = w.swing_residual.as_ref().map_or((0.0, 0.0), |r| {
+        if r.len() == 0 {
             (0.0, 0.0)
         } else {
-            let r = &task.a * &sol.x - &task.b;
-            (r[r.len() - 1], task.a.nrows() as f64)
+            (r[r.len() - 1], r.len() as f64)
         }
     });
     // Leg reach this tick. `steps.sole[side]` is the PLANNED sole, so the
@@ -4425,8 +3860,7 @@ pub(crate) fn phase_solve_diag(
     let mut cop_use = 0.0_f64;
     for (slot, mi) in stance.iter().copied().enumerate() {
         let side = robot.side_of(mi);
-        let w = &w.sole_sel[slot] * &extracted.forces;
-        if let Some((cx, cy, fz)) = cop_from_sole_wrench(&w) {
+        if let Some((cx, cy, fz)) = cop_from_sole_wrench(&w.sole_wrench[slot]) {
             if fz > 1e-6 {
                 cop_qp[side] = [cx, cy, fz];
                 // Same net pressure point as `diag_mpc_net_cop`, for the

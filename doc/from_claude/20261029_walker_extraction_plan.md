@@ -860,6 +860,32 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
   - MPC のレンチを WBC の力の名目へ写すとき、`p0.sole_sel` の逆を使う（5302–5330）。これは Stack の中に置く。
 - **確認**: 96＋14＋eqdiag。
 - **規模**: trait 約 150 行、wbc_stack.rs 約 900 行（移動が大半）。
+- **実施 S12a（2026-10-30）**: 96＋14＋eqdiag＋s1x で差 0。walker.rs 4,554 → 3,988 行、main.rs 4,247 → 4,237 行、新設 `crates/misa-biped/src/wbc.rs` 258 行、`src/biped/wbc_stack.rs` 754 行（相 11 の本体の移動が大半）。1 回で済んだので S12b 以降は無い。
+  - **trait**（§2.6 の案 A）: `trait WbcStack { fn solve(&mut self, req: &WbcRequest) -> WbcSolution; fn anchor(&self, side) -> Option<(Vector3, Matrix3)>; }`。`anchor` はハーネスの TRAJ_CSV（係留点の y の列）が読む。`LogSink` はまだ無いので `solve` は sink を取らない（`WBC_LEVEL_DEBUG_T` の印字は Stack の中の `println!` のまま。S13 で sink を足すなら trait に足す）。
+  - **`WbcRequest<'a>`**（参照と接触の要求だけ。すべて misa-biped・misa-wbc・nalgebra の型）:
+    - 時刻と状態: `t`、`tick`、`robot: &RobotModel`、`state: &RobotState`、`support`（QP_DIAG とデバッグ印字が報告する）。
+    - 接触の要求: `stance_sides`／`stance`、`anchor_events: &[AnchorEvent]`（`Release(side)`／`Touchdown { side, pos, rot }`、相 3 → 相 4 の順）、側ごとの `load_share: [f64; 2]`・`contact_mode: [ContactMode; 2]`（Rigid／Managed）・`cop_patch: [Option<CopPatch>; 2]`（SLOPE_HEEL_CUT の箱）。`contact_level` に渡していた 3 つの閉包を、両側について先に評価したもの（どれも純粋で、`load_share` は `ramp.load_share(foot_mi[side])`＝今の `side = (mi != foot_mi[0])` の逆写像）。
+    - 参照: `a_com`、`trunk: TrunkRef { j, djv, rp_ref, yaw }`（`yaw = yaw_ref.map(|_| ori[2])`）、`coupled`、`momentum: Option<&MomRef>`、`mom_cmp: Option<MomCmp { cmm, r: &CmpRef }>`（`cmm` は tick の `Centroidal`）、`arm_hold: Option<&ArmRef>`、`joint_pos`（姿勢・腕の保持が読む植物の関節角、§6.6）、`tau_gravity`、`shares`、`mpc: Option<MpcNominal { wrench, authority, blend }>`（`wrench_mpc_command` を `WRENCH_MPC_APPLY && nc > 0` のときだけ。`authority = MPC_SOLE_AUTHORITY && nc == 2`）、`swing: Option<&SwingRef>`、`contact_fz`（QP_DIAG のみ）。
+    - `MomRef`／`CmpRef`／`ArmRef`／`SwingRef` は walker.rs から wbc.rs へ移した（中身は同じ）。`SwingRef.axes` は misa-biped の `SwingAxes`（tasks.rs の `SwingAxes` の写し）。`ContactMode` も写しで、`wbc_stack.rs` が tasks.rs の型へ写す。
+  - **`WbcSolution`**: `sol`（門で落としたときは `Degraded`）、`extracted`、`level_names`、`forces_nominal`、`sole_wrench`（スロットごとの `p0.sole_sel × forces`。相 12 の CoP はこれを読む）、`acc_dbg`、`swing_residual`（重みを付ける前の遊脚の段の `A x − b`。相 12 の RMS と z 行はこれを読む）、`trunk_acc_rp`、`timings: QpTimings`、`physical_violation`、`reset`、`rejected`、`degraded`。`trunk_cmd_rp` は `refs.rp_ref` そのものなので解からは外し、ループで `rp_ref` を使う。`sole_sel` と遊脚の `Task` は外へ出さない。
+  - **`TaskStack`**（`src/biped/wbc_stack.rs`、mujoco に依存しない）: `cfg: TaskStackConfig`、`Solver`、前の tick の QP の構造、`Anchors` を持つ。`solve` の頭で `anchor_events` を順に適用し、あとは相 11 の文をそのまま（動力学、トルク箱、CBF、`contact_level`、各段、名目の力の MPC の写し（`p0.sole_sel` の逆）、段の並べ方と重み、解、門、`WBC_LEVEL_DEBUG_T`、QP_DIAG_DIR、取り出し）。contact.rs・tasks.rs・actuate.rs は変えていない。
+    - 係留点の順: 相 3・4 は出来事を記録するだけになり、適用は相 11 の頭へ動いた。相 5〜10 は係留点を読まない（S11d で確かめた）ので値は同じ。`[anchor]` のデバッグ印字は相 3 のその場に残した。
+    - `TaskStackConfig::new(&wcfg, SolveConfig, &ContactParams, &jlim_cfg, total_mass, sole_half_l, dt, StackDiag)` が Config から段のノブを読む: `eom_hard`、JLIM（`joint_limits: Option<JointLimitCbf>`）、`validate`（`wcfg.wbc.qp_gate()`）、`weighted`、`level_weights`、姿勢・胴の有無と利得、腕の利得と `ARM_BEFORE_SWING`、`MOM_LEVEL`、`MOM_CMP_W`、`WBC_LEVEL_DEBUG_T`。
+    - **段の重み**: `level_weight_from_env`（tick の中の環境変数の読み）を消した。`LevelWeights` は Stack が作る 13 の名前をすべて持っている（`LevelWeights::NAMES`）。段の名前は `levels` と必ず対で積まれるので、表に無い名前の枝には来ない。その枝は `LevelWeights::default_for` にした。
+    - **接触の設定**: `bt::ContactCfg` の代わりに misa-biped の `ContactParams`（同じ 11 個の数値）を main.rs の同じ位置で作る。Walker（`WalkerConsts.contact_cfg`、相 9 の MPC の CoP 箱と捩り、相 11 の踵の切り取りの箱の幅）と Stack（`wbc_stack::contact_cfg(&ContactParams)` で `bt::ContactCfg` に写す）が同じものを読む。
+    - `WalkerConsts` から `jlim_cfg`・`qp_gate`・`weighted_levels` を外した（Stack の設定に移った）。main.rs の `weighted_levels` の束縛と `WbcState` も消えた。`jlim_cfg` はハーネスの ANKLE_CBF_DIAG が読むので main.rs に残る（Stack は写しを持つ）。
+    - QP_DIAG_DIR の設定（`DiagSinks` の 7 個の欄）は `wbc_stack::QpDump` 1 個にまとめた。環境変数は `DiagSinks::open` の同じ位置・同じ順で読み、Stack を作るときに `std::mem::take` で渡す。写しの番号 `count` は Stack の状態。
+    - `serde_json` を articara の `[dependencies]` に足した（dev-dependencies だけだった。QP_DIAG のダンプを lib の Stack が書くため）。Cargo.lock の中身は変わらない。
+  - **§7 の 19 は解いた**: 物理の行の控え（`qp_physical`）を開く条件を `validate || diag.measure_violation || diag.dump.dir.is_some()` にした。`validate`（`TaskStackConfig.validate`＝QP_BENCH_GATE か native の backend）だけが解の採否（`rejected`）を変え、`StackDiag`（`measure_violation`＝QP_RUNTIME_CSV の有無、`dump`＝QP_DIAG_DIR）は計測を足すだけ。真理値は今の `qp_diag_dir || qp_gate || qp_runtime_log` と同じ。ハーネスの `DiagSinks` は制御の計算経路から外れた（`qp_runtime_log.is_some()` は起動時に 1 回、`StackDiag` へ写すだけ）。
+- **S13（Walker を misa-biped へ）への申し送り**
+  - 相 11 は `phase_wbc(stack: &mut impl WbcStack, ..) -> WbcSolution` で、請求の組み立てだけになった。`Walker<S: WbcStack>` は `step` の中でこれを呼べばよい。ハーネスは `TaskStack::new(TaskStackConfig::new(..), Solver::new())` を作って渡す。係留点を TRAJ_CSV に書くので、ハーネスは `walker.stack().anchor(side)` のような読み口が要る。
+  - **walker.rs に残る articara／misa-mpc への依存**（misa-biped へ移す前に片付けるもの）:
+    - `bt::trunk_ori_ref`／`bt::TrunkGains`（相 10 の胴の向きの参照。段ではなく参照の計算なので、misa-biped へ移すのが筋。tasks.rs は今は差分が無い）。
+    - `contact::cop_from_sole_wrench`（相 12 の CoP。`sole_wrench` から計算する 6 行の純関数。misa-biped に写すか、`WbcSolution` に CoP を載せる）。
+    - `articara::biped::wrench_mpc`（＝misa-mpc、相 9）。misa-biped の依存は misarta・misa-wbc・nalgebra だけという決めごとと衝突する。(a) misa-biped が misa-mpc に依存する（同じリポジトリの crate）、(b) MPC も `WbcStack` と同じく trait で注入する、のどちらかの判断が要る（ユーザー）。
+    - `rig::G`（9.81）は `misa_biped::dcm::G`（同じ 9.81）に替えられる。`serde_json`（相 9 の MPC_DIAG_DIR）は `WalkerDiag` のフックへ。
+  - `ContactMode`・`SwingAxes` は misa-biped と tasks.rs に 2 つある（`wbc_stack.rs` の `contact_mode`／`swing_axes` が写す）。tasks.rs・contact.rs を `TaskStack` ごと misa-biped へ移すとき（§7 の 3）に 1 つにする。
+  - 段の並べ方（MOM_LEVEL、ARM_BEFORE_SWING、姿勢・胴の有無）と重みは、案 A のとおり当面 `TaskStackConfig` にある。`ContactParams` は main.rs が作っている（`kp_c`、`kd_c`、`anchor_leak`、`friction_mu`、`f_max_per_foot`、`cop_frac`、`dt` から）。S13 で `Walker::new` が Config とプロファイルから作り、`walker.contact_params()` をハーネスが Stack に渡す形にするとよい。
 
 #### S13 Walker を misa-biped へ
 
@@ -1059,4 +1085,4 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
 | 16 | 印字の順の固定をいつやめるか | §2.5 で今の順を保つ | Walker が落ち着いたら、印字を `TickRecord` の出来事の列にして、ハーネスが tick の終わりにまとめて出す形にしてよい。その 1 回はログの差（CSV は同一）を明示したコミットにする | ユーザー |
 | 17 | 実行中の指令の変更 API（§6.9） | 今は起動時に計画へ織り込む | 作らない。必要になったら、`CommandSchedule` を「先の区間だけ引き直す」再計画の要求（`PlanEditor` の書き手を 1 つ足す）として設計する | ユーザー（実機の段で） |
 | 18 | `CTRL_DT` の置き場 | 名目は Config、実現値はハーネス（§4.1） | この形で確定してよいか | ユーザー |
-| 19 | `QP_BENCH_GATE`／`MPC_BENCH_GATE` と `qp_physical`（診断の有無が `qp_physical` の計算を開く） | 制御の結果は変えないが、診断の設定が制御の計算経路に入っている | Stack の設定 `validate: bool` と診断の要求を分ける（S12 で一致を保ったまま可能） | 実装者 |
+| 19 | `QP_BENCH_GATE`／`MPC_BENCH_GATE` と `qp_physical`（診断の有無が `qp_physical` の計算を開く） | 制御の結果は変えないが、診断の設定が制御の計算経路に入っている | **済（S12a）**: `TaskStackConfig.validate` と `StackDiag { measure_violation, dump }` に分けた（§5.1 S12）。`MPC_BENCH_GATE`（`mpc_gate`）は Walker 側のまま | 済 |
