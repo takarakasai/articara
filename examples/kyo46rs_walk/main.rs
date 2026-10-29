@@ -31,8 +31,9 @@ use misa_biped::recovery::RefLib;
 
 #[cfg(feature = "mujoco")]
 mod config_env;
+// The walker (the control) is misa-biped's; this example is its harness.
 #[cfg(feature = "mujoco")]
-mod walker;
+use misa_biped::walker;
 
 /// Read a push-recovery reference from scripts/trajopt/push_recovery.py
 /// (JSON) into [`RefLib`] (misa-biped does not read JSON).

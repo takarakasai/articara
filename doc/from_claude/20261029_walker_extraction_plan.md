@@ -903,6 +903,36 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
   - 計画作りの印字（1198、1283、1333、1444、1627、1650、1682–1721）は sink 経由で同じ順に出す。
 - **確認**: 96＋14＋eqdiag。misa-biped は `cargo build -p misa-biped`（mujoco 無し）で通ること。
 - **規模**: walker.rs 約 3,500 行（移動）、main.rs は約 2,000 行まで縮む見込み。
+- **実施 S13a〜S13c（2026-10-30）**: 3 回とも 96＋14＋eqdiag＋s1x で差 0。デバッグ印字を全部点けた単発 4 本（押し・MPC 診断ファイル付き・昇段・降段。`[lt]`／`[anchor]`（stderr）／`[traj]`／`[wbc-levels]`／`[adm]`／`[dsc]`／`[dsf]`、MPC_DIAG_DIR の JSON 400 個、PREVIEW／MPC_TRAJ／QP_WRENCH の CSV）も S12a と差 0（時間の列とパスの行を除く）。main.rs 4,237 → 3,351 行、`crates/misa-biped/src/walker.rs` 1,280 行（API・型・計画作り・step）＋ `walker/phases.rs` 3,916 行（相の関数）。example の walker.rs は消えた。
+  - **S13a**（印字と依存の片付け、example の中のまま）:
+    - `misa_biped::sink` を新設: `trait LogSink { fn line(&mut self, &str); fn err_line(&mut self, &str); }`（stdout と stderr を分けたまま。`2>&1` の 1 ファイルで順が保たれる）、`outln!`／`errln!`、`NullSink`。ハーネスは `StdSink`（`println!("{s}")`／`eprintln!("{s}")`）。`print!` を重ねて 1 行にしていた `[traj]` は文字列を組んでから 1 回で出す（バイトは同じ）。
+    - `trait WalkerDiag`（既定は全部空、`NoDiag`）: `preview_solved`（PREVIEW_TRAJ_CSV）、`preview_runtime`（COM_PREVIEW_RUNTIME_CSV）、`wants_mpc_input`＋`mpc_input`（MPC_DIAG_DIR。Walker は `wants` が真のときだけ計時する＝今の `mpc_capture_ns` と同じ意味）、`mpc_runtime`（MPC_RUNTIME_CSV）、`keeps_mpc_frames`（QP_WRENCH_CSV の有無。`wrench_mpc_frames` を残すか）、`mpc_solved`（MPC_TRAJ_CSV）。書式と `serde_json` はハーネスの `impl WalkerDiag for DiagSinks` に移した（式はそのまま）。
+    - `trunk_ori_ref`／`TrunkGains`／`cop_from_sole_wrench` を `misa_biped::wbc` へ移し、tasks.rs・contact.rs は旧パスで再輸出（tests/biped_tasks.rs はそのまま通る）。`rig::G` → `misa_biped::dcm::G`。
+    - `WbcStack::solve(&mut self, req, out: &mut dyn LogSink)`。`[wbc-levels]` も sink 経由。
+    - `LAND_TIMING_DEBUG`（preview.rs が毎回 `env::var`）を `DebugFlags.land_timing` → `LandingTiming.debug`（`Config::landing_timing` が写す）にし、`LandingTiming::update` に `out` を足した。misa-biped の中の環境変数の読みはこれで 0。
+    - `SOLE_HALF_L／W`: `config_env::profile_from_kv(prof, get)` が `Profile::cop_half` を上書き（読む位置は今の行、値も同じ）。ハーネスは `prof.cop_half` を読み、Walker は `robot.prof.cop_half` を読む。
+  - **S13b**（example の中に Walker）: `WalkerInit::new(cfg, robot, setup, out)` が計画作り（旧 1785–2365 行の文をそのまま。環境変数の読みだけ `WalkerSetup` へ）と `CtlState` の初期化（旧 2494–2842 行に散っていた `let` の初期値）を行う。`with_stack(stack)` で `Walker<S>`。`WalkerConsts` は借用をやめて所有にした（相の中の `let robot = k.robot;` 6 か所などを `&k.robot` に）。
+    - **段の構築を 2 段にした理由**: 計画の印字（`gait:`〜`NO_LIFT`）→ `TrajLog::create` の印字 → `ankle_roll limit` の印字 → TaskStack の構築（`StackDiag` は `DiagSinks::open` の後）、の順なので、`Walker::new(.., stack)` の 1 段では印字の順が変わる。`WalkerInit` の間にハーネスが `init.contact_params()` から Stack を作る。
+    - 相 1（着地の設定）は `step()` の頭に入った（今まで `rig.sync()` の前。印字も観測の読みも無いので値は同じ、§2.5）。
+    - `REF_LIBRARY` の読み込み（印字なし）を計画作りの前へ動かした（`WalkerSetup.recovery_refs` に入れるため）。
+    - 消えたハーネスの別名（`kp_c`、`kd_c`、`anchor_leak`、`k_dcm`、`no_lift`、`kp_sw_xy`、`f_max_per_foot` とその assert、`land_extend_desc`、`wrench_mpc_apply`、`stair_wrench_*`、`com_*_dt`、`ContactCorrection` と `CONTACT_ON_BW` の assert）は、測定の注釈ごと `WalkerInit::new` へ移した。ハーネスに残した別名は最終報告が読むもの（`contact_admit_*`、`ds_feasible*`、`contact_plan_on`、`push_replan_trig`、`mpc_footstep_cross_y`）と、起動時の assert（`com_replan_forward_gain`、`com_xy_jerk_max`、MPC_FOOTSTEP と contact_plan の排他、`mpc_gate` の作動モード）だけ。
+  - **S13c**（misa-biped へ）: `crates/misa-biped/src/walker.rs` と `walker/phases.rs`。パスは `articara::biped::X` → `crate::X`、`articara::biped::wrench_mpc` → `misa_mpc::wrench_mpc`。example は `use misa_biped::walker;`。
+  - **公開 API**（`misa_biped::walker`）:
+    - `WalkerInit::new(cfg: Config, robot: RobotModel, setup: WalkerSetup, out: &mut dyn LogSink) -> WalkerInit`、`init.contact_params() -> &ContactParams`、`init.plan() -> &Plan`、`init.with_stack(stack: S) -> Walker<S>`。
+    - `walker.step(&Observation, &mut dyn LogSink, &mut dyn WalkerDiag) -> StepOutput { command: Command { sol, extracted, tau_gravity, rejected, degraded }, record: TickRecord }`。`TickRecord` は今までのリテラルのまま（`actual_feet` ほか 56 欄）。
+    - `walker.end_tick(&mut dyn LogSink)`（相 13。時刻は直前の `step` のもの）。
+    - 読み口: `config()`、`robot()`、`plan()`、`stats() -> &WalkerStats`（`Clone`）、`stack() -> &S`（係留点 `walker.stack().anchor(side)`）、`omega()`、`gait_params()`、`initial_feet()`（起動時の足裏、最終報告の歩幅の式が読む）。
+    - `WalkerSetup { dt, t_end, terrain: Option<Stairs>, command: CommandSchedule, recovery_refs: Vec<RefLib>, friction_mu, init_fk, leg_reach, hip_mi }`。最後の 4 つが**漏れ**（doc に LEAK と書いた）: `friction_mu`（MU_GROUND 由来、§6.7）、`init_fk`（植物の関節角からの FK＝`rig.fk_now()`。初期の足跡・CoM・`foot_rot0` がここから、§6.6）、`leg_reach`（LEG_REACH）、`hip_mi`（rig の `link_to_idx`）。
+    - `CommandSchedule { vx, vy, wz, squat_amp, squat_period, vx2: Option<(usize, f64, usize)>, jab, jab_start, jab_period, jab_pattern, jab_pitch, jab_elbow }`。`vx` の既定（STRIDE ÷ 歩の周期）はハーネスが同じ式で作る。
+    - `Observation { tick, estimate, contact_fz, joint_pos_plant }`。`joint_pos_plant` が漏れ（§6.6、doc に LEAK）。
+  - misa-biped の依存: misarta、misa-wbc、misa-mpc（path）、nalgebra。MuJoCo・serde・articara は入っていない。misa-biped の中の環境変数の読み・印字・ファイル書き込みは 0。
+- **S14 以降への申し送り**
+  - 残る環境変数の読み（ライブラリ）: misa-mpc の `MPC_LANDING_TIME_DEBUG`（wrench_mpc.rs 891）、`MPC_FS_DEBUG`（1707、1805、1821）。どちらも `eprintln!`。misa-mpc の公開 API（`solve_with_workspace` の引数か `Config`）を変えるので、§7 の 15 のとおり他の利用者と調整してから。
+  - Walker に残る articara 由来の物は無い。ハーネスに残る制御寄りの物: `CommandGuard`（方策）・`DegradedTally`（§7 の 4）、`jlim_cfg` と `SolveConfig`（Stack の設定。ANKLE_CBF_DIAG も読む）、TaskStack の構築。
+  - S14（観測を推定の結果に）: `step()` の頭の `obs_state(obs)` が `Estimate::State` を開いている。`init_fk` も推定から作る形にするなら `WalkerSetup` の欄を替える。
+  - S15（ハーネスを薄く）: main.rs は 3,351 行。`impl WalkerDiag for DiagSinks` と `StdSink` は diag.rs に、最終報告は metrics.rs に出せる。ハーネスは `walker::CommandSchedule` を作るために `jab*` を別に読み、押しの `JabClock` にも同じ値を渡している（`CommandSchedule::jab_phase` に寄せる余地）。
+  - S16（`PlanEditor`）: 計画の書き手はすべて `walker/phases.rs` の中に入った（ハーネスは `walker.plan()` を読むだけ）。
+  - `WalkerInit` → `with_stack` の 2 段は、印字の順の固定（§7 の 16）をやめれば `Walker::new(.., stack)` の 1 段にできる。
 
 #### S14 観測を状態推定の結果にする（Walker が運動学を計算）
 
@@ -1081,8 +1111,10 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
 | 12 | 要確認 7 個（`ROUGH_MODE`、`ROUGH_MODE_LIFT_H`、`TERRAIN_PITCH`、`VX2_SCHED`、`STAIR_ABSOLUTE_TD_DESC`、`STAIR_SWING_FF`、`STAIR_ZONE_SWING_ROT`）と kyo の v3 候補が使う `STAIR_ABSOLUTE_TD`・`Z_COM_OFFSET` | 台帳 §4.4 の 4 | Config には全部入れる（一致のため）。既定やプリセットの値は kyo46rs v3 の採否と合わせて決める | ユーザー |
 | 13 | `RefLib` の JSON の読み込み | misa-biped は serde_json に依存していない | **確定（ユーザー、2026-10-29）: (b)**。JSON の読み込みは misa-biped に入れない。依存は misarta・misa-wbc・nalgebra だけ。参照の読み込みはハーネスの `load_ref_lib`（S7）、プリセットの試験の JSON は試験の中で読む（S9d） | 済 |
 | 14 | `BASE_VEL_KIN*`（不採用、rig.rs） | S14 で推定と運動学を分ける妨げ | S14 の前に消す（挙動同一。分類 3 で見本に入っていない） | ユーザー |
-| 15 | ライブラリ内の `*_DEBUG` の環境変数の読み（preview.rs、wrench_mpc.rs） | 毎回 `env::var` を読む | `DebugFlags` を引数で渡す形にする。misa-mpc の公開 API が変わるので、他の利用者（namiashi 系）と調整する | ユーザー |
+| 15 | ライブラリ内の `*_DEBUG` の環境変数の読み（preview.rs、wrench_mpc.rs） | 毎回 `env::var` を読む。**preview.rs の `LAND_TIMING_DEBUG` は S13a で `DebugFlags.land_timing` に入れた（misa-biped の読みは 0）。残りは misa-mpc の 2 つ** | `DebugFlags` を引数で渡す形にする。misa-mpc の公開 API が変わるので、他の利用者（namiashi 系）と調整する | ユーザー |
 | 16 | 印字の順の固定をいつやめるか | §2.5 で今の順を保つ | Walker が落ち着いたら、印字を `TickRecord` の出来事の列にして、ハーネスが tick の終わりにまとめて出す形にしてよい。その 1 回はログの差（CSV は同一）を明示したコミットにする | ユーザー |
 | 17 | 実行中の指令の変更 API（§6.9） | 今は起動時に計画へ織り込む | 作らない。必要になったら、`CommandSchedule` を「先の区間だけ引き直す」再計画の要求（`PlanEditor` の書き手を 1 つ足す）として設計する | ユーザー（実機の段で） |
 | 18 | `CTRL_DT` の置き場 | 名目は Config、実現値はハーネス（§4.1） | この形で確定してよいか | ユーザー |
 | 19 | `QP_BENCH_GATE`／`MPC_BENCH_GATE` と `qp_physical`（診断の有無が `qp_physical` の計算を開く） | 制御の結果は変えないが、診断の設定が制御の計算経路に入っている | **済（S12a）**: `TaskStackConfig.validate` と `StackDiag { measure_violation, dump }` に分けた（§5.1 S12）。`MPC_BENCH_GATE`（`mpc_gate`）は Walker 側のまま | 済 |
+| 20 | misa-biped が misa-mpc に依存するか（S12 の申し送り） | (a) path 依存、(b) MPC も trait で注入 | **済（S13、ユーザー判断）: (a)**。misa-mpc の依存は misa-wbc と nalgebra だけなので、MuJoCo・serde・articara を入れない趣旨は保てる | 済 |
+| 21 | 足裏の寸法 `SOLE_HALF_*` の置き場 | 今はハーネスが環境変数を読み `WalkerConsts` に渡す | **済（S13、ユーザー判断）**: robot の `Profile::cop_half`。環境変数の上書きは `config_env::profile_from_kv` が Profile に書く（読む位置と値は同じ） | 済 |
