@@ -27,152 +27,45 @@
 #[cfg(feature = "mujoco")]
 #[cfg(feature = "mujoco")]
 use nalgebra as na;
+#[cfg(feature = "mujoco")]
+use misa_biped::recovery::{RefLib, RefMode};
 
-/// A recovery reference from scripts/trajopt/push_recovery.py (JSON): phase
-/// durations, node times, sole-centre trajectories and the CoM, all in the
-/// optimiser's frame (left foot stance at y = `stance_y0`, push toward +y).
+/// Read a push-recovery reference from scripts/trajopt/push_recovery.py
+/// (JSON) into [`RefLib`] (misa-biped does not read JSON).
 /// `REF_LIBRARY=<file>` loads one; see doc/from_claude/20261005_trajopt_reference_plan.md §9.
 #[cfg(feature = "mujoco")]
-#[derive(Clone)]
-struct RefLib {
-    phases: Vec<f64>,
-    swing_z0: f64,
-    /// Swing phase (fraction of the single support) this reference is meant for.
-    swing_phase: f64,
-    /// Direction of the push this reference answers [deg]: 90 = toward the stance foot, 0 = forward.
-    impulse_deg: f64,
-    /// Solved from the LANDED state (the swing foot on the ground, unloaded):
-    /// the re-step reference. Only RESTEP (removed) engaged it; the
-    /// detectors never pick it.
-    landed: bool,
-    /// Walking speed the reference was solved at [m/s] (0.12 = the nominal
-    /// gait; the library is picked by the nearest speed first, then phase).
-    vx: f64,
-    t: Vec<f64>,
-    sole: [Vec<na::Vector3<f64>>; 2],
-    /// CoM at the nodes, and the vertical force of each foot per interval.
-    com: Vec<na::Vector3<f64>>,
-    fz: [Vec<f64>; 2],
-    stance_y0: f64,
-}
-
-#[cfg(feature = "mujoco")]
-impl RefLib {
-    fn load(path: &str) -> RefLib {
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).expect("REF_LIBRARY file"))
-            .expect("REF_LIBRARY json");
-        let f = |x: &serde_json::Value| x.as_f64().unwrap();
-        let vec3 = |a: &serde_json::Value| {
-            a.as_array().unwrap().iter().map(|r| {
-                let r = r.as_array().unwrap();
-                na::Vector3::new(f(&r[0]), f(&r[1]), f(&r[2]))
-            }).collect::<Vec<_>>()
-        };
-        let sole_l = vec3(&v["sole_l"]);
-        let stance_y0 = sole_l[0].y;
-        let sole_r = vec3(&v["sole_r"]);
-        let swing_z0 = sole_r[0].z - sole_l[0].z;
-        let com = vec3(&v["com"]);
-        let fz: [Vec<f64>; 2] = {
-            let fa = v["f"].as_array().map(|a| a.to_vec()).unwrap_or_default();
-            let per = |side: usize| fa.iter().map(|k| k[side].as_array().unwrap().iter().map(|c| f(&c[2])).sum::<f64>()).collect::<Vec<f64>>();
-            [per(0), per(1)]
-        };
-        RefLib {
-            com,
-            fz,
-            swing_z0,
-            swing_phase: v["swing_phase"].as_f64().unwrap_or(0.5),
-            impulse_deg: v["impulse_deg"].as_f64().unwrap_or(90.0),
-            landed: v["landed"].as_bool().unwrap_or(false),
-            vx: v["vx"].as_f64().unwrap_or(0.12),
-            phases: v["T"].as_array().unwrap().iter().map(f).collect(),
-            t: v["t"].as_array().unwrap().iter().map(f).collect(),
-            sole: [sole_l, sole_r],
-            stance_y0,
-        }
-    }
-    fn total(&self) -> f64 {
-        self.phases.iter().sum()
-    }
-    fn interp(&self, xs: &[na::Vector3<f64>], tau: f64) -> na::Vector3<f64> {
-        let t = &self.t;
-        if tau <= t[0] {
-            return xs[0];
-        }
-        for k in 0..t.len() - 1 {
-            if tau <= t[k + 1] {
-                let a = ((tau - t[k]) / (t[k + 1] - t[k]).max(1e-9)).clamp(0.0, 1.0);
-                return xs[k] * (1.0 - a) + xs[k + 1] * a;
-            }
-        }
-        *xs.last().unwrap()
-    }
-    /// Reference DCM (xy) at `tau`: c + c_dot / omega, c_dot by finite difference.
-    fn dcm_at(&self, tau: f64, omega: f64) -> na::Vector2<f64> {
-        let h = 0.01;
-        let c = self.interp(&self.com, tau);
-        let cd = (self.interp(&self.com, tau + h) - self.interp(&self.com, (tau - h).max(0.0))) / (h + (tau - (tau - h).max(0.0)));
-        (c + cd / omega).xy()
-    }
-    /// Reference net CoP (xy) at `tau`: the soles weighted by their vertical force.
-    fn cop_at(&self, tau: f64) -> na::Vector2<f64> {
-        let t = &self.t;
-        let mut k = 0usize;
-        while k + 1 < self.fz[0].len() && tau > t[k + 1] {
-            k += 1;
-        }
-        let (fl, fr) = (self.fz[0][k].max(0.0), self.fz[1][k].max(0.0));
-        let (pl, pr) = (self.sole_at(0, tau), self.sole_at(1, tau));
-        if fl + fr < 1.0 {
-            return (0.5 * (pl + pr)).xy();
-        }
-        ((pl * fl + pr * fr) / (fl + fr)).xy()
-    }
-    /// Sole centre of reference foot `side` at reference time `tau`, linearly
-    /// interpolated between nodes and held at the ends.
-    fn sole_at(&self, side: usize, tau: f64) -> na::Vector3<f64> {
-        let t = &self.t;
-        if tau <= t[0] {
-            return self.sole[side][0];
-        }
-        for k in 0..t.len() - 1 {
-            if tau <= t[k + 1] {
-                let a = ((tau - t[k]) / (t[k + 1] - t[k]).max(1e-9)).clamp(0.0, 1.0);
-                return self.sole[side][k] * (1.0 - a) + self.sole[side][k + 1] * a;
-            }
-        }
-        *self.sole[side].last().unwrap()
-    }
-}
-
-/// An engaged reference: when it started, which walker foot plays the
-/// reference's LEFT (stance) foot, and the frame that maps the reference into
-/// the world (origin = measured stance sole at engagement, `mirror` = -1 when
-/// the stance is the walker's right foot).
-#[cfg(feature = "mujoco")]
-#[derive(Clone, Copy)]
-struct RefMode {
-    t0: f64,
-    /// Reference time already elapsed at engagement (the detector fires
-    /// some tens of ms after the push; the reference starts at the push).
-    tau0: f64,
-    stance: usize,
-    origin: na::Vector3<f64>,
-    mirror: f64,
-}
-
-#[cfg(feature = "mujoco")]
-impl RefMode {
-    fn world(&self, lib: &RefLib, p: na::Vector3<f64>) -> na::Vector3<f64> {
-        self.origin + na::Vector3::new(p.x, self.mirror * (p.y - lib.stance_y0), p.z)
-    }
-    fn world_xy(&self, lib: &RefLib, p: na::Vector2<f64>) -> na::Vector2<f64> {
-        self.world(lib, na::Vector3::new(p.x, p.y, 0.0)).xy()
-    }
-    /// Walker foot index that plays reference foot `ref_side` (0 = its stance).
-    fn foot(&self, ref_side: usize) -> usize {
-        if ref_side == 0 { self.stance } else { 1 - self.stance }
+fn load_ref_lib(path: &str) -> RefLib {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).expect("REF_LIBRARY file"))
+        .expect("REF_LIBRARY json");
+    let f = |x: &serde_json::Value| x.as_f64().unwrap();
+    let vec3 = |a: &serde_json::Value| {
+        a.as_array().unwrap().iter().map(|r| {
+            let r = r.as_array().unwrap();
+            na::Vector3::new(f(&r[0]), f(&r[1]), f(&r[2]))
+        }).collect::<Vec<_>>()
+    };
+    let sole_l = vec3(&v["sole_l"]);
+    let stance_y0 = sole_l[0].y;
+    let sole_r = vec3(&v["sole_r"]);
+    let swing_z0 = sole_r[0].z - sole_l[0].z;
+    let com = vec3(&v["com"]);
+    let fz: [Vec<f64>; 2] = {
+        let fa = v["f"].as_array().map(|a| a.to_vec()).unwrap_or_default();
+        let per = |side: usize| fa.iter().map(|k| k[side].as_array().unwrap().iter().map(|c| f(&c[2])).sum::<f64>()).collect::<Vec<f64>>();
+        [per(0), per(1)]
+    };
+    RefLib {
+        com,
+        fz,
+        swing_z0,
+        swing_phase: v["swing_phase"].as_f64().unwrap_or(0.5),
+        impulse_deg: v["impulse_deg"].as_f64().unwrap_or(90.0),
+        landed: v["landed"].as_bool().unwrap_or(false),
+        vx: v["vx"].as_f64().unwrap_or(0.12),
+        phases: v["T"].as_array().unwrap().iter().map(f).collect(),
+        t: v["t"].as_array().unwrap().iter().map(f).collect(),
+        sole: [sole_l, sole_r],
+        stance_y0,
     }
 }
 
@@ -2940,7 +2833,7 @@ fn main() {
     // (the phase of the swing is what the references differ in).
     let ref_libs: Vec<RefLib> = std::env::var("REF_LIBRARY")
         .ok()
-        .map(|p| p.split(',').filter(|x| !x.is_empty()).map(RefLib::load).collect())
+        .map(|p| p.split(',').filter(|x| !x.is_empty()).map(load_ref_lib).collect())
         .unwrap_or_default();
     let ref_lib: Option<RefLib> = None;
     let ref_any = !ref_libs.is_empty();
