@@ -1142,8 +1142,6 @@ fn main() {
     };
     let kp_sw_rot = env_f64("KP_SWING_ROT", 400.0);
     let kd_sw_rot = env_f64("KD_SWING_ROT", 40.0);
-    // Multiplier on kd_sw_rot through a stair swing's drop phase (1 = off).
-    let land_kd_rot_boost = env_f64("LAND_KD_ROT_BOOST", 1.0);
     // 0 = translation, 1 = +yaw, 2 = full pose, 3 = XYZ+roll+pitch (no yaw).
     let stair_absolute_td = flag("STAIR_ABSOLUTE_TD", false);
     // STAIR_ABSOLUTE_TD_DESC=1: the surveyed-tread touchdown height for
@@ -1169,9 +1167,6 @@ fn main() {
     let tracking_ff_min_riser = env_f64("TRACKING_FF_MIN_RISER", 0.0).max(0.0);
     let tracking_ff_riser_ok = stairs.as_ref().is_some_and(|st| st.riser.abs() >= tracking_ff_min_riser);
     let tracking_ff_scale = env_f64("TRACKING_FF_SCALE", 1.0);
-    // Isolation experiment: use stair rise/hold/lower timing even on flat ground.
-    // LIFT_H is the full rise above lift-off when both surfaces are level.
-    let stair_swing_profile = flag("STAIR_SWING_PROFILE", false);
     let swing_rot_mode = env_f64("SWING_ROT", 1.0) as u32;
     // STAIR_ZONE_SWING_ROT=mode: the SWING_ROT mode used only while the
     // mid-feet point is inside a known staircase's zone (the same zone as
@@ -1713,15 +1708,9 @@ fn main() {
     }
     // The LIPM height is the CoM's height ABOVE THE WALKING SURFACE, which
     // on a descent platform is not its world z.
-    // The LIPM height must be the CoM's height above the walking surface AS
-    // FLOWN, which includes the stair crouch: omega = sqrt(g/z) and the crouch
-    // is up to 90 mm of a 350 mm height, so ignoring it leaves the DCM plan
-    // 10-17% slow exactly when the machine is lowest and least stable.
-    let stair_crouch = env_f64("STAIR_CROUCH", 0.0);
-    let z_lip = (z_com
-        - stairs.as_ref().map_or(0.0, |st| st.base())
-        - env_f64("STAIR_CROUCH", 0.0).max(0.0))
-    .max(0.05);
+    // (STAIR_CROUCH, a fixed crouch on stairs that this height also took
+    // out, was opt-in and is removed; STAIR_ZONE_CROUCH is the one in use.)
+    let z_lip = (z_com - stairs.as_ref().map_or(0.0, |st| st.base())).max(0.05);
     // Heel-to-toe travel of the planned pressure inside each stance (see
     // DcmPlan::from_footsteps_rolled). On for stairs by default: the tread
     // pitch fixes the footstep pitch at ~2x what the commanded speed builds
@@ -1992,21 +1981,8 @@ fn main() {
     // one riser's climb over several steps; large finishes it within the
     // swing that takes the tread.
     let stair_climb_rate = env_f64("STAIR_CLIMB_RATE", 1.5);
-    // Descent: ride the minimum of the two planned sole heights (see the
-    // height-reference block). Off by default for lineage comparability.
-    let stair_desc_min = flag("STAIR_DESC_MIN", false);
-    // Crouch while on stairs. Measured on the one-step mount: the swing
-    // target sits 212 mm from the hip -- the leg's full thigh+shank length
-    // -- so the foot hovered 40 mm short waiting for the body, landed after
-    // the schedule, and the anchor slam felled the run. Lowering the hip
-    // 25 mm trades that dead-stretched reach for ~+39 mm of horizontal
-    // range, the way a person bends their knees on a staircase. Slewed in
-    // so the reference does not step.
-    // OPT-IN (default 0), not stairs-conditional: the bench's `flat` case
-    // keeps a staircase parked at x = 5 m, so a stairs-conditional default
-    // silently crouched every flat baseline -- measured by the Codex
-    // thread, it felled their reference runs before they pinned it to 0.
-    let mut crouch_track = 0.0_f64;
+    // (STAIR_DESC_MIN, riding the lower of the two soles down a descent, and
+    // STAIR_CROUCH, a fixed crouch on stairs, were opt-in and are removed.)
     // Phase windows of the stair swing, `rise_end,travel_start,travel_end,
     // drop_start` (see gait::stair_swing_windows). The default is the
     // shipped profile.
@@ -2014,24 +1990,12 @@ fn main() {
     // surface). See gait::stair_swing_sink.
     let stair_td_sink = env_f64("STAIR_TD_SINK", 0.004);
     let stair_land_sink = env_f64("STAIR_LAND_SINK", 0.004).max(0.0);
-    // Toe-first descent landing: pitch the swing sole toe-down by this many
-    // radians through the DROP phase of a DESCENDING stair swing. The toe
-    // then meets the lower tread first (plantarflexion buys ~half_l*sin
-    // of reach) and the sole rolls flat as load transfers, the way a person
-    // steps down. 0 = off.
-    let stair_desc_toe = env_f64("STAIR_DESC_TOE", 0.0);
-    // SWING_TOE_UP=rad: lift the swing foot's toe through the middle of
-    // EVERY swing (window SWING_TOE_UP_W="w0,w1" of the swing fraction,
-    // eased in and out over 20% of the window; level again before touchdown).
-    // Measured 2026-10-15 on the unmodelled-bump bench: the default XyzYaw
-    // swing leaves pitch free, the foot travels with its toe down at a 5 cm
-    // apex and the toe catches a 15 mm edge mid-swing (CoP at the toe with
-    // 10-60 N while airborne, the foot stalls and slides back) -- 20 mm bumps
-    // 3/48. The two extra rows are paid only inside the window. 0 = off.
+    // (STAIR_DESC_TOE, a toe-first descent landing, and SWING_TOE_UP / _W,
+    // the toe lifted through every swing, were not adopted and are removed.)
+    // SWING_XY_DELAY / SWING_Z_HOLD / SWING_Z_DROP: ROUGH_MODE sets them.
     let swing_xy_delay = env_f64("SWING_XY_DELAY", 0.0).clamp(0.0, 0.6);
     let swing_z_hold = flag("SWING_Z_HOLD", false);
     let swing_z_hold_min_dur = env_f64("SWING_Z_HOLD_MIN_DUR", 0.0).clamp(0.0, 1.0);
-    let swing_xy_end = env_f64("SWING_XY_END", 1.0).clamp(0.3, 1.0);
     let swing_z_drop: [f64; 2] = {
         let v: Vec<f64> = std::env::var("SWING_Z_DROP")
             .ok()
@@ -2039,39 +2003,8 @@ fn main() {
             .unwrap_or_default();
         [v.first().copied().unwrap_or(0.60).clamp(0.3, 0.95), v.get(1).copied().unwrap_or(0.95).clamp(0.5, 1.0)]
     };
-    let swing_cautious_err: [f64; 2] = {
-        let v: Vec<f64> = std::env::var("SWING_CAUTIOUS_ERR")
-            .ok()
-            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-            .unwrap_or_default();
-        [v.first().copied().unwrap_or(0.0), v.get(1).copied().unwrap_or(0.0)]
-    };
-    let swing_toe_up = env_f64("SWING_TOE_UP", 0.0).clamp(0.0, 0.6);
-    let swing_toe_up_w: [f64; 2] = {
-        let v: Vec<f64> = std::env::var("SWING_TOE_UP_W")
-            .ok()
-            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-            .unwrap_or_default();
-        [v.first().copied().unwrap_or(0.15).clamp(0.0, 1.0), v.get(1).copied().unwrap_or(0.75).clamp(0.0, 1.0)]
-    };
-    // Smooth bump over [w0, w1]: 0 outside, 1 in the middle.
-    let toe_up_shape = move |f: f64| -> f64 {
-        let (w0, w1) = (swing_toe_up_w[0], swing_toe_up_w[1]);
-        if swing_toe_up <= 0.0 || w1 <= w0 || f < w0 || f > w1 {
-            return 0.0;
-        }
-        let ramp = (0.2 * (w1 - w0)).max(1e-6);
-        let ss = |u: f64| { let u = u.clamp(0.0, 1.0); u * u * (3.0 - 2.0 * u) };
-        ss((f - w0) / ramp) * (1.0 - ss((f - (w1 - ramp)) / ramp))
-    };
-    // Anchor landings at the PLAN rotation (flat sole) instead of the
-    // measured one. Needed for toe-first descent landings (a measured
-    // anchor freezes the sole on its toe); breaks the validated ascent
-    // recipes if applied there, so strictly opt-in.
-    let stair_anchor_flat = flag("STAIR_ANCHOR_FLAT", false);
-    // Shrink the CoP box to the contact edge while a sole is pitched
-    // (rolling contact). See contact_level's patch_mod. Opt-in.
-    let stair_roll_patch = flag("STAIR_ROLL_PATCH", false);
+    // (SWING_CAUTIOUS_ERR, STAIR_ANCHOR_FLAT and STAIR_ROLL_PATCH -- the
+    // latter two for the toe-first descent -- are removed.)
     let slope_heel_cut = env_f64("SLOPE_HEEL_CUT", 0.0).max(0.0);
     let slope_heel_cut_max = env_f64("SLOPE_HEEL_CUT_MAX", 0.05).clamp(0.0, 0.08);
     // (CONTACT_FZ_RATE, a load-split damper on the measured normal force,
@@ -2467,9 +2400,6 @@ fn main() {
     // Command the swing to the ANKLE pose the footstep plan implies, rather
     // than to the sole pose directly. See the use site for the measurement.
     let stair_td_sole_frame = flag("STAIR_TD_SOLE_FRAME", false);
-    // Keep the sole flat through a height-changing swing. See the use sites.
-    let stair_rise_sole_pose = flag("STAIR_RISE_SOLE_POSE", false);
-    let stair_rise_sole_pose_min_dz = env_f64("STAIR_RISE_SOLE_POSE_MIN_DZ", 0.0).max(0.0);
     let stair_wrench_mpc = flag("STAIR_WRENCH_MPC", false);
     // Run the wrench MPC outside a stair transfer too.
     //
@@ -3465,11 +3395,8 @@ fn main() {
                     // robot vaulted over the toe and fell forward. Anchoring
                     // flat makes the Baumgarte roll the heel down instead,
                     // which is what a toe-first landing is FOR.
-                    let r = if stair_anchor_flat {
-                        foot_rot_at(swing, footsteps.at_slice(slice_idx).yaw[swing])
-                    } else {
-                        misarta::se3::rotation_matrix(&data.oMi[mi])
-                    };
+                    // (STAIR_ANCHOR_FLAT, the plan rotation, is removed.)
+                    let r = misarta::se3::rotation_matrix(&data.oMi[mi]);
                     // x, y and orientation from the measurement -- but z on
                     // the WALKING SURFACE (the plan's sole height), same as
                     // the contact-driven branch below. Anchoring a foot at
@@ -3610,14 +3537,7 @@ fn main() {
                 // A landing admitted on an unmodelled surface (see
                 // CONTACT_ADMIT_LOADED) is anchored where it actually is.
                 p.z = admit_measured_z[side].unwrap_or(steps.sole[side].z) + prof.sole_below_origin;
-                // Plan rotation for the same reason as the scheduled path
-                // above: a toe-first contact must not freeze the sole on
-                // its toe.
-                let rr = if stair_anchor_flat {
-                    foot_rot_at(side, steps.yaw[side])
-                } else {
-                    misarta::se3::rotation_matrix(&data.oMi[mi])
-                };
+                let rr = misarta::se3::rotation_matrix(&data.oMi[mi]);
                 anchors.touchdown(side, p, rr);
             }
             let sched: Vec<usize> = (0..2).filter(|&s| support.is_stance(s)).collect();
@@ -3735,7 +3655,7 @@ fn main() {
                     bt::ContactMode::Rigid
                 }
             },
-            &|_side: usize, rot: &na::Matrix3<f64>| {
+            &|_side: usize, _rot: &na::Matrix3<f64>| {
                 // SLOPE_HEEL_CUT [m/deg]: on a known UPSLOPE, during double
                 // support, move the REAR foot's CoP box forward by
                 // cut * slope_deg and shrink it by the same, so its heel
@@ -3767,23 +3687,9 @@ fn main() {
                         ((sole_half_l - d).max(0.005), contact_cfg.cop_half.1),
                     ));
                 }
-                if !stair_roll_patch {
-                    return None;
-                }
-                // World pitch of the sole's forward axis: toe-down positive.
-                let s_pitch = -rot[(2, 0)];
-                if s_pitch.abs() < 0.087 {
-                    return None; // < ~5 deg: treat as flat, full sole
-                }
-                // Line contact at the leading (toe) or trailing (heel)
-                // edge: a narrow CoP strip CENTRED ON THE PATCH, not on the
-                // sole. w = 12 mm of effective strip.
-                let w = 0.012;
-                let x_edge = (sole_half_l - 0.5 * w) * s_pitch.signum();
-                Some((
-                    [prof.sole_centre_x + x_edge, 0.0, -prof.sole_below_origin],
-                    (0.5 * w, contact_cfg.cop_half.1),
-                ))
+                // (STAIR_ROLL_PATCH, a narrow strip at the edge of a pitched
+                // sole, is removed.)
+                None
             },
         );
 
@@ -4505,33 +4411,9 @@ fn main() {
             // slope; no gating on support phase (a DS-only ramp was tried
             // and left the reference a riser behind the feet by tread 2).
             let fs = footsteps.at_slice(slice_idx);
-            // STAIR_DESC_MIN=1: descend toward the LOWER of the two planned
-            // soles instead of their mean. The mean keeps the hip half a
-            // riser high exactly while the swing foot needs to reach a full
-            // riser down -- measured on the one-step descent, the foot
-            // stalled 46 mm above the lower surface at schedule end. Riding
-            // the minimum is the stance knee actively lowering the pelvis
-            // through the step, the way a person walks downstairs; it also
-            // removes the mean's upward bounce when the pair completes.
-            let tgt_h = if stair_desc_min && st.riser < 0.0 {
-                // Look ONE SLICE AHEAD: the double support BEFORE a descent
-                // swing already rides down to the coming lower level, so
-                // both knees share the 52 mm of lowering quasi-statically
-                // and the swing starts with the pelvis low. Lowering during
-                // the single support instead leaves the reach to the last
-                // 30 mm of the swing, where the QP diagnosis shows the leg
-                // at sigma_min = 0.004 -- a kinematic singularity -- and
-                // the swing level goes Infeasible with |x| ~ 430.
-                let cur = fs.sole[0].z.min(fs.sole[1].z);
-                let nxt = footsteps
-                    .at
-                    .get(slice_idx + 1)
-                    .map(|f| f.sole[0].z.min(f.sole[1].z))
-                    .unwrap_or(cur);
-                cur.min(nxt)
-            } else {
-                0.5 * (fs.sole[0].z + fs.sole[1].z)
-            };
+            // The mean planned sole height (STAIR_DESC_MIN, the lower of the
+            // two on a descent, is removed).
+            let tgt_h = 0.5 * (fs.sole[0].z + fs.sole[1].z);
             // A slope (TERRAIN_SLOPE) has no riser: its rise per step is
             // the grade times the nominal stride, else the rate is zero and
             // the height reference never leaves the spawn level (measured
@@ -4544,10 +4426,7 @@ fn main() {
             let rate = stair_climb_rate * riser_eff / t_step.max(1e-6);
             let dh = (tgt_h - terrain_track).clamp(-rate * dt, rate * dt);
             terrain_track += dh;
-            // The stair crouch (see STAIR_CROUCH above) eases in at 50 mm/s.
-            let dc = (stair_crouch - crouch_track).clamp(-0.05 * dt, 0.05 * dt);
-            crouch_track += dc;
-            (dh - dc) / dt
+            dh / dt
         } else {
             0.0
         };
@@ -4642,7 +4521,7 @@ fn main() {
             )
         } else {
             (
-                z_com + (terrain_track - terrain_base) - crouch_track,
+                z_com + (terrain_track - terrain_base),
                 zd_terrain,
                 0.0,
             )
@@ -5815,7 +5694,7 @@ fn main() {
                     (slice_frac, slice.duration())
                 };
                 let (mut tgt, mut tgt_v, tgt_a) =
-                    if (dz.abs() > step_dz_swing_min || stair_swing_profile) && stair_swing_ff {
+                    if dz.abs() > step_dz_swing_min && stair_swing_ff {
                         articara::biped::gait::stair_swing_sink(
                             lift_off,
                             touch_down,
@@ -5825,7 +5704,7 @@ fn main() {
                             stair_swing_windows,
                             stair_td_sink,
                         )
-                    } else if dz.abs() > 1e-9 || stair_swing_profile {
+                    } else if dz.abs() > 1e-9 {
                         let f = swing_fraction;
                         let dur = swing_duration;
                         let ss = |u: f64| -> (f64, f64) {
@@ -5893,7 +5772,6 @@ fn main() {
                             swing_fraction,
                             swing_duration,
                         );
-                        let (pos_ship, vel_ship) = (pos0, vel0);
                         // Level swings only: a swing that changes height
                         // (the shipped arc interpolates z linearly under its
                         // bump) would hold the apex and drop the whole change
@@ -5943,11 +5821,9 @@ fn main() {
                             vel0.z = (z_max - lift_off.z) * (dru / 0.30 / dur)
                                 + (touch_down.z - z_max) * (ddu / (d1 - d0) / dur);
                         }
-                        if swing_xy_delay > 0.0 || swing_xy_end < 1.0 {
-                            // SWING_XY_END: the horizontal motion is complete
-                            // at this fraction and the last part of the swing
-                            // descends vertically (the three-phase profile
-                            // ends its travel at 0.70).
+                        if swing_xy_delay > 0.0 {
+                            // (SWING_XY_END, ending the horizontal motion
+                            // before 1, is removed.)
                             // SWING_XY_DELAY: hold the horizontal motion for
                             // the first `delay` of the swing while the shipped
                             // sin^2 lift runs, then smoothstep the xy over the
@@ -5959,7 +5835,7 @@ fn main() {
                             // This keeps the lift and landing timing as
                             // shipped. 0 = off (bit-identical).
                             let d = swing_xy_delay;
-                            let e = swing_xy_end.max(d + 0.05);
+                            let e = 1.0_f64.max(d + 0.05);
                             let u = ((swing_fraction - d) / (e - d)).clamp(0.0, 1.0);
                             let s_ = (3.0 - 2.0 * u) * u * u;
                             let ds = 6.0 * u * (1.0 - u) / ((e - d) * swing_duration.max(1e-6));
@@ -5968,22 +5844,6 @@ fn main() {
                             pos0.y = lift_off.y + dxy.y * s_;
                             vel0.x = dxy.x * ds;
                             vel0.y = dxy.y * ds;
-                        }
-                        // SWING_CAUTIOUS_ERR="e0,e1": the cautious shape above
-                        // is used in full while the DCM error is below e0 and
-                        // blended back to the shipped arc by e1. A push
-                        // retimes the swing shorter, and the compressed
-                        // horizontal window then doubles the swing velocity
-                        // and slips the stance foot: the 24 worst push
-                        // members went 23 -> 10 with the shape unconditional
-                        // (2026-10-15). The trip the shape prevents happens in
-                        // nominal walking, where the error is a few mm.
-                        if swing_cautious_err[1] > swing_cautious_err[0] {
-                            let w = ((swing_cautious_err[1] - dcm_err)
-                                / (swing_cautious_err[1] - swing_cautious_err[0]))
-                                .clamp(0.0, 1.0);
-                            pos0 = pos_ship + (pos0 - pos_ship) * w;
-                            vel0 = vel_ship + (vel0 - vel_ship) * w;
                         }
                         (pos0, vel0, na::Vector3::zeros())
                     };
@@ -6048,45 +5908,15 @@ fn main() {
                     kp_sw_xy,
                     kp_sw_z,
                     kd_sw,
-                    // A swing that CHANGES HEIGHT -- the step onto a tread.
-                    //
-                    // OPT-IN. Measured 2026-09-22 on G1 with the default
-                    // four-row `XyzYaw` swing: the foot reaches the tread
-                    // with its heel 33 mm past the nosing and nothing
-                    // holding its pitch, so the heel becomes a pivot --
-                    // ankle pitch runs -18 to -43 deg in 700 ms, the
-                    // measured CoP sits at -87 mm on an 85 mm half-sole
-                    // (off the heel), the load never exceeds 90 N of a
-                    // 334 N body, and the landing check correctly refuses
-                    // to confirm a foot that is not on the surface.
-                    // Constraining roll and pitch for EVERY swing is not
-                    // the answer: `SWING_ROT=3` costs a row of null space
-                    // the CEM-tuned gains do not have, and the same recipe
-                    // then falls at 3.37 s on flat ground, two steps in.
-                    // STAIR_RISE_SOLE_POSE_MIN_DZ: only pay the two extra
-                    // swing rows for a step that needs them. At a 1 cm
-                    // riser the free-arm recipe (arm hold above swing =
-                    // less null space) went 7/24 with this on and 18/24
-                    // with it off, while it is load-bearing for deep
-                    // treads (measured 2026-09-26, Sec.54). 0 = any dz,
-                    // the shipped behaviour.
-                    if stair_rise_sole_pose
-                        && dz.abs() > 1e-9
-                        && dz.abs() >= stair_rise_sole_pose_min_dz
-                    {
-                        // Full sole orientation is essential only for the deep
-                        // stair transfer. Applying it to the approach made the
-                        // feet collide, while leaving roll free lets the swing
-                        // ankle run to its stop and throws the foot sideways.
-                        bt::SwingAxes::XyzRollPitch
-                    } else if terrain_pitch
+                    // (STAIR_RISE_SOLE_POSE / _MIN_DZ, roll and pitch held
+                    // through a height-changing swing, were opt-in -- the
+                    // champion sets 0 -- and are removed.)
+                    if terrain_pitch
                         && stairs.as_ref().is_some_and(|st| st.pitch_at(footsteps.at_slice(slice_idx).sole[side].x) != 0.0)
                     {
                         // TERRAIN_PITCH_YAW=1: keep the walking default's yaw
                         // and add pitch only, roll free (see SwingAxes::XyzYawPitch).
                         if terrain_pitch_yaw { bt::SwingAxes::XyzYawPitch } else { bt::SwingAxes::XyzRollPitch }
-                    } else if toe_up_shape(swing_fraction) > 0.0 {
-                        bt::SwingAxes::XyzRollPitch
                     } else {
                         match swing_rot_mode {
                             0 => bt::SwingAxes::Xyz,
@@ -6105,50 +5935,14 @@ fn main() {
                                 rot_tgt = na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), -th).matrix() * rot_tgt;
                             }
                         }
-                        let toe_up_s = toe_up_shape(swing_fraction);
-                        if toe_up_s > 0.0 {
-                            // Toe up: rotate about the foot's y axis by -angle.
-                            rot_tgt = rot_tgt
-                                * na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), -swing_toe_up * toe_up_s)
-                                    .into_inner();
-                        }
-                        if stair_desc_toe > 0.0 && dz < -1e-9 {
-                            // Start the toe-down EARLY. Measured on the
-                            // one-step descent: ramping it from the drop
-                            // phase only reached +16.6 deg by the time the
-                            // sole met the nosing, and the heel needs >=35
-                            // deg of pitch to clear a 52 mm riser with a
-                            // 98 mm foot -- so the foot landed perched on
-                            // the edge of the step it was leaving, every
-                            // time. `STAIR_DESC_TOE_START` is the swing
-                            // fraction at which the pitch begins.
-                            let w3 = env_f64("STAIR_DESC_TOE_START", stair_swing_windows[3]);
-                            let u = ((swing_fraction - w3) / (0.95 - w3).max(1e-6)).clamp(0.0, 1.0);
-                            let s_ = u * u * (3.0 - 2.0 * u);
-                            rot_tgt = rot_tgt
-                                * na::Rotation3::from_axis_angle(
-                                    &na::Vector3::y_axis(),
-                                    stair_desc_toe * s_,
-                                )
-                                .into_inner();
-                        }
                         Some((
                             misarta::se3::rotation_matrix(&data.oMi[mi]),
                             rot_tgt,
                             na::Vector3::new(om3[0], om3[1], om3[2]),
                             kp_sw_rot,
-                            // Extra rotational damping through the DROP phase of
-                            // a stair swing: the touchdown slap is what pushes
-                            // the landing ankle's difference-velocity past its
-                            // URDF limit (+2..3 rad/s in the failing gate cell),
-                            // and it is a rate spike, not a pose error.
-                            if (dz.abs() > 1e-9 || stair_swing_profile)
-                                && swing_fraction > stair_swing_windows[3]
-                            {
-                                kd_sw_rot * land_kd_rot_boost
-                            } else {
-                                kd_sw_rot
-                            },
+                            // (LAND_KD_ROT_BOOST, a multiplier through a stair
+                            // swing's drop phase, defaulted to 1 and is removed.)
+                            kd_sw_rot,
                         ))
                     },
                     &(tgt_a * tracking_ff_scale),
