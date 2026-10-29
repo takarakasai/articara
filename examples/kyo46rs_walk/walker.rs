@@ -67,6 +67,49 @@ pub(crate) struct WalkerConsts<'a> {
     pub contact_plan_cfg: articara::biped::contact_plan::Config,
     pub com_preview_dt: f64,
     pub com_replan_dt: f64,
+    /// The wrench MPC: the per-foot force ceiling
+    /// (`cfg.wbc.f_max_per_foot(total_mass, G)`), the WBC's friction
+    /// coefficient (`cfg.wbc.friction_mu(MU_GROUND, ..)` -- built from the
+    /// PLANT's friction, §6.7), whether the solution is validated
+    /// (QP_BENCH_GATE or MPC_BENCH_GATE), `cfg.mpc.applies()`, its update and
+    /// node periods (`.max(dt)`), and the WBC's contact configuration (the
+    /// MPC's CoP box and torsion coefficient are the WBC's).
+    pub f_max_per_foot: f64,
+    pub friction_mu: f64,
+    pub mpc_gate: bool,
+    pub wrench_mpc_apply: bool,
+    pub stair_wrench_dt: f64,
+    pub stair_wrench_preview_dt: f64,
+    pub contact_cfg: &'a articara::biped::tasks::ContactCfg,
+}
+
+/// The centroidal momentum matrix `A_G(q)` and `Ȧ_G v`, computed once per
+/// tick on first use. Both are pure functions of the model and the tick's
+/// `q` / `v`, which nothing changes inside the tick, so the MPC (`h`), the
+/// momentum task and MOM_CMP read the same values they used to compute three
+/// times (the result is bit-identical).
+pub(crate) struct Centroidal<'a> {
+    model: &'a misarta::model::Model<f64>,
+    q: &'a [f64],
+    v: &'a [f64],
+    cmm: std::cell::OnceCell<na::DMatrix<f64>>,
+    dcmm_v: std::cell::OnceCell<na::Vector6<f64>>,
+}
+
+impl<'a> Centroidal<'a> {
+    pub fn new(model: &'a misarta::model::Model<f64>, q: &'a [f64], v: &'a [f64]) -> Self {
+        Centroidal { model, q, v, cmm: Default::default(), dcmm_v: Default::default() }
+    }
+
+    pub fn cmm(&self) -> &na::DMatrix<f64> {
+        self.cmm
+            .get_or_init(|| misarta::centroidal::compute_centroidal_momentum_matrix(self.model, self.q))
+    }
+
+    pub fn dcmm_v(&self) -> &na::Vector6<f64> {
+        self.dcmm_v
+            .get_or_init(|| misarta::centroidal::compute_cmm_dot_times_v(self.model, self.q, self.v))
+    }
 }
 
 /// The state the observation carries (the harness assembles it until S14).
@@ -829,6 +872,20 @@ pub(crate) fn phase_contacts(
     // were not adopted and are removed.)
     let ramp = LoadRamp { landing, lifting, slice_frac, ramp_frac, foot_mi: robot.foot_mi };
     ContactsOut { fz_meas, stance_sides, stance, nc, ramp }
+}
+
+/// Which lateral direction is "inward" (toward the stance foot) for the
+/// landing of `swing` planned at slice `i`: returns (lateral gap, true when
+/// inward is +y). The gap is |stance.y - landing.y| in world y.
+fn landing_inward(
+    footsteps: &articara::biped::gait::FootstepPlan,
+    i: usize,
+    swing: usize,
+) -> (f64, bool) {
+    let f = footsteps.at_slice(i);
+    let stance = 1 - swing;
+    let dy = f.sole[stance].y - f.sole[swing].y;
+    (dy.abs(), dy > 0.0)
 }
 
 /// What phase 5 found: the measured DCM, the DCM reference (a landed
@@ -1783,4 +1840,781 @@ pub(crate) fn phase_height(
     let a_z = zdd_ref + kp_com * (z_ref - com.z) + kd_com * (zd_ref - com_vel.z - diag_vz_bias_height);
     let a_com = na::Vector3::new(a_xy.x, a_xy.y, a_z);
     HeightOut { z_ref, a_com }
+}
+
+/// Phase 9: the centroidal wrench MPC (STAIR_WRENCH_MPC with
+/// WRENCH_MPC_ALWAYS): on its own clock, build the input (load and contact
+/// schedules, the contacts and their forecast landings, the crossing gate,
+/// the landing variable), solve, hold the answer in `ctl`, and move the
+/// swing's landing by the MPC's shift (MPC_FOOTSTEP). Writes MPC_DIAG_DIR,
+/// MPC_RUNTIME_CSV and MPC_TRAJ_CSV (the harness's sinks, until S13's hook).
+/// Returns the time spent on the MPC_DIAG_DIR capture [ns].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn phase_wrench_mpc(
+    ctl: &mut CtlState,
+    plan: &mut Plan,
+    stats: &mut WalkerStats,
+    diag: &mut DiagSinks,
+    cfg: &Config,
+    k: &WalkerConsts,
+    obs: &Observation,
+    actual: &Footsteps,
+    cent: &Centroidal,
+    sup: &SupportOut,
+    stance_sides: &[usize],
+    dcm: &DcmOut,
+    a_com: &na::Vector3<f64>,
+    t: f64,
+) -> u128 {
+    let stair_wrench_mpc = cfg.mpc.enabled;
+    // Run the wrench MPC outside a stair transfer too.
+    //
+    // The block below was gated on a running stair transfer (since removed),
+    // so the MPC solved only while a transfer was armed. Measured
+    // 2026-09-22: at 60 and 80 mm risers no transfer armed in 16 of 16 runs,
+    // i.e. the best high-riser figures of that day were obtained with the
+    // MPC executing ZERO ticks. A predictive layer that only runs during a
+    // hand-written primitive cannot carry a momentum reference or a foothold
+    // decision, so this is infrastructure for both rather than a result on
+    // its own.
+    //
+    // Default OFF: the walking branch builds its own references (below) and
+    // must be measured against the transfer-only lineage before it replaces
+    // it.
+    let wrench_mpc_always = cfg.mpc.always;
+    let stair_wrench_horizon = cfg.mpc.horizon;
+    // Align the fz schedules with `contact_schedule` (node centre).
+    let mpc_node_centre = cfg.mpc.node_centre;
+    let stair_wrench_low_min = cfg.mpc.low_min;
+    // 0 = off, 1 = seed the FIRST solve from the measured load, 2 = anchor
+    // EVERY solve to the measured load (the stair-transfer ramp's rule, made
+    // general): the smoothness term then says "do not jump away from what the
+    // robot is actually carrying" instead of "do not jump away from what the
+    // MPC said last time", which is what makes it lag every load transfer.
+    let mpc_seed_previous = cfg.mpc.seed_previous;
+    // Couple the plant's measured contact set into both the horizon and WBC.
+    // An absent foot is recovered kinematically and cannot provide a wrench
+    // until ContactCorrection's load hysteresis admits it again.
+    let stair_hybrid_contact = cfg.mpc.hybrid_contact;
+    let mpc_footstep_cross_y = cfg.mpc_cross.y;
+    let mpc_footstep_cross_ex = cfg.mpc_cross.ex;
+    let debug = cfg.debug;
+    // Largest lateral shift TOWARD the stance foot (a narrower step). The
+    // contact_plan adjuster forbids it in v4.1 (CP_MAX_Y_IN=0); the MPC box
+    // allowed it. Measured 2026-09-27 (D+J+T, 11 N.s backward, m32): the
+    // landing moved 27 mm inward, the lateral DCM error then ran away
+    // -19 -> -126 mm and the robot fell. Default = MPC_FOOTSTEP_MAX_Y
+    // (symmetric box), bit-identical.
+    let mpc_footstep_max_y_in = cfg.mpc_footstep.max_y_in;
+    // Inward bound while the SAGITTAL DCM error is forward by at least
+    // MPC_FOOTSTEP_Y_IN_FWD_TRIG [m] (world x; the walk heads +x). Measured
+    // 2026-09-27: the inward shifts that save 11 N.s forward pushes happen
+    // at x error +10..+17 mm; the harmful ones after backward pushes at
+    // x error -16..-34 mm (push step) or ~0 with a large lateral error (the
+    // next step). The retimed-step rule above does not separate them (a
+    // backward push shortens steps too). 0 = off = shipped.
+    let mpc_footstep_y_in_fwd = cfg.mpc_footstep.y_in_fwd;
+    let mpc_footstep_y_in_fwd_trig = cfg.mpc_footstep.y_in_fwd_trig;
+    let mpc_footstep = cfg.mpc_footstep.on;
+    // Arm the landing variable only once the DCM error of this single
+    // support reaches this value [m] (latched for the rest of the step), the
+    // rule the contact_plan adjuster uses (CP_TRIG): an undisturbed step
+    // then solves exactly the fixed-contact problem. Measured 2026-09-27:
+    // with the variable always present, D+J loses 6-8 cm wide-holdout
+    // stairs on two independent seeds (pooled 1 better / 10 worse) while
+    // the variable itself stays near 0 where the runs part -- the cost is
+    // its presence, not its choice. 0 = always armed = shipped.
+    let mpc_footstep_trig = cfg.mpc_footstep.trig;
+    let mpc_footstep_w = cfg.mpc_footstep.w;
+    // (MPC_FOOTSTEP_TRIG_HOLD, arming the following steps too, and
+    // VXS_BOX_GAIN, a box grown with the speed command, are removed.)
+    let mpc_footstep_max = cfg.mpc_footstep.max;
+    // MPC_FOOTSTEP_CROSS_FLOOR [fraction of the sole half width]: while
+    // crossing, a lower bound on the inward shift from the LIPM: the DCM at
+    // the end of this single support, with the stance CoP held at the
+    // stance sole's outer edge (the best the ankle can do), must lie within
+    // this fraction of the half width of the landing sole. (Its x twin,
+    // MPC_FOOTSTEP_CAPTURE_FLOOR, is removed.) Measured 2026-10-20: with
+    // only the bound opened the MPC lands at y +0.02..+0.04 for a DCM at
+    // +0.09 (stance sole +0.05) -- the SRBD model has no attitude and
+    // believes it can hold the excursion. 0 = off.
+    let mpc_footstep_cross_floor = cfg.mpc_cross.floor;
+    // DIAG_VZ_BIAS_MPC / DIAG_VZ_BIAS_HEIGHT (m/s): a vertical CoM velocity
+    // error seen by ONE consumer only -- the wrench MPC's initial state, or
+    // the CoM height PD. Diagnostic for where SENSE_VEL_BIAS_Z acts; 0 = off.
+    let diag_vz_bias_mpc = cfg.gains.diag_vz_bias_mpc;
+    let mpc_net_cop_weight = cfg.mpc.net_cop_w;
+    // MPC_FOOTSTEP: the swing foot's landing becomes a decision variable of
+    // the wrench MPC (`wrench_mpc::Landing`, one SQP step about the planned
+    // load). The chosen offset is applied the way the contact_plan adjuster
+    // applies its shift -- `shift_next` (non-accumulating) and a rebuilt DCM
+    // plan -- and the two are mutually exclusive: both on would be two
+    // authorities over the same landing. Off by default.
+    // Step-4 body, stage 1 (design note Sec.9): the landing recaptures the DCM.
+    let mpc_landing_capture_w = cfg.mpc_footstep.capture_w;
+    // Give the capture rows the plan's own sensitivity to the landing
+    // (`Input::reference_dcm_sensitivity`), differenced from the real DCM
+    // plan the way CP_J_AUTO does: shift the landing by 2 cm per axis,
+    // rebuild the rolled plan, read the reference DCM at every node. Off =
+    // the shipped rows, bit-identical.
+    let mpc_landing_capture_j = cfg.mpc_footstep.capture_j;
+    let mpc_w_pos = cfg.mpc.w_pos;
+    let mpc_w_vel = cfg.mpc.w_vel;
+    let mpc_w_mom = cfg.mpc.w_mom;
+    let mpc_w_acc = cfg.mpc.w_acc;
+    let mpc_w_wrench = cfg.mpc.w_wrench;
+    // Decide the landing lexicographically (capture first, exactly, inside
+    // the box; then the wrench MPC with it fixed) instead of through the
+    // penalty weight above, which then only has to be > 0 to switch the
+    // capture inputs on. See wrench_mpc::Config::landing_lexicographic.
+    let mpc_landing_lex = cfg.mpc_footstep.lex;
+    // 1 = shipped: the landing offset also enters the momentum and net-CoP
+    // rows as `dp x F`. 0 = capture rows and landing cost only (2026-09-27:
+    // the moment coupling made the landing jitter +-30-47 mm on
+    // undisturbed steps, see the design note).
+    let mpc_footstep_moment = cfg.mpc_footstep.moment;
+    let mpc_w_smooth = cfg.mpc.w_smooth;
+    // KKT complementarity tolerance of the MPC's solution check (see its use).
+    let mpc_kkt_comp_tol = cfg.mpc.kkt_comp_tol;
+    let mpc_backend_override = cfg.mpc.backend;
+    let (dt, omega, total_mass) = (k.dt, k.omega, k.total_mass);
+    let sole_half_l = k.sole_half_l;
+    let sole_half_w = k.sole_half_w;
+    let robot = k.robot;
+    let (f_max_per_foot, friction_mu, mpc_gate) = (k.f_max_per_foot, k.friction_mu, k.mpc_gate);
+    let wrench_mpc_apply = k.wrench_mpc_apply;
+    let (stair_wrench_dt, stair_wrench_preview_dt) = (k.stair_wrench_dt, k.stair_wrench_preview_dt);
+    let contact_cfg = k.contact_cfg;
+    let st = obs_state(obs);
+    let (com, com_vel, v_dvec, data) = (st.com, st.com_vel, &st.v_dvec, &st.data);
+    let support = sup.support;
+    let (xi, dcm_err) = (dcm.xi, dcm.dcm_err);
+    let a_com = *a_com;
+    let mut mpc_capture_ns = 0u128;
+    if stair_wrench_mpc && wrench_mpc_always {
+        // A held result has no age limit (STAIR_WRENCH_MAX_AGE removed).
+        if t + 1e-9 >= ctl.wrench_mpc_next {
+            let horizon_time = stair_wrench_preview_dt * stair_wrench_horizon as f64;
+            let weight = total_mass * G;
+            // Where the MPC is asked to be at the end of its horizon.
+            //
+            // Historically this was the state PROPAGATED from now at the
+            // DCM controller's current acceleration -- i.e. "wherever we
+            // are already heading", which is a prediction, not a target.
+            // An MPC given its own prediction has nothing to correct, and
+            // measured 2026-09-24 the walking branch's horizontal target
+            // carried no plan at all (only the height came from one).
+            // (MPC_TARGET_PREVIEW, the horizontal target from the CoM
+            // preview QP, was not adopted and is removed.)
+            let mut target_com =
+                com + com_vel * horizon_time + a_com * (0.5 * horizon_time * horizon_time);
+            let mut target_velocity = com_vel + a_com * horizon_time;
+            // `high` is the CURRENT stance foot, purely so the code below
+            // has a name for "the loaded side"; the schedules are built
+            // from the gait.
+            let high = usize::from(!stance_sides.contains(&0));
+            // The height reference is the walk's own.
+            let (hz, hzd, _) = plan.height.at(t + horizon_time);
+            target_com.z = hz;
+            target_velocity.z = hzd;
+            let low = 1 - high;
+            let mut reference_fz_schedule = Vec::with_capacity(stair_wrench_horizon);
+            let mut min_fz_schedule = Vec::with_capacity(stair_wrench_horizon);
+            for k in 0..stair_wrench_horizon {
+                // Sample the gait at the node's CENTRE, the same instant
+                // `contact_schedule` uses.
+                //
+                // These two schedules used to disagree by half a node:
+                // this one read `k * dt`, the contact set read
+                // `(k + 0.5) * dt`. A node that straddles a lift-off then
+                // gets "swing" from one and "double support" from the
+                // other, and the MPC is handed a minimum vertical force on
+                // a foot it has been told is in the air. Measured
+                // 2026-09-24 with the MPC applied: the first node at
+                // t=22.06 said contact [false, true] and min_fz
+                // [40.2, 0.0] -- infeasible, the solve failed, the walker
+                // held the last wrench across a support change and put
+                // 770 N through the wrong foot.
+                let stage_dt = if mpc_node_centre {
+                    (k as f64 + 0.5) * stair_wrench_preview_dt
+                } else {
+                    k as f64 * stair_wrench_preview_dt
+                };
+                // The load split is the GAIT's, read forward along the
+                // horizon. Double support is an even split; single
+                // support puts the whole weight on the stance sole. This
+                // is the schedule the walk is already executing, so the
+                // MPC predicts the motion rather than a primitive.
+                let high_share = {
+                    let idx = plan.gait.index_at(t + stage_dt);
+                    match plan.gait.slices[idx].support.swing() {
+                        None => 0.5,
+                        Some(sw) => {
+                            if sw == high {
+                                0.0
+                            } else {
+                                1.0
+                            }
+                        }
+                    }
+                };
+                let mut reference = [0.0; 2];
+                let mut minimum = [0.0; 2];
+                reference[high] = high_share * weight;
+                reference[low] = (1.0 - high_share) * weight;
+                minimum[high] = stair_wrench_low_min * weight * high_share;
+                minimum[low] = stair_wrench_low_min * weight * (1.0 - high_share);
+                for side in 0..2 {
+                    let capacity = f_max_per_foot;
+                    minimum[side] = minimum[side].min(capacity);
+                    reference[side] = reference[side].max(minimum[side]).min(capacity);
+                }
+                reference_fz_schedule.push(reference);
+                min_fz_schedule.push(minimum);
+            }
+            let mut previous =
+                ctl.wrench_mpc_command.unwrap_or([articara::biped::wrench_mpc::Wrench::zeros(); 2]);
+            // MPC_SEED_PREVIOUS: start the smoothness anchor at the
+            // MEASURED load instead of at zero.
+            //
+            // The smoothness term penalises distance from `previous`, and
+            // on the first solve `previous` is zero. With the weight that
+            // kills the chatter (MPC_W_SMOOTH=10, 1e4x the default) the
+            // commanded wrench then ramps up at ~150 N/s: measured
+            // 2026-09-26, 148 N total at t=1.0 s and 113 N on the stance
+            // leg as the first single support began, against 353 N the
+            // WBC needed. Under MPC_SOLE_AUTHORITY that under-load IS the
+            // regulariser target; the welded robot absorbed it (151/192),
+            // the free-arm robot touched down early at 2.6 s and fell at
+            // 3.2 s in half the members. The stair-transfer ramp already
+            // seeds `previous` this way (`seed_previous`); this does the
+            // same for the first solve of a walk. Off = zero seed = the
+            // shipped behaviour.
+            if mpc_seed_previous == 2 || (mpc_seed_previous == 1 && ctl.wrench_mpc_command.is_none()) {
+                for side in 0..2 {
+                    previous[side][5] = obs.contact_fz[side].max(0.0);
+                }
+            }
+            let mut contacts: Vec<articara::biped::wrench_mpc::Contact> = Vec::with_capacity(2);
+            for side in 0..2 {
+                let rotation = misarta::se3::rotation_matrix(&data.oMi[robot.foot_mi[side]]);
+                let s_pitch = -rotation[(2, 0)];
+                let rolling = stair_hybrid_contact && s_pitch.abs() >= 0.087;
+                let cop_half = if rolling {
+                    (0.006, contact_cfg.cop_half.1)
+                } else {
+                    contact_cfg.cop_half
+                };
+                // The WBC selector and MPC wrench must use the same
+                // point. During rolling contact that point is the toe or
+                // heel strip centre rather than the sole centre.
+                let patch_x = if rolling {
+                    (sole_half_l - cop_half.0) * s_pitch.signum()
+                } else {
+                    0.0
+                };
+                let position =
+                    actual.sole[side] + rotation * na::Vector3::new(patch_x, 0.0, 0.0);
+                contacts.push(articara::biped::wrench_mpc::Contact {
+                    position,
+                    rotation,
+                    cop_half,
+                });
+            }
+            // A foot in the air now but scheduled to be in contact within
+            // the horizon: place its MPC contact at the forecast landing
+            // rather than where it is mid-swing.
+            if wrench_mpc_apply {
+                let end = t + stair_wrench_horizon as f64 * stair_wrench_preview_dt;
+                let fc = articara::biped::preview::forecast_feet(
+                    &plan.gait,
+                    &plan.footsteps,
+                    &actual,
+                    &stance_sides,
+                    t,
+                    end - 1e-9,
+                );
+                for side in 0..2 {
+                    if !stance_sides.contains(&side) {
+                        let yaw = fc.yaw[side];
+                        let (sy, cy) = yaw.sin_cos();
+                        let rot = na::Matrix3::new(cy, -sy, 0.0, sy, cy, 0.0, 0.0, 0.0, 1.0);
+                        contacts[side].position = fc.sole[side];
+                        contacts[side].rotation = rot;
+                    }
+                }
+            }
+            let cmm = cent.cmm();
+            let h = cmm * v_dvec;
+            // MPC_FOOTSTEP: in single support, the swing foot's landing is
+            // a variable from the first node at which the schedule has it
+            // down.
+            // Inward (toward-stance) bound on the landing shift and which
+            // sign of y is inward: MPC_FOOTSTEP_MAX_Y_IN. (The v6.13
+            // backward parts MPC_FOOTSTEP_SHIFT_REST / _BACK_ONLY /
+            // _BACK_PERSIST / _FLOOR_BACK_ERR / _BACK_VMAX / _HOLD_SHIFT /
+            // _CAPTURE_FLOOR went to PUSH_REPLAN in v6.14 and are removed.)
+            // MPC_FOOTSTEP_CROSS_Y gate (see its declaration).
+            let cross_now: Option<(usize, bool)> = if mpc_footstep_cross_y > 0.0
+                && let Support::Single { swing: sw_c, .. } = support
+            {
+                let i = plan.gait.index_at(t);
+                if let Some((li, lp)) = ctl.mpc_fs_cross_latched
+                    && li == i
+                {
+                    Some((li, lp))
+                } else {
+                    let stance_c = 1 - sw_c;
+                    let f = plan.footsteps.at_slice(i);
+                    // The stance foot lies at +y of the swing foot.
+                    let plus = f.sole[stance_c].y > f.sole[sw_c].y;
+                    let ex = (xi.y - f.sole[stance_c].y) * if plus { 1.0 } else { -1.0 };
+                    if ex > mpc_footstep_cross_ex {
+                        ctl.mpc_fs_cross_latched = Some((i, plus));
+                        stats.n_mpc_fs_cross += 1;
+                        if debug.mpc_fs_cross {
+                            println!("  [fs-cross] t={t:.3} slice {i} swing {sw_c} DCM {ex:+.3} m past the stance sole");
+                        }
+                        Some((i, plus))
+                    } else {
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let inward_bound = |i: usize| -> (f64, bool) {
+                let (_, plus) = support
+                    .swing()
+                    .map(|sw| landing_inward(&plan.footsteps, i, sw))
+                    .unwrap_or((0.0, true));
+                let mut b = mpc_footstep_max_y_in;
+                if mpc_footstep_y_in_fwd > 0.0
+                    && xi.x - plan.dcm.reference(t).xi.x >= mpc_footstep_y_in_fwd_trig
+                {
+                    b = b.max(mpc_footstep_y_in_fwd);
+                }
+                if let Some((ci, cplus)) = cross_now
+                    && ci == i
+                {
+                    return (b.max(mpc_footstep_cross_y), cplus);
+                }
+                (b, plus)
+            };
+            let landing = if mpc_footstep
+                && ctl.push_replan_slice != Some(plan.gait.index_at(t))
+                && wrench_mpc_apply
+                && let Support::Single { swing, .. } = support
+                && {
+                    let i = plan.gait.index_at(t);
+                    if mpc_footstep_trig > 0.0
+                        && dcm_err >= mpc_footstep_trig
+                        && !ctl.mpc_fs_armed.is_some_and(|(a, u)| a <= i && i <= u)
+                    {
+                        // A step is two slices (single + double support).
+                        ctl.mpc_fs_armed = Some((i, i));
+                    }
+                    mpc_footstep_trig == 0.0
+                        || ctl.mpc_fs_armed.is_some_and(|(a, u)| a <= i && i <= u)
+                }
+                && {
+                    // (The freeze by swing phase, MPC_FOOTSTEP_FREEZE_FRAC /
+                    // _RISE, defaulted to inf = never and is removed.)
+                    // Event mode: no landing moves while the foot is
+                    // probing for the ground (measured 2026-10-04: the
+                    // goal moved 5-12 cm under a foot 2 cm from contact).
+                    !plan.landing.landing_closed(plan.gait.index_at(t)) && ctl.ref_mode.is_none()
+                }
+            {
+                (0..stair_wrench_horizon)
+                    .find(|&k| {
+                        let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
+                        match plan.gait.support_at(at) {
+                            Support::Double => true,
+                            Support::Single { swing: sw, .. } => sw != swing,
+                        }
+                    })
+                    .map(|first_node| articara::biped::wrench_mpc::Landing {
+                        foot: swing,
+                        first_node,
+                        min_first_node: first_node,
+                        position: [contacts[swing].position.x, contacts[swing].position.y],
+                        // MPC_FOOTSTEP_TERRAIN_W (terrain as a cost) removed.
+                        terrain_x: None,
+                        weight: mpc_footstep_w,
+                        max: {
+                            let i = plan.gait.index_at(t);
+                            let (inward, inward_is_plus) = inward_bound(i);
+                            let mut m = mpc_footstep_max;
+                            if inward_is_plus {
+                                m[1] = if cross_now.is_some_and(|(ci, _)| ci == i) { inward } else { m[1].min(inward) };
+                            }
+                            m
+                        },
+                        // The answer is the total since the slice began
+                        // (MPC_FOOTSTEP_INCREMENT removed).
+                        prior: [0.0; 2],
+                        min: {
+                            let i = plan.gait.index_at(t);
+                            // (MPC_FOOTSTEP_STAIR_BACK, inf by default, removed.)
+                            let mut m = mpc_footstep_max;
+                            let (inward, inward_is_plus) = inward_bound(i);
+                            if !inward_is_plus {
+                                m[1] = if cross_now.is_some_and(|(ci, _)| ci == i) { inward } else { m[1].min(inward) };
+                            }
+                            m
+                        },
+                    })
+                    .map(|mut land| {
+                        // Crossing: the LIPM capture floor on the inward shift.
+                        if mpc_footstep_cross_floor > 0.0
+                            && let Some((ci, cplus)) = cross_now
+                            && ci == plan.gait.index_at(t)
+                        {
+                            let sl = &plan.gait.slices[ci];
+                            let rem = (sl.t1 - t).max(0.0);
+                            let sgn = if cplus { 1.0 } else { -1.0 };
+                            let stance_y = plan.footsteps.at_slice(ci).sole[1 - land.foot].y;
+                            let edge = stance_y + sgn * sole_half_w;
+                            let xi_td = edge + (xi.y - edge) * (omega * rem).exp();
+                            // The ORIGINAL landing: the contact position already
+                            // carries the shift applied so far this slice, and
+                            // the box acts on the total shift from the original.
+                            let applied_y = if ctl.mpc_fs_slice == Some(ci) { ctl.mpc_fs_applied.y } else { 0.0 };
+                            let base = land.position[1] - applied_y;
+                            // Inward shift needed for the landing to come within
+                            // floor * half width of xi_td.
+                            let need = (xi_td - sgn * mpc_footstep_cross_floor * sole_half_w - base) * sgn;
+                            if need > 0.0 {
+                                if cplus {
+                                    land.min[1] = land.min[1].min(-need);
+                                    land.max[1] = land.max[1].max(need);
+                                } else {
+                                    land.max[1] = land.max[1].min(-need);
+                                    land.min[1] = land.min[1].max(need);
+                                }
+                            }
+                            if debug.mpc_fs_cross {
+                                println!("  [fs-cross-floor] t={t:.3} rem={rem:.3} xi.y={:+.3} xi_td={xi_td:+.3} base={base:+.3} need={need:+.3} max={:?} min={:?}", xi.y, land.max, land.min);
+                            }
+                        }
+                        land
+                    })
+            } else {
+                None
+            };
+            let input = articara::biped::wrench_mpc::Input {
+                com,
+                velocity: if diag_vz_bias_mpc != 0.0 {
+                    com_vel + na::Vector3::new(0.0, 0.0, diag_vz_bias_mpc)
+                } else {
+                    com_vel
+                },
+                angular_momentum: na::Vector3::new(h[0], h[1], h[2]),
+                target_com,
+                target_velocity,
+                target_acceleration: a_com,
+                com_z_max: None,
+                contacts: [contacts[0].clone(), contacts[1].clone()],
+                // Walking branch: the contact SET over the horizon comes
+                // from the gait, node by node (lift-off and landing inside
+                // the horizon), the same way the CoM preview builds its
+                // support boxes. Repeating the current stance for 0.4 s
+                // -- the historical construction, kept for transfers --
+                // gave a solution that, once applied (WRENCH_MPC_APPLY),
+                // could not walk at all (0/192, measured 2026-09-24).
+                contact_schedule: if wrench_mpc_apply {
+                    (0..stair_wrench_horizon)
+                        .map(|k| {
+                            let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
+                            match plan.gait.support_at(at) {
+                                Support::Double => [true, true],
+                                Support::Single { swing, .. } => [swing != 0, swing != 1],
+                            }
+                        })
+                        .collect()
+                } else {
+                    vec![
+                        [stance_sides.contains(&0), stance_sides.contains(&1)];
+                        stair_wrench_horizon
+                    ]
+                },
+                // What fraction of its capacity each foot may use at
+                // each node: all of it. (MPC_LOAD_SCHEDULE, the WBC's
+                // double-support load ramp shown to the MPC, was not
+                // adopted and is removed.)
+                activation_schedule: vec![[1.0; 2]; stair_wrench_horizon],
+                reference_fz_schedule,
+                // Where the walk wants the pressure, node by node, in
+                // each sole's own frame. Without it the MPC has no
+                // opinion about the CoP and picks the split its wrench
+                // terms like, which is a different CoP from the one the
+                // DCM plan is steering by (measured 2026-09-25: totals
+                // agree to 1%, the split differs by 40-55 N, and applying
+                // the MPC's answer cannot walk at any blend).
+                reference_cop_schedule: None,
+                // Where the walk wants the NET pressure of both feet,
+                // node by node, in world. This is what the DCM plan
+                // actually constrains; asking each sole for its own CoP
+                // made the disagreement worse (43 -> 63 N, 2026-09-25).
+                // (MPC_COP_REF_CMD, the schedule shifted to the WBC's
+                // p_cmd, was not adopted -- the champion sets 0 -- and is
+                // removed; it added an exact zero when off.)
+                reference_net_cop_schedule: (mpc_net_cop_weight > 0.0)
+                    .then(|| {
+                    (0..stair_wrench_horizon)
+                        .map(|k| {
+                            let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
+                            plan.dcm.reference(at).p
+                        })
+                        .collect()
+                }),
+                reference_dcm_schedule: (mpc_landing_capture_w > 0.0)
+                    .then(|| {
+                    (0..stair_wrench_horizon)
+                        .map(|k| {
+                            let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
+                            plan.dcm.reference(at).xi
+                        })
+                        .collect()
+                }),
+                min_fz_schedule,
+                previous,
+                landing,
+                dcm_now: (mpc_landing_capture_w > 0.0).then_some(xi),
+                reference_dcm_sensitivity: (mpc_landing_capture_j
+                    && mpc_landing_capture_w > 0.0)
+                    .then(|| landing)
+                    .flatten()
+                    .map(|land| {
+                        let i = plan.gait.index_at(t);
+                        let du = 0.02;
+                        let mut cols = [Vec::new(), Vec::new()];
+                        for axis in 0..2 {
+                            let mut probe = plan.footsteps.clone();
+                            let mut d = na::Vector2::zeros();
+                            d[axis] = du;
+                            // The sensitivity describes the plan the shift
+                            // is actually applied to.
+                            probe.shift_next(i, land.foot, d);
+                            let moved = plan.dcm_for(&probe);
+                            cols[axis] = (0..stair_wrench_horizon)
+                                .map(|k| {
+                                    let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
+                                    (moved.reference(at).xi - plan.dcm.reference(at).xi) / du
+                                })
+                                .collect();
+                        }
+                        (0..stair_wrench_horizon)
+                            .map(|k| {
+                                na::Matrix2::from_columns(&[cols[0][k], cols[1][k]])
+                            })
+                            .collect()
+                    }),
+                // MPC_ARM_ABOUT_PRIOR (removed) was the only user.
+                prior_com: None,
+            };
+            let mut config = articara::biped::wrench_mpc::Config {
+                horizon: stair_wrench_horizon,
+                dt: stair_wrench_preview_dt,
+                mass: total_mass,
+                gravity: G,
+                friction_mu,
+                cop_half: contact_cfg.cop_half,
+                torsion_mu: contact_cfg.mu_torsion,
+                // (MPC_F_MAX_SCALE, a ceiling of its own, is removed:
+                // its default NaN meant the WBC's.)
+                max_fz: f_max_per_foot,
+                validate_solution: mpc_gate,
+                // The cost weights, so the ones that compete with the CoP
+                // term can be measured against it. Defaults are the
+                // shipped values, so leaving them alone is bit-identical.
+                // The removed experiments (MPC_DCM_W, MPC_LANDING_CAPTURE_N,
+                // MPC_LANDING_TIME*, MPC_FZ_SPLIT_EQ, MPC_CAPTURE_COP_W,
+                // MPC_CAPTURE_LEX*, MPC_ARM_ABOUT_PRIOR, MPC_W_LDOT,
+                // MPC_COP_W, MPC_NET_COP_EQ, MPC_REACH_W) keep `Config::default()`,
+                // which is what their defaults were.
+                position_weight: mpc_w_pos,
+                velocity_weight: mpc_w_vel,
+                momentum_weight: mpc_w_mom,
+                acceleration_weight: mpc_w_acc,
+                wrench_weight: mpc_w_wrench,
+                omega,
+                landing_capture_weight: mpc_landing_capture_w,
+                landing_lexicographic: mpc_landing_lex,
+                landing_moment_coupling: mpc_footstep_moment,
+                smooth_weight: mpc_w_smooth,
+                net_cop_weight: mpc_net_cop_weight,
+                ..Default::default()
+            };
+            config.qp.absolute_gap = mpc_gate;
+            // Interior-point solutions carry complementarity slack at the
+            // gap setting; the KKT gate's 1e-6 rejected every one.
+            config.kkt_complementarity_tolerance = mpc_kkt_comp_tol;
+            if let Some(backend) = mpc_backend_override {
+                config.qp.solver = backend;
+            }
+            if let Some(dir) = &diag.mpc_diag_dir {
+                let capture_start = std::time::Instant::now();
+                let contacts: Vec<_> = input.contacts.iter().map(|c| serde_json::json!({
+                    "position":c.position.as_slice(),"rotation":c.rotation.as_slice(),"cop_half":c.cop_half})).collect();
+                // "phase" was the stair transfer's phase (removed); the walk
+                // always wrote its placeholder, `Capture`.
+                let dump = serde_json::json!({"schema":1,"t":t,"ctrl_dt":dt,"mpc_update_dt":stair_wrench_dt,
+                    "phase":"Capture","input":{
+                        "com":input.com.as_slice(),"velocity":input.velocity.as_slice(),"angular_momentum":input.angular_momentum.as_slice(),
+                        "target_com":input.target_com.as_slice(),"target_velocity":input.target_velocity.as_slice(),"target_acceleration":input.target_acceleration.as_slice(),
+                        "contacts":contacts,"contact_schedule":input.contact_schedule,"activation_schedule":input.activation_schedule,
+                        "reference_fz_schedule":input.reference_fz_schedule,"min_fz_schedule":input.min_fz_schedule,
+                        "previous":[input.previous[0].as_slice(),input.previous[1].as_slice()]},
+                    "config":{"horizon":config.horizon,"dt":config.dt,"mass":config.mass,"gravity":config.gravity,
+                        "friction_mu":config.friction_mu,"cop_half":config.cop_half,"torsion_mu":config.torsion_mu,"max_fz":config.max_fz,
+                        "position_weight":config.position_weight,"velocity_weight":config.velocity_weight,"momentum_weight":config.momentum_weight,
+                        "acceleration_weight":config.acceleration_weight,"wrench_weight":config.wrench_weight,"smooth_weight":config.smooth_weight,"validate_solution":config.validate_solution}});
+                std::fs::create_dir_all(dir).expect("MPC_DIAG_DIR");
+                std::fs::write(
+                    format!("{dir}/mpc_{:06}.json", diag.mpc_diag_count),
+                    serde_json::to_vec(&dump).unwrap(),
+                )
+                .expect("MPC snapshot");
+                diag.mpc_diag_count += 1;
+                mpc_capture_ns = capture_start.elapsed().as_nanos();
+            }
+            let previous_age = ctl.diag_mpc_time.map_or(-1.0, |stamp| t - stamp);
+            let mpc_solve_start = std::time::Instant::now();
+            let mpc_result = articara::biped::wrench_mpc::solve_with_workspace(
+                &input,
+                &config,
+                None, // no warm start (MPC_QP_WARM removed)
+            );
+            let mpc_solve_ns = mpc_solve_start.elapsed().as_nanos();
+            if let Some(file) = &mut diag.mpc_runtime_log {
+                use std::io::Write;
+                let mask = u8::from(stance_sides.contains(&0))
+                    | (u8::from(stance_sides.contains(&1)) << 1);
+                // Second column: the removed stair transfer's phase,
+                // `Capture` being the walk's placeholder.
+                writeln!(file, "{t:.9},Capture,{mask},{:?},{},{stair_wrench_dt:.9},{mpc_solve_ns},{},{},{previous_age:.9}",
+                    config.qp.solver, config.horizon,
+                    mpc_solve_ns > (stair_wrench_dt * 1e9) as u128,
+                    mpc_result.is_some()).unwrap();
+            }
+            match mpc_result {
+                Some(solution) => {
+                    let mut by_side = [articara::biped::wrench_mpc::Wrench::zeros(); 2];
+                    by_side.copy_from_slice(&solution.sole_wrenches);
+                    ctl.diag_mpc_reference = input.reference_fz_schedule[0];
+                    ctl.diag_mpc_time = Some(t);
+                    ctl.wrench_mpc_command = Some(by_side);
+                    {
+                        let (mut mx, mut my, mut fz) = (0.0, 0.0, 0.0);
+                        for foot in 0..2 {
+                            let c = &input.contacts[foot];
+                            let w = by_side[foot];
+                            let m = c.rotation * na::Vector3::new(w[0], w[1], w[2]);
+                            let f = c.rotation * na::Vector3::new(w[3], w[4], w[5]);
+                            // Moment of this contact about the world origin,
+                            // horizontal components only.
+                            mx += m.x + c.position.y * f.z - c.position.z * f.y;
+                            my += m.y - c.position.x * f.z + c.position.z * f.x;
+                            fz += f.z;
+                        }
+                        ctl.diag_mpc_net_cop = if fz > 1.0 {
+                            [-my / fz, mx / fz]
+                        } else {
+                            [f64::NAN; 2]
+                        };
+                    }
+                    if diag.qp_wrench_log.is_some() {
+                        ctl.wrench_mpc_frames = Some(input.contacts.clone());
+                    }
+                    if let Some(f) = diag.mpc_traj_file.as_mut() {
+                        use std::io::Write as _;
+                        let nan = f64::NAN;
+                        let mut row = format!(
+                            "{t:.4},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5}",
+                            com.x, com.y, com.z, input.target_com.x, input.target_com.y, input.target_com.z
+                        );
+                        for k in 0..16 {
+                            match solution.trajectory.get(k) {
+                                Some(n) => row += &format!(",{:.5},{:.5},{:.5}", n[0].x, n[0].y, n[0].z),
+                                None => row += &format!(",{nan},{nan},{nan}"),
+                            }
+                        }
+                        row += &format!(",{:.5},{:.5}", ctl.diag_mpc_net_cop[0], ctl.diag_mpc_net_cop[1]);
+                        for k in 0..16 {
+                            match input.reference_net_cop_schedule.as_ref().and_then(|v| v.get(k)) {
+                                Some(c) => row += &format!(",{:.5},{:.5}", c.x, c.y),
+                                None => row += &format!(",{nan},{nan}"),
+                            }
+                        }
+                        for foot in 0..2 {
+                            let p = input.contacts[foot].position;
+                            row += &format!(",{:.5},{:.5},{:.5}", p.x, p.y, p.z);
+                        }
+                        let on = input.contact_schedule.first().copied().unwrap_or([false; 2]);
+                        let (lf, ld) = match (&landing, solution.landing_shift) {
+                            (Some(l), Some(d)) => (l.foot as i64, d),
+                            (Some(l), None) => (l.foot as i64, na::Vector2::zeros()),
+                            _ => (-1, na::Vector2::zeros()),
+                        };
+                        row += &format!(
+                            ",{:.3},{:.3},{},{},{lf},{:.5},{:.5},{}",
+                            by_side[0][5], by_side[1][5], on[0] as u8, on[1] as u8, ld.x, ld.y, solution.trajectory.len()
+                        );
+                        writeln!(f, "{row}").unwrap();
+                    }
+                    // (The lexicographic CoP's soft fallback and its
+                    // MPC_LEX_DEBUG_* prints went with MPC_CAPTURE_LEX.)
+                    if let Some(dp) = solution.landing_shift
+                        && let Some(land) = landing
+                        && !plan.landing.landing_closed(plan.gait.index_at(t))
+                    {
+                        let i = plan.gait.index_at(t);
+                        if ctl.mpc_fs_slice != Some(i) {
+                            ctl.mpc_fs_slice = Some(i);
+                            ctl.mpc_fs_applied = na::Vector2::zeros();
+                        }
+                        let (d, total) = (dp - ctl.mpc_fs_applied, dp);
+                        ctl.mpc_fs_last = total;
+                        if debug.mpc_fs_landing {
+                            println!(
+                                "  [fs-decision] t={t:.3} first_node={} prior=({:+.3},{:+.3}) dp=({:+.3},{:+.3}) total=({:+.3},{:+.3}) max={:?} min={:?} xi-ref=({:+.3},{:+.3})",
+                                land.first_node, land.prior[0], land.prior[1], dp.x, dp.y, total.x, total.y, land.max, land.min,
+                                xi.x - plan.dcm.reference(t).xi.x, xi.y - plan.dcm.reference(t).xi.y
+                            );
+                        }
+                        if d.norm() > 1e-6 {
+                            plan.footsteps.shift_next(i, land.foot, d);
+                            ctl.mpc_fs_applied = total;
+                            plan.rebuild_dcm();
+                            stats.n_replan += 1;
+                            if debug.replan { println!("  [diag-replan] site 6 t={t:.3} (line 9380)"); }
+                        }
+                    }
+                    if debug.mpc_traj && t < 2.0 {
+                        let xi0 = com.xy() + com_vel.xy() / omega;
+                        let r0 = plan.dcm.reference(t);
+                        print!("  [traj] t={t:.3} xi_meas=({:+.3},{:+.3}) xi_plan=({:+.3},{:+.3}) tgt=({:+.3},{:+.3}) |",
+                            xi0.x, xi0.y, r0.xi.x, r0.xi.y, target_com.x, target_com.y);
+                        for (k, [c, v]) in solution.trajectory.iter().enumerate() {
+                            let xi = c.xy() + v.xy() / omega;
+                            let rp = plan.dcm.reference(t + (k as f64 + 1.0) * stair_wrench_preview_dt);
+                            print!(" k{k}: pred({:+.3},{:+.3}) plan({:+.3},{:+.3})", xi.x, xi.y, rp.xi.x, rp.xi.y);
+                        }
+                        println!();
+                    }
+                    stats.wrench_mpc_solves += 1;
+                }
+                None => {
+                    stats.wrench_mpc_failures += 1;
+                }
+            }
+            ctl.wrench_mpc_next = t + stair_wrench_dt;
+        }
+    } else {
+        ctl.wrench_mpc_command = None;
+        ctl.wrench_mpc_next = t;
+    }
+    mpc_capture_ns
 }

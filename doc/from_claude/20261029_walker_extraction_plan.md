@@ -816,6 +816,12 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
   - 相 8 `phase_height(ctl, plan, cfg, k, obs, &SupportOut, stance_sides, &p_cmd, t) -> HeightOut { z_ref, a_com }`（水平の加速度とジャーク制限、高さ参照、重心下げ、鉛直の PD）。`z_ref` は 2 度目の束縛（重心下げの後）を返す。
   - `WalkerConsts` に指令とハーネス由来の値を足した: `vx`、`t_step`、`gp: &GaitParams`、`squat_amp`／`squat_period`、`vx2_change`（歩幅の上限で直した後のもの）、`vx2_cmd_speed`（直す前の VX2）、`vx2_z_from`、`vx2_z_drop`、`ref_libs: &[RefLib]`、`contact_plan_cfg`、`com_preview_dt`、`com_replan_dt`。`vxs_cap_of` の閉包は相 5 の中で `cfg.speed.stride_cap(v)` から作り直した（同じ式）。
   - 参照の作動（相 5）と予見（相 7）の `Footsteps::from_fk` を `actual_feet` に置き換えた。
+- **実施 S11c（2026-10-30）**: 96＋14＋eqdiag＋s1x で差 0。main.rs 6,542 → 5,801 行、walker.rs 1,786 → 2,620 行。
+  - 相 9 `phase_wrench_mpc(ctl, plan, stats, diag, cfg, k, obs, actual, &Centroidal, &SupportOut, stance_sides, &DcmOut, &a_com, t) -> u128`（MPC_DIAG_DIR の捕獲にかかった時間 `mpc_capture_ns`）。主スイッチの判定（`STAIR_WRENCH_MPC && WRENCH_MPC_ALWAYS`、off なら保持を捨てる else 枝）ごと移した。`MPC_DIAG_DIR`／`MPC_RUNTIME_CSV`／`MPC_TRAJ_CSV` を書き、`QP_WRENCH_CSV` の有無で `wrench_mpc_frames` を残すので `&mut DiagSinks` を受ける。
+  - `landing_inward()`（main.rs の末尾の関数）は制御なので walker.rs へ移した。
+  - `WalkerConsts` に足したもの: `f_max_per_foot`、`friction_mu`、`mpc_gate`、`wrench_mpc_apply`、`stair_wrench_dt`、`stair_wrench_preview_dt`、`contact_cfg: &ContactCfg`（MPC の CoP 箱と捩り摩擦は WBC の接触設定から読む。S12 で Stack 側の値をどう Walker に見せるか決める）。
+  - **CMM の重複を 1 回にした**: `walker::Centroidal`（`A_G(q)` と `Ȧ_G v` を `OnceCell` で最初に要る所で 1 回だけ計算）を tick ごとに作り、MPC の `h`、角運動量の段、MOM_CMP がそれを読む。3 か所の呼び出しの間に `q`／`v`（`st` の不変の借用）は変わらず、misarta の `compute_centroidal_momentum_matrix(model, q)`／`compute_cmm_dot_times_v(model, q, v)` は純関数なので、値は同じ。見本はすべて MPC・`MOM=1 MOM_REF=arms_neutral`・`MOM_CMP=1` なので、共有の経路は 96＋14 本で通っている。ハーネスの計測（押しの後の `h_roll`、2 か所と TRAJ_CSV の `MOM_DIAG`）は `rig.model` で別に計算していて、そのまま残した（計測はハーネスの責任。S13 で `walker.state()` に載せるかは未定）。
+  - **`Footsteps::from_fk` の重複も 1 回にした**: 制御の 4 か所（着地の時計、参照の作動、予見、MPC）はすべて `actual_feet` を読む。TRAJ_CSV の 1 か所（ハーネス）は S11d で記録から読む。
 
 #### S12 `WbcStack` と `TaskStack`
 
