@@ -56,10 +56,13 @@ def inventory_class():
 
 
 def tasks():
-    s = open('examples/kyo46rs_walk.rs').read()
+    # S9（37ccb32）から歩行は examples/kyo46rs_walk/ の main.rs と config_env.rs に分かれ、
+    # config_env.rs の既定は `d.x`（Config::code_defaults）の式になった。式の既定は 0 と 1.37 の 2 通りで振る。
+    s = ''.join(open(f).read() for f in sorted(Path('examples/kyo46rs_walk').glob('*.rs')))
     seen = {}
-    for kind, pat in (('f64', r'env_f64\(\s*"([A-Z0-9_]+)"\s*,\s*([^)]*?)\)'),
-                      ('flag', r'flag\(\s*"([A-Z0-9_]+)"\s*,\s*(true|false)\s*\)')):
+    for kind, pat in (('f64', r'(?:env_f64|num)\(\s*"([A-Z0-9_]+)"\s*,\s*([^)]*?)\)'),
+                      ('flag', r'flag\(\s*"([A-Z0-9_]+)"\s*,\s*([a-z_.0-9]+)\s*\)'),
+                      ('f64', r'opt\(\s*"([A-Z0-9_]+)"()\s*\)')):
         for n, d in re.findall(pat, s):
             seen.setdefault(n, (kind, d.strip()))
     for n in DIRECT_NUM:
@@ -71,7 +74,9 @@ def tasks():
         if c in ('4', '5'):
             continue
         champ = CHAMP.get(n)
-        if kind == 'flag':
+        if kind == 'flag' and champ is None and d not in ('true', 'false'):
+            out += [(n, '0', c), (n, '1', c)]   # 既定が式（d.x）なら両方に振る
+        elif kind == 'flag':
             eff = (champ != '0') if champ is not None else (d == 'true')
             out.append((n, '0' if eff else '1', c))
         elif kind == 'direct':
