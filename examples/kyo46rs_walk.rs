@@ -2399,6 +2399,9 @@ fn main() {
     let land_confirm_fz_frac = env_f64("LAND_CONFIRM_FZ_FRAC", 0.05).max(0.0);
     let mut landing_timing =
         articara::biped::preview::LandingTiming::new(land_confirm_fz_frac * total_mass * G);
+    // The confirmation's xy / z tolerances (see LandingTiming::update).
+    landing_timing.xy_tol = env_f64("LAND_CONFIRM_XY", landing_timing.xy_tol);
+    landing_timing.z_tol = env_f64("LAND_CONFIRM_Z", landing_timing.z_tol);
     // P2-2: confirm a landing on real load (see LandingTiming::load_confirm).
     // Default OFF. When it confirms, the plan is moved onto the actual foot
     // for THIS landing only (`shift_next`), so the xy error is absorbed by
