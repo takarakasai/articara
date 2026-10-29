@@ -42,7 +42,8 @@ struct RefLib {
     /// Direction of the push this reference answers [deg]: 90 = toward the stance foot, 0 = forward.
     impulse_deg: f64,
     /// Solved from the LANDED state (the swing foot on the ground, unloaded):
-    /// the re-step reference, engaged by RESTEP and never by the detectors.
+    /// the re-step reference. Only RESTEP (removed) engaged it; the
+    /// detectors never pick it.
     landed: bool,
     /// Walking speed the reference was solved at [m/s] (0.12 = the nominal
     /// gait; the library is picked by the nearest speed first, then phase).
@@ -1469,36 +1470,6 @@ fn main() {
     // after a lateral-push reference: a 0.65 m step, then the fall). Only
     // with a speed command (VX2); unset = bit-identical.
     let vx2_reanchor = flag("VX2_REANCHOR", false);
-    let plan_reanchor = flag("PLAN_REANCHOR", false);
-    let ds_ffdc = env_f64("DS_FFDC", 0.0).max(0.0);
-    let mut ds_ffdc_window: Option<(usize, f64, f64)> = None;
-    let ds_ffdc_clamp = env_f64("DS_FFDC_CLAMP", 0.02).max(0.0);
-    let plan_reanchor_max = env_f64("PLAN_REANCHOR_MAX", 0.05).max(0.0);
-    // PLAN_REANCHOR_TD=max [m]: at TOUCHDOWN (single -> double support),
-    // move the plan so the landed foot's planned position is where it
-    // actually landed (`FootstepPlan::shift_rest`: the landed foot from now
-    // on, the other foot once it leaves), when the gap is below `max`, and
-    // rebuild the DCM reference. Measured 2026-10-20 (v6.12, 14 N.s
-    // backward): the swing landed 8 cm behind where the plan then put it
-    // (the MPC's last shift is not where the foot came down), the double
-    // support's ZMP and DCM references sat 8-12 cm ahead of the real feet,
-    // and the next step went forward. PLAN_REANCHOR does this only at the
-    // NEXT single support and below 5 cm. 0 = off = bit-identical.
-    let plan_reanchor_td = env_f64("PLAN_REANCHOR_TD", 0.0).max(0.0);
-    let mut n_reanchor_td = 0u32;
-    // LAND_BIAS_ADAPT=k: pre-compensate the swing's landing error with the
-    // error MEASURED on the previous landings (EMA, LAND_BIAS_ADAPT_TAU
-    // landings), applied inside known stair zones. Measured 2026-10-19 on the
-    // 4-step ascent: the sole lands 14-35 mm AHEAD of its goal on the treads
-    // (flat: 3 mm behind), which is what the hand biases STAIR_TD_BIAS_ASC_MID
-    // / STAIR_TD_BIAS_DESC (20 mm back) have been compensating; without them
-    // the toe reaches past the next nosing on tread 3 and the run falls.
-    // 0 = off (bit-identical).
-    let land_bias_adapt = env_f64("LAND_BIAS_ADAPT", 0.0).clamp(0.0, 1.5);
-    let land_bias_adapt_tau = env_f64("LAND_BIAS_ADAPT_TAU", 3.0).max(1.0);
-    let land_bias_adapt_max = env_f64("LAND_BIAS_ADAPT_MAX", 0.04).max(0.0);
-    let mut land_err_ema = na::Vector2::zeros();
-    let mut land_err_seen: Option<usize> = None;
     let mut n_reanchor = 0u32;
     let mut reanchor_total = 0.0_f64;
     let (vx2_stride_max, vx2_z_drop_sched) = match vx2_change {
@@ -2186,23 +2157,10 @@ fn main() {
     );
     correction.on_n = contact_on_bw * total_mass * G;
     correction.scheduled_reentry = flag("CONTACT_SCHEDULED_REENTRY", false);
-    // Capture-point footstep adaptation. Default OFF because it was measured
-    // and does not earn its place: the ZMP clamp it exists to replace turns
-    // out to be a SYMPTOM, not the cause. See doc section 13.7 -- at the
-    // sustainable speed the clamp never binds and this fires zero times, and
-    // above it the clamp binds once, at the collapse, when a 67 mm step
-    // adjustment is already too late. Kept because the mechanism is right and
-    // will be needed once whatever actually limits the speed is found.
-    let adapt = flag("ADAPT_STEP", false);
-    // Reachability. Not a tuning knob -- past this the leg cannot get there,
-    // and a target it cannot reach is worse than a nominal one.
-    let adapt_max_x = env_f64("ADAPT_MAX_X", 0.06);
-    let adapt_max_y = env_f64("ADAPT_MAX_Y", 0.03);
     // P2-1 contact planner (doc/from_claude/20260923_p2_contact_planner_design_v2.md).
-    // Predictive replacement for ADAPT_STEP/ADAPT_TIME: picks the landing
-    // shift AND the end of the current single support so the predicted
-    // end-of-step DCM meets the plan's. Default OFF. Keeps its own state --
-    // never shares `adapt_now`/`adapt_applied` (the A/B would be polluted).
+    // Predictive replacement for ADAPT_STEP/ADAPT_TIME (both removed, never
+    // adopted): picks the landing shift AND the end of the current single
+    // support so the predicted end-of-step DCM meets the plan's. Default OFF.
     let contact_plan_on = flag("CONTACT_PLAN", false);
     let contact_plan_cfg = articara::biped::contact_plan::Config {
         t_min_frac: env_f64("CP_T_MIN", 0.5),
@@ -2212,9 +2170,10 @@ fn main() {
         // retimes per run); those runs all fell, the quiet ones survived ~95%.
         t_max_frac: env_f64("CP_T_MAX", 1.0),
         dt_grid: env_f64("CP_DT", 0.01).max(0.001),
-        max_x: env_f64("CP_MAX_X", adapt_max_x),
-        max_y: env_f64("CP_MAX_Y", adapt_max_y),
-        max_y_in: env_f64("CP_MAX_Y_IN", env_f64("CP_MAX_Y", adapt_max_y)),
+        // Defaults were ADAPT_MAX_X / ADAPT_MAX_Y (removed with ADAPT_STEP).
+        max_x: env_f64("CP_MAX_X", 0.06),
+        max_y: env_f64("CP_MAX_Y", 0.03),
+        max_y_in: env_f64("CP_MAX_Y_IN", env_f64("CP_MAX_Y", 0.03)),
         timing_from_x: flag("CP_T_FROM_X", false),
         timing_lat_outward: flag("CP_T_LAT_OUT", false),
         j: env_f64("CP_J", 0.5).max(0.05),
@@ -2225,8 +2184,9 @@ fn main() {
         dead_u: env_f64("CP_DEAD_U", 0.002),
         dead_t: env_f64("CP_DEAD_T", 0.005),
     };
-    // Only plan when the DCM is actually off the plan (same reason as
-    // ADAPT_TIME_TRIG: the undisturbed gait must reproduce bit for bit).
+    // Only plan when the DCM is actually off the plan (same reason as the
+    // removed ADAPT_TIME_TRIG: the undisturbed gait must reproduce bit for
+    // bit).
     let contact_plan_trig = env_f64("CP_TRIG", 0.015);
     let cp_track = flag("CP_TRACK", false);
     let cp_j_auto = flag("CP_J_AUTO", false);
@@ -2358,18 +2318,6 @@ fn main() {
         }
     };
     let mut dcm_plan = dcm_plan;
-    let mut adapt_now = na::Vector2::zeros();
-    // How much of `adapt_now` is already committed to the footstep plan.
-    //
-    // The adaptation has to be IN the plan, not added on top of it. If the
-    // foot target moves but the DCM reference still describes the nominal
-    // footstep, the ZMP feedback and the step adjustment see the same error
-    // and fight over it -- which is exactly what made the first two attempts
-    // at this worse than doing nothing (section 13.7). Every method in the
-    // literature regenerates the reference from the adapted decision
-    // variables: Khadiv et al. re-solve every control cycle and the solution
-    // IS the reference, so the CoP layer only ever sees the residual.
-    let mut adapt_applied = na::Vector2::zeros();
     let mut cp_applied = na::Vector2::zeros();
     let cp_shift_next = flag("CP_SHIFT_NEXT", false);
     let cp_tread_box = flag("CP_TREAD_BOX", false);
@@ -2379,96 +2327,6 @@ fn main() {
     let mut n_cp_retime = 0u32;
     let mut n_mpc_pcmd = 0u64;
     let mut cp_retime_total = 0.0_f64;
-    // Rebuild the plan continuously rather than only at touchdown.
-    let adapt_live = flag("ADAPT_LIVE", true);
-    // ---- step TIMING adaptation ----------------------------------------
-    //
-    // Independent of `ADAPT_STEP`, which moves WHERE the next foot goes.
-    // This moves WHEN it gets there, by inverting the single-support DCM
-    // closed form for the remaining time (see `dcm::step_timing`). Default
-    // OFF: `t_ss` has been a constant for every result in this doc, and a
-    // schedule that breathes changes the swing trajectory's duration, the
-    // ZMP plan and the per-step accounting all at once.
-    let adapt_time = flag("ADAPT_TIME", false);
-    // Which axis the (over-determined) solve honours. 1 = lateral, because
-    // that is the axis this machine falls on -- +-19 mm of CoP box against
-    // +-49 mm fore-aft, and every failure traced in doc Sec.19 was the
-    // stance CoP pinned to the LATERAL edge.
-    let adapt_time_axis = env_f64("ADAPT_TIME_AXIS", 1.0) as usize;
-    // How far the solve may move the end of the current single support, as a
-    // fraction of the nominal `t_ss`. The swing trajectory is re-evaluated
-    // against the new duration, so a large cut asks the leg for a speed it
-    // does not have; a large extension leaves the machine on one foot longer
-    // than the plan ever tested.
-    let adapt_time_min = env_f64("ADAPT_TIME_MIN", 0.6);
-    let adapt_time_max = env_f64("ADAPT_TIME_MAX", 1.4);
-    // Deadband: below this the retime is not worth the plan rebuild it costs.
-    let adapt_time_dead = env_f64("ADAPT_TIME_DEAD", 0.005);
-    // Trigger: only solve when the DCM is actually off its reference by this
-    // much. Without it the solve fires on EVERY tick of an undisturbed walk --
-    // 54-60 ticks and ~500 ms of accumulated retiming with no disturbance at
-    // all -- because the measured DCM never matches `xi_eos` exactly, so the
-    // solver always has a few milliseconds to ask for. That is not disturbance
-    // rejection, it is a slow rewrite of the gait, and it cost 8 of the 42
-    // cases in the command benchmark (34/42 -> 26/42) before this existed.
-    // The nominal gait has to be preserved bit-for-bit when nothing is wrong.
-    let adapt_time_trig = env_f64("ADAPT_TIME_TRIG", 0.015);
-    // Reduced-step reflex. `StepTiming::Unreachable` says the DCM is outboard
-    // of the stance ZMP and no waiting brings it back -- measured on 75 of 83
-    // ticks in a run that falls, against 0 in runs that survive. Standing on a
-    // foot whose CoP is pinned to the sole edge is strictly dominated by
-    // standing on two, so end the step as early as the swing trajectory allows
-    // and let the wider polygon take over. Default OFF so every number already
-    // measured with ADAPT_TIME reproduces bit-for-bit.
-    let adapt_time_cut = flag("ADAPT_TIME_CUT", false);
-    let mut n_time_cut = 0u32;
-    // Reactive widen. `ADAPT_TIME_CUT` alone (same `Unreachable` trigger)
-    // measured as no effect (doc Sec.21.5) -- it only moves WHEN the step
-    // ends, not WHERE the next one lands, and the resulting support polygon
-    // is the same nominal width either way. This is the untried half: bias
-    // the swing foot's landing OUTWARD (away from the centreline) by a fixed
-    // amount when `Unreachable` fires, growing the polygon instead of just
-    // reaching it sooner. Independent flag from `ADAPT_TIME_CUT` so cut-only,
-    // wide-only and cut+wide are separately measurable. ALWAYS outward,
-    // unlike `ADAPT_STEP` (Sec.19.6, harmful over 336 points): that chases
-    // the ZMP clamp deficit in whichever direction it points and reacts to
-    // small, benign saturation; this fires only on the much cleaner
-    // `Unreachable` signal (Sec.21.2: 75/83 ticks in a falling run, ~0 in
-    // survivors) and only ever grows the polygon. Fires at most once per
-    // step (`last_wide_slice` guard) -- doc Sec.25.4.
-    let adapt_time_wide = flag("ADAPT_TIME_WIDE", false);
-    let adapt_time_widen = env_f64("ADAPT_TIME_WIDEN", 0.02);
-    let mut n_time_wide = 0u32;
-    let mut last_wide_slice: Option<usize> = None;
-    // ---- variable double support ---------------------------------------
-    //
-    // `t_ds` has been a constant since the gait was written, so the tick at
-    // which the plan commits the whole machine to one foot is chosen before
-    // the disturbance happens. Measured at that instant, on the lateral cell
-    // with no adaptation of any kind, the DCM's offset from the foot being
-    // committed to separates the outcomes completely over 8 impulses:
-    //
-    //   survived  +7.7  +7.8  +3.3  +8.9 mm
-    //   fell      -4.3 -11.9         (committed LATE, the DCM is already
-    //                                 outboard of the new stance foot)
-    //   fell     +23.2 +23.9         (committed EARLY, the DCM has not
-    //                                 travelled far enough yet)
-    //
-    // against a periodic-walk nominal of b_y = l_p / (1 + exp(omega t_ss)) =
-    // 12.3 mm. So end double support when the DCM ARRIVES, not when the clock
-    // says. This is the mirror of the reduced-step reflex (which shortens
-    // single support AFTER commitment and measured as no effect, Sec.21.5) --
-    // the damage is done at the commitment itself.
-    let adapt_ds = flag("ADAPT_DS", false);
-    // Same discipline as `ADAPT_TIME_TRIG`: without a gate this fires on an
-    // undisturbed walk too and quietly rewrites the nominal gait, which cost
-    // 8 of the 42 command-benchmark cases when step timing did it.
-    let adapt_ds_trig = env_f64("ADAPT_DS_TRIG", 0.015);
-    // 0.5 was the first guess and it bound: a run whose DCM was already
-    // 11.9 mm OUTBOARD at commitment could only be pulled back to +0.8 mm
-    // because double support could not be cut below 0.10 s.
-    let adapt_ds_min = env_f64("ADAPT_DS_MIN", 0.25);
-    let adapt_ds_max = env_f64("ADAPT_DS_MAX", 2.0);
     // ---- corrective impulse at the commitment instant -------------------
     //
     // A causal probe, not another correlate. Six quantities have now been
@@ -2504,19 +2362,6 @@ fn main() {
     // requirement rather than another correlate.
     let fix_at_s = env_f64("FIX_AT_S", -1.0);
     let mut fix_fired = false;
-    let mut n_ds_retime = 0u32;
-    let mut ds_retime_max: f64 = 0.0;
-    // Why the timing solve declined, per tick. A reviewer's claim worth
-    // checking: `step_timing` returns None when the DCM is on the far side of
-    // the ZMP, which may be exactly the lateral-outboard case that falls -- in
-    // which case the measured +27 survivals came from fixing runs that were
-    // merely late, not from saving runs that were going over.
-    let mut n_time_solved = 0u32;
-    let mut n_time_wrongside = 0u32;
-    let mut n_time_clamped = 0u32;
-    let mut n_retime_dcm = 0u32;
-    let mut retime_dcm_total = 0.0f64;
-    let mut retime_dcm_max: f64 = 0.0;
     // ---- contact-driven phase transitions -----------------------------
     //
     // The schedule says when the step ENDS; the ground says when it actually
@@ -2751,8 +2596,6 @@ fn main() {
     let ref_wbc_landed = flag("REF_WBC_LANDED", true);
     let mut ref_cooldown_until = f64::NEG_INFINITY;
     let mut ref_engage_pending: Option<f64> = None;
-    // The pending engagement wants a landed-state (re-step) reference.
-    let mut ref_want_landed = false;
     let mut ref_lat_quiet_t = f64::NEG_INFINITY;
     let ref_trig_pred = env_f64("REF_TRIG_PRED", 0.0).max(0.0);
     let mut ref_lat_hist: std::collections::VecDeque<(f64, f64)> = std::collections::VecDeque::new();
@@ -2798,40 +2641,6 @@ fn main() {
     // the MPC as usual. DS_FEASIBLE (which only lengthens, when the DS
     // pressure CAN still catch the DCM) is complementary. Default off.
     let ds_capture = flag("DS_CAPTURE", false);
-    // RESTEP: when the DCM has run past the LOADED foot's outer edge toward
-    // the stance side while the just-landed foot carries no load, the
-    // double support is wasted (the load never transfers) -- end it now and
-    // swing the landed foot again, across to the stance side (the cross
-    // step the recovery references take, for the late phases where no
-    // reference fires). Design: doc/from_claude/20261012_restep_design.md.
-    let restep = flag("RESTEP", false);
-    let restep_margin = env_f64("RESTEP_MARGIN", 0.0);
-    let restep_load_max = env_f64("RESTEP_LOAD_MAX", 0.15).clamp(0.0, 1.0);
-    let restep_t_ss = env_f64("RESTEP_T_SS", 0.30).max(0.1);
-    let restep_t_ds = env_f64("RESTEP_T_DS", 0.15).max(0.02);
-    let restep_x = env_f64("RESTEP_X", 0.05);
-    let restep_cross = env_f64("RESTEP_CROSS", 0.03);
-    let restep_debug = std::env::var("RESTEP_DEBUG").is_ok();
-    // Inward (toward-stance) landing bound allowed for the re-step and the
-    // RESTEP_Y_IN_STEPS single supports after it: the lateral DCM left over
-    // after the cross can only be caught by landing further inward, which
-    // the shipped ban (MPC_FOOTSTEP_MAX_Y_IN=0) forbids.
-    let restep_y_in = env_f64("RESTEP_Y_IN", 0.06).max(0.0);
-    // The step AFTER the re-step is shortened too (single support
-    // RESTEP_T_SS2, its double support RESTEP_T_DS): measured 2026-10-12,
-    // with the nominal 0.84 s swing the touchdown lies beyond the MPC's
-    // 0.4 s horizon, so no landing variable exists until the last 0.4 s
-    // and the lateral residual left by the cross is never caught.
-    let restep_t_ss2 = env_f64("RESTEP_T_SS2", 0.35).max(0.1);
-    // How many steps after the re-step get that shortening.
-    let restep_follow = env_f64("RESTEP_FOLLOW", 1.0).max(0.0) as usize;
-    // Drive the re-step with a landed-state reference from REF_LIBRARY
-    // (engaged through the pending path at the inserted single support)
-    // instead of the hand-made cross + re-centre.
-    let restep_ref = flag("RESTEP_REF", true) && ref_libs.iter().any(|l| l.landed);
-    let restep_y_in_steps = env_f64("RESTEP_Y_IN_STEPS", 2.0).max(0.0) as usize;
-    let mut restep_last: Option<usize> = None;
-    let mut n_restep = 0u32;
     // "Hopeless": the time the DS pressure needs along x exceeds this
     // multiple of the remaining double support.
     let ds_capture_hopeless = env_f64("DS_CAPTURE_HOPELESS", 1.5).max(1.0);
@@ -2985,9 +2794,6 @@ fn main() {
     // so it times out repeatedly and drags the schedule -- the approach fell
     // at 5.66 s instead of reaching the stair.
     let land_confirm_level_always = flag("LAND_CONFIRM_LEVEL_ALWAYS", false);
-    // Rate at which the FFDC offset (DS_FFDC) bleeds back to zero when FFDC
-    // is not driving, so a released foot does not inherit a stale bias.
-    let stair_ffdc_leak = env_f64("STAIR_FFDC_LEAK", 4.0).max(0.0);
     // Full per-foot wrench MPC for the three-phase stair transfer.
     // Opt-in until the fixed-arm staircase benchmark has been revalidated.
     // Command the swing to the ANKLE pose the footstep plan implies, rather
@@ -3636,8 +3442,6 @@ fn main() {
     let mut n_early = 0u32;
     let mut n_late = 0u32;
     let mut retime_total = 0.0_f64;
-    let mut max_adapt: f64 = 0.0;
-    let mut n_adapt = 0u32;
     let mut n_replan = 0u32;
     // DIAG_REPLAN=1: print each live replan with its site (diagnostic only).
     let diag_replan = flag("DIAG_REPLAN", false);
@@ -3971,14 +3775,6 @@ fn main() {
     let mut wrench_mpc_solves = 0u32;
     let mut wrench_mpc_failures = 0u32;
     let mut wrench_mpc_soft = 0u32;
-    // FFDC state: the integrated relative-height correction, and the load
-    // split the QP was asked for on the PREVIOUS tick. HRP-4 feeds back the
-    // distribution QP's own output; `forces_nominal` is built after the
-    // contact level that consumes the anchors, so the reference is one WBC
-    // tick (5 ms) old. That lag is far inside an admittance whose gain moves
-    // the feet at millimetres per second.
-    let mut ffdc_dz = 0.0_f64;
-    let mut ffdc_err_log = 0.0_f64;
     let mut trunk_cmd_rp = [0.0_f64; 2];
     let mut trunk_acc_rp = [0.0_f64; 2];
 
@@ -4063,58 +3859,6 @@ fn main() {
         let com = st.com;
         let com_vel = st.com_vel;
 
-        // DS_FFDC bookkeeping: the landed foot and the whole double support's
-        // time window, kept across its sub-slices.
-        if ds_ffdc > 0.0 {
-            match (support_prev, gait.support_at(t)) {
-                (Some(Support::Single { swing, .. }), Support::Double) => {
-                    let i = gait.index_at(t);
-                    let mut j = i;
-                    while j + 1 < gait.slices.len() && matches!(gait.slices[j + 1].support, Support::Double) {
-                        j += 1;
-                    }
-                    ds_ffdc_window = Some((swing, gait.slices[i].t0, gait.slices[j].t1));
-                }
-                (_, Support::Single { .. }) => ds_ffdc_window = None,
-                _ => {}
-            }
-        }
-        // PLAN_REANCHOR=1: at every double->single transition translate the
-        // rest of the plan (both feet) onto the ACTUAL stance foot, for any
-        // walk. Measured 2026-10-17 on known slopes: the stance foot lands
-        // 4-5 mm inward of its plan on +3/+4 deg (flat: 3 mm outward), the
-        // lateral ZMP command then sits 6-13 mm outside the sole centre for
-        // the whole single support (flat: at the centre), and on +6 deg the
-        // lateral pressure saturates and the foot slides. VX2_REANCHOR is the
-        // same move gated to a speed command. Unset = off (bit-identical).
-        if plan_reanchor_td > 0.0
-            && ref_mode.is_none()
-            && let (Some(Support::Single { swing: landed, .. }), Support::Double) = (support_prev, gait.support_at(t))
-        {
-            let actual = Footsteps::from_fk(data, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
-            let i = gait.index_at(t);
-            let d = actual.sole[landed].xy() - footsteps.at_slice(i).sole[landed].xy();
-            if d.norm() > 0.002 && d.norm() < plan_reanchor_td {
-                footsteps.shift_rest(i, landed, d);
-                dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
-                n_reanchor_td += 1;
-            }
-        }
-        if plan_reanchor
-            && ref_mode.is_none()
-            && let (Some(Support::Double), Support::Single { stance, swing }) = (support_prev, gait.support_at(t))
-        {
-            let actual = Footsteps::from_fk(data, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
-            let i = gait.index_at(t);
-            let d = actual.sole[stance].xy() - footsteps.at_slice(i).sole[stance].xy();
-            if d.norm() > 0.002 && d.norm() < plan_reanchor_max {
-                footsteps.shift_from(i, stance, d);
-                footsteps.shift_from(i, swing, d);
-                dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
-                n_reanchor += 1;
-                reanchor_total += d.norm();
-            }
-        }
         if com_replan {
             let actual = Footsteps::from_fk(
                 data,
@@ -4342,117 +4086,6 @@ fn main() {
                         }
                         if std::env::var("DS_FEASIBLE_DEBUG").is_ok() {
                             println!("  [dsf] t={t:.3} ds={ds} xi=({:.3},{:+.3}) target=({:.3},{:+.3}) p=({:.3},{:+.3}) need={need:.3} nominal={nominal:.3} -> {want:.3}", xi_meas.x, xi_meas.y, target.x, target.y, p.x, p.y);
-                        }
-                    }
-                }
-            }
-            if restep && ref_mode.is_none() {
-                let ds = gait.index_at(t + 1e-6);
-                let is_ds = |j: usize| matches!(gait.slices[j].support, Support::Double);
-                if is_ds(ds) && !restep_last.is_some_and(|l| l >= ds) && ds > 0 {
-                    let mut first = ds;
-                    while first > 0 && is_ds(first - 1) {
-                        first -= 1;
-                    }
-                    let mut last = ds;
-                    while last + 1 < gait.slices.len() && is_ds(last + 1) {
-                        last += 1;
-                    }
-                    if let Some(landed) = first.checked_sub(1).and_then(|j| gait.slices[j].support.swing())
-                        && last + 1 < gait.slices.len()
-                    {
-                        let loaded = 1 - landed;
-                        let xi_meas = dcm_of(&com, &com_vel, omega);
-                        let sole = actual.sole[loaded];
-                        // Toward the loaded (stance) side is +y for the left foot.
-                        let sgn = if loaded == 0 { 1.0 } else { -1.0 };
-                        // Outer edge of the loaded sole's pressure box (ZMP_MARGIN
-                        // is a fraction, not metres: go through SupportBox).
-                        let sbox1 = SupportBox::from_stance_yawed(
-                            &actual,
-                            Support::Single { stance: loaded, swing: landed },
-                            (sole_half_l * cop_frac, sole_half_w * cop_frac),
-                            zmp_margin,
-                        );
-                        let edge = if loaded == 0 { sbox1.hi.y } else { sbox1.lo.y };
-                        let beyond = (xi_meas.y - edge) * sgn;
-                        let landed_load = fz_prev[landed];
-                        if restep_debug && beyond > -0.02 {
-                            println!("  [restep?] t={t:.3} ds run {first}..{last} loaded={loaded} xi.y={:+.3} edge={edge:+.3} beyond={beyond:+.3} landed load={landed_load:.0}", xi_meas.y);
-                        }
-                        if beyond > restep_margin && landed_load < restep_load_max * total_mass * G {
-                            // End the double support now.
-                            let t_end = t + 2.0 * dt;
-                            let remaining = (gait.slices[last].t1 - t).max(1e-6);
-                            let f = ((t_end - t) / remaining).min(1.0);
-                            let targets: Vec<(usize, f64)> =
-                                (ds..=last).map(|j| (j, t + (gait.slices[j].t1 - t) * f)).collect();
-                            for (j, nt) in targets {
-                                gait.retime(j, nt);
-                            }
-                            // Insert the re-step: the landed foot swings again
-                            // across to the stance side, then a short DS.
-                            let i_ss = gait.insert_after(last, Support::Single { stance: loaded, swing: landed }, restep_t_ss);
-                            let i_ds = gait.insert_after(i_ss, Support::Double, restep_t_ds);
-                            let cur = *footsteps.at_slice(last);
-                            let mut fs = cur;
-                            fs.sole[landed] = na::Vector3::new(sole.x + restep_x, sole.y + sgn * restep_cross, sole.z);
-                            footsteps.insert_after(last, fs);
-                            footsteps.insert_after(i_ss, fs);
-                            if restep_ref {
-                                // The reference retimes the phases, sets both
-                                // landings and re-centres on exit.
-                                ref_engage_pending = Some(t);
-                                ref_want_landed = true;
-                            }
-                            // Re-centre every later footfall on the feet as
-                            // they will be after the cross, at nominal width.
-                            let mid = 0.5 * (fs.sole[0].xy() + fs.sole[1].xy());
-                            let half_w = 0.5 * (footsteps.initial.sole[0].y - footsteps.initial.sole[1].y).abs();
-                            for side in 0..2 {
-                                if restep_ref {
-                                    break;
-                                }
-                                let want = na::Vector2::new(mid.x, mid.y + if side == 0 { half_w } else { -half_w });
-                                if let Some(j) = (i_ds + 1..gait.slices.len()).find(|&j| gait.slices[j].support.swing() == Some(side)) {
-                                    let d = want - footsteps.at_slice(j).sole[side].xy();
-                                    footsteps.shift_from(j, side, d);
-                                }
-                            }
-                            // Shorten the following RESTEP_FOLLOW steps as well
-                            // (single support to RESTEP_T_SS2, their double
-                            // supports to RESTEP_T_DS).
-                            let mut j = i_ds + 1;
-                            for _ in 0..(if restep_ref { 0 } else { restep_follow }) {
-                                if j >= gait.slices.len() || !matches!(gait.slices[j].support, Support::Single { .. }) {
-                                    break;
-                                }
-                                let t0j = gait.slices[j].t0;
-                                gait.retime(j, t0j + restep_t_ss2);
-                                let k0 = j + 1;
-                                let mut k = k0;
-                                while k < gait.slices.len() && matches!(gait.slices[k].support, Support::Double) {
-                                    k += 1;
-                                }
-                                if k > k0 {
-                                    let tot = gait.slices[k - 1].t1 - gait.slices[k0].t0;
-                                    let f = restep_t_ds / tot.max(1e-6);
-                                    let base = gait.slices[k0].t0;
-                                    let targets: Vec<(usize, f64)> =
-                                        (k0..k).map(|q| (q, base + (gait.slices[q].t1 - base) * f)).collect();
-                                    for (q, nt) in targets {
-                                        gait.retime(q, nt);
-                                    }
-                                }
-                                j = k;
-                            }
-                            dcm_plan = DcmPlan::from_footsteps_rolled(&gait, &footsteps, z_lip, zmp_lat_scale, zmp_roll);
-                            restep_last = Some(i_ds);
-                            n_restep += 1;
-                            println!(
-                                "  [restep] t={t:.3} foot {landed} re-steps across: DS ends {t_end:.3}, swing [{:.3},{:.3}] to ({:.3},{:+.3}), DS to {:.3}",
-                                gait.slices[i_ss].t0, gait.slices[i_ss].t1, fs.sole[landed].x, fs.sole[landed].y, gait.slices[i_ds].t1
-                            );
                         }
                     }
                 }
@@ -4688,22 +4321,6 @@ fn main() {
                     // factor of 7 at these timings -- so a few mm one step
                     // ahead moves the current reference by a fraction of a
                     // millimetre.
-                    if adapt && adapt_now.norm() > 1e-9 {
-                        if !adapt_live {
-                            footsteps.shift_from(slice_idx, swing, adapt_now);
-                            dcm_plan = DcmPlan::from_footsteps_rolled(
-                                &gait,
-                                &footsteps,
-                                z_lip,
-                                zmp_lat_scale,
-                                zmp_roll,
-                            );
-                        }
-                        max_adapt = max_adapt.max(adapt_now.norm());
-                        n_adapt += 1;
-                    }
-                    adapt_now = na::Vector2::zeros();
-                    adapt_applied = na::Vector2::zeros();
                     // Re-anchor the landed foot where it ACTUALLY is, not
                     // where it was planned to be: the anchor's job is to stop
                     // drift from here, and seeding it with a position the
@@ -4941,18 +4558,6 @@ fn main() {
         } else {
             (None, None)
         };
-        if land_bias_adapt > 0.0
-            && let Some(l) = landing
-            && land_err_seen != Some(gait.index_at(t))
-        {
-            // One sample per double support: where the landed sole IS against
-            // where the plan put it.
-            land_err_seen = Some(gait.index_at(t));
-            let actual = Footsteps::from_fk(data, rig.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
-            let e = actual.sole[l].xy() - steps.sole[l].xy();
-            let a = 1.0 / land_bias_adapt_tau;
-            land_err_ema += (e - land_err_ema) * a;
-        }
         let ramp_frac = env_f64("LOAD_RAMP_FRAC", 0.6).clamp(0.05, 1.0);
         // LOAD_RAMP_TD=1: the foot that has just landed may keep the share it
         // is ALREADY carrying. The ramp below starts the landed foot at zero
@@ -5043,48 +4648,6 @@ fn main() {
         } else {
             base
         };
-        // --- FFDC: close the loop on the measured load split -------------
-        // dz_dot = A * [(f_hi - f_lo)_ref - (f_hi - f_lo)_meas], then the
-        // anchors move +-dz/2 so the under-loaded foot is pressed down and
-        // the mean foot height is untouched.
-        if ds_ffdc > 0.0
-            && matches!(support, Support::Double)
-            && stance_sides.len() == 2
-            && let Some((front, ds_t0, ds_t1)) = ds_ffdc_window
-        {
-            // DS_FFDC: the same loop for EVERY double support, with the
-            // reference split taken from the load ramp the QP is given
-            // (landed foot share = slice_frac / LOAD_RAMP_FRAC). Measured
-            // 2026-10-17: on known slopes the landed foot sits 0-3 mm above
-            // the surface with 0 N through most of the double support
-            // (flat: 4 N at its start, then loaded passively); the lateral
-            // pressure then saturates on the rear foot. Pressing the
-            // under-loaded foot down is the only way a unilateral contact
-            // can be asked for load. 0 = off (bit-identical).
-            let rear = 1 - front;
-            // The WHOLE double support's clock: the contact plan splits a
-            // double support into up to three slices, and the first attempt
-            // (2026-10-17) read the first sub-slice's fraction (0.8 at
-            // 50 ms), pressed the landed foot for 100 ms and went idle.
-            let ds_frac = ((t - ds_t0) / (ds_t1 - ds_t0).max(1e-6)).clamp(0.0, 1.0);
-            let ramp = (ds_frac / ramp_frac).clamp(0.0, 1.0);
-            let ref_diff = (2.0 * ramp - 1.0) * total_mass * G;
-            let meas_diff = measured_pre[front].max(0.0) - measured_pre[rear].max(0.0);
-            let err = ref_diff - meas_diff;
-            ffdc_err_log = err;
-            ffdc_dz = (ffdc_dz + ds_ffdc * err * dt).clamp(-ds_ffdc_clamp, ds_ffdc_clamp);
-            anchors.bias_z[front] = -0.5 * ffdc_dz;
-            anchors.bias_z[rear] = 0.5 * ffdc_dz;
-        } else {
-            // Bleed back so a foot that leaves the transfer -- or lands for
-            // the next step -- does not inherit a stale offset.
-            let decay = (1.0 - stair_ffdc_leak * dt).clamp(0.0, 1.0);
-            ffdc_dz *= decay;
-            ffdc_err_log = 0.0;
-            for b in anchors.bias_z.iter_mut() {
-                *b *= decay;
-            }
-        }
         let p0 = bt::contact_level(
             &dyn_ctx,
             base,
@@ -5532,14 +5095,13 @@ fn main() {
                     _ => vx,
                 };
                 let pick = (0..ref_libs.len())
-                    .filter(|&k| ref_libs[k].impulse_deg == want_deg && ref_libs[k].landed == ref_want_landed)
+                    .filter(|&k| ref_libs[k].impulse_deg == want_deg && !ref_libs[k].landed)
                     .min_by(|&a, &b| {
                         let da = ((ref_libs[a].vx - v_now).abs() * 10.0, (ref_libs[a].swing_phase - frac_push).abs());
                         let db = ((ref_libs[b].vx - v_now).abs() * 10.0, (ref_libs[b].swing_phase - frac_push).abs());
                         (da.0 + da.1).partial_cmp(&(db.0 + db.1)).unwrap()
                     })
                     .unwrap_or(0);
-                ref_want_landed = false;
                 ref_lib = Some(ref_libs[pick].clone());
                 let lib = ref_lib.as_ref().unwrap();
                 println!("  [ref] swing phase {slice_frac:.2} -> reference {} (meant for {:.2})", pick, lib.swing_phase);
@@ -5641,148 +5203,8 @@ fn main() {
                 push_last_exceed = Some(t);
             }
         }
-        // ---- variable double support -------------------------------------
-        // Ends the CURRENT double support the moment the measured DCM reaches
-        // the nominal offset from the foot the next slice commits to.
-        if adapt_ds && matches!(support, Support::Double) && dcm_err >= adapt_ds_trig {
-            let i = gait.index_at(t);
-            if let Some(next) = gait.slices.get(i + 1).copied() {
-                if let Support::Single { stance, .. } = next.support {
-                    let u = steps.xy(stance);
-                    // Inboard is the direction of the OTHER foot, so the sign
-                    // of the nominal offset follows the stance side rather
-                    // than being hard-coded.
-                    let other = steps.xy(1 - stance);
-                    let inboard = (other.y - u.y).signum();
-                    let b_y = (other.y - u.y).abs() / (1.0 + (omega * gp.t_ss).exp());
-                    let off = (xi.y - u.y) * inboard;
-                    let t0 = gait.slices[i].t0;
-                    let lo = t0 + gp.t_ds * adapt_ds_min;
-                    let hi = t0 + gp.t_ds * adapt_ds_max;
-                    // The DCM has arrived: commit now. Or it has NOT arrived
-                    // and the clock is about to commit anyway: hold the phase
-                    // open. Both directions are needed -- the first version
-                    // only shortened, and the two runs that failed by
-                    // committing EARLY (+23 mm, the DCM not yet close enough)
-                    // never triggered it at all.
-                    // Open the phase to its maximum and let the arrival
-                    // branch close it. Extending by one tick at a time does
-                    // not work: `retime(i, t + dt)` puts the boundary exactly
-                    // on the next tick, `index_at` then returns the FOLLOWING
-                    // slice, and the branch never runs again -- measured as
-                    // exactly one retime per run and an unchanged commitment
-                    // offset.
-                    let new_end = if off <= b_y {
-                        Some(t.clamp(lo, hi))
-                    } else if gait.slices[i].t1 < hi - 1e-9 {
-                        Some(hi)
-                    } else {
-                        None
-                    };
-                    if let Some(ne) = new_end
-                        && ref_mode.is_none()
-                    {
-                        if (gait.slices[i].t1 - ne).abs() > 1e-4 {
-                            let d = gait.retime(i, ne);
-                            n_ds_retime += 1;
-                            ds_retime_max = ds_retime_max.max(d.abs());
-                            dcm_plan = DcmPlan::from_footsteps_rolled(
-                                &gait,
-                                &footsteps,
-                                z_lip,
-                                zmp_lat_scale,
-                                zmp_roll,
-                            );
-                        }
-                    }
-                }
-            }
-        }
 
-        // ---- step-timing adaptation --------------------------------------
-        // Placed after the DCM reference and before the footstep adaptation,
-        // so the two never argue over the same tick: timing reads the plan's
-        // own `xi_eos` as its target, which placement would have moved.
-        if adapt_time && matches!(support, Support::Single { .. }) && dcm_err >= adapt_time_trig {
-            let i = gait.index_at(t);
-            let nominal_end = gait.slices[i].t1;
-            let target = dcm_plan.eos_at(t);
-            let solved = step_timing(&xi, &target, &r.p, omega, adapt_time_axis);
-            match solved {
-                StepTiming::Time(_) => n_time_solved += 1,
-                StepTiming::Unreachable => n_time_wrongside += 1,
-                StepTiming::Degenerate => {}
-            }
-            // The reflex: unreachable means "stop waiting", not "do nothing".
-            if adapt_time_cut && solved == StepTiming::Unreachable {
-                let slice_t0 = gait.slices[i].t0;
-                let new_end = slice_t0 + gp.t_ss * adapt_time_min;
-                if nominal_end - new_end > adapt_time_dead {
-                    let d = gait.retime(i, new_end);
-                    n_time_cut += 1;
-                    retime_dcm_total += d.abs();
-                    retime_dcm_max = retime_dcm_max.max(d.abs());
-                    dcm_plan = DcmPlan::from_footsteps_rolled(
-                        &gait,
-                        &footsteps,
-                        z_lip,
-                        zmp_lat_scale,
-                        zmp_roll,
-                    );
-                }
-            }
-            // The other half of the reflex: unreachable also means "the next
-            // footstep should grow the polygon". `swing == 0` is LEFT (URDF:
-            // left leg at positive y), so its landing moves further +y and
-            // RIGHT's moves further -y -- both away from the centreline.
-            if adapt_time_wide && solved == StepTiming::Unreachable && last_wide_slice != Some(i) {
-                let swing = support.swing().expect("Support::Single has a swing side");
-                let outward = if swing == 0 { 1.0 } else { -1.0 };
-                let d = na::Vector2::new(0.0, outward * adapt_time_widen);
-                footsteps.shift_from(i, swing, d);
-                dcm_plan = DcmPlan::from_footsteps_rolled(
-                    &gait,
-                    &footsteps,
-                    z_lip,
-                    zmp_lat_scale,
-                    zmp_roll,
-                );
-                last_wide_slice = Some(i);
-                n_time_wide += 1;
-            }
-            if let StepTiming::Time(tau) = solved {
-                let lo = gp.t_ss * adapt_time_min;
-                let hi = gp.t_ss * adapt_time_max;
-                // Clamp on the SLICE duration, not on tau alone: the solve is
-                // "how much longer from now", and a step already 90% done can
-                // legitimately want 10 ms while still being a full-length step.
-                let slice_t0 = gait.slices[i].t0;
-                let new_end = (t + tau).clamp(slice_t0 + lo, slice_t0 + hi);
-                if ((t + tau) - new_end).abs() > 1e-9 {
-                    n_time_clamped += 1;
-                }
-                let shift = nominal_end - new_end;
-                if shift.abs() > adapt_time_dead {
-                    let d = gait.retime(i, new_end);
-                    n_retime_dcm += 1;
-                    retime_dcm_total += d.abs();
-                    retime_dcm_max = retime_dcm_max.max(d.abs());
-                    dcm_plan = DcmPlan::from_footsteps_rolled(
-                        &gait,
-                        &footsteps,
-                        z_lip,
-                        zmp_lat_scale,
-                        zmp_roll,
-                    );
-                }
-            }
-        }
-
-        // ---- capture-point footstep adaptation --------------------------
-        // Steer the NEXT footstep on the DCM's predicted position at
-        // touchdown. Recomputed every tick; the prediction horizon shrinks to
-        // zero as the step runs out, so the target converges rather than
-        // chasing early-step noise.
+        // ---- commanded ZMP ----------------------------------------------
         let p_raw = commanded_zmp(&xi, &r, omega, k_dcm);
         // Clamp against the support that is REALLY there, which in NO_LIFT is
         // both feet even where the plan says one.
@@ -5801,22 +5223,7 @@ fn main() {
         // Pressure the polygon refused (world x, y), for MOM_CMP.
         let zmp_deficit = p_raw - p_cmd;
 
-        // ---- capture-point footstep adaptation --------------------------
-        //
-        // Trigger on ZMP SATURATION, not on a DCM prediction.
-        //
-        // The obvious formulation -- predict the DCM at touchdown open-loop
-        // and shift the foot by the error -- is wrong here and was measured
-        // to be: it ignores that the ZMP feedback is already pulling the DCM
-        // back, so the two corrections fight. At the head of a single support
-        // the prediction carries exp(omega*0.35) = 7, turning a 5 mm tracking
-        // error into a 35 mm step adjustment, and the gait went from 200
-        // steps to 190 at the sustainable speed and 26 to 14 above it.
-        //
-        // The foot should move only when the ZMP CANNOT do the job. The clamp
-        // deficit `p_raw - p_cmd` is exactly that: the pressure the controller
-        // asked for and the support polygon refused. Move the next footstep
-        // by it, and the next polygon contains what this one could not.
+        // ---- contact plan (CONTACT_PLAN) --------------------------------
         if contact_plan_on
             && ref_mode.is_none()
             && let Support::Single { swing, .. } = support
@@ -5934,7 +5341,7 @@ fn main() {
                 dec.shift.x = snapped - nominal;
             }
             let mut rebuilt = false;
-            // Like ADAPT_STEP: place the foot once per step, keeping the
+            // Like ADAPT_STEP did: place the foot once per step, keeping the
             // largest demand seen, instead of re-placing it every tick.
             //
             // That is a RATCHET: the landing only ever moves further from
@@ -6000,38 +5407,6 @@ fn main() {
                 );
                 n_replan += 1;
                 if diag_replan { println!("  [diag-replan] site 2 t={t:.3} (line 7454)"); }
-            }
-        }
-        if !contact_plan_on && adapt && matches!(support, Support::Single { .. }) && clamped > 1e-6 {
-            let d = p_raw - p_cmd;
-            let want = na::Vector2::new(
-                d.x.clamp(-adapt_max_x, adapt_max_x),
-                d.y.clamp(-adapt_max_y, adapt_max_y),
-            );
-            // Keep the largest demand seen this step rather than the latest:
-            // the deficit is transient and the foot has to be placed once.
-            if want.norm() > adapt_now.norm() {
-                adapt_now = want;
-            }
-        }
-        // Commit the change to the plan NOW, so `xi_ref` below describes the
-        // footstep the foot is actually going to.
-        if adapt_live && !contact_plan_on {
-            if let Support::Single { swing, .. } = support {
-                let d = adapt_now - adapt_applied;
-                if d.norm() > 1e-9 {
-                    footsteps.shift_from(slice_idx, swing, d);
-                    dcm_plan = DcmPlan::from_footsteps_rolled(
-                        &gait,
-                        &footsteps,
-                        z_lip,
-                        zmp_lat_scale,
-                        zmp_roll,
-                    );
-                    adapt_applied = adapt_now;
-                    n_replan += 1;
-                    if diag_replan { println!("  [diag-replan] site 3 t={t:.3} (line 7484)"); }
-                }
             }
         }
         if replan_engaged {
@@ -6762,14 +6137,6 @@ fn main() {
                     }
                     if mpc_footstep_y_in_retimed > 0.0 && cp_retimed_slice == Some(i) {
                         b = b.max(mpc_footstep_y_in_retimed);
-                    }
-                    // Around a re-step: its own swing (restep_last - 1) and the
-                    // next RESTEP_Y_IN_STEPS single supports (two slices each).
-                    if let Some(l) = restep_last
-                        && i + 1 >= l
-                        && i <= l + 2 * restep_y_in_steps
-                    {
-                        b = b.max(restep_y_in);
                     }
                     if mpc_footstep_y_in_fwd > 0.0
                         && xi.x - dcm_plan.reference(t).xi.x >= mpc_footstep_y_in_fwd_trig
@@ -8090,15 +7457,7 @@ fn main() {
                 // within a millimetre, and using the measured one keeps a foot
                 // that started slightly high from being driven into the floor.
                 // With stride 0 this is exactly "land where you took off".
-                // Read the plan, which already carries the adaptation when
-                // ADAPT_LIVE is on. Adding `adapt_now` on top of a plan that
-                // has been shifted would apply it twice.
                 let plan_xy = footsteps.at_slice(slice_idx).sole[side];
-                let extra = if adapt_live {
-                    na::Vector2::zeros()
-                } else {
-                    adapt_now
-                };
                 // On stairs the surfaces differ in height; carry the CHANGE
                 // in surface height on top of the measured lift-off z, so a
                 // foot that started a few millimetres high keeps its offset
@@ -8109,20 +7468,20 @@ fn main() {
                 // of dz is what it replaces, so it cannot be read first).
                 let plan_dz_sign = stairs
                     .as_ref()
-                    .map_or(0.0, |st| st.h(plan_xy.x + extra.x) - st.h(lift_off.x));
+                    .map_or(0.0, |st| st.h(plan_xy.x) - st.h(lift_off.x));
                 let dz = if (stair_absolute_td || (stair_absolute_td_desc && plan_dz_sign < -1e-9)) && stairs.is_some() {
                     plan_xy.z - footsteps.at_slice(slice_idx.saturating_sub(1)).sole[side].z
                 } else {
                     stairs
                         .as_ref()
-                        .map_or(0.0, |st| st.h(plan_xy.x + extra.x) - st.h(lift_off.x))
+                        .map_or(0.0, |st| st.h(plan_xy.x) - st.h(lift_off.x))
                 };
                 let touch_down = if (stair_absolute_td || (stair_absolute_td_desc && dz < -1e-9)) && dz.abs() > 1e-9 {
                     // The target is a surveyed tread, not the measured height
                     // of the previous (possibly rocking) foot plus a riser.
                     let offset = foot_rot_at(side, footsteps.at_slice(slice_idx).yaw[side])
                         * na::Vector3::new(prof.sole_centre_x, 0.0, -prof.sole_below_origin);
-                    plan_xy + na::Vector3::new(extra.x, extra.y, 0.0) - offset
+                    plan_xy - offset
                 } else {
                     // `plan_xy` is the SOLE centre; the swing task tracks the
                     // ANKLE. On a robot whose sole centre sits under the ankle
@@ -8143,13 +7502,7 @@ fn main() {
                     // height here, being lift-off plus a surface delta.
                     // OPT-IN: zero on kyo46rs either way, so the default keeps
                     // every existing result bit-identical.
-                    let mut td = na::Vector3::new(
-                        plan_xy.x + extra.x, plan_xy.y + extra.y, lift_off.z + dz);
-                    if land_bias_adapt > 0.0 && in_stair_zone {
-                        let c = (land_err_ema * land_bias_adapt).map(|v| v.clamp(-land_bias_adapt_max, land_bias_adapt_max));
-                        td.x -= c.x;
-                        td.y -= c.y;
-                    }
+                    let mut td = na::Vector3::new(plan_xy.x, plan_xy.y, lift_off.z + dz);
                     if stair_td_sole_frame {
                         let off = foot_rot_at(side, footsteps.at_slice(slice_idx).yaw[side])
                             * na::Vector3::new(prof.sole_centre_x, 0.0, 0.0);
@@ -9231,7 +8584,7 @@ fn main() {
                 measured_c.cop[0][0],
                 measured_c.cop[1][0],
                 f64::from(degraded),
-                ffdc_dz,
+                0.0, // ffdc_dz: the removed FFDC loops left it at 0
             ];
             for (i, value) in values.iter().enumerate() {
                 if i > 0 {
@@ -9986,8 +9339,8 @@ fn main() {
                 0.0,
                 0.0,
                 -1.0,
-                ffdc_dz,
-                ffdc_err_log,
+                0.0, // ffdc_dz (removed DS_FFDC / STAIR_FFDC)
+                0.0, // ffdc_err (removed DS_FFDC / STAIR_FFDC)
                 -1.0, // capture_error (removed stair transfer)
                 0.0,  // capture_tilt (removed stair transfer)
                 trunk_tilt_roll,
@@ -10257,18 +9610,18 @@ fn main() {
     if contact_admit_confirmed || contact_admit_scheduled {
         println!("  confirmed-landing admissions: {n_confirmed_admissions}");
     }
-    println!(
-        "  footstep adaptations: {n_adapt} steps moved, largest {:.1} mm, {n_replan} live replans",
-        // (contact planner counters follow)
-        max_adapt * 1e3
-    );
+    // ADAPT_STEP / ADAPT_TIME / ADAPT_DS were removed (never adopted, off by
+    // default); their summary lines stay, at the zeros they printed, so
+    // existing log parsers keep their layout.
+    println!("  footstep adaptations: 0 steps moved, largest 0.0 mm, {n_replan} live replans");
     if contact_plan_on {
         println!("  contact plan: {n_cp_shift} shifts, {n_cp_retime} retimes ({:.0} ms total)", cp_retime_total * 1e3);
     }
     if ds_feasible {
         println!("  ds feasible: {n_ds_feasible} retimes ({:.0} ms total)", ds_feasible_total * 1e3);
         println!("  ds capture: {n_ds_capture} early ends ({:.0} ms total)", ds_capture_total * 1e3);
-        println!("  re-steps: {n_restep}");
+        // RESTEP (removed, never adopted) re-stepped nothing by default.
+        println!("  re-steps: 0");
         println!("  plan re-anchors: {n_reanchor} ({:.0} mm total)", reanchor_total * 1e3);
         println!("  hip strategy (MOM_CMP): {n_mom_cmp_ticks} ticks, peak rate {mom_cmp_peak:.1} N m");
         if ds_feasible_continuous {
@@ -10296,25 +9649,15 @@ fn main() {
     if land_by_load {
         println!("  landing by load: {} confirmed, {n_land_by_load_shift} plan shifts", landing_timing.load_confirm_count);
     }
+    println!("  step-timing adaptations: 0 ticks retimed, 0 ms total, largest single shift 0 ms");
+    println!("  reduced-step cuts: 0 ticks (unreachable -> end the step now)");
+    // 20 mm: the ADAPT_TIME_WIDEN default.
+    println!("  reactive widen: 0 steps (20 mm, unreachable -> land further out)");
+    println!("  double-support retimes: 0 ticks, largest shift 0 ms");
     println!(
-        "  step-timing adaptations: {n_retime_dcm} ticks retimed, {:.0} ms total, \
-         largest single shift {:.0} ms",
-        retime_dcm_total * 1e3,
-        retime_dcm_max * 1e3
-    );
-    println!("  reduced-step cuts: {n_time_cut} ticks (unreachable -> end the step now)");
-    println!(
-        "  reactive widen: {n_time_wide} steps ({:.0} mm, unreachable -> land further out)",
-        adapt_time_widen * 1e3
-    );
-    println!(
-        "  double-support retimes: {n_ds_retime} ticks, largest shift {:.0} ms",
-        ds_retime_max * 1e3
-    );
-    println!(
-        "  step-timing solve: {n_time_solved} solved / {n_time_wrongside} declined \
+        "  step-timing solve: 0 solved / 0 declined \
          (DCM on the far side of the ZMP -- no positive time reaches the target), \
-         {n_time_clamped} clamped to the duration bounds"
+         0 clamped to the duration bounds"
     );
     {
         // Arms first and by name, because they are the ones nothing else
@@ -10595,9 +9938,6 @@ fn main() {
     }
     if mpc_footstep_cross_y > 0.0 {
         println!("  mpc crossing gate: {n_mpc_fs_cross} single supports opened");
-    }
-    if plan_reanchor_td > 0.0 {
-        println!("  plan re-anchored at touchdown: {n_reanchor_td}");
     }
     if push_replan_trig > 0.0 {
         println!("  push re-plans: {n_push_replan}");
