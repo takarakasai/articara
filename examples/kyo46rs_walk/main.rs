@@ -25,10 +25,14 @@
 //! ```
 
 #[cfg(feature = "mujoco")]
-#[cfg(feature = "mujoco")]
 use nalgebra as na;
 #[cfg(feature = "mujoco")]
 use misa_biped::recovery::{RefLib, RefMode};
+#[cfg(feature = "mujoco")]
+use misa_biped::config::LevelWeights;
+
+#[cfg(feature = "mujoco")]
+mod config_env;
 
 /// Read a push-recovery reference from scripts/trajopt/push_recovery.py
 /// (JSON) into [`RefLib`] (misa-biped does not read JSON).
@@ -131,62 +135,12 @@ impl DebugFlags {
     }
 }
 
-/// WBCW_<NAME>: the weighted strategy's weight of one WBC level, NAME being
-/// the level name upper-cased with non-alphanumerics as '_' (e.g. WBCW_COM,
-/// WBCW_SWING, WBCW_POSTURE_MOMENTUM). The default depends on the level.
+/// WBCW_<NAME> read on the spot, for a level name the walker's table
+/// (`LevelWeights`, read once at start-up) does not list -- the stack below
+/// produces none today; kept so an unlisted level reads as it always did.
 #[cfg(feature = "mujoco")]
 fn level_weight_from_env(name: &str) -> f64 {
-    let key: String = name
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
-        .collect();
-    let default = match name {
-        "com" | "com+momentum+wrench" => 1.0,
-        "swing" | "contact recovery" => 1.0,
-        "trunk" => 0.3,
-        "momentum" => 0.1,
-        "posture" | "posture+momentum" => 0.01,
-        "regularise" => 1e-4,
-        _ => 0.1,
-    };
-    env_f64(&format!("WBCW_{key}"), default)
-}
-
-/// The per-level weights of the weighted strategy, read once for every level
-/// name the stack in `main` produces (they were read every tick). An array,
-/// not a map, so a lookup cannot depend on an iteration order; a name not in
-/// the table is read on the spot, as before.
-#[cfg(feature = "mujoco")]
-struct LevelWeights([(&'static str, f64); 13]);
-
-#[cfg(feature = "mujoco")]
-impl LevelWeights {
-    const NAMES: [&'static str; 13] = [
-        "eom",
-        "contact+cones",
-        "dynamics+contact+cones",
-        "com",
-        "com+momentum+wrench",
-        "trunk",
-        "momentum",
-        "arm hold(before swing)",
-        "swing",
-        "arm hold",
-        "posture",
-        "posture+momentum",
-        "regularise",
-    ];
-
-    fn from_env() -> Self {
-        Self(Self::NAMES.map(|name| (name, level_weight_from_env(name))))
-    }
-
-    fn get(&self, name: &str) -> f64 {
-        self.0
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map_or_else(|| level_weight_from_env(name), |&(_, w)| w)
-    }
+    env_f64(&LevelWeights::key(name), LevelWeights::default_for(name))
 }
 
 /// What `build_scene` put into the world besides the robot. `stairs` is also
@@ -1275,6 +1229,7 @@ struct WalkerStats {
     wrench_mpc_failures: u32,
 }
 
+#[cfg(feature = "mujoco")]
 fn main() {
     use articara::biped::actuate::{
         CommandPolicy, DegradedTally, gravity_plus_posture, write_to_plant,
@@ -1291,7 +1246,7 @@ fn main() {
     use articara::biped::profile;
     use articara::biped::rig::{BipedRig, CtrlMode, G, RigOptions};
     use articara::biped::tasks as bt;
-    use misa_biped::plan::{DcmParams, Plan};
+    use misa_biped::plan::Plan;
     use misa_wbc::{Dynamics, Formulation, SolveConfig, Solver, tasks};
     use nalgebra as na;
     use std::f64::consts::PI;
@@ -1320,6 +1275,10 @@ fn main() {
     }
 
     let prof = profile::by_name(&std::env::var("ROBOT").unwrap_or_default());
+    // The walker's knobs (misa_biped::config), read once from the
+    // environment through the table in config_env.rs. The rest of this
+    // start-up reads the rig, the scenario, the command and the diagnostics.
+    let wcfg = config_env::config_from_kv(&prof, &|k| std::env::var(k).ok());
 
     let mut o = RigOptions::from_profile(&prof);
     o.knee = env_f64("KNEE", prof.knee_seed);
@@ -1515,7 +1474,7 @@ fn main() {
     // REACH_LIMIT is on.
     let leg_reach = articara::biped::reach::LegReach {
         max: env_f64("LEG_REACH", prof.leg_reach).max(0.0),
-        margin: env_f64("LEG_REACH_MARGIN", 0.95).clamp(0.1, 1.0),
+        margin: wcfg.descent.leg_reach_margin,
     };
     let sole_half_l = env_f64("SOLE_HALF_L", prof.cop_half.0);
     let sole_half_w = env_f64("SOLE_HALF_W", prof.cop_half.1);
@@ -1539,8 +1498,7 @@ fn main() {
     let mj_dt = rig.mj_dt;
     let total_mass = rig.total_mass;
 
-    let f_max_scale = env_f64("F_MAX_SCALE", 2.3);
-    let f_max_per_foot = env_f64("F_MAX", f_max_scale * total_mass * G);
+    let f_max_per_foot = wcfg.wbc.f_max_per_foot(total_mass, G);
     assert!(
         f_max_per_foot >= total_mass * G,
         "f_max ({f_max_per_foot:.1} N) is below the single-support nominal ({:.1} N)",
@@ -1551,11 +1509,7 @@ fn main() {
     let solver = Solver::new();
     // Additional WBC backends must never bypass the independent acceptance gate.
     // QP_BENCH_GATE also enables the identical gate for existing baselines.
-    let qp_gate = flag("QP_BENCH_GATE", false)
-        || matches!(
-            std::env::var("WBC_QP_BACKEND").as_deref(),
-            Ok("proxqp" | "eiquadprog" | "qpoases")
-        );
+    let qp_gate = wcfg.wbc.qp_gate();
     assert!(
         !qp_gate || ctrl_mode == CtrlMode::Torque,
         "QP_BENCH_GATE requires torque control"
@@ -1567,9 +1521,7 @@ fn main() {
     );
     let qp_has_good_command = false;
     let qp_previous_structure: Option<(Vec<usize>, Vec<(usize, usize, usize)>)> = None;
-    let feasibility_tol = env_f64("WBC_FEAS_TOL", SolveConfig::default().feasibility_tol);
-    // WBCW_<NAME>: the weighted strategy's per-level weights.
-    let level_weights = LevelWeights::from_env();
+    let feasibility_tol = wcfg.wbc.feas_tol;
     assert!(
         feasibility_tol.is_finite() && feasibility_tol > 0.0,
         "WBC_FEAS_TOL must be positive and finite"
@@ -1582,29 +1534,11 @@ fn main() {
     // Priority resolution. Default = the strict null-space cascade (shipped).
     // `weighted` = one QP with level k>=1 weighted WBC_WEIGHT_RATIO^-(k-1),
     // level 0 hard (misa_wbc::HqpStrategy::WeightedQp) -- plan v2 P4.
-    let weighted_levels = std::env::var("WBC_STRATEGY").as_deref() == Ok("weighted");
-    match std::env::var("WBC_STRATEGY").as_deref() {
-        Ok("weighted") => {
-            // Per-task weights are applied to the levels themselves (see
-            // WBCW_* below); the ratio defaults to 1 so they are not scaled
-            // again by position.
-            cfg.strategy = misa_wbc::HqpStrategy::WeightedQp {
-                level_ratio: env_f64("WBC_WEIGHT_RATIO", 1.0).max(1.0) as u32,
-            };
-        }
-        Ok("force_budget") => cfg.strategy = misa_wbc::HqpStrategy::ForceBudgetCascade,
-        Ok("null_space") | Err(_) => {}
-        Ok(other) => panic!("unsupported WBC_STRATEGY: {other}"),
-    }
-    if let Ok(name) = std::env::var("WBC_QP_BACKEND") {
-        cfg.backend = match name.as_str() {
-            "clarabel" => misa_wbc::QpSolver::Clarabel,
-            "active_set" => misa_wbc::QpSolver::ActiveSet,
-            "proxqp" => misa_wbc::QpSolver::Proxqp,
-            "eiquadprog" => misa_wbc::QpSolver::Eiquadprog,
-            "qpoases" => misa_wbc::QpSolver::Qpoases,
-            _ => panic!("unsupported WBC_QP_BACKEND: {name}"),
-        };
+    // (Per-task weights are applied to the levels themselves, WBCW_*.)
+    let weighted_levels = matches!(wcfg.wbc.strategy, misa_wbc::HqpStrategy::WeightedQp { .. });
+    cfg.strategy = wcfg.wbc.strategy;
+    if let Some(backend) = wcfg.wbc.backend {
+        cfg.backend = backend;
     }
     // Joint position/velocity safety limits (misa_wbc::tasks::joint_limit_cbf).
     // Off by default: only the torque box is enforced today, which is why a
@@ -1614,16 +1548,14 @@ fn main() {
     // priority as the torque box (`base`, below), since both are "never
     // violate" safety constraints rather than tracked objectives. Gains are
     // a first guess, unverified on this robot -- doc Sec.21.7/25.4.
-    let jlim = flag("JLIM", false);
-    let jlim_alpha1 = env_f64("JLIM_ALPHA1", 10.0);
-    let jlim_alpha2 = env_f64("JLIM_ALPHA2", 10.0);
-    let jlim_alpha3 = env_f64("JLIM_ALPHA3", 10.0);
-    let jlim_amax = env_f64("JLIM_AMAX", 50.0);
+    let jlim = wcfg.joint_limit.enabled;
+    let [jlim_alpha1, jlim_alpha2, jlim_alpha3] = wcfg.joint_limit.alpha;
+    let jlim_amax = wcfg.joint_limit.a_max;
     let mut jlim_v_max = rig.v_max.clone();
     // Slow the CBF's velocity limit below the mechanical one. (The position
     // band JLIM_Q_MARGIN that shared this block was not adopted and is
     // removed; the message keeps its 0 deg.)
-    let jlim_v_frac = env_f64("JLIM_V_FRAC", 1.0).clamp(0.05, 1.0);
+    let jlim_v_frac = wcfg.joint_limit.v_frac;
     if jlim_v_frac < 1.0 {
         assert!(jlim, "JLIM_V_FRAC requires JLIM=1");
         for row in 0..na_count {
@@ -1644,14 +1576,14 @@ fn main() {
         alpha2: na::DVector::from_element(na_count, jlim_alpha2),
         alpha3: na::DVector::from_element(na_count, jlim_alpha3),
     };
-    let friction_mu: f64 = env_f64("friction_mu", mu_ground * prof.friction_margin);
-    let kp_com = env_f64("KP_COM", 300.0);
-    let kd_com = env_f64("KD_COM", 80.0);
-    let kp_trunk = env_f64("KP_TRUNK", 200.0);
-    let kd_trunk = env_f64("KD_TRUNK", 40.0);
-    let kp_post = env_f64("KP_POST", 100.0);
-    let kd_post = env_f64("KD_POST", 20.0);
-    let use_post = flag("POST", true);
+    let friction_mu: f64 = wcfg.wbc.friction_mu(mu_ground, prof.friction_margin);
+    let kp_com = wcfg.gains.kp_com;
+    let kd_com = wcfg.gains.kd_com;
+    let kp_trunk = wcfg.gains.kp_trunk;
+    let kd_trunk = wcfg.gains.kd_trunk;
+    let kp_post = wcfg.gains.kp_post;
+    let kd_post = wcfg.gains.kd_post;
+    let use_post = wcfg.gains.posture;
     // Hold the arms, at their own level ABOVE posture.
     //
     // Sec.29.6 measured the v6 arm swinging 111 deg peak-to-peak at the
@@ -1788,14 +1720,14 @@ fn main() {
     // saturates by design and leaning on it breaks the step. Ascents and
     // the flat were unchanged. (MOM_CMP_STAIRS, lean on stairs too, is
     // removed.)
-    let use_trunk = flag("TRUNK", true);
-    let trunk_sign = env_f64("TRUNK_SIGN", 1.0);
-    let eom_hard = flag("EOM_HARD", true);
-    let cop_frac = env_f64("COP_FRAC", 1.0);
-    let hold_kp = env_f64("HOLD_KP", prof.hold_kp);
-    let hold_kd = env_f64("HOLD_KD", prof.hold_kd);
-    let hold_bridge = env_f64("HOLD_BRIDGE", 8.0) as u32;
-    let fallback_max_level = env_f64("FALLBACK_LEVEL", 999.0) as usize;
+    let use_trunk = wcfg.gains.trunk;
+    let trunk_sign = wcfg.gains.trunk_sign;
+    let eom_hard = wcfg.wbc.eom_hard;
+    let cop_frac = wcfg.dcm.cop_frac;
+    let hold_kp = wcfg.wbc.hold_kp;
+    let hold_kd = wcfg.wbc.hold_kd;
+    let hold_bridge = wcfg.wbc.hold_bridge;
+    let fallback_max_level = wcfg.wbc.fallback_level;
     let anchor_leak = env_f64("ANCHOR_LEAK", 0.2);
     // Contact-stabiliser (Baumgarte) gain. 1600 was picked for a two-foot
     // stance and concentrated on one foot it kicks the robot off the ground --
@@ -1832,31 +1764,31 @@ fn main() {
 
     // DCM tracking. k is dimensionless: the DCM error decays as
     // exp(-k_dcm * omega * t), so 2.0 is two e-folds per DCM time constant.
-    let k_dcm = env_f64("K_DCM", 2.0);
+    let k_dcm = wcfg.dcm.k_dcm;
     // VH_DCM=1: the height-varying DCM law on a modelled terrain (see its use).
-    let vh_dcm = flag("VH_DCM", false);
+    let vh_dcm = wcfg.dcm.vh_dcm;
     // Keep the commanded ZMP inside the support polygon, shrunk by this
     // factor. Riding the exact edge means the next disturbance makes P0
     // infeasible outright.
-    let zmp_margin = env_f64("ZMP_MARGIN", 0.8);
-    let clamp_zmp = flag("CLAMP_ZMP", true);
+    let zmp_margin = wcfg.dcm.zmp_margin;
+    let clamp_zmp = wcfg.dcm.clamp_zmp;
 
     let total_t = env_f64("T", 25.0);
     let gp = GaitParams {
-        t_start: env_f64("T_START", 2.0),
-        t_ds: env_f64("T_DS", 0.20),
-        t_ss: env_f64("T_SS", 0.45),
-        n_steps: env_f64("N_STEPS", 20.0) as usize,
-        first_swing: env_f64("FIRST_SWING", 1.0) as usize,
+        t_start: wcfg.gait.t_start,
+        t_ds: wcfg.gait.t_ds,
+        t_ss: wcfg.gait.t_ss,
+        n_steps: wcfg.gait.n_steps,
+        first_swing: wcfg.gait.first_swing,
         t_end: total_t,
     };
     // W1: run the schedule (so the ZMP reference moves) but never actually
     // release a foot. Isolates "can the balance reference move at all" from
     // everything that touchdown brings with it.
-    let no_lift = flag("NO_LIFT", false);
+    let no_lift = wcfg.gait.no_lift;
     // TURN_IN_DS: the trunk turns toward a new heading during the double
     // support, not the single support before it (see its use).
-    let turn_in_ds = flag("TURN_IN_DS", true);
+    let turn_in_ds = wcfg.gait.turn_in_ds;
 
     // ---- disturbance: one rectangular push at a chosen gait phase --------
     // What is fired and when is `PushScenario`; the thresholds below are
@@ -1902,12 +1834,12 @@ fn main() {
     let edge_frac = env_f64("PUSH_EDGE_FRAC", 0.9);
     let transfer_s = env_f64("PUSH_TRANSFER_S", 0.10);
 
-    let ctrl_dt = env_f64("CTRL_DT", prof.ctrl_dt);
+    let ctrl_dt = wcfg.wbc.ctrl_dt;
     // DIAG_VZ_BIAS_MPC / DIAG_VZ_BIAS_HEIGHT (m/s): a vertical CoM velocity
     // error seen by ONE consumer only -- the wrench MPC's initial state, or
     // the CoM height PD. Diagnostic for where SENSE_VEL_BIAS_Z acts; 0 = off.
-    let diag_vz_bias_mpc = env_f64("DIAG_VZ_BIAS_MPC", 0.0);
-    let diag_vz_bias_height = env_f64("DIAG_VZ_BIAS_HEIGHT", 0.0);
+    let diag_vz_bias_mpc = wcfg.gains.diag_vz_bias_mpc;
+    let diag_vz_bias_height = wcfg.gains.diag_vz_bias_height;
     let mj_substeps = (ctrl_dt / mj_dt).round().max(1.0) as u32;
     let dt = mj_substeps as f64 * mj_dt;
     let n_ticks = (total_t / dt) as usize;
@@ -1991,17 +1923,17 @@ fn main() {
     // everywhere, bit-identical.
     let stair_zone_swing_rot = env_f64("STAIR_ZONE_SWING_ROT", 0.0).max(0.0) as u32;
     // Regulate the trunk's yaw as well as its roll and pitch.
-    let trunk_yaw = flag("TRUNK_YAW", true);
-    let kp_yaw = env_f64("KP_YAW", 200.0);
-    let kd_yaw = env_f64("KD_YAW", 40.0);
+    let trunk_yaw = wcfg.gains.trunk_yaw;
+    let kp_yaw = wcfg.gains.kp_yaw;
+    let kd_yaw = wcfg.gains.kd_yaw;
     let mut gait = GaitPlan::new(&gp);
     // A separate hold AFTER the normal inter-step pressure transfer. Extending
     // T_DS itself changes the transfer slope and proved non-robust for fixed
     // arms: 20 ms changes swapped survival between the 0.5/0.25 ms plants.
     // Consecutive DS slices make this one a constant-ZMP segment, so it adds
     // settling time without changing the validated transfer duration.
-    let ds_settle = env_f64("DS_SETTLE", 0.0);
-    let ds_settle_after_step = env_f64("DS_SETTLE_AFTER_STEP", 1.0).max(1.0) as usize;
+    let ds_settle = wcfg.gait.ds_settle;
+    let ds_settle_after_step = wcfg.gait.ds_settle_after_step;
     assert!(
         ds_settle.is_finite() && ds_settle >= 0.0,
         "DS_SETTLE must be finite and non-negative"
@@ -2022,13 +1954,13 @@ fn main() {
     // half stance width. 1.0 is true single support (all load on one sole);
     // anything less is only reachable with both feet down, so it is a W1
     // instrument, not a gait parameter.
-    let zmp_lat_scale = env_f64("ZMP_LAT_SCALE", 1.0);
+    let zmp_lat_scale = wcfg.dcm.zmp_lat_scale;
     // Forward travel per step, in metres of BODY advance. 0 is stepping in
     // place, which stays a special case of this rather than a separate path.
     // A commanded speed maps to it as stride = v * (t_ss + t_ds).
     // Velocity command. STRIDE is kept as a shorthand for VX in m/step.
     let t_step = gp.t_ss + gp.t_ds;
-    let stride = env_f64("STRIDE", 0.0);
+    let stride = wcfg.gait.stride;
     let vx = env_f64("VX", stride / t_step);
     let vy = env_f64("VY", 0.0);
     let wz = env_f64("WZ", 0.0);
@@ -2037,7 +1969,7 @@ fn main() {
     let squat_amp = env_f64("SQUAT_AMP", 0.0);
     let squat_period = env_f64("SQUAT_PERIOD", 3.0);
     // Steps over which the stride ramps in from standing.
-    let stride_ramp = env_f64("STRIDE_RAMP", 6.0) as usize;
+    let stride_ramp = wcfg.gait.stride_ramp;
     // ALTERNATE=0 restores the step-and-close plan, for A/B.
     // Speed-change benchmark: from step VX2_AT the forward speed ramps to
     // VX2 over VX2_RAMP steps (gait::FootstepPlan::velocity_with_change).
@@ -2173,7 +2105,7 @@ fn main() {
             .map(|sl| sl.t0),
         _ => None,
     };
-    let mut footsteps = if flag("ALTERNATE", true) {
+    let mut footsteps = if wcfg.gait.alternate {
         FootstepPlan::velocity_with_change(&gait, &steps, vx, vy, wz, t_step, stride_ramp, vx2_change)
     } else {
         FootstepPlan::ramped_stride(&gait, &steps, vx * t_step, stride_ramp)
@@ -2202,16 +2134,14 @@ fn main() {
         // still RISING (td_vz +0.114), DCM error went 0.0042 -> 0.1857, cop_use
         // saturated and fz nearly doubled. Overridable so a longer-footed robot
         // can buy the clearance; the default keeps kyo46rs bit-identical.
-        let m = sole_half_l + env_f64("STAIR_TOE_MARGIN", 0.020);
+        let m = sole_half_l + wcfg.stair_plan.toe_margin;
         let a_pos = st.start - m; // stand line: toes just clear of riser 1
         // Widen the on-stairs footfalls. Foot-over-foot passes the swing
         // shank beside the stance foot at tread height, and the measured
         // clearance was negative: left_shank <-> right_foot at 75 N on the
         // second climb. Walking a little wide opens it.
-        let y_out = env_f64("STAIR_Y_OUT", 0.010);
-        let stair_gait_pair = std::env::var("STAIR_GAIT")
-            .map(|v| v == "pair")
-            .unwrap_or(false);
+        let y_out = wcfg.stair_plan.y_out;
+        let stair_gait_pair = wcfg.stair_plan.gait_pair;
         let n = st.n as i64;
         let land = st.start + st.n as f64 * st.tread + m;
         // Aim tread landings BEHIND the centre. The measured touchdown
@@ -2220,7 +2150,7 @@ fn main() {
         // surface and the overshoot was harmless, but on a real flight each
         // tread is a 110 mm island and centre+45 is the nosing. Biasing the
         // TARGET rearward spends the sole's rear margin on the overshoot.
-        let mut td_bias = env_f64("STAIR_TD_BIAS", 0.0);
+        let mut td_bias = wcfg.stair_plan.td_bias;
         // Descent-only rearward bias. Measured 2026-10-03 on G1 (v6.2, two
         // steps down, 60 mm risers, 29/48): the step-down landing overshoots
         // its goal by ~21 mm in x, a 170 mm sole on a 211 mm tread has 20 mm
@@ -2238,14 +2168,14 @@ fn main() {
         // 6 cm the sole rests half on it (centre 20 mm high, 0/48), at 8 cm
         // the riser face stops the toe (48/48). Default = STAIR_TD_BIAS, so
         // the one-step benches are bit-identical.
-        let td_bias_asc_mid = env_f64("STAIR_TD_BIAS_ASC_MID", td_bias);
+        let td_bias_asc_mid = wcfg.stair_plan.td_bias_asc_mid();
         let td_bias_desc = if st.riser < 0.0 || st.down_n > 0 {
-            env_f64("STAIR_TD_BIAS_DESC", td_bias)
+            wcfg.descent.td_bias_desc(&wcfg.stair_plan)
         } else {
             td_bias
         };
-        if flag("STAIR_FULL_SOLE", false) {
-            let margin = env_f64("STAIR_SOLE_MARGIN", 0.002);
+        if wcfg.stair_plan.full_sole {
+            let margin = wcfg.stair_plan.sole_margin;
             let available = 0.5 * st.tread - sole_half_l - margin;
             assert!(
                 margin.is_finite() && margin >= 0.0 && available >= 0.0,
@@ -2263,8 +2193,8 @@ fn main() {
         // -- while the same recipe without STAIRS walked 6.23 m. `pos_of` and
         // `lvl_of` must read the SAME value or the grade and its inverse
         // disagree. The default keeps kyo46rs bit-identical.
-        let landing_step = env_f64("STAIR_LANDING_FRAC", 0.5).max(1e-3) * st.tread;
-        let slope_keep_stride = flag("SLOPE_KEEP_STRIDE", false);
+        let landing_step = wcfg.stair_plan.landing_frac * st.tread;
+        let slope_keep_stride = wcfg.slope.keep_stride;
         let pos_of = |lvl: i64| -> f64 {
             if lvl <= 0 {
                 a_pos
@@ -2325,7 +2255,7 @@ fn main() {
         // audit). Squaring splits it into 141 mm and 226 mm, both inside that.
         // The knob exists so the trade (one short step vs one oversized one)
         // is a measured choice per robot rather than a constant.
-        let align_stand_line = flag("STAIR_ALIGN_STAND_LINE", false);
+        let align_stand_line = wcfg.stair_plan.align_stand_line;
         // Up-and-over course (STAIRS_DOWN): the footfall positions by level,
         // walked with explicit per-foot levels instead of the `lvl_of`
         // inverse. Level 0 = stand line, 1..n = up treads, then the landing
@@ -2339,7 +2269,7 @@ fn main() {
             // v6 and v6.2 alike): with the toe AT the edge (the ascent's
             // STAIR_TOE_MARGIN=0 reused) the landing overshoots by 7 mm, the
             // toe spheres hang over the edge and the sole centre sinks 20 mm.
-            let stand2 = le - sole_half_l - env_f64("STAIR_DESC_STAND_MARGIN", 0.03).max(0.0);
+            let stand2 = le - sole_half_l - wcfg.descent.stand_margin;
             let mut v = vec![a_pos];
             for k in 1..=n {
                 v.push(pos_of(k));
@@ -2476,13 +2406,13 @@ fn main() {
     // on a descent platform is not its world z.
     // (STAIR_CROUCH, a fixed crouch on stairs that this height also took
     // out, was opt-in and is removed; STAIR_ZONE_CROUCH is the one in use.)
-    let z_lip = (z_com - stairs.as_ref().map_or(0.0, |st| st.base())).max(0.05);
     // Heel-to-toe travel of the planned pressure inside each stance (see
     // DcmPlan::from_footsteps_rolled). On for stairs by default: the tread
     // pitch fixes the footstep pitch at ~2x what the commanded speed builds
     // momentum for, and the sole's own length is where the difference has
     // to come from. Must stay inside the CoP box (cop_half.0 * COP_FRAC).
-    let zmp_roll = env_f64("ZMP_ROLL", if stairs.is_some() { 0.030 } else { 0.0 });
+    // Both are `DcmConfig::params`.
+    let dcm_params = wcfg.dcm.params(z_com, stairs.as_ref().map(|st| st.base()));
     // (DCM_PREVIEW_HORIZON, a finite DCM preview, and DCM_REF_BLEND_T / _MIN,
     // a continuity guard that blended a jump of the DCM reference across a
     // plan rebuild, were not adopted and are removed. Measured 2026-09-23
@@ -2503,7 +2433,7 @@ fn main() {
     let mut plan = Plan::new(
         gait,
         footsteps,
-        DcmParams { z_lip, lat_scale: zmp_lat_scale, roll: zmp_roll },
+        dcm_params,
         articara::biped::preview::HeightPlan::constant(z_com),
         articara::biped::preview::LandingTiming::new(land_confirm_fz_frac * total_mass * G),
     );
@@ -2771,8 +2701,8 @@ fn main() {
     };
     // (SWING_CAUTIOUS_ERR, STAIR_ANCHOR_FLAT and STAIR_ROLL_PATCH -- the
     // latter two for the toe-first descent -- are removed.)
-    let slope_heel_cut = env_f64("SLOPE_HEEL_CUT", 0.0).max(0.0);
-    let slope_heel_cut_max = env_f64("SLOPE_HEEL_CUT_MAX", 0.05).clamp(0.0, 0.08);
+    let slope_heel_cut = wcfg.slope.heel_cut;
+    let slope_heel_cut_max = wcfg.slope.heel_cut_max;
     // (CONTACT_FZ_RATE, a load-split damper on the measured normal force,
     // was FALSIFIED -- worse than undamped at every weight -- and is
     // removed, as is DS_FZ_FLOOR_WEIGHT / _BW, a soft double-support load
@@ -2904,8 +2834,8 @@ fn main() {
     // riser, through the usual COM_HEIGHT_TIME retarget. Only a landing
     // BELOW the stance soles counts, so ascents and level walking are
     // bit-identical. Default 0 = off = shipped.
-    let com_height_desc_lead = env_f64("COM_HEIGHT_DESC_LEAD", 0.0).clamp(0.0, 1.0);
-    let stair_zone_crouch = env_f64("STAIR_ZONE_CROUCH", 0.0).clamp(0.0, 0.15);
+    let com_height_desc_lead = wcfg.descent.com_height_lead;
+    let stair_zone_crouch = wcfg.descent.zone_crouch;
     let stair_crouch_lead = env_f64("STAIR_ZONE_CROUCH_LEAD", 0.30).max(0.0);
     let stair_crouch_tail = env_f64("STAIR_ZONE_CROUCH_TAIL", 0.60).max(0.0);
     // Per side: the DOUBLE-SUPPORT slice that follows a certified landing.
@@ -3051,8 +2981,8 @@ fn main() {
     // slope on its toe or heel only (measured 2026-10-15: the sole centre
     // hovered 7 mm above the surface with no load, then the stance rolled).
     // Off = shipped, bit-identical.
-    let terrain_pitch = flag("TERRAIN_PITCH", false);
-    let terrain_pitch_yaw = flag("TERRAIN_PITCH_YAW", false);
+    let terrain_pitch = wcfg.slope.terrain_pitch;
+    let terrain_pitch_yaw = wcfg.slope.terrain_pitch_yaw;
     plan.landing.dz_min = step_dz_min;
     // Landing-deadline slack for a swing that steps DOWN. Default = the rise
     // value (bit-identical). Measured 2026-10-03 on a 60 mm descent: the
@@ -3060,7 +2990,7 @@ fn main() {
     // surface unloaded while the body walked on (2 timeouts, 2.16 s net),
     // and the next swing started with 22 N on the new stance -- a fall at
     // 3/48. With 0 the same member walked out.
-    let land_extend_desc = env_f64("COM_LAND_EXTEND_DESC", land_extend_rise).max(0.0);
+    let land_extend_desc = wcfg.descent.land_extend.unwrap_or(land_extend_rise);
     // xy tolerance of the landing confirmation for DESCENDING swings only.
     // Measured 2026-10-03 on the up-and-over course (8 cm, 2/48): the long
     // step-down swing overshoots its goal by ~23 mm in x, the 12 mm gate
@@ -3076,8 +3006,8 @@ fn main() {
     // the confirmation fire on the HEEL STRIKE of a toe-up foot (sole centre
     // still 8 mm high), 60 ms before the sole is flat (measured: 2 steps x
     // 6 cm 46 -> 33 with the wide xy alone). Unset = LAND_CONFIRM_Z.
-    plan.landing.z_tol_override = std::env::var("LAND_CONFIRM_Z_DESC").ok().and_then(|v| v.parse().ok());
-    let land_confirm_xy_desc: Option<f64> = std::env::var("LAND_CONFIRM_XY_DESC").ok().and_then(|v| v.parse().ok());
+    plan.landing.z_tol_override = wcfg.descent.land_confirm_z;
+    let land_confirm_xy_desc: Option<f64> = wcfg.descent.land_confirm_xy;
     plan.landing.max_extension = land_extend_base;
     plan.landing.speed_z = env_f64("COM_LAND_VZ", 0.20).max(0.01);
     plan.landing.speed_xy = env_f64("COM_LAND_VXY", 0.35).max(0.01);
@@ -3403,7 +3333,7 @@ fn main() {
     // its piecewise-linear ZMP slope changes at support boundaries, producing
     // a jerk step.  Limiting that step preserves the full DCM feedback law
     // while giving contacts and counterweight joints time to respond.
-    let com_xy_jerk_max = env_f64("COM_XY_JERK_MAX", f64::INFINITY);
+    let com_xy_jerk_max = wcfg.dcm.com_xy_jerk_max;
     assert!(
         com_xy_jerk_max.is_finite() && com_xy_jerk_max > 0.0 || com_xy_jerk_max == f64::INFINITY,
         "COM_XY_JERK_MAX must be positive"
@@ -6455,7 +6385,7 @@ fn main() {
         if weighted_levels {
             for (k, lvl) in levels.iter_mut().enumerate().skip(1) {
                 let name = level_names.get(k).copied().unwrap_or("");
-                let wk = level_weights.get(name);
+                let wk = wcfg.wbc.level_weights.get(name).unwrap_or_else(|| level_weight_from_env(name));
                 let taken = std::mem::replace(lvl, misa_wbc::Task::empty(nd));
                 *lvl = taken.weight(wk);
             }
@@ -8125,6 +8055,7 @@ fn main() {
 /// Which lateral direction is "inward" (toward the stance foot) for the
 /// landing of `swing` planned at slice `i`: returns (lateral gap, true when
 /// inward is +y). The gap is |stance.y - landing.y| in world y.
+#[cfg(feature = "mujoco")]
 fn landing_inward(
     footsteps: &articara::biped::gait::FootstepPlan,
     i: usize,
