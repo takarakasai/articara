@@ -1016,6 +1016,16 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
   - eq.sh の `DROP` はそのまま使える。プリセットは環境変数を 1 つ足すだけなので、eq.sh を少し直す（`EXTRA_ENV`）。
 - **規模**: 約 300 行＋試験。
 
+- **実施 S17a（2026-10-30）**: 未設定のとき 96＋14＋eqdiag＋s1x で差 0（デバッグ印字の単発 4 本も S12a と差 0。ただし MPC_RUNTIME_CSV の `deadline_miss` 列が 2 行だけ違った。計時の列で、負荷の高い時に回したため。比較の式は時間の列 `solve_ns` だけを外している）。プリセットの照合は 92 本で CSV 差 0・ログ差 0、対象外 18 本。
+  - **入口**: `config_env::base_config(prof, get)` が `WALKER_PRESET`（`g1_v619`／`kyo46rs_v2`、未設定は `Config::code_defaults(prof)`）で土台を選び、`config_from_kv` は土台の値を既定として環境変数を重ねる。プリセットは機体が決まっている（Profile 由来の既定を含む）ので、別の機体の名で呼ぶと panic（`ROBOT=g1` に `g1_v619`、ROBOT 未設定か `kyo46rs` に `kyo46rs_v2`）。ROUGH_MODE はプリセットの上にも重なる。
+  - **表を土台に従わせた**: 既定が土台から来ていなかった読み 19 個を直した（`opt(K)` → `opt(K).or(d.x)`: `friction_mu`、`F_MAX`、`ZMP_ROLL`、`STAIR_TD_BIAS_ASC_MID`、`STAIR_TD_BIAS_DESC`、`COM_LAND_EXTEND_DESC`、`LAND_CONFIRM_XY_DESC`／`_Z_DESC`、`KP_SWING_XY`、`KD_CONTACT`、`CONTACT_ADMIT_LOADED`、`Z_COM`、`COM_PREPLAN`、`CP_MAX_Y_IN`、`WBC_QP_BACKEND`、`MPC_QP_BACKEND`。`WBCW_*` の既定は土台の `level_weights`、`WBC_STRATEGY=null_space` は土台でなく `NullSpace` そのもの）。土台が `code_defaults` のときは、どれも今と同じ値（`None` か同じ数）。
+  - **単体試験**（crates/misa-biped/tests/presets.rs、6 本）: `WALKER_PRESET` だけでプリセットに等しい、プリセットの元の controls を重ねても等しい、上に置いたキー（`KP_COM`、`ZMP_ROLL`、`WBC_STRATEGY=null_space`）だけが変わる、別の機体の名で panic。
+  - **照合の道具**（新設、eq.sh・eqdiag.sh は変えていない）: `log/claude_g1rand_20260925/eqpreset_list.py`（見本ごとのプリセットと外すキー: 台帳の分類 1・2・1k のうち Config が読むキー。分類 1 でも Config の外のキー（`REF_LIBRARY`、`BASE_VEL_FUSE_*`）は外さない）、`eqpreset.sh BIN OUT`（① 見本ごとに、元の controls と「キーを外して WALKER_PRESET」の 2 通りの Config を `WALKER_CONFIG_DUMP`（T=0）で書き出して比べ、② 違う見本を OUT/excluded.txt に違う行つきで残して外し、③ 残りを WALKER_PRESET で走らせる）、`eqpresetcmp.sh NEW REF...`（基準は eq.sh の 96 本と 14 本の出力）。
+  - **対象 92 本**（G1 の家族 68＋押し 14、kyo46rs 10）。キーごとの差: G1 の見本は全部、プリセットの元（チャンピオンの controls）と `REF_LIBRARY`（分類 1 だが Config の外、見本の値のまま残る）と分類 3d の死に値 10 個（`ADAPT_MAX_*`、`STAIR_TRANSFER_*` など。もう読まれない）が違うが、Config は同じ。差が分類 4・5・6 だけ、という字面の条件では 1 本も残らないので、「外すキーのうち値がプリセットと違うものが無い」（＝Config の書き出しが一致する）を条件にした。
+  - **対象外 18 本**とその理由（Config の差）:
+    - G1 の斜面 8 本（`FAM_nh10_comb_slope3` 4 本: `STEP_DZ_MIN` 0.03、`FAM_nh10_slope±5` 4 本: `STEP_DZ_MIN`・`STEP_DZ_SWING_MIN` 0.08）。斜面のベンチが見本ごとに入れる分類 2 の値（チャンピオンは 0.005・1e-9）。
+    - kyo46rs の v3 候補 10 本（`KV3_desc_v3` 4 本: `STAIR_ALIGN_STAND_LINE=1`・`STAIR_ZONE_CROUCH=0.02`、`KV3_flat_v3c` 2 本と `KV3_push_v3c` 4 本: `STAIR_ALIGN_STAND_LINE=1`・`SWING_ROT=3`）。v2 のプリセットに無い候補の値。
+
 #### （S18 任意）劣化時の方策と `DegradedTally` を misa-biped へ
 
 - `src/biped/actuate.rs` の差分が片付いた後に行う。

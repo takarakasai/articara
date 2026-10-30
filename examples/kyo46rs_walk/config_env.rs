@@ -52,9 +52,33 @@ pub fn profile_from_kv(mut prof: Profile, get: &dyn Fn(&str) -> Option<String>) 
     prof
 }
 
+/// The Config a run starts from (S17): `WALKER_PRESET=g1_v619` or
+/// `kyo46rs_v2` names a preset ([`Config::g1_v619`], [`Config::kyo46rs_v2`]),
+/// unset is [`Config::code_defaults`] of the robot. A preset is made for one
+/// robot; naming it for another panics (its profile-derived values would be
+/// the wrong robot's).
+pub fn base_config(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> Config {
+    match get("WALKER_PRESET").as_deref() {
+        None => Config::code_defaults(prof),
+        Some("g1_v619") => {
+            assert_eq!(prof.name, misa_biped::profile::G1_23DOF.name, "WALKER_PRESET=g1_v619 is the G1 preset (ROBOT=g1)");
+            Config::g1_v619()
+        }
+        Some("kyo46rs_v2") => {
+            assert_eq!(prof.name, misa_biped::profile::KYO46RS.name, "WALKER_PRESET=kyo46rs_v2 is the kyo46rs preset (ROBOT unset or kyo46rs)");
+            Config::kyo46rs_v2()
+        }
+        Some(other) => panic!("unknown WALKER_PRESET={other:?} (g1_v619 | kyo46rs_v2)"),
+    }
+}
+
 /// Every walker knob from `get` (`|k| std::env::var(k).ok()` for the
-/// environment), with [`rough_mode`]'s values over its four knobs. Panics on
-/// an unsupported `WBC_STRATEGY` / `WBC_QP_BACKEND`.
+/// environment), over the base [`base_config`] picks (`WALKER_PRESET`, or
+/// the code defaults), with [`rough_mode`]'s values over its four knobs. A
+/// key that is unset (or does not parse) keeps the base's value, so with no
+/// preset this is the code defaults' table it always was. Panics on an
+/// unsupported `WBC_STRATEGY` / `WBC_QP_BACKEND` / `MPC_QP_BACKEND` and on a
+/// preset named for another robot.
 pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> Config {
     let rough = rough_mode(get);
     let get = |k: &str| -> Option<String> {
@@ -66,13 +90,13 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
     let num = |k: &str, d: f64| -> f64 { get(k).and_then(|s| s.parse().ok()).unwrap_or(d) };
     let flag = |k: &str, d: bool| -> bool { get(k).map(|v| v != "0").unwrap_or(d) };
     let opt = |k: &str| -> Option<f64> { get(k).and_then(|v| v.parse().ok()) };
-    let d = Config::code_defaults(prof);
+    let d = base_config(prof, &get);
 
     let wbc = {
         let d = &d.wbc;
         let mut level_weights = d.level_weights.clone();
         for name in LevelWeights::NAMES {
-            level_weights.set(name, num(&LevelWeights::key(name), LevelWeights::default_for(name)));
+            level_weights.set(name, num(&LevelWeights::key(name), d.level_weights.get(name).unwrap_or(LevelWeights::default_for(name))));
         }
         WbcConfig {
             feas_tol: num("WBC_FEAS_TOL", d.feas_tol),
@@ -84,7 +108,8 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
                     level_ratio: num("WBC_WEIGHT_RATIO", 1.0).max(1.0) as u32,
                 },
                 Some("force_budget") => misa_wbc::HqpStrategy::ForceBudgetCascade,
-                Some("null_space") | None => d.strategy,
+                Some("null_space") => misa_wbc::HqpStrategy::NullSpace,
+                None => d.strategy,
                 Some(other) => panic!("unsupported WBC_STRATEGY: {other}"),
             },
             backend: get("WBC_QP_BACKEND").map(|name| match name.as_str() {
@@ -94,11 +119,11 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
                 "eiquadprog" => misa_wbc::QpSolver::Eiquadprog,
                 "qpoases" => misa_wbc::QpSolver::Qpoases,
                 _ => panic!("unsupported WBC_QP_BACKEND: {name}"),
-            }),
+            }).or(d.backend),
             bench_gate: flag("QP_BENCH_GATE", d.bench_gate),
-            friction_mu: opt("friction_mu"),
+            friction_mu: opt("friction_mu").or(d.friction_mu),
             f_max_scale: num("F_MAX_SCALE", d.f_max_scale),
-            f_max: opt("F_MAX"),
+            f_max: opt("F_MAX").or(d.f_max),
             eom_hard: flag("EOM_HARD", d.eom_hard),
             hold_kp: num("HOLD_KP", d.hold_kp),
             hold_kd: num("HOLD_KD", d.hold_kd),
@@ -152,7 +177,7 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
             zmp_margin: num("ZMP_MARGIN", d.zmp_margin),
             clamp_zmp: flag("CLAMP_ZMP", d.clamp_zmp),
             zmp_lat_scale: num("ZMP_LAT_SCALE", d.zmp_lat_scale),
-            zmp_roll: opt("ZMP_ROLL"),
+            zmp_roll: opt("ZMP_ROLL").or(d.zmp_roll),
             com_xy_jerk_max: num("COM_XY_JERK_MAX", d.com_xy_jerk_max),
         }
     };
@@ -182,7 +207,7 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
             y_out: num("STAIR_Y_OUT", d.y_out),
             gait_pair: get("STAIR_GAIT").map(|v| v == "pair").unwrap_or(d.gait_pair),
             td_bias: num("STAIR_TD_BIAS", d.td_bias),
-            td_bias_asc_mid: opt("STAIR_TD_BIAS_ASC_MID"),
+            td_bias_asc_mid: opt("STAIR_TD_BIAS_ASC_MID").or(d.td_bias_asc_mid),
             full_sole: flag("STAIR_FULL_SOLE", d.full_sole),
             sole_margin: num("STAIR_SOLE_MARGIN", d.sole_margin),
             landing_frac: num("STAIR_LANDING_FRAC", d.landing_frac).max(1e-3),
@@ -193,13 +218,13 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
     let descent = {
         let d = &d.descent;
         DescentConfig {
-            td_bias_desc: opt("STAIR_TD_BIAS_DESC"),
+            td_bias_desc: opt("STAIR_TD_BIAS_DESC").or(d.td_bias_desc),
             stand_margin: num("STAIR_DESC_STAND_MARGIN", d.stand_margin).max(0.0),
             com_height_lead: num("COM_HEIGHT_DESC_LEAD", d.com_height_lead).clamp(0.0, 1.0),
             zone_crouch: num("STAIR_ZONE_CROUCH", d.zone_crouch).clamp(0.0, 0.15),
-            land_extend: opt("COM_LAND_EXTEND_DESC").map(|v| v.max(0.0)),
-            land_confirm_xy: opt("LAND_CONFIRM_XY_DESC"),
-            land_confirm_z: opt("LAND_CONFIRM_Z_DESC"),
+            land_extend: opt("COM_LAND_EXTEND_DESC").map(|v| v.max(0.0)).or(d.land_extend),
+            land_confirm_xy: opt("LAND_CONFIRM_XY_DESC").or(d.land_confirm_xy),
+            land_confirm_z: opt("LAND_CONFIRM_Z_DESC").or(d.land_confirm_z),
             leg_reach_margin: num("LEG_REACH_MARGIN", d.leg_reach_margin).clamp(0.1, 1.0),
         }
     };
@@ -220,7 +245,7 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
         let kp = num("KP_SWING", d.kp);
         SwingConfig {
             kp,
-            kp_xy: opt("KP_SWING_XY"),
+            kp_xy: opt("KP_SWING_XY").or(d.kp_xy),
             kd: num("KD_SWING", d.kd),
             kp_rot: num("KP_SWING_ROT", d.kp_rot),
             kd_rot: num("KD_SWING_ROT", d.kd_rot),
@@ -302,7 +327,7 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
         let d = &d.contact;
         ContactConfig {
             kp: num("KP_CONTACT", d.kp),
-            kd: opt("KD_CONTACT"),
+            kd: opt("KD_CONTACT").or(d.kd),
             anchor_leak: num("ANCHOR_LEAK", d.anchor_leak),
             driven: flag("CONTACT_DRIVEN", d.driven),
             ticks: num("CONTACT_TICKS", d.ticks as f64) as u32,
@@ -314,7 +339,7 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
             admit_loaded: get("CONTACT_ADMIT_LOADED").and_then(|v| {
                 let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok());
                 Some((it.next()??.max(0.0), it.next()??.max(0.0)))
-            }),
+            }).or(d.admit_loaded),
         }
     };
 
@@ -356,10 +381,10 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
     let com_plan = {
         let d = &d.com_plan;
         ComPlanConfig {
-            z_com: opt("Z_COM"),
+            z_com: opt("Z_COM").or(d.z_com),
             z_com_offset: num("Z_COM_OFFSET", d.z_com_offset),
             replan: flag("COM_REPLAN", d.replan),
-            preplan: get("COM_PREPLAN").map(|v| v != "0"),
+            preplan: get("COM_PREPLAN").map(|v| v != "0").or(d.preplan),
             preplan_xy_min: num("COM_PREPLAN_XY_MIN", d.preplan_xy_min),
             stair_ss_max: num("COM_STAIR_SS_MAX", d.stair_ss_max),
             replan_forward_gain: num("COM_REPLAN_FORWARD_GAIN", d.replan_forward_gain),
@@ -391,7 +416,7 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
             dt_grid: num("CP_DT", d.dt_grid).max(0.001),
             max_x: num("CP_MAX_X", d.max_x),
             max_y: num("CP_MAX_Y", d.max_y),
-            max_y_in: opt("CP_MAX_Y_IN"),
+            max_y_in: opt("CP_MAX_Y_IN").or(d.max_y_in),
             timing_from_x: flag("CP_T_FROM_X", d.timing_from_x),
             timing_lat_outward: flag("CP_T_LAT_OUT", d.timing_lat_outward),
             j: num("CP_J", d.j).max(0.05),
@@ -453,7 +478,7 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
                 "osqp" => misa_wbc::QpSolver::Osqp,
                 "hpipm" => misa_wbc::QpSolver::Hpipm,
                 _ => panic!("unsupported MPC_QP_BACKEND: {name}"),
-            }),
+            }).or(d.backend),
             kkt_comp_tol: num("MPC_KKT_COMP_TOL", d.kkt_comp_tol),
             bench_gate: flag("MPC_BENCH_GATE", d.bench_gate),
         }
