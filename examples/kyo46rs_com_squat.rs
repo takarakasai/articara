@@ -690,7 +690,7 @@ fn main() {
             let tg = &tau_gravity;
             let vv = v;
             let fallback = move |out: &mut [f64]| {
-                gravity_plus_posture(rig_ref, tg, vv, hold_kp, hold_kd, out);
+                gravity_plus_posture(rig_ref, &rig_ref.robot.joint_positions, tg, vv, hold_kp, hold_kd, out);
             };
             policy.apply(&sol.status, &mut robot_taus, t, dt, nc, &fallback);
         }
@@ -702,7 +702,8 @@ fn main() {
         let trot = misarta::se3::rotation_matrix(&data.oMi[rig.trunk_mi]);
         let trunk_tilt = trot[(2, 1)].atan2(trot[(2, 2)]).abs().max((-trot[(2, 0)]).asin().abs());
 
-        write_to_plant(&mut rig, ctrl_mode, &robot_taus, &extracted.qddot, v, dt);
+        let q_joint = rig.robot.joint_positions.clone();
+        write_to_plant(&mut rig, ctrl_mode, &q_joint, &robot_taus, &extracted.qddot, v, dt);
         rig.step(mj_substeps);
 
         if log.is_enabled() {

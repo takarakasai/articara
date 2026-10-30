@@ -253,8 +253,13 @@ impl CommandPolicy {
 /// support one foot needs, so freezing it let the stance knee sag 49 -> 11 deg
 /// over 705 ms, and the QP then had to recover from a leg whose own 6x6
 /// Jacobian had gone from cond 49 to cond 206.
+///
+/// `q_joint` is the joint angles the PD reads (harness order): the plant's
+/// `rig.robot.joint_positions` as it always was, or the state estimate's
+/// (kyo46rs_walk's `JOINT_Q_EST`).
 pub fn gravity_plus_posture(
     rig: &BipedRig,
+    q_joint: &[f64],
     tau_gravity: &na::DVector<f64>,
     v: &[f64],
     hold_kp: f64,
@@ -262,7 +267,7 @@ pub fn gravity_plus_posture(
     out: &mut [f64],
 ) {
     for (ji, vi) in rig.actuated() {
-        let e = rig.q_seed[ji] - rig.robot.joint_positions[ji];
+        let e = rig.q_seed[ji] - q_joint[ji];
         let tau = tau_gravity[vi - 6] + hold_kp * e - hold_kd * v[vi];
         let lim = rig.torque_max[vi - 6];
         out[ji] = tau.clamp(-lim, lim);
@@ -270,9 +275,13 @@ pub fn gravity_plus_posture(
 }
 
 /// Hand the command to the plant in whichever form the control mode wants.
+/// `q_joint` is the joint angles Hybrid integrates from (harness order; the
+/// plant's `rig.robot.joint_positions`, or the estimate's under
+/// kyo46rs_walk's `JOINT_Q_EST`); the other modes do not read it.
 pub fn write_to_plant(
     rig: &mut BipedRig,
     mode: CtrlMode,
+    q_joint: &[f64],
     robot_taus: &[f64],
     qddot: &na::DVector<f64>,
     v: &[f64],
@@ -298,7 +307,7 @@ pub fn write_to_plant(
             // what changes between ticks, not to reproduce the dynamics.
             for (ji, vi) in rig.actuated() {
                 let qdd = qddot[vi];
-                let q_now = rig.robot.joint_positions[ji];
+                let q_now = q_joint[ji];
                 let qd_now = v[vi];
                 rig.sim
                     .set_position_target(ji, q_now + qd_now * dt + 0.5 * qdd * dt * dt);

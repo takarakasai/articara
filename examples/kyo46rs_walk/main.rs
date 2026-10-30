@@ -328,6 +328,10 @@ fn main() {
     // below, after the walker's plan).
     let solver = Solver::new();
     let (solve_cfg, jlim_cfg) = stack_settings(&wcfg, &robot, ctrl_mode);
+    // The friction the WBC and the MPC plan against: from the plant's
+    // MU_GROUND (the leak of §6.7), or from MU_ASSUMED when set. The
+    // measurements of "what the WBC thinks it is allowed" use this value,
+    // the plant's slip uses `mu_ground`.
     let friction_mu: f64 = wcfg.wbc.friction_mu(mu_ground, prof.friction_margin);
     let total_t = env_f64("T", 25.0);
 
@@ -372,6 +376,16 @@ fn main() {
         .map(|p| p.split(',').filter(|x| !x.is_empty()).map(load_ref_lib).collect())
         .unwrap_or_default();
     let ref_any = !ref_libs.is_empty();
+    // JOINT_Q_EST: the controller reads the ESTIMATE's joint angles, not the
+    // plant's (the leak of §6.6): the start-up FK is built from the t=0
+    // estimate, which is then tick 0's estimate (the sensor model is read
+    // once per tick, as without the switch). Off = the plant's FK.
+    let joint_q_est = wcfg.wbc.joint_q_estimate;
+    let mut est0 = joint_q_est.then(|| rig.sense());
+    let init_fk = match &est0 {
+        Some(e) => robot.fk_of(e),
+        None => rig.fk_now(),
+    };
     let init = walker::WalkerInit::new(
         wcfg.clone(),
         robot,
@@ -382,7 +396,7 @@ fn main() {
             command,
             recovery_refs: ref_libs,
             friction_mu,
-            init_fk: rig.fk_now(),
+            init_fk,
             leg_reach,
             hip_mi,
         },
@@ -497,7 +511,7 @@ fn main() {
         m.begin_tick(t, tally.n);
         // The state estimate (the sensor model, QD_CLAMP); the walker
         // assembles the dynamics and kinematics from it (S14).
-        let est = rig.sense();
+        let est = est0.take().unwrap_or_else(|| rig.sense());
         // Ground truth first: the phase logic, the contact set and the tasks
         // all solve against this, so it is read before any of them. The CoP
         // in the sole frame needs the FK, so the measurement is finished
@@ -506,7 +520,7 @@ fn main() {
         let measured_pre = contacts.fz();
         // What the walker is given this tick: the estimate, the vertical
         // contact forces, and the plant's joint angles (read by the posture
-        // levels; `misa_biped::robot::Observation`).
+        // levels unless JOINT_Q_EST; `misa_biped::robot::Observation`).
         let obs = Observation {
             tick,
             estimate: &est,
@@ -541,12 +555,17 @@ fn main() {
         for (ji, vi) in rig.actuated() {
             robot_taus[ji] = extracted.tau[vi - 6];
         }
+        // The joint angles the harness's own control reads (the fallback's
+        // PD, Hybrid's integration): the plant's, or the estimate's under
+        // JOINT_Q_EST.
+        let q_joint: Vec<f64> = if joint_q_est { est.joint_q.clone() } else { rig.robot.joint_positions.clone() };
         {
             let rig_ref = &rig;
             let tg = &tau_gravity;
+            let q_joint = &q_joint[..];
             let (v, hold_kp, hold_kd) = (&st.v, wcfg.wbc.hold_kp, wcfg.wbc.hold_kd);
             let fallback =
-                move |out: &mut [f64]| gravity_plus_posture(rig_ref, tg, v, hold_kp, hold_kd, out);
+                move |out: &mut [f64]| gravity_plus_posture(rig_ref, q_joint, tg, v, hold_kp, hold_kd, out);
             guard.policy.apply(&sol.status, &mut robot_taus, t, dt, rec.nc, &fallback);
             // Existing policy has no held command on its first failed tick.
             // Use its existing recomputed fallback instead of applying rejected QP torques.
@@ -602,9 +621,9 @@ fn main() {
                 act_delay_buf.pop_front();
             }
             let delayed = act_delay_buf.front().cloned().unwrap_or_else(|| robot_taus.clone());
-            write_to_plant(&mut rig, ctrl_mode, &delayed, &extracted.qddot, &st.v, dt);
+            write_to_plant(&mut rig, ctrl_mode, &q_joint, &delayed, &extracted.qddot, &st.v, dt);
         } else {
-            write_to_plant(&mut rig, ctrl_mode, &robot_taus, &extracted.qddot, &st.v, dt);
+            write_to_plant(&mut rig, ctrl_mode, &q_joint, &robot_taus, &extracted.qddot, &st.v, dt);
         }
         rig.step(mj_substeps);
         diag.after_plant(

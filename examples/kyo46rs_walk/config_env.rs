@@ -122,6 +122,8 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
             }).or(d.backend),
             bench_gate: flag("QP_BENCH_GATE", d.bench_gate),
             friction_mu: opt("friction_mu").or(d.friction_mu),
+            mu_assumed: opt("MU_ASSUMED").or(d.mu_assumed),
+            joint_q_estimate: flag("JOINT_Q_EST", d.joint_q_estimate),
             f_max_scale: num("F_MAX_SCALE", d.f_max_scale),
             f_max: opt("F_MAX").or(d.f_max),
             eom_hard: flag("EOM_HARD", d.eom_hard),

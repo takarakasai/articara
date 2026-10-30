@@ -1087,7 +1087,7 @@ fn main() {
         {
             let rig_ref = &rig;
             let tg = &tau_gravity;
-            let fallback = move |out: &mut [f64]| gravity_plus_posture(rig_ref, tg, v, hold_kp, hold_kd, out);
+            let fallback = move |out: &mut [f64]| gravity_plus_posture(rig_ref, &rig_ref.robot.joint_positions, tg, v, hold_kp, hold_kd, out);
             policy.apply(&sol.status, &mut robot_taus, t, dt, nc.max(1), &fallback);
         }
         if log.is_enabled() {
@@ -1117,7 +1117,8 @@ fn main() {
             };
             log.write(&rig, &row);
         }
-        write_to_plant(&mut rig, ctrl_mode, &robot_taus, &ex.qddot, v, dt);
+        let q_joint = rig.robot.joint_positions.clone();
+        write_to_plant(&mut rig, ctrl_mode, &q_joint, &robot_taus, &ex.qddot, v, dt);
         rig.step(mj_substeps);
 
         let tilt = roll.abs().max(pitch.abs());
