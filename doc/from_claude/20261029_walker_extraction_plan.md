@@ -986,6 +986,13 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
 - **確認**: 96＋14＋eqdiag。
 - **規模**: 移動が大半。main.rs は 300〜500 行が目安。
 
+- **実施 S15a（2026-10-30）**: 96＋14＋eqdiag＋s1x で差 0、デバッグ印字の単発 4 本も S12a と差 0（1 回で済んだ）。
+  - examples/kyo46rs_walk/ は 5 本: `main.rs` 657 行（起動の順とループ。`load_ref_lib`、`command_from_env`、`stack_settings`（SolveConfig と関節の CBF、ゲートの assert、CBF の帯の印字）、`check_config`（ハーネスに残した起動時の assert））、`config_env.rs` 610（変えていない）、`scene.rs` 665（`plant_from_env`＝RigOptions と URDF／ROOT_LINK／TRUNK_LINK、`build_scene`、`PushScenario`・`fire_push`・`FixProbe`）、`metrics.rs` 1,149（`PushThresholds`、`RunSetup`、`AnkleRoll`（`ankle_roll limit` の印字）、`RunMetrics` と tick の区画を写した `begin_tick`／`observe_step`／`observe_plant`／`observe_ankle`／`observe_steps`／`observe_pose`、最終報告 `report`）、`diag.rs` 1,099（`DiagSinks`、`QpDiagWriter`、`impl WalkerDiag`、`StdSink`、`EXTRA_COLS`、tick の行 `contact_dump`／`transfer`／`before_plant`／`after_plant`、終わりの `finish`＝SUBSTEP_LIMIT_AUDIT_JSON）。main.rs は目安の 300〜500 行より長い（起動の配線が残る）。
+  - 区画の中身は式ごと写した（生成は区画の行を切り出して変数名だけ置き換えた）。tick の中の呼び出しの順は今のまま: `begin_tick` → 推定・接触 → `contact_dump` → `walker.step` → 計測の仕上げ → `tally.observe` → `transfer` → `observe_step`（FIX の発火はここで判定し、ハーネスが撃つ。印字は今と同じ位置） → `observe_plant`（`[self-collision]`） → 方策 → `observe_ankle`／`observe_steps` → 押しの発火 → `end_tick` → `before_plant` → 植物 → `after_plant`（`[gait]`） → `observe_pose` → 40 tick の行 → 転倒。ファイルへの書き込み（TRANSFER_DIAG_CSV、SUBSTEP_LIMIT_AUDIT_JSON）は印字に挟まれない位置へ寄せた（SUBSTEP の JSON は最終報告の後）。
+  - **CMM の二重計算を消した**: `RobotState` に `cmm: OnceCell<DMatrix>` を持たせ、`RobotModel::cmm(&state)` が初回に計算して状態に残す。Walker の `Centroidal`（MPC の `h`、運動量の段、MOM_CMP）もこれを読み、ハーネスの押しの計測 2 か所（`h_roll_at_xfer`、`h_roll_max`）と MOM_DIAG_CSV は `walker.robot().cmm(&st)` を読む。入力は同じ: Walker の `robot.model` は `rig.model` の写し（`rig.walker_model()` が `model.clone()`）、`q` は Walker が組み立てて `StepOutput.state` で返したもの。Walker が計算しなかった tick はハーネスの初回の呼び出しで計算する。ハーネスは `rig.model` を読まなくなった。
+  - **突きの時計を 1 つに**: `CommandSchedule::jab_at(t) -> JabPhase { side, phase, extension }`。Walker の腕の参照（`t >= jab_start` のときだけ呼ぶ）と押しの行 `PUSH JAB PHASE` が共有する（式は今の 2 つと同じ。`jab_start` 以降は `.max(0.0)` が値を変えない）。`WalkerConsts` の `jab*` 6 欄は `command: CommandSchedule` 1 欄に、読み口 `walker.command()` を足した。ハーネスの `JabClock` と `jab*` の別読みは消えた（最終報告の `vx`／`vy`／`wz` も `walker.command()` から）。
+  - 消した配線: ハーネスの `f_max_per_foot` の assert（WalkerInit::new に同じものがある）、最終報告のための別名（`contact_admit_*`、`ds_feasible*`、`contact_plan_on`、`push_replan_trig`、`mpc_footstep_cross_y`。`walker.config()` を読む）、`measured`／`measured_c` の二重の名前、ループの外の `gait_dump_t`／`contact_dump_t`／`ankle_cbf_indices`（`DiagSinks` へ）。
+
 #### S16 計画の書き換えを `PlanEditor`／`SliceClaims` に一本化
 
 - **何を**: §3.2 の 2 段目。
