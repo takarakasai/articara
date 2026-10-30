@@ -20,6 +20,13 @@
   - 「段がある」の判定が 4 通りある。
   - 再構築が DS_FEASIBLE の区間 ZMP の書き換えを黙って消す。
 
+- **切り出しの完了時点の形（S0〜S17、2026-10-30）**:
+  - **misa-biped のモジュール**: profile、gait、dcm、preview、contact_plan、reach、terrain、height、plan、recovery、config、robot、wbc、contact、tasks、task_stack、sink、walker（walker/phases.rs）。依存は misarta・misa-wbc・misa-mpc（path）・nalgebra。環境変数の読み・印字・ファイル書き込みは 0（計時の `Instant` だけ）。feature `walker-claims-check`（取り決めの確認用）。
+  - **公開 API**: `WalkerInit::new(Config, RobotModel, WalkerSetup, &mut dyn LogSink)` → `init.contact_params()` で `TaskStack` を作り `init.with_stack(stack)` → `Walker<S: WbcStack>`。tick は `walker.step(&Observation { tick, estimate: &StateEstimate, contact_fz, joint_pos_plant }, &mut dyn LogSink, &mut dyn WalkerDiag) -> StepOutput { command, record: TickRecord, state: RobotState }` と `walker.end_tick(out)`。読み口 `config()`、`robot()`（`robot().cmm(&state)` で A_G）、`plan()`（`Plan` の読み口と `claims()`）、`stats()`、`stack()`、`omega()`、`gait_params()`、`initial_feet()`、`command()`（`CommandSchedule::jab_at`）。プリセット `Config::code_defaults`／`g1_v619`／`kyo46rs_v2`（ハーネスの入口は `WALKER_PRESET`）。計画の書き換えは `Plan::edit(Writer)`／`PlanEditor::commit` と `SliceClaims`。
+  - **ハーネス**（examples/kyo46rs_walk/）: main.rs 657（起動とループ）、config_env.rs 635（環境変数 → Config、WALKER_PRESET）、scene.rs 665、metrics.rs 1,149、diag.rs 1,099。
+  - **残った漏れ**（挙動を変えるので §7 の判断待ち）: 植物の真の関節角 `Observation.joint_pos_plant`（姿勢・劣化時の代替・Hybrid、§6.6）と起動時の FK `WalkerSetup.init_fk`、`friction_mu` の既定が植物の `MU_GROUND` 由来（§6.7）、「段がある」の判定 4 通り（§6.2）、再構築が DS_FEASIBLE の区間 ZMP を捨てる（§7 の 8、注釈と試験で明記）。`WalkerSetup.leg_reach`・`hip_mi` も rig 由来の値。
+  - **残った articara 依存・外の読み**: 劣化時の方策（`CommandPolicy`、`DegradedTally`、`gravity_plus_posture`、`write_to_plant`、src/biped/actuate.rs、§7 の 4）、状態推定の融合と濾波（rig.rs の `sense()` の `BASE_VEL_FUSE_*`、`SENSE_FILTER_*`。`StateEstimator` として misa-biped か別 crate へ出す候補）、`QD_CLAMP`（rig の設定）、`jlim_cfg`・`SolveConfig`・`TaskStack` の構築（ハーネスの `stack_settings`）、misa-mpc の環境変数の読み 2 つ（`MPC_LANDING_TIME_DEBUG`、`MPC_FS_DEBUG`、§7 の 15）。
+
 ## 1. 今の main の構造
 
 ### 1.1 全体
@@ -1005,6 +1012,15 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
 - **確認**: 96＋14（feature 付きと無しの両方）。misa-biped の単体試験（書き手の順と区間の持ち主）。
 - **規模**: 約 400 行。
 
+- **実施 S16a・S16b（2026-10-30）**: 両方とも 96＋14＋eqdiag＋s1x で差 0（feature `walker-claims-check` 無し・付きの両方）、デバッグ印字の単発 4 本も S12a と差 0（MPC_RUNTIME_CSV の計時の列 `solve_ns`・`deadline_miss` を除く。`deadline_miss` は負荷で 2 行揺れる）。
+  - **形**（crates/misa-biped/src/plan.rs）: `Plan` の欄（gait、footsteps、dcm、height、landing）は非公開。読み口 `gait()`／`footsteps()`／`dcm()`／`height()`／`landing()`／`claims()`／`rebuilds(Writer)`／`landing_closed(i)`。書くのは `plan.edit(Writer::X) -> PlanEditor` だけで、`PlanEditor` は `Deref<Target = Plan>`（編集中も読める）と、`retime`、`shift_next`、`shift_from`、`replace_footsteps`、`footsteps_mut`（PUSH_YIELD の一括の引き戻し）、`touch`（自前の編集なしで再構築させる）、`update_landing`（着地の時計。触れない）、`landing_mut`、`height_mut`、`claim_end_time`／`claim_landing`／`claim_whole`／`release_whole`／`claim_ds_run`／`claim_once`。`commit()` は触れていれば DCM を作り直して書き手ごとに数え、作り直したかを返す。
+  - **書き手 13**（`Writer`、tick の順）: LandingSetup（#1、着地の時計の設定だけ）、LandingClock（#2）、ContactEvent（#3）、DsFeasible（#4）、DsCapture（#5）、ReplanStart（#6、高さの計画の作り直し）、PushYield（#7）、PushReplan（#8）、RecoveryRef（#9）、ContactPlan（#10）、Height（#11）、MpcLanding（#12）、RecoveryEnd（#13）。`commit()` の位置は今の再構築の位置のまま。着地の時計は 2 回の編集に分けた: 1 回目は `update_landing`（時計が区間の終わりを動かしても触れない）と接触イベントの取り出し、2 回目は「ずれ ≠ 0 か、時間切れの作り直し」のときの `touch`＋`commit`（今の再構築の位置）。その間の ContactEvent の commit が時計の retime ごと作り直すのも今のまま。RecoveryEnd は、ずらす足が無くても今は作り直していたので `touch` する。
+  - **DS_FEASIBLE の区間 ZMP**: commit の後に `Plan::set_segment_zmp`／`set_segment_zmp_ramp`（編集を通らない唯一の書き込み）。**既知の漏れ（§7 の 8）は直していない**: 次に作り直す commit（同じ tick の後の書き手でも、後の tick でも）が黙って捨てる。plan.rs の頭と phases.rs の書き込みの所に注釈、単体試験 `writers_in_tick_order_and_the_segment_leak` が今の挙動（捨てられること）を固定している。
+  - **`SliceClaims`**（取り決めの判定 7 種類の写し）: `end_time: Option<(slice, Writer)>`（ContactPlan が終わりを決めた区間＝旧 `cp_retimed_slice`。着地の延長 #1 と ContactPlan の 2 回目の retime が読む）、`landing: Option<(slice, Writer)>`（PushReplan が着地を持つ区間＝旧 `push_replan_slice`。#8、MPC の着地 #12、遊脚の保持が読む）、`whole: Option<Writer>`（RecoveryRef が計画全体を持つ＝旧 `ref_mode.is_some()`。#5、#8、PUSH_Z_DROP、#9、#10、#12 が読む）、`ds_run: Option<(last, Writer)>`（DS_CAPTURE が縮めた両脚支持の並び＝旧 `dsc_retimed_last`）、`once: u32`（1 回限り: PushYield＝旧 `push_yield_done`、ReplanStart＝旧 `replan_engaged`）。7 種類目の `landing_closed`（イベントで確認・探り中の着地）は着地の時計の状態そのものなので、蓄えずに `Plan::landing_closed(i)` で問う。
+  - **feature の確認**: S16a で 7 種類（`landing_closed` は問い合わせの付け替えだけ）の判定を `claim_check!(新, 旧)` にし、`walker-claims-check` 付きのとき旧い `CtlState` の判定と `assert_eq!`。feature 付きのバイナリ（`--features mujoco,misa-biped/walker-claims-check`）で 96＋14＋eqdiag＋s1x＋単発 4 本が差 0（assert は 1 度も落ちない）。S16b で、取り決めだけを持っていた欄 5 個（`cp_retimed_slice`、`push_replan_slice`、`push_yield_done`、`dsc_retimed_last`、`replan_engaged`）を消した（記録の `replan_engaged` は `claims().done(ReplanStart)`）。`ref_mode` は参照の座標を持つので残り、`whole` との対だけ feature の確認が残る。
+  - **単体試験**（plan.rs、4 本足した）: `commit_rebuilds_only_an_edit`（読むだけ・時計の設定だけでは作り直さない、編集は commit まで見えない、`touch`、書き手ごとの回数）、`writers_in_tick_order_and_the_segment_leak`（時計の retime は次の commit で入る → DS_FEASIBLE の commit と区間 ZMP → MPC の着地の commit で区間 ZMP が消える、書き手ごとの回数）、`slice_claims_name_their_owner`、`writer_indices_follow_all`。
+  - 散らばったカウンタ（`n_replan`、`n_cp_shift`、`n_push_replan` など）は最終報告の意味（`n_replan` は 4 つの書き手の、PUSH_REPLAN は区間の最初の 1 回だけ）を保つためにそのまま。書き手ごとの作り直しの回数は `plan.rebuilds(w)` に別に集まる（印字はしていない）。
+
 #### S17 プリセットと照合
 
 - **何を**:
@@ -1144,7 +1160,7 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
 | 5 | 植物の真の関節角の漏れ（§6.6） | posture・代替・Hybrid が真値を読む | 一致の段がすべて済んだ後、推定値にそろえる 1 回限りの挙動変更として、家族 21 ベンチで判定する | ユーザー |
 | 6 | `friction_mu` の既定が `MU_GROUND` 由来（§6.7） | 制御が振られた床の摩擦を知っている | 同上。固定の仮定にして、`MU_GROUND` の振りへの頑健さを測る | ユーザー |
 | 7 | 段差 0 の「段」と 4 通りの判定（§6.2） | 平地のベンチで `ZMP_ROLL=0.030`、`VH_DCM` が生きている | 判定を `Terrain` の問い合わせに並べるところまでは一致の段で行う。意味の統一は挙動変更として別に判断する | ユーザー |
-| 8 | 再構築が DS_FEASIBLE の区間 ZMP を消す（§3.2） | 後の再構築があると上書きが消える | 意図を確かめる。区間の上書きを Plan の状態にするなら挙動変更 | ユーザー（DS_FEASIBLE の作者） |
+| 8 | 再構築が DS_FEASIBLE の区間 ZMP を消す（§3.2） | 後の再構築があると上書きが消える。**S16 で `Plan::set_segment_zmp*`（commit の後、編集を通らない唯一の書き込み）にし、挙動は変えずに plan.rs と phases.rs の注釈・単体試験で明記** | 意図を確かめる。区間の上書きを Plan の状態にするなら挙動変更 | ユーザー（DS_FEASIBLE の作者） |
 | 9 | MPC の 3 つの主スイッチ（`STAIR_WRENCH_MPC`、`WRENCH_MPC_ALWAYS`、`WRENCH_MPC_APPLY`）と `STAIR_WRENCH_COUPLED` | 台帳 §2.17。`APPLY` は複合ゲート（記憶 apply-flag-confound） | Config では当面 3 つの bool のまま、意味の名前（`enabled`、`always`、`apply`）に付け替えるだけ。1 つにまとめるのは、kyo46rs（全部 off）と G1（全部 on）以外の組み合わせを捨てる判断 | ユーザー |
 | 10 | `PUSH_REPLAN_HOLD=10`（実質「保持なし」） | 台帳 §2.20 | `hold: Option<f64>`。プリセットは None。`10` を読んだら None として扱うのは挙動同一（`push_replan_shift > 10` は起きない）だが、環境変数の意味を変えるので明示して決める | ユーザー |
 | 11 | `ROUGH_MODE` の形 | 上書き（S9b） | 当面は上書き。モード（列挙型）にして Walker が実行中に切り替えられるようにするかは、地形の知覚の設計と合わせて決める | ユーザー |
