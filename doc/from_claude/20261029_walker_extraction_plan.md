@@ -239,6 +239,7 @@ pub enum Estimate<'a> {
     /// S14 以降: 状態推定の結果だけを渡し、Walker が運動学・動力学を計算する。
     Raw(&'a StateEstimate),
 }
+// S14 で実施: enum は消え、`estimate: &'a StateEstimate` になった（§5.1 S14）。
 
 pub struct StateEstimate {
     pub base_pos: [f64; 3],
@@ -955,6 +956,19 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
 - **確認**: 96＋14。
 - **規模**: 約 200 行。
 
+- **実施 S14（2026-10-30）**: 96＋14＋eqdiag＋s1x で差 0、デバッグ印字の単発 4 本も S12a と差 0（1 回で済んだ）。
+  - **`BASE_VEL_KIN*` を消した**（HEAD の rig.rs に残っていた。台帳の分類 3、チャンピオン v6.19 の controls.json にも eq の 110 本の見本にも無い。未設定ならビット同一）。台帳にも削除を記した。§7 の 14 は済。
+  - **rig**: `BipedRig::sense(&self) -> StateEstimate`（植物の読み → センサの模型（遅れ、雑音、偏り、加速度計の融合、低域通過）→ `QD_CLAMP`）。`QD_CLAMP` は `joint_qd` の各値に同じ `clamp(-c, c)` を掛ける（前は `configuration` が `v` に置くときに掛けていた。同じ演算なので値は同じ）。`sync()` は `self.walker.assemble(&self.sense())` の 1 行になり、自前の段を組む example（kyo46rs_com_squat、g1_flight_probe、g1_reference_track）のために残した。
+  - **misa-biped の robot.rs**: `enum Estimate` を消し、`Observation { tick, estimate: &StateEstimate, contact_fz, joint_pos_plant }` にした（`Estimate::State` の経路は無い）。`RobotModel::configuration(&self, est)`／`assemble(&self, est)` は `qd_clamp` の引数を外した（推定の側で済んでいる）。
+  - **Walker**: `step()` の相 1（着地の設定、観測を読まない）の後で `robot.assemble(obs.estimate)` を呼び、相には内部の `TickObs { tick, state: &RobotState, contact_fz, joint_pos_plant }` を渡す（相の関数の引数の型を替えただけ、`obs_state(obs)` は `obs.state`）。組み立てた状態は `StepOutput { command, record, state: RobotState }` でハーネスへ返す（§2.4 の `walker.state()` の代わり。値で返すので、ハーネスが後で `rig` を可変で借りても衝突しない）。
+  - **ハーネス**: `let est = rig.sense();` → `read_contacts(&rig)`（接触力の合計まで、FK を使わない）→ `contacts.fz()` を `Observation.contact_fz` に → `walker.step` → 返った `state` の FK で `contacts.finish(&rig, data, friction_mu)`（足裏座標の CoP）。`src/biped/log.rs` の `measure_contacts` を `read_contacts` ＋ `ContactReadout::finish` に分けた（`measure_contacts(rig, data, mu)` は 2 つを続けて呼ぶ形で残る。演算は同じ）。`fz()` は `f_w[side][2]` と同じ値（`fz <= 1e-6` なら 0）。植物の接触は step の間に変わらないので、計測の値も同じ。
+  - 起動時の FK（`WalkerSetup.init_fk`、植物の関節角から）と `joint_pos_plant`・`friction_mu` の漏れは、そのまま（§6.6、§6.7、§7 の 5・6）。
+- **S15〜S17 への申し送り**
+  - S15: main.rs は 3,415 行。`QpDiagWriter`（S13d）と `impl WalkerDiag for DiagSinks` は diag.rs へ出せる。押しの計測の CMM（`compute_centroidal_momentum_matrix(&rig.model, &st.q)`、3 か所）は Walker が同じ tick に計算している（`Centroidal`）ので、`TickRecord` か `StepOutput` に載せれば二重の計算が消える（値は同じ純関数）。`rig.sync()` を使うのは kyo46rs_walk 以外の example だけになった。
+  - S16: 相の関数は `&TickObs` を取る。計画の書き手には影響しない。
+  - S17: `QD_CLAMP` は推定（rig）の設定で、Walker の `Config` には入らない（config.rs の `g1_v619` の注のとおり rig 側のキー）。
+  - articara に残る制御寄りの物: `src/biped/actuate.rs`（`CommandPolicy`、`DegradedTally`、`gravity_plus_posture`、`write_to_plant`。§7 の 4）、`rig.rs` の `sense()` の中の推定器の部分（加速度計の融合 `BASE_VEL_FUSE_*`（分類 1）と低域通過 `SENSE_FILTER_*`。遅れ・雑音・偏りは植物側のセンサの模型だが、融合と濾波は実機では制御側の推定器になる。MuJoCo を読まないので、`misa_biped`（または別の crate）の `StateEstimator` に出せる）、ハーネスの `CommandGuard`、`jlim_cfg`・`SolveConfig`・`TaskStack` の構築。
+
 #### S15 ハーネスを薄くする
 
 - **何を**: `examples/kyo46rs_walk/` を次のモジュールに分ける。
@@ -1119,7 +1133,7 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
 | 11 | `ROUGH_MODE` の形 | 上書き（S9b） | 当面は上書き。モード（列挙型）にして Walker が実行中に切り替えられるようにするかは、地形の知覚の設計と合わせて決める | ユーザー |
 | 12 | 要確認 7 個（`ROUGH_MODE`、`ROUGH_MODE_LIFT_H`、`TERRAIN_PITCH`、`VX2_SCHED`、`STAIR_ABSOLUTE_TD_DESC`、`STAIR_SWING_FF`、`STAIR_ZONE_SWING_ROT`）と kyo の v3 候補が使う `STAIR_ABSOLUTE_TD`・`Z_COM_OFFSET` | 台帳 §4.4 の 4 | Config には全部入れる（一致のため）。既定やプリセットの値は kyo46rs v3 の採否と合わせて決める | ユーザー |
 | 13 | `RefLib` の JSON の読み込み | misa-biped は serde_json に依存していない | **確定（ユーザー、2026-10-29）: (b)**。JSON の読み込みは misa-biped に入れない。依存は misarta・misa-wbc・nalgebra だけ。参照の読み込みはハーネスの `load_ref_lib`（S7）、プリセットの試験の JSON は試験の中で読む（S9d） | 済 |
-| 14 | `BASE_VEL_KIN*`（不採用、rig.rs） | S14 で推定と運動学を分ける妨げ | S14 の前に消す（挙動同一。分類 3 で見本に入っていない） | ユーザー |
+| 14 | `BASE_VEL_KIN*`（不採用、rig.rs） | S14 で推定と運動学を分ける妨げ | **済（S14、2026-10-30）**: 消した（挙動同一。分類 3 で見本に入っていない） | 済 |
 | 15 | ライブラリ内の `*_DEBUG` の環境変数の読み（preview.rs、wrench_mpc.rs） | 毎回 `env::var` を読む。**preview.rs の `LAND_TIMING_DEBUG` は S13a で `DebugFlags.land_timing` に入れた（misa-biped の読みは 0）。残りは misa-mpc の 2 つ** | `DebugFlags` を引数で渡す形にする。misa-mpc の公開 API が変わるので、他の利用者（namiashi 系）と調整する | ユーザー |
 | 16 | 印字の順の固定をいつやめるか | §2.5 で今の順を保つ | Walker が落ち着いたら、印字を `TickRecord` の出来事の列にして、ハーネスが tick の終わりにまとめて出す形にしてよい。その 1 回はログの差（CSV は同一）を明示したコミットにする | ユーザー |
 | 17 | 実行中の指令の変更 API（§6.9） | 今は起動時に計画へ織り込む | 作らない。必要になったら、`CommandSchedule` を「先の区間だけ引き直す」再計画の要求（`PlanEditor` の書き手を 1 つ足す）として設計する | ユーザー（実機の段で） |

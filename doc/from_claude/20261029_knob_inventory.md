@@ -1024,11 +1024,11 @@
 
 | 名前 | 場所 | 既定 | チャンピオン | 分類 | 説明 |
 |---|---|---|---|---|---|
-| QD_CLAMP | src/biped/rig.rs:838 | 5.0 | 40 | 6 | rig.sync が関節速度を切る上限（既定 5 rad/s の罠、記憶 qd-clamp-default-5） |
+| QD_CLAMP | src/biped/rig.rs:838 | 5.0 | 40 | 6 | rig.sync が関節速度を切る上限（既定 5 rad/s の罠、記憶 qd-clamp-default-5）。S14 から `rig.sense()`（推定）の中で切る |
 | BASE_VEL_FUSE_HZ | rig.rs:860 | 0 | 3 | 1 | 胴の並進速度の推定: 加速度計との融合の帯域（v6.15）。ライブラリでは状態推定器の Config |
 | BASE_VEL_FUSE_BIAS_T | rig.rs:875 | 0 | 2 | 1 | 同、加速度計の偏りの推定の時定数（v6.15） |
-| BASE_VEL_KIN | rig.rs:858 | off |  | 3 | 運動学だけの速度推定（不採用） |
-| BASE_VEL_KIN_FMIN | rig.rs:859 | 30 |  | 3 | 同 |
+| BASE_VEL_KIN | rig.rs:858 | off |  | 3 | 運動学だけの速度推定（不採用）。**2026-10-30 削除**（Walker 切り出し S14、推定と運動学を分けるため） |
+| BASE_VEL_KIN_FMIN | rig.rs:859 | 30 |  | 3 | 同。**2026-10-30 削除**（同） |
 | SENSE_NOISE_A | rig.rs:866 | 0 | 0.02 | 4 | 加速度計の雑音（センサ模型。v6.15 から比較の標準として controls に入れている） |
 | SENSE_ACC_BIAS | rig.rs:867 | 0 | 0.05,-0.05,0.05 | 4 | 加速度計の偏り（同上） |
 | SENSE_DELAY_TICKS / SENSE_DELAY_SCOPE | rig.rs:842/852 | 0 |  | 4 | センサの遅れ（sense ベンチ） |

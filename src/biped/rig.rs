@@ -258,17 +258,12 @@ pub struct BipedRig {
     /// clean lateral pushes 157 -> 143. 0 = off = bit-identical.
     pub sense_filter_v_hz: f64,
     sense_filt_v: RefCell<Option<[f64; 3]>>,
-    /// `BASE_VEL_KIN=1`: contact-aided base linear velocity. A loaded foot
-    /// is assumed still, so its sole-centre velocity computed from the
-    /// measured state (J·v) is pure estimation error and is subtracted
-    /// from the base linear velocity, fz-weighted across both feet. That
-    /// replaces the base velocity sensor with joint rates + angular
-    /// velocity, the channels whose noise was measured harmless.
-    /// `BASE_VEL_KIN_FMIN` (N, default 30): per-foot load below which a
-    /// foot gets no weight; with neither foot loaded the sensor is used
-    /// as-is. Unset = off = bit-identical.
-    pub base_vel_kin: bool,
-    pub base_vel_kin_fmin: f64,
+    // (`BASE_VEL_KIN` / `BASE_VEL_KIN_FMIN`, the contact-aided base
+    // velocity -- a loaded foot's sole velocity J·v subtracted from the base
+    // velocity -- was not adopted: inventory class 3, in no adopted control
+    // set. Removed in S14 of the walker extraction; it read the plant's
+    // contacts between the configuration and the dynamics, which kept the
+    // estimate and the kinematics from separating.)
     /// `BASE_VEL_FUSE_HZ`: complementary filter on the base linear
     /// velocity -- an IMU accelerometer integrated between control ticks
     /// carries the high band, the (noisy) velocity sensor corrects below
@@ -863,8 +858,6 @@ impl BipedRig {
             sense_filt: RefCell::new(None),
             sense_filter_v_hz: sense_env("SENSE_FILTER_V_HZ", 0.0).max(0.0),
             sense_filt_v: RefCell::new(None),
-            base_vel_kin: std::env::var("BASE_VEL_KIN").map(|v| v == "1").unwrap_or(false),
-            base_vel_kin_fmin: sense_env("BASE_VEL_KIN_FMIN", 30.0).max(0.0),
             base_vel_fuse_hz: sense_env("BASE_VEL_FUSE_HZ", 0.0).max(0.0),
             sense_vel_bias: [
                 sense_env("SENSE_VEL_BIAS_X", 0.0),
@@ -944,13 +937,23 @@ impl BipedRig {
         misarta::fk::forward_kinematics(&self.model, &q)
     }
 
-    /// Read the plant into misarta's coordinates and build everything the
-    /// tasks need from it: `M` (with armature), `h` (with joint damping),
-    /// FK, and the centroidal Jacobian with its bias.
+    /// Read the plant and build everything the tasks need from it: the
+    /// estimate ([`BipedRig::sense`]), then `M` (with armature), `h` (with
+    /// joint damping), FK, and the centroidal Jacobian with its bias
+    /// ([`misa_biped::robot::RobotModel::assemble`]). The walker is handed
+    /// the estimate and assembles the state itself; this is for the drivers
+    /// that build their own levels.
     pub fn sync(&self) -> BipedState {
+        self.walker.assemble(&self.sense())
+    }
+
+    /// The state estimate: the plant read through the sensor model (delay,
+    /// noise, bias, the accelerometer fusion, the low-pass filters), with
+    /// the joint rates clamped to `QD_CLAMP`. Nothing after this reads the
+    /// plant.
+    pub fn sense(&self) -> misa_biped::robot::StateEstimate {
         let sim = &self.sim;
         let robot = &self.robot;
-        let model = &self.model;
 
         let mut raw = RawSense {
             body_pos: sim.body_world_position(&robot.root_link).unwrap(),
@@ -1077,60 +1080,19 @@ impl BipedRig {
                 None => *st = Some(raw.v_lin_w),
             }
         }
-        // The estimate, and from here on no plant: q / v (QD_CLAMP), then
-        // M, h, FK and the centroidal Jacobian (misa_biped::robot).
-        let est = misa_biped::robot::StateEstimate {
+        // The estimate. QD_CLAMP is the estimator's: the joint rates the
+        // controller sees are saturated here (the configuration used to
+        // clamp them as it placed them in `v`; the same `clamp`, so the
+        // same values).
+        let qd_clamp = self.qd_clamp;
+        misa_biped::robot::StateEstimate {
             base_pos: raw.body_pos,
             base_quat: raw.body_quat,
             base_lin_vel_w: raw.v_lin_w,
             base_ang_vel_w: raw.v_ang_w,
             joint_q: raw.joint_q,
-            joint_qd: raw.joint_qd,
-        };
-        let (q, mut v) = self.walker.configuration(&est, self.qd_clamp);
-        // BASE_VEL_KIN (not adopted) corrects the base velocity from the
-        // plant's contacts, between the configuration and the dynamics.
-        if self.base_vel_kin {
-            let r_bw = est.base_quat.to_rotation_matrix().transpose();
-            let mut fz = [0.0_f64; 2];
-            for c in sim.contacts() {
-                let side_of = |n: &str| self.prof.foot_links.iter().position(|l| *l == n);
-                let walkable = |n: &str| n.is_empty() || n.starts_with("stair");
-                let (side, sgn) = match (side_of(&c.body1), side_of(&c.body2)) {
-                    (Some(s), None) if walkable(&c.body2) => (s, -1.0),
-                    (None, Some(s)) if walkable(&c.body1) => (s, 1.0),
-                    _ => continue,
-                };
-                fz[side] += sgn * c.force_world[2];
-            }
-            let w = fz.map(|f| (f - self.base_vel_kin_fmin).max(0.0));
-            let wsum = w[0] + w[1];
-            if wsum > 0.0 {
-                let data = misarta::fk::forward_kinematics(model, &q);
-                let mut err = na::Vector3::zeros();
-                for side in 0..2 {
-                    if w[side] <= 0.0 {
-                        continue;
-                    }
-                    let mi = self.foot_mi[side];
-                    let j = misarta::jacobian::compute_joint_jacobian_from_data(model, &q, &data, mi);
-                    let vs = &j * na::DVector::from_column_slice(&v);
-                    let omega = na::Vector3::new(vs[0], vs[1], vs[2]);
-                    let v_o = na::Vector3::new(vs[3], vs[4], vs[5]);
-                    let rot = misarta::se3::rotation_matrix(&data.oMi[mi]);
-                    let lever = rot
-                        * na::Vector3::new(self.prof.sole_centre_x, 0.0, -self.prof.sole_below_origin);
-                    err += (w[side] / wsum) * (v_o + omega.cross(&lever));
-                }
-                // The base-linear columns of a world Jacobian are R_wb, so
-                // removing a world velocity e is v_body -= R_bw e.
-                let corr = r_bw * err;
-                v[3] -= corr.x;
-                v[4] -= corr.y;
-                v[5] -= corr.z;
-            }
+            joint_qd: raw.joint_qd.into_iter().map(|qd| qd.map(|x| x.clamp(-qd_clamp, qd_clamp))).collect(),
         }
-        self.walker.state(q, v, &est)
     }
 
     /// Gravity-compensation torque on the actuated rows, at this state.

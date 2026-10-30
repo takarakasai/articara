@@ -55,11 +55,71 @@ pub fn contact_wrench_in_sole(
 /// Force-weighted mean of the ground contact points on each foot, plus the
 /// tangential force, so the stance foot can be tested against its own
 /// friction cone rather than assumed to stick.
+///
+/// [`read_contacts`] then [`ContactReadout::finish`]: the plant's contacts,
+/// then the CoP in the sole frame of `data` (the FK of the estimate).
 pub fn measure_contacts(
     rig: &BipedRig,
     data: &misarta::data::Data<f64>,
     friction_mu: f64,
 ) -> MeasuredContact {
+    read_contacts(rig).finish(rig, data, friction_mu)
+}
+
+/// The plant's ground contacts summed per foot, before the FK: the sole
+/// wrenches (in MuJoCo's own foot frames), the force-weighted contact point
+/// and the tangential force. [`ContactReadout::fz`] is the vertical load the
+/// walker is given; [`ContactReadout::finish`] puts the CoP in the sole
+/// frame of an FK once the walker has assembled it (S14: the harness reads
+/// the contacts before the step and finishes the measurement after).
+pub struct ContactReadout {
+    out: MeasuredContact,
+    /// Per foot: `[sum fz*x, fz*y, fz*z, sum fz]`.
+    acc: [[f64; 4]; 2],
+    ft: [[f64; 2]; 2],
+}
+
+impl ContactReadout {
+    /// The vertical load per foot, as [`MeasuredContact::f_w`]`[side][2]`
+    /// will hold it (0 for a foot at or under 1e-6 N).
+    pub fn fz(&self) -> [f64; 2] {
+        std::array::from_fn(|side| {
+            let fz = self.acc[side][3];
+            if fz <= 1e-6 { 0.0 } else { fz }
+        })
+    }
+
+    /// The CoP in the sole frame of `data`, the slip against `friction_mu`,
+    /// the patch position and the force.
+    pub fn finish(
+        self,
+        rig: &BipedRig,
+        data: &misarta::data::Data<f64>,
+        friction_mu: f64,
+    ) -> MeasuredContact {
+        let ContactReadout { mut out, acc, ft } = self;
+        for side in 0..2 {
+            let fz = acc[side][3];
+            if fz <= 1e-6 {
+                continue;
+            }
+            let foot_mi = rig.foot_mi[side];
+            let o = misarta::se3::translation(&data.oMi[foot_mi]);
+            let r = misarta::se3::rotation_matrix(&data.oMi[foot_mi]);
+            let pw = na::Vector3::new(acc[side][0] / fz, acc[side][1] / fz, acc[side][2] / fz);
+            let pl = r.transpose() * (pw - o);
+            out.cop[side] = [pl.x - rig.prof.sole_centre_x, pl.y, fz];
+            let tan = (ft[side][0].powi(2) + ft[side][1].powi(2)).sqrt();
+            out.slip[side] = tan / (friction_mu * fz).max(1e-9);
+            out.patch_w[side] = [pw.x, pw.y];
+            out.f_w[side] = [ft[side][0], ft[side][1], fz];
+        }
+        out
+    }
+}
+
+/// The plant's half of [`measure_contacts`] (no FK).
+pub fn read_contacts(rig: &BipedRig) -> ContactReadout {
     let mut out = MeasuredContact::default();
     let sole_frames: [Option<(na::Vector3<f64>, na::Matrix3<f64>)>; 2] =
         std::array::from_fn(|side| {
@@ -140,23 +200,7 @@ pub fn measure_contacts(
         ft[side][0] += fw[0];
         ft[side][1] += fw[1];
     }
-    for side in 0..2 {
-        let fz = acc[side][3];
-        if fz <= 1e-6 {
-            continue;
-        }
-        let foot_mi = rig.foot_mi[side];
-        let o = misarta::se3::translation(&data.oMi[foot_mi]);
-        let r = misarta::se3::rotation_matrix(&data.oMi[foot_mi]);
-        let pw = na::Vector3::new(acc[side][0] / fz, acc[side][1] / fz, acc[side][2] / fz);
-        let pl = r.transpose() * (pw - o);
-        out.cop[side] = [pl.x - rig.prof.sole_centre_x, pl.y, fz];
-        let tan = (ft[side][0].powi(2) + ft[side][1].powi(2)).sqrt();
-        out.slip[side] = tan / (friction_mu * fz).max(1e-9);
-        out.patch_w[side] = [pw.x, pw.y];
-        out.f_w[side] = [ft[side][0], ft[side][1], fz];
-    }
-    out
+    ContactReadout { out, acc, ft }
 }
 
 /// The columns that vary per controller, gathered so the writer signature

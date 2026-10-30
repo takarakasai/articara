@@ -1181,11 +1181,11 @@ fn main() {
         CommandPolicy, DegradedTally, gravity_plus_posture, write_to_plant,
     };
     use articara::biped::gait::{GaitParams, Support};
-    use articara::biped::log::{Row, TrajLog, measure_contacts};
+    use articara::biped::log::{Row, TrajLog, measure_contacts, read_contacts};
     use articara::biped::profile;
     use articara::biped::rig::{BipedRig, CtrlMode, G, RigOptions};
     use articara::biped::wbc_stack::{StackDiag, TaskStack, TaskStackConfig};
-    use misa_biped::robot::{Estimate, Observation};
+    use misa_biped::robot::Observation;
     use misa_biped::wbc::WbcStack;
     use misa_wbc::{SolveConfig, Solver, tasks};
     use nalgebra as na;
@@ -2063,18 +2063,21 @@ fn main() {
             }
             m.win_degraded_end = tally.n;
         }
-        let st = rig.sync();
-        let (q, v, v_dvec, data) = (&st.q, &st.v, &st.v_dvec, &st.data);
+        // The state estimate (the sensor model, QD_CLAMP); the walker
+        // assembles the dynamics and kinematics from it (S14).
+        let est = rig.sense();
         // Ground truth first: the phase logic, the contact set and the tasks
-        // all solve against this, so it is read before any of them.
-        let measured_c = measure_contacts(&rig, data, friction_mu);
-        let measured_pre = [measured_c.f_w[0][2], measured_c.f_w[1][2]];
-        // What the walker is given this tick: the state the rig assembled,
-        // the vertical contact forces, and the plant's joint angles (read by
-        // the posture levels; `misa_biped::robot::Observation`).
+        // all solve against this, so it is read before any of them. The CoP
+        // in the sole frame needs the FK, so the measurement is finished
+        // after the step (the plant's contacts do not change in between).
+        let contacts = read_contacts(&rig);
+        let measured_pre = contacts.fz();
+        // What the walker is given this tick: the estimate, the vertical
+        // contact forces, and the plant's joint angles (read by the posture
+        // levels; `misa_biped::robot::Observation`).
         let obs = Observation {
             tick,
-            estimate: Estimate::State(&st),
+            estimate: &est,
             contact_fz: measured_pre,
             joint_pos_plant: &rig.robot.joint_positions,
         };
@@ -2094,14 +2097,18 @@ fn main() {
                 );
             }
         }
-        let com = st.com;
 
         // ---- the walker's control (walker.rs, phases 1-12): its lines are
-        // printed as they are decided, its records go to `diag`.
+        // printed as they are decided, its records go to `diag`. It hands
+        // back the state it assembled from the estimate.
         let walker::StepOutput {
             command: walker::Command { sol, extracted, tau_gravity, rejected: qp_rejected, degraded },
             record: rec,
+            state: st,
         } = walker.step(&obs, &mut out, &mut diag);
+        let (q, v, v_dvec, data) = (&st.q, &st.v, &st.v_dvec, &st.data);
+        let com = st.com;
+        let measured_c = contacts.finish(&rig, data, friction_mu);
         let measured = measured_c;
         tally.observe(&sol.status, t, tick, rec.nc, &rec.level_names);
         // Run measurements from the record (they were taken inside the
