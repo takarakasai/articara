@@ -1157,8 +1157,8 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
 | 2 | `CONTACT_ADMIT_CONFIRMED` | 採用だが、29 本のどれでも効かない（台帳 §5.2）。荷重 admit が先に入るため | eq.sh を `DROP=CONTACT_ADMIT_CONFIRMED` で回し、96＋14 本で一致すれば外す。一致しなければ残す | ユーザー（または S0 のついでに実測） |
 | 3 | tasks.rs・contact.rs を misa-biped へ移す時期 | contact.rs の差分（`Anchors::bias_z`）はコミット済みになった | **済（S13d、2026-10-30）**: `TaskStack` ごと misa-biped へ（`contact.rs`、`tasks.rs`、`task_stack.rs`）。articara は旧い経路で再輸出 | 済 |
 | 4 | 劣化時の方策（`CommandPolicy`、`DegradedTally`、`gravity_plus_posture`）の置き場 | actuate.rs に他の人の差分。印字の順（§5.1 S18） | 当面ハーネス（`CommandGuard`）。actuate.rs が片付いたら misa-biped の独立部品にし、Walker の外に置く（安全層として） | ユーザー |
-| 5 | 植物の真の関節角の漏れ（§6.6） | posture・代替・Hybrid が真値を読む | 一致の段がすべて済んだ後、推定値にそろえる 1 回限りの挙動変更として、家族 21 ベンチで判定する | ユーザー |
-| 6 | `friction_mu` の既定が `MU_GROUND` 由来（§6.7） | 制御が振られた床の摩擦を知っている | 同上。固定の仮定にして、`MU_GROUND` の振りへの頑健さを測る | ユーザー |
+| 5 | 植物の真の関節角の漏れ（§6.6） | posture・代替・Hybrid が真値を読む。**10-30: ノブ `JOINT_Q_EST`（既定 off、65ccc7c）で推定値に替えられる。家族は `doc/from_claude/20261030_plant_leaks_mu_joint.md`** | 一致の段がすべて済んだ後、推定値にそろえる 1 回限りの挙動変更として、家族 21 ベンチで判定する | ユーザー |
+| 6 | `friction_mu` の既定が `MU_GROUND` 由来（§6.7） | 制御が振られた床の摩擦を知っている。**10-30: ノブ `MU_ASSUMED`（既定 off＝植物の値、名目 0.70、65ccc7c）。家族は `doc/from_claude/20261030_plant_leaks_mu_joint.md`** | 同上。固定の仮定にして、`MU_GROUND` の振りへの頑健さを測る | ユーザー |
 | 7 | 段差 0 の「段」と 4 通りの判定（§6.2） | 平地のベンチで `ZMP_ROLL=0.030`、`VH_DCM` が生きている | 判定を `Terrain` の問い合わせに並べるところまでは一致の段で行う。意味の統一は挙動変更として別に判断する | ユーザー |
 | 8 | 再構築が DS_FEASIBLE の区間 ZMP を消す（§3.2） | 後の再構築があると上書きが消える。**S16 で `Plan::set_segment_zmp*`（commit の後、編集を通らない唯一の書き込み）にし、挙動は変えずに plan.rs と phases.rs の注釈・単体試験で明記** | 意図を確かめる。区間の上書きを Plan の状態にするなら挙動変更 | ユーザー（DS_FEASIBLE の作者） |
 | 9 | MPC の 3 つの主スイッチ（`STAIR_WRENCH_MPC`、`WRENCH_MPC_ALWAYS`、`WRENCH_MPC_APPLY`）と `STAIR_WRENCH_COUPLED` | 台帳 §2.17。`APPLY` は複合ゲート（記憶 apply-flag-confound） | Config では当面 3 つの bool のまま、意味の名前（`enabled`、`always`、`apply`）に付け替えるだけ。1 つにまとめるのは、kyo46rs（全部 off）と G1（全部 on）以外の組み合わせを捨てる判断 | ユーザー |
