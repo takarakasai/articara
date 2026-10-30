@@ -1,5 +1,9 @@
 //! Contact anchors, contact Jacobians, and the foot-link -> sole wrench map.
 //!
+//! Moved from articara's `biped::contact` on 2026-10-30 (S13d of
+//! doc/from_claude/20261029_walker_extraction_plan.md), which re-exports it
+//! under its old path.
+//!
 //! Three things live here that each cost a day to find:
 //!
 //! 1. **The contact constraint needs Baumgarte.** `zero_contact_acceleration`
@@ -207,6 +211,6 @@ pub fn sole_selection(
     sel
 }
 
-/// The CoP of a sole-frame wrench lives in misa-biped (the walker reads it
-/// from the stack's solution); re-exported under its old path.
-pub use misa_biped::wbc::cop_from_sole_wrench;
+/// The CoP of a sole-frame wrench lives in [`crate::wbc`] (the walker reads
+/// it from the stack's solution); re-exported under its old path.
+pub use crate::wbc::cop_from_sole_wrench;

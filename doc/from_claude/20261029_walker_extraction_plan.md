@@ -934,6 +934,15 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
   - S16（`PlanEditor`）: 計画の書き手はすべて `walker/phases.rs` の中に入った（ハーネスは `walker.plan()` を読むだけ）。
   - `WalkerInit` → `with_stack` の 2 段は、印字の順の固定（§7 の 16）をやめれば `Walker::new(.., stack)` の 1 段にできる。
 
+- **実施 S13d（2026-10-30）: TaskStack・contact・tasks を misa-biped へ**。96＋14＋eqdiag＋s1x で差 0、デバッグ印字の単発 4 本も S12a と差 0。QP_DIAG の JSON 40 個は S13c とバイト一致（solve_ns／check_ns を伏せて `cmp`）。
+  - `git mv` で `src/biped/{contact.rs, tasks.rs, wbc_stack.rs}` → `crates/misa-biped/src/{contact.rs, tasks.rs, task_stack.rs}`。中身は `super::`／`misa_biped::` → `crate::` と doc のリンク（tasks.rs の `super::rig::BipedRig` → `crate::robot::RobotModel::actuated`）だけ。
+  - articara は旧い経路を再輸出: `pub use misa_biped::{contact, tasks}; pub use misa_biped::task_stack as wbc_stack;`（src/biped/mod.rs）。kyo46rs_com_squat.rs（他の人の差分あり、触っていない）・g1_flight_probe.rs・g1_reference_track.rs・tests/biped_tasks.rs はそのまま通る。
+  - 型を 1 つに: `ContactMode`・`SwingAxes` は tasks.rs のもの（`wbc.rs` は `pub use crate::tasks::{ContactMode, SwingAxes}`）。`tasks::ContactCfg` は `wbc::ContactParams` と欄が同じだったので `pub use crate::wbc::ContactParams as ContactCfg`（構造体の式 `bt::ContactCfg { .. }` もそのまま書ける）。写しの関数 `contact_cfg`／`contact_mode`／`swing_axes` は消えた。
+  - **QP_DIAG_DIR**: Stack は撮る tick を決める（`QpDump { count, capture_all, start, end, stride, max, sink }`、判定の式は今のまま）だけで、中身を `QpSnapshot`（`index`、`t`、`tick`、`ctrl_dt`、`sol`、`solve: &SolveConfig`、`levels`、`level_names`、`layout: &VarLayout`、`physical: Option<QpPhysicalRows>`（EoM、`d`・`f`、`units`、`scales`、`torque_rows`、`cbf_rows`、`body_weight`、`reference_length`）、`contact_ids`、`support`、`contact_fz`、`solve_ns`、`check_ns`、`violation`）にしてフック `trait QpSnapshotSink { fn snapshot(&mut self, &QpSnapshot) }` を呼ぶ。`StackDiag { measure_violation, dump: Option<QpDump> }`（`dump.is_some()` が旧 `dir.is_some()`）。JSON の組み立てと書き込みはハーネスの `QpDiagWriter`（main.rs、式はそのまま）。
+  - `serde_json` は articara の通常の依存から外した（lib はもう使わない。example は dev-dependencies の serde_json を使う）。
+  - misa-biped のモジュール: profile、gait、dcm、preview、contact_plan、reach、terrain、height、plan、recovery、config、robot、wbc、contact、tasks、task_stack、sink、walker。依存は変わらず misarta・misa-wbc・misa-mpc・nalgebra。環境変数の読み・印字・ファイル書き込みは 0（`std::time::Instant` の計時だけ）。
+  - §7 の 3 は済。
+
 #### S14 観測を状態推定の結果にする（Walker が運動学を計算）
 
 - **何を**:
@@ -1099,7 +1108,7 @@ bash $L/eqcmp.sh $O/WX00p $O/WXNNp     # 計 14 本: CSV 差 0、ログ差 0
 |---|---|---|---|---|
 | 1 | contact_plan のずらしの仕組み（`CP_MAX_*`、`CP_J`、`CP_W_SHIFT`、`CP_W_U`、`CP_DEAD_U`） | チャンピオンは `CP_MAX_*=0` でずらしが常に 0、時間調整だけ。(a) Config に残す、(b) 時間の側だけ Config に出し、ずらしは `contact_plan::Config` の内部定数（0）にする、(c) 仕組みごと消す | (b)。消すのは S16 の後。`shift_from`（3997）の経路が `PlanEditor` で 1 行になってから判断すると軽い | ユーザー、S9c の前 |
 | 2 | `CONTACT_ADMIT_CONFIRMED` | 採用だが、29 本のどれでも効かない（台帳 §5.2）。荷重 admit が先に入るため | eq.sh を `DROP=CONTACT_ADMIT_CONFIRMED` で回し、96＋14 本で一致すれば外す。一致しなければ残す | ユーザー（または S0 のついでに実測） |
-| 3 | tasks.rs・contact.rs を misa-biped へ移す時期 | contact.rs に他の人の差分（`Anchors::bias_z`、FFDC 用）。tasks.rs は今は差分が無いが、依頼文では差分ありとされている | S12 の trait で待つ。差分が入った後に、`TaskStack` ごと misa-biped へ移す（1 段で済む） | contact.rs の作業の持ち主 |
+| 3 | tasks.rs・contact.rs を misa-biped へ移す時期 | contact.rs の差分（`Anchors::bias_z`）はコミット済みになった | **済（S13d、2026-10-30）**: `TaskStack` ごと misa-biped へ（`contact.rs`、`tasks.rs`、`task_stack.rs`）。articara は旧い経路で再輸出 | 済 |
 | 4 | 劣化時の方策（`CommandPolicy`、`DegradedTally`、`gravity_plus_posture`）の置き場 | actuate.rs に他の人の差分。印字の順（§5.1 S18） | 当面ハーネス（`CommandGuard`）。actuate.rs が片付いたら misa-biped の独立部品にし、Walker の外に置く（安全層として） | ユーザー |
 | 5 | 植物の真の関節角の漏れ（§6.6） | posture・代替・Hybrid が真値を読む | 一致の段がすべて済んだ後、推定値にそろえる 1 回限りの挙動変更として、家族 21 ベンチで判定する | ユーザー |
 | 6 | `friction_mu` の既定が `MU_GROUND` 由来（§6.7） | 制御が振られた床の摩擦を知っている | 同上。固定の仮定にして、`MU_GROUND` の振りへの頑健さを測る | ユーザー |

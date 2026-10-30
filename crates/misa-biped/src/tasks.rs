@@ -6,11 +6,16 @@
 //! single-support run by one. What lives here is how each level's matrices
 //! and reference are built, so that two drivers (squat and walk) cannot drift
 //! apart in the details.
+//!
+//! Moved from articara's `biped::tasks` on 2026-10-30 (S13d of
+//! doc/from_claude/20261029_walker_extraction_plan.md), which re-exports it
+//! under its old path. [`crate::task_stack::TaskStack`] is the walker's
+//! driver of these builders.
 
 use misa_wbc::{Affine, AsAffine, Dynamics, Task, tasks as wt};
 use nalgebra as na;
 
-use super::contact::{Anchors, sole_selection};
+use crate::contact::{Anchors, sole_selection};
 
 /// P1: track a CoM acceleration reference.
 pub fn com(
@@ -110,9 +115,10 @@ pub fn trunk_rp_ref(
     ]
 }
 
-/// The trunk level's orientation reference and its gains live in misa-biped
-/// (a reference the walker computes); re-exported under their old path.
-pub use misa_biped::wbc::{TrunkGains, trunk_ori_ref};
+/// The trunk level's orientation reference and its gains live in
+/// [`crate::wbc`] (a reference the walker computes); re-exported under their
+/// old path.
+pub use crate::wbc::{TrunkGains, trunk_ori_ref};
 
 /// Centroidal ANGULAR momentum, driven toward zero: `ḣ_ang = -kp · h_ang`.
 ///
@@ -180,7 +186,8 @@ pub fn angular_momentum(
 /// P4: weak posture, so the null space does not wander.
 ///
 /// `actuated` is `(articara joint index, misarta v index)` as
-/// [`super::rig::BipedRig::actuated`] returns it.
+/// [`crate::robot::RobotModel::actuated`] (and articara's
+/// `BipedRig::actuated`) returns it.
 pub fn posture(
     qddot: &Affine,
     actuated: &[(usize, usize)],
@@ -209,7 +216,7 @@ pub fn posture(
 /// doc Sec.18.5). See `JLIM` in kyo46rs_walk.rs for the level this feeds.
 ///
 /// `limits` (gains and `q_min`/`q_max`/`v_max`/`a_max`) is built once by the
-/// caller from [`super::rig::BipedRig`]'s URDF-derived bounds. `q_act`/`v_act`
+/// caller from the URDF-derived bounds (articara's `BipedRig`). `q_act`/`v_act`
 /// are this tick's LIVE actuated-row position/velocity, read through
 /// `rig.model.q_idx`/`v_idx` off misarta's raw state.
 ///
@@ -506,28 +513,16 @@ pub fn force_nominal(forces_size: usize, shares: &[f64], weight_n: f64) -> na::D
     forces_nominal
 }
 
-/// Everything the P0 contact level needs that is not per-foot state.
-pub struct ContactCfg {
-    /// Baumgarte gains on the foot pose error against its anchor.
-    pub kp_c: f64,
-    pub kd_c: f64,
-    pub anchor_leak: f64,
-    pub anchor_leak_rot: f64,
-    /// Sole plane in the foot link frame: `[centre_x, 0, -below_origin]`.
-    pub sole_offset_local: [f64; 3],
-    pub friction_mu: f64,
-    /// CoP box half-extents, already scaled by any margin factor.
-    pub cop_half: (f64, f64),
-    pub mu_torsion: f64,
-    pub f_max_per_foot: f64,
-    /// Drop `patch_contact` entirely, to test whether the CoP box is what is
-    /// binding.
-    pub no_patch: bool,
-    pub dt: f64,
-}
+/// Everything the P0 contact level needs that is not per-foot state: the
+/// walker's contact model ([`crate::wbc::ContactParams`]) under the name the
+/// level builders have always used. (One struct since S13d; the two were
+/// field-for-field copies.)
+pub use crate::wbc::ContactParams as ContactCfg;
 
+/// How a stance foot's contact acceleration is held.
 #[derive(Clone, Copy, Debug)]
 pub enum ContactMode {
+    /// All six rows as one hard contact.
     Rigid,
     /// Keep normal recovery authoritative while allowing a lightly loaded
     /// sole to slide/rotate enough to re-establish a physical contact.

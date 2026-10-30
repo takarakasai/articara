@@ -1,10 +1,12 @@
-//! articara's stack of QP levels behind the walker: [`TaskStack`] implements
-//! misa-biped's [`WbcStack`] with the level builders of [`super::tasks`] and
-//! [`super::contact`] and a stateful [`misa_wbc::Solver`].
+//! The stack of QP levels behind the walker: [`TaskStack`] implements
+//! [`WbcStack`] with the level builders of [`crate::tasks`] and
+//! [`crate::contact`] and a stateful [`misa_wbc::Solver`].
 //!
 //! Moved on 2026-10-30 from phase 11 of the G1 walker
 //! (`examples/kyo46rs_walk/walker.rs`, S12 of
-//! doc/from_claude/20261029_walker_extraction_plan.md). The body of
+//! doc/from_claude/20261029_walker_extraction_plan.md) into articara's
+//! `biped::wbc_stack`, and on the same day (S13d) here with the builders;
+//! articara re-exports it under the old path. The body of
 //! [`TaskStack::solve`] is that phase's, statement for statement: the
 //! dynamics, the torque box and the joint-limit CBF, the contact level (which
 //! bleeds the anchors), the CoM, trunk, momentum, MOM_CMP, arm-hold and
@@ -22,82 +24,94 @@
 //! The levels' ORDER (MOM_LEVEL, ARM_BEFORE_SWING, posture / trunk on or
 //! off) and weights are a control decision that lives here for now (plan A
 //! of §2.6).
-use super::contact::{Anchors, contact_jacobians};
-use super::tasks as bt;
-use misa_biped::config::{Config, LevelWeights};
-use misa_biped::dcm::G;
-use misa_biped::wbc::{
-    AnchorEvent, ContactMode, ContactParams, QpTimings, SwingAxes, WbcRequest, WbcSolution, WbcStack,
-};
+//!
+//! The QP_DIAG_DIR snapshots: the stack decides WHICH ticks to capture
+//! ([`QpDump`]) and hands each one's contents ([`QpSnapshot`]) to a hook
+//! ([`QpSnapshotSink`]); writing them (articara's harness writes JSON) is the
+//! hook's, so this crate writes no files.
+use crate::config::{Config, LevelWeights};
+use crate::contact::{Anchors, contact_jacobians};
+use crate::dcm::G;
+use crate::gait::Support;
+use crate::tasks as bt;
+use crate::wbc::{AnchorEvent, ContactParams, QpTimings, WbcRequest, WbcSolution, WbcStack};
 use misa_wbc::{Dynamics, Formulation, SolveConfig, tasks};
 use nalgebra as na;
 
-/// articara's contact configuration from the walker's contact model.
-pub fn contact_cfg(p: &ContactParams) -> bt::ContactCfg {
-    bt::ContactCfg {
-        kp_c: p.kp_c,
-        kd_c: p.kd_c,
-        anchor_leak: p.anchor_leak,
-        anchor_leak_rot: p.anchor_leak_rot,
-        sole_offset_local: p.sole_offset_local,
-        friction_mu: p.friction_mu,
-        cop_half: p.cop_half,
-        mu_torsion: p.mu_torsion,
-        f_max_per_foot: p.f_max_per_foot,
-        no_patch: p.no_patch,
-        dt: p.dt,
-    }
+/// The physical rows of one solve, before task weighting and HQP slack: the
+/// equation of motion, the contact level's inequalities (`d x <= f`) with
+/// each row's unit and normalisation scale, how many of them are the torque
+/// box and the joint-limit CBF, and the two scales (body weight, the sole's
+/// half length).
+pub struct QpPhysicalRows<'a> {
+    pub eom: &'a misa_wbc::Task,
+    pub d: &'a na::DMatrix<f64>,
+    pub f: &'a na::DVector<f64>,
+    pub units: &'a [&'static str],
+    pub scales: &'a [f64],
+    pub torque_rows: usize,
+    pub cbf_rows: usize,
+    pub body_weight: f64,
+    pub reference_length: f64,
 }
 
-fn contact_mode(m: ContactMode) -> bt::ContactMode {
-    match m {
-        ContactMode::Rigid => bt::ContactMode::Rigid,
-        ContactMode::Managed { tangent_weight, rotation_weight, normal_weight, normal_accel_max } => {
-            bt::ContactMode::Managed { tangent_weight, rotation_weight, normal_weight, normal_accel_max }
-        }
-    }
+/// One QP_DIAG_DIR snapshot of the task stack, for offline numerical
+/// diagnosis: the levels as solved (weighted), their names, the decision
+/// layout, the solution, the physical rows and the tick's context.
+/// `index` numbers the snapshots from 0 (the file name).
+pub struct QpSnapshot<'a> {
+    pub index: usize,
+    pub t: f64,
+    pub tick: usize,
+    pub ctrl_dt: f64,
+    pub sol: &'a misa_wbc::Solution,
+    pub solve: &'a SolveConfig,
+    pub levels: &'a [misa_wbc::Task],
+    pub level_names: &'a [&'static str],
+    pub layout: &'a misa_wbc::VarLayout,
+    pub physical: Option<QpPhysicalRows<'a>>,
+    /// The stance sides, in slot order.
+    pub contact_ids: &'a [usize],
+    pub support: Support,
+    pub contact_fz: [f64; 2],
+    pub solve_ns: u128,
+    pub check_ns: u128,
+    pub violation: f64,
 }
 
-fn swing_axes(a: SwingAxes) -> bt::SwingAxes {
-    match a {
-        SwingAxes::ZOnly => bt::SwingAxes::ZOnly,
-        SwingAxes::Xyz => bt::SwingAxes::Xyz,
-        SwingAxes::XyzYaw => bt::SwingAxes::XyzYaw,
-        SwingAxes::XyzRollPitch => bt::SwingAxes::XyzRollPitch,
-        SwingAxes::XyzYawPitch => bt::SwingAxes::XyzYawPitch,
-        SwingAxes::Pose => bt::SwingAxes::Pose,
-    }
+/// Where the snapshots go. articara's harness writes each as
+/// `tick_NNNNNN.json`.
+pub trait QpSnapshotSink {
+    fn snapshot(&mut self, s: &QpSnapshot<'_>);
 }
 
-/// QP_DIAG_DIR: snapshots of the task stack for offline numerical diagnosis
-/// (`tick_NNNNNN.json`, numbered by `count`). QP_CAPTURE_*: opt-in continuous
-/// sampling between `start` and `end` every `stride` ticks, at most `max`;
-/// otherwise the legacy capture of the first 8 swing-level failures after
-/// 2 s.
-#[derive(Clone, Debug, Default)]
+/// QP_DIAG_DIR: which ticks to snapshot (numbered by `count`) and the hook
+/// that takes them. QP_CAPTURE_*: opt-in continuous sampling between `start`
+/// and `end` every `stride` ticks, at most `max`; otherwise the legacy
+/// capture of the first 8 swing-level failures after 2 s.
 pub struct QpDump {
-    pub dir: Option<String>,
     pub count: usize,
     pub capture_all: bool,
     pub start: f64,
     pub end: f64,
     pub stride: usize,
     pub max: usize,
+    pub sink: Box<dyn QpSnapshotSink>,
 }
 
 /// What the stack's diagnostics are asked for (the harness's sinks): the
 /// physical violation measured every tick (QP_RUNTIME_CSV reports it) and
 /// the QP_DIAG_DIR snapshots. Neither changes the solve.
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub struct StackDiag {
     pub measure_violation: bool,
-    pub dump: QpDump,
+    pub dump: Option<QpDump>,
 }
 
 /// The stack's knobs, fixed at start-up.
 pub struct TaskStackConfig {
     pub solve: SolveConfig,
-    pub contact: bt::ContactCfg,
+    pub contact: ContactParams,
     /// JLIM: the joint-limit CBF beside the torque box.
     pub joint_limits: Option<misa_wbc::tasks::JointLimitCbf>,
     /// WBC_EOM_HARD: the equation of motion as its own top level.
@@ -151,7 +165,7 @@ impl TaskStackConfig {
     ) -> Self {
         TaskStackConfig {
             solve,
-            contact: contact_cfg(contact),
+            contact: contact.clone(),
             joint_limits: wcfg.joint_limit.enabled.then(|| jlim_cfg.clone()),
             eom_hard: wcfg.wbc.eom_hard,
             validate: wcfg.wbc.qp_gate(),
@@ -199,7 +213,7 @@ impl WbcStack for TaskStack {
         self.anchors.a[side]
     }
 
-    fn solve(&mut self, req: &WbcRequest, out: &mut dyn misa_biped::sink::LogSink) -> WbcSolution {
+    fn solve(&mut self, req: &WbcRequest, out: &mut dyn crate::sink::LogSink) -> WbcSolution {
         // The anchor changes the walker decided this tick, in its order.
         for ev in req.anchor_events {
             match ev {
@@ -289,7 +303,7 @@ impl WbcStack for TaskStack {
             contact_cfg,
             // Managed or rigid, as the walker asked (STAIR_MANAGED_*: the
             // rate trigger's window).
-            &|side: usize| contact_mode(req.contact_mode[side]),
+            &|side: usize| req.contact_mode[side],
             // The walker's CoP box for the foot (SLOPE_HEEL_CUT on a known
             // upslope), or the full sole.
             &|side: usize, _rot: &na::Matrix3<f64>| req.cop_patch[side],
@@ -398,7 +412,7 @@ impl WbcStack for TaskStack {
                 s.kp_xy,
                 s.kp_z,
                 s.kd,
-                swing_axes(s.axes),
+                s.axes,
                 s.rot,
                 &acc,
             ),
@@ -413,7 +427,7 @@ impl WbcStack for TaskStack {
                 s.kp_xy,
                 s.kp_z,
                 s.kd,
-                swing_axes(s.axes),
+                s.axes,
                 s.rot,
             ),
         });
@@ -424,7 +438,7 @@ impl WbcStack for TaskStack {
         // Preserve original physical rows before task weighting / HQP slack:
         // to validate the solve (the gate), or because a diagnostic asked for
         // the violation or the snapshots (they do not change the solve).
-        let keep_physical = scfg.diag.dump.dir.is_some() || qp_gate || scfg.diag.measure_violation;
+        let keep_physical = scfg.diag.dump.is_some() || qp_gate || scfg.diag.measure_violation;
         let qp_physical = keep_physical.then(|| {
             let mut units = vec!["N*m"; 2 * na_count];
             let mut scales = vec![(total_mass * G * sole_half_l).max(1.0); 2 * na_count];
@@ -624,7 +638,7 @@ impl WbcStack for TaskStack {
                     format!("{}={:.3e}/{:.1e}", level_names.get(k).copied().unwrap_or("?"), r, viol.max(0.0))
                 })
                 .collect();
-            misa_biped::outln!(out, "  [wbc-levels] t={t:.3} support={support:?} {}", parts.join(" "));
+            crate::outln!(out, "  [wbc-levels] t={t:.3} support={support:?} {}", parts.join(" "));
         }
         let qp_check_start = std::time::Instant::now();
         let mut qp_physical_violation = 0.0_f64;
@@ -684,8 +698,7 @@ impl WbcStack for TaskStack {
         };
         let degraded = !matches!(sol.status, misa_wbc::SolveStatus::Optimal);
         let qp_capture_timer = std::time::Instant::now();
-        let dump = &mut self.cfg.diag.dump;
-        if let Some(dir) = &dump.dir {
+        if let Some(dump) = self.cfg.diag.dump.as_mut() {
             let legacy_failure = t >= 2.0
                 && dump.count < 8
                 && matches!(sol.status,
@@ -696,35 +709,35 @@ impl WbcStack for TaskStack {
                 && tick % dump.stride == 0
                 && dump.count < dump.max;
             if continuous || (!dump.capture_all && legacy_failure) {
-                let matrix = |m: &na::DMatrix<f64>| serde_json::json!({"rows":m.nrows(),"cols":m.ncols(),"data":m.as_slice()});
-                let tasks: Vec<_> = levels.iter().zip(&level_names).map(|(task,name)| serde_json::json!({
-                    "name":name,"a":matrix(&task.a),"b":task.b.as_slice(),"d":matrix(&task.d),"f":task.f.as_slice(),
-                    "equality_semantics":"lexicographic_least_squares", "inequality_semantics":"hierarchical_slack",
-                    "row_units":"weighted_task_units", "stored_scale":1.0})).collect();
-                let variables: Vec<_> = dyn_ctx.layout().names().map(|name| {
-                    let var=dyn_ctx.layout().var(name);
-                    serde_json::json!({"name":name,"offset":var.offset(),"size":var.size(),
-                        "components":match name {"qddot"=>"base angular rad/s^2, base linear m/s^2, joints rad/s^2", "f"=>"world link-origin [mx,my,mz,fx,fy,fz] per contact", _=>"joint torque N*m"}})
-                }).collect();
-                let physical = qp_physical.as_ref().map(|(eom,d,f,units,scales)| serde_json::json!({
-                    "eom":{"a":matrix(&eom.a),"b":eom.b.as_slice(),"units":"base moment N*m, base force N, joint moment N*m"},
-                    "inequalities":{"d":matrix(d),"f":f.as_slice(),"units":units,"normalization_scales":scales,
-                        "semantics":"physical_hard_despite_hqp_slack","torque_rows":2*na_count,"cbf_rows":if jlim {2*na_count} else {0}},
-                    "body_weight_N":total_mass*G,"reference_length_m":sole_half_l}));
-                let snapshot = serde_json::json!({"schema_version":2,"t":t,"tick":tick,"ctrl_dt":dt,
-                    "status":format!("{:?}",sol.status),"backend":format!("{:?}",cfg.backend),
-                    "layer_statuses":sol.level_statuses.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>(),
-                    "layer_raw_statuses":sol.level_diagnostics.iter().map(|d| d.as_ref().map(|d| &d.raw_status)).collect::<Vec<_>>(),
-                    "prox_weight":cfg.prox_weight,"tasks":tasks,"solution":sol.x.as_slice(),"variables":variables,
-                    "contact_ids":stance_sides,"planned_support":format!("{:?}",support),"phase":"None",
-                    "measured_fz_N":req.contact_fz,"physical_groups":physical,"solve_ns":qp_solve_ns,
-                    "check_ns":qp_check_ns,"normalized_physical_violation":qp_physical_violation});
-                std::fs::create_dir_all(dir).expect("QP_DIAG_DIR");
-                std::fs::write(
-                    format!("{dir}/tick_{:06}.json", dump.count),
-                    serde_json::to_vec(&snapshot).unwrap(),
-                )
-                .expect("write QP snapshot");
+                let physical = qp_physical.as_ref().map(|(eom, d, f, units, scales)| QpPhysicalRows {
+                    eom,
+                    d,
+                    f,
+                    units,
+                    scales,
+                    torque_rows: 2 * na_count,
+                    cbf_rows: if jlim { 2 * na_count } else { 0 },
+                    body_weight: total_mass * G,
+                    reference_length: sole_half_l,
+                });
+                dump.sink.snapshot(&QpSnapshot {
+                    index: dump.count,
+                    t,
+                    tick,
+                    ctrl_dt: dt,
+                    sol: &sol,
+                    solve: cfg,
+                    levels: &levels,
+                    level_names: &level_names,
+                    layout: dyn_ctx.layout(),
+                    physical,
+                    contact_ids: stance_sides,
+                    support,
+                    contact_fz: req.contact_fz,
+                    solve_ns: qp_solve_ns,
+                    check_ns: qp_check_ns,
+                    violation: qp_physical_violation,
+                });
                 dump.count += 1;
             }
         }

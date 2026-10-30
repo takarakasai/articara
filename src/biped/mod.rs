@@ -12,15 +12,17 @@
 //! # Layout
 //!
 //! The simulator-free planners live in the `misa-biped` crate and the wrench
-//! MPC in `misa-mpc` (lifted out 2026-10-29); they are re-exported here under
-//! their old paths so `articara::biped::gait` etc. keep working.
+//! MPC in `misa-mpc` (lifted out 2026-10-29); the QP level builders and the
+//! task stack followed on 2026-10-30. They are re-exported here under their
+//! old paths so `articara::biped::gait`, `articara::biped::tasks` etc. keep
+//! working.
 //!
 //! - [`profile`] -- per-machine constants (kyo46rs, Unitree G1). (misa-biped)
 //! - [`rig`]     -- URDF -> plant bring-up, and the per-tick state sync.
-//! - [`contact`] -- contact anchors, contact Jacobians, sole-wrench selection.
-//! - [`tasks`]   -- one builder per priority level of the hierarchical QP.
+//! - [`contact`] -- contact anchors, contact Jacobians, sole-wrench selection. (misa-biped)
+//! - [`tasks`]   -- one builder per priority level of the hierarchical QP. (misa-biped)
 //! - [`wbc_stack`] -- the `TaskStack`: the levels above, ordered, weighted and
-//!   solved behind misa-biped's `WbcStack` trait.
+//!   solved behind misa-biped's `WbcStack` trait. (misa-biped `task_stack`)
 //! - [`actuate`] -- degraded-solve policy, fallback PD, and the plant write.
 //! - [`log`]     -- the trajectory CSV the replay tooling reads.
 //! - [`gait`]    -- support schedule and swing-foot trajectory. (misa-biped)
@@ -42,9 +44,8 @@ pub use misa_mpc::wrench_mpc;
 #[cfg(feature = "mujoco")]
 pub mod rig;
 
-pub mod contact;
-pub mod tasks;
-pub mod wbc_stack;
+pub use misa_biped::{contact, tasks};
+pub use misa_biped::task_stack as wbc_stack;
 
 #[cfg(feature = "mujoco")]
 pub mod actuate;

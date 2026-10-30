@@ -795,7 +795,8 @@ impl RunMetrics {
 /// the physics-rate audit. Harness state: the controller writes into some of
 /// them on the way, but none of them is read back by it. Opened together in
 /// `open`; a file that is not asked for is `None`. The QP_DIAG_DIR settings
-/// are handed to the `TaskStack`, which writes the snapshots (and keeps the
+/// and their writer ([`QpDiagWriter`]) are handed to the `TaskStack`, which
+/// picks the ticks to snapshot and hands them to the writer (and keeps the
 /// physical rows for them, or for QP_RUNTIME_CSV's violation column, without
 /// changing the solve).
 #[cfg(feature = "mujoco")]
@@ -804,8 +805,8 @@ struct DiagSinks {
     /// TICK_AUDIT_CSV: per-joint pre/post state around every plant step.
     tick_audit: Option<articara::biped::tick_audit::TickAudit>,
     /// QP_DIAG_DIR / QP_CAPTURE_*: the task-stack snapshots (taken by the
-    /// `TaskStack` when it is built).
-    qp_dump: articara::biped::wbc_stack::QpDump,
+    /// `TaskStack` when it is built; `None` without QP_DIAG_DIR).
+    qp_dump: Option<articara::biped::wbc_stack::QpDump>,
     /// QP_RUNTIME_CSV: per tick, the WBC solve's timing and status.
     qp_runtime_log: Option<Csv>,
     /// MPC_RUNTIME_CSV: per MPC solve. The MPC update period and the 5 ms
@@ -863,6 +864,54 @@ struct DiagSinks {
 #[cfg(feature = "mujoco")]
 type Csv = std::io::BufWriter<std::fs::File>;
 
+/// QP_DIAG_DIR: writes the task stack's snapshots as
+/// `<dir>/tick_NNNNNN.json` (schema 2), for offline numerical diagnosis.
+/// The stack (misa-biped) picks the ticks and hands over the contents; the
+/// JSON is built here (moved from the stack in S13d, expression for
+/// expression, so the bytes are the same).
+#[cfg(feature = "mujoco")]
+struct QpDiagWriter {
+    dir: String,
+}
+
+#[cfg(feature = "mujoco")]
+impl articara::biped::wbc_stack::QpSnapshotSink for QpDiagWriter {
+    fn snapshot(&mut self, s: &articara::biped::wbc_stack::QpSnapshot<'_>) {
+        use nalgebra as na;
+        let dir = &self.dir;
+        let (sol, cfg) = (s.sol, s.solve);
+        let matrix = |m: &na::DMatrix<f64>| serde_json::json!({"rows":m.nrows(),"cols":m.ncols(),"data":m.as_slice()});
+        let tasks: Vec<_> = s.levels.iter().zip(s.level_names).map(|(task,name)| serde_json::json!({
+            "name":name,"a":matrix(&task.a),"b":task.b.as_slice(),"d":matrix(&task.d),"f":task.f.as_slice(),
+            "equality_semantics":"lexicographic_least_squares", "inequality_semantics":"hierarchical_slack",
+            "row_units":"weighted_task_units", "stored_scale":1.0})).collect();
+        let variables: Vec<_> = s.layout.names().map(|name| {
+            let var=s.layout.var(name);
+            serde_json::json!({"name":name,"offset":var.offset(),"size":var.size(),
+                "components":match name {"qddot"=>"base angular rad/s^2, base linear m/s^2, joints rad/s^2", "f"=>"world link-origin [mx,my,mz,fx,fy,fz] per contact", _=>"joint torque N*m"}})
+        }).collect();
+        let physical = s.physical.as_ref().map(|p| serde_json::json!({
+            "eom":{"a":matrix(&p.eom.a),"b":p.eom.b.as_slice(),"units":"base moment N*m, base force N, joint moment N*m"},
+            "inequalities":{"d":matrix(p.d),"f":p.f.as_slice(),"units":p.units,"normalization_scales":p.scales,
+                "semantics":"physical_hard_despite_hqp_slack","torque_rows":p.torque_rows,"cbf_rows":p.cbf_rows},
+            "body_weight_N":p.body_weight,"reference_length_m":p.reference_length}));
+        let snapshot = serde_json::json!({"schema_version":2,"t":s.t,"tick":s.tick,"ctrl_dt":s.ctrl_dt,
+            "status":format!("{:?}",sol.status),"backend":format!("{:?}",cfg.backend),
+            "layer_statuses":sol.level_statuses.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>(),
+            "layer_raw_statuses":sol.level_diagnostics.iter().map(|d| d.as_ref().map(|d| &d.raw_status)).collect::<Vec<_>>(),
+            "prox_weight":cfg.prox_weight,"tasks":tasks,"solution":sol.x.as_slice(),"variables":variables,
+            "contact_ids":s.contact_ids,"planned_support":format!("{:?}",s.support),"phase":"None",
+            "measured_fz_N":s.contact_fz,"physical_groups":physical,"solve_ns":s.solve_ns,
+            "check_ns":s.check_ns,"normalized_physical_violation":s.violation});
+        std::fs::create_dir_all(dir).expect("QP_DIAG_DIR");
+        std::fs::write(
+            format!("{dir}/tick_{:06}.json", s.index),
+            serde_json::to_vec(&snapshot).unwrap(),
+        )
+        .expect("write QP snapshot");
+    }
+}
+
 #[cfg(feature = "mujoco")]
 impl DiagSinks {
     /// `traj` and `tick_audit` are made by the caller (TrajLog prints its
@@ -885,14 +934,22 @@ impl DiagSinks {
         Self {
             traj,
             tick_audit,
-            qp_dump: articara::biped::wbc_stack::QpDump {
-                dir: std::env::var("QP_DIAG_DIR").ok(),
-                count: 0,
-                capture_all: flag("QP_CAPTURE_ALL", false),
-                start: env_f64("QP_CAPTURE_START", 0.0),
-                end: env_f64("QP_CAPTURE_END", f64::INFINITY),
-                stride: env_f64("QP_CAPTURE_STRIDE", 1.0).max(1.0) as usize,
-                max: env_f64("QP_CAPTURE_MAX", 20000.0).max(1.0) as usize,
+            qp_dump: {
+                let dir = std::env::var("QP_DIAG_DIR").ok();
+                let capture_all = flag("QP_CAPTURE_ALL", false);
+                let start = env_f64("QP_CAPTURE_START", 0.0);
+                let end = env_f64("QP_CAPTURE_END", f64::INFINITY);
+                let stride = env_f64("QP_CAPTURE_STRIDE", 1.0).max(1.0) as usize;
+                let max = env_f64("QP_CAPTURE_MAX", 20000.0).max(1.0) as usize;
+                dir.map(|dir| articara::biped::wbc_stack::QpDump {
+                    count: 0,
+                    capture_all,
+                    start,
+                    end,
+                    stride,
+                    max,
+                    sink: Box::new(QpDiagWriter { dir }),
+                })
             },
             qp_runtime_log: csv("QP_RUNTIME_CSV", "QP_RUNTIME_CSV", &|f| {
                 writeln!(f, "t,solve_ns,check_ns,status,normalized_physical_violation,reset,deadline_miss,control_ns,mpc_age_s,mpc_solves,mpc_failures,prefix_applied,repair_applied,repair_scaled_delta,repair_ns").unwrap();
