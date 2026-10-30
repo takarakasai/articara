@@ -782,7 +782,7 @@ pub fn report<S: misa_biped::wbc::WbcStack>(
 
     println!(
         "COM REPLAN: {preview_count} solves / {preview_failures} failures; {landing_retimes} landing retimes ({landing_delay:.3}s net), {} confirmed / {} timeouts",
-        walker.plan().landing.touchdowns, walker.plan().landing.timeouts
+        walker.plan().landing().touchdowns, walker.plan().landing().timeouts
     );
     // The three-phase stair transfer was removed (never adopted, off by
     // default); the line stays so existing log parsers keep their layout.
@@ -878,10 +878,10 @@ pub fn report<S: misa_biped::wbc::WbcStack>(
     if ref_any {
         println!("  reference engagements: {ref_engagements}");
     }
-    if walker.plan().landing.event_mode {
+    if walker.plan().landing().event_mode {
         println!(
             "  contact events: {} touchdowns by event, {} probes, {} timeouts",
-            walker.plan().landing.events, walker.plan().landing.probes, walker.plan().landing.timeouts
+            walker.plan().landing().events, walker.plan().landing().probes, walker.plan().landing().timeouts
         );
     }
     println!("  step-timing adaptations: 0 ticks retimed, 0 ms total, largest single shift 0 ms");
@@ -1127,7 +1127,7 @@ pub fn report<S: misa_biped::wbc::WbcStack>(
                  last out-of-band tick, then under {:.0} mm for {settled_for:.2} s \
                  to the end of the run",
                 te - tp,
-                walker.plan().gait.steps_taken(te.max(1e-9)).saturating_sub(push_at_step),
+                walker.plan().gait().steps_taken(te.max(1e-9)).saturating_sub(push_at_step),
                 push_recover_m * 1e3,
             );
         } else {

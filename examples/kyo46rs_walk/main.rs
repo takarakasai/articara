@@ -431,11 +431,11 @@ fn main() {
     };
     // Time at which the last step ends, so achievement is measured over the
     // WALK and not diluted by the settle.
-    let t_walk_end = init.plan().gait
+    let t_walk_end = init.plan().gait()
         .slices
         .iter()
         .rposition(|s| matches!(s.support, Support::Single { .. }))
-        .map(|i| init.plan().gait.slices[i].t1 + gp.t_ds)
+        .map(|i| init.plan().gait().slices[i].t1 + gp.t_ds)
         // No steps at all (a standing squat): the "walk" is the whole run, so
         // the achievement window is the whole run. Falling back to 0 made the
         // window 1 microsecond wide and turned a millimetre of drift into

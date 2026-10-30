@@ -1037,8 +1037,8 @@ impl DiagSinks {
                 && t >= d0
                 && t <= d1
             {
-                let i = walker.plan().gait.index_at(t);
-                let sl = &walker.plan().gait.slices[i];
+                let i = walker.plan().gait().index_at(t);
+                let sl = &walker.plan().gait().slices[i];
                 println!(
                     "  [gait] t={t:.3} slice {i} {:?} [{:.3},{:.3}] stance={:?} fz=({:.0},{:.0}) xi.x={:.3} ref.x={:.3}",
                     sl.support, sl.t0, sl.t1, rec.stance_sides, rec.fz_meas[0], rec.fz_meas[1], rec.xi.x, rec.r.xi.x
