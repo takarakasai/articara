@@ -146,9 +146,10 @@ misarta-formats = { git = "https://github.com/takarakasai/misarta.git" }
 # (e.g. a biped) can call the generic task catalogue / Dynamics context
 # directly. See examples/kyo46rs_squat.rs.
 misa-wbc = { git = "https://github.com/takarakasai/misa-wbc.git" }
-# Biped planners and the wrench MPC, lifted out of `src/biped` (2026-10-29).
-misa-mpc = { path = "crates/misa-mpc" }
-misa-biped = { path = "crates/misa-biped" }
+# Biped walker and the wrench MPC: lifted out of `src/biped` (2026-10-29),
+# their own repository since 2026-10-31.
+misa-mpc = { path = "/home/takara/work/dp/misa-locomotion/misa-mpc" }
+misa-biped = { path = "/home/takara/work/dp/misa-locomotion/misa-biped" }
 quadruped-gait = { git = "https://github.com/takarakasai/quadruped-gait.git" }
 # Sim-deploy for the Go2 RL policy (`go2_policy_sim` example): the same
 # deploy-side ONNX runtime the hardware runner uses. Optional so the GUI
@@ -169,7 +170,7 @@ approx = "0.5"
 serde_json = "1"
 
 [workspace]
-members = [".", "xtask", "vendor/misa-wbc", "crates/misa-mpc", "crates/misa-biped"]
+members = [".", "xtask"]
 
 
 [[example]]
@@ -192,6 +193,7 @@ required-features = ["mujoco"]
 name = "g1_flight_probe"
 required-features = ["mujoco"]
 
-# Isolated solver comparison copy; upstream base recorded in vendor/misa-wbc/UPSTREAM.md.
+# misa-wbc with the QP diagnostics, the OCP and the native solver features
+# (formerly vendored here as vendor/misa-wbc), for every crate in the graph.
 [patch."https://github.com/takarakasai/misa-wbc.git"]
-misa-wbc = { path = "vendor/misa-wbc" }
+misa-wbc = { path = "/tmp/claude-1000/-home-takara-work-dp-articara/c7814efe-5799-450c-ad10-d7119cecb8a9/scratchpad/wbcwt" }

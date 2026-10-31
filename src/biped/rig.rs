@@ -249,7 +249,6 @@ pub struct BipedRig {
     /// `SENSE_DELAY_SCOPE=basevel`: delay only the base linear and angular
     /// velocity (the IMU/fusion path); pose and joints stay fresh.
     pub sense_delay_basevel_only: bool,
-    sense_filt: RefCell<Option<RawSense>>,
     /// `SENSE_FILTER_V_HZ`: the same first-order low-pass on the base LINEAR
     /// velocity only (joint rates and angular velocity untouched). Measured
     /// 2026-10-22 on G1 v6.14: weak noise on the base linear velocity alone
@@ -257,7 +256,6 @@ pub struct BipedRig {
     /// 15 Hz filter on every velocity saves the noisy runs but costs the
     /// clean lateral pushes 157 -> 143. 0 = off = bit-identical.
     pub sense_filter_v_hz: f64,
-    sense_filt_v: RefCell<Option<[f64; 3]>>,
     // (`BASE_VEL_KIN` / `BASE_VEL_KIN_FMIN`, the contact-aided base
     // velocity -- a loaded foot's sole velocity J·v subtracted from the base
     // velocity -- was not adopted: inventory class 3, in no adopted control
@@ -284,8 +282,13 @@ pub struct BipedRig {
     /// so a constant bias leaves no steady velocity error. The bias settles
     /// with roughly this time constant (gain 1 / (tau * T)). 0 = off.
     pub base_vel_fuse_bias_t: f64,
-    /// (true velocity at the previous tick, fused estimate, bias estimate)
-    base_vel_fuse: RefCell<Option<([f64; 3], [f64; 3], [f64; 3])>>,
+    /// The accelerometer model's true base velocity at the previous tick
+    /// (`None` before the first reading).
+    accel_prev: RefCell<Option<[f64; 3]>>,
+    /// The estimator the fusion, the low-pass filters and `QD_CLAMP` above
+    /// configure (`misa_biped::estimator`, set from those fields on every
+    /// reading, so a field changed after `build` still applies).
+    estimator: RefCell<misa_biped::estimator::Estimator>,
     /// The fields above that the walker computes with, copied once at the
     /// end of `build` (none of them changes after it): what `sync` assembles
     /// the state with, and what [`BipedRig::walker_model`] hands out.
@@ -855,9 +858,7 @@ impl BipedRig {
             sense_delay_base_only: std::env::var("SENSE_DELAY_SCOPE").map(|v| v == "base").unwrap_or(false),
             sense_delay_basevel_only: std::env::var("SENSE_DELAY_SCOPE").map(|v| v == "basevel").unwrap_or(false),
             sense_filter_dt: sense_env("SENSE_FILTER_DT", 0.005).max(1e-4),
-            sense_filt: RefCell::new(None),
             sense_filter_v_hz: sense_env("SENSE_FILTER_V_HZ", 0.0).max(0.0),
-            sense_filt_v: RefCell::new(None),
             base_vel_fuse_hz: sense_env("BASE_VEL_FUSE_HZ", 0.0).max(0.0),
             sense_vel_bias: [
                 sense_env("SENSE_VEL_BIAS_X", 0.0),
@@ -872,7 +873,8 @@ impl BipedRig {
                     (p.len() == 3).then(|| [p[0], p[1], p[2]])
                 })
                 .unwrap_or([0.0; 3]),
-            base_vel_fuse: RefCell::new(None),
+            accel_prev: RefCell::new(None),
+            estimator: RefCell::new(misa_biped::estimator::Estimator::new(Default::default())),
             base_vel_fuse_bias_t: sense_env("BASE_VEL_FUSE_BIAS_T", 0.0).max(0.0),
             walker,
         }
@@ -948,9 +950,9 @@ impl BipedRig {
     }
 
     /// The state estimate: the plant read through the sensor model (delay,
-    /// noise, bias, the accelerometer fusion, the low-pass filters), with
-    /// the joint rates clamped to `QD_CLAMP`. Nothing after this reads the
-    /// plant.
+    /// noise, bias, the accelerometer), then `misa_biped::estimator` (the
+    /// velocity fusion, the low-pass filters, the joint rates clamped to
+    /// `QD_CLAMP`). Nothing after this reads the plant.
     pub fn sense(&self) -> misa_biped::robot::StateEstimate {
         let sim = &self.sim;
         let robot = &self.robot;
@@ -1016,83 +1018,46 @@ impl BipedRig {
                 raw.v_lin_w[i] += self.sense_vel_bias[i];
             }
         }
+        // The accelerometer: the plant's true velocity increment per tick (a
+        // fast IMU integrated exactly) plus `SENSE_ACC_BIAS` and white
+        // `SENSE_NOISE_A`, from the second reading on. Only the fusion reads it.
+        let mut accel = None;
         if self.base_vel_fuse_hz > 0.0 {
             let dt = self.sense_filter_dt;
-            let tau = 1.0 / (2.0 * std::f64::consts::PI * self.base_vel_fuse_hz);
-            let k = dt / (tau + dt);
-            let mut st = self.base_vel_fuse.borrow_mut();
-            match st.as_mut() {
-                Some((prev, est, bias)) => {
-                    let mut rng = self.sense_rng.borrow_mut();
-                    for i in 0..3 {
-                        let mut acc = (v_lin_true[i] - prev[i]) / dt + self.sense_acc_bias[i];
-                        if self.sense_noise_a > 0.0 {
-                            acc += self.sense_noise_a * gauss(&mut rng);
-                        }
-                        est[i] += (acc - bias[i]) * dt;
-                        let innov = raw.v_lin_w[i] - est[i];
-                        est[i] += k * innov;
-                        if self.base_vel_fuse_bias_t > 0.0 {
-                            bias[i] -= innov * dt / (tau * self.base_vel_fuse_bias_t);
-                        }
+            let mut prev = self.accel_prev.borrow_mut();
+            if let Some(p) = prev.as_ref() {
+                let mut rng = self.sense_rng.borrow_mut();
+                let mut acc = [0.0; 3];
+                for i in 0..3 {
+                    acc[i] = (v_lin_true[i] - p[i]) / dt + self.sense_acc_bias[i];
+                    if self.sense_noise_a > 0.0 {
+                        acc[i] += self.sense_noise_a * gauss(&mut rng);
                     }
-                    *prev = v_lin_true;
-                    raw.v_lin_w = *est;
                 }
-                None => *st = Some((v_lin_true, raw.v_lin_w, [0.0; 3])),
+                accel = Some(acc);
             }
+            *prev = Some(v_lin_true);
         }
-        if self.sense_filter_hz > 0.0 {
-            let tau = 1.0 / (2.0 * std::f64::consts::PI * self.sense_filter_hz);
-            let a = self.sense_filter_dt / (tau + self.sense_filter_dt);
-            let mut st = self.sense_filt.borrow_mut();
-            match st.as_mut() {
-                Some(f) => {
-                    for (x, y) in f.joint_qd.iter_mut().zip(raw.joint_qd.iter()) {
-                        if let (Some(xv), Some(yv)) = (x.as_mut(), y) {
-                            *xv += a * (yv - *xv);
-                        } else {
-                            *x = *y;
-                        }
-                    }
-                    for i in 0..3 {
-                        f.v_lin_w[i] += a * (raw.v_lin_w[i] - f.v_lin_w[i]);
-                        f.v_ang_w[i] += a * (raw.v_ang_w[i] - f.v_ang_w[i]);
-                    }
-                    raw.joint_qd = f.joint_qd.clone();
-                    raw.v_lin_w = f.v_lin_w;
-                    raw.v_ang_w = f.v_ang_w;
-                }
-                None => *st = Some(raw.clone()),
-            }
-        }
-        if self.sense_filter_v_hz > 0.0 {
-            let tau = 1.0 / (2.0 * std::f64::consts::PI * self.sense_filter_v_hz);
-            let a = self.sense_filter_dt / (tau + self.sense_filter_dt);
-            let mut st = self.sense_filt_v.borrow_mut();
-            match st.as_mut() {
-                Some(f) => {
-                    for i in 0..3 {
-                        f[i] += a * (raw.v_lin_w[i] - f[i]);
-                    }
-                    raw.v_lin_w = *f;
-                }
-                None => *st = Some(raw.v_lin_w),
-            }
-        }
-        // The estimate. QD_CLAMP is the estimator's: the joint rates the
-        // controller sees are saturated here (the configuration used to
-        // clamp them as it placed them in `v`; the same `clamp`, so the
-        // same values).
-        let qd_clamp = self.qd_clamp;
-        misa_biped::robot::StateEstimate {
+        // The estimate: the fusion, the low-pass filters and QD_CLAMP (the
+        // joint rates the controller sees are saturated there).
+        let reading = misa_biped::robot::StateEstimate {
             base_pos: raw.body_pos,
             base_quat: raw.body_quat,
             base_lin_vel_w: raw.v_lin_w,
             base_ang_vel_w: raw.v_ang_w,
             joint_q: raw.joint_q,
-            joint_qd: raw.joint_qd.into_iter().map(|qd| qd.map(|x| x.clamp(-qd_clamp, qd_clamp))).collect(),
-        }
+            joint_qd: raw.joint_qd,
+        };
+        let mut est = self.estimator.borrow_mut();
+        est.cfg = misa_biped::estimator::EstimatorConfig {
+            dt: self.sense_filter_dt,
+            vel_fuse_hz: self.base_vel_fuse_hz,
+            vel_fuse_bias_t: self.base_vel_fuse_bias_t,
+            filter_hz: self.sense_filter_hz,
+            filter_v_hz: self.sense_filter_v_hz,
+            qd_clamp: self.qd_clamp,
+        };
+        est.update(reading, accel)
     }
 
     /// Gravity-compensation torque on the actuated rows, at this state.
