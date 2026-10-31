@@ -156,3 +156,12 @@ kbump05・kbump10・ksense を 3 つの種で（`flat_split.sh`、`fls_judge_*.o
 | 10 Hz | 45／43／47（37／3） | 20／9（27〜30） | 5／20 |
 
 - 5 Hz を採り、候補 **kpc4L** = kpc4s ＋ `PUSH_TRIG_LPF_HZ=5`（`cand_kpc4L.extra`）を家族へ。雑音は MPC の適用だけ（dm0）と同じ数まで戻った。凹凸の残り 5／18 は MPC の適用そのもの（dm0 と同じ）。
+
+## 9. 家族: kpc4L（kpc4s ＋ PUSH_TRIG_LPF_HZ=5）
+
+`kfam_judge_kpc4L.out`。家族全体 1348→1413（+5.55）／1342→1418（+6.21）／1323→1415（+7.67）、個体の重複を除く合算 改善 270・悪化 96（z +9.10）。
+
+- 押しの 3 ベンチは kpc4s とほぼ同じ（0.9 N·s 3 方向の合算 189／14）。
+- センサは損から得に（雑音（大）20／6、他の条件は ±1）。
+- 残る規則 A の悪化は 2 つで、どちらも MPC の適用そのもの（dm0 と同じ数）: 凹凸 5 mm（T28、5／18）、降段 20 mm（20／35）。規則 B（Holm 補正した合算）には当たらない（最も損に寄った凹凸 5 mm で Holm 0.143）。結論は「悪化あり」。
+- kpc4L のノブ（MPC_FOOTSTEP_STAIR_OFF、PUSH_TRIG_LPF_HZ）は misa-locomotion にだけある。articara の main で使うには本番の切り替え（misa-locomotion を読む）が先に要る。
