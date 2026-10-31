@@ -754,7 +754,7 @@ pub fn report<S: misa_biped::wbc::WbcStack>(
     spar_wall: f64,
     ref_any: bool,
 ) {
-    let walker::WalkerStats { n_mom_cmp_ticks, mom_cmp_peak, n_push_z_drop, n_cp_shift, n_cp_retime, cp_retime_total, n_confirmed_admissions, ref_engagements, n_ds_capture, ds_capture_total, n_ds_feasible, n_ds_continuous, ds_feasible_total, n_push_replan, n_mpc_fs_cross, preview_count, preview_failures, landing_retimes, landing_delay, n_replan, n_corrected, .. } = walker.stats().clone();
+    let walker::WalkerStats { n_mom_cmp_ticks, mom_cmp_peak, n_push_z_drop, n_cp_shift, n_cp_retime, cp_retime_total, n_confirmed_admissions, ref_engagements, n_ds_capture, ds_capture_total, n_ds_feasible, n_ds_continuous, ds_feasible_total, n_push_replan, n_mpc_fs_cross, n_reanchor, preview_count, preview_failures, landing_retimes, landing_delay, n_replan, n_corrected, .. } = walker.stats().clone();
     let RunSetup { th: PushThresholds { recover_m: push_recover_m, recover_s: push_recover_s, window_s: push_window_s, edge_frac, transfer_s }, total_mass, sole_half: (sole_half_l, sole_half_w), friction_mu, mu_ground, dt, p0_body, yaw0_body, .. } = m.setup;
     let wcfg = walker.config();
     let gp = walker.gait_params();
@@ -1144,6 +1144,9 @@ pub fn report<S: misa_biped::wbc::WbcStack>(
     }
     if wcfg.push_replan.trig > 0.0 {
         println!("  push re-plans: {n_push_replan}");
+    }
+    if wcfg.landing.reanchor > 0.0 {
+        println!("  landing re-anchors: {n_reanchor}");
     }
     println!("  verdict: {}", if fell { "FELL" } else { "SURVIVED" });
 }

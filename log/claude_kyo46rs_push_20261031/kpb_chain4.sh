@@ -1,0 +1,12 @@
+#!/bin/bash
+# 押しの小ベンチの 5 便目（2026-10-31）: MPC の着地の内側（Y_IN_FWD）を切る、PUSH_REPLAN を G1 の閾値・その場足踏みなしで。chain3 の後。
+cd /home/takara/work/dp/articara
+L=log/claude_kyo46rs_push_20261031
+until grep -q CHAIN3_DONE $L/kpb_chain3.out 2>/dev/null; do sleep 10; done
+MPC='"STAIR_WRENCH_MPC":"1","WRENCH_MPC_ALWAYS":"1","WRENCH_MPC_APPLY":"1","STAIR_WRENCH_COUPLED":"0","MPC_NODE_CENTRE":"1","MPC_NET_COP_W":"10","MPC_SEED_PREVIOUS":"2","MPC_W_SMOOTH":"10","MPC_SOLE_AUTHORITY":"1"'
+FS0='"MPC_FOOTSTEP":"1","MPC_FOOTSTEP_W":"100","MPC_FOOTSTEP_TRIG":"0.0075","MPC_FOOTSTEP_MAX_X":"0.075","MPC_FOOTSTEP_MAX_Y":"0.04","MPC_FOOTSTEP_MAX_Y_IN":"0","MPC_FOOTSTEP_Y_IN_FWD":"0","MPC_LANDING_CAPTURE_W":"1000000","MPC_LANDING_CAPTURE_J":"1","MPC_LANDING_LEX":"1"'
+PRB='"PUSH_REPLAN":"0.03","PUSH_REPLAN_MAX_FWD":"0.15","PUSH_REPLAN_MAX_BACK":"0.15","PUSH_REPLAN_MIN_W":"0.06","PUSH_REPLAN_MAX_W":"0.20","PUSH_REPLAN_HOLD":"10","PUSH_REPLAN_STAND":"0","PUSH_REPLAN_RAMP":"0"'
+r() { bash $L/kpb.sh $1 "$2" > $L/kpb_$1.out 2>&1; }
+r c3 "$MPC,$FS0" & r c4 "$MPC,$FS0,$PRB" & wait
+r pr7 "$PRB" & r c5 "$MPC,$PRB" & wait
+echo "#### CHAIN4_DONE"
