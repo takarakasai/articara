@@ -1,0 +1,28 @@
+家族 KFAM_*、ベンチ 3: kbump05,kbump10,ksense
+## ベンチごと（組ごと、全部の条件）
+| ベンチ | k3n→dprn | k3o→dpro | k3t→dprt |
+|---|---|---|---|
+| kbump05 | 44→44（0／0） | 45→45（0／0） | 47→47（0／0） |
+| kbump10 | 18→18（0／0） | 17→17（0／0） | 15→15（0／0） |
+| ksense | 135→123（0／12、-3.46） | 131→123（2／10、-2.31） | 133→126（1／8、-2.33） |
+| 家族全体 | 197→185（0／12、-3.46） | 193→185（2／10、-2.31） | 195→188（1／8、-2.33） |
+
+## 規則 1（入れ替わり 4 本以上で z ≤ −1.5、組ごと）
+- ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03 k3n→dprn: 0／12、z -3.46
+- ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03 k3o→dpro: 2／10、z -2.31
+- ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03 k3t→dprt: 1／8、z -2.33
+
+## 規則 2（2 つ以上の組で z ≤ −1、落ちた個体が組の間で別）
+- ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: k3n→dprn 0／12、k3o→dpro 2／10、k3t→dprt 1／8 ── 再現
+
+## 条件ごと（全ベンチ・全組、個体の重複を除く）
+- SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: 個体 72、改善 3・悪化 30、z -4.70
+- 全体: 個体 792（重複 0 を除く）、改善 3・悪化 30、z -4.70
+
+## 判定（改定した規則 A・B、10-31）
+- 合算で最も損に寄った条件: ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03 3／30、片側 p=0.0000（Holm 0.000、条件 1）
+- 悪化 A ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: k3n→dprn 0／12 が k3o→dpro 2／10、k3t→dprt 1／8 で再現
+- 悪化 A ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: k3o→dpro 2／10 が k3n→dprn 0／12、k3t→dprt 1／8 で再現
+- 悪化 A ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: k3t→dprt 1／8 が k3n→dprn 0／12、k3o→dpro 2／10 で再現
+- 悪化 B ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: 合算 3／30、片側 p=0.0000（Holm 0.000、条件 1）
+- 結論: 悪化あり

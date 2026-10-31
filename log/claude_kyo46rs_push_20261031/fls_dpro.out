@@ -1,0 +1,9 @@
+  T28: 生存 45/48  転倒中央値 18.49s  転倒時刻の種類 3
+  T28: 生存 17/48  転倒中央値 12.12s  転倒時刻の種類 30
+  SENSE_DELAY_TICKS2: 生存 23/24  転倒中央値 0.41s  転倒時刻の種類 1
+  SENSE_DELAY_TICKS4: 生存 22/24  転倒中央値 0.48s  転倒時刻の種類 2
+  SENSE_DELAY_TICKS6: 生存 0/24  転倒中央値 5.28s  転倒時刻の種類 24
+  SENSE_NOISE_QD0p05_SENSE_NOISE_V0p015_SENSE_NOISE_W0p015: 生存 24/24  転倒中央値 0.00s  転倒時刻の種類 0
+  SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: 生存 6/24  転倒中央値 3.65s  転倒時刻の種類 18
+  SENSE_NOISE_Q0p002: 生存 24/24  転倒中央値 0.00s  転倒時刻の種類 0
+  ACT_DELAY_TICKS2: 生存 24/24  転倒中央値 0.00s  転倒時刻の種類 0

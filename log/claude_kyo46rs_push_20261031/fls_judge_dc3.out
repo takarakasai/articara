@@ -1,0 +1,40 @@
+家族 KFAM_*、ベンチ 3: kbump05,kbump10,ksense
+## ベンチごと（組ごと、全部の条件）
+| ベンチ | k3n→dc3n | k3o→dc3o | k3t→dc3t |
+|---|---|---|---|
+| kbump05 | 44→40（3／7、-1.26） | 45→40（2／7、-1.67） | 47→41（0／6、-2.45） |
+| kbump10 | 18→15（4／7、-0.90） | 17→11（2／8、-1.90） | 15→12（5／8、-0.83） |
+| ksense | 135→121（2／16、-3.30） | 131→121（2／12、-2.67） | 133→119（0／14、-3.74） |
+| 家族全体 | 197→176（9／30、-3.36） | 193→172（6／27、-3.66） | 195→172（5／28、-4.00） |
+
+## 規則 1（入れ替わり 4 本以上で z ≤ −1.5、組ごと）
+- kbump05 T28 k3o→dc3o: 2／7、z -1.67
+- kbump05 T28 k3t→dc3t: 0／6、z -2.45
+- kbump10 T28 k3o→dc3o: 2／8、z -1.90
+- ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03 k3n→dc3n: 1／15、z -3.50
+- ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03 k3o→dc3o: 1／12、z -3.05
+- ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03 k3t→dc3t: 0／14、z -3.74
+
+## 規則 2（2 つ以上の組で z ≤ −1、落ちた個体が組の間で別）
+- kbump05 T28: k3n→dc3n 3／7、k3o→dc3o 2／7、k3t→dc3t 0／6 ── 再現
+- ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: k3n→dc3n 1／15、k3o→dc3o 1／12、k3t→dc3t 0／14 ── 再現
+
+## 条件ごと（全ベンチ・全組、個体の重複を除く）
+- SENSE_DELAY_TICKS2: 個体 72、改善 1・悪化 0、z +1.00
+- SENSE_DELAY_TICKS4: 個体 72、改善 0・悪化 1、z -1.00
+- SENSE_NOISE_QD0p05_SENSE_NOISE_V0p015_SENSE_NOISE_W0p015: 個体 72、改善 1・悪化 0、z +1.00
+- SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: 個体 72、改善 2・悪化 41、z -5.95
+- T28: 個体 288、改善 16・悪化 43、z -3.52
+- 全体: 個体 792（重複 0 を除く）、改善 20・悪化 85、z -6.34
+
+## 判定（改定した規則 A・B、10-31）
+- 要確認（再現なし）: kbump10 T28 k3o→dc3o 2／8
+- 合算で最も損に寄った条件: ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03 2／41、片側 p=0.0000（Holm 0.000、条件 6）
+- 悪化 A kbump05 T28: k3o→dc3o 2／7 が k3n→dc3n 3／7、k3t→dc3t 0／6 で再現
+- 悪化 A kbump05 T28: k3t→dc3t 0／6 が k3n→dc3n 3／7、k3o→dc3o 2／7 で再現
+- 悪化 A ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: k3n→dc3n 1／15 が k3o→dc3o 1／12、k3t→dc3t 0／14 で再現
+- 悪化 A ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: k3o→dc3o 1／12 が k3n→dc3n 1／15、k3t→dc3t 0／14 で再現
+- 悪化 A ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: k3t→dc3t 0／14 が k3n→dc3n 1／15、k3o→dc3o 1／12 で再現
+- 悪化 B ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: 合算 2／41、片側 p=0.0000（Holm 0.000、条件 6）
+- 悪化 B kbump05 T28: 合算 5／20、片側 p=0.0020（Holm 0.010、条件 6）
+- 結論: 悪化あり
