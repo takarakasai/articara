@@ -1,0 +1,58 @@
+家族 KFAM_*、ベンチ 8: kp,khold,kw,kdesc,kflat,kbump05,kbump10,ksense
+## ベンチごと（組ごと、全部の条件）
+| ベンチ | k3n→kpc4sn | k3o→kpc4so | k3t→kpc4st |
+|---|---|---|---|
+| kp | 579→617（39／1、+6.01） | 581→609（29／1、+5.11） | 579→611（34／2、+5.33） |
+| khold | 153→177（25／1、+4.71） | 148→185（38／1、+5.92） | 148→186（39／1、+6.01） |
+| kw | 229→250（23／2、+4.20） | 225→244（24／5、+3.53） | 221→245（25／1、+4.71） |
+| kdesc | 118→109（5／14、-2.06） | 123→113（7／17、-2.04） | 108→110（9／7、+0.50） |
+| kflat | 72→72（0／0） | 72→72（0／0） | 72→72（0／0） |
+| kbump05 | 44→40（3／7、-1.26） | 45→40（2／7、-1.67） | 47→41（0／6、-2.45） |
+| kbump10 | 18→15（4／7、-0.90） | 17→11（2／8、-1.90） | 15→12（5／8、-0.83） |
+| ksense | 135→127（2／10、-2.31） | 131→131（6／6、+0.00） | 133→126（4／11、-1.81） |
+| 家族全体 | 1348→1407（101／42、+4.93） | 1342→1405（108／45、+5.09） | 1323→1403（116／36、+6.49） |
+
+## 規則 1（入れ替わり 4 本以上で z ≤ −1.5、組ごと）
+- kbump05 T28 k3o→kpc4so: 2／7、z -1.67
+- kbump05 T28 k3t→kpc4st: 0／6、z -2.45
+- kbump10 T28 k3o→kpc4so: 2／8、z -1.90
+- kdesc r-0.020 k3n→kpc4sn: 5／13、z -1.89
+- kdesc r-0.020 k3o→kpc4so: 7／16、z -1.88
+- ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03 k3n→kpc4sn: 1／9、z -2.53
+- ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03 k3t→kpc4st: 4／11、z -1.81
+
+## 規則 2（2 つ以上の組で z ≤ −1、落ちた個体が組の間で別）
+- kbump05 T28: k3n→kpc4sn 3／7、k3o→kpc4so 2／7、k3t→kpc4st 0／6 ── 再現
+- kdesc r-0.020: k3n→kpc4sn 5／13、k3o→kpc4so 7／16 ── 再現
+- kdesc r0.000: k3o→kpc4so 0／1、k3t→kpc4st 0／1 ── 再現
+- ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: k3n→kpc4sn 1／9、k3t→kpc4st 4／11 ── 再現
+
+## 条件ごと（全ベンチ・全組、個体の重複を除く）
+- SENSE_DELAY_TICKS2: 個体 72、改善 1・悪化 0、z +1.00
+- SENSE_DELAY_TICKS4: 個体 72、改善 0・悪化 1、z -1.00
+- SENSE_NOISE_QD0p05_SENSE_NOISE_V0p015_SENSE_NOISE_W0p015: 個体 72、改善 1・悪化 0、z +1.00
+- SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: 個体 72、改善 10・悪化 26、z -2.67
+- T28: 個体 288、改善 16・悪化 43、z -3.52
+- i0.6_d0: 個体 288、改善 11・悪化 0、z +3.32
+- i0.6_d180: 個体 240、改善 0・悪化 1、z -1.00
+- i0.6_d270: 個体 240、改善 2・悪化 1、z +0.58
+- i0.6_d90: 個体 240、改善 8・悪化 1、z +2.33
+- i0.9_d0: 個体 288、改善 64・悪化 8、z +6.60
+- i0.9_d270: 個体 288、改善 58・悪化 1、z +7.42
+- i0.9_d90: 個体 288、改善 70・悪化 0、z +8.37
+- i0_d0: 個体 240、改善 0・悪化 1、z -1.00
+- r-0.010: 個体 144、改善 1・悪化 1、z +0.00
+- r-0.020: 個体 144、改善 20・悪化 35、z -2.02
+- r0.000: 個体 144、改善 0・悪化 2、z -1.41
+- 全体: 個体 4272（重複 384 を除く）、改善 262・悪化 121、z +7.20
+
+## 判定（改定した規則 A・B、10-31）
+- 要確認（再現なし）: kbump10 T28 k3o→kpc4so 2／8
+- 合算で最も損に寄った条件: kbump05 T28 5／20、片側 p=0.0020（Holm 0.055、条件 27）
+- 悪化 A kbump05 T28: k3o→kpc4so 2／7 が k3n→kpc4sn 3／7、k3t→kpc4st 0／6 で再現
+- 悪化 A kbump05 T28: k3t→kpc4st 0／6 が k3n→kpc4sn 3／7、k3o→kpc4so 2／7 で再現
+- 悪化 A kdesc r-0.020: k3n→kpc4sn 5／13 が k3o→kpc4so 7／16 で再現
+- 悪化 A kdesc r-0.020: k3o→kpc4so 7／16 が k3n→kpc4sn 5／13 で再現
+- 悪化 A ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: k3n→kpc4sn 1／9 が k3t→kpc4st 4／11 で再現
+- 悪化 A ksense SENSE_NOISE_QD0p1_SENSE_NOISE_V0p03_SENSE_NOISE_W0p03: k3t→kpc4st 4／11 が k3n→kpc4sn 1／9 で再現
+- 結論: 悪化あり
