@@ -1,6 +1,11 @@
 """家族の昇格判定（2026-10-31）。使い方（リポジトリの根から）:
-  python3 log/claude_g1rand_20260925/family_judge.py BASE1:CAND1 [BASE2:CAND2 ...]
+  python3 log/claude_g1rand_20260925/family_judge.py [--kyo | --prefix P --benches B1,B2,...] BASE1:CAND1 [BASE2:CAND2 ...]
   例: family_judge.py v620n:fA58n v620o:fA58o v620t:fA58t
+      family_judge.py --kyo v2n:v3n v2o:v3o v2t:v3t        （kyo46rs の家族 kfamily.sh、KFAM_*）
+  家族の出力は <R>/<P>_<NAME>_<bench>/。既定は G1 の family.sh（P=FAM、ベンチは BENCHES）。
+  --kyo は kfamily.sh の家族（P=KFAM、ベンチは KYO_BENCHES）。--prefix／--benches（または環境変数
+  FAM_PREFIX／FAM_BENCHES、コンマ区切り）で別の家族を渡せる。--benches を省いて --prefix だけを渡すと、
+  最初の組の BASE の出力にあるベンチを全部使う（2026-10-31）。
 
 family_cmp.sh との違い:
 - 全部の条件を出す（family_cmp.sh は z が負の条件しか出さないので、条件ごとに足すと損の側に偏る）。
@@ -24,6 +29,9 @@ from collections import defaultdict
 R = 'log/claude_g1rand_20260924'
 BENCHES = ['p', 'lat', 'w', 'hold', 's', 'desc', 'desc_n3', 'desc_deep', 'asc_n4', 'c3', 'spd_30', 'spd_50',
            'bump10', 'rough30', 'slope5', 'slope-5', 'sense', 'mis_p5', 'mis_ad2', 'comb_slope3', 'comb_bump10']
+# kyo46rs の家族（kfamily.sh、2026-10-31）
+KYO_BENCHES = ['kp', 'khold', 'kw', 'kdesc', 'kflat', 'kbump05', 'kbump10', 'ksense']
+PREFIX = 'FAM'
 SKIP = {'REF_LIBRARY', 'TRAJ_CSV'}
 
 
@@ -49,17 +57,45 @@ def pair_rows(base, cand):
     """(bench, cond, key, base_ok, cand_ok) の列。"""
     out = []
     for b in BENCHES:
-        for md in sorted(glob.glob(f'{R}/FAM_{base}_{b}/*/m*')):
+        for md in sorted(glob.glob(f'{R}/{PREFIX}_{base}_{b}/*/m*')):
             cond, m = md.split('/')[-2:]
-            a = surv(md); c = surv(f'{R}/FAM_{cand}_{b}/{cond}/{m}')
+            a = surv(md); c = surv(f'{R}/{PREFIX}_{cand}_{b}/{cond}/{m}')
             if a is None or c is None:
                 continue
             out.append((b, cond, member_key(md), a, c))
     return out
 
 
+def parse_args(argv):
+    """--kyo／--prefix／--benches（と FAM_PREFIX／FAM_BENCHES）を読み、組の列を返す。"""
+    global PREFIX, BENCHES
+    prefix = os.environ.get('FAM_PREFIX'); benches = os.environ.get('FAM_BENCHES'); rest = []
+    it = iter(argv)
+    for a in it:
+        if a == '--kyo':
+            prefix = prefix or 'KFAM'; benches = benches or ','.join(KYO_BENCHES)
+        elif a == '--prefix':
+            prefix = next(it)
+        elif a == '--benches':
+            benches = next(it)
+        else:
+            rest.append(a)
+    pairs = [p.split(':') for p in rest]
+    if prefix:
+        PREFIX = prefix
+    if benches:
+        BENCHES = [b for b in benches.split(',') if b]
+    elif prefix and pairs:
+        head = f'{R}/{PREFIX}_{pairs[0][0]}_'
+        BENCHES = sorted(d[len(head):] for d in glob.glob(head + '*') if os.path.isdir(d))
+    return pairs
+
+
 def main():
-    pairs = [p.split(':') for p in sys.argv[1:]]
+    g1 = list(BENCHES)
+    pairs = parse_args(sys.argv[1:])
+    if PREFIX != 'FAM' or BENCHES != g1:   # G1 の既定の出力は 10-31 のまま
+        print(f'家族 {PREFIX}_*、ベンチ {len(BENCHES)}: {",".join(BENCHES)}')
     rows = {tuple(p): pair_rows(*p) for p in pairs}
     # 1. 組ごとのベンチの表
     print('## ベンチごと（組ごと、全部の条件）')
