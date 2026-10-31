@@ -165,3 +165,9 @@ kbump05・kbump10・ksense を 3 つの種で（`flat_split.sh`、`fls_judge_*.o
 - センサは損から得に（雑音（大）20／6、他の条件は ±1）。
 - 残る規則 A の悪化は 2 つで、どちらも MPC の適用そのもの（dm0 と同じ数）: 凹凸 5 mm（T28、5／18）、降段 20 mm（20／35）。規則 B（Holm 補正した合算）には当たらない（最も損に寄った凹凸 5 mm で Holm 0.143）。結論は「悪化あり」。
 - kpc4L のノブ（MPC_FOOTSTEP_STAIR_OFF、PUSH_TRIG_LPF_HZ）は misa-locomotion にだけある。articara の main で使うには本番の切り替え（misa-locomotion を読む）が先に要る。
+
+## 10. articara の本番の切り替え（2026-11-01）
+
+- articara main a148eae で misa-mpc・misa-biped を GitHub の misa-locomotion から rev e30bccf で読む（crates/ と vendor/misa-wbc は消えた）。kpc4L のノブは articara main のバイナリで使える。Cargo.lock は 8 月から main に入っていないので、rev で固定する。misa-locomotion を上げるときは 2 つの rev を一緒に上げる。
+- 未設定の一致一式（eq 96・押し 14・eqdiag 4・s1x 3・eqpreset 96）は tu63 とバイト一致。kpc4L の一部（種 n の kp 0.9@0／0.9@90、kdesc r-0.020、ksense 雑音（大）の 168 本、`ml5_check.sh`）は path 依存のバイナリ（ml4）の家族の run.log と一致。バイナリは `log/claude_g1rand_20260925/kyo46rs_walk_ml5`。
+- `cargo check --all-targets` で落ちるのは切り替え前からのもの: bin articara とそのテスト・test format_mjcf（MjcfExportOptions の欄の不足）、example kyo46rs_com_squat（コミット済みの版。作業中の差分では直っている）、未追跡の example wrench_mpc_bench（misa-mpc の Input の欄の不足）。
