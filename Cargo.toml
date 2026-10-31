@@ -193,7 +193,3 @@ required-features = ["mujoco"]
 name = "g1_flight_probe"
 required-features = ["mujoco"]
 
-# misa-wbc with the QP diagnostics, the OCP and the native solver features
-# (formerly vendored here as vendor/misa-wbc), for every crate in the graph.
-[patch."https://github.com/takarakasai/misa-wbc.git"]
-misa-wbc = { path = "/tmp/claude-1000/-home-takara-work-dp-articara/c7814efe-5799-450c-ad10-d7119cecb8a9/scratchpad/wbcwt" }
