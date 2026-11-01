@@ -355,6 +355,7 @@ fn main() {
     let mut flight_spans: Vec<(f64, f64)> = Vec::new();
     let mut touchdown_t: Option<f64> = None;
     let mut fell = false;
+    let fall_tilt = env_f64("FALL_TILT", 0.52);
     let mut max_tilt_after = 0.0_f64;
 
     for tick in 0..n_ticks {
@@ -1138,7 +1139,9 @@ fn main() {
             println!("  t={t:6.3} nc={nc} com=({:+.3},{:+.3},{:+.4}) vz={:+.3} roll={roll:+.3} pitch={pitch:+.3} status={:?}", com.x, com.y, com.z, com_vel.z, sol.status);
         }
         let cur_z = rig.sim.body_world_position(&rig.robot.root_link).unwrap()[2];
-        if cur_z < 0.30 || tilt > 0.52 {
+        // FALL_TILT: the tilt verdict [rad] (default 0.52). Raised, it tells
+        // a torso that leans past 0.52 and comes back from one that falls.
+        if cur_z < 0.30 || tilt > fall_tilt {
             println!("  FELL at t={t:.3} (z={cur_z:.3}, tilt={tilt:.3})");
             fell = true;
             break;
