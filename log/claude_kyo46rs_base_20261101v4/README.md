@@ -4,6 +4,8 @@
 
 **main への取り込み（11-01）**: misa-locomotion の 3 コミット（b49d71d・a672047・5d978d5）は push 済み。articara main は rev を 5d978d5 に上げ、host の変更（`log/claude_kyo46rs_push_20261031/mpcloss/leash_host.patch`: `src/biped/log.rs` の `ContactReadout::sole_cop` と `examples/kyo46rs_walk/main.rs` の `Observation::sole_cop`）を入れた。main のバイナリ `log/claude_g1rand_20260925/kyo46rs_walk_tu65` は、未設定で eq 96・押し 14・eqdiag 4 が tu63 とバイト一致し、kl9 の家族の 11 本（8 ベンチ）を再現し、`WALKER_PRESET=kyo46rs_v4` が全 controls と一致する。
 
+その後（同日）misa-locomotion を最新の 29c6064（走行の 14 コミット、すべて既定 off）に上げた。main のバイナリ `log/claude_g1rand_20260925/kyo46rs_walk_tu66` でも同じ 3 つの確認がすべて一致（`main_tu66_check.out`）。以後の v4 の作業は tu66 から。
+
 中身（v3 に足したもの）:
 - レンチ MPC の適用（G1 の 9 キー: `STAIR_WRENCH_MPC WRENCH_MPC_ALWAYS WRENCH_MPC_APPLY STAIR_WRENCH_COUPLED=0 MPC_NODE_CENTRE MPC_NET_COP_W=10 MPC_SEED_PREVIOUS=2 MPC_W_SMOOTH=10 MPC_SOLE_AUTHORITY`）
 - MPC の着地（`MPC_FOOTSTEP` の寸法は G1 の半分、内側なし `Y_IN_FWD=0`、段の区間では切る `MPC_FOOTSTEP_STAIR_OFF=1`）
