@@ -2074,6 +2074,7 @@ mod contact_sum_tests {
             pos: [0.0; 3],
             force_mag: (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt(),
             force_world: f,
+            torque_world: [0.0; 3],
             // The world body has no name.
             body1: String::new(),
             body2: body.to_string(),
@@ -2125,6 +2126,7 @@ mod contact_sum_tests {
             pos: [0.0; 3],
             force_mag: 99.0,
             force_world: [0.0, 0.0, 99.0],
+            torque_world: [0.0; 3],
             body1: "FL_calf".to_string(),
             body2: "FL_foot".to_string(),
         }];
