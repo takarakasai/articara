@@ -1039,9 +1039,38 @@
 | PLANT_MASS_SCALE / PLANT_TORSO_MASS_SCALE | rig.rs:1318/1323 | 1 |  | 4 | 植物の質量のずれ |
 | PLANT_PAYLOAD（_KG/_X/_Y/_Z） | rig.rs:1333–1339 | なし |  | 4 | 植物の積載物（mis_p5 ベンチ） |
 | RIG_MJCF_OUT | rig.rs:512 | なし |  | 5 | 生成した MJCF の書き出し |
-| LAND_CONFIRM_XY / LAND_CONFIRM_Z | crates/misa-biped/src/preview.rs:587–588 | 0.012 / 0.010 |  | 2 | 着地確認の既定の許容。**ライブラリが環境変数を読んでいる**ので Config に移す |
+| LAND_CONFIRM_XY | crates/misa-biped/src/preview.rs:587 | 0.012 |  | 2 | 着地確認の既定の許容（水平）。**ライブラリが環境変数を読んでいる**ので Config に移す。11-01 現在は misa-biped kv.rs:378 が `LandingConfig::confirm_xy` として読む |
+| LAND_CONFIRM_Z | crates/misa-biped/src/preview.rs:588 | 0.010 |  | 2 | 同（高さ）。11-01 現在は kv.rs:379 の `LandingConfig::confirm_z` |
 | LAND_TIMING_DEBUG | preview.rs:551 ほか |  |  | 5 | デバッグ出力（ライブラリ内） |
 | MPC_LANDING_TIME_DEBUG / MPC_FS_DEBUG | crates/misa-mpc/src/wrench_mpc.rs:891 ほか |  |  | 5 | デバッグ出力（ライブラリ内。`MPC_FS_DEBUG` は walk.rs でも読む） |
+
+
+### 付録 B. 10-29 の棚卸しの後に足したノブ（2026-11-01 追記）
+
+読むのは misa-locomotion の `misa-biped/src/kv.rs`（commit 5d978d5）。「行」は kv.rs の行。「チャンピオン」は G1 v6.21（`log/claude_g1champion_20261031v621`）、「kyo」は kyo46rs の基準 v4（`log/claude_kyo46rs_base_20261101v4`）。分類の意味は §1.1 と同じ。この表を足しても §1.1 の個数は数え直していない。
+
+| 名前 | 既定 | チャンピオン | kyo | 分類 | 行 | 説明 |
+|---|---|---|---|---|---:|---|
+| `JOINT_Q_EST` | 0 | 1 |  | 1 | 135 | 関節角を植物でなく推定から取る（v6.20、植物の漏れを閉じる。doc/from_claude/20261030_plant_leaks_mu_joint.md）。kyo の v3 の上では中立で入れていない |
+| `MU_ASSUMED` | 未設定（`MU_GROUND` を使う） | 0.58 |  | 1 | 134 | 制御が仮定する摩擦係数（v6.21）。kyo では前押し 0.9 が悪化するので入れていない |
+| `PUSH_TRIG_LPF_HZ` | 0 |  | 5 | 1k | 193 | 押しの引き金（MPC の着地・PUSH_REPLAN）が見る DCM のずれだけに 1 次の低域通過を掛ける（e30bccf）。雑音（大）の誤作動を消す |
+| `MPC_FOOTSTEP_STAIR_OFF` | 0 |  | 1 | 1k | 531 | 段の区間では MPC の着地変数を切る（191c5c5）。kyo の降段の長い一歩が押しなしで引き金を超える |
+| `COP_LEASH` | 0 |  | 0.005 | 1k | 355 | 片脚支持の支持足の CoP の箱（前後）を、足裏の測った CoP（`Observation::sole_cop`）± この値に縛る（a672047）。両脚支持・段の区間では掛けない |
+| `COP_LEASH_TILT` | 0 |  | 0.02 | 1k | 356 | 縛りの門: 足裏の傾き（rad）がこれ以上のときだけ縛る。0 だと遅れのベンチで全滅（測った CoP の遅れと縛りが結合） |
+| `COP_LEASH_MPC` | 0 |  | 1 | 1k | 358 | MPC の CoP の箱も同じく縛る |
+| `COP_LEASH_FZ` | 0.15 |  |  | 2 | 357 | 縛る支持足の荷重の下限（体重比）。kyo v4 では既定のまま働く |
+| `MPC_AUTH_TILT` | 0 |  |  | 3 | 483 | 足裏が傾いたら MPC の権限を控える（b49d71d、切り分け用）。凹凸は直すが押しの 90° を落とす |
+| `MPC_AUTH_FZ_RATIO` | 0 |  |  | 3 | 481 | 同、MPC の力が体重のこの倍を超えたら控える（切り分け用、効かない） |
+| `MPC_AUTH_STAIR_OFF` | 0 |  |  | 3 | 482 | 同、段の区間で控える（切り分け用、降段 20 mm は直らない） |
+| `MPC_COP_SCALE_X` | 1.0 |  |  | 3 | 480 | MPC の CoP の箱の前後を縮める（切り分け用、効かない） |
+| `MPC_FORECAST_SWING_ONLY` | 0 |  |  | 3 | 478 | MPC の接触の予測を遊脚だけに（切り分け用、効かない） |
+| `MPC_SCHEDULE_EARLY_FZ` | 0 |  |  | 3 | 479 | 早い接地を MPC の接触の予定に入れる力の閾値（切り分け用、効かない） |
+| `LAND_REANCHOR` | 0 |  |  | 3 | 394 | 着地の位置の取り直し（7996f18、kyo の押しで 0.9 N·s を 1〜2 本足すだけ） |
+| `LAND_REANCHOR_MAX` | 0.10 |  |  | 3 | 395 | 同、取り直しの上限（m） |
+| `LAND_REANCHOR_LOAD` | 0.3 |  |  | 3 | 396 | 同、取り直す荷重の閾値（体重比） |
+| `MPC_LANDING_TIME_DEBUG` | 未設定 |  |  | 5 | 509 | デバッグ出力（付録 A の misa-mpc 側と同じ名前を kv.rs も読む） |
+
+`WALKER_PRESET`（kv.rs）はノブでなく、上の値の出発点を選ぶ（`g1_v619`・`kyo46rs_v2`・`kyo46rs_v3`・`kyo46rs_v4`）。照合の道具（`eqpreset_list.py`、v4 の確認）は分類 1・2・1k のうち kv.rs の `config_from_kv` が読むキーを controls から落とし、`WALKER_PRESET` に任せる。
 
 ## 4. 切り出しの所見
 

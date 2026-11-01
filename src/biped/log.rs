@@ -89,6 +89,17 @@ impl ContactReadout {
         })
     }
 
+    /// The CoP per foot in the plant's own sole frame (x forward from the
+    /// sole centre, y left), from the summed sole wrench -- what an ankle
+    /// F/T reports, no FK of the estimate involved. None for a foot at or
+    /// under 1e-6 N or with a non-finite wrench.
+    pub fn sole_cop(&self) -> [Option<[f64; 2]>; 2] {
+        std::array::from_fn(|side| {
+            let w = &self.out.sole_wrench[side];
+            (self.out.sole_wrench_valid[side] && w[5] > 1e-6).then(|| [-w[1] / w[5], w[0] / w[5]])
+        })
+    }
+
     /// The CoP in the sole frame of `data`, the slip against `friction_mu`,
     /// the patch position and the force.
     pub fn finish(

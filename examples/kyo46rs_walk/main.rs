@@ -525,6 +525,7 @@ fn main() {
             tick,
             estimate: &est,
             contact_fz: measured_pre,
+            sole_cop: contacts.sole_cop(),
             joint_pos_plant: &rig.robot.joint_positions,
         };
         diag.contact_dump(&rig, t);

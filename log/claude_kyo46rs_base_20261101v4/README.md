@@ -1,8 +1,8 @@
 # kyo46rs 基準 v4（2026-11-01）── v3 ＋ 押しの回復 ＋ COP_LEASH（候補 kl9、ユーザ判断で例外として昇格）
 
-`controls.json` = `log/claude_g1rand_20260925/kyo_base_v3.json` ＋ `log/claude_kyo46rs_push_20261031/cand_kl9.extra`。プリセットは `WALKER_PRESET=kyo46rs_v4`（misa-locomotion `Config::kyo46rs_v4()`、commit 5d978d5、`tests/presets.rs` が `fixtures/kyo46rs_v4.json` = この controls と照合）。バイナリは `log/claude_g1rand_20260925/kyo46rs_walk_ml9`（worktree で misa-locomotion を path で読んだもの、家族は同じ挙動の ml8）。URDF は v3 と同じ。
+`controls.json` = `log/claude_g1rand_20260925/kyo_base_v3.json` ＋ `log/claude_kyo46rs_push_20261031/cand_kl9.extra`。プリセットは `WALKER_PRESET=kyo46rs_v4`（misa-locomotion `Config::kyo46rs_v4()`、commit 5d978d5、`tests/presets.rs` が `fixtures/kyo46rs_v4.json` = この controls と照合）。バイナリは main の `log/claude_g1rand_20260925/kyo46rs_walk_tu65`（同じ挙動の worktree 製 ml9・家族を回した ml8）。URDF は v3 と同じ。
 
-**未了**: misa-locomotion の 3 コミット（b49d71d・a672047・5d978d5）は未 push（push は許可の確認で止めた）。`Observation::sole_cop` を足したので、articara main は rev を 5d978d5 に上げて host の変更（`log/claude_kyo46rs_push_20261031/mpcloss/leash_host.patch`、`src/biped/log.rs` と `examples/kyo46rs_walk/main.rs`）を入れるまで v4 を組めない。
+**main への取り込み（11-01）**: misa-locomotion の 3 コミット（b49d71d・a672047・5d978d5）は push 済み。articara main は rev を 5d978d5 に上げ、host の変更（`log/claude_kyo46rs_push_20261031/mpcloss/leash_host.patch`: `src/biped/log.rs` の `ContactReadout::sole_cop` と `examples/kyo46rs_walk/main.rs` の `Observation::sole_cop`）を入れた。main のバイナリ `log/claude_g1rand_20260925/kyo46rs_walk_tu65` は、未設定で eq 96・押し 14・eqdiag 4 が tu63 とバイト一致し、kl9 の家族の 11 本（8 ベンチ）を再現し、`WALKER_PRESET=kyo46rs_v4` が全 controls と一致する。
 
 中身（v3 に足したもの）:
 - レンチ MPC の適用（G1 の 9 キー: `STAIR_WRENCH_MPC WRENCH_MPC_ALWAYS WRENCH_MPC_APPLY STAIR_WRENCH_COUPLED=0 MPC_NODE_CENTRE MPC_NET_COP_W=10 MPC_SEED_PREVIOUS=2 MPC_W_SMOOTH=10 MPC_SOLE_AUTHORITY`）
