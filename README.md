@@ -6,7 +6,7 @@ A high-performance robot model editor built in Rust. articara is built around
 **`.misa`** — its own native master format that captures the full kinematic
 tree, geometry, materials, sensors, actuators, mimic / loop-closure
 constraints, and editor metadata (poses, sequences, gaits, home pose) in a
-single TOML file. URDF / SDF / MJCF / USD are supported as derivative
+single TOML file. URDF / SDF / MJCF / USD / glTF are supported as derivative
 import / export targets.
 
 ## Build
@@ -47,7 +47,7 @@ the extra runtime dependency and build command.
 `.misa` is articara's canonical on-disk representation. A single file holds
 everything `RobotModel` carries; round-tripping through `from_misa` /
 `to_misa` is lossless. Mesh files live alongside as a `meshes/` sibling
-directory. URDF / SDF / MJCF / USD remain available for interop with other
+directory. URDF / SDF / MJCF / USD / glTF remain available for interop with other
 tooling but are treated as **lossy derivatives** of the `.misa` master.
 
 - Schema reference: [`doc/misa_schema.md`](doc/misa_schema.md)
@@ -63,6 +63,12 @@ tooling but are treated as **lossy derivatives** of the `.misa` master.
   via the [`misarta::native`](misarta/src/native/) module.
 - **Multi-format model loading** — `.misa` (native), URDF, MJCF (MuJoCo XML),
   USD, SDF. Legacy URDF + `.misarta.toml` sidecar workflows continue to work.
+- **glTF 2.0 (`.glb` / `.gltf`) import & export** — exports the posed robot
+  as a node hierarchy (link → joint → child link) any glTF viewer can open,
+  with meshes embedded and the full `.misa` description stored in node
+  `extras`, so articara → glTF → articara is lossless. Plain glTF scenes
+  (Blender, CAD exporters) import as links on fixed joints, converted from
+  Y-up to Z-up. See [`src/gltf_io.rs`](src/gltf_io.rs).
 - **Rigid body dynamics** — O(n) Featherstone algorithms via [`misarta`](https://github.com/takarakasai/misarta) (kinematics, dynamics, autodiff-ready).
 - **3D viewer & GUI** — `eframe` + `glow` renderer with `egui_plot` overlays (default `gui` feature).
 - **Physics backend** — optional MuJoCo integration (`--features mujoco`, requires `mujoco-rs`).
