@@ -748,6 +748,7 @@ impl DiagSinks {
                 let planned_support = match rec.support {
                     Support::Double => true,
                     Support::Single { stance, .. } => stance == side,
+                    Support::Flight { .. } => false,
                 };
                 write!(
                     file,
@@ -888,6 +889,7 @@ impl DiagSinks {
             let support_code = match rec.support {
                 Support::Double => 0.0,
                 Support::Single { stance, .. } => 1.0 + stance as f64,
+                Support::Flight { .. } => 3.0,
             };
             let actual_feet = rec.actual_feet;
             let [al, ar] = actual_feet.sole;

@@ -442,6 +442,7 @@ fn main() {
         n_steps: wcfg.gait.n_steps,
         first_swing: wcfg.gait.first_swing,
         t_end: total_t,
+        t_flight: wcfg.gait.t_flight,
     };
     // Time at which the last step ends, so achievement is measured over the
     // WALK and not diluted by the settle.
@@ -648,6 +649,7 @@ fn main() {
                 Support::Single { stance, .. } => {
                     format!("SS{}", if stance == 0 { "L" } else { "R" })
                 }
+                Support::Flight { .. } => "FL  ".to_string(),
             };
             let com = st.com;
             println!(

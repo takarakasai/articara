@@ -546,6 +546,7 @@ pub fn fire_push(
                 Support::Double => "DS".to_string(),
                 Support::Single { stance, .. } =>
                     format!("SS/{}", if stance == 0 { "L" } else { "R" }),
+                Support::Flight { .. } => "FL".to_string(),
             },
             dv / omega * 1e3,
         );

@@ -643,7 +643,7 @@ impl RunMetrics {
         if matches!(rec.support, Support::Single { .. }) {
             let stance_side = match rec.support {
                 Support::Single { stance, .. } => stance,
-                Support::Double => unreachable!(),
+                Support::Double | Support::Flight { .. } => unreachable!(),
             };
             if self.step_stats.last().map(|s| s.slice) != Some(rec.slice_idx) {
                 self.step_stats.push(StepStat {
