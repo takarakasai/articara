@@ -19,7 +19,12 @@ for l in open(R + '/doc/from_claude/20261029_knob_inventory.md').read().split('\
     cols = [x.strip() for x in l.strip().strip('|').split('|')]
     if len(cols) >= 5 and re.fullmatch(r'`?[A-Za-z][A-Za-z0-9_*]*`?', cols[0]):
         cls[cols[0].strip('`')] = cols[4]  # the class column (main table and appendix A)
+# Since the switch to misa-locomotion (articara a148eae, 2026-11-01) config_env.rs only re-exports
+# misa_biped::kv; the reader is then misa-biped's kv.rs (MISA_BIPED_KV overrides the path).
+import os
 src = open(R + '/examples/kyo46rs_walk/config_env.rs').read()
+if 'pub fn config_from_kv' not in src:
+    src = open(os.environ.get('MISA_BIPED_KV', '/home/takara/work/dp/misa-locomotion/misa-biped/src/kv.rs')).read()
 fn = src[src.index('pub fn config_from_kv'):]
 cfg_keys = (set(re.findall(r'"([A-Z][A-Z0-9_]+)"', fn)) | {'friction_mu'}) - {'WALKER_PRESET'}
 # The v3 candidate's five stair-zone keys (Config::kyo46rs_v3 over kyo46rs_v2): a kyo46rs sample holding all

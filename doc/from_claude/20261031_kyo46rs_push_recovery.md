@@ -171,3 +171,49 @@ kbump05・kbump10・ksense を 3 つの種で（`flat_split.sh`、`fls_judge_*.o
 - articara main a148eae で misa-mpc・misa-biped を GitHub の misa-locomotion から rev e30bccf で読む（crates/ と vendor/misa-wbc は消えた）。kpc4L のノブは articara main のバイナリで使える。Cargo.lock は 8 月から main に入っていないので、rev で固定する。misa-locomotion を上げるときは 2 つの rev を一緒に上げる。
 - 未設定の一致一式（eq 96・押し 14・eqdiag 4・s1x 3・eqpreset 96）は tu63 とバイト一致。kpc4L の一部（種 n の kp 0.9@0／0.9@90、kdesc r-0.020、ksense 雑音（大）の 168 本、`ml5_check.sh`）は path 依存のバイナリ（ml4）の家族の run.log と一致。バイナリは `log/claude_g1rand_20260925/kyo46rs_walk_ml5`。
 - `cargo check --all-targets` で落ちるのは切り替え前からのもの: bin articara とそのテスト・test format_mjcf（MjcfExportOptions の欄の不足）、example kyo46rs_com_squat（コミット済みの版。作業中の差分では直っている）、未追跡の example wrench_mpc_bench（misa-mpc の Input の欄の不足）。
+
+## 11. MPC の適用そのものの損の機構（2026-11-01）
+
+対象は dm0（MPC の適用の 9 キーだけ）が k3 に対して落とす個体（凹凸 5 mm と降段 20 mm）。道具は `log/claude_kyo46rs_push_20261031/`（`mpcloss_list.py` 一覧、以下は `mpcloss/` の下、`rerun.sh` 軌跡付きの再走、`sig.py` 転倒の手前の印、`ablate.sh`／`abl2.sh` キーの切り分け、`subchk.sh`／`subcmp.py` 種 n の部分家族）。
+
+**計測の注意（家族の規則 A に効く）**: `rand.py` は `TERRAIN_SEED` と `INIT_SEED` を個体の番号＋1 で振り、家族の種（FAM_SEED）では変えない。3 つの種で変わるのは摩擦と立ち位置だけ。凹凸の「3 つの種で独立に再現」は同じ 6 つの地形（m14／m16／m28／m35／m39／m45／m47 のうち毎回同じ組）を 3 回数えている。G1 の家族の凹凸ベンチ（bump10・rough30・comb_bump10）も同じ。
+
+**凹凸 5 mm の機構（m28 で tick ごと、他の 6 個体も同じ印）**:
+1. 支持足（右）のつま先が凹凸の前縁（x 0.17）に乗り、足は −5° で傾いて立つ。実際の支えは踵と凹凸の縁（足の座標で +8 mm）まで。
+2. 遊脚が凹凸に早く接地する（予定の両脚支持の 55 ms 前）。MPC の接触予定は歩容から作るので、その足には力を持たせない。
+3. 重心が凹凸の縁を越える 9.51 s に、WBC の支持足の CoP が箱の端 +49 mm へ（MPC の適用なしは +27 mm）。足がシーソーのように前へ倒れる（−4.9° → +6.4°、40 ms）。
+4. 5° で転がり接触に切り替わる（`stair_hybrid_contact`、接触点が ±43 mm 跳び、箱が 6 mm に）。MPC は体重の 1.9 倍（128 N）を要求し、関節 5〜11 個がトルク飽和、合力 200〜300 N、両足が浮く。
+12 個体（凹凸 7・降段 5）すべてで「飽和 → 合力 3〜4.5 倍」、11 個体で飽和の 40〜370 ms 前に遊脚の早い接地。
+
+**どのキーか（12 個体、1 つずつ既定へ戻す）**: `MPC_SOLE_AUTHORITY=0` で 10／12、`MPC_NET_COP_W=0` で 9／12 生存。NODE_CENTRE・SEED_PREVIOUS・W_SMOOTH は 3〜5、COUPLED・BLEND は 0。
+
+**試した手（新設ノブ、misa-locomotion b49d71d、既定 off、未設定は全一式で tu63 とバイト一致、バイナリ ml6）**:
+
+| 手 | 12 個体 | 備考 |
+|---|---|---|
+| `MPC_FORECAST_SWING_ONLY` | 0 | 9.56 s の接触点の跳びは予測でなく転がりの切り替え |
+| `MPC_SCHEDULE_EARLY_FZ` 5／10 N | 0／2 | 降段 2 個体だけ。WBC の接触集合が早い足を使わない |
+| `MPC_COP_SCALE_X` 0.6／0.4 | 2／1 | 端へ寄せるのは WBC の側 |
+| `MPC_AUTH_FZ_RATIO` 1.2／1.4／1.7 | 1／2／2 | 大きな力は損の後に出る |
+| `MPC_AUTH_STAIR_OFF` | 0 | 段の区間（t≈8 s から）で権限を控えても降段は落ちる |
+| `MPC_AUTH_TILT` 0.03／0.05 rad | 8／8 | 凹凸 7／7、降段 1／5 |
+
+**部分家族（種 n、kpc4L との比較、`mpcloss/subcmp_kpc4La_Lt.out`）**:
+
+| ベンチ | k3 | kpc4L | kpc4L＋AUTHORITY=0 | kpc4L＋AUTH_TILT=0.05 |
+|---|---|---|---|---|
+| 押し 0.9 前 | 33 | 45 | 44 | 41 |
+| 押し 0.9 遊脚側 90° | 27 | 43 | **24** | 32 |
+| 押し 0.9 後ろ | 48 | 48 | 48 | 48 |
+| 押し 0.9 270° | 41 | 47 | 43 | 43 |
+| 降段 20 mm | 22 | 14 | **24** | 12 |
+| 凹凸 5 mm | 44 | 41 | 45 | **45** |
+| 雑音（大） | 18 | 18 | 15 | 20 |
+
+（`MPC_NET_COP_W=0` は押しが崩れる（後ろ 0.9 が 48 → 5）ので途中で止めた。）
+
+結論:
+- 両脚支持の権限（`MPC_SOLE_AUTHORITY`）が、遊脚側の押しの得（24 → 43）と降段 20 mm の損（24 → 14）の両方の出どころ。
+- 凹凸の損は、支持足が凹凸の縁でシーソーになる機構で、支持足の傾きで権限を控えると直る。ただし押しでも支持足は同じくらい傾くので、押しの得を失う（90° で 43 → 32）。傾きだけでは押しと凹凸を見分けられない。
+- 降段 20 mm は段の区間で権限を控えても直らない。生存が 45% 前後の領域で、k3 と dm0 の比較も種 t では 8／6 と両向きに振れる（賽の振り直しが大きい）。
+- 根は、平らな足裏を仮定した CoP の箱と接触の切り替え（5° の二値の転がり）が、実際の支えと食い違うこと。直すなら、測った接触（足の傾き・接地点）から箱を連続に縮める、転がりの切り替えにヒステリシスを持たせる、の構造の手。
