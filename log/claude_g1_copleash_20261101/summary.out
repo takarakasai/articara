@@ -1,0 +1,17 @@
+ベンチ | 基準 | 縛り 5 mm | 縛り 10 mm   （種 n、48 本／条件。m = 地形を振り直し。斜面の縛りは面からの傾きの門 ml10）
+bump10 T40: 35 | 36 | 35
+comb_bump10 i11_d0: 36 | 19 | 23
+comb_bump10 i11_d180: 37 | 35 | 37
+comb_bump10 i5_d270: 35 | 32 | 34
+comb_bump10 i7_d90: 23 | 10 | 20
+slope5 T40: 48 | 48 | -
+slope-5 T40: 48 | 48 | -
+comb_slope3 i11_d0: 43 | 15 | -
+comb_slope3 i11_d180: 16 | 14 | -
+comb_slope3 i5_d270: 42 | 33 | -
+comb_slope3 i7_d90: 26 | 13 | -
+bump10(m) T40: 30 | 30 | -
+comb_bump10(m) i11_d0: 36 | 15 | -
+comb_bump10(m) i11_d180: 42 | 40 | -
+comb_bump10(m) i5_d270: 36 | 36 | -
+comb_bump10(m) i7_d90: 26 | 11 | -
