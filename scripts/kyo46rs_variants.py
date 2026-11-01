@@ -14,7 +14,7 @@ the forearm. The clearance is negative for any hip rotation worth having.
 
 Variants are written to a directory and pointed at with URDF=<path>.
 """
-import argparse, os, re, shutil, sys
+import argparse, math, os, re, shutil, sys
 import xml.etree.ElementTree as ET
 
 SRC = "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf"
@@ -95,6 +95,62 @@ def stance_width(root, hip_y):
         xyz = o.get("xyz").split()
         xyz[1] = f"{sign * hip_y:.5f}"
         o.set("xyz", " ".join(xyz))
+
+
+def _matmul(a, b):
+    return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+
+
+def _rpy_matrix(r, p, y):
+    cr, sr, cp, sp, cy, sy = math.cos(r), math.sin(r), math.cos(p), math.sin(p), math.cos(y), math.sin(y)
+    return [[cy*cp, cy*sp*sr-sy*cr, cy*sp*cr+sy*sr],
+            [sy*cp, sy*sp*sr+cy*cr, sy*sp*cr-cy*sr],
+            [-sp, cp*sr, cp*cr]]
+
+
+def _axis_matrix(axis, angle):
+    x, y, z = axis
+    n = math.sqrt(x*x + y*y + z*z)
+    x, y, z = x/n, y/n, z/n
+    c, s, v = math.cos(angle), math.sin(angle), 1.0-math.cos(angle)
+    return [[x*x*v+c, x*y*v-z*s, x*z*v+y*s],
+            [y*x*v+z*s, y*y*v+c, y*z*v-x*s],
+            [z*x*v-y*s, z*y*v+x*s, z*z*v+c]]
+
+
+def _matrix_rpy(r):
+    p = math.asin(max(-1.0, min(1.0, -r[2][0])))
+    if abs(math.cos(p)) > 1e-10:
+        return math.atan2(r[2][1], r[2][2]), p, math.atan2(r[1][0], r[0][0])
+    return 0.0, p, math.atan2(-r[0][1], r[1][1])
+
+
+def fix_joint_at(root, name, angle):
+    """Bake a revolute joint angle into its origin, retaining every child
+    link mass/shape while removing the DoF."""
+    j = joint(root, name)
+    if j.get("type") == "fixed":
+        if abs(angle) > 1e-12:
+            raise ValueError(f"{name} is already fixed but requested angle {angle}")
+        return
+    origin = j.find("origin")
+    if origin is None:
+        origin = ET.SubElement(j, "origin", xyz="0 0 0", rpy="0 0 0")
+    rpy = [float(x) for x in origin.get("rpy", "0 0 0").split()]
+    axis = [float(x) for x in j.find("axis").get("xyz").split()]
+    baked = _matmul(_rpy_matrix(*rpy), _axis_matrix(axis, angle))
+    origin.set("rpy", " ".join(f"{x:.12g}" for x in _matrix_rpy(baked)))
+    j.set("type", "fixed")
+    for tag in ("axis", "limit", "dynamics", "mimic", "safety_controller"):
+        e = j.find(tag)
+        if e is not None:
+            j.remove(e)
+
+
+def fix_arms_at_seed(root, arm_pitch, elbow):
+    for side in ("left", "right"):
+        fix_joint_at(root, f"{side}_shoulder_pitch_joint", arm_pitch)
+        fix_joint_at(root, f"{side}_elbow_joint", elbow)
 
 
 WAIST_AXES = {"yaw": "0 0 1", "roll": "1 0 0", "pitch": "0 1 0"}
@@ -205,6 +261,8 @@ def add_waist(root, dofs):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--src", default=SRC,
+                    help="source URDF (defaults to the development kyo46rs URDF)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--shoulder-y", type=float, default=None)
     ap.add_argument("--shoulder-z", type=float, default=None)
@@ -214,10 +272,21 @@ def main():
                     help="comma-separated waist DoF from yaw,roll,pitch (proximal first)")
     ap.add_argument("--ankle-roll-deg", type=float, default=None)
     ap.add_argument("--hip-roll-deg", type=float, default=None)
+    ap.add_argument("--fix-arms-at-seed", action="store_true",
+                    help="make shoulder pitch and elbow fixed at the supplied seed angles")
+    ap.add_argument("--arm-pitch", type=float, default=-0.4363)
+    ap.add_argument("--elbow", type=float, default=-2.24)
     a = ap.parse_args()
 
-    tree = ET.parse(SRC)
+    source = os.path.abspath(a.src)
+    tree = ET.parse(source)
     root = tree.getroot()
+    # A generated variant normally lives outside the source URDF directory.
+    # Keep its mesh references resolvable until the benchmark snapshots them.
+    for mesh in root.iter("mesh"):
+        filename = mesh.get("filename")
+        if filename and not os.path.isabs(filename):
+            mesh.set("filename", os.path.abspath(os.path.join(os.path.dirname(source), filename)))
     if a.shoulder_y is not None:
         shoulder_out(root, a.shoulder_y)
     if a.shoulder_z is not None:
@@ -228,6 +297,8 @@ def main():
         stance_width(root, a.hip_y)
     if a.ankle_roll_deg is not None or a.hip_roll_deg is not None:
         roll_rom(root, a.ankle_roll_deg, a.hip_roll_deg)
+    if a.fix_arms_at_seed:
+        fix_arms_at_seed(root, a.arm_pitch, a.elbow)
 
     os.makedirs(a.out, exist_ok=True)
     path = os.path.join(a.out, f"{a.name}.urdf")
