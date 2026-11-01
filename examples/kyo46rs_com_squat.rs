@@ -38,18 +38,23 @@
 
 #[cfg(feature = "mujoco")]
 fn main() {
-    use articara::biped::actuate::{gravity_plus_posture, write_to_plant, CommandPolicy, DegradedTally};
-    use articara::biped::contact::{contact_jacobians, cop_from_sole_wrench, Anchors};
-    use articara::biped::log::{measure_contacts, Row, TrajLog};
+    use articara::biped::actuate::{
+        CommandPolicy, DegradedTally, gravity_plus_posture, write_to_plant,
+    };
+    use articara::biped::contact::{Anchors, contact_jacobians, cop_from_sole_wrench};
+    use articara::biped::log::{Row, TrajLog, measure_contacts};
     use articara::biped::profile;
-    use articara::biped::rig::{BipedRig, CtrlMode, RigOptions, G};
+    use articara::biped::rig::{BipedRig, CtrlMode, G, RigOptions};
     use articara::biped::tasks as bt;
-    use misa_wbc::{tasks, Dynamics, Formulation, SolveConfig, Solver};
+    use misa_wbc::{Dynamics, Formulation, SolveConfig, Solver, tasks};
     use nalgebra as na;
     use std::f64::consts::PI;
 
     let env_f64 = |k: &str, d: f64| -> f64 {
-        std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d)
+        std::env::var(k)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(d)
     };
     let flag = |k: &str, d: bool| -> bool { std::env::var(k).map(|v| v != "0").unwrap_or(d) };
 
@@ -68,9 +73,8 @@ fn main() {
     o.burnin_s = env_f64("BURNIN_S", prof.burnin_s);
     o.run_kp = env_f64("RUN_KP", prof.burnin_kp);
     o.run_kv = env_f64("RUN_KV", prof.burnin_kv);
-    o.ctrl_mode = CtrlMode::from_env_name(
-        &std::env::var("CTRL_MODE").unwrap_or_else(|_| "torque".into()),
-    );
+    o.ctrl_mode =
+        CtrlMode::from_env_name(&std::env::var("CTRL_MODE").unwrap_or_else(|_| "torque".into()));
     o.sim_dt = env_f64("SIM_DT", 0.001);
     o.mu_ground = env_f64("MU_GROUND", 0.7);
     o.probe_z = env_f64("PROBE_Z", prof.probe_z);
@@ -198,8 +202,11 @@ fn main() {
     let ctrl_dt = env_f64("CTRL_DT", prof.ctrl_dt);
     let mj_substeps = (ctrl_dt / mj_dt).round().max(1.0) as u32;
     let dt = mj_substeps as f64 * mj_dt;
-    println!("control: {:.1} kHz plant / {:.0} Hz WBC ({mj_substeps} substeps per tick)",
-             1e-3 / mj_dt, 1.0 / dt);
+    println!(
+        "control: {:.1} kHz plant / {:.0} Hz WBC ({mj_substeps} substeps per tick)",
+        1e-3 / mj_dt,
+        1.0 / dt
+    );
     let n_ticks = (total_t / dt) as usize;
 
     rig.report_footprint(sole_half_l);
@@ -218,7 +225,11 @@ fn main() {
         dt,
     };
 
-    let mut log = TrajLog::create(std::env::var("TRAJ_CSV").ok(), prof.log_joints.to_vec(), &[]);
+    let mut log = TrajLog::create(
+        std::env::var("TRAJ_CSV").ok(),
+        prof.log_joints.to_vec(),
+        &[],
+    );
     let mut policy = CommandPolicy::new(
         rig.robot.joints.len(),
         fallback_max_level,
@@ -264,7 +275,10 @@ fn main() {
                     (st.body_pos[2] - pp[2]) / dt,
                 ];
                 if tick % 20 == 0 {
-                    let vl = rig.sim.body_world_linear_velocity(&rig.robot.root_link).unwrap();
+                    let vl = rig
+                        .sim
+                        .body_world_linear_velocity(&rig.robot.root_link)
+                        .unwrap();
                     println!(
                         "  [velchk] d(xpos)/dt=({:+.4},{:+.4},{:+.4})  cvel_lin=({:+.4},{:+.4},{:+.4})",
                         fd[0], fd[1], fd[2], vl[0], vl[1], vl[2]
@@ -285,7 +299,8 @@ fn main() {
                 let qi = rig.model.q_idx[rig.a2m[ji].unwrap()];
                 let mut qp = q.clone();
                 qp[qi] += EPS;
-                let fd = (rig.com_of(&misarta::fk::forward_kinematics(&rig.model, &qp)) - com) / EPS;
+                let fd =
+                    (rig.com_of(&misarta::fk::forward_kinematics(&rig.model, &qp)) - com) / EPS;
                 let col = na::Vector3::new(st.j_com[(0, vi)], st.j_com[(1, vi)], st.j_com[(2, vi)]);
                 let e = (fd - col).norm();
                 if e > worst.1 {
@@ -298,7 +313,10 @@ fn main() {
                     );
                 }
             }
-            println!("  [colchk] worst joint column: {} (v{}) err={:.3e}", worst.2, worst.0, worst.1);
+            println!(
+                "  [colchk] worst joint column: {} (v{}) err={:.3e}",
+                worst.2, worst.0, worst.1
+            );
         }
 
         // Verify J_com against a finite difference of the measured CoM rather
@@ -353,8 +371,7 @@ fn main() {
         if single {
             anchors.release(1); // right foot is swinging; forget its anchor
         }
-        let (j_contact, dj_v) =
-            contact_jacobians(&rig.model, q, v, data, v_dvec, &stance, nv);
+        let (j_contact, dj_v) = contact_jacobians(&rig.model, q, v, data, v_dvec, &stance, nv);
 
         // Level 0's equality block, assembled explicitly so its conditioning
         // can be watched. A Clarabel NumericalFailure at level 0 is a
@@ -383,7 +400,9 @@ fn main() {
             let jsv = j_contact.clone().singular_values();
             println!(
                 "  [cond] t={t:6.3} nc={nc}  A0 cond={:10.1} (sigma_min {:.3e})   Jc cond={:8.1}",
-                mx / mn, mn, jsv.max() / jsv.min()
+                mx / mn,
+                mn,
+                jsv.max() / jsv.min()
             );
         }
 
@@ -400,7 +419,9 @@ fn main() {
         // its least-squares problem has nothing to trade against, so the
         // residual goes to zero -- and every later level is then confined to
         // null(A_eom), which preserves it exactly.
-        let eom_task = dyn_ctx.dynamics_task().expect("Explicit keeps the EoM task");
+        let eom_task = dyn_ctx
+            .dynamics_task()
+            .expect("Explicit keeps the EoM task");
         let base = if eom_hard {
             tasks::box_bound(dyn_ctx.tau(), &rig.torque_max)
         } else {
@@ -418,6 +439,8 @@ fn main() {
             &mut anchors,
             &load_share,
             &contact_cfg,
+            &|_side: usize| bt::ContactMode::Rigid,
+            &|_side: usize, _rot: &na::Matrix3<f64>| None,
         );
 
         // ---- P1: the CoM task = balance (x,y) AND squat (z) ------------
@@ -460,8 +483,12 @@ fn main() {
         // ---- P2: trunk upright, via the WORLD-frame angular Jacobian ---
         let j_trunk =
             misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, rig.trunk_mi);
-        let dj_trunk =
-            misarta::jacobian::compute_joint_jacobian_time_derivative(&rig.model, q, v, rig.trunk_mi);
+        let dj_trunk = misarta::jacobian::compute_joint_jacobian_time_derivative(
+            &rig.model,
+            q,
+            v,
+            rig.trunk_mi,
+        );
         let djv_trunk = &dj_trunk * v_dvec;
         // The Jacobian comes from misarta's FK, so on the face of it the
         // ERROR should too -- reading the base attitude from MuJoCo mixes two
@@ -477,7 +504,9 @@ fn main() {
             let rot = misarta::se3::rotation_matrix(&data.oMi[rig.trunk_mi]);
             (rot[(2, 1)].atan2(rot[(2, 2)]), (-rot[(2, 0)]).asin())
         };
-        let rp_ref = bt::trunk_rp_ref(roll, pitch, &v_ang_w, kp_trunk, kd_trunk, trunk_dead, trunk_sign);
+        let rp_ref = bt::trunk_rp_ref(
+            roll, pitch, &v_ang_w, kp_trunk, kd_trunk, trunk_dead, trunk_sign,
+        );
         let p2 = bt::trunk(dyn_ctx.qddot(), &j_trunk, &djv_trunk, &rp_ref, nv);
 
         // ---- P4: weak posture, so the null space does not wander -------
@@ -528,15 +557,26 @@ fn main() {
             .map(|(mi, l)| load_share(mi) * l)
             .collect();
         let forces_nominal = bt::force_nominal(forces.size(), &shares, total_mass * G);
-        let p_reg = bt::regulariser(dyn_ctx.tau(), &tau_gravity, &dyn_ctx.forces(), &forces_nominal);
+        let p_reg = bt::regulariser(
+            dyn_ctx.tau(),
+            &tau_gravity,
+            &dyn_ctx.forces(),
+            &forces_nominal,
+        );
 
         // ---- swing foot: hold it at a clearance above where it started --
         let p_swing = if single {
             let jf = misarta::jacobian::compute_joint_jacobian_from_data(
-                &rig.model, q, data, right_foot_mi,
+                &rig.model,
+                q,
+                data,
+                right_foot_mi,
             );
             let djf = misarta::jacobian::compute_joint_jacobian_time_derivative(
-                &rig.model, q, v, right_foot_mi,
+                &rig.model,
+                q,
+                v,
+                right_foot_mi,
             );
             let djv = &djf * v_dvec;
             let pos = misarta::se3::translation(&data.oMi[right_foot_mi]);
@@ -560,7 +600,11 @@ fn main() {
                 kp_sw,
                 kp_sw,
                 kd_sw,
-                if swing_z_only { bt::SwingAxes::ZOnly } else { bt::SwingAxes::Xyz },
+                if swing_z_only {
+                    bt::SwingAxes::ZOnly
+                } else {
+                    bt::SwingAxes::Xyz
+                },
             ))
         } else {
             None
@@ -578,7 +622,11 @@ fn main() {
             level_names.push("eom");
         }
         levels.push(p0.task);
-        level_names.push(if eom_hard { "contact+cones" } else { "dynamics+contact+cones" });
+        level_names.push(if eom_hard {
+            "contact+cones"
+        } else {
+            "dynamics+contact+cones"
+        });
         levels.push(p1);
         level_names.push("com");
         let mut p2_late = None;
@@ -622,7 +670,10 @@ fn main() {
                     None => parts.push(format!("foot{slot}: fz~0")),
                     Some((cx, cy, fz)) => parts.push(format!(
                         "foot{slot} fz={fz:6.1}N cop=({:+6.1},{:+6.1})mm  use=({:5.2},{:5.2})",
-                        cx * 1e3, cy * 1e3, cx.abs() / lx, cy.abs() / ly
+                        cx * 1e3,
+                        cy * 1e3,
+                        cx.abs() / lx,
+                        cy.abs() / ly
                     )),
                 }
             }
@@ -669,10 +720,14 @@ fn main() {
             if !hits.is_empty() {
                 n_selfcollide += 1;
                 if n_selfcollide == 1 {
-                    let d: Vec<String> = hits.iter().map(|(a, b, f)| format!("{a} <-> {b} ({f:.1} N)")).collect();
+                    let d: Vec<String> = hits
+                        .iter()
+                        .map(|(a, b, f)| format!("{a} <-> {b} ({f:.1} N)"))
+                        .collect();
                     println!("  [self-collision] first at t={t:6.3}  {}", d.join(", "));
                 }
-                max_selfcollide_f = max_selfcollide_f.max(hits.iter().map(|(_, _, f)| *f).fold(0.0, f64::max));
+                max_selfcollide_f =
+                    max_selfcollide_f.max(hits.iter().map(|(_, _, f)| *f).fold(0.0, f64::max));
             }
         }
 
@@ -700,7 +755,10 @@ fn main() {
         // FOR, and mixing in post-step positions would put two different
         // instants on one line.
         let trot = misarta::se3::rotation_matrix(&data.oMi[rig.trunk_mi]);
-        let trunk_tilt = trot[(2, 1)].atan2(trot[(2, 2)]).abs().max((-trot[(2, 0)]).asin().abs());
+        let trunk_tilt = trot[(2, 1)]
+            .atan2(trot[(2, 2)])
+            .abs()
+            .max((-trot[(2, 0)]).asin().abs());
 
         let q_joint = rig.robot.joint_positions.clone();
         write_to_plant(&mut rig, ctrl_mode, &q_joint, &robot_taus, &extracted.qddot, v, dt);
