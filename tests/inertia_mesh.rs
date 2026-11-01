@@ -19,7 +19,11 @@ mod test_inertia {
     #[test]
     fn box_inertia_values() {
         // 1kg box with half-extents 0.1, 0.2, 0.3  (full: 0.2, 0.4, 0.6)
-        let geom = GeomData::Box { hx: 0.1, hy: 0.2, hz: 0.3 };
+        let geom = GeomData::Box {
+            hx: 0.1,
+            hy: 0.2,
+            hz: 0.3,
+        };
         let i = compute_geometry_inertia(&geom, 1.0);
         // Ixx = m/12 * (b² + c²) = (0.4² + 0.6²) / 12 = 0.0433..
         let expected_ixx = (0.4f64.powi(2) + 0.6f64.powi(2)) / 12.0;
@@ -36,7 +40,10 @@ mod test_inertia {
     #[test]
     fn cylinder_inertia_values() {
         // 2kg cylinder, radius=0.05, half_length=0.1  (height=0.2)
-        let geom = GeomData::Cylinder { radius: 0.05, half_length: 0.1 };
+        let geom = GeomData::Cylinder {
+            radius: 0.05,
+            half_length: 0.1,
+        };
         let i = compute_geometry_inertia(&geom, 2.0);
         let r2 = 0.05f64.powi(2);
         let h2 = 0.2f64.powi(2);
@@ -60,14 +67,21 @@ mod test_inertia {
 
     #[test]
     fn volume_box() {
-        let geom = GeomData::Box { hx: 0.5, hy: 0.5, hz: 0.5 };
+        let geom = GeomData::Box {
+            hx: 0.5,
+            hy: 0.5,
+            hz: 0.5,
+        };
         let vol = compute_geometry_volume(&geom);
         assert!((vol - 1.0).abs() < 1e-6); // 1x1x1 = 1 m³
     }
 
     #[test]
     fn volume_cylinder() {
-        let geom = GeomData::Cylinder { radius: 1.0, half_length: 0.5 };
+        let geom = GeomData::Cylinder {
+            radius: 1.0,
+            half_length: 0.5,
+        };
         let vol = compute_geometry_volume(&geom);
         assert!((vol - std::f64::consts::PI).abs() < 1e-6); // π×1²×1
     }
@@ -87,13 +101,24 @@ mod test_inertia {
         use nalgebra as na;
         let vis = VisualData {
             origin: na::Isometry3::identity(),
-            geometry: GeomData::Box { hx: 0.1, hy: 0.1, hz: 0.1 },
+            geometry: GeomData::Box {
+                hx: 0.1,
+                hy: 0.1,
+                hz: 0.1,
+            },
             color: [0.7, 0.7, 0.7, 1.0],
         };
         let result = compute_link_inertia(&[vis], 1.0);
         assert!((result.mass - 1.0).abs() < 1e-15);
         assert!(result.origin.translation.vector.norm() < 1e-10); // CoM at origin
-        let expected = compute_geometry_inertia(&GeomData::Box { hx: 0.1, hy: 0.1, hz: 0.1 }, 1.0);
+        let expected = compute_geometry_inertia(
+            &GeomData::Box {
+                hx: 0.1,
+                hy: 0.1,
+                hz: 0.1,
+            },
+            1.0,
+        );
         assert!((result.ixx - expected.ixx).abs() < 1e-10);
         assert!((result.iyy - expected.iyy).abs() < 1e-10);
         assert!((result.izz - expected.izz).abs() < 1e-10);
@@ -170,7 +195,11 @@ mod test_inertia {
 
     #[test]
     fn inertia_scales_with_mass() {
-        let geom = GeomData::Box { hx: 0.1, hy: 0.1, hz: 0.1 };
+        let geom = GeomData::Box {
+            hx: 0.1,
+            hy: 0.1,
+            hz: 0.1,
+        };
         let i1 = compute_geometry_inertia(&geom, 1.0);
         let i2 = compute_geometry_inertia(&geom, 5.0);
         assert!((i2.ixx / i1.ixx - 5.0).abs() < 1e-6);
@@ -184,8 +213,16 @@ mod test_inertia {
 mod test_inertia_validation {
     use articara::robot::*;
 
-    fn make_link(name: &str, mass: f64, ixx: f64, iyy: f64, izz: f64,
-                 ixy: f64, ixz: f64, iyz: f64) -> LinkData {
+    fn make_link(
+        name: &str,
+        mass: f64,
+        ixx: f64,
+        iyy: f64,
+        izz: f64,
+        ixy: f64,
+        ixz: f64,
+        iyz: f64,
+    ) -> LinkData {
         LinkData {
             name: name.to_string(),
             visuals: vec![],
@@ -193,8 +230,12 @@ mod test_inertia_validation {
             inertial: InertialData {
                 origin: nalgebra::Isometry3::identity(),
                 mass,
-                ixx, ixy, ixz,
-                iyy, iyz, izz,
+                ixx,
+                ixy,
+                ixz,
+                iyy,
+                iyz,
+                izz,
             },
             collision_enabled: true,
         }
@@ -232,7 +273,11 @@ mod test_inertia_validation {
         let link = make_link("bad_ixx", 1.0, -0.01, 0.01, 0.01, 0.0, 0.0, 0.0);
         let v = validate_inertia(&link);
         assert!(v.has_errors());
-        assert!(v.issues.iter().any(|i| i.message.contains("Ixx") && i.message.contains("negative")));
+        assert!(
+            v.issues
+                .iter()
+                .any(|i| i.message.contains("Ixx") && i.message.contains("negative"))
+        );
     }
 
     #[test]
@@ -241,7 +286,11 @@ mod test_inertia_validation {
         let link = make_link("bad_tri", 1.0, 0.001, 0.001, 1.0, 0.0, 0.0, 0.0);
         let v = validate_inertia(&link);
         assert!(v.has_errors());
-        assert!(v.issues.iter().any(|i| i.message.contains("Triangle inequality")));
+        assert!(
+            v.issues
+                .iter()
+                .any(|i| i.message.contains("Triangle inequality"))
+        );
     }
 
     #[test]
@@ -258,7 +307,11 @@ mod test_inertia_validation {
         let link = make_link("bad_psd", 1.0, 0.001, 0.001, 0.001, 0.1, 0.1, 0.1);
         let v = validate_inertia(&link);
         assert!(v.has_errors());
-        assert!(v.issues.iter().any(|i| i.message.contains("positive semi-definite")));
+        assert!(
+            v.issues
+                .iter()
+                .any(|i| i.message.contains("positive semi-definite"))
+        );
     }
 
     #[test]
@@ -276,15 +329,24 @@ mod test_inertia_validation {
         // new_empty creates "base_link" with mass=1.0 and valid inertia
 
         // Add a child link
-        model.add_child(
-            "base_link", "bad_link", "j1",
-            "revolute",
-            nalgebra::Isometry3::identity(),
-            nalgebra::Vector3::z(),
-            GeomData::Box { hx: 0.1, hy: 0.1, hz: 0.1 },
-            [0.5, 0.5, 0.5, 1.0],
-            -1.0, 1.0,
-        ).unwrap();
+        model
+            .add_child(
+                "base_link",
+                "bad_link",
+                "j1",
+                "revolute",
+                nalgebra::Isometry3::identity(),
+                nalgebra::Vector3::z(),
+                GeomData::Box {
+                    hx: 0.1,
+                    hy: 0.1,
+                    hz: 0.1,
+                },
+                [0.5, 0.5, 0.5, 1.0],
+                -1.0,
+                1.0,
+            )
+            .unwrap();
         // Make the child link have bad inertia (negative mass)
         if let Some(idx) = model.link_map.get("bad_link") {
             model.links[*idx].inertial.mass = -1.0;
@@ -316,7 +378,7 @@ mod test_inertia_validation {
 mod test_mesh_io_regressions {
     use super::*;
     use articara::rbd::model::{CollisionData, GeomData};
-    use articara::robot::{resolve_package_path, RobotModel};
+    use articara::robot::{RobotModel, resolve_package_path};
 
     /// A 2-triangle Wavefront OBJ (forms a corner of a cube). 4 unique
     /// verts (deduped by tobj's `single_index` pass) → 2 triangles → 12
@@ -341,7 +403,9 @@ f 1 3 4
         buf.extend_from_slice(&1f32.to_le_bytes());
         // 3 vertices in z=0 plane
         for v in [[0f32, 0., 0.], [1., 0., 0.], [0., 1., 0.]] {
-            for f in v { buf.extend_from_slice(&f.to_le_bytes()); }
+            for f in v {
+                buf.extend_from_slice(&f.to_le_bytes());
+            }
         }
         buf.extend_from_slice(&[0u8, 0u8]); // attribute byte count
         buf
@@ -372,7 +436,10 @@ f 1 3 4
 
     fn tempdir(prefix: &str) -> PathBuf {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let p = std::env::temp_dir().join(format!("articara_meshio_{prefix}_{nanos}"));
         std::fs::create_dir_all(&p).unwrap();
         p
@@ -387,11 +454,7 @@ f 1 3 4
         std::fs::create_dir_all(&mesh_dir).unwrap();
         std::fs::write(mesh_dir.join("tri.obj"), TINY_OBJ).unwrap();
         let urdf_path = pkg.join("robot.urdf");
-        std::fs::write(
-            &urdf_path,
-            tiny_urdf("package://test_pkg/mesh/tri.obj"),
-        )
-        .unwrap();
+        std::fs::write(&urdf_path, tiny_urdf("package://test_pkg/mesh/tri.obj")).unwrap();
         urdf_path
     }
 
@@ -410,7 +473,11 @@ f 1 3 4
             for v in &link.visuals {
                 if let GeomData::Mesh { mesh, filename, .. } = &v.geometry {
                     let vertices = mesh.to_flat_vertices_f32();
-                    if filename.as_deref().map(|s| s.ends_with(".obj")).unwrap_or(false) {
+                    if filename
+                        .as_deref()
+                        .map(|s| s.ends_with(".obj"))
+                        .unwrap_or(false)
+                    {
                         assert!(
                             !vertices.is_empty(),
                             "OBJ vertices empty — convert_geometry probably regressed to STL-only"
@@ -469,9 +536,9 @@ f 1 3 4
         model.links[0].collisions.push(CollisionData {
             origin: nalgebra::Isometry3::identity(),
             geometry: GeomData::Mesh {
-                mesh: std::sync::Arc::new(
-                    misarta::mesh::MeshData::from_flat_vertices_f32(&fake_verts),
-                ),
+                mesh: std::sync::Arc::new(misarta::mesh::MeshData::from_flat_vertices_f32(
+                    &fake_verts,
+                )),
                 filename: None,
                 scale: None,
             },
@@ -524,9 +591,9 @@ f 1 3 4
         model.links[0].collisions.push(CollisionData {
             origin: nalgebra::Isometry3::identity(),
             geometry: GeomData::Mesh {
-                mesh: std::sync::Arc::new(
-                    misarta::mesh::MeshData::from_flat_vertices_f32(&one_tri_flat_verts()),
-                ),
+                mesh: std::sync::Arc::new(misarta::mesh::MeshData::from_flat_vertices_f32(
+                    &one_tri_flat_verts(),
+                )),
                 filename: None,
                 scale: None,
             },
@@ -538,9 +605,7 @@ f 1 3 4
 
         model.save_as_misa(&misa_path).expect("save_as_misa");
 
-        let expected_stl = dir.join(format!(
-            "meshes/decomposed/{link_name}_col_{col_idx}.stl"
-        ));
+        let expected_stl = dir.join(format!("meshes/decomposed/{link_name}_col_{col_idx}.stl"));
         assert!(
             expected_stl.exists(),
             "decomposed STL not materialised at {expected_stl:?}"
@@ -599,8 +664,7 @@ f 1 3 4
         let misa_path = dst_dir.join("out.misa");
         model.save_as_misa(&misa_path).expect("save_as_misa");
 
-        let (loaded, report) =
-            RobotModel::from_misa_with_report(&misa_path).expect("reload misa");
+        let (loaded, report) = RobotModel::from_misa_with_report(&misa_path).expect("reload misa");
         assert!(
             report.missing_meshes.is_empty(),
             "expected no missing meshes after .misa round-trip, got: {:?}",
@@ -610,7 +674,12 @@ f 1 3 4
         let mut obj_meshes_with_verts = 0;
         for link in &loaded.links {
             for v in &link.visuals {
-                if let GeomData::Mesh { filename: Some(f), mesh, .. } = &v.geometry {
+                if let GeomData::Mesh {
+                    filename: Some(f),
+                    mesh,
+                    ..
+                } = &v.geometry
+                {
                     if f.to_lowercase().ends_with(".obj") && mesh.num_triangles() > 0 {
                         obj_meshes_with_verts += 1;
                     }
@@ -629,9 +698,8 @@ f 1 3 4
     /// (matching what `load_stl_mesh` / `load_obj_mesh` emit).
     fn one_tri_flat_verts() -> Vec<f32> {
         vec![
-            0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-            1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-            0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+            1.0,
         ]
     }
 

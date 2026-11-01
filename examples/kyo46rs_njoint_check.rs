@@ -26,19 +26,22 @@ fn main() {
     use articara::rbd::model::ActuatorMode;
     use articara::robot::RobotModel;
     use articara::wbc_pipeline::build_floating_base_model;
-    use misa_wbc::{tasks, Dynamics, Formulation, SolveConfig, Solver};
+    use misa_wbc::{Dynamics, Formulation, SolveConfig, Solver, tasks};
     use nalgebra as na;
     use std::f64::consts::PI;
 
     // ── EDIT THIS to sweep 1 -> 2 -> 3 -> 6 joints ─────────────────────
     const JOINT_SET: &[&str] = &[
-        "left_hip_pitch_joint", "left_knee_joint", "left_ankle_pitch_joint",
-        "right_hip_pitch_joint", "right_knee_joint", "right_ankle_pitch_joint",
+        "left_hip_pitch_joint",
+        "left_knee_joint",
+        "left_ankle_pitch_joint",
+        "right_hip_pitch_joint",
+        "right_knee_joint",
+        "right_ankle_pitch_joint",
     ];
 
-    let urdf_path = std::path::Path::new(
-        "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
-    );
+    let urdf_path =
+        std::path::Path::new("/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf");
     let mut robot = RobotModel::from_urdf(urdf_path).expect("load kyo46rs.urdf");
 
     // Full crouch+arms seed (same as kyo46rs_hanging_squat.rs /
@@ -132,7 +135,10 @@ fn main() {
     let tracked: Vec<(usize, usize, f64, f64)> = JOINT_SET
         .iter()
         .map(|&name| {
-            let ji = *robot.joint_map.get(name).unwrap_or_else(|| panic!("{name} not in URDF"));
+            let ji = *robot
+                .joint_map
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} not in URDF"));
             let mi = a2m[ji].unwrap_or_else(|| panic!("{name} not mapped into misarta model"));
             let seed = full_seed
                 .iter()
@@ -267,7 +273,8 @@ fn main() {
             .expect("Explicit formulation always keeps the EoM task")
             + tasks::box_bound(dyn_ctx.tau(), &torque_max)
             + tasks::zero_contact_acceleration(dyn_ctx.qddot(), &j_base_fixed, &dj_v_base_fixed);
-        let p1 = tasks::cartesian_acceleration(dyn_ctx.qddot(), &j_tracked, &dj_v_tracked, &accel_ref);
+        let p1 =
+            tasks::cartesian_acceleration(dyn_ctx.qddot(), &j_tracked, &dj_v_tracked, &accel_ref);
         let p2 = tasks::regularize(dyn_ctx.tau(), &tau_gravity);
 
         let sol = solver
@@ -292,7 +299,10 @@ fn main() {
         }
         if !matches!(sol.status, misa_wbc::SolveStatus::Optimal) {
             let worst_gap = qddot_gap_this_tick.iter().cloned().fold(0.0, f64::max);
-            println!("    [degraded] t={t:.3} status={:?} worst_qddot_gap={worst_gap:.2}", sol.status);
+            println!(
+                "    [degraded] t={t:.3} status={:?} worst_qddot_gap={worst_gap:.2}",
+                sol.status
+            );
         }
 
         let mut robot_taus = vec![0.0_f64; robot.joints.len()];
@@ -326,7 +336,12 @@ fn main() {
             use std::io::Write;
             write!(log_file, "{t:.4}").unwrap();
             for (row, (ji, _, _, _)) in tracked.iter().enumerate() {
-                write!(log_file, ",{:.5},{:.5}", robot.joint_positions[*ji], q_ref_this_tick[row]).unwrap();
+                write!(
+                    log_file,
+                    ",{:.5},{:.5}",
+                    robot.joint_positions[*ji], q_ref_this_tick[row]
+                )
+                .unwrap();
             }
             writeln!(log_file).unwrap();
         }
@@ -346,7 +361,9 @@ fn main() {
             let report: Vec<String> = tracked
                 .iter()
                 .enumerate()
-                .map(|(row, (ji, _, _, _))| format!("{}={:+.3}", JOINT_SET[row], robot.joint_positions[*ji]))
+                .map(|(row, (ji, _, _, _))| {
+                    format!("{}={:+.3}", JOINT_SET[row], robot.joint_positions[*ji])
+                })
                 .collect();
             let gaps: Vec<String> = qddot_gap_this_tick
                 .iter()
@@ -374,8 +391,14 @@ fn main() {
             max_qddot_gap_per_joint[row],
         );
     }
-    println!("  degraded (non-Optimal) solves: {n_degraded} / {n_ticks} ticks ({:.1}%)", 100.0 * n_degraded as f64 / n_ticks as f64);
-    println!("  fallback (held last-good torque) used: {n_fallback_used} / {n_ticks} ticks ({:.1}%)", 100.0 * n_fallback_used as f64 / n_ticks as f64);
+    println!(
+        "  degraded (non-Optimal) solves: {n_degraded} / {n_ticks} ticks ({:.1}%)",
+        100.0 * n_degraded as f64 / n_ticks as f64
+    );
+    println!(
+        "  fallback (held last-good torque) used: {n_fallback_used} / {n_ticks} ticks ({:.1}%)",
+        100.0 * n_fallback_used as f64 / n_ticks as f64
+    );
 }
 
 #[cfg(not(feature = "mujoco"))]

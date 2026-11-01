@@ -243,26 +243,22 @@ impl GlRenderer {
             let (com_sphere_vao, com_sphere_vbo) = upload_mesh_data(gl, &com_sphere_data);
 
             // Gizmo arrow (along +Z; rotated at draw time for each axis)
-            let gizmo_arrow_data =
-                primitives::generate_arrow(0.003, 0.06, 0.009, 0.02, 12);
+            let gizmo_arrow_data = primitives::generate_arrow(0.003, 0.06, 0.009, 0.02, 12);
             let gizmo_arrow_num = (gizmo_arrow_data.len() / 6) as i32;
             let (gizmo_arrow_vao, gizmo_arrow_vbo) = upload_mesh_data(gl, &gizmo_arrow_data);
 
             // Gizmo ring (around Z axis; rotated at draw time for each axis)
-            let gizmo_ring_data =
-                primitives::generate_ring(0.05, 0.003, 48, 8);
+            let gizmo_ring_data = primitives::generate_ring(0.05, 0.003, 48, 8);
             let gizmo_ring_num = (gizmo_ring_data.len() / 6) as i32;
             let (gizmo_ring_vao, gizmo_ring_vbo) = upload_mesh_data(gl, &gizmo_ring_data);
 
             // Gizmo scale handle (shaft + cube along +Z; rotated for each axis)
-            let gizmo_scale_data =
-                primitives::generate_scale_handle(0.003, 0.06, 0.006, 12);
+            let gizmo_scale_data = primitives::generate_scale_handle(0.003, 0.06, 0.006, 12);
             let gizmo_scale_num = (gizmo_scale_data.len() / 6) as i32;
             let (gizmo_scale_vao, gizmo_scale_vbo) = upload_mesh_data(gl, &gizmo_scale_data);
 
             // Joint axis arrow (smaller than gizmo; shaft_r=0.002, shaft_l=0.04, head_r=0.007, head_l=0.015)
-            let joint_arrow_data =
-                primitives::generate_arrow(0.002, 0.04, 0.007, 0.015, 12);
+            let joint_arrow_data = primitives::generate_arrow(0.002, 0.04, 0.007, 0.015, 12);
             let joint_arrow_num = (joint_arrow_data.len() / 6) as i32;
             let (joint_arrow_vao, joint_arrow_vbo) = upload_mesh_data(gl, &joint_arrow_data);
 
@@ -368,7 +364,10 @@ impl GlRenderer {
                         half_length,
                     } => primitives::generate_cylinder(*radius, *half_length, 16),
                     GeomData::Sphere { radius } => primitives::generate_sphere(*radius, 16, 8),
-                    GeomData::Capsule { radius, half_length } => primitives::generate_capsule(*radius, *half_length, 16, 8),
+                    GeomData::Capsule {
+                        radius,
+                        half_length,
+                    } => primitives::generate_capsule(*radius, *half_length, 16, 8),
                     GeomData::Mesh { mesh, .. } => mesh.to_flat_vertices_f32(),
                 };
 
@@ -394,11 +393,15 @@ impl GlRenderer {
             for col in &link.collisions {
                 let vertex_data = match &col.geometry {
                     GeomData::Box { hx, hy, hz } => primitives::generate_box(*hx, *hy, *hz),
-                    GeomData::Cylinder { radius, half_length } => {
-                        primitives::generate_cylinder(*radius, *half_length, 16)
-                    }
+                    GeomData::Cylinder {
+                        radius,
+                        half_length,
+                    } => primitives::generate_cylinder(*radius, *half_length, 16),
                     GeomData::Sphere { radius } => primitives::generate_sphere(*radius, 16, 8),
-                    GeomData::Capsule { radius, half_length } => primitives::generate_capsule(*radius, *half_length, 16, 8),
+                    GeomData::Capsule {
+                        radius,
+                        half_length,
+                    } => primitives::generate_capsule(*radius, *half_length, 16, 8),
                     GeomData::Mesh { mesh, .. } => mesh.to_flat_vertices_f32(),
                 };
                 if vertex_data.is_empty() {
@@ -471,11 +474,7 @@ impl GlRenderer {
                 .try_inverse()
                 .map(|inv| inv.transpose())
                 .unwrap_or(na::Matrix3::identity());
-            gl.uniform_matrix_3_f32_slice(
-                Some(&self.u_normal_mat),
-                false,
-                normal_mat.as_slice(),
-            );
+            gl.uniform_matrix_3_f32_slice(Some(&self.u_normal_mat), false, normal_mat.as_slice());
 
             let a = alpha.unwrap_or(entry.color[3]);
             // A tinted link is being called out (joint at its limit, say), so
@@ -588,31 +587,27 @@ impl GlRenderer {
                 gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
                 gl.depth_mask(false); // don't write depth for transparent surface
 
-                let translate = na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, self.ground_z));
+                let translate =
+                    na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, self.ground_z));
                 // Roll (X-axis) then pitch (Y-axis) rotation
-                let rot_x = na::Rotation3::from_axis_angle(
-                    &na::Vector3::x_axis(),
-                    self.ground_plane_roll,
-                );
-                let rot_y = na::Rotation3::from_axis_angle(
-                    &na::Vector3::y_axis(),
-                    self.ground_plane_pitch,
-                );
+                let rot_x =
+                    na::Rotation3::from_axis_angle(&na::Vector3::x_axis(), self.ground_plane_roll);
+                let rot_y =
+                    na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), self.ground_plane_pitch);
                 let rot = (rot_y * rot_x).to_homogeneous();
                 // Tile size is baked as 1.0 in the mesh; scale by ground_size
                 // to map [0..N tiles] to the desired world extent.
                 let tile_scale = self.ground_size / CHECKER_HALF_TILES as f32;
-                let scale = na::Matrix4::new_nonuniform_scaling(&na::Vector3::new(tile_scale, tile_scale, 1.0));
+                let scale = na::Matrix4::new_nonuniform_scaling(&na::Vector3::new(
+                    tile_scale, tile_scale, 1.0,
+                ));
                 let mvp = vp * translate * rot * scale;
                 gl.uniform_matrix_4_f32_slice(Some(&self.u_mvp), false, mvp.as_slice());
 
                 // Compute rotated normal for proper lighting
                 let normal3 = (rot_y * rot_x) * na::Vector3::new(0.0, 0.0, 1.0);
-                let normal_mat = na::Matrix3::from_columns(&[
-                    na::Vector3::x(),
-                    na::Vector3::y(),
-                    normal3,
-                ]);
+                let normal_mat =
+                    na::Matrix3::from_columns(&[na::Vector3::x(), na::Vector3::y(), normal3]);
                 gl.uniform_matrix_3_f32_slice(
                     Some(&self.u_normal_mat),
                     false,
@@ -725,7 +720,6 @@ impl GlRenderer {
             gl.disable(glow::BLEND);
             gl.depth_mask(true);
 
-
             // Draw CoM markers
             if self.show_com {
                 gl.uniform_1_i32(Some(&self.u_flat), 0);
@@ -759,7 +753,8 @@ impl GlRenderer {
                 gl.uniform_1_i32(Some(&self.u_flat), 0);
                 gl.bind_vertex_array(Some(self.joint_arrow_vao));
 
-                for (parent_link, local_origin, local_axis, is_revolute) in &self.joint_axis_entries {
+                for (parent_link, local_origin, local_axis, is_revolute) in &self.joint_axis_entries
+                {
                     let parent_tf = self
                         .transforms
                         .get(parent_link)
@@ -769,28 +764,20 @@ impl GlRenderer {
                     let world_axis = (joint_world.rotation * local_axis).normalize();
 
                     // Build a rotation that aligns +Z with the joint axis
-                    let axis_rot = na::UnitQuaternion::rotation_between(
-                        &na::Vector3::z(),
-                        &world_axis,
-                    )
-                    .unwrap_or(na::UnitQuaternion::identity());
+                    let axis_rot =
+                        na::UnitQuaternion::rotation_between(&na::Vector3::z(), &world_axis)
+                            .unwrap_or(na::UnitQuaternion::identity());
 
                     // Position arrow so it is centered on the joint:
                     // shift back by half the arrow length (0.04+0.015=0.055 total, half≈0.0275)
                     let arrow_center_offset = world_axis * (-0.0275);
                     let arrow_pos = joint_world.translation.vector + arrow_center_offset;
-                    let arrow_tf = na::Isometry3::from_parts(
-                        na::Translation3::from(arrow_pos),
-                        axis_rot,
-                    );
+                    let arrow_tf =
+                        na::Isometry3::from_parts(na::Translation3::from(arrow_pos), axis_rot);
 
                     let model_mat = arrow_tf.to_homogeneous();
                     let mvp = vp * model_mat;
-                    gl.uniform_matrix_4_f32_slice(
-                        Some(&self.u_mvp),
-                        false,
-                        mvp.as_slice(),
-                    );
+                    gl.uniform_matrix_4_f32_slice(Some(&self.u_mvp), false, mvp.as_slice());
                     let model3 = model_mat.fixed_view::<3, 3>(0, 0).into_owned();
                     let normal_mat = model3
                         .try_inverse()
@@ -859,18 +846,12 @@ impl GlRenderer {
                     na::UnitQuaternion::identity(),
                 ];
 
-                for (i, (color, rot)) in
-                    axis_colors.iter().zip(axis_rotations.iter()).enumerate()
-                {
-                    let axis_tf = gizmo_tf
-                        * na::Isometry3::from_parts(na::Translation3::identity(), *rot);
+                for (i, (color, rot)) in axis_colors.iter().zip(axis_rotations.iter()).enumerate() {
+                    let axis_tf =
+                        gizmo_tf * na::Isometry3::from_parts(na::Translation3::identity(), *rot);
                     let model_mat = axis_tf.to_homogeneous();
                     let mvp = vp * model_mat;
-                    gl.uniform_matrix_4_f32_slice(
-                        Some(&self.u_mvp),
-                        false,
-                        mvp.as_slice(),
-                    );
+                    gl.uniform_matrix_4_f32_slice(Some(&self.u_mvp), false, mvp.as_slice());
 
                     let model3 = model_mat.fixed_view::<3, 3>(0, 0).into_owned();
                     let normal_mat = model3
@@ -1011,7 +992,14 @@ unsafe fn upload_mesh_data(gl: &glow::Context, data: &[f32]) -> (glow::VertexArr
         gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
         // Normal: location 1
         gl.enable_vertex_attrib_array(1);
-        gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, stride, 3 * size_of::<f32>() as i32);
+        gl.vertex_attrib_pointer_f32(
+            1,
+            3,
+            glow::FLOAT,
+            false,
+            stride,
+            3 * size_of::<f32>() as i32,
+        );
 
         gl.bind_vertex_array(None);
         gl.bind_buffer(glow::ARRAY_BUFFER, None);
@@ -1047,13 +1035,19 @@ fn generate_checkerboard_tiles() -> (Vec<f32>, Vec<f32>) {
             let is_light = (ix + iy) & 1 == 0;
             let buf = if is_light { &mut light } else { &mut dark };
             // Triangle 1
-            buf.extend_from_slice(&[x0, y0, 0.0]); buf.extend_from_slice(&nrm);
-            buf.extend_from_slice(&[x1, y0, 0.0]); buf.extend_from_slice(&nrm);
-            buf.extend_from_slice(&[x1, y1, 0.0]); buf.extend_from_slice(&nrm);
+            buf.extend_from_slice(&[x0, y0, 0.0]);
+            buf.extend_from_slice(&nrm);
+            buf.extend_from_slice(&[x1, y0, 0.0]);
+            buf.extend_from_slice(&nrm);
+            buf.extend_from_slice(&[x1, y1, 0.0]);
+            buf.extend_from_slice(&nrm);
             // Triangle 2
-            buf.extend_from_slice(&[x0, y0, 0.0]); buf.extend_from_slice(&nrm);
-            buf.extend_from_slice(&[x1, y1, 0.0]); buf.extend_from_slice(&nrm);
-            buf.extend_from_slice(&[x0, y1, 0.0]); buf.extend_from_slice(&nrm);
+            buf.extend_from_slice(&[x0, y0, 0.0]);
+            buf.extend_from_slice(&nrm);
+            buf.extend_from_slice(&[x1, y1, 0.0]);
+            buf.extend_from_slice(&nrm);
+            buf.extend_from_slice(&[x0, y1, 0.0]);
+            buf.extend_from_slice(&nrm);
         }
     }
     (light, dark)

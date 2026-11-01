@@ -1,6 +1,5 @@
 //! Shared fixture paths for the format / editor regression suites.
 
-
 // Each integration-test binary compiles this module in full but
 // only calls the helpers it needs — per-binary dead_code noise
 // is expected, not a defect.
@@ -10,7 +9,9 @@ use std::path::PathBuf;
 
 /// Return the absolute path of the `tests/fixtures` directory.
 pub fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
 }
 
 /// Return the fixture URDF path.
@@ -30,5 +31,8 @@ pub fn fixture_mjcf() -> PathBuf {
 
 /// Return the real namiashi URDF path (for full integration tests).
 pub fn namiashi_urdf() -> PathBuf {
-    fixtures_dir().join("namiashi").join("urdf").join("namiashi.urdf")
+    fixtures_dir()
+        .join("namiashi")
+        .join("urdf")
+        .join("namiashi.urdf")
 }

@@ -26,15 +26,14 @@ fn main() {
     use articara::rbd::model::ActuatorMode;
     use articara::robot::RobotModel;
     use articara::wbc_pipeline::build_floating_base_model;
-    use misa_wbc::{tasks, AsAffine, Dynamics, Formulation, SolveConfig, Solver};
+    use misa_wbc::{AsAffine, Dynamics, Formulation, SolveConfig, Solver, tasks};
     use nalgebra as na;
 
     // ── EDIT THIS: 1 = left foot only, 2 = both feet ───────────────────
     const N_FEET: usize = 2;
 
-    let urdf_path = std::path::Path::new(
-        "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
-    );
+    let urdf_path =
+        std::path::Path::new("/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf");
     let mut robot = RobotModel::from_urdf(urdf_path).expect("load kyo46rs.urdf");
 
     let seed = [
@@ -70,7 +69,12 @@ fn main() {
     let opts = MjcfExportOptions {
         base_pos: Some([0.0, 0.0, 0.41 + 0.059 + 0.002]),
         base_locked_axes: [true; 6],
-        ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 2.0, roll: 0.0, pitch: 0.0 }),
+        ground_plane: Some(GroundPlaneCfg {
+            z: 0.0,
+            half_size: 2.0,
+            roll: 0.0,
+            pitch: 0.0,
+        }),
         ..MjcfExportOptions::default()
     };
     let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
@@ -79,7 +83,10 @@ fn main() {
     {
         let lfoot = sim.body_world_position("left_foot_link").unwrap();
         let rfoot = sim.body_world_position("right_foot_link").unwrap();
-        println!("  t=0 (pre-burn-in) left_foot_z={:.4} right_foot_z={:.4}", lfoot[2], rfoot[2]);
+        println!(
+            "  t=0 (pre-burn-in) left_foot_z={:.4} right_foot_z={:.4}",
+            lfoot[2], rfoot[2]
+        );
     }
 
     let (model, a2m, link_to_idx) = build_floating_base_model(&robot);
@@ -121,7 +128,10 @@ fn main() {
     {
         let lfoot = sim.body_world_position("left_foot_link").unwrap();
         let rfoot = sim.body_world_position("right_foot_link").unwrap();
-        println!("post-burn-in: left_foot_z={:.4} right_foot_z={:.4}", lfoot[2], rfoot[2]);
+        println!(
+            "post-burn-in: left_foot_z={:.4} right_foot_z={:.4}",
+            lfoot[2], rfoot[2]
+        );
     }
 
     let mut solver = Solver::new();
@@ -135,7 +145,10 @@ fn main() {
 
     let mut n_degraded: u32 = 0;
     let mut max_joint_drift: f64 = 0.0;
-    let q0: Vec<f64> = seed.iter().map(|(name, _)| robot.joint_positions[*robot.joint_map.get(*name).unwrap()]).collect();
+    let q0: Vec<f64> = seed
+        .iter()
+        .map(|(name, _)| robot.joint_positions[*robot.joint_map.get(*name).unwrap()])
+        .collect();
 
     for tick in 0..n_ticks {
         let t = tick as f64 * dt;
@@ -168,7 +181,11 @@ fn main() {
         let h = misarta::rnea::nonlinear_effects(&model, &q, &v);
         let v_dvec = na::DVector::from_column_slice(&v);
 
-        let feet: &[usize] = if N_FEET == 1 { &[left_foot_mi] } else { &[left_foot_mi, right_foot_mi] };
+        let feet: &[usize] = if N_FEET == 1 {
+            &[left_foot_mi]
+        } else {
+            &[left_foot_mi, right_foot_mi]
+        };
         let nc = feet.len();
 
         // A welded base is BOTH "free reaction force" AND "prescribed
@@ -186,7 +203,8 @@ fn main() {
         }
         for (slot, &foot_mi) in feet.iter().enumerate() {
             let j_full = misarta::jacobian::compute_joint_jacobian(&model, &q, foot_mi);
-            let dj_full = misarta::jacobian::compute_joint_jacobian_time_derivative(&model, &q, &v, foot_mi);
+            let dj_full =
+                misarta::jacobian::compute_joint_jacobian_time_derivative(&model, &q, &v, foot_mi);
             let dj_v_full = &dj_full * &v_dvec;
             for r in 0..6 {
                 for c in 0..nv {
@@ -199,7 +217,12 @@ fn main() {
         let dyn_ctx = Dynamics::new(Formulation::Explicit, &mass, &h, &j_contact, na_count);
 
         let forces = dyn_ctx.forces();
-        let sole_patch = tasks::ContactPatch { mu: FRICTION_MU, cop_half: (0.049, 0.019), mu_torsion: 0.05, f_max: 150.0 };
+        let sole_patch = tasks::ContactPatch {
+            mu: FRICTION_MU,
+            cop_half: (0.049, 0.019),
+            mu_torsion: 0.05,
+            f_max: 150.0,
+        };
 
         let j_base = j_contact.rows(0, 6).into_owned();
         let dj_v_base = dj_v.rows(0, 6).into_owned();
@@ -267,9 +290,11 @@ fn main() {
                 "  [wrench foot0] t={t:6.3} status={:?} m=({mx:+.3},{my:+.3},{mz:+.3}) f=({fx:+.3},{fy:+.3},{fz:+.3})  |mx|<=Ly*fz? {} ({:.3}<={:.3})  |my|<=Lx*fz? {} ({:.3}<={:.3})",
                 sol.status,
                 mx.abs() <= sole_patch.cop_half.1 * fz + 1e-6,
-                mx.abs(), sole_patch.cop_half.1 * fz,
+                mx.abs(),
+                sole_patch.cop_half.1 * fz,
                 my.abs() <= sole_patch.cop_half.0 * fz + 1e-6,
-                my.abs(), sole_patch.cop_half.0 * fz,
+                my.abs(),
+                sole_patch.cop_half.0 * fz,
             );
         }
 
@@ -298,13 +323,19 @@ fn main() {
 
         if tick % 100 == 0 {
             let lfoot = sim.body_world_position("left_foot_link").unwrap();
-            println!("  t={t:6.3}  left_foot_z={:.4}  max_joint_drift={max_joint_drift:.4}  status={:?}", lfoot[2], sol.status);
+            println!(
+                "  t={t:6.3}  left_foot_z={:.4}  max_joint_drift={max_joint_drift:.4}  status={:?}",
+                lfoot[2], sol.status
+            );
         }
     }
 
     println!("\n=== Result (N_FEET={N_FEET}, torso welded) ===");
     println!("  max joint drift from seed: {max_joint_drift:.4} rad");
-    println!("  degraded (non-Optimal) solves: {n_degraded} / {n_ticks} ticks ({:.1}%)", 100.0 * n_degraded as f64 / n_ticks as f64);
+    println!(
+        "  degraded (non-Optimal) solves: {n_degraded} / {n_ticks} ticks ({:.1}%)",
+        100.0 * n_degraded as f64 / n_ticks as f64
+    );
 }
 
 #[cfg(not(feature = "mujoco"))]

@@ -25,13 +25,12 @@ fn main() {
     use articara::rbd::model::ActuatorMode;
     use articara::robot::RobotModel;
     use articara::wbc_pipeline::build_floating_base_model;
-    use misa_wbc::{tasks, Dynamics, Formulation, SolveConfig, Solver};
+    use misa_wbc::{Dynamics, Formulation, SolveConfig, Solver, tasks};
     use nalgebra as na;
     use std::f64::consts::PI;
 
-    let urdf_path = std::path::Path::new(
-        "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
-    );
+    let urdf_path =
+        std::path::Path::new("/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf");
     let mut robot = RobotModel::from_urdf(urdf_path).expect("load kyo46rs.urdf");
 
     const TARGET_JOINT: &str = "left_knee_joint";
@@ -91,7 +90,10 @@ fn main() {
         torque_max[vi - 6] = robot.joints[ji].effort.max(1.0);
     }
 
-    let target_ji = *robot.joint_map.get(TARGET_JOINT).expect("target joint in URDF");
+    let target_ji = *robot
+        .joint_map
+        .get(TARGET_JOINT)
+        .expect("target joint in URDF");
     let target_mi = a2m[target_ji].expect("target joint mapped into misarta model");
     let target_vidx = model.v_idx[target_mi];
 
@@ -180,7 +182,8 @@ fn main() {
             .expect("Explicit formulation always keeps the EoM task")
             + tasks::box_bound(dyn_ctx.tau(), &torque_max)
             + tasks::zero_contact_acceleration(dyn_ctx.qddot(), &j_base_fixed, &dj_v_base_fixed);
-        let p1 = tasks::cartesian_acceleration(dyn_ctx.qddot(), &j_single, &dj_v_single, &accel_ref);
+        let p1 =
+            tasks::cartesian_acceleration(dyn_ctx.qddot(), &j_single, &dj_v_single, &accel_ref);
         let p2 = tasks::regularize(dyn_ctx.tau(), &tau_gravity);
 
         let sol = solver
@@ -204,7 +207,10 @@ fn main() {
         sim.step_n_frames(robot, mj_substeps, true);
 
         let q_now = robot.joint_positions[target_ji];
-        let qd_now = sim.joint_q_qd(TARGET_JOINT).map(|(_, qd)| qd).unwrap_or(0.0);
+        let qd_now = sim
+            .joint_q_qd(TARGET_JOINT)
+            .map(|(_, qd)| qd)
+            .unwrap_or(0.0);
         (q_now, qd_now, sol.status)
     };
 
@@ -230,14 +236,20 @@ fn main() {
             }
             let err = (q_now - step_target).abs();
             if !settle_reported && err < 0.02 && i > 5 {
-                println!("    settled within 0.02 rad at t={t:.3}s ({:.0} ms after step)", (i as f64 * dt) * 1000.0);
+                println!(
+                    "    settled within 0.02 rad at t={t:.3}s ({:.0} ms after step)",
+                    (i as f64 * dt) * 1000.0
+                );
                 settle_reported = true;
             }
             if i % ((0.5 / dt) as usize).max(1) == 0 {
                 println!("    t={t:6.3}  q={q_now:+.4} qd={qd_now:+.3}  status={status:?}");
             }
         }
-        println!("    max overshoot past target: {:.4} rad", overshoot.max(0.0));
+        println!(
+            "    max overshoot past target: {:.4} rad",
+            overshoot.max(0.0)
+        );
     }
 
     // ── Phase 2: sinusoid tracking (matches kyo46rs_hanging_squat.rs) ──

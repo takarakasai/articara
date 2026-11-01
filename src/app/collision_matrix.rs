@@ -36,10 +36,7 @@ impl ArticaraApp {
         let mut enabled_map = std::collections::HashMap::<(String, String), bool>::new();
         if let Some(model) = self.model.as_ref() {
             for cp in &model.collision_pairs {
-                enabled_map.insert(
-                    (cp.link_a.clone(), cp.link_b.clone()),
-                    cp.enabled,
-                );
+                enabled_map.insert((cp.link_a.clone(), cp.link_b.clone()), cp.enabled);
             }
         }
 
@@ -60,25 +57,29 @@ impl ArticaraApp {
         // Helper: is *every* pair involving `link` currently excluded?
         // (Used to decide whether the bulk toggle should enable-all or
         // disable-all, and to colour the header.)
-        let all_pairs_for_link_excluded = |link: &str, names: &[String], map: &std::collections::HashMap<(String, String), bool>| -> bool {
-            let mut saw_any = false;
-            for other in names {
-                if other == link {
-                    continue;
+        let all_pairs_for_link_excluded =
+            |link: &str,
+             names: &[String],
+             map: &std::collections::HashMap<(String, String), bool>|
+             -> bool {
+                let mut saw_any = false;
+                for other in names {
+                    if other == link {
+                        continue;
+                    }
+                    saw_any = true;
+                    let (a, b) = if link <= other.as_str() {
+                        (link.to_string(), other.clone())
+                    } else {
+                        (other.clone(), link.to_string())
+                    };
+                    let excluded = map.get(&(a, b)).map(|v| !v).unwrap_or(false);
+                    if !excluded {
+                        return false;
+                    }
                 }
-                saw_any = true;
-                let (a, b) = if link <= other.as_str() {
-                    (link.to_string(), other.clone())
-                } else {
-                    (other.clone(), link.to_string())
-                };
-                let excluded = map.get(&(a, b)).map(|v| !v).unwrap_or(false);
-                if !excluded {
-                    return false;
-                }
-            }
-            saw_any
-        };
+                saw_any
+            };
 
         // Pre-compute the parent-child link pairs (from joints) so the
         // "Exclude joint-connected" button can populate them, and so we
@@ -107,7 +108,8 @@ impl ArticaraApp {
         // self-collision pairs.
         #[cfg(feature = "mujoco")]
         let currently_colliding: std::collections::HashSet<(String, String)> = self
-            .sim.mujoco_sim
+            .sim
+            .mujoco_sim
             .as_ref()
             .map(|sim| {
                 sim.contacts()
@@ -425,12 +427,14 @@ impl ArticaraApp {
                 let mut flipped_disabled = 0usize;
                 let mut flipped_enabled = 0usize;
                 for (name, want) in &link_collision_toggles {
-                    if let Some(link) =
-                        model.links.iter_mut().find(|l| &l.name == name)
-                    {
+                    if let Some(link) = model.links.iter_mut().find(|l| &l.name == name) {
                         if link.collision_enabled != *want {
                             link.collision_enabled = *want;
-                            if *want { flipped_enabled += 1; } else { flipped_disabled += 1; }
+                            if *want {
+                                flipped_enabled += 1;
+                            } else {
+                                flipped_disabled += 1;
+                            }
                         }
                     }
                 }
@@ -482,8 +486,7 @@ impl ArticaraApp {
             // list. Existing user-defined entries for the same pair are
             // replaced so the final state is unambiguous "excluded".
             if exclude_joint_connected {
-                let pairs_to_add: Vec<(String, String)> =
-                    joint_pairs.iter().cloned().collect();
+                let pairs_to_add: Vec<(String, String)> = joint_pairs.iter().cloned().collect();
                 let mut added = 0usize;
                 for (a, b) in &pairs_to_add {
                     model.collision_pairs.retain(|p| !p.matches(a, b));
@@ -492,17 +495,14 @@ impl ArticaraApp {
                         .push(CollisionPair::new(a.clone(), b.clone(), false));
                     added += 1;
                 }
-                self.status_message = format!(
-                    "🔗 Marked {} joint-connected pair(s) as excluded",
-                    added
-                );
+                self.status_message =
+                    format!("🔗 Marked {} joint-connected pair(s) as excluded", added);
             }
             // Row / column bulk toggle. If EVERY pair involving the
             // clicked link is currently excluded, the user wants to bring
             // them all back; otherwise they want to push them all out.
             if let Some(link) = link_toggle.as_ref() {
-                let all_excluded =
-                    all_pairs_for_link_excluded(link, &link_names, &enabled_map);
+                let all_excluded = all_pairs_for_link_excluded(link, &link_names, &enabled_map);
                 let make_excluded = !all_excluded;
                 let mut affected = 0usize;
                 for other in &link_names {
@@ -539,10 +539,8 @@ impl ArticaraApp {
                     added += 1;
                 }
                 if added > 0 {
-                    self.status_message = format!(
-                        "⚠ Marked {} currently-colliding pair(s) as excluded",
-                        added,
-                    );
+                    self.status_message =
+                        format!("⚠ Marked {} currently-colliding pair(s) as excluded", added,);
                 }
             }
         }

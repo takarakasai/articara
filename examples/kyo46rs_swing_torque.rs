@@ -47,7 +47,9 @@ fn main() {
         let z = vec![0.0; nv];
         let tau0 = misarta::rnea::rnea(&model, &q0, &z, &z);
         let g0 = misarta::rnea::compute_gravity(&model, &q0);
-        let worst = (0..nv).map(|i| (tau0[i] - g0[i]).abs()).fold(0.0_f64, f64::max);
+        let worst = (0..nv)
+            .map(|i| (tau0[i] - g0[i]).abs())
+            .fold(0.0_f64, f64::max);
         println!("check: |rnea(q,0,0) - gravity| = {worst:.3e}  (must be ~0)");
 
         // leg hanging, hip rotated 0.3 rad: gravity torque about the hip
@@ -55,17 +57,27 @@ fn main() {
         q1[qidx("left_hip_pitch_joint")] = 0.30;
         let g1 = misarta::rnea::compute_gravity(&model, &q1);
         let m_leg = 0.604 + 0.322 + 0.252 + 0.322;
-        println!("check: static hip_pitch at 0.30 rad = {:.3} N·m  (leg {:.3} kg)",
-                 g1[vidx("left_hip_pitch_joint")], m_leg);
+        println!(
+            "check: static hip_pitch at 0.30 rad = {:.3} N·m  (leg {:.3} kg)",
+            g1[vidx("left_hip_pitch_joint")],
+            m_leg
+        );
     }
 
     println!("\nswing-leg inverse dynamics, torso held (stance side static)\n");
-    println!("{:>6} {:>6} {:>11} {:>11} {:>11}   {}",
-             "f[Hz]", "amp", "hip_pitch", "knee", "ankle_p", "hip_pitch verdict");
+    println!(
+        "{:>6} {:>6} {:>11} {:>11} {:>11}   {}",
+        "f[Hz]", "amp", "hip_pitch", "knee", "ankle_p", "hip_pitch verdict"
+    );
 
     for &(freq, amp) in &[
-        (0.8_f64, 0.30_f64), (1.0, 0.30), (1.25, 0.30),
-        (1.0, 0.45), (1.25, 0.45), (1.5, 0.45), (2.0, 0.45),
+        (0.8_f64, 0.30_f64),
+        (1.0, 0.30),
+        (1.25, 0.30),
+        (1.0, 0.45),
+        (1.25, 0.45),
+        (1.5, 0.45),
+        (2.0, 0.45),
     ] {
         let w = 2.0 * PI * freq;
         let mut peak = [0.0_f64; 3];
@@ -85,9 +97,13 @@ fn main() {
             }
             let tau = misarta::rnea::rnea(&model, &q, &v, &a);
             let g = misarta::rnea::compute_gravity(&model, &q);
-            for (k, name) in ["left_hip_pitch_joint", "left_knee_joint", "left_ankle_pitch_joint"]
-                .iter()
-                .enumerate()
+            for (k, name) in [
+                "left_hip_pitch_joint",
+                "left_knee_joint",
+                "left_ankle_pitch_joint",
+            ]
+            .iter()
+            .enumerate()
             {
                 // rnea includes gravity; keep it, a swinging leg is lifted
                 // against gravity too. (g printed separately below.)
@@ -98,17 +114,28 @@ fn main() {
         let verdict = if peak[0] > 2.0 * EL05_PEAK {
             "over even 2x peak".to_string()
         } else if peak[0] > EL05_PEAK {
-            format!("needs 2 motors ({:.0}% of 1x peak)", peak[0] / EL05_PEAK * 100.0)
+            format!(
+                "needs 2 motors ({:.0}% of 1x peak)",
+                peak[0] / EL05_PEAK * 100.0
+            )
         } else if peak[0] > EL05_CONT {
-            format!("1 motor OK on peak ({:.0}% of 1x peak)", peak[0] / EL05_PEAK * 100.0)
+            format!(
+                "1 motor OK on peak ({:.0}% of 1x peak)",
+                peak[0] / EL05_PEAK * 100.0
+            )
         } else {
             "1 motor, within continuous".to_string()
         };
-        println!("{freq:6.2} {amp:6.2} {:9.2}N·m {:9.2}N·m {:9.2}N·m   {verdict}",
-                 peak[0], peak[1], peak[2]);
+        println!(
+            "{freq:6.2} {amp:6.2} {:9.2}N·m {:9.2}N·m {:9.2}N·m   {verdict}",
+            peak[0], peak[1], peak[2]
+        );
     }
 
     println!("\nreference: EL05 continuous {EL05_CONT} N·m, peak {EL05_PEAK} N·m per unit");
-    println!("hip_pitch as built = 2 units -> {} continuous / {} peak",
-             2.0 * EL05_CONT, 2.0 * EL05_PEAK);
+    println!(
+        "hip_pitch as built = 2 units -> {} continuous / {} peak",
+        2.0 * EL05_CONT,
+        2.0 * EL05_PEAK
+    );
 }

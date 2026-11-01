@@ -336,10 +336,7 @@ fn integration_position_pd_plus_lkf() {
         let w_obs = sim
             .body_world_angular_velocity(&robot.root_link)
             .unwrap_or([0.0, 0.0, 0.0]);
-        gc.set_body_state_observed(
-            v_obs,
-            Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
-        );
+        gc.set_body_state_observed(v_obs, Vector3::new(w_obs[0], w_obs[1], w_obs[2]));
 
         // Synthetic IMU input via finite-diff of body world velocity.
         let accel_world = if k > 0 {
@@ -461,8 +458,7 @@ impl WalkBenchmark {
     fn dyaw(&self) -> f64 {
         // Wrap to (-π, π] so a near-360° turn doesn't print as ~0.
         let raw = self.yaw_end - self.yaw_start;
-        ((raw + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI))
-            - std::f64::consts::PI
+        ((raw + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI)) - std::f64::consts::PI
     }
 
     /// Compute the 5-dim quality score for a walk under `cmd`. The
@@ -584,8 +580,8 @@ fn run_walk(
     };
 
     let cfg = GaitConfig::trot();
-    let mut gc = GaitController::build(&robot, kin.clone(), cfg, gait_mode)
-        .expect("GaitController::build");
+    let mut gc =
+        GaitController::build(&robot, kin.clone(), cfg, gait_mode).expect("GaitController::build");
     // Under misa (stiff PD), pin capture-point gain to 0 explicitly.
     // Redundant since D3.3.7-C2 (default is now 0.0), but kept as
     // documentation: this test's envelope numbers assume the
@@ -675,10 +671,7 @@ fn run_walk(
             .body_world_position(&robot.root_link)
             .unwrap_or([0.0, 0.0, 0.0]);
         let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
-        gc.set_body_pose_observed(
-            yaw_obs,
-            Vector3::new(body_pos[0], body_pos[1], body_pos[2]),
-        );
+        gc.set_body_pose_observed(yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
 
         let (out, targets, torque_ff) = gc.tick(DT);
         for (idx, q) in targets {
@@ -707,12 +700,8 @@ fn run_walk(
                     out.legs[2].phase,
                     out.legs[3].phase,
                 ];
-                let corrected = ContactDrivenPhase::apply_correction(
-                    &nominal_phases,
-                    force_z,
-                    5.0,
-                    0.0,
-                );
+                let corrected =
+                    ContactDrivenPhase::apply_correction(&nominal_phases, force_z, 5.0, 0.0);
                 let contact_flag = [
                     corrected[0].is_stance,
                     corrected[1].is_stance,
@@ -764,20 +753,32 @@ fn run_walk(
 }
 
 // ─── Per-axis cmd values used across the benchmark suite ──────────
-const FORWARD_CMD_VX: f64 = 0.15;  // m/s forward command magnitude
-const LATERAL_CMD_VY: f64 = 0.10;  // m/s lateral command (slower than
-                                   //   forward — trot can't match
-                                   //   forward speed sideways)
-const YAW_CMD_WZ: f64 = 0.5;       // rad/s yaw rate command (~30°/s)
+const FORWARD_CMD_VX: f64 = 0.15; // m/s forward command magnitude
+const LATERAL_CMD_VY: f64 = 0.10; // m/s lateral command (slower than
+//   forward — trot can't match
+//   forward speed sideways)
+const YAW_CMD_WZ: f64 = 0.5; // rad/s yaw rate command (~30°/s)
 
 fn fwd_cmd() -> VelocityCmd {
-    VelocityCmd { vx: FORWARD_CMD_VX, vy: 0.0, wz: 0.0 }
+    VelocityCmd {
+        vx: FORWARD_CMD_VX,
+        vy: 0.0,
+        wz: 0.0,
+    }
 }
 fn lat_cmd() -> VelocityCmd {
-    VelocityCmd { vx: 0.0, vy: LATERAL_CMD_VY, wz: 0.0 }
+    VelocityCmd {
+        vx: 0.0,
+        vy: LATERAL_CMD_VY,
+        wz: 0.0,
+    }
 }
 fn yaw_cmd() -> VelocityCmd {
-    VelocityCmd { vx: 0.0, vy: 0.0, wz: YAW_CMD_WZ }
+    VelocityCmd {
+        vx: 0.0,
+        vy: 0.0,
+        wz: YAW_CMD_WZ,
+    }
 }
 
 // ─── Forward-walk benchmarks ──────────────────────────────────────
@@ -797,7 +798,10 @@ fn integration_walk_straight_champ() {
     };
     eprintln!(
         "[forward:champ] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
+        m.min_body_z,
     );
     assert!(m.min_body_z > FALL_THRESHOLD_Z, "CHAMP fell");
 }
@@ -817,15 +821,27 @@ fn integration_walk_straight_mpc_wbc() {
     };
     eprintln!(
         "[forward:mpc+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
+        m.min_body_z,
     );
     assert!(m.min_body_z > FALL_THRESHOLD_Z, "MPC+WBC fell (forward)");
-    assert!(m.body_dx() > 0.10,
-        "forward: body_dx = {:+.3} m, expected > +0.10 m", m.body_dx());
-    assert!(m.body_dy().abs() < 0.20,
-        "forward: body_dy = {:+.3} m, expected |·| < 0.20 m", m.body_dy());
-    assert!(m.dyaw().abs() < 1.0,
-        "forward: Δyaw = {:+.3} rad, expected |·| < 1.0 rad", m.dyaw());
+    assert!(
+        m.body_dx() > 0.10,
+        "forward: body_dx = {:+.3} m, expected > +0.10 m",
+        m.body_dx()
+    );
+    assert!(
+        m.body_dy().abs() < 0.20,
+        "forward: body_dy = {:+.3} m, expected |·| < 0.20 m",
+        m.body_dy()
+    );
+    assert!(
+        m.dyaw().abs() < 1.0,
+        "forward: Δyaw = {:+.3} rad, expected |·| < 1.0 rad",
+        m.dyaw()
+    );
 }
 
 // ─── Centroidal-SRBD MPC benchmarks (D1.3) ────────────────────────
@@ -862,7 +878,10 @@ fn diag_centroidal_no_wbc_3axis() {
         };
         eprintln!(
             "[{label}:centroidal-only] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-            m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+            m.body_dx(),
+            m.body_dy(),
+            m.dyaw(),
+            m.min_body_z,
         );
     }
 }
@@ -875,15 +894,30 @@ fn integration_walk_straight_centroidal_wbc() {
     };
     eprintln!(
         "[forward:centroidal+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
+        m.min_body_z,
     );
-    assert!(m.min_body_z > FALL_THRESHOLD_Z, "Centroidal+WBC fell (forward)");
-    assert!(m.body_dx() > 0.10,
-        "forward (centroidal): body_dx = {:+.3} m, expected > +0.10 m", m.body_dx());
-    assert!(m.body_dy().abs() < 0.20,
-        "forward (centroidal): body_dy = {:+.3} m, expected |·| < 0.20 m", m.body_dy());
-    assert!(m.dyaw().abs() < 1.0,
-        "forward (centroidal): Δyaw = {:+.3} rad, expected |·| < 1.0 rad", m.dyaw());
+    assert!(
+        m.min_body_z > FALL_THRESHOLD_Z,
+        "Centroidal+WBC fell (forward)"
+    );
+    assert!(
+        m.body_dx() > 0.10,
+        "forward (centroidal): body_dx = {:+.3} m, expected > +0.10 m",
+        m.body_dx()
+    );
+    assert!(
+        m.body_dy().abs() < 0.20,
+        "forward (centroidal): body_dy = {:+.3} m, expected |·| < 0.20 m",
+        m.body_dy()
+    );
+    assert!(
+        m.dyaw().abs() < 1.0,
+        "forward (centroidal): Δyaw = {:+.3} rad, expected |·| < 1.0 rad",
+        m.dyaw()
+    );
 }
 
 #[test]
@@ -894,15 +928,30 @@ fn integration_walk_lateral_centroidal_wbc() {
     };
     eprintln!(
         "[lateral:centroidal+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
+        m.min_body_z,
     );
-    assert!(m.min_body_z > FALL_THRESHOLD_Z, "Centroidal+WBC fell (lateral)");
-    assert!(m.body_dy() > 0.20,
-        "lateral (centroidal): body_dy = {:+.3} m, expected > +0.20 m", m.body_dy());
-    assert!(m.body_dx().abs() < 0.30,
-        "lateral (centroidal): body_dx = {:+.3} m, expected |·| < 0.30 m", m.body_dx());
-    assert!(m.dyaw().abs() < 1.5,
-        "lateral (centroidal): Δyaw = {:+.3} rad, expected |·| < 1.5 rad", m.dyaw());
+    assert!(
+        m.min_body_z > FALL_THRESHOLD_Z,
+        "Centroidal+WBC fell (lateral)"
+    );
+    assert!(
+        m.body_dy() > 0.20,
+        "lateral (centroidal): body_dy = {:+.3} m, expected > +0.20 m",
+        m.body_dy()
+    );
+    assert!(
+        m.body_dx().abs() < 0.30,
+        "lateral (centroidal): body_dx = {:+.3} m, expected |·| < 0.30 m",
+        m.body_dx()
+    );
+    assert!(
+        m.dyaw().abs() < 1.5,
+        "lateral (centroidal): Δyaw = {:+.3} rad, expected |·| < 1.5 rad",
+        m.dyaw()
+    );
 }
 
 #[test]
@@ -913,15 +962,27 @@ fn integration_walk_yaw_centroidal_wbc() {
     };
     eprintln!(
         "[yaw:centroidal+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
+        m.min_body_z,
     );
     assert!(m.min_body_z > FALL_THRESHOLD_Z, "Centroidal+WBC fell (yaw)");
-    assert!(m.dyaw().abs() > 1.5,
-        "yaw (centroidal): Δyaw = {:+.3} rad, expected |·| > 1.5 rad", m.dyaw());
-    assert!(m.body_dx().abs() < 0.35,
-        "yaw (centroidal): body_dx = {:+.3} m, expected |·| < 0.35 m", m.body_dx());
-    assert!(m.body_dy().abs() < 0.35,
-        "yaw (centroidal): body_dy = {:+.3} m, expected |·| < 0.35 m", m.body_dy());
+    assert!(
+        m.dyaw().abs() > 1.5,
+        "yaw (centroidal): Δyaw = {:+.3} rad, expected |·| > 1.5 rad",
+        m.dyaw()
+    );
+    assert!(
+        m.body_dx().abs() < 0.35,
+        "yaw (centroidal): body_dx = {:+.3} m, expected |·| < 0.35 m",
+        m.body_dx()
+    );
+    assert!(
+        m.body_dy().abs() < 0.35,
+        "yaw (centroidal): body_dy = {:+.3} m, expected |·| < 0.35 m",
+        m.body_dy()
+    );
 }
 
 // ─── Full-centroidal MPC benchmarks (D3.3.6) ─────────────────────────
@@ -970,23 +1031,24 @@ fn diag_champ_forward_gui_pd() {
     drop(fixture.sim);
     // Override the test PD with GUI defaults.
     for j in robot.joints.iter_mut() {
-        if j.joint_type == "fixed" { continue; }
+        if j.joint_type == "fixed" {
+            continue;
+        }
         j.actuator_kp = 50.0;
         j.actuator_kv = 5.0;
     }
     // Rebuild sim with the new PD.
-    let mut sim = articara::mujoco_sim::MujocoSim::new(
-        &robot,
-        common::default_mjcf_export_options(),
-    ).expect("MujocoSim::new");
+    let mut sim =
+        articara::mujoco_sim::MujocoSim::new(&robot, common::default_mjcf_export_options())
+            .expect("MujocoSim::new");
     sim.set_gravity_compensation(true);
 
     // Initial joint seed identical to fixture.
     common::seed_joint_positions_from_kinematics(&mut robot, &kin);
 
     let cfg = GaitConfig::trot();
-    let mut gc = GaitController::build(&robot, kin, cfg, GaitMode::Champ)
-        .expect("GaitController::build");
+    let mut gc =
+        GaitController::build(&robot, kin, cfg, GaitMode::Champ).expect("GaitController::build");
     gc.enable();
     let n_steps = (WALK_SIM_TIME_S / DT) as usize;
     let burn_in_steps = (WALK_BURN_IN_S / DT) as usize;
@@ -1015,10 +1077,7 @@ fn diag_champ_forward_gui_pd() {
             .body_world_position(&robot.root_link)
             .unwrap_or([0.0, 0.0, 0.0]);
         let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
-        gc.set_body_pose_observed(
-            yaw_obs,
-            Vector3::new(body_pos[0], body_pos[1], body_pos[2]),
-        );
+        gc.set_body_pose_observed(yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
         let (_out, targets, _torque_ff) = gc.tick(DT);
         for (idx, q) in targets {
             sim.set_position_target(idx, q);
@@ -1033,7 +1092,10 @@ fn diag_champ_forward_gui_pd() {
     }
     let m = metrics;
     eprintln!();
-    eprintln!("=== CHAMP forward GUI-PD (kp=50, kv=5) — cmd vx=+{:.2} m/s, 4.5 s ===", cmd.vx);
+    eprintln!(
+        "=== CHAMP forward GUI-PD (kp=50, kv=5) — cmd vx=+{:.2} m/s, 4.5 s ===",
+        cmd.vx
+    );
     eprintln!("  dx_world  = {:+.4} m", m.dx_world());
     eprintln!("  dy_world  = {:+.4} m", m.dy_world());
     eprintln!("  dyaw      = {:+.3} rad", m.dyaw());
@@ -1055,28 +1117,36 @@ fn diag_champ_forward_gui_pd() {
 ///
 /// Returns the benchmark covering ONLY the walk window (cmd phase) so
 /// `body_dx` / `body_dy` / `dyaw` reflect post-cmd-application motion.
-fn run_walk_gui_v2(
-    use_wbc: bool,
-    gait_mode: GaitMode,
-    cmd: VelocityCmd,
-) -> Option<WalkBenchmark> {
+fn run_walk_gui_v2(use_wbc: bool, gait_mode: GaitMode, cmd: VelocityCmd) -> Option<WalkBenchmark> {
     const SETTLE_S: f64 = 2.0;
     const CMD_S: f64 = 7.0;
 
     let path = common::namiashi_urdf();
-    if !path.exists() { return None; }
+    if !path.exists() {
+        return None;
+    }
     let mut robot = articara::robot::RobotModel::from_urdf(&path).ok()?;
     for j in robot.joints.iter_mut() {
-        if j.joint_type == "fixed" { continue; }
+        if j.joint_type == "fixed" {
+            continue;
+        }
         j.actuator_mode = articara::robot::ActuatorMode::Position;
         j.actuator_kp = 50.0;
         j.actuator_kv = 5.0;
     }
     let constrain_pose = [
-        ("FL_hip_joint", 0.0), ("FL_thigh_joint", 1.0), ("FL_calf_joint", -2.0),
-        ("FR_hip_joint", 0.0), ("FR_thigh_joint", 1.0), ("FR_calf_joint", -2.0),
-        ("RL_hip_joint", 0.0), ("RL_thigh_joint", 1.0), ("RL_calf_joint", -2.0),
-        ("RR_hip_joint", 0.0), ("RR_thigh_joint", 1.0), ("RR_calf_joint", -2.0),
+        ("FL_hip_joint", 0.0),
+        ("FL_thigh_joint", 1.0),
+        ("FL_calf_joint", -2.0),
+        ("FR_hip_joint", 0.0),
+        ("FR_thigh_joint", 1.0),
+        ("FR_calf_joint", -2.0),
+        ("RL_hip_joint", 0.0),
+        ("RL_thigh_joint", 1.0),
+        ("RL_calf_joint", -2.0),
+        ("RR_hip_joint", 0.0),
+        ("RR_thigh_joint", 1.0),
+        ("RR_calf_joint", -2.0),
         ("arm_pitch_joint", 0.0),
     ];
     for (name, q) in constrain_pose {
@@ -1084,13 +1154,15 @@ fn run_walk_gui_v2(
             robot.joint_positions[idx] = q;
         }
     }
-    let kin = articara::gait::auto_detect_kinematics_config(
-        &robot,
-        &articara::gait::DEFAULT_FOOT_LINKS,
-    ).ok()?;
+    let kin =
+        articara::gait::auto_detect_kinematics_config(&robot, &articara::gait::DEFAULT_FOOT_LINKS)
+            .ok()?;
     let opts = articara::mjcf::MjcfExportOptions {
         ground_plane: Some(articara::mjcf::GroundPlaneCfg {
-            z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0,
+            z: 0.0,
+            half_size: 4.0,
+            roll: 0.0,
+            pitch: 0.0,
         }),
         // `add_actuators` is forced to `true` inside MujocoSim::new
         // regardless of what we pass, so this value is cosmetic.
@@ -1113,7 +1185,9 @@ fn run_walk_gui_v2(
 
     let mut wbc_pipeline = if use_wbc {
         Some(WbcPipeline::new(&robot, common::default_foot_links()))
-    } else { None };
+    } else {
+        None
+    };
     if let Some(pipeline) = wbc_pipeline.as_mut() {
         if let Some(full_cfg) = gc.full_centroidal_mpc_config() {
             pipeline.mass_kg = full_cfg.mass_kg;
@@ -1147,7 +1221,8 @@ fn run_walk_gui_v2(
             gc.enable();
             gc.set_velocity_cmd(cmd);
             if let Some(p) = sim.body_world_position(&robot.root_link) {
-                m.body_x_start = p[0]; m.body_y_start = p[1];
+                m.body_x_start = p[0];
+                m.body_y_start = p[1];
             }
             m.yaw_start = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
         }
@@ -1160,17 +1235,25 @@ fn run_walk_gui_v2(
                 }
             }
         } else {
-            let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
-            let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            let v_obs = sim
+                .body_world_linear_velocity(&robot.root_link)
+                .unwrap_or([0.0; 3]);
+            let w_obs = sim
+                .body_world_angular_velocity(&robot.root_link)
+                .unwrap_or([0.0; 3]);
             gc.set_body_state_observed(
                 Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                 Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
             );
-            let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+            let body_pos = sim
+                .body_world_position(&robot.root_link)
+                .unwrap_or([0.0; 3]);
             let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
             gc.set_body_pose_observed(yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
             let (out, targets, torque_ff) = gc.tick(DT);
-            for (idx, q) in targets { sim.set_position_target(idx, q); }
+            for (idx, q) in targets {
+                sim.set_position_target(idx, q);
+            }
 
             if let Some(pipeline) = wbc_pipeline.as_mut() {
                 pipeline.weights = if pipeline.centroidal_inertia_body.is_some() {
@@ -1178,7 +1261,9 @@ fn run_walk_gui_v2(
                 } else {
                     quadruped_gait::wbc::WbcWeights::for_cmd(&gc.velocity_cmd())
                 };
-                let f_grf = gc.predicted_grfs().map(|s| s.grfs_first_step)
+                let f_grf = gc
+                    .predicted_grfs()
+                    .map(|s| s.grfs_first_step)
                     .unwrap_or([Vector3::zeros(); 4]);
                 let v_cmd_body = Vector3::new(cmd.vx, cmd.vy, 0.0);
                 let contact_flag = [
@@ -1191,11 +1276,19 @@ fn run_walk_gui_v2(
                 let joint_indices = gc.joint_indices();
                 let joint_signs = gc.joint_signs();
                 let taus = pipeline.solve(
-                    &robot, &sim, &out, &kin_ref, joint_indices, joint_signs,
-                    &v_cmd_body, cmd.wz,
+                    &robot,
+                    &sim,
+                    &out,
+                    &kin_ref,
+                    joint_indices,
+                    joint_signs,
+                    &v_cmd_body,
+                    cmd.wz,
                     &Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                     &Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
-                    &f_grf, contact_flag, DT,
+                    &f_grf,
+                    contact_flag,
+                    DT,
                 );
                 for (ji, &tau) in taus.iter().enumerate() {
                     sim.set_torque_feedforward(ji, tau);
@@ -1212,7 +1305,8 @@ fn run_walk_gui_v2(
         // GUI's slower wall clock keeps it stable without clamps.
         sim.step(&mut robot, DT, true);
         if let Some(p) = sim.body_world_position(&robot.root_link) {
-            m.body_x_end = p[0]; m.body_y_end = p[1];
+            m.body_x_end = p[0];
+            m.body_y_end = p[1];
             m.min_body_z = m.min_body_z.min(p[2]);
         }
         m.yaw_end = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
@@ -1226,15 +1320,28 @@ fn run_walk_gui_v2(
 #[test]
 #[ignore = "harness debug — run with --ignored"]
 fn diag_walk_champ_forward_v2() {
-    let cmd = VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 };
-    let Some(m) = run_walk_gui_v2(false, GaitMode::Champ, cmd) else { return; };
+    let cmd = VelocityCmd {
+        vx: 0.30,
+        vy: 0.0,
+        wz: 0.0,
+    };
+    let Some(m) = run_walk_gui_v2(false, GaitMode::Champ, cmd) else {
+        return;
+    };
     let q = m.metrics(cmd, 7.0);
     eprintln!();
-    eprintln!("[champ forward v2] dx_world={:+.4} dy_world={:+.4} dyaw={:+.3} rad min_z={:.3} m",
-        m.dx_world(), m.dy_world(), m.dyaw(), m.min_body_z);
+    eprintln!(
+        "[champ forward v2] dx_world={:+.4} dy_world={:+.4} dyaw={:+.3} rad min_z={:.3} m",
+        m.dx_world(),
+        m.dy_world(),
+        m.dyaw(),
+        m.min_body_z
+    );
     eprintln!("  metric = {}", q.line("forward"));
     eprintln!("  (user GUI reported: dx ≈ +1.13 over ~5-10s = track ≈ 0.55-0.65)");
-    eprintln!("  (user GUI reported: dz = +0.18 — body rises during walk; if test stays crouched, that's the gap)");
+    eprintln!(
+        "  (user GUI reported: dz = +0.18 — body rises during walk; if test stays crouched, that's the gap)"
+    );
 }
 
 /// Diff the MJCF that `mj_start` (script path) emits vs what
@@ -1245,30 +1352,49 @@ fn diag_walk_champ_forward_v2() {
 #[ignore = "harness debug — run with --ignored"]
 fn diag_mjcf_diff_test_vs_script() {
     let path = common::namiashi_urdf();
-    if !path.exists() { return; }
+    if !path.exists() {
+        return;
+    }
     let mut robot = articara::robot::RobotModel::from_urdf(&path).expect("load");
     // Apply constrain pose and PD same as run_walk_gui_v2.
     for j in robot.joints.iter_mut() {
-        if j.joint_type == "fixed" { continue; }
+        if j.joint_type == "fixed" {
+            continue;
+        }
         j.actuator_mode = articara::robot::ActuatorMode::Position;
         j.actuator_kp = 50.0;
         j.actuator_kv = 5.0;
     }
     let constrain_pose = [
-        ("FL_hip_joint", 0.0), ("FL_thigh_joint", 1.0), ("FL_calf_joint", -2.0),
-        ("FR_hip_joint", 0.0), ("FR_thigh_joint", 1.0), ("FR_calf_joint", -2.0),
-        ("RL_hip_joint", 0.0), ("RL_thigh_joint", 1.0), ("RL_calf_joint", -2.0),
-        ("RR_hip_joint", 0.0), ("RR_thigh_joint", 1.0), ("RR_calf_joint", -2.0),
+        ("FL_hip_joint", 0.0),
+        ("FL_thigh_joint", 1.0),
+        ("FL_calf_joint", -2.0),
+        ("FR_hip_joint", 0.0),
+        ("FR_thigh_joint", 1.0),
+        ("FR_calf_joint", -2.0),
+        ("RL_hip_joint", 0.0),
+        ("RL_thigh_joint", 1.0),
+        ("RL_calf_joint", -2.0),
+        ("RR_hip_joint", 0.0),
+        ("RR_thigh_joint", 1.0),
+        ("RR_calf_joint", -2.0),
         ("arm_pitch_joint", 0.0),
     ];
     for (name, q) in constrain_pose {
-        if let Some(&idx) = robot.joint_map.get(name) { robot.joint_positions[idx] = q; }
+        if let Some(&idx) = robot.joint_map.get(name) {
+            robot.joint_positions[idx] = q;
+        }
     }
 
     // MujocoSim::new forces `add_actuators = true` regardless, so for
     // both paths we use the post-override value.
     let test_opts = articara::mjcf::MjcfExportOptions {
-        ground_plane: Some(articara::mjcf::GroundPlaneCfg { z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0 }),
+        ground_plane: Some(articara::mjcf::GroundPlaneCfg {
+            z: 0.0,
+            half_size: 4.0,
+            roll: 0.0,
+            pitch: 0.0,
+        }),
         add_actuators: true,
         bake_actuator_limits: true,
         bake_joint_position_limits: true,
@@ -1276,7 +1402,12 @@ fn diag_mjcf_diff_test_vs_script() {
     };
     let script_opts = articara::mjcf::MjcfExportOptions {
         base_pos: None,
-        ground_plane: Some(articara::mjcf::GroundPlaneCfg { z: 0.0, half_size: 2.0, roll: 0.0, pitch: 0.0 }),
+        ground_plane: Some(articara::mjcf::GroundPlaneCfg {
+            z: 0.0,
+            half_size: 2.0,
+            roll: 0.0,
+            pitch: 0.0,
+        }),
         add_actuators: true,
         base_locked_axes: [false; 6],
         ..Default::default()
@@ -1293,8 +1424,11 @@ fn diag_mjcf_diff_test_vs_script() {
         return;
     }
     eprintln!("MJCF DIFFERS — wrote /tmp/test_mjcf.xml and /tmp/script_mjcf.xml");
-    eprintln!("test_xml length = {}, script_xml length = {}",
-        test_xml.len(), script_xml.len());
+    eprintln!(
+        "test_xml length = {}, script_xml length = {}",
+        test_xml.len(),
+        script_xml.len()
+    );
 
     let test_lines: Vec<&str> = test_xml.lines().collect();
     let script_lines: Vec<&str> = script_xml.lines().collect();
@@ -1308,7 +1442,10 @@ fn diag_mjcf_diff_test_vs_script() {
             eprintln!("    test:   {t}");
             eprintln!("    script: {s}");
             diffs += 1;
-            if diffs >= 20 { eprintln!("  ... (truncated at 20 diffs)"); break; }
+            if diffs >= 20 {
+                eprintln!("  ... (truncated at 20 diffs)");
+                break;
+            }
         }
     }
 }
@@ -1353,65 +1490,92 @@ fn diag_mpc_grf_direction_forward_cmd() {
     //       gc.set_srbd_mpc_config(new_cfg);
     //   }
     //   gc.set_capture_point_gain(0.0);
-    let mass_kg = gc.srbd_mpc_config()
-        .map(|c| c.mass_kg)
-        .unwrap_or(2.4);
+    let mass_kg = gc.srbd_mpc_config().map(|c| c.mass_kg).unwrap_or(2.4);
     if let Some(c) = gc.srbd_mpc_config() {
-        eprintln!("[diag] SRBD config: mass={:.3} kg, inertia_diag={:?}, dt_per_step={}",
-            c.mass_kg, c.inertia_diag_body, c.dt_per_step);
+        eprintln!(
+            "[diag] SRBD config: mass={:.3} kg, inertia_diag={:?}, dt_per_step={}",
+            c.mass_kg, c.inertia_diag_body, c.dt_per_step
+        );
         eprintln!("[diag] q_diag = {:?}", c.q_diag);
         eprintln!("[diag] r_diag = {}", c.r_diag);
     }
     // Heaviest link inertia direct from the loaded model (= what
     // auto_detect_srbd_mpc_config picks up).
-    let heaviest = robot.links.iter()
-        .max_by(|a, b| a.inertial.mass.partial_cmp(&b.inertial.mass)
-            .unwrap_or(std::cmp::Ordering::Equal));
+    let heaviest = robot.links.iter().max_by(|a, b| {
+        a.inertial
+            .mass
+            .partial_cmp(&b.inertial.mass)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     if let Some(l) = heaviest {
         let i = &l.inertial;
-        eprintln!("[diag] heaviest link = {:?}: mass={} ixx={} iyy={} izz={}",
-            l.name, i.mass, i.ixx, i.iyy, i.izz);
+        eprintln!(
+            "[diag] heaviest link = {:?}: mass={} ixx={} iyy={} izz={}",
+            l.name, i.mass, i.ixx, i.iyy, i.izz
+        );
     }
     let burn_s = 0.5;
     let walk_s = 1.0;
     let burn_steps = (burn_s / DT) as usize;
     let walk_steps = (walk_s / DT) as usize;
     let log_every = (0.05 / DT).round() as usize; // 50 ms
-    let cmd = VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 };
+    let cmd = VelocityCmd {
+        vx: 0.30,
+        vy: 0.0,
+        wz: 0.0,
+    };
     eprintln!();
     eprintln!("=== diag_mpc_grf_direction_forward_cmd (misa, kp=100/kv=1.2, cmd vx=+0.30) ===");
-    eprintln!("  mass = {mass_kg:.3} kg → expected ΣF_z ≈ {:.2} N (= m·g)", mass_kg * 9.81);
-    eprintln!("  t[s]   body_x   body_y   yaw      v_x      v_y      ΣF_x     ΣF_y     ΣF_z     stance_legs");
+    eprintln!(
+        "  mass = {mass_kg:.3} kg → expected ΣF_z ≈ {:.2} N (= m·g)",
+        mass_kg * 9.81
+    );
+    eprintln!(
+        "  t[s]   body_x   body_y   yaw      v_x      v_y      ΣF_x     ΣF_y     ΣF_z     stance_legs"
+    );
     gc.enable();
     for k in 0..(burn_steps + walk_steps) {
         if k == burn_steps {
             gc.set_velocity_cmd(cmd);
         }
-        let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
-        let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+        let v_obs = sim
+            .body_world_linear_velocity(&robot.root_link)
+            .unwrap_or([0.0; 3]);
+        let w_obs = sim
+            .body_world_angular_velocity(&robot.root_link)
+            .unwrap_or([0.0; 3]);
         gc.set_body_state_observed(
             Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
-            Vector3::new(w_obs[0], w_obs[1], w_obs[2]));
-        let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+            Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+        );
+        let body_pos = sim
+            .body_world_position(&robot.root_link)
+            .unwrap_or([0.0; 3]);
         let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
         gc.set_body_pose_observed(yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
         let (out, targets, torque_ff) = gc.tick(DT);
-        for (idx, q) in targets { sim.set_position_target(idx, q); }
-        for (idx, tau) in torque_ff { sim.set_torque_feedforward(idx, tau); }
+        for (idx, q) in targets {
+            sim.set_position_target(idx, q);
+        }
+        for (idx, tau) in torque_ff {
+            sim.set_torque_feedforward(idx, tau);
+        }
         sim.step(&mut robot, DT, true);
         // Log AFTER step so observed pos/vel reflect the tick that just
         // ran. Subtract burn_steps so t=0 = cmd-applied instant.
         if k >= burn_steps && (k - burn_steps) % log_every == 0 {
             let t = (k - burn_steps) as f64 * DT;
-            let stance_flags: Vec<bool> = (0..4)
-                .map(|s| out.legs[s].phase.is_stance)
-                .collect();
+            let stance_flags: Vec<bool> = (0..4).map(|s| out.legs[s].phase.is_stance).collect();
             let n_stance = stance_flags.iter().filter(|&&x| x).count();
             let (sum_fx, sum_fy, sum_fz) = match gc.predicted_grfs() {
                 Some(sol) => {
-                    let mut sx = 0.0; let mut sy = 0.0; let mut sz = 0.0;
+                    let mut sx = 0.0;
+                    let mut sy = 0.0;
+                    let mut sz = 0.0;
                     for f in sol.grfs_first_step.iter() {
-                        sx += f.x; sy += f.y; sz += f.z;
+                        sx += f.x;
+                        sy += f.y;
+                        sz += f.z;
                     }
                     (sx, sy, sz)
                 }
@@ -1419,8 +1583,16 @@ fn diag_mpc_grf_direction_forward_cmd() {
             };
             eprintln!(
                 "  {:>5.3}  {:+.4}  {:+.4}  {:+.4}  {:+.4}  {:+.4}  {:+8.2}  {:+8.2}  {:+8.2}  {}/4",
-                t, body_pos[0], body_pos[1], yaw_obs, v_obs[0], v_obs[1],
-                sum_fx, sum_fy, sum_fz, n_stance,
+                t,
+                body_pos[0],
+                body_pos[1],
+                yaw_obs,
+                v_obs[0],
+                v_obs[1],
+                sum_fx,
+                sum_fy,
+                sum_fz,
+                n_stance,
             );
         }
     }
@@ -1433,28 +1605,48 @@ fn diag_mpc_grf_direction_forward_cmd() {
 #[ignore = "harness debug — run with --ignored"]
 fn diag_walk_champ_forward_v2_timeseries() {
     let path = common::namiashi_urdf();
-    if !path.exists() { return; }
+    if !path.exists() {
+        return;
+    }
     let mut robot = articara::robot::RobotModel::from_urdf(&path).expect("load");
     for j in robot.joints.iter_mut() {
-        if j.joint_type == "fixed" { continue; }
+        if j.joint_type == "fixed" {
+            continue;
+        }
         j.actuator_mode = articara::robot::ActuatorMode::Position;
         j.actuator_kp = 50.0;
         j.actuator_kv = 5.0;
     }
     let constrain_pose = [
-        ("FL_hip_joint", 0.0), ("FL_thigh_joint", 1.0), ("FL_calf_joint", -2.0),
-        ("FR_hip_joint", 0.0), ("FR_thigh_joint", 1.0), ("FR_calf_joint", -2.0),
-        ("RL_hip_joint", 0.0), ("RL_thigh_joint", 1.0), ("RL_calf_joint", -2.0),
-        ("RR_hip_joint", 0.0), ("RR_thigh_joint", 1.0), ("RR_calf_joint", -2.0),
+        ("FL_hip_joint", 0.0),
+        ("FL_thigh_joint", 1.0),
+        ("FL_calf_joint", -2.0),
+        ("FR_hip_joint", 0.0),
+        ("FR_thigh_joint", 1.0),
+        ("FR_calf_joint", -2.0),
+        ("RL_hip_joint", 0.0),
+        ("RL_thigh_joint", 1.0),
+        ("RL_calf_joint", -2.0),
+        ("RR_hip_joint", 0.0),
+        ("RR_thigh_joint", 1.0),
+        ("RR_calf_joint", -2.0),
         ("arm_pitch_joint", 0.0),
     ];
     for (name, q) in constrain_pose {
-        if let Some(&idx) = robot.joint_map.get(name) { robot.joint_positions[idx] = q; }
+        if let Some(&idx) = robot.joint_map.get(name) {
+            robot.joint_positions[idx] = q;
+        }
     }
-    let kin = articara::gait::auto_detect_kinematics_config(
-        &robot, &articara::gait::DEFAULT_FOOT_LINKS).expect("kin");
+    let kin =
+        articara::gait::auto_detect_kinematics_config(&robot, &articara::gait::DEFAULT_FOOT_LINKS)
+            .expect("kin");
     let opts = articara::mjcf::MjcfExportOptions {
-        ground_plane: Some(articara::mjcf::GroundPlaneCfg { z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0 }),
+        ground_plane: Some(articara::mjcf::GroundPlaneCfg {
+            z: 0.0,
+            half_size: 4.0,
+            roll: 0.0,
+            pitch: 0.0,
+        }),
         add_actuators: false,
         bake_actuator_limits: true,
         bake_joint_position_limits: true,
@@ -1465,9 +1657,15 @@ fn diag_walk_champ_forward_v2_timeseries() {
     let cfg = GaitConfig::trot();
     let mut gc = GaitController::build(&robot, kin, cfg, GaitMode::Champ).expect("gc");
     for (name, q) in constrain_pose {
-        if let Some(&idx) = robot.joint_map.get(name) { sim.set_position_target(idx, q); }
+        if let Some(&idx) = robot.joint_map.get(name) {
+            sim.set_position_target(idx, q);
+        }
     }
-    let cmd = VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 };
+    let cmd = VelocityCmd {
+        vx: 0.30,
+        vy: 0.0,
+        wz: 0.0,
+    };
     let settle_s = 2.0;
     let cmd_s = 7.0;
     let n_steps = ((settle_s + cmd_s) / DT) as usize;
@@ -1483,32 +1681,51 @@ fn diag_walk_champ_forward_v2_timeseries() {
             gc.enable();
             gc.set_velocity_cmd(cmd);
             if let Some(p) = sim.body_world_position(&robot.root_link) {
-                x0 = p[0]; z0 = p[2];
+                x0 = p[0];
+                z0 = p[2];
             }
         }
         if k < settle_steps {
             for (name, q) in constrain_pose {
-                if let Some(&idx) = robot.joint_map.get(name) { sim.set_position_target(idx, q); }
+                if let Some(&idx) = robot.joint_map.get(name) {
+                    sim.set_position_target(idx, q);
+                }
             }
         } else {
-            let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
-            let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            let v_obs = sim
+                .body_world_linear_velocity(&robot.root_link)
+                .unwrap_or([0.0; 3]);
+            let w_obs = sim
+                .body_world_angular_velocity(&robot.root_link)
+                .unwrap_or([0.0; 3]);
             gc.set_body_state_observed(
                 Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
-                Vector3::new(w_obs[0], w_obs[1], w_obs[2]));
-            let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+                Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+            );
+            let body_pos = sim
+                .body_world_position(&robot.root_link)
+                .unwrap_or([0.0; 3]);
             let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
             gc.set_body_pose_observed(yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
             let (_o, targets, _ff) = gc.tick(DT);
-            for (idx, q) in targets { sim.set_position_target(idx, q); }
+            for (idx, q) in targets {
+                sim.set_position_target(idx, q);
+            }
         }
         sim.step(&mut robot, DT, true);
         if k >= settle_steps && (k - settle_steps) % log_every == 0 {
             if let Some(p) = sim.body_world_position(&robot.root_link) {
                 let yaw = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
                 let t = (k - settle_steps) as f64 * DT;
-                eprintln!("  {:>5.2}    {:+.4}  {:+.4}  {:+.4}  {:+.4}    {:.4}",
-                    t, p[0]-x0, p[1], p[2]-z0, yaw, p[2]);
+                eprintln!(
+                    "  {:>5.2}    {:+.4}  {:+.4}  {:+.4}  {:+.4}    {:.4}",
+                    t,
+                    p[0] - x0,
+                    p[1],
+                    p[2] - z0,
+                    yaw,
+                    p[2]
+                );
             }
         }
     }
@@ -1522,28 +1739,50 @@ fn diag_walk_champ_forward_v2_timeseries() {
 #[ignore = "harness debug — run with --ignored"]
 fn diag_walk_champ_forward_gui_replica_full_misa() {
     let misa_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests").join("fixtures").join("namiashi").join("namiashi.misa");
-    if !misa_path.exists() { return; }
+        .join("tests")
+        .join("fixtures")
+        .join("namiashi")
+        .join("namiashi.misa");
+    if !misa_path.exists() {
+        return;
+    }
     let mut robot = articara::robot::RobotModel::from_misa(&misa_path).expect("load misa");
     let constrain_pose = [
-        ("FL_hip_joint", 0.0), ("FL_thigh_joint", 1.0), ("FL_calf_joint", -2.0),
-        ("FR_hip_joint", 0.0), ("FR_thigh_joint", 1.0), ("FR_calf_joint", -2.0),
-        ("RL_hip_joint", 0.0), ("RL_thigh_joint", 1.0), ("RL_calf_joint", -2.0),
-        ("RR_hip_joint", 0.0), ("RR_thigh_joint", 1.0), ("RR_calf_joint", -2.0),
+        ("FL_hip_joint", 0.0),
+        ("FL_thigh_joint", 1.0),
+        ("FL_calf_joint", -2.0),
+        ("FR_hip_joint", 0.0),
+        ("FR_thigh_joint", 1.0),
+        ("FR_calf_joint", -2.0),
+        ("RL_hip_joint", 0.0),
+        ("RL_thigh_joint", 1.0),
+        ("RL_calf_joint", -2.0),
+        ("RR_hip_joint", 0.0),
+        ("RR_thigh_joint", 1.0),
+        ("RR_calf_joint", -2.0),
         ("arm_pitch_joint", 0.0),
     ];
     for (name, q) in constrain_pose {
-        if let Some(&idx) = robot.joint_map.get(name) { robot.joint_positions[idx] = q; }
+        if let Some(&idx) = robot.joint_map.get(name) {
+            robot.joint_positions[idx] = q;
+        }
     }
     // Dump the loaded PD gains + damping for diagnostic confirmation.
     if let Some(&idx) = robot.joint_map.get("FL_thigh_joint") {
-        eprintln!("[diag] FL_thigh kp={} kv={} damping={}",
+        eprintln!(
+            "[diag] FL_thigh kp={} kv={} damping={}",
             robot.joints[idx].actuator_kp,
             robot.joints[idx].actuator_kv,
-            robot.joints[idx].joint_damping);
+            robot.joints[idx].joint_damping
+        );
     }
     let opts = articara::mjcf::MjcfExportOptions {
-        ground_plane: Some(articara::mjcf::GroundPlaneCfg { z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0 }),
+        ground_plane: Some(articara::mjcf::GroundPlaneCfg {
+            z: 0.0,
+            half_size: 4.0,
+            roll: 0.0,
+            pitch: 0.0,
+        }),
         add_actuators: false,
         bake_actuator_limits: true,
         bake_joint_position_limits: true,
@@ -1552,7 +1791,9 @@ fn diag_walk_champ_forward_gui_replica_full_misa() {
     let mut sim = articara::mujoco_sim::MujocoSim::new(&robot, opts).expect("sim");
     sim.set_gravity_compensation(false);
     for (name, q) in constrain_pose {
-        if let Some(&idx) = robot.joint_map.get(name) { sim.set_position_target(idx, q); }
+        if let Some(&idx) = robot.joint_map.get(name) {
+            sim.set_position_target(idx, q);
+        }
     }
     let settle_s = 2.0;
     let cmd_zero_s = 0.5;
@@ -1563,42 +1804,64 @@ fn diag_walk_champ_forward_gui_replica_full_misa() {
     let log_every = (0.5 / DT) as usize;
     for _ in 0..settle_steps {
         for (name, q) in constrain_pose {
-            if let Some(&idx) = robot.joint_map.get(name) { sim.set_position_target(idx, q); }
+            if let Some(&idx) = robot.joint_map.get(name) {
+                sim.set_position_target(idx, q);
+            }
         }
         sim.step(&mut robot, DT, true);
     }
-    let kin = articara::gait::auto_detect_kinematics_config(
-        &robot, &articara::gait::DEFAULT_FOOT_LINKS).expect("kin");
+    let kin =
+        articara::gait::auto_detect_kinematics_config(&robot, &articara::gait::DEFAULT_FOOT_LINKS)
+            .expect("kin");
     let cfg = GaitConfig::trot();
     let mut gc = GaitController::build(&robot, kin, cfg, GaitMode::Champ).expect("gc");
     gc.enable();
     gc.set_velocity_cmd(VelocityCmd::zero());
     for _ in 0..cmd_zero_steps {
         let (_o, targets, _ff) = gc.tick(DT);
-        for (idx, q) in targets { sim.set_position_target(idx, q); }
+        for (idx, q) in targets {
+            sim.set_position_target(idx, q);
+        }
         sim.step(&mut robot, DT, true);
     }
     let (x_cmd_start, z_cmd_start) = {
-        let p = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+        let p = sim
+            .body_world_position(&robot.root_link)
+            .unwrap_or([0.0; 3]);
         (p[0], p[2])
     };
-    gc.set_velocity_cmd(VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 });
+    gc.set_velocity_cmd(VelocityCmd {
+        vx: 0.30,
+        vy: 0.0,
+        wz: 0.0,
+    });
     eprintln!();
     eprintln!("=== diag_walk_champ_forward_gui_replica_full_misa ===");
     eprintln!("  (from_misa loader: PD 100/1.2 + damping 0.1 + post-settle kin + 0.5 s hold)");
     eprintln!("  t_cmd[s]   dx[m]    dy[m]    dz[m]    yaw[rad]   body_z[m]");
-    eprintln!("  {:>5.2}    {:+.4}  {:+.4}  {:+.4}  {:+.4}    {:.4}",
-        0.0, 0.0, 0.0, 0.0, 0.0, z_cmd_start);
+    eprintln!(
+        "  {:>5.2}    {:+.4}  {:+.4}  {:+.4}  {:+.4}    {:.4}",
+        0.0, 0.0, 0.0, 0.0, 0.0, z_cmd_start
+    );
     for k in 0..cmd_steps {
         let (_o, targets, _ff) = gc.tick(DT);
-        for (idx, q) in targets { sim.set_position_target(idx, q); }
+        for (idx, q) in targets {
+            sim.set_position_target(idx, q);
+        }
         sim.step(&mut robot, DT, true);
         if (k + 1) % log_every == 0 {
             if let Some(p) = sim.body_world_position(&robot.root_link) {
                 let yaw = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
                 let t = (k + 1) as f64 * DT;
-                eprintln!("  {:>5.2}    {:+.4}  {:+.4}  {:+.4}  {:+.4}    {:.4}",
-                    t, p[0]-x_cmd_start, p[1], p[2]-z_cmd_start, yaw, p[2]);
+                eprintln!(
+                    "  {:>5.2}    {:+.4}  {:+.4}  {:+.4}  {:+.4}    {:.4}",
+                    t,
+                    p[0] - x_cmd_start,
+                    p[1],
+                    p[2] - z_cmd_start,
+                    yaw,
+                    p[2]
+                );
             }
         }
     }
@@ -1622,22 +1885,23 @@ fn diag_walk_champ_forward_gui_replica_full_misa() {
 #[test]
 #[ignore = "external-force robustness benchmark — run with --ignored"]
 fn diag_external_force_robustness() {
-    let common::StandFixture {
-        robot,
-        kin: _,
-        sim,
-    } = match common::build_namiashi_stand_fixture_misa() {
-        Some(f) => f,
-        None => return,
-    };
+    let common::StandFixture { robot, kin: _, sim } =
+        match common::build_namiashi_stand_fixture_misa() {
+            Some(f) => f,
+            None => return,
+        };
     drop(robot);
     drop(sim);
 
     // Test parameters.
-    let cmd = VelocityCmd { vx: 0.15, vy: 0.0, wz: 0.0 };
-    let pre_force_s = 3.0;        // walk for 3 s before force
-    let force_duration_s = 0.2;   // impulse window
-    let post_force_s = 4.0;       // observe recovery
+    let cmd = VelocityCmd {
+        vx: 0.15,
+        vy: 0.0,
+        wz: 0.0,
+    };
+    let pre_force_s = 3.0; // walk for 3 s before force
+    let force_duration_s = 0.2; // impulse window
+    let post_force_s = 4.0; // observe recovery
     let total_s = pre_force_s + force_duration_s + post_force_s;
 
     // Force levels are calibrated for namiashi (m = 2.4 kg). An impulse
@@ -1646,15 +1910,15 @@ fn diag_external_force_robustness() {
     // each mode loses stability.
     let scenarios: [(&str, [f64; 3], [f64; 3]); 9] = [
         // (label, force [N], torque [N·m])
-        ("lateral +y 2 N",  [0.0,  2.0, 0.0], [0.0; 3]),
-        ("lateral +y 4 N",  [0.0,  4.0, 0.0], [0.0; 3]),
-        ("lateral +y 6 N",  [0.0,  6.0, 0.0], [0.0; 3]),
-        ("forward −x 2 N",  [-2.0, 0.0, 0.0], [0.0; 3]),
-        ("forward −x 4 N",  [-4.0, 0.0, 0.0], [0.0; 3]),
-        ("forward −x 6 N",  [-6.0, 0.0, 0.0], [0.0; 3]),
+        ("lateral +y 2 N", [0.0, 2.0, 0.0], [0.0; 3]),
+        ("lateral +y 4 N", [0.0, 4.0, 0.0], [0.0; 3]),
+        ("lateral +y 6 N", [0.0, 6.0, 0.0], [0.0; 3]),
+        ("forward −x 2 N", [-2.0, 0.0, 0.0], [0.0; 3]),
+        ("forward −x 4 N", [-4.0, 0.0, 0.0], [0.0; 3]),
+        ("forward −x 6 N", [-6.0, 0.0, 0.0], [0.0; 3]),
         ("vertical −z 4 N", [0.0, 0.0, -4.0], [0.0; 3]),
         ("vertical −z 8 N", [0.0, 0.0, -8.0], [0.0; 3]),
-        ("yaw torque 1.5 N·m", [0.0; 3],      [0.0, 0.0, 1.5]),
+        ("yaw torque 1.5 N·m", [0.0; 3], [0.0, 0.0, 1.5]),
     ];
 
     // (mode label, GaitMode, use_wbc, FullCentroidal tweak (h,sqp_iter), enable SRBD foot-offset, enable legged_control parity, capture-point gain override, nominal q_ref).
@@ -1712,19 +1976,175 @@ fn diag_external_force_robustness() {
     // cone block to honour the ramp as a HARD constraint. This is
     // where C1 (cost-side, bit-exact identical to parity baseline)
     // graduates to a real intervention.
-    let modes: [(&str, GaitMode, bool, Option<(usize, usize)>, bool, bool, Option<f64>, bool, Option<(f64, f64)>, f64, bool); 20] = [
-        ("CHAMP open-loop",                 GaitMode::Champ, false, None, false, false, None, false, None, 0.0, false),
-        ("SRBD MPC + WBC",                  GaitMode::Mpc, true,    None, false, false, None, false, None, 0.0, false),
-        ("FullC default",                   GaitMode::FullCentroidal, true, None, false, false, None, false, None, 0.0, false),
-        ("FullC h20 sqp3",                  GaitMode::FullCentroidal, true, Some((20, 3)), false, false, None, false, None, 0.0, false),
-        ("FullC h10 sqp5",                  GaitMode::FullCentroidal, true, Some((10, 5)), false, false, None, false, None, 0.0, false),
-        ("FullC + cap-pt 0.05",             GaitMode::FullCentroidal, true, None, false, false, Some(0.05),  false, None, 0.0, false),
-        ("FullC + cap-pt 0.10",             GaitMode::FullCentroidal, true, None, false, false, Some(0.10),  false, None, 0.0, false),
-        ("FullC + cap-pt 0.175",            GaitMode::FullCentroidal, true, None, false, false, Some(0.175), false, None, 0.0, false),
-        ("FullC + db 0.05 / k_p 0.20",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.20, 0.05)), 0.0, false),
-        ("FullC + db 0.05 / k_p 0.30",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.30, 0.05)), 0.0, false),
-        ("FullC + db 0.10 / k_p 0.30",      GaitMode::FullCentroidal, true, None, false, false, None, false, Some((0.30, 0.10)), 0.0, false),
-        ("FullC legged-parity",             GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.0, false),
+    let modes: [(
+        &str,
+        GaitMode,
+        bool,
+        Option<(usize, usize)>,
+        bool,
+        bool,
+        Option<f64>,
+        bool,
+        Option<(f64, f64)>,
+        f64,
+        bool,
+    ); 20] = [
+        (
+            "CHAMP open-loop",
+            GaitMode::Champ,
+            false,
+            None,
+            false,
+            false,
+            None,
+            false,
+            None,
+            0.0,
+            false,
+        ),
+        (
+            "SRBD MPC + WBC",
+            GaitMode::Mpc,
+            true,
+            None,
+            false,
+            false,
+            None,
+            false,
+            None,
+            0.0,
+            false,
+        ),
+        (
+            "FullC default",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            false,
+            None,
+            false,
+            None,
+            0.0,
+            false,
+        ),
+        (
+            "FullC h20 sqp3",
+            GaitMode::FullCentroidal,
+            true,
+            Some((20, 3)),
+            false,
+            false,
+            None,
+            false,
+            None,
+            0.0,
+            false,
+        ),
+        (
+            "FullC h10 sqp5",
+            GaitMode::FullCentroidal,
+            true,
+            Some((10, 5)),
+            false,
+            false,
+            None,
+            false,
+            None,
+            0.0,
+            false,
+        ),
+        (
+            "FullC + cap-pt 0.05",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            false,
+            Some(0.05),
+            false,
+            None,
+            0.0,
+            false,
+        ),
+        (
+            "FullC + cap-pt 0.10",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            false,
+            Some(0.10),
+            false,
+            None,
+            0.0,
+            false,
+        ),
+        (
+            "FullC + cap-pt 0.175",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            false,
+            Some(0.175),
+            false,
+            None,
+            0.0,
+            false,
+        ),
+        (
+            "FullC + db 0.05 / k_p 0.20",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            false,
+            None,
+            false,
+            Some((0.20, 0.05)),
+            0.0,
+            false,
+        ),
+        (
+            "FullC + db 0.05 / k_p 0.30",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            false,
+            None,
+            false,
+            Some((0.30, 0.05)),
+            0.0,
+            false,
+        ),
+        (
+            "FullC + db 0.10 / k_p 0.30",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            false,
+            None,
+            false,
+            Some((0.30, 0.10)),
+            0.0,
+            false,
+        ),
+        (
+            "FullC legged-parity",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            true,
+            None,
+            false,
+            None,
+            0.0,
+            false,
+        ),
         // Sec.5ac confounder check: does k_capture=0 (legged_control's
         // own value, and what fixed the Go2 velocity-tracking reversal
         // in ①②③) hurt the lateral-push recovery that
@@ -1732,14 +2152,110 @@ fn diag_external_force_robustness() {
         // (η experiment, 2026-05-15)? Placed right next to the
         // unmodified "FullC legged-parity" row (which inherits the
         // 0.05 default) for a direct comparison.
-        ("FullC legged-parity + cap-pt 0.0", GaitMode::FullCentroidal, true, None, false, true, Some(0.0), false, None, 0.0, false),
-        ("FullC parity + cap-pt 0.175",     GaitMode::FullCentroidal, true, None, false, true, Some(0.175), false, None, 0.0, false),
-        ("FullC parity + nominal q_ref",    GaitMode::FullCentroidal, true, None, false, true, None, true, None, 0.0, false),
-        ("FullC parity + cap-pt + nom-q",   GaitMode::FullCentroidal, true, None, false, true, Some(0.175), true, None, 0.0, false),
-        ("FullC parity + trans 0.05",       GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.05, false),
-        ("FullC parity + trans 0.10",       GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.10, false),
-        ("FullC parity + trans 0.05 hard",  GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.05, true),
-        ("FullC parity + trans 0.10 hard",  GaitMode::FullCentroidal, true, None, false, true, None, false, None, 0.10, true),
+        (
+            "FullC legged-parity + cap-pt 0.0",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            true,
+            Some(0.0),
+            false,
+            None,
+            0.0,
+            false,
+        ),
+        (
+            "FullC parity + cap-pt 0.175",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            true,
+            Some(0.175),
+            false,
+            None,
+            0.0,
+            false,
+        ),
+        (
+            "FullC parity + nominal q_ref",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            true,
+            None,
+            true,
+            None,
+            0.0,
+            false,
+        ),
+        (
+            "FullC parity + cap-pt + nom-q",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            true,
+            Some(0.175),
+            true,
+            None,
+            0.0,
+            false,
+        ),
+        (
+            "FullC parity + trans 0.05",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            true,
+            None,
+            false,
+            None,
+            0.05,
+            false,
+        ),
+        (
+            "FullC parity + trans 0.10",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            true,
+            None,
+            false,
+            None,
+            0.10,
+            false,
+        ),
+        (
+            "FullC parity + trans 0.05 hard",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            true,
+            None,
+            false,
+            None,
+            0.05,
+            true,
+        ),
+        (
+            "FullC parity + trans 0.10 hard",
+            GaitMode::FullCentroidal,
+            true,
+            None,
+            false,
+            true,
+            None,
+            false,
+            None,
+            0.10,
+            true,
+        ),
     ];
 
     eprintln!();
@@ -1755,14 +2271,30 @@ fn diag_external_force_robustness() {
     eprintln!("        {}", "─".repeat(140));
 
     for (scen_label, force, torque) in &scenarios {
-        for (mode_label, mode, use_wbc, full_cfg_tweak, enable_foot_offset, enable_parity, cap_pt_override, use_nominal_q_ref, pulse_db, transition_fraction, enforce_constraint) in &modes {
+        for (
+            mode_label,
+            mode,
+            use_wbc,
+            full_cfg_tweak,
+            enable_foot_offset,
+            enable_parity,
+            cap_pt_override,
+            use_nominal_q_ref,
+            pulse_db,
+            transition_fraction,
+            enforce_constraint,
+        ) in &modes
+        {
             // Fresh fixture per (mode, scenario) so disturbance windows
             // don't bleed across tests.
             let Some(common::StandFixture {
                 mut robot,
                 kin,
                 mut sim,
-            }) = common::build_namiashi_stand_fixture_misa() else { continue; };
+            }) = common::build_namiashi_stand_fixture_misa()
+            else {
+                continue;
+            };
 
             // C1: opt into the GRF-reference transition ramp via
             // GaitConfig::transition_fraction. Default 0.0 leaves the
@@ -1830,7 +2362,9 @@ fn diag_external_force_robustness() {
             }
             let mut wbc_pipeline = if *use_wbc {
                 Some(WbcPipeline::new(&robot, common::default_foot_links()))
-            } else { None };
+            } else {
+                None
+            };
             if let Some(pipeline) = wbc_pipeline.as_mut() {
                 if let Some(full_cfg) = gc.full_centroidal_mpc_config() {
                     pipeline.mass_kg = full_cfg.mass_kg;
@@ -1871,20 +2405,27 @@ fn diag_external_force_robustness() {
                 }
                 // Inject force exactly once.
                 if k == force_start_step && !force_applied_already.get() {
-                    sim.apply_external_force(
-                        &robot.root_link, *force, *torque, force_duration_s,
-                    );
+                    sim.apply_external_force(&robot.root_link, *force, *torque, force_duration_s);
                     force_applied_already.set(true);
                 }
-                let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
-                let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+                let v_obs = sim
+                    .body_world_linear_velocity(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
+                let w_obs = sim
+                    .body_world_angular_velocity(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
                 gc.set_body_state_observed(
                     Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
-                    Vector3::new(w_obs[0], w_obs[1], w_obs[2]));
-                let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+                    Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
+                );
+                let body_pos = sim
+                    .body_world_position(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
                 let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
                 gc.set_body_pose_observed(
-                    yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
+                    yaw_obs,
+                    Vector3::new(body_pos[0], body_pos[1], body_pos[2]),
+                );
                 // Per-cmd WBC weights (mirrors run_walk).
                 if let Some(pipeline) = wbc_pipeline.as_mut() {
                     pipeline.weights = if pipeline.centroidal_inertia_body.is_some() {
@@ -1894,11 +2435,14 @@ fn diag_external_force_robustness() {
                     };
                 }
                 let (out, targets, torque_ff) = gc.tick(DT);
-                for (idx, q) in targets { sim.set_position_target(idx, q); }
+                for (idx, q) in targets {
+                    sim.set_position_target(idx, q);
+                }
                 // WBC path: same shape as run_walk's hybrid joint command.
                 if let Some(pipeline) = wbc_pipeline.as_mut() {
                     if k >= burn_in_steps {
-                        let f_grf_world = gc.predicted_grfs()
+                        let f_grf_world = gc
+                            .predicted_grfs()
                             .map(|sol| sol.grfs_first_step)
                             .unwrap_or([Vector3::zeros(); 4]);
                         let cmd_w = gc.velocity_cmd();
@@ -1917,7 +2461,10 @@ fn diag_external_force_robustness() {
                             out.legs[3].phase,
                         ];
                         let corrected = ContactDrivenPhase::apply_correction(
-                            &nominal_phases, force_z, 5.0, 0.0,
+                            &nominal_phases,
+                            force_z,
+                            5.0,
+                            0.0,
                         );
                         let contact_flag = [
                             corrected[0].is_stance,
@@ -1949,7 +2496,9 @@ fn diag_external_force_robustness() {
                         }
                     }
                 } else {
-                    for (idx, tau) in torque_ff { sim.set_torque_feedforward(idx, tau); }
+                    for (idx, tau) in torque_ff {
+                        sim.set_torque_feedforward(idx, tau);
+                    }
                 }
                 sim.step(&mut robot, DT, true);
 
@@ -1962,7 +2511,7 @@ fn diag_external_force_robustness() {
                         body_x_end = p[0];
                     }
                     if let Some(quat) = sim.body_world_orientation(&robot.root_link) {
-                        let euler = quat.euler_angles();  // (roll, pitch, yaw) in ZYX convention
+                        let euler = quat.euler_angles(); // (roll, pitch, yaw) in ZYX convention
                         peak_roll = peak_roll.max(euler.0.abs());
                         peak_pitch = peak_pitch.max(euler.1.abs());
                     }
@@ -1971,12 +2520,12 @@ fn diag_external_force_robustness() {
                     // Recovery time: first sample post-force-end with
                     // |dy| < 5 cm.
                     if k >= force_end_step && recovery_time_s.is_none() {
-                        let dy = sim.body_world_position(&robot.root_link)
-                            .map(|p| p[1].abs()).unwrap_or(0.0);
+                        let dy = sim
+                            .body_world_position(&robot.root_link)
+                            .map(|p| p[1].abs())
+                            .unwrap_or(0.0);
                         if dy < 0.05 {
-                            recovery_time_s = Some(
-                                (k - force_end_step) as f64 * DT
-                            );
+                            recovery_time_s = Some((k - force_end_step) as f64 * DT);
                         }
                     }
                 }
@@ -1989,11 +2538,24 @@ fn diag_external_force_robustness() {
                 None if fell => "fell".to_string(),
                 None => "no recov".to_string(),
             };
-            let result = if fell { "✗ fell" } else if recovery_time_s.is_some() { "✓ recovered" } else { "△ no recovery" };
+            let result = if fell {
+                "✗ fell"
+            } else if recovery_time_s.is_some() {
+                "✓ recovered"
+            } else {
+                "△ no recovery"
+            };
             eprintln!(
                 "        {:<22} | {:>9.3} | {:>11.3} | {:>12.3} | {:>11.3} | {:>6.3} | {:>+8.3}             | {} | {}",
                 format!("{} ({})", mode_label, scen_label),
-                peak_dy, peak_roll, peak_pitch, peak_dyaw, min_z, dx, recovery_label, result,
+                peak_dy,
+                peak_roll,
+                peak_pitch,
+                peak_dyaw,
+                min_z,
+                dx,
+                recovery_label,
+                result,
             );
         }
         eprintln!("        {}", "─".repeat(140));
@@ -2019,16 +2581,19 @@ fn diag_external_force_robustness() {
 #[test]
 #[ignore = "max_step_length sweep — run with --ignored"]
 fn diag_max_step_length_lateral_recovery() {
-    let common::StandFixture {
-        robot, kin: _, sim,
-    } = match common::build_namiashi_stand_fixture_misa() {
-        Some(f) => f,
-        None => return,
-    };
+    let common::StandFixture { robot, kin: _, sim } =
+        match common::build_namiashi_stand_fixture_misa() {
+            Some(f) => f,
+            None => return,
+        };
     drop(robot);
     drop(sim);
 
-    let cmd = VelocityCmd { vx: 0.15, vy: 0.0, wz: 0.0 };
+    let cmd = VelocityCmd {
+        vx: 0.15,
+        vy: 0.0,
+        wz: 0.0,
+    };
     let pre_force_s = 3.0;
     let force_duration_s = 0.2;
     let post_force_s = 4.0;
@@ -2049,8 +2614,8 @@ fn diag_max_step_length_lateral_recovery() {
     let variants: [(f64, bool, &str); 4] = [
         (0.10, false, "cap-pt baseline"),
         (0.15, false, "wider step only"),
-        (0.10, true,  "MPC-pred footstep"),
-        (0.15, true,  "MPC-pred + wider"),
+        (0.10, true, "MPC-pred footstep"),
+        (0.15, true, "MPC-pred + wider"),
     ];
 
     eprintln!();
@@ -2070,7 +2635,10 @@ fn diag_max_step_length_lateral_recovery() {
                 mut robot,
                 kin,
                 mut sim,
-            }) = common::build_namiashi_stand_fixture_misa() else { continue; };
+            }) = common::build_namiashi_stand_fixture_misa()
+            else {
+                continue;
+            };
 
             let cfg = GaitConfig::trot().with_max_step_length(*max_step);
             let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::FullCentroidal)
@@ -2103,27 +2671,37 @@ fn diag_max_step_length_lateral_recovery() {
                     gc.set_velocity_cmd(cmd);
                 }
                 if k == force_start_step && !force_applied_already.get() {
-                    sim.apply_external_force(
-                        &robot.root_link, *force, [0.0; 3], force_duration_s,
-                    );
+                    sim.apply_external_force(&robot.root_link, *force, [0.0; 3], force_duration_s);
                     force_applied_already.set(true);
                 }
-                let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
-                let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+                let v_obs = sim
+                    .body_world_linear_velocity(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
+                let w_obs = sim
+                    .body_world_angular_velocity(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
                 gc.set_body_state_observed(
                     Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                     Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
                 );
-                let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+                let body_pos = sim
+                    .body_world_position(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
                 let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
                 gc.set_body_pose_observed(
-                    yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
-                wbc_pipeline.weights = quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd());
+                    yaw_obs,
+                    Vector3::new(body_pos[0], body_pos[1], body_pos[2]),
+                );
+                wbc_pipeline.weights =
+                    quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd());
 
                 let (out, targets, _) = gc.tick(DT);
-                for (idx, q) in targets { sim.set_position_target(idx, q); }
+                for (idx, q) in targets {
+                    sim.set_position_target(idx, q);
+                }
                 if k >= burn_in_steps {
-                    let f_grf_world = gc.predicted_grfs()
+                    let f_grf_world = gc
+                        .predicted_grfs()
                         .map(|sol| sol.grfs_first_step)
                         .unwrap_or([Vector3::zeros(); 4]);
                     let cmd_w = gc.velocity_cmd();
@@ -2135,20 +2713,34 @@ fn diag_max_step_length_lateral_recovery() {
                         wbc_pipeline.foot_links[3].as_str(),
                     ];
                     let force_z = sim.contact_force_per_foot(&foot_links_str);
-                    let nominal_phases = [out.legs[0].phase, out.legs[1].phase,
-                                          out.legs[2].phase, out.legs[3].phase];
-                    let corrected = ContactDrivenPhase::apply_correction(
-                        &nominal_phases, force_z, 5.0, 0.0,
-                    );
-                    let contact_flag = [corrected[0].is_stance, corrected[1].is_stance,
-                                        corrected[2].is_stance, corrected[3].is_stance];
+                    let nominal_phases = [
+                        out.legs[0].phase,
+                        out.legs[1].phase,
+                        out.legs[2].phase,
+                        out.legs[3].phase,
+                    ];
+                    let corrected =
+                        ContactDrivenPhase::apply_correction(&nominal_phases, force_z, 5.0, 0.0);
+                    let contact_flag = [
+                        corrected[0].is_stance,
+                        corrected[1].is_stance,
+                        corrected[2].is_stance,
+                        corrected[3].is_stance,
+                    ];
                     let taus = wbc_pipeline.solve(
-                        &robot, &sim, &out, gc.kinematics(),
-                        gc.joint_indices(), gc.joint_signs(),
-                        &v_cmd_body, cmd_w.wz,
+                        &robot,
+                        &sim,
+                        &out,
+                        gc.kinematics(),
+                        gc.joint_indices(),
+                        gc.joint_signs(),
+                        &v_cmd_body,
+                        cmd_w.wz,
                         &Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                         &Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
-                        &f_grf_world, contact_flag, DT,
+                        &f_grf_world,
+                        contact_flag,
+                        DT,
                     );
                     for (ji, &tau) in taus.iter().enumerate() {
                         sim.set_torque_feedforward(ji, tau);
@@ -2179,7 +2771,12 @@ fn diag_max_step_length_lateral_recovery() {
             eprintln!(
                 "        {:<32} | {:>9.3} | {:>8.3} | {:>9.3} | {:>10.3} | {:>5.3} | {}",
                 format!("step={:.2} {} ({})", max_step, variant_label, scen_label),
-                peak_dy, body_y_end.abs(), peak_roll, peak_pitch, min_z, result,
+                peak_dy,
+                body_y_end.abs(),
+                peak_roll,
+                peak_pitch,
+                min_z,
+                result,
             );
         }
         eprintln!("        {}", "─".repeat(115));
@@ -2206,16 +2803,19 @@ fn diag_max_step_length_lateral_recovery() {
 #[test]
 #[ignore = "friction-cone utilization probe — run with --ignored"]
 fn diag_friction_cone_utilization() {
-    let common::StandFixture {
-        robot, kin: _, sim,
-    } = match common::build_namiashi_stand_fixture_misa() {
-        Some(f) => f,
-        None => return,
-    };
+    let common::StandFixture { robot, kin: _, sim } =
+        match common::build_namiashi_stand_fixture_misa() {
+            Some(f) => f,
+            None => return,
+        };
     drop(robot);
     drop(sim);
 
-    let cmd = VelocityCmd { vx: 0.15, vy: 0.0, wz: 0.0 };
+    let cmd = VelocityCmd {
+        vx: 0.15,
+        vy: 0.0,
+        wz: 0.0,
+    };
     let pre_force_s = 3.0;
     let force_duration_s = 0.2;
     let post_force_s = 4.0;
@@ -2223,9 +2823,9 @@ fn diag_friction_cone_utilization() {
 
     let scenarios: [(&str, [f64; 3]); 4] = [
         ("baseline (no push)", [0.0; 3]),
-        ("lateral +y 2 N",     [0.0,  2.0, 0.0]),
-        ("lateral +y 4 N",     [0.0,  4.0, 0.0]),
-        ("lateral +y 6 N",     [0.0,  6.0, 0.0]),
+        ("lateral +y 2 N", [0.0, 2.0, 0.0]),
+        ("lateral +y 4 N", [0.0, 4.0, 0.0]),
+        ("lateral +y 6 N", [0.0, 6.0, 0.0]),
     ];
 
     eprintln!();
@@ -2244,12 +2844,16 @@ fn diag_friction_cone_utilization() {
             mut robot,
             kin,
             mut sim,
-        }) = common::build_namiashi_stand_fixture_misa() else { continue; };
+        }) = common::build_namiashi_stand_fixture_misa()
+        else {
+            continue;
+        };
 
         let cfg = GaitConfig::trot();
         let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::FullCentroidal)
             .expect("GaitController::build");
-        let mu = gc.full_centroidal_mpc_config()
+        let mu = gc
+            .full_centroidal_mpc_config()
             .map(|c| c.friction_mu)
             .unwrap_or(0.5);
         let mut wbc_pipeline = WbcPipeline::new(&robot, common::default_foot_links());
@@ -2276,27 +2880,34 @@ fn diag_friction_cone_utilization() {
                 gc.set_velocity_cmd(cmd);
             }
             if k == force_start_step && !force_applied_already.get() && force != &[0.0; 3] {
-                sim.apply_external_force(
-                    &robot.root_link, *force, [0.0; 3], force_duration_s,
-                );
+                sim.apply_external_force(&robot.root_link, *force, [0.0; 3], force_duration_s);
                 force_applied_already.set(true);
             }
-            let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
-            let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            let v_obs = sim
+                .body_world_linear_velocity(&robot.root_link)
+                .unwrap_or([0.0; 3]);
+            let w_obs = sim
+                .body_world_angular_velocity(&robot.root_link)
+                .unwrap_or([0.0; 3]);
             gc.set_body_state_observed(
                 Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                 Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
             );
-            let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+            let body_pos = sim
+                .body_world_position(&robot.root_link)
+                .unwrap_or([0.0; 3]);
             let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
-            gc.set_body_pose_observed(
-                yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
-            wbc_pipeline.weights = quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd());
+            gc.set_body_pose_observed(yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
+            wbc_pipeline.weights =
+                quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd());
 
             let (out, targets, _) = gc.tick(DT);
-            for (idx, q) in targets { sim.set_position_target(idx, q); }
+            for (idx, q) in targets {
+                sim.set_position_target(idx, q);
+            }
             if k >= burn_in_steps {
-                let f_grf_world = gc.predicted_grfs()
+                let f_grf_world = gc
+                    .predicted_grfs()
                     .map(|sol| sol.grfs_first_step)
                     .unwrap_or([Vector3::zeros(); 4]);
                 let cmd_w = gc.velocity_cmd();
@@ -2308,20 +2919,34 @@ fn diag_friction_cone_utilization() {
                     wbc_pipeline.foot_links[3].as_str(),
                 ];
                 let force_z = sim.contact_force_per_foot(&foot_links_str);
-                let nominal_phases = [out.legs[0].phase, out.legs[1].phase,
-                                      out.legs[2].phase, out.legs[3].phase];
-                let corrected = ContactDrivenPhase::apply_correction(
-                    &nominal_phases, force_z, 5.0, 0.0,
-                );
-                let contact_flag = [corrected[0].is_stance, corrected[1].is_stance,
-                                    corrected[2].is_stance, corrected[3].is_stance];
+                let nominal_phases = [
+                    out.legs[0].phase,
+                    out.legs[1].phase,
+                    out.legs[2].phase,
+                    out.legs[3].phase,
+                ];
+                let corrected =
+                    ContactDrivenPhase::apply_correction(&nominal_phases, force_z, 5.0, 0.0);
+                let contact_flag = [
+                    corrected[0].is_stance,
+                    corrected[1].is_stance,
+                    corrected[2].is_stance,
+                    corrected[3].is_stance,
+                ];
                 let taus = wbc_pipeline.solve(
-                    &robot, &sim, &out, gc.kinematics(),
-                    gc.joint_indices(), gc.joint_signs(),
-                    &v_cmd_body, cmd_w.wz,
+                    &robot,
+                    &sim,
+                    &out,
+                    gc.kinematics(),
+                    gc.joint_indices(),
+                    gc.joint_signs(),
+                    &v_cmd_body,
+                    cmd_w.wz,
                     &Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                     &Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
-                    &f_grf_world, contact_flag, DT,
+                    &f_grf_world,
+                    contact_flag,
+                    DT,
                 );
                 for (ji, &tau) in taus.iter().enumerate() {
                     sim.set_torque_feedforward(ji, tau);
@@ -2386,12 +3011,11 @@ fn diag_friction_cone_utilization() {
 #[test]
 #[ignore = "goal-pose lateral recovery — run with --ignored"]
 fn diag_goal_pose_lateral_recovery() {
-    let common::StandFixture {
-        robot, kin: _, sim,
-    } = match common::build_namiashi_stand_fixture_misa() {
-        Some(f) => f,
-        None => return,
-    };
+    let common::StandFixture { robot, kin: _, sim } =
+        match common::build_namiashi_stand_fixture_misa() {
+            Some(f) => f,
+            None => return,
+        };
     drop(robot);
     drop(sim);
 
@@ -2437,7 +3061,10 @@ fn diag_goal_pose_lateral_recovery() {
                 mut robot,
                 kin,
                 mut sim,
-            }) = common::build_namiashi_stand_fixture_misa() else { continue; };
+            }) = common::build_namiashi_stand_fixture_misa()
+            else {
+                continue;
+            };
 
             let cfg = GaitConfig::trot();
             let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::FullCentroidal)
@@ -2468,7 +3095,11 @@ fn diag_goal_pose_lateral_recovery() {
                 if k == burn_in_steps {
                     match mode {
                         CmdMode::Velocity => {
-                            gc.set_velocity_cmd(VelocityCmd { vx: cmd_vx, vy: 0.0, wz: 0.0 });
+                            gc.set_velocity_cmd(VelocityCmd {
+                                vx: cmd_vx,
+                                vy: 0.0,
+                                wz: 0.0,
+                            });
                         }
                         CmdMode::Goal => {
                             gc.set_goal_pose_world(quadruped_gait::GoalPoseWorld {
@@ -2487,27 +3118,37 @@ fn diag_goal_pose_lateral_recovery() {
                     }
                 }
                 if k == force_start_step && !force_applied_already.get() {
-                    sim.apply_external_force(
-                        &robot.root_link, *force, [0.0; 3], force_duration_s,
-                    );
+                    sim.apply_external_force(&robot.root_link, *force, [0.0; 3], force_duration_s);
                     force_applied_already.set(true);
                 }
-                let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
-                let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+                let v_obs = sim
+                    .body_world_linear_velocity(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
+                let w_obs = sim
+                    .body_world_angular_velocity(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
                 gc.set_body_state_observed(
                     Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                     Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
                 );
-                let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+                let body_pos = sim
+                    .body_world_position(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
                 let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
                 gc.set_body_pose_observed(
-                    yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
-                wbc_pipeline.weights = quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd());
+                    yaw_obs,
+                    Vector3::new(body_pos[0], body_pos[1], body_pos[2]),
+                );
+                wbc_pipeline.weights =
+                    quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd());
 
                 let (out, targets, _) = gc.tick(DT);
-                for (idx, q) in targets { sim.set_position_target(idx, q); }
+                for (idx, q) in targets {
+                    sim.set_position_target(idx, q);
+                }
                 if k >= burn_in_steps {
-                    let f_grf_world = gc.predicted_grfs()
+                    let f_grf_world = gc
+                        .predicted_grfs()
                         .map(|sol| sol.grfs_first_step)
                         .unwrap_or([Vector3::zeros(); 4]);
                     let cmd_w = gc.velocity_cmd();
@@ -2520,23 +3161,33 @@ fn diag_goal_pose_lateral_recovery() {
                     ];
                     let force_z = sim.contact_force_per_foot(&foot_links_str);
                     let nominal_phases = [
-                        out.legs[0].phase, out.legs[1].phase,
-                        out.legs[2].phase, out.legs[3].phase,
+                        out.legs[0].phase,
+                        out.legs[1].phase,
+                        out.legs[2].phase,
+                        out.legs[3].phase,
                     ];
-                    let corrected = ContactDrivenPhase::apply_correction(
-                        &nominal_phases, force_z, 5.0, 0.0,
-                    );
+                    let corrected =
+                        ContactDrivenPhase::apply_correction(&nominal_phases, force_z, 5.0, 0.0);
                     let contact_flag = [
-                        corrected[0].is_stance, corrected[1].is_stance,
-                        corrected[2].is_stance, corrected[3].is_stance,
+                        corrected[0].is_stance,
+                        corrected[1].is_stance,
+                        corrected[2].is_stance,
+                        corrected[3].is_stance,
                     ];
                     let taus = wbc_pipeline.solve(
-                        &robot, &sim, &out, gc.kinematics(),
-                        gc.joint_indices(), gc.joint_signs(),
-                        &v_cmd_body, cmd_w.wz,
+                        &robot,
+                        &sim,
+                        &out,
+                        gc.kinematics(),
+                        gc.joint_indices(),
+                        gc.joint_signs(),
+                        &v_cmd_body,
+                        cmd_w.wz,
                         &Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                         &Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
-                        &f_grf_world, contact_flag, DT,
+                        &f_grf_world,
+                        contact_flag,
+                        DT,
                     );
                     for (ji, &tau) in taus.iter().enumerate() {
                         sim.set_torque_feedforward(ji, tau);
@@ -2556,8 +3207,10 @@ fn diag_goal_pose_lateral_recovery() {
                         body_y_end = p[1];
                     }
                     if k >= force_end_step && recovery_time_s.is_none() {
-                        let dy = sim.body_world_position(&robot.root_link)
-                            .map(|p| p[1].abs()).unwrap_or(0.0);
+                        let dy = sim
+                            .body_world_position(&robot.root_link)
+                            .map(|p| p[1].abs())
+                            .unwrap_or(0.0);
                         if dy < 0.05 {
                             recovery_time_s = Some((k - force_end_step) as f64 * DT);
                         }
@@ -2572,14 +3225,22 @@ fn diag_goal_pose_lateral_recovery() {
                 None if fell => "fell".to_string(),
                 None => "no recov".to_string(),
             };
-            let result = if fell { "✗ fell" }
-                         else if recovery_time_s.is_some() { "✓ recovered" }
-                         else { "△ no recovery" };
+            let result = if fell {
+                "✗ fell"
+            } else if recovery_time_s.is_some() {
+                "✓ recovered"
+            } else {
+                "△ no recovery"
+            };
             eprintln!(
                 "        {:<40} | {:>9.3} | {:>8.3} | {:>+7.3} (Δ {:+.3}) | {} | {}",
                 format!("{} ({})", mode_label, scen_label),
-                peak_dy, body_y_end.abs(), dx, dx - goal_x,
-                recovery_label, result,
+                peak_dy,
+                body_y_end.abs(),
+                dx,
+                dx - goal_x,
+                recovery_label,
+                result,
             );
         }
         eprintln!("        {}", "─".repeat(125));
@@ -2592,18 +3253,32 @@ fn diag_walk_metric_matrix_gui_v2() {
     let cmd_duration = 7.0;
     // GUI uses Linear cmd = 0.30 m/s (NOT 0.15 — that's the test
     // harness's `fwd_cmd()`). Match GUI here.
-    let fwd = VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 };
-    let lat = VelocityCmd { vx: 0.0, vy: 0.30, wz: 0.0 };
-    let yaw = VelocityCmd { vx: 0.0, vy: 0.0, wz: 0.5 };
+    let fwd = VelocityCmd {
+        vx: 0.30,
+        vy: 0.0,
+        wz: 0.0,
+    };
+    let lat = VelocityCmd {
+        vx: 0.0,
+        vy: 0.30,
+        wz: 0.0,
+    };
+    let yaw = VelocityCmd {
+        vx: 0.0,
+        vy: 0.0,
+        wz: 0.5,
+    };
     let scenarios = [("forward", fwd), ("lateral", lat), ("yaw", yaw)];
     let modes: [(&str, GaitMode, bool); 4] = [
-        ("champ-open",       GaitMode::Champ,          false),
-        ("mpc-srbd+wbc",     GaitMode::Mpc,            true),
-        ("centroidal+wbc",   GaitMode::CentroidalSrbd, true),
-        ("full24+wbc",       GaitMode::FullCentroidal, true),
+        ("champ-open", GaitMode::Champ, false),
+        ("mpc-srbd+wbc", GaitMode::Mpc, true),
+        ("centroidal+wbc", GaitMode::CentroidalSrbd, true),
+        ("full24+wbc", GaitMode::FullCentroidal, true),
     ];
     eprintln!();
-    eprintln!("=== diag_walk_metric_matrix_gui_v2 (constrain pose, kp=50/kv=5, grav_comp off, 7s cmd) ===");
+    eprintln!(
+        "=== diag_walk_metric_matrix_gui_v2 (constrain pose, kp=50/kv=5, grav_comp off, 7s cmd) ==="
+    );
     for (axis, cmd) in scenarios {
         eprintln!("--- axis: {axis} ---");
         for (label, mode, use_wbc) in &modes {
@@ -2631,14 +3306,18 @@ fn diag_walk_metric_matrix_gui_v2() {
 #[ignore = "metric debug — run with --ignored"]
 fn diag_champ_forward_constrain_pose() {
     let path = common::namiashi_urdf();
-    if !path.exists() { return; }
+    if !path.exists() {
+        return;
+    }
     let mut robot = articara::robot::RobotModel::from_urdf(&path).expect("load");
     // GUI uses URDF-default PD (kp=50, kv=5) — NOT the test harness's
     // (kp=30, kv=0.6). The constrain pose requires real joint torque
     // to hold against gravity (deeply bent legs); kp=30 isn't enough
     // and the robot collapses during the settle phase.
     for j in robot.joints.iter_mut() {
-        if j.joint_type == "fixed" { continue; }
+        if j.joint_type == "fixed" {
+            continue;
+        }
         j.actuator_mode = articara::robot::ActuatorMode::Position;
         j.actuator_kp = 50.0;
         j.actuator_kv = 5.0;
@@ -2651,10 +3330,18 @@ fn diag_champ_forward_constrain_pose() {
     // `seed_joint_positions_from_kinematics` which puts the legs near
     // straight-down (q ≈ small bend).
     let constrain_pose = [
-        ("FL_hip_joint", 0.0),  ("FL_thigh_joint", 1.0),  ("FL_calf_joint", -2.0),
-        ("FR_hip_joint", 0.0),  ("FR_thigh_joint", 1.0),  ("FR_calf_joint", -2.0),
-        ("RL_hip_joint", 0.0),  ("RL_thigh_joint", 1.0),  ("RL_calf_joint", -2.0),
-        ("RR_hip_joint", 0.0),  ("RR_thigh_joint", 1.0),  ("RR_calf_joint", -2.0),
+        ("FL_hip_joint", 0.0),
+        ("FL_thigh_joint", 1.0),
+        ("FL_calf_joint", -2.0),
+        ("FR_hip_joint", 0.0),
+        ("FR_thigh_joint", 1.0),
+        ("FR_calf_joint", -2.0),
+        ("RL_hip_joint", 0.0),
+        ("RL_thigh_joint", 1.0),
+        ("RL_calf_joint", -2.0),
+        ("RR_hip_joint", 0.0),
+        ("RR_thigh_joint", 1.0),
+        ("RR_calf_joint", -2.0),
         ("arm_pitch_joint", 0.0),
     ];
     for (name, q) in constrain_pose {
@@ -2667,14 +3354,20 @@ fn diag_champ_forward_constrain_pose() {
 
     // Now run Auto-Detect — the foot transforms will reflect the
     // constrain pose.
-    let kin = articara::gait::auto_detect_kinematics_config(
-        &robot,
-        &articara::gait::DEFAULT_FOOT_LINKS,
-    ).expect("kin");
+    let kin =
+        articara::gait::auto_detect_kinematics_config(&robot, &articara::gait::DEFAULT_FOOT_LINKS)
+            .expect("kin");
     eprintln!("nominal_foot_body after auto-detect at constrain pose:");
-    for (label, leg) in [("FL", &kin.fl), ("FR", &kin.fr), ("RL", &kin.rl), ("RR", &kin.rr)] {
-        eprintln!("  {label}: nominal_foot_body = {:?}, hip_offset = {:?}, upper={:.3} lower={:.3}",
-            leg.nominal_foot_body, leg.hip_offset, leg.upper_leg_m, leg.lower_leg_m);
+    for (label, leg) in [
+        ("FL", &kin.fl),
+        ("FR", &kin.fr),
+        ("RL", &kin.rl),
+        ("RR", &kin.rr),
+    ] {
+        eprintln!(
+            "  {label}: nominal_foot_body = {:?}, hip_offset = {:?}, upper={:.3} lower={:.3}",
+            leg.nominal_foot_body, leg.hip_offset, leg.upper_leg_m, leg.lower_leg_m
+        );
     }
 
     // Two-phase: 2 s settle (no gait, holding constrain pose) +
@@ -2688,7 +3381,10 @@ fn diag_champ_forward_constrain_pose() {
     // test harness default sets `true`. Match the GUI here.
     let opts = articara::mjcf::MjcfExportOptions {
         ground_plane: Some(articara::mjcf::GroundPlaneCfg {
-            z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0,
+            z: 0.0,
+            half_size: 4.0,
+            roll: 0.0,
+            pitch: 0.0,
         }),
         add_actuators: false,
         ..Default::default()
@@ -2713,7 +3409,11 @@ fn diag_champ_forward_constrain_pose() {
     }
 
     // GUI cmd = 0.30 m/s (not 0.15 in fwd_cmd()).
-    let cmd = VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 };
+    let cmd = VelocityCmd {
+        vx: 0.30,
+        vy: 0.0,
+        wz: 0.0,
+    };
 
     let total_s = settle_s + cmd_s;
     let n_steps = (total_s / DT) as usize;
@@ -2721,7 +3421,10 @@ fn diag_champ_forward_constrain_pose() {
     let mut m = WalkBenchmark::default();
     m.min_body_z = f64::INFINITY;
 
-    eprintln!("initial body pos: {:?}", sim.body_world_position(&robot.root_link));
+    eprintln!(
+        "initial body pos: {:?}",
+        sim.body_world_position(&robot.root_link)
+    );
     for k in 0..n_steps {
         if k == settle_steps {
             // Settle done — start the gait and apply forward cmd.
@@ -2729,13 +3432,19 @@ fn diag_champ_forward_constrain_pose() {
             gc.set_velocity_cmd(cmd);
             // Record start of cmd window.
             if let Some(p) = sim.body_world_position(&robot.root_link) {
-                m.body_x_start = p[0]; m.body_y_start = p[1];
+                m.body_x_start = p[0];
+                m.body_y_start = p[1];
             }
             m.yaw_start = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
-            eprintln!("at cmd start (t={settle_s}s): body_pos = ({:.3}, {:.3}, {:.3}), yaw = {:+.3}",
-                m.body_x_start, m.body_y_start,
-                sim.body_world_position(&robot.root_link).map(|p| p[2]).unwrap_or(0.0),
-                m.yaw_start);
+            eprintln!(
+                "at cmd start (t={settle_s}s): body_pos = ({:.3}, {:.3}, {:.3}), yaw = {:+.3}",
+                m.body_x_start,
+                m.body_y_start,
+                sim.body_world_position(&robot.root_link)
+                    .map(|p| p[2])
+                    .unwrap_or(0.0),
+                m.yaw_start
+            );
         }
 
         if k < settle_steps {
@@ -2747,31 +3456,50 @@ fn diag_champ_forward_constrain_pose() {
             }
         } else {
             // Walk phase: gait controller drives joint targets.
-            let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
-            let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            let v_obs = sim
+                .body_world_linear_velocity(&robot.root_link)
+                .unwrap_or([0.0; 3]);
+            let w_obs = sim
+                .body_world_angular_velocity(&robot.root_link)
+                .unwrap_or([0.0; 3]);
             gc.set_body_state_observed(
                 Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                 Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
             );
-            let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+            let body_pos = sim
+                .body_world_position(&robot.root_link)
+                .unwrap_or([0.0; 3]);
             let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
             gc.set_body_pose_observed(yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
             let (_o, targets, _ff) = gc.tick(DT);
-            for (idx, q) in targets { sim.set_position_target(idx, q); }
+            for (idx, q) in targets {
+                sim.set_position_target(idx, q);
+            }
         }
         sim.step(&mut robot, DT, true);
         if let Some(p) = sim.body_world_position(&robot.root_link) {
-            m.body_x_end = p[0]; m.body_y_end = p[1];
+            m.body_x_end = p[0];
+            m.body_y_end = p[1];
             m.min_body_z = m.min_body_z.min(p[2]);
         }
         m.yaw_end = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
     }
     let cmd_duration = cmd_s;
     eprintln!();
-    eprintln!("=== CHAMP forward CONSTRAIN-POSE (cmd vx=+{:.2} m/s, {:.1}s under cmd) ===",
-              cmd.vx, cmd_duration);
-    eprintln!("  dx_world  = {:+.4} m   dy_world = {:+.4} m", m.dx_world(), m.dy_world());
-    eprintln!("  dyaw      = {:+.3} rad  min_z    = {:.4} m", m.dyaw(), m.min_body_z);
+    eprintln!(
+        "=== CHAMP forward CONSTRAIN-POSE (cmd vx=+{:.2} m/s, {:.1}s under cmd) ===",
+        cmd.vx, cmd_duration
+    );
+    eprintln!(
+        "  dx_world  = {:+.4} m   dy_world = {:+.4} m",
+        m.dx_world(),
+        m.dy_world()
+    );
+    eprintln!(
+        "  dyaw      = {:+.3} rad  min_z    = {:.4} m",
+        m.dyaw(),
+        m.min_body_z
+    );
     let q = m.metrics(cmd, cmd_duration);
     eprintln!("  metric    = {}", q.line("forward"));
     eprintln!("  (user GUI reported: dx ≈ +1.13, dy ≈ +0.05..+0.10)");
@@ -2787,25 +3515,24 @@ fn diag_champ_forward_constrain_pose() {
 fn diag_champ_forward_no_nudge() {
     let cmd = fwd_cmd();
     let path = common::namiashi_urdf();
-    if !path.exists() { return; }
+    if !path.exists() {
+        return;
+    }
     let mut robot = articara::robot::RobotModel::from_urdf(&path).expect("load");
     common::setup_position_pd_actuators(&mut robot);
-    let kin = articara::gait::auto_detect_kinematics_config(
-        &robot,
-        &articara::gait::DEFAULT_FOOT_LINKS,
-    ).expect("kin");
+    let kin =
+        articara::gait::auto_detect_kinematics_config(&robot, &articara::gait::DEFAULT_FOOT_LINKS)
+            .expect("kin");
     // NO 8% nudge — leaves nominal_foot_body at the URDF q=0 pose.
     common::seed_joint_positions_from_kinematics(&mut robot, &kin);
 
-    let mut sim = articara::mujoco_sim::MujocoSim::new(
-        &robot,
-        common::default_mjcf_export_options(),
-    ).expect("sim");
+    let mut sim =
+        articara::mujoco_sim::MujocoSim::new(&robot, common::default_mjcf_export_options())
+            .expect("sim");
     sim.set_gravity_compensation(true);
 
     let cfg = GaitConfig::trot();
-    let mut gc = GaitController::build(&robot, kin, cfg, GaitMode::Champ)
-        .expect("build");
+    let mut gc = GaitController::build(&robot, kin, cfg, GaitMode::Champ).expect("build");
     gc.enable();
 
     let n_steps = (WALK_SIM_TIME_S / DT) as usize;
@@ -2813,7 +3540,8 @@ fn diag_champ_forward_no_nudge() {
     let mut m = WalkBenchmark::default();
     m.min_body_z = f64::INFINITY;
     if let Some(p) = sim.body_world_position(&robot.root_link) {
-        m.body_x_start = p[0]; m.body_y_start = p[1];
+        m.body_x_start = p[0];
+        m.body_y_start = p[1];
     }
     m.yaw_start = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
     for k in 0..n_steps {
@@ -2821,18 +3549,29 @@ fn diag_champ_forward_no_nudge() {
             gc.set_velocity_cmd(cmd);
         }
         let (_o, targets, _ff) = gc.tick(DT);
-        for (idx, q) in targets { sim.set_position_target(idx, q); }
+        for (idx, q) in targets {
+            sim.set_position_target(idx, q);
+        }
         sim.step(&mut robot, DT, true);
         if let Some(p) = sim.body_world_position(&robot.root_link) {
-            m.body_x_end = p[0]; m.body_y_end = p[1];
+            m.body_x_end = p[0];
+            m.body_y_end = p[1];
             m.min_body_z = m.min_body_z.min(p[2]);
         }
         m.yaw_end = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
     }
     eprintln!();
     eprintln!("=== CHAMP forward NO-NUDGE (URDF q=0 nominal) ===");
-    eprintln!("  dx_world  = {:+.4} m   dy_world = {:+.4} m", m.dx_world(), m.dy_world());
-    eprintln!("  dyaw      = {:+.3} rad  min_z    = {:.4} m", m.dyaw(), m.min_body_z);
+    eprintln!(
+        "  dx_world  = {:+.4} m   dy_world = {:+.4} m",
+        m.dx_world(),
+        m.dy_world()
+    );
+    eprintln!(
+        "  dyaw      = {:+.3} rad  min_z    = {:.4} m",
+        m.dyaw(),
+        m.min_body_z
+    );
     let q = m.metrics(cmd, WALK_SIM_TIME_S - WALK_BURN_IN_S);
     eprintln!("  metric    = {}", q.line("forward"));
 }
@@ -2848,15 +3587,27 @@ fn diag_champ_forward_raw() {
         return;
     };
     eprintln!();
-    eprintln!("=== CHAMP forward raw (cmd vx=+{:.2} m/s, 4.5 s under cmd) ===", cmd.vx);
+    eprintln!(
+        "=== CHAMP forward raw (cmd vx=+{:.2} m/s, 4.5 s under cmd) ===",
+        cmd.vx
+    );
     eprintln!("  yaw_start = {:+.3} rad", m.yaw_start);
     eprintln!("  yaw_end   = {:+.3} rad", m.yaw_end);
     eprintln!("  dyaw      = {:+.3} rad", m.dyaw());
     eprintln!("  dx_world  = {:+.4} m  (raw, world x)", m.dx_world());
     eprintln!("  dy_world  = {:+.4} m  (raw, world y)", m.dy_world());
-    eprintln!("  body_dx   = {:+.4} m  (projected on initial yaw)", m.body_dx());
-    eprintln!("  body_dy   = {:+.4} m  (projected, perp to initial yaw)", m.body_dy());
-    eprintln!("  norm_xy   = {:.4} m   (path radius)", (m.dx_world().powi(2) + m.dy_world().powi(2)).sqrt());
+    eprintln!(
+        "  body_dx   = {:+.4} m  (projected on initial yaw)",
+        m.body_dx()
+    );
+    eprintln!(
+        "  body_dy   = {:+.4} m  (projected, perp to initial yaw)",
+        m.body_dy()
+    );
+    eprintln!(
+        "  norm_xy   = {:.4} m   (path radius)",
+        (m.dx_world().powi(2) + m.dy_world().powi(2)).sqrt()
+    );
     eprintln!("  min_z     = {:.4} m", m.min_body_z);
     let q = m.metrics(cmd, WALK_SIM_TIME_S - WALK_BURN_IN_S);
     eprintln!("  metric    = {}", q.line("forward"));
@@ -2881,7 +3632,10 @@ fn diag_walk_metric_matrix() {
         ("full24+wbc", GaitMode::FullCentroidal, true),
     ];
     eprintln!();
-    eprintln!("=== diag_walk_metric_matrix (cmd_duration = {:.1} s) ===", cmd_duration);
+    eprintln!(
+        "=== diag_walk_metric_matrix (cmd_duration = {:.1} s) ===",
+        cmd_duration
+    );
     eprintln!();
     for (axis, cmd) in scenarios {
         eprintln!("--- axis: {axis} ---");
@@ -2910,7 +3664,10 @@ fn diag_full_centroidal_no_wbc_3axis() {
         };
         eprintln!(
             "[{label}:full-centroidal-only] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-            m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+            m.body_dx(),
+            m.body_dy(),
+            m.dyaw(),
+            m.min_body_z,
         );
     }
 }
@@ -2923,15 +3680,30 @@ fn integration_walk_straight_full_centroidal_wbc() {
     };
     eprintln!(
         "[forward:full-centroidal+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
+        m.min_body_z,
     );
-    assert!(m.min_body_z > FALL_THRESHOLD_Z, "FullCentroidal+WBC fell (forward)");
-    assert!(m.body_dx() > 0.10,
-        "forward (full-centroidal): body_dx = {:+.3} m, expected > +0.10 m", m.body_dx());
-    assert!(m.body_dy().abs() < 0.20,
-        "forward (full-centroidal): body_dy = {:+.3} m, expected |·| < 0.20 m", m.body_dy());
-    assert!(m.dyaw().abs() < 1.0,
-        "forward (full-centroidal): Δyaw = {:+.3} rad, expected |·| < 1.0 rad", m.dyaw());
+    assert!(
+        m.min_body_z > FALL_THRESHOLD_Z,
+        "FullCentroidal+WBC fell (forward)"
+    );
+    assert!(
+        m.body_dx() > 0.10,
+        "forward (full-centroidal): body_dx = {:+.3} m, expected > +0.10 m",
+        m.body_dx()
+    );
+    assert!(
+        m.body_dy().abs() < 0.20,
+        "forward (full-centroidal): body_dy = {:+.3} m, expected |·| < 0.20 m",
+        m.body_dy()
+    );
+    assert!(
+        m.dyaw().abs() < 1.0,
+        "forward (full-centroidal): Δyaw = {:+.3} rad, expected |·| < 1.0 rad",
+        m.dyaw()
+    );
 }
 
 #[test]
@@ -2942,15 +3714,30 @@ fn integration_walk_lateral_full_centroidal_wbc() {
     };
     eprintln!(
         "[lateral:full-centroidal+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
+        m.min_body_z,
     );
-    assert!(m.min_body_z > FALL_THRESHOLD_Z, "FullCentroidal+WBC fell (lateral)");
-    assert!(m.body_dy() > 0.20,
-        "lateral (full-centroidal): body_dy = {:+.3} m, expected > +0.20 m", m.body_dy());
-    assert!(m.body_dx().abs() < 0.30,
-        "lateral (full-centroidal): body_dx = {:+.3} m, expected |·| < 0.30 m", m.body_dx());
-    assert!(m.dyaw().abs() < 1.5,
-        "lateral (full-centroidal): Δyaw = {:+.3} rad, expected |·| < 1.5 rad", m.dyaw());
+    assert!(
+        m.min_body_z > FALL_THRESHOLD_Z,
+        "FullCentroidal+WBC fell (lateral)"
+    );
+    assert!(
+        m.body_dy() > 0.20,
+        "lateral (full-centroidal): body_dy = {:+.3} m, expected > +0.20 m",
+        m.body_dy()
+    );
+    assert!(
+        m.body_dx().abs() < 0.30,
+        "lateral (full-centroidal): body_dx = {:+.3} m, expected |·| < 0.30 m",
+        m.body_dx()
+    );
+    assert!(
+        m.dyaw().abs() < 1.5,
+        "lateral (full-centroidal): Δyaw = {:+.3} rad, expected |·| < 1.5 rad",
+        m.dyaw()
+    );
 }
 
 #[test]
@@ -2961,15 +3748,30 @@ fn integration_walk_yaw_full_centroidal_wbc() {
     };
     eprintln!(
         "[yaw:full-centroidal+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
+        m.min_body_z,
     );
-    assert!(m.min_body_z > FALL_THRESHOLD_Z, "FullCentroidal+WBC fell (yaw)");
-    assert!(m.dyaw().abs() > 1.5,
-        "yaw (full-centroidal): Δyaw = {:+.3} rad, expected |·| > 1.5 rad", m.dyaw());
-    assert!(m.body_dx().abs() < 0.35,
-        "yaw (full-centroidal): body_dx = {:+.3} m, expected |·| < 0.35 m", m.body_dx());
-    assert!(m.body_dy().abs() < 0.35,
-        "yaw (full-centroidal): body_dy = {:+.3} m, expected |·| < 0.35 m", m.body_dy());
+    assert!(
+        m.min_body_z > FALL_THRESHOLD_Z,
+        "FullCentroidal+WBC fell (yaw)"
+    );
+    assert!(
+        m.dyaw().abs() > 1.5,
+        "yaw (full-centroidal): Δyaw = {:+.3} rad, expected |·| > 1.5 rad",
+        m.dyaw()
+    );
+    assert!(
+        m.body_dx().abs() < 0.35,
+        "yaw (full-centroidal): body_dx = {:+.3} m, expected |·| < 0.35 m",
+        m.body_dx()
+    );
+    assert!(
+        m.body_dy().abs() < 0.35,
+        "yaw (full-centroidal): body_dy = {:+.3} m, expected |·| < 0.35 m",
+        m.body_dy()
+    );
 }
 
 /// Repro of the user-reported axis swap at high cmd magnitude: drives
@@ -2979,18 +3781,30 @@ fn integration_walk_yaw_full_centroidal_wbc() {
 #[test]
 #[ignore = "diagnostic — run with --ignored"]
 fn diag_high_cmd_axis_swap() {
-    let high_fwd = VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 };
-    let high_lat = VelocityCmd { vx: 0.0, vy: 0.30, wz: 0.0 };
+    let high_fwd = VelocityCmd {
+        vx: 0.30,
+        vy: 0.0,
+        wz: 0.0,
+    };
+    let high_lat = VelocityCmd {
+        vx: 0.0,
+        vy: 0.30,
+        wz: 0.0,
+    };
     if let Some(m) = run_walk(true, GaitMode::Mpc, high_fwd, false) {
         eprintln!(
             "[diag:vx=0.3] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad",
-            m.body_dx(), m.body_dy(), m.dyaw(),
+            m.body_dx(),
+            m.body_dy(),
+            m.dyaw(),
         );
     }
     if let Some(m) = run_walk(true, GaitMode::Mpc, high_lat, false) {
         eprintln!(
             "[diag:vy=0.3] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad",
-            m.body_dx(), m.body_dy(), m.dyaw(),
+            m.body_dx(),
+            m.body_dy(),
+            m.dyaw(),
         );
     }
 }
@@ -3003,9 +3817,9 @@ fn diag_high_cmd_axis_swap() {
 #[test]
 #[ignore = "diagnostic — run with --ignored"]
 fn diag_constrain_pose_axis_swap() {
-    use articara::gait::{auto_detect_kinematics_config, DEFAULT_FOOT_LINKS};
-    use articara::robot::RobotModel;
+    use articara::gait::{DEFAULT_FOOT_LINKS, auto_detect_kinematics_config};
     use articara::mujoco_sim::MujocoSim;
+    use articara::robot::RobotModel;
     use articara::wbc_pipeline::WbcPipeline;
 
     let misa_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3021,12 +3835,16 @@ fn diag_constrain_pose_axis_swap() {
     common::setup_position_pd_actuators(&mut robot);
 
     // Auto-detect kin (q=0 reference foot positions).
-    let mut kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS)
-        .expect("auto-detect kinematics");
+    let mut kin =
+        auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS).expect("auto-detect kinematics");
 
     // Seed constrain pose: copy [[pose]] "constrain" angles into joint_positions.
-    let constrain = robot.poses.iter().find(|p| p.name == "constrain")
-        .expect("constrain pose").clone();
+    let constrain = robot
+        .poses
+        .iter()
+        .find(|p| p.name == "constrain")
+        .expect("constrain pose")
+        .clone();
     for (ji, joint) in robot.joints.iter().enumerate() {
         if let Some(&q) = constrain.angles.get(&joint.name) {
             robot.joint_positions[ji] = q;
@@ -3042,29 +3860,26 @@ fn diag_constrain_pose_axis_swap() {
         .unwrap_or_else(nalgebra::Vector3::zeros);
     for kin_leg in [&mut kin.fl, &mut kin.fr, &mut kin.rl, &mut kin.rr] {
         if let Some(foot_iso) = transforms.get(&kin_leg.foot_link) {
-            let foot_pos: nalgebra::Vector3<f64> =
-                foot_iso.translation.vector.cast::<f64>();
+            let foot_pos: nalgebra::Vector3<f64> = foot_iso.translation.vector.cast::<f64>();
             kin_leg.nominal_foot_body = foot_pos - body_pos;
         }
     }
     eprintln!(
         "[diag:setup] nominal_foot_body FL=({:+.3}, {:+.3}, {:+.3})",
-        kin.fl.nominal_foot_body.x,
-        kin.fl.nominal_foot_body.y,
-        kin.fl.nominal_foot_body.z,
+        kin.fl.nominal_foot_body.x, kin.fl.nominal_foot_body.y, kin.fl.nominal_foot_body.z,
     );
 
-    let mut sim = MujocoSim::new(&robot, common::default_mjcf_export_options())
-        .expect("MujocoSim::new");
+    let mut sim =
+        MujocoSim::new(&robot, common::default_mjcf_export_options()).expect("MujocoSim::new");
     sim.set_gravity_compensation(true);
 
     // Quick test runner inline (mirrors run_walk but with custom kin
     // already seeded in robot, plus this test runs only 3 s, no
     // burn-in retune).
     let cfg = quadruped_gait::GaitConfig::trot();
-    let mut gc = articara::gait::GaitController::build(
-        &robot, kin, cfg, quadruped_gait::GaitMode::Mpc,
-    ).expect("GaitController::build");
+    let mut gc =
+        articara::gait::GaitController::build(&robot, kin, cfg, quadruped_gait::GaitMode::Mpc)
+            .expect("GaitController::build");
     let use_wbc = std::env::var("DIAG_WBC").map(|v| v != "0").unwrap_or(true);
     eprintln!("[diag:setup] use_wbc = {use_wbc}");
     let mut wbc_pipeline = if use_wbc {
@@ -3080,40 +3895,63 @@ fn diag_constrain_pose_axis_swap() {
 
     for (label, cmd) in [
         ("vx=0.0", VelocityCmd::zero()),
-        ("vx=+0.3", VelocityCmd { vx: 0.30, vy: 0.0, wz: 0.0 }),
-        ("vy=+0.3", VelocityCmd { vx: 0.0, vy: 0.30, wz: 0.0 }),
+        (
+            "vx=+0.3",
+            VelocityCmd {
+                vx: 0.30,
+                vy: 0.0,
+                wz: 0.0,
+            },
+        ),
+        (
+            "vy=+0.3",
+            VelocityCmd {
+                vx: 0.0,
+                vy: 0.30,
+                wz: 0.0,
+            },
+        ),
     ] {
         // 0.5 s burn-in @ zero cmd, then 3 s @ cmd.
         gc.set_velocity_cmd(VelocityCmd::zero());
         gc.enable();
-        let pos0 = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+        let pos0 = sim
+            .body_world_position(&robot.root_link)
+            .unwrap_or([0.0; 3]);
         let yaw0 = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
         let dt = sim.timestep();
         let burn = (0.5 / dt) as usize;
         let active = (3.0 / dt) as usize;
         for k in 0..(burn + active) {
-            if k == burn { gc.set_velocity_cmd(cmd); }
+            if k == burn {
+                gc.set_velocity_cmd(cmd);
+            }
             if let Some(p) = wbc_pipeline.as_mut() {
                 p.weights = quadruped_gait::wbc::WbcWeights::for_cmd(&gc.velocity_cmd());
             }
-            let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
-            let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            let v_obs = sim
+                .body_world_linear_velocity(&robot.root_link)
+                .unwrap_or([0.0; 3]);
+            let w_obs = sim
+                .body_world_angular_velocity(&robot.root_link)
+                .unwrap_or([0.0; 3]);
             gc.set_body_state_observed(
                 nalgebra::Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                 nalgebra::Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
             );
-            let pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+            let pos = sim
+                .body_world_position(&robot.root_link)
+                .unwrap_or([0.0; 3]);
             let yaw = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
-            gc.set_body_pose_observed(
-                yaw, nalgebra::Vector3::new(pos[0], pos[1], pos[2]),
-            );
+            gc.set_body_pose_observed(yaw, nalgebra::Vector3::new(pos[0], pos[1], pos[2]));
             let (out, targets, torque_ff) = gc.tick(dt);
             for (idx, q) in targets {
                 sim.set_position_target(idx, q);
             }
             if let Some(pipeline) = wbc_pipeline.as_mut() {
                 // WBC torques via Hybrid path (τ_ff on top of Position-PD).
-                let f_grf_world = gc.predicted_grfs()
+                let f_grf_world = gc
+                    .predicted_grfs()
                     .map(|s| s.grfs_first_step)
                     .unwrap_or([nalgebra::Vector3::zeros(); 4]);
                 let v_cmd_body = nalgebra::Vector3::new(cmd.vx, cmd.vy, 0.0);
@@ -3130,20 +3968,37 @@ fn diag_constrain_pose_axis_swap() {
                 ];
                 let force_z = sim.contact_force_per_foot(&foot_links_str);
                 let nominal_phases = [
-                    out.legs[0].phase, out.legs[1].phase,
-                    out.legs[2].phase, out.legs[3].phase,
+                    out.legs[0].phase,
+                    out.legs[1].phase,
+                    out.legs[2].phase,
+                    out.legs[3].phase,
                 ];
                 let corrected = quadruped_gait::ContactDrivenPhase::apply_correction(
-                    &nominal_phases, force_z, 5.0, 0.0,
+                    &nominal_phases,
+                    force_z,
+                    5.0,
+                    0.0,
                 );
                 let contact_flag_corrected = [
-                    corrected[0].is_stance, corrected[1].is_stance,
-                    corrected[2].is_stance, corrected[3].is_stance,
+                    corrected[0].is_stance,
+                    corrected[1].is_stance,
+                    corrected[2].is_stance,
+                    corrected[3].is_stance,
                 ];
                 let taus = pipeline.solve(
-                    &robot, &sim, &out, &kin_now, joint_indices, joint_signs,
-                    &v_cmd_body, cmd.wz, &v_obs_v3, &omega_obs_v3,
-                    &f_grf_world, contact_flag_corrected, dt,
+                    &robot,
+                    &sim,
+                    &out,
+                    &kin_now,
+                    joint_indices,
+                    joint_signs,
+                    &v_cmd_body,
+                    cmd.wz,
+                    &v_obs_v3,
+                    &omega_obs_v3,
+                    &f_grf_world,
+                    contact_flag_corrected,
+                    dt,
                 );
                 for (ji, &tau) in taus.iter().enumerate() {
                     sim.set_torque_feedforward(ji, tau);
@@ -3156,15 +4011,24 @@ fn diag_constrain_pose_axis_swap() {
             }
             sim.step(&mut robot, dt, true);
         }
-        let pos1 = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+        let pos1 = sim
+            .body_world_position(&robot.root_link)
+            .unwrap_or([0.0; 3]);
         let yaw1 = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
         eprintln!(
             "[diag:{}] pos start=({:+.2}, {:+.2}, {:+.2}) end=({:+.2}, {:+.2}, {:+.2})  Δ=({:+.3}, {:+.3}, {:+.3})  yaw {:+.0}°→{:+.0}°",
             label,
-            pos0[0], pos0[1], pos0[2],
-            pos1[0], pos1[1], pos1[2],
-            pos1[0] - pos0[0], pos1[1] - pos0[1], pos1[2] - pos0[2],
-            yaw0.to_degrees(), yaw1.to_degrees(),
+            pos0[0],
+            pos0[1],
+            pos0[2],
+            pos1[0],
+            pos1[1],
+            pos1[2],
+            pos1[0] - pos0[0],
+            pos1[1] - pos0[1],
+            pos1[2] - pos0[2],
+            yaw0.to_degrees(),
+            yaw1.to_degrees(),
         );
     }
 }
@@ -3183,9 +4047,15 @@ fn integration_walk_lateral_mpc_no_wbc() {
     };
     eprintln!(
         "[lateral:mpc-only] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
+        m.min_body_z,
     );
-    assert!(m.min_body_z > FALL_THRESHOLD_Z, "MPC fell (lateral diagnostic)");
+    assert!(
+        m.min_body_z > FALL_THRESHOLD_Z,
+        "MPC fell (lateral diagnostic)"
+    );
 }
 
 /// CHAMP lateral walk benchmark — open-loop documentation only.
@@ -3198,7 +4068,10 @@ fn integration_walk_lateral_champ() {
     };
     eprintln!(
         "[lateral:champ] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
+        m.min_body_z,
     );
     assert!(m.min_body_z > FALL_THRESHOLD_Z, "CHAMP fell (lateral)");
 }
@@ -3221,15 +4094,27 @@ fn integration_walk_lateral_mpc_wbc() {
     };
     eprintln!(
         "[lateral:mpc+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
+        m.min_body_z,
     );
     assert!(m.min_body_z > FALL_THRESHOLD_Z, "MPC+WBC fell (lateral)");
-    assert!(m.body_dy() > 0.20,
-        "lateral: body_dy = {:+.3} m, expected > +0.20 m", m.body_dy());
-    assert!(m.body_dx().abs() < 0.30,
-        "lateral: body_dx = {:+.3} m, expected |·| < 0.30 m", m.body_dx());
-    assert!(m.dyaw().abs() < 1.5,
-        "lateral: Δyaw = {:+.3} rad, expected |·| < 1.5 rad", m.dyaw());
+    assert!(
+        m.body_dy() > 0.20,
+        "lateral: body_dy = {:+.3} m, expected > +0.20 m",
+        m.body_dy()
+    );
+    assert!(
+        m.body_dx().abs() < 0.30,
+        "lateral: body_dx = {:+.3} m, expected |·| < 0.30 m",
+        m.body_dx()
+    );
+    assert!(
+        m.dyaw().abs() < 1.5,
+        "lateral: Δyaw = {:+.3} rad, expected |·| < 1.5 rad",
+        m.dyaw()
+    );
 }
 
 // ─── Yaw-rotate benchmarks ────────────────────────────────────────
@@ -3243,7 +4128,10 @@ fn integration_walk_yaw_champ() {
     };
     eprintln!(
         "[yaw:champ] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
+        m.min_body_z,
     );
     assert!(m.min_body_z > FALL_THRESHOLD_Z, "CHAMP fell (yaw)");
 }
@@ -3267,15 +4155,27 @@ fn integration_walk_yaw_mpc_wbc() {
     };
     eprintln!(
         "[yaw:mpc+wbc] body_dx={:+.3} m  body_dy={:+.3} m  Δyaw={:+.3} rad  min_z={:.3} m",
-        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
+        m.min_body_z,
     );
     assert!(m.min_body_z > FALL_THRESHOLD_Z, "MPC+WBC fell (yaw)");
-    assert!(m.dyaw().abs() > 1.5,
-        "yaw: Δyaw = {:+.3} rad, expected |·| > 1.5 rad", m.dyaw());
-    assert!(m.body_dx().abs() < 0.35,
-        "yaw: body_dx = {:+.3} m, expected |·| < 0.35 m", m.body_dx());
-    assert!(m.body_dy().abs() < 0.35,
-        "yaw: body_dy = {:+.3} m, expected |·| < 0.35 m", m.body_dy());
+    assert!(
+        m.dyaw().abs() > 1.5,
+        "yaw: Δyaw = {:+.3} rad, expected |·| > 1.5 rad",
+        m.dyaw()
+    );
+    assert!(
+        m.body_dx().abs() < 0.35,
+        "yaw: body_dx = {:+.3} m, expected |·| < 0.35 m",
+        m.body_dx()
+    );
+    assert!(
+        m.body_dy().abs() < 0.35,
+        "yaw: body_dy = {:+.3} m, expected |·| < 0.35 m",
+        m.body_dy()
+    );
 }
 
 // ─── P5a: per-task lateral diagnostic ─────────────────────────────
@@ -3343,10 +4243,7 @@ fn run_lateral_with_weights(weights: WbcWeights) -> Option<WalkBenchmark> {
             .body_world_position(&robot.root_link)
             .unwrap_or([0.0, 0.0, 0.0]);
         let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
-        gc.set_body_pose_observed(
-            yaw_obs,
-            Vector3::new(body_pos[0], body_pos[1], body_pos[2]),
-        );
+        gc.set_body_pose_observed(yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
 
         let (out, targets, _torque_ff) = gc.tick(DT);
         for (idx, q) in targets {
@@ -3372,12 +4269,8 @@ fn run_lateral_with_weights(weights: WbcWeights) -> Option<WalkBenchmark> {
                 out.legs[2].phase,
                 out.legs[3].phase,
             ];
-            let corrected = ContactDrivenPhase::apply_correction(
-                &nominal_phases,
-                force_z,
-                5.0,
-                0.0,
-            );
+            let corrected =
+                ContactDrivenPhase::apply_correction(&nominal_phases, force_z, 5.0, 0.0);
             let contact_flag = [
                 corrected[0].is_stance,
                 corrected[1].is_stance,
@@ -3427,10 +4320,14 @@ fn run_lateral_with_weights(weights: WbcWeights) -> Option<WalkBenchmark> {
 fn diag_lateral_no_base_accel() {
     let mut w = WbcWeights::default();
     w.base_accel = 0.0;
-    let Some(m) = run_lateral_with_weights(w) else { return };
+    let Some(m) = run_lateral_with_weights(w) else {
+        return;
+    };
     eprintln!(
         "[diag-lat:no-base-accel] body_dx={:+.3} body_dy={:+.3} Δyaw={:+.3}",
-        m.body_dx(), m.body_dy(), m.dyaw(),
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
     );
 }
 
@@ -3440,10 +4337,14 @@ fn diag_lateral_no_base_accel() {
 fn diag_lateral_no_swing_leg() {
     let mut w = WbcWeights::default();
     w.swing_leg = 0.0;
-    let Some(m) = run_lateral_with_weights(w) else { return };
+    let Some(m) = run_lateral_with_weights(w) else {
+        return;
+    };
     eprintln!(
         "[diag-lat:no-swing-leg] body_dx={:+.3} body_dy={:+.3} Δyaw={:+.3}",
-        m.body_dx(), m.body_dy(), m.dyaw(),
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
     );
 }
 
@@ -3453,10 +4354,14 @@ fn diag_lateral_no_swing_leg() {
 fn diag_lateral_no_contact_force() {
     let mut w = WbcWeights::default();
     w.contact_force = 0.0;
-    let Some(m) = run_lateral_with_weights(w) else { return };
+    let Some(m) = run_lateral_with_weights(w) else {
+        return;
+    };
     eprintln!(
         "[diag-lat:no-contact-force] body_dx={:+.3} body_dy={:+.3} Δyaw={:+.3}",
-        m.body_dx(), m.body_dy(), m.dyaw(),
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
     );
 }
 
@@ -3466,10 +4371,14 @@ fn diag_lateral_no_contact_force() {
 fn diag_lateral_no_tau_gravity() {
     let mut w = WbcWeights::default();
     w.tau_gravity = 0.0;
-    let Some(m) = run_lateral_with_weights(w) else { return };
+    let Some(m) = run_lateral_with_weights(w) else {
+        return;
+    };
     eprintln!(
         "[diag-lat:no-tau-gravity] body_dx={:+.3} body_dy={:+.3} Δyaw={:+.3}",
-        m.body_dx(), m.body_dy(), m.dyaw(),
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
     );
 }
 
@@ -3500,44 +4409,97 @@ fn diag_forward_no_swing_leg() {
     let mut m = WalkBenchmark::default();
     m.min_body_z = f64::INFINITY;
     if let Some(p) = sim.body_world_position(&robot.root_link) {
-        m.body_x_start = p[0]; m.body_y_start = p[1];
+        m.body_x_start = p[0];
+        m.body_y_start = p[1];
     }
     m.yaw_start = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
     gc.enable();
     let cmd = fwd_cmd();
     for k in 0..n_steps {
-        if k == burn_in_steps { gc.set_velocity_cmd(cmd); }
-        let v = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.;3]);
-        let w_o = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.;3]);
-        gc.set_body_state_observed(Vector3::new(v[0],v[1],v[2]), Vector3::new(w_o[0],w_o[1],w_o[2]));
-        let bp = sim.body_world_position(&robot.root_link).unwrap_or([0.;3]);
+        if k == burn_in_steps {
+            gc.set_velocity_cmd(cmd);
+        }
+        let v = sim
+            .body_world_linear_velocity(&robot.root_link)
+            .unwrap_or([0.; 3]);
+        let w_o = sim
+            .body_world_angular_velocity(&robot.root_link)
+            .unwrap_or([0.; 3]);
+        gc.set_body_state_observed(
+            Vector3::new(v[0], v[1], v[2]),
+            Vector3::new(w_o[0], w_o[1], w_o[2]),
+        );
+        let bp = sim.body_world_position(&robot.root_link).unwrap_or([0.; 3]);
         let ya = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
-        gc.set_body_pose_observed(ya, Vector3::new(bp[0],bp[1],bp[2]));
+        gc.set_body_pose_observed(ya, Vector3::new(bp[0], bp[1], bp[2]));
         let (out, targets, _) = gc.tick(DT);
-        for (idx, q) in targets { sim.set_position_target(idx, q); }
+        for (idx, q) in targets {
+            sim.set_position_target(idx, q);
+        }
         if k >= burn_in_steps {
-            let f = gc.predicted_grfs().map(|s| s.grfs_first_step).unwrap_or([Vector3::zeros();4]);
+            let f = gc
+                .predicted_grfs()
+                .map(|s| s.grfs_first_step)
+                .unwrap_or([Vector3::zeros(); 4]);
             let cn = gc.velocity_cmd();
             let vcb = Vector3::new(cn.vx, cn.vy, 0.0);
-            let fls: [&str;4] = [wbc_pipeline.foot_links[0].as_str(),wbc_pipeline.foot_links[1].as_str(),wbc_pipeline.foot_links[2].as_str(),wbc_pipeline.foot_links[3].as_str()];
+            let fls: [&str; 4] = [
+                wbc_pipeline.foot_links[0].as_str(),
+                wbc_pipeline.foot_links[1].as_str(),
+                wbc_pipeline.foot_links[2].as_str(),
+                wbc_pipeline.foot_links[3].as_str(),
+            ];
             let fz = sim.contact_force_per_foot(&fls);
-            let np = [out.legs[0].phase,out.legs[1].phase,out.legs[2].phase,out.legs[3].phase];
+            let np = [
+                out.legs[0].phase,
+                out.legs[1].phase,
+                out.legs[2].phase,
+                out.legs[3].phase,
+            ];
             let cor = ContactDrivenPhase::apply_correction(&np, fz, 5.0, 0.0);
-            let cf = [cor[0].is_stance,cor[1].is_stance,cor[2].is_stance,cor[3].is_stance];
-            let taus = wbc_pipeline.solve(&robot,&sim,&out,gc.kinematics(),gc.joint_indices(),gc.joint_signs(),&vcb,cn.wz,&Vector3::new(v[0],v[1],v[2]),&Vector3::new(w_o[0],w_o[1],w_o[2]),&f,cf,DT);
-            for (ji,&t) in taus.iter().enumerate() { sim.set_torque_feedforward(ji,t); }
+            let cf = [
+                cor[0].is_stance,
+                cor[1].is_stance,
+                cor[2].is_stance,
+                cor[3].is_stance,
+            ];
+            let taus = wbc_pipeline.solve(
+                &robot,
+                &sim,
+                &out,
+                gc.kinematics(),
+                gc.joint_indices(),
+                gc.joint_signs(),
+                &vcb,
+                cn.wz,
+                &Vector3::new(v[0], v[1], v[2]),
+                &Vector3::new(w_o[0], w_o[1], w_o[2]),
+                &f,
+                cf,
+                DT,
+            );
+            for (ji, &t) in taus.iter().enumerate() {
+                sim.set_torque_feedforward(ji, t);
+            }
         } else {
-            for ji in 0..robot.joints.len() { sim.set_torque_feedforward(ji,0.0); }
+            for ji in 0..robot.joints.len() {
+                sim.set_torque_feedforward(ji, 0.0);
+            }
         }
         sim.step(&mut robot, DT, true);
         if let Some(p) = sim.body_world_position(&robot.root_link) {
-            m.min_body_z = m.min_body_z.min(p[2]); m.body_x_end = p[0]; m.body_y_end = p[1];
+            m.min_body_z = m.min_body_z.min(p[2]);
+            m.body_x_end = p[0];
+            m.body_y_end = p[1];
         }
         m.yaw_end = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
     }
     eprintln!(
         "[diag-fwd:no-swing-leg] body_dx={:+.3} body_dy={:+.3} Δyaw={:+.3} min_z={:.3}",
-        m.body_dx(), m.body_dy(), m.dyaw(), m.min_body_z,
+        m.body_dx(),
+        m.body_dy(),
+        m.dyaw(),
+        m.min_body_z,
     );
 }
 
@@ -3553,7 +4515,10 @@ fn diag_swing_leg_sweep_lateral() {
         if let Some(m) = run_lateral_with_weights(w) {
             eprintln!(
                 "[sweep-lat swing={:.1}] body_dx={:+.3}  body_dy={:+.3}  Δyaw={:+.3}",
-                w_swing, m.body_dx(), m.body_dy(), m.dyaw(),
+                w_swing,
+                m.body_dx(),
+                m.body_dy(),
+                m.dyaw(),
             );
         }
     }
@@ -3580,37 +4545,87 @@ fn run_forward_with_weights(weights: WbcWeights) -> Option<WalkBenchmark> {
     let mut m = WalkBenchmark::default();
     m.min_body_z = f64::INFINITY;
     if let Some(p) = sim.body_world_position(&robot.root_link) {
-        m.body_x_start = p[0]; m.body_y_start = p[1];
+        m.body_x_start = p[0];
+        m.body_y_start = p[1];
     }
     m.yaw_start = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
     gc.enable();
     for k in 0..n_steps {
-        if k == burn_in_steps { gc.set_velocity_cmd(fwd_cmd()); }
-        let v = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.;3]);
-        let w_o = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.;3]);
-        gc.set_body_state_observed(Vector3::new(v[0],v[1],v[2]), Vector3::new(w_o[0],w_o[1],w_o[2]));
-        let bp = sim.body_world_position(&robot.root_link).unwrap_or([0.;3]);
+        if k == burn_in_steps {
+            gc.set_velocity_cmd(fwd_cmd());
+        }
+        let v = sim
+            .body_world_linear_velocity(&robot.root_link)
+            .unwrap_or([0.; 3]);
+        let w_o = sim
+            .body_world_angular_velocity(&robot.root_link)
+            .unwrap_or([0.; 3]);
+        gc.set_body_state_observed(
+            Vector3::new(v[0], v[1], v[2]),
+            Vector3::new(w_o[0], w_o[1], w_o[2]),
+        );
+        let bp = sim.body_world_position(&robot.root_link).unwrap_or([0.; 3]);
         let ya = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
-        gc.set_body_pose_observed(ya, Vector3::new(bp[0],bp[1],bp[2]));
+        gc.set_body_pose_observed(ya, Vector3::new(bp[0], bp[1], bp[2]));
         let (out, targets, _) = gc.tick(DT);
-        for (idx, q) in targets { sim.set_position_target(idx, q); }
+        for (idx, q) in targets {
+            sim.set_position_target(idx, q);
+        }
         if k >= burn_in_steps {
-            let f = gc.predicted_grfs().map(|s| s.grfs_first_step).unwrap_or([Vector3::zeros();4]);
+            let f = gc
+                .predicted_grfs()
+                .map(|s| s.grfs_first_step)
+                .unwrap_or([Vector3::zeros(); 4]);
             let cn = gc.velocity_cmd();
             let vcb = Vector3::new(cn.vx, cn.vy, 0.0);
-            let fls: [&str;4] = [wbc_pipeline.foot_links[0].as_str(),wbc_pipeline.foot_links[1].as_str(),wbc_pipeline.foot_links[2].as_str(),wbc_pipeline.foot_links[3].as_str()];
+            let fls: [&str; 4] = [
+                wbc_pipeline.foot_links[0].as_str(),
+                wbc_pipeline.foot_links[1].as_str(),
+                wbc_pipeline.foot_links[2].as_str(),
+                wbc_pipeline.foot_links[3].as_str(),
+            ];
             let fz = sim.contact_force_per_foot(&fls);
-            let np = [out.legs[0].phase,out.legs[1].phase,out.legs[2].phase,out.legs[3].phase];
+            let np = [
+                out.legs[0].phase,
+                out.legs[1].phase,
+                out.legs[2].phase,
+                out.legs[3].phase,
+            ];
             let cor = ContactDrivenPhase::apply_correction(&np, fz, 5.0, 0.0);
-            let cf = [cor[0].is_stance,cor[1].is_stance,cor[2].is_stance,cor[3].is_stance];
-            let taus = wbc_pipeline.solve(&robot,&sim,&out,gc.kinematics(),gc.joint_indices(),gc.joint_signs(),&vcb,cn.wz,&Vector3::new(v[0],v[1],v[2]),&Vector3::new(w_o[0],w_o[1],w_o[2]),&f,cf,DT);
-            for (ji,&t) in taus.iter().enumerate() { sim.set_torque_feedforward(ji,t); }
+            let cf = [
+                cor[0].is_stance,
+                cor[1].is_stance,
+                cor[2].is_stance,
+                cor[3].is_stance,
+            ];
+            let taus = wbc_pipeline.solve(
+                &robot,
+                &sim,
+                &out,
+                gc.kinematics(),
+                gc.joint_indices(),
+                gc.joint_signs(),
+                &vcb,
+                cn.wz,
+                &Vector3::new(v[0], v[1], v[2]),
+                &Vector3::new(w_o[0], w_o[1], w_o[2]),
+                &f,
+                cf,
+                DT,
+            );
+            for (ji, &t) in taus.iter().enumerate() {
+                sim.set_torque_feedforward(ji, t);
+            }
         } else {
-            for ji in 0..robot.joints.len() { sim.set_torque_feedforward(ji,0.0); }
+            for ji in 0..robot.joints.len() {
+                sim.set_torque_feedforward(ji, 0.0);
+            }
         }
         sim.step(&mut robot, DT, true);
         if let Some(p) = sim.body_world_position(&robot.root_link) {
-            m.min_body_z = m.min_body_z.min(p[2]); m.body_x_end = p[0]; m.body_y_end = p[1];
+            m.min_body_z = m.min_body_z.min(p[2]);
+            m.body_x_end = p[0];
+            m.body_y_end = p[1];
         }
         m.yaw_end = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
     }
@@ -3626,7 +4641,10 @@ fn diag_swing_leg_sweep_forward() {
         if let Some(m) = run_forward_with_weights(w) {
             eprintln!(
                 "[sweep-fwd swing={:.1}] body_dx={:+.3}  body_dy={:+.3}  Δyaw={:+.3}",
-                w_swing, m.body_dx(), m.body_dy(), m.dyaw(),
+                w_swing,
+                m.body_dx(),
+                m.body_dy(),
+                m.dyaw(),
             );
         }
     }
@@ -3641,16 +4659,19 @@ fn diag_swing_leg_sweep_forward() {
 #[test]
 #[ignore = "A3 friction-cone A/B probe — run with --ignored"]
 fn diag_a3_friction_cone_soft_vs_hard() {
-    let common::StandFixture {
-        robot, kin: _, sim,
-    } = match common::build_namiashi_stand_fixture_misa() {
-        Some(f) => f,
-        None => return,
-    };
+    let common::StandFixture { robot, kin: _, sim } =
+        match common::build_namiashi_stand_fixture_misa() {
+            Some(f) => f,
+            None => return,
+        };
     drop(robot);
     drop(sim);
 
-    let cmd = VelocityCmd { vx: 0.15, vy: 0.0, wz: 0.0 };
+    let cmd = VelocityCmd {
+        vx: 0.15,
+        vy: 0.0,
+        wz: 0.0,
+    };
     let pre_force_s = 3.0;
     let force_duration_s = 0.2;
     let post_force_s = 4.0;
@@ -3658,16 +4679,13 @@ fn diag_a3_friction_cone_soft_vs_hard() {
 
     let scenarios: [(&str, [f64; 3]); 4] = [
         ("baseline (no push)", [0.0; 3]),
-        ("lateral +y 2 N",     [0.0,  2.0, 0.0]),
-        ("lateral +y 4 N",     [0.0,  4.0, 0.0]),
-        ("lateral +y 6 N",     [0.0,  6.0, 0.0]),
+        ("lateral +y 2 N", [0.0, 2.0, 0.0]),
+        ("lateral +y 4 N", [0.0, 4.0, 0.0]),
+        ("lateral +y 6 N", [0.0, 6.0, 0.0]),
     ];
 
     eprintln!();
-    eprintln!(
-        "=== A3 friction-cone A/B (cmd vx={:.2} m/s) ===",
-        cmd.vx,
-    );
+    eprintln!("=== A3 friction-cone A/B (cmd vx={:.2} m/s) ===", cmd.vx,);
     eprintln!(
         "        {:<28} | peak ratio (post-force) | peak |f_xy| (N) | peak f_z (N) | μ·f_z at peak (N)",
         "Mode (scenario)",
@@ -3680,13 +4698,17 @@ fn diag_a3_friction_cone_soft_vs_hard() {
                 mut robot,
                 kin,
                 mut sim,
-            }) = common::build_namiashi_stand_fixture_misa() else { continue; };
+            }) = common::build_namiashi_stand_fixture_misa()
+            else {
+                continue;
+            };
 
             let mut cfg = GaitConfig::trot();
             cfg.friction_cone_soft = soft;
             let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::FullCentroidal)
                 .expect("GaitController::build");
-            let mu = gc.full_centroidal_mpc_config()
+            let mu = gc
+                .full_centroidal_mpc_config()
                 .map(|c| c.friction_mu)
                 .unwrap_or(0.5);
             let mut wbc_pipeline = WbcPipeline::new(&robot, common::default_foot_links());
@@ -3713,27 +4735,37 @@ fn diag_a3_friction_cone_soft_vs_hard() {
                     gc.set_velocity_cmd(cmd);
                 }
                 if k == force_start_step && !force_applied_already.get() && force != &[0.0; 3] {
-                    sim.apply_external_force(
-                        &robot.root_link, *force, [0.0; 3], force_duration_s,
-                    );
+                    sim.apply_external_force(&robot.root_link, *force, [0.0; 3], force_duration_s);
                     force_applied_already.set(true);
                 }
-                let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
-                let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+                let v_obs = sim
+                    .body_world_linear_velocity(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
+                let w_obs = sim
+                    .body_world_angular_velocity(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
                 gc.set_body_state_observed(
                     Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                     Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
                 );
-                let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+                let body_pos = sim
+                    .body_world_position(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
                 let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
                 gc.set_body_pose_observed(
-                    yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
-                wbc_pipeline.weights = quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd());
+                    yaw_obs,
+                    Vector3::new(body_pos[0], body_pos[1], body_pos[2]),
+                );
+                wbc_pipeline.weights =
+                    quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd());
 
                 let (out, targets, _) = gc.tick(DT);
-                for (idx, q) in targets { sim.set_position_target(idx, q); }
+                for (idx, q) in targets {
+                    sim.set_position_target(idx, q);
+                }
                 if k >= burn_in_steps {
-                    let f_grf_world = gc.predicted_grfs()
+                    let f_grf_world = gc
+                        .predicted_grfs()
                         .map(|sol| sol.grfs_first_step)
                         .unwrap_or([Vector3::zeros(); 4]);
                     let cmd_w = gc.velocity_cmd();
@@ -3745,20 +4777,34 @@ fn diag_a3_friction_cone_soft_vs_hard() {
                         wbc_pipeline.foot_links[3].as_str(),
                     ];
                     let force_z = sim.contact_force_per_foot(&foot_links_str);
-                    let nominal_phases = [out.legs[0].phase, out.legs[1].phase,
-                                          out.legs[2].phase, out.legs[3].phase];
-                    let corrected = ContactDrivenPhase::apply_correction(
-                        &nominal_phases, force_z, 5.0, 0.0,
-                    );
-                    let contact_flag = [corrected[0].is_stance, corrected[1].is_stance,
-                                        corrected[2].is_stance, corrected[3].is_stance];
+                    let nominal_phases = [
+                        out.legs[0].phase,
+                        out.legs[1].phase,
+                        out.legs[2].phase,
+                        out.legs[3].phase,
+                    ];
+                    let corrected =
+                        ContactDrivenPhase::apply_correction(&nominal_phases, force_z, 5.0, 0.0);
+                    let contact_flag = [
+                        corrected[0].is_stance,
+                        corrected[1].is_stance,
+                        corrected[2].is_stance,
+                        corrected[3].is_stance,
+                    ];
                     let taus = wbc_pipeline.solve(
-                        &robot, &sim, &out, gc.kinematics(),
-                        gc.joint_indices(), gc.joint_signs(),
-                        &v_cmd_body, cmd_w.wz,
+                        &robot,
+                        &sim,
+                        &out,
+                        gc.kinematics(),
+                        gc.joint_indices(),
+                        gc.joint_signs(),
+                        &v_cmd_body,
+                        cmd_w.wz,
                         &Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                         &Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
-                        &f_grf_world, contact_flag, DT,
+                        &f_grf_world,
+                        contact_flag,
+                        DT,
                     );
                     for (ji, &tau) in taus.iter().enumerate() {
                         sim.set_torque_feedforward(ji, tau);
@@ -3798,7 +4844,10 @@ fn diag_a3_friction_cone_soft_vs_hard() {
             eprintln!(
                 "        {:<28} | {:>22.3} | {:>14.3} | {:>11.3} | {:>17.3}",
                 format!("{} ({})", mode_label, scen_label),
-                peak_ratio, peak_fxy_at_peak, peak_fz_at_peak, mu_fz_at_peak,
+                peak_ratio,
+                peak_fxy_at_peak,
+                peak_fz_at_peak,
+                mu_fz_at_peak,
             );
         }
         eprintln!("        {}", "─".repeat(115));
@@ -3821,44 +4870,45 @@ fn diag_a3_friction_cone_soft_vs_hard() {
 #[test]
 #[ignore = "A1/A3/B3 external-force bench — run with --ignored"]
 fn diag_a1_a3_b3_external_force_bench() {
-    let common::StandFixture {
-        robot,
-        kin: _,
-        sim,
-    } = match common::build_namiashi_stand_fixture_misa() {
-        Some(f) => f,
-        None => return,
-    };
+    let common::StandFixture { robot, kin: _, sim } =
+        match common::build_namiashi_stand_fixture_misa() {
+            Some(f) => f,
+            None => return,
+        };
     drop(robot);
     drop(sim);
 
-    let cmd = VelocityCmd { vx: 0.15, vy: 0.0, wz: 0.0 };
+    let cmd = VelocityCmd {
+        vx: 0.15,
+        vy: 0.0,
+        wz: 0.0,
+    };
     let pre_force_s = 3.0;
     let force_duration_s = 0.2;
     let post_force_s = 4.0;
     let total_s = pre_force_s + force_duration_s + post_force_s;
 
     let scenarios: [(&str, [f64; 3], [f64; 3]); 9] = [
-        ("lateral +y 2 N",  [0.0,  2.0, 0.0], [0.0; 3]),
-        ("lateral +y 4 N",  [0.0,  4.0, 0.0], [0.0; 3]),
-        ("lateral +y 6 N",  [0.0,  6.0, 0.0], [0.0; 3]),
-        ("forward −x 2 N",  [-2.0, 0.0, 0.0], [0.0; 3]),
-        ("forward −x 4 N",  [-4.0, 0.0, 0.0], [0.0; 3]),
-        ("forward −x 6 N",  [-6.0, 0.0, 0.0], [0.0; 3]),
+        ("lateral +y 2 N", [0.0, 2.0, 0.0], [0.0; 3]),
+        ("lateral +y 4 N", [0.0, 4.0, 0.0], [0.0; 3]),
+        ("lateral +y 6 N", [0.0, 6.0, 0.0], [0.0; 3]),
+        ("forward −x 2 N", [-2.0, 0.0, 0.0], [0.0; 3]),
+        ("forward −x 4 N", [-4.0, 0.0, 0.0], [0.0; 3]),
+        ("forward −x 6 N", [-6.0, 0.0, 0.0], [0.0; 3]),
         ("vertical −z 4 N", [0.0, 0.0, -4.0], [0.0; 3]),
         ("vertical −z 8 N", [0.0, 0.0, -8.0], [0.0; 3]),
-        ("yaw torque 1.5 N·m", [0.0; 3],      [0.0, 0.0, 1.5]),
+        ("yaw torque 1.5 N·m", [0.0; 3], [0.0, 0.0, 1.5]),
     ];
 
     // (label, friction_cone_soft, warm_start, mpc_optimized_footstep)
     let modes: [(&str, bool, bool, bool); 7] = [
-        ("baseline",   false, false, false),
-        ("A3 soft",    true,  false, false),
-        ("B3 warm",    false, true,  false),
-        ("A1 foot",    false, false, true),
-        ("A1+A3",      true,  false, true),
-        ("A3+B3",      true,  true,  false),
-        ("A1+A3+B3",   true,  true,  true),
+        ("baseline", false, false, false),
+        ("A3 soft", true, false, false),
+        ("B3 warm", false, true, false),
+        ("A1 foot", false, false, true),
+        ("A1+A3", true, false, true),
+        ("A3+B3", true, true, false),
+        ("A1+A3+B3", true, true, true),
     ];
 
     // Snapshot the fixture once so we can restore between scenarios:
@@ -3866,9 +4916,8 @@ fn diag_a1_a3_b3_external_force_bench() {
     // mass-detect / inertia enrichment on first load, which leaves the
     // file in a state that subsequent loads can fail to parse. Saving
     // the bytes here and writing them back keeps the bench rerunnable.
-    let fixture_path =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/namiashi/namiashi.misa");
+    let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/namiashi/namiashi.misa");
     let fixture_bytes = std::fs::read(&fixture_path).ok();
 
     eprintln!();
@@ -3893,7 +4942,10 @@ fn diag_a1_a3_b3_external_force_bench() {
                 mut robot,
                 kin,
                 mut sim,
-            }) = common::build_namiashi_stand_fixture_misa() else { continue; };
+            }) = common::build_namiashi_stand_fixture_misa()
+            else {
+                continue;
+            };
 
             // Build GaitConfig with the per-row toggles. Everything
             // else is `GaitConfig::trot()` defaults (the post-session
@@ -3902,9 +4954,8 @@ fn diag_a1_a3_b3_external_force_bench() {
             cfg.friction_cone_soft = *fc_soft;
             cfg.warm_start = *warm;
             cfg.mpc_optimized_footstep = *mpc_footstep;
-            let mut gc = GaitController::build(
-                &robot, kin.clone(), cfg, GaitMode::FullCentroidal,
-            ).expect("GaitController::build");
+            let mut gc = GaitController::build(&robot, kin.clone(), cfg, GaitMode::FullCentroidal)
+                .expect("GaitController::build");
 
             let mut wbc_pipeline = WbcPipeline::new(&robot, common::default_foot_links());
             if let Some(full_cfg) = gc.full_centroidal_mpc_config() {
@@ -3936,27 +4987,37 @@ fn diag_a1_a3_b3_external_force_bench() {
                     }
                 }
                 if k == force_start_step && !force_applied_already.get() {
-                    sim.apply_external_force(
-                        &robot.root_link, *force, *torque, force_duration_s,
-                    );
+                    sim.apply_external_force(&robot.root_link, *force, *torque, force_duration_s);
                     force_applied_already.set(true);
                 }
-                let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
-                let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+                let v_obs = sim
+                    .body_world_linear_velocity(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
+                let w_obs = sim
+                    .body_world_angular_velocity(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
                 gc.set_body_state_observed(
                     Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                     Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
                 );
-                let body_pos = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+                let body_pos = sim
+                    .body_world_position(&robot.root_link)
+                    .unwrap_or([0.0; 3]);
                 let yaw_obs = sim.body_world_yaw(&robot.root_link).unwrap_or(0.0);
                 gc.set_body_pose_observed(
-                    yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
-                wbc_pipeline.weights = quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd());
+                    yaw_obs,
+                    Vector3::new(body_pos[0], body_pos[1], body_pos[2]),
+                );
+                wbc_pipeline.weights =
+                    quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&gc.velocity_cmd());
 
                 let (out, targets, _) = gc.tick(DT);
-                for (idx, q) in targets { sim.set_position_target(idx, q); }
+                for (idx, q) in targets {
+                    sim.set_position_target(idx, q);
+                }
                 if k >= burn_in_steps {
-                    let f_grf_world = gc.predicted_grfs()
+                    let f_grf_world = gc
+                        .predicted_grfs()
                         .map(|sol| sol.grfs_first_step)
                         .unwrap_or([Vector3::zeros(); 4]);
                     let cmd_w = gc.velocity_cmd();
@@ -3968,17 +5029,29 @@ fn diag_a1_a3_b3_external_force_bench() {
                         wbc_pipeline.foot_links[3].as_str(),
                     ];
                     let force_z = sim.contact_force_per_foot(&foot_links_str);
-                    let nominal_phases = [out.legs[0].phase, out.legs[1].phase,
-                                          out.legs[2].phase, out.legs[3].phase];
-                    let corrected = ContactDrivenPhase::apply_correction(
-                        &nominal_phases, force_z, 5.0, 0.0,
-                    );
-                    let contact_flag = [corrected[0].is_stance, corrected[1].is_stance,
-                                        corrected[2].is_stance, corrected[3].is_stance];
+                    let nominal_phases = [
+                        out.legs[0].phase,
+                        out.legs[1].phase,
+                        out.legs[2].phase,
+                        out.legs[3].phase,
+                    ];
+                    let corrected =
+                        ContactDrivenPhase::apply_correction(&nominal_phases, force_z, 5.0, 0.0);
+                    let contact_flag = [
+                        corrected[0].is_stance,
+                        corrected[1].is_stance,
+                        corrected[2].is_stance,
+                        corrected[3].is_stance,
+                    ];
                     let taus = wbc_pipeline.solve(
-                        &robot, &sim, &out,
-                        gc.kinematics(), gc.joint_indices(), gc.joint_signs(),
-                        &v_cmd_body, cmd_w.wz,
+                        &robot,
+                        &sim,
+                        &out,
+                        gc.kinematics(),
+                        gc.joint_indices(),
+                        gc.joint_signs(),
+                        &v_cmd_body,
+                        cmd_w.wz,
                         &Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
                         &Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
                         &f_grf_world,
@@ -4003,8 +5076,10 @@ fn diag_a1_a3_b3_external_force_bench() {
                         peak_pitch = peak_pitch.max(euler.1.abs());
                     }
                     if k >= force_end_step && recovery_time_s.is_none() {
-                        let dy = sim.body_world_position(&robot.root_link)
-                            .map(|p| p[1].abs()).unwrap_or(0.0);
+                        let dy = sim
+                            .body_world_position(&robot.root_link)
+                            .map(|p| p[1].abs())
+                            .unwrap_or(0.0);
                         if dy < 0.05 {
                             recovery_time_s = Some((k - force_end_step) as f64 * DT);
                         }
@@ -4019,11 +5094,23 @@ fn diag_a1_a3_b3_external_force_bench() {
                 None if fell => "fell".to_string(),
                 None => "no recov".to_string(),
             };
-            let result = if fell { "✗ fell" } else if recovery_time_s.is_some() { "✓ recovered" } else { "△ no recovery" };
+            let result = if fell {
+                "✗ fell"
+            } else if recovery_time_s.is_some() {
+                "✓ recovered"
+            } else {
+                "△ no recovery"
+            };
             eprintln!(
                 "        {:<28} | {:>9.3} | {:>9.3} | {:>10.3} | {:>6.3} | {:>+7.3} | {} | {}",
                 format!("{} ({})", mode_label, scen_label),
-                peak_dy, peak_roll, peak_pitch, min_z, dx, recovery_label, result,
+                peak_dy,
+                peak_roll,
+                peak_pitch,
+                min_z,
+                dx,
+                recovery_label,
+                result,
             );
         }
         eprintln!("        {}", "─".repeat(125));

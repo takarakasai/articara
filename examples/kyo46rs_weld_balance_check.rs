@@ -24,9 +24,8 @@ fn run_trial(label: &str, use_mujoco_bias: bool) {
     use articara::robot::RobotModel;
     use articara::wbc_pipeline::build_floating_base_model;
 
-    let urdf_path = std::path::Path::new(
-        "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
-    );
+    let urdf_path =
+        std::path::Path::new("/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf");
     let mut robot = RobotModel::from_urdf(urdf_path).expect("load kyo46rs.urdf");
 
     let crouch = [

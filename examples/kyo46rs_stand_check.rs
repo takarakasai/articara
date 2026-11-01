@@ -27,7 +27,10 @@ fn main() {
     use articara::robot::RobotModel;
 
     let env_f64 = |k: &str, d: f64| -> f64 {
-        std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d)
+        std::env::var(k)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(d)
     };
     let kp = env_f64("KP", 150.0);
     let kv = env_f64("KV", 8.0);
@@ -42,9 +45,8 @@ fn main() {
     // is answerable instead of arguable.
     let substeps = env_f64("SUBSTEPS", 1.0).max(1.0) as u32;
 
-    let urdf_path = std::path::Path::new(
-        "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
-    );
+    let urdf_path =
+        std::path::Path::new("/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf");
     let mut robot = RobotModel::from_urdf(urdf_path).expect("load kyo46rs.urdf");
 
     let crouch = [
@@ -67,7 +69,9 @@ fn main() {
     // thigh box's top face are 4 mm apart). Non-adjacent pairs are not
     // excluded by MuJoCo's parent-child filter, so they can generate
     // spurious contact impulses. Only the soles should collide.
-    let feet_only = std::env::var("FEET_ONLY").map(|v| v != "0").unwrap_or(false);
+    let feet_only = std::env::var("FEET_ONLY")
+        .map(|v| v != "0")
+        .unwrap_or(false);
     if feet_only {
         for l in robot.links.iter_mut() {
             l.collision_enabled = l.name.ends_with("foot_link");
@@ -87,7 +91,12 @@ fn main() {
     let dt_override = std::env::var("DT").ok().and_then(|v| v.parse::<f64>().ok());
     let make_opts = |z: f64| MjcfExportOptions {
         base_pos: Some([0.0, 0.0, z]),
-        ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 2.0, roll: 0.0, pitch: 0.0 }),
+        ground_plane: Some(GroundPlaneCfg {
+            z: 0.0,
+            half_size: 2.0,
+            roll: 0.0,
+            pitch: 0.0,
+        }),
         timestep: dt_override,
         ..MjcfExportOptions::default()
     };
@@ -109,7 +118,10 @@ fn main() {
     // DOFs (hip_roll, ankle_roll) diverge monotonically from step 1 --
     // perfectly anti-symmetric left/right, before the soles even touch
     // -- which is what an unheld joint looks like.
-    if std::env::var("ALL_TARGETS").map(|v| v != "0").unwrap_or(true) {
+    if std::env::var("ALL_TARGETS")
+        .map(|v| v != "0")
+        .unwrap_or(true)
+    {
         for ji in 0..robot.joints.len() {
             sim.set_position_target(ji, robot.joint_positions[ji]);
         }
@@ -142,7 +154,11 @@ fn main() {
                 "step {step:2} t={:.4} z={z:.5} sole={:.5} | {}",
                 step as f64 * mj_dt,
                 lf - SOLE_BELOW_FOOT_ORIGIN,
-                if worst.is_empty() { "(all |qd|<0.5)".to_string() } else { worst.join(" ") }
+                if worst.is_empty() {
+                    "(all |qd|<0.5)".to_string()
+                } else {
+                    worst.join(" ")
+                }
             );
             sim.step_n_frames(&mut robot, 1, true);
         }
@@ -161,7 +177,9 @@ fn main() {
         let wv = sim.body_world_angular_velocity(&robot.root_link).unwrap();
         let (mut worst, mut worst_qd) = ("-", 0.0_f64);
         for (ji, n) in names.iter().enumerate() {
-            let Some((_, qd)) = sim.joint_q_qd(n) else { continue };
+            let Some((_, qd)) = sim.joint_q_qd(n) else {
+                continue;
+            };
             if qd.abs() > worst_qd.abs() {
                 worst_qd = qd;
                 worst = n;
@@ -174,9 +192,13 @@ fn main() {
         println!(
             "t={t:5.2}  z={z:.4}  |w|={:.3}  worst={worst} qd={worst_qd:+.2}  foot_z=({:.4},{:.4})  hip_roll=({:+.3},{:+.3})  foot_y=({:+.4},{:+.4}) gap={:+.4}",
             (wv[0] * wv[0] + wv[1] * wv[1] + wv[2] * wv[2]).sqrt(),
-            lfp[2], rfp[2],
-            hr("left_hip_roll_joint"), hr("right_hip_roll_joint"),
-            lfp[1], rfp[1], (lfp[1] - 0.019) - (rfp[1] + 0.019),
+            lfp[2],
+            rfp[2],
+            hr("left_hip_roll_joint"),
+            hr("right_hip_roll_joint"),
+            lfp[1],
+            rfp[1],
+            (lfp[1] - 0.019) - (rfp[1] + 0.019),
         );
         if z < 0.20 {
             println!("COLLAPSED at t={t:.2}");

@@ -18,12 +18,7 @@ pub fn self_collision_hits(robot: &RobotModel, ignore_adjacent_links: bool) -> V
     let q = mc.build_q(robot);
     let (gmodel, geo_map) = robot.build_collision_geometry_with_map();
 
-    let pairs = misarta::collision::collision_pairs(
-        &mc.model,
-        &gmodel,
-        &q,
-        ignore_adjacent_links,
-    );
+    let pairs = misarta::collision::collision_pairs(&mc.model, &gmodel, &q, ignore_adjacent_links);
 
     pairs
         .iter()
@@ -48,10 +43,7 @@ pub fn has_self_collision(robot: &RobotModel, ignore_adjacent_links: bool) -> bo
     misarta::collision::has_collision(&mc.model, &gmodel, &q, ignore_adjacent_links)
 }
 
-pub fn minimum_separation_distance(
-    robot: &RobotModel,
-    ignore_adjacent_links: bool,
-) -> Option<f32> {
+pub fn minimum_separation_distance(robot: &RobotModel, ignore_adjacent_links: bool) -> Option<f32> {
     let mc = robot.mc();
     let q = mc.build_q(robot);
     let (gmodel, _) = robot.build_collision_geometry_with_map();
@@ -125,10 +117,7 @@ mod tests {
             joint_type: "fixed".to_string(),
             parent_link: "base".to_string(),
             child_link: "link1".to_string(),
-            origin: na::Isometry3::new(
-                na::Vector3::new(offset_x, 0.0, 0.0),
-                na::Vector3::zeros(),
-            ),
+            origin: na::Isometry3::new(na::Vector3::new(offset_x, 0.0, 0.0), na::Vector3::zeros()),
             axis: na::Vector3::z_axis().into_inner(),
             lower: 0.0,
             upper: 0.0,

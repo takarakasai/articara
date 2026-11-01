@@ -21,9 +21,8 @@ fn main() {
     use articara::robot::RobotModel;
     use articara::wbc_pipeline::build_floating_base_model;
 
-    let urdf_path = std::path::Path::new(
-        "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
-    );
+    let urdf_path =
+        std::path::Path::new("/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf");
     let mut robot = RobotModel::from_urdf(urdf_path).expect("load kyo46rs.urdf");
 
     // Same crouch seed as kyo46rs_squat.rs / kyo46rs_weld_balance_check.rs,
@@ -152,7 +151,10 @@ fn main() {
     }
 
     println!("\n=== Final per-joint drift from seed pose (after 3.0 s) ===");
-    println!("  {:<28} {:>8} {:>8} {:>8}", "joint", "seed", "final", "drift");
+    println!(
+        "  {:<28} {:>8} {:>8} {:>8}",
+        "joint", "seed", "final", "drift"
+    );
     for (name, target) in seed_pose {
         let (q, _qd) = sim.joint_q_qd(name).unwrap_or((f64::NAN, f64::NAN));
         println!("  {name:<28} {target:>+8.3} {q:>+8.4} {:>+8.4}", q - target);

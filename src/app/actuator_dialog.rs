@@ -295,8 +295,7 @@ impl ArticaraApp {
                     j.joint_damping = namiashi_preset::JOINT_DAMPING;
                     n += 1;
                 }
-                self.status_message =
-                    format!("🦵 namiashi preset applied to {n} joint(s)");
+                self.status_message = format!("🦵 namiashi preset applied to {n} joint(s)");
                 applied_any = true;
             }
             if let Some(b) = bulk_apply {

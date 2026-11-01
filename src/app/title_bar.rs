@@ -16,30 +16,26 @@ impl ArticaraApp {
         let corner = 12.0_f32; // size of corner resize zone
 
         // Helper: add an invisible resize zone at the given rect.
-        let resize_zone =
-            |id_salt: &str,
-             rect: egui::Rect,
-             cursor: egui::CursorIcon,
-             dir: egui::ResizeDirection| {
-                // Use an Area so the zone is always on top of all panels.
-                egui::Area::new(egui::Id::new(id_salt))
-                    .fixed_pos(rect.min)
-                    .order(egui::Order::Foreground)
-                    .interactable(true)
-                    .show(ctx, |ui| {
-                        let resp = ui.allocate_response(
-                            rect.size(),
-                            egui::Sense::click_and_drag(),
-                        );
-                        if resp.hovered() {
-                            ui.ctx().set_cursor_icon(cursor);
-                        }
-                        if resp.drag_started() {
-                            ui.ctx()
-                                .send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
-                        }
-                    });
-            };
+        let resize_zone = |id_salt: &str,
+                           rect: egui::Rect,
+                           cursor: egui::CursorIcon,
+                           dir: egui::ResizeDirection| {
+            // Use an Area so the zone is always on top of all panels.
+            egui::Area::new(egui::Id::new(id_salt))
+                .fixed_pos(rect.min)
+                .order(egui::Order::Foreground)
+                .interactable(true)
+                .show(ctx, |ui| {
+                    let resp = ui.allocate_response(rect.size(), egui::Sense::click_and_drag());
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(cursor);
+                    }
+                    if resp.drag_started() {
+                        ui.ctx()
+                            .send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+                    }
+                });
+        };
 
         // ── Corners (checked first so they take priority) ──
         // Top-left
@@ -135,10 +131,7 @@ impl ArticaraApp {
         // Thin separator line along the bottom edge
         let sep_color = egui::Color32::from_rgb(60, 60, 72);
         ui.painter().line_segment(
-            [
-                title_bar_rect.left_bottom(),
-                title_bar_rect.right_bottom(),
-            ],
+            [title_bar_rect.left_bottom(), title_bar_rect.right_bottom()],
             egui::Stroke::new(1.0, sep_color),
         );
 
@@ -156,8 +149,11 @@ impl ArticaraApp {
                 title_bar_rect.bottom(),
             ),
         );
-        let drag_response =
-            ui.interact(drag_rect, ui.id().with("title_bar_drag"), egui::Sense::click());
+        let drag_response = ui.interact(
+            drag_rect,
+            ui.id().with("title_bar_drag"),
+            egui::Sense::click(),
+        );
         if drag_response.is_pointer_button_down_on() {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
@@ -193,10 +189,10 @@ impl ArticaraApp {
 
         // Helper: paint a title-bar button with hover/press highlight
         let draw_btn = |index: usize,
-                            label: &str,
-                            text_color: egui::Color32,
-                            hover_bg: egui::Color32,
-                            id_salt: &str|
+                        label: &str,
+                        text_color: egui::Color32,
+                        hover_bg: egui::Color32,
+                        id_salt: &str|
          -> egui::Response {
             let btn_rect = egui::Rect::from_min_size(
                 egui::pos2(buttons_left + index as f32 * btn_w, title_bar_rect.top()),

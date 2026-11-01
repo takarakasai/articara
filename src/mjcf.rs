@@ -193,11 +193,9 @@ pub fn export_mjcf_to_file(
         .ok_or_else(|| format!("export_mjcf_to_file: invalid path {:?}", output_path))?
         .to_path_buf();
     let mut opts = MjcfExportOptions::default();
-    opts.mesh_path_style =
-        crate::mesh_paths::MeshPathStyle::RelativeToDir(output_dir.clone());
+    opts.mesh_path_style = crate::mesh_paths::MeshPathStyle::RelativeToDir(output_dir.clone());
     let xml = export_mjcf_with_options(model, opts);
-    std::fs::write(output_path, xml)
-        .map_err(|e| format!("write {:?}: {e}", output_path))?;
+    std::fs::write(output_path, xml).map_err(|e| format!("write {:?}: {e}", output_path))?;
     let copied = crate::mesh_paths::copy_meshes_to(model, &output_dir)?;
     log::info!(
         "Exported MJCF to {:?}, copied {} mesh file(s)",
@@ -212,10 +210,7 @@ pub fn export_mjcf_to_file(
 /// Builds a `MisaFile` from the model, applies the mesh-path policy and
 /// the auto-lift, then delegates the XML emission to
 /// `misarta_formats::mjcf::export`.
-pub fn export_mjcf_with_options(
-    model: &RobotModel,
-    opts: MjcfExportOptions,
-) -> String {
+pub fn export_mjcf_with_options(model: &RobotModel, opts: MjcfExportOptions) -> String {
     let mut file = match model.to_misa() {
         Ok(f) => f,
         Err(e) => {
@@ -265,7 +260,13 @@ pub fn export_mjcf_with_options(
     let integrator = opts
         .integrator
         .or(opts.native_velocity_servo.map(|_| "implicitfast"));
-    let xml = match (opts.timestep, integrator, opts.impratio, opts.cone, opts.noslip_iterations) {
+    let xml = match (
+        opts.timestep,
+        integrator,
+        opts.impratio,
+        opts.cone,
+        opts.noslip_iterations,
+    ) {
         (None, None, None, None, None) => xml,
         (dt, ig, ir, cone, noslip) => {
             let mut attrs = String::new();

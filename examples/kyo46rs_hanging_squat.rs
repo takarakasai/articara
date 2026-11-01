@@ -29,13 +29,12 @@ fn main() {
     use articara::rbd::model::ActuatorMode;
     use articara::robot::RobotModel;
     use articara::wbc_pipeline::build_floating_base_model;
-    use misa_wbc::{tasks, Dynamics, Formulation, SolveConfig, Solver};
+    use misa_wbc::{Dynamics, Formulation, SolveConfig, Solver, tasks};
     use nalgebra as na;
     use std::f64::consts::PI;
 
-    let urdf_path = std::path::Path::new(
-        "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
-    );
+    let urdf_path =
+        std::path::Path::new("/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf");
     let mut robot = RobotModel::from_urdf(urdf_path).expect("load kyo46rs.urdf");
 
     // Mid-crouch seed (matches the pose already validated to hold well
@@ -132,12 +131,22 @@ fn main() {
     let log_path = "/tmp/claude-1000/-home-takara-work/3288d9bb-da13-4665-bfb2-9595dd62f7ab/scratchpad/kyo46rs_hanging_squat_traj.csv";
     let mut log_file = std::fs::File::create(log_path).expect("create trajectory log");
     let log_joint_order: Vec<&str> = vec![
-        "left_hip_yaw_joint", "left_hip_roll_joint", "left_hip_pitch_joint",
-        "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
-        "right_hip_yaw_joint", "right_hip_roll_joint", "right_hip_pitch_joint",
-        "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
-        "left_shoulder_pitch_joint", "left_elbow_joint",
-        "right_shoulder_pitch_joint", "right_elbow_joint",
+        "left_hip_yaw_joint",
+        "left_hip_roll_joint",
+        "left_hip_pitch_joint",
+        "left_knee_joint",
+        "left_ankle_pitch_joint",
+        "left_ankle_roll_joint",
+        "right_hip_yaw_joint",
+        "right_hip_roll_joint",
+        "right_hip_pitch_joint",
+        "right_knee_joint",
+        "right_ankle_pitch_joint",
+        "right_ankle_roll_joint",
+        "left_shoulder_pitch_joint",
+        "left_elbow_joint",
+        "right_shoulder_pitch_joint",
+        "right_elbow_joint",
     ];
     {
         use std::io::Write;
@@ -156,8 +165,12 @@ fn main() {
         // Base never moves (welded) -- q[0..7]/v[0..6] are the fixed
         // identity pose, no need to read them from MuJoCo every tick,
         // but do it anyway for symmetry with kyo46rs_squat.rs's pattern.
-        let body_pos = sim.body_world_position(&robot.root_link).expect("torso xpos");
-        let body_quat = sim.body_world_orientation(&robot.root_link).expect("torso xquat");
+        let body_pos = sim
+            .body_world_position(&robot.root_link)
+            .expect("torso xpos");
+        let body_quat = sim
+            .body_world_orientation(&robot.root_link)
+            .expect("torso xquat");
         let mut q = model.neutral_q();
         q[0] = body_pos[0];
         q[1] = body_pos[1];

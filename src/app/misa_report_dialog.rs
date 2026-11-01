@@ -71,18 +71,10 @@ impl ArticaraApp {
                                         ui.end_row();
                                         for s in &report.sanitized_names {
                                             ui.label(&s.category);
-                                            ui.label(
-                                                egui::RichText::new(&s.original).monospace(),
-                                            );
+                                            ui.label(egui::RichText::new(&s.original).monospace());
                                             ui.label("→");
-                                            ui.label(
-                                                egui::RichText::new(&s.sanitized).monospace(),
-                                            );
-                                            ui.label(
-                                                egui::RichText::new(&s.reason)
-                                                    .small()
-                                                    .weak(),
-                                            );
+                                            ui.label(egui::RichText::new(&s.sanitized).monospace());
+                                            ui.label(egui::RichText::new(&s.reason).small().weak());
                                             ui.end_row();
                                         }
                                     });
@@ -116,9 +108,7 @@ impl ArticaraApp {
                                 for c in &report.material_collisions {
                                     ui.label(egui::RichText::new(&c.original).monospace());
                                     ui.label("→");
-                                    ui.label(
-                                        egui::RichText::new(&c.renamed_to).monospace(),
-                                    );
+                                    ui.label(egui::RichText::new(&c.renamed_to).monospace());
                                     ui.end_row();
                                 }
                             });
@@ -173,12 +163,9 @@ impl ArticaraApp {
                         close = true;
                     }
                     ui.label(
-                        egui::RichText::new(format!(
-                            "Total: {} item(s)",
-                            report.total()
-                        ))
-                        .small()
-                        .weak(),
+                        egui::RichText::new(format!("Total: {} item(s)", report.total()))
+                            .small()
+                            .weak(),
                     );
                 });
             });

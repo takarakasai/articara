@@ -76,7 +76,13 @@ impl FileDialog {
     /// Open the dialog, optionally starting at `start_path`.
     /// If `start_path` is a file, the directory is used and the filename
     /// pre-fills the text input.
-    pub fn open(&mut self, title: &str, mode: FileDialogMode, start_path: Option<&Path>, extensions: &[&str]) {
+    pub fn open(
+        &mut self,
+        title: &str,
+        mode: FileDialogMode,
+        start_path: Option<&Path>,
+        extensions: &[&str],
+    ) {
         self.open = true;
         self.title = title.into();
         self.mode = mode;
@@ -124,12 +130,12 @@ impl FileDialog {
                 ui.horizontal(|ui| {
                     ui.label("📁");
                     let dir_str = self.current_dir.display().to_string();
-                    ui.label(
-                        egui::RichText::new(&dir_str)
-                            .monospace()
-                            .small(),
-                    );
-                    if ui.small_button("⬆").on_hover_text("Parent directory").clicked() {
+                    ui.label(egui::RichText::new(&dir_str).monospace().small());
+                    if ui
+                        .small_button("⬆")
+                        .on_hover_text("Parent directory")
+                        .clicked()
+                    {
                         if let Some(parent) = self.current_dir.parent() {
                             self.current_dir = parent.to_path_buf();
                             self.dirty = true;
@@ -211,7 +217,10 @@ impl FileDialog {
                         FileDialogMode::ChooseDir => "Select",
                     };
                     let ok_enabled = !self.path_input.is_empty();
-                    if ui.add_enabled(ok_enabled, egui::Button::new(ok_label)).clicked() {
+                    if ui
+                        .add_enabled(ok_enabled, egui::Button::new(ok_label))
+                        .clicked()
+                    {
                         let path = PathBuf::from(&self.path_input);
                         result = FileDialogResult::Confirmed(path);
                         self.open = false;
@@ -258,14 +267,18 @@ impl FileDialog {
                 // Apply extension filter (case-insensitive)
                 if !self.extension_filter.is_empty() {
                     let name_lower = name.to_ascii_lowercase();
-                    let has_ext = self.extension_filter.iter().any(|ext| {
-                        name_lower.ends_with(&format!(".{ext}"))
-                    });
+                    let has_ext = self
+                        .extension_filter
+                        .iter()
+                        .any(|ext| name_lower.ends_with(&format!(".{ext}")));
                     if !has_ext {
                         continue;
                     }
                 }
-                files.push(DirEntry { name, is_dir: false });
+                files.push(DirEntry {
+                    name,
+                    is_dir: false,
+                });
             }
         }
 

@@ -50,7 +50,10 @@ fn main() {
 
     let file = namiashi_misa();
     if !file.exists() {
-        eprintln!("namiashi fixture missing at {} — cannot generate demo", file.display());
+        eprintln!(
+            "namiashi fixture missing at {} — cannot generate demo",
+            file.display()
+        );
         std::process::exit(1);
     }
     let robot = RobotModel::from_misa(&file).expect("load namiashi .misa");
@@ -65,8 +68,7 @@ fn main() {
     let duration = 8.0;
     let n = (duration / dt) as usize;
 
-    let mut csv =
-        String::from("t,trunk_pitch,head_q_on,head_world_on,head_q_off,head_world_off\n");
+    let mut csv = String::from("t,trunk_pitch,head_q_on,head_world_on,head_q_off,head_world_off\n");
     let mut trunk_rms = 0.0;
     let mut on_rms = 0.0;
     let mut off_rms = 0.0;

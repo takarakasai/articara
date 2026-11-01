@@ -135,8 +135,11 @@ impl ArticaraApp {
                     if let Some(model) = &mut self.model {
                         match model.remove_link(&link_name) {
                             Ok(removed) => {
-                                self.status_message =
-                                    format!("Removed {} link(s): {}", removed.len(), removed.join(", "));
+                                self.status_message = format!(
+                                    "Removed {} link(s): {}",
+                                    removed.len(),
+                                    removed.join(", ")
+                                );
                                 self.selected_link = None;
                                 self.selected_joint = None;
                                 self.needs_upload = true;
@@ -158,29 +161,45 @@ impl ArticaraApp {
     /// - `◆` (U+25C6) for IK-pinned link (orange)
     fn link_tree_label(&self, link_name: &str, visuals: &egui::Visuals) -> egui::text::LayoutJob {
         let is_ik_root = self.ik.root_link.as_deref() == Some(link_name);
-        let is_pinned = self.ik.pinned_links.iter().any(|p| p.link_name == link_name);
+        let is_pinned = self
+            .ik
+            .pinned_links
+            .iter()
+            .any(|p| p.link_name == link_name);
 
         let base_color = visuals.text_color();
         let font_id = egui::FontId::proportional(13.0);
         let mut job = egui::text::LayoutJob::default();
-        job.append(link_name, 0.0, egui::TextFormat {
-            font_id: font_id.clone(),
-            color: base_color,
-            ..Default::default()
-        });
-        if is_ik_root {
-            job.append(" ⚓", 0.0, egui::TextFormat {
+        job.append(
+            link_name,
+            0.0,
+            egui::TextFormat {
                 font_id: font_id.clone(),
-                color: egui::Color32::from_rgb(70, 140, 255),
+                color: base_color,
                 ..Default::default()
-            });
+            },
+        );
+        if is_ik_root {
+            job.append(
+                " ⚓",
+                0.0,
+                egui::TextFormat {
+                    font_id: font_id.clone(),
+                    color: egui::Color32::from_rgb(70, 140, 255),
+                    ..Default::default()
+                },
+            );
         }
         if is_pinned {
-            job.append(" ◆", 0.0, egui::TextFormat {
-                font_id: font_id.clone(),
-                color: egui::Color32::from_rgb(255, 160, 0),
-                ..Default::default()
-            });
+            job.append(
+                " ◆",
+                0.0,
+                egui::TextFormat {
+                    font_id: font_id.clone(),
+                    color: egui::Color32::from_rgb(255, 160, 0),
+                    ..Default::default()
+                },
+            );
         }
         job
     }
@@ -218,10 +237,17 @@ impl ArticaraApp {
             // Branch node
             let id = ui.make_persistent_id(link_name);
             let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
-                ui.ctx(), id, true,
+                ui.ctx(),
+                id,
+                true,
             );
             // Auto-expand if this link is an ancestor of the viewport-selected link
-            if self.editor.tree_reveal_ancestors.iter().any(|a| a == link_name) {
+            if self
+                .editor
+                .tree_reveal_ancestors
+                .iter()
+                .any(|a| a == link_name)
+            {
                 state.set_open(true);
             }
             state
@@ -287,7 +313,11 @@ impl ArticaraApp {
                     .selected_text(&self.editor.new_parent_link)
                     .show_ui(ui, |ui| {
                         for name in &link_names {
-                            ui.selectable_value(&mut self.editor.new_parent_link, name.clone(), name);
+                            ui.selectable_value(
+                                &mut self.editor.new_parent_link,
+                                name.clone(),
+                                name,
+                            );
                         }
                     });
             });
@@ -334,32 +364,62 @@ impl ArticaraApp {
                     // Box: hx, hy, hz
                     ui.horizontal(|ui| {
                         ui.label("Size XYZ:");
-                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[0]).speed(0.005).prefix("x:"));
-                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[1]).speed(0.005).prefix("y:"));
-                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[2]).speed(0.005).prefix("z:"));
+                        ui.add(
+                            egui::DragValue::new(&mut self.editor.new_geom_size[0])
+                                .speed(0.005)
+                                .prefix("x:"),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.editor.new_geom_size[1])
+                                .speed(0.005)
+                                .prefix("y:"),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.editor.new_geom_size[2])
+                                .speed(0.005)
+                                .prefix("z:"),
+                        );
                     });
                 }
                 1 => {
                     // Cylinder: radius, length
                     ui.horizontal(|ui| {
                         ui.label("Cyl:");
-                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[0]).speed(0.005).prefix("r:"));
-                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[1]).speed(0.005).prefix("l:"));
+                        ui.add(
+                            egui::DragValue::new(&mut self.editor.new_geom_size[0])
+                                .speed(0.005)
+                                .prefix("r:"),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.editor.new_geom_size[1])
+                                .speed(0.005)
+                                .prefix("l:"),
+                        );
                     });
                 }
                 2 => {
                     // Sphere: radius
                     ui.horizontal(|ui| {
                         ui.label("Radius:");
-                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[0]).speed(0.005));
+                        ui.add(
+                            egui::DragValue::new(&mut self.editor.new_geom_size[0]).speed(0.005),
+                        );
                     });
                 }
                 3 => {
                     // Capsule: radius, half_length
                     ui.horizontal(|ui| {
                         ui.label("Cap:");
-                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[0]).speed(0.005).prefix("r:"));
-                        ui.add(egui::DragValue::new(&mut self.editor.new_geom_size[1]).speed(0.005).prefix("l:"));
+                        ui.add(
+                            egui::DragValue::new(&mut self.editor.new_geom_size[0])
+                                .speed(0.005)
+                                .prefix("r:"),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.editor.new_geom_size[1])
+                                .speed(0.005)
+                                .prefix("l:"),
+                        );
                     });
                 }
                 _ => {}
@@ -368,17 +428,41 @@ impl ArticaraApp {
             // Joint origin
             ui.horizontal(|ui| {
                 ui.label("Origin XYZ:");
-                ui.add(egui::DragValue::new(&mut self.editor.new_joint_origin[0]).speed(0.005).prefix("x:"));
-                ui.add(egui::DragValue::new(&mut self.editor.new_joint_origin[1]).speed(0.005).prefix("y:"));
-                ui.add(egui::DragValue::new(&mut self.editor.new_joint_origin[2]).speed(0.005).prefix("z:"));
+                ui.add(
+                    egui::DragValue::new(&mut self.editor.new_joint_origin[0])
+                        .speed(0.005)
+                        .prefix("x:"),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut self.editor.new_joint_origin[1])
+                        .speed(0.005)
+                        .prefix("y:"),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut self.editor.new_joint_origin[2])
+                        .speed(0.005)
+                        .prefix("z:"),
+                );
             });
 
             // Joint axis
             ui.horizontal(|ui| {
                 ui.label("Axis:");
-                ui.add(egui::DragValue::new(&mut self.editor.new_joint_axis[0]).speed(0.01).prefix("x:"));
-                ui.add(egui::DragValue::new(&mut self.editor.new_joint_axis[1]).speed(0.01).prefix("y:"));
-                ui.add(egui::DragValue::new(&mut self.editor.new_joint_axis[2]).speed(0.01).prefix("z:"));
+                ui.add(
+                    egui::DragValue::new(&mut self.editor.new_joint_axis[0])
+                        .speed(0.01)
+                        .prefix("x:"),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut self.editor.new_joint_axis[1])
+                        .speed(0.01)
+                        .prefix("y:"),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut self.editor.new_joint_axis[2])
+                        .speed(0.01)
+                        .prefix("z:"),
+                );
             });
 
             // Joint limits (only for revolute / prismatic)
@@ -468,7 +552,10 @@ impl ArticaraApp {
 
         let jtype = JOINT_TYPES[self.editor.new_joint_type_idx];
         let (lower, upper) = if self.editor.new_joint_type_idx < 2 {
-            (self.editor.new_joint_limits[0] as f64, self.editor.new_joint_limits[1] as f64)
+            (
+                self.editor.new_joint_limits[0] as f64,
+                self.editor.new_joint_limits[1] as f64,
+            )
         } else {
             (0.0, 0.0)
         };
@@ -545,18 +632,23 @@ impl ArticaraApp {
             if ui.button("📋 Copy Visuals → Collisions").clicked() {
                 if let Some(model) = &mut self.model {
                     if let Some(&li) = model.link_map.get(link_name) {
-                        let new_cols: Vec<_> = model.links[li].visuals.iter().map(|v| {
-                            articara::robot::CollisionData {
+                        let new_cols: Vec<_> = model.links[li]
+                            .visuals
+                            .iter()
+                            .map(|v| articara::robot::CollisionData {
                                 origin: v.origin,
                                 geometry: v.geometry.clone(),
-                            
+
                                 physics: None,
-                            }
-                        }).collect();
+                            })
+                            .collect();
                         if !new_cols.is_empty() {
                             model.links[li].collisions = new_cols;
                             self.needs_upload = true;
-                            self.mark_edit(&format!("Copy visuals → collisions for '{}'", link_name));
+                            self.mark_edit(&format!(
+                                "Copy visuals → collisions for '{}'",
+                                link_name
+                            ));
                         }
                     }
                 }
@@ -565,8 +657,12 @@ impl ArticaraApp {
 
             ui.separator();
 
-            let is_root = self.model.as_ref().map_or(false, |m| m.root_link == link_name);
-            let del_btn = ui.add_enabled(!is_root, egui::Button::new("🗑 Delete"))
+            let is_root = self
+                .model
+                .as_ref()
+                .map_or(false, |m| m.root_link == link_name);
+            let del_btn = ui
+                .add_enabled(!is_root, egui::Button::new("🗑 Delete"))
                 .on_disabled_hover_text("Cannot delete root link");
             if del_btn.clicked() {
                 if let Some(model) = &mut self.model {
@@ -613,7 +709,8 @@ impl ArticaraApp {
                         if ui.selectable_label(is_current, jt).clicked() && !is_current {
                             model.joints[ji].joint_type = jt.to_string();
                             model.rebuild_misarta_model();
-                            type_change_msg = Some(format!("Change joint '{}' type to {}", joint_name, jt));
+                            type_change_msg =
+                                Some(format!("Change joint '{}' type to {}", joint_name, jt));
                             ui.close();
                             break;
                         }

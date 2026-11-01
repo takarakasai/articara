@@ -44,8 +44,16 @@ mod test_sidecar {
         let restored = &model2.joints[target_idx];
         assert_eq!(restored.name, target_name);
         assert_eq!(restored.actuator_mode, ActuatorMode::Velocity);
-        assert!((restored.actuator_kp - 123.0).abs() < 1e-9, "Kp not restored: got {}", restored.actuator_kp);
-        assert!((restored.actuator_kv - 7.5).abs() < 1e-9, "Kv not restored: got {}", restored.actuator_kv);
+        assert!(
+            (restored.actuator_kp - 123.0).abs() < 1e-9,
+            "Kp not restored: got {}",
+            restored.actuator_kp
+        );
+        assert!(
+            (restored.actuator_kv - 7.5).abs() < 1e-9,
+            "Kv not restored: got {}",
+            restored.actuator_kv
+        );
 
         std::fs::remove_file(&tmp).ok();
     }
@@ -59,25 +67,25 @@ mod test_sidecar {
         let a = model.links[0].name.clone();
         let b = model.links[1].name.clone();
         // 3-DoF loop closure (position only)
-        model.loop_closures.push(
-            articara::rbd::model::LoopClosure::position(
+        model
+            .loop_closures
+            .push(articara::rbd::model::LoopClosure::position(
                 "lc_pos".to_string(),
                 a.clone(),
                 nalgebra::Vector3::new(0.1, 0.0, 0.0),
                 b.clone(),
                 nalgebra::Vector3::zeros(),
-            ),
-        );
+            ));
         // 6-DoF loop closure (full pose)
-        model.loop_closures.push(
-            articara::rbd::model::LoopClosure::pose(
+        model
+            .loop_closures
+            .push(articara::rbd::model::LoopClosure::pose(
                 "lc_weld".to_string(),
                 a.clone(),
                 nalgebra::Isometry3::translation(0.0, 0.05, 0.0),
                 b.clone(),
                 nalgebra::Isometry3::identity(),
-            ),
-        );
+            ));
         let xml = articara::mjcf::export_mjcf(&model);
         assert!(xml.contains("<connect"), "expected <connect>:\n{}", xml);
         assert!(xml.contains("<weld"), "expected <weld>:\n{}", xml);
@@ -98,14 +106,16 @@ mod test_sidecar {
             },
             color: [0.5, 0.5, 1.0, 1.0],
         });
-        model.links[0].collisions.push(articara::robot::CollisionData {
-            origin: nalgebra::Isometry3::identity(),
-            geometry: articara::robot::GeomData::Capsule {
-                radius: 0.05,
-                half_length: 0.20,
-            },
-            physics: None,
-        });
+        model.links[0]
+            .collisions
+            .push(articara::robot::CollisionData {
+                origin: nalgebra::Isometry3::identity(),
+                geometry: articara::robot::GeomData::Capsule {
+                    radius: 0.05,
+                    half_length: 0.20,
+                },
+                physics: None,
+            });
 
         let xml = model.export_urdf().unwrap();
         // Should contain cylinder + at least 2 sphere entries (2 visual + 2 collision)
@@ -186,7 +196,11 @@ mod test_sidecar {
             },
         });
         let xml = articara::mjcf::export_mjcf(&model);
-        assert!(xml.contains("<equality>"), "expected <equality> block:\n{}", xml);
+        assert!(
+            xml.contains("<equality>"),
+            "expected <equality> block:\n{}",
+            xml
+        );
         assert!(
             xml.contains(&format!("joint1=\"{}\"", movable[1])),
             "expected mimic joint1 in MJCF:\n{}",
@@ -342,15 +356,15 @@ mod test_sidecar {
         let oa = transforms[&a_name].inverse().transform_point(&mid_pt);
         let ob = transforms[&b_name].inverse().transform_point(&mid_pt);
 
-        model.loop_closures.push(
-            articara::rbd::model::LoopClosure::position(
+        model
+            .loop_closures
+            .push(articara::rbd::model::LoopClosure::position(
                 "captured".to_string(),
                 a_name,
                 nalgebra::Vector3::new(oa.x as f64, oa.y as f64, oa.z as f64),
                 b_name,
                 nalgebra::Vector3::new(ob.x as f64, ob.y as f64, ob.z as f64),
-            ),
-        );
+            ));
         model.rebuild_misarta_model();
 
         let err = model.loop_closure_error();
@@ -365,29 +379,17 @@ mod test_sidecar {
     fn loop_closure_rotation_roundtrips_via_sidecar() {
         // 6-DoF pose loop closures must round-trip rotation as well.
         let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
-        let q_a = nalgebra::UnitQuaternion::from_axis_angle(
-            &nalgebra::Vector3::z_axis(),
-            0.5,
-        );
-        let q_b = nalgebra::UnitQuaternion::from_axis_angle(
-            &nalgebra::Vector3::x_axis(),
-            -0.3,
-        );
-        model.loop_closures.push(
-            articara::rbd::model::LoopClosure::pose(
+        let q_a = nalgebra::UnitQuaternion::from_axis_angle(&nalgebra::Vector3::z_axis(), 0.5);
+        let q_b = nalgebra::UnitQuaternion::from_axis_angle(&nalgebra::Vector3::x_axis(), -0.3);
+        model
+            .loop_closures
+            .push(articara::rbd::model::LoopClosure::pose(
                 "weld".to_string(),
                 model.links[0].name.clone(),
-                nalgebra::Isometry3::from_parts(
-                    nalgebra::Translation3::new(0.1, 0.0, 0.0),
-                    q_a,
-                ),
+                nalgebra::Isometry3::from_parts(nalgebra::Translation3::new(0.1, 0.0, 0.0), q_a),
                 model.links[1].name.clone(),
-                nalgebra::Isometry3::from_parts(
-                    nalgebra::Translation3::new(0.0, 0.1, 0.0),
-                    q_b,
-                ),
-            ),
-        );
+                nalgebra::Isometry3::from_parts(nalgebra::Translation3::new(0.0, 0.1, 0.0), q_b),
+            ));
         let cfg = model.to_misarta_config();
         let toml = cfg.to_toml().unwrap();
         let cfg2 = misarta::config::MisartaConfig::from_toml(&toml).unwrap();
@@ -400,8 +402,16 @@ mod test_sidecar {
         let r_b = lc.offset_b.rotation;
         let dq_a = (r_a.inverse() * q_a).angle();
         let dq_b = (r_b.inverse() * q_b).angle();
-        assert!(dq_a.abs() < 1e-6, "rot_a not preserved: angle diff = {}", dq_a);
-        assert!(dq_b.abs() < 1e-6, "rot_b not preserved: angle diff = {}", dq_b);
+        assert!(
+            dq_a.abs() < 1e-6,
+            "rot_a not preserved: angle diff = {}",
+            dq_a
+        );
+        assert!(
+            dq_b.abs() < 1e-6,
+            "rot_b not preserved: angle diff = {}",
+            dq_b
+        );
         assert!(lc.pose_6dof);
     }
 
@@ -410,7 +420,10 @@ mod test_sidecar {
         let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
         // Need at least one pose for the sequence step to reference.
         let snap = articara::rbd::model::NamedPose::snapshot(
-            "rest", &model, 1.0, misarta::trajectory::InterpolationKind::Linear,
+            "rest",
+            &model,
+            1.0,
+            misarta::trajectory::InterpolationKind::Linear,
         );
         model.poses.push(snap);
         model.sequences.push(articara::rbd::model::Sequence {
@@ -437,7 +450,10 @@ mod test_sidecar {
         let mut model2 = RobotModel::from_file(&fixture_urdf()).unwrap();
         // Pose must exist so build_sequence_animation can resolve the step.
         let snap2 = articara::rbd::model::NamedPose::snapshot(
-            "rest", &model2, 1.0, misarta::trajectory::InterpolationKind::Linear,
+            "rest",
+            &model2,
+            1.0,
+            misarta::trajectory::InterpolationKind::Linear,
         );
         model2.poses.push(snap2);
         model2.load_misarta_config(&cfg2);
@@ -461,14 +477,21 @@ mod test_sidecar {
         assert!(model.links.len() >= 2);
         let a = model.links[0].name.clone();
         let b = model.links[1].name.clone();
-        model.collision_pairs.push(
-            articara::rbd::model::CollisionPair::new(a.clone(), b.clone(), false),
-        );
+        model
+            .collision_pairs
+            .push(articara::rbd::model::CollisionPair::new(
+                a.clone(),
+                b.clone(),
+                false,
+            ));
 
         let cfg = model.to_misarta_config();
         let toml = cfg.to_toml().unwrap();
-        assert!(toml.contains("[[collision_pair]]"),
-            "TOML should contain collision_pair entries:\n{}", toml);
+        assert!(
+            toml.contains("[[collision_pair]]"),
+            "TOML should contain collision_pair entries:\n{}",
+            toml
+        );
 
         let mut model2 = RobotModel::from_file(&fixture_urdf()).unwrap();
         let cfg2 = misarta::config::MisartaConfig::from_toml(&toml).unwrap();
@@ -490,29 +513,51 @@ mod test_sidecar {
         // Synthesize a collision shape on link0 if it has none, so the
         // generic test_robot fixture exercises both paths.
         if let Some(li) = model.links.iter().position(|l| l.collisions.is_empty()) {
-            model.links[li].collisions.push(articara::robot::CollisionData {
-                origin: nalgebra::Isometry3::identity(),
-                geometry: articara::robot::GeomData::Box {
-                    hx: 0.05, hy: 0.05, hz: 0.05,
-                },
-                physics: None,
-            });
+            model.links[li]
+                .collisions
+                .push(articara::robot::CollisionData {
+                    origin: nalgebra::Isometry3::identity(),
+                    geometry: articara::robot::GeomData::Box {
+                        hx: 0.05,
+                        hy: 0.05,
+                        hz: 0.05,
+                    },
+                    physics: None,
+                });
         }
         let xml = articara::mjcf::export_mjcf(&model);
         // Visual geoms should be no-collide (group 1).
-        assert!(xml.contains("contype=\"0\""),
-            "MJCF should mark visuals as contype=\"0\":\n{}", xml);
-        assert!(xml.contains("conaffinity=\"0\""),
-            "MJCF should mark visuals as conaffinity=\"0\":\n{}", xml);
-        assert!(xml.contains("group=\"1\""),
-            "MJCF should put visuals in group=\"1\":\n{}", xml);
+        assert!(
+            xml.contains("contype=\"0\""),
+            "MJCF should mark visuals as contype=\"0\":\n{}",
+            xml
+        );
+        assert!(
+            xml.contains("conaffinity=\"0\""),
+            "MJCF should mark visuals as conaffinity=\"0\":\n{}",
+            xml
+        );
+        assert!(
+            xml.contains("group=\"1\""),
+            "MJCF should put visuals in group=\"1\":\n{}",
+            xml
+        );
         // Collision geoms should be physics-enabled (group 3).
-        assert!(xml.contains("contype=\"1\""),
-            "MJCF should mark collisions as contype=\"1\":\n{}", xml);
-        assert!(xml.contains("conaffinity=\"1\""),
-            "MJCF should mark collisions as conaffinity=\"1\":\n{}", xml);
-        assert!(xml.contains("group=\"3\""),
-            "MJCF should put collisions in group=\"3\":\n{}", xml);
+        assert!(
+            xml.contains("contype=\"1\""),
+            "MJCF should mark collisions as contype=\"1\":\n{}",
+            xml
+        );
+        assert!(
+            xml.contains("conaffinity=\"1\""),
+            "MJCF should mark collisions as conaffinity=\"1\":\n{}",
+            xml
+        );
+        assert!(
+            xml.contains("group=\"3\""),
+            "MJCF should put collisions in group=\"3\":\n{}",
+            xml
+        );
     }
 
     #[test]
@@ -520,14 +565,24 @@ mod test_sidecar {
         let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
         let a = model.links[0].name.clone();
         let b = model.links[1].name.clone();
-        model.collision_pairs.push(
-            articara::rbd::model::CollisionPair::new(a.clone(), b.clone(), false),
-        );
+        model
+            .collision_pairs
+            .push(articara::rbd::model::CollisionPair::new(
+                a.clone(),
+                b.clone(),
+                false,
+            ));
         let xml = articara::mjcf::export_mjcf(&model);
-        assert!(xml.contains("<contact>"),
-            "expected <contact> block:\n{}", xml);
-        assert!(xml.contains("<exclude"),
-            "expected <exclude/> entry:\n{}", xml);
+        assert!(
+            xml.contains("<contact>"),
+            "expected <contact> block:\n{}",
+            xml
+        );
+        assert!(
+            xml.contains("<exclude"),
+            "expected <exclude/> entry:\n{}",
+            xml
+        );
         assert!(xml.contains(&a) && xml.contains(&b));
     }
 
@@ -677,8 +732,7 @@ mod test_sidecar {
         model.joints[target].joint_damping = 1.25;
         let xml = articara::mjcf::export_mjcf(&model);
 
-        let tmp = std::env::temp_dir()
-            .join("articara_armature_roundtrip.xml");
+        let tmp = std::env::temp_dir().join("articara_armature_roundtrip.xml");
         std::fs::write(&tmp, &xml).unwrap();
         let parsed = RobotModel::from_file(&tmp).unwrap();
         let restored = parsed
@@ -705,9 +759,7 @@ mod test_sidecar {
         // express natively, plus a capsule that triggers approximation.
         // Run the analyzer against the URDF handler and verify each
         // category lands in the issue list with the right severity.
-        use articara::format::{
-            analyze_export_compatibility, ExportSeverity, FormatRegistry,
-        };
+        use articara::format::{ExportSeverity, FormatRegistry, analyze_export_compatibility};
         let mut model = RobotModel::from_file(&fixture_urdf()).unwrap();
 
         // Add a sensor (URDF: drop).
@@ -726,13 +778,13 @@ mod test_sidecar {
         });
 
         // Add a collision-pair override (URDF: drop).
-        model.collision_pairs.push(
-            articara::rbd::model::CollisionPair::new(
+        model
+            .collision_pairs
+            .push(articara::rbd::model::CollisionPair::new(
                 "a_link".to_string(),
                 "b_link".to_string(),
                 false,
-            ),
-        );
+            ));
 
         // Inject a capsule visual to trigger the URDF approximation
         // warning. Pick the first link for simplicity.
@@ -757,8 +809,7 @@ mod test_sidecar {
         let issues = analyze_export_compatibility(&model, urdf);
 
         // Expect at least sensor / collision_pairs / capsule issues.
-        let features: Vec<&str> =
-            issues.iter().map(|i| i.feature.as_str()).collect();
+        let features: Vec<&str> = issues.iter().map(|i| i.feature.as_str()).collect();
         assert!(
             features.contains(&"Sensors"),
             "expected Sensors issue, got {:?}",
@@ -776,7 +827,10 @@ mod test_sidecar {
         );
 
         // Capsule must be flagged as approximation, not drop.
-        let capsule = issues.iter().find(|i| i.feature == "Capsule shapes").unwrap();
+        let capsule = issues
+            .iter()
+            .find(|i| i.feature == "Capsule shapes")
+            .unwrap();
         assert_eq!(capsule.severity, ExportSeverity::Approximate);
 
         // Sensors must be flagged as drop.
@@ -787,7 +841,7 @@ mod test_sidecar {
     #[test]
     fn analyze_export_compatibility_clean_model_returns_empty() {
         // Plain URDF model with nothing extra → no warnings.
-        use articara::format::{analyze_export_compatibility, FormatRegistry};
+        use articara::format::{FormatRegistry, analyze_export_compatibility};
         let model = RobotModel::from_file(&fixture_urdf()).unwrap();
         let registry = FormatRegistry::default_registry();
         let urdf = registry
@@ -809,10 +863,9 @@ mod test_sidecar {
         // Even a heavily-decorated model (mimic + sensor + collision_pair +
         // loop_closure + capsule) should produce zero warnings when the
         // target is `.misa` — the master format preserves everything.
-        use articara::format::{analyze_export_compatibility, FormatRegistry};
+        use articara::format::{FormatRegistry, analyze_export_compatibility};
         use articara::robot::{
-            CollisionPair, GeomData, LoopClosure, Mimic, RobotModel, Sensor, SensorKind,
-            VisualData,
+            CollisionPair, GeomData, LoopClosure, Mimic, RobotModel, Sensor, SensorKind, VisualData,
         };
         use nalgebra as na;
 
@@ -834,7 +887,10 @@ mod test_sidecar {
             link: model.links[0].name.clone(),
             origin: na::Isometry3::identity(),
             update_rate: 100.0,
-            kind: SensorKind::Imu { gyro_noise: 0.0, accel_noise: 0.0 },
+            kind: SensorKind::Imu {
+                gyro_noise: 0.0,
+                accel_noise: 0.0,
+            },
         });
         if model.links.len() >= 2 {
             model.collision_pairs.push(CollisionPair::new(
@@ -853,7 +909,10 @@ mod test_sidecar {
         });
         model.links[0].visuals.push(VisualData {
             origin: na::Isometry3::identity(),
-            geometry: GeomData::Capsule { radius: 0.05, half_length: 0.10 },
+            geometry: GeomData::Capsule {
+                radius: 0.05,
+                half_length: 0.10,
+            },
             color: [1.0, 0.0, 0.0, 1.0],
         });
 
@@ -912,9 +971,9 @@ mod test_sidecar {
         // exercised too.
         model.base_transform = nalgebra::Isometry3::from_parts(
             nalgebra::Translation3::new(0.5, -0.25, 1.0),
-            nalgebra::UnitQuaternion::from_quaternion(
-                nalgebra::Quaternion::new(0.7071, 0.7071, 0.0, 0.0),
-            ),
+            nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                0.7071, 0.7071, 0.0, 0.0,
+            )),
         );
 
         model.save_sidecar_config(&urdf_dst).unwrap();
@@ -945,9 +1004,9 @@ mod test_sidecar {
         // Base orientation: compare via the dot product of the underlying
         // quaternions; a sign flip on the quat is equivalent to the same
         // rotation, so we look at |dot|.
-        let original = nalgebra::UnitQuaternion::from_quaternion(
-            nalgebra::Quaternion::new(0.7071, 0.7071, 0.0, 0.0),
-        );
+        let original = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+            0.7071, 0.7071, 0.0, 0.0,
+        ));
         let restored_q = model2.base_transform.rotation;
         let dot = original.coords.dot(&restored_q.coords);
         assert!(
@@ -972,11 +1031,7 @@ mod test_sidecar {
 
         // Write a sidecar with only the version header.
         let toml_path = tmp_dir.join("test_robot.misarta.toml");
-        std::fs::write(
-            &toml_path,
-            "[misarta]\nversion = 1\n",
-        )
-        .unwrap();
+        std::fs::write(&toml_path, "[misarta]\nversion = 1\n").unwrap();
 
         let mut model = RobotModel::from_file(&urdf_dst).unwrap();
         let original_q = model.joint_positions.clone();
@@ -986,9 +1041,7 @@ mod test_sidecar {
 
         assert_eq!(model.joint_positions, original_q);
         assert!(
-            (model.base_transform.translation.vector
-                - original_base.translation.vector)
-                .norm()
+            (model.base_transform.translation.vector - original_base.translation.vector).norm()
                 < 1e-12,
         );
 
@@ -1066,13 +1119,21 @@ mod test_sidecar {
         let mut model2 = RobotModel::from_file(&urdf_dst).unwrap();
         let report = model2.load_sidecar_config();
         let report = report.expect("load_sidecar_config should return Some after save");
-        assert!(report.n_actuators_total > 0, "saved sidecar should contain actuator entries");
-        assert_eq!(report.n_actuators_applied, report.n_actuators_total,
+        assert!(
+            report.n_actuators_total > 0,
+            "saved sidecar should contain actuator entries"
+        );
+        assert_eq!(
+            report.n_actuators_applied, report.n_actuators_total,
             "all actuator entries should match the model: unmatched={:?}",
-            report.unmatched_actuators);
+            report.unmatched_actuators
+        );
         let restored = &model2.joints[target_idx];
-        assert_eq!(restored.actuator_mode, ActuatorMode::Torque,
-            "actuator mode not restored via load_sidecar_config");
+        assert_eq!(
+            restored.actuator_mode,
+            ActuatorMode::Torque,
+            "actuator mode not restored via load_sidecar_config"
+        );
         assert!((restored.actuator_kp - 999.0).abs() < 1e-9);
         assert!((restored.actuator_kv - 42.0).abs() < 1e-9);
 
@@ -1102,7 +1163,12 @@ mod test_misa {
             .map(|l| l.name.clone())
             .find(|n| *n != model.root_link && !model.joints.iter().any(|j| j.parent_link == *n))
             .expect("fixture has a leaf link");
-        let joint = model.joints.last().expect("fixture has joints").name.clone();
+        let joint = model
+            .joints
+            .last()
+            .expect("fixture has joints")
+            .name
+            .clone();
 
         // (a) edits on RobotModel, then export.
         let mut via_model = model.clone();
@@ -1123,7 +1189,9 @@ mod test_misa {
 
         // Removal parity on the renamed model.
         let mut via_model_rm = via_model.clone();
-        via_model_rm.remove_link("parity_link").expect("remove via model");
+        via_model_rm
+            .remove_link("parity_link")
+            .expect("remove via model");
         let doc_a = via_model_rm.to_misa().expect("to_misa after remove");
 
         let mut doc_b_rm = doc_b.clone();
@@ -1428,8 +1496,7 @@ mod test_misa {
             duration: 0.3,
             kind: misarta::trajectory::InterpolationKind::QuinticSmooth,
         });
-        file.home.joint_positions =
-            [("left_hip_pitch".to_string(), 0.7)].into_iter().collect();
+        file.home.joint_positions = [("left_hip_pitch".to_string(), 0.7)].into_iter().collect();
         let path = save_to_temp(&file, "pose_home");
         let model = RobotModel::from_misa(&path).expect("load");
 
@@ -1498,7 +1565,10 @@ child = "front-leg"
     fn misa_format_detection() {
         let p = std::path::Path::new("foo/bar.misa");
         assert_eq!(RobotFormat::detect(p), Some(RobotFormat::Misa));
-        assert_eq!(RobotFormat::detect_from_extension(p), Some(RobotFormat::Misa));
+        assert_eq!(
+            RobotFormat::detect_from_extension(p),
+            Some(RobotFormat::Misa)
+        );
         assert!(RobotFormat::Misa.supports_import());
         assert!(RobotFormat::Misa.supports_export());
         assert_eq!(RobotFormat::Misa.extension(), "misa");
@@ -1643,8 +1713,8 @@ child = "front-leg"
 
     /// Path to the checked-in namiashi.misa fixture.
     fn namiashi_misa_path() -> Option<PathBuf> {
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/namiashi/namiashi.misa");
+        let p =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/namiashi/namiashi.misa");
         if p.exists() { Some(p) } else { None }
     }
 
@@ -1655,8 +1725,7 @@ child = "front-leg"
             return;
         };
 
-        let (model, report) =
-            RobotModel::from_misa_with_report(&misa_path).expect("from_misa");
+        let (model, report) = RobotModel::from_misa_with_report(&misa_path).expect("from_misa");
 
         // Basic counts (matches what convert_to_misa produced)
         assert_eq!(model.name, "namiashi_description");
@@ -1677,7 +1746,11 @@ child = "front-leg"
         // FK should compute clean
         let tf = model.compute_transforms();
         for link in &model.links {
-            assert!(tf.contains_key(&link.name), "missing transform for {}", link.name);
+            assert!(
+                tf.contains_key(&link.name),
+                "missing transform for {}",
+                link.name
+            );
         }
     }
 
@@ -1696,12 +1769,7 @@ child = "front-leg"
         let dir = std::env::temp_dir().join("articara_namiashi_misa_test");
         std::fs::create_dir_all(&dir).unwrap();
         // Mesh dir alongside the .misa so relative path resolution works.
-        let meshes_src = urdf_path
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("meshes");
+        let meshes_src = urdf_path.parent().unwrap().parent().unwrap().join("meshes");
         let meshes_dst = dir.join("meshes");
         std::fs::create_dir_all(&meshes_dst).ok();
         if meshes_src.exists() {
@@ -1732,11 +1800,7 @@ child = "front-leg"
             original.links.len(),
             loaded.links.len()
         );
-        assert_eq!(
-            original.joints.len(),
-            loaded.joints.len(),
-            "joint count"
-        );
+        assert_eq!(original.joints.len(), loaded.joints.len(), "joint count");
         assert_eq!(original.root_link, loaded.root_link, "root link");
 
         // Link names preserved in order
@@ -1816,7 +1880,11 @@ child = "front-leg"
         );
 
         let meshes = dir.join("meshes");
-        assert!(meshes.is_dir(), "meshes/ not present at {}", meshes.display());
+        assert!(
+            meshes.is_dir(),
+            "meshes/ not present at {}",
+            meshes.display()
+        );
         let stl_count = std::fs::read_dir(&meshes)
             .expect("read meshes/")
             .filter_map(|e| e.ok())
@@ -1828,11 +1896,7 @@ child = "front-leg"
                     .unwrap_or(false)
             })
             .count();
-        assert!(
-            stl_count > 0,
-            "no STL files copied to {}",
-            meshes.display()
-        );
+        assert!(stl_count > 0, "no STL files copied to {}", meshes.display());
 
         std::fs::read_to_string(&model_path).expect("read model file")
     }

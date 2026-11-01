@@ -143,7 +143,11 @@ pub fn copy_meshes_to(model: &RobotModel, dest_dir: &Path) -> Result<usize, Stri
             .map(|v| &v.geometry)
             .chain(link.collisions.iter().map(|c| &c.geometry));
         for geom in geoms {
-            let GeomData::Mesh { filename: Some(uri), .. } = geom else {
+            let GeomData::Mesh {
+                filename: Some(uri),
+                ..
+            } = geom
+            else {
                 continue;
             };
             let Some(src_abs) = resolve_source(uri, model) else {
@@ -165,9 +169,8 @@ pub fn copy_meshes_to(model: &RobotModel, dest_dir: &Path) -> Result<usize, Stri
                 .ok_or_else(|| format!("mesh URI has no basename: {uri}"))?;
             let dst = meshes_dir.join(basename);
             if src_abs != dst {
-                std::fs::copy(&src_abs, &dst).map_err(|e| {
-                    format!("copy mesh {:?} → {:?}: {e}", src_abs, dst)
-                })?;
+                std::fs::copy(&src_abs, &dst)
+                    .map_err(|e| format!("copy mesh {:?} → {:?}: {e}", src_abs, dst))?;
                 count += 1;
             }
         }
@@ -258,22 +261,42 @@ mod tests {
             emit_path("package://my_pkg/meshes/trunk.stl", &model, &style),
             "meshes/trunk.stl"
         );
-        assert_eq!(emit_path("meshes/foo.stl", &model, &style), "meshes/foo.stl");
+        assert_eq!(
+            emit_path("meshes/foo.stl", &model, &style),
+            "meshes/foo.stl"
+        );
         assert_eq!(emit_path("/abs/bar.stl", &model, &style), "meshes/bar.stl");
     }
 
     #[test]
     fn emit_preserve_returns_input_unchanged() {
         let model = RobotModel {
-            name: "x".into(), links: vec![], joints: vec![], link_map: Default::default(),
-            joint_map: Default::default(), root_link: "".into(),
-            children_joints: Default::default(), materials: Default::default(),
-            joint_positions: vec![], source_path: None,
-            base_transform: nalgebra::Isometry3::identity(), misarta_cache: None,
-            loop_closures: vec![], poses: vec![], collision_pairs: vec![],
-            sequences: vec![], mimics: vec![], sensors: vec![], gaits: vec![],
+            name: "x".into(),
+            links: vec![],
+            joints: vec![],
+            link_map: Default::default(),
+            joint_map: Default::default(),
+            root_link: "".into(),
+            children_joints: Default::default(),
+            materials: Default::default(),
+            joint_positions: vec![],
+            source_path: None,
+            base_transform: nalgebra::Isometry3::identity(),
+            misarta_cache: None,
+            loop_closures: vec![],
+            poses: vec![],
+            collision_pairs: vec![],
+            sequences: vec![],
+            mimics: vec![],
+            sensors: vec![],
+            gaits: vec![],
         };
-        let inputs = ["package://a/b/c.stl", "/abs.stl", "rel/foo.stl", "file:///x.stl"];
+        let inputs = [
+            "package://a/b/c.stl",
+            "/abs.stl",
+            "rel/foo.stl",
+            "file:///x.stl",
+        ];
         for u in inputs {
             assert_eq!(emit_path(u, &model, &MeshPathStyle::Preserve), u);
         }

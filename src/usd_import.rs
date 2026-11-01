@@ -21,10 +21,7 @@ pub fn import_usda(path: &Path) -> Result<RobotModel, String> {
 }
 
 /// Import from a USDA string. `source_path` is optional metadata.
-pub fn import_usda_from_str(
-    text: &str,
-    source_path: Option<&Path>,
-) -> Result<RobotModel, String> {
+pub fn import_usda_from_str(text: &str, source_path: Option<&Path>) -> Result<RobotModel, String> {
     let out = misarta_formats::usd::import_str(text)?;
     for w in &out.warnings {
         log::warn!("USD import: {w}");
@@ -116,21 +113,27 @@ mod tests {
     fn roundtrip_model_with_joints() {
         let mut model = RobotModel::new_empty("jointbot");
         // Add a child link + revolute joint
-        model.add_child(
-            "base_link",
-            "arm_link",
-            "arm_joint",
-            "revolute",
-            na::Isometry3::from_parts(
-                na::Translation3::new(0.0, 0.0, 0.1),
-                na::UnitQuaternion::identity(),
-            ),
-            na::Vector3::z(),
-            GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.05 },
-            [0.7, 0.7, 0.7, 1.0],
-            -1.57,
-            1.57,
-        ).unwrap();
+        model
+            .add_child(
+                "base_link",
+                "arm_link",
+                "arm_joint",
+                "revolute",
+                na::Isometry3::from_parts(
+                    na::Translation3::new(0.0, 0.0, 0.1),
+                    na::UnitQuaternion::identity(),
+                ),
+                na::Vector3::z(),
+                GeomData::Box {
+                    hx: 0.05,
+                    hy: 0.05,
+                    hz: 0.05,
+                },
+                [0.7, 0.7, 0.7, 1.0],
+                -1.57,
+                1.57,
+            )
+            .unwrap();
 
         let usda = crate::usd::export_usda(&model);
         let imported = import_usda_from_str(&usda, None).unwrap();
@@ -171,17 +174,27 @@ mod tests {
     #[test]
     fn roundtrip_fixed_joint() {
         let mut model = RobotModel::new_empty("fixbot");
-        model.add_child(
-            "base_link", "sensor_link", "sensor_joint", "fixed",
-            na::Isometry3::from_parts(
-                na::Translation3::new(0.05, 0.0, 0.02),
-                na::UnitQuaternion::from_euler_angles(0.0, 0.0, std::f32::consts::FRAC_PI_4),
-            ),
-            na::Vector3::z(),
-            GeomData::Box { hx: 0.02, hy: 0.02, hz: 0.02 },
-            [0.5, 0.5, 0.5, 1.0],
-            0.0, 0.0,
-        ).unwrap();
+        model
+            .add_child(
+                "base_link",
+                "sensor_link",
+                "sensor_joint",
+                "fixed",
+                na::Isometry3::from_parts(
+                    na::Translation3::new(0.05, 0.0, 0.02),
+                    na::UnitQuaternion::from_euler_angles(0.0, 0.0, std::f32::consts::FRAC_PI_4),
+                ),
+                na::Vector3::z(),
+                GeomData::Box {
+                    hx: 0.02,
+                    hy: 0.02,
+                    hz: 0.02,
+                },
+                [0.5, 0.5, 0.5, 1.0],
+                0.0,
+                0.0,
+            )
+            .unwrap();
 
         let usda = crate::usd::export_usda(&model);
         let imported = import_usda_from_str(&usda, None).unwrap();
@@ -195,14 +208,24 @@ mod tests {
     #[test]
     fn roundtrip_prismatic_joint() {
         let mut model = RobotModel::new_empty("slidebot");
-        model.add_child(
-            "base_link", "slider", "slide_joint", "prismatic",
-            na::Isometry3::identity(),
-            na::Vector3::x(),
-            GeomData::Box { hx: 0.03, hy: 0.03, hz: 0.03 },
-            [0.7, 0.7, 0.7, 1.0],
-            -0.5, 0.5,
-        ).unwrap();
+        model
+            .add_child(
+                "base_link",
+                "slider",
+                "slide_joint",
+                "prismatic",
+                na::Isometry3::identity(),
+                na::Vector3::x(),
+                GeomData::Box {
+                    hx: 0.03,
+                    hy: 0.03,
+                    hz: 0.03,
+                },
+                [0.7, 0.7, 0.7, 1.0],
+                -0.5,
+                0.5,
+            )
+            .unwrap();
 
         let usda = crate::usd::export_usda(&model);
         let imported = import_usda_from_str(&usda, None).unwrap();
@@ -247,12 +270,11 @@ mod tests {
         let imported = import_usda_from_str(&usda, None).unwrap();
 
         match &imported.links[0].visuals[0].geometry {
-            GeomData::Cylinder { radius, half_length } => {
-                assert!(
-                    (radius - 0.03).abs() < 1e-3,
-                    "radius = {}",
-                    radius
-                );
+            GeomData::Cylinder {
+                radius,
+                half_length,
+            } => {
+                assert!((radius - 0.03).abs() < 1e-3, "radius = {}", radius);
                 assert!(
                     (half_length - 0.15).abs() < 1e-3,
                     "half_length = {}",
@@ -326,32 +348,66 @@ mod tests {
         assert!((inertial.ixx - 0.01).abs() < 1e-3);
         assert!((inertial.iyy - 0.02).abs() < 1e-3);
         assert!((inertial.izz - 0.03).abs() < 1e-3);
-        assert!(
-            (inertial.origin.translation.x - 0.01).abs() < 1e-3,
-        );
+        assert!((inertial.origin.translation.x - 0.01).abs() < 1e-3,);
     }
 
     #[test]
     fn roundtrip_multi_link_tree() {
         let mut model = RobotModel::new_empty("treebot");
-        model.add_child(
-            "base_link", "link_a", "joint_a", "revolute",
-            na::Isometry3::identity(), na::Vector3::z(),
-            GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.05 },
-            [0.7, 0.7, 0.7, 1.0], -1.57, 1.57,
-        ).unwrap();
-        model.add_child(
-            "link_a", "link_b", "joint_b", "revolute",
-            na::Isometry3::identity(), na::Vector3::z(),
-            GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.05 },
-            [0.7, 0.7, 0.7, 1.0], -1.57, 1.57,
-        ).unwrap();
-        model.add_child(
-            "base_link", "link_c", "joint_c", "fixed",
-            na::Isometry3::identity(), na::Vector3::z(),
-            GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.05 },
-            [0.7, 0.7, 0.7, 1.0], 0.0, 0.0,
-        ).unwrap();
+        model
+            .add_child(
+                "base_link",
+                "link_a",
+                "joint_a",
+                "revolute",
+                na::Isometry3::identity(),
+                na::Vector3::z(),
+                GeomData::Box {
+                    hx: 0.05,
+                    hy: 0.05,
+                    hz: 0.05,
+                },
+                [0.7, 0.7, 0.7, 1.0],
+                -1.57,
+                1.57,
+            )
+            .unwrap();
+        model
+            .add_child(
+                "link_a",
+                "link_b",
+                "joint_b",
+                "revolute",
+                na::Isometry3::identity(),
+                na::Vector3::z(),
+                GeomData::Box {
+                    hx: 0.05,
+                    hy: 0.05,
+                    hz: 0.05,
+                },
+                [0.7, 0.7, 0.7, 1.0],
+                -1.57,
+                1.57,
+            )
+            .unwrap();
+        model
+            .add_child(
+                "base_link",
+                "link_c",
+                "joint_c",
+                "fixed",
+                na::Isometry3::identity(),
+                na::Vector3::z(),
+                GeomData::Box {
+                    hx: 0.05,
+                    hy: 0.05,
+                    hz: 0.05,
+                },
+                [0.7, 0.7, 0.7, 1.0],
+                0.0,
+                0.0,
+            )
+            .unwrap();
 
         let usda = crate::usd::export_usda(&model);
         let imported = import_usda_from_str(&usda, None).unwrap();

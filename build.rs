@@ -19,6 +19,8 @@ fn main() {
     if feature_on && !dynamic_set && !static_set {
         println!("cargo:warning=MUJOCO_DYNAMIC_LINK_DIR is not set.");
         println!("cargo:warning=Use `cargo xtask build --features mujoco` for auto-detection,");
-        println!("cargo:warning=or `source ./setup-mujoco.sh` (PowerShell: `. .\\setup-mujoco.ps1`) before `cargo build`.");
+        println!(
+            "cargo:warning=or `source ./setup-mujoco.sh` (PowerShell: `. .\\setup-mujoco.ps1`) before `cargo build`."
+        );
     }
 }

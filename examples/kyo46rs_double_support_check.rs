@@ -17,12 +17,11 @@ fn main() {
     use articara::rbd::model::ActuatorMode;
     use articara::robot::RobotModel;
     use articara::wbc_pipeline::build_floating_base_model;
-    use misa_wbc::{tasks, AsAffine, Dynamics, Formulation, SolveConfig, Solver};
+    use misa_wbc::{AsAffine, Dynamics, Formulation, SolveConfig, Solver, tasks};
     use nalgebra as na;
 
-    let urdf_path = std::path::Path::new(
-        "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
-    );
+    let urdf_path =
+        std::path::Path::new("/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf");
     let mut robot = RobotModel::from_urdf(urdf_path).expect("load kyo46rs.urdf");
 
     // Both legs at the same symmetric crouch angles as kyo46rs_squat.rs.
@@ -42,7 +41,11 @@ fn main() {
         ("right_shoulder_pitch_joint", -1.0),
         ("right_elbow_joint", 1.2),
     ];
-    for (name, q) in left_stance.iter().chain(right_stance.iter()).chain(arm_pose.iter()) {
+    for (name, q) in left_stance
+        .iter()
+        .chain(right_stance.iter())
+        .chain(arm_pose.iter())
+    {
         if let Some(&ji) = robot.joint_map.get(*name) {
             robot.joint_positions[ji] = *q;
         }
@@ -68,7 +71,12 @@ fn main() {
         // foot (the one this height must clear) uses the identical leg
         // angles; the right leg's geometry doesn't affect it.
         base_pos: Some([0.0, 0.0, 0.41 + 0.059 + 0.002]),
-        ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 2.0, roll: 0.0, pitch: 0.0 }),
+        ground_plane: Some(GroundPlaneCfg {
+            z: 0.0,
+            half_size: 2.0,
+            roll: 0.0,
+            pitch: 0.0,
+        }),
         ..MjcfExportOptions::default()
     };
     let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
@@ -77,7 +85,12 @@ fn main() {
     {
         let lfoot = sim.body_world_position("left_foot_link").unwrap();
         let rfoot = sim.body_world_position("right_foot_link").unwrap();
-        println!("  t=0 (pre-burn-in) left_foot_z={:.4}  right_foot_z={:.4}  clearance={:.4}", lfoot[2], rfoot[2], rfoot[2] - lfoot[2]);
+        println!(
+            "  t=0 (pre-burn-in) left_foot_z={:.4}  right_foot_z={:.4}  clearance={:.4}",
+            lfoot[2],
+            rfoot[2],
+            rfoot[2] - lfoot[2]
+        );
     }
 
     let (model, a2m, link_to_idx) = build_floating_base_model(&robot);
@@ -112,13 +125,23 @@ fn main() {
         j.actuator_mode = ActuatorMode::Torque;
     }
 
-    let z_hi = sim.body_world_position(&robot.root_link).expect("torso xpos")[2];
-    let post_rpy = sim.body_world_orientation(&robot.root_link).unwrap().euler_angles();
+    let z_hi = sim
+        .body_world_position(&robot.root_link)
+        .expect("torso xpos")[2];
+    let post_rpy = sim
+        .body_world_orientation(&robot.root_link)
+        .unwrap()
+        .euler_angles();
     let lfoot = sim.body_world_position("left_foot_link").unwrap();
     let rfoot = sim.body_world_position("right_foot_link").unwrap();
     println!(
         "post-burn-in: trunk z={z_hi:.3} rpy=({:+.3},{:+.3},{:+.3})  left_foot_z={:.4} right_foot_z={:.4} clearance={:.4}",
-        post_rpy.0, post_rpy.1, post_rpy.2, lfoot[2], rfoot[2], rfoot[2] - lfoot[2]
+        post_rpy.0,
+        post_rpy.1,
+        post_rpy.2,
+        lfoot[2],
+        rfoot[2],
+        rfoot[2] - lfoot[2]
     );
 
     let mut solver = Solver::new();
@@ -193,7 +216,8 @@ fn main() {
         let mut dj_v = na::DVector::zeros(12);
         for (slot, foot_mi) in [left_foot_mi, right_foot_mi].into_iter().enumerate() {
             let j_full = misarta::jacobian::compute_joint_jacobian(&model, &q, foot_mi);
-            let dj_full = misarta::jacobian::compute_joint_jacobian_time_derivative(&model, &q, &v, foot_mi);
+            let dj_full =
+                misarta::jacobian::compute_joint_jacobian_time_derivative(&model, &q, &v, foot_mi);
             let dj_v_full = &dj_full * &v_dvec;
             for r in 0..6 {
                 for c in 0..nv {
@@ -219,8 +243,11 @@ fn main() {
 
         roll_i = (roll_i + roll_meas * dt).clamp(-I_ATT_CLAMP, I_ATT_CLAMP);
         pitch_i = (pitch_i + pitch_meas * dt).clamp(-I_ATT_CLAMP, I_ATT_CLAMP);
-        let a_roll_cmd = -(KD_ATT * (0.0 - v_ang_body.x) + KP_ATT * (0.0 - roll_meas) + KI_ATT * (0.0 - roll_i));
-        let a_pitch_cmd = -(KD_ATT * (0.0 - v_ang_body.y) + KP_ATT * (0.0 - pitch_meas) + KI_ATT * (0.0 - pitch_i));
+        let a_roll_cmd =
+            -(KD_ATT * (0.0 - v_ang_body.x) + KP_ATT * (0.0 - roll_meas) + KI_ATT * (0.0 - roll_i));
+        let a_pitch_cmd = -(KD_ATT * (0.0 - v_ang_body.y)
+            + KP_ATT * (0.0 - pitch_meas)
+            + KI_ATT * (0.0 - pitch_i));
         let att_ref = na::DVector::from_vec(vec![a_roll_cmd, a_pitch_cmd]);
         let height_ref = na::DVector::from_vec(vec![az_cmd]);
 
@@ -241,7 +268,12 @@ fn main() {
         let dj_v_left = dj_v.rows(0, 6).into_owned();
         let dj_v_right = dj_v.rows(6, 6).into_owned();
 
-        let sole_patch = tasks::ContactPatch { mu: FRICTION_MU, cop_half: (0.049, 0.019), mu_torsion: 0.05, f_max: 150.0 };
+        let sole_patch = tasks::ContactPatch {
+            mu: FRICTION_MU,
+            cop_half: (0.049, 0.019),
+            mu_torsion: 0.05,
+            f_max: 150.0,
+        };
 
         let p0 = dyn_ctx
             .dynamics_task()
@@ -253,7 +285,8 @@ fn main() {
             + tasks::box_bound(dyn_ctx.tau(), &torque_max);
 
         let p1 = tasks::cartesian_acceleration(dyn_ctx.qddot(), &j_att, &dj_v_att, &att_ref);
-        let p1h = tasks::cartesian_acceleration(dyn_ctx.qddot(), &j_height, &dj_v_height, &height_ref);
+        let p1h =
+            tasks::cartesian_acceleration(dyn_ctx.qddot(), &j_height, &dj_v_height, &height_ref);
 
         let g_full = misarta::rnea::compute_gravity(&model, &q);
         let mut tau_gravity = na::DVector::zeros(na_count);

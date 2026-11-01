@@ -7,7 +7,7 @@
 
 #[cfg(feature = "mujoco")]
 fn main() {
-    use articara::gait::{auto_detect_kinematics_config, GaitController};
+    use articara::gait::{GaitController, auto_detect_kinematics_config};
     use articara::mjcf::{self, GroundPlaneCfg, MjcfExportOptions};
     use articara::mujoco_sim::MujocoSim;
     use articara::rbd::model::ActuatorMode;
@@ -32,11 +32,16 @@ fn main() {
         );
         model
             .add_child(
-                parent, leg, &format!("{leg}_fixed"), "fixed", origin,
+                parent,
+                leg,
+                &format!("{leg}_fixed"),
+                "fixed",
+                origin,
                 na::Vector3::z(),
                 GeomData::Sphere { radius: 0.022 },
                 [0.5, 0.5, 0.5, 1.0],
-                0.0, 0.0,
+                0.0,
+                0.0,
             )
             .unwrap();
     }
@@ -50,10 +55,18 @@ fn main() {
 
     // Go2 ホーム姿勢 (hip=0, thigh=0.9, calf=-1.8) で立たせる。
     let home_q = [
-        ("FL_hip_joint", 0.0), ("FL_thigh_joint", 0.9), ("FL_calf_joint", -1.8),
-        ("FR_hip_joint", 0.0), ("FR_thigh_joint", 0.9), ("FR_calf_joint", -1.8),
-        ("RL_hip_joint", 0.0), ("RL_thigh_joint", 0.9), ("RL_calf_joint", -1.8),
-        ("RR_hip_joint", 0.0), ("RR_thigh_joint", 0.9), ("RR_calf_joint", -1.8),
+        ("FL_hip_joint", 0.0),
+        ("FL_thigh_joint", 0.9),
+        ("FL_calf_joint", -1.8),
+        ("FR_hip_joint", 0.0),
+        ("FR_thigh_joint", 0.9),
+        ("FR_calf_joint", -1.8),
+        ("RL_hip_joint", 0.0),
+        ("RL_thigh_joint", 0.9),
+        ("RL_calf_joint", -1.8),
+        ("RR_hip_joint", 0.0),
+        ("RR_thigh_joint", 0.9),
+        ("RR_calf_joint", -1.8),
     ];
     for (name, q) in home_q.iter() {
         model.joint_positions[model.joint_map[*name]] = *q;
@@ -61,8 +74,10 @@ fn main() {
     model.rebuild_misarta_model();
 
     let foot_links = [
-        (LegId::FL, "FL_foot"), (LegId::FR, "FR_foot"),
-        (LegId::RL, "RL_foot"), (LegId::RR, "RR_foot"),
+        (LegId::FL, "FL_foot"),
+        (LegId::FR, "FR_foot"),
+        (LegId::RL, "RL_foot"),
+        (LegId::RR, "RR_foot"),
     ];
     let kin = auto_detect_kinematics_config(&model, &foot_links)
         .unwrap_or_else(|errs| panic!("kin auto-detect: {errs:?}"));
@@ -70,8 +85,10 @@ fn main() {
     // ★ ここが trot 版との唯一の本質的な差: GaitConfig::crawl() を使う。
     let cfg = GaitConfig::crawl();
     println!("Gait preset: {:?}", cfg.gait_type);
-    println!("  cycle = {:.2} s, duty = {:.2}, swing_h = {:.3} m, max_step = {:.3} m",
-        cfg.cycle_period_s, cfg.duty_factor, cfg.swing_height_m, cfg.max_step_length_m);
+    println!(
+        "  cycle = {:.2} s, duty = {:.2}, swing_h = {:.3} m, max_step = {:.3} m",
+        cfg.cycle_period_s, cfg.duty_factor, cfg.swing_height_m, cfg.max_step_length_m
+    );
 
     // Crawl は static-stable (duty 0.85, 常に 3 脚支持) なので CHAMP の純運動学
     // プランだとほぼ揺れない代わりに能動的な体重シフトがなく、Go2 では「立つ
@@ -83,7 +100,10 @@ fn main() {
     let opts = MjcfExportOptions {
         base_pos: Some([0.0, 0.0, 0.30]),
         ground_plane: Some(GroundPlaneCfg {
-            z: 0.0, half_size: 5.0, roll: 0.0, pitch: 0.0,
+            z: 0.0,
+            half_size: 5.0,
+            roll: 0.0,
+            pitch: 0.0,
         }),
         ..MjcfExportOptions::default()
     };
@@ -107,15 +127,21 @@ fn main() {
     sim.step_n_frames(&mut model, (0.5 / mj_dt) as u32, true);
     let (p1, r1) = trunk(&sim);
     let rpy1 = r1.euler_angles();
-    println!("  t=0.500 trunk=({:+.3}, {:+.3}, {:+.3})  rpy=({:+.3},{:+.3},{:+.3})",
-        p1.x, p1.y, p1.z, rpy1.0, rpy1.1, rpy1.2);
+    println!(
+        "  t=0.500 trunk=({:+.3}, {:+.3}, {:+.3})  rpy=({:+.3},{:+.3},{:+.3})",
+        p1.x, p1.y, p1.z, rpy1.0, rpy1.1, rpy1.2
+    );
 
     // Phase 2: crawl で vx=0.10 m/s をコマンド、 4.8 s ≈ 3 サイクル。
     let cmd_vx = 0.10_f64;
     let total_phase2 = 4.8_f64;
     println!("\n--- Phase 2: crawl vx={cmd_vx} m/s, {total_phase2:.1} s (~3 cycles) ---");
     ctrl.enable();
-    ctrl.set_velocity_cmd(VelocityCmd { vx: cmd_vx, vy: 0.0, wz: 0.0 });
+    ctrl.set_velocity_cmd(VelocityCmd {
+        vx: cmd_vx,
+        vy: 0.0,
+        wz: 0.0,
+    });
 
     let gait_dt = 0.005_f64;
     let n_ticks = (total_phase2 / gait_dt) as usize;
@@ -152,13 +178,27 @@ fn main() {
 
     let (pf, _) = trunk(&sim);
     println!("\n=== Result ===");
-    println!("  start  trunk x={:+.3} y={:+.3} z={:+.3}", p1.x, p1.y, p1.z);
-    println!("  end    trunk x={:+.3} y={:+.3} z={:+.3}", pf.x, pf.y, pf.z);
-    println!("  Δx = {:+.3} m  (cmd vx={cmd_vx} m/s × {total_phase2:.1} s = {:.3} m expected)",
-        pf.x - p1.x, cmd_vx * total_phase2);
-    println!("  Δy = {:+.3} m  (lateral drift; smaller = straighter)", pf.y - p1.y);
-    println!("  trunk z range  = [{min_z:.3}, {max_z:.3}] m  Δz = {:.3} m  (vertical sway)",
-        max_z - min_z);
+    println!(
+        "  start  trunk x={:+.3} y={:+.3} z={:+.3}",
+        p1.x, p1.y, p1.z
+    );
+    println!(
+        "  end    trunk x={:+.3} y={:+.3} z={:+.3}",
+        pf.x, pf.y, pf.z
+    );
+    println!(
+        "  Δx = {:+.3} m  (cmd vx={cmd_vx} m/s × {total_phase2:.1} s = {:.3} m expected)",
+        pf.x - p1.x,
+        cmd_vx * total_phase2
+    );
+    println!(
+        "  Δy = {:+.3} m  (lateral drift; smaller = straighter)",
+        pf.y - p1.y
+    );
+    println!(
+        "  trunk z range  = [{min_z:.3}, {max_z:.3}] m  Δz = {:.3} m  (vertical sway)",
+        max_z - min_z
+    );
     println!("  trunk |y| peak = {max_abs_y:.3} m  (lateral sway)");
     println!("  max |roll|     = {max_roll:.3} rad");
     println!("  max |pitch|    = {max_pitch:.3} rad");
@@ -167,7 +207,13 @@ fn main() {
     let walked = pf.x - p1.x > 0.05;
     println!(
         "  verdict: {}",
-        if fell { "FELL" } else if walked { "WALKED" } else { "STOOD-BUT-DIDN'T-WALK" }
+        if fell {
+            "FELL"
+        } else if walked {
+            "WALKED"
+        } else {
+            "STOOD-BUT-DIDN'T-WALK"
+        }
     );
 }
 

@@ -270,10 +270,8 @@ impl ArticaraApp {
                     match load_posture(model, &path) {
                         Ok(n) => {
                             self.needs_upload = true;
-                            self.status_message = format!(
-                                "Loaded posture ({n} joints matched) ← {}",
-                                path.display()
-                            );
+                            self.status_message =
+                                format!("Loaded posture ({n} joints matched) ← {}", path.display());
                         }
                         Err(e) => {
                             self.status_message = format!("Load error: {e}");

@@ -32,17 +32,15 @@ fn main() {
 
 #[cfg(feature = "mujoco")]
 mod sweep {
-    use articara::gait::{
-        auto_detect_kinematics_config, GaitController, DEFAULT_FOOT_LINKS,
-    };
+    use articara::gait::{DEFAULT_FOOT_LINKS, GaitController, auto_detect_kinematics_config};
     use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
     use articara::mujoco_sim::MujocoSim;
     use articara::robot::RobotModel;
     use articara::wbc_pipeline::WbcPipeline;
     use nalgebra::Vector3;
     use quadruped_gait::{
-        load_presets, solve_leg_ik, wbc::WbcWeights, ContactDrivenPhase, ExpValue, GaitConfig,
-        GaitMode, KinematicsConfig, LegIkSolution, VelocityCmd,
+        ContactDrivenPhase, ExpValue, GaitConfig, GaitMode, KinematicsConfig, LegIkSolution,
+        VelocityCmd, load_presets, solve_leg_ik, wbc::WbcWeights,
     };
     use std::path::PathBuf;
 
@@ -85,7 +83,11 @@ mod sweep {
             model: PathBuf::from("tests/fixtures/namiashi/namiashi.misa"),
             axes: Vec::new(),
             preset: None,
-            cmd: VelocityCmd { vx: 0.15, vy: 0.0, wz: 0.0 },
+            cmd: VelocityCmd {
+                vx: 0.15,
+                vy: 0.0,
+                wz: 0.0,
+            },
             total_s: 7.7,
             burn_in_s: 0.5,
             dt: 0.002,
@@ -99,9 +101,7 @@ mod sweep {
         };
         let mut it = std::env::args().skip(1);
         while let Some(flag) = it.next() {
-            let mut val = |name: &str| {
-                it.next().ok_or_else(|| format!("{name} needs a value"))
-            };
+            let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
             match flag.as_str() {
                 "--model" => args.model = PathBuf::from(val("--model")?),
                 "--set" => {
@@ -129,20 +129,30 @@ mod sweep {
                 "--vy" => args.cmd.vy = val("--vy")?.parse().map_err(|e| format!("--vy: {e}"))?,
                 "--wz" => args.cmd.wz = val("--wz")?.parse().map_err(|e| format!("--wz: {e}"))?,
                 "--duration" => {
-                    args.total_s = val("--duration")?.parse().map_err(|e| format!("--duration: {e}"))?
+                    args.total_s = val("--duration")?
+                        .parse()
+                        .map_err(|e| format!("--duration: {e}"))?
                 }
                 "--burn-in" => {
-                    args.burn_in_s = val("--burn-in")?.parse().map_err(|e| format!("--burn-in: {e}"))?
+                    args.burn_in_s = val("--burn-in")?
+                        .parse()
+                        .map_err(|e| format!("--burn-in: {e}"))?
                 }
                 "--dt" => args.dt = val("--dt")?.parse().map_err(|e| format!("--dt: {e}"))?,
                 "--push-n" => {
-                    args.push_n = val("--push-n")?.parse().map_err(|e| format!("--push-n: {e}"))?
+                    args.push_n = val("--push-n")?
+                        .parse()
+                        .map_err(|e| format!("--push-n: {e}"))?
                 }
                 "--push-t" => {
-                    args.push_t = val("--push-t")?.parse().map_err(|e| format!("--push-t: {e}"))?
+                    args.push_t = val("--push-t")?
+                        .parse()
+                        .map_err(|e| format!("--push-t: {e}"))?
                 }
                 "--push-dur" => {
-                    args.push_dur = val("--push-dur")?.parse().map_err(|e| format!("--push-dur: {e}"))?
+                    args.push_dur = val("--push-dur")?
+                        .parse()
+                        .map_err(|e| format!("--push-dur: {e}"))?
                 }
                 "--push-axis" => {
                     args.push_axis = match val("--push-axis")?.as_str() {
@@ -152,9 +162,13 @@ mod sweep {
                     }
                 }
                 "--fall-z" => {
-                    args.fall_z = val("--fall-z")?.parse().map_err(|e| format!("--fall-z: {e}"))?
+                    args.fall_z = val("--fall-z")?
+                        .parse()
+                        .map_err(|e| format!("--fall-z: {e}"))?
                 }
-                "--bend" => args.bend = val("--bend")?.parse().map_err(|e| format!("--bend: {e}"))?,
+                "--bend" => {
+                    args.bend = val("--bend")?.parse().map_err(|e| format!("--bend: {e}"))?
+                }
                 "--csv" => args.csv = Some(PathBuf::from(val("--csv")?)),
                 "--help" | "-h" => {
                     println!("{}", HELP);
@@ -240,15 +254,21 @@ exp_sweep — headless FullCentroidal exp-knob bench sweeper
         seed_joint_positions(&mut robot, &kin)?;
 
         let opts = MjcfExportOptions {
-            ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0 }),
+            ground_plane: Some(GroundPlaneCfg {
+                z: 0.0,
+                half_size: 4.0,
+                roll: 0.0,
+                pitch: 0.0,
+            }),
             add_actuators: true,
             ..Default::default()
         };
         let mut sim = MujocoSim::new(&robot, opts).map_err(|e| format!("MujocoSim: {e}"))?;
         sim.set_gravity_compensation(true);
 
-        let mut gc = GaitController::build(&robot, kin, GaitConfig::trot(), GaitMode::FullCentroidal)
-            .map_err(|e| format!("GaitController::build: {e}"))?;
+        let mut gc =
+            GaitController::build(&robot, kin, GaitConfig::trot(), GaitMode::FullCentroidal)
+                .map_err(|e| format!("GaitController::build: {e}"))?;
 
         if let Some(preset) = base {
             let (_, skipped) = gc.apply_experimental(preset);
@@ -265,8 +285,7 @@ exp_sweep — headless FullCentroidal exp-knob bench sweeper
         // torque feedforward — the same drive shape as the GUI and the
         // integration_walk bench matrix (position-PD alone can't hold
         // the FullCentroidal solution and falls).
-        let foot_links: [String; 4] =
-            DEFAULT_FOOT_LINKS.map(|(_, name)| name.to_string());
+        let foot_links: [String; 4] = DEFAULT_FOOT_LINKS.map(|(_, name)| name.to_string());
         let mut wbc = WbcPipeline::new(&robot, foot_links);
         if let Some(full_cfg) = gc.full_centroidal_mpc_config() {
             wbc.mass_kg = full_cfg.mass_kg;
@@ -315,10 +334,7 @@ exp_sweep — headless FullCentroidal exp-knob bench sweeper
             );
             let body_pos = sim.body_world_position(&root).unwrap_or([0.0; 3]);
             let yaw_obs = sim.body_world_yaw(&root).unwrap_or(0.0);
-            gc.set_body_pose_observed(
-                yaw_obs,
-                Vector3::new(body_pos[0], body_pos[1], body_pos[2]),
-            );
+            gc.set_body_pose_observed(yaw_obs, Vector3::new(body_pos[0], body_pos[1], body_pos[2]));
             wbc.weights = WbcWeights::for_cmd_centroidal(&gc.velocity_cmd());
 
             let t0 = std::time::Instant::now();
@@ -520,7 +536,14 @@ exp_sweep — headless FullCentroidal exp-knob bench sweeper
             );
             csv.push_str(&format!(
                 "\"{label}\",{},{},{},{},{},{},{},{}\n",
-                m.dx, m.dy_max, m.roll_max, m.pitch_max, m.min_z, m.fell, m.tick_ms_avg, m.tick_ms_max,
+                m.dx,
+                m.dy_max,
+                m.roll_max,
+                m.pitch_max,
+                m.min_z,
+                m.fell,
+                m.tick_ms_avg,
+                m.tick_ms_max,
             ));
         }
 
@@ -534,5 +557,7 @@ exp_sweep — headless FullCentroidal exp-knob bench sweeper
 
 #[cfg(not(feature = "mujoco"))]
 fn main() {
-    eprintln!("exp_sweep requires the `mujoco` feature: cargo xtask run --features mujoco --example exp_sweep");
+    eprintln!(
+        "exp_sweep requires the `mujoco` feature: cargo xtask run --features mujoco --example exp_sweep"
+    );
 }

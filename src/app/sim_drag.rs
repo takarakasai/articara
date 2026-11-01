@@ -82,8 +82,7 @@ impl ArticaraApp {
             .unwrap_or(na::Isometry3::identity());
         let ee_local_offset = link_world_tf.inverse() * hit_world;
 
-        let cam_fwd =
-            (self.camera.target - na::Point3::from(self.camera.eye().coords)).normalize();
+        let cam_fwd = (self.camera.target - na::Point3::from(self.camera.eye().coords)).normalize();
         let drag_depth = (hit_world - self.camera.eye()).dot(&cam_fwd);
 
         let chain = match self.sim.sim_drag_mode {
@@ -134,8 +133,7 @@ impl ArticaraApp {
         // Project cursor onto the drag plane (perpendicular to the camera
         // forward at the click depth) so the drag stays in 3D world space.
         let (ro, rd) = self.camera.screen_ray(ndc, aspect);
-        let cam_fwd =
-            (self.camera.target - na::Point3::from(self.camera.eye().coords)).normalize();
+        let cam_fwd = (self.camera.target - na::Point3::from(self.camera.eye().coords)).normalize();
         let denom = rd.dot(&cam_fwd);
         if denom.abs() < 1e-6 {
             return;
@@ -168,8 +166,7 @@ impl ArticaraApp {
                             .map(|&li| m.links[li].inertial.origin.translation.vector)
                     })
                     .unwrap_or_else(na::Vector3::zeros);
-                let com_world = link_world_tf
-                    * na::Point3::from(com_local);
+                let com_world = link_world_tf * na::Point3::from(com_local);
                 let r = cur_world - com_world; // f32
                 let torque = r.cross(&f);
                 if let Some(ref mut sim) = self.sim.mujoco_sim {
@@ -179,11 +176,7 @@ impl ArticaraApp {
                     sim.apply_external_force(
                         &state.link_name,
                         [f.x as f64, f.y as f64, f.z as f64],
-                        [
-                            torque.x as f64,
-                            torque.y as f64,
-                            torque.z as f64,
-                        ],
+                        [torque.x as f64, torque.y as f64, torque.z as f64],
                         0.1,
                     );
                 }
@@ -263,12 +256,7 @@ impl ArticaraApp {
 
     /// Overlay a thin guide line from the click anchor to the current cursor
     /// position so the user can see what they're dragging.
-    pub(super) fn draw_sim_drag_overlay(
-        &self,
-        ui: &mut egui::Ui,
-        rect: egui::Rect,
-        aspect: f32,
-    ) {
+    pub(super) fn draw_sim_drag_overlay(&self, ui: &mut egui::Ui, rect: egui::Rect, aspect: f32) {
         let Some(state) = self.sim.sim_drag_state.as_ref() else {
             return;
         };

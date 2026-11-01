@@ -7,10 +7,7 @@ mod renderer;
 use std::path::PathBuf;
 
 fn main() -> eframe::Result {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn"),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     // MuJoCo runtime version pre-check. mujoco-rs panics deep in its
     // crate when the linked libmujoco doesn't match its FFI bindings;
@@ -67,11 +64,10 @@ fn main() -> eframe::Result {
                 .expect("--script-headless requires a file path");
             let model_path = args.get(pos + 2);
 
-            let source = std::fs::read_to_string(script_path)
-                .unwrap_or_else(|e| {
-                    eprintln!("Error reading {script_path}: {e}");
-                    std::process::exit(1);
-                });
+            let source = std::fs::read_to_string(script_path).unwrap_or_else(|e| {
+                eprintln!("Error reading {script_path}: {e}");
+                std::process::exit(1);
+            });
 
             let mut engine = articara::scripting_model::ModelScriptEngine::new();
 

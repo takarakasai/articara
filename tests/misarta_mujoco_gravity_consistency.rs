@@ -25,30 +25,25 @@
 
 use std::path::PathBuf;
 
-use articara::gait::{auto_detect_kinematics_config, DEFAULT_FOOT_LINKS};
+use articara::gait::{DEFAULT_FOOT_LINKS, auto_detect_kinematics_config};
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
 use articara::rbd::model::ActuatorMode;
 use articara::robot::RobotModel;
 use nalgebra as na;
-use quadruped_gait::{solve_leg_ik, KinematicsConfig, LegIkSolution};
+use quadruped_gait::{KinematicsConfig, LegIkSolution, solve_leg_ik};
 
 fn namiashi_urdf() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/namiashi/urdf/namiashi.urdf")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/namiashi/urdf/namiashi.urdf")
 }
 
 /// Same seeding the WBC tests use — bent legs at the gait
 /// controller's nominal stance, NOT the URDF's q=0 fully-extended
 /// pose.
-fn seed_joint_positions_from_kinematics(
-    robot: &mut RobotModel,
-    kin: &KinematicsConfig,
-) {
+fn seed_joint_positions_from_kinematics(robot: &mut RobotModel, kin: &KinematicsConfig) {
     for leg_kin in [&kin.fl, &kin.fr, &kin.rl, &kin.rr] {
         let target = leg_kin.nominal_foot_body;
-        let LegIkSolution::Reached { hip, thigh, calf } =
-            solve_leg_ik(leg_kin, target, false)
+        let LegIkSolution::Reached { hip, thigh, calf } = solve_leg_ik(leg_kin, target, false)
         else {
             return;
         };
@@ -78,8 +73,7 @@ fn misarta_compute_gravity_matches_mujoco_qfrc_bias() {
             j.actuator_mode = ActuatorMode::Position;
         }
     }
-    let mut kin =
-        auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS).expect("kin");
+    let mut kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS).expect("kin");
     for lk in [&mut kin.fl, &mut kin.fr, &mut kin.rl, &mut kin.rr] {
         let total_leg = lk.upper_leg_m + lk.lower_leg_m;
         lk.nominal_foot_body.z += 0.08 * total_leg;
@@ -155,10 +149,7 @@ fn misarta_compute_gravity_matches_mujoco_qfrc_bias() {
     }
 
     let g_mis = misarta::rnea::compute_gravity(model, &q);
-    eprintln!(
-        "\n=== misarta compute_gravity (length {}) ===",
-        g_mis.len()
-    );
+    eprintln!("\n=== misarta compute_gravity (length {}) ===", g_mis.len());
     for i in 0..g_mis.len() {
         eprintln!("  [{i:2}] = {:+.4} N·m (or N for base)", g_mis[i]);
     }
@@ -189,14 +180,9 @@ fn misarta_compute_gravity_matches_mujoco_qfrc_bias() {
         .sum::<f64>()
         .sqrt();
     let mis_base_norm: f64 = g_mis.iter().take(6).map(|v| v * v).sum::<f64>().sqrt();
-    let mis_joint_norm: f64 =
-        g_mis.iter().skip(6).map(|v| v * v).sum::<f64>().sqrt();
-    eprintln!(
-        "  base block:  MuJoCo |.| = {mj_base_norm:.3}   misarta |.| = {mis_base_norm:.3}",
-    );
-    eprintln!(
-        "  joint block: MuJoCo |.| = {mj_joint_norm:.3}   misarta |.| = {mis_joint_norm:.3}",
-    );
+    let mis_joint_norm: f64 = g_mis.iter().skip(6).map(|v| v * v).sum::<f64>().sqrt();
+    eprintln!("  base block:  MuJoCo |.| = {mj_base_norm:.3}   misarta |.| = {mis_base_norm:.3}",);
+    eprintln!("  joint block: MuJoCo |.| = {mj_joint_norm:.3}   misarta |.| = {mis_joint_norm:.3}",);
 
     // Check the `m·g` invariant: total mass × 9.81 should match the
     // base linear-z component (in body frame). Both formulations
@@ -207,7 +193,10 @@ fn misarta_compute_gravity_matches_mujoco_qfrc_bias() {
     // base linear z is index 2 (x, y, z). For an upright body the z
     // bias should be ≈ +m·g (gravity wants to pull down, the bias
     // generalised force is the *negation* needed to hold static).
-    eprintln!("  MuJoCo  qfrc_bias[2] (base_lin_z) = {:.3}", bias_mj_full[2]);
+    eprintln!(
+        "  MuJoCo  qfrc_bias[2] (base_lin_z) = {:.3}",
+        bias_mj_full[2]
+    );
     eprintln!("  misarta g(q)        [2] (base_lin_z) = {:.3}", g_mis[2]);
 
     // Soft assertion: the ratio between the two base_lin_z should be

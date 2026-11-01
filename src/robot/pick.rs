@@ -37,9 +37,7 @@ impl RobotModel {
             let mut link_best_dist: Option<f32> = None;
             for vis in &link.visuals {
                 let full_tf = world_tf * vis.origin;
-                let dist = precise_geometry_intersect(
-                    ray_origin, ray_dir, &full_tf, &vis.geometry,
-                );
+                let dist = precise_geometry_intersect(ray_origin, ray_dir, &full_tf, &vis.geometry);
                 if let Some(d) = dist {
                     if d > 0.0 && (link_best_dist.is_none() || d < link_best_dist.unwrap()) {
                         link_best_dist = Some(d);
@@ -73,20 +71,27 @@ pub fn precise_geometry_intersect(
 
     match geom {
         GeomData::Box { hx, hy, hz } => ray_box_intersect(&local_origin, &local_dir, *hx, *hy, *hz),
-        GeomData::Cylinder { radius, half_length } => {
-            ray_cylinder_intersect(&local_origin, &local_dir, *radius, *half_length)
-        }
+        GeomData::Cylinder {
+            radius,
+            half_length,
+        } => ray_cylinder_intersect(&local_origin, &local_dir, *radius, *half_length),
         GeomData::Sphere { radius } => {
             ray_sphere_intersect(&local_origin, &local_dir, &na::Point3::origin(), *radius)
         }
-        GeomData::Capsule { radius, half_length } => {
+        GeomData::Capsule {
+            radius,
+            half_length,
+        } => {
             // Test cylinder body + two hemisphere caps
             let t_cyl = ray_cylinder_intersect(&local_origin, &local_dir, *radius, *half_length);
             let top_center = na::Point3::new(0.0, 0.0, *half_length);
             let bot_center = na::Point3::new(0.0, 0.0, -*half_length);
             let t_top = ray_sphere_intersect(&local_origin, &local_dir, &top_center, *radius);
             let t_bot = ray_sphere_intersect(&local_origin, &local_dir, &bot_center, *radius);
-            [t_cyl, t_top, t_bot].iter().filter_map(|t| *t).reduce(f32::min)
+            [t_cyl, t_top, t_bot]
+                .iter()
+                .filter_map(|t| *t)
+                .reduce(f32::min)
         }
         GeomData::Mesh { mesh, .. } => {
             ray_mesh_intersect(&local_origin, &local_dir, &mesh.to_flat_vertices_f32())
@@ -224,8 +229,16 @@ pub fn ray_mesh_intersect(
     let mut i = 0;
     while i + tri_stride <= vertices.len() {
         let v0 = na::Point3::new(vertices[i], vertices[i + 1], vertices[i + 2]);
-        let v1 = na::Point3::new(vertices[i + stride], vertices[i + stride + 1], vertices[i + stride + 2]);
-        let v2 = na::Point3::new(vertices[i + stride * 2], vertices[i + stride * 2 + 1], vertices[i + stride * 2 + 2]);
+        let v1 = na::Point3::new(
+            vertices[i + stride],
+            vertices[i + stride + 1],
+            vertices[i + stride + 2],
+        );
+        let v2 = na::Point3::new(
+            vertices[i + stride * 2],
+            vertices[i + stride * 2 + 1],
+            vertices[i + stride * 2 + 2],
+        );
 
         if let Some(t) = ray_triangle_intersect(origin, dir, &v0, &v1, &v2) {
             if t > 0.0 && (best.is_none() || t < best.unwrap()) {
@@ -264,11 +277,7 @@ pub fn ray_triangle_intersect(
         return None;
     }
     let t = f * edge2.dot(&q);
-    if t > 1e-6 {
-        Some(t)
-    } else {
-        None
-    }
+    if t > 1e-6 { Some(t) } else { None }
 }
 
 /// Find closest approach of a ray to an axis line (infinite line through origin in given direction).
@@ -304,4 +313,3 @@ pub fn ray_axis_closest(
         (t_line, dist)
     }
 }
-

@@ -13,9 +13,7 @@ use egui::PointerButton;
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 
 use super::file_dialog::FileDialogMode;
-use super::{
-    ArticaraApp, PeaksPlotMetric, PeaksXAxisMode, PEAKS_PLOT_UNLIMITED_CAP,
-};
+use super::{ArticaraApp, PEAKS_PLOT_UNLIMITED_CAP, PeaksPlotMetric, PeaksXAxisMode};
 
 /// UI state of the Joint Peaks plot window, grouped so [`ArticaraApp`]
 /// carries one field instead of eleven loose `peaks_plot_*` ones.
@@ -153,11 +151,7 @@ impl ArticaraApp {
             // last reset" rather than the absolute MuJoCo clock — keeps
             // labels short and comparable across runs.
             let t0 = sim.trace().next().map(|f| f.time).unwrap_or(0.0);
-            let t_latest = sim
-                .trace()
-                .last()
-                .map(|f| f.time - t0)
-                .unwrap_or(0.0);
+            let t_latest = sim.trace().last().map(|f| f.time - t0).unwrap_or(0.0);
 
             let mut traces: Vec<JointTrace> = render_set
                 .iter()
@@ -408,12 +402,8 @@ impl ArticaraApp {
             let dt = sim_dt.max(1e-6);
             let target = match xaxis_mode {
                 PeaksXAxisMode::Auto if auto_unlimited => PEAKS_PLOT_UNLIMITED_CAP,
-                PeaksXAxisMode::Auto => {
-                    ((auto_seconds as f64 / dt).ceil() as usize).max(1)
-                }
-                PeaksXAxisMode::Fixed => {
-                    ((fixed_seconds as f64 / dt).ceil() as usize).max(1)
-                }
+                PeaksXAxisMode::Auto => ((auto_seconds as f64 / dt).ceil() as usize).max(1),
+                PeaksXAxisMode::Fixed => ((fixed_seconds as f64 / dt).ceil() as usize).max(1),
             };
             sim.set_trace_max(target.min(PEAKS_PLOT_UNLIMITED_CAP));
         }

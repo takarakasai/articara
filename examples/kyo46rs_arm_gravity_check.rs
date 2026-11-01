@@ -26,9 +26,8 @@ fn main() {
     use articara::robot::RobotModel;
     use articara::wbc_pipeline::build_floating_base_model;
 
-    let urdf_path = std::path::Path::new(
-        "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
-    );
+    let urdf_path =
+        std::path::Path::new("/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf");
     let mut robot = RobotModel::from_urdf(urdf_path).expect("load kyo46rs.urdf");
 
     // Non-trivial seed: shoulder raised forward, elbow bent -- q=0 for
@@ -124,9 +123,14 @@ fn main() {
 
         if tick % report_every == 0 {
             let t = tick as f64 * mj_dt;
-            let (sp_q, sp_qd) = sim.joint_q_qd("left_shoulder_pitch_joint").unwrap_or((f64::NAN, f64::NAN));
-            let (el_q, el_qd) = sim.joint_q_qd("left_elbow_joint").unwrap_or((f64::NAN, f64::NAN));
-            let drift = (sp_q - q0[*robot.joint_map.get("left_shoulder_pitch_joint").unwrap()]).abs()
+            let (sp_q, sp_qd) = sim
+                .joint_q_qd("left_shoulder_pitch_joint")
+                .unwrap_or((f64::NAN, f64::NAN));
+            let (el_q, el_qd) = sim
+                .joint_q_qd("left_elbow_joint")
+                .unwrap_or((f64::NAN, f64::NAN));
+            let drift = (sp_q - q0[*robot.joint_map.get("left_shoulder_pitch_joint").unwrap()])
+                .abs()
                 .max((el_q - q0[*robot.joint_map.get("left_elbow_joint").unwrap()]).abs());
             max_drift = max_drift.max(drift);
             println!(
@@ -146,7 +150,11 @@ fn main() {
     println!("  max drift observed over 3.0s: {max_drift:.4} rad");
     println!(
         "  verdict: {}",
-        if max_drift < 0.05 { "HOLDS (gravity-comp alone is enough)" } else { "DRIFTS (gravity-comp alone is not enough to hold this pose)" }
+        if max_drift < 0.05 {
+            "HOLDS (gravity-comp alone is enough)"
+        } else {
+            "DRIFTS (gravity-comp alone is not enough to hold this pose)"
+        }
     );
 }
 

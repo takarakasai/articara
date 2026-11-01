@@ -3,8 +3,8 @@ use nalgebra as na;
 use std::path::PathBuf;
 
 use super::{ArticaraApp, InteractionMode, OffsetTarget};
-use articara::format::RobotFormat;
 use crate::renderer::{DisplayMode, MeshKind};
+use articara::format::RobotFormat;
 use articara::robot::GeomData;
 
 impl ArticaraApp {
@@ -859,165 +859,208 @@ impl ArticaraApp {
                 // two top-level property blocks present consistently.
                 let ji_name_for_hdr = joint_name.clone();
                 egui::CollapsingHeader::new(
-                    egui::RichText::new(format!("⚙ Joint: {ji_name_for_hdr}"))
-                        .heading(),
+                    egui::RichText::new(format!("⚙ Joint: {ji_name_for_hdr}")).heading(),
                 )
                 .id_salt("joint_props_collapsing")
                 .default_open(true)
                 .show(ui, |ui| {
-                // Sync rename buffer when selection changes
-                if self.editor.rename_joint_buf.is_empty() || !model.joint_map.contains_key(&self.editor.rename_joint_buf) {
-                    self.editor.rename_joint_buf = joint_name.clone();
-                }
-                // Editable joint name (before taking &mut joint)
-                let mut jrename_result: Option<(String, String)> = None;
-                ui.horizontal(|ui| {
-                    ui.label("Joint:");
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.editor.rename_joint_buf)
-                            .desired_width(160.0)
-                            .font(egui::TextStyle::Heading),
-                    );
-                    if resp.lost_focus() && self.editor.rename_joint_buf != joint_name {
-                        jrename_result = Some((joint_name.clone(), self.editor.rename_joint_buf.clone()));
+                    // Sync rename buffer when selection changes
+                    if self.editor.rename_joint_buf.is_empty()
+                        || !model.joint_map.contains_key(&self.editor.rename_joint_buf)
+                    {
+                        self.editor.rename_joint_buf = joint_name.clone();
                     }
-                });
-                if let Some((old_name, new_name)) = jrename_result {
-                    if model.rename_joint(&old_name, &new_name) {
-                        props_edit_desc = Some(format!("Rename joint '{}' → '{}'", old_name, new_name));
-                    } else {
-                        self.editor.rename_joint_buf = model.joints[ji].name.clone();
-                    }
-                }
-                let joint = &mut model.joints[ji];
-                let joint_name = joint.name.clone();
-                ui.separator();
-                let mut joint_changed = false;
-                egui::Grid::new("joint_props")
-                    .striped(true)
-                    .num_columns(2)
-                    .show(ui, |ui| {
-                        ui.label("Type:");
-                        {
-                            const JOINT_TYPES: &[&str] = &["revolute", "prismatic", "fixed", "continuous"];
-                            let mut cur_type = joint.joint_type.clone();
-                            egui::ComboBox::from_id_salt(format!("jtype_{ji}"))
-                                .selected_text(&cur_type)
-                                .show_ui(ui, |ui| {
-                                    for &jt in JOINT_TYPES {
-                                        ui.selectable_value(&mut cur_type, jt.to_string(), jt);
-                                    }
-                                });
-                            if cur_type != joint.joint_type {
-                                joint.joint_type = cur_type;
-                                joint_changed = true;
-                            }
+                    // Editable joint name (before taking &mut joint)
+                    let mut jrename_result: Option<(String, String)> = None;
+                    ui.horizontal(|ui| {
+                        ui.label("Joint:");
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut self.editor.rename_joint_buf)
+                                .desired_width(160.0)
+                                .font(egui::TextStyle::Heading),
+                        );
+                        if resp.lost_focus() && self.editor.rename_joint_buf != joint_name {
+                            jrename_result =
+                                Some((joint_name.clone(), self.editor.rename_joint_buf.clone()));
                         }
-                        ui.end_row();
-                        ui.label("Parent:");
-                        ui.label(&joint.parent_link);
-                        ui.end_row();
-                        ui.label("Child:");
-                        ui.label(&joint.child_link);
-                        ui.end_row();
-
-                        ui.label("Axis:");
-                        ui.horizontal(|ui| {
-                            joint_changed |= ui.add(egui::DragValue::new(&mut joint.axis.x).speed(0.01).prefix("x:")).changed();
-                            joint_changed |= ui.add(egui::DragValue::new(&mut joint.axis.y).speed(0.01).prefix("y:")).changed();
-                            joint_changed |= ui.add(egui::DragValue::new(&mut joint.axis.z).speed(0.01).prefix("z:")).changed();
-                        });
-                        ui.end_row();
-
-                        ui.label("Lower (rad):");
-                        joint_changed |= ui.add(egui::DragValue::new(&mut joint.lower).speed(0.01)).changed();
-                        ui.end_row();
-                        ui.label("Upper (rad):");
-                        joint_changed |= ui.add(egui::DragValue::new(&mut joint.upper).speed(0.01)).changed();
-                        ui.end_row();
-                        ui.label("Effort (Nm):");
-                        joint_changed |= ui.add(egui::DragValue::new(&mut joint.effort).speed(0.1).range(0.0..=f64::MAX)).changed();
-                        ui.end_row();
-                        ui.label("Velocity (rad/s):");
-                        joint_changed |= ui.add(egui::DragValue::new(&mut joint.velocity).speed(0.1).range(0.0..=f64::MAX)).changed();
-                        ui.end_row();
-
-                        ui.label("Origin xyz:");
-                        ui.horizontal(|ui| {
-                            let t = &mut joint.origin.translation;
-                            joint_changed |= ui.add(egui::DragValue::new(&mut t.x).speed(0.0001).prefix("x:")).changed();
-                            joint_changed |= ui.add(egui::DragValue::new(&mut t.y).speed(0.0001).prefix("y:")).changed();
-                            joint_changed |= ui.add(egui::DragValue::new(&mut t.z).speed(0.0001).prefix("z:")).changed();
-                        });
-                        ui.end_row();
                     });
-
-                // --- Actuator (control mode + gains) ---
-                // Skip for fixed joints; they have no actuator.
-                if joint.joint_type != "fixed" {
+                    if let Some((old_name, new_name)) = jrename_result {
+                        if model.rename_joint(&old_name, &new_name) {
+                            props_edit_desc =
+                                Some(format!("Rename joint '{}' → '{}'", old_name, new_name));
+                        } else {
+                            self.editor.rename_joint_buf = model.joints[ji].name.clone();
+                        }
+                    }
+                    let joint = &mut model.joints[ji];
+                    let joint_name = joint.name.clone();
                     ui.separator();
-                    egui::CollapsingHeader::new("Actuator")
-                        .default_open(true)
+                    let mut joint_changed = false;
+                    egui::Grid::new("joint_props")
+                        .striped(true)
+                        .num_columns(2)
                         .show(ui, |ui| {
-                            egui::Grid::new(format!("actuator_props_{ji}"))
-                                .striped(true)
-                                .num_columns(2)
-                                .show(ui, |ui| {
-                                    ui.label("Mode:");
-                                    let mut mode = joint.actuator_mode;
-                                    egui::ComboBox::from_id_salt(format!("actmode_{ji}"))
-                                        .selected_text(mode.label())
-                                        .show_ui(ui, |ui| {
-                                            for m in articara::rbd::model::ActuatorMode::ALL {
-                                                ui.selectable_value(&mut mode, m, m.label());
-                                            }
-                                        });
-                                    if mode != joint.actuator_mode {
-                                        joint.actuator_mode = mode;
-                                        joint_changed = true;
-                                    }
-                                    ui.end_row();
+                            ui.label("Type:");
+                            {
+                                const JOINT_TYPES: &[&str] =
+                                    &["revolute", "prismatic", "fixed", "continuous"];
+                                let mut cur_type = joint.joint_type.clone();
+                                egui::ComboBox::from_id_salt(format!("jtype_{ji}"))
+                                    .selected_text(&cur_type)
+                                    .show_ui(ui, |ui| {
+                                        for &jt in JOINT_TYPES {
+                                            ui.selectable_value(&mut cur_type, jt.to_string(), jt);
+                                        }
+                                    });
+                                if cur_type != joint.joint_type {
+                                    joint.joint_type = cur_type;
+                                    joint_changed = true;
+                                }
+                            }
+                            ui.end_row();
+                            ui.label("Parent:");
+                            ui.label(&joint.parent_link);
+                            ui.end_row();
+                            ui.label("Child:");
+                            ui.label(&joint.child_link);
+                            ui.end_row();
 
-                                    let kp_enabled = matches!(
+                            ui.label("Axis:");
+                            ui.horizontal(|ui| {
+                                joint_changed |= ui
+                                    .add(
+                                        egui::DragValue::new(&mut joint.axis.x)
+                                            .speed(0.01)
+                                            .prefix("x:"),
+                                    )
+                                    .changed();
+                                joint_changed |= ui
+                                    .add(
+                                        egui::DragValue::new(&mut joint.axis.y)
+                                            .speed(0.01)
+                                            .prefix("y:"),
+                                    )
+                                    .changed();
+                                joint_changed |= ui
+                                    .add(
+                                        egui::DragValue::new(&mut joint.axis.z)
+                                            .speed(0.01)
+                                            .prefix("z:"),
+                                    )
+                                    .changed();
+                            });
+                            ui.end_row();
+
+                            ui.label("Lower (rad):");
+                            joint_changed |= ui
+                                .add(egui::DragValue::new(&mut joint.lower).speed(0.01))
+                                .changed();
+                            ui.end_row();
+                            ui.label("Upper (rad):");
+                            joint_changed |= ui
+                                .add(egui::DragValue::new(&mut joint.upper).speed(0.01))
+                                .changed();
+                            ui.end_row();
+                            ui.label("Effort (Nm):");
+                            joint_changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut joint.effort)
+                                        .speed(0.1)
+                                        .range(0.0..=f64::MAX),
+                                )
+                                .changed();
+                            ui.end_row();
+                            ui.label("Velocity (rad/s):");
+                            joint_changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut joint.velocity)
+                                        .speed(0.1)
+                                        .range(0.0..=f64::MAX),
+                                )
+                                .changed();
+                            ui.end_row();
+
+                            ui.label("Origin xyz:");
+                            ui.horizontal(|ui| {
+                                let t = &mut joint.origin.translation;
+                                joint_changed |= ui
+                                    .add(egui::DragValue::new(&mut t.x).speed(0.0001).prefix("x:"))
+                                    .changed();
+                                joint_changed |= ui
+                                    .add(egui::DragValue::new(&mut t.y).speed(0.0001).prefix("y:"))
+                                    .changed();
+                                joint_changed |= ui
+                                    .add(egui::DragValue::new(&mut t.z).speed(0.0001).prefix("z:"))
+                                    .changed();
+                            });
+                            ui.end_row();
+                        });
+
+                    // --- Actuator (control mode + gains) ---
+                    // Skip for fixed joints; they have no actuator.
+                    if joint.joint_type != "fixed" {
+                        ui.separator();
+                        egui::CollapsingHeader::new("Actuator")
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                egui::Grid::new(format!("actuator_props_{ji}"))
+                                    .striped(true)
+                                    .num_columns(2)
+                                    .show(ui, |ui| {
+                                        ui.label("Mode:");
+                                        let mut mode = joint.actuator_mode;
+                                        egui::ComboBox::from_id_salt(format!("actmode_{ji}"))
+                                            .selected_text(mode.label())
+                                            .show_ui(ui, |ui| {
+                                                for m in articara::rbd::model::ActuatorMode::ALL {
+                                                    ui.selectable_value(&mut mode, m, m.label());
+                                                }
+                                            });
+                                        if mode != joint.actuator_mode {
+                                            joint.actuator_mode = mode;
+                                            joint_changed = true;
+                                        }
+                                        ui.end_row();
+
+                                        let kp_enabled = matches!(
                                         joint.actuator_mode,
                                         articara::rbd::model::ActuatorMode::Position
                                             | articara::rbd::model::ActuatorMode::ComputedTorque
                                     );
-                                    let kv_enabled = matches!(
+                                        let kv_enabled = matches!(
                                         joint.actuator_mode,
                                         articara::rbd::model::ActuatorMode::Position
                                             | articara::rbd::model::ActuatorMode::Velocity
                                             | articara::rbd::model::ActuatorMode::ComputedTorque
                                     );
 
-                                    ui.label("Kp (N·m/rad):");
-                                    ui.add_enabled_ui(kp_enabled, |ui| {
-                                        joint_changed |= ui
-                                            .add(
-                                                egui::DragValue::new(&mut joint.actuator_kp)
-                                                    .speed(1.0)
-                                                    .range(0.0..=f64::MAX)
-                                                    .fixed_decimals(1),
-                                            )
-                                            .changed();
-                                    });
-                                    ui.end_row();
+                                        ui.label("Kp (N·m/rad):");
+                                        ui.add_enabled_ui(kp_enabled, |ui| {
+                                            joint_changed |= ui
+                                                .add(
+                                                    egui::DragValue::new(&mut joint.actuator_kp)
+                                                        .speed(1.0)
+                                                        .range(0.0..=f64::MAX)
+                                                        .fixed_decimals(1),
+                                                )
+                                                .changed();
+                                        });
+                                        ui.end_row();
 
-                                    ui.label("Kv (N·m·s/rad):");
-                                    ui.add_enabled_ui(kv_enabled, |ui| {
-                                        joint_changed |= ui
-                                            .add(
-                                                egui::DragValue::new(&mut joint.actuator_kv)
-                                                    .speed(0.1)
-                                                    .range(0.0..=f64::MAX)
-                                                    .fixed_decimals(2),
-                                            )
-                                            .changed();
-                                    });
-                                    ui.end_row();
+                                        ui.label("Kv (N·m·s/rad):");
+                                        ui.add_enabled_ui(kv_enabled, |ui| {
+                                            joint_changed |= ui
+                                                .add(
+                                                    egui::DragValue::new(&mut joint.actuator_kv)
+                                                        .speed(0.1)
+                                                        .range(0.0..=f64::MAX)
+                                                        .fixed_decimals(2),
+                                                )
+                                                .changed();
+                                        });
+                                        ui.end_row();
 
-                                    ui.label("Armature (kg·m²):")
-                                        .on_hover_text(
+                                        ui.label("Armature (kg·m²):").on_hover_text(
                                             "Reflected rotor inertia. \
                                              Mapped to MuJoCo `<joint armature>`. \
                                              Acts as a low-pass filter for the PD \
@@ -1025,52 +1068,51 @@ impl ArticaraApp {
                                              Real motors with gearboxes typically \
                                              have 1e-4 .. 1e-2 kg·m².",
                                         );
-                                    joint_changed |= ui
-                                        .add(
-                                            egui::DragValue::new(&mut joint.armature)
-                                                .speed(0.0001)
-                                                .range(0.0..=f64::MAX)
-                                                .fixed_decimals(5),
-                                        )
-                                        .changed();
-                                    ui.end_row();
+                                        joint_changed |= ui
+                                            .add(
+                                                egui::DragValue::new(&mut joint.armature)
+                                                    .speed(0.0001)
+                                                    .range(0.0..=f64::MAX)
+                                                    .fixed_decimals(5),
+                                            )
+                                            .changed();
+                                        ui.end_row();
 
-                                    ui.label("Damping (N·m·s/rad):")
-                                        .on_hover_text(
+                                        ui.label("Damping (N·m·s/rad):").on_hover_text(
                                             "Passive joint damping. Mapped to \
                                              MuJoCo `<joint damping>`. Models bearing \
                                              friction and dissipates impact energy.",
                                         );
-                                    joint_changed |= ui
-                                        .add(
-                                            egui::DragValue::new(&mut joint.joint_damping)
-                                                .speed(0.01)
-                                                .range(0.0..=f64::MAX)
-                                                .fixed_decimals(3),
-                                        )
-                                        .changed();
-                                    ui.end_row();
-                                });
-                            ui.label(
-                                egui::RichText::new(
-                                    "Kp / Kv apply on the next physics tick. \
+                                        joint_changed |= ui
+                                            .add(
+                                                egui::DragValue::new(&mut joint.joint_damping)
+                                                    .speed(0.01)
+                                                    .range(0.0..=f64::MAX)
+                                                    .fixed_decimals(3),
+                                            )
+                                            .changed();
+                                        ui.end_row();
+                                    });
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Kp / Kv apply on the next physics tick. \
                                      Armature and damping are baked into the \
                                      MJCF at sim start, so changing them \
                                      requires Stop → Play. Position holds the \
                                      user-set pose; Velocity / Torque modes \
                                      take their target via the API.",
-                                )
-                                .small()
-                                .weak(),
-                            );
-                        });
-                }
+                                    )
+                                    .small()
+                                    .weak(),
+                                );
+                            });
+                    }
 
-                if joint_changed {
-                    self.needs_upload = true;
-                    model.rebuild_misarta_model();
-                    props_edit_desc = Some(format!("Edit joint '{}'", joint_name));
-                }
+                    if joint_changed {
+                        self.needs_upload = true;
+                        model.rebuild_misarta_model();
+                        props_edit_desc = Some(format!("Edit joint '{}'", joint_name));
+                    }
                 }); // close joint-properties CollapsingHeader::show closure
             }
 
@@ -1096,11 +1138,9 @@ impl ArticaraApp {
                         return;
                     }
                     ui.label(
-                        egui::RichText::new(
-                            "Edits apply on the next physics tick.",
-                        )
-                        .small()
-                        .weak(),
+                        egui::RichText::new("Edits apply on the next physics tick.")
+                            .small()
+                            .weak(),
                     );
                     egui::ScrollArea::vertical()
                         .max_height(280.0)
@@ -1115,18 +1155,11 @@ impl ArticaraApp {
                                     ui.strong("Kp");
                                     ui.strong("Kv");
                                     ui.strong("Arm")
-                                        .on_hover_text(
-                                            "Armature (rotor inertia, kg·m²)",
-                                        );
-                                    ui.strong("Damp")
-                                        .on_hover_text(
-                                            "Joint damping (N·m·s/rad)",
-                                        );
+                                        .on_hover_text("Armature (rotor inertia, kg·m²)");
+                                    ui.strong("Damp").on_hover_text("Joint damping (N·m·s/rad)");
                                     ui.end_row();
-                                    for joint in model
-                                        .joints
-                                        .iter_mut()
-                                        .filter(|j| j.joint_type != "fixed")
+                                    for joint in
+                                        model.joints.iter_mut().filter(|j| j.joint_type != "fixed")
                                     {
                                         ui.label(
                                             egui::RichText::new(&joint.name).monospace().small(),
@@ -1134,19 +1167,19 @@ impl ArticaraApp {
 
                                         let mut mode = joint.actuator_mode;
                                         egui::ComboBox::from_id_salt(format!(
-                                            "all_actmode_{}", joint.name
+                                            "all_actmode_{}",
+                                            joint.name
                                         ))
                                         .selected_text(mode.label())
                                         .width(72.0)
-                                        .show_ui(ui, |ui| {
-                                            for m in
-                                                articara::rbd::model::ActuatorMode::ALL
-                                            {
-                                                ui.selectable_value(
-                                                    &mut mode, m, m.label(),
-                                                );
-                                            }
-                                        });
+                                        .show_ui(
+                                            ui,
+                                            |ui| {
+                                                for m in articara::rbd::model::ActuatorMode::ALL {
+                                                    ui.selectable_value(&mut mode, m, m.label());
+                                                }
+                                            },
+                                        );
                                         if mode != joint.actuator_mode {
                                             joint.actuator_mode = mode;
                                             actuators_changed = true;
@@ -1164,45 +1197,37 @@ impl ArticaraApp {
                                         ui.add_enabled_ui(kp_enabled, |ui| {
                                             actuators_changed |= ui
                                                 .add(
-                                                    egui::DragValue::new(
-                                                        &mut joint.actuator_kp,
-                                                    )
-                                                    .speed(1.0)
-                                                    .range(0.0..=f64::MAX)
-                                                    .fixed_decimals(1),
+                                                    egui::DragValue::new(&mut joint.actuator_kp)
+                                                        .speed(1.0)
+                                                        .range(0.0..=f64::MAX)
+                                                        .fixed_decimals(1),
                                                 )
                                                 .changed();
                                         });
                                         ui.add_enabled_ui(kv_enabled, |ui| {
                                             actuators_changed |= ui
                                                 .add(
-                                                    egui::DragValue::new(
-                                                        &mut joint.actuator_kv,
-                                                    )
-                                                    .speed(0.1)
-                                                    .range(0.0..=f64::MAX)
-                                                    .fixed_decimals(2),
+                                                    egui::DragValue::new(&mut joint.actuator_kv)
+                                                        .speed(0.1)
+                                                        .range(0.0..=f64::MAX)
+                                                        .fixed_decimals(2),
                                                 )
                                                 .changed();
                                         });
                                         actuators_changed |= ui
                                             .add(
-                                                egui::DragValue::new(
-                                                    &mut joint.armature,
-                                                )
-                                                .speed(0.0001)
-                                                .range(0.0..=f64::MAX)
-                                                .fixed_decimals(5),
+                                                egui::DragValue::new(&mut joint.armature)
+                                                    .speed(0.0001)
+                                                    .range(0.0..=f64::MAX)
+                                                    .fixed_decimals(5),
                                             )
                                             .changed();
                                         actuators_changed |= ui
                                             .add(
-                                                egui::DragValue::new(
-                                                    &mut joint.joint_damping,
-                                                )
-                                                .speed(0.01)
-                                                .range(0.0..=f64::MAX)
-                                                .fixed_decimals(3),
+                                                egui::DragValue::new(&mut joint.joint_damping)
+                                                    .speed(0.01)
+                                                    .range(0.0..=f64::MAX)
+                                                    .fixed_decimals(3),
                                             )
                                             .changed();
                                         ui.end_row();
@@ -1299,8 +1324,7 @@ impl ArticaraApp {
                 ui.horizontal(|ui| {
                     ui.label("Name:");
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.pose_save_name)
-                            .desired_width(120.0),
+                        egui::TextEdit::singleline(&mut self.pose_save_name).desired_width(120.0),
                     );
                     if ui
                         .add_enabled(
@@ -1321,9 +1345,7 @@ impl ArticaraApp {
                             self.pose_transition_duration as f64,
                             self.pose_transition_kind,
                         );
-                        if let Some(existing) =
-                            model.poses.iter_mut().find(|p| p.name == name)
-                        {
+                        if let Some(existing) = model.poses.iter_mut().find(|p| p.name == name) {
                             existing.angles = snap.angles;
                             // Refresh the saved defaults too so re-save acts
                             // as "update everything about this pose".
@@ -1353,11 +1375,7 @@ impl ArticaraApp {
                         .selected_text(self.pose_transition_kind.label())
                         .show_ui(ui, |ui| {
                             for k in misarta::trajectory::InterpolationKind::ALL {
-                                ui.selectable_value(
-                                    &mut self.pose_transition_kind,
-                                    k,
-                                    k.label(),
-                                );
+                                ui.selectable_value(&mut self.pose_transition_kind, k, k.label());
                             }
                         });
                 });
@@ -1392,9 +1410,7 @@ impl ArticaraApp {
                         for (i, pose) in model.poses.iter_mut().enumerate() {
                             // Row 1: name + action buttons
                             ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(&pose.name).monospace(),
-                                );
+                                ui.label(egui::RichText::new(&pose.name).monospace());
                                 if ui
                                     .small_button("📐")
                                     .on_hover_text(
@@ -1406,10 +1422,7 @@ impl ArticaraApp {
                                     to_apply_static = Some(i);
                                 }
                                 if ui
-                                    .add_enabled(
-                                        mj_active,
-                                        egui::Button::new("▶ Play"),
-                                    )
+                                    .add_enabled(mj_active, egui::Button::new("▶ Play"))
                                     .on_hover_text(if mj_active {
                                         "Smoothly transition the running MuJoCo \
                                          sim to this pose using the row's duration / curve."
@@ -1450,12 +1463,8 @@ impl ArticaraApp {
                                 egui::ComboBox::from_id_salt(format!("pose_kind_{i}"))
                                     .selected_text(k.label())
                                     .show_ui(ui, |ui| {
-                                        for kk in
-                                            misarta::trajectory::InterpolationKind::ALL
-                                        {
-                                            ui.selectable_value(
-                                                &mut k, kk, kk.label(),
-                                            );
+                                        for kk in misarta::trajectory::InterpolationKind::ALL {
+                                            ui.selectable_value(&mut k, kk, kk.label());
                                         }
                                     });
                                 if k != pose.kind {
@@ -1464,8 +1473,7 @@ impl ArticaraApp {
                                 }
                             });
                             if row_changed {
-                                edit_desc =
-                                    Some(format!("Edit pose defaults '{}'", pose.name));
+                                edit_desc = Some(format!("Edit pose defaults '{}'", pose.name));
                             }
                         }
                     });
@@ -1553,13 +1561,10 @@ impl ArticaraApp {
                     let name = self.sequence_save_name.trim().to_string();
                     if ui
                         .add_enabled(
-                            !name.is_empty()
-                                && !model.sequences.iter().any(|s| s.name == name),
+                            !name.is_empty() && !model.sequences.iter().any(|s| s.name == name),
                             egui::Button::new("📌 New"),
                         )
-                        .on_hover_text(
-                            "Create an empty sequence; add pose steps below.",
-                        )
+                        .on_hover_text("Create an empty sequence; add pose steps below.")
                         .clicked()
                     {
                         model.sequences.push(articara::rbd::model::Sequence {
@@ -1588,8 +1593,7 @@ impl ArticaraApp {
                 let mj_active = false;
 
                 // Pose dropdown candidates — needed by every step's edit row.
-                let pose_names: Vec<String> =
-                    model.poses.iter().map(|p| p.name.clone()).collect();
+                let pose_names: Vec<String> = model.poses.iter().map(|p| p.name.clone()).collect();
 
                 let mut to_remove_seq: Option<usize> = None;
                 let mut to_play_seq: Option<usize> = None;
@@ -1597,55 +1601,51 @@ impl ArticaraApp {
                 let mut to_add_step: Option<(usize, String)> = None;
 
                 for (si, seq) in model.sequences.iter_mut().enumerate() {
-                    egui::CollapsingHeader::new(format!("▶ {}  ({} steps)", seq.name, seq.steps.len()))
-                        .id_salt(format!("seq_{si}"))
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .add_enabled(
-                                        mj_active && !seq.steps.is_empty(),
-                                        egui::Button::new("▶ Play"),
-                                    )
-                                    .on_hover_text(if mj_active {
-                                        "Replay the chained transitions in this sequence."
-                                    } else {
-                                        "Start MuJoCo first to enable playback."
-                                    })
-                                    .clicked()
-                                {
-                                    to_play_seq = Some(si);
-                                }
-                                if ui
-                                    .small_button("🗑")
-                                    .on_hover_text("Delete this sequence.")
-                                    .clicked()
-                                {
-                                    to_remove_seq = Some(si);
-                                }
-                            });
+                    egui::CollapsingHeader::new(format!(
+                        "▶ {}  ({} steps)",
+                        seq.name,
+                        seq.steps.len()
+                    ))
+                    .id_salt(format!("seq_{si}"))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    mj_active && !seq.steps.is_empty(),
+                                    egui::Button::new("▶ Play"),
+                                )
+                                .on_hover_text(if mj_active {
+                                    "Replay the chained transitions in this sequence."
+                                } else {
+                                    "Start MuJoCo first to enable playback."
+                                })
+                                .clicked()
+                            {
+                                to_play_seq = Some(si);
+                            }
+                            if ui
+                                .small_button("🗑")
+                                .on_hover_text("Delete this sequence.")
+                                .clicked()
+                            {
+                                to_remove_seq = Some(si);
+                            }
+                        });
 
-                            // Step list
-                            for (stepi, step) in seq.steps.iter_mut().enumerate() {
-                                let mut row_changed = false;
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(format!("{stepi}."))
-                                            .small().weak(),
-                                    );
-                                    // Pose name dropdown
-                                    egui::ComboBox::from_id_salt(format!(
-                                        "seqstep_pose_{si}_{stepi}"
-                                    ))
+                        // Step list
+                        for (stepi, step) in seq.steps.iter_mut().enumerate() {
+                            let mut row_changed = false;
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(format!("{stepi}.")).small().weak());
+                                // Pose name dropdown
+                                egui::ComboBox::from_id_salt(format!("seqstep_pose_{si}_{stepi}"))
                                     .selected_text(&step.pose_name)
                                     .width(120.0)
                                     .show_ui(ui, |ui| {
                                         for n in &pose_names {
                                             if ui
-                                                .selectable_label(
-                                                    &step.pose_name == n,
-                                                    n,
-                                                )
+                                                .selectable_label(&step.pose_name == n, n)
                                                 .clicked()
                                             {
                                                 step.pose_name = n.clone();
@@ -1653,90 +1653,76 @@ impl ArticaraApp {
                                             }
                                         }
                                     });
-                                    // Duration
-                                    if ui
-                                        .add(
-                                            egui::DragValue::new(&mut step.duration)
-                                                .speed(0.05)
-                                                .range(0.05..=30.0)
-                                                .fixed_decimals(2)
-                                                .suffix(" s"),
-                                        )
-                                        .changed()
-                                    {
-                                        row_changed = true;
-                                    }
-                                    // Curve
-                                    let mut k = step.kind;
-                                    egui::ComboBox::from_id_salt(format!(
-                                        "seqstep_kind_{si}_{stepi}"
-                                    ))
+                                // Duration
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut step.duration)
+                                            .speed(0.05)
+                                            .range(0.05..=30.0)
+                                            .fixed_decimals(2)
+                                            .suffix(" s"),
+                                    )
+                                    .changed()
+                                {
+                                    row_changed = true;
+                                }
+                                // Curve
+                                let mut k = step.kind;
+                                egui::ComboBox::from_id_salt(format!("seqstep_kind_{si}_{stepi}"))
                                     .selected_text(k.label())
                                     .show_ui(ui, |ui| {
-                                        for kk in
-                                            misarta::trajectory::InterpolationKind::ALL
-                                        {
-                                            ui.selectable_value(
-                                                &mut k, kk, kk.label(),
-                                            );
+                                        for kk in misarta::trajectory::InterpolationKind::ALL {
+                                            ui.selectable_value(&mut k, kk, kk.label());
                                         }
                                     });
-                                    if k != step.kind {
-                                        step.kind = k;
-                                        row_changed = true;
-                                    }
-                                    // Delete step
-                                    if ui
-                                        .small_button("🗑")
-                                        .on_hover_text("Remove this step.")
-                                        .clicked()
-                                    {
-                                        to_remove_step = Some((si, stepi));
-                                    }
-                                });
-                                if row_changed {
-                                    edit_desc = Some(format!(
-                                        "Edit sequence '{}' step {}",
-                                        seq.name, stepi
-                                    ));
+                                if k != step.kind {
+                                    step.kind = k;
+                                    row_changed = true;
                                 }
-                            }
-
-                            // Add-step row.
-                            ui.horizontal(|ui| {
-                                ui.label("    + Add:");
-                                let buf = self
-                                    .sequence_step_pose_buf
-                                    .entry(si)
-                                    .or_default();
-                                let label = if buf.is_empty() {
-                                    "(pick pose)".to_string()
-                                } else {
-                                    buf.clone()
-                                };
-                                egui::ComboBox::from_id_salt(format!("seqadd_pose_{si}"))
-                                    .selected_text(label)
-                                    .width(140.0)
-                                    .show_ui(ui, |ui| {
-                                        for n in &pose_names {
-                                            if ui.selectable_label(buf == n, n).clicked() {
-                                                *buf = n.clone();
-                                            }
-                                        }
-                                    });
+                                // Delete step
                                 if ui
-                                    .add_enabled(
-                                        !buf.is_empty(),
-                                        egui::Button::new("➕"),
-                                    )
-                                    .on_hover_text("Append this pose as a new step.")
+                                    .small_button("🗑")
+                                    .on_hover_text("Remove this step.")
                                     .clicked()
                                 {
-                                    to_add_step = Some((si, buf.clone()));
-                                    *buf = String::new();
+                                    to_remove_step = Some((si, stepi));
                                 }
                             });
+                            if row_changed {
+                                edit_desc =
+                                    Some(format!("Edit sequence '{}' step {}", seq.name, stepi));
+                            }
+                        }
+
+                        // Add-step row.
+                        ui.horizontal(|ui| {
+                            ui.label("    + Add:");
+                            let buf = self.sequence_step_pose_buf.entry(si).or_default();
+                            let label = if buf.is_empty() {
+                                "(pick pose)".to_string()
+                            } else {
+                                buf.clone()
+                            };
+                            egui::ComboBox::from_id_salt(format!("seqadd_pose_{si}"))
+                                .selected_text(label)
+                                .width(140.0)
+                                .show_ui(ui, |ui| {
+                                    for n in &pose_names {
+                                        if ui.selectable_label(buf == n, n).clicked() {
+                                            *buf = n.clone();
+                                        }
+                                    }
+                                });
+                            if ui
+                                .add_enabled(!buf.is_empty(), egui::Button::new("➕"))
+                                .on_hover_text("Append this pose as a new step.")
+                                .clicked()
+                            {
+                                to_add_step = Some((si, buf.clone()));
+                                *buf = String::new();
+                            }
                         });
+                    });
                 }
 
                 if let Some(i) = to_remove_seq {
@@ -1776,14 +1762,11 @@ impl ArticaraApp {
                         if let Some(ref mut sim) = self.sim.mujoco_sim {
                             sim.start_sequence(anim, seq_name.clone());
                             self.sim.dynamics_sim_paused = false;
-                            self.status_message =
-                                format!("Playing sequence '{}'", seq_name);
+                            self.status_message = format!("Playing sequence '{}'", seq_name);
                         }
                     } else {
-                        self.status_message = format!(
-                            "Sequence '{}' references missing pose(s)",
-                            seq_name
-                        );
+                        self.status_message =
+                            format!("Sequence '{}' references missing pose(s)", seq_name);
                     }
                 }
 
@@ -1820,7 +1803,8 @@ impl ArticaraApp {
         // Snapshot the active pulses for the status display so we don't
         // borrow `self.sim.mujoco_sim` while UI closures hold `&mut self`.
         let active_pulses: Vec<(String, f64, f64)> = self
-            .sim.mujoco_sim
+            .sim
+            .mujoco_sim
             .as_ref()
             .map(|s| {
                 s.external_force_pulses()
@@ -1836,7 +1820,8 @@ impl ArticaraApp {
                 ui.horizontal(|ui| {
                     ui.label("Link:");
                     let label = self
-                        .sim.ext_force_link
+                        .sim
+                        .ext_force_link
                         .as_deref()
                         .unwrap_or("(select)")
                         .to_string();
@@ -1844,8 +1829,7 @@ impl ArticaraApp {
                         .selected_text(label)
                         .show_ui(ui, |ui| {
                             for name in &link_names {
-                                let sel =
-                                    self.sim.ext_force_link.as_deref() == Some(name.as_str());
+                                let sel = self.sim.ext_force_link.as_deref() == Some(name.as_str());
                                 if ui.selectable_label(sel, name).clicked() {
                                     self.sim.ext_force_link = Some(name.clone());
                                 }
@@ -1856,30 +1840,42 @@ impl ArticaraApp {
                     ui.label("Force (N):");
                     ui.add(
                         egui::DragValue::new(&mut self.sim.ext_force_value[0])
-                            .speed(0.1).fixed_decimals(2).prefix("x:"),
+                            .speed(0.1)
+                            .fixed_decimals(2)
+                            .prefix("x:"),
                     );
                     ui.add(
                         egui::DragValue::new(&mut self.sim.ext_force_value[1])
-                            .speed(0.1).fixed_decimals(2).prefix("y:"),
+                            .speed(0.1)
+                            .fixed_decimals(2)
+                            .prefix("y:"),
                     );
                     ui.add(
                         egui::DragValue::new(&mut self.sim.ext_force_value[2])
-                            .speed(0.1).fixed_decimals(2).prefix("z:"),
+                            .speed(0.1)
+                            .fixed_decimals(2)
+                            .prefix("z:"),
                     );
                 });
                 ui.horizontal(|ui| {
                     ui.label("Torque (N·m):");
                     ui.add(
                         egui::DragValue::new(&mut self.sim.ext_torque_value[0])
-                            .speed(0.05).fixed_decimals(2).prefix("x:"),
+                            .speed(0.05)
+                            .fixed_decimals(2)
+                            .prefix("x:"),
                     );
                     ui.add(
                         egui::DragValue::new(&mut self.sim.ext_torque_value[1])
-                            .speed(0.05).fixed_decimals(2).prefix("y:"),
+                            .speed(0.05)
+                            .fixed_decimals(2)
+                            .prefix("y:"),
                     );
                     ui.add(
                         egui::DragValue::new(&mut self.sim.ext_torque_value[2])
-                            .speed(0.05).fixed_decimals(2).prefix("z:"),
+                            .speed(0.05)
+                            .fixed_decimals(2)
+                            .prefix("z:"),
                     );
                 });
                 ui.horizontal(|ui| {
@@ -1898,10 +1894,7 @@ impl ArticaraApp {
                         && (self.sim.ext_force_value.iter().any(|&v| v != 0.0)
                             || self.sim.ext_torque_value.iter().any(|&v| v != 0.0));
                     if ui
-                        .add_enabled(
-                            can_apply,
-                            egui::Button::new("⚡ Apply pulse"),
-                        )
+                        .add_enabled(can_apply, egui::Button::new("⚡ Apply pulse"))
                         .on_hover_text(if mj_active {
                             "Apply the wrench (world frame) to the selected link \
                              for the specified duration."
@@ -1910,9 +1903,10 @@ impl ArticaraApp {
                         })
                         .clicked()
                     {
-                        if let (Some(link), Some(ref mut sim)) =
-                            (self.sim.ext_force_link.clone(), self.sim.mujoco_sim.as_mut())
-                        {
+                        if let (Some(link), Some(ref mut sim)) = (
+                            self.sim.ext_force_link.clone(),
+                            self.sim.mujoco_sim.as_mut(),
+                        ) {
                             let f = [
                                 self.sim.ext_force_value[0] as f64,
                                 self.sim.ext_force_value[1] as f64,
@@ -1924,7 +1918,10 @@ impl ArticaraApp {
                                 self.sim.ext_torque_value[2] as f64,
                             ];
                             sim.apply_external_force(
-                                &link, f, t, self.sim.ext_force_duration as f64,
+                                &link,
+                                f,
+                                t,
+                                self.sim.ext_force_duration as f64,
                             );
                             self.sim.dynamics_sim_paused = false;
                             self.status_message = format!(
@@ -1941,29 +1938,24 @@ impl ArticaraApp {
                         .on_hover_text("Stop any pulse currently on this link.")
                         .clicked()
                     {
-                        if let (Some(link), Some(ref mut sim)) =
-                            (self.sim.ext_force_link.clone(), self.sim.mujoco_sim.as_mut())
-                        {
+                        if let (Some(link), Some(ref mut sim)) = (
+                            self.sim.ext_force_link.clone(),
+                            self.sim.mujoco_sim.as_mut(),
+                        ) {
                             sim.cancel_external_force(&link);
                         }
                     }
                 });
                 if !active_pulses.is_empty() {
                     ui.separator();
-                    ui.label(
-                        egui::RichText::new("Active pulses").small().strong(),
-                    );
+                    ui.label(egui::RichText::new("Active pulses").small().strong());
                     for (name, elapsed, duration) in &active_pulses {
-                        let frac =
-                            ((duration - elapsed).max(0.0) / duration.max(1e-9))
-                                as f32;
-                        ui.add(
-                            egui::ProgressBar::new(frac).text(format!(
-                                "{} — {:.2}s left",
-                                name,
-                                (duration - elapsed).max(0.0),
-                            )),
-                        );
+                        let frac = ((duration - elapsed).max(0.0) / duration.max(1e-9)) as f32;
+                        ui.add(egui::ProgressBar::new(frac).text(format!(
+                            "{} — {:.2}s left",
+                            name,
+                            (duration - elapsed).max(0.0),
+                        )));
                     }
                 }
             });
@@ -1983,32 +1975,30 @@ impl ArticaraApp {
         let mut reset_clicked = false;
         // Snapshot peaks + joint metadata up-front so we don't borrow
         // self.sim.mujoco_sim while building the UI.
-        let peaks_snapshot: Vec<(String, String, f64, f64, f64, f64)> = match (
-            self.model.as_ref(),
-            self.sim.mujoco_sim.as_ref(),
-        ) {
-            (Some(model), Some(sim)) => {
-                let peaks = sim.peaks();
-                model
-                    .joints
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, j)| j.joint_type != "fixed")
-                    .map(|(i, j)| {
-                        let p = peaks.get(i).cloned().unwrap_or_default();
-                        (
-                            j.name.clone(),
-                            j.joint_type.clone(),
-                            p.tau_abs,
-                            p.tau_signed,
-                            p.qvel_abs,
-                            p.qvel_signed,
-                        )
-                    })
-                    .collect()
-            }
-            _ => Vec::new(),
-        };
+        let peaks_snapshot: Vec<(String, String, f64, f64, f64, f64)> =
+            match (self.model.as_ref(), self.sim.mujoco_sim.as_ref()) {
+                (Some(model), Some(sim)) => {
+                    let peaks = sim.peaks();
+                    model
+                        .joints
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, j)| j.joint_type != "fixed")
+                        .map(|(i, j)| {
+                            let p = peaks.get(i).cloned().unwrap_or_default();
+                            (
+                                j.name.clone(),
+                                j.joint_type.clone(),
+                                p.tau_abs,
+                                p.tau_signed,
+                                p.qvel_abs,
+                                p.qvel_signed,
+                            )
+                        })
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
 
         egui::CollapsingHeader::new("📊 Joint Peaks")
             .default_open(false)
@@ -2141,7 +2131,9 @@ impl ArticaraApp {
                     })
                     .collect();
                 v.sort_by(|a, b| {
-                    b.mag.partial_cmp(&a.mag).unwrap_or(std::cmp::Ordering::Equal)
+                    b.mag
+                        .partial_cmp(&a.mag)
+                        .unwrap_or(std::cmp::Ordering::Equal)
                 });
                 v
             }
@@ -2169,7 +2161,9 @@ impl ArticaraApp {
             }
             if rows.is_empty() {
                 ui.label(
-                    egui::RichText::new("(no contacts this tick)").small().weak(),
+                    egui::RichText::new("(no contacts this tick)")
+                        .small()
+                        .weak(),
                 );
                 return;
             }
@@ -2210,9 +2204,7 @@ impl ArticaraApp {
                                         .monospace()
                                         .small(),
                                 );
-                                ui.label(
-                                    egui::RichText::new(pair).monospace().small(),
-                                );
+                                ui.label(egui::RichText::new(pair).monospace().small());
                                 if r.is_self
                                     && ui
                                         .small_button("🛡 Exclude")
@@ -2224,10 +2216,7 @@ impl ArticaraApp {
                                         )
                                         .clicked()
                                 {
-                                    pending_exclude = Some((
-                                        r.body1.clone(),
-                                        r.body2.clone(),
-                                    ));
+                                    pending_exclude = Some((r.body1.clone(), r.body2.clone()));
                                 }
                                 ui.end_row();
                             }
@@ -2301,11 +2290,7 @@ impl ArticaraApp {
                         ),
                     );
                 });
-                ui.label(
-                    egui::RichText::new(&issue.message)
-                        .small()
-                        .weak(),
-                );
+                ui.label(egui::RichText::new(&issue.message).small().weak());
                 ui.add_space(4.0);
             }
             ui.separator();
@@ -2540,8 +2525,11 @@ impl ArticaraApp {
                     RobotFormat::Misa => " (full state preserved — no sidecar needed)",
                     _ => "",
                 };
-                self.export_message =
-                    format!("✔ Exported {} to {}{suffix}", fmt.label(), written.display());
+                self.export_message = format!(
+                    "✔ Exported {} to {}{suffix}",
+                    fmt.label(),
+                    written.display()
+                );
             }
             Err(e) => {
                 self.export_message = format!("⚠ {} export failed: {e}", fmt.label());
@@ -2571,14 +2559,17 @@ impl ArticaraApp {
         }
         // Display mode overrides
         let keys_to_update: Vec<_> = self
-            .view.link_display_modes
+            .view
+            .link_display_modes
             .keys()
             .filter(|(name, _)| name == old)
             .cloned()
             .collect();
         for key in keys_to_update {
             if let Some(mode) = self.view.link_display_modes.remove(&key) {
-                self.view.link_display_modes.insert((new.to_string(), key.1), mode);
+                self.view
+                    .link_display_modes
+                    .insert((new.to_string(), key.1), mode);
             }
         }
         // IK root link

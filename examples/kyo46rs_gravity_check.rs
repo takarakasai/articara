@@ -21,9 +21,8 @@ fn main() {
     use articara::robot::RobotModel;
     use articara::wbc_pipeline::build_floating_base_model;
 
-    let urdf_path = std::path::Path::new(
-        "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
-    );
+    let urdf_path =
+        std::path::Path::new("/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf");
     let mut robot = RobotModel::from_urdf(urdf_path).expect("load kyo46rs.urdf");
 
     let crouch = [
@@ -72,7 +71,9 @@ fn main() {
 
     let (model, a2m, _link_to_idx) = build_floating_base_model(&robot);
 
-    let body_pos = sim.body_world_position(&robot.root_link).expect("torso xpos");
+    let body_pos = sim
+        .body_world_position(&robot.root_link)
+        .expect("torso xpos");
     let body_quat = sim
         .body_world_orientation(&robot.root_link)
         .expect("torso xquat");
@@ -143,7 +144,10 @@ fn main() {
     println!("\nworst per-joint ratio: {worst_name} = {worst_ratio:.3} (1.0 = perfect agreement)");
 
     let total_mass: f64 = robot.links.iter().map(|l| l.inertial.mass).sum();
-    println!("\nrobot total mass = {total_mass:.3} kg, m*g = {:.3} N", total_mass * 9.81);
+    println!(
+        "\nrobot total mass = {total_mass:.3} kg, m*g = {:.3} N",
+        total_mass * 9.81
+    );
     println!("misarta base lin_z g(q)[5] = {:+.4} N", g_mis[5]);
     println!("mujoco  base lin_z qfrc_bias[2] = {:+.4} N", bias_mj[2]);
 }

@@ -164,11 +164,7 @@ pub fn compute_payload_capacity(
     Some(PayloadResult {
         max_mass_kg: cap.max_mass_kg,
         limiting_joint: limiting,
-        ee_position: na::Point3::new(
-            ee_pos.x as f64,
-            ee_pos.y as f64,
-            ee_pos.z as f64,
-        ),
+        ee_position: na::Point3::new(ee_pos.x as f64, ee_pos.y as f64, ee_pos.z as f64),
     })
 }
 
@@ -182,15 +178,10 @@ pub fn compute_payload_capacity(
 /// Run full static analysis.
 ///
 /// `ee_link` — optional end-effector for payload analysis.
-pub fn analyze(
-    model: &RobotModel,
-    ee_link: Option<&str>,
-) -> StaticAnalysis {
+pub fn analyze(model: &RobotModel, ee_link: Option<&str>) -> StaticAnalysis {
     let mut joint_torques = compute_gravity_torques(model);
 
-    let payload = ee_link.and_then(|ee| {
-        compute_payload_capacity(model, ee, &mut joint_torques)
-    });
+    let payload = ee_link.and_then(|ee| compute_payload_capacity(model, ee, &mut joint_torques));
 
     StaticAnalysis {
         joint_torques,
@@ -253,11 +244,7 @@ impl DynSim {
 // ===== Payload sim construction =====
 
 /// Create a payload simulation.
-pub fn start_payload_sim(
-    model: &RobotModel,
-    ee_link: &str,
-    speed: f64,
-) -> Option<PayloadSim> {
+pub fn start_payload_sim(model: &RobotModel, ee_link: &str, speed: f64) -> Option<PayloadSim> {
     // Run a static analysis to find max payload
     let mut torques = compute_gravity_torques(model);
     let payload = compute_payload_capacity(model, ee_link, &mut torques)?;
@@ -282,11 +269,7 @@ pub fn start_payload_sim(
 }
 
 /// Step the payload simulation by `dt`. Returns `true` while still running.
-pub fn step_payload_sim(
-    sim: &mut PayloadSim,
-    model: &RobotModel,
-    ee_link: &str,
-) -> bool {
+pub fn step_payload_sim(sim: &mut PayloadSim, model: &RobotModel, ee_link: &str) -> bool {
     match sim.phase {
         PayloadPhase::Ramping => {
             let t_frac = (sim.phase_time / sim.ramp_duration).clamp(0.0, 1.0);
@@ -315,11 +298,7 @@ pub fn step_payload_sim(
     }
 }
 
-fn update_utilisation(
-    sim: &mut PayloadSim,
-    model: &RobotModel,
-    ee_link: &str,
-) {
+fn update_utilisation(sim: &mut PayloadSim, model: &RobotModel, ee_link: &str) {
     let mc = model.mc();
     let q = model.build_q();
     let limits = joint_limits(model);
@@ -382,16 +361,23 @@ mod tests {
         RobotModel::from_urdf(&path).unwrap()
     }
 
-
     #[test]
     fn rnea_bias_matches_gravity_torques() {
         // Verify that RNEA bias (at zero velocity) matches compute_gravity_torques.
         let mut model = load_namiashi();
         // Set a crouch pose
         for j in &model.joints {
-            let ji = model.joints.iter().position(|jj| jj.name == j.name).unwrap();
-            if j.name.contains("thigh") { model.joint_positions[ji] = 0.8; }
-            if j.name.contains("calf")  { model.joint_positions[ji] = -1.5; }
+            let ji = model
+                .joints
+                .iter()
+                .position(|jj| jj.name == j.name)
+                .unwrap();
+            if j.name.contains("thigh") {
+                model.joint_positions[ji] = 0.8;
+            }
+            if j.name.contains("calf") {
+                model.joint_positions[ji] = -1.5;
+            }
         }
 
         let grav = compute_gravity_torques(&model);
@@ -405,12 +391,17 @@ mod tests {
             let rnea_val = h[col];
             let gt_val = gt.map(|t| t.gravity_torque).unwrap_or(0.0);
             let diff = (rnea_val - gt_val).abs();
-            eprintln!("  joint {:2} {:20}: rnea_h={:+.6} gt={:+.6} diff={:.6} effort={:.2}",
-                ji, model.joints[ji].name, rnea_val, gt_val, diff, model.joints[ji].effort);
-            assert!(diff < 0.1,
+            eprintln!(
+                "  joint {:2} {:20}: rnea_h={:+.6} gt={:+.6} diff={:.6} effort={:.2}",
+                ji, model.joints[ji].name, rnea_val, gt_val, diff, model.joints[ji].effort
+            );
+            assert!(
+                diff < 0.1,
                 "RNEA bias doesn't match gravity torque for {}: rnea={:.6}, gt={:.6}",
-                model.joints[ji].name, rnea_val, gt_val);
+                model.joints[ji].name,
+                rnea_val,
+                gt_val
+            );
         }
     }
-
 }

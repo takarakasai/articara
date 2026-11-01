@@ -37,8 +37,10 @@ mod test_isaac {
         assert!(script.contains("joint2"));
         assert!(script.contains("angular"));
         // fixed_joint should be skipped from drive configuration
-        assert!(!script.contains("# Joint: fixed_joint"),
-            "fixed_joint should be skipped in drive config");
+        assert!(
+            !script.contains("# Joint: fixed_joint"),
+            "fixed_joint should be skipped in drive config"
+        );
     }
 
     #[test]

@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 // ============================================================
 mod test_robot {
     use super::*;
-    use nalgebra as na;
     use articara::robot::*;
+    use nalgebra as na;
 
     #[test]
     fn load_fixture_urdf() {
@@ -30,7 +30,11 @@ mod test_robot {
     fn link_map_contains_all_links() {
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
         for link in &model.links {
-            assert!(model.link_map.contains_key(&link.name), "Missing link: {}", link.name);
+            assert!(
+                model.link_map.contains_key(&link.name),
+                "Missing link: {}",
+                link.name
+            );
         }
     }
 
@@ -39,7 +43,11 @@ mod test_robot {
         let model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
         let j1 = model.joints.iter().find(|j| j.name == "joint1").unwrap();
         assert_eq!(j1.joint_type, "revolute");
-        let jf = model.joints.iter().find(|j| j.name == "fixed_joint").unwrap();
+        let jf = model
+            .joints
+            .iter()
+            .find(|j| j.name == "fixed_joint")
+            .unwrap();
         assert_eq!(jf.joint_type, "fixed");
     }
 
@@ -153,7 +161,11 @@ mod test_robot {
     fn compute_transforms_with_joint_rotation() {
         let mut model = RobotModel::from_urdf(&fixture_urdf()).unwrap();
         // Set joint1 to 90 degrees (pi/2) around Y axis
-        let ji = model.joints.iter().position(|j| j.name == "joint1").unwrap();
+        let ji = model
+            .joints
+            .iter()
+            .position(|j| j.name == "joint1")
+            .unwrap();
         model.joint_positions[ji] = std::f64::consts::FRAC_PI_2;
 
         let tf = model.compute_transforms();
@@ -315,7 +327,10 @@ mod test_robot {
     fn resolve_package_path_basic() {
         let pkg = Path::new("/opt/ros/packages/my_robot");
         let result = resolve_package_path("package://my_robot/meshes/foo.stl", pkg);
-        assert_eq!(result, PathBuf::from("/opt/ros/packages/my_robot/meshes/foo.stl"));
+        assert_eq!(
+            result,
+            PathBuf::from("/opt/ros/packages/my_robot/meshes/foo.stl")
+        );
     }
 
     #[test]
@@ -386,10 +401,17 @@ mod test_robot {
         assert_eq!(model.root_link, "trunk");
 
         // Verify meshes were loaded (trunk should have non-empty visual vertices)
-        let trunk_inertia = model.links.iter().find(|l| l.name == "trunk_interia").unwrap();
+        let trunk_inertia = model
+            .links
+            .iter()
+            .find(|l| l.name == "trunk_interia")
+            .unwrap();
         assert!(!trunk_inertia.visuals.is_empty());
         if let GeomData::Mesh { mesh, filename, .. } = &trunk_inertia.visuals[0].geometry {
-            assert!(mesh.num_triangles() > 0, "trunk mesh vertices should not be empty");
+            assert!(
+                mesh.num_triangles() > 0,
+                "trunk mesh vertices should not be empty"
+            );
             assert!(filename.as_ref().unwrap().contains("trunk.stl"));
         } else {
             panic!("Expected trunk_interia to have mesh geometry");
@@ -399,26 +421,39 @@ mod test_robot {
     #[test]
     fn namiashi_transforms_reasonable() {
         let path = namiashi_urdf();
-        if !path.exists() { return; }
+        if !path.exists() {
+            return;
+        }
         let model = RobotModel::from_urdf(&path).unwrap();
         let tf = model.compute_transforms();
 
         // All transforms should exist for all links
         for link in &model.links {
-            assert!(tf.contains_key(&link.name), "Missing transform for {}", link.name);
+            assert!(
+                tf.contains_key(&link.name),
+                "Missing transform for {}",
+                link.name
+            );
         }
 
         // All link positions should be within reasonable bounds (robot is ~0.5m)
         for (name, iso) in &tf {
             let pos = iso.translation.vector;
-            assert!(pos.norm() < 2.0, "Link {} has unreasonable position: {:?}", name, pos);
+            assert!(
+                pos.norm() < 2.0,
+                "Link {} has unreasonable position: {:?}",
+                name,
+                pos
+            );
         }
     }
 
     #[test]
     fn namiashi_pick_link() {
         let path = namiashi_urdf();
-        if !path.exists() { return; }
+        if !path.exists() {
+            return;
+        }
         let model = RobotModel::from_urdf(&path).unwrap();
         let tf = model.compute_transforms();
 
@@ -426,6 +461,9 @@ mod test_robot {
         let origin = na::Point3::new(0.0, 0.0, 1.0_f32);
         let dir = na::Vector3::new(0.0, 0.0, -1.0);
         let hit = model.pick_link(&origin, &dir, &tf);
-        assert!(hit.is_some(), "Ray should hit a link when shooting at robot");
+        assert!(
+            hit.is_some(),
+            "Ray should hit a link when shooting at robot"
+        );
     }
 }

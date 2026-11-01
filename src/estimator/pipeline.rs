@@ -158,9 +158,8 @@ impl LkfPipeline {
         }
 
         // ── Contact flag from force threshold ────────────────────
-        let contact_flag: [bool; 4] = std::array::from_fn(|i| {
-            contact_force_z_per_foot[i] > self.contact_force_threshold_n
-        });
+        let contact_flag: [bool; 4] =
+            std::array::from_fn(|i| contact_force_z_per_foot[i] > self.contact_force_threshold_n);
 
         let inputs = LinearKalmanInputs {
             dt,

@@ -19,9 +19,8 @@ use std::collections::HashMap;
 
 use nalgebra as na;
 use quadruped_gait::{
-    AnyGaitController as InnerController, ControllerOutput, GaitConfig,
-    GaitGenerator as _, GaitMode, KinematicsConfig,
-    LegId, LegKinematics, VelocityCmd,
+    AnyGaitController as InnerController, ControllerOutput, GaitConfig, GaitGenerator as _,
+    GaitMode, KinematicsConfig, LegId, LegKinematics, VelocityCmd,
 };
 
 use crate::rbd::model::RobotModel;
@@ -116,9 +115,7 @@ fn joint_axis_in_body(
 /// `joint_axis_in_body`. Auto-detect needs the rest-pose axes specifically
 /// (the URDF declares them at q = 0), so this helper temporarily zeroes
 /// the cache.
-fn compute_transforms_at_rest(
-    model: &RobotModel,
-) -> HashMap<String, na::Isometry3<f32>> {
+fn compute_transforms_at_rest(model: &RobotModel) -> HashMap<String, na::Isometry3<f32>> {
     let mut clone = model.clone();
     for q in &mut clone.joint_positions {
         *q = 0.0;
@@ -305,9 +302,7 @@ fn slot_of(id: LegId) -> usize {
 /// URDF; for hand-tuned setups call
 /// [`GaitController::set_srbd_mpc_config`] directly with custom
 /// values.
-pub fn auto_detect_srbd_mpc_config(
-    model: &RobotModel,
-) -> quadruped_gait::SrbdMpcConfig {
+pub fn auto_detect_srbd_mpc_config(model: &RobotModel) -> quadruped_gait::SrbdMpcConfig {
     let mut cfg = quadruped_gait::SrbdMpcConfig::default();
 
     let mass_total: f64 = model.links.iter().map(|l| l.inertial.mass).sum();
@@ -338,15 +333,12 @@ pub fn auto_detect_srbd_mpc_config(
     // If a caller wants the composite, it should set it explicitly via
     // `GaitController::set_srbd_mpc_config` for that robot rather than
     // changing what every robot gets.
-    let heaviest = model
-        .links
-        .iter()
-        .max_by(|a, b| {
-            a.inertial
-                .mass
-                .partial_cmp(&b.inertial.mass)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+    let heaviest = model.links.iter().max_by(|a, b| {
+        a.inertial
+            .mass
+            .partial_cmp(&b.inertial.mass)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     if let Some(link) = heaviest {
         let i = &link.inertial;
         let diag = na::Vector3::new(i.ixx, i.iyy, i.izz);
@@ -597,9 +589,7 @@ impl GaitController {
             let ik_to_urdf_factor = [1.0, -1.0, -1.0];
             for (k, name) in names.iter().enumerate() {
                 let idx = *model.joint_map.get(name.as_str()).ok_or_else(|| {
-                    format!(
-                        "joint {name:?} (referenced by gait kinematics) not in model"
-                    )
+                    format!("joint {name:?} (referenced by gait kinematics) not in model")
                 })?;
                 joint_indices[slot][k] = idx;
                 let comp = axis_components[k](model.joints[idx].axis) as f64;
@@ -622,9 +612,10 @@ impl GaitController {
         // mode at build time.
         inner.set_srbd_mpc_config(auto_detect_srbd_mpc_config(model));
         inner.set_centroidal_mpc_config(auto_detect_centroidal_mpc_config(model));
-        inner.set_full_centroidal_mpc_config(
-            auto_detect_full_centroidal_mpc_config(model, inner.kinematics()),
-        );
+        inner.set_full_centroidal_mpc_config(auto_detect_full_centroidal_mpc_config(
+            model,
+            inner.kinematics(),
+        ));
         // Re-apply the gait config so flags that the FullCentroidal
         // controller mirrors onto its MPC config (A3 friction_cone_soft,
         // B3 warm_start, A1 mpc_optimized_footstep / q_foot_xy_world)
@@ -713,10 +704,7 @@ impl GaitController {
     /// robot's actual mass should call this once after `build` — the
     /// default 9 kg / Cheetah-3 inertia is wildly off for most robots
     /// and produces grossly over- or under-scaled τ_ff.
-    pub fn set_srbd_mpc_config(
-        &mut self,
-        cfg: quadruped_gait::SrbdMpcConfig,
-    ) {
+    pub fn set_srbd_mpc_config(&mut self, cfg: quadruped_gait::SrbdMpcConfig) {
         self.inner.set_srbd_mpc_config(cfg);
     }
 
@@ -757,10 +745,7 @@ impl GaitController {
     /// `goalToTargetTrajectories` analogue from legged_control.
     /// `set_velocity_cmd` implicitly clears the goal. No-op outside
     /// FullCentroidal mode.
-    pub fn set_goal_pose_world(
-        &mut self,
-        goal: quadruped_gait::GoalPoseWorld,
-    ) {
+    pub fn set_goal_pose_world(&mut self, goal: quadruped_gait::GoalPoseWorld) {
         self.inner.set_goal_pose_world(goal);
     }
     pub fn clear_goal_pose(&mut self) {
@@ -955,43 +940,31 @@ impl GaitController {
     }
 
     /// Read the active SRBD MPC config. `None` when running CHAMP.
-    pub fn srbd_mpc_config(
-        &self,
-    ) -> Option<&quadruped_gait::SrbdMpcConfig> {
+    pub fn srbd_mpc_config(&self) -> Option<&quadruped_gait::SrbdMpcConfig> {
         self.inner.srbd_mpc_config()
     }
 
     /// Override the centroidal-SRBD MPC config. No-op outside
     /// [`quadruped_gait::GaitMode::CentroidalSrbd`].
-    pub fn set_centroidal_mpc_config(
-        &mut self,
-        cfg: quadruped_gait::CentroidalMpcConfig,
-    ) {
+    pub fn set_centroidal_mpc_config(&mut self, cfg: quadruped_gait::CentroidalMpcConfig) {
         self.inner.set_centroidal_mpc_config(cfg);
     }
 
     /// Read the active centroidal MPC config. `None` outside
     /// [`quadruped_gait::GaitMode::CentroidalSrbd`].
-    pub fn centroidal_mpc_config(
-        &self,
-    ) -> Option<&quadruped_gait::CentroidalMpcConfig> {
+    pub fn centroidal_mpc_config(&self) -> Option<&quadruped_gait::CentroidalMpcConfig> {
         self.inner.centroidal_mpc_config()
     }
 
     /// Override the 24-state full-centroidal MPC config. No-op outside
     /// [`quadruped_gait::GaitMode::FullCentroidal`].
-    pub fn set_full_centroidal_mpc_config(
-        &mut self,
-        cfg: quadruped_gait::FullCentroidalMpcConfig,
-    ) {
+    pub fn set_full_centroidal_mpc_config(&mut self, cfg: quadruped_gait::FullCentroidalMpcConfig) {
         self.inner.set_full_centroidal_mpc_config(cfg);
     }
 
     /// Read the active full-centroidal MPC config. `None` outside
     /// [`quadruped_gait::GaitMode::FullCentroidal`].
-    pub fn full_centroidal_mpc_config(
-        &self,
-    ) -> Option<&quadruped_gait::FullCentroidalMpcConfig> {
+    pub fn full_centroidal_mpc_config(&self) -> Option<&quadruped_gait::FullCentroidalMpcConfig> {
         self.inner.full_centroidal_mpc_config()
     }
 
@@ -1115,10 +1088,7 @@ impl GaitController {
     ///   through the leg Jacobian (`-J^T·f_GRF`) for stance feet; for
     ///   swing feet and for CHAMP mode τ_ff is zero. Sign-corrected per
     ///   joint to match URDF axes.
-    pub fn tick(
-        &mut self,
-        dt: f64,
-    ) -> (ControllerOutput, [(usize, f64); 12], [(usize, f64); 12]) {
+    pub fn tick(&mut self, dt: f64) -> (ControllerOutput, [(usize, f64); 12], [(usize, f64); 12]) {
         let out = self.inner.tick(dt);
         // Stance-leg torque feedforward from the MPC, in IK convention.
         // [None; 4] when running CHAMP or before the first MPC solve.
@@ -1226,7 +1196,10 @@ mod tests {
             &["RL_foot", "RL_calf"],
             &["RR_foot", "RR_calf"],
         ];
-        for (slot, leg) in [LegId::FL, LegId::FR, LegId::RL, LegId::RR].iter().enumerate() {
+        for (slot, leg) in [LegId::FL, LegId::FR, LegId::RL, LegId::RR]
+            .iter()
+            .enumerate()
+        {
             let mut found = false;
             for name in candidates[slot] {
                 if model.link_map.contains_key(*name) {
@@ -1237,8 +1210,10 @@ mod tests {
                         assert!(kin.lower_leg_m > 0.05);
                         assert!(kin.lower_leg_m < 0.5);
                         found = true;
-                        eprintln!("{leg:?} from {name}: L1={:.3}, L2={:.3}, hip_offset={:?}",
-                            kin.upper_leg_m, kin.lower_leg_m, kin.hip_offset);
+                        eprintln!(
+                            "{leg:?} from {name}: L1={:.3}, L2={:.3}, hip_offset={:?}",
+                            kin.upper_leg_m, kin.lower_leg_m, kin.hip_offset
+                        );
                         break;
                     } else {
                         eprintln!("{leg:?} {name}: detect failed: {:?}", result.err());
@@ -1246,7 +1221,10 @@ mod tests {
                 }
             }
             if !found {
-                eprintln!("no working foot link for {leg:?}; tried {:?}", candidates[slot]);
+                eprintln!(
+                    "no working foot link for {leg:?}; tried {:?}",
+                    candidates[slot]
+                );
             }
         }
     }
@@ -1313,7 +1291,9 @@ mod tests {
         let kin = auto_detect_kinematics_config(&model, &foot_links).unwrap();
         let cfg = quadruped_gait::GaitConfig::trot();
         let gc = GaitController::build(&model, kin, cfg, GaitMode::Mpc).unwrap();
-        let active = gc.srbd_mpc_config().expect("MPC mode should expose the config");
+        let active = gc
+            .srbd_mpc_config()
+            .expect("MPC mode should expose the config");
         let expected = auto_detect_srbd_mpc_config(&model);
         assert!(
             (active.mass_kg - expected.mass_kg).abs() < 1e-9,

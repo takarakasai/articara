@@ -170,7 +170,9 @@ mod test_mjcf {
 
         // The clean diagonal links must still use diaginertia.
         let clean_li = (0..model.links.len()).find(|&i| i != li).unwrap();
-        let _ = LinkData { ..model.links[clean_li].clone() }; // suppress unused warning if any
+        let _ = LinkData {
+            ..model.links[clean_li].clone()
+        }; // suppress unused warning if any
         assert!(
             xml.contains("diaginertia="),
             "diagonal-only links should still emit diaginertia"
@@ -218,7 +220,10 @@ mod test_mjcf {
             "export_urdf should succeed for .misa source — the loader \
              must NOT try to re-read a .misa as URDF",
         );
-        assert!(xml.contains("<robot"), "exported XML should contain <robot>");
+        assert!(
+            xml.contains("<robot"),
+            "exported XML should contain <robot>"
+        );
         assert!(
             xml.contains(&format!("<link name=\"{}\"", model.root_link)),
             "exported URDF should contain the root link"
@@ -240,13 +245,10 @@ mod test_mjcf {
         model.links[0].visuals.push(VisualData {
             origin: nalgebra::Isometry3::identity(),
             geometry: GeomData::Mesh {
-                mesh: std::sync::Arc::new(
-                    misarta::mesh::MeshData::from_flat_vertices_f32(&[
-                    0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-                    1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-                    0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
-                ]),
-                ),
+                mesh: std::sync::Arc::new(misarta::mesh::MeshData::from_flat_vertices_f32(&[
+                    0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0,
+                    0.0, 1.0,
+                ])),
                 filename: Some("/abs/path/example.obj".into()),
                 scale: Some([0.001, 0.001, 0.001]),
             },
@@ -255,13 +257,10 @@ mod test_mjcf {
         model.links[0].collisions.push(CollisionData {
             origin: nalgebra::Isometry3::identity(),
             geometry: GeomData::Mesh {
-                mesh: std::sync::Arc::new(
-                    misarta::mesh::MeshData::from_flat_vertices_f32(&[
-                    0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-                    1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-                    0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
-                ]),
-                ),
+                mesh: std::sync::Arc::new(misarta::mesh::MeshData::from_flat_vertices_f32(&[
+                    0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0,
+                    0.0, 1.0,
+                ])),
                 filename: Some("/abs/path/example.obj".into()),
                 scale: Some([0.001, 0.001, 0.001]),
             },
@@ -279,9 +278,9 @@ mod test_mjcf {
         model2.links[0].visuals.push(VisualData {
             origin: nalgebra::Isometry3::identity(),
             geometry: GeomData::Mesh {
-                mesh: std::sync::Arc::new(
-                    misarta::mesh::MeshData::from_flat_vertices_f32(&vec![0.0; 18]),
-                ),
+                mesh: std::sync::Arc::new(misarta::mesh::MeshData::from_flat_vertices_f32(
+                    &vec![0.0; 18],
+                )),
                 filename: Some("/abs/unit.obj".into()),
                 scale: None,
             },
@@ -322,7 +321,8 @@ mod test_mjcf {
         assert!(
             xml.contains("<contact>") && (xml.contains(&needle_a) || xml.contains(&needle_b)),
             "MJCF must emit an <exclude> for parent={:?} child={:?}.\n{xml}",
-            any_joint.parent_link, any_joint.child_link
+            any_joint.parent_link,
+            any_joint.child_link
         );
     }
 
@@ -335,9 +335,9 @@ mod test_mjcf {
     /// `clearance - epsilon` above the ground plane.
     #[test]
     fn mjcf_auto_lift_clears_foot_sphere() {
-        use articara::rbd::model::{CollisionData, VisualData, GeomData};
+        use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions, export_mjcf_with_options};
+        use articara::rbd::model::{CollisionData, GeomData, VisualData};
         use articara::robot::RobotModel;
-        use articara::mjcf::{export_mjcf_with_options, MjcfExportOptions, GroundPlaneCfg};
 
         // Build a tiny model: 1 link with a sphere visual (and matching
         // collision) offset 0.5 m below the root, sphere radius 0.022 m.
@@ -456,10 +456,18 @@ mod test_mjcf {
             .collect();
         assert_eq!(qs.len(), 4, "quat should have 4 components, got {qs:?}");
         let half_sqrt = 0.5_f64.sqrt();
-        assert!((qs[0] - half_sqrt).abs() < 1e-4, "quat.w {} != {half_sqrt}", qs[0]);
+        assert!(
+            (qs[0] - half_sqrt).abs() < 1e-4,
+            "quat.w {} != {half_sqrt}",
+            qs[0]
+        );
         assert!(qs[1].abs() < 1e-4, "quat.x {} should be ~0", qs[1]);
         assert!(qs[2].abs() < 1e-4, "quat.y {} should be ~0", qs[2]);
-        assert!((qs[3] - half_sqrt).abs() < 1e-4, "quat.z {} != {half_sqrt}", qs[3]);
+        assert!(
+            (qs[3] - half_sqrt).abs() < 1e-4,
+            "quat.z {} != {half_sqrt}",
+            qs[3]
+        );
     }
 
     /// Regression: MJCF `<default class>` inheritance must be applied at
@@ -532,28 +540,52 @@ mod test_mjcf {
         let calf = by_name("calf_j");
 
         // abduction inherits robot.joint then overrides axis + range.
-        assert!((hip.axis.x - 1.0).abs() < 1e-9, "hip.axis.x = {}", hip.axis.x);
+        assert!(
+            (hip.axis.x - 1.0).abs() < 1e-9,
+            "hip.axis.x = {}",
+            hip.axis.x
+        );
         assert!(hip.axis.y.abs() < 1e-9, "hip.axis.y = {}", hip.axis.y);
-        assert!((hip.lower - (-1.0)).abs() < 1e-9, "hip.lower = {}", hip.lower);
+        assert!(
+            (hip.lower - (-1.0)).abs() < 1e-9,
+            "hip.lower = {}",
+            hip.lower
+        );
         assert!((hip.upper - 1.0).abs() < 1e-9, "hip.upper = {}", hip.upper);
         // Damping / armature stay inherited from `robot`.
         assert!((hip.joint_damping - 2.0).abs() < 1e-9);
         assert!((hip.armature - 0.01).abs() < 1e-9);
 
         // No explicit class → inherits childclass="robot".
-        assert!((thigh.axis.y - 1.0).abs() < 1e-9, "thigh.axis.y = {}", thigh.axis.y);
+        assert!(
+            (thigh.axis.y - 1.0).abs() < 1e-9,
+            "thigh.axis.y = {}",
+            thigh.axis.y
+        );
         assert!(thigh.axis.x.abs() < 1e-9);
 
         // `knee` keeps robot's Y axis (no override) but overrides range.
         assert!((calf.axis.y - 1.0).abs() < 1e-9);
-        assert!((calf.lower - (-2.7)).abs() < 1e-9, "calf.lower = {}", calf.lower);
-        assert!((calf.upper - (-0.8)).abs() < 1e-9, "calf.upper = {}", calf.upper);
+        assert!(
+            (calf.lower - (-2.7)).abs() < 1e-9,
+            "calf.lower = {}",
+            calf.lower
+        );
+        assert!(
+            (calf.upper - (-0.8)).abs() < 1e-9,
+            "calf.upper = {}",
+            calf.upper
+        );
 
         // Actuators: all <motor> → Torque, effort from class-inherited ctrlrange.
         assert_eq!(hip.actuator_mode, ActuatorMode::Torque);
         assert_eq!(thigh.actuator_mode, ActuatorMode::Torque);
         assert_eq!(calf.actuator_mode, ActuatorMode::Torque);
-        assert!((hip.effort - 25.0).abs() < 1e-9, "hip.effort = {}", hip.effort);
+        assert!(
+            (hip.effort - 25.0).abs() < 1e-9,
+            "hip.effort = {}",
+            hip.effort
+        );
         assert!((thigh.effort - 25.0).abs() < 1e-9);
         assert!(
             (calf.effort - 45.0).abs() < 1e-9,
@@ -616,11 +648,7 @@ mod test_mjcf {
             "expected exactly one visual on the root body"
         );
         match &root.visuals[0].geometry {
-            GeomData::Mesh {
-                mesh,
-                filename,
-                ..
-            } => {
+            GeomData::Mesh { mesh, filename, .. } => {
                 let vertices = mesh.to_flat_vertices_f32();
                 // meshdir prefix must be baked into the stored URI so the
                 // exporter (which joins this against `model.source_path`'s
@@ -647,9 +675,7 @@ mod test_mjcf {
                     vertices.len()
                 );
             }
-            _ => panic!(
-                "geom should be a Mesh (inherited type from class=\"visual\")"
-            ),
+            _ => panic!("geom should be a Mesh (inherited type from class=\"visual\")"),
         }
 
         // End-to-end: re-export the imported model through
@@ -658,7 +684,11 @@ mod test_mjcf {
         // points at a real file. This is the regression for the user-
         // observed "Failed to load MuJoCo model" error.
         let geom = &root.visuals[0].geometry;
-        let GeomData::Mesh { filename: Some(uri), .. } = geom else {
+        let GeomData::Mesh {
+            filename: Some(uri),
+            ..
+        } = geom
+        else {
             unreachable!("checked above");
         };
         let resolved = articara::mesh_paths::resolve_source(uri, &model)

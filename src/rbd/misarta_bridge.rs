@@ -6,14 +6,14 @@
 //! pure data types and tree navigation stay readable on their own; the
 //! `impl RobotModel` blocks here extend the same type.
 
-use nalgebra as na;
 use na::Matrix3;
+use nalgebra as na;
 use std::collections::HashMap;
 
-use misarta::joint::JointType;
-use misarta::model::{LinkInertia, ModelBuilder};
 use misarta::geometry::{GeometryModel, GeometryObject, GeometryShape};
+use misarta::joint::JointType;
 use misarta::mesh::MeshData;
+use misarta::model::{LinkInertia, ModelBuilder};
 
 use super::model::*;
 
@@ -206,7 +206,9 @@ impl RobotModel {
 
     /// Get the cached misarta model. Panics if not built.
     pub fn mc(&self) -> &MisartaCache {
-        self.misarta_cache.as_ref().expect("misarta model not built; call rebuild_misarta_model()")
+        self.misarta_cache
+            .as_ref()
+            .expect("misarta model not built; call rebuild_misarta_model()")
     }
 
     /// Build the q-vector from current joint positions.
@@ -314,13 +316,10 @@ impl RobotModel {
             let p_joint = misarta::se3::translation(&data.oMi[mi]);
             let qi = mc.model.q_idx[mi];
             let nq = mc.model.joints[mi].joint_type.nq();
-            let s_local =
-                mc.model.joints[mi].joint_type.motion_subspace(&q[qi..qi + nq]);
-            let s_ang = na::Vector3::new(
-                s_local[(0, 0)],
-                s_local[(1, 0)],
-                s_local[(2, 0)],
-            );
+            let s_local = mc.model.joints[mi]
+                .joint_type
+                .motion_subspace(&q[qi..qi + nq]);
+            let s_ang = na::Vector3::new(s_local[(0, 0)], s_local[(1, 0)], s_local[(2, 0)]);
             let omega_root = r_joint * s_ang;
 
             let mut v_root = na::Vector3::zeros();
@@ -382,11 +381,7 @@ impl RobotModel {
             };
             if let Some(&Some(mi)) = mc.a2m.get(ji) {
                 let vi = mc.model.q_idx[mi];
-                let v = na::Vector3::new(
-                    full_jac[(3, vi)],
-                    full_jac[(4, vi)],
-                    full_jac[(5, vi)],
-                );
+                let v = na::Vector3::new(full_jac[(3, vi)], full_jac[(4, vi)], full_jac[(5, vi)]);
                 let v_world = r * v;
                 jac[(0, col)] = v_world[0];
                 jac[(1, col)] = v_world[1];
@@ -445,16 +440,20 @@ impl RobotModel {
         // Build task-space projection for 2-DoF screen plane
         let task_projection = screen_axes.map(|(cam_right, cam_up)| {
             let mut p = na::DMatrix::<f64>::zeros(2, 3);
-            p[(0, 0)] = cam_right.x; p[(0, 1)] = cam_right.y; p[(0, 2)] = cam_right.z;
-            p[(1, 0)] = cam_up.x;    p[(1, 1)] = cam_up.y;    p[(1, 2)] = cam_up.z;
+            p[(0, 0)] = cam_right.x;
+            p[(0, 1)] = cam_right.y;
+            p[(0, 2)] = cam_right.z;
+            p[(1, 0)] = cam_up.x;
+            p[(1, 1)] = cam_up.y;
+            p[(1, 2)] = cam_up.z;
             p
         });
 
         // Build misarta JointWeights
-        let misarta_weights = joint_weights.map(|w| {
-            misarta::ik::JointWeights {
-                weights: (0..n).map(|i| if i < w.len() { w[i].max(1e-6) } else { 1.0 }).collect(),
-            }
+        let misarta_weights = joint_weights.map(|w| misarta::ik::JointWeights {
+            weights: (0..n)
+                .map(|i| if i < w.len() { w[i].max(1e-6) } else { 1.0 })
+                .collect(),
         });
 
         let diff_config = misarta::ik::DiffIkConfig {
@@ -477,8 +476,12 @@ impl RobotModel {
             // Need pseudo-inverse for null-space projector
             let (jac, m) = if let Some((cam_right, cam_up)) = screen_axes {
                 let mut p = na::DMatrix::<f64>::zeros(2, 3);
-                p[(0, 0)] = cam_right.x; p[(0, 1)] = cam_right.y; p[(0, 2)] = cam_right.z;
-                p[(1, 0)] = cam_up.x;    p[(1, 1)] = cam_up.y;    p[(1, 2)] = cam_up.z;
+                p[(0, 0)] = cam_right.x;
+                p[(0, 1)] = cam_right.y;
+                p[(0, 2)] = cam_right.z;
+                p[(1, 0)] = cam_up.x;
+                p[(1, 1)] = cam_up.y;
+                p[(1, 2)] = cam_up.z;
                 (&p * &jac3, 2_usize)
             } else {
                 (jac3.clone(), 3_usize)
@@ -486,7 +489,9 @@ impl RobotModel {
 
             // Build W⁻¹ diagonal
             let w_inv: Option<Vec<f64>> = joint_weights.map(|w| {
-                (0..n).map(|i| 1.0 / (if i < w.len() { w[i] } else { 1.0 }).max(1e-6)).collect()
+                (0..n)
+                    .map(|i| 1.0 / (if i < w.len() { w[i] } else { 1.0 }).max(1e-6))
+                    .collect()
             });
 
             // Weighted JJᵀ
@@ -671,8 +676,7 @@ impl RobotModel {
 
                 // Error vector: [ω_err; v_err] (6D, Featherstone order)
                 let err = na::DVector::from_column_slice(&[
-                    rot_err.x, rot_err.y, rot_err.z,
-                    pos_err.x, pos_err.y, pos_err.z,
+                    rot_err.x, rot_err.y, rot_err.z, pos_err.x, pos_err.y, pos_err.z,
                 ]);
                 constraints.push(misarta::ik::DiffIkConstraint {
                     jacobian: jac6,
@@ -717,16 +721,20 @@ impl RobotModel {
         // Task projection for 2-DoF screen plane
         let task_projection = screen_axes.map(|(cam_right, cam_up)| {
             let mut p = na::DMatrix::<f64>::zeros(2, 3);
-            p[(0, 0)] = cam_right.x; p[(0, 1)] = cam_right.y; p[(0, 2)] = cam_right.z;
-            p[(1, 0)] = cam_up.x;    p[(1, 1)] = cam_up.y;    p[(1, 2)] = cam_up.z;
+            p[(0, 0)] = cam_right.x;
+            p[(0, 1)] = cam_right.y;
+            p[(0, 2)] = cam_right.z;
+            p[(1, 0)] = cam_up.x;
+            p[(1, 1)] = cam_up.y;
+            p[(1, 2)] = cam_up.z;
             p
         });
 
         // Full-nv joint weights
-        let misarta_weights = joint_weights_raw.map(|w| {
-            misarta::ik::JointWeights {
-                weights: (0..nv).map(|i| if i < w.len() { w[i].max(1e-6) } else { 1.0 }).collect(),
-            }
+        let misarta_weights = joint_weights_raw.map(|w| misarta::ik::JointWeights {
+            weights: (0..nv)
+                .map(|i| if i < w.len() { w[i].max(1e-6) } else { 1.0 })
+                .collect(),
         });
 
         let diff_config = misarta::ik::DiffIkConfig {
@@ -745,7 +753,11 @@ impl RobotModel {
         constraints.extend_from_slice(extra_constraints);
 
         let result = misarta::ik::differential_ik_step_with_constraints(
-            &jac_ee, &ee_v, &tgt_v, &constraints, &diff_config,
+            &jac_ee,
+            &ee_v,
+            &tgt_v,
+            &constraints,
+            &diff_config,
         );
 
         // Map full-nv deltas back to articara joint indices
@@ -830,7 +842,10 @@ impl RobotModel {
     /// Enforce mimic constraints on current joint positions.
     #[allow(dead_code)]
     pub fn enforce_mimic(&mut self) {
-        let mc = self.misarta_cache.as_ref().expect("misarta model not built");
+        let mc = self
+            .misarta_cache
+            .as_ref()
+            .expect("misarta model not built");
         if mc.model.mimic.is_empty() {
             return;
         }
@@ -856,8 +871,7 @@ impl RobotModel {
 // =========================================================================
 
 use misarta::constraint::{
-    ConstrainedIkConfig, ConstrainedIkResult, ConstraintModel,
-    RigidConstraint,
+    ConstrainedIkConfig, ConstrainedIkResult, ConstraintModel, RigidConstraint,
 };
 use misarta::frames::Frame;
 
@@ -891,11 +905,7 @@ impl RobotModel {
 
     /// Create a position-only (3D) constraint between two links.
     #[allow(dead_code)]
-    pub fn position_constraint(
-        &self,
-        link_a: &str,
-        link_b: &str,
-    ) -> Option<RigidConstraint<f64>> {
+    pub fn position_constraint(&self, link_a: &str, link_b: &str) -> Option<RigidConstraint<f64>> {
         let f1 = self.frame_for_link(link_a)?;
         let f2 = self.frame_for_link(link_b)?;
         Some(RigidConstraint::position(f1, f2))
@@ -903,11 +913,7 @@ impl RobotModel {
 
     /// Create a full-pose (6D) constraint between two links.
     #[allow(dead_code)]
-    pub fn pose_constraint(
-        &self,
-        link_a: &str,
-        link_b: &str,
-    ) -> Option<RigidConstraint<f64>> {
+    pub fn pose_constraint(&self, link_a: &str, link_b: &str) -> Option<RigidConstraint<f64>> {
         let f1 = self.frame_for_link(link_a)?;
         let f2 = self.frame_for_link(link_b)?;
         Some(RigidConstraint::pose(f1, f2))
@@ -981,10 +987,7 @@ impl RobotModel {
 
     /// Build [`DiffIkConstraint`]s from stored loop closures at the current
     /// configuration, suitable for single-step differential IK.
-    pub fn build_loop_diff_constraints(
-        &self,
-        weight: f64,
-    ) -> Vec<misarta::ik::DiffIkConstraint> {
+    pub fn build_loop_diff_constraints(&self, weight: f64) -> Vec<misarta::ik::DiffIkConstraint> {
         let cm = self.build_loop_constraint_model();
         if cm.is_empty() {
             return Vec::new();
@@ -1077,11 +1080,12 @@ impl RobotModel {
         // Persist per-link-pair collision overrides. Pairs are stored
         // alphabetically so the TOML stays diff-friendly.
         for cp in &self.collision_pairs {
-            cfg.collision_pair.push(misarta::config::CollisionPairConfig {
-                link_a: cp.link_a.clone(),
-                link_b: cp.link_b.clone(),
-                enabled: cp.enabled,
-            });
+            cfg.collision_pair
+                .push(misarta::config::CollisionPairConfig {
+                    link_a: cp.link_a.clone(),
+                    link_b: cp.link_b.clone(),
+                    enabled: cp.enabled,
+                });
         }
         // Persist named sequences.
         for seq in &self.sequences {
@@ -1184,8 +1188,7 @@ impl RobotModel {
         // tuning.
         for ac in &cfg.actuator {
             if let Some(&ji) = self.joint_map.get(&ac.joint_name) {
-                self.joints[ji].actuator_mode =
-                    actuator_mode_from_config(ac.mode);
+                self.joints[ji].actuator_mode = actuator_mode_from_config(ac.mode);
                 self.joints[ji].actuator_kp = ac.kp;
                 self.joints[ji].actuator_kv = ac.kv;
                 self.joints[ji].armature = ac.armature;
@@ -1397,13 +1400,26 @@ pub struct SidecarLoadReport {
 /// serialisation-friendly [`misarta::config::SensorKind`].
 fn sensor_kind_to_config(k: &SensorKind) -> misarta::config::SensorKind {
     match k {
-        SensorKind::Camera { fov, width, height, near, far } => {
-            misarta::config::SensorKind::Camera {
-                fov: *fov, width: *width, height: *height, near: *near, far: *far,
-            }
-        }
+        SensorKind::Camera {
+            fov,
+            width,
+            height,
+            near,
+            far,
+        } => misarta::config::SensorKind::Camera {
+            fov: *fov,
+            width: *width,
+            height: *height,
+            near: *near,
+            far: *far,
+        },
         SensorKind::Lidar {
-            range_min, range_max, h_fov, h_samples, v_fov, v_samples,
+            range_min,
+            range_max,
+            h_fov,
+            h_samples,
+            v_fov,
+            v_samples,
         } => misarta::config::SensorKind::Lidar {
             range_min: *range_min,
             range_max: *range_max,
@@ -1412,36 +1428,48 @@ fn sensor_kind_to_config(k: &SensorKind) -> misarta::config::SensorKind {
             v_fov: *v_fov,
             v_samples: *v_samples,
         },
-        SensorKind::Imu { gyro_noise, accel_noise } => {
-            misarta::config::SensorKind::Imu {
-                gyro_noise: *gyro_noise,
-                accel_noise: *accel_noise,
-            }
-        }
-        SensorKind::ForceTorque { joint } => {
-            misarta::config::SensorKind::ForceTorque { joint: joint.clone() }
-        }
-        SensorKind::Contact { partner } => {
-            misarta::config::SensorKind::Contact { partner: partner.clone() }
-        }
-        SensorKind::Generic { kind, params } => {
-            misarta::config::SensorKind::Generic {
-                kind: kind.clone(),
-                params: params.clone(),
-            }
-        }
+        SensorKind::Imu {
+            gyro_noise,
+            accel_noise,
+        } => misarta::config::SensorKind::Imu {
+            gyro_noise: *gyro_noise,
+            accel_noise: *accel_noise,
+        },
+        SensorKind::ForceTorque { joint } => misarta::config::SensorKind::ForceTorque {
+            joint: joint.clone(),
+        },
+        SensorKind::Contact { partner } => misarta::config::SensorKind::Contact {
+            partner: partner.clone(),
+        },
+        SensorKind::Generic { kind, params } => misarta::config::SensorKind::Generic {
+            kind: kind.clone(),
+            params: params.clone(),
+        },
     }
 }
 
 fn sensor_kind_from_config(k: &misarta::config::SensorKind) -> SensorKind {
     match k {
-        misarta::config::SensorKind::Camera { fov, width, height, near, far } => {
-            SensorKind::Camera {
-                fov: *fov, width: *width, height: *height, near: *near, far: *far,
-            }
-        }
+        misarta::config::SensorKind::Camera {
+            fov,
+            width,
+            height,
+            near,
+            far,
+        } => SensorKind::Camera {
+            fov: *fov,
+            width: *width,
+            height: *height,
+            near: *near,
+            far: *far,
+        },
         misarta::config::SensorKind::Lidar {
-            range_min, range_max, h_fov, h_samples, v_fov, v_samples,
+            range_min,
+            range_max,
+            h_fov,
+            h_samples,
+            v_fov,
+            v_samples,
         } => SensorKind::Lidar {
             range_min: *range_min,
             range_max: *range_max,
@@ -1450,24 +1478,23 @@ fn sensor_kind_from_config(k: &misarta::config::SensorKind) -> SensorKind {
             v_fov: *v_fov,
             v_samples: *v_samples,
         },
-        misarta::config::SensorKind::Imu { gyro_noise, accel_noise } => {
-            SensorKind::Imu {
-                gyro_noise: *gyro_noise,
-                accel_noise: *accel_noise,
-            }
-        }
-        misarta::config::SensorKind::ForceTorque { joint } => {
-            SensorKind::ForceTorque { joint: joint.clone() }
-        }
-        misarta::config::SensorKind::Contact { partner } => {
-            SensorKind::Contact { partner: partner.clone() }
-        }
-        misarta::config::SensorKind::Generic { kind, params } => {
-            SensorKind::Generic {
-                kind: kind.clone(),
-                params: params.clone(),
-            }
-        }
+        misarta::config::SensorKind::Imu {
+            gyro_noise,
+            accel_noise,
+        } => SensorKind::Imu {
+            gyro_noise: *gyro_noise,
+            accel_noise: *accel_noise,
+        },
+        misarta::config::SensorKind::ForceTorque { joint } => SensorKind::ForceTorque {
+            joint: joint.clone(),
+        },
+        misarta::config::SensorKind::Contact { partner } => SensorKind::Contact {
+            partner: partner.clone(),
+        },
+        misarta::config::SensorKind::Generic { kind, params } => SensorKind::Generic {
+            kind: kind.clone(),
+            params: params.clone(),
+        },
     }
 }
 
@@ -1540,9 +1567,7 @@ fn convert_link_inertia(link: &LinkData) -> LinkInertia<f64> {
     let r = rot.matrix().cast::<f64>();
 
     let i_com = Matrix3::new(
-        i.ixx, i.ixy, i.ixz,
-        i.ixy, i.iyy, i.iyz,
-        i.ixz, i.iyz, i.izz,
+        i.ixx, i.ixy, i.ixz, i.ixy, i.iyy, i.iyz, i.ixz, i.iyz, i.izz,
     );
     let rotational_inertia = &r * &i_com * r.transpose();
 
@@ -1577,30 +1602,40 @@ pub fn convert_geom_to_shape_with_mesh(
     geom: &GeomData,
 ) -> Option<(GeometryShape, Option<MeshData>)> {
     match geom {
-        GeomData::Box { hx, hy, hz } => {
-            Some((GeometryShape::Box {
+        GeomData::Box { hx, hy, hz } => Some((
+            GeometryShape::Box {
                 x: *hx as f64 * 2.0,
                 y: *hy as f64 * 2.0,
                 z: *hz as f64 * 2.0,
-            }, None))
-        }
-        GeomData::Sphere { radius } => {
-            Some((GeometryShape::Sphere {
+            },
+            None,
+        )),
+        GeomData::Sphere { radius } => Some((
+            GeometryShape::Sphere {
                 radius: *radius as f64,
-            }, None))
-        }
-        GeomData::Cylinder { radius, half_length } => {
-            Some((GeometryShape::Cylinder {
+            },
+            None,
+        )),
+        GeomData::Cylinder {
+            radius,
+            half_length,
+        } => Some((
+            GeometryShape::Cylinder {
                 radius: *radius as f64,
                 length: *half_length as f64 * 2.0,
-            }, None))
-        }
-        GeomData::Capsule { radius, half_length } => {
-            Some((GeometryShape::Capsule {
+            },
+            None,
+        )),
+        GeomData::Capsule {
+            radius,
+            half_length,
+        } => Some((
+            GeometryShape::Capsule {
                 radius: *radius as f64,
                 length: *half_length as f64 * 2.0,
-            }, None))
-        }
+            },
+            None,
+        )),
         GeomData::Mesh { mesh, scale, .. } => {
             if mesh.num_triangles() == 0 {
                 return None;
@@ -1611,10 +1646,13 @@ pub fn convert_geom_to_shape_with_mesh(
             } else {
                 mesh.scaled(&na::Vector3::new(s[0] as f64, s[1] as f64, s[2] as f64))
             };
-            Some((GeometryShape::Mesh {
-                scale: na::Vector3::new(1.0, 1.0, 1.0),
-                filename: String::new(),
-            }, Some(md)))
+            Some((
+                GeometryShape::Mesh {
+                    scale: na::Vector3::new(1.0, 1.0, 1.0),
+                    filename: String::new(),
+                },
+                Some(md),
+            ))
         }
     }
 }

@@ -72,14 +72,14 @@ impl Default for ScriptConsoleState {
 }
 
 // ── Terminal colour palette (VSCode Dark+ inspired) ─────────────────────
-const BG: egui::Color32 = egui::Color32::from_rgb(30, 30, 30);       // #1e1e1e
-const FG: egui::Color32 = egui::Color32::from_rgb(204, 204, 204);    // #cccccc
-const FG_INPUT: egui::Color32 = egui::Color32::from_rgb(86, 182, 194);  // #56b6c2 (cyan)
-const FG_ERROR: egui::Color32 = egui::Color32::from_rgb(244, 71, 71);   // #f44747
+const BG: egui::Color32 = egui::Color32::from_rgb(30, 30, 30); // #1e1e1e
+const FG: egui::Color32 = egui::Color32::from_rgb(204, 204, 204); // #cccccc
+const FG_INPUT: egui::Color32 = egui::Color32::from_rgb(86, 182, 194); // #56b6c2 (cyan)
+const FG_ERROR: egui::Color32 = egui::Color32::from_rgb(244, 71, 71); // #f44747
 const FG_SYSTEM: egui::Color32 = egui::Color32::from_rgb(106, 153, 85); // #6a9955 (green)
 const FG_PROMPT: egui::Color32 = egui::Color32::from_rgb(86, 182, 194); // cyan
 const FONT_SIZE: f32 = 13.0;
-const INPUT_BG: egui::Color32 = egui::Color32::from_rgb(37, 37, 38);   // slightly lighter
+const INPUT_BG: egui::Color32 = egui::Color32::from_rgb(37, 37, 38); // slightly lighter
 
 impl ArticaraApp {
     /// Draw the script console as a docked bottom panel (VSCode-terminal style).
@@ -162,9 +162,14 @@ impl ArticaraApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Close button (×)
                         if ui
-                            .add(egui::Button::new(
-                                egui::RichText::new("✕").color(FG).font(egui::FontId::proportional(12.0)),
-                            ).frame(false))
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("✕")
+                                        .color(FG)
+                                        .font(egui::FontId::proportional(12.0)),
+                                )
+                                .frame(false),
+                            )
                             .on_hover_text("Close")
                             .clicked()
                         {
@@ -173,9 +178,14 @@ impl ArticaraApp {
 
                         // Clear button (🗑)
                         if ui
-                            .add(egui::Button::new(
-                                egui::RichText::new("🗑").color(FG).font(egui::FontId::proportional(12.0)),
-                            ).frame(false))
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("🗑")
+                                        .color(FG)
+                                        .font(egui::FontId::proportional(12.0)),
+                                )
+                                .frame(false),
+                            )
                             .on_hover_text("Clear")
                             .clicked()
                         {
@@ -188,9 +198,14 @@ impl ArticaraApp {
                         // confirms, `pending_script_run` is populated and
                         // we read+eval it below in this same panel draw.
                         if ui
-                            .add(egui::Button::new(
-                                egui::RichText::new("📂").color(FG).font(egui::FontId::proportional(12.0)),
-                            ).frame(false))
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("📂")
+                                        .color(FG)
+                                        .font(egui::FontId::proportional(12.0)),
+                                )
+                                .frame(false),
+                            )
                             .on_hover_text("Run script from file (.rhai)")
                             .clicked()
                         {
@@ -299,31 +314,19 @@ impl ArticaraApp {
                                             .color(FG_PROMPT),
                                     );
                                     ui.label(
-                                        egui::RichText::new(s)
-                                            .font(mono.clone())
-                                            .color(FG_INPUT),
+                                        egui::RichText::new(s).font(mono.clone()).color(FG_INPUT),
                                     );
                                 });
                             }
                             ScriptLine::Output(s) => {
-                                ui.label(
-                                    egui::RichText::new(s)
-                                        .font(mono.clone())
-                                        .color(FG),
-                                );
+                                ui.label(egui::RichText::new(s).font(mono.clone()).color(FG));
                             }
                             ScriptLine::Error(s) => {
-                                ui.label(
-                                    egui::RichText::new(s)
-                                        .font(mono.clone())
-                                        .color(FG_ERROR),
-                                );
+                                ui.label(egui::RichText::new(s).font(mono.clone()).color(FG_ERROR));
                             }
                             ScriptLine::System(s) => {
                                 ui.label(
-                                    egui::RichText::new(s)
-                                        .font(mono.clone())
-                                        .color(FG_SYSTEM),
+                                    egui::RichText::new(s).font(mono.clone()).color(FG_SYSTEM),
                                 );
                             }
                         }
@@ -346,11 +349,7 @@ impl ArticaraApp {
                     let mut submit = false;
 
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("❯")
-                                .font(mono.clone())
-                                .color(FG_PROMPT),
-                        );
+                        ui.label(egui::RichText::new("❯").font(mono.clone()).color(FG_PROMPT));
 
                         let input_id = ui.id().with("term_input");
                         let re = ui.add(
@@ -373,21 +372,18 @@ impl ArticaraApp {
                         }
 
                         // Enter → submit (detect key press while widget has focus)
-                        if re.has_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        {
+                        if re.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             submit = true;
                         }
 
                         // Tab → completion
-                        if re.has_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Tab))
-                        {
+                        if re.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Tab)) {
                             #[cfg(feature = "scripting")]
                             if let Some(eng) = &self.script.engine {
                                 let input = &self.script.input;
                                 // Extract the token being typed (last word-like fragment)
-                                let token_start = input.rfind(|c: char| !c.is_alphanumeric() && c != '_')
+                                let token_start = input
+                                    .rfind(|c: char| !c.is_alphanumeric() && c != '_')
                                     .map(|i| i + 1)
                                     .unwrap_or(0);
                                 let prefix = &input[token_start..];
@@ -415,7 +411,9 @@ impl ArticaraApp {
                                         }
                                         self.script.tab_candidates = matches;
                                         // Show candidates in output
-                                        let display = self.script.tab_candidates
+                                        let display = self
+                                            .script
+                                            .tab_candidates
                                             .chunks(6)
                                             .map(|row| row.join("  "))
                                             .collect::<Vec<_>>()

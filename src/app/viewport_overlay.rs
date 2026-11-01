@@ -95,10 +95,7 @@ impl ArticaraApp {
         ];
 
         for (i, (mode, tooltip)) in modes.iter().enumerate() {
-            let btn_pos = egui::pos2(
-                toolbar_x + i as f32 * (icon_size.x + 4.0),
-                toolbar_y,
-            );
+            let btn_pos = egui::pos2(toolbar_x + i as f32 * (icon_size.x + 4.0), toolbar_y);
             let btn_rect = egui::Rect::from_min_size(btn_pos, icon_size);
             let is_active = self.interaction_mode == *mode;
 
@@ -164,10 +161,7 @@ impl ArticaraApp {
             let small_size = egui::vec2(28.0, 28.0);
 
             for (i, target) in OffsetTarget::ALL.iter().enumerate() {
-                let btn_pos = egui::pos2(
-                    toolbar_x + i as f32 * (small_size.x + 3.0),
-                    row2_y,
-                );
+                let btn_pos = egui::pos2(toolbar_x + i as f32 * (small_size.x + 3.0), row2_y);
                 let btn_rect = egui::Rect::from_min_size(btn_pos, small_size);
                 let is_active = self.offset_target == *target;
 
@@ -241,10 +235,7 @@ impl ArticaraApp {
                 ]
             };
             for (i, (op, icon, label)) in gizmo_ops.iter().enumerate() {
-                let btn_pos = egui::pos2(
-                    toolbar_x + i as f32 * (small_size.x + 3.0),
-                    row3_y,
-                );
+                let btn_pos = egui::pos2(toolbar_x + i as f32 * (small_size.x + 3.0), row3_y);
                 let btn_rect = egui::Rect::from_min_size(btn_pos, small_size);
                 let is_active = self.gizmo_op == *op;
 
@@ -319,29 +310,16 @@ impl ArticaraApp {
 
         let pivot = egui::pos2(c.x - 2.0, c.y + 1.0);
         let arm1_start = egui::pos2(c.x - 11.0, c.y - 8.0);
-        painter.line_segment(
-            [arm1_start, pivot],
-            egui::Stroke::new(3.0, icon_color),
-        );
+        painter.line_segment([arm1_start, pivot], egui::Stroke::new(3.0, icon_color));
 
         let ghost_end = egui::pos2(pivot.x + 10.0, pivot.y + 3.0);
-        painter.line_segment(
-            [pivot, ghost_end],
-            egui::Stroke::new(2.5, ghost_color),
-        );
+        painter.line_segment([pivot, ghost_end], egui::Stroke::new(2.5, ghost_color));
 
         let arm2_end = egui::pos2(pivot.x + 8.0, pivot.y - 7.0);
-        painter.line_segment(
-            [pivot, arm2_end],
-            egui::Stroke::new(3.0, icon_color),
-        );
+        painter.line_segment([pivot, arm2_end], egui::Stroke::new(3.0, icon_color));
 
         painter.circle_filled(pivot, 3.0, icon_color);
-        painter.circle_stroke(
-            pivot,
-            3.0,
-            egui::Stroke::new(1.2, bg_color),
-        );
+        painter.circle_stroke(pivot, 3.0, egui::Stroke::new(1.2, bg_color));
 
         let arc_r = 7.0;
         let a_start = -0.29_f32;
@@ -351,17 +329,11 @@ impl ArticaraApp {
             .map(|k| {
                 let t = k as f32 / n_seg as f32;
                 let a = a_start + (a_end - a_start) * t;
-                egui::pos2(
-                    pivot.x + arc_r * a.cos(),
-                    pivot.y - arc_r * a.sin(),
-                )
+                egui::pos2(pivot.x + arc_r * a.cos(), pivot.y - arc_r * a.sin())
             })
             .collect();
         for w in arc_pts.windows(2) {
-            painter.line_segment(
-                [w[0], w[1]],
-                egui::Stroke::new(1.2, icon_color),
-            );
+            painter.line_segment([w[0], w[1]], egui::Stroke::new(1.2, icon_color));
         }
         if let Some(&tip) = arc_pts.last() {
             let prev = arc_pts[arc_pts.len() - 2];
@@ -402,8 +374,7 @@ impl ArticaraApp {
             egui::Color32::from_rgb(130, 170, 200)
         };
 
-        let draw_box = |cx: f32, cy: f32, hw: f32, hh: f32, depth: f32,
-                        stroke: egui::Stroke| {
+        let draw_box = |cx: f32, cy: f32, hw: f32, hh: f32, depth: f32, stroke: egui::Stroke| {
             let fl = egui::pos2(cx - hw, cy - hh);
             let fr = egui::pos2(cx + hw, cy - hh);
             let br = egui::pos2(cx + hw, cy + hh);
@@ -432,14 +403,22 @@ impl ArticaraApp {
         let g_cx = c.x - 5.0;
         let g_cy = c.y + 3.0;
         draw_box(
-            g_cx, g_cy, 4.5, 3.5, 4.0,
+            g_cx,
+            g_cy,
+            4.5,
+            3.5,
+            4.0,
             egui::Stroke::new(1.2, ghost_color),
         );
 
         let s_cx = c.x + 4.5;
         let s_cy = c.y - 3.5;
         draw_box(
-            s_cx, s_cy, 4.5, 3.5, 4.0,
+            s_cx,
+            s_cy,
+            4.5,
+            3.5,
+            4.0,
             egui::Stroke::new(1.6, solid_color),
         );
 
@@ -458,15 +437,9 @@ impl ArticaraApp {
                 arrow_start.x + (arrow_end.x - arrow_start.x) * t1,
                 arrow_start.y + (arrow_end.y - arrow_start.y) * t1,
             );
-            painter.line_segment(
-                [p0, p1],
-                egui::Stroke::new(1.4, arrow_color),
-            );
+            painter.line_segment([p0, p1], egui::Stroke::new(1.4, arrow_color));
         }
-        let ad = egui::vec2(
-            arrow_end.x - arrow_start.x,
-            arrow_end.y - arrow_start.y,
-        );
+        let ad = egui::vec2(arrow_end.x - arrow_start.x, arrow_end.y - arrow_start.y);
         let al = (ad.x * ad.x + ad.y * ad.y).sqrt().max(0.01);
         let and = egui::vec2(ad.x / al, ad.y / al);
         let aperp = egui::vec2(-and.y, and.x);
@@ -482,12 +455,7 @@ impl ArticaraApp {
     }
 
     /// Draw CoM mass labels on the viewport.
-    pub(super) fn draw_com_labels(
-        &self,
-        ui: &mut egui::Ui,
-        rect: egui::Rect,
-        aspect: f32,
-    ) {
+    pub(super) fn draw_com_labels(&self, ui: &mut egui::Ui, rect: egui::Rect, aspect: f32) {
         if !self.view.show_com {
             return;
         }
@@ -516,16 +484,13 @@ impl ArticaraApp {
     /// Draw the whole-robot CoM marker (+ its ground projection) and
     /// the support polygon outline on the ground. Controlled by
     /// `View → Show Total CoM` / `View → Show Support Polygon`.
-    pub(super) fn draw_balance_overlay(
-        &self,
-        ui: &mut egui::Ui,
-        rect: egui::Rect,
-        aspect: f32,
-    ) {
+    pub(super) fn draw_balance_overlay(&self, ui: &mut egui::Ui, rect: egui::Rect, aspect: f32) {
         if !self.view.show_total_com && !self.view.show_support_polygon {
             return;
         }
-        let Some(model) = self.model.as_ref() else { return };
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
         // Need an up-to-date forward-kinematics map. The model carries
         // a misarta cache that's rebuilt whenever joints/positions
         // change — call `compute_transforms` directly so we don't
@@ -551,7 +516,9 @@ impl ArticaraApp {
         } else if let Some(min_z) = foot_world_xy_z
             .iter()
             .map(|p| p[2])
-            .fold(None, |acc: Option<f32>, z| Some(acc.map_or(z, |a| a.min(z))))
+            .fold(None, |acc: Option<f32>, z| {
+                Some(acc.map_or(z, |a| a.min(z)))
+            })
         {
             min_z
         } else {
@@ -573,10 +540,8 @@ impl ArticaraApp {
             .collect();
         if self.view.show_support_polygon && stance_feet.len() >= 3 {
             // 2D centroid for ordering corners angle-wise.
-            let cx: f32 = stance_feet.iter().map(|p| p[0]).sum::<f32>()
-                / stance_feet.len() as f32;
-            let cy: f32 = stance_feet.iter().map(|p| p[1]).sum::<f32>()
-                / stance_feet.len() as f32;
+            let cx: f32 = stance_feet.iter().map(|p| p[0]).sum::<f32>() / stance_feet.len() as f32;
+            let cy: f32 = stance_feet.iter().map(|p| p[1]).sum::<f32>() / stance_feet.len() as f32;
             let mut ordered: Vec<[f32; 3]> = stance_feet.clone();
             ordered.sort_by(|a, b| {
                 let aa = (a[1] - cy).atan2(a[0] - cx);
@@ -587,13 +552,7 @@ impl ArticaraApp {
             // polygon sits flat on the floor).
             let screen: Vec<Option<egui::Pos2>> = ordered
                 .iter()
-                .map(|p| {
-                    self.project_world(
-                        na::Point3::new(p[0], p[1], ground_z),
-                        rect,
-                        aspect,
-                    )
-                })
+                .map(|p| self.project_world(na::Point3::new(p[0], p[1], ground_z), rect, aspect))
                 .collect();
             let poly_color = egui::Color32::from_rgba_unmultiplied(80, 180, 255, 220);
             let poly_fill = egui::Color32::from_rgba_unmultiplied(80, 180, 255, 35);
@@ -651,10 +610,7 @@ impl ArticaraApp {
                 self.project_world(ground_proj, rect, aspect),
             ) {
                 // Vertical drop line.
-                painter.line_segment(
-                    [sp, gp],
-                    egui::Stroke::new(1.0, proj_color),
-                );
+                painter.line_segment([sp, gp], egui::Stroke::new(1.0, proj_color));
                 // Ground-projection ring (= where the CoM lands on the floor).
                 if rect.contains(gp) {
                     painter.circle_stroke(gp, 6.0, egui::Stroke::new(1.5, com_color));
@@ -677,14 +633,13 @@ impl ArticaraApp {
     }
 
     /// Draw a crosshair at the IK target position during IK drag.
-    pub(super) fn draw_ik_target_marker(
-        &self,
-        ui: &mut egui::Ui,
-        rect: egui::Rect,
-        aspect: f32,
-    ) {
-        let Some(target_world) = self.ik.target_marker else { return };
-        let Some(ndc) = self.camera.project(&target_world, aspect) else { return };
+    pub(super) fn draw_ik_target_marker(&self, ui: &mut egui::Ui, rect: egui::Rect, aspect: f32) {
+        let Some(target_world) = self.ik.target_marker else {
+            return;
+        };
+        let Some(ndc) = self.camera.project(&target_world, aspect) else {
+            return;
+        };
 
         let screen_pos = egui::pos2(
             rect.left() + ndc.x * rect.width(),
@@ -709,11 +664,7 @@ impl ArticaraApp {
             egui::Stroke::new(1.5, color),
         );
         // Circle
-        painter.circle_stroke(
-            c,
-            size * 0.7,
-            egui::Stroke::new(1.5, color),
-        );
+        painter.circle_stroke(c, size * 0.7, egui::Stroke::new(1.5, color));
 
         // Numeric position label + IK error
         let error_str = match self.ik.error {
@@ -738,14 +689,13 @@ impl ArticaraApp {
 
     /// Draw a diamond marker at the current end-effector (bounding-sphere center)
     /// position during IK drag so the user can see where the EE actually is.
-    pub(super) fn draw_ik_ee_marker(
-        &self,
-        ui: &mut egui::Ui,
-        rect: egui::Rect,
-        aspect: f32,
-    ) {
-        let Some(ee_world) = self.ik.ee_marker else { return };
-        let Some(ndc) = self.camera.project(&ee_world, aspect) else { return };
+    pub(super) fn draw_ik_ee_marker(&self, ui: &mut egui::Ui, rect: egui::Rect, aspect: f32) {
+        let Some(ee_world) = self.ik.ee_marker else {
+            return;
+        };
+        let Some(ndc) = self.camera.project(&ee_world, aspect) else {
+            return;
+        };
 
         let screen_pos = egui::pos2(
             rect.left() + ndc.x * rect.width(),
@@ -792,25 +742,26 @@ impl ArticaraApp {
     }
 
     /// Draw the IK root anchor icon on the viewport.
-    pub(super) fn draw_ik_root_anchor(
-        &self,
-        ui: &mut egui::Ui,
-        rect: egui::Rect,
-        aspect: f32,
-    ) {
+    pub(super) fn draw_ik_root_anchor(&self, ui: &mut egui::Ui, rect: egui::Rect, aspect: f32) {
         if self.interaction_mode != InteractionMode::JointDrive
             || self.drag_mode != DragMode::InverseKinematics
         {
             return;
         }
-        let Some(ref root_name) = self.ik.root_link else { return };
+        let Some(ref root_name) = self.ik.root_link else {
+            return;
+        };
         let Some(ref model) = self.model else { return };
 
         let transforms = model.compute_transforms();
-        let Some(root_tf) = transforms.get(root_name) else { return };
+        let Some(root_tf) = transforms.get(root_name) else {
+            return;
+        };
 
         let world_pos = na::Point3::from(root_tf.translation.vector);
-        let Some(ndc) = self.camera.project(&world_pos, aspect) else { return };
+        let Some(ndc) = self.camera.project(&world_pos, aspect) else {
+            return;
+        };
 
         let screen_pos = egui::pos2(
             rect.left() + ndc.x * rect.width(),
@@ -853,17 +804,11 @@ impl ArticaraApp {
                 .map(|k| {
                     let t = k as f32 / n_seg as f32;
                     let angle = t * std::f32::consts::FRAC_PI_2;
-                    egui::pos2(
-                        c.x + sign * 5.0 * angle.sin(),
-                        bar_y + 6.0 * angle.cos(),
-                    )
+                    egui::pos2(c.x + sign * 5.0 * angle.sin(), bar_y + 6.0 * angle.cos())
                 })
                 .collect();
             for w in pts.windows(2) {
-                painter.line_segment(
-                    [w[0], w[1]],
-                    egui::Stroke::new(1.6, anchor_color),
-                );
+                painter.line_segment([w[0], w[1]], egui::Stroke::new(1.6, anchor_color));
             }
         }
 
@@ -877,12 +822,7 @@ impl ArticaraApp {
     }
 
     /// Draw IK pin markers (◆) on the viewport for each pinned link.
-    pub(super) fn draw_ik_pin_markers(
-        &self,
-        ui: &mut egui::Ui,
-        rect: egui::Rect,
-        aspect: f32,
-    ) {
+    pub(super) fn draw_ik_pin_markers(&self, ui: &mut egui::Ui, rect: egui::Rect, aspect: f32) {
         if self.ik.pinned_links.is_empty() {
             return;
         }
@@ -893,9 +833,13 @@ impl ArticaraApp {
         let pin_bg = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140);
 
         for pin in &self.ik.pinned_links {
-            let Some(&li) = model.link_map.get(&pin.link_name) else { continue };
+            let Some(&li) = model.link_map.get(&pin.link_name) else {
+                continue;
+            };
             let world_pos = model.ee_world_pos(li, &transforms);
-            let Some(ndc) = self.camera.project(&world_pos, aspect) else { continue };
+            let Some(ndc) = self.camera.project(&world_pos, aspect) else {
+                continue;
+            };
 
             let screen_pos = egui::pos2(
                 rect.left() + ndc.x * rect.width(),
@@ -972,14 +916,8 @@ impl ArticaraApp {
         for (i, _depth) in draw_order {
             let (ax, color, label) = &world_axes[i];
             let cam = view3 * ax;
-            let tip = egui::pos2(
-                center.x + cam.x * axis_len,
-                center.y - cam.y * axis_len,
-            );
-            painter.line_segment(
-                [center, tip],
-                egui::Stroke::new(2.5, *color),
-            );
+            let tip = egui::pos2(center.x + cam.x * axis_len, center.y - cam.y * axis_len);
+            painter.line_segment([center, tip], egui::Stroke::new(2.5, *color));
             painter.circle_filled(tip, 4.0, *color);
             painter.text(
                 tip + egui::vec2(6.0, -6.0),
@@ -1024,7 +962,10 @@ impl ArticaraApp {
         painter.circle_stroke(
             center,
             axes_size,
-            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(160, 70, 160, 100)),
+            egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgba_unmultiplied(160, 70, 160, 100),
+            ),
         );
 
         let view = self.camera.view_matrix();
@@ -1033,9 +974,21 @@ impl ArticaraApp {
 
         // ── 1. Faint reference axes (X / Y / Z) ──
         let ref_axes: [(na::Vector3<f32>, egui::Color32, &str); 3] = [
-            (na::Vector3::x(), egui::Color32::from_rgba_unmultiplied(230, 60, 60, 55), "X"),
-            (na::Vector3::y(), egui::Color32::from_rgba_unmultiplied(60, 200, 60, 55), "Y"),
-            (na::Vector3::z(), egui::Color32::from_rgba_unmultiplied(60, 100, 230, 55), "Z"),
+            (
+                na::Vector3::x(),
+                egui::Color32::from_rgba_unmultiplied(230, 60, 60, 55),
+                "X",
+            ),
+            (
+                na::Vector3::y(),
+                egui::Color32::from_rgba_unmultiplied(60, 200, 60, 55),
+                "Y",
+            ),
+            (
+                na::Vector3::z(),
+                egui::Color32::from_rgba_unmultiplied(60, 100, 230, 55),
+                "Z",
+            ),
         ];
         // depth-sort
         let mut ref_order: Vec<(usize, f32)> = ref_axes
@@ -1133,10 +1086,7 @@ impl ArticaraApp {
 
         // ── 4. Main gravity arrow (bold purple) ──
         let arrow_color = egui::Color32::from_rgb(220, 110, 220);
-        painter.line_segment(
-            [center, tip],
-            egui::Stroke::new(3.0, arrow_color),
-        );
+        painter.line_segment([center, tip], egui::Stroke::new(3.0, arrow_color));
 
         // Arrowhead
         let dx = tip.x - center.x;
@@ -1269,10 +1219,7 @@ impl ArticaraApp {
 
         // --- Visual toggle ---
         let vis_on = self.view.visual_mode != DisplayMode::Off;
-        let vis_rect = egui::Rect::from_min_size(
-            egui::pos2(start_x, start_y),
-            btn_size,
-        );
+        let vis_rect = egui::Rect::from_min_size(egui::pos2(start_x, start_y), btn_size);
         let vis_resp = ui.interact(
             vis_rect,
             ui.id().with("toggle_visual"),
@@ -1325,10 +1272,8 @@ impl ArticaraApp {
 
         // --- Collision toggle ---
         let col_on = self.view.collision_mode != DisplayMode::Off;
-        let col_rect = egui::Rect::from_min_size(
-            egui::pos2(start_x + btn_size.x + gap, start_y),
-            btn_size,
-        );
+        let col_rect =
+            egui::Rect::from_min_size(egui::pos2(start_x + btn_size.x + gap, start_y), btn_size);
         let col_resp = ui.interact(
             col_rect,
             ui.id().with("toggle_collision"),
@@ -1404,11 +1349,7 @@ impl ArticaraApp {
     ///
     /// Hidden when no MuJoCo sim is active.
     #[cfg(feature = "mujoco")]
-    pub(super) fn draw_realtime_ratio_indicator(
-        &mut self,
-        ui: &mut egui::Ui,
-        rect: egui::Rect,
-    ) {
+    pub(super) fn draw_realtime_ratio_indicator(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let Some(sim) = self.sim.mujoco_sim.as_ref() else {
             return;
         };
@@ -1537,8 +1478,7 @@ impl ArticaraApp {
         } else {
             egui::Color32::from_gray(180)
         };
-        let wbc_text_pos =
-            egui::pos2(centre_x, bar_rect.bottom() + 2.0 + 2.0 * line_h);
+        let wbc_text_pos = egui::pos2(centre_x, bar_rect.bottom() + 2.0 + 2.0 * line_h);
         let wbc_text_rect = painter.text(
             wbc_text_pos,
             egui::Align2::CENTER_TOP,
@@ -1549,11 +1489,7 @@ impl ArticaraApp {
         // Make the text area clickable. Expand the rect a few pixels
         // for a comfier hit target.
         let click_rect = wbc_text_rect.expand(4.0);
-        let resp = ui.interact(
-            click_rect,
-            ui.id().with("wbc_toggle"),
-            egui::Sense::click(),
-        );
+        let resp = ui.interact(click_rect, ui.id().with("wbc_toggle"), egui::Sense::click());
         if resp.clicked() && in_mpc_mode {
             self.sim.wbc_enabled = !self.sim.wbc_enabled;
             self.status_message = if self.sim.wbc_enabled {
@@ -1603,10 +1539,7 @@ impl ArticaraApp {
             painter.text(
                 egui::pos2(centre_x, bar_rect.bottom() + 2.0 + 4.0 * line_h),
                 egui::Align2::CENTER_TOP,
-                format!(
-                    "v=({:+.2}, {:+.2}, {:+.2}) m/s",
-                    vel[0], vel[1], vel[2],
-                ),
+                format!("v=({:+.2}, {:+.2}, {:+.2}) m/s", vel[0], vel[1], vel[2],),
                 egui::FontId::proportional(11.0),
                 egui::Color32::from_gray(220),
             );
@@ -1618,12 +1551,7 @@ impl ArticaraApp {
     /// even when the mouse is far away. The link receives a thin dashed
     /// circle around its bounding-sphere centre; the joint gets a crosshair
     /// at its origin, with the joint name tagged below.
-    pub(super) fn draw_selection_markers(
-        &self,
-        ui: &mut egui::Ui,
-        rect: egui::Rect,
-        aspect: f32,
-    ) {
+    pub(super) fn draw_selection_markers(&self, ui: &mut egui::Ui, rect: egui::Rect, aspect: f32) {
         let Some(model) = self.model.as_ref() else {
             return;
         };
@@ -1645,22 +1573,16 @@ impl ArticaraApp {
                 if let Some(tf) = transforms.get(link_name) {
                     let (center, radius) = model.link_bounding_sphere(li);
                     let world_center = *tf * center;
-                    if let Some(p_screen) =
-                        self.project_world(world_center, rect, aspect)
-                    {
+                    if let Some(p_screen) = self.project_world(world_center, rect, aspect) {
                         // Approximate screen radius by projecting a point
                         // offset by `radius` along the camera right axis.
-                        let cam_right = na::Vector3::new(
-                            -self.camera.yaw.sin(),
-                            self.camera.yaw.cos(),
-                            0.0,
-                        );
+                        let cam_right =
+                            na::Vector3::new(-self.camera.yaw.sin(), self.camera.yaw.cos(), 0.0);
                         let edge_world = world_center + cam_right * radius;
                         let edge_screen = self
                             .project_world(edge_world, rect, aspect)
                             .unwrap_or(p_screen + egui::vec2(20.0, 0.0));
-                        let r_screen =
-                            (edge_screen - p_screen).length().max(8.0);
+                        let r_screen = (edge_screen - p_screen).length().max(8.0);
                         let color = egui::Color32::from_rgb(120, 220, 255);
                         // Dashed circle approximation via short arcs.
                         let segs = 24;
@@ -1676,10 +1598,7 @@ impl ArticaraApp {
                                     p_screen.x + r_screen * (a + step).cos(),
                                     p_screen.y + r_screen * (a + step).sin(),
                                 );
-                                painter.line_segment(
-                                    [p0, p1],
-                                    egui::Stroke::new(2.0, color),
-                                );
+                                painter.line_segment([p0, p1], egui::Stroke::new(2.0, color));
                             }
                             a += step;
                         }
@@ -1723,11 +1642,7 @@ impl ArticaraApp {
                         ],
                         egui::Stroke::new(2.0, color),
                     );
-                    painter.circle_stroke(
-                        p_screen,
-                        s * 0.6,
-                        egui::Stroke::new(2.0, color),
-                    );
+                    painter.circle_stroke(p_screen, s * 0.6, egui::Stroke::new(2.0, color));
                     painter.text(
                         p_screen + egui::vec2(s + 4.0, -s),
                         egui::Align2::LEFT_BOTTOM,
@@ -1794,12 +1709,7 @@ impl ArticaraApp {
     /// arrow length is logarithmically scaled so small grazing contacts
     /// remain visible alongside heavy load-bearing ones.
     #[cfg(feature = "mujoco")]
-    pub(super) fn draw_contact_markers(
-        &self,
-        ui: &mut egui::Ui,
-        rect: egui::Rect,
-        aspect: f32,
-    ) {
+    pub(super) fn draw_contact_markers(&self, ui: &mut egui::Ui, rect: egui::Rect, aspect: f32) {
         if !self.sim.show_contacts {
             return;
         }
@@ -1829,7 +1739,11 @@ impl ArticaraApp {
         // separately below.
         for c in &contacts {
             let is_self = c.is_self_collision();
-            let dot_color = if is_self { dot_color_self } else { dot_color_external };
+            let dot_color = if is_self {
+                dot_color_self
+            } else {
+                dot_color_external
+            };
             let p = na::Point3::new(c.pos[0] as f32, c.pos[1] as f32, c.pos[2] as f32);
             if let Some(p_screen) = self.project_world(p, rect, aspect) {
                 painter.circle_filled(p_screen, 4.0, dot_color);
@@ -1843,8 +1757,8 @@ impl ArticaraApp {
         // its neighbours and becomes unreadable (the screenshot from a user
         // showed "33490NN RR_thigh↔UGV_link" — actually 5+ labels overlaid).
         struct PairAgg {
-            pos_sum: [f64; 3],          // world-frame centroid accumulator
-            force_sum: [f64; 3],        // vector sum of contact forces
+            pos_sum: [f64; 3],   // world-frame centroid accumulator
+            force_sum: [f64; 3], // vector sum of contact forces
             n: usize,
             is_self: bool,
             body1: String,
@@ -1895,11 +1809,14 @@ impl ArticaraApp {
                 continue;
             };
 
-            let arrow_color = if agg.is_self { color_self } else { color_external };
+            let arrow_color = if agg.is_self {
+                color_self
+            } else {
+                color_external
+            };
 
             // Tip in world space — scale linear force vector logarithmically.
-            let log_scale =
-                (1.0 + (force_mag / calib_n)).ln() / (1.0_f32 + 1.0).ln();
+            let log_scale = (1.0 + (force_mag / calib_n)).ln() / (1.0_f32 + 1.0).ln();
             let scale = log_scale * base_px;
             let dir = na::Vector3::new(
                 agg.force_sum[0] as f32,
@@ -1974,11 +1891,7 @@ impl ArticaraApp {
             let Some(tf) = transforms.get(&pulse.link_name) else {
                 continue;
             };
-            let origin = na::Point3::new(
-                tf.translation.x,
-                tf.translation.y,
-                tf.translation.z,
-            );
+            let origin = na::Point3::new(tf.translation.x, tf.translation.y, tf.translation.z);
             let Some(p_screen) = self.project_world(origin, rect, aspect) else {
                 continue;
             };

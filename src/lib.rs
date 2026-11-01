@@ -21,12 +21,12 @@ pub mod mujoco_version;
 pub mod primitives;
 pub mod rbd;
 pub mod robot;
-pub mod sdf;
-pub mod standing_gesture;
 #[cfg(feature = "scripting")]
 pub mod scripting;
 #[cfg(feature = "scripting")]
 pub mod scripting_model;
+pub mod sdf;
+pub mod standing_gesture;
 pub mod usd;
 pub mod usd_import;
 #[cfg(feature = "mujoco")]

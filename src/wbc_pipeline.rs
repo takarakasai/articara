@@ -34,12 +34,12 @@ use nalgebra as na;
 use misarta::joint::JointType;
 use misarta::model::{LinkInertia, Model, ModelBuilder};
 
-use quadruped_gait::wbc::{
-    self, WbcDims, WbcInputs, WbcSolution, WbcWarmStart, WbcWeights,
-};
+use quadruped_gait::wbc::{self, WbcDims, WbcInputs, WbcSolution, WbcWarmStart, WbcWeights};
 #[allow(unused_imports)] // re-exported for host use of `with_wbc_solver`
 pub use quadruped_gait::wbc::{Formulation, HqpStrategy, QpSolver, SolveConfig};
-use quadruped_gait::{ControllerOutput, KinematicsConfig, RobotStateSource, forward_leg_kinematics};
+use quadruped_gait::{
+    ControllerOutput, KinematicsConfig, RobotStateSource, forward_leg_kinematics,
+};
 
 use crate::rbd::model::RobotModel;
 
@@ -428,12 +428,8 @@ impl WbcPipeline {
                 continue;
             };
             let j_full = misarta::jacobian::compute_joint_jacobian(&self.model, &q, mi);
-            let dj_dt = misarta::jacobian::compute_joint_jacobian_time_derivative(
-                &self.model,
-                &q,
-                &v,
-                mi,
-            );
+            let dj_dt =
+                misarta::jacobian::compute_joint_jacobian_time_derivative(&self.model, &q, &v, mi);
             let v_dvec = na::DVector::from_column_slice(&v);
             let dj_v_full = dj_dt * v_dvec;
             // misarta's spatial Jacobian rows: [angular(0..3); linear(3..6)].
@@ -486,9 +482,7 @@ impl WbcPipeline {
         //     mode that broke the C1/C2 attempts when the SRBD MPC was
         //     paired with body-root WBC reference).
         //   * Otherwise ⇒ body-root SRBD path, exactly as before.
-        let (a_lin_world, a_ang_world) = if let Some(i_centroidal) =
-            self.centroidal_inertia_body
-        {
+        let (a_lin_world, a_ang_world) = if let Some(i_centroidal) = self.centroidal_inertia_body {
             let cent_cfg = quadruped_gait::CentroidalMpcConfig {
                 mass_kg: self.mass_kg,
                 centroidal_inertia_body: i_centroidal,
@@ -654,15 +648,10 @@ impl WbcPipeline {
                     if vi >= 6 {
                         let act_idx = vi - 6;
                         if act_idx < na_count {
-                            let (q_meas, qd_meas) = mj_sim
-                                .joint_q_qd(&cfg.joint_name)
-                                .unwrap_or((0.0, 0.0));
-                            let q_ddot = cfg.target_accel(
-                                &body_quat,
-                                &omega_obs_body,
-                                q_meas,
-                                qd_meas,
-                            );
+                            let (q_meas, qd_meas) =
+                                mj_sim.joint_q_qd(&cfg.joint_name).unwrap_or((0.0, 0.0));
+                            let q_ddot =
+                                cfg.target_accel(&body_quat, &omega_obs_body, q_meas, qd_meas);
                             swing_q_ddot_des[act_idx] = q_ddot;
                             swing_actuator_flag[act_idx] = true;
                         }
@@ -684,8 +673,8 @@ impl WbcPipeline {
             self.grf_smoothing_seeded = true;
         } else {
             for slot in 0..4 {
-                self.smoothed_f_grf[slot] = alpha * f_grf_world_des[slot]
-                    + (1.0 - alpha) * self.smoothed_f_grf[slot];
+                self.smoothed_f_grf[slot] =
+                    alpha * f_grf_world_des[slot] + (1.0 - alpha) * self.smoothed_f_grf[slot];
             }
         }
         let mut f_grf_des = na::DVector::zeros(12);
@@ -813,7 +802,11 @@ impl WbcPipeline {
 ///   is that link (used to resolve foot frame indices).
 pub fn build_floating_base_model(
     robot: &RobotModel,
-) -> (Model<f64>, Vec<Option<usize>>, std::collections::HashMap<String, usize>) {
+) -> (
+    Model<f64>,
+    Vec<Option<usize>>,
+    std::collections::HashMap<String, usize>,
+) {
     let mut builder = ModelBuilder::<f64>::new()
         .name(robot.name.clone())
         .root_link_name(robot.root_link.clone())

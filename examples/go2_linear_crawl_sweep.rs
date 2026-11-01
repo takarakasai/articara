@@ -6,7 +6,7 @@
 
 #[cfg(feature = "mujoco")]
 fn main() {
-    use articara::gait::{auto_detect_kinematics_config, GaitController};
+    use articara::gait::{GaitController, auto_detect_kinematics_config};
     use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
     use articara::mujoco_sim::MujocoSim;
     use articara::rbd::model::ActuatorMode;
@@ -16,11 +16,41 @@ fn main() {
 
     // (label, t3 [s], t4 [s], swing_h [m], Kp [N·m/rad])
     let configs: &[(&str, f64, f64, f64, f64)] = &[
-        ("(0) baseline α=0.5  Kp=500           ", 0.2083, 0.2083, 0.005, 500.0),
-        ("(1) α=0.75            Kp=500           ", 0.1042, 0.3125, 0.005, 500.0),
-        ("(2) α=0.85            Kp=500           ", 0.0625, 0.3542, 0.005, 500.0),
-        ("(3) α=0.85            Kp=1000          ", 0.0625, 0.3542, 0.005, 1000.0),
-        ("(4) α=0.85 swing 0.003 Kp=1000         ", 0.0625, 0.3542, 0.003, 1000.0),
+        (
+            "(0) baseline α=0.5  Kp=500           ",
+            0.2083,
+            0.2083,
+            0.005,
+            500.0,
+        ),
+        (
+            "(1) α=0.75            Kp=500           ",
+            0.1042,
+            0.3125,
+            0.005,
+            500.0,
+        ),
+        (
+            "(2) α=0.85            Kp=500           ",
+            0.0625,
+            0.3542,
+            0.005,
+            500.0,
+        ),
+        (
+            "(3) α=0.85            Kp=1000          ",
+            0.0625,
+            0.3542,
+            0.005,
+            1000.0,
+        ),
+        (
+            "(4) α=0.85 swing 0.003 Kp=1000         ",
+            0.0625,
+            0.3542,
+            0.003,
+            1000.0,
+        ),
     ];
 
     let cmd_vx = 0.05_f64;
@@ -31,7 +61,9 @@ fn main() {
         "vx={cmd_vx} m/s, walk {walk_s} s per config.\n\
          label                                     |   Δx [m] |    |y|p |   Δz | |roll|max | |pitch|max | |yaw|max"
     );
-    println!("-------------------------------------------+----------+--------+-------+-----------+------------+----------");
+    println!(
+        "-------------------------------------------+----------+--------+-------+-----------+------------+----------"
+    );
 
     for &(label, t3, t4, swing_h, kp) in configs {
         // Fresh load each iteration so previous run's residual pose
@@ -46,10 +78,18 @@ fn main() {
         }
 
         let home_q = [
-            ("FL_hip_joint", 0.0), ("FL_thigh_joint", 0.9), ("FL_calf_joint", -1.8),
-            ("FR_hip_joint", 0.0), ("FR_thigh_joint", 0.9), ("FR_calf_joint", -1.8),
-            ("RL_hip_joint", 0.0), ("RL_thigh_joint", 0.9), ("RL_calf_joint", -1.8),
-            ("RR_hip_joint", 0.0), ("RR_thigh_joint", 0.9), ("RR_calf_joint", -1.8),
+            ("FL_hip_joint", 0.0),
+            ("FL_thigh_joint", 0.9),
+            ("FL_calf_joint", -1.8),
+            ("FR_hip_joint", 0.0),
+            ("FR_thigh_joint", 0.9),
+            ("FR_calf_joint", -1.8),
+            ("RL_hip_joint", 0.0),
+            ("RL_thigh_joint", 0.9),
+            ("RL_calf_joint", -1.8),
+            ("RR_hip_joint", 0.0),
+            ("RR_thigh_joint", 0.9),
+            ("RR_calf_joint", -1.8),
         ];
         for (name, q) in home_q.iter() {
             let ji = *model.joint_map.get(*name).unwrap();
@@ -58,8 +98,10 @@ fn main() {
         model.rebuild_misarta_model();
 
         let foot_links = [
-            (LegId::FL, "FL_foot"), (LegId::FR, "FR_foot"),
-            (LegId::RL, "RL_foot"), (LegId::RR, "RR_foot"),
+            (LegId::FL, "FL_foot"),
+            (LegId::FR, "FR_foot"),
+            (LegId::RL, "RL_foot"),
+            (LegId::RR, "RR_foot"),
         ];
         let kin = auto_detect_kinematics_config(&model, &foot_links).unwrap();
 
@@ -78,7 +120,10 @@ fn main() {
         let opts = MjcfExportOptions {
             base_pos: Some([0.0, 0.0, 0.30]),
             ground_plane: Some(GroundPlaneCfg {
-                z: 0.0, half_size: 5.0, roll: 0.0, pitch: 0.0,
+                z: 0.0,
+                half_size: 5.0,
+                roll: 0.0,
+                pitch: 0.0,
             }),
             ..MjcfExportOptions::default()
         };
@@ -93,7 +138,11 @@ fn main() {
         let p_start = sim.body_world_position("base").unwrap();
         let p_start = na::Vector3::new(p_start[0], p_start[1], p_start[2]);
 
-        gc.set_velocity_cmd(VelocityCmd { vx: cmd_vx, vy: 0.0, wz: 0.0 });
+        gc.set_velocity_cmd(VelocityCmd {
+            vx: cmd_vx,
+            vy: 0.0,
+            wz: 0.0,
+        });
         gc.enable();
 
         let mut max_roll: f64 = 0.0;

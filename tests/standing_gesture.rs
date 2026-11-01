@@ -14,14 +14,14 @@
 
 use std::path::PathBuf;
 
-use articara::gait::{auto_detect_kinematics_config, GaitController, DEFAULT_FOOT_LINKS};
+use articara::gait::{DEFAULT_FOOT_LINKS, GaitController, auto_detect_kinematics_config};
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
 use articara::robot::RobotModel;
 use articara::standing_gesture::{GestureKind, StandingGestureConfig};
 use nalgebra::Vector3;
 use quadruped_gait::{
-    solve_leg_ik, GaitConfig, GaitMode, KinematicsConfig, LegIkSolution, VelocityCmd,
+    GaitConfig, GaitMode, KinematicsConfig, LegIkSolution, VelocityCmd, solve_leg_ik,
 };
 
 const ARM_JOINT: &str = "arm_pitch_joint";
@@ -63,8 +63,8 @@ fn nod_gesture_oscillates_the_head() {
         return;
     }
     let mut robot = RobotModel::from_misa(&file).expect("load namiashi .misa");
-    let mut kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS)
-        .expect("auto-detect kinematics");
+    let mut kin =
+        auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS).expect("auto-detect kinematics");
     for leg_kin in [&mut kin.fl, &mut kin.fr, &mut kin.rl, &mut kin.rr] {
         let total_leg = leg_kin.upper_leg_m + leg_kin.lower_leg_m;
         leg_kin.nominal_foot_body.z += 0.08 * total_leg;
@@ -72,7 +72,12 @@ fn nod_gesture_oscillates_the_head() {
     seed_legs(&mut robot, &kin);
 
     let opts = MjcfExportOptions {
-        ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0 }),
+        ground_plane: Some(GroundPlaneCfg {
+            z: 0.0,
+            half_size: 4.0,
+            roll: 0.0,
+            pitch: 0.0,
+        }),
         add_actuators: true,
         ..Default::default()
     };
@@ -82,7 +87,11 @@ fn nod_gesture_oscillates_the_head() {
     let mut gc = GaitController::build(&robot, kin.clone(), GaitConfig::trot(), GaitMode::Mpc)
         .expect("GaitController::build");
     gc.enable();
-    gc.set_velocity_cmd(VelocityCmd { vx: 0.0, vy: 0.0, wz: 0.0 });
+    gc.set_velocity_cmd(VelocityCmd {
+        vx: 0.0,
+        vy: 0.0,
+        wz: 0.0,
+    });
 
     // Nod gesture: ~9° at 0.8 Hz.
     let mut gesture = StandingGestureConfig::for_robot(&robot, GestureKind::Nod);
@@ -101,8 +110,12 @@ fn nod_gesture_oscillates_the_head() {
     let mut q_max = f64::NEG_INFINITY;
 
     for k in 0..n {
-        let v = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
-        let w = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+        let v = sim
+            .body_world_linear_velocity(&robot.root_link)
+            .unwrap_or([0.0; 3]);
+        let w = sim
+            .body_world_angular_velocity(&robot.root_link)
+            .unwrap_or([0.0; 3]);
         gc.set_body_state_observed(
             Vector3::new(v[0], v[1], v[2]),
             Vector3::new(w[0], w[1], w[2]),

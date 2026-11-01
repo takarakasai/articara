@@ -154,10 +154,16 @@ impl StandingGestureConfig {
                     }
                 } else {
                     // No head — nod the whole body in pitch instead.
-                    GestureOutput { pitch: s, ..Default::default() }
+                    GestureOutput {
+                        pitch: s,
+                        ..Default::default()
+                    }
                 }
             }
-            GestureKind::Sway => GestureOutput { roll: s, ..Default::default() },
+            GestureKind::Sway => GestureOutput {
+                roll: s,
+                ..Default::default()
+            },
         }
     }
 

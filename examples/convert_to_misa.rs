@@ -64,7 +64,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Verifying round-trip…");
     let loaded = RobotModel::from_misa(&misa_path)?;
     assert_eq!(model.links.len(), loaded.links.len(), "link count mismatch");
-    assert_eq!(model.joints.len(), loaded.joints.len(), "joint count mismatch");
+    assert_eq!(
+        model.joints.len(),
+        loaded.joints.len(),
+        "joint count mismatch"
+    );
     println!(
         "  ✔ Round-trip OK ({} links, {} joints)",
         loaded.links.len(),

@@ -16,7 +16,7 @@
 
 #[cfg(feature = "mujoco")]
 fn main() {
-    use articara::gait::{auto_detect_kinematics_config, GaitController};
+    use articara::gait::{GaitController, auto_detect_kinematics_config};
     use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
     use articara::mujoco_sim::MujocoSim;
     use articara::rbd::model::ActuatorMode;
@@ -32,7 +32,11 @@ fn main() {
         misa.display(),
         model.links.len(),
         model.joints.len(),
-        model.joints.iter().filter(|j| j.joint_type != "fixed").count(),
+        model
+            .joints
+            .iter()
+            .filter(|j| j.joint_type != "fixed")
+            .count(),
     );
 
     // ユーザ確認済の前進セットアップ: Position-PD で Kp=500。
@@ -48,21 +52,33 @@ fn main() {
 
     // ホーム姿勢を seed (hip=0, thigh=0.9, calf=-1.8)。
     let home_q = [
-        ("FL_hip_joint", 0.0), ("FL_thigh_joint", 0.9), ("FL_calf_joint", -1.8),
-        ("FR_hip_joint", 0.0), ("FR_thigh_joint", 0.9), ("FR_calf_joint", -1.8),
-        ("RL_hip_joint", 0.0), ("RL_thigh_joint", 0.9), ("RL_calf_joint", -1.8),
-        ("RR_hip_joint", 0.0), ("RR_thigh_joint", 0.9), ("RR_calf_joint", -1.8),
+        ("FL_hip_joint", 0.0),
+        ("FL_thigh_joint", 0.9),
+        ("FL_calf_joint", -1.8),
+        ("FR_hip_joint", 0.0),
+        ("FR_thigh_joint", 0.9),
+        ("FR_calf_joint", -1.8),
+        ("RL_hip_joint", 0.0),
+        ("RL_thigh_joint", 0.9),
+        ("RL_calf_joint", -1.8),
+        ("RR_hip_joint", 0.0),
+        ("RR_thigh_joint", 0.9),
+        ("RR_calf_joint", -1.8),
     ];
     for (name, q) in home_q.iter() {
-        let ji = *model.joint_map.get(*name)
+        let ji = *model
+            .joint_map
+            .get(*name)
             .unwrap_or_else(|| panic!("joint missing: {name}"));
         model.joint_positions[ji] = *q;
     }
     model.rebuild_misarta_model();
 
     let foot_links = [
-        (LegId::FL, "FL_foot"), (LegId::FR, "FR_foot"),
-        (LegId::RL, "RL_foot"), (LegId::RR, "RR_foot"),
+        (LegId::FL, "FL_foot"),
+        (LegId::FR, "FR_foot"),
+        (LegId::RL, "RL_foot"),
+        (LegId::RR, "RR_foot"),
     ];
     let kin = auto_detect_kinematics_config(&model, &foot_links)
         .unwrap_or_else(|errs| panic!("kin auto-detect: {errs:?}"));
@@ -85,7 +101,10 @@ fn main() {
     let opts = MjcfExportOptions {
         base_pos: Some([0.0, 0.0, 0.30]),
         ground_plane: Some(GroundPlaneCfg {
-            z: 0.0, half_size: 5.0, roll: 0.0, pitch: 0.0,
+            z: 0.0,
+            half_size: 5.0,
+            roll: 0.0,
+            pitch: 0.0,
         }),
         ..MjcfExportOptions::default()
     };
@@ -133,13 +152,24 @@ fn main() {
     let mut max_abs_y = 0.0_f64;
     let mut t_clock = 0.5_f64; // continues from Phase 1's 0.5 s settle
 
-    let run_segment = |label: &str, duration: f64, vx: f64,
-        sim: &mut MujocoSim, gc: &mut GaitController,
-        model: &mut articara::robot::RobotModel,
-        t_clock: &mut f64, max_roll: &mut f64, max_pitch: &mut f64, max_yaw: &mut f64,
-        min_z: &mut f64, max_z: &mut f64, max_abs_y: &mut f64,
-    | {
-        gc.set_velocity_cmd(VelocityCmd { vx, vy: 0.0, wz: 0.0 });
+    let run_segment = |label: &str,
+                       duration: f64,
+                       vx: f64,
+                       sim: &mut MujocoSim,
+                       gc: &mut GaitController,
+                       model: &mut articara::robot::RobotModel,
+                       t_clock: &mut f64,
+                       max_roll: &mut f64,
+                       max_pitch: &mut f64,
+                       max_yaw: &mut f64,
+                       min_z: &mut f64,
+                       max_z: &mut f64,
+                       max_abs_y: &mut f64| {
+        gc.set_velocity_cmd(VelocityCmd {
+            vx,
+            vy: 0.0,
+            wz: 0.0,
+        });
         let n = (duration / gait_dt) as usize;
         let mut foot_z_peak_during_segment = -1.0_f64;
         for tick in 0..n {
@@ -182,18 +212,66 @@ fn main() {
         }
     };
 
-    run_segment("walk-1", walk_s, cmd_vx, &mut sim, &mut gc, &mut model,
-        &mut t_clock, &mut max_roll, &mut max_pitch, &mut max_yaw,
-        &mut min_z, &mut max_z, &mut max_abs_y);
-    run_segment("stop-1", stop_s, 0.0, &mut sim, &mut gc, &mut model,
-        &mut t_clock, &mut max_roll, &mut max_pitch, &mut max_yaw,
-        &mut min_z, &mut max_z, &mut max_abs_y);
-    run_segment("walk-2", walk_s, cmd_vx, &mut sim, &mut gc, &mut model,
-        &mut t_clock, &mut max_roll, &mut max_pitch, &mut max_yaw,
-        &mut min_z, &mut max_z, &mut max_abs_y);
-    run_segment("stop-2", stop_s, 0.0, &mut sim, &mut gc, &mut model,
-        &mut t_clock, &mut max_roll, &mut max_pitch, &mut max_yaw,
-        &mut min_z, &mut max_z, &mut max_abs_y);
+    run_segment(
+        "walk-1",
+        walk_s,
+        cmd_vx,
+        &mut sim,
+        &mut gc,
+        &mut model,
+        &mut t_clock,
+        &mut max_roll,
+        &mut max_pitch,
+        &mut max_yaw,
+        &mut min_z,
+        &mut max_z,
+        &mut max_abs_y,
+    );
+    run_segment(
+        "stop-1",
+        stop_s,
+        0.0,
+        &mut sim,
+        &mut gc,
+        &mut model,
+        &mut t_clock,
+        &mut max_roll,
+        &mut max_pitch,
+        &mut max_yaw,
+        &mut min_z,
+        &mut max_z,
+        &mut max_abs_y,
+    );
+    run_segment(
+        "walk-2",
+        walk_s,
+        cmd_vx,
+        &mut sim,
+        &mut gc,
+        &mut model,
+        &mut t_clock,
+        &mut max_roll,
+        &mut max_pitch,
+        &mut max_yaw,
+        &mut min_z,
+        &mut max_z,
+        &mut max_abs_y,
+    );
+    run_segment(
+        "stop-2",
+        stop_s,
+        0.0,
+        &mut sim,
+        &mut gc,
+        &mut model,
+        &mut t_clock,
+        &mut max_roll,
+        &mut max_pitch,
+        &mut max_yaw,
+        &mut min_z,
+        &mut max_z,
+        &mut max_abs_y,
+    );
 
     let _total_phase2 = walk_s * 2.0 + stop_s * 2.0;
 
@@ -203,7 +281,9 @@ fn main() {
     println!("  end   trunk x={:+.3} y={:+.3} z={:+.3}", pf.x, pf.y, pf.z);
     println!(
         "  Δx = {:+.3} m  (effective walking time {:.1} s × vx={cmd_vx} m/s = {:.3} m expected)",
-        pf.x - p1.x, walk_s * 2.0, cmd_vx * walk_s * 2.0,
+        pf.x - p1.x,
+        walk_s * 2.0,
+        cmd_vx * walk_s * 2.0,
     );
     println!("  Δy = {:+.3} m  (lateral drift)", pf.y - p1.y);
     println!(

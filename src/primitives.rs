@@ -4,12 +4,7 @@ pub fn generate_box(hx: f32, hy: f32, hz: f32) -> Vec<f32> {
     let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
         (
             [1.0, 0.0, 0.0],
-            [
-                [hx, -hy, -hz],
-                [hx, hy, -hz],
-                [hx, hy, hz],
-                [hx, -hy, hz],
-            ],
+            [[hx, -hy, -hz], [hx, hy, -hz], [hx, hy, hz], [hx, -hy, hz]],
         ),
         (
             [-1.0, 0.0, 0.0],
@@ -22,12 +17,7 @@ pub fn generate_box(hx: f32, hy: f32, hz: f32) -> Vec<f32> {
         ),
         (
             [0.0, 1.0, 0.0],
-            [
-                [-hx, hy, -hz],
-                [-hx, hy, hz],
-                [hx, hy, hz],
-                [hx, hy, -hz],
-            ],
+            [[-hx, hy, -hz], [-hx, hy, hz], [hx, hy, hz], [hx, hy, -hz]],
         ),
         (
             [0.0, -1.0, 0.0],
@@ -40,12 +30,7 @@ pub fn generate_box(hx: f32, hy: f32, hz: f32) -> Vec<f32> {
         ),
         (
             [0.0, 0.0, 1.0],
-            [
-                [-hx, -hy, hz],
-                [hx, -hy, hz],
-                [hx, hy, hz],
-                [-hx, hy, hz],
-            ],
+            [[-hx, -hy, hz], [hx, -hy, hz], [hx, hy, hz], [-hx, hy, hz]],
         ),
         (
             [0.0, 0.0, -1.0],
@@ -400,12 +385,48 @@ pub fn generate_scale_handle(
     // 6 faces × 2 triangles × 3 vertices
     let faces: [([f32; 3], [f32; 3], [f32; 3], [f32; 3], [f32; 3]); 6] = [
         // (v0, v1, v2, v3, normal)  — two tris: v0-v1-v2, v0-v2-v3
-        ([-ch, -ch, cz+ch], [ ch, -ch, cz+ch], [ ch,  ch, cz+ch], [-ch,  ch, cz+ch], [0.0, 0.0, 1.0]),  // +Z
-        ([-ch, -ch, cz-ch], [-ch,  ch, cz-ch], [ ch,  ch, cz-ch], [ ch, -ch, cz-ch], [0.0, 0.0,-1.0]),  // -Z
-        ([-ch,  ch, cz-ch], [-ch,  ch, cz+ch], [ ch,  ch, cz+ch], [ ch,  ch, cz-ch], [0.0, 1.0, 0.0]),  // +Y
-        ([-ch, -ch, cz-ch], [ ch, -ch, cz-ch], [ ch, -ch, cz+ch], [-ch, -ch, cz+ch], [0.0,-1.0, 0.0]),  // -Y
-        ([ ch, -ch, cz-ch], [ ch,  ch, cz-ch], [ ch,  ch, cz+ch], [ ch, -ch, cz+ch], [1.0, 0.0, 0.0]),  // +X
-        ([-ch, -ch, cz-ch], [-ch, -ch, cz+ch], [-ch,  ch, cz+ch], [-ch,  ch, cz-ch], [-1.0, 0.0, 0.0]), // -X
+        (
+            [-ch, -ch, cz + ch],
+            [ch, -ch, cz + ch],
+            [ch, ch, cz + ch],
+            [-ch, ch, cz + ch],
+            [0.0, 0.0, 1.0],
+        ), // +Z
+        (
+            [-ch, -ch, cz - ch],
+            [-ch, ch, cz - ch],
+            [ch, ch, cz - ch],
+            [ch, -ch, cz - ch],
+            [0.0, 0.0, -1.0],
+        ), // -Z
+        (
+            [-ch, ch, cz - ch],
+            [-ch, ch, cz + ch],
+            [ch, ch, cz + ch],
+            [ch, ch, cz - ch],
+            [0.0, 1.0, 0.0],
+        ), // +Y
+        (
+            [-ch, -ch, cz - ch],
+            [ch, -ch, cz - ch],
+            [ch, -ch, cz + ch],
+            [-ch, -ch, cz + ch],
+            [0.0, -1.0, 0.0],
+        ), // -Y
+        (
+            [ch, -ch, cz - ch],
+            [ch, ch, cz - ch],
+            [ch, ch, cz + ch],
+            [ch, -ch, cz + ch],
+            [1.0, 0.0, 0.0],
+        ), // +X
+        (
+            [-ch, -ch, cz - ch],
+            [-ch, -ch, cz + ch],
+            [-ch, ch, cz + ch],
+            [-ch, ch, cz - ch],
+            [-1.0, 0.0, 0.0],
+        ), // -X
     ];
     for (v0, v1, v2, v3, n) in &faces {
         push_vert(&mut v, *v0, *n);

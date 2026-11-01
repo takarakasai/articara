@@ -262,12 +262,11 @@ pub fn analyze_export_compatibility(
             feature: "Capsule shapes".into(),
             count: capsule_total,
             severity: ExportSeverity::Approximate,
-            message:
-                "URDF has no `<capsule>` primitive. Each capsule is \
+            message: "URDF has no `<capsule>` primitive. Each capsule is \
                  decomposed into a cylinder plus two end spheres on \
                  export — visually correct but slightly different \
                  contact behaviour."
-                    .into(),
+                .into(),
         });
     }
 
@@ -331,7 +330,9 @@ pub struct FormatRegistry {
 
 impl FormatRegistry {
     pub fn new() -> Self {
-        Self { handlers: Vec::new() }
+        Self {
+            handlers: Vec::new(),
+        }
     }
 
     /// Built-in registry covering Misa (native) / URDF / SDF / MJCF / USD.
@@ -395,10 +396,7 @@ impl FormatRegistry {
         Some(by_ext[0])
     }
 
-    pub fn import(
-        &self,
-        path: &Path,
-    ) -> Result<crate::robot::RobotModel, String> {
+    pub fn import(&self, path: &Path) -> Result<crate::robot::RobotModel, String> {
         let h = self
             .handler_for(path)
             .ok_or_else(|| format!("No handler for {:?}", path))?;
@@ -430,8 +428,12 @@ mod handlers {
     /// URDF (.urdf, .xacro). Tree-only; no native sensors / collision pairs.
     pub struct UrdfHandler;
     impl FormatHandler for UrdfHandler {
-        fn name(&self) -> &str { "URDF" }
-        fn extensions(&self) -> &[&'static str] { &["urdf", "xacro"] }
+        fn name(&self) -> &str {
+            "URDF"
+        }
+        fn extensions(&self) -> &[&'static str] {
+            &["urdf", "xacro"]
+        }
         fn capabilities(&self) -> FormatCapabilities {
             FormatCapabilities {
                 mimic: true,
@@ -460,8 +462,12 @@ mod handlers {
     /// SDF (.sdf, .world). Native sensors + bitmask-based collision filter.
     pub struct SdfHandler;
     impl FormatHandler for SdfHandler {
-        fn name(&self) -> &str { "SDF" }
-        fn extensions(&self) -> &[&'static str] { &["sdf", "world"] }
+        fn name(&self) -> &str {
+            "SDF"
+        }
+        fn extensions(&self) -> &[&'static str] {
+            &["sdf", "world"]
+        }
         fn capabilities(&self) -> FormatCapabilities {
             FormatCapabilities {
                 mimic: true,
@@ -491,8 +497,12 @@ mod handlers {
     /// `<equality><joint>` provides linear-coupling equivalent.
     pub struct MjcfHandler;
     impl FormatHandler for MjcfHandler {
-        fn name(&self) -> &str { "MJCF" }
-        fn extensions(&self) -> &[&'static str] { &["xml", "mjcf"] }
+        fn name(&self) -> &str {
+            "MJCF"
+        }
+        fn extensions(&self) -> &[&'static str] {
+            &["xml", "mjcf"]
+        }
         fn capabilities(&self) -> FormatCapabilities {
             FormatCapabilities {
                 mimic: true,
@@ -525,8 +535,12 @@ mod handlers {
     /// / USD exist as derivative export targets.
     pub struct MisaHandler;
     impl FormatHandler for MisaHandler {
-        fn name(&self) -> &str { "Misa" }
-        fn extensions(&self) -> &[&'static str] { &["misa"] }
+        fn name(&self) -> &str {
+            "Misa"
+        }
+        fn extensions(&self) -> &[&'static str] {
+            &["misa"]
+        }
         fn capabilities(&self) -> FormatCapabilities {
             FormatCapabilities {
                 mimic: true,
@@ -553,8 +567,12 @@ mod handlers {
     /// only via Isaac extensions (not yet wired).
     pub struct UsdHandler;
     impl FormatHandler for UsdHandler {
-        fn name(&self) -> &str { "Isaac USD" }
-        fn extensions(&self) -> &[&'static str] { &["usda", "usd"] }
+        fn name(&self) -> &str {
+            "Isaac USD"
+        }
+        fn extensions(&self) -> &[&'static str] {
+            &["usda", "usd"]
+        }
         fn capabilities(&self) -> FormatCapabilities {
             FormatCapabilities {
                 mimic: false,

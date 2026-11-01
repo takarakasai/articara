@@ -34,7 +34,10 @@ fn write_binary_stl(path: &Path, m: &MeshData) -> std::io::Result<()> {
         let n = if n.norm() > 1e-20 {
             n / n.norm()
         } else {
-            m.face_normals.get(t).copied().unwrap_or_else(na::Vector3::zeros)
+            m.face_normals
+                .get(t)
+                .copied()
+                .unwrap_or_else(na::Vector3::zeros)
         };
         for v in [n.x, n.y, n.z] {
             f.write_all(&(v as f32).to_le_bytes())?;
@@ -57,7 +60,12 @@ fn write_binary_stl(path: &Path, m: &MeshData) -> std::io::Result<()> {
 /// the surface not at all, but leaves those points far from any remaining
 /// vertex. That version reported 14.6 mm of error on a torso the eye cannot
 /// tell apart from the original.
-fn point_tri(p: &na::Point3<f64>, a: &na::Point3<f64>, b: &na::Point3<f64>, c: &na::Point3<f64>) -> f64 {
+fn point_tri(
+    p: &na::Point3<f64>,
+    a: &na::Point3<f64>,
+    b: &na::Point3<f64>,
+    c: &na::Point3<f64>,
+) -> f64 {
     let (ab, ac, ap) = (b - a, c - a, p - a);
     let (d1, d2) = (ab.dot(&ap), ac.dot(&ap));
     if d1 <= 0.0 && d2 <= 0.0 {
@@ -125,7 +133,11 @@ fn main() {
         eprintln!("usage: decimate_stl <in.stl> <out.stl> <ratio 0..1>");
         std::process::exit(2);
     }
-    let (src, dst, ratio) = (Path::new(&a[1]), Path::new(&a[2]), a[3].parse::<f64>().unwrap());
+    let (src, dst, ratio) = (
+        Path::new(&a[1]),
+        Path::new(&a[2]),
+        a[3].parse::<f64>().unwrap(),
+    );
 
     let before = MeshData::from_stl(src).expect("read stl");
     let after = before.decimate_with(ratio, DecimationMethod::Qem);

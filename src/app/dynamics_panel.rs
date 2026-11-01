@@ -1,7 +1,9 @@
 #[cfg(feature = "mujoco")]
 impl ArticaraApp {
     /// MuJoCo用のbase_posとground_plane設定をUI状態から取得
-    pub fn collect_mujoco_setup(&self) -> (Option<[f64; 3]>, Option<articara::mjcf::GroundPlaneCfg>) {
+    pub fn collect_mujoco_setup(
+        &self,
+    ) -> (Option<[f64; 3]>, Option<articara::mjcf::GroundPlaneCfg>) {
         let base_pos = if self.sim.mujoco_base_pos.iter().any(|&v| v != 0.0) {
             Some([
                 self.sim.mujoco_base_pos[0] as f64,
@@ -27,7 +29,7 @@ impl ArticaraApp {
 use eframe::egui;
 
 use super::ArticaraApp;
-use articara::dynamics::{self, StaticAnalysis, DynSim, PayloadPhase};
+use articara::dynamics::{self, DynSim, PayloadPhase, StaticAnalysis};
 
 /// Simulation-execution state owned by the dynamics panel: the active
 /// payload / MuJoCo sims, sim-time estimators, WBC pipeline, external
@@ -216,7 +218,6 @@ impl Default for SimState {
     }
 }
 
-
 impl ArticaraApp {
     pub fn draw_dynamics_panel(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("⚡ Dynamics Analysis")
@@ -248,7 +249,11 @@ impl ArticaraApp {
                         egui::vec2(100.0, 18.0),
                         egui::TextEdit::singleline(&mut self.sim_config_path),
                     );
-                    if ui.small_button("💾").on_hover_text("Save sim config").clicked() {
+                    if ui
+                        .small_button("💾")
+                        .on_hover_text("Save sim config")
+                        .clicked()
+                    {
                         if !self.sim_config_path.is_empty() {
                             let path = std::path::PathBuf::from(&self.sim_config_path);
                             match save_sim_config(self, &path) {
@@ -257,13 +262,16 @@ impl ArticaraApp {
                                         format!("Saved sim config → {}", path.display());
                                 }
                                 Err(e) => {
-                                    self.status_message =
-                                        format!("Save sim config error: {e}");
+                                    self.status_message = format!("Save sim config error: {e}");
                                 }
                             }
                         }
                     }
-                    if ui.small_button("📂").on_hover_text("Load sim config").clicked() {
+                    if ui
+                        .small_button("📂")
+                        .on_hover_text("Load sim config")
+                        .clicked()
+                    {
                         if !self.sim_config_path.is_empty() {
                             let path = std::path::PathBuf::from(&self.sim_config_path);
                             match load_sim_config(&path) {
@@ -273,8 +281,7 @@ impl ArticaraApp {
                                         format!("Loaded sim config ← {}", path.display());
                                 }
                                 Err(e) => {
-                                    self.status_message =
-                                        format!("Load sim config error: {e}");
+                                    self.status_message = format!("Load sim config error: {e}");
                                 }
                             }
                         }
@@ -287,10 +294,7 @@ impl ArticaraApp {
                         let start = if self.sim_config_path.is_empty() {
                             None
                         } else {
-                            Some(
-                                std::path::Path::new(&self.sim_config_path)
-                                    .to_path_buf(),
-                            )
+                            Some(std::path::Path::new(&self.sim_config_path).to_path_buf())
                         };
                         self.dialogs.open_sim_config.open(
                             "Load Sim Config",
@@ -321,10 +325,7 @@ impl ArticaraApp {
                         .clicked()
                     {
                         if let Some(ref model) = self.model {
-                            let result = dynamics::analyze(
-                                model,
-                                self.dynamics_ee_link.as_deref(),
-                            );
+                            let result = dynamics::analyze(model, self.dynamics_ee_link.as_deref());
                             self.dynamics_result = Some(result);
                         }
                     }
@@ -353,15 +354,10 @@ impl ArticaraApp {
                                 base_locked_axes: self.sim.mujoco_base_locked,
                                 bake_actuator_limits: bake,
                                 bake_joint_position_limits: bake,
-                                mesh_path_style:
-                                    articara::mesh_paths::MeshPathStyle::default(),
+                                mesh_path_style: articara::mesh_paths::MeshPathStyle::default(),
                                 timestep: None, // keep MuJoCo's default
                                 extra_worldbody: None,
-                                default_friction: [
-                                    self.sim.sim_default_friction,
-                                    0.005,
-                                    0.0001,
-                                ],
+                                default_friction: [self.sim.sim_default_friction, 0.005, 0.0001],
                                 // GUI sims stay on the hand-rolled PD path.
                                 native_velocity_servo: None,
                                 integrator: None,
@@ -387,9 +383,7 @@ impl ArticaraApp {
                                     if let (Some(ref mj_sim), Some(ref m)) =
                                         (self.sim.mujoco_sim.as_ref(), self.model.as_ref())
                                     {
-                                        if let Some(p) =
-                                            mj_sim.body_world_position(&m.root_link)
-                                        {
+                                        if let Some(p) = mj_sim.body_world_position(&m.root_link) {
                                             self.sim.leg_odometry.set_position(
                                                 nalgebra::Vector3::new(p[0], p[1], p[2]),
                                             );
@@ -401,7 +395,8 @@ impl ArticaraApp {
                                     // advances.
                                     self.sim.dynamics_sim_paused = true;
                                     self.status_message =
-                                        "MuJoCo paused at t=0 — press ▶ Play or ⏩ +N to advance".into();
+                                        "MuJoCo paused at t=0 — press ▶ Play or ⏩ +N to advance"
+                                            .into();
                                 }
                                 Err(e) => self.status_message = format!("MuJoCo init error: {e}"),
                             }
@@ -441,17 +436,14 @@ impl ArticaraApp {
                                 .selected_text(&current_label)
                                 .show_ui(ui, |ui| {
                                     if ui
-                                        .selectable_label(
-                                            self.dynamics_ee_link.is_none(),
-                                            "(none)",
-                                        )
+                                        .selectable_label(self.dynamics_ee_link.is_none(), "(none)")
                                         .clicked()
                                     {
                                         self.dynamics_ee_link = None;
                                     }
                                     for name in &link_names {
-                                        let sel = self.dynamics_ee_link.as_deref()
-                                            == Some(name.as_str());
+                                        let sel =
+                                            self.dynamics_ee_link.as_deref() == Some(name.as_str());
                                         if ui.selectable_label(sel, name).clicked() {
                                             self.dynamics_ee_link = Some(name.clone());
                                         }
@@ -459,8 +451,7 @@ impl ArticaraApp {
                                 });
                         });
 
-                        let can_payload =
-                            !sim_active && self.dynamics_ee_link.is_some();
+                        let can_payload = !sim_active && self.dynamics_ee_link.is_some();
                         let payload_hover: &str = if sim_active {
                             "⚠ Another simulation is already running — stop it first."
                         } else if self.dynamics_ee_link.is_none() {
@@ -469,25 +460,18 @@ impl ArticaraApp {
                             "Gradually load the end-effector and visualise joint torque utilisation"
                         };
                         if ui
-                            .add_enabled(
-                                can_payload,
-                                egui::Button::new("🏋 Play Payload"),
-                            )
+                            .add_enabled(can_payload, egui::Button::new("🏋 Play Payload"))
                             .on_hover_text(payload_hover)
                             .clicked()
                         {
                             if let Some(ref model) = self.model {
-                                let ee = self
-                                    .dynamics_ee_link
-                                    .as_deref()
-                                    .unwrap_or("");
+                                let ee = self.dynamics_ee_link.as_deref().unwrap_or("");
                                 if let Some(sim) = dynamics::start_payload_sim(
                                     model,
                                     ee,
                                     self.sim.dynamics_sim_speed as f64,
                                 ) {
-                                    self.sim.dynamics_sim =
-                                        Some(DynSim::Payload(sim));
+                                    self.sim.dynamics_sim = Some(DynSim::Payload(sim));
                                 } else {
                                     self.status_message =
                                         "Cannot start payload sim (no effort limits or 0 capacity?)"
@@ -506,66 +490,66 @@ impl ArticaraApp {
                     .default_open(false)
                     .id_salt("dyn_base_setup")
                     .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Base pos:");
-                        ui.checkbox(&mut self.sim.mujoco_auto_base, "Auto")
-                            .on_hover_text(
-                                "When checked, the root link is auto-lifted just \
+                        ui.horizontal(|ui| {
+                            ui.label("Base pos:");
+                            ui.checkbox(&mut self.sim.mujoco_auto_base, "Auto")
+                                .on_hover_text(
+                                    "When checked, the root link is auto-lifted just \
                                  above the ground plane. When unchecked, the values \
                                  below are used as the floating-base initial \
                                  world-frame position.",
+                                );
+                        });
+                        ui.add_enabled_ui(!self.sim.mujoco_auto_base, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("X:");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.sim.mujoco_base_pos[0])
+                                        .speed(0.01)
+                                        .fixed_decimals(3)
+                                        .suffix(" m"),
+                                );
+                                ui.label("Y:");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.sim.mujoco_base_pos[1])
+                                        .speed(0.01)
+                                        .fixed_decimals(3)
+                                        .suffix(" m"),
+                                );
+                                ui.label("Z:");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.sim.mujoco_base_pos[2])
+                                        .speed(0.01)
+                                        .fixed_decimals(3)
+                                        .suffix(" m"),
+                                );
+                            })
+                            .response
+                            .on_hover_text(
+                                "Initial world-frame position of the floating base \
+                             link at MuJoCo sim start.",
                             );
-                    });
-                    ui.add_enabled_ui(!self.sim.mujoco_auto_base, |ui| {
+                        });
+
+                        // --- Base 6-DoF lock ---
+                        // All unchecked = full <freejoint/>; all checked = welded;
+                        // mixed = only the unlocked axes get individual joints.
+                        ui.label("Base lock:");
                         ui.horizontal(|ui| {
-                            ui.label("X:");
-                            ui.add(
-                                egui::DragValue::new(&mut self.sim.mujoco_base_pos[0])
-                                    .speed(0.01)
-                                    .fixed_decimals(3)
-                                    .suffix(" m"),
-                            );
-                            ui.label("Y:");
-                            ui.add(
-                                egui::DragValue::new(&mut self.sim.mujoco_base_pos[1])
-                                    .speed(0.01)
-                                    .fixed_decimals(3)
-                                    .suffix(" m"),
-                            );
-                            ui.label("Z:");
-                            ui.add(
-                                egui::DragValue::new(&mut self.sim.mujoco_base_pos[2])
-                                    .speed(0.01)
-                                    .fixed_decimals(3)
-                                    .suffix(" m"),
-                            );
+                            ui.checkbox(&mut self.sim.mujoco_base_locked[0], "TX");
+                            ui.checkbox(&mut self.sim.mujoco_base_locked[1], "TY");
+                            ui.checkbox(&mut self.sim.mujoco_base_locked[2], "TZ");
                         })
                         .response
-                        .on_hover_text(
-                            "Initial world-frame position of the floating base \
-                             link at MuJoCo sim start.",
-                        );
+                        .on_hover_text("Lock translation along world X / Y / Z");
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.sim.mujoco_base_locked[3], "RX");
+                            ui.checkbox(&mut self.sim.mujoco_base_locked[4], "RY");
+                            ui.checkbox(&mut self.sim.mujoco_base_locked[5], "RZ");
+                        })
+                        .response
+                        .on_hover_text("Lock rotation about world X / Y / Z");
                     });
-
-                    // --- Base 6-DoF lock ---
-                    // All unchecked = full <freejoint/>; all checked = welded;
-                    // mixed = only the unlocked axes get individual joints.
-                    ui.label("Base lock:");
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.sim.mujoco_base_locked[0], "TX");
-                        ui.checkbox(&mut self.sim.mujoco_base_locked[1], "TY");
-                        ui.checkbox(&mut self.sim.mujoco_base_locked[2], "TZ");
-                    })
-                    .response
-                    .on_hover_text("Lock translation along world X / Y / Z");
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.sim.mujoco_base_locked[3], "RX");
-                        ui.checkbox(&mut self.sim.mujoco_base_locked[4], "RY");
-                        ui.checkbox(&mut self.sim.mujoco_base_locked[5], "RZ");
-                    })
-                    .response
-                    .on_hover_text("Lock rotation about world X / Y / Z");
-                });
 
                 // ── Sim-time visualisation / safety toggles (MuJoCo only) ──
                 // Same rationale as base setup — kept tucked away so the
@@ -575,18 +559,15 @@ impl ArticaraApp {
                     .default_open(false)
                     .id_salt("dyn_sim_toggles")
                     .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.sim.show_contacts, "👣 Contacts")
-                            .on_hover_text(
-                                "Draw contact points and contact-force \
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.sim.show_contacts, "👣 Contacts")
+                                .on_hover_text(
+                                    "Draw contact points and contact-force \
                                  vectors over the viewport.",
-                            );
-                        ui.checkbox(
-                            &mut self.sim.enforce_actuator_limits,
-                            "⛔ Limits",
-                        )
-                        .on_hover_text(
-                            "Enforce per-joint hardware limits at three places:\n\
+                                );
+                            ui.checkbox(&mut self.sim.enforce_actuator_limits, "⛔ Limits")
+                                .on_hover_text(
+                                    "Enforce per-joint hardware limits at three places:\n\
                              • runtime PD: clamp τ to ±τmax, q̇* to ±ωmax\n\
                              • MJCF <motor>: forcelimited=\"true\"\n\
                              • MJCF <joint>: range=\"lower upper\"\n\
@@ -594,43 +575,44 @@ impl ArticaraApp {
                              time, so changing this checkbox while a sim is \
                              active requires Stop → Play to take effect on \
                              MuJoCo's side. Off = unrestricted at all three.",
-                        );
-                        if ui
-                            .checkbox(
-                                &mut self.sim.enforce_gravity_compensation,
-                                "🌍 Grav comp",
-                            )
-                            .on_hover_text(
-                                "Add a feedforward gravity-compensation \
+                                );
+                            if ui
+                                .checkbox(
+                                    &mut self.sim.enforce_gravity_compensation,
+                                    "🌍 Grav comp",
+                                )
+                                .on_hover_text(
+                                    "Add a feedforward gravity-compensation \
                                  torque (RNEA) to every Position/Velocity-\
                                  mode joint. With this on, the PD only \
                                  corrects tracking error, not the static \
                                  load — Kp and the resulting deflection \
                                  drop dramatically.",
-                            )
-                            .changed()
-                        {
-                            if let Some(sim) = self.sim.mujoco_sim.as_mut() {
-                                sim.set_gravity_compensation(
-                                    self.sim.enforce_gravity_compensation,
-                                );
+                                )
+                                .changed()
+                            {
+                                if let Some(sim) = self.sim.mujoco_sim.as_mut() {
+                                    sim.set_gravity_compensation(
+                                        self.sim.enforce_gravity_compensation,
+                                    );
+                                }
                             }
-                        }
-                    });
-                    // Default sliding-friction coefficient baked into MJCF
-                    // at MuJoCo init. Changes only take effect at the next
-                    // Stop → Play (MuJoCo compiles the value in once).
-                    ui.horizontal(|ui| {
-                        ui.label("🪨 Friction μ:");
-                        let resp = ui.add(
-                            egui::Slider::new(
-                                &mut self.sim.sim_default_friction,
-                                0.0..=2.0,
-                            )
-                            .fixed_decimals(2),
-                        )
-                        .on_hover_text(
-                            "Default sliding-friction coefficient applied \
+                        });
+                        // Default sliding-friction coefficient baked into MJCF
+                        // at MuJoCo init. Changes only take effect at the next
+                        // Stop → Play (MuJoCo compiles the value in once).
+                        ui.horizontal(|ui| {
+                            ui.label("🪨 Friction μ:");
+                            let resp = ui
+                                .add(
+                                    egui::Slider::new(
+                                        &mut self.sim.sim_default_friction,
+                                        0.0..=2.0,
+                                    )
+                                    .fixed_decimals(2),
+                                )
+                                .on_hover_text(
+                                    "Default sliding-friction coefficient applied \
                              to every emitted MJCF geom (ground plane, foot \
                              collisions, link colliders). MuJoCo combines \
                              contact pairs via per-axis max, so foot-on-ground \
@@ -638,47 +620,51 @@ impl ArticaraApp {
                              equal to the slider. Bake-time setting — changes \
                              require Stop → Play to take effect on a \
                              running sim.",
-                        );
-                        if ui.small_button("0.7").on_hover_text("Reset to default (0.7)").clicked() {
-                            self.sim.sim_default_friction = 0.7;
-                        }
-                        if sim_active && resp.changed() {
-                            self.status_message = format!(
-                                "🪨 Friction μ = {:.2} — Stop → Play to apply",
-                                self.sim.sim_default_friction,
-                            );
-                        }
-                    });
-                    // Mouse-drag interaction during sim:
-                    // pick Force (apply wrench) vs Posture (IK target) and
-                    // tune the force gain for Force mode.
-                    ui.horizontal(|ui| {
-                        ui.label("🖱 Drag:");
-                        let mut mode = self.sim.sim_drag_mode;
-                        egui::ComboBox::from_id_salt("sim_drag_mode")
-                            .selected_text(mode.label())
-                            .show_ui(ui, |ui| {
-                                for m in super::SimDragMode::ALL {
-                                    ui.selectable_value(&mut mode, m, m.label());
-                                }
-                            });
-                        if mode != self.sim.sim_drag_mode {
-                            self.sim.sim_drag_mode = mode;
-                        }
-                    });
-                    if matches!(self.sim.sim_drag_mode, super::SimDragMode::Force) {
-                        ui.horizontal(|ui| {
-                            ui.label("    Force gain:");
-                            ui.add(
-                                egui::DragValue::new(&mut self.sim.sim_drag_force_gain)
-                                    .speed(10.0)
-                                    .range(1.0..=10000.0)
-                                    .fixed_decimals(0)
-                                    .suffix(" N/m"),
-                            );
+                                );
+                            if ui
+                                .small_button("0.7")
+                                .on_hover_text("Reset to default (0.7)")
+                                .clicked()
+                            {
+                                self.sim.sim_default_friction = 0.7;
+                            }
+                            if sim_active && resp.changed() {
+                                self.status_message = format!(
+                                    "🪨 Friction μ = {:.2} — Stop → Play to apply",
+                                    self.sim.sim_default_friction,
+                                );
+                            }
                         });
-                    }
-                });
+                        // Mouse-drag interaction during sim:
+                        // pick Force (apply wrench) vs Posture (IK target) and
+                        // tune the force gain for Force mode.
+                        ui.horizontal(|ui| {
+                            ui.label("🖱 Drag:");
+                            let mut mode = self.sim.sim_drag_mode;
+                            egui::ComboBox::from_id_salt("sim_drag_mode")
+                                .selected_text(mode.label())
+                                .show_ui(ui, |ui| {
+                                    for m in super::SimDragMode::ALL {
+                                        ui.selectable_value(&mut mode, m, m.label());
+                                    }
+                                });
+                            if mode != self.sim.sim_drag_mode {
+                                self.sim.sim_drag_mode = mode;
+                            }
+                        });
+                        if matches!(self.sim.sim_drag_mode, super::SimDragMode::Force) {
+                            ui.horizontal(|ui| {
+                                ui.label("    Force gain:");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.sim.sim_drag_force_gain)
+                                        .speed(10.0)
+                                        .range(1.0..=10000.0)
+                                        .fixed_decimals(0)
+                                        .suffix(" N/m"),
+                                );
+                            });
+                        }
+                    });
 
                 // Playback controls
                 if sim_active {
@@ -703,12 +689,14 @@ impl ArticaraApp {
                     #[cfg(feature = "mujoco")]
                     if self.sim.mujoco_sim.is_some() {
                         let history_len = self
-                            .sim.mujoco_sim
+                            .sim
+                            .mujoco_sim
                             .as_ref()
                             .map(|s| s.history_len())
                             .unwrap_or(0);
                         let mj_dt_ms = self
-                            .sim.mujoco_sim
+                            .sim
+                            .mujoco_sim
                             .as_ref()
                             .map(|s| s.timestep() * 1000.0)
                             .unwrap_or(0.0);
@@ -722,10 +710,7 @@ impl ArticaraApp {
                             let can_back = history_len > 0;
                             for n in [100u32, 10, 1] {
                                 if ui
-                                    .add_enabled(
-                                        can_back,
-                                        egui::Button::new(format!("⏪ -{n}")),
-                                    )
+                                    .add_enabled(can_back, egui::Button::new(format!("⏪ -{n}")))
                                     .on_hover_text(format!(
                                         "Restore state from {n} frame(s) ago \
                                          (auto-pauses if running)",
@@ -742,9 +727,7 @@ impl ArticaraApp {
                             for n in [1u32, 10, 100] {
                                 if ui
                                     .button(format!("⏩ +{n}"))
-                                    .on_hover_text(format!(
-                                        "Advance {n} frame(s) then pause",
-                                    ))
+                                    .on_hover_text(format!("Advance {n} frame(s) then pause",))
                                     .clicked()
                                 {
                                     self.sim.dynamics_sim_paused = true;
@@ -788,10 +771,7 @@ impl ArticaraApp {
 
                 // Progress bar
                 let pct = (sim.current_mass / sim.max_mass).clamp(0.0, 1.0) as f32;
-                ui.add(
-                    egui::ProgressBar::new(pct)
-                        .text(format!("{:.1}%", pct * 100.0)),
-                );
+                ui.add(egui::ProgressBar::new(pct).text(format!("{:.1}%", pct * 100.0)));
 
                 // Per-joint utilisation bars
                 if !sim.joint_utilisation.is_empty() {
@@ -823,21 +803,13 @@ impl ArticaraApp {
                     };
 
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(&name_short)
-                                .small()
-                                .monospace(),
-                        );
+                        ui.label(egui::RichText::new(&name_short).small().monospace());
                         let (rect, _) = ui.allocate_exact_size(
                             egui::vec2(available_width, bar_height),
                             egui::Sense::hover(),
                         );
                         let painter = ui.painter_at(rect);
-                        painter.rect_filled(
-                            rect,
-                            2.0,
-                            egui::Color32::from_gray(50),
-                        );
+                        painter.rect_filled(rect, 2.0, egui::Color32::from_gray(50));
                         let frac = (util as f32).clamp(0.0, 1.5);
                         let color = if util <= 0.7 {
                             egui::Color32::from_rgb(80, 200, 80)
@@ -924,7 +896,7 @@ impl ArticaraApp {
                                 let color = if info.torque_margin >= 0.0 {
                                     egui::Color32::from_rgb(100, 200, 100) // green
                                 } else {
-                                    egui::Color32::from_rgb(255, 80, 80)   // red
+                                    egui::Color32::from_rgb(255, 80, 80) // red
                                 };
                                 ui.colored_label(color, format!("{:.3}", info.torque_margin));
                             } else {
@@ -957,9 +929,7 @@ impl ArticaraApp {
                     ui.label(format!("Limiting joint: {}", payload.limiting_joint));
                     ui.label(format!(
                         "EE pos: ({:.3}, {:.3}, {:.3})",
-                        payload.ee_position.x,
-                        payload.ee_position.y,
-                        payload.ee_position.z,
+                        payload.ee_position.x, payload.ee_position.y, payload.ee_position.z,
                     ));
 
                     // Per-joint payload contribution
@@ -987,18 +957,13 @@ impl ArticaraApp {
                         });
                 });
         }
-
     }
 
     fn draw_torque_bars(&self, ui: &mut egui::Ui, torques: &[dynamics::JointTorqueInfo]) {
         // Find the max scale for normalization
         let max_val = torques
             .iter()
-            .map(|t| {
-                t.gravity_torque
-                    .abs()
-                    .max(t.effort_limit.abs())
-            })
+            .map(|t| t.gravity_torque.abs().max(t.effort_limit.abs()))
             .fold(0.0_f64, f64::max);
 
         if max_val < 1e-12 {
@@ -1022,11 +987,7 @@ impl ArticaraApp {
                 } else {
                     info.joint_name.clone()
                 };
-                ui.label(
-                    egui::RichText::new(name_short)
-                        .small()
-                        .monospace(),
-                );
+                ui.label(egui::RichText::new(name_short).small().monospace());
 
                 // Draw bar
                 let (rect, _) = ui.allocate_exact_size(
@@ -1043,10 +1004,7 @@ impl ArticaraApp {
                 let limit_frac = (info.effort_limit / max_val).min(1.0) as f32;
                 let limit_rect = egui::Rect::from_min_max(
                     rect.min,
-                    egui::pos2(
-                        rect.min.x + rect.width() * limit_frac,
-                        rect.max.y,
-                    ),
+                    egui::pos2(rect.min.x + rect.width() * limit_frac, rect.max.y),
                 );
                 painter.rect_filled(limit_rect, 2.0, egui::Color32::from_gray(80));
 
@@ -1055,14 +1013,11 @@ impl ArticaraApp {
                 let bar_color = if info.torque_margin >= 0.0 {
                     egui::Color32::from_rgb(80, 180, 80) // green
                 } else {
-                    egui::Color32::from_rgb(230, 60, 60)  // red
+                    egui::Color32::from_rgb(230, 60, 60) // red
                 };
                 let tau_rect = egui::Rect::from_min_max(
                     rect.min,
-                    egui::pos2(
-                        rect.min.x + rect.width() * tau_frac,
-                        rect.max.y,
-                    ),
+                    egui::pos2(rect.min.x + rect.width() * tau_frac, rect.max.y),
                 );
                 painter.rect_filled(tau_rect, 2.0, bar_color);
 
@@ -1072,11 +1027,7 @@ impl ArticaraApp {
                 } else {
                     0
                 };
-                ui.label(
-                    egui::RichText::new(format!("{}%", pct))
-                        .small()
-                        .monospace(),
-                );
+                ui.label(egui::RichText::new(format!("{}%", pct)).small().monospace());
             });
         }
     }
@@ -1259,4 +1210,3 @@ fn strip_quotes(s: &str) -> &str {
         .and_then(|s| s.strip_suffix('"'))
         .unwrap_or(s.trim())
 }
-

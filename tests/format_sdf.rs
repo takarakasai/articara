@@ -54,7 +54,10 @@ mod test_sdf {
         let model = sdf::import_sdf(&fixture_sdf()).unwrap();
         let l1 = model.links.iter().find(|l| l.name == "link1").unwrap();
         match &l1.visuals[0].geometry {
-            GeomData::Cylinder { radius, half_length } => {
+            GeomData::Cylinder {
+                radius,
+                half_length,
+            } => {
                 assert!((*radius - 0.02).abs() < 1e-4);
                 assert!((*half_length - 0.1).abs() < 1e-4);
             }
@@ -91,7 +94,7 @@ mod test_sdf {
         let l1 = model.links.iter().find(|l| l.name == "link1").unwrap();
         let c = l1.visuals[0].color;
         assert!((c[0] - 1.0).abs() < 1e-3); // red=1
-        assert!((c[1]).abs() < 1e-3);         // green=0
+        assert!((c[1]).abs() < 1e-3); // green=0
     }
 
     #[test]
@@ -136,8 +139,13 @@ mod test_sdf {
 
         // Check inertial mass round-trips
         for (a, b) in model.links.iter().zip(model2.links.iter()) {
-            assert!((a.inertial.mass - b.inertial.mass).abs() < 1e-4,
-                "Mass mismatch for {}: {} vs {}", a.name, a.inertial.mass, b.inertial.mass);
+            assert!(
+                (a.inertial.mass - b.inertial.mass).abs() < 1e-4,
+                "Mass mismatch for {}: {} vs {}",
+                a.name,
+                a.inertial.mass,
+                b.inertial.mass
+            );
         }
     }
 
@@ -177,7 +185,9 @@ mod test_sdf {
         assert!(
             err < 0.01,
             "Four-bar loop not closed at q=0: coupler_tip={:?} crank_r_tip={:?} err={}",
-            coupler_tip, crank_r_tip, err
+            coupler_tip,
+            crank_r_tip,
+            err
         );
     }
 
@@ -185,7 +195,7 @@ mod test_sdf {
     fn five_bar_loads() {
         let model = sdf::import_sdf(&fixture_five_bar()).expect("five_bar import failed");
         assert_eq!(model.name, "five_bar_parallel");
-        assert_eq!(model.links.len(), 6);  // base + 2 proximal + 2 distal + EE
+        assert_eq!(model.links.len(), 6); // base + 2 proximal + 2 distal + EE
         // 4 revolute + 1 fixed = 5 joints
         assert_eq!(model.joints.len(), 5);
         assert_eq!(model.root_link, "base_link");
@@ -197,8 +207,7 @@ mod test_sdf {
         let transforms = model.compute_transforms();
 
         // EE position (fixed to distal_left tip)
-        let ee_pos = transforms["end_effector"]
-            * nalgebra::Point3::new(0.0_f32, 0.0, 0.0);
+        let ee_pos = transforms["end_effector"] * nalgebra::Point3::new(0.0_f32, 0.0, 0.0);
 
         // Distal-right tip = distal_right origin + (0, 0, 0.2) in its frame
         let dr_tf = transforms["distal_right"];
@@ -208,7 +217,9 @@ mod test_sdf {
         assert!(
             err < 0.01,
             "Five-bar loop not closed at q=0: ee={:?} dr_tip={:?} err={}",
-            ee_pos, dr_tip, err
+            ee_pos,
+            dr_tip,
+            err
         );
     }
 }

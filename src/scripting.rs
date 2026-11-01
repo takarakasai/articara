@@ -33,7 +33,7 @@
 //! - `max_call_levels` prevents stack overflow.
 //! - No file I/O, no network — Rhai is sandboxed by design.
 
-use rhai::{Dynamic, Engine, AST, Scope, Map};
+use rhai::{AST, Dynamic, Engine, Map, Scope};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -107,7 +107,7 @@ impl ScriptEngine {
 
         // ── Safety limits ──
         engine.set_max_operations(10_000); // prevent infinite loops
-        engine.set_max_call_levels(16);    // prevent deep recursion
+        engine.set_max_call_levels(16); // prevent deep recursion
         engine.set_max_expr_depths(32, 32);
 
         // ── Utility math functions ──
@@ -122,7 +122,13 @@ impl ScriptEngine {
             x.clamp(lo, hi)
         });
         engine.register_fn("sign", |x: f64| -> f64 {
-            if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }
+            if x > 0.0 {
+                1.0
+            } else if x < 0.0 {
+                -1.0
+            } else {
+                0.0
+            }
         });
 
         // ── Constants ──
@@ -218,7 +224,10 @@ impl ScriptEngine {
         self.scope.set_or_push("sensor", sensor_map);
 
         // Evaluate
-        match self.engine.eval_ast_with_scope::<Dynamic>(&mut self.scope, &ast) {
+        match self
+            .engine
+            .eval_ast_with_scope::<Dynamic>(&mut self.scope, &ast)
+        {
             Ok(_) => {
                 self.last_error = None;
             }
@@ -281,7 +290,9 @@ mod tests {
     #[test]
     fn test_compile_and_eval_basic() {
         let mut engine = ScriptEngine::new();
-        engine.compile(r#"
+        engine
+            .compile(
+                r#"
             let k = 0.5;
             let threshold = 30.0;
             let f = sensor["foot_force"];
@@ -289,7 +300,9 @@ mod tests {
                 let tau = -k * (f - threshold);
                 set_torque(2, tau);
             }
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
 
         let mut inputs = ScriptInputs::default();
         inputs.sensors.insert("foot_force".to_string(), 50.0);
@@ -328,11 +341,15 @@ mod tests {
     #[test]
     fn test_math_functions() {
         let mut engine = ScriptEngine::new();
-        engine.compile(r#"
+        engine
+            .compile(
+                r#"
             debug_val("sin_val", sin(0.0));
             debug_val("abs_val", abs(-5.0));
             debug_val("clamp_val", clamp(100.0, -1.0, 1.0));
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
 
         let outputs = engine.eval(&ScriptInputs::default());
         assert!((outputs.debug_values["sin_val"]).abs() < 1e-9);
@@ -348,10 +365,14 @@ mod tests {
         engine.scope.set_or_push("counter", 0 as i64);
 
         // Compile a script that increments the counter
-        engine.compile(r#"
+        engine
+            .compile(
+                r#"
             counter += 1;
             debug_val("counter", counter.to_float());
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
 
         // First eval: counter goes from 0 → 1
         let outputs = engine.eval(&ScriptInputs::default());
@@ -365,12 +386,16 @@ mod tests {
     #[test]
     fn test_joint_pos_vel_access() {
         let mut engine = ScriptEngine::new();
-        engine.compile(r#"
+        engine
+            .compile(
+                r#"
             let pos = q["3"];
             let vel = qd["3"];
             debug_val("pos", pos);
             debug_val("vel", vel);
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
 
         let mut inputs = ScriptInputs::default();
         inputs.joint_positions.insert(3, 1.57);
@@ -384,9 +409,13 @@ mod tests {
     #[test]
     fn test_debug_val_output() {
         let mut engine = ScriptEngine::new();
-        engine.compile(r#"
+        engine
+            .compile(
+                r#"
             debug_val("my_metric", 42.0);
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
 
         let outputs = engine.eval(&ScriptInputs::default());
         assert!((outputs.debug_values["my_metric"] - 42.0).abs() < 1e-9);

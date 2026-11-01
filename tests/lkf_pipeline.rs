@@ -12,12 +12,12 @@
 use std::path::PathBuf;
 
 use articara::estimator::LkfPipeline;
-use articara::gait::{auto_detect_kinematics_config, DEFAULT_FOOT_LINKS};
+use articara::gait::{DEFAULT_FOOT_LINKS, auto_detect_kinematics_config};
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
 use articara::robot::RobotModel;
 use nalgebra::{UnitQuaternion, Vector3};
-use quadruped_gait::{solve_leg_ik, KinematicsConfig, LegIkSolution};
+use quadruped_gait::{KinematicsConfig, LegIkSolution, solve_leg_ik};
 
 fn namiashi_misa() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -27,10 +27,7 @@ fn namiashi_misa() -> PathBuf {
         .join("namiashi.misa")
 }
 
-fn seed_joint_positions_from_kinematics(
-    robot: &mut RobotModel,
-    kin: &KinematicsConfig,
-) {
+fn seed_joint_positions_from_kinematics(robot: &mut RobotModel, kin: &KinematicsConfig) {
     for leg_kin in [&kin.fl, &kin.fr, &kin.rl, &kin.rr] {
         let target = leg_kin.nominal_foot_body;
         let sol = solve_leg_ik(leg_kin, target, false);
@@ -70,8 +67,8 @@ fn lkf_static_stand_tracks_ground_truth_body_z() {
     // same migration in gait_walk_stability.
     let mut robot = RobotModel::from_misa(&path).expect("load namiashi .misa");
 
-    let mut kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS)
-        .expect("auto-detect kinematics");
+    let mut kin =
+        auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS).expect("auto-detect kinematics");
     for leg_kin in [&mut kin.fl, &mut kin.fr, &mut kin.rl, &mut kin.rr] {
         let total_leg = leg_kin.upper_leg_m + leg_kin.lower_leg_m;
         leg_kin.nominal_foot_body.z += 0.08 * total_leg;

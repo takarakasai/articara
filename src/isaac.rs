@@ -20,7 +20,11 @@ pub fn export_isaac_python(model: &RobotModel, urdf_relative_path: &str) -> Stri
     s.push_str("# Run this in Isaac Sim's Script Editor or via command line.\n");
     s.push_str("#\n");
     s.push_str(&format!("# Robot: {}\n", model.name));
-    s.push_str(&format!("# Links: {}, Joints: {}\n", model.links.len(), model.joints.len()));
+    s.push_str(&format!(
+        "# Links: {}, Joints: {}\n",
+        model.links.len(),
+        model.joints.len()
+    ));
     s.push_str("#\n");
     s.push_str("# Usage:\n");
     s.push_str("#   1. Open Isaac Sim\n");
@@ -65,10 +69,7 @@ pub fn export_isaac_python(model: &RobotModel, urdf_relative_path: &str) -> Stri
         if joint.joint_type == "fixed" {
             continue;
         }
-        s.push_str(&format!(
-            "# Joint: {} ({})\n",
-            joint.name, joint.joint_type
-        ));
+        s.push_str(&format!("# Joint: {} ({})\n", joint.name, joint.joint_type));
         s.push_str(&format!(
             "joint_prim = stage.GetPrimAtPath(\"/World/{}/{}\")\n",
             model.name, joint.name
@@ -77,19 +78,13 @@ pub fn export_isaac_python(model: &RobotModel, urdf_relative_path: &str) -> Stri
         if joint.joint_type == "revolute" || joint.joint_type == "continuous" {
             s.push_str("    drive = UsdPhysics.DriveAPI.Apply(joint_prim, \"angular\")\n");
             s.push_str("    drive.CreateTypeAttr(\"force\")\n");
-            s.push_str(&format!(
-                "    drive.CreateMaxForceAttr({})\n",
-                joint.effort
-            ));
+            s.push_str(&format!("    drive.CreateMaxForceAttr({})\n", joint.effort));
             s.push_str("    drive.CreateDampingAttr(1e3)\n");
             s.push_str("    drive.CreateStiffnessAttr(1e4)\n");
         } else if joint.joint_type == "prismatic" {
             s.push_str("    drive = UsdPhysics.DriveAPI.Apply(joint_prim, \"linear\")\n");
             s.push_str("    drive.CreateTypeAttr(\"force\")\n");
-            s.push_str(&format!(
-                "    drive.CreateMaxForceAttr({})\n",
-                joint.effort
-            ));
+            s.push_str(&format!("    drive.CreateMaxForceAttr({})\n", joint.effort));
             s.push_str("    drive.CreateDampingAttr(1e3)\n");
             s.push_str("    drive.CreateStiffnessAttr(1e4)\n");
         }
@@ -123,14 +118,10 @@ pub fn export_isaac_python(model: &RobotModel, urdf_relative_path: &str) -> Stri
 
 /// Export Isaac-compatible files: a URDF + Python import script.
 #[allow(dead_code)]
-pub fn export_isaac_to_dir(
-    model: &RobotModel,
-    output_dir: &Path,
-) -> Result<(), String> {
+pub fn export_isaac_to_dir(model: &RobotModel, output_dir: &Path) -> Result<(), String> {
     // First export the URDF (using existing URDF export)
     let urdf_subdir = output_dir.join("urdf");
-    std::fs::create_dir_all(&urdf_subdir)
-        .map_err(|e| format!("Create urdf dir: {e}"))?;
+    std::fs::create_dir_all(&urdf_subdir).map_err(|e| format!("Create urdf dir: {e}"))?;
 
     let urdf_filename = format!("{}.urdf", model.name);
     let urdf_path = urdf_subdir.join(&urdf_filename);
@@ -140,8 +131,7 @@ pub fn export_isaac_to_dir(
     let relative_urdf = format!("urdf/{urdf_filename}");
     let script = export_isaac_python(model, &relative_urdf);
     let script_path = output_dir.join(format!("import_{}.py", model.name));
-    std::fs::write(&script_path, &script)
-        .map_err(|e| format!("Write Isaac script: {e}"))?;
+    std::fs::write(&script_path, &script).map_err(|e| format!("Write Isaac script: {e}"))?;
 
     log::info!(
         "Isaac export: URDF at {:?}, script at {:?}",

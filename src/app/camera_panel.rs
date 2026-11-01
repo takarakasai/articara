@@ -44,18 +44,17 @@ impl ArticaraApp {
                 ui.separator();
 
                 // ── TPS settings ──
-                ui.label(
-                    egui::RichText::new("TPS settings")
-                        .strong()
-                        .small(),
-                );
+                ui.label(egui::RichText::new("TPS settings").strong().small());
                 let s = &mut self.tps_settings;
 
                 ui.horizontal(|ui| {
                     ui.label("Follow link:");
                     let mut name = s.follow_link.clone().unwrap_or_default();
-                    let placeholder =
-                        self.model.as_ref().map(|m| m.root_link.as_str()).unwrap_or("");
+                    let placeholder = self
+                        .model
+                        .as_ref()
+                        .map(|m| m.root_link.as_str())
+                        .unwrap_or("");
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut name)
                             .hint_text(format!("(default: {placeholder})"))
@@ -72,24 +71,15 @@ impl ArticaraApp {
 
                 ui.horizontal(|ui| {
                     ui.label("Distance (m):");
-                    ui.add(
-                        egui::Slider::new(&mut s.distance, 0.1..=5.0)
-                            .fixed_decimals(2),
-                    );
+                    ui.add(egui::Slider::new(&mut s.distance, 0.1..=5.0).fixed_decimals(2));
                 });
                 ui.horizontal(|ui| {
                     ui.label("Yaw offset (rad):");
-                    ui.add(
-                        egui::Slider::new(&mut s.yaw_offset, -3.14..=3.14)
-                            .fixed_decimals(2),
-                    );
+                    ui.add(egui::Slider::new(&mut s.yaw_offset, -3.14..=3.14).fixed_decimals(2));
                 });
                 ui.horizontal(|ui| {
                     ui.label("Pitch (rad):");
-                    ui.add(
-                        egui::Slider::new(&mut s.pitch_offset, -1.5..=1.5)
-                            .fixed_decimals(2),
-                    );
+                    ui.add(egui::Slider::new(&mut s.pitch_offset, -1.5..=1.5).fixed_decimals(2));
                 });
                 ui.horizontal(|ui| {
                     ui.label("Look-at lift (m):");

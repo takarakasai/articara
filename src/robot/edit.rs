@@ -24,15 +24,23 @@ impl RobotModel {
                 name: root_name.clone(),
                 visuals: vec![VisualData {
                     origin: na::Isometry3::identity(),
-                    geometry: GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.025 },
+                    geometry: GeomData::Box {
+                        hx: 0.05,
+                        hy: 0.05,
+                        hz: 0.025,
+                    },
                     color: [0.7, 0.7, 0.7, 1.0],
                 }],
                 collisions: Vec::new(),
                 inertial: InertialData {
                     origin: na::Isometry3::identity(),
                     mass: 1.0,
-                    ixx: 0.001, ixy: 0.0, ixz: 0.0,
-                    iyy: 0.001, iyz: 0.0, izz: 0.001,
+                    ixx: 0.001,
+                    ixy: 0.0,
+                    ixz: 0.0,
+                    iyy: 0.001,
+                    iyz: 0.0,
+                    izz: 0.001,
                 },
                 collision_enabled: true,
             }],
@@ -101,8 +109,12 @@ impl RobotModel {
             inertial: InertialData {
                 origin: na::Isometry3::identity(),
                 mass: 0.1,
-                ixx: 0.0001, ixy: 0.0, ixz: 0.0,
-                iyy: 0.0001, iyz: 0.0, izz: 0.0001,
+                ixx: 0.0001,
+                ixy: 0.0,
+                ixz: 0.0,
+                iyy: 0.0001,
+                iyz: 0.0,
+                izz: 0.0001,
             },
             collision_enabled: true,
         });
@@ -149,10 +161,10 @@ impl RobotModel {
             actuator_mode: crate::rbd::model::ActuatorMode::default(),
             actuator_kp: 50.0,
             actuator_kv: 5.0,
-                    // Match `default_armature()` — see comment on the URDF
-                    // loader path for the rationale.
-                    armature: 0.0014,
-                    joint_damping: 0.0,
+            // Match `default_armature()` — see comment on the URDF
+            // loader path for the rationale.
+            armature: 0.0014,
+            joint_damping: 0.0,
         });
         self.joint_positions.push(0.0);
         self.misarta_cache = None; // invalidate stale cache
@@ -176,7 +188,16 @@ impl RobotModel {
         upper: f64,
     ) -> Result<(usize, usize), String> {
         let li = self.add_link(link_name, geometry, color);
-        let ji = self.add_joint(joint_name, joint_type, parent_link, link_name, origin, axis, lower, upper)?;
+        let ji = self.add_joint(
+            joint_name,
+            joint_type,
+            parent_link,
+            link_name,
+            origin,
+            axis,
+            lower,
+            upper,
+        )?;
         Ok((li, ji))
     }
 
@@ -188,8 +209,8 @@ impl RobotModel {
     /// links, collision pairs / loop closures touching them, mimics of
     /// removed joints, pose angle entries) — previously those went stale.
     pub fn remove_link(&mut self, link_name: &str) -> Result<Vec<String>, String> {
-        let removed = misarta::native::edit::remove_link_in(self, link_name)
-            .map_err(|e| e.to_string())?;
+        let removed =
+            misarta::native::edit::remove_link_in(self, link_name).map_err(|e| e.to_string())?;
         self.rebuild_indices();
         Ok(removed)
     }
@@ -349,8 +370,7 @@ impl misarta::native::edit::EditTables for RobotModel {
     }
 
     fn retain_rows_by_joint(&mut self, keep: &dyn Fn(&str) -> bool) {
-        self.mimics
-            .retain(|m| keep(&m.joint) && keep(&m.source));
+        self.mimics.retain(|m| keep(&m.joint) && keep(&m.source));
         for p in &mut self.poses {
             p.angles.retain(|k, _| keep(k));
         }

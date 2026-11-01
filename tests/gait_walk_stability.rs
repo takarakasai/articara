@@ -25,16 +25,13 @@
 
 use std::path::PathBuf;
 
-use articara::gait::{
-    auto_detect_kinematics_config, GaitController, DEFAULT_FOOT_LINKS,
-};
+use articara::gait::{DEFAULT_FOOT_LINKS, GaitController, auto_detect_kinematics_config};
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
 use articara::robot::RobotModel;
 use nalgebra::Vector3;
 use quadruped_gait::{
-    solve_leg_ik, GaitConfig, GaitMode, KinematicsConfig, LegIkSolution,
-    VelocityCmd,
+    GaitConfig, GaitMode, KinematicsConfig, LegIkSolution, VelocityCmd, solve_leg_ik,
 };
 
 fn namiashi_misa() -> PathBuf {
@@ -52,10 +49,7 @@ fn namiashi_misa() -> PathBuf {
 /// derivation. Without this seeding, the robot starts at the URDF q=0
 /// pose (legs straight, kinematic singularity) and falls a few cm
 /// before the gait controller's first tick takes effect.
-fn seed_joint_positions_from_kinematics(
-    robot: &mut RobotModel,
-    kin: &KinematicsConfig,
-) {
+fn seed_joint_positions_from_kinematics(robot: &mut RobotModel, kin: &KinematicsConfig) {
     for leg_kin in [&kin.fl, &kin.fr, &kin.rl, &kin.rr] {
         let target = leg_kin.nominal_foot_body;
         let sol = solve_leg_ik(leg_kin, target, false);
@@ -221,8 +215,7 @@ fn run_walk(mode: GaitMode, params: WalkParams) -> Option<Vec<TrunkSample>> {
     sim.set_gravity_compensation(true);
 
     let cfg = GaitConfig::trot();
-    let mut gc = GaitController::build(&robot, kin, cfg, mode)
-        .expect("GaitController::build");
+    let mut gc = GaitController::build(&robot, kin, cfg, mode).expect("GaitController::build");
     // SRBD MPC config (mass / inertia) is auto-detected from the
     // model's link inertials inside `GaitController::build`, so the
     // test no longer needs a manual override.
@@ -313,10 +306,7 @@ fn assert_walk_stable(mode: GaitMode, samples: &[TrunkSample], params: &WalkPara
     // 1. No fall: trunk z stays above the threshold for the entire run
     //    (including burn-in, since "fell while settling" is also a
     //    failure).
-    let min_z = samples
-        .iter()
-        .map(|s| s.z)
-        .fold(f64::INFINITY, f64::min);
+    let min_z = samples.iter().map(|s| s.z).fold(f64::INFINITY, f64::min);
     assert!(
         min_z > TRUNK_Z_FALL_THRESHOLD_M,
         "{mode:?}: trunk fell — min_z = {min_z:.3} m (threshold {:.2})",
@@ -324,14 +314,8 @@ fn assert_walk_stable(mode: GaitMode, samples: &[TrunkSample], params: &WalkPara
     );
 
     // 2. Bounded body tilt during walking.
-    let peak_roll = walk
-        .iter()
-        .map(|s| s.roll.abs())
-        .fold(0.0_f64, f64::max);
-    let peak_pitch = walk
-        .iter()
-        .map(|s| s.pitch.abs())
-        .fold(0.0_f64, f64::max);
+    let peak_roll = walk.iter().map(|s| s.roll.abs()).fold(0.0_f64, f64::max);
+    let peak_pitch = walk.iter().map(|s| s.pitch.abs()).fold(0.0_f64, f64::max);
     assert!(
         peak_roll < MAX_BODY_TILT_RAD,
         "{mode:?}: roll exceeded {:.2} rad — peak {:.3}",

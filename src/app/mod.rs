@@ -3,11 +3,11 @@ use nalgebra as na;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use crate::renderer::GlRenderer;
 use articara::camera::OrbitCamera;
 use articara::dynamics;
 use articara::format::RobotFormat;
 use articara::history::History;
-use crate::renderer::GlRenderer;
 use articara::robot::RobotModel;
 
 /// How a left-mouse drag on a link is interpreted while a MuJoCo sim is running.
@@ -86,13 +86,25 @@ impl PeaksPlotMetric {
     pub fn unit(self, is_prismatic: bool) -> &'static str {
         match self {
             PeaksPlotMetric::Position => {
-                if is_prismatic { "m" } else { "rad" }
+                if is_prismatic {
+                    "m"
+                } else {
+                    "rad"
+                }
             }
             PeaksPlotMetric::Velocity => {
-                if is_prismatic { "m/s" } else { "rad/s" }
+                if is_prismatic {
+                    "m/s"
+                } else {
+                    "rad/s"
+                }
             }
             PeaksPlotMetric::Torque => {
-                if is_prismatic { "N" } else { "N·m" }
+                if is_prismatic {
+                    "N"
+                } else {
+                    "N·m"
+                }
             }
         }
     }
@@ -213,8 +225,8 @@ impl OffsetTarget {
 
     pub fn icon(self) -> &'static str {
         match self {
-            OffsetTarget::Joint => "\u{1f517}",   // 🔗
-            OffsetTarget::Visual => "\u{1f441}",  // 👁
+            OffsetTarget::Joint => "\u{1f517}",     // 🔗
+            OffsetTarget::Visual => "\u{1f441}",    // 👁
             OffsetTarget::Collision => "\u{1f6e1}", // 🛡
         }
     }
@@ -509,8 +521,7 @@ pub struct ArticaraApp {
     /// dismisses the dialog. Only set when the `mujoco` feature is
     /// active **and** the version check came back as `Mismatch`.
     #[cfg(feature = "mujoco")]
-    pending_mujoco_warning:
-        Option<articara::mujoco_version::CheckResult>,
+    pending_mujoco_warning: Option<articara::mujoco_version::CheckResult>,
     /// Quadruped gait controller + panel tuning state. See
     /// [`gait_panel::GaitPanelState`].
     gait: gait_panel::GaitPanelState,
@@ -656,9 +667,7 @@ impl ArticaraApp {
             pending_misa_report: None,
             #[cfg(feature = "mujoco")]
             pending_mujoco_warning: match articara::mujoco_version::cached() {
-                Some(r @ articara::mujoco_version::CheckResult::Mismatch { .. }) => {
-                    Some(r.clone())
-                }
+                Some(r @ articara::mujoco_version::CheckResult::Mismatch { .. }) => Some(r.clone()),
                 _ => None,
             },
             gait: gait_panel::GaitPanelState::default(),
@@ -674,10 +683,7 @@ impl ArticaraApp {
     /// the user sees their saved configuration. Falls back to the default
     /// FL/FR/RL/RR_foot when the model has no gait entries.
     pub(crate) fn sync_gait_panel_from_model(&mut self) {
-        let descriptor = self
-            .model
-            .as_ref()
-            .and_then(|m| m.gaits.first().cloned());
+        let descriptor = self.model.as_ref().and_then(|m| m.gaits.first().cloned());
         let names = match descriptor {
             Some(d) => [d.fl_foot, d.fr_foot, d.rl_foot, d.rr_foot],
             None => articara::gait::DEFAULT_FOOT_LINKS.map(|(_, s)| s.to_string()),
@@ -695,7 +701,9 @@ impl ArticaraApp {
             return;
         };
         if model.gaits.is_empty() {
-            model.gaits.push(articara::rbd::model::GaitDescriptor::default_trot());
+            model
+                .gaits
+                .push(articara::rbd::model::GaitDescriptor::default_trot());
         }
         let g = &mut model.gaits[0];
         g.fl_foot = self.gait.foot_links[0].1.clone();
@@ -768,10 +776,7 @@ impl ArticaraApp {
                             if report.unmatched_actuators.is_empty() {
                                 String::new()
                             } else {
-                                format!(
-                                    "  ⚠ unmatched: {}",
-                                    report.unmatched_actuators.join(", ")
-                                )
+                                format!("  ⚠ unmatched: {}", report.unmatched_actuators.join(", "))
                             },
                         );
                     }
@@ -794,8 +799,10 @@ impl ArticaraApp {
                 // Default posture path: <model_dir>/<robot_name>.toml
                 if let Some(parent) = path.parent() {
                     if let Some(ref m) = self.model {
-                        self.posture_path =
-                            parent.join(format!("{}.toml", m.name)).display().to_string();
+                        self.posture_path = parent
+                            .join(format!("{}.toml", m.name))
+                            .display()
+                            .to_string();
                     }
                 }
                 // Default export dir to the URDF's parent directory
@@ -840,18 +847,16 @@ impl ArticaraApp {
                 .follow_link
                 .as_deref()
                 .unwrap_or(&model.root_link);
-            transforms
-                .get(link_name)
-                .copied()
-                .unwrap_or_else(|| {
-                    // Fallback if the configured link disappeared
-                    // (mid-rename, etc.): use the base transform.
-                    model.base_transform.cast::<f32>()
-                })
+            transforms.get(link_name).copied().unwrap_or_else(|| {
+                // Fallback if the configured link disappeared
+                // (mid-rename, etc.): use the base transform.
+                model.base_transform.cast::<f32>()
+            })
         } else {
             na::Isometry3::identity()
         };
-        self.tps_camera.update_from_tps(&link_world, &self.tps_settings);
+        self.tps_camera
+            .update_from_tps(&link_world, &self.tps_settings);
     }
 
     /// Switch the active camera mode, preserving the user's free-camera
@@ -899,8 +904,7 @@ impl ArticaraApp {
                     let scroll = response.ctx.input(|i| i.smooth_scroll_delta.y);
                     if scroll != 0.0 {
                         self.tps_settings.distance *= 1.0 - scroll * 0.002;
-                        self.tps_settings.distance =
-                            self.tps_settings.distance.clamp(0.05, 50.0);
+                        self.tps_settings.distance = self.tps_settings.distance.clamp(0.05, 50.0);
                     }
                 }
                 // Right / middle drag: nudge the look-at point's local
@@ -953,13 +957,12 @@ impl ArticaraApp {
         #[cfg(feature = "mujoco")]
         self.drain_instantaneous_async_ops();
         #[cfg(feature = "mujoco")]
-        let async_step_remaining: Option<u32> = self
-            .sim.mujoco_sim
-            .as_ref()
-            .and_then(|s| match s.async_peek() {
-                Some(articara::mujoco_sim::AsyncSimOp::StepFrames(n)) => Some(*n),
-                _ => None,
-            });
+        let async_step_remaining: Option<u32> = self.sim.mujoco_sim.as_ref().and_then(|s| match s
+            .async_peek()
+        {
+            Some(articara::mujoco_sim::AsyncSimOp::StepFrames(n)) => Some(*n),
+            _ => None,
+        });
 
         #[cfg(feature = "mujoco")]
         let has_mujoco = self.sim.mujoco_sim.is_some();
@@ -1023,24 +1026,21 @@ impl ArticaraApp {
                             // scope's mutable borrow of `self.*`, so going
                             // through a `&mut self` method would double-borrow.
                             for reading in mj_sim.imu_readings(model) {
-                                let dt_imu = match self
-                                    .sim.imu_last_sim_time
-                                    .get(&reading.name)
-                                {
+                                let dt_imu = match self.sim.imu_last_sim_time.get(&reading.name) {
                                     Some(prev) if reading.sim_time > *prev => {
                                         reading.sim_time - *prev
                                     }
                                     _ => {
-                                        self.sim.imu_last_sim_time
+                                        self.sim
+                                            .imu_last_sim_time
                                             .insert(reading.name.clone(), reading.sim_time);
                                         continue;
                                     }
                                 };
-                                self.sim.imu_last_sim_time
+                                self.sim
+                                    .imu_last_sim_time
                                     .insert(reading.name.clone(), reading.sim_time);
-                                if let Some(est) =
-                                    self.sim.imu_estimators.get_mut(&reading.name)
-                                {
+                                if let Some(est) = self.sim.imu_estimators.get_mut(&reading.name) {
                                     est.update_imu(reading.gyro, reading.accel, dt_imu);
                                 }
                             }
@@ -1068,9 +1068,7 @@ impl ArticaraApp {
                                             model.sensors.iter().find(|s| {
                                                 matches!(
                                                     s.kind,
-                                                    articara::rbd::model::SensorKind::Imu {
-                                                        ..
-                                                    }
+                                                    articara::rbd::model::SensorKind::Imu { .. }
                                                 )
                                             })
                                         });
@@ -1080,9 +1078,9 @@ impl ArticaraApp {
                                         .or_else(|| mj_sim.body_world_yaw(trunk))
                                         .unwrap_or(0.0)
                                 }
-                                articara::gait::PoseSource::GroundTruth => mj_sim
-                                    .body_world_yaw(trunk)
-                                    .unwrap_or(0.0),
+                                articara::gait::PoseSource::GroundTruth => {
+                                    mj_sim.body_world_yaw(trunk).unwrap_or(0.0)
+                                }
                             };
 
                             // Update the leg-odometry estimator if the user
@@ -1099,8 +1097,7 @@ impl ArticaraApp {
                                     let kin = gc.kinematics().clone();
                                     let joint_indices = gc.joint_indices();
                                     let joint_signs = gc.joint_signs();
-                                    let mut legs =
-                                        [(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, false); 4];
+                                    let mut legs = [(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, false); 4];
                                     for slot in 0..4 {
                                         for k in 0..3 {
                                             let ji = joint_indices[slot][k];
@@ -1112,8 +1109,7 @@ impl ArticaraApp {
                                                 .joints
                                                 .get(ji)
                                                 .and_then(|j| {
-                                                    let info =
-                                                        mj_sim.joint_q_qd(&j.name)?;
+                                                    let info = mj_sim.joint_q_qd(&j.name)?;
                                                     Some(info)
                                                 })
                                                 .unwrap_or((0.0, 0.0));
@@ -1145,9 +1141,7 @@ impl ArticaraApp {
                                     self.sim.leg_odometry.update(
                                         &kin,
                                         legs,
-                                        nalgebra::Vector3::new(
-                                            omega_w[0], omega_w[1], omega_w[2],
-                                        ),
+                                        nalgebra::Vector3::new(omega_w[0], omega_w[1], omega_w[2]),
                                         yaw_observed,
                                         dt as f64,
                                     );
@@ -1159,9 +1153,7 @@ impl ArticaraApp {
                                     let p = self.sim.leg_odometry.position_world();
                                     [p.x, p.y, p.z]
                                 }
-                                _ => mj_sim
-                                    .body_world_position(trunk)
-                                    .unwrap_or([0.0, 0.0, 0.0]),
+                                _ => mj_sim.body_world_position(trunk).unwrap_or([0.0, 0.0, 0.0]),
                             };
 
                             // Clone the ChickenHead + standing-gesture configs
@@ -1213,14 +1205,10 @@ impl ArticaraApp {
                                     // the same reference is *also* injected as
                                     // a WBC joint task (dynamic consistency,
                                     // legged_control-style hybrid).
-                                    if let Some(cfg) =
-                                        chicken_cfg.as_ref().filter(|c| c.enabled)
-                                    {
+                                    if let Some(cfg) = chicken_cfg.as_ref().filter(|c| c.enabled) {
                                         let body_quat = mj_sim
                                             .body_world_orientation(&model.root_link)
-                                            .unwrap_or_else(
-                                                nalgebra::UnitQuaternion::identity,
-                                            );
+                                            .unwrap_or_else(nalgebra::UnitQuaternion::identity);
                                         let q_ref = cfg.target_angle(&body_quat);
                                         mj_sim.set_position_target(cfg.joint_idx, q_ref);
                                     }
@@ -1232,18 +1220,14 @@ impl ArticaraApp {
                                     // the head bobs *around* level. Overrides
                                     // the ChickenHead command above for this
                                     // tick when a head gesture is running.
-                                    if let Some(g) =
-                                        gesture_cfg.as_ref().filter(|g| g.enabled)
-                                    {
+                                    if let Some(g) = gesture_cfg.as_ref().filter(|g| g.enabled) {
                                         if let Some(head_idx) = g.head_joint_idx {
                                             let base = chicken_cfg
                                                 .as_ref()
                                                 .filter(|c| c.enabled)
                                                 .map(|c| {
                                                     let bq = mj_sim
-                                                        .body_world_orientation(
-                                                            &model.root_link,
-                                                        )
+                                                        .body_world_orientation(&model.root_link)
                                                         .unwrap_or_else(
                                                             nalgebra::UnitQuaternion::identity,
                                                         );
@@ -1309,8 +1293,7 @@ impl ArticaraApp {
                                             // (2.4 kg) without this override produces a
                                             // ~4× force overestimate that flings the legs
                                             // into the ground and tips the robot over.
-                                            if let Some(full_cfg) =
-                                                gc.full_centroidal_mpc_config()
+                                            if let Some(full_cfg) = gc.full_centroidal_mpc_config()
                                             {
                                                 // FullCentroidal mode shares the
                                                 // CoM-aware `a_base_des` path —
@@ -1318,20 +1301,17 @@ impl ArticaraApp {
                                                 // the centroidal moment-arm
                                                 // relationship.
                                                 new_pipe.mass_kg = full_cfg.mass_kg;
-                                                new_pipe.centroidal_inertia_body = Some(
-                                                    full_cfg.centroidal_inertia_body,
-                                                );
-                                                new_pipe.com_offset_body =
-                                                    full_cfg.com_offset_body;
+                                                new_pipe.centroidal_inertia_body =
+                                                    Some(full_cfg.centroidal_inertia_body);
+                                                new_pipe.com_offset_body = full_cfg.com_offset_body;
                                             } else if let Some(centroidal_cfg) =
                                                 gc.centroidal_mpc_config()
                                             {
                                                 // CentroidalSrbd mode: WBC uses
                                                 // the CoM-aware `a_base_des` path.
                                                 new_pipe.mass_kg = centroidal_cfg.mass_kg;
-                                                new_pipe.centroidal_inertia_body = Some(
-                                                    centroidal_cfg.centroidal_inertia_body,
-                                                );
+                                                new_pipe.centroidal_inertia_body =
+                                                    Some(centroidal_cfg.centroidal_inertia_body);
                                                 new_pipe.com_offset_body =
                                                     centroidal_cfg.com_offset_body;
                                             } else if let Some(srbd_cfg) = gc.srbd_mpc_config() {
@@ -1356,13 +1336,10 @@ impl ArticaraApp {
                                         // The gait command is naturally body-frame; the
                                         // WBC pipeline now expects body-frame inputs and
                                         // rotates the observation internally.
-                                        let v_cmd_body = nalgebra::Vector3::new(
-                                            cmd.vx, cmd.vy, 0.0,
-                                        );
-                                        let v_obs_v3 =
-                                            nalgebra::Vector3::new(v[0], v[1], v[2]);
-                                        let omega_obs_v3 =
-                                            nalgebra::Vector3::new(w[0], w[1], w[2]);
+                                        let v_cmd_body =
+                                            nalgebra::Vector3::new(cmd.vx, cmd.vy, 0.0);
+                                        let v_obs_v3 = nalgebra::Vector3::new(v[0], v[1], v[2]);
+                                        let omega_obs_v3 = nalgebra::Vector3::new(w[0], w[1], w[2]);
                                         let kin = gc.kinematics().clone();
                                         let joint_indices = gc.joint_indices();
                                         let joint_signs = gc.joint_signs();
@@ -1418,14 +1395,14 @@ impl ArticaraApp {
                                         // (`for_cmd_centroidal`) to reduce
                                         // joint-PD reaction-torque amplification
                                         // through the MPC's CoM-aware predictions.
-                                        pipeline.weights = if pipeline
-                                            .centroidal_inertia_body
-                                            .is_some()
-                                        {
-                                            quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(&cmd)
-                                        } else {
-                                            quadruped_gait::wbc::WbcWeights::for_cmd(&cmd)
-                                        };
+                                        pipeline.weights =
+                                            if pipeline.centroidal_inertia_body.is_some() {
+                                                quadruped_gait::wbc::WbcWeights::for_cmd_centroidal(
+                                                    &cmd,
+                                                )
+                                            } else {
+                                                quadruped_gait::wbc::WbcWeights::for_cmd(&cmd)
+                                            };
                                         let taus = pipeline.solve(
                                             model,
                                             mj_sim,
@@ -1495,17 +1472,10 @@ impl ArticaraApp {
                                 let mj_dt = mj_sim.timestep();
                                 let frames_from_wall =
                                     ((dt as f64) / mj_dt).round().max(1.0) as u32;
-                                let frames_to_step =
-                                    frames_from_wall.min(remaining);
+                                let frames_to_step = frames_from_wall.min(remaining);
                                 if frames_to_step > 0 {
-                                    mj_sim.step_n_frames(
-                                        model,
-                                        frames_to_step,
-                                        enforce_limits,
-                                    );
-                                    mj_sim.async_consume_step_frames(
-                                        frames_to_step,
-                                    );
+                                    mj_sim.step_n_frames(model, frames_to_step, enforce_limits);
+                                    mj_sim.async_consume_step_frames(frames_to_step);
                                 }
                             } else {
                                 mj_sim.step(model, dt as f64, enforce_limits);
@@ -1582,11 +1552,7 @@ impl ArticaraApp {
                         sim.async_pop();
                     }
                     if let Some(gc) = self.gait.controller.as_mut() {
-                        gc.set_velocity_cmd(quadruped_gait::VelocityCmd {
-                            vx,
-                            vy,
-                            wz,
-                        });
+                        gc.set_velocity_cmd(quadruped_gait::VelocityCmd { vx, vy, wz });
                     }
                     continue;
                 }
@@ -1604,7 +1570,9 @@ impl ArticaraApp {
                 } else {
                     return;
                 };
-                self.script.output.push(script_console::ScriptLine::System(msg));
+                self.script
+                    .output
+                    .push(script_console::ScriptLine::System(msg));
             } else if head_kind == "save" {
                 let path = if let Some(sim) = self.sim.mujoco_sim.as_mut() {
                     if let Some(AsyncSimOp::SaveCsv(p)) = sim.async_pop() {
@@ -1659,10 +1627,8 @@ impl ArticaraApp {
                     match posture::load_posture(model, &path) {
                         Ok(n) => {
                             self.needs_upload = true;
-                            self.status_message = format!(
-                                "Loaded posture ({n} joints matched) ← {}",
-                                path.display()
-                            );
+                            self.status_message =
+                                format!("Loaded posture ({n} joints matched) ← {}", path.display());
                         }
                         Err(e) => {
                             self.status_message = format!("Load error: {e}");
@@ -1680,8 +1646,7 @@ impl ArticaraApp {
                 if let Some(ref model) = self.model {
                     match posture::save_posture(model, &path) {
                         Ok(()) => {
-                            self.status_message =
-                                format!("Saved posture → {}", path.display());
+                            self.status_message = format!("Saved posture → {}", path.display());
                         }
                         Err(e) => {
                             self.status_message = format!("Save error: {e}");
@@ -1714,8 +1679,7 @@ impl ArticaraApp {
                 match dynamics_panel::load_sim_config(&path) {
                     Ok(cfg) => {
                         dynamics_panel::apply_sim_config(self, cfg);
-                        self.status_message =
-                            format!("Loaded sim config ← {}", path.display());
+                        self.status_message = format!("Loaded sim config ← {}", path.display());
                     }
                     Err(e) => {
                         self.status_message = format!("Load sim config error: {e}");
@@ -1752,10 +1716,7 @@ impl ArticaraApp {
                 };
                 match result {
                     Ok(n) => {
-                        self.status_message = format!(
-                            "Saved {n} samples → {}",
-                            path.display(),
-                        );
+                        self.status_message = format!("Saved {n} samples → {}", path.display(),);
                     }
                     Err(e) => {
                         self.status_message = format!("Save CSV error: {e}");
@@ -1771,8 +1732,7 @@ impl ArticaraApp {
                 self.sim_config_path = path.display().to_string();
                 match dynamics_panel::save_sim_config(self, &path) {
                     Ok(()) => {
-                        self.status_message =
-                            format!("Saved sim config → {}", path.display());
+                        self.status_message = format!("Saved sim config → {}", path.display());
                     }
                     Err(e) => {
                         self.status_message = format!("Save sim config error: {e}");
@@ -1787,10 +1747,7 @@ impl ArticaraApp {
             FileDialogResult::Confirmed(path) => {
                 let mesh = articara::robot::load_mesh(&path, None);
                 if mesh.num_triangles() == 0 {
-                    self.status_message = format!(
-                        "メッシュ読み込み失敗: {}",
-                        path.display()
-                    );
+                    self.status_message = format!("メッシュ読み込み失敗: {}", path.display());
                 } else if let Some(target) = self.dialogs.add_mesh_target.take() {
                     let tri_count = mesh.num_triangles();
                     let fname = path.display().to_string();
@@ -1809,15 +1766,14 @@ impl ArticaraApp {
                                         geometry: geom,
                                         color: [0.7, 0.7, 0.7, 1.0],
                                     });
-                                    self.status_message = format!(
-                                        "Visual メッシュ追加 ({tri_count} tris) ← {fname}"
-                                    );
+                                    self.status_message =
+                                        format!("Visual メッシュ追加 ({tri_count} tris) ← {fname}");
                                 }
                                 MeshAddKind::Collision => {
                                     link.collisions.push(articara::robot::CollisionData {
                                         origin: nalgebra::Isometry3::identity(),
                                         geometry: geom,
-                                    
+
                                         physics: None,
                                     });
                                     self.status_message = format!(
@@ -1837,35 +1793,34 @@ impl ArticaraApp {
             _ => {}
         }
     }
-
 }
 
 // ===== UI sub-modules =====
-mod menu_bar;
-mod title_bar;
-mod tree_panel;
-mod joint_sliders;
-mod properties_panel;
-mod validation;
-mod history_panel;
-mod viewport;
-mod viewport_overlay;
-mod camera_panel;
-mod dynamics_panel;
-mod gait_panel;
-mod posture;
-mod file_dialog;
-mod status_bar;
-mod script_console;
-#[cfg(feature = "mujoco")]
-mod peaks_plot_window;
-#[cfg(feature = "mujoco")]
-mod sim_drag;
 mod actuator_dialog;
+mod camera_panel;
 mod collision_matrix;
+mod dynamics_panel;
+mod file_dialog;
+mod gait_panel;
+mod history_panel;
+mod joint_sliders;
+mod menu_bar;
 mod misa_report_dialog;
 #[cfg(feature = "mujoco")]
 mod mujoco_warning_dialog;
+#[cfg(feature = "mujoco")]
+mod peaks_plot_window;
+mod posture;
+mod properties_panel;
+mod script_console;
+#[cfg(feature = "mujoco")]
+mod sim_drag;
+mod status_bar;
+mod title_bar;
+mod tree_panel;
+mod validation;
+mod viewport;
+mod viewport_overlay;
 
 // Sentinel to mark the end of module-level code.
 // Everything below was moved to sub-modules.
@@ -1885,9 +1840,8 @@ impl eframe::App for ArticaraApp {
         self.pre_frame_snapshot = self.model.as_ref().map(|m| m.clone());
 
         // --- Undo/Redo keyboard shortcuts (Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y) ---
-        let undo_pressed = ctx.input(|i| {
-            i.key_pressed(egui::Key::Z) && i.modifiers.command && !i.modifiers.shift
-        });
+        let undo_pressed =
+            ctx.input(|i| i.key_pressed(egui::Key::Z) && i.modifiers.command && !i.modifiers.shift);
         let redo_pressed = ctx.input(|i| {
             (i.key_pressed(egui::Key::Z) && i.modifiers.command && i.modifiers.shift)
                 || (i.key_pressed(egui::Key::Y) && i.modifiers.command)
@@ -2045,9 +1999,7 @@ impl eframe::App for ArticaraApp {
         // (= the trunk's pose at the moment playback was toggled on)
         // so the robot animates from wherever the user placed it.
         if self.kinematic_playback_active {
-            if let (Some(model), Some(gc)) =
-                (self.model.as_mut(), self.gait.controller.as_mut())
-            {
+            if let (Some(model), Some(gc)) = (self.model.as_mut(), self.gait.controller.as_mut()) {
                 let dt = ctx.input(|i| i.stable_dt).max(1e-4) as f64;
                 let dt = dt.min(0.05); // cap so huge frame stalls don't fast-forward
                 let (out, targets, _ff) = gc.tick(dt);
@@ -2065,14 +2017,9 @@ impl eframe::App for ArticaraApp {
                         out.body_state.world_position.y,
                         0.0,
                     ),
-                    na::UnitQuaternion::from_euler_angles(
-                        0.0,
-                        0.0,
-                        out.body_state.world_yaw,
-                    ),
+                    na::UnitQuaternion::from_euler_angles(0.0, 0.0, out.body_state.world_yaw),
                 );
-                model.base_transform =
-                    self.kinematic_playback_base_offset * body_iso;
+                model.base_transform = self.kinematic_playback_base_offset * body_iso;
                 model.rebuild_misarta_model();
                 self.needs_upload = true;
             }
@@ -2152,8 +2099,7 @@ impl eframe::App for ArticaraApp {
                         ui.checkbox(&mut self.viz.overlay_target, "target ghost");
                         ui.add_enabled(
                             self.viz.overlay_target,
-                            egui::Slider::new(&mut self.viz.ghost_alpha, 0.05..=1.0)
-                                .text("alpha"),
+                            egui::Slider::new(&mut self.viz.ghost_alpha, 0.05..=1.0).text("alpha"),
                         );
                     });
                     // Where the ghost's body sits once the measured stream
@@ -2257,10 +2203,7 @@ impl ArticaraApp {
     /// [`ArticaraApp`] field, and the override struct's contents are
     /// consumed (`drain_overrides` already moved them out).
     #[cfg(feature = "scripting")]
-    fn apply_script_overrides(
-        &mut self,
-        ov: articara::scripting_model::ScriptOverrides,
-    ) {
+    fn apply_script_overrides(&mut self, ov: articara::scripting_model::ScriptOverrides) {
         if let Some(mode) = ov.gait_mode {
             self.gait.mode = mode;
             // Re-build the gait controller in the new mode if one is
@@ -2310,10 +2253,7 @@ impl ArticaraApp {
         };
 
         // Check if the thread has finished.
-        let is_finished = task
-            .handle
-            .as_ref()
-            .map_or(true, |h| h.is_finished());
+        let is_finished = task.handle.as_ref().map_or(true, |h| h.is_finished());
 
         if !is_finished {
             return;
@@ -2352,8 +2292,14 @@ impl ArticaraApp {
             let n = match (target, result) {
                 (DecomposeTarget::Collision, DecomposeResult::Collisions(new_cols)) => {
                     let n = new_cols.len();
-                    if n == 0 { self.status_message = format!("Decomposition produced 0 shapes ({method_label})"); return; }
-                    if si >= model.links[li].collisions.len() { return; }
+                    if n == 0 {
+                        self.status_message =
+                            format!("Decomposition produced 0 shapes ({method_label})");
+                        return;
+                    }
+                    if si >= model.links[li].collisions.len() {
+                        return;
+                    }
                     model.links[li].collisions.remove(si);
                     for (i, c) in new_cols.into_iter().enumerate() {
                         model.links[li].collisions.insert(si + i, c);
@@ -2362,21 +2308,31 @@ impl ArticaraApp {
                 }
                 (DecomposeTarget::Visual, DecomposeResult::Visuals(new_vis)) => {
                     let n = new_vis.len();
-                    if n == 0 { self.status_message = format!("Decomposition produced 0 shapes ({method_label})"); return; }
-                    if si >= model.links[li].visuals.len() { return; }
+                    if n == 0 {
+                        self.status_message =
+                            format!("Decomposition produced 0 shapes ({method_label})");
+                        return;
+                    }
+                    if si >= model.links[li].visuals.len() {
+                        return;
+                    }
                     model.links[li].visuals.remove(si);
                     for (i, v) in new_vis.into_iter().enumerate() {
                         model.links[li].visuals.insert(si + i, v);
                     }
                     n
                 }
-                _ => { return; }
+                _ => {
+                    return;
+                }
             };
 
             self.needs_upload = true;
             self.status_message = format!(
                 "Decomposed {kind_str} of '{}' into {} shapes ({method_label}, {:.1}s)",
-                link_name, n, elapsed.as_secs_f64()
+                link_name,
+                n,
+                elapsed.as_secs_f64()
             );
             // Record in undo history.
             if let Some(snapshot) = self.pre_frame_snapshot.take() {
@@ -2437,18 +2393,10 @@ impl ArticaraApp {
                     //               HULLS 0.50–0.90, BUILDING 0.90–1.00
                     let frac = match phase {
                         misarta::decompose::PHASE_NOT_STARTED => 0.0,
-                        misarta::decompose::PHASE_PREPARING => {
-                            0.00 + 0.05 * (sub as f64 / 100.0)
-                        }
-                        misarta::decompose::PHASE_DECOMPOSING => {
-                            0.05 + 0.45 * (sub as f64 / 100.0)
-                        }
-                        misarta::decompose::PHASE_HULLS => {
-                            0.50 + 0.40 * (sub as f64 / 100.0)
-                        }
-                        misarta::decompose::PHASE_BUILDING => {
-                            0.90 + 0.10 * (sub as f64 / 100.0)
-                        }
+                        misarta::decompose::PHASE_PREPARING => 0.00 + 0.05 * (sub as f64 / 100.0),
+                        misarta::decompose::PHASE_DECOMPOSING => 0.05 + 0.45 * (sub as f64 / 100.0),
+                        misarta::decompose::PHASE_HULLS => 0.50 + 0.40 * (sub as f64 / 100.0),
+                        misarta::decompose::PHASE_BUILDING => 0.90 + 0.10 * (sub as f64 / 100.0),
                         misarta::decompose::PHASE_DONE => 1.0,
                         _ => 0.5,
                     };

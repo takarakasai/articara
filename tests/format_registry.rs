@@ -138,8 +138,13 @@ mod test_cross_format {
 
         for (a, b) in model.links.iter().zip(model2.links.iter()) {
             assert_eq!(a.name, b.name);
-            assert!((a.inertial.mass - b.inertial.mass).abs() < 1e-3,
-                "Mass mismatch for {}: {} vs {}", a.name, a.inertial.mass, b.inertial.mass);
+            assert!(
+                (a.inertial.mass - b.inertial.mass).abs() < 1e-3,
+                "Mass mismatch for {}: {} vs {}",
+                a.name,
+                a.inertial.mass,
+                b.inertial.mass
+            );
         }
     }
 
@@ -158,10 +163,19 @@ mod test_cross_format {
         assert_eq!(model.links.len(), model2.links.len());
         for a in &model.links {
             let b = model2.links.iter().find(|l| l.name == a.name);
-            assert!(b.is_some(), "Link {} missing after URDF→MJCF roundtrip", a.name);
+            assert!(
+                b.is_some(),
+                "Link {} missing after URDF→MJCF roundtrip",
+                a.name
+            );
             let b = b.unwrap();
-            assert!((a.inertial.mass - b.inertial.mass).abs() < 1e-3,
-                "Mass mismatch for {}: {} vs {}", a.name, a.inertial.mass, b.inertial.mass);
+            assert!(
+                (a.inertial.mass - b.inertial.mass).abs() < 1e-3,
+                "Mass mismatch for {}: {} vs {}",
+                a.name,
+                a.inertial.mass,
+                b.inertial.mass
+            );
         }
     }
 
@@ -175,8 +189,12 @@ mod test_cross_format {
             let tf = model.compute_transforms();
             assert!(!tf.is_empty(), "Empty transforms for {:?}", path);
             for (name, iso) in &tf {
-                assert!(iso.translation.vector.norm() < 10.0,
-                    "Unreasonable position for {} in {:?}", name, path);
+                assert!(
+                    iso.translation.vector.norm() < 10.0,
+                    "Unreasonable position for {} in {:?}",
+                    name,
+                    path
+                );
             }
         }
     }
@@ -203,9 +221,12 @@ mod test_serde {
         assert_eq!(deser.joints.len(), model.joints.len());
         assert_eq!(deser.root_link, model.root_link);
         assert_eq!(deser.joint_positions.len(), model.joint_positions.len());
-        for (a, b) in deser.joint_positions.iter().zip(model.joint_positions.iter()) {
+        for (a, b) in deser
+            .joint_positions
+            .iter()
+            .zip(model.joint_positions.iter())
+        {
             assert!((a - b).abs() < 1e-6, "joint position mismatch");
         }
     }
-
 }

@@ -125,10 +125,7 @@ impl OrbitCamera {
         }
         let ndc = clip.xyz() / clip.w;
         // NDC: [-1,1] -> screen [0,1] with Y flipped (top=0)
-        Some(na::Point2::new(
-            (ndc.x + 1.0) * 0.5,
-            (1.0 - ndc.y) * 0.5,
-        ))
+        Some(na::Point2::new((ndc.x + 1.0) * 0.5, (1.0 - ndc.y) * 0.5))
     }
 
     /// Cast a ray from screen coordinates (normalized [0..1]) into the scene.
@@ -152,8 +149,8 @@ impl OrbitCamera {
         let far_clip = vp_inv * na::Vector4::new(ndc_x, ndc_y, 1.0, 1.0);
 
         let near_pt = na::Point3::from_homogeneous(near_clip).unwrap_or(self.eye());
-        let far_pt = na::Point3::from_homogeneous(far_clip)
-            .unwrap_or(na::Point3::new(ndc_x, ndc_y, 1.0));
+        let far_pt =
+            na::Point3::from_homogeneous(far_clip).unwrap_or(na::Point3::new(ndc_x, ndc_y, 1.0));
 
         let dir = (far_pt - near_pt).normalize();
         (near_pt, dir)
@@ -208,11 +205,7 @@ impl OrbitCamera {
     /// world frame); yaw / pitch / distance are taken from `settings`,
     /// with the link's body-yaw added so a `yaw_offset = 0` puts the
     /// camera directly behind the body's local +x axis.
-    pub fn update_from_tps(
-        &mut self,
-        link_world: &na::Isometry3<f32>,
-        settings: &TpsSettings,
-    ) {
+    pub fn update_from_tps(&mut self, link_world: &na::Isometry3<f32>, settings: &TpsSettings) {
         // Look-at point: link origin + offset rotated into world frame.
         let target_world =
             link_world.translation.vector + link_world.rotation * settings.target_local_offset;

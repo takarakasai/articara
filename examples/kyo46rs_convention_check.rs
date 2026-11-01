@@ -43,9 +43,8 @@ fn main() {
     use articara::wbc_pipeline::build_floating_base_model;
     use nalgebra as na;
 
-    let urdf_path = std::path::Path::new(
-        "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
-    );
+    let urdf_path =
+        std::path::Path::new("/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf");
     let mut robot = RobotModel::from_urdf(urdf_path).expect("load kyo46rs.urdf");
 
     // An ASYMMETRIC pose with a real tilt. A symmetric upright robot
@@ -149,11 +148,24 @@ fn main() {
     let total_mass: f64 = robot.links.iter().map(|l| l.inertial.mass).sum();
 
     println!("=== Stage 2: gravity generalised force at v=0 (free flight) ===");
-    println!("  total mass = {total_mass:.4} kg   m*g = {:.4} N", total_mass * 9.81);
-    println!("  MuJoCo qfrc_bias[0..6] = [{}]",
-        (0..6).map(|i| format!("{:+8.4}", bias_mj[i])).collect::<Vec<_>>().join(", "));
-    println!("  misarta h        [0..6] = [{}]",
-        (0..6).map(|i| format!("{:+8.4}", h_misarta[i])).collect::<Vec<_>>().join(", "));
+    println!(
+        "  total mass = {total_mass:.4} kg   m*g = {:.4} N",
+        total_mass * 9.81
+    );
+    println!(
+        "  MuJoCo qfrc_bias[0..6] = [{}]",
+        (0..6)
+            .map(|i| format!("{:+8.4}", bias_mj[i]))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!(
+        "  misarta h        [0..6] = [{}]",
+        (0..6)
+            .map(|i| format!("{:+8.4}", h_misarta[i]))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     println!();
 
     // Hypothesis A (the one the controllers assume):
@@ -168,15 +180,33 @@ fn main() {
     let mj_lin_in_body = r_wb.transpose() * mj_lin_world;
 
     println!("  [A] linear: MuJoCo(world)->body vs misarta(body)");
-    println!("      R^T*mj_lin = ({:+8.4},{:+8.4},{:+8.4})", mj_lin_in_body.x, mj_lin_in_body.y, mj_lin_in_body.z);
-    println!("      misarta    = ({:+8.4},{:+8.4},{:+8.4})", mi_lin_body.x, mi_lin_body.y, mi_lin_body.z);
-    println!("      diff norm  = {:.6}   (sum norm = {:.6})",
-        (mj_lin_in_body - mi_lin_body).norm(), (mj_lin_in_body + mi_lin_body).norm());
+    println!(
+        "      R^T*mj_lin = ({:+8.4},{:+8.4},{:+8.4})",
+        mj_lin_in_body.x, mj_lin_in_body.y, mj_lin_in_body.z
+    );
+    println!(
+        "      misarta    = ({:+8.4},{:+8.4},{:+8.4})",
+        mi_lin_body.x, mi_lin_body.y, mi_lin_body.z
+    );
+    println!(
+        "      diff norm  = {:.6}   (sum norm = {:.6})",
+        (mj_lin_in_body - mi_lin_body).norm(),
+        (mj_lin_in_body + mi_lin_body).norm()
+    );
     println!("  [A] angular: MuJoCo(body) vs misarta(body)");
-    println!("      mujoco  = ({:+8.4},{:+8.4},{:+8.4})", mj_ang_body.x, mj_ang_body.y, mj_ang_body.z);
-    println!("      misarta = ({:+8.4},{:+8.4},{:+8.4})", mi_ang_body.x, mi_ang_body.y, mi_ang_body.z);
-    println!("      diff norm = {:.6}   (sum norm = {:.6})",
-        (mj_ang_body - mi_ang_body).norm(), (mj_ang_body + mi_ang_body).norm());
+    println!(
+        "      mujoco  = ({:+8.4},{:+8.4},{:+8.4})",
+        mj_ang_body.x, mj_ang_body.y, mj_ang_body.z
+    );
+    println!(
+        "      misarta = ({:+8.4},{:+8.4},{:+8.4})",
+        mi_ang_body.x, mi_ang_body.y, mi_ang_body.z
+    );
+    println!(
+        "      diff norm = {:.6}   (sum norm = {:.6})",
+        (mj_ang_body - mi_ang_body).norm(),
+        (mj_ang_body + mi_ang_body).norm()
+    );
     println!("      NOTE: a small 'sum norm' instead of a small 'diff norm' means SIGN FLIP.");
     println!();
 
@@ -192,14 +222,18 @@ fn main() {
         if vi < 6 {
             continue;
         }
-        let Some(row) = sim.joint_dof_adr(&robot.joints[ji].name) else { continue };
+        let Some(row) = sim.joint_dof_adr(&robot.joints[ji].name) else {
+            continue;
+        };
         let d = (bias_mj[row] - h_misarta[vi]).abs();
         if d > worst_joint.1 {
             worst_joint = (robot.joints[ji].name.clone(), d);
         }
     }
-    println!("  control: worst ACTUATED-row |mujoco - misarta| = {:.3e} ({})",
-        worst_joint.1, worst_joint.0);
+    println!(
+        "  control: worst ACTUATED-row |mujoco - misarta| = {:.3e} ({})",
+        worst_joint.1, worst_joint.0
+    );
     println!();
 
     // ── Stage 3a: dynamics FROM REST, one step ─────────────────────────
@@ -259,9 +293,17 @@ fn main() {
                 }
             }
         }
-        println!("  misarta M[3..6,3..6] (base linear, expect ~{:.3}*I):", total_mass);
+        println!(
+            "  misarta M[3..6,3..6] (base linear, expect ~{:.3}*I):",
+            total_mass
+        );
         for r in 3..6 {
-            println!("      [{:+8.4},{:+8.4},{:+8.4}]", m_mi[(r, 3)], m_mi[(r, 4)], m_mi[(r, 5)]);
+            println!(
+                "      [{:+8.4},{:+8.4},{:+8.4}]",
+                m_mi[(r, 3)],
+                m_mi[(r, 4)],
+                m_mi[(r, 5)]
+            );
         }
         println!("  --- base 6x6, misarta [ang(0..3); lin(3..6)] ordering ---");
         for r in 0..6 {
@@ -269,7 +311,11 @@ fn main() {
             let mj: Vec<String> = (0..6)
                 .map(|c| format!("{:+8.4}", m_mj_flat[perm[r] * nv + perm[c]]))
                 .collect();
-            println!("    r{r}  misarta [{}]   mujoco [{}]", mi.join(","), mj.join(","));
+            println!(
+                "    r{r}  misarta [{}]   mujoco [{}]",
+                mi.join(","),
+                mj.join(",")
+            );
         }
         // Where does the whole-body CoM sit relative to the base origin?
         // The angular/linear coupling block of a composite inertia is
@@ -289,10 +335,19 @@ fn main() {
             }
             c /= total_mass;
             let rel = c - base_o;
-            println!("  CoM relative to base origin = ({:+.4},{:+.4},{:+.4})  m*|c| = {:.4}",
-                rel.x, rel.y, rel.z, total_mass * rel.norm());
-            println!("  m*cx={:+.4}  m*cy={:+.4}  m*cz={:+.4}",
-                total_mass * rel.x, total_mass * rel.y, total_mass * rel.z);
+            println!(
+                "  CoM relative to base origin = ({:+.4},{:+.4},{:+.4})  m*|c| = {:.4}",
+                rel.x,
+                rel.y,
+                rel.z,
+                total_mass * rel.norm()
+            );
+            println!(
+                "  m*cx={:+.4}  m*cy={:+.4}  m*cz={:+.4}",
+                total_mass * rel.x,
+                total_mass * rel.y,
+                total_mass * rel.z
+            );
         }
         // Confirm the missing term is exactly the composite inertia's
         // angular<->linear coupling m*[c]x, which `se3::spatial_inertia`
@@ -313,22 +368,29 @@ fn main() {
                 }
             }
             c = c / total_mass - base_o;
-            let mcx = total_mass
-                * na::Matrix3::new(0.0, -c.z, c.y, c.z, 0.0, -c.x, -c.y, c.x, 0.0);
+            let mcx = total_mass * na::Matrix3::new(0.0, -c.z, c.y, c.z, 0.0, -c.x, -c.y, c.x, 0.0);
             println!("  expected coupling m*[c]x (upper-right of the base block):");
             for r in 0..3 {
-                println!("      predicted [{:+8.4},{:+8.4},{:+8.4}]   mujoco [{:+8.4},{:+8.4},{:+8.4}]",
-                    mcx[(r, 0)], mcx[(r, 1)], mcx[(r, 2)],
+                println!(
+                    "      predicted [{:+8.4},{:+8.4},{:+8.4}]   mujoco [{:+8.4},{:+8.4},{:+8.4}]",
+                    mcx[(r, 0)],
+                    mcx[(r, 1)],
+                    mcx[(r, 2)],
                     m_mj_flat[perm[r] * nv + perm[3]],
                     m_mj_flat[perm[r] * nv + perm[4]],
-                    m_mj_flat[perm[r] * nv + perm[5]]);
+                    m_mj_flat[perm[r] * nv + perm[5]]
+                );
             }
             println!("      misarta has this block identically ZERO.");
         }
-        println!("  worst |crba - fullM| over ALL {nv}x{nv} entries : {:.3e}  at (r={},c={})",
-            worst.2, worst.0, worst.1);
-        println!("  worst over the 6x6 BASE block                  : {:.3e}  at (r={},c={})",
-            worst_base.2, worst_base.0, worst_base.1);
+        println!(
+            "  worst |crba - fullM| over ALL {nv}x{nv} entries : {:.3e}  at (r={},c={})",
+            worst.2, worst.0, worst.1
+        );
+        println!(
+            "  worst over the 6x6 BASE block                  : {:.3e}  at (r={},c={})",
+            worst_base.2, worst_base.0, worst_base.1
+        );
     }
     println!();
 
@@ -391,10 +453,15 @@ fn main() {
         // rows 3..6 and lines up directly with misarta's rows 0..3.
         let qacc = sim.qacc();
         let mj_ang = na::Vector3::new(qacc[3], qacc[4], qacc[5]);
-        println!("  MuJoCo qacc[3..6] (body ang) = ({:+9.3},{:+9.3},{:+9.3})",
-            mj_ang.x, mj_ang.y, mj_ang.z);
-        println!("  vs misarta                   -> diff {:.4e}  (rel {:.3e})",
-            (pv - mj_ang).norm(), (pv - mj_ang).norm() / mj_ang.norm().max(1e-9));
+        println!(
+            "  MuJoCo qacc[3..6] (body ang) = ({:+9.3},{:+9.3},{:+9.3})",
+            mj_ang.x, mj_ang.y, mj_ang.z
+        );
+        println!(
+            "  vs misarta                   -> diff {:.4e}  (rel {:.3e})",
+            (pv - mj_ang).norm(),
+            (pv - mj_ang).norm() / mj_ang.norm().max(1e-9)
+        );
         // M and h were both verified exact at v = 0, so if q̈ still
         // disagrees at v != 0 the culprit is one of the two INPUTS:
         // the bias evaluated at our synced velocity, or the torque that
@@ -406,14 +473,22 @@ fn main() {
             let mut worst_t = (0usize, 0.0_f64);
             for r in 0..nv {
                 let dh = (h_a[r] - bias_now[perm_vec[r]]).abs();
-                if dh > worst_h.1 { worst_h = (r, dh); }
+                if dh > worst_h.1 {
+                    worst_h = (r, dh);
+                }
                 let dtq = (tau_a[r] - act_now[perm_vec[r]]).abs();
-                if dtq > worst_t.1 { worst_t = (r, dtq); }
+                if dtq > worst_t.1 {
+                    worst_t = (r, dtq);
+                }
             }
-            println!("  input check: worst |h_misarta - qfrc_bias|     = {:.3e} at misarta row {}",
-                worst_h.1, worst_h.0);
-            println!("  input check: worst |tau_built - qfrc_actuator| = {:.3e} at misarta row {}",
-                worst_t.1, worst_t.0);
+            println!(
+                "  input check: worst |h_misarta - qfrc_bias|     = {:.3e} at misarta row {}",
+                worst_h.1, worst_h.0
+            );
+            println!(
+                "  input check: worst |tau_built - qfrc_actuator| = {:.3e} at misarta row {}",
+                worst_t.1, worst_t.0
+            );
             // MuJoCo solves M q̈ + qfrc_bias = qfrc_actuator + qfrc_passive
             //                                 + qfrc_constraint.
             // Our prediction drops the last two, so if they are non-zero
@@ -421,15 +496,34 @@ fn main() {
             let con = sim.qfrc_constraint();
             let pas = sim.qfrc_passive();
             let n2 = |v: &Vec<f64>| v.iter().map(|x| x * x).sum::<f64>().sqrt();
-            println!("  omitted terms: |qfrc_constraint| = {:.4}   |qfrc_passive| = {:.4}",
-                n2(&con), n2(&pas));
+            println!(
+                "  omitted terms: |qfrc_constraint| = {:.4}   |qfrc_passive| = {:.4}",
+                n2(&con),
+                n2(&pas)
+            );
         }
-        println!("  |omega| at measurement = {:.4} rad/s (want small)", wb_b.norm());
-        println!("  misarta qddot[0..3] = ({:+9.3},{:+9.3},{:+9.3})", pv.x, pv.y, pv.z);
-        println!("  measured  dw_body/dt = ({:+9.3},{:+9.3},{:+9.3})", meas.x, meas.y, meas.z);
-        println!("  diff norm = {:.4}   sum norm = {:.4}   rel_err = {:.4}",
-            (pv - meas).norm(), (pv + meas).norm(), (pv - meas).norm() / meas.norm().max(1e-9));
-        println!("  misarta qddot[3..6] = ({:+9.3},{:+9.3},{:+9.3})", pred[3], pred[4], pred[5]);
+        println!(
+            "  |omega| at measurement = {:.4} rad/s (want small)",
+            wb_b.norm()
+        );
+        println!(
+            "  misarta qddot[0..3] = ({:+9.3},{:+9.3},{:+9.3})",
+            pv.x, pv.y, pv.z
+        );
+        println!(
+            "  measured  dw_body/dt = ({:+9.3},{:+9.3},{:+9.3})",
+            meas.x, meas.y, meas.z
+        );
+        println!(
+            "  diff norm = {:.4}   sum norm = {:.4}   rel_err = {:.4}",
+            (pv - meas).norm(),
+            (pv + meas).norm(),
+            (pv - meas).norm() / meas.norm().max(1e-9)
+        );
+        println!(
+            "  misarta qddot[3..6] = ({:+9.3},{:+9.3},{:+9.3})",
+            pred[3], pred[4], pred[5]
+        );
     }
     println!();
 
@@ -460,8 +554,14 @@ fn main() {
         (p_after[2] - p_before[2]) / dt,
     ];
     let vl = sim.body_world_linear_velocity(&robot.root_link).unwrap();
-    println!("  d(xpos)/dt              = ({:+8.4},{:+8.4},{:+8.4})", fd_lin[0], fd_lin[1], fd_lin[2]);
-    println!("  body_world_linear_vel   = ({:+8.4},{:+8.4},{:+8.4})", vl[0], vl[1], vl[2]);
+    println!(
+        "  d(xpos)/dt              = ({:+8.4},{:+8.4},{:+8.4})",
+        fd_lin[0], fd_lin[1], fd_lin[2]
+    );
+    println!(
+        "  body_world_linear_vel   = ({:+8.4},{:+8.4},{:+8.4})",
+        vl[0], vl[1], vl[2]
+    );
     // dR = R_after * R_before^T  ->  omega_world ~ vee(dR - I)/dt
     let dr = quat_after.to_rotation_matrix() * quat_before.to_rotation_matrix().transpose();
     let m = dr.matrix();
@@ -470,8 +570,14 @@ fn main() {
         (m[(0, 2)] - m[(2, 0)]) / (2.0 * dt),
         (m[(1, 0)] - m[(0, 1)]) / (2.0 * dt),
     ];
-    println!("  d(R)/dt -> omega_world  = ({:+8.4},{:+8.4},{:+8.4})", fd_w[0], fd_w[1], fd_w[2]);
-    println!("  body_world_angular_vel  = ({:+8.4},{:+8.4},{:+8.4})", w_before[0], w_before[1], w_before[2]);
+    println!(
+        "  d(R)/dt -> omega_world  = ({:+8.4},{:+8.4},{:+8.4})",
+        fd_w[0], fd_w[1], fd_w[2]
+    );
+    println!(
+        "  body_world_angular_vel  = ({:+8.4},{:+8.4},{:+8.4})",
+        w_before[0], w_before[1], w_before[2]
+    );
     println!("      -> body_world_angular_velocity is in the WORLD frame if these match.");
     println!();
 
@@ -496,32 +602,38 @@ fn main() {
         }
     }
     let rhs = &tau_full - &h1;
-    let qddot_pred = mass
-        .clone()
-        .lu()
-        .solve(&rhs)
-        .expect("M is invertible");
+    let qddot_pred = mass.clone().lu().solve(&rhs).expect("M is invertible");
 
     let quat_b = sim.body_world_orientation(&robot.root_link).unwrap();
     let w_b = sim.body_world_angular_velocity(&robot.root_link).unwrap();
-    let wb_body = quat_b.to_rotation_matrix().transpose()
-        * na::Vector3::new(w_b[0], w_b[1], w_b[2]);
+    let wb_body =
+        quat_b.to_rotation_matrix().transpose() * na::Vector3::new(w_b[0], w_b[1], w_b[2]);
     sim.set_wbc_torques(&robot_taus);
     sim.step_n_frames(&mut robot, 1, false);
     let quat_a = sim.body_world_orientation(&robot.root_link).unwrap();
     let w_a = sim.body_world_angular_velocity(&robot.root_link).unwrap();
-    let wa_body = quat_a.to_rotation_matrix().transpose()
-        * na::Vector3::new(w_a[0], w_a[1], w_a[2]);
+    let wa_body =
+        quat_a.to_rotation_matrix().transpose() * na::Vector3::new(w_a[0], w_a[1], w_a[2]);
     let meas_ang = (wa_body - wb_body) / dt;
 
-    println!("  misarta qddot[0..3] (body ang) = ({:+9.3},{:+9.3},{:+9.3})",
-        qddot_pred[0], qddot_pred[1], qddot_pred[2]);
-    println!("  measured d(omega_body)/dt      = ({:+9.3},{:+9.3},{:+9.3})",
-        meas_ang.x, meas_ang.y, meas_ang.z);
+    println!(
+        "  misarta qddot[0..3] (body ang) = ({:+9.3},{:+9.3},{:+9.3})",
+        qddot_pred[0], qddot_pred[1], qddot_pred[2]
+    );
+    println!(
+        "  measured d(omega_body)/dt      = ({:+9.3},{:+9.3},{:+9.3})",
+        meas_ang.x, meas_ang.y, meas_ang.z
+    );
     let pred = na::Vector3::new(qddot_pred[0], qddot_pred[1], qddot_pred[2]);
-    println!("  diff norm = {:.4}   sum norm = {:.4}", (pred - meas_ang).norm(), (pred + meas_ang).norm());
-    println!("  misarta qddot[3..6] (body lin) = ({:+9.3},{:+9.3},{:+9.3})",
-        qddot_pred[3], qddot_pred[4], qddot_pred[5]);
+    println!(
+        "  diff norm = {:.4}   sum norm = {:.4}",
+        (pred - meas_ang).norm(),
+        (pred + meas_ang).norm()
+    );
+    println!(
+        "  misarta qddot[3..6] (body lin) = ({:+9.3},{:+9.3},{:+9.3})",
+        qddot_pred[3], qddot_pred[4], qddot_pred[5]
+    );
     println!();
     println!("READING: 'diff norm << sum norm' = conventions agree.");
     println!("         'sum norm << diff norm' = pure SIGN INVERSION.");

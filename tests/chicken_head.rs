@@ -22,15 +22,15 @@
 use std::path::PathBuf;
 
 use articara::chicken_head::{ChickenHeadConfig, StabAxis};
-use articara::gait::{auto_detect_kinematics_config, GaitController, DEFAULT_FOOT_LINKS};
+use articara::gait::{DEFAULT_FOOT_LINKS, GaitController, auto_detect_kinematics_config};
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
 use articara::robot::RobotModel;
 use articara::wbc_pipeline::WbcPipeline;
 use nalgebra::Vector3;
 use quadruped_gait::{
-    solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, KinematicsConfig, LegIkSolution,
-    VelocityCmd,
+    ContactDrivenPhase, GaitConfig, GaitMode, KinematicsConfig, LegIkSolution, VelocityCmd,
+    solve_leg_ik,
 };
 
 const ARM_JOINT: &str = "arm_pitch_joint";
@@ -89,8 +89,8 @@ fn run(path: Path, arm_seed: f64, target_world_angle: f64) -> Option<RunResult> 
         return None;
     }
     let mut robot = RobotModel::from_misa(&file).expect("load namiashi .misa");
-    let mut kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS)
-        .expect("auto-detect kinematics");
+    let mut kin =
+        auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS).expect("auto-detect kinematics");
     for leg_kin in [&mut kin.fl, &mut kin.fr, &mut kin.rl, &mut kin.rr] {
         let total_leg = leg_kin.upper_leg_m + leg_kin.lower_leg_m;
         leg_kin.nominal_foot_body.z += 0.08 * total_leg;
@@ -105,7 +105,12 @@ fn run(path: Path, arm_seed: f64, target_world_angle: f64) -> Option<RunResult> 
     robot.joint_positions[arm_ji] = arm_seed;
 
     let opts = MjcfExportOptions {
-        ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0 }),
+        ground_plane: Some(GroundPlaneCfg {
+            z: 0.0,
+            half_size: 4.0,
+            roll: 0.0,
+            pitch: 0.0,
+        }),
         add_actuators: true,
         ..Default::default()
     };
@@ -128,7 +133,9 @@ fn run(path: Path, arm_seed: f64, target_world_angle: f64) -> Option<RunResult> 
     let arm_vi = {
         let a2m = pipeline.a2m_for_test();
         let model = pipeline.model_for_test();
-        a2m[arm_ji].map(|mi| model.v_idx[mi]).expect("arm resolves in WBC model")
+        a2m[arm_ji]
+            .map(|mi| model.v_idx[mi])
+            .expect("arm resolves in WBC model")
     };
 
     if let Path::Wbc { chicken_enabled } = path {
@@ -140,17 +147,25 @@ fn run(path: Path, arm_seed: f64, target_world_angle: f64) -> Option<RunResult> 
     // Position-PD needs a long window to converge; the WBC tests only read the
     // first post-burn-in solve, so a couple of extra ticks suffice there.
     let n_steps = match path {
-        Path::PositionPd => 1250,          // 2.5 s
+        Path::PositionPd => 1250, // 2.5 s
         Path::Wbc { .. } => burn_in_steps + 3,
     };
     let mut arm_qddot_first_wbc: Option<f64> = None;
 
     gc.enable();
-    gc.set_velocity_cmd(VelocityCmd { vx: 0.0, vy: 0.0, wz: 0.0 });
+    gc.set_velocity_cmd(VelocityCmd {
+        vx: 0.0,
+        vy: 0.0,
+        wz: 0.0,
+    });
 
     for k in 0..n_steps {
-        let v_obs = sim.body_world_linear_velocity(&robot.root_link).unwrap_or([0.0; 3]);
-        let w_obs = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+        let v_obs = sim
+            .body_world_linear_velocity(&robot.root_link)
+            .unwrap_or([0.0; 3]);
+        let w_obs = sim
+            .body_world_angular_velocity(&robot.root_link)
+            .unwrap_or([0.0; 3]);
         gc.set_body_state_observed(
             Vector3::new(v_obs[0], v_obs[1], v_obs[2]),
             Vector3::new(w_obs[0], w_obs[1], w_obs[2]),
@@ -207,10 +222,8 @@ fn run(path: Path, arm_seed: f64, target_world_angle: f64) -> Option<RunResult> 
                         dt,
                     );
                     if arm_qddot_first_wbc.is_none() {
-                        arm_qddot_first_wbc = pipeline
-                            .last_solution
-                            .as_ref()
-                            .map(|s| s.q_ddot[arm_vi]);
+                        arm_qddot_first_wbc =
+                            pipeline.last_solution.as_ref().map(|s| s.q_ddot[arm_vi]);
                     }
                     // Hybrid application (same as wbc_walk.rs): Position-PD
                     // tracks the leg q* while the WBC τ enters as feed-forward.
@@ -231,8 +244,14 @@ fn run(path: Path, arm_seed: f64, target_world_angle: f64) -> Option<RunResult> 
         sim.step(&mut robot, dt, true);
     }
 
-    let arm_q_final = sim.joint_q_qd(ARM_JOINT).map(|(q, _)| q).unwrap_or(f64::NAN);
-    Some(RunResult { arm_q_final, arm_qddot_first_wbc })
+    let arm_q_final = sim
+        .joint_q_qd(ARM_JOINT)
+        .map(|(q, _)| q)
+        .unwrap_or(f64::NAN);
+    Some(RunResult {
+        arm_q_final,
+        arm_qddot_first_wbc,
+    })
 }
 
 /// Position-PD path: the head, seeded high, converges to the ChickenHead
@@ -259,7 +278,13 @@ fn position_pd_head_converges_to_target() {
 fn wbc_head_acceleration_tracks_target() {
     // Head at nominal 0, target +0.4, level body ⇒ q* ≈ +0.4 ⇒
     // q̈* = kp·(0.4−0) + kd·(…) ≈ +40 ≫ 0.
-    let Some(res) = run(Path::Wbc { chicken_enabled: true }, 0.0, 0.4) else {
+    let Some(res) = run(
+        Path::Wbc {
+            chicken_enabled: true,
+        },
+        0.0,
+        0.4,
+    ) else {
         return;
     };
     let a = res.arm_qddot_first_wbc.expect("WBC solve happened");
@@ -278,7 +303,13 @@ fn wbc_head_acceleration_tracks_target() {
 /// `enabled`.
 #[test]
 fn wbc_disabled_does_not_track_target() {
-    let Some(res) = run(Path::Wbc { chicken_enabled: false }, 0.0, 0.4) else {
+    let Some(res) = run(
+        Path::Wbc {
+            chicken_enabled: false,
+        },
+        0.0,
+        0.4,
+    ) else {
         return;
     };
     let a = res.arm_qddot_first_wbc.expect("WBC solve happened");

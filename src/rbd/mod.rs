@@ -9,6 +9,6 @@
 //!   inertial properties, FK, tree navigation, and misarta integration.
 //! - [`dynamics`] — Gravity torques, payload capacity, forward dynamics.
 
+pub mod dynamics;
 pub mod misarta_bridge;
 pub mod model;
-pub mod dynamics;

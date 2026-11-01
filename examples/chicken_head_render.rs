@@ -21,12 +21,12 @@
 use std::path::PathBuf;
 
 use articara::chicken_head::{ChickenHeadConfig, StabAxis};
-use articara::gait::{auto_detect_kinematics_config, DEFAULT_FOOT_LINKS};
+use articara::gait::{DEFAULT_FOOT_LINKS, auto_detect_kinematics_config};
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
 use articara::robot::RobotModel;
 use nalgebra::Vector3;
-use quadruped_gait::{solve_leg_ik, KinematicsConfig, LegIkSolution};
+use quadruped_gait::{KinematicsConfig, LegIkSolution, solve_leg_ik};
 
 use mujoco::prelude::*;
 use mujoco::renderer::MjRenderer;
@@ -87,8 +87,7 @@ fn main() {
         std::process::exit(1);
     }
     let mut robot = RobotModel::from_misa(&file).expect("load namiashi .misa");
-    let mut kin =
-        auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS).expect("kinematics");
+    let mut kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS).expect("kinematics");
     for leg_kin in [&mut kin.fl, &mut kin.fr, &mut kin.rl, &mut kin.rr] {
         let total = leg_kin.upper_leg_m + leg_kin.lower_leg_m;
         // Raise the foot in the body frame so the legs stay out of the fully
@@ -135,15 +134,20 @@ fn main() {
         .collect();
 
     let opts = MjcfExportOptions {
-        ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 4.0, roll: 0.0, pitch: 0.0 }),
+        ground_plane: Some(GroundPlaneCfg {
+            z: 0.0,
+            half_size: 4.0,
+            roll: 0.0,
+            pitch: 0.0,
+        }),
         add_actuators: true,
         ..Default::default()
     };
     let mut sim = MujocoSim::new(&robot, opts).expect("MujocoSim::new");
     sim.set_gravity_compensation(true);
 
-    let mut chicken = ChickenHeadConfig::for_joint(&robot, ARM_JOINT, StabAxis::Pitch)
-        .expect("arm_pitch_joint");
+    let mut chicken =
+        ChickenHeadConfig::for_joint(&robot, ARM_JOINT, StabAxis::Pitch).expect("arm_pitch_joint");
     chicken.enabled = chicken_on;
 
     // ── Offscreen renderer against the live model ───────────────────────
@@ -192,8 +196,7 @@ fn main() {
         for (leg, lk) in legs_kin.iter().enumerate() {
             // Foot target in the body frame for the desired pitched body pose.
             let foot_body = r.inverse() * (foot_world_fixed[leg] - p_body);
-            if let LegIkSolution::Reached { hip, thigh, calf } =
-                solve_leg_ik(lk, foot_body, false)
+            if let LegIkSolution::Reached { hip, thigh, calf } = solve_leg_ik(lk, foot_body, false)
             {
                 let qs = [hip, thigh, calf];
                 for kk in 0..3 {
@@ -212,7 +215,9 @@ fn main() {
             .unwrap_or_else(nalgebra::UnitQuaternion::identity);
         if chicken.enabled {
             sim.set_position_target(chicken.joint_idx, chicken.target_angle(&body_quat));
-            let w = sim.body_world_angular_velocity(&robot.root_link).unwrap_or([0.0; 3]);
+            let w = sim
+                .body_world_angular_velocity(&robot.root_link)
+                .unwrap_or([0.0; 3]);
             let omega_body = body_quat.inverse() * Vector3::new(w[0], w[1], w[2]);
             // Position-mode velocity feed-forward: q̇* = -sign·ω_body drives the
             // head at the trunk's counter-rate so the PD doesn't lag.

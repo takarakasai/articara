@@ -91,10 +91,7 @@ fn main() {
         },
     );
     let _ = time_us("compute_centroidal_inertia (6×6)", || {
-        std::hint::black_box(compute_centroidal_inertia(
-            &model,
-            std::hint::black_box(&q),
-        ));
+        std::hint::black_box(compute_centroidal_inertia(&model, std::hint::black_box(&q)));
     });
     let t_crba = time_us("crba (mass matrix M, nv × nv)", || {
         std::hint::black_box(crba(&model, std::hint::black_box(&q)));
@@ -153,11 +150,21 @@ fn main() {
     println!("# Notable observations");
     println!();
     println!("- `compute_centroidal_momentum_matrix_time_derivative` ({t_cmm_dot:.1} μs) is");
-    println!("  ~{:.1}× the cost of a single CMM ({t_cmm:.1} μs) — finite-difference",
-        t_cmm_dot / t_cmm.max(1e-3));
-    println!("  via 2·nnz(v) CMM calls ({} expected). Replace with analytical Ȧ", 2 * nv);
-    println!("  (Pinocchio dccrba) for ~{}× speedup if D3 hits node-budget.", 2 * nv);
+    println!(
+        "  ~{:.1}× the cost of a single CMM ({t_cmm:.1} μs) — finite-difference",
+        t_cmm_dot / t_cmm.max(1e-3)
+    );
+    println!(
+        "  via 2·nnz(v) CMM calls ({} expected). Replace with analytical Ȧ",
+        2 * nv
+    );
+    println!(
+        "  (Pinocchio dccrba) for ~{}× speedup if D3 hits node-budget.",
+        2 * nv
+    );
     println!("- CMM + CRBA share the same propagated FK + spatial inertia composite;");
-    println!("  a fused evaluator could amortize ~{:.0}% by reusing intermediates.",
-        100.0 * (t_cmm.min(t_crba) / (t_cmm + t_crba)));
+    println!(
+        "  a fused evaluator could amortize ~{:.0}% by reusing intermediates.",
+        100.0 * (t_cmm.min(t_crba) / (t_cmm + t_crba))
+    );
 }

@@ -32,8 +32,8 @@
 use std::path::PathBuf;
 
 use articara::gait::{
-    auto_detect_centroidal_mpc_config, auto_detect_kinematics_config,
-    GaitController, DEFAULT_FOOT_LINKS,
+    DEFAULT_FOOT_LINKS, GaitController, auto_detect_centroidal_mpc_config,
+    auto_detect_kinematics_config,
 };
 use articara::mjcf::{GroundPlaneCfg, MjcfExportOptions};
 use articara::mujoco_sim::MujocoSim;
@@ -42,8 +42,8 @@ use articara::wbc_pipeline::WbcPipeline;
 use nalgebra::Vector3;
 use quadruped_gait::wbc;
 use quadruped_gait::{
-    solve_leg_ik, ContactDrivenPhase, GaitConfig, GaitMode, GaitType,
-    KinematicsConfig, LegIkSolution, VelocityCmd,
+    ContactDrivenPhase, GaitConfig, GaitMode, GaitType, KinematicsConfig, LegIkSolution,
+    VelocityCmd, solve_leg_ik,
 };
 
 fn namiashi_misa() -> PathBuf {
@@ -81,18 +81,12 @@ fn namiashi_misa_named(file: &str) -> PathBuf {
 
 /// Same seeding logic as `gait_walk_stability`. Keeps the legs out of
 /// their q=0 fully-extended kinematic singularity at sim start.
-fn seed_joint_positions_from_kinematics(
-    robot: &mut RobotModel,
-    kin: &KinematicsConfig,
-) {
+fn seed_joint_positions_from_kinematics(robot: &mut RobotModel, kin: &KinematicsConfig) {
     for leg_kin in [&kin.fl, &kin.fr, &kin.rl, &kin.rr] {
         let target = leg_kin.nominal_foot_body;
         let sol = solve_leg_ik(leg_kin, target, false);
         let LegIkSolution::Reached { hip, thigh, calf } = sol else {
-            panic!(
-                "{:?}: nominal_foot_body unreachable",
-                leg_kin.leg
-            );
+            panic!("{:?}: nominal_foot_body unreachable", leg_kin.leg);
         };
         for (joint_name, q_ik, sign) in [
             (&leg_kin.hip_joint, hip, 1.0),
@@ -263,10 +257,14 @@ impl WbcParams {
             cmd_vx: 0.0,
             dt: 0.002,
             misa_wbc_mode: None,
-            gait_type: None, cycle_period_s: None,
-            duty_factor: None, max_step_length_m: None,
-            swing_height_m: None, k_capture_s: None,
-            cmd_vy: 0.0, cmd_wz: 0.0,
+            gait_type: None,
+            cycle_period_s: None,
+            duty_factor: None,
+            max_step_length_m: None,
+            swing_height_m: None,
+            k_capture_s: None,
+            cmd_vy: 0.0,
+            cmd_wz: 0.0,
             misa_file: DEFAULT_MISA,
             early_contact_n: 5.0,
             kinematic_only: false,
@@ -288,10 +286,14 @@ impl WbcParams {
             cmd_vx: 0.15,
             dt: 0.002,
             misa_wbc_mode: None,
-            gait_type: None, cycle_period_s: None,
-            duty_factor: None, max_step_length_m: None,
-            swing_height_m: None, k_capture_s: None,
-            cmd_vy: 0.0, cmd_wz: 0.0,
+            gait_type: None,
+            cycle_period_s: None,
+            duty_factor: None,
+            max_step_length_m: None,
+            swing_height_m: None,
+            k_capture_s: None,
+            cmd_vy: 0.0,
+            cmd_wz: 0.0,
             misa_file: DEFAULT_MISA,
             early_contact_n: 5.0,
             kinematic_only: false,
@@ -310,13 +312,19 @@ impl WbcParams {
     /// Same schedule as [`Self::static_stand`], routed through
     /// `WbcSolver` with the given formulation/strategy/backend.
     fn static_stand_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
-        Self { misa_wbc_mode: Some((formulation, cfg)), ..Self::static_stand() }
+        Self {
+            misa_wbc_mode: Some((formulation, cfg)),
+            ..Self::static_stand()
+        }
     }
 
     /// Same schedule as [`Self::forward_walk`], routed through
     /// `WbcSolver` with the given formulation/strategy/backend.
     fn forward_walk_misa_wbc(formulation: wbc::Formulation, cfg: wbc::SolveConfig) -> Self {
-        Self { misa_wbc_mode: Some((formulation, cfg)), ..Self::forward_walk() }
+        Self {
+            misa_wbc_mode: Some((formulation, cfg)),
+            ..Self::forward_walk()
+        }
     }
 }
 
@@ -337,8 +345,8 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     // commit `f53482c` for the same migration in gait_walk_stability.
     let mut robot = RobotModel::from_misa(&path).expect("load namiashi .misa");
 
-    let mut kin = auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS)
-        .expect("auto-detect kinematics");
+    let mut kin =
+        auto_detect_kinematics_config(&robot, &DEFAULT_FOOT_LINKS).expect("auto-detect kinematics");
     for leg_kin in [&mut kin.fl, &mut kin.fr, &mut kin.rl, &mut kin.rr] {
         let total_leg = leg_kin.upper_leg_m + leg_kin.lower_leg_m;
         leg_kin.nominal_foot_body.z += 0.08 * total_leg;
@@ -401,8 +409,11 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
     eprintln!(
         "[gait] {:?}  T={:.3}s duty={:.3} max_step={:.3}m  cmd_vx={:.3}  \
          model={} m={:.3}kg",
-        cfg.gait_type, cfg.cycle_period_s, cfg.duty_factor,
-        cfg.max_step_length_m, params.cmd_vx,
+        cfg.gait_type,
+        cfg.cycle_period_s,
+        cfg.duty_factor,
+        cfg.max_step_length_m,
+        params.cmd_vx,
         params.misa_file,
         robot.links.iter().map(|l| l.inertial.mass).sum::<f64>(),
     );
@@ -455,9 +466,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         }
         eprintln!(
             "[wbc] partial: mass={} com={} inertia={}",
-            params.wbc_real_mass_only,
-            params.wbc_real_com_only,
-            params.wbc_real_inertia_only,
+            params.wbc_real_mass_only, params.wbc_real_com_only, params.wbc_real_inertia_only,
         );
     }
     if params.wbc_real_inertia {
@@ -475,8 +484,12 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             "[wbc] real inertia: m={:.3}kg (was 9.000)  com_off=({:+.4},{:+.4},{:+.4})m  \
              I_diag=({:.5},{:.5},{:.5}) (was 0.07000,0.26000,0.24200)",
             c.mass_kg,
-            c.com_offset_body.x, c.com_offset_body.y, c.com_offset_body.z,
-            i[(0, 0)], i[(1, 1)], i[(2, 2)],
+            c.com_offset_body.x,
+            c.com_offset_body.y,
+            c.com_offset_body.z,
+            i[(0, 0)],
+            i[(1, 1)],
+            i[(2, 2)],
         );
     }
 
@@ -577,7 +590,8 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     // collapse. Early touchdown is the more important
                     // direction anyway; late liftoff matters mainly for
                     // slip detection on real hardware.
-                    /* late_liftoff_threshold_n = */ 0.0,
+                    /* late_liftoff_threshold_n = */
+                    0.0,
                 );
                 let contact_flag = [
                     corrected[0].is_stance,
@@ -611,10 +625,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     let body_pos = sim
                         .body_world_position(&robot.root_link)
                         .unwrap_or([0.0, 0.0, 0.0]);
-                    let tau_max = taus
-                        .iter()
-                        .cloned()
-                        .fold(0.0_f64, |a, b| a.max(b.abs()));
+                    let tau_max = taus.iter().cloned().fold(0.0_f64, |a, b| a.max(b.abs()));
                     let mpc_fz_sum: f64 = f_grf_world.iter().map(|v| v.z).sum();
                     let stance_count = contact_flag.iter().filter(|b| **b).count();
                     eprintln!(
@@ -633,8 +644,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     let mut q_err_max = 0.0_f64;
                     let mut qd_err_max = 0.0_f64;
                     for (ji, q_target) in targets.iter() {
-                        if let Some((q_actual, qd_actual)) =
-                            sim.joint_q_qd(&robot.joints[*ji].name)
+                        if let Some((q_actual, qd_actual)) = sim.joint_q_qd(&robot.joints[*ji].name)
                         {
                             let q_err = (*q_target - q_actual).abs();
                             q_err_max = q_err_max.max(q_err);
@@ -644,8 +654,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     // WBC solution breakdown (cached on the pipeline).
                     let (wbc_fz_sum, q_ddot_z, tau_norm) =
                         if let Some(sol) = wbc_pipeline.last_solution.as_ref() {
-                            let fz: f64 =
-                                (0..4).map(|s| sol.f_grf[3 * s + 2]).sum();
+                            let fz: f64 = (0..4).map(|s| sol.f_grf[3 * s + 2]).sum();
                             let q_ddot_z = sol.q_ddot[5]; // body z (Featherstone [ang;lin])
                             let tau_norm: f64 = sol.tau.iter().map(|x| x * x).sum::<f64>().sqrt();
                             (fz, q_ddot_z, tau_norm)
@@ -666,16 +675,13 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                             let signs = gc.joint_signs()[slot];
                             for kk in 0..3 {
                                 let ji = gc.joint_indices()[slot][kk];
-                                if let Some((q, _)) =
-                                    sim.joint_q_qd(&robot.joints[ji].name)
-                                {
+                                if let Some((q, _)) = sim.joint_q_qd(&robot.joints[ji].name) {
                                     q_leg[kk] = signs[kk] * q;
                                 }
                             }
-                            let measured_body =
-                                quadruped_gait::forward_leg_kinematics(
-                                    leg_kin, q_leg[0], q_leg[1], q_leg[2],
-                                );
+                            let measured_body = quadruped_gait::forward_leg_kinematics(
+                                leg_kin, q_leg[0], q_leg[1], q_leg[2],
+                            );
                             let err = (target_body - measured_body).norm();
                             swing_err_max = swing_err_max.max(err);
                         }
@@ -683,22 +689,25 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                     eprintln!(
                         "[diag-detail k={k:5}] q*-q max={:.4} rad   q̇ max={:.3} rad/s   \
                          WBC Σf_z={:.2} N  q̈_z={:.2}  ‖τ‖={:.2}  swing FK err={:.4} m",
-                        q_err_max, qd_err_max,
-                        wbc_fz_sum, q_ddot_z, tau_norm, swing_err_max,
+                        q_err_max, qd_err_max, wbc_fz_sum, q_ddot_z, tau_norm, swing_err_max,
                     );
                     // MPC vs WBC f_GRF per-leg comparison (z-component
                     // only; horizontal components omitted to keep the
                     // line readable).
                     if let Some(sol) = wbc_pipeline.last_solution.as_ref() {
-                        let mpc_per_leg: [f64; 4] =
-                            std::array::from_fn(|s| f_grf_world[s].z);
-                        let wbc_per_leg: [f64; 4] =
-                            std::array::from_fn(|s| sol.f_grf[3 * s + 2]);
+                        let mpc_per_leg: [f64; 4] = std::array::from_fn(|s| f_grf_world[s].z);
+                        let wbc_per_leg: [f64; 4] = std::array::from_fn(|s| sol.f_grf[3 * s + 2]);
                         eprintln!(
                             "[diag-grf  k={k:5}] MPC_f_z=[{:.1} {:.1} {:.1} {:.1}]   \
                              WBC_f_z=[{:.1} {:.1} {:.1} {:.1}]",
-                            mpc_per_leg[0], mpc_per_leg[1], mpc_per_leg[2], mpc_per_leg[3],
-                            wbc_per_leg[0], wbc_per_leg[1], wbc_per_leg[2], wbc_per_leg[3],
+                            mpc_per_leg[0],
+                            mpc_per_leg[1],
+                            mpc_per_leg[2],
+                            mpc_per_leg[3],
+                            wbc_per_leg[0],
+                            wbc_per_leg[1],
+                            wbc_per_leg[2],
+                            wbc_per_leg[3],
                         );
                     }
                 }
@@ -723,10 +732,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
                 // depends on `W_CONTACT_FORCE` in `quadruped_gait::wbc`.
                 let _ = torque_ff; // discard MPC ff — WBC owns the τ stream
                 for (ji, &tau) in taus.iter().enumerate() {
-                    sim.set_torque_feedforward(
-                        ji,
-                        if params.kinematic_only { 0.0 } else { tau },
-                    );
+                    sim.set_torque_feedforward(ji, if params.kinematic_only { 0.0 } else { tau });
                 }
                 sim.clear_wbc_torques();
             } else {
@@ -747,7 +753,9 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         let tx = robot.base_transform.translation;
         let (roll, pitch, yaw) = robot.base_transform.rotation.euler_angles();
         if replay_out.is_some() {
-            let p = sim.body_world_position(&robot.root_link).unwrap_or([0.0; 3]);
+            let p = sim
+                .body_world_position(&robot.root_link)
+                .unwrap_or([0.0; 3]);
             let q = robot.base_transform.rotation;
             replay_buf.push_str(&format!(
                 "{:.5},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}",
@@ -759,8 +767,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             }
             replay_buf.push('\n');
         }
-        let total_fz_world: f64 =
-            sim.contacts().iter().map(|c| c.force_world[2]).sum();
+        let total_fz_world: f64 = sim.contacts().iter().map(|c| c.force_world[2]).sum();
         // Applied joint torque against its own effort limit. `mujoco_sim`
         // clamps to `joint.effort` silently, so without this a saturated
         // actuator is invisible: the harness would report a gait that the
@@ -791,9 +798,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
             foot_fz[fi] = sim
                 .contacts()
                 .iter()
-                .filter(|c| {
-                    c.body1.to_lowercase() == lname || c.body2.to_lowercase() == lname
-                })
+                .filter(|c| c.body1.to_lowercase() == lname || c.body2.to_lowercase() == lname)
                 .map(|c| c.force_world[2].abs())
                 .sum();
         }
@@ -814,8 +819,7 @@ fn run_wbc_sim(params: WbcParams) -> Option<Vec<WbcSample>> {
         });
     }
     if let Some(dir) = replay_out.as_deref() {
-        std::fs::write(format!("{dir}/trace.csv"), &replay_buf)
-            .expect("write replay trace.csv");
+        std::fs::write(format!("{dir}/trace.csv"), &replay_buf).expect("write replay trace.csv");
         eprintln!("[replay] wrote {dir}/model.xml and trace.csv");
     }
     Some(samples)
@@ -864,7 +868,10 @@ fn wbc_static_stand_balances_gravity() {
 /// not just on synthetic matrices.
 #[test]
 fn wbc_static_stand_balances_gravity_force_space_active_set() {
-    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
+    let cfg = wbc::SolveConfig {
+        backend: wbc::QpSolver::ActiveSet,
+        ..Default::default()
+    };
     let params = WbcParams::static_stand_misa_wbc(wbc::Formulation::ForceSpace, cfg);
     let misa = params.misa_file;
     let Some(samples) = run_wbc_sim(params) else {
@@ -881,7 +888,10 @@ fn wbc_static_stand_balances_gravity_force_space_active_set() {
 /// inside a +/-60% tolerance, so it would have passed while being wrong.
 fn assert_static_stand_balances_gravity(samples: &[WbcSample], misa_file: &str) {
     // No fall.
-    let min_z = samples.iter().map(|s| s.body_z).fold(f64::INFINITY, f64::min);
+    let min_z = samples
+        .iter()
+        .map(|s| s.body_z)
+        .fold(f64::INFINITY, f64::min);
     assert!(
         min_z > TRUNK_Z_FALL_THRESHOLD_M,
         "static stand: trunk fell, min_z = {min_z:.3} m (threshold {:.2})",
@@ -961,10 +971,14 @@ fn wbc_forward_command_advances_body() {
 /// the rationale.
 #[test]
 fn wbc_forward_command_advances_body_force_space_active_set() {
-    let cfg = wbc::SolveConfig { backend: wbc::QpSolver::ActiveSet, ..Default::default() };
-    let Some(samples) =
-        run_wbc_sim(WbcParams::forward_walk_misa_wbc(wbc::Formulation::ForceSpace, cfg))
-    else {
+    let cfg = wbc::SolveConfig {
+        backend: wbc::QpSolver::ActiveSet,
+        ..Default::default()
+    };
+    let Some(samples) = run_wbc_sim(WbcParams::forward_walk_misa_wbc(
+        wbc::Formulation::ForceSpace,
+        cfg,
+    )) else {
         return;
     };
     assert_forward_command_advances_body(&samples);
@@ -1066,12 +1080,23 @@ fn report_walk_cmd(
          support@1N: n_down 0/1/2/3/4 = {:.3}/{:.3}/{:.3}/{:.3}/{:.3}   \
          duty per foot = {:.2} {:.2} {:.2} {:.2}",
         fwd / span,
-        if cmd_vx.abs() > 1e-9 { 100.0 * (fwd / span) / cmd_vx } else { 0.0 },
+        if cmd_vx.abs() > 1e-9 {
+            100.0 * (fwd / span) / cmd_vx
+        } else {
+            0.0
+        },
         dyaw.to_degrees(),
-        roll_pk.to_degrees(), pitch_pk.to_degrees(),
-        f(0), f(1), f(2), f(3), f(4),
-        duty[0] as f64 / n, duty[1] as f64 / n,
-        duty[2] as f64 / n, duty[3] as f64 / n,
+        roll_pk.to_degrees(),
+        pitch_pk.to_degrees(),
+        f(0),
+        f(1),
+        f(2),
+        f(3),
+        f(4),
+        duty[0] as f64 / n,
+        duty[1] as f64 / n,
+        duty[2] as f64 / n,
+        duty[3] as f64 / n,
     );
 
     // Per-second velocity in each window's OWN heading frame, plus that
@@ -1166,14 +1191,22 @@ fn report_walk_cmd(
         eprintln!(
             "  body-frame: vx={bvx:+.3} m/s ({:.0}% of cmd)  vy={bvy:+.3} m/s  \
              yaw rate={:+.2} deg/s",
-            if cmd_vx.abs() > 1e-9 { 100.0 * bvx / cmd_vx } else { 0.0 },
+            if cmd_vx.abs() > 1e-9 {
+                100.0 * bvx / cmd_vx
+            } else {
+                0.0
+            },
             dyaw.to_degrees() / span,
         );
         if cmd_vy.abs() > 1e-9 || cmd_wz.abs() > 1e-9 {
             eprintln!(
                 "  cmd vy={cmd_vy:+.2} -> {bvy:+.3} m/s ({:.0}%)   \
                  cmd wz={:+.1} -> {:+.1} deg/s ({:.0}%)",
-                if cmd_vy.abs() > 1e-9 { 100.0 * bvy / cmd_vy } else { 0.0 },
+                if cmd_vy.abs() > 1e-9 {
+                    100.0 * bvy / cmd_vy
+                } else {
+                    0.0
+                },
                 cmd_wz.to_degrees(),
                 dyaw.to_degrees() / span,
                 if cmd_wz.abs() > 1e-9 {
@@ -1187,12 +1220,7 @@ fn report_walk_cmd(
     metrics
 }
 
-fn report_walk(
-    label: &str,
-    samples: &[WbcSample],
-    cmd_vx: f64,
-    burn_in_s: f64,
-) -> WalkMetrics {
+fn report_walk(label: &str, samples: &[WbcSample], cmd_vx: f64, burn_in_s: f64) -> WalkMetrics {
     report_walk_cmd(label, samples, cmd_vx, 0.0, 0.0, burn_in_s)
 }
 
@@ -1224,7 +1252,9 @@ fn namiashi_gait_baseline_sweep() {
                 gait_type: Some(gait),
                 ..WbcParams::forward_walk()
             };
-            let Some(samples) = run_wbc_sim(params) else { return };
+            let Some(samples) = run_wbc_sim(params) else {
+                return;
+            };
             report_walk(&format!("{gait:?} default"), &samples, cmd_vx, 1.0);
         }
     }
@@ -1284,7 +1314,9 @@ fn namiashi_gait_scaled_sweep() {
             max_step_length_m: Some(step),
             ..WbcParams::forward_walk()
         };
-        let Some(samples) = run_wbc_sim(params) else { return };
+        let Some(samples) = run_wbc_sim(params) else {
+            return;
+        };
         report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
     }
 }
@@ -1330,7 +1362,9 @@ fn namiashi_capture_gain_and_swing_height() {
                 k_capture_s: Some(k),
                 ..WbcParams::forward_walk()
             };
-            let Some(samples) = run_wbc_sim(params) else { return };
+            let Some(samples) = run_wbc_sim(params) else {
+                return;
+            };
             report_walk(&format!("{gait:?} k={k:.3}"), &samples, cmd_vx, 1.0);
         }
     }
@@ -1351,7 +1385,9 @@ fn namiashi_capture_gain_and_swing_height() {
                 k_capture_s: Some(k),
                 ..WbcParams::forward_walk()
             };
-            let Some(samples) = run_wbc_sim(params) else { return };
+            let Some(samples) = run_wbc_sim(params) else {
+                return;
+            };
             report_walk(&format!("Crawl k={k:.3} h={h:.3}"), &samples, 0.17, 1.0);
         }
     }
@@ -1394,7 +1430,9 @@ fn namiashi_capture_gain_low_side() {
                 k_capture_s: Some(k),
                 ..WbcParams::forward_walk()
             };
-            let Some(samples) = run_wbc_sim(params) else { return };
+            let Some(samples) = run_wbc_sim(params) else {
+                return;
+            };
             report_walk(&format!("{gait:?} k={k:.3}"), &samples, cmd_vx, 1.0);
         }
     }
@@ -1423,9 +1461,27 @@ fn namiashi_gait_endurance() {
     let rows: &[(GaitType, &str, f64, f64, f64, f64, f64, f64)] = &[
         // gait, tag, T, duty, step, swing_h, k, cmd
         (GaitType::Trot, "k0", 0.260, 0.50, 0.145, 0.040, 0.0, 0.89),
-        (GaitType::Trot, "k.03", 0.260, 0.50, 0.145, 0.040, 0.030, 0.89),
+        (
+            GaitType::Trot,
+            "k.03",
+            0.260,
+            0.50,
+            0.145,
+            0.040,
+            0.030,
+            0.89,
+        ),
         (GaitType::Walk, "k0", 0.400, 0.75, 0.145, 0.035, 0.0, 0.38),
-        (GaitType::Crawl, "h.04", 0.800, 0.85, 0.145, 0.040, 0.050, 0.17),
+        (
+            GaitType::Crawl,
+            "h.04",
+            0.800,
+            0.85,
+            0.145,
+            0.040,
+            0.050,
+            0.17,
+        ),
     ];
     for &(gait, tag, t, duty, step, h, k, cmd_vx) in rows {
         let params = WbcParams {
@@ -1440,7 +1496,9 @@ fn namiashi_gait_endurance() {
             k_capture_s: Some(k),
             ..WbcParams::forward_walk()
         };
-        let Some(samples) = run_wbc_sim(params) else { return };
+        let Some(samples) = run_wbc_sim(params) else {
+            return;
+        };
         report_walk(&format!("{gait:?} {tag} 25s"), &samples, cmd_vx, 1.0);
     }
 }
@@ -1474,7 +1532,9 @@ fn namiashi_crawl_yaw_drift() {
             k_capture_s: Some(k),
             ..WbcParams::forward_walk()
         };
-        let Some(samples) = run_wbc_sim(params) else { return };
+        let Some(samples) = run_wbc_sim(params) else {
+            return;
+        };
         report_walk(&format!("Crawl k={k:.3}"), &samples, 0.17, 1.0);
     }
 }
@@ -1521,7 +1581,9 @@ fn namiashi_command_coverage() {
                 k_capture_s: Some(k),
                 ..WbcParams::forward_walk()
             };
-            let Some(samples) = run_wbc_sim(params) else { return };
+            let Some(samples) = run_wbc_sim(params) else {
+                return;
+            };
             report_walk_cmd(&format!("{gait:?} {tag}"), &samples, vx, vy, wz, 1.0);
         }
     }
@@ -1564,7 +1626,9 @@ fn namiashi_turn_rate_linearity() {
             k_capture_s: Some(0.0),
             ..WbcParams::forward_walk()
         };
-        let Some(samples) = run_wbc_sim(params) else { return };
+        let Some(samples) = run_wbc_sim(params) else {
+            return;
+        };
         report_walk_cmd(&format!("Trot wz={wz:.2}"), &samples, 0.0, 0.0, wz, 1.0);
     }
 }
@@ -1717,7 +1781,9 @@ fn namiashi_mass_variants() {
                 misa_file: model,
                 ..namiashi_tuned_params(i)
             };
-            let Some(samples) = run_wbc_sim(params) else { return };
+            let Some(samples) = run_wbc_sim(params) else {
+                return;
+            };
             let tag = model.trim_end_matches(".misa");
             report_walk(&format!("{gait:?} @{tag}"), &samples, cmd_vx, 1.0);
         }
@@ -1778,7 +1844,9 @@ fn namiashi_prop_walk_swing_time() {
             k_capture_s: Some(0.0),
             ..WbcParams::forward_walk()
         };
-        let Some(samples) = run_wbc_sim(params) else { return };
+        let Some(samples) = run_wbc_sim(params) else {
+            return;
+        };
         report_walk(
             &format!("Walk T={t:.3} d={duty:.2} swing={:.3}s", t * (1.0 - duty)),
             &samples,
@@ -1823,7 +1891,9 @@ fn namiashi_prop_walk_speed_vs_shape() {
 
     eprintln!("---- A: speed sweep at the tuned shape (T=0.400, duty=0.75) ----");
     for cmd_vx in [0.20, 0.26, 0.31, 0.34, 0.38, 0.44] {
-        let Some(samples) = run_wbc_sim(base(0.400, 0.75, cmd_vx)) else { return };
+        let Some(samples) = run_wbc_sim(base(0.400, 0.75, cmd_vx)) else {
+            return;
+        };
         report_walk(&format!("Walk v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
     }
 
@@ -1837,7 +1907,9 @@ fn namiashi_prop_walk_speed_vs_shape() {
         (0.400, 0.55),
         (0.300, 0.75),
     ] {
-        let Some(samples) = run_wbc_sim(base(t, duty, 0.38)) else { return };
+        let Some(samples) = run_wbc_sim(base(t, duty, 0.38)) else {
+            return;
+        };
         report_walk(&format!("Walk T={t:.3} d={duty:.2}"), &samples, 0.38, 1.0);
     }
 }
@@ -1885,8 +1957,15 @@ fn namiashi_prop_walk_contact_override() {
                 early_contact_n: thr,
                 ..WbcParams::forward_walk()
             };
-            let Some(samples) = run_wbc_sim(params) else { return };
-            report_walk(&format!("Walk v={cmd_vx:.2} thr={label}"), &samples, cmd_vx, 1.0);
+            let Some(samples) = run_wbc_sim(params) else {
+                return;
+            };
+            report_walk(
+                &format!("Walk v={cmd_vx:.2} thr={label}"),
+                &samples,
+                cmd_vx,
+                1.0,
+            );
         }
     }
 }
@@ -1938,7 +2017,9 @@ fn namiashi_walk_band_is_mass_or_tuning() {
                 k_capture_s: Some(0.0),
                 ..WbcParams::forward_walk()
             };
-            let Some(samples) = run_wbc_sim(params) else { return };
+            let Some(samples) = run_wbc_sim(params) else {
+                return;
+            };
             report_walk(&format!("{label} v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
         }
     }
@@ -1983,8 +2064,15 @@ fn namiashi_prop_retune_trot_crawl() {
             k_capture_s: Some(0.0),
             ..WbcParams::forward_walk()
         };
-        let Some(samples) = run_wbc_sim(params) else { return };
-        report_walk(&format!("Trot T={t:.3} v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
+        let Some(samples) = run_wbc_sim(params) else {
+            return;
+        };
+        report_walk(
+            &format!("Trot T={t:.3} v={cmd_vx:.2}"),
+            &samples,
+            cmd_vx,
+            1.0,
+        );
     }
 
     eprintln!("---- Crawl on prop ----");
@@ -2002,7 +2090,9 @@ fn namiashi_prop_retune_trot_crawl() {
             k_capture_s: Some(0.0),
             ..WbcParams::forward_walk()
         };
-        let Some(samples) = run_wbc_sim(params) else { return };
+        let Some(samples) = run_wbc_sim(params) else {
+            return;
+        };
         report_walk(&format!("Crawl v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
     }
 }
@@ -2047,7 +2137,9 @@ fn namiashi_is_the_dynamic_layer_load_bearing() {
                 total_time_s: 16.0,
                 ..namiashi_tuned_params(i)
             };
-            let Some(samples) = run_wbc_sim(params) else { return };
+            let Some(samples) = run_wbc_sim(params) else {
+                return;
+            };
             report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
         }
     }
@@ -2111,7 +2203,9 @@ fn namiashi_walk_band_torque_saturation() {
             k_capture_s: Some(0.0),
             ..WbcParams::forward_walk()
         };
-        let Some(samples) = run_wbc_sim(params) else { return };
+        let Some(samples) = run_wbc_sim(params) else {
+            return;
+        };
         report_walk(&format!("Walk v={cmd_vx:.2}"), &samples, cmd_vx, 1.0);
     }
 }
@@ -2155,7 +2249,9 @@ fn namiashi_wbc_real_inertia() {
                     total_time_s: 16.0,
                     ..namiashi_tuned_params(i)
                 };
-                let Some(samples) = run_wbc_sim(params) else { return };
+                let Some(samples) = run_wbc_sim(params) else {
+                    return;
+                };
                 report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
             }
         }
@@ -2194,7 +2290,9 @@ fn namiashi_min_stance_force() {
                 total_time_s: 16.0,
                 ..namiashi_tuned_params(i)
             };
-            let Some(samples) = run_wbc_sim(params) else { return };
+            let Some(samples) = run_wbc_sim(params) else {
+                return;
+            };
             report_walk(&format!("{gait:?} fmin={frac:.2}"), &samples, cmd_vx, 1.0);
         }
     }
@@ -2232,7 +2330,9 @@ fn namiashi_base_accel_weight() {
                 total_time_s: 16.0,
                 ..namiashi_tuned_params(i)
             };
-            let Some(samples) = run_wbc_sim(params) else { return };
+            let Some(samples) = run_wbc_sim(params) else {
+                return;
+            };
             report_walk(&format!("{gait:?} w={w:.0}"), &samples, cmd_vx, 1.0);
         }
     }
@@ -2282,7 +2382,9 @@ fn namiashi_contact_flag_consistency() {
                     total_time_s: 16.0,
                     ..namiashi_tuned_params(i)
                 };
-                let Some(samples) = run_wbc_sim(params) else { return };
+                let Some(samples) = run_wbc_sim(params) else {
+                    return;
+                };
                 report_walk(&format!("{gait:?} {tag} {k}"), &samples, cmd_vx, 1.0);
             }
         }
@@ -2319,8 +2421,15 @@ fn namiashi_contact_force_weight() {
             total_time_s: 16.0,
             ..namiashi_tuned_params(1)
         };
-        let Some(samples) = run_wbc_sim(params) else { return };
-        report_walk(&format!("Walk cf={w:.0}"), &samples, NAMIASHI_TUNED[1].5, 1.0);
+        let Some(samples) = run_wbc_sim(params) else {
+            return;
+        };
+        report_walk(
+            &format!("Walk cf={w:.0}"),
+            &samples,
+            NAMIASHI_TUNED[1].5,
+            1.0,
+        );
     }
     // Both off: what is left is gravity comp plus the swing-leg term.
     let params = WbcParams {
@@ -2374,7 +2483,9 @@ fn namiashi_wbc_inertia_decomposition() {
             total_time_s: 16.0,
             ..namiashi_tuned_params(1)
         };
-        let Some(samples) = run_wbc_sim(params) else { return };
+        let Some(samples) = run_wbc_sim(params) else {
+            return;
+        };
         report_walk(&format!("Walk {tag}"), &samples, NAMIASHI_TUNED[1].5, 1.0);
     }
 }
@@ -2408,7 +2519,9 @@ fn namiashi_video_source() {
             replay_dir: Some(format!("{root}/{label}")),
             ..namiashi_tuned_params(i)
         };
-        let Some(samples) = run_wbc_sim(params) else { return };
+        let Some(samples) = run_wbc_sim(params) else {
+            return;
+        };
         report_walk(&format!("{gait:?} video"), &samples, cmd_vx, 1.0);
     }
 
@@ -2437,7 +2550,9 @@ fn namiashi_video_source() {
             k_capture_s: Some(0.0),
             ..WbcParams::forward_walk()
         };
-        let Some(samples) = run_wbc_sim(params) else { return };
+        let Some(samples) = run_wbc_sim(params) else {
+            return;
+        };
         report_walk_cmd(&format!("Trot {tag}"), &samples, vx, vy, wz, 1.0);
     }
 }
@@ -2471,7 +2586,9 @@ fn namiashi_trunk_height_sweep() {
                 total_time_s: 16.0,
                 ..namiashi_tuned_params(i)
             };
-            let Some(samples) = run_wbc_sim(params) else { return };
+            let Some(samples) = run_wbc_sim(params) else {
+                return;
+            };
             report_walk(
                 &format!("{gait:?} drop={:.0}cm", drop * 100.0),
                 &samples,
@@ -2513,7 +2630,9 @@ fn namiashi_height_video_source() {
                 replay_dir: Some(format!("{root}/{tag}")),
                 ..namiashi_tuned_params(i)
             };
-            let Some(samples) = run_wbc_sim(params) else { return };
+            let Some(samples) = run_wbc_sim(params) else {
+                return;
+            };
             report_walk(&format!("{gait:?} {tag}"), &samples, cmd_vx, 1.0);
         }
     }
@@ -2526,7 +2645,10 @@ fn assert_forward_command_advances_body(samples: &[WbcSample]) {
     let walk = &samples[burn_in_steps..];
 
     // No fall during the entire run (including burn-in).
-    let min_z = samples.iter().map(|s| s.body_z).fold(f64::INFINITY, f64::min);
+    let min_z = samples
+        .iter()
+        .map(|s| s.body_z)
+        .fold(f64::INFINITY, f64::min);
     assert!(
         min_z > TRUNK_Z_FALL_THRESHOLD_M,
         "forward walk: trunk fell, min_z = {min_z:.3} m",
@@ -2539,8 +2661,7 @@ fn assert_forward_command_advances_body(samples: &[WbcSample]) {
     eprintln!(
         "[wbc] forward_command: Δx = {dx:.3} m over {:.1} s \
          (threshold ≥ {:.2})",
-        walk.last().map(|s| s.t).unwrap_or(0.0)
-            - walk.first().map(|s| s.t).unwrap_or(0.0),
+        walk.last().map(|s| s.t).unwrap_or(0.0) - walk.first().map(|s| s.t).unwrap_or(0.0),
         MIN_DISPLACEMENT_M,
     );
     assert!(
@@ -2552,14 +2673,8 @@ fn assert_forward_command_advances_body(samples: &[WbcSample]) {
 
     // Bounded body tilt during walking. WBC + Position-PD with
     // gravity-comp should keep the trunk roughly level on flat ground.
-    let peak_roll = walk
-        .iter()
-        .map(|s| s.roll.abs())
-        .fold(0.0_f64, f64::max);
-    let peak_pitch = walk
-        .iter()
-        .map(|s| s.pitch.abs())
-        .fold(0.0_f64, f64::max);
+    let peak_roll = walk.iter().map(|s| s.roll.abs()).fold(0.0_f64, f64::max);
+    let peak_pitch = walk.iter().map(|s| s.pitch.abs()).fold(0.0_f64, f64::max);
     eprintln!(
         "[wbc] forward_command: peak |roll| = {peak_roll:.2} rad, \
          peak |pitch| = {peak_pitch:.2} rad",

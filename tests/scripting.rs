@@ -44,10 +44,7 @@ mod scripting_tests {
         let out = engine.eval(&inputs);
         // tau = -0.8 * (45 - 20) = -20.0
         let tau = out.torque_overrides[&4];
-        assert!(
-            (tau - (-20.0)).abs() < 1e-9,
-            "expected -20.0, got {tau}"
-        );
+        assert!((tau - (-20.0)).abs() < 1e-9, "expected -20.0, got {tau}");
         assert!((out.debug_values["reflex_active"] - 1.0).abs() < 1e-9);
     }
 

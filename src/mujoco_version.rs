@@ -129,9 +129,7 @@ pub fn init() -> &'static CheckResult {
 /// `true` if [`init`] has not been called yet (best-effort: avoid
 /// hiding MuJoCo if we don't know).
 pub fn is_runtime_compatible() -> bool {
-    CACHED
-        .get()
-        .map_or(true, |r| r.is_compatible())
+    CACHED.get().map_or(true, |r| r.is_compatible())
 }
 
 /// Get the cached check result. Returns `None` if [`init`] hasn't run.
@@ -147,7 +145,11 @@ mod tests {
 
     #[test]
     fn version_packed_round_trip() {
-        let v = MujocoVersion { major: 3, minor: 8, patch: 0 };
+        let v = MujocoVersion {
+            major: 3,
+            minor: 8,
+            patch: 0,
+        };
         assert_eq!(v.packed(), 3_008_000);
         let back = MujocoVersion::from_packed(3_008_000);
         assert_eq!(back, v);

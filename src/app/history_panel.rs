@@ -45,9 +45,11 @@ impl ArticaraApp {
                 }
 
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new(
-                    format!("Undo: {} / Redo: {}", undo_n, redo_n)
-                ).small().weak());
+                ui.label(
+                    egui::RichText::new(format!("Undo: {} / Redo: {}", undo_n, redo_n))
+                        .small()
+                        .weak(),
+                );
             });
 
         // Execute history jump (outside borrow scope)

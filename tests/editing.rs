@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 // camera.rs — camera math
 // ============================================================
 mod test_camera {
-    use nalgebra as na;
     use articara::camera::OrbitCamera;
+    use nalgebra as na;
 
     #[test]
     fn default_camera() {
@@ -63,8 +63,16 @@ mod test_camera {
         let screen = cam.project(&cam.target, aspect);
         assert!(screen.is_some());
         let s = screen.unwrap();
-        assert!((s.x - 0.5).abs() < 0.1, "Target should project near center, got x={}", s.x);
-        assert!((s.y - 0.5).abs() < 0.1, "Target should project near center, got y={}", s.y);
+        assert!(
+            (s.x - 0.5).abs() < 0.1,
+            "Target should project near center, got x={}",
+            s.x
+        );
+        assert!(
+            (s.y - 0.5).abs() < 0.1,
+            "Target should project near center, got y={}",
+            s.y
+        );
     }
 
     #[test]
@@ -75,7 +83,10 @@ mod test_camera {
         // Ray from center of screen should point roughly from eye toward target
         let to_target = (cam.target - ro).normalize();
         let dot = rd.dot(&to_target);
-        assert!(dot > 0.9, "Center ray should point toward target, dot={dot}");
+        assert!(
+            dot > 0.9,
+            "Center ray should point toward target, dot={dot}"
+        );
     }
 
     #[test]
@@ -83,7 +94,10 @@ mod test_camera {
         let cam = OrbitCamera::new();
         let (ro, _) = cam.screen_ray(na::Point2::new(0.5, 0.5), 1.0);
         let dist = na::distance(&ro, &cam.eye());
-        assert!(dist < 0.1, "Ray origin should be near camera eye, dist={dist}");
+        assert!(
+            dist < 0.1,
+            "Ray origin should be near camera eye, dist={dist}"
+        );
     }
 }
 
@@ -92,8 +106,8 @@ mod test_camera {
 // ============================================================
 mod test_ik {
     use super::*;
+    use articara::robot::{IkSolver, RobotModel};
     use nalgebra as na;
-    use articara::robot::{RobotModel, IkSolver};
 
     /// Reproduces the user-reported case: with RL_foot as the IK root,
     /// dragging RL_hip should move it in the SAME direction as the cursor
@@ -117,19 +131,21 @@ mod test_ik {
         // The IK ee link and its kinematic-root counterpart.
         let ee_link = "RL_hip";
         let root_link = "RL_foot";
-        if !model.link_map.contains_key(ee_link)
-            || !model.link_map.contains_key(root_link)
-        {
+        if !model.link_map.contains_key(ee_link) || !model.link_map.contains_key(root_link) {
             return;
         }
 
         let chain = model.chain_joints_between(ee_link, Some(root_link));
-        assert!(!chain.is_empty(), "chain RL_foot → RL_hip should be non-empty");
+        assert!(
+            !chain.is_empty(),
+            "chain RL_foot → RL_hip should be non-empty"
+        );
         eprintln!("chain joints (foot→hip):");
         for &ji in &chain {
-            eprintln!("  {} ({}) axis={:?}",
-                model.joints[ji].name, model.joints[ji].joint_type,
-                model.joints[ji].axis);
+            eprintln!(
+                "  {} ({}) axis={:?}",
+                model.joints[ji].name, model.joints[ji].joint_type, model.joints[ji].axis
+            );
         }
 
         let transforms = model.compute_transforms();
@@ -139,11 +155,7 @@ mod test_ik {
         eprintln!("foot_initial = {:?}", foot_initial);
 
         // Target ~3 cm in +X from the hip's current position.
-        let target = na::Point3::new(
-            hip_initial.x + 0.03,
-            hip_initial.y,
-            hip_initial.z,
-        );
+        let target = na::Point3::new(hip_initial.x + 0.03, hip_initial.y, hip_initial.z);
 
         // The IK is iterative and can over/under-shoot at high gain, but
         // the *direction* of the very first step must point at the target
@@ -155,13 +167,12 @@ mod test_ik {
             let cur_tf_dbg = model.compute_transforms();
             let hip_now = cur_tf_dbg[ee_link].translation.vector.cast::<f64>();
             let foot_now = cur_tf_dbg[root_link].translation.vector.cast::<f64>();
-            eprintln!("iter {iter}: hip={:?} foot={:?} q_calf={} q_thigh={}",
-                hip_now, foot_now,
-                model.joint_positions[chain[0]], model.joint_positions[chain[1]]);
-            let cur_tf = model.compute_transforms();
-            let ee_now = na::Point3::from(
-                cur_tf[ee_link].translation.vector.cast::<f64>(),
+            eprintln!(
+                "iter {iter}: hip={:?} foot={:?} q_calf={} q_thigh={}",
+                hip_now, foot_now, model.joint_positions[chain[0]], model.joint_positions[chain[1]]
             );
+            let cur_tf = model.compute_transforms();
+            let ee_now = na::Point3::from(cur_tf[ee_link].translation.vector.cast::<f64>());
             // No surface offset for the test (use link origin) so we focus
             // strictly on the chain Jacobian's directional correctness.
             let deltas = model.solve_ik_step(
@@ -187,10 +198,8 @@ mod test_ik {
             model.base_transform = na::Isometry3::identity();
             let id_tf = model.compute_transforms();
             if let Some(root_rel) = id_tf.get(root_link) {
-                let desired = na::Isometry3::from_parts(
-                    na::Translation3::from(foot_initial),
-                    saved_rot,
-                );
+                let desired =
+                    na::Isometry3::from_parts(na::Translation3::from(foot_initial), saved_rot);
                 model.base_transform = desired * root_rel.inverse().cast::<f64>();
             }
 
@@ -273,8 +282,14 @@ mod test_ik {
         let ee_pos_f64: na::Point3<f64> = ee_pos.cast();
         let target_f64: na::Point3<f64> = target.cast();
         let deltas = model.solve_ik_step(
-            &chain, "link2", None,
-            &ee_pos_f64, &target_f64, 0.05, 1.0, 0.1,
+            &chain,
+            "link2",
+            None,
+            &ee_pos_f64,
+            &target_f64,
+            0.05,
+            1.0,
+            0.1,
             None,
             IkSolver::Dls,
             None,
@@ -288,8 +303,10 @@ mod test_ik {
         let new_pos = model.ee_world_pos(li, &tf2);
         let new_error = na::distance(&new_pos, &target);
 
-        assert!(new_error < initial_error,
-            "IK should reduce error: {initial_error} -> {new_error}");
+        assert!(
+            new_error < initial_error,
+            "IK should reduce error: {initial_error} -> {new_error}"
+        );
     }
 
     #[test]
@@ -519,8 +536,8 @@ mod test_primitives {
 // Model editing — add_link, add_joint, add_child, remove_link
 // ============================================================
 mod test_model_editing {
-    use nalgebra as na;
     use articara::robot::*;
+    use nalgebra as na;
 
     #[test]
     fn new_empty_has_root_link() {
@@ -535,7 +552,11 @@ mod test_model_editing {
     #[test]
     fn add_link_updates_maps() {
         let mut model = RobotModel::new_empty("test");
-        let idx = model.add_link("arm", GeomData::Sphere { radius: 0.05 }, [1.0, 0.0, 0.0, 1.0]);
+        let idx = model.add_link(
+            "arm",
+            GeomData::Sphere { radius: 0.05 },
+            [1.0, 0.0, 0.0, 1.0],
+        );
         assert_eq!(idx, 1);
         assert_eq!(model.links.len(), 2);
         assert_eq!(model.link_map["arm"], 1);
@@ -545,13 +566,27 @@ mod test_model_editing {
     #[test]
     fn add_joint_updates_maps_and_children() {
         let mut model = RobotModel::new_empty("test");
-        model.add_link("child1", GeomData::Box { hx: 0.1, hy: 0.1, hz: 0.1 }, [1.0; 4]);
-        let ji = model.add_joint(
-            "j1", "revolute", "base_link", "child1",
-            na::Isometry3::identity(),
-            na::Vector3::z(),
-            -1.0, 1.0,
-        ).unwrap();
+        model.add_link(
+            "child1",
+            GeomData::Box {
+                hx: 0.1,
+                hy: 0.1,
+                hz: 0.1,
+            },
+            [1.0; 4],
+        );
+        let ji = model
+            .add_joint(
+                "j1",
+                "revolute",
+                "base_link",
+                "child1",
+                na::Isometry3::identity(),
+                na::Vector3::z(),
+                -1.0,
+                1.0,
+            )
+            .unwrap();
         assert_eq!(ji, 0);
         assert_eq!(model.joints.len(), 1);
         assert_eq!(model.joint_map["j1"], 0);
@@ -565,10 +600,14 @@ mod test_model_editing {
         let mut model = RobotModel::new_empty("test");
         model.add_link("child1", GeomData::Sphere { radius: 0.1 }, [1.0; 4]);
         let result = model.add_joint(
-            "j1", "revolute", "no_such_link", "child1",
+            "j1",
+            "revolute",
+            "no_such_link",
+            "child1",
             na::Isometry3::identity(),
             na::Vector3::z(),
-            -1.0, 1.0,
+            -1.0,
+            1.0,
         );
         assert!(result.is_err());
     }
@@ -576,14 +615,23 @@ mod test_model_editing {
     #[test]
     fn add_child_creates_link_and_joint() {
         let mut model = RobotModel::new_empty("test");
-        let (li, ji) = model.add_child(
-            "base_link", "leg", "base_to_leg", "revolute",
-            na::Isometry3::new(na::Vector3::new(0.0, 0.0, 0.1), na::Vector3::zeros()),
-            na::Vector3::y(),
-            GeomData::Cylinder { radius: 0.02, half_length: 0.1 },
-            [0.0, 1.0, 0.0, 1.0],
-            -1.57, 1.57,
-        ).unwrap();
+        let (li, ji) = model
+            .add_child(
+                "base_link",
+                "leg",
+                "base_to_leg",
+                "revolute",
+                na::Isometry3::new(na::Vector3::new(0.0, 0.0, 0.1), na::Vector3::zeros()),
+                na::Vector3::y(),
+                GeomData::Cylinder {
+                    radius: 0.02,
+                    half_length: 0.1,
+                },
+                [0.0, 1.0, 0.0, 1.0],
+                -1.57,
+                1.57,
+            )
+            .unwrap();
         assert_eq!(li, 1);
         assert_eq!(ji, 0);
         assert_eq!(model.links.len(), 2);
@@ -595,14 +643,24 @@ mod test_model_editing {
     #[test]
     fn add_child_transforms_valid() {
         let mut model = RobotModel::new_empty("robot");
-        model.add_child(
-            "base_link", "link1", "joint1", "revolute",
-            na::Isometry3::new(na::Vector3::new(0.0, 0.0, 0.5), na::Vector3::zeros()),
-            na::Vector3::z(),
-            GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.25 },
-            [1.0; 4],
-            -3.14, 3.14,
-        ).unwrap();
+        model
+            .add_child(
+                "base_link",
+                "link1",
+                "joint1",
+                "revolute",
+                na::Isometry3::new(na::Vector3::new(0.0, 0.0, 0.5), na::Vector3::zeros()),
+                na::Vector3::z(),
+                GeomData::Box {
+                    hx: 0.05,
+                    hy: 0.05,
+                    hz: 0.25,
+                },
+                [1.0; 4],
+                -3.14,
+                3.14,
+            )
+            .unwrap();
         let tf = model.compute_transforms();
         assert!(tf.contains_key("base_link"));
         assert!(tf.contains_key("link1"));
@@ -623,20 +681,38 @@ mod test_model_editing {
         let mut model = RobotModel::new_empty("test");
         model.add_link("child", GeomData::Sphere { radius: 0.05 }, [1.0; 4]);
         assert_eq!(model.generate_joint_name("j"), "j");
-        model.add_joint("j", "fixed", "base_link", "child",
-            na::Isometry3::identity(), na::Vector3::z(), 0.0, 0.0).unwrap();
+        model
+            .add_joint(
+                "j",
+                "fixed",
+                "base_link",
+                "child",
+                na::Isometry3::identity(),
+                na::Vector3::z(),
+                0.0,
+                0.0,
+            )
+            .unwrap();
         assert_eq!(model.generate_joint_name("j"), "j_1");
     }
 
     #[test]
     fn remove_link_basic() {
         let mut model = RobotModel::new_empty("test");
-        model.add_child(
-            "base_link", "arm", "base_to_arm", "revolute",
-            na::Isometry3::identity(), na::Vector3::z(),
-            GeomData::Sphere { radius: 0.05 }, [1.0; 4],
-            -1.0, 1.0,
-        ).unwrap();
+        model
+            .add_child(
+                "base_link",
+                "arm",
+                "base_to_arm",
+                "revolute",
+                na::Isometry3::identity(),
+                na::Vector3::z(),
+                GeomData::Sphere { radius: 0.05 },
+                [1.0; 4],
+                -1.0,
+                1.0,
+            )
+            .unwrap();
         assert_eq!(model.links.len(), 2);
         let removed = model.remove_link("arm").unwrap();
         assert_eq!(removed, vec!["arm"]);
@@ -648,18 +724,34 @@ mod test_model_editing {
     #[test]
     fn remove_link_recursive() {
         let mut model = RobotModel::new_empty("test");
-        model.add_child(
-            "base_link", "arm", "j1", "revolute",
-            na::Isometry3::identity(), na::Vector3::z(),
-            GeomData::Sphere { radius: 0.05 }, [1.0; 4],
-            -1.0, 1.0,
-        ).unwrap();
-        model.add_child(
-            "arm", "hand", "j2", "revolute",
-            na::Isometry3::identity(), na::Vector3::z(),
-            GeomData::Sphere { radius: 0.03 }, [1.0; 4],
-            -1.0, 1.0,
-        ).unwrap();
+        model
+            .add_child(
+                "base_link",
+                "arm",
+                "j1",
+                "revolute",
+                na::Isometry3::identity(),
+                na::Vector3::z(),
+                GeomData::Sphere { radius: 0.05 },
+                [1.0; 4],
+                -1.0,
+                1.0,
+            )
+            .unwrap();
+        model
+            .add_child(
+                "arm",
+                "hand",
+                "j2",
+                "revolute",
+                na::Isometry3::identity(),
+                na::Vector3::z(),
+                GeomData::Sphere { radius: 0.03 },
+                [1.0; 4],
+                -1.0,
+                1.0,
+            )
+            .unwrap();
         assert_eq!(model.links.len(), 3);
         let removed = model.remove_link("arm").unwrap();
         assert!(removed.contains(&"arm".to_string()));
@@ -685,16 +777,34 @@ mod test_model_editing {
     #[test]
     fn rebuild_indices_consistency() {
         let mut model = RobotModel::new_empty("test");
-        model.add_child(
-            "base_link", "a", "j1", "revolute",
-            na::Isometry3::identity(), na::Vector3::z(),
-            GeomData::Sphere { radius: 0.02 }, [1.0; 4], -1.0, 1.0,
-        ).unwrap();
-        model.add_child(
-            "a", "b", "j2", "fixed",
-            na::Isometry3::identity(), na::Vector3::z(),
-            GeomData::Sphere { radius: 0.02 }, [1.0; 4], 0.0, 0.0,
-        ).unwrap();
+        model
+            .add_child(
+                "base_link",
+                "a",
+                "j1",
+                "revolute",
+                na::Isometry3::identity(),
+                na::Vector3::z(),
+                GeomData::Sphere { radius: 0.02 },
+                [1.0; 4],
+                -1.0,
+                1.0,
+            )
+            .unwrap();
+        model
+            .add_child(
+                "a",
+                "b",
+                "j2",
+                "fixed",
+                na::Isometry3::identity(),
+                na::Vector3::z(),
+                GeomData::Sphere { radius: 0.02 },
+                [1.0; 4],
+                0.0,
+                0.0,
+            )
+            .unwrap();
         model.rebuild_indices();
         assert_eq!(model.link_map.len(), 3);
         assert_eq!(model.joint_map.len(), 2);
@@ -723,14 +833,24 @@ mod test_model_editing {
     #[test]
     fn added_model_exports_valid_urdf() {
         let mut model = RobotModel::new_empty("built_robot");
-        model.add_child(
-            "base_link", "arm", "base_to_arm", "revolute",
-            na::Isometry3::new(na::Vector3::new(0.0, 0.0, 0.2), na::Vector3::zeros()),
-            na::Vector3::z(),
-            GeomData::Box { hx: 0.05, hy: 0.05, hz: 0.1 },
-            [0.8, 0.2, 0.2, 1.0],
-            -1.57, 1.57,
-        ).unwrap();
+        model
+            .add_child(
+                "base_link",
+                "arm",
+                "base_to_arm",
+                "revolute",
+                na::Isometry3::new(na::Vector3::new(0.0, 0.0, 0.2), na::Vector3::zeros()),
+                na::Vector3::z(),
+                GeomData::Box {
+                    hx: 0.05,
+                    hy: 0.05,
+                    hz: 0.1,
+                },
+                [0.8, 0.2, 0.2, 1.0],
+                -1.57,
+                1.57,
+            )
+            .unwrap();
         let xml = model.export_urdf().expect("export_urdf failed");
         assert!(xml.contains("<robot"));
         assert!(xml.contains("built_robot"));
@@ -744,11 +864,20 @@ mod test_model_editing {
     fn added_model_exports_valid_sdf() {
         use articara::sdf::export_sdf;
         let mut model = RobotModel::new_empty("sdf_test");
-        model.add_child(
-            "base_link", "link1", "j1", "fixed",
-            na::Isometry3::identity(), na::Vector3::z(),
-            GeomData::Sphere { radius: 0.1 }, [1.0; 4], 0.0, 0.0,
-        ).unwrap();
+        model
+            .add_child(
+                "base_link",
+                "link1",
+                "j1",
+                "fixed",
+                na::Isometry3::identity(),
+                na::Vector3::z(),
+                GeomData::Sphere { radius: 0.1 },
+                [1.0; 4],
+                0.0,
+                0.0,
+            )
+            .unwrap();
         let sdf = export_sdf(&model);
         assert!(sdf.contains("<sdf"));
         assert!(sdf.contains("sdf_test"));
@@ -759,13 +888,23 @@ mod test_model_editing {
     fn added_model_exports_valid_mjcf() {
         use articara::mjcf::export_mjcf;
         let mut model = RobotModel::new_empty("mjcf_test");
-        model.add_child(
-            "base_link", "link1", "j1", "revolute",
-            na::Isometry3::identity(), na::Vector3::z(),
-            GeomData::Cylinder { radius: 0.03, half_length: 0.15 },
-            [0.5, 0.5, 1.0, 1.0],
-            -3.14, 3.14,
-        ).unwrap();
+        model
+            .add_child(
+                "base_link",
+                "link1",
+                "j1",
+                "revolute",
+                na::Isometry3::identity(),
+                na::Vector3::z(),
+                GeomData::Cylinder {
+                    radius: 0.03,
+                    half_length: 0.15,
+                },
+                [0.5, 0.5, 1.0, 1.0],
+                -3.14,
+                3.14,
+            )
+            .unwrap();
         let mjcf = export_mjcf(&model);
         assert!(mjcf.contains("<mujoco"));
         assert!(mjcf.contains("mjcf_test"));
@@ -774,20 +913,34 @@ mod test_model_editing {
     #[test]
     fn multiple_children_from_same_parent() {
         let mut model = RobotModel::new_empty("multi");
-        model.add_child(
-            "base_link", "left", "j_left", "revolute",
-            na::Isometry3::new(na::Vector3::new(0.0, 0.1, 0.0), na::Vector3::zeros()),
-            na::Vector3::z(),
-            GeomData::Sphere { radius: 0.05 }, [1.0, 0.0, 0.0, 1.0],
-            -1.0, 1.0,
-        ).unwrap();
-        model.add_child(
-            "base_link", "right", "j_right", "revolute",
-            na::Isometry3::new(na::Vector3::new(0.0, -0.1, 0.0), na::Vector3::zeros()),
-            na::Vector3::z(),
-            GeomData::Sphere { radius: 0.05 }, [0.0, 0.0, 1.0, 1.0],
-            -1.0, 1.0,
-        ).unwrap();
+        model
+            .add_child(
+                "base_link",
+                "left",
+                "j_left",
+                "revolute",
+                na::Isometry3::new(na::Vector3::new(0.0, 0.1, 0.0), na::Vector3::zeros()),
+                na::Vector3::z(),
+                GeomData::Sphere { radius: 0.05 },
+                [1.0, 0.0, 0.0, 1.0],
+                -1.0,
+                1.0,
+            )
+            .unwrap();
+        model
+            .add_child(
+                "base_link",
+                "right",
+                "j_right",
+                "revolute",
+                na::Isometry3::new(na::Vector3::new(0.0, -0.1, 0.0), na::Vector3::zeros()),
+                na::Vector3::z(),
+                GeomData::Sphere { radius: 0.05 },
+                [0.0, 0.0, 1.0, 1.0],
+                -1.0,
+                1.0,
+            )
+            .unwrap();
         assert_eq!(model.links.len(), 3);
         assert_eq!(model.joints.len(), 2);
         assert_eq!(model.children_joints["base_link"].len(), 2);
@@ -803,9 +956,9 @@ mod test_model_editing {
 // Gizmo / Offset Adjustment tests
 // ============================================================
 mod test_gizmo {
-    use nalgebra as na;
-    use articara::robot::{self, GeomData, RobotModel};
     use super::fixture_urdf;
+    use articara::robot::{self, GeomData, RobotModel};
+    use nalgebra as na;
 
     #[test]
     fn ray_axis_closest_perpendicular_hit() {
@@ -879,10 +1032,7 @@ mod test_gizmo {
                 "link1",
                 "joint1",
                 "revolute",
-                na::Isometry3::new(
-                    na::Vector3::new(0.0, 0.0, 0.1),
-                    na::Vector3::zeros(),
-                ),
+                na::Isometry3::new(na::Vector3::new(0.0, 0.0, 0.1), na::Vector3::zeros()),
                 na::Vector3::z(),
                 GeomData::Sphere { radius: 0.02 },
                 [1.0, 0.0, 0.0, 1.0],
@@ -914,10 +1064,7 @@ mod test_gizmo {
                 "link1",
                 "joint1",
                 "revolute",
-                na::Isometry3::new(
-                    na::Vector3::new(0.0, 0.0, 0.2),
-                    na::Vector3::zeros(),
-                ),
+                na::Isometry3::new(na::Vector3::new(0.0, 0.0, 0.2), na::Vector3::zeros()),
                 na::Vector3::z(),
                 GeomData::Sphere { radius: 0.02 },
                 [1.0, 0.0, 0.0, 1.0],
@@ -995,7 +1142,10 @@ mod test_gizmo {
             )
             .unwrap();
         let ancestors = model.ancestor_links("child_B");
-        assert_eq!(ancestors, vec!["base_link".to_string(), "child_A".to_string()]);
+        assert_eq!(
+            ancestors,
+            vec!["base_link".to_string(), "child_A".to_string()]
+        );
     }
 
     #[test]
@@ -1133,16 +1283,19 @@ mod test_closed_loop_ik {
         // Perturb joint_left slightly (will break loop)
         model.joint_positions[0] = 0.3;
         let err_before = four_bar_loop_error(&model);
-        assert!(err_before > 0.01, "expected broken loop: err={}", err_before);
+        assert!(
+            err_before > 0.01,
+            "expected broken loop: err={}",
+            err_before
+        );
 
         // Run several IK steps with loop constraint to restore closure
         // Using the coupler link as "EE" target, moving it toward a position
         // while maintaining the loop.
         let transforms = model.compute_transforms();
-        let ee_pos = model.ee_world_pos(
-            *model.link_map.get("coupler").unwrap(),
-            &transforms,
-        ).cast::<f64>();
+        let ee_pos = model
+            .ee_world_pos(*model.link_map.get("coupler").unwrap(), &transforms)
+            .cast::<f64>();
         // Target = current position (just maintain loop)
         let target = ee_pos;
 
@@ -1153,9 +1306,9 @@ mod test_closed_loop_ik {
                 &ee_pos,
                 &target,
                 &[],
-                0.01,   // damping
-                0.3,    // gain
-                0.15,   // max_step
+                0.01, // damping
+                0.3,  // gain
+                0.15, // max_step
                 IkSolver::Dls,
                 None,
                 None,
@@ -1170,7 +1323,8 @@ mod test_closed_loop_ik {
         assert!(
             err_after < err_before * 0.5,
             "Loop closure should improve: before={} after={}",
-            err_before, err_after
+            err_before,
+            err_after
         );
     }
 
@@ -1191,7 +1345,11 @@ mod test_closed_loop_ik {
         model.joint_positions[0] = 0.2;
 
         let initial_err = model.loop_closure_error();
-        assert!(initial_err > 0.001, "expected broken loop: err={}", initial_err);
+        assert!(
+            initial_err > 0.001,
+            "expected broken loop: err={}",
+            initial_err
+        );
 
         // Run iterative constraint-only IK to close the loop
         let mc = model.mc();
@@ -1205,38 +1363,64 @@ mod test_closed_loop_ik {
             constraint_weight: 10.0,
             tol_task: 1e-6,
         };
-        let result = misarta::constraint::solve_constrained_ik(
-            &mc.model, &q0, &cm, &config,
-        );
+        let result = misarta::constraint::solve_constrained_ik(&mc.model, &q0, &cm, &config);
 
         assert!(
             result.converged || result.constraint_error_norm < 1e-3,
             "Five-bar loop closure should converge: err={}, iters={}",
-            result.constraint_error_norm, result.iterations
+            result.constraint_error_norm,
+            result.iterations
         );
     }
 
     #[test]
     fn misarta_build_diff_ik_constraints_basic() {
         // Test the misarta-level bridge function directly
-        use misarta::{model::*, joint, se3};
-        use misarta::frames::Frame;
         use misarta::constraint::*;
+        use misarta::frames::Frame;
+        use misarta::{joint, model::*, se3};
 
         // Simple 3-joint chain
         let model = ModelBuilder::<f64>::new()
-            .add_joint("j1", 0, joint::revolute_z(), se3::identity(), LinkInertia::zero())
-            .add_joint("j2", 1, joint::revolute_y(), se3::identity(), LinkInertia::zero())
-            .add_joint("j3", 1, joint::revolute_x(), se3::identity(), LinkInertia::zero())
+            .add_joint(
+                "j1",
+                0,
+                joint::revolute_z(),
+                se3::identity(),
+                LinkInertia::zero(),
+            )
+            .add_joint(
+                "j2",
+                1,
+                joint::revolute_y(),
+                se3::identity(),
+                LinkInertia::zero(),
+            )
+            .add_joint(
+                "j3",
+                1,
+                joint::revolute_x(),
+                se3::identity(),
+                LinkInertia::zero(),
+            )
             .build();
 
-        let f1 = Frame { name: "a".into(), parent_joint: 2, placement: se3::identity() };
-        let f2 = Frame { name: "b".into(), parent_joint: 3, placement: se3::identity() };
+        let f1 = Frame {
+            name: "a".into(),
+            parent_joint: 2,
+            placement: se3::identity(),
+        };
+        let f2 = Frame {
+            name: "b".into(),
+            parent_joint: 3,
+            placement: se3::identity(),
+        };
 
         // 3D constraint
-        let cm3 = ConstraintModel::from_constraints(vec![
-            RigidConstraint::position(f1.clone(), f2.clone()),
-        ]);
+        let cm3 = ConstraintModel::from_constraints(vec![RigidConstraint::position(
+            f1.clone(),
+            f2.clone(),
+        )]);
         let q = vec![0.0; model.nq];
         let cs3 = build_diff_ik_constraints(&model, &q, &cm3, 10.0);
         assert_eq!(cs3.len(), 1);
@@ -1244,9 +1428,7 @@ mod test_closed_loop_ik {
         assert_eq!(cs3[0].weight, 10.0);
 
         // 6D constraint
-        let cm6 = ConstraintModel::from_constraints(vec![
-            RigidConstraint::pose(f1, f2),
-        ]);
+        let cm6 = ConstraintModel::from_constraints(vec![RigidConstraint::pose(f1, f2)]);
         let cs6 = build_diff_ik_constraints(&model, &q, &cm6, 5.0);
         assert_eq!(cs6.len(), 1);
         assert_eq!(cs6[0].jacobian.nrows(), 6);
@@ -1262,7 +1444,10 @@ mod test_closed_loop_ik {
 
         // load_sidecar_config looks for five_bar_parallel.misarta.toml next to the .sdf
         let loaded = model.load_sidecar_config();
-        assert!(loaded.is_some(), "Expected .misarta.toml sidecar to be found and loaded");
+        assert!(
+            loaded.is_some(),
+            "Expected .misarta.toml sidecar to be found and loaded"
+        );
 
         // Should have exactly 1 loop closure
         assert_eq!(model.loop_closures.len(), 1);
@@ -1276,13 +1461,19 @@ mod test_closed_loop_ik {
         let oa = lc.offset_a.translation.vector;
         assert!((oa.norm()) < 1e-10, "offset_a should be zero, got {:?}", oa);
         let ob = lc.offset_b.translation.vector;
-        assert!((ob - nalgebra::Vector3::new(0.0, 0.0, 0.2)).norm() < 1e-10,
-            "offset_b should be (0,0,0.2), got {:?}", ob);
+        assert!(
+            (ob - nalgebra::Vector3::new(0.0, 0.0, 0.2)).norm() < 1e-10,
+            "offset_b should be (0,0,0.2), got {:?}",
+            ob
+        );
 
         // The loaded constraint should produce a valid constraint model and near-zero error at q=0
         model.rebuild_misarta_model();
         let err = model.loop_closure_error();
-        assert!(err < 0.01, "Loop closure error at q=0 should be near zero, got {}", err);
+        assert!(
+            err < 0.01,
+            "Loop closure error at q=0 should be near zero, got {}",
+            err
+        );
     }
 }
-

@@ -176,10 +176,7 @@ fn detect_windows() -> Option<MujocoEnv> {
         for sub in ["lib", "bin"] {
             let dir = root.join(sub);
             if dir.join("mujoco.dll").exists() {
-                return Some(MujocoEnv {
-                    lib_dir: dir,
-                    root,
-                });
+                return Some(MujocoEnv { lib_dir: dir, root });
             }
         }
     }

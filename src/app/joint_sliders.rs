@@ -57,7 +57,7 @@ impl ArticaraApp {
                             ui.label("Weight:");
                             ui.add(
                                 egui::Slider::new(&mut self.ik.weight_gradient, 0.0..=5.0)
-                                    .text("EE-proximal")
+                                    .text("EE-proximal"),
                             );
                         })
                         .response
@@ -196,10 +196,7 @@ impl ArticaraApp {
                         for (i, lc) in model.loop_closures.iter().enumerate() {
                             ui.horizontal(|ui| {
                                 let dim = if lc.pose_6dof { "6D" } else { "3D" };
-                                ui.label(format!(
-                                    "🔗 {} ↔ {} [{}]",
-                                    &lc.link_a, &lc.link_b, dim
-                                ));
+                                ui.label(format!("🔗 {} ↔ {} [{}]", &lc.link_a, &lc.link_b, dim));
                                 if ui.small_button("✕").clicked() {
                                     lc_remove = Some(i);
                                 }
@@ -234,7 +231,8 @@ impl ArticaraApp {
 
                         // Link B selector — viewport-pick or fallback dropdown.
                         if self.selected_link.is_some() {
-                            let sel_link_name = model.links[self.selected_link.unwrap()].name.clone();
+                            let sel_link_name =
+                                model.links[self.selected_link.unwrap()].name.clone();
                             ui.label(format!("Link A: {}", &sel_link_name));
 
                             // Persistent state for the add-loop form via egui's temp data.
@@ -290,9 +288,7 @@ impl ArticaraApp {
                                     .and_then(|i| model.links.get(i).map(|l| l.name.as_str()))
                                     .unwrap_or("(not set)")
                                     .to_string();
-                                ui.label(
-                                    egui::RichText::new(&cur_b_label).monospace(),
-                                );
+                                ui.label(egui::RichText::new(&cur_b_label).monospace());
                             });
                             ui.horizontal(|ui| {
                                 let pick_label = if self.ik.loop_closure_picking_b {
@@ -330,11 +326,7 @@ impl ArticaraApp {
                                     .width(28.0)
                                     .show_ui(ui, |ui| {
                                         for (i, link) in model.links.iter().enumerate() {
-                                            ui.selectable_value(
-                                                &mut dropdown_idx,
-                                                i,
-                                                &link.name,
-                                            );
+                                            ui.selectable_value(&mut dropdown_idx, i, &link.name);
                                         }
                                     });
                                 if dropdown_idx != prev_dropdown_idx {
@@ -393,10 +385,9 @@ impl ArticaraApp {
                             {
                                 let transforms = model.compute_transforms();
                                 let lbn = link_b_name.as_deref().unwrap_or("");
-                                if let (Some(tf_a), Some(tf_b)) = (
-                                    transforms.get(&sel_link_name),
-                                    transforms.get(lbn),
-                                ) {
+                                if let (Some(tf_a), Some(tf_b)) =
+                                    (transforms.get(&sel_link_name), transforms.get(lbn))
+                                {
                                     let pa = tf_a.translation.vector;
                                     let pb = tf_b.translation.vector;
                                     let mid = (pa + pb) * 0.5;
@@ -445,16 +436,22 @@ impl ArticaraApp {
                             {
                                 let lbn = link_b_name.clone().unwrap_or_default();
                                 if pose_mode {
-                                    let q_a = na::UnitQuaternion::from_quaternion(
-                                        na::Quaternion::new(
-                                            ra_w as f32, ra_x as f32, ra_y as f32, ra_z as f32,
-                                        ),
-                                    ).cast::<f64>();
-                                    let q_b = na::UnitQuaternion::from_quaternion(
-                                        na::Quaternion::new(
-                                            rb_w as f32, rb_x as f32, rb_y as f32, rb_z as f32,
-                                        ),
-                                    ).cast::<f64>();
+                                    let q_a =
+                                        na::UnitQuaternion::from_quaternion(na::Quaternion::new(
+                                            ra_w as f32,
+                                            ra_x as f32,
+                                            ra_y as f32,
+                                            ra_z as f32,
+                                        ))
+                                        .cast::<f64>();
+                                    let q_b =
+                                        na::UnitQuaternion::from_quaternion(na::Quaternion::new(
+                                            rb_w as f32,
+                                            rb_x as f32,
+                                            rb_y as f32,
+                                            rb_z as f32,
+                                        ))
+                                        .cast::<f64>();
                                     let off_a = na::Isometry3::from_parts(
                                         na::Translation3::new(oa_x, oa_y, oa_z),
                                         q_a,
@@ -463,15 +460,13 @@ impl ArticaraApp {
                                         na::Translation3::new(ob_x, ob_y, ob_z),
                                         q_b,
                                     );
-                                    model.loop_closures.push(
-                                        articara::robot::LoopClosure::pose(
-                                            format!("{}↔{}", &sel_link_name, &lbn),
-                                            sel_link_name.clone(),
-                                            off_a,
-                                            lbn.clone(),
-                                            off_b,
-                                        ),
-                                    );
+                                    model.loop_closures.push(articara::robot::LoopClosure::pose(
+                                        format!("{}↔{}", &sel_link_name, &lbn),
+                                        sel_link_name.clone(),
+                                        off_a,
+                                        lbn.clone(),
+                                        off_b,
+                                    ));
                                 } else {
                                     model.loop_closures.push(
                                         articara::robot::LoopClosure::position(

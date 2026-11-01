@@ -25,9 +25,7 @@ impl ArticaraApp {
                 if !violations.is_empty() {
                     let beyond = violations
                         .iter()
-                        .filter(|v| {
-                            v.state == articara::joint_limits::LimitState::Beyond
-                        })
+                        .filter(|v| v.state == articara::joint_limits::LimitState::Beyond)
                         .count();
                     let (text, [r, g, b, _]) = if beyond > 0 {
                         (

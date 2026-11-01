@@ -18,7 +18,7 @@ fn main() {
     use articara::rbd::model::ActuatorMode;
     use articara::robot::RobotModel;
     use articara::wbc_pipeline::build_floating_base_model;
-    use misa_wbc::{tasks, AsAffine, Dynamics, Formulation, SolveConfig, Solver};
+    use misa_wbc::{AsAffine, Dynamics, Formulation, SolveConfig, Solver, tasks};
     use nalgebra as na;
     use std::f64::consts::PI;
 
@@ -26,14 +26,16 @@ fn main() {
     // kyo46rs's q=0 (all-straight legs) is a kinematic singularity for a
     // floating-base squat controller, same reason go2_sim.rs/wbc_walk.rs
     // never start their quadrupeds at q=0. ~20 deg symmetric crouch.
-    let urdf_path = std::path::Path::new(
-        "/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf",
-    );
+    let urdf_path =
+        std::path::Path::new("/home/takara/work/dp/humanoid/kyo46rs_description/urdf/kyo46rs.urdf");
     let mut robot = RobotModel::from_urdf(urdf_path).expect("load kyo46rs.urdf");
 
     // ── Runtime-tunable knobs (sweep without recompiling) ──────────────
     let env_f64 = |k: &str, d: f64| -> f64 {
-        std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d)
+        std::env::var(k)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(d)
     };
     // Sign of the attitude command fed into qddot[0..2].
     //
@@ -57,7 +59,9 @@ fn main() {
     // unexplained; keeping the knob so it stays testable.
     let att_sign = env_f64("ATT_SIGN", 1.0);
     let use_xy = std::env::var("XY").map(|v| v != "0").unwrap_or(false);
-    let height_first = std::env::var("HEIGHT_FIRST").map(|v| v != "0").unwrap_or(false);
+    let height_first = std::env::var("HEIGHT_FIRST")
+        .map(|v| v != "0")
+        .unwrap_or(false);
     let use_post = std::env::var("POST").map(|v| v != "0").unwrap_or(false);
     let burnin_s = env_f64("BURNIN_S", 1.2);
     let burnin_kp = env_f64("BURNIN_KP", 150.0);
@@ -161,14 +165,21 @@ fn main() {
     let sim_dt = env_f64("SIM_DT", 0.001);
     let make_opts = |z: f64| MjcfExportOptions {
         base_pos: Some([0.0, 0.0, z]),
-        ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 2.0, roll: 0.0, pitch: 0.0 }),
+        ground_plane: Some(GroundPlaneCfg {
+            z: 0.0,
+            half_size: 2.0,
+            roll: 0.0,
+            pitch: 0.0,
+        }),
         timestep: Some(sim_dt),
         ..MjcfExportOptions::default()
     };
     let probe_z = 0.47;
     let spawn_z = {
         let probe = MujocoSim::new(&robot, make_opts(probe_z)).expect("MujocoSim::new (probe)");
-        let foot_origin_z = probe.body_world_position("left_foot_link").expect("left_foot_link")[2];
+        let foot_origin_z = probe
+            .body_world_position("left_foot_link")
+            .expect("left_foot_link")[2];
         let sole_z = foot_origin_z - SOLE_BELOW_FOOT_ORIGIN;
         let z = probe_z - (sole_z - SOLE_CLEARANCE);
         println!(
@@ -193,8 +204,12 @@ fn main() {
             if m <= 0.0 {
                 continue;
             }
-            let Some(p) = sim.body_world_position(&link.name) else { continue };
-            let Some(rot) = sim.body_world_orientation(&link.name) else { continue };
+            let Some(p) = sim.body_world_position(&link.name) else {
+                continue;
+            };
+            let Some(rot) = sim.body_world_orientation(&link.name) else {
+                continue;
+            };
             let o = link.inertial.origin.translation.vector;
             let c = na::Vector3::new(p[0], p[1], p[2])
                 + rot.to_rotation_matrix() * na::Vector3::new(o.x as f64, o.y as f64, o.z as f64);
@@ -207,7 +222,10 @@ fn main() {
         let (mut lo_x, mut hi_x) = (f64::INFINITY, f64::NEG_INFINITY);
         for foot in ["left_foot_link", "right_foot_link"] {
             let p = sim.body_world_position(foot).expect("foot pos");
-            let rot = sim.body_world_orientation(foot).expect("foot rot").to_rotation_matrix();
+            let rot = sim
+                .body_world_orientation(foot)
+                .expect("foot rot")
+                .to_rotation_matrix();
             for sx in [-1.0_f64, 1.0] {
                 for sy in [-1.0_f64, 1.0] {
                     let corner = na::Vector3::new(p[0], p[1], p[2])
@@ -220,20 +238,44 @@ fn main() {
         let margin = (cx - lo_x).min(hi_x - cx);
         println!(
             "static stability: mass={m_tot:.3} kg  CoM=({cx:+.4},{cy:+.4})  support x=[{lo_x:+.4},{hi_x:+.4}]  margin={margin:+.4} m  -> {}",
-            if margin > 0.0 { "INSIDE (statically standable)" } else { "OUTSIDE (will topple)" }
+            if margin > 0.0 {
+                "INSIDE (statically standable)"
+            } else {
+                "OUTSIDE (will topple)"
+            }
         );
     }
     let mj_dt = sim.timestep();
     println!("MuJoCo timestep = {mj_dt} s");
     {
-        let rpy0 = sim.body_world_orientation(&robot.root_link).unwrap().euler_angles();
+        let rpy0 = sim
+            .body_world_orientation(&robot.root_link)
+            .unwrap()
+            .euler_angles();
         let z0 = sim.body_world_position(&robot.root_link).unwrap()[2];
-        println!("  t=0 (pre-burn-in) trunk z={z0:.3} rpy=({:+.3},{:+.3},{:+.3})", rpy0.0, rpy0.1, rpy0.2);
+        println!(
+            "  t=0 (pre-burn-in) trunk z={z0:.3} rpy=({:+.3},{:+.3},{:+.3})",
+            rpy0.0, rpy0.1, rpy0.2
+        );
         for n in [
-            "torso", "head_link",
-            "left_hip_yaw_link", "left_hip_roll_link", "left_thigh_link", "left_shank_link", "left_ankle_pitch_link", "left_foot_link",
-            "right_hip_yaw_link", "right_hip_roll_link", "right_thigh_link", "right_shank_link", "right_ankle_pitch_link", "right_foot_link",
-            "left_upper_arm_link", "left_forearm_link", "right_upper_arm_link", "right_forearm_link",
+            "torso",
+            "head_link",
+            "left_hip_yaw_link",
+            "left_hip_roll_link",
+            "left_thigh_link",
+            "left_shank_link",
+            "left_ankle_pitch_link",
+            "left_foot_link",
+            "right_hip_yaw_link",
+            "right_hip_roll_link",
+            "right_thigh_link",
+            "right_shank_link",
+            "right_ankle_pitch_link",
+            "right_foot_link",
+            "left_upper_arm_link",
+            "left_forearm_link",
+            "right_upper_arm_link",
+            "right_forearm_link",
         ] {
             println!("    {n} = {:?}", sim.body_world_position(n));
         }
@@ -286,12 +328,25 @@ fn main() {
         let wv = sim.body_world_angular_velocity(&robot.root_link).unwrap();
         let lv = sim.body_world_linear_velocity(&robot.root_link).unwrap();
         let z = sim.body_world_position(&robot.root_link).unwrap()[2];
-        let (lk_q, lk_qd) = sim.joint_q_qd("left_knee_joint").unwrap_or((f64::NAN, f64::NAN));
-        let (lhp_q, _) = sim.joint_q_qd("left_hip_pitch_joint").unwrap_or((f64::NAN, f64::NAN));
-        let lfoot = sim.body_world_position("left_foot_link").unwrap_or([f64::NAN; 3]);
+        let (lk_q, lk_qd) = sim
+            .joint_q_qd("left_knee_joint")
+            .unwrap_or((f64::NAN, f64::NAN));
+        let (lhp_q, _) = sim
+            .joint_q_qd("left_hip_pitch_joint")
+            .unwrap_or((f64::NAN, f64::NAN));
+        let lfoot = sim
+            .body_world_position("left_foot_link")
+            .unwrap_or([f64::NAN; 3]);
         println!(
             "  burn-in t={:.2}s z={z:.4} wvel=({:+.4},{:+.4},{:+.4}) lvel=({:+.4},{:+.4},{:+.4}) knee_q={lk_q:+.3} knee_qd={lk_qd:+.3} hip_p_q={lhp_q:+.3} left_foot_z={:.4}",
-            (chunk + 1) as f64 * 0.05, wv[0], wv[1], wv[2], lv[0], lv[1], lv[2], lfoot[2],
+            (chunk + 1) as f64 * 0.05,
+            wv[0],
+            wv[1],
+            wv[2],
+            lv[0],
+            lv[1],
+            lv[2],
+            lfoot[2],
         );
     }
 
@@ -301,11 +356,15 @@ fn main() {
         j.actuator_mode = ActuatorMode::Torque;
     }
 
-    let z_hi = sim.body_world_position(&robot.root_link).expect("torso xpos")[2];
+    let z_hi = sim
+        .body_world_position(&robot.root_link)
+        .expect("torso xpos")[2];
     // Horizontal reference, captured once the burn-in has settled. See
     // the P1xy task for why this is needed at all.
     let xy_ref = {
-        let p = sim.body_world_position(&robot.root_link).expect("torso xpos");
+        let p = sim
+            .body_world_position(&robot.root_link)
+            .expect("torso xpos");
         [p[0], p[1]]
     };
     let z_lo = z_hi * 0.85; // ~15% squat depth
@@ -327,15 +386,23 @@ fn main() {
         let rp = sim.body_world_position("right_foot_link").unwrap();
         println!(
             "  post-burn-in hip_roll=({:+.3},{:+.3}) ankle_roll=({:+.3},{:+.3})  foot y=({:+.4},{:+.4}) inner-gap={:+.4} (spawn gap 0.102)",
-            hr("left_hip_roll_joint"), hr("right_hip_roll_joint"),
-            hr("left_ankle_roll_joint"), hr("right_ankle_roll_joint"),
-            lp[1], rp[1], (lp[1] - 0.019) - (rp[1] + 0.019),
+            hr("left_hip_roll_joint"),
+            hr("right_hip_roll_joint"),
+            hr("left_ankle_roll_joint"),
+            hr("right_ankle_roll_joint"),
+            lp[1],
+            rp[1],
+            (lp[1] - 0.019) - (rp[1] + 0.019),
         );
     }
     println!(
         "  post-burn-in world ang_vel=({:+.4},{:+.4},{:+.4}) lin_vel=({:+.4},{:+.4},{:+.4})",
-        post_burnin_wvel[0], post_burnin_wvel[1], post_burnin_wvel[2],
-        post_burnin_lvel[0], post_burnin_lvel[1], post_burnin_lvel[2],
+        post_burnin_wvel[0],
+        post_burnin_wvel[1],
+        post_burnin_wvel[2],
+        post_burnin_lvel[0],
+        post_burnin_lvel[1],
+        post_burnin_lvel[2],
     );
     for (name, target) in [
         ("left_foot", sim.body_world_position("left_foot_link")),
@@ -384,12 +451,22 @@ fn main() {
     // rendering/screenshot capability). One row per tick: t, base xyz,
     // base quat (w,x,y,z), then all 16 actuated joint angles by name.
     let log_joint_order: Vec<&str> = vec![
-        "left_hip_yaw_joint", "left_hip_roll_joint", "left_hip_pitch_joint",
-        "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
-        "right_hip_yaw_joint", "right_hip_roll_joint", "right_hip_pitch_joint",
-        "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
-        "left_shoulder_pitch_joint", "left_elbow_joint",
-        "right_shoulder_pitch_joint", "right_elbow_joint",
+        "left_hip_yaw_joint",
+        "left_hip_roll_joint",
+        "left_hip_pitch_joint",
+        "left_knee_joint",
+        "left_ankle_pitch_joint",
+        "left_ankle_roll_joint",
+        "right_hip_yaw_joint",
+        "right_hip_roll_joint",
+        "right_hip_pitch_joint",
+        "right_knee_joint",
+        "right_ankle_pitch_joint",
+        "right_ankle_roll_joint",
+        "left_shoulder_pitch_joint",
+        "left_elbow_joint",
+        "right_shoulder_pitch_joint",
+        "right_elbow_joint",
     ];
     let log_path = "/tmp/claude-1000/-home-takara-work/3288d9bb-da13-4665-bfb2-9595dd62f7ab/scratchpad/kyo46rs_squat_traj.csv";
     let mut log_file = std::fs::File::create(log_path).expect("create trajectory log");
@@ -427,7 +504,9 @@ fn main() {
         let t = tick as f64 * dt;
 
         // ---- sync q, v from MuJoCo -------------------------------------
-        let body_pos = sim.body_world_position(&robot.root_link).expect("torso xpos");
+        let body_pos = sim
+            .body_world_position(&robot.root_link)
+            .expect("torso xpos");
         let body_quat = sim
             .body_world_orientation(&robot.root_link)
             .expect("torso xquat");
@@ -544,8 +623,14 @@ fn main() {
         // flip was measured against a solver that was failing every tick.
         roll_i = (roll_i + roll_meas * dt).clamp(-I_ATT_CLAMP, I_ATT_CLAMP);
         pitch_i = (pitch_i + pitch_meas * dt).clamp(-I_ATT_CLAMP, I_ATT_CLAMP);
-        let a_roll_cmd = att_sign * (kd_att * (0.0 - v_ang_body.x) + kp_att * (0.0 - roll_meas) + ki_att * (0.0 - roll_i));
-        let a_pitch_cmd = att_sign * (kd_att * (0.0 - v_ang_body.y) + kp_att * (0.0 - pitch_meas) + ki_att * (0.0 - pitch_i));
+        let a_roll_cmd = att_sign
+            * (kd_att * (0.0 - v_ang_body.x)
+                + kp_att * (0.0 - roll_meas)
+                + ki_att * (0.0 - roll_i));
+        let a_pitch_cmd = att_sign
+            * (kd_att * (0.0 - v_ang_body.y)
+                + kp_att * (0.0 - pitch_meas)
+                + ki_att * (0.0 - pitch_i));
         let att_ref = na::DVector::from_vec(vec![a_roll_cmd, a_pitch_cmd]);
         let height_ref = na::DVector::from_vec(vec![az_cmd]);
 
@@ -599,11 +684,7 @@ fn main() {
                 );
             let rt = rot.transpose();
             let rt = rt.matrix();
-            let skew = na::Matrix3::new(
-                0.0, -r_w.z, r_w.y,
-                r_w.z, 0.0, -r_w.x,
-                -r_w.y, r_w.x, 0.0,
-            );
+            let skew = na::Matrix3::new(0.0, -r_w.z, r_w.y, r_w.z, 0.0, -r_w.x, -r_w.y, r_w.x, 0.0);
             let top_right = -(rt * skew);
             let mut t = na::DMatrix::zeros(6, 6);
             for i in 0..3 {
@@ -647,7 +728,8 @@ fn main() {
             + tasks::box_bound(dyn_ctx.tau(), &torque_max);
 
         let p1 = tasks::cartesian_acceleration(dyn_ctx.qddot(), &j_att, &dj_v_att, &att_ref);
-        let p1h = tasks::cartesian_acceleration(dyn_ctx.qddot(), &j_height, &dj_v_height, &height_ref);
+        let p1h =
+            tasks::cartesian_acceleration(dyn_ctx.qddot(), &j_height, &dj_v_height, &height_ref);
 
         // ---- horizontal balance: hold the base over the feet ------------
         // THE OTHER MISSING TASK. P1 regulates base roll/pitch, P1h
@@ -723,8 +805,8 @@ fn main() {
                 continue;
             }
             j_post[(vi - 6, vi)] = 1.0;
-            post_ref[vi - 6] = kp_post * (q_seed[ji] - robot.joint_positions[ji])
-                + kd_post * (0.0 - v[vi]);
+            post_ref[vi - 6] =
+                kp_post * (q_seed[ji] - robot.joint_positions[ji]) + kd_post * (0.0 - v[vi]);
         }
         let p_post = tasks::cartesian_acceleration(
             dyn_ctx.qddot(),
@@ -795,7 +877,7 @@ fn main() {
         }
         levels.push(p2);
         let sol = solver
-                        .solve(&levels, &cfg)
+            .solve(&levels, &cfg)
             .unwrap_or_else(|e| panic!("wbc solve failed at t={t:.3}: {e}"));
         let extracted = dyn_ctx.extract(&sol.x);
 
@@ -846,7 +928,11 @@ fn main() {
                 // Only ground contacts: the world body reports as "".
                 // Without this a foot-vs-link self-collision would be
                 // folded in as if it were ground reaction.
-                let partner = if c.body1.ends_with("foot_link") { &c.body2 } else { &c.body1 };
+                let partner = if c.body1.ends_with("foot_link") {
+                    &c.body2
+                } else {
+                    &c.body1
+                };
                 if !partner.is_empty() {
                     other.push(format!("{}~{}", if idx == 0 { "L" } else { "R" }, partner));
                     continue;
@@ -854,7 +940,11 @@ fn main() {
                 npts[idx] += 1;
                 // MuJoCo reports the force on geom2's body; flip when the
                 // foot is geom1 so `f` is always the force ON THE FOOT.
-                let s = if c.body2.ends_with("foot_link") { 1.0 } else { -1.0 };
+                let s = if c.body2.ends_with("foot_link") {
+                    1.0
+                } else {
+                    -1.0
+                };
                 let f = [
                     s * c.force_world[0],
                     s * c.force_world[1],
@@ -876,23 +966,37 @@ fn main() {
             let mj_fz = meas[0][5] + meas[1][5];
             println!(
                 "    [f] pts=({},{})  fz  qp=({:+6.1},{:+6.1})={:+6.1}  mj=({:+6.1},{:+6.1})={:+6.1}  weight={:.1}  my qp=({:+.3},{:+.3}) mj=({:+.3},{:+.3}){}",
-                npts[0], npts[1],
-                extracted.forces[5], extracted.forces[11], qp_fz,
-                meas[0][5], meas[1][5], mj_fz,
+                npts[0],
+                npts[1],
+                extracted.forces[5],
+                extracted.forces[11],
+                qp_fz,
+                meas[0][5],
+                meas[1][5],
+                mj_fz,
                 total_mass * G,
-                extracted.forces[1], extracted.forces[7],
-                meas[0][1], meas[1][1],
-                if other.is_empty() { String::new() } else { format!("  SELF-COLLISION: {}", other.join(",")) },
+                extracted.forces[1],
+                extracted.forces[7],
+                meas[0][1],
+                meas[1][1],
+                if other.is_empty() {
+                    String::new()
+                } else {
+                    format!("  SELF-COLLISION: {}", other.join(","))
+                },
             );
             let lp = sim.body_world_position("left_foot_link").unwrap();
             let rp = sim.body_world_position("right_foot_link").unwrap();
             let hr = |n: &str| sim.joint_q_qd(n).map(|(q, _)| q).unwrap_or(f64::NAN);
             println!(
                 "         foot y: L={:+.4} R={:+.4} inner-gap={:+.4} (touch at <=0)  hip_roll=({:+.3},{:+.3}) ankle_roll=({:+.3},{:+.3})",
-                lp[1], rp[1],
+                lp[1],
+                rp[1],
                 (lp[1] - 0.019) - (rp[1] + 0.019),
-                hr("left_hip_roll_joint"), hr("right_hip_roll_joint"),
-                hr("left_ankle_roll_joint"), hr("right_ankle_roll_joint"),
+                hr("left_hip_roll_joint"),
+                hr("right_hip_roll_joint"),
+                hr("left_ankle_roll_joint"),
+                hr("right_ankle_roll_joint"),
             );
         }
 
@@ -911,8 +1015,13 @@ fn main() {
             let measured_az = (vz_after - v_lin_body.z) / dt;
             println!(
                 "    [probe] pitch: cmd={:+8.1} qp={:+8.1} meas={:+8.1} | height: cmd={:+8.1} qp={:+8.1} meas={:+8.1}  z={:.4}",
-                a_pitch_cmd, extracted.qddot[1], measured_acc,
-                az_cmd, extracted.qddot[5], measured_az, body_pos[2],
+                a_pitch_cmd,
+                extracted.qddot[1],
+                measured_acc,
+                az_cmd,
+                extracted.qddot[5],
+                measured_az,
+                body_pos[2],
             );
             prev_wy = Some(wy_after);
         }
@@ -950,9 +1059,21 @@ fn main() {
         }
 
         if tick % 10 == 0 {
-            let lhp = robot.joint_map.get("left_hip_pitch_joint").map(|&i| robot_taus[i]).unwrap_or(0.0);
-            let lk = robot.joint_map.get("left_knee_joint").map(|&i| robot_taus[i]).unwrap_or(0.0);
-            let lap = robot.joint_map.get("left_ankle_pitch_joint").map(|&i| robot_taus[i]).unwrap_or(0.0);
+            let lhp = robot
+                .joint_map
+                .get("left_hip_pitch_joint")
+                .map(|&i| robot_taus[i])
+                .unwrap_or(0.0);
+            let lk = robot
+                .joint_map
+                .get("left_knee_joint")
+                .map(|&i| robot_taus[i])
+                .unwrap_or(0.0);
+            let lap = robot
+                .joint_map
+                .get("left_ankle_pitch_joint")
+                .map(|&i| robot_taus[i])
+                .unwrap_or(0.0);
             println!(
                 "  t={t:6.3}  z={cur_z:+.3} (ref {z_ref:+.3})  roll={roll_meas:+.3} pitch={pitch_meas:+.3} wy={:+.3}  a_pitch_cmd={a_pitch_cmd:+.2} status={:?}  tau[hip_p,knee,ank_p]=({lhp:+.2},{lk:+.2},{lap:+.2})",
                 v_ang_body.y, sol.status,

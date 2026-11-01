@@ -362,10 +362,18 @@ impl ArticaraApp {
                 // Drag mode toggle
                 let sj = self.drag_mode == DragMode::SingleJoint;
                 let ik = self.drag_mode == DragMode::InverseKinematics;
-                if ui.selectable_label(sj, "Single").on_hover_text("Drag rotates one joint").clicked() {
+                if ui
+                    .selectable_label(sj, "Single")
+                    .on_hover_text("Drag rotates one joint")
+                    .clicked()
+                {
                     self.drag_mode = DragMode::SingleJoint;
                 }
-                if ui.selectable_label(ik, "IK").on_hover_text("Drag solves IK chain").clicked() {
+                if ui
+                    .selectable_label(ik, "IK")
+                    .on_hover_text("Drag solves IK chain")
+                    .clicked()
+                {
                     self.drag_mode = DragMode::InverseKinematics;
                 }
             }
@@ -373,7 +381,10 @@ impl ArticaraApp {
                 // Offset target toggles
                 for t in OffsetTarget::ALL {
                     let sel = self.offset_target == t;
-                    if ui.selectable_label(sel, format!("{} {}", t.icon(), t.label())).clicked() {
+                    if ui
+                        .selectable_label(sel, format!("{} {}", t.icon(), t.label()))
+                        .clicked()
+                    {
                         self.offset_target = t;
                         if t == OffsetTarget::Joint && self.gizmo_op == GizmoOp::Scale {
                             self.gizmo_op = GizmoOp::Translate;
@@ -382,14 +393,26 @@ impl ArticaraApp {
                 }
                 ui.separator();
                 // Gizmo op toggles
-                if ui.selectable_label(self.gizmo_op == GizmoOp::Translate, "⬌").on_hover_text("Translate").clicked() {
+                if ui
+                    .selectable_label(self.gizmo_op == GizmoOp::Translate, "⬌")
+                    .on_hover_text("Translate")
+                    .clicked()
+                {
                     self.gizmo_op = GizmoOp::Translate;
                 }
-                if ui.selectable_label(self.gizmo_op == GizmoOp::Rotate, "↻").on_hover_text("Rotate").clicked() {
+                if ui
+                    .selectable_label(self.gizmo_op == GizmoOp::Rotate, "↻")
+                    .on_hover_text("Rotate")
+                    .clicked()
+                {
                     self.gizmo_op = GizmoOp::Rotate;
                 }
                 if self.offset_target != OffsetTarget::Joint {
-                    if ui.selectable_label(self.gizmo_op == GizmoOp::Scale, "⬡").on_hover_text("Scale").clicked() {
+                    if ui
+                        .selectable_label(self.gizmo_op == GizmoOp::Scale, "⬡")
+                        .on_hover_text("Scale")
+                        .clicked()
+                    {
                         self.gizmo_op = GizmoOp::Scale;
                     }
                 }

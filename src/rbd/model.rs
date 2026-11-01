@@ -167,10 +167,16 @@ impl LoopClosure {
     /// Construct from misarta's serialisable config representation.
     pub fn from_config(cfg: &misarta::config::LoopClosureConfig) -> Self {
         let q_a = na::UnitQuaternion::from_quaternion(na::Quaternion::new(
-            cfg.rot_a[3], cfg.rot_a[0], cfg.rot_a[1], cfg.rot_a[2],
+            cfg.rot_a[3],
+            cfg.rot_a[0],
+            cfg.rot_a[1],
+            cfg.rot_a[2],
         ));
         let q_b = na::UnitQuaternion::from_quaternion(na::Quaternion::new(
-            cfg.rot_b[3], cfg.rot_b[0], cfg.rot_b[1], cfg.rot_b[2],
+            cfg.rot_b[3],
+            cfg.rot_b[0],
+            cfg.rot_b[1],
+            cfg.rot_b[2],
         ));
         Self {
             name: cfg.name.clone(),
@@ -388,14 +394,17 @@ impl CollisionPair {
             let b: String = b.into();
             if a <= b { (a, b) } else { (b, a) }
         };
-        Self { link_a, link_b, enabled }
+        Self {
+            link_a,
+            link_b,
+            enabled,
+        }
     }
 
     /// Whether this pair refers to the same two links as `(a, b)` ignoring
     /// order.
     pub fn matches(&self, a: &str, b: &str) -> bool {
-        (self.link_a == a && self.link_b == b)
-            || (self.link_a == b && self.link_b == a)
+        (self.link_a == a && self.link_b == b) || (self.link_a == b && self.link_b == a)
     }
 }
 
@@ -431,7 +440,12 @@ impl NamedPose {
             }
             angles.insert(joint.name.clone(), model.joint_positions[ji]);
         }
-        Self { name: name.into(), angles, duration, kind }
+        Self {
+            name: name.into(),
+            angles,
+            duration,
+            kind,
+        }
     }
 
     /// Resolve the pose into a full joint-position vector matching
@@ -485,7 +499,10 @@ pub struct CollisionData {
     /// (typically `friction = 0.6 0.005 0.0001`, `condim = 3`,
     /// `priority = 0`, `margin = 0`). All [`MjcfPhysics`] fields are
     /// themselves optional and emit only when set.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub physics: Option<MjcfPhysics>,
 }
 
@@ -497,39 +514,66 @@ pub struct CollisionData {
 pub struct MjcfPhysics {
     /// `friction = "tangential torsional rolling"`. MuJoCo default
     /// `[0.6, 0.005, 0.0001]`. Pure Coulomb only needs the first.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub friction: Option<[f64; 3]>,
     /// `condim`. 1 = frictionless, 3 = sliding only (Coulomb),
     /// 4 = sliding + rolling, 6 = full (sliding + torsional + rolling).
     /// Foot spheres typically want 6 so the leg can't free-roll under
     /// load.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub condim: Option<u32>,
     /// `priority`. Higher-priority geom wins when two geoms with
     /// different contact properties are involved in the same contact
     /// pair. Default `0`.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub priority: Option<u32>,
     /// `solimp = "d0 d_width width"`. Soft-contact impedance curve;
     /// see MuJoCo docs. `Some([0.015, 1.0, 0.022])` matches Go2's
     /// stock foot tuning.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub solimp: Option<[f64; 3]>,
     /// `margin` — distance at which contacts start to be generated
     /// (m). Default `0`.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub margin: Option<f64>,
 }
 
 #[derive(Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum GeomData {
-    Box { hx: f32, hy: f32, hz: f32 },
-    Cylinder { radius: f32, half_length: f32 },
-    Sphere { radius: f32 },
+    Box {
+        hx: f32,
+        hy: f32,
+        hz: f32,
+    },
+    Cylinder {
+        radius: f32,
+        half_length: f32,
+    },
+    Sphere {
+        radius: f32,
+    },
     /// Capsule: cylinder body + hemispherical caps.
     /// `half_length` is the half-length of the **cylindrical** portion only (total = 2*half_length + 2*radius).
-    Capsule { radius: f32, half_length: f32 },
+    Capsule {
+        radius: f32,
+        half_length: f32,
+    },
     Mesh {
         /// Loaded mesh geometry. The [`misarta::mesh::MeshData`] is the
         /// source of truth (indexed triangles, face normals, materials);
@@ -543,7 +587,7 @@ pub enum GeomData {
             serde(rename = "vertices", with = "mesh_as_flat_vertices")
         )]
         mesh: std::sync::Arc<misarta::mesh::MeshData>,
-        filename: Option<String>,    // original URI e.g. "package://..."
+        filename: Option<String>, // original URI e.g. "package://..."
         scale: Option<[f32; 3]>,
     },
 }
@@ -691,12 +735,17 @@ pub struct JointData {
 }
 
 #[cfg(feature = "serde")]
-fn default_kp() -> f64 { 50.0 }
+fn default_kp() -> f64 {
+    50.0
+}
 #[cfg(feature = "serde")]
-fn default_kv() -> f64 { 5.0 }
+fn default_kv() -> f64 {
+    5.0
+}
 #[cfg(feature = "serde")]
-fn default_armature() -> f64 { 0.0014 }
-
+fn default_armature() -> f64 {
+    0.0014
+}
 
 // ========== Forward Kinematics & Tree Navigation ==========
 
@@ -717,13 +766,10 @@ impl RobotModel {
         transforms
     }
 
-
     /// Find the parent joint index for a given link name.
     /// Returns None for the root link.
     pub fn parent_joint_of_link(&self, link_name: &str) -> Option<usize> {
-        self.joints
-            .iter()
-            .position(|j| j.child_link == link_name)
+        self.joints.iter().position(|j| j.child_link == link_name)
     }
 
     /// Return the list of ancestor link names from root down to (but not including)
@@ -759,30 +805,45 @@ impl RobotModel {
                     for &sx in &[-1.0_f32, 1.0] {
                         for &sy in &[-1.0_f32, 1.0] {
                             for &sz in &[-1.0_f32, 1.0] {
-                                points.push(vis.origin * na::Point3::new(*hx * sx, *hy * sy, *hz * sz));
+                                points.push(
+                                    vis.origin * na::Point3::new(*hx * sx, *hy * sy, *hz * sz),
+                                );
                             }
                         }
                     }
                 }
-                GeomData::Cylinder { radius, half_length } => {
+                GeomData::Cylinder {
+                    radius,
+                    half_length,
+                } => {
                     for i in 0..8 {
                         let a = (i as f32) * std::f32::consts::TAU / 8.0;
                         let (c, s) = (a.cos(), a.sin());
-                        points.push(vis.origin * na::Point3::new(radius * c, radius * s, *half_length));
-                        points.push(vis.origin * na::Point3::new(radius * c, radius * s, -*half_length));
+                        points.push(
+                            vis.origin * na::Point3::new(radius * c, radius * s, *half_length),
+                        );
+                        points.push(
+                            vis.origin * na::Point3::new(radius * c, radius * s, -*half_length),
+                        );
                     }
                 }
                 GeomData::Sphere { radius } => {
                     let r = *radius;
                     for &d in &[
-                        [r, 0.0, 0.0], [-r, 0.0, 0.0],
-                        [0.0, r, 0.0], [0.0, -r, 0.0],
-                        [0.0, 0.0, r], [0.0, 0.0, -r],
+                        [r, 0.0, 0.0],
+                        [-r, 0.0, 0.0],
+                        [0.0, r, 0.0],
+                        [0.0, -r, 0.0],
+                        [0.0, 0.0, r],
+                        [0.0, 0.0, -r],
                     ] {
                         points.push(vis.origin * na::Point3::new(d[0], d[1], d[2]));
                     }
                 }
-                GeomData::Capsule { radius, half_length } => {
+                GeomData::Capsule {
+                    radius,
+                    half_length,
+                } => {
                     let total_h = *half_length + *radius;
                     for i in 0..8 {
                         let a = (i as f32) * std::f32::consts::TAU / 8.0;
@@ -794,7 +855,8 @@ impl RobotModel {
                 GeomData::Mesh { mesh, .. } => {
                     let step = if mesh.vertices.len() > 1000 { 10 } else { 1 };
                     for v in mesh.vertices.iter().step_by(step) {
-                        points.push(vis.origin * na::Point3::new(v.x as f32, v.y as f32, v.z as f32));
+                        points
+                            .push(vis.origin * na::Point3::new(v.x as f32, v.y as f32, v.z as f32));
                     }
                 }
             }
@@ -804,7 +866,9 @@ impl RobotModel {
             return (na::Point3::origin(), 0.0);
         }
 
-        let sum = points.iter().fold(na::Vector3::zeros(), |a, p| a + p.coords);
+        let sum = points
+            .iter()
+            .fold(na::Vector3::zeros(), |a, p| a + p.coords);
         let center = na::Point3::from(sum / points.len() as f32);
 
         let radius = points
@@ -855,7 +919,10 @@ impl RobotModel {
                     }
                 }
             }
-            GeomData::Cylinder { radius, half_length } => {
+            GeomData::Cylinder {
+                radius,
+                half_length,
+            } => {
                 for i in 0..8 {
                     let a = (i as f32) * std::f32::consts::TAU / 8.0;
                     let (c, s) = (a.cos(), a.sin());
@@ -866,14 +933,20 @@ impl RobotModel {
             GeomData::Sphere { radius } => {
                 let r = *radius;
                 for &d in &[
-                    [r, 0.0, 0.0], [-r, 0.0, 0.0],
-                    [0.0, r, 0.0], [0.0, -r, 0.0],
-                    [0.0, 0.0, r], [0.0, 0.0, -r],
+                    [r, 0.0, 0.0],
+                    [-r, 0.0, 0.0],
+                    [0.0, r, 0.0],
+                    [0.0, -r, 0.0],
+                    [0.0, 0.0, r],
+                    [0.0, 0.0, -r],
                 ] {
                     pts.push(na::Point3::new(d[0], d[1], d[2]));
                 }
             }
-            GeomData::Capsule { radius, half_length } => {
+            GeomData::Capsule {
+                radius,
+                half_length,
+            } => {
                 let total_h = *half_length + *radius;
                 for i in 0..8 {
                     let a = (i as f32) * std::f32::consts::TAU / 8.0;
@@ -919,11 +992,7 @@ impl RobotModel {
     /// If `root_link` is `None`, equivalent to [`chain_joints`].
     /// Otherwise, finds the Lowest Common Ancestor (LCA) and returns all
     /// movable joints on both paths (root_link→LCA and LCA→end_link).
-    pub fn chain_joints_between(
-        &self,
-        end_link: &str,
-        root_link: Option<&str>,
-    ) -> Vec<usize> {
+    pub fn chain_joints_between(&self, end_link: &str, root_link: Option<&str>) -> Vec<usize> {
         let root_link = match root_link {
             Some(r) => r,
             None => return self.chain_joints(end_link),
@@ -1074,7 +1143,10 @@ pub fn compute_geometry_inertia(geom: &GeomData, mass: f64) -> InertiaTensor {
                 izz: mass / 12.0 * (a2 + b2),
             }
         }
-        GeomData::Cylinder { radius, half_length } => {
+        GeomData::Cylinder {
+            radius,
+            half_length,
+        } => {
             // Solid cylinder, axis along Z.
             let r2 = (*radius as f64).powi(2);
             let h2 = (2.0 * *half_length as f64).powi(2);
@@ -1100,7 +1172,10 @@ pub fn compute_geometry_inertia(geom: &GeomData, mass: f64) -> InertiaTensor {
                 izz: i,
             }
         }
-        GeomData::Capsule { radius, half_length } => {
+        GeomData::Capsule {
+            radius,
+            half_length,
+        } => {
             // Solid capsule = cylinder + 2 hemispheres (= 1 full sphere).
             // Reference: https://www.gamedev.net/resources/_/technical/math-and-physics/capsule-inertia-tensor-r3149
             let r = *radius as f64;
@@ -1130,9 +1205,7 @@ pub fn compute_geometry_inertia(geom: &GeomData, mass: f64) -> InertiaTensor {
                 izz: i_cyl_zz + i_sph_zz,
             }
         }
-        GeomData::Mesh { mesh, .. } => {
-            compute_mesh_inertia(&mesh.to_flat_vertices_f32(), mass)
-        }
+        GeomData::Mesh { mesh, .. } => compute_mesh_inertia(&mesh.to_flat_vertices_f32(), mass),
     }
 }
 
@@ -1147,8 +1220,12 @@ fn compute_mesh_inertia(vertices: &[f32], mass: f64) -> InertiaTensor {
     let num_tris = num_verts / 3;
     if num_tris == 0 {
         return InertiaTensor {
-            ixx: 0.001, ixy: 0.0, ixz: 0.0,
-            iyy: 0.001, iyz: 0.0, izz: 0.001,
+            ixx: 0.001,
+            ixy: 0.0,
+            ixz: 0.0,
+            iyy: 0.001,
+            iyz: 0.0,
+            izz: 0.001,
         };
     }
 
@@ -1201,23 +1278,24 @@ fn compute_mesh_inertia(vertices: &[f32], mass: f64) -> InertiaTensor {
         vxx += det * (x0 * x0 + x1 * x1 + x2 * x2 + xs * xs);
         vyy += det * (y0 * y0 + y1 * y1 + y2 * y2 + ys * ys);
         vzz += det * (z0 * z0 + z1 * z1 + z2 * z2 + zs * zs);
-        vxy += det * (x0 * (2.0 * y0 + y1 + y2)
-                     + x1 * (y0 + 2.0 * y1 + y2)
-                     + x2 * (y0 + y1 + 2.0 * y2));
-        vxz += det * (x0 * (2.0 * z0 + z1 + z2)
-                     + x1 * (z0 + 2.0 * z1 + z2)
-                     + x2 * (z0 + z1 + 2.0 * z2));
-        vyz += det * (y0 * (2.0 * z0 + z1 + z2)
-                     + y1 * (z0 + 2.0 * z1 + z2)
-                     + y2 * (z0 + z1 + 2.0 * z2));
+        vxy += det
+            * (x0 * (2.0 * y0 + y1 + y2) + x1 * (y0 + 2.0 * y1 + y2) + x2 * (y0 + y1 + 2.0 * y2));
+        vxz += det
+            * (x0 * (2.0 * z0 + z1 + z2) + x1 * (z0 + 2.0 * z1 + z2) + x2 * (z0 + z1 + 2.0 * z2));
+        vyz += det
+            * (y0 * (2.0 * z0 + z1 + z2) + y1 * (z0 + 2.0 * z1 + z2) + y2 * (z0 + z1 + 2.0 * z2));
     }
 
     // vol is 6× the signed volume
     let volume = vol / 6.0;
     if volume.abs() < 1e-20 {
         return InertiaTensor {
-            ixx: 0.001, ixy: 0.0, ixz: 0.0,
-            iyy: 0.001, iyz: 0.0, izz: 0.001,
+            ixx: 0.001,
+            ixy: 0.0,
+            ixz: 0.0,
+            iyy: 0.001,
+            iyz: 0.0,
+            izz: 0.001,
         };
     }
 
@@ -1246,21 +1324,21 @@ pub fn compute_geometry_volume(geom: &GeomData) -> f64 {
         GeomData::Box { hx, hy, hz } => {
             (2.0 * *hx as f64) * (2.0 * *hy as f64) * (2.0 * *hz as f64)
         }
-        GeomData::Cylinder { radius, half_length } => {
-            std::f64::consts::PI * (*radius as f64).powi(2) * (2.0 * *half_length as f64)
-        }
-        GeomData::Sphere { radius } => {
-            4.0 / 3.0 * std::f64::consts::PI * (*radius as f64).powi(3)
-        }
-        GeomData::Capsule { radius, half_length } => {
+        GeomData::Cylinder {
+            radius,
+            half_length,
+        } => std::f64::consts::PI * (*radius as f64).powi(2) * (2.0 * *half_length as f64),
+        GeomData::Sphere { radius } => 4.0 / 3.0 * std::f64::consts::PI * (*radius as f64).powi(3),
+        GeomData::Capsule {
+            radius,
+            half_length,
+        } => {
             let r = *radius as f64;
             let h = 2.0 * *half_length as f64;
             // cylinder + sphere
             std::f64::consts::PI * r * r * h + 4.0 / 3.0 * std::f64::consts::PI * r * r * r
         }
-        GeomData::Mesh { mesh, .. } => {
-            compute_mesh_volume(&mesh.to_flat_vertices_f32())
-        }
+        GeomData::Mesh { mesh, .. } => compute_mesh_volume(&mesh.to_flat_vertices_f32()),
     }
 }
 
@@ -1301,20 +1379,31 @@ pub fn compute_link_inertia(visuals: &[VisualData], total_mass: f64) -> Inertial
         return InertialData {
             origin: na::Isometry3::identity(),
             mass: total_mass,
-            ixx: 0.001, ixy: 0.0, ixz: 0.0,
-            iyy: 0.001, iyz: 0.0, izz: 0.001,
+            ixx: 0.001,
+            ixy: 0.0,
+            ixz: 0.0,
+            iyy: 0.001,
+            iyz: 0.0,
+            izz: 0.001,
         };
     }
 
     // 1) Compute volume and centroid (in visual-local frame) for each visual.
-    let vols: Vec<f64> = visuals.iter().map(|v| compute_geometry_volume(&v.geometry)).collect();
+    let vols: Vec<f64> = visuals
+        .iter()
+        .map(|v| compute_geometry_volume(&v.geometry))
+        .collect();
     let total_vol: f64 = vols.iter().sum();
     if total_vol < 1e-20 {
         return InertialData {
             origin: na::Isometry3::identity(),
             mass: total_mass,
-            ixx: 0.001, ixy: 0.0, ixz: 0.0,
-            iyy: 0.001, iyz: 0.0, izz: 0.001,
+            ixx: 0.001,
+            ixy: 0.0,
+            ixz: 0.0,
+            iyy: 0.001,
+            iyz: 0.0,
+            izz: 0.001,
         };
     }
 
@@ -1352,9 +1441,15 @@ pub fn compute_link_inertia(visuals: &[VisualData], total_mass: f64) -> Inertial
         let rot = vis.origin.rotation.to_rotation_matrix();
         let r = rot.matrix().cast::<f64>();
         let i_local = na::Matrix3::new(
-            local_inertia.ixx, local_inertia.ixy, local_inertia.ixz,
-            local_inertia.ixy, local_inertia.iyy, local_inertia.iyz,
-            local_inertia.ixz, local_inertia.iyz, local_inertia.izz,
+            local_inertia.ixx,
+            local_inertia.ixy,
+            local_inertia.ixz,
+            local_inertia.ixy,
+            local_inertia.iyy,
+            local_inertia.iyz,
+            local_inertia.ixz,
+            local_inertia.iyz,
+            local_inertia.izz,
         );
         let i_rotated = &r * &i_local * r.transpose();
 
@@ -1367,10 +1462,10 @@ pub fn compute_link_inertia(visuals: &[VisualData], total_mass: f64) -> Inertial
 
         // I_shifted = I_rotated + m * (d²·E - d⊗d)
         ixx_total += i_rotated[(0, 0)] + mi * (d2 - dx * dx);
-        ixy_total += i_rotated[(0, 1)] + mi * (    - dx * dy);
-        ixz_total += i_rotated[(0, 2)] + mi * (    - dx * dz);
+        ixy_total += i_rotated[(0, 1)] + mi * (-dx * dy);
+        ixz_total += i_rotated[(0, 2)] + mi * (-dx * dz);
         iyy_total += i_rotated[(1, 1)] + mi * (d2 - dy * dy);
-        iyz_total += i_rotated[(1, 2)] + mi * (    - dy * dz);
+        iyz_total += i_rotated[(1, 2)] + mi * (-dy * dz);
         izz_total += i_rotated[(2, 2)] + mi * (d2 - dz * dz);
     }
 
@@ -1388,7 +1483,6 @@ pub fn compute_link_inertia(visuals: &[VisualData], total_mass: f64) -> Inertial
         izz: izz_total,
     }
 }
-
 
 // ========== Inertia Validation ==========
 
@@ -1419,11 +1513,15 @@ impl InertiaValidation {
     }
 
     pub fn has_errors(&self) -> bool {
-        self.issues.iter().any(|i| i.severity == ValidationSeverity::Error)
+        self.issues
+            .iter()
+            .any(|i| i.severity == ValidationSeverity::Error)
     }
 
     pub fn has_warnings(&self) -> bool {
-        self.issues.iter().any(|i| i.severity == ValidationSeverity::Warning)
+        self.issues
+            .iter()
+            .any(|i| i.severity == ValidationSeverity::Warning)
     }
 }
 
@@ -1482,28 +1580,43 @@ pub fn validate_inertia(link: &LinkData) -> InertiaValidation {
         if ixx + iyy + eps < izz {
             issues.push(ValidationIssue {
                 severity: ValidationSeverity::Error,
-                message: format!("Triangle inequality violated: Ixx + Iyy < Izz ({:.6e} + {:.6e} < {:.6e})", ixx, iyy, izz),
+                message: format!(
+                    "Triangle inequality violated: Ixx + Iyy < Izz ({:.6e} + {:.6e} < {:.6e})",
+                    ixx, iyy, izz
+                ),
             });
         }
         if iyy + izz + eps < ixx {
             issues.push(ValidationIssue {
                 severity: ValidationSeverity::Error,
-                message: format!("Triangle inequality violated: Iyy + Izz < Ixx ({:.6e} + {:.6e} < {:.6e})", iyy, izz, ixx),
+                message: format!(
+                    "Triangle inequality violated: Iyy + Izz < Ixx ({:.6e} + {:.6e} < {:.6e})",
+                    iyy, izz, ixx
+                ),
             });
         }
         if ixx + izz + eps < iyy {
             issues.push(ValidationIssue {
                 severity: ValidationSeverity::Error,
-                message: format!("Triangle inequality violated: Ixx + Izz < Iyy ({:.6e} + {:.6e} < {:.6e})", ixx, izz, iyy),
+                message: format!(
+                    "Triangle inequality violated: Ixx + Izz < Iyy ({:.6e} + {:.6e} < {:.6e})",
+                    ixx, izz, iyy
+                ),
             });
         }
     }
 
     // --- 4. Positive semi-definite (eigenvalue check) ---
     let mat = na::Matrix3::new(
-        inertial.ixx, inertial.ixy, inertial.ixz,
-        inertial.ixy, inertial.iyy, inertial.iyz,
-        inertial.ixz, inertial.iyz, inertial.izz,
+        inertial.ixx,
+        inertial.ixy,
+        inertial.ixz,
+        inertial.ixy,
+        inertial.iyy,
+        inertial.iyz,
+        inertial.ixz,
+        inertial.iyz,
+        inertial.izz,
     );
     let eigen = na::SymmetricEigen::new(mat);
     let min_eigenvalue = eigen.eigenvalues.min();
@@ -1558,7 +1671,11 @@ pub fn validate_inertia(link: &LinkData) -> InertiaValidation {
 
 /// Validate inertia for all links in a model.
 pub fn validate_all_inertia(model: &RobotModel) -> Vec<InertiaValidation> {
-    model.links.iter().map(|link| validate_inertia(link)).collect()
+    model
+        .links
+        .iter()
+        .map(|link| validate_inertia(link))
+        .collect()
 }
 
 // The misarta integration (cache building, FK / Jacobian / IK solves,

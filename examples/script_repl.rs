@@ -34,14 +34,24 @@ fn main() {
 
     // Simulated sensor values (pretend robot state)
     let mut sim_time = 0.0_f64;
-    let dt = 0.001;  // 1kHz control loop
+    let dt = 0.001; // 1kHz control loop
 
     // Simulated joint state: 6 joints
     let joint_positions: Vec<(usize, f64)> = vec![
-        (0, 0.0), (1, -0.5), (2, 1.0), (3, -0.3), (4, 0.8), (5, -0.2),
+        (0, 0.0),
+        (1, -0.5),
+        (2, 1.0),
+        (3, -0.3),
+        (4, 0.8),
+        (5, -0.2),
     ];
     let joint_velocities: Vec<(usize, f64)> = vec![
-        (0, 0.0), (1, 0.1), (2, -0.05), (3, 0.0), (4, 0.02), (5, 0.0),
+        (0, 0.0),
+        (1, 0.1),
+        (2, -0.05),
+        (3, 0.0),
+        (4, 0.02),
+        (5, 0.0),
     ];
 
     let stdin = io::stdin();
@@ -162,8 +172,8 @@ fn main() {
                     sim_time += dt;
 
                     // Print outputs for this cycle
-                    let has_output = !outputs.torque_overrides.is_empty()
-                        || !outputs.debug_values.is_empty();
+                    let has_output =
+                        !outputs.torque_overrides.is_empty() || !outputs.debug_values.is_empty();
                     if has_output {
                         print!("  [cycle {cycle}] ");
                         for (ji, tau) in &outputs.torque_overrides {

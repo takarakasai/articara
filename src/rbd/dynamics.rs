@@ -17,11 +17,10 @@
 // rigidly attached to the world).  The floating-base extension (6 virtual
 // DOFs) is *not* modelled — instead, the base translation is advanced as
 /// a rigid body driven by the net ground reaction force.
-
 use nalgebra as na;
 use std::collections::HashMap;
 
-use super::model::{RobotModel, MisartaCache};
+use super::model::{MisartaCache, RobotModel};
 
 // ========== Constants ==========
 
@@ -137,7 +136,11 @@ pub fn forward_dynamics(
         Some(chol) => chol.solve(&rhs),
         None => {
             // Fallback: LU decomposition (less efficient, but handles near-singular)
-            m_mat.clone().lu().solve(&rhs).unwrap_or_else(|| na::DVector::zeros(h.len()))
+            m_mat
+                .clone()
+                .lu()
+                .solve(&rhs)
+                .unwrap_or_else(|| na::DVector::zeros(h.len()))
         }
     }
 }
@@ -162,7 +165,6 @@ pub fn foot_jacobian(
 ) -> na::DMatrix<f64> {
     model.foot_positional_jacobian(foot_link, body_link, joint_order, idx_in_m)
 }
-
 
 // ========== Gravity torque ==========
 
@@ -258,7 +260,12 @@ pub fn compute_body_side_gravity_torques(
         let world_axis = (joint_tf.rotation * joint.axis).cast::<f64>();
 
         let tau_all = gravity_torque_from_links(
-            model, &transforms, &joint_pos, &world_axis, jt, &all_link_indices,
+            model,
+            &transforms,
+            &joint_pos,
+            &world_axis,
+            jt,
+            &all_link_indices,
         );
 
         let tau_descendants = g_for(ji);
@@ -399,7 +406,4 @@ pub fn compute_centroidal_momentum_matrix(
 /// Re-export misarta's iLQR types and solver so articara callers
 /// can use them through the `rbd::dynamics` namespace.
 #[allow(unused_imports)]
-pub use misarta::optimization::{
-    IlqrConfig, IlqrResult, solve_ilqr,
-    discrete_dynamics_step,
-};
+pub use misarta::optimization::{IlqrConfig, IlqrResult, discrete_dynamics_step, solve_ilqr};

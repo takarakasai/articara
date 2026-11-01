@@ -90,8 +90,7 @@ impl Default for GaitPanelState {
             exp_preset_name: String::new(),
             controller: None,
             mode: quadruped_gait::GaitMode::default(),
-            foot_links: articara::gait::DEFAULT_FOOT_LINKS
-                .map(|(id, name)| (id, name.to_string())),
+            foot_links: articara::gait::DEFAULT_FOOT_LINKS.map(|(id, name)| (id, name.to_string())),
             dpad_speed: 0.3,
             dpad_yaw_speed: 0.5,
             dpad_was_active: false,
@@ -160,16 +159,12 @@ impl ArticaraApp {
         // adds drag-tracking so the response stays "active" as long as
         // the primary button is down on the widget — ergonomically what
         // the user expects of a hold-to-drive control.
-        let mk = |label: &str| {
-            egui::Button::new(label).sense(egui::Sense::click_and_drag())
-        };
+        let mk = |label: &str| egui::Button::new(label).sense(egui::Sense::click_and_drag());
         // A button is "held" if either (a) the press originated on it
         // and the primary mouse button is still down, OR (b) the user
         // is dragging from it (mouse moved while held). Using both
         // tolerates small cursor wobbles during a long press.
-        let held = |r: &egui::Response| -> bool {
-            r.is_pointer_button_down_on() || r.dragged()
-        };
+        let held = |r: &egui::Response| -> bool { r.is_pointer_button_down_on() || r.dragged() };
 
         let speed = self.gait.dpad_speed as f64;
         let yaw_speed = self.gait.dpad_yaw_speed as f64;
@@ -192,21 +187,20 @@ impl ArticaraApp {
                 .spacing(egui::vec2(2.0, 2.0))
                 .show(ui, |ui| {
                     ui.label("");
-                    let r_up = ui.add_sized(btn_size, mk("⬆"))
+                    let r_up = ui
+                        .add_sized(btn_size, mk("⬆"))
                         .on_hover_text("Forward (+vx)");
                     ui.label("");
                     ui.end_row();
 
-                    let r_left = ui.add_sized(btn_size, mk("⬅"))
-                        .on_hover_text("Left (+vy)");
+                    let r_left = ui.add_sized(btn_size, mk("⬅")).on_hover_text("Left (+vy)");
                     // Center cell: march in place. Holding sends a
                     // tiny-but-nonzero cmd so the phase generator keeps
                     // cycling (it freezes at cmd=0) while the Raibert
                     // stride amplitude collapses to ~0 — feet lift in
                     // swing but the body doesn't translate.
-                    let r_march = ui.add_sized(btn_size, mk("👣"))
-                        .on_hover_text(
-                            "Press AND HOLD: march in place (gait active, \
+                    let r_march = ui.add_sized(btn_size, mk("👣")).on_hover_text(
+                        "Press AND HOLD: march in place (gait active, \
                              no translation). Feet lift through the swing \
                              curve while the body stays put. A quick click \
                              will only flash a tiny cmd for one frame — \
@@ -214,23 +208,39 @@ impl ArticaraApp {
                              hold the button for at least one full gait \
                              cycle (≈ 0.4 s) to see motion. Direction \
                              buttons override this when both are held.",
-                        );
-                    let r_right = ui.add_sized(btn_size, mk("➡"))
-                        .on_hover_text("Right (−vy)");
+                    );
+                    let r_right = ui.add_sized(btn_size, mk("➡")).on_hover_text("Right (−vy)");
                     ui.end_row();
 
                     ui.label("");
-                    let r_down = ui.add_sized(btn_size, mk("⬇"))
+                    let r_down = ui
+                        .add_sized(btn_size, mk("⬇"))
                         .on_hover_text("Backward (−vx)");
                     ui.label("");
                     ui.end_row();
 
-                    if held(&r_up)    { vx += speed; any_held = true; }
-                    if held(&r_down)  { vx -= speed; any_held = true; }
-                    if held(&r_left)  { vy += speed; any_held = true; }
-                    if held(&r_right) { vy -= speed; any_held = true; }
-                    if held(&r_march) { march_held = true; }
-                    if r_march.clicked() { march_clicked = true; }
+                    if held(&r_up) {
+                        vx += speed;
+                        any_held = true;
+                    }
+                    if held(&r_down) {
+                        vx -= speed;
+                        any_held = true;
+                    }
+                    if held(&r_left) {
+                        vy += speed;
+                        any_held = true;
+                    }
+                    if held(&r_right) {
+                        vy -= speed;
+                        any_held = true;
+                    }
+                    if held(&r_march) {
+                        march_held = true;
+                    }
+                    if r_march.clicked() {
+                        march_clicked = true;
+                    }
                 });
 
             ui.add_space(12.0);
@@ -240,29 +250,31 @@ impl ArticaraApp {
             // ↻ = clockwise = −wz.
             ui.vertical(|ui| {
                 ui.label(egui::RichText::new("Yaw").small().weak());
-                let r_yaw_l = ui.add_sized(btn_size, mk("↺"))
+                let r_yaw_l = ui
+                    .add_sized(btn_size, mk("↺"))
                     .on_hover_text("Turn left (+wz)");
-                let r_yaw_r = ui.add_sized(btn_size, mk("↻"))
+                let r_yaw_r = ui
+                    .add_sized(btn_size, mk("↻"))
                     .on_hover_text("Turn right (−wz)");
-                if held(&r_yaw_l) { wz += yaw_speed; any_held = true; }
-                if held(&r_yaw_r) { wz -= yaw_speed; any_held = true; }
+                if held(&r_yaw_l) {
+                    wz += yaw_speed;
+                    any_held = true;
+                }
+                if held(&r_yaw_r) {
+                    wz -= yaw_speed;
+                    any_held = true;
+                }
             });
         });
 
         // Speed knobs.
         ui.horizontal(|ui| {
             ui.label("Linear (m/s):");
-            ui.add(
-                egui::Slider::new(&mut self.gait.dpad_speed, 0.0..=1.0)
-                    .fixed_decimals(2),
-            );
+            ui.add(egui::Slider::new(&mut self.gait.dpad_speed, 0.0..=1.0).fixed_decimals(2));
         });
         ui.horizontal(|ui| {
             ui.label("Yaw (rad/s):");
-            ui.add(
-                egui::Slider::new(&mut self.gait.dpad_yaw_speed, 0.0..=2.0)
-                    .fixed_decimals(2),
-            );
+            ui.add(egui::Slider::new(&mut self.gait.dpad_yaw_speed, 0.0..=2.0).fixed_decimals(2));
         });
         // LinearCrawl-only: choose whether the D-pad operates in
         // vx-primary (default) or stride-primary mode. See the field
@@ -355,8 +367,7 @@ impl ArticaraApp {
             // In **vx-primary** mode (default), the D-pad just sets vx
             // and leaves cycle_period / t3 / t4 untouched; stride
             // simply varies with vx.
-            let is_linear_crawl =
-                gc.mode() == quadruped_gait::GaitMode::LinearCrawl;
+            let is_linear_crawl = gc.mode() == quadruped_gait::GaitMode::LinearCrawl;
             let apply_stride_primary =
                 stride_primary && is_linear_crawl && vx.abs() > 1e-6 && design_stride > 1e-6;
             if any_held && apply_stride_primary {
@@ -414,11 +425,7 @@ impl ArticaraApp {
     /// Foot-link configuration + auto-detect button. Always visible so the
     /// user can re-run detection after editing the link names.
     fn draw_gait_setup_section(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            egui::RichText::new("Setup")
-                .strong()
-                .small(),
-        );
+        ui.label(egui::RichText::new("Setup").strong().small());
         ui.label(
             egui::RichText::new(
                 "Foot link names per leg. Defaults assume the standard \
@@ -464,8 +471,7 @@ impl ArticaraApp {
                     // it so MPC modes keep solving off the UI thread (else
                     // the freeze returns on a live switch into a heavy MPC).
                     gc.set_async_mpc(true);
-                    self.status_message =
-                        format!("Gait mode → {}", new_mode.label());
+                    self.status_message = format!("Gait mode → {}", new_mode.label());
                 }
             }
         });
@@ -502,22 +508,17 @@ impl ArticaraApp {
         // produce the GRF / contact references the WBC needs).
         #[cfg(feature = "mujoco")]
         ui.horizontal(|ui| {
-            let enabled =
-                self.gait.mode == quadruped_gait::GaitMode::Mpc;
+            let enabled = self.gait.mode == quadruped_gait::GaitMode::Mpc;
             let resp = ui.add_enabled(
                 enabled,
-                egui::Checkbox::new(
-                    &mut self.sim.wbc_enabled,
-                    "Hierarchical WBC",
-                ),
+                egui::Checkbox::new(&mut self.sim.wbc_enabled, "Hierarchical WBC"),
             );
             if !enabled {
                 self.sim.wbc_enabled = false;
             }
             if resp.changed() {
                 if self.sim.wbc_enabled {
-                    self.status_message =
-                        "WBC enabled — torques solved by 3-priority HoQp".into();
+                    self.status_message = "WBC enabled — torques solved by 3-priority HoQp".into();
                 } else {
                     self.status_message =
                         "WBC disabled — back to per-joint Position-PD + τ_ff".into();
@@ -712,15 +713,18 @@ impl ArticaraApp {
                         self.status_message =
                             "Capture-point disabled (k=0) — stiff-PD safe mode".into();
                     } else {
-                        self.status_message = format!(
-                            "Capture-point gain → {:.3}", self.gait.capture_point_gain,
-                        );
+                        self.status_message =
+                            format!("Capture-point gain → {:.3}", self.gait.capture_point_gain,);
                     }
                 }
-                if ui.small_button("0").on_hover_text(
-                    "Set capture-point gain to 0 (= current controller default, \
+                if ui
+                    .small_button("0")
+                    .on_hover_text(
+                        "Set capture-point gain to 0 (= current controller default, \
                      legged_control-style open-loop Raibert).",
-                ).clicked() {
+                    )
+                    .clicked()
+                {
                     self.gait.capture_point_gain = 0.0;
                     if let Some(gc) = self.gait.controller.as_mut() {
                         gc.set_capture_point_gain(0.0);
@@ -728,13 +732,17 @@ impl ArticaraApp {
                     self.status_message =
                         "Capture-point gain → 0 (default, open-loop Raibert)".into();
                 }
-                if ui.small_button("legacy").on_hover_text(
-                    "Restore the pre-D3.3.7 legacy heuristic gain (k=0.175). \
+                if ui
+                    .small_button("legacy")
+                    .on_hover_text(
+                        "Restore the pre-D3.3.7 legacy heuristic gain (k=0.175). \
                      Use for A/B comparison against the LIP capture-point \
                      behaviour. Under stiff PD this turns into a positive \
                      feedback loop and degrades tracking — keep at 0 for \
                      production.",
-                ).clicked() {
+                    )
+                    .clicked()
+                {
                     self.gait.capture_point_gain = 0.175;
                     if let Some(gc) = self.gait.controller.as_mut() {
                         gc.set_capture_point_gain(0.175);
@@ -780,9 +788,17 @@ impl ArticaraApp {
             );
             ui.horizontal(|ui| {
                 ui.label("x:");
-                ui.add(egui::DragValue::new(&mut self.gait.goal_x_m).speed(0.05).suffix(" m"));
+                ui.add(
+                    egui::DragValue::new(&mut self.gait.goal_x_m)
+                        .speed(0.05)
+                        .suffix(" m"),
+                );
                 ui.label("y:");
-                ui.add(egui::DragValue::new(&mut self.gait.goal_y_m).speed(0.05).suffix(" m"));
+                ui.add(
+                    egui::DragValue::new(&mut self.gait.goal_y_m)
+                        .speed(0.05)
+                        .suffix(" m"),
+                );
                 ui.label("yaw:");
                 ui.add(
                     egui::DragValue::new(&mut self.gait.goal_yaw_rad)
@@ -851,8 +867,7 @@ impl ArticaraApp {
                 if clear {
                     if let Some(gc) = self.gait.controller.as_mut() {
                         gc.clear_goal_pose();
-                        self.status_message =
-                            "Goal-pose mode cleared → cmd_vel mode".into();
+                        self.status_message = "Goal-pose mode cleared → cmd_vel mode".into();
                     }
                 }
                 // Active-state indicator. We also poll the controller
@@ -866,10 +881,7 @@ impl ArticaraApp {
                     .is_some();
                 self.gait.goal_pose_active = live_active;
                 if live_active {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(120, 200, 120),
-                        "● goal mode active",
-                    );
+                    ui.colored_label(egui::Color32::from_rgb(120, 200, 120), "● goal mode active");
                 } else {
                     ui.colored_label(egui::Color32::GRAY, "○ cmd_vel mode");
                 }
@@ -1104,24 +1116,38 @@ impl ArticaraApp {
         // tiny-ε hack continues to drive the phase generator.
         ui.label(egui::RichText::new("Velocity command").strong().small());
         let mut cmd = gc.velocity_cmd();
-        let r_vx = ui.horizontal(|ui| {
-            ui.label("vx (m/s):");
-            ui.add(egui::Slider::new(&mut cmd.vx, -1.0..=1.0).fixed_decimals(2))
-        }).inner;
-        let r_vy = ui.horizontal(|ui| {
-            ui.label("vy (m/s):");
-            ui.add(egui::Slider::new(&mut cmd.vy, -1.0..=1.0).fixed_decimals(2))
-        }).inner;
-        let r_wz = ui.horizontal(|ui| {
-            ui.label("wz (rad/s):");
-            ui.add(egui::Slider::new(&mut cmd.wz, -2.0..=2.0).fixed_decimals(2))
-        }).inner;
+        let r_vx = ui
+            .horizontal(|ui| {
+                ui.label("vx (m/s):");
+                ui.add(egui::Slider::new(&mut cmd.vx, -1.0..=1.0).fixed_decimals(2))
+            })
+            .inner;
+        let r_vy = ui
+            .horizontal(|ui| {
+                ui.label("vy (m/s):");
+                ui.add(egui::Slider::new(&mut cmd.vy, -1.0..=1.0).fixed_decimals(2))
+            })
+            .inner;
+        let r_wz = ui
+            .horizontal(|ui| {
+                ui.label("wz (rad/s):");
+                ui.add(egui::Slider::new(&mut cmd.wz, -2.0..=2.0).fixed_decimals(2))
+            })
+            .inner;
         let zero_clicked = ui.button("🛑 Zero velocity").clicked();
-        let user_interacted = r_vx.dragged() || r_vx.has_focus() || r_vx.clicked()
-            || r_vy.dragged() || r_vy.has_focus() || r_vy.clicked()
-            || r_wz.dragged() || r_wz.has_focus() || r_wz.clicked();
+        let user_interacted = r_vx.dragged()
+            || r_vx.has_focus()
+            || r_vx.clicked()
+            || r_vy.dragged()
+            || r_vy.has_focus()
+            || r_vy.clicked()
+            || r_wz.dragged()
+            || r_wz.has_focus()
+            || r_wz.clicked();
         if user_interacted || zero_clicked {
-            if zero_clicked { cmd = VelocityCmd::zero(); }
+            if zero_clicked {
+                cmd = VelocityCmd::zero();
+            }
             gc.set_velocity_cmd(cmd);
         }
 
@@ -1197,8 +1223,7 @@ impl ArticaraApp {
         // computes its own stride from `cycle_period × vx` and never
         // consults this value — grey out so the user doesn't waste time
         // tuning a no-op when LinearCrawl is the active mode.
-        let raibert_active =
-            gc.mode() != quadruped_gait::GaitMode::LinearCrawl;
+        let raibert_active = gc.mode() != quadruped_gait::GaitMode::LinearCrawl;
         ui.horizontal(|ui| {
             ui.add_enabled_ui(raibert_active, |ui| {
                 ui.label("Max step length (m):").on_hover_text(
@@ -1233,8 +1258,7 @@ impl ArticaraApp {
         // Stride is bidirectionally bound to VelocityCmd.vx via T:
         //   stride = |vx| · T   (display)
         //   vx = sign · stride / T   (writeback on stride edit)
-        let linear_crawl_active =
-            gc.mode() == quadruped_gait::GaitMode::LinearCrawl;
+        let linear_crawl_active = gc.mode() == quadruped_gait::GaitMode::LinearCrawl;
         let t3_cur = cfg.cycle_period_s * (1.0 - cfg.four_support_fraction) / 4.0;
         let t4_cur = cfg.cycle_period_s * cfg.four_support_fraction / 4.0;
         ui.horizontal(|ui| {
@@ -1437,13 +1461,12 @@ impl ArticaraApp {
         let current_pattern = gc.knee_pattern();
         let mut new_pattern = current_pattern;
         ui.horizontal(|ui| {
-            ui.label("Knee pattern:")
-                .on_hover_text(
-                    "First char = front legs, second = rear legs.\n\
+            ui.label("Knee pattern:").on_hover_text(
+                "First char = front legs, second = rear legs.\n\
                      '<' bends backward, '>' bends forward.\n\
                      << = all back   <> = mammalian (dog/horse)\n\
                      >< = reverse    >> = all forward",
-                );
+            );
             for p in quadruped_gait::KneePattern::ALL {
                 if ui
                     .selectable_label(p == current_pattern, p.label())
@@ -1493,10 +1516,7 @@ impl ArticaraApp {
                 gc.enable();
             }
             if !sim_alive {
-                ui.colored_label(
-                    egui::Color32::from_gray(150),
-                    "(start MuJoCo first)",
-                );
+                ui.colored_label(egui::Color32::from_gray(150), "(start MuJoCo first)");
             }
         });
 
@@ -1523,21 +1543,29 @@ impl ArticaraApp {
             return;
         };
         let foot_links: [(LegId, &str); 4] = [
-            (self.gait.foot_links[0].0, self.gait.foot_links[0].1.as_str()),
-            (self.gait.foot_links[1].0, self.gait.foot_links[1].1.as_str()),
-            (self.gait.foot_links[2].0, self.gait.foot_links[2].1.as_str()),
-            (self.gait.foot_links[3].0, self.gait.foot_links[3].1.as_str()),
+            (
+                self.gait.foot_links[0].0,
+                self.gait.foot_links[0].1.as_str(),
+            ),
+            (
+                self.gait.foot_links[1].0,
+                self.gait.foot_links[1].1.as_str(),
+            ),
+            (
+                self.gait.foot_links[2].0,
+                self.gait.foot_links[2].1.as_str(),
+            ),
+            (
+                self.gait.foot_links[3].0,
+                self.gait.foot_links[3].1.as_str(),
+            ),
         ];
         match articara::gait::auto_detect_kinematics_config(model, &foot_links) {
             Ok(kin) => {
                 // Seed the controller from the saved gait descriptor (if
                 // any) so re-running auto-detect doesn't reset the user's
                 // knee pattern / cycle period etc.
-                let (cfg, knee_forward) = match self
-                    .model
-                    .as_ref()
-                    .and_then(|m| m.gaits.first())
-                {
+                let (cfg, knee_forward) = match self.model.as_ref().and_then(|m| m.gaits.first()) {
                     Some(d) => {
                         let mut cfg = GaitConfig::trot()
                             .with_cycle_period(d.cycle_period_s)
@@ -1630,10 +1658,7 @@ impl ArticaraApp {
                     .into_iter()
                     .map(|(leg, msg)| format!("{}: {msg}", leg.label()))
                     .collect();
-                self.status_message = format!(
-                    "Gait auto-detect failed: {}",
-                    summary.join("; "),
-                );
+                self.status_message = format!("Gait auto-detect failed: {}", summary.join("; "),);
             }
         }
     }

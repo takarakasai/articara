@@ -40,11 +40,18 @@ fn main() {
         // 1. Visual + joint を生やす (add_child は visuals だけ埋める)。
         let (foot_li, _) = model
             .add_child(
-                calf, foot, &format!("{foot}_fixed"), "fixed", origin,
+                calf,
+                foot,
+                &format!("{foot}_fixed"),
+                "fixed",
+                origin,
                 na::Vector3::z(),
-                GeomData::Sphere { radius: foot_radius },
+                GeomData::Sphere {
+                    radius: foot_radius,
+                },
                 [0.5, 0.5, 0.5, 1.0],
-                0.0, 0.0,
+                0.0,
+                0.0,
             )
             .unwrap();
         // 2. 同じ sphere を collisions にも追加 (origin = link 原点)。
@@ -57,7 +64,9 @@ fn main() {
         //    forward grip が半減して trunk が後方に滑る → 起動時の発散も起こる。
         model.links[foot_li].collisions.push(CollisionData {
             origin: na::Isometry3::identity(),
-            geometry: GeomData::Sphere { radius: foot_radius },
+            geometry: GeomData::Sphere {
+                radius: foot_radius,
+            },
             physics: Some(MjcfPhysics {
                 friction: Some([0.8, 0.02, 0.01]),
                 condim: Some(6),
@@ -82,11 +91,13 @@ fn main() {
         // (太腿付近の box/cylinder 近似) のみで、これらが正規の calf
         // collision。
         let calf_li = model.link_map[calf];
-        model.links[calf_li].collisions.retain(|c| match &c.geometry {
-            GeomData::Sphere { radius } => (radius - foot_radius).abs() >= 1e-4,
-            GeomData::Mesh { .. } => false,
-            _ => true,
-        });
+        model.links[calf_li]
+            .collisions
+            .retain(|c| match &c.geometry {
+                GeomData::Sphere { radius } => (radius - foot_radius).abs() >= 1e-4,
+                GeomData::Mesh { .. } => false,
+                _ => true,
+            });
     }
     model.rebuild_misarta_model();
     // NOTE: foot link collision は球 1 点だけになるので、Go2 MJCF が元々
@@ -99,16 +110,26 @@ fn main() {
     // Go2 home keyframe (hip=0, thigh=0.9, calf=-1.8) を「全脚同角度の屈曲姿勢」
     // としてそのまま Pose にする。
     let bent: [(&str, f64); 12] = [
-        ("FL_hip_joint", 0.0), ("FL_thigh_joint", 0.9), ("FL_calf_joint", -1.8),
-        ("FR_hip_joint", 0.0), ("FR_thigh_joint", 0.9), ("FR_calf_joint", -1.8),
-        ("RL_hip_joint", 0.0), ("RL_thigh_joint", 0.9), ("RL_calf_joint", -1.8),
-        ("RR_hip_joint", 0.0), ("RR_thigh_joint", 0.9), ("RR_calf_joint", -1.8),
+        ("FL_hip_joint", 0.0),
+        ("FL_thigh_joint", 0.9),
+        ("FL_calf_joint", -1.8),
+        ("FR_hip_joint", 0.0),
+        ("FR_thigh_joint", 0.9),
+        ("FR_calf_joint", -1.8),
+        ("RL_hip_joint", 0.0),
+        ("RL_thigh_joint", 0.9),
+        ("RL_calf_joint", -1.8),
+        ("RR_hip_joint", 0.0),
+        ("RR_thigh_joint", 0.9),
+        ("RR_calf_joint", -1.8),
     ];
 
     // Pose 適用前に model.joint_positions を bent に揃えておく (.misa の
     // current pose としても保存されるよう)。
     for (name, q) in bent.iter() {
-        let ji = *model.joint_map.get(*name)
+        let ji = *model
+            .joint_map
+            .get(*name)
             .unwrap_or_else(|| panic!("joint not found: {name}"));
         model.joint_positions[ji] = *q;
     }
@@ -128,12 +149,18 @@ fn main() {
     let out = std::path::Path::new("models/unitree_go2/go2.misa");
     model.save_as_misa(out).expect("save_as_misa");
     println!("Wrote: {}", out.display());
-    println!("  joints: {} (movable: {})",
+    println!(
+        "  joints: {} (movable: {})",
         model.joints.len(),
-        model.joints.iter().filter(|j| j.joint_type != "fixed").count(),
+        model
+            .joints
+            .iter()
+            .filter(|j| j.joint_type != "fixed")
+            .count(),
     );
     println!("  links:  {}", model.links.len());
-    println!("  poses:  {} (latest='{}')",
+    println!(
+        "  poses:  {} (latest='{}')",
         model.poses.len(),
         model.poses.last().map(|p| p.name.as_str()).unwrap_or(""),
     );

@@ -3,7 +3,7 @@
 //! targets. No MuJoCo dependency — exercises only the kinematic /
 //! gait pipeline.
 
-use articara::gait::{auto_detect_kinematics_config, GaitController};
+use articara::gait::{GaitController, auto_detect_kinematics_config};
 use articara::mjcf;
 use articara::robot::*;
 use nalgebra as na;
@@ -90,7 +90,12 @@ fn main() {
         }
     };
     println!("\n=== Detected leg kinematics ===");
-    for (label, leg) in [("FL", &kin.fl), ("FR", &kin.fr), ("RL", &kin.rl), ("RR", &kin.rr)] {
+    for (label, leg) in [
+        ("FL", &kin.fl),
+        ("FR", &kin.fr),
+        ("RL", &kin.rl),
+        ("RR", &kin.rr),
+    ] {
         println!(
             "  {label}: hip_offset={:?}  upper={:.4}  lower={:.4}  hip_to_thigh_y={:.4}",
             (leg.hip_offset.x, leg.hip_offset.y, leg.hip_offset.z),
@@ -142,10 +147,8 @@ fn main() {
 
     println!("\n=== Final joint targets (URDF convention) ===");
     let labels = [
-        "FL hip", "FL thigh", "FL calf",
-        "FR hip", "FR thigh", "FR calf",
-        "RL hip", "RL thigh", "RL calf",
-        "RR hip", "RR thigh", "RR calf",
+        "FL hip", "FL thigh", "FL calf", "FR hip", "FR thigh", "FR calf", "RL hip", "RL thigh",
+        "RL calf", "RR hip", "RR thigh", "RR calf",
     ];
     for (i, lab) in labels.iter().enumerate() {
         let (ji, q) = last_targets[i];

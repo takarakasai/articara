@@ -25,12 +25,12 @@
 //! export_urdf("/tmp/out.urdf");
 //! ```
 
-use rhai::{Dynamic, Engine, AST, Scope, Array};
+use rhai::{AST, Array, Dynamic, Engine, Scope};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::robot::RobotModel;
 use crate::rbd::model::{IkSolver, LoopClosure};
+use crate::robot::RobotModel;
 
 #[cfg(feature = "mujoco")]
 use crate::mujoco_sim::MujocoSim;
@@ -163,7 +163,10 @@ impl ModelScriptEngine {
         let ast = self.ast.as_ref().ok_or("No script compiled")?;
         self.output_lines.borrow_mut().clear();
 
-        match self.engine.eval_ast_with_scope::<Dynamic>(&mut self.scope, ast) {
+        match self
+            .engine
+            .eval_ast_with_scope::<Dynamic>(&mut self.scope, ast)
+        {
             Ok(_) => {
                 self.last_error = None;
                 Ok(self.output_lines.borrow().clone())
@@ -223,10 +226,7 @@ impl ModelScriptEngine {
     /// Same handover semantics as [`Self::set_mujoco_sim`] but for the
     /// quadruped-gait controller. Lets scripts call `gait_setup`,
     /// `gait_start` etc. while the engine is running.
-    pub fn set_gait_controller(
-        &mut self,
-        gc: Option<crate::gait::GaitController>,
-    ) {
+    pub fn set_gait_controller(&mut self, gc: Option<crate::gait::GaitController>) {
         *self.gait_controller.borrow_mut() = gc;
     }
 
@@ -315,9 +315,7 @@ impl ModelScriptEngine {
         });
 
         let m = Rc::clone(&model);
-        engine.register_fn("has_model", move || -> bool {
-            m.borrow().is_some()
-        });
+        engine.register_fn("has_model", move || -> bool { m.borrow().is_some() });
 
         // ────────────────────────────────────────────────────────────────
         //  Link queries
@@ -338,13 +336,18 @@ impl ModelScriptEngine {
 
         let m = Rc::clone(&model);
         engine.register_fn("num_links", move || -> i64 {
-            m.borrow().as_ref().map(|r| r.links.len() as i64).unwrap_or(0)
+            m.borrow()
+                .as_ref()
+                .map(|r| r.links.len() as i64)
+                .unwrap_or(0)
         });
 
         let m = Rc::clone(&model);
         engine.register_fn("link_pos", move |name: &str| -> Array {
             let borrow = m.borrow();
-            let Some(robot) = borrow.as_ref() else { return vec![].into() };
+            let Some(robot) = borrow.as_ref() else {
+                return vec![].into();
+            };
             let transforms = robot.compute_transforms();
             if let Some(tf) = transforms.get(name) {
                 let t = tf.translation;
@@ -361,7 +364,9 @@ impl ModelScriptEngine {
         let m = Rc::clone(&model);
         engine.register_fn("link_rpy", move |name: &str| -> Array {
             let borrow = m.borrow();
-            let Some(robot) = borrow.as_ref() else { return vec![].into() };
+            let Some(robot) = borrow.as_ref() else {
+                return vec![].into();
+            };
             let transforms = robot.compute_transforms();
             if let Some(tf) = transforms.get(name) {
                 let (r, p, y) = tf.rotation.euler_angles();
@@ -394,14 +399,19 @@ impl ModelScriptEngine {
 
         let m = Rc::clone(&model);
         engine.register_fn("num_joints", move || -> i64 {
-            m.borrow().as_ref().map(|r| r.joints.len() as i64).unwrap_or(0)
+            m.borrow()
+                .as_ref()
+                .map(|r| r.joints.len() as i64)
+                .unwrap_or(0)
         });
 
         // get joint position by name
         let m = Rc::clone(&model);
         engine.register_fn("joint_pos", move |name: &str| -> f64 {
             let borrow = m.borrow();
-            let Some(robot) = borrow.as_ref() else { return 0.0 };
+            let Some(robot) = borrow.as_ref() else {
+                return 0.0;
+            };
             if let Some(&idx) = robot.joint_map.get(name) {
                 robot.joint_positions[idx]
             } else {
@@ -413,7 +423,9 @@ impl ModelScriptEngine {
         let m = Rc::clone(&model);
         engine.register_fn("joint_pos_idx", move |idx: i64| -> f64 {
             let borrow = m.borrow();
-            let Some(robot) = borrow.as_ref() else { return 0.0 };
+            let Some(robot) = borrow.as_ref() else {
+                return 0.0;
+            };
             let i = idx as usize;
             if i < robot.joint_positions.len() {
                 robot.joint_positions[i]
@@ -477,13 +489,12 @@ impl ModelScriptEngine {
         let m = Rc::clone(&model);
         engine.register_fn("joint_limits", move |name: &str| -> Array {
             let borrow = m.borrow();
-            let Some(robot) = borrow.as_ref() else { return vec![].into() };
+            let Some(robot) = borrow.as_ref() else {
+                return vec![].into();
+            };
             if let Some(&idx) = robot.joint_map.get(name) {
                 let j = &robot.joints[idx];
-                vec![
-                    Dynamic::from_float(j.lower),
-                    Dynamic::from_float(j.upper),
-                ]
+                vec![Dynamic::from_float(j.lower), Dynamic::from_float(j.upper)]
             } else {
                 vec![]
             }
@@ -493,7 +504,9 @@ impl ModelScriptEngine {
         let m = Rc::clone(&model);
         engine.register_fn("joint_type", move |name: &str| -> String {
             let borrow = m.borrow();
-            let Some(robot) = borrow.as_ref() else { return String::new() };
+            let Some(robot) = borrow.as_ref() else {
+                return String::new();
+            };
             if let Some(&idx) = robot.joint_map.get(name) {
                 robot.joints[idx].joint_type.clone()
             } else {
@@ -509,7 +522,9 @@ impl ModelScriptEngine {
         let m = Rc::clone(&model);
         engine.register_fn("fk", move || -> rhai::Map {
             let borrow = m.borrow();
-            let Some(robot) = borrow.as_ref() else { return rhai::Map::new() };
+            let Some(robot) = borrow.as_ref() else {
+                return rhai::Map::new();
+            };
             let transforms = robot.compute_transforms();
             let mut map = rhai::Map::new();
             for (name, tf) in &transforms {
@@ -532,7 +547,9 @@ impl ModelScriptEngine {
         let m = Rc::clone(&model);
         engine.register_fn("ik", move |link: &str, tx: f64, ty: f64, tz: f64| -> bool {
             let mut borrow = m.borrow_mut();
-            let Some(robot) = borrow.as_mut() else { return false };
+            let Some(robot) = borrow.as_mut() else {
+                return false;
+            };
             let target = nalgebra::Point3::new(tx, ty, tz);
 
             if robot.joint_map.is_empty() {
@@ -564,17 +581,17 @@ impl ModelScriptEngine {
                 let deltas = robot.solve_ik_step(
                     &chain,
                     link,
-                    None,         // root_link
+                    None, // root_link
                     &ee_pos,
                     &target,
-                    0.01,         // damping
-                    0.5,          // gain
-                    0.1,          // max_step
-                    None,         // ref_positions
+                    0.01, // damping
+                    0.5,  // gain
+                    0.1,  // max_step
+                    None, // ref_positions
                     IkSolver::Dls,
-                    None,         // screen_axes
-                    None,         // joint_weights
-                    None,         // ee_offset_world
+                    None, // screen_axes
+                    None, // joint_weights
+                    None, // ee_offset_world
                 );
 
                 robot.apply_joint_deltas(&chain, &deltas);
@@ -584,83 +601,103 @@ impl ModelScriptEngine {
 
         // ik_steps(link_name, tx, ty, tz, steps) — configurable iteration count
         let m = Rc::clone(&model);
-        engine.register_fn("ik_steps", move |link: &str, tx: f64, ty: f64, tz: f64, steps: i64| -> f64 {
-            let mut borrow = m.borrow_mut();
-            let Some(robot) = borrow.as_mut() else { return -1.0 };
-            let target = nalgebra::Point3::new(tx, ty, tz);
-
-            let chain = robot.chain_joints(link);
-            if chain.is_empty() {
-                return -1.0;
-            }
-
-            let mut err = f64::MAX;
-            for _ in 0..steps.max(1) {
-                let transforms = robot.compute_transforms();
-                let ee_tf = match transforms.get(link) {
-                    Some(tf) => tf,
-                    None => return -1.0,
+        engine.register_fn(
+            "ik_steps",
+            move |link: &str, tx: f64, ty: f64, tz: f64, steps: i64| -> f64 {
+                let mut borrow = m.borrow_mut();
+                let Some(robot) = borrow.as_mut() else {
+                    return -1.0;
                 };
-                let ee_pos = nalgebra::Point3::new(
-                    ee_tf.translation.x as f64,
-                    ee_tf.translation.y as f64,
-                    ee_tf.translation.z as f64,
-                );
+                let target = nalgebra::Point3::new(tx, ty, tz);
 
-                err = (target - ee_pos).norm();
-                if err < 1e-6 {
-                    break;
+                let chain = robot.chain_joints(link);
+                if chain.is_empty() {
+                    return -1.0;
                 }
 
-                let deltas = robot.solve_ik_step(
-                    &chain,
-                    link,
-                    None,
-                    &ee_pos,
-                    &target,
-                    0.01,
-                    0.5,
-                    0.1,
-                    None,
-                    IkSolver::Dls,
-                    None,
-                    None,
-                    None,         // ee_offset_world
-                );
-                robot.apply_joint_deltas(&chain, &deltas);
-            }
-            err
-        });
+                let mut err = f64::MAX;
+                for _ in 0..steps.max(1) {
+                    let transforms = robot.compute_transforms();
+                    let ee_tf = match transforms.get(link) {
+                        Some(tf) => tf,
+                        None => return -1.0,
+                    };
+                    let ee_pos = nalgebra::Point3::new(
+                        ee_tf.translation.x as f64,
+                        ee_tf.translation.y as f64,
+                        ee_tf.translation.z as f64,
+                    );
+
+                    err = (target - ee_pos).norm();
+                    if err < 1e-6 {
+                        break;
+                    }
+
+                    let deltas = robot.solve_ik_step(
+                        &chain,
+                        link,
+                        None,
+                        &ee_pos,
+                        &target,
+                        0.01,
+                        0.5,
+                        0.1,
+                        None,
+                        IkSolver::Dls,
+                        None,
+                        None,
+                        None, // ee_offset_world
+                    );
+                    robot.apply_joint_deltas(&chain, &deltas);
+                }
+                err
+            },
+        );
 
         // ────────────────────────────────────────────────────────────────
         //  Loop closures
         // ────────────────────────────────────────────────────────────────
 
         let m = Rc::clone(&model);
-        engine.register_fn("add_loop_closure", move |name: &str, link_a: &str, ox_a: f64, oy_a: f64, oz_a: f64,
-                                                       link_b: &str, ox_b: f64, oy_b: f64, oz_b: f64| {
-            let mut borrow = m.borrow_mut();
-            let Some(robot) = borrow.as_mut() else { return };
-            robot.loop_closures.push(LoopClosure::position(
-                name,
-                link_a,
-                nalgebra::Vector3::new(ox_a, oy_a, oz_a),
-                link_b,
-                nalgebra::Vector3::new(ox_b, oy_b, oz_b),
-            ));
-        });
+        engine.register_fn(
+            "add_loop_closure",
+            move |name: &str,
+                  link_a: &str,
+                  ox_a: f64,
+                  oy_a: f64,
+                  oz_a: f64,
+                  link_b: &str,
+                  ox_b: f64,
+                  oy_b: f64,
+                  oz_b: f64| {
+                let mut borrow = m.borrow_mut();
+                let Some(robot) = borrow.as_mut() else { return };
+                robot.loop_closures.push(LoopClosure::position(
+                    name,
+                    link_a,
+                    nalgebra::Vector3::new(ox_a, oy_a, oz_a),
+                    link_b,
+                    nalgebra::Vector3::new(ox_b, oy_b, oz_b),
+                ));
+            },
+        );
 
         let m = Rc::clone(&model);
         engine.register_fn("loop_closure_error", move || -> f64 {
             let borrow = m.borrow();
-            let Some(robot) = borrow.as_ref() else { return 0.0 };
+            let Some(robot) = borrow.as_ref() else {
+                return 0.0;
+            };
             robot.loop_closure_error()
         });
 
         let m = Rc::clone(&model);
         engine.register_fn("num_loop_closures", move || -> i64 {
             let borrow = m.borrow();
-            borrow.as_ref().map(|r| r.loop_closures.len() as i64).unwrap_or(0)
+            borrow
+                .as_ref()
+                .map(|r| r.loop_closures.len() as i64)
+                .unwrap_or(0)
         });
 
         // ────────────────────────────────────────────────────────────────
@@ -670,7 +707,9 @@ impl ModelScriptEngine {
         let m = Rc::clone(&model);
         engine.register_fn("export_urdf", move |path: &str| -> bool {
             let borrow = m.borrow();
-            let Some(robot) = borrow.as_ref() else { return false };
+            let Some(robot) = borrow.as_ref() else {
+                return false;
+            };
             match robot.export_urdf_to_file(std::path::Path::new(path)) {
                 Ok(()) => true,
                 Err(e) => {
@@ -683,7 +722,9 @@ impl ModelScriptEngine {
         let m = Rc::clone(&model);
         engine.register_fn("export_sdf", move |path: &str| -> bool {
             let borrow = m.borrow();
-            let Some(robot) = borrow.as_ref() else { return false };
+            let Some(robot) = borrow.as_ref() else {
+                return false;
+            };
             match crate::sdf::export_sdf_to_file(robot, std::path::Path::new(path)) {
                 Ok(()) => true,
                 Err(e) => {
@@ -696,7 +737,9 @@ impl ModelScriptEngine {
         let m = Rc::clone(&model);
         engine.register_fn("export_mjcf", move |path: &str| -> bool {
             let borrow = m.borrow();
-            let Some(robot) = borrow.as_ref() else { return false };
+            let Some(robot) = borrow.as_ref() else {
+                return false;
+            };
             let xml = crate::mjcf::export_mjcf(robot);
             match std::fs::write(path, &xml) {
                 Ok(()) => true,
@@ -712,9 +755,12 @@ impl ModelScriptEngine {
         // ────────────────────────────────────────────────────────────────
 
         // dist(ax, ay, az, bx, by, bz) → euclidean distance
-        engine.register_fn("dist", |ax: f64, ay: f64, az: f64, bx: f64, by: f64, bz: f64| -> f64 {
-            ((ax - bx).powi(2) + (ay - by).powi(2) + (az - bz).powi(2)).sqrt()
-        });
+        engine.register_fn(
+            "dist",
+            |ax: f64, ay: f64, az: f64, bx: f64, by: f64, bz: f64| -> f64 {
+                ((ax - bx).powi(2) + (ay - by).powi(2) + (az - bz).powi(2)).sqrt()
+            },
+        );
 
         // ────────────────────────────────────────────────────────────────
         //  Mesh reduction
@@ -727,89 +773,140 @@ impl ModelScriptEngine {
 
         // reduce_mesh(link_name, visual_index, target_ratio)  — QEM default
         let m = Rc::clone(&model);
-        engine.register_fn("reduce_mesh", move |link: &str, vi: i64, ratio: f64| -> i64 {
-            let mut borrow = m.borrow_mut();
-            let Some(robot) = borrow.as_mut() else { return -1 };
-            let Some(&li) = robot.link_map.get(link) else { return -1 };
-            let vi = vi as usize;
-            if vi >= robot.links[li].visuals.len() { return -1; }
-            if let crate::robot::GeomData::Mesh { mesh, .. } = &mut robot.links[li].visuals[vi].geometry {
-                let reduced = mesh.decimate(ratio);
-                let n = reduced.num_triangles() as i64;
-                *mesh = std::sync::Arc::new(reduced);
-                n
-            } else {
-                -1
-            }
-        });
+        engine.register_fn(
+            "reduce_mesh",
+            move |link: &str, vi: i64, ratio: f64| -> i64 {
+                let mut borrow = m.borrow_mut();
+                let Some(robot) = borrow.as_mut() else {
+                    return -1;
+                };
+                let Some(&li) = robot.link_map.get(link) else {
+                    return -1;
+                };
+                let vi = vi as usize;
+                if vi >= robot.links[li].visuals.len() {
+                    return -1;
+                }
+                if let crate::robot::GeomData::Mesh { mesh, .. } =
+                    &mut robot.links[li].visuals[vi].geometry
+                {
+                    let reduced = mesh.decimate(ratio);
+                    let n = reduced.num_triangles() as i64;
+                    *mesh = std::sync::Arc::new(reduced);
+                    n
+                } else {
+                    -1
+                }
+            },
+        );
 
         // reduce_mesh(link_name, visual_index, target_ratio, method_string)
         let m = Rc::clone(&model);
-        engine.register_fn("reduce_mesh", move |link: &str, vi: i64, ratio: f64, method: &str| -> i64 {
-            let mut borrow = m.borrow_mut();
-            let Some(robot) = borrow.as_mut() else { return -1 };
-            let Some(&li) = robot.link_map.get(link) else { return -1 };
-            let vi = vi as usize;
-            if vi >= robot.links[li].visuals.len() { return -1; }
-            if let crate::robot::GeomData::Mesh { mesh, .. } = &mut robot.links[li].visuals[vi].geometry {
-                let (_, after) =
-                    crate::mesh_ops::decimate_mesh(mesh, ratio, parse_method(method));
-                after as i64
-            } else {
-                -1
-            }
-        });
+        engine.register_fn(
+            "reduce_mesh",
+            move |link: &str, vi: i64, ratio: f64, method: &str| -> i64 {
+                let mut borrow = m.borrow_mut();
+                let Some(robot) = borrow.as_mut() else {
+                    return -1;
+                };
+                let Some(&li) = robot.link_map.get(link) else {
+                    return -1;
+                };
+                let vi = vi as usize;
+                if vi >= robot.links[li].visuals.len() {
+                    return -1;
+                }
+                if let crate::robot::GeomData::Mesh { mesh, .. } =
+                    &mut robot.links[li].visuals[vi].geometry
+                {
+                    let (_, after) =
+                        crate::mesh_ops::decimate_mesh(mesh, ratio, parse_method(method));
+                    after as i64
+                } else {
+                    -1
+                }
+            },
+        );
 
         // reduce_collision_mesh(link_name, collision_index, target_ratio)
         let m = Rc::clone(&model);
-        engine.register_fn("reduce_collision_mesh", move |link: &str, ci: i64, ratio: f64| -> i64 {
-            let mut borrow = m.borrow_mut();
-            let Some(robot) = borrow.as_mut() else { return -1 };
-            let Some(&li) = robot.link_map.get(link) else { return -1 };
-            let ci = ci as usize;
-            if ci >= robot.links[li].collisions.len() { return -1; }
-            if let crate::robot::GeomData::Mesh { mesh, .. } = &mut robot.links[li].collisions[ci].geometry {
-                let reduced = mesh.decimate(ratio);
-                let n = reduced.num_triangles() as i64;
-                *mesh = std::sync::Arc::new(reduced);
-                n
-            } else {
-                -1
-            }
-        });
+        engine.register_fn(
+            "reduce_collision_mesh",
+            move |link: &str, ci: i64, ratio: f64| -> i64 {
+                let mut borrow = m.borrow_mut();
+                let Some(robot) = borrow.as_mut() else {
+                    return -1;
+                };
+                let Some(&li) = robot.link_map.get(link) else {
+                    return -1;
+                };
+                let ci = ci as usize;
+                if ci >= robot.links[li].collisions.len() {
+                    return -1;
+                }
+                if let crate::robot::GeomData::Mesh { mesh, .. } =
+                    &mut robot.links[li].collisions[ci].geometry
+                {
+                    let reduced = mesh.decimate(ratio);
+                    let n = reduced.num_triangles() as i64;
+                    *mesh = std::sync::Arc::new(reduced);
+                    n
+                } else {
+                    -1
+                }
+            },
+        );
 
         // reduce_collision_mesh(link_name, collision_index, target_ratio, method_string)
         let m = Rc::clone(&model);
-        engine.register_fn("reduce_collision_mesh", move |link: &str, ci: i64, ratio: f64, method: &str| -> i64 {
-            let mut borrow = m.borrow_mut();
-            let Some(robot) = borrow.as_mut() else { return -1 };
-            let Some(&li) = robot.link_map.get(link) else { return -1 };
-            let ci = ci as usize;
-            if ci >= robot.links[li].collisions.len() { return -1; }
-            if let crate::robot::GeomData::Mesh { mesh, .. } = &mut robot.links[li].collisions[ci].geometry {
-                let (_, after) =
-                    crate::mesh_ops::decimate_mesh(mesh, ratio, parse_method(method));
-                after as i64
-            } else {
-                -1
-            }
-        });
+        engine.register_fn(
+            "reduce_collision_mesh",
+            move |link: &str, ci: i64, ratio: f64, method: &str| -> i64 {
+                let mut borrow = m.borrow_mut();
+                let Some(robot) = borrow.as_mut() else {
+                    return -1;
+                };
+                let Some(&li) = robot.link_map.get(link) else {
+                    return -1;
+                };
+                let ci = ci as usize;
+                if ci >= robot.links[li].collisions.len() {
+                    return -1;
+                }
+                if let crate::robot::GeomData::Mesh { mesh, .. } =
+                    &mut robot.links[li].collisions[ci].geometry
+                {
+                    let (_, after) =
+                        crate::mesh_ops::decimate_mesh(mesh, ratio, parse_method(method));
+                    after as i64
+                } else {
+                    -1
+                }
+            },
+        );
 
         // reduce_all_meshes(target_ratio) → total triangles removed (QEM)
         let m = Rc::clone(&model);
         engine.register_fn("reduce_all_meshes", move |ratio: f64| -> i64 {
             let mut borrow = m.borrow_mut();
-            let Some(robot) = borrow.as_mut() else { return -1 };
+            let Some(robot) = borrow.as_mut() else {
+                return -1;
+            };
             reduce_all_meshes_impl(robot, ratio, misarta::decimate::DecimationMethod::Qem)
         });
 
         // reduce_all_meshes(target_ratio, method_string)
         let m = Rc::clone(&model);
-        engine.register_fn("reduce_all_meshes", move |ratio: f64, method: &str| -> i64 {
-            let mut borrow = m.borrow_mut();
-            let Some(robot) = borrow.as_mut() else { return -1 };
-            reduce_all_meshes_impl(robot, ratio, parse_method(method))
-        });
+        engine.register_fn(
+            "reduce_all_meshes",
+            move |ratio: f64, method: &str| -> i64 {
+                let mut borrow = m.borrow_mut();
+                let Some(robot) = borrow.as_mut() else {
+                    return -1;
+                };
+                reduce_all_meshes_impl(robot, ratio, parse_method(method))
+            },
+        );
 
         // ────────────────────────────────────────────────────────────────
         //  Mesh decomposition (V-HACD / Sphere Tree)
@@ -819,40 +916,86 @@ impl ModelScriptEngine {
         let m = Rc::clone(&model);
         engine.register_fn("decompose_vhacd", move |link: &str, ci: i64| -> i64 {
             let mut borrow = m.borrow_mut();
-            let Some(robot) = borrow.as_mut() else { return -1 };
-            decompose_collision_impl(robot, link, ci as usize, misarta::decompose::DecompositionMethod::Vhacd, None)
+            let Some(robot) = borrow.as_mut() else {
+                return -1;
+            };
+            decompose_collision_impl(
+                robot,
+                link,
+                ci as usize,
+                misarta::decompose::DecompositionMethod::Vhacd,
+                None,
+            )
         });
 
         // decompose_vhacd(link_name, collision_index, max_hulls) → number of hulls
         let m = Rc::clone(&model);
-        engine.register_fn("decompose_vhacd", move |link: &str, ci: i64, max_hulls: i64| -> i64 {
-            let mut borrow = m.borrow_mut();
-            let Some(robot) = borrow.as_mut() else { return -1 };
-            decompose_collision_impl(robot, link, ci as usize, misarta::decompose::DecompositionMethod::Vhacd, Some(max_hulls as usize))
-        });
+        engine.register_fn(
+            "decompose_vhacd",
+            move |link: &str, ci: i64, max_hulls: i64| -> i64 {
+                let mut borrow = m.borrow_mut();
+                let Some(robot) = borrow.as_mut() else {
+                    return -1;
+                };
+                decompose_collision_impl(
+                    robot,
+                    link,
+                    ci as usize,
+                    misarta::decompose::DecompositionMethod::Vhacd,
+                    Some(max_hulls as usize),
+                )
+            },
+        );
 
         // decompose_spheres(link_name, collision_index) → number of spheres
         let m = Rc::clone(&model);
         engine.register_fn("decompose_spheres", move |link: &str, ci: i64| -> i64 {
             let mut borrow = m.borrow_mut();
-            let Some(robot) = borrow.as_mut() else { return -1 };
-            decompose_collision_impl(robot, link, ci as usize, misarta::decompose::DecompositionMethod::SphereTree, None)
+            let Some(robot) = borrow.as_mut() else {
+                return -1;
+            };
+            decompose_collision_impl(
+                robot,
+                link,
+                ci as usize,
+                misarta::decompose::DecompositionMethod::SphereTree,
+                None,
+            )
         });
 
         // decompose_spheres(link_name, collision_index, max_spheres) → number of spheres
         let m = Rc::clone(&model);
-        engine.register_fn("decompose_spheres", move |link: &str, ci: i64, max_count: i64| -> i64 {
-            let mut borrow = m.borrow_mut();
-            let Some(robot) = borrow.as_mut() else { return -1 };
-            decompose_collision_impl(robot, link, ci as usize, misarta::decompose::DecompositionMethod::SphereTree, Some(max_count as usize))
-        });
+        engine.register_fn(
+            "decompose_spheres",
+            move |link: &str, ci: i64, max_count: i64| -> i64 {
+                let mut borrow = m.borrow_mut();
+                let Some(robot) = borrow.as_mut() else {
+                    return -1;
+                };
+                decompose_collision_impl(
+                    robot,
+                    link,
+                    ci as usize,
+                    misarta::decompose::DecompositionMethod::SphereTree,
+                    Some(max_count as usize),
+                )
+            },
+        );
 
         // decompose_primitive(link_name, collision_index) → 1 on success (single primitive, no V-HACD)
         let m = Rc::clone(&model);
         engine.register_fn("decompose_primitive", move |link: &str, ci: i64| -> i64 {
             let mut borrow = m.borrow_mut();
-            let Some(robot) = borrow.as_mut() else { return -1 };
-            decompose_collision_impl(robot, link, ci as usize, misarta::decompose::DecompositionMethod::PrimitiveFitDirect, None)
+            let Some(robot) = borrow.as_mut() else {
+                return -1;
+            };
+            decompose_collision_impl(
+                robot,
+                link,
+                ci as usize,
+                misarta::decompose::DecompositionMethod::PrimitiveFitDirect,
+                None,
+            )
         });
 
         // ────────────────────────────────────────────────────────────────
@@ -868,9 +1011,7 @@ impl ModelScriptEngine {
         #[cfg(feature = "mujoco")]
         {
             let s = Rc::clone(&mujoco_sim);
-            engine.register_fn("mj_active", move || -> bool {
-                s.borrow().is_some()
-            });
+            engine.register_fn("mj_active", move || -> bool { s.borrow().is_some() });
 
             // mj_start() — construct a sim from the current model with
             // default options (auto-base lift, ground plane, no axis locks,
@@ -952,7 +1093,10 @@ impl ModelScriptEngine {
             // History buffer length (number of frames available for backward stepping).
             let s = Rc::clone(&mujoco_sim);
             engine.register_fn("mj_history_len", move || -> i64 {
-                s.borrow().as_ref().map(|x| x.history_len() as i64).unwrap_or(0)
+                s.borrow()
+                    .as_ref()
+                    .map(|x| x.history_len() as i64)
+                    .unwrap_or(0)
             });
 
             // Number of (q, q̇, τ) samples in the time-series trace ring buffer.
@@ -960,7 +1104,10 @@ impl ModelScriptEngine {
             // upcoming `save_peaks_csv` call will write.
             let s = Rc::clone(&mujoco_sim);
             engine.register_fn("mj_trace_len", move || -> i64 {
-                s.borrow().as_ref().map(|x| x.trace_len() as i64).unwrap_or(0)
+                s.borrow()
+                    .as_ref()
+                    .map(|x| x.trace_len() as i64)
+                    .unwrap_or(0)
             });
 
             // ── Async timeline API ────────────────────────────────────────
@@ -1006,17 +1153,16 @@ impl ModelScriptEngine {
                 move |name: &str, target: f64| -> bool {
                     let mut sim_borrow = s.borrow_mut();
                     let model_borrow = m.borrow();
-                    let (Some(sim), Some(robot)) =
-                        (sim_borrow.as_mut(), model_borrow.as_ref())
+                    let (Some(sim), Some(robot)) = (sim_borrow.as_mut(), model_borrow.as_ref())
                     else {
                         return false;
                     };
                     let Some(&idx) = robot.joint_map.get(name) else {
                         return false;
                     };
-                    sim.async_enqueue(
-                        crate::mujoco_sim::AsyncSimOp::SetPositionTarget(idx, target),
-                    );
+                    sim.async_enqueue(crate::mujoco_sim::AsyncSimOp::SetPositionTarget(
+                        idx, target,
+                    ));
                     true
                 },
             );
@@ -1034,9 +1180,7 @@ impl ModelScriptEngine {
                     let Some(sim) = sim_borrow.as_mut() else {
                         return false;
                     };
-                    sim.async_enqueue(
-                        crate::mujoco_sim::AsyncSimOp::SetGaitVelocity(vx, vy, wz),
-                    );
+                    sim.async_enqueue(crate::mujoco_sim::AsyncSimOp::SetGaitVelocity(vx, vy, wz));
                     true
                 },
             );
@@ -1065,7 +1209,10 @@ impl ModelScriptEngine {
 
             let s = Rc::clone(&mujoco_sim);
             engine.register_fn("mj_async_pending", move || -> i64 {
-                s.borrow().as_ref().map(|x| x.async_pending() as i64).unwrap_or(-1)
+                s.borrow()
+                    .as_ref()
+                    .map(|x| x.async_pending() as i64)
+                    .unwrap_or(-1)
             });
 
             let s = Rc::clone(&mujoco_sim);
@@ -1112,10 +1259,7 @@ impl ModelScriptEngine {
             engine.register_fn("save_peaks_csv", move |path: &str| -> i64 {
                 let sim_borrow = s.borrow();
                 let model_borrow = m.borrow();
-                let (Some(sim), Some(robot)) = (
-                    sim_borrow.as_ref(),
-                    model_borrow.as_ref(),
-                ) else {
+                let (Some(sim), Some(robot)) = (sim_borrow.as_ref(), model_borrow.as_ref()) else {
                     return -1;
                 };
                 let p = std::path::Path::new(path);
@@ -1212,7 +1356,10 @@ impl ModelScriptEngine {
             // Whether a transition is currently playing.
             let s = Rc::clone(&mujoco_sim);
             engine.register_fn("transition_in_progress", move || -> bool {
-                s.borrow().as_ref().map(|x| x.transition_in_progress()).unwrap_or(false)
+                s.borrow()
+                    .as_ref()
+                    .map(|x| x.transition_in_progress())
+                    .unwrap_or(false)
             });
 
             // Start a chained-pose sequence by name. Returns true on
@@ -1225,9 +1372,7 @@ impl ModelScriptEngine {
             engine.register_fn("play_sequence", move |name: &str| -> bool {
                 let mut sim_borrow = s.borrow_mut();
                 let model_borrow = m.borrow();
-                let (Some(sim), Some(robot)) =
-                    (sim_borrow.as_mut(), model_borrow.as_ref())
-                else {
+                let (Some(sim), Some(robot)) = (sim_borrow.as_mut(), model_borrow.as_ref()) else {
                     return false;
                 };
                 let Some(anim) = robot.build_sequence_animation(name) else {
@@ -1400,28 +1545,26 @@ impl ModelScriptEngine {
             // "Torque", or "ComputedTorque" (case-insensitive). Returns true
             // on success.
             let m = Rc::clone(&model);
-            engine.register_fn(
-                "set_actuator_mode",
-                move |name: &str, mode: &str| -> bool {
-                    let parsed = match mode.to_ascii_lowercase().as_str() {
-                        "position" => crate::rbd::model::ActuatorMode::Position,
-                        "velocity" => crate::rbd::model::ActuatorMode::Velocity,
-                        "torque" => crate::rbd::model::ActuatorMode::Torque,
-                        "computedtorque" | "computed_torque" | "computed-torque"
-                            | "ct" => crate::rbd::model::ActuatorMode::ComputedTorque,
-                        _ => return false,
-                    };
-                    let mut model_borrow = m.borrow_mut();
-                    let Some(robot) = model_borrow.as_mut() else {
-                        return false;
-                    };
-                    let Some(&idx) = robot.joint_map.get(name) else {
-                        return false;
-                    };
-                    robot.joints[idx].actuator_mode = parsed;
-                    true
-                },
-            );
+            engine.register_fn("set_actuator_mode", move |name: &str, mode: &str| -> bool {
+                let parsed = match mode.to_ascii_lowercase().as_str() {
+                    "position" => crate::rbd::model::ActuatorMode::Position,
+                    "velocity" => crate::rbd::model::ActuatorMode::Velocity,
+                    "torque" => crate::rbd::model::ActuatorMode::Torque,
+                    "computedtorque" | "computed_torque" | "computed-torque" | "ct" => {
+                        crate::rbd::model::ActuatorMode::ComputedTorque
+                    }
+                    _ => return false,
+                };
+                let mut model_borrow = m.borrow_mut();
+                let Some(robot) = model_borrow.as_mut() else {
+                    return false;
+                };
+                let Some(&idx) = robot.joint_map.get(name) else {
+                    return false;
+                };
+                robot.joints[idx].actuator_mode = parsed;
+                true
+            });
 
             // Bulk-set actuator mode on every non-fixed joint. Same string
             // syntax as `set_actuator_mode`. Returns the number of joints
@@ -1432,8 +1575,9 @@ impl ModelScriptEngine {
                     "position" => crate::rbd::model::ActuatorMode::Position,
                     "velocity" => crate::rbd::model::ActuatorMode::Velocity,
                     "torque" => crate::rbd::model::ActuatorMode::Torque,
-                    "computedtorque" | "computed_torque" | "computed-torque"
-                        | "ct" => crate::rbd::model::ActuatorMode::ComputedTorque,
+                    "computedtorque" | "computed_torque" | "computed-torque" | "ct" => {
+                        crate::rbd::model::ActuatorMode::ComputedTorque
+                    }
                     _ => return -1,
                 };
                 let mut model_borrow = m.borrow_mut();
@@ -1468,20 +1612,17 @@ impl ModelScriptEngine {
             // Per-joint passive viscous damping (N·m·s/rad). Mapped to MuJoCo
             // `<joint damping>` at the next sim start.
             let m = Rc::clone(&model);
-            engine.register_fn(
-                "set_joint_damping",
-                move |name: &str, value: f64| -> bool {
-                    let mut model_borrow = m.borrow_mut();
-                    let Some(robot) = model_borrow.as_mut() else {
-                        return false;
-                    };
-                    let Some(&idx) = robot.joint_map.get(name) else {
-                        return false;
-                    };
-                    robot.joints[idx].joint_damping = value;
-                    true
-                },
-            );
+            engine.register_fn("set_joint_damping", move |name: &str, value: f64| -> bool {
+                let mut model_borrow = m.borrow_mut();
+                let Some(robot) = model_borrow.as_mut() else {
+                    return false;
+                };
+                let Some(&idx) = robot.joint_map.get(name) else {
+                    return false;
+                };
+                robot.joints[idx].joint_damping = value;
+                true
+            });
 
             // Bulk setters: apply the same value to every non-fixed joint.
             // Returns the number of joints touched. Designed for tuning sweeps
@@ -1558,8 +1699,7 @@ impl ModelScriptEngine {
                 move |name: &str, target: f64| -> bool {
                     let mut sim_borrow = s.borrow_mut();
                     let model_borrow = m.borrow();
-                    let (Some(sim), Some(robot)) =
-                        (sim_borrow.as_mut(), model_borrow.as_ref())
+                    let (Some(sim), Some(robot)) = (sim_borrow.as_mut(), model_borrow.as_ref())
                     else {
                         return false;
                     };
@@ -1578,8 +1718,7 @@ impl ModelScriptEngine {
                 move |name: &str, target: f64| -> bool {
                     let mut sim_borrow = s.borrow_mut();
                     let model_borrow = m.borrow();
-                    let (Some(sim), Some(robot)) =
-                        (sim_borrow.as_mut(), model_borrow.as_ref())
+                    let (Some(sim), Some(robot)) = (sim_borrow.as_mut(), model_borrow.as_ref())
                     else {
                         return false;
                     };
@@ -1598,8 +1737,7 @@ impl ModelScriptEngine {
                 move |name: &str, target: f64| -> bool {
                     let mut sim_borrow = s.borrow_mut();
                     let model_borrow = m.borrow();
-                    let (Some(sim), Some(robot)) =
-                        (sim_borrow.as_mut(), model_borrow.as_ref())
+                    let (Some(sim), Some(robot)) = (sim_borrow.as_mut(), model_borrow.as_ref())
                     else {
                         return false;
                     };
@@ -1626,9 +1764,7 @@ impl ModelScriptEngine {
                     return false;
                 };
                 let foot_links = crate::gait::DEFAULT_FOOT_LINKS;
-                let kin = match crate::gait::auto_detect_kinematics_config(
-                    robot, &foot_links,
-                ) {
+                let kin = match crate::gait::auto_detect_kinematics_config(robot, &foot_links) {
                     Ok(k) => k,
                     Err(errs) => {
                         for (leg, msg) in errs {
@@ -1638,7 +1774,12 @@ impl ModelScriptEngine {
                     }
                 };
                 let cfg = quadruped_gait::GaitConfig::trot();
-                match crate::gait::GaitController::build(robot, kin, cfg, quadruped_gait::GaitMode::Champ) {
+                match crate::gait::GaitController::build(
+                    robot,
+                    kin,
+                    cfg,
+                    quadruped_gait::GaitMode::Champ,
+                ) {
                     Ok(ctrl) => {
                         *g.borrow_mut() = Some(ctrl);
                         true
@@ -1665,22 +1806,22 @@ impl ModelScriptEngine {
                         (quadruped_gait::LegId::RL, rl),
                         (quadruped_gait::LegId::RR, rr),
                     ];
-                    let kin = match crate::gait::auto_detect_kinematics_config(
-                        robot, &foot_links,
-                    ) {
+                    let kin = match crate::gait::auto_detect_kinematics_config(robot, &foot_links) {
                         Ok(k) => k,
                         Err(errs) => {
                             for (leg, msg) in errs {
-                                log::warn!(
-                                    "gait_setup_with_feet: {}: {msg}",
-                                    leg.label(),
-                                );
+                                log::warn!("gait_setup_with_feet: {}: {msg}", leg.label(),);
                             }
                             return false;
                         }
                     };
                     let cfg = quadruped_gait::GaitConfig::trot();
-                    match crate::gait::GaitController::build(robot, kin, cfg, quadruped_gait::GaitMode::Champ) {
+                    match crate::gait::GaitController::build(
+                        robot,
+                        kin,
+                        cfg,
+                        quadruped_gait::GaitMode::Champ,
+                    ) {
                         Ok(ctrl) => {
                             *g.borrow_mut() = Some(ctrl);
                             true
@@ -1701,11 +1842,7 @@ impl ModelScriptEngine {
                     let Some(ctrl) = gb.as_mut() else {
                         return false;
                     };
-                    ctrl.set_velocity_cmd(quadruped_gait::VelocityCmd {
-                        vx,
-                        vy,
-                        wz,
-                    });
+                    ctrl.set_velocity_cmd(quadruped_gait::VelocityCmd { vx, vy, wz });
                     true
                 },
             );
@@ -1730,7 +1867,9 @@ impl ModelScriptEngine {
                 "gait_set_goal_pose",
                 move |x: f64, y: f64, yaw: f64, max_v: f64, max_wz: f64| -> bool {
                     let mut gb = g.borrow_mut();
-                    let Some(ctrl) = gb.as_mut() else { return false };
+                    let Some(ctrl) = gb.as_mut() else {
+                        return false;
+                    };
                     ctrl.set_goal_pose_world(quadruped_gait::GoalPoseWorld {
                         x_m: x,
                         y_m: y,
@@ -1750,11 +1889,18 @@ impl ModelScriptEngine {
             let g = Rc::clone(&gait_controller);
             engine.register_fn(
                 "gait_set_goal_pose_full",
-                move |x: f64, y: f64, yaw: f64,
-                      max_v: f64, max_wz: f64,
-                      pos_tol: f64, yaw_tol: f64| -> bool {
+                move |x: f64,
+                      y: f64,
+                      yaw: f64,
+                      max_v: f64,
+                      max_wz: f64,
+                      pos_tol: f64,
+                      yaw_tol: f64|
+                      -> bool {
                     let mut gb = g.borrow_mut();
-                    let Some(ctrl) = gb.as_mut() else { return false };
+                    let Some(ctrl) = gb.as_mut() else {
+                        return false;
+                    };
                     ctrl.set_goal_pose_world(quadruped_gait::GoalPoseWorld {
                         x_m: x,
                         y_m: y,
@@ -1774,7 +1920,9 @@ impl ModelScriptEngine {
             let g = Rc::clone(&gait_controller);
             engine.register_fn("gait_clear_goal_pose", move || -> bool {
                 let mut gb = g.borrow_mut();
-                let Some(ctrl) = gb.as_mut() else { return false };
+                let Some(ctrl) = gb.as_mut() else {
+                    return false;
+                };
                 ctrl.clear_goal_pose();
                 true
             });
@@ -1784,7 +1932,9 @@ impl ModelScriptEngine {
             let g = Rc::clone(&gait_controller);
             engine.register_fn("gait_has_goal_pose", move || -> bool {
                 let gb = g.borrow();
-                let Some(ctrl) = gb.as_ref() else { return false };
+                let Some(ctrl) = gb.as_ref() else {
+                    return false;
+                };
                 ctrl.goal_pose_world().is_some()
             });
 
@@ -1814,16 +1964,16 @@ impl ModelScriptEngine {
             });
 
             let g = Rc::clone(&gait_controller);
-            engine.register_fn("gait_active", move || -> bool {
-                g.borrow().is_some()
-            });
+            engine.register_fn("gait_active", move || -> bool { g.borrow().is_some() });
 
             // Gait config tweaks. Each takes a single parameter and
             // returns true on success / false if no controller exists.
             let g = Rc::clone(&gait_controller);
             engine.register_fn("gait_set_cycle_period", move |s: f64| -> bool {
                 let mut gb = g.borrow_mut();
-                let Some(ctrl) = gb.as_mut() else { return false; };
+                let Some(ctrl) = gb.as_mut() else {
+                    return false;
+                };
                 let mut cfg = ctrl.config().clone();
                 cfg.cycle_period_s = s.max(0.05);
                 ctrl.set_config(cfg);
@@ -1832,7 +1982,9 @@ impl ModelScriptEngine {
             let g = Rc::clone(&gait_controller);
             engine.register_fn("gait_set_swing_height", move |m: f64| -> bool {
                 let mut gb = g.borrow_mut();
-                let Some(ctrl) = gb.as_mut() else { return false; };
+                let Some(ctrl) = gb.as_mut() else {
+                    return false;
+                };
                 let mut cfg = ctrl.config().clone();
                 cfg.swing_height_m = m.max(0.0);
                 ctrl.set_config(cfg);
@@ -1841,7 +1993,9 @@ impl ModelScriptEngine {
             let g = Rc::clone(&gait_controller);
             engine.register_fn("gait_set_duty", move |d: f64| -> bool {
                 let mut gb = g.borrow_mut();
-                let Some(ctrl) = gb.as_mut() else { return false; };
+                let Some(ctrl) = gb.as_mut() else {
+                    return false;
+                };
                 let mut cfg = ctrl.config().clone();
                 cfg.duty_factor = d.clamp(0.05, 0.95);
                 ctrl.set_config(cfg);
@@ -1859,7 +2013,9 @@ impl ModelScriptEngine {
                     return false;
                 };
                 let mut gb = g.borrow_mut();
-                let Some(ctrl) = gb.as_mut() else { return false; };
+                let Some(ctrl) = gb.as_mut() else {
+                    return false;
+                };
                 ctrl.set_knee_pattern(p);
                 true
             });
@@ -1889,10 +2045,8 @@ impl ModelScriptEngine {
             engine.register_fn("seed_kinematic_pose", move || -> bool {
                 let mut model_borrow = m.borrow_mut();
                 let gait_borrow = g.borrow();
-                let (Some(robot), Some(ctrl)) = (
-                    model_borrow.as_mut(),
-                    gait_borrow.as_ref(),
-                ) else {
+                let (Some(robot), Some(ctrl)) = (model_borrow.as_mut(), gait_borrow.as_ref())
+                else {
                     return false;
                 };
                 let kin = ctrl.kinematics();
@@ -1905,8 +2059,7 @@ impl ModelScriptEngine {
                     let mut target = leg_kin.nominal_foot_body;
                     target.z += 0.08 * total;
                     let sol = quadruped_gait::solve_leg_ik(leg_kin, target, false);
-                    let quadruped_gait::LegIkSolution::Reached { hip, thigh, calf } = sol
-                    else {
+                    let quadruped_gait::LegIkSolution::Reached { hip, thigh, calf } = sol else {
                         log::warn!(
                             "seed_kinematic_pose: leg {:?} unreachable at nominal pose",
                             leg_kin.leg
@@ -1930,7 +2083,9 @@ impl ModelScriptEngine {
             let g = Rc::clone(&gait_controller);
             engine.register_fn("gait_set_max_step", move |m: f64| -> bool {
                 let mut gb = g.borrow_mut();
-                let Some(ctrl) = gb.as_mut() else { return false; };
+                let Some(ctrl) = gb.as_mut() else {
+                    return false;
+                };
                 let mut cfg = ctrl.config().clone();
                 cfg.max_step_length_m = m.max(0.0);
                 ctrl.set_config(cfg);
@@ -2021,16 +2176,16 @@ impl ModelScriptEngine {
         let o = Rc::clone(&overrides);
         engine.register_fn("set_gait_mode", move |s: &str| -> bool {
             let mode = match s.trim().to_ascii_lowercase().as_str() {
-                "mpc" | "mpc(capture-point)" | "capture-point" | "capture_point"
-                    => quadruped_gait::GaitMode::Mpc,
+                "mpc" | "mpc(capture-point)" | "capture-point" | "capture_point" => {
+                    quadruped_gait::GaitMode::Mpc
+                }
                 "champ" => quadruped_gait::GaitMode::Champ,
-                "centroidal" | "centroidal-srbd" | "centroidal_srbd"
-                    | "mpc-centroidal" | "mpc_centroidal"
-                    => quadruped_gait::GaitMode::CentroidalSrbd,
-                "full-centroidal" | "full_centroidal" | "fullcentroidal"
-                    | "full" | "mpc-full" | "mpc_full"
-                    | "centroidal-full" | "centroidal_full"
-                    => quadruped_gait::GaitMode::FullCentroidal,
+                "centroidal" | "centroidal-srbd" | "centroidal_srbd" | "mpc-centroidal"
+                | "mpc_centroidal" => quadruped_gait::GaitMode::CentroidalSrbd,
+                "full-centroidal" | "full_centroidal" | "fullcentroidal" | "full" | "mpc-full"
+                | "mpc_full" | "centroidal-full" | "centroidal_full" => {
+                    quadruped_gait::GaitMode::FullCentroidal
+                }
                 _ => return false,
             };
             o.borrow_mut().gait_mode = Some(mode);
@@ -2048,12 +2203,13 @@ impl ModelScriptEngine {
                 .replace(' ', "_")
                 .replace('-', "_");
             let src = match cleaned.as_str() {
-                "groundtruth" | "ground_truth" | "mujoco_ground_truth" | "gt"
-                    => crate::gait::PoseSource::GroundTruth,
-                "imu_madgwick" | "madgwick" | "imu" | "imu_fusion"
-                    => crate::gait::PoseSource::ImuFusion,
-                "leg_odometry" | "leg_odom" | "legodometry"
-                    => crate::gait::PoseSource::LegOdometry,
+                "groundtruth" | "ground_truth" | "mujoco_ground_truth" | "gt" => {
+                    crate::gait::PoseSource::GroundTruth
+                }
+                "imu_madgwick" | "madgwick" | "imu" | "imu_fusion" => {
+                    crate::gait::PoseSource::ImuFusion
+                }
+                "leg_odometry" | "leg_odom" | "legodometry" => crate::gait::PoseSource::LegOdometry,
                 _ => return false,
             };
             o.borrow_mut().pose_source = Some(src);
@@ -2142,8 +2298,12 @@ fn decompose_collision_impl(
     method: misarta::decompose::DecompositionMethod,
     max_count: Option<usize>,
 ) -> i64 {
-    let Some(&li) = robot.link_map.get(link) else { return -1 };
-    if ci >= robot.links[li].collisions.len() { return -1; }
+    let Some(&li) = robot.link_map.get(link) else {
+        return -1;
+    };
+    if ci >= robot.links[li].collisions.len() {
+        return -1;
+    }
 
     let col = &robot.links[li].collisions[ci];
     let origin = col.origin;
@@ -2190,46 +2350,128 @@ impl ModelScriptEngine {
 
         // Model functions registered via register_fn
         let builtins = [
-            "load", "model_name", "has_model",
-            "link_names", "num_links", "link_pos", "link_rpy",
-            "joint_names", "num_joints", "joint_pos", "joint_pos_idx",
-            "joint_positions", "set_joint", "set_joint_idx", "set_joints",
-            "joint_limits", "joint_type",
-            "fk", "ik", "ik_steps",
-            "add_loop_closure", "loop_closure_error", "num_loop_closures",
-            "export_urdf", "export_sdf", "export_mjcf",
-            "reduce_mesh", "reduce_collision_mesh", "reduce_all_meshes",
-            "decompose_vhacd", "decompose_spheres", "decompose_primitive",
-            "mj_active", "mj_start", "mj_stop", "mj_step", "mj_step_back",
-            "mj_timestep", "mj_history_len", "mj_trace_len", "mj_set_trace_max",
-            "mj_gravity_compensation", "save_peaks_csv",
-            "gait_setup", "gait_setup_with_feet", "gait_set_velocity",
-            "gait_start", "gait_stop", "gait_running", "gait_active",
-            "gait_set_cycle_period", "gait_set_swing_height",
-            "gait_set_duty", "gait_set_max_step",
-            "gait_set_knee_pattern", "gait_knee_pattern",
+            "load",
+            "model_name",
+            "has_model",
+            "link_names",
+            "num_links",
+            "link_pos",
+            "link_rpy",
+            "joint_names",
+            "num_joints",
+            "joint_pos",
+            "joint_pos_idx",
+            "joint_positions",
+            "set_joint",
+            "set_joint_idx",
+            "set_joints",
+            "joint_limits",
+            "joint_type",
+            "fk",
+            "ik",
+            "ik_steps",
+            "add_loop_closure",
+            "loop_closure_error",
+            "num_loop_closures",
+            "export_urdf",
+            "export_sdf",
+            "export_mjcf",
+            "reduce_mesh",
+            "reduce_collision_mesh",
+            "reduce_all_meshes",
+            "decompose_vhacd",
+            "decompose_spheres",
+            "decompose_primitive",
+            "mj_active",
+            "mj_start",
+            "mj_stop",
+            "mj_step",
+            "mj_step_back",
+            "mj_timestep",
+            "mj_history_len",
+            "mj_trace_len",
+            "mj_set_trace_max",
+            "mj_gravity_compensation",
+            "save_peaks_csv",
+            "gait_setup",
+            "gait_setup_with_feet",
+            "gait_set_velocity",
+            "gait_start",
+            "gait_stop",
+            "gait_running",
+            "gait_active",
+            "gait_set_cycle_period",
+            "gait_set_swing_height",
+            "gait_set_duty",
+            "gait_set_max_step",
+            "gait_set_knee_pattern",
+            "gait_knee_pattern",
             "gait_use_current_pose_as_stance",
-            "set_initial_pose", "seed_kinematic_pose",
-            "mj_async_step_seconds", "mj_async_step_frames",
-            "mj_async_set_position_target", "mj_async_print",
-            "mj_async_save_csv", "mj_async_pending", "mj_async_clear",
-            "play_pose", "transition_in_progress", "transition_progress",
-            "play_sequence", "sequence_in_progress", "sequence_progress",
-            "apply_force", "cancel_force",
-            "reset_peaks", "peak_torque", "peak_velocity", "peaks",
-            "set_actuator_mode", "set_actuator_mode_all",
-            "set_kp", "set_kv", "set_armature", "set_joint_damping",
-            "set_kp_all", "set_kv_all", "set_armature_all", "set_joint_damping_all",
-            "set_position_target", "set_velocity_target", "set_torque_target",
-            "abs", "sqrt", "sin", "cos", "atan2",
-            "min_f", "max_f", "clamp", "to_deg", "to_rad", "PI",
+            "set_initial_pose",
+            "seed_kinematic_pose",
+            "mj_async_step_seconds",
+            "mj_async_step_frames",
+            "mj_async_set_position_target",
+            "mj_async_print",
+            "mj_async_save_csv",
+            "mj_async_pending",
+            "mj_async_clear",
+            "play_pose",
+            "transition_in_progress",
+            "transition_progress",
+            "play_sequence",
+            "sequence_in_progress",
+            "sequence_progress",
+            "apply_force",
+            "cancel_force",
+            "reset_peaks",
+            "peak_torque",
+            "peak_velocity",
+            "peaks",
+            "set_actuator_mode",
+            "set_actuator_mode_all",
+            "set_kp",
+            "set_kv",
+            "set_armature",
+            "set_joint_damping",
+            "set_kp_all",
+            "set_kv_all",
+            "set_armature_all",
+            "set_joint_damping_all",
+            "set_position_target",
+            "set_velocity_target",
+            "set_torque_target",
+            "abs",
+            "sqrt",
+            "sin",
+            "cos",
+            "atan2",
+            "min_f",
+            "max_f",
+            "clamp",
+            "to_deg",
+            "to_rad",
+            "PI",
             "dist",
             "print",
             // Rhai keywords
-            "let", "const", "if", "else", "while", "for", "in", "loop",
-            "break", "continue", "return", "fn", "true", "false",
+            "let",
+            "const",
+            "if",
+            "else",
+            "while",
+            "for",
+            "in",
+            "loop",
+            "break",
+            "continue",
+            "return",
+            "fn",
+            "true",
+            "false",
             // Built-in console commands
-            "clear", "help",
+            "clear",
+            "help",
         ];
         for name in builtins {
             names.push(name.to_string());
@@ -2265,13 +2507,11 @@ mod tests {
     use std::path::PathBuf;
 
     fn fixture_urdf() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/urdf/test_robot.urdf")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/urdf/test_robot.urdf")
     }
 
     fn fixture_five_bar() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/sdf/five_bar_parallel.sdf")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sdf/five_bar_parallel.sdf")
     }
 
     fn load_test_model() -> ModelScriptEngine {
@@ -2302,8 +2542,7 @@ mod tests {
         ];
         for rel in scripts {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
-            let src = std::fs::read_to_string(&path)
-                .expect(&format!("read {}", path.display()));
+            let src = std::fs::read_to_string(&path).expect(&format!("read {}", path.display()));
             let mut eng = ModelScriptEngine::new();
             eng.compile(&src)
                 .unwrap_or_else(|e| panic!("{} failed to compile: {e}", rel));
@@ -2320,10 +2559,14 @@ mod tests {
     #[test]
     fn test_link_names() {
         let mut eng = load_test_model();
-        let out = eng.eval(r#"
+        let out = eng
+            .eval(
+                r#"
             let names = link_names();
             print("count=" + names.len());
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
         assert!(out[0].starts_with("count="));
         let n: usize = out[0].strip_prefix("count=").unwrap().parse().unwrap();
         assert!(n >= 3); // test_robot has at least 3 links
@@ -2332,12 +2575,16 @@ mod tests {
     #[test]
     fn test_joint_get_set() {
         let mut eng = load_test_model();
-        let out = eng.eval(r#"
+        let out = eng
+            .eval(
+                r#"
             let names = joint_names();
             let jname = names[0];
             set_joint(jname, 0.42);
             print(joint_pos(jname));
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
         let val: f64 = out[0].parse().unwrap();
         assert!((val - 0.42).abs() < 1e-9);
     }
@@ -2345,10 +2592,14 @@ mod tests {
     #[test]
     fn test_joint_positions_array() {
         let mut eng = load_test_model();
-        let out = eng.eval(r#"
+        let out = eng
+            .eval(
+                r#"
             let q = joint_positions();
             print(q.len());
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
         let n: usize = out[0].parse().unwrap();
         assert!(n >= 2);
     }
@@ -2356,20 +2607,28 @@ mod tests {
     #[test]
     fn test_link_pos() {
         let mut eng = load_test_model();
-        let out = eng.eval(r#"
+        let out = eng
+            .eval(
+                r#"
             let p = link_pos("base_link");
             print(p.len());
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
         assert_eq!(out[0], "3");
     }
 
     #[test]
     fn test_fk_returns_map() {
         let mut eng = load_test_model();
-        let out = eng.eval(r#"
+        let out = eng
+            .eval(
+                r#"
             let m = fk();
             print(m.len());
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
         let n: usize = out[0].parse().unwrap();
         assert!(n >= 3);
     }
@@ -2377,7 +2636,9 @@ mod tests {
     #[test]
     fn test_ik_reduces_error() {
         let mut eng = load_test_model();
-        let out = eng.eval(r#"
+        let out = eng
+            .eval(
+                r#"
             let names = link_names();
             let ee = names[names.len() - 1];  // last link as end-effector
             let p0 = link_pos(ee);
@@ -2389,7 +2650,9 @@ mod tests {
             let p1 = link_pos(ee);
             let d = dist(p1[0], p1[1], p1[2], tx, ty, tz);
             print(d);
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
         let d: f64 = out[0].parse().unwrap();
         assert!(d < 0.05, "IK should reduce error, got d={d}");
     }
@@ -2397,21 +2660,29 @@ mod tests {
     #[test]
     fn test_joint_limits() {
         let mut eng = load_test_model();
-        let out = eng.eval(r#"
+        let out = eng
+            .eval(
+                r#"
             let names = joint_names();
             let lim = joint_limits(names[0]);
             print(lim.len());
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
         assert_eq!(out[0], "2");
     }
 
     #[test]
     fn test_joint_type() {
         let mut eng = load_test_model();
-        let out = eng.eval(r#"
+        let out = eng
+            .eval(
+                r#"
             let names = joint_names();
             print(joint_type(names[0]));
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
         assert!(!out[0].is_empty());
     }
 
@@ -2419,26 +2690,37 @@ mod tests {
     fn test_loop_closure() {
         let robot = crate::sdf::import_sdf(&fixture_five_bar()).unwrap();
         let mut eng = ModelScriptEngine::with_model(robot);
-        let out = eng.eval(r#"
+        let out = eng
+            .eval(
+                r#"
             add_loop_closure("test_loop", "end_effector", 0.0, 0.0, 0.0,
                              "distal_right", 0.0, 0.0, 0.2);
             print(num_loop_closures());
             let e = loop_closure_error();
             print(e);
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
         assert_eq!(out[0], "1");
         let err: f64 = out[1].parse().unwrap();
-        assert!(err < 0.02, "Loop closure error at q=0 should be small, got {err}");
+        assert!(
+            err < 0.02,
+            "Loop closure error at q=0 should be small, got {err}"
+        );
     }
 
     #[test]
     fn test_math_functions() {
         let mut eng = ModelScriptEngine::new();
-        let out = eng.eval(r#"
+        let out = eng
+            .eval(
+                r#"
             print(sin(0.0));
             print(abs(-3.14));
             print(to_deg(PI()));
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
         assert!((out[0].parse::<f64>().unwrap()).abs() < 1e-9);
         assert!((out[1].parse::<f64>().unwrap() - 3.14).abs() < 1e-9);
         assert!((out[2].parse::<f64>().unwrap() - 180.0).abs() < 1e-3);
@@ -2447,11 +2729,15 @@ mod tests {
     #[test]
     fn test_no_model_graceful() {
         let mut eng = ModelScriptEngine::new();
-        let out = eng.eval(r#"
+        let out = eng
+            .eval(
+                r#"
             print(num_links());
             print(num_joints());
             print(model_name());
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
         assert_eq!(out[0], "0");
         assert_eq!(out[1], "0");
         assert_eq!(out[2], "");

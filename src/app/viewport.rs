@@ -10,8 +10,7 @@ use articara::robot;
 impl ArticaraApp {
     pub(super) fn draw_viewport(&mut self, ui: &mut egui::Ui) {
         let available = ui.available_size();
-        let (rect, response) =
-            ui.allocate_exact_size(available, egui::Sense::click_and_drag());
+        let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click_and_drag());
 
         self.viewport_rect = rect;
         let aspect = rect.width() / rect.height().max(1.0);
@@ -81,9 +80,7 @@ impl ArticaraApp {
                     // Rotate mode: pick ring circles
                     let mut best_dist = f32::MAX;
                     for (i, axis) in axes.iter().enumerate() {
-                        let dist = ray_ring_distance(
-                            &ro, &rd, &origin, axis, GIZMO_RING_RADIUS,
-                        );
+                        let dist = ray_ring_distance(&ro, &rd, &origin, axis, GIZMO_RING_RADIUS);
                         if dist < GIZMO_RING_PICK_TOL && dist < best_dist {
                             best_dist = dist;
                             self.hovered_gizmo_axis = Some(i as u8);
@@ -116,15 +113,12 @@ impl ArticaraApp {
 
         // Left mouse button pressed: start drag
         let had_drag_before = self.drag_state.is_some() || self.offset_drag_state.is_some();
-        if !pick_b_active_this_frame
-            && response.drag_started_by(egui::PointerButton::Primary)
-        {
+        if !pick_b_active_this_frame && response.drag_started_by(egui::PointerButton::Primary) {
             // Sim drag takes precedence when MuJoCo is running so the user
             // can poke the live robot without the editor's joint-drive logic
             // mutating angles directly.
             #[cfg(feature = "mujoco")]
-            let sim_drag_started =
-                self.handle_sim_drag_start(mouse_ndc, aspect, &transforms);
+            let sim_drag_started = self.handle_sim_drag_start(mouse_ndc, aspect, &transforms);
             #[cfg(not(feature = "mujoco"))]
             let sim_drag_started = false;
             if !sim_drag_started {
@@ -207,7 +201,8 @@ impl ArticaraApp {
                     .iter()
                     .map(|s| s.as_str())
                     .collect();
-                self.ik.pinned_links
+                self.ik
+                    .pinned_links
                     .retain(|p| !ch_set.contains(p.link_name.as_str()));
             }
             self.drag_state = None;
@@ -229,9 +224,11 @@ impl ArticaraApp {
         {
             let mut r = self.gl_renderer.lock().unwrap();
             let highlight = if self.drag_state.is_some() {
-                self.drag_state
-                    .as_ref()
-                    .and_then(|d| self.model.as_ref().map(|m| m.links[d.link_idx].name.clone()))
+                self.drag_state.as_ref().and_then(|d| {
+                    self.model
+                        .as_ref()
+                        .map(|m| m.links[d.link_idx].name.clone())
+                })
             } else if let Some(li) = self.hovered_link {
                 self.model.as_ref().map(|m| m.links[li].name.clone())
             } else {
@@ -259,23 +256,21 @@ impl ArticaraApp {
 
         let callback = egui::PaintCallback {
             rect,
-            callback: Arc::new(eframe::egui_glow::CallbackFn::new(
-                move |info, painter| {
-                    let gl = painter.gl();
-                    let renderer = renderer.lock().unwrap();
+            callback: Arc::new(eframe::egui_glow::CallbackFn::new(move |info, painter| {
+                let gl = painter.gl();
+                let renderer = renderer.lock().unwrap();
 
-                    let vp = info.viewport_in_pixels();
-                    let screen_h = info.screen_size_px[1] as i32;
-                    let gl_viewport = [
-                        vp.left_px,
-                        screen_h - vp.top_px - vp.height_px,
-                        vp.width_px,
-                        vp.height_px,
-                    ];
+                let vp = info.viewport_in_pixels();
+                let screen_h = info.screen_size_px[1] as i32;
+                let gl_viewport = [
+                    vp.left_px,
+                    screen_h - vp.top_px - vp.height_px,
+                    vp.width_px,
+                    vp.height_px,
+                ];
 
-                    renderer.render(gl, &camera, gl_viewport);
-                },
-            )),
+                renderer.render(gl, &camera, gl_viewport);
+            })),
         };
 
         ui.painter().add(callback);
@@ -302,10 +297,7 @@ impl ArticaraApp {
             let wipe_h = wipe_w * 0.72;
             let margin = 8.0;
             let wipe_rect = egui::Rect::from_min_size(
-                egui::pos2(
-                    rect.right() - wipe_w - margin,
-                    rect.top() + margin,
-                ),
+                egui::pos2(rect.right() - wipe_w - margin, rect.top() + margin),
                 egui::vec2(wipe_w, wipe_h),
             );
             // Frame outline so the wipe stands out from the background.
@@ -329,21 +321,19 @@ impl ArticaraApp {
             let renderer = self.gl_renderer.clone();
             let wipe_callback = egui::PaintCallback {
                 rect: wipe_rect,
-                callback: Arc::new(eframe::egui_glow::CallbackFn::new(
-                    move |info, painter| {
-                        let gl = painter.gl();
-                        let renderer = renderer.lock().unwrap();
-                        let vp = info.viewport_in_pixels();
-                        let screen_h = info.screen_size_px[1] as i32;
-                        let gl_viewport = [
-                            vp.left_px,
-                            screen_h - vp.top_px - vp.height_px,
-                            vp.width_px,
-                            vp.height_px,
-                        ];
-                        renderer.render(gl, &alt_camera, gl_viewport);
-                    },
-                )),
+                callback: Arc::new(eframe::egui_glow::CallbackFn::new(move |info, painter| {
+                    let gl = painter.gl();
+                    let renderer = renderer.lock().unwrap();
+                    let vp = info.viewport_in_pixels();
+                    let screen_h = info.screen_size_px[1] as i32;
+                    let gl_viewport = [
+                        vp.left_px,
+                        screen_h - vp.top_px - vp.height_px,
+                        vp.width_px,
+                        vp.height_px,
+                    ];
+                    renderer.render(gl, &alt_camera, gl_viewport);
+                })),
             };
             ui.painter().add(wipe_callback);
         }
@@ -381,64 +371,58 @@ impl ArticaraApp {
         }
         let m = self.model.as_ref()?;
         match self.offset_target {
-            OffsetTarget::Joint => {
-                self.selected_joint.map(|ji| {
-                    let joint = &m.joints[ji];
-                    let parent_tf = transforms
-                        .get(&joint.parent_link)
-                        .copied()
-                        .unwrap_or(na::Isometry3::identity());
-                    let joint_world = parent_tf * joint.origin;
-                    let rot = if use_element_rot {
-                        joint_world.rotation
-                    } else {
-                        parent_tf.rotation
-                    };
-                    na::Isometry3::from_parts(joint_world.translation, rot)
-                })
-            }
-            OffsetTarget::Visual => {
-                self.selected_link.and_then(|li| {
-                    self.selected_visual.and_then(|vi| {
-                        m.links.get(li).and_then(|link| {
-                            link.visuals.get(vi).map(|vis| {
-                                let link_tf = transforms
-                                    .get(&link.name)
-                                    .copied()
-                                    .unwrap_or(na::Isometry3::identity());
-                                let vis_world = link_tf * vis.origin;
-                                let rot = if use_element_rot {
-                                    vis_world.rotation
-                                } else {
-                                    link_tf.rotation
-                                };
-                                na::Isometry3::from_parts(vis_world.translation, rot)
-                            })
+            OffsetTarget::Joint => self.selected_joint.map(|ji| {
+                let joint = &m.joints[ji];
+                let parent_tf = transforms
+                    .get(&joint.parent_link)
+                    .copied()
+                    .unwrap_or(na::Isometry3::identity());
+                let joint_world = parent_tf * joint.origin;
+                let rot = if use_element_rot {
+                    joint_world.rotation
+                } else {
+                    parent_tf.rotation
+                };
+                na::Isometry3::from_parts(joint_world.translation, rot)
+            }),
+            OffsetTarget::Visual => self.selected_link.and_then(|li| {
+                self.selected_visual.and_then(|vi| {
+                    m.links.get(li).and_then(|link| {
+                        link.visuals.get(vi).map(|vis| {
+                            let link_tf = transforms
+                                .get(&link.name)
+                                .copied()
+                                .unwrap_or(na::Isometry3::identity());
+                            let vis_world = link_tf * vis.origin;
+                            let rot = if use_element_rot {
+                                vis_world.rotation
+                            } else {
+                                link_tf.rotation
+                            };
+                            na::Isometry3::from_parts(vis_world.translation, rot)
                         })
                     })
                 })
-            }
-            OffsetTarget::Collision => {
-                self.selected_link.and_then(|li| {
-                    self.selected_collision.and_then(|ci| {
-                        m.links.get(li).and_then(|link| {
-                            link.collisions.get(ci).map(|col| {
-                                let link_tf = transforms
-                                    .get(&link.name)
-                                    .copied()
-                                    .unwrap_or(na::Isometry3::identity());
-                                let col_world = link_tf * col.origin;
-                                let rot = if use_element_rot {
-                                    col_world.rotation
-                                } else {
-                                    link_tf.rotation
-                                };
-                                na::Isometry3::from_parts(col_world.translation, rot)
-                            })
+            }),
+            OffsetTarget::Collision => self.selected_link.and_then(|li| {
+                self.selected_collision.and_then(|ci| {
+                    m.links.get(li).and_then(|link| {
+                        link.collisions.get(ci).map(|col| {
+                            let link_tf = transforms
+                                .get(&link.name)
+                                .copied()
+                                .unwrap_or(na::Isometry3::identity());
+                            let col_world = link_tf * col.origin;
+                            let rot = if use_element_rot {
+                                col_world.rotation
+                            } else {
+                                link_tf.rotation
+                            };
+                            na::Isometry3::from_parts(col_world.translation, rot)
                         })
                     })
                 })
-            }
+            }),
         }
     }
 
@@ -454,9 +438,7 @@ impl ArticaraApp {
         match self.interaction_mode {
             InteractionMode::OffsetAdjust => {
                 // Try to pick a gizmo arrow first
-                if let (Some(axis_idx), Some(gt)) =
-                    (self.hovered_gizmo_axis, gizmo_tf)
-                {
+                if let (Some(axis_idx), Some(gt)) = (self.hovered_gizmo_axis, gizmo_tf) {
                     if let Some(ndc) = mouse_ndc {
                         let (ro, rd) = self.camera.screen_ray(ndc, aspect);
                         let origin = na::Point3::from(gt.translation.vector);
@@ -495,44 +477,52 @@ impl ArticaraApp {
                                         initial_geom_params: [0.0; 3],
                                     })
                                 }
-                                OffsetTarget::Visual => {
-                                    self.selected_link.and_then(|li| {
-                                        self.selected_visual.map(|vi| OffsetDragState {
-                                            axis: axis_idx,
-                                            target: OffsetTarget::Visual,
-                                            entity_idx: li,
-                                            sub_idx: vi,
-                                            axis_dir_world: axis_dir,
-                                            gizmo_origin: origin,
-                                            initial_t: t_line,
-                                            initial_translation: model.links[li].visuals[vi].origin.translation,
-                                            inv_parent_rotation: inv_rot,
-                                            op: cur_op,
-                                            initial_rotation: model.links[li].visuals[vi].origin.rotation,
-                                            initial_angle,
-                                            initial_geom_params: geom_params(&model.links[li].visuals[vi].geometry),
-                                        })
+                                OffsetTarget::Visual => self.selected_link.and_then(|li| {
+                                    self.selected_visual.map(|vi| OffsetDragState {
+                                        axis: axis_idx,
+                                        target: OffsetTarget::Visual,
+                                        entity_idx: li,
+                                        sub_idx: vi,
+                                        axis_dir_world: axis_dir,
+                                        gizmo_origin: origin,
+                                        initial_t: t_line,
+                                        initial_translation: model.links[li].visuals[vi]
+                                            .origin
+                                            .translation,
+                                        inv_parent_rotation: inv_rot,
+                                        op: cur_op,
+                                        initial_rotation: model.links[li].visuals[vi]
+                                            .origin
+                                            .rotation,
+                                        initial_angle,
+                                        initial_geom_params: geom_params(
+                                            &model.links[li].visuals[vi].geometry,
+                                        ),
                                     })
-                                }
-                                OffsetTarget::Collision => {
-                                    self.selected_link.and_then(|li| {
-                                        self.selected_collision.map(|ci| OffsetDragState {
-                                            axis: axis_idx,
-                                            target: OffsetTarget::Collision,
-                                            entity_idx: li,
-                                            sub_idx: ci,
-                                            axis_dir_world: axis_dir,
-                                            gizmo_origin: origin,
-                                            initial_t: t_line,
-                                            initial_translation: model.links[li].collisions[ci].origin.translation,
-                                            inv_parent_rotation: inv_rot,
-                                            op: cur_op,
-                                            initial_rotation: model.links[li].collisions[ci].origin.rotation,
-                                            initial_angle,
-                                            initial_geom_params: geom_params(&model.links[li].collisions[ci].geometry),
-                                        })
+                                }),
+                                OffsetTarget::Collision => self.selected_link.and_then(|li| {
+                                    self.selected_collision.map(|ci| OffsetDragState {
+                                        axis: axis_idx,
+                                        target: OffsetTarget::Collision,
+                                        entity_idx: li,
+                                        sub_idx: ci,
+                                        axis_dir_world: axis_dir,
+                                        gizmo_origin: origin,
+                                        initial_t: t_line,
+                                        initial_translation: model.links[li].collisions[ci]
+                                            .origin
+                                            .translation,
+                                        inv_parent_rotation: inv_rot,
+                                        op: cur_op,
+                                        initial_rotation: model.links[li].collisions[ci]
+                                            .origin
+                                            .rotation,
+                                        initial_angle,
+                                        initial_geom_params: geom_params(
+                                            &model.links[li].collisions[ci].geometry,
+                                        ),
                                     })
-                                }
+                                }),
                             };
                             self.offset_drag_state = drag;
                         }
@@ -551,12 +541,11 @@ impl ArticaraApp {
                             } else {
                                 Some(0)
                             };
-                            self.selected_collision =
-                                if model.links[li].collisions.is_empty() {
-                                    None
-                                } else {
-                                    Some(0)
-                                };
+                            self.selected_collision = if model.links[li].collisions.is_empty() {
+                                None
+                            } else {
+                                Some(0)
+                            };
                         }
                         match self.offset_target {
                             OffsetTarget::Joint => {
@@ -629,8 +618,7 @@ impl ArticaraApp {
                                         .unwrap_or(na::Isometry3::identity());
                                     let joint_tf = parent_tf * joint.origin;
                                     let world_axis = joint_tf * joint.axis;
-                                    let pivot_world =
-                                        na::Point3::from(joint_tf.translation.vector);
+                                    let pivot_world = na::Point3::from(joint_tf.translation.vector);
 
                                     self.drag_state = Some(DragState {
                                         link_idx: li,
@@ -650,10 +638,8 @@ impl ArticaraApp {
                                 }
                             }
                             DragMode::InverseKinematics => {
-                                let chain = model.chain_joints_between(
-                                    link_name,
-                                    self.ik.root_link.as_deref(),
-                                );
+                                let chain = model
+                                    .chain_joints_between(link_name, self.ik.root_link.as_deref());
                                 // Allow drag even with empty chain when pins,
                                 // chicken-head links, or loop closures exist,
                                 // because the constrained solver works in full
@@ -662,15 +648,15 @@ impl ArticaraApp {
                                     || !self.ik.chicken_head_links.is_empty()
                                     || !model.loop_closures.is_empty();
                                 if !chain.is_empty() || has_constraints {
-                                    let ji =
-                                        *chain.last().unwrap_or(&0);
-                                    let ik_root_tf = self.ik.root_link.as_ref().and_then(|name| {
-                                        transforms.get(name).copied()
-                                    });
+                                    let ji = *chain.last().unwrap_or(&0);
+                                    let ik_root_tf = self
+                                        .ik
+                                        .root_link
+                                        .as_ref()
+                                        .and_then(|name| transforms.get(name).copied());
                                     // Capture reference posture for null-space stabilization
-                                    let ref_positions: Vec<f64> = chain.iter()
-                                        .map(|&ji| model.joint_positions[ji])
-                                        .collect();
+                                    let ref_positions: Vec<f64> =
+                                        chain.iter().map(|&ji| model.joint_positions[ji]).collect();
                                     // Capture IK root world position for translation-only correction
                                     let ik_root_initial_pos = ik_root_tf.map(|tf| {
                                         na::Point3::from(tf.translation.vector).cast::<f64>()
@@ -685,13 +671,18 @@ impl ArticaraApp {
                                     // Use clicked surface point for drag depth
                                     let cam_fwd = (self.camera.target
                                         - na::Point3::from(self.camera.eye().coords))
-                                        .normalize();
+                                    .normalize();
                                     let drag_depth = (hit_world - self.camera.eye()).dot(&cam_fwd);
 
                                     // Chicken-head: auto-pin designated links at their current poses
                                     for ch_link in &self.ik.chicken_head_links {
                                         // Skip if already manually pinned
-                                        if self.ik.pinned_links.iter().any(|p| p.link_name == *ch_link) {
+                                        if self
+                                            .ik
+                                            .pinned_links
+                                            .iter()
+                                            .any(|p| p.link_name == *ch_link)
+                                        {
                                             continue;
                                         }
                                         // Skip if this is the link being dragged
@@ -699,8 +690,11 @@ impl ArticaraApp {
                                             continue;
                                         }
                                         if let Some(&ch_li) = model.link_map.get(ch_link.as_str()) {
-                                            let pos = model.ee_world_pos(ch_li, transforms).cast::<f64>();
-                                            let rot = model.link_world_orientation(ch_li, transforms).cast::<f64>();
+                                            let pos =
+                                                model.ee_world_pos(ch_li, transforms).cast::<f64>();
+                                            let rot = model
+                                                .link_world_orientation(ch_li, transforms)
+                                                .cast::<f64>();
                                             self.ik.pinned_links.push(super::PinnedLink {
                                                 link_name: ch_link.clone(),
                                                 target_pos: pos,
@@ -752,21 +746,14 @@ impl ArticaraApp {
         let (ro, rd) = self.camera.screen_ray(ndc, aspect);
         if let Some((li, _)) = model.pick_link(&ro, &rd, transforms) {
             self.ik.loop_closure_link_b = Some(li);
-            self.status_message = format!(
-                "Loop-closure link B = '{}'",
-                model.links[li].name,
-            );
+            self.status_message = format!("Loop-closure link B = '{}'", model.links[li].name,);
         } else if let Some(hov_li) = self.hovered_link {
             // Fallback when the precise mesh test misses but the hover
             // pick succeeded.
             self.ik.loop_closure_link_b = Some(hov_li);
-            self.status_message = format!(
-                "Loop-closure link B = '{}'",
-                model.links[hov_li].name,
-            );
+            self.status_message = format!("Loop-closure link B = '{}'", model.links[hov_li].name,);
         } else {
-            self.status_message =
-                "Loop-closure pick: no link under cursor".into();
+            self.status_message = "Loop-closure pick: no link under cursor".into();
         }
         // One-shot: turn off picking mode after a successful or failed click.
         self.ik.loop_closure_picking_b = false;
@@ -791,27 +778,24 @@ impl ArticaraApp {
                     } else {
                         Some(0)
                     };
-                    self.selected_collision =
-                        if model.links[li].collisions.is_empty() {
-                            None
-                        } else {
-                            Some(0)
-                        };
+                    self.selected_collision = if model.links[li].collisions.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    };
                 }
                 match self.interaction_mode {
                     InteractionMode::JointDrive => {
                         self.selected_joint = model.parent_joint_of_link(link_name);
                     }
-                    InteractionMode::OffsetAdjust => {
-                        match self.offset_target {
-                            OffsetTarget::Joint => {
-                                self.selected_joint = model.parent_joint_of_link(link_name);
-                            }
-                            OffsetTarget::Visual | OffsetTarget::Collision => {
-                                self.selected_joint = None;
-                            }
+                    InteractionMode::OffsetAdjust => match self.offset_target {
+                        OffsetTarget::Joint => {
+                            self.selected_joint = model.parent_joint_of_link(link_name);
                         }
-                    }
+                        OffsetTarget::Visual | OffsetTarget::Collision => {
+                            self.selected_joint = None;
+                        }
+                    },
                 }
             }
         }
@@ -832,8 +816,12 @@ impl ArticaraApp {
 
                 match odrag.op {
                     GizmoOp::Translate => {
-                        let (t_line, _) =
-                            robot::ray_axis_closest(&ro, &rd, &odrag.gizmo_origin, &odrag.axis_dir_world);
+                        let (t_line, _) = robot::ray_axis_closest(
+                            &ro,
+                            &rd,
+                            &odrag.gizmo_origin,
+                            &odrag.axis_dir_world,
+                        );
                         let delta_t = t_line - odrag.initial_t;
 
                         if let Some(ref mut model) = self.model {
@@ -851,11 +839,13 @@ impl ArticaraApp {
                                 }
                                 OffsetTarget::Visual => {
                                     model.links[odrag.entity_idx].visuals[odrag.sub_idx]
-                                        .origin.translation = new_trans;
+                                        .origin
+                                        .translation = new_trans;
                                 }
                                 OffsetTarget::Collision => {
                                     model.links[odrag.entity_idx].collisions[odrag.sub_idx]
-                                        .origin.translation = new_trans;
+                                        .origin
+                                        .translation = new_trans;
                                 }
                             }
                             self.needs_upload = true;
@@ -863,7 +853,10 @@ impl ArticaraApp {
                     }
                     GizmoOp::Rotate => {
                         let cur_angle = compute_ring_angle(
-                            &ro, &rd, &odrag.gizmo_origin, &odrag.axis_dir_world,
+                            &ro,
+                            &rd,
+                            &odrag.gizmo_origin,
+                            &odrag.axis_dir_world,
                         );
                         let delta_angle = cur_angle - odrag.initial_angle;
 
@@ -873,10 +866,8 @@ impl ArticaraApp {
                                 1 => na::Vector3::y_axis(),
                                 _ => na::Vector3::z_axis(),
                             };
-                            let delta_rot = na::UnitQuaternion::from_axis_angle(
-                                &local_axis,
-                                delta_angle,
-                            );
+                            let delta_rot =
+                                na::UnitQuaternion::from_axis_angle(&local_axis, delta_angle);
                             let new_rot = odrag.initial_rotation * delta_rot;
 
                             match odrag.target {
@@ -885,32 +876,50 @@ impl ArticaraApp {
                                 }
                                 OffsetTarget::Visual => {
                                     model.links[odrag.entity_idx].visuals[odrag.sub_idx]
-                                        .origin.rotation = new_rot;
+                                        .origin
+                                        .rotation = new_rot;
                                 }
                                 OffsetTarget::Collision => {
                                     model.links[odrag.entity_idx].collisions[odrag.sub_idx]
-                                        .origin.rotation = new_rot;
+                                        .origin
+                                        .rotation = new_rot;
                                 }
                             }
                             self.needs_upload = true;
                         }
                     }
                     GizmoOp::Scale => {
-                        let (t_line, _) =
-                            robot::ray_axis_closest(&ro, &rd, &odrag.gizmo_origin, &odrag.axis_dir_world);
+                        let (t_line, _) = robot::ray_axis_closest(
+                            &ro,
+                            &rd,
+                            &odrag.gizmo_origin,
+                            &odrag.axis_dir_world,
+                        );
                         let delta_t = t_line - odrag.initial_t;
 
                         if let Some(ref mut model) = self.model {
                             match odrag.target {
                                 OffsetTarget::Visual => {
-                                    let geom = &mut model.links[odrag.entity_idx]
-                                        .visuals[odrag.sub_idx].geometry;
-                                    apply_geom_scale(geom, odrag.axis, odrag.initial_geom_params, delta_t);
+                                    let geom = &mut model.links[odrag.entity_idx].visuals
+                                        [odrag.sub_idx]
+                                        .geometry;
+                                    apply_geom_scale(
+                                        geom,
+                                        odrag.axis,
+                                        odrag.initial_geom_params,
+                                        delta_t,
+                                    );
                                 }
                                 OffsetTarget::Collision => {
-                                    let geom = &mut model.links[odrag.entity_idx]
-                                        .collisions[odrag.sub_idx].geometry;
-                                    apply_geom_scale(geom, odrag.axis, odrag.initial_geom_params, delta_t);
+                                    let geom = &mut model.links[odrag.entity_idx].collisions
+                                        [odrag.sub_idx]
+                                        .geometry;
+                                    apply_geom_scale(
+                                        geom,
+                                        odrag.axis,
+                                        odrag.initial_geom_params,
+                                        delta_t,
+                                    );
                                 }
                                 OffsetTarget::Joint => {}
                             }
@@ -952,48 +961,44 @@ impl ArticaraApp {
                                     Some(ro + rd * t)
                                 };
 
-                            let angle_delta = match (
-                                ray_plane_hit(&ro0, &rd0),
-                                ray_plane_hit(&ro1, &rd1),
-                            ) {
-                                (Some(p0), Some(p1)) => {
-                                    let v0 = p0 - pivot;
-                                    let v1 = p1 - pivot;
-                                    if v0.norm() < 1e-8 || v1.norm() < 1e-8 {
-                                        0.0
-                                    } else {
-                                        let v0n = v0.normalize();
-                                        let v1n = v1.normalize();
-                                        let cross = v0n.cross(&v1n);
-                                        let dot = v0n.dot(&v1n).clamp(-1.0, 1.0);
-                                        cross.dot(&axis).atan2(dot)
+                            let angle_delta =
+                                match (ray_plane_hit(&ro0, &rd0), ray_plane_hit(&ro1, &rd1)) {
+                                    (Some(p0), Some(p1)) => {
+                                        let v0 = p0 - pivot;
+                                        let v1 = p1 - pivot;
+                                        if v0.norm() < 1e-8 || v1.norm() < 1e-8 {
+                                            0.0
+                                        } else {
+                                            let v0n = v0.normalize();
+                                            let v1n = v1.normalize();
+                                            let cross = v0n.cross(&v1n);
+                                            let dot = v0n.dot(&v1n).clamp(-1.0, 1.0);
+                                            cross.dot(&axis).atan2(dot)
+                                        }
                                     }
-                                }
-                                _ => {
-                                    let delta_ndc = na::Vector2::new(
-                                        delta.x / rect.width(),
-                                        delta.y / rect.height(),
-                                    );
-                                    delta_ndc.norm() * 3.0 * delta.x.signum()
-                                }
-                            };
+                                    _ => {
+                                        let delta_ndc = na::Vector2::new(
+                                            delta.x / rect.width(),
+                                            delta.y / rect.height(),
+                                        );
+                                        delta_ndc.norm() * 3.0 * delta.x.signum()
+                                    }
+                                };
 
                             if angle_delta.abs() > 1e-8 {
                                 if let Some(ref mut model) = self.model {
                                     let ji = drag.joint_idx;
                                     let lower = model.joints[ji].lower;
                                     let upper = model.joints[ji].upper;
-                                    model.joint_positions[ji] =
-                                        (model.joint_positions[ji] + angle_delta as f64)
-                                            .clamp(lower, upper);
+                                    model.joint_positions[ji] = (model.joint_positions[ji]
+                                        + angle_delta as f64)
+                                        .clamp(lower, upper);
                                 }
                             }
                         }
                     }
                     DragMode::InverseKinematics => {
-                        if let (Some(ndc), Some(ref mut model)) =
-                            (mouse_ndc, self.model.as_mut())
-                        {
+                        if let (Some(ndc), Some(ref mut model)) = (mouse_ndc, self.model.as_mut()) {
                             let cur_transforms = model.compute_transforms();
                             let _ee_pos = model.ee_world_pos_at(
                                 drag.link_idx,
@@ -1005,9 +1010,7 @@ impl ArticaraApp {
 
                             let (ray_o, ray_d) = self.camera.screen_ray(ndc, aspect);
                             let cam_forward = (self.camera.target
-                                - na::Point3::from(
-                                    self.camera.eye().coords,
-                                ))
+                                - na::Point3::from(self.camera.eye().coords))
                             .normalize();
 
                             let denom = ray_d.dot(&cam_forward);
@@ -1033,15 +1036,15 @@ impl ArticaraApp {
 
                                     let cur_tf = model.compute_transforms();
                                     let ee_now = model.ee_world_pos_at(
-                                        drag.link_idx, &cur_tf,
+                                        drag.link_idx,
+                                        &cur_tf,
                                         &drag.ee_local_offset,
                                     );
                                     // Compute world-frame offset vector for Jacobian correction.
                                     // r_world = R_link * r_local (vector from link origin to click point)
                                     let ee_offset_world = {
-                                        let link_rot = model.link_world_orientation(
-                                            drag.link_idx, &cur_tf,
-                                        );
+                                        let link_rot =
+                                            model.link_world_orientation(drag.link_idx, &cur_tf);
                                         let r_local = drag.ee_local_offset.coords.cast::<f64>();
                                         let r_world = link_rot.cast::<f64>() * r_local;
                                         r_world
@@ -1058,7 +1061,9 @@ impl ArticaraApp {
                                     // as "wrong direction" for non-tip
                                     // links because their click points sit
                                     // off the joint origin).
-                                    let screen_axes = if self.ik.dof == articara::robot::IkDof::ScreenPlane2D {
+                                    let screen_axes = if self.ik.dof
+                                        == articara::robot::IkDof::ScreenPlane2D
+                                    {
                                         let cam_right = self.camera.world_right().cast::<f64>();
                                         let cam_up = self.camera.world_up_screen().cast::<f64>();
                                         Some((cam_right, cam_up))
@@ -1088,7 +1093,9 @@ impl ArticaraApp {
 
                                     // Use constrained IK when pins or loop closures exist
                                     if !self.ik.pinned_links.is_empty() || has_loops {
-                                        let pins: Vec<articara::robot::PinSpec> = self.ik.pinned_links
+                                        let pins: Vec<articara::robot::PinSpec> = self
+                                            .ik
+                                            .pinned_links
                                             .iter()
                                             .map(|p| articara::robot::PinSpec {
                                                 link_name: p.link_name.clone(),
@@ -1112,16 +1119,14 @@ impl ArticaraApp {
                                                     dx
                                                 }
                                             };
-                                            model.base_transform.translation.vector +=
-                                                dx_clamped;
+                                            model.base_transform.translation.vector += dx_clamped;
 
                                             // Solve pin + loop constraints only (no primary
                                             // task, just keep constraints satisfied).
                                             let mc = model.mc();
                                             let nv = mc.model.nv;
                                             if nv > 0 && (!pins.is_empty() || has_loops) {
-                                                let dummy_jac =
-                                                    na::DMatrix::<f64>::zeros(3, nv);
+                                                let dummy_jac = na::DMatrix::<f64>::zeros(3, nv);
                                                 let zero = na::Vector3::zeros();
 
                                                 let misarta_damping = match self.ik.solver {
@@ -1145,25 +1150,31 @@ impl ArticaraApp {
 
                                                 // Build pin constraints from post-move positions
                                                 let post_tf = model.compute_transforms();
-                                                let mut constraints: Vec<misarta::ik::DiffIkConstraint> = Vec::new();
+                                                let mut constraints: Vec<
+                                                    misarta::ik::DiffIkConstraint,
+                                                > = Vec::new();
                                                 for pin in &pins {
                                                     if let Some(&li) =
                                                         model.link_map.get(pin.link_name.as_str())
                                                     {
                                                         if pin.pose_6dof {
-                                                            let jac = model.link_full_jacobian_full(
-                                                                &pin.link_name,
-                                                            );
+                                                            let jac = model
+                                                                .link_full_jacobian_full(
+                                                                    &pin.link_name,
+                                                                );
                                                             let pin_world = model
                                                                 .ee_world_pos(li, &post_tf)
                                                                 .cast::<f64>();
                                                             let pin_rot = model
-                                                                .link_world_orientation(li, &post_tf)
+                                                                .link_world_orientation(
+                                                                    li, &post_tf,
+                                                                )
                                                                 .cast::<f64>();
-                                                            let pos_err = pin_world - pin.target_pos;
+                                                            let pos_err =
+                                                                pin_world - pin.target_pos;
                                                             let rot_err = (pin_rot
                                                                 * pin.target_rot.inverse())
-                                                                .scaled_axis();
+                                                            .scaled_axis();
                                                             constraints.push(
                                                                 misarta::ik::DiffIkConstraint {
                                                                     jacobian: jac,
@@ -1201,9 +1212,10 @@ impl ArticaraApp {
                                                 }
 
                                                 // Add loop-closure constraints (recomputed after base move)
-                                                let loop_cs_post = model.build_loop_diff_constraints(
-                                                    self.ik.loop_closure_weight as f64,
-                                                );
+                                                let loop_cs_post = model
+                                                    .build_loop_diff_constraints(
+                                                        self.ik.loop_closure_weight as f64,
+                                                    );
                                                 constraints.extend(loop_cs_post);
 
                                                 let diff_config = misarta::ik::DiffIkConfig {
@@ -1240,13 +1252,21 @@ impl ArticaraApp {
                                             let mc = model.mc();
                                             let nv = mc.model.nv;
                                             let full_weights = if self.ik.weight_gradient > 0.01 {
-                                                let alpha = (1.0 + self.ik.weight_gradient as f64).max(1.0);
-                                                let mut w = vec![alpha.powi(drag.chain.len().max(1) as i32 - 1); nv];
+                                                let alpha =
+                                                    (1.0 + self.ik.weight_gradient as f64).max(1.0);
+                                                let mut w = vec![
+                                                    alpha.powi(
+                                                        drag.chain.len().max(1) as i32 - 1
+                                                    );
+                                                    nv
+                                                ];
                                                 for (i, &ji) in drag.chain.iter().enumerate() {
                                                     if let Some(&Some(mi)) = mc.a2m.get(ji) {
                                                         let vi = mc.model.q_idx[mi];
                                                         if vi < nv {
-                                                            w[vi] = alpha.powi((drag.chain.len() - 1 - i) as i32);
+                                                            w[vi] = alpha.powi(
+                                                                (drag.chain.len() - 1 - i) as i32,
+                                                            );
                                                         }
                                                     }
                                                 }
@@ -1294,16 +1314,15 @@ impl ArticaraApp {
                                     // Base correction: pin the IK root to its initial pose.
                                     // Skip when using pinned-link mode with root drag
                                     // (base_transform was moved intentionally).
-                                    let skip_base_correction = !self.ik.pinned_links.is_empty()
-                                        && drag.chain.is_empty();
+                                    let skip_base_correction =
+                                        !self.ik.pinned_links.is_empty() && drag.chain.is_empty();
                                     if !skip_base_correction {
                                         if let Some(desired_tf) = drag.ik_root_initial_tf {
                                             if let Some(ik_root_name) = drag.ik_root_link.as_ref() {
                                                 model.base_transform = na::Isometry3::identity();
                                                 let id_tf = model.compute_transforms();
                                                 if let Some(root_rel) = id_tf.get(ik_root_name) {
-                                                    model.base_transform =
-                                                        desired_tf.cast::<f64>()
+                                                    model.base_transform = desired_tf.cast::<f64>()
                                                         * root_rel.inverse().cast::<f64>();
                                                 }
                                             }
@@ -1313,13 +1332,12 @@ impl ArticaraApp {
                                     // Compute IK error for debug overlay
                                     let final_tf = model.compute_transforms();
                                     let ee_final = model.ee_world_pos_at(
-                                        drag.link_idx, &final_tf,
+                                        drag.link_idx,
+                                        &final_tf,
                                         &drag.ee_local_offset,
                                     );
                                     self.ik.ee_marker = Some(ee_final);
-                                    self.ik.error = Some(
-                                        (ee_final.cast::<f32>() - target).norm()
-                                    );
+                                    self.ik.error = Some((ee_final.cast::<f32>() - target).norm());
                                 }
                             }
                         }
@@ -1345,9 +1363,7 @@ impl ArticaraApp {
                 self.model.as_ref().and_then(|m| {
                     let link_name = &m.links[li].name;
                     match self.interaction_mode {
-                        InteractionMode::OffsetAdjust => {
-                            Some(&m.links[li].name as &str)
-                        }
+                        InteractionMode::OffsetAdjust => Some(&m.links[li].name as &str),
                         InteractionMode::JointDrive => match self.drag_mode {
                             DragMode::SingleJoint => m
                                 .parent_joint_of_link(link_name)
@@ -1417,9 +1433,15 @@ fn ray_ring_distance(
 fn geom_params(geom: &robot::GeomData) -> [f32; 3] {
     match geom {
         robot::GeomData::Box { hx, hy, hz } => [*hx, *hy, *hz],
-        robot::GeomData::Cylinder { radius, half_length } => [*radius, *half_length, 0.0],
+        robot::GeomData::Cylinder {
+            radius,
+            half_length,
+        } => [*radius, *half_length, 0.0],
         robot::GeomData::Sphere { radius } => [*radius, 0.0, 0.0],
-        robot::GeomData::Capsule { radius, half_length } => [*radius, *half_length, 0.0],
+        robot::GeomData::Capsule {
+            radius,
+            half_length,
+        } => [*radius, *half_length, 0.0],
         robot::GeomData::Mesh { .. } => [0.0, 0.0, 0.0],
     }
 }
@@ -1428,28 +1450,28 @@ fn geom_params(geom: &robot::GeomData) -> [f32; 3] {
 fn apply_geom_scale(geom: &mut robot::GeomData, axis: u8, initial: [f32; 3], delta: f32) {
     const MIN_DIM: f32 = 0.001;
     match geom {
-        robot::GeomData::Box { hx, hy, hz } => {
-            match axis {
-                0 => *hx = (initial[0] + delta).max(MIN_DIM),
-                1 => *hy = (initial[1] + delta).max(MIN_DIM),
-                _ => *hz = (initial[2] + delta).max(MIN_DIM),
-            }
-        }
-        robot::GeomData::Cylinder { radius, half_length } => {
-            match axis {
-                0 | 1 => *radius = (initial[0] + delta).max(MIN_DIM),
-                _ => *half_length = (initial[1] + delta).max(MIN_DIM),
-            }
-        }
+        robot::GeomData::Box { hx, hy, hz } => match axis {
+            0 => *hx = (initial[0] + delta).max(MIN_DIM),
+            1 => *hy = (initial[1] + delta).max(MIN_DIM),
+            _ => *hz = (initial[2] + delta).max(MIN_DIM),
+        },
+        robot::GeomData::Cylinder {
+            radius,
+            half_length,
+        } => match axis {
+            0 | 1 => *radius = (initial[0] + delta).max(MIN_DIM),
+            _ => *half_length = (initial[1] + delta).max(MIN_DIM),
+        },
         robot::GeomData::Sphere { radius } => {
             *radius = (initial[0] + delta).max(MIN_DIM);
         }
-        robot::GeomData::Capsule { radius, half_length } => {
-            match axis {
-                0 | 1 => *radius = (initial[0] + delta).max(MIN_DIM),
-                _ => *half_length = (initial[1] + delta).max(MIN_DIM),
-            }
-        }
+        robot::GeomData::Capsule {
+            radius,
+            half_length,
+        } => match axis {
+            0 | 1 => *radius = (initial[0] + delta).max(MIN_DIM),
+            _ => *half_length = (initial[1] + delta).max(MIN_DIM),
+        },
         robot::GeomData::Mesh { .. } => {}
     }
 }

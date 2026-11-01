@@ -30,8 +30,8 @@ fn main() {
     use nalgebra as na;
     use policy_runtime::go2::*;
     use policy_runtime::{
-        action_to_q_des_go2, build_obs, clamp_cmd, csv_header, obs_anomalies, write_csv_row,
-        ObsInput, OnnxPolicy, N_OBS, POLICY_HZ,
+        N_OBS, ObsInput, OnnxPolicy, POLICY_HZ, action_to_q_des_go2, build_obs, clamp_cmd,
+        csv_header, obs_anomalies, write_csv_row,
     };
 
     // ── CLI ──────────────────────────────────────────────────────────────────
@@ -53,7 +53,9 @@ fn main() {
         get("--vy").and_then(|v| v.parse().ok()).unwrap_or(0.0),
         get("--wz").and_then(|v| v.parse().ok()).unwrap_or(0.0),
     ]);
-    let duration: f64 = get("--duration").and_then(|v| v.parse().ok()).unwrap_or(8.0);
+    let duration: f64 = get("--duration")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8.0);
     let settle: f64 = get("--settle").and_then(|v| v.parse().ok()).unwrap_or(0.5);
     let csv_path = get("--csv");
 
@@ -70,14 +72,27 @@ fn main() {
 
     // Go2 motor order (FR,FL,RR,RL × hip/thigh/calf) → articara joint names.
     const GO2_MOTOR_JOINTS: [&str; 12] = [
-        "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
-        "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
-        "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
-        "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
+        "FR_hip_joint",
+        "FR_thigh_joint",
+        "FR_calf_joint",
+        "FL_hip_joint",
+        "FL_thigh_joint",
+        "FL_calf_joint",
+        "RR_hip_joint",
+        "RR_thigh_joint",
+        "RR_calf_joint",
+        "RL_hip_joint",
+        "RL_thigh_joint",
+        "RL_calf_joint",
     ];
     let joint_idx: Vec<usize> = GO2_MOTOR_JOINTS
         .iter()
-        .map(|n| *model.joint_map.get(*n).unwrap_or_else(|| panic!("joint missing: {n}")))
+        .map(|n| {
+            *model
+                .joint_map
+                .get(*n)
+                .unwrap_or_else(|| panic!("joint missing: {n}"))
+        })
         .collect();
 
     // The policy's nominal pose, in Go2 motor order.
@@ -100,7 +115,12 @@ fn main() {
     // ── Sim ──────────────────────────────────────────────────────────────────
     let opts = MjcfExportOptions {
         base_pos: Some([0.0, 0.0, 0.32]),
-        ground_plane: Some(GroundPlaneCfg { z: 0.0, half_size: 5.0, roll: 0.0, pitch: 0.0 }),
+        ground_plane: Some(GroundPlaneCfg {
+            z: 0.0,
+            half_size: 5.0,
+            roll: 0.0,
+            pitch: 0.0,
+        }),
         ..MjcfExportOptions::default()
     };
     let mut sim = MujocoSim::new(&model, opts).expect("MujocoSim::new");
@@ -121,17 +141,11 @@ fn main() {
     let obs_input = |sim: &MujocoSim, model: &RobotModel| -> ObsInput {
         let q_wb = sim.body_world_orientation("base").expect("base quat");
         let w_world = sim.body_world_angular_velocity("base").expect("base omega");
-        let w_body = q_wb.inverse_transform_vector(&na::Vector3::new(
-            w_world[0], w_world[1], w_world[2],
-        ));
+        let w_body =
+            q_wb.inverse_transform_vector(&na::Vector3::new(w_world[0], w_world[1], w_world[2]));
         let mut inp = ObsInput {
             gyro_rad_s: [w_body.x as f32, w_body.y as f32, w_body.z as f32],
-            quat_wxyz: [
-                q_wb.w as f32,
-                q_wb.i as f32,
-                q_wb.j as f32,
-                q_wb.k as f32,
-            ],
+            quat_wxyz: [q_wb.w as f32, q_wb.i as f32, q_wb.j as f32, q_wb.k as f32],
             ..Default::default()
         };
         for (g, name) in GO2_MOTOR_JOINTS.iter().enumerate() {
@@ -180,8 +194,17 @@ fn main() {
             sim.set_position_target(*ji, q_des[g]);
         }
         if let Some(f) = csv.as_mut() {
-            write_csv_row(f, tick as f64 * infer_dt, "sim", us, &obs, &action, &q_des, &anomalies)
-                .expect("csv row");
+            write_csv_row(
+                f,
+                tick as f64 * infer_dt,
+                "sim",
+                us,
+                &obs,
+                &action,
+                &q_des,
+                &anomalies,
+            )
+            .expect("csv row");
         }
         sim.step_n_frames(&mut model, frames_per_infer, true);
 
@@ -229,7 +252,10 @@ fn main() {
         ran_s,
         dx / ran_s.max(1e-9)
     );
-    println!("  max|roll|={:.2} rad  max|pitch|={:.2} rad  fell={fell}", max_roll, max_pitch);
+    println!(
+        "  max|roll|={:.2} rad  max|pitch|={:.2} rad  fell={fell}",
+        max_roll, max_pitch
+    );
     if !infer_us.is_empty() {
         let mut v = infer_us.clone();
         v.sort_unstable();

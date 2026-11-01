@@ -124,8 +124,7 @@ impl RobotModel {
     pub fn from_misa_with_report(
         path: &Path,
     ) -> Result<(Self, misarta::native::LoadReport), String> {
-        let out = misarta::native::load(path)
-            .map_err(|e| format!(".misa load: {e}"))?;
+        let out = misarta::native::load(path).map_err(|e| format!(".misa load: {e}"))?;
         let report = out.report.clone();
         let model = Self::from_misa_file(&out.file, path)?;
         Ok((model, report))
@@ -139,10 +138,7 @@ impl RobotModel {
     /// `path` is used to resolve relative mesh references and is stored
     /// as `source_path` on the returned model. Pass any path under the
     /// directory mesh files live in.
-    pub fn from_misa_file(
-        file: &misarta::native::MisaFile,
-        path: &Path,
-    ) -> Result<Self, String> {
+    pub fn from_misa_file(file: &misarta::native::MisaFile, path: &Path) -> Result<Self, String> {
         misa_load::build_robot_model(file, path)
     }
 
@@ -195,10 +191,7 @@ mod misa_load {
     use super::*;
     use misarta::native as mn;
 
-    pub fn build_robot_model(
-        file: &mn::MisaFile,
-        path: &Path,
-    ) -> Result<RobotModel, String> {
+    pub fn build_robot_model(file: &mn::MisaFile, path: &Path) -> Result<RobotModel, String> {
         let base_dir = path.parent().unwrap_or(Path::new("."));
 
         // ── Materials map: name → RGBA ──────────────────────────────────
@@ -229,14 +222,12 @@ mod misa_load {
                 .map(|c| CollisionData {
                     origin: misa_origin_to_isometry_f32(&c.origin),
                     geometry: convert_misa_geom(&c.geom, base_dir),
-                    physics: c.physics.as_ref().map(|p| {
-                        crate::rbd::model::MjcfPhysics {
-                            friction: p.friction,
-                            condim: p.condim,
-                            priority: p.priority,
-                            solimp: p.solimp,
-                            margin: p.margin,
-                        }
+                    physics: c.physics.as_ref().map(|p| crate::rbd::model::MjcfPhysics {
+                        friction: p.friction,
+                        condim: p.condim,
+                        priority: p.priority,
+                        solimp: p.solimp,
+                        margin: p.margin,
                     }),
                 })
                 .collect();
@@ -289,10 +280,7 @@ mod misa_load {
         let mut children_joints: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, j) in file.joint.iter().enumerate() {
             joint_map.insert(j.name.clone(), i);
-            children_joints
-                .entry(j.parent.clone())
-                .or_default()
-                .push(i);
+            children_joints.entry(j.parent.clone()).or_default().push(i);
 
             let (actuator_mode, actuator_kp, actuator_kv) = joint_actuator_settings
                 .get(j.name.as_str())
@@ -343,7 +331,11 @@ mod misa_load {
             .collision_pair
             .iter()
             .map(|cp| {
-                crate::rbd::model::CollisionPair::new(cp.link_a.clone(), cp.link_b.clone(), cp.enabled)
+                crate::rbd::model::CollisionPair::new(
+                    cp.link_a.clone(),
+                    cp.link_b.clone(),
+                    cp.enabled,
+                )
             })
             .collect();
 
@@ -489,7 +481,6 @@ mod misa_load {
         }
     }
 
-
     pub(super) fn color_spec_to_rgba(c: &mn::ColorSpec) -> [f32; 4] {
         match c {
             mn::ColorSpec::Rgba(v) => *v,
@@ -510,10 +501,7 @@ mod misa_load {
         }
     }
 
-    fn resolve_visual_color(
-        v: &mn::Visual,
-        materials: &HashMap<String, [f32; 4]>,
-    ) -> [f32; 4] {
+    fn resolve_visual_color(v: &mn::Visual, materials: &HashMap<String, [f32; 4]>) -> [f32; 4] {
         if let Some(c) = &v.color {
             return color_spec_to_rgba(c);
         }
@@ -549,11 +537,26 @@ mod misa_load {
     fn convert_sensor_kind(k: &mn::SensorKind) -> crate::rbd::model::SensorKind {
         use crate::rbd::model::SensorKind as Out;
         match k {
-            mn::SensorKind::Camera { fov, width, height, near, far } => Out::Camera {
-                fov: *fov, width: *width, height: *height, near: *near, far: *far,
+            mn::SensorKind::Camera {
+                fov,
+                width,
+                height,
+                near,
+                far,
+            } => Out::Camera {
+                fov: *fov,
+                width: *width,
+                height: *height,
+                near: *near,
+                far: *far,
             },
             mn::SensorKind::Lidar {
-                range_min, range_max, h_fov, h_samples, v_fov, v_samples,
+                range_min,
+                range_max,
+                h_fov,
+                h_samples,
+                v_fov,
+                v_samples,
             } => Out::Lidar {
                 range_min: *range_min,
                 range_max: *range_max,
@@ -562,7 +565,10 @@ mod misa_load {
                 v_fov: *v_fov,
                 v_samples: *v_samples,
             },
-            mn::SensorKind::Imu { gyro_noise, accel_noise } => Out::Imu {
+            mn::SensorKind::Imu {
+                gyro_noise,
+                accel_noise,
+            } => Out::Imu {
                 gyro_noise: *gyro_noise,
                 accel_noise: *accel_noise,
             },
@@ -582,7 +588,6 @@ mod misa_load {
 
 // compute_transforms, parent_joint_of_link, ancestor_links, link_bounding_sphere
 // are now defined in crate::rbd::model (re-exported via pub use above).
-
 
 impl RobotModel {
     /// Export the current model as a URDF XML string.
@@ -653,7 +658,10 @@ impl RobotModel {
                 .map(|v| &v.geometry)
                 .chain(link.collisions.iter().map(|c| &c.geometry))
                 .filter_map(|g| match g {
-                    GeomData::Mesh { filename: Some(uri), .. } => Some(uri),
+                    GeomData::Mesh {
+                        filename: Some(uri),
+                        ..
+                    } => Some(uri),
                     _ => None,
                 });
             for uri in uris {
@@ -698,7 +706,6 @@ impl RobotModel {
     }
 }
 
-
 pub fn resolve_package_path(filename: &str, package_dir: &Path) -> PathBuf {
     if let Some(rest) = filename.strip_prefix("package://") {
         let (pkg_name, rel_path) = match rest.find('/') {
@@ -727,9 +734,6 @@ pub fn resolve_package_path(filename: &str, package_dir: &Path) -> PathBuf {
     }
 }
 
-
-
-
 /// Write a flat `[x, y, z, nx, ny, nz]` vertex array (3 verts per tri, no indexing —
 /// same shape produced by `load_stl_mesh` / `load_obj_mesh`) as a **binary STL** file.
 ///
@@ -740,7 +744,10 @@ pub fn write_stl_binary(path: &Path, vertices: &[f32]) -> std::io::Result<()> {
     if vertices.len() % 18 != 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("vertex array length {} is not a multiple of 18", vertices.len()),
+            format!(
+                "vertex array length {} is not a multiple of 18",
+                vertices.len()
+            ),
         ));
     }
     if let Some(parent) = path.parent() {
@@ -846,10 +853,7 @@ pub fn materialize_urdf_decomposed_meshes(
     // subfolder (ROS convention) or directly in the package directory.
     //   ROS layout:    <base>/<pkg>/urdf/foo.urdf  →  mesh_root = <base>/<pkg>
     //   Direct layout: <base>/<pkg>/foo.urdf      →  mesh_root = <base>/<pkg>
-    let urdf_dir_name = urdf_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let urdf_dir_name = urdf_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let mesh_root: PathBuf = if urdf_dir_name == "urdf" {
         package_dir.to_path_buf()
     } else {
@@ -921,13 +925,13 @@ fn copy_referenced_meshes_to_misa_dir(
         if !src_abs.exists() {
             log::warn!(
                 "Mesh source not found, .misa will reference a missing file: {:?} (resolved from {:?})",
-                src_abs, filename
+                src_abs,
+                filename
             );
             return Ok(());
         }
         if let Some(parent) = dst_abs.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create {parent:?}: {e}"))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("create {parent:?}: {e}"))?;
         }
         std::fs::copy(&src_abs, &dst_abs)
             .map_err(|e| format!("copy {src_abs:?} -> {dst_abs:?}: {e}"))?;
@@ -936,12 +940,18 @@ fn copy_referenced_meshes_to_misa_dir(
 
     for link in &model.links {
         for v in &link.visuals {
-            if let GeomData::Mesh { filename: Some(f), .. } = &v.geometry {
+            if let GeomData::Mesh {
+                filename: Some(f), ..
+            } = &v.geometry
+            {
                 visit(f)?;
             }
         }
         for c in &link.collisions {
-            if let GeomData::Mesh { filename: Some(f), .. } = &c.geometry {
+            if let GeomData::Mesh {
+                filename: Some(f), ..
+            } = &c.geometry
+            {
                 visit(f)?;
             }
         }
@@ -960,7 +970,6 @@ fn sanitize_filename(s: &str) -> String {
         })
         .collect()
 }
-
 
 /// Load a mesh file (STL / OBJ / DAE by extension) via [`misarta::mesh::MeshData`].
 /// I/O errors, parse errors and unsupported formats log a warning and
@@ -1142,11 +1151,12 @@ mod misa_save {
 
         // ── Collision pairs ─────────────────────────────────────────────
         for cp in &model.collision_pairs {
-            out.collision_pair.push(misarta::config::CollisionPairConfig {
-                link_a: cp.link_a.clone(),
-                link_b: cp.link_b.clone(),
-                enabled: cp.enabled,
-            });
+            out.collision_pair
+                .push(misarta::config::CollisionPairConfig {
+                    link_a: cp.link_a.clone(),
+                    link_b: cp.link_b.clone(),
+                    enabled: cp.enabled,
+                });
         }
 
         // ── Sensors ─────────────────────────────────────────────────────
@@ -1217,18 +1227,26 @@ mod misa_save {
             GeomData::Box { hx, hy, hz } => mn::Geom::Box {
                 size: [*hx as f64 * 2.0, *hy as f64 * 2.0, *hz as f64 * 2.0],
             },
-            GeomData::Cylinder { radius, half_length } => mn::Geom::Cylinder {
+            GeomData::Cylinder {
+                radius,
+                half_length,
+            } => mn::Geom::Cylinder {
                 radius: *radius as f64,
                 length: *half_length as f64 * 2.0,
             },
             GeomData::Sphere { radius } => mn::Geom::Sphere {
                 radius: *radius as f64,
             },
-            GeomData::Capsule { radius, half_length } => mn::Geom::Capsule {
+            GeomData::Capsule {
+                radius,
+                half_length,
+            } => mn::Geom::Capsule {
                 radius: *radius as f64,
                 length: *half_length as f64 * 2.0,
             },
-            GeomData::Mesh { filename, scale, .. } => {
+            GeomData::Mesh {
+                filename, scale, ..
+            } => {
                 let file = filename
                     .as_ref()
                     .map(|s| normalise_mesh_path(s))
@@ -1313,11 +1331,26 @@ mod misa_save {
     fn sensor_kind_to_native(k: &crate::rbd::model::SensorKind) -> mn::SensorKind {
         use crate::rbd::model::SensorKind as In;
         match k {
-            In::Camera { fov, width, height, near, far } => mn::SensorKind::Camera {
-                fov: *fov, width: *width, height: *height, near: *near, far: *far,
+            In::Camera {
+                fov,
+                width,
+                height,
+                near,
+                far,
+            } => mn::SensorKind::Camera {
+                fov: *fov,
+                width: *width,
+                height: *height,
+                near: *near,
+                far: *far,
             },
             In::Lidar {
-                range_min, range_max, h_fov, h_samples, v_fov, v_samples,
+                range_min,
+                range_max,
+                h_fov,
+                h_samples,
+                v_fov,
+                v_samples,
             } => mn::SensorKind::Lidar {
                 range_min: *range_min,
                 range_max: *range_max,
@@ -1326,7 +1359,10 @@ mod misa_save {
                 v_fov: *v_fov,
                 v_samples: *v_samples,
             },
-            In::Imu { gyro_noise, accel_noise } => mn::SensorKind::Imu {
+            In::Imu {
+                gyro_noise,
+                accel_noise,
+            } => mn::SensorKind::Imu {
                 gyro_noise: *gyro_noise,
                 accel_noise: *accel_noise,
             },
