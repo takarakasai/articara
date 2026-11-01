@@ -1,0 +1,34 @@
+diff --git a/examples/kyo46rs_walk/main.rs b/examples/kyo46rs_walk/main.rs
+index a5c38b6..564a46e 100644
+--- a/examples/kyo46rs_walk/main.rs
++++ b/examples/kyo46rs_walk/main.rs
+@@ -525,6 +525,7 @@ fn main() {
+             tick,
+             estimate: &est,
+             contact_fz: measured_pre,
++            sole_cop: contacts.sole_cop(),
+             joint_pos_plant: &rig.robot.joint_positions,
+         };
+         diag.contact_dump(&rig, t);
+diff --git a/src/biped/log.rs b/src/biped/log.rs
+index 10d09ef..18c19ed 100644
+--- a/src/biped/log.rs
++++ b/src/biped/log.rs
+@@ -89,6 +89,17 @@ impl ContactReadout {
+         })
+     }
+ 
++    /// The CoP per foot in the plant's own sole frame (x forward from the
++    /// sole centre, y left), from the summed sole wrench -- what an ankle
++    /// F/T reports, no FK of the estimate involved. None for a foot at or
++    /// under 1e-6 N or with a non-finite wrench.
++    pub fn sole_cop(&self) -> [Option<[f64; 2]>; 2] {
++        std::array::from_fn(|side| {
++            let w = &self.out.sole_wrench[side];
++            (self.out.sole_wrench_valid[side] && w[5] > 1e-6).then(|| [-w[1] / w[5], w[0] / w[5]])
++        })
++    }
++
+     /// The CoP in the sole frame of `data`, the slip against `friction_mu`,
+     /// the patch position and the force.
+     pub fn finish(
