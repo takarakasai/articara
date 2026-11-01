@@ -92,6 +92,14 @@ def one(a):
         c['PUSH_IMPULSE'] = case[0]; c['PUSH_DEG'] = case[1]
         c['PUSH_STEP'] = str(s['step'] + int(os.environ.get('PUSH_STEP_OFFSET', '0'))); c['PUSH_AT'] = str(s['at'])
         c['PUSH_SUPPORT'] = os.environ.get('PUSH_SUPPORT', 'ss')
+    # SEED_MIX_TERRAIN=1 / SEED_MIX_SENSE=1 (default off): draw TERRAIN_SEED /
+    # SENSE_SEED from (SEED, k). Without them the bump layout is k+1 and the
+    # sensor noise stream the binary's default for every SEED, so a family's
+    # three seeds re-count the same terrains and the same noise (2026-11-01).
+    if os.environ.get('SEED_MIX_TERRAIN') == '1' and c.get('TERRAIN_SEED') == str(k + 1):
+        c['TERRAIN_SEED'] = str(random.Random(f"{SEED}:{k}:terrain").randrange(1, 2**31))
+    if os.environ.get('SEED_MIX_SENSE') == '1' and 'SENSE_SEED' not in c:
+        c['SENSE_SEED'] = str(random.Random(f"{SEED}:{k}:sense").randrange(1, 2**31))
     (d / 'controls.json').write_text(json.dumps(c, indent=1))
     e = dict(os.environ); e.update({k2: str(v) for k2, v in c.items()})
     try:
