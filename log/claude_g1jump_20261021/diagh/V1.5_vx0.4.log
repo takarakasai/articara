@@ -1,0 +1,138 @@
+robot: g1_23dof
+collision: dropped 21 mesh geoms, kept 12 primitives (visual meshes untouched)
+rig check: freejoint=true  ground_plane=true
+centroidal model: nv=29 na=23 mass_links=29 total_mass=34.134 kg  dt=0.001
+  torque limits (QP box == MuJoCo forcerange, from URDF effort): [25.0, 35.0, 88.0, 139.0] N*m over 23 joints
+  burn-in t=0: foot z=0.0360 (sole +0.0010 vs floor), contacts=4
+      contact                        WORLD <-> left_ankle_roll_link         |f|=9.4 N
+      contact                        WORLD <-> left_ankle_roll_link         |f|=28.8 N
+      contact                        WORLD <-> right_ankle_roll_link        |f|=31.5 N
+      contact                        WORLD <-> right_ankle_roll_link        |f|=22.6 N
+  burn-in end: foot z=0.0359 (sole +0.0009), contacts=4, sum fz=92.3 N (weight 334.9 N)
+settled (base welded) for 1.2s: max joint move from seed = 0.0032 rad  (right_knee_joint)
+actuation: mode=torque kp=0 kv=0
+post-burn-in: rpy=(+0.000,-0.002,+0.008) hip_roll=(-0.008,+0.006) foot inner-gap=+0.1965
+flight probe: m=34.13 kg, launch 1.00 m/s over 0.100 s at t=1.20, F_ON 16.7 N, ctrl 500 Hz
+logging trajectory to log/claude_g1jump_20261021/diagh/V1.5_vx0.4.csv
+  t= 0.000 nc=2 com=(+0.038,+0.000,+0.6851) vz=+0.004 roll=+0.000 pitch=-0.002 status=Optimal
+  t= 0.080 nc=2 com=(+0.038,+0.000,+0.6851) vz=-0.000 roll=+0.000 pitch=-0.002 status=Optimal
+  t= 0.160 nc=2 com=(+0.038,+0.000,+0.6851) vz=+0.000 roll=+0.000 pitch=-0.002 status=Optimal
+  t= 0.240 nc=2 com=(+0.038,+0.000,+0.6851) vz=+0.000 roll=+0.000 pitch=-0.001 status=Optimal
+  t= 0.320 nc=2 com=(+0.038,+0.000,+0.6851) vz=+0.000 roll=+0.000 pitch=-0.001 status=Optimal
+  t= 0.400 nc=2 com=(+0.038,+0.000,+0.6851) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 0.480 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 0.560 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=-0.000 pitch=-0.000 status=Optimal
+  t= 0.640 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=-0.000 pitch=-0.000 status=Optimal
+  t= 0.720 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=-0.000 pitch=-0.000 status=Optimal
+  t= 0.800 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=-0.000 pitch=-0.000 status=Optimal
+  t= 0.880 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=-0.000 pitch=-0.000 status=Optimal
+  t= 0.960 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=-0.000 pitch=-0.000 status=Optimal
+  t= 1.040 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=-0.000 pitch=-0.000 status=Optimal
+  t= 1.120 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=-0.000 pitch=-0.000 status=Optimal
+  t= 1.200 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=-0.000 pitch=-0.000 status=Optimal
+  t= 1.280 nc=2 com=(+0.039,+0.000,+0.6841) vz=-0.038 roll=-0.000 pitch=+0.001 status=Optimal
+  t= 1.360 nc=2 com=(+0.039,+0.000,+0.6774) vz=-0.136 roll=-0.000 pitch=+0.004 status=Optimal
+  t= 1.440 nc=2 com=(+0.040,+0.000,+0.6617) vz=-0.253 roll=-0.000 pitch=+0.010 status=Optimal
+  t= 1.520 nc=2 com=(+0.041,+0.000,+0.6375) vz=-0.346 roll=-0.000 pitch=+0.012 status=Optimal
+  t= 1.600 nc=2 com=(+0.041,+0.000,+0.6078) vz=-0.385 roll=-0.000 pitch=+0.009 status=Optimal
+  t= 1.680 nc=2 com=(+0.041,+0.000,+0.5776) vz=-0.361 roll=-0.000 pitch=+0.001 status=Optimal
+  t= 1.760 nc=2 com=(+0.040,+0.000,+0.5517) vz=-0.280 roll=-0.000 pitch=-0.010 status=Optimal
+  t= 1.840 nc=2 com=(+0.039,+0.000,+0.5338) vz=-0.166 roll=-0.000 pitch=-0.022 status=Optimal
+  t= 1.920 nc=2 com=(+0.038,+0.000,+0.5253) vz=-0.049 roll=-0.000 pitch=-0.030 status=Optimal
+  t= 2.000 nc=2 com=(+0.037,+0.000,+0.5240) vz=+0.002 roll=+0.000 pitch=-0.032 status=Optimal
+  t= 2.080 nc=2 com=(+0.036,+0.000,+0.5241) vz=+0.001 roll=+0.000 pitch=-0.035 status=Optimal
+  t= 2.160 nc=2 com=(+0.035,+0.000,+0.5241) vz=-0.000 roll=+0.000 pitch=-0.038 status=Optimal
+  t= 2.240 nc=2 com=(+0.035,+0.000,+0.5241) vz=-0.001 roll=+0.000 pitch=-0.040 status=Optimal
+  [h] t=2.250 GND h_y -0.040 plant -0.040 vcom model (-0.005,-0.001) plant (-0.005,-0.001) (d -0.040; ground int: fx*h +0.085 cop*fz -0.147 sum -0.061) | base -0.061 Lleg +0.012 Rleg +0.012 waist -0.000 arms -0.003 | fz 168 167 fx +0.2 +0.4
+  [h] t=2.260 GND h_y -0.039 plant -0.039 vcom model (-0.005,-0.001) plant (-0.005,-0.001) (d -0.039; ground int: fx*h +0.082 cop*fz -0.142 sum -0.060) | base -0.058 Lleg +0.011 Rleg +0.011 waist -0.000 arms -0.002 | fz 168 167 fx +0.2 +0.3
+  [h] t=2.270 GND h_y -0.037 plant -0.037 vcom model (-0.005,-0.001) plant (-0.005,-0.001) (d -0.038; ground int: fx*h +0.079 cop*fz -0.138 sum -0.059) | base -0.056 Lleg +0.011 Rleg +0.011 waist -0.000 arms -0.002 | fz 168 167 fx +0.2 +0.3
+  [h] t=2.280 GND h_y -0.036 plant -0.036 vcom model (-0.005,-0.001) plant (-0.005,-0.001) (d -0.036; ground int: fx*h +0.076 cop*fz -0.134 sum -0.058) | base -0.054 Lleg +0.010 Rleg +0.010 waist -0.000 arms -0.002 | fz 168 167 fx +0.2 +0.3
+  [h] t=2.290 GND h_y -0.035 plant -0.035 vcom model (-0.005,-0.001) plant (-0.005,-0.001) (d -0.035; ground int: fx*h +0.073 cop*fz -0.130 sum -0.056) | base -0.052 Lleg +0.010 Rleg +0.010 waist -0.000 arms -0.002 | fz 168 167 fx +0.2 +0.3
+  [h] t=2.300 GND h_y -0.034 plant -0.034 vcom model (-0.004,-0.001) plant (-0.004,-0.001) (d -0.034; ground int: fx*h +0.071 cop*fz -0.126 sum -0.055) | base -0.050 Lleg +0.009 Rleg +0.009 waist -0.000 arms -0.002 | fz 168 167 fx +0.2 +0.3
+  [h] t=2.310 GND h_y +0.065 plant +0.065 vcom model (-0.020,+0.087) plant (-0.020,+0.087) (d +0.065; ground int: fx*h +0.342 cop*fz -0.297 sum +0.045) | base -0.074 Lleg +0.070 Rleg +0.070 waist -0.000 arms -0.001 | fz 315 314 fx -19.9 -19.9
+  [h] t=2.320 GND h_y +0.203 plant +0.203 vcom model (-0.027,+0.171) plant (-0.027,+0.171) (d +0.203; ground int: fx*h +0.467 cop*fz -0.285 sum +0.182) | base -0.104 Lleg +0.153 Rleg +0.154 waist -0.000 arms +0.000 | fz 309 308 fx -7.0 -7.0
+  t= 2.320 nc=2 com=(+0.034,+0.000,+0.5259) vz=+0.171 roll=+0.000 pitch=-0.042 status=Optimal
+  [h] t=2.330 GND h_y +0.358 plant +0.358 vcom model (-0.027,+0.252) plant (-0.027,+0.252) (d +0.358; ground int: fx*h +0.478 cop*fz -0.143 sum +0.335) | base -0.140 Lleg +0.247 Rleg +0.249 waist -0.000 arms +0.002 | fz 303 303 fx +2.4 +2.4
+  [h] t=2.340 GND h_y +0.520 plant +0.520 vcom model (-0.024,+0.330) plant (-0.024,+0.330) (d +0.520; ground int: fx*h +0.412 cop*fz +0.085 sum +0.497) | base -0.181 Lleg +0.347 Rleg +0.350 waist -0.000 arms +0.003 | fz 298 298 fx +8.6 +8.5
+  [h] t=2.350 GND h_y +0.686 plant +0.686 vcom model (-0.017,+0.405) plant (-0.017,+0.405) (d +0.686; ground int: fx*h +0.295 cop*fz +0.368 sum +0.663) | base -0.224 Lleg +0.451 Rleg +0.455 waist -0.000 arms +0.005 | fz 293 292 fx +12.3 +12.3
+  [h] t=2.360 GND h_y +0.855 plant +0.855 vcom model (-0.009,+0.476) plant (-0.009,+0.476) (d +0.855; ground int: fx*h +0.147 cop*fz +0.685 sum +0.832) | base -0.270 Lleg +0.557 Rleg +0.562 waist -0.000 arms +0.006 | fz 287 287 fx +14.5 +14.5
+  [h] t=2.370 GND h_y +1.027 plant +1.027 vcom model (-0.000,+0.544) plant (-0.000,+0.544) (d +1.027; ground int: fx*h -0.019 cop*fz +1.024 sum +1.005) | base -0.316 Lleg +0.665 Rleg +0.671 waist -0.000 arms +0.007 | fz 281 280 fx +15.8 +15.7
+  [h] t=2.380 GND h_y +1.201 plant +1.201 vcom model (+0.009,+0.608) plant (+0.009,+0.608) (d +1.201; ground int: fx*h -0.204 cop*fz +1.382 sum +1.177) | base -0.365 Lleg +0.776 Rleg +0.783 waist -0.000 arms +0.008 | fz 268 268 fx +20.2 +20.1
+  [h] t=2.390 GND h_y +1.377 plant +1.377 vcom model (+0.019,+0.668) plant (+0.019,+0.668) (d +1.377; ground int: fx*h -0.375 cop*fz +1.734 sum +1.359) | base -0.416 Lleg +0.889 Rleg +0.896 waist -0.000 arms +0.008 | fz 268 268 fx +15.9 +15.8
+  [h] t=2.400 GND h_y +1.556 plant +1.556 vcom model (+0.029,+0.724) plant (+0.029,+0.724) (d +1.556; ground int: fx*h -0.566 cop*fz +2.103 sum +1.538) | base -0.470 Lleg +1.005 Rleg +1.013 waist -0.000 arms +0.009 | fz 260 260 fx +16.8 +16.7
+  t= 2.400 nc=2 com=(+0.034,-0.000,+0.5635) vz=+0.724 roll=+0.000 pitch=-0.051 status=Optimal
+  [h] t=2.410 GND h_y +1.737 plant +1.737 vcom model (+0.038,+0.776) plant (+0.038,+0.776) (d +1.737; ground int: fx*h -0.747 cop*fz +2.467 sum +1.720) | base -0.527 Lleg +1.123 Rleg +1.132 waist -0.000 arms +0.009 | fz 253 253 fx +15.8 +15.7
+  [h] t=2.420 GND h_y +1.918 plant +1.918 vcom model (+0.047,+0.824) plant (+0.047,+0.824) (d +1.918; ground int: fx*h -0.921 cop*fz +2.824 sum +1.903) | base -0.586 Lleg +1.243 Rleg +1.253 waist -0.000 arms +0.008 | fz 246 246 fx +14.7 +14.6
+  [h] t=2.430 GND h_y +2.102 plant +2.102 vcom model (+0.055,+0.867) plant (+0.055,+0.867) (d +2.101; ground int: fx*h -1.085 cop*fz +3.173 sum +2.088) | base -0.649 Lleg +1.366 Rleg +1.377 waist -0.000 arms +0.008 | fz 238 238 fx +13.6 +13.6
+  [h] t=2.440 GND h_y +2.292 plant +2.292 vcom model (+0.062,+0.905) plant (+0.062,+0.905) (d +2.292; ground int: fx*h -1.213 cop*fz +3.508 sum +2.295) | base -0.714 Lleg +1.491 Rleg +1.508 waist -0.000 arms +0.007 | fz 214 213 fx +1.8 +2.3
+  [h] t=2.450 GND h_y +2.499 plant +2.499 vcom model (+0.068,+0.937) plant (+0.068,+0.937) (d +2.499; ground int: fx*h -1.356 cop*fz +3.841 sum +2.485) | base -0.782 Lleg +1.638 Rleg +1.637 waist -0.000 arms +0.005 | fz 227 223 fx +14.7 +12.9
+  [h] t=2.460 GND h_y +2.698 plant +2.698 vcom model (+0.074,+0.964) plant (+0.074,+0.964) (d +2.698; ground int: fx*h -1.470 cop*fz +4.161 sum +2.691) | base -0.852 Lleg +1.761 Rleg +1.785 waist -0.000 arms +0.004 | fz 212 205 fx +9.0 +6.5
+  [h] t=2.470 GND h_y +2.881 plant +2.881 vcom model (+0.080,+0.988) plant (+0.080,+0.988) (d +2.881; ground int: fx*h -1.606 cop*fz +4.476 sum +2.871) | base -0.919 Lleg +1.871 Rleg +1.927 waist +0.000 arms +0.002 | fz 212 207 fx +13.9 +14.7
+  [h] t=2.480 GND h_y +3.042 plant +3.042 vcom model (+0.086,+1.002) plant (+0.086,+1.002) (d +3.042; ground int: fx*h -1.737 cop*fz +4.787 sum +3.050) | base -0.980 Lleg +1.977 Rleg +2.044 waist +0.000 arms +0.001 | fz 207 192 fx +8.9 +11.9
+  t= 2.480 nc=2 com=(+0.038,-0.000,+0.6348) vz=+1.002 roll=+0.000 pitch=-0.070 status=Optimal
+  [h] t=2.490 GND h_y +3.282 plant +3.282 vcom model (+0.088,+1.008) plant (+0.088,+1.008) (d +3.282; ground int: fx*h -1.798 cop*fz +5.066 sum +3.268) | base -1.052 Lleg +2.188 Rleg +2.147 waist -0.000 arms -0.001 | fz 149 190 fx -18.1 +20.8
+  [h] t=2.500 GND h_y +3.646 plant +3.646 vcom model (+0.080,+0.989) plant (+0.080,+0.989) (d +3.645; ground int: fx*h -1.643 cop*fz +5.287 sum +3.644) | base -1.155 Lleg +2.528 Rleg +2.277 waist -0.000 arms -0.005 | fz 135 113 fx -30.8 -12.7
+  [h] t=2.510 GND h_y +3.553 plant +3.553 vcom model (+0.095,+0.980) plant (+0.095,+0.980) (d +3.553; ground int: fx*h -2.094 cop*fz +5.558 sum +3.464) | base -1.082 Lleg +2.370 Rleg +2.269 waist -0.000 arms -0.004 | fz 175 34 fx +53.8 -1.0
+  [release] t=2.516 after 0.012 s (one foot unloaded: fz 125 16)
+  [lift-off] t=2.518 com (+0.042, z 0.6724) v (+0.099, +0.971), foot x ["+0.006", "+0.011"] z ["+0.040", "+0.039"], h_ang (+0.012,+3.681,-0.059), roll +0.001 pitch -0.083
+  [hx] lift-off h_x +0.012 | base +0.057 Lleg -0.417 Rleg +0.372 waist +0.007 arms -0.007
+  [hx] crouch  dt 0.800 dh_x +0.004 ground +0.005 = fzdiff +0.013 cop -0.014 com +0.008 fy*h -0.003 | mean fzL-fzR +0.1
+  [hx] hold    dt 0.300 dh_x -0.003 ground -0.003 = fzdiff +0.013 cop -0.027 com +0.008 fy*h +0.002 | mean fzL-fzR +0.4
+  [hx] push    dt 0.206 dh_x +0.145 ground +0.141 = fzdiff +0.066 cop -0.200 com +0.030 fy*h +0.246 | mean fzL-fzR +2.7
+  [hx] release dt 0.012 dh_x -0.134 ground -0.076 = fzdiff +0.193 cop +0.055 com -0.000 fy*h -0.324 | mean fzL-fzR +131.0
+  [hx] loaded  dt 0.000 dh_x NaN ground +0.000 = fzdiff +0.000 cop +0.000 com +0.000 fy*h +0.000 | mean fzL-fzR +0.0
+  [airborne] t=2.520 both feet unloaded: h_ang (+0.012,+3.681,-0.058) com vz +0.951
+  [h] t=2.520 AIR h_y +3.681 plant +3.681 vcom model (+0.099,+0.951) plant (+0.099,+0.951) (d +3.681; ground int: fx*h -2.246 cop*fz +5.637 sum +3.391) | base -0.620 Lleg +2.132 Rleg +2.177 waist +0.000 arms -0.008 | fz 0 0 fx +0.0 +0.0
+  [h] t=2.530 AIR h_y +3.680 plant +3.680 vcom model (+0.099,+0.853) plant (+0.099,+0.853) (d +3.679; ground int: fx*h -2.246 cop*fz +5.637 sum +3.391) | base +0.893 Lleg +1.370 Rleg +1.429 waist +0.000 arms -0.012 | fz 0 0 fx +0.0 +0.0
+  [h] t=2.540 AIR h_y +3.679 plant +3.679 vcom model (+0.099,+0.754) plant (+0.099,+0.754) (d +3.678; ground int: fx*h -2.246 cop*fz +5.637 sum +3.391) | base +2.153 Lleg +0.735 Rleg +0.803 waist +0.000 arms -0.012 | fz 0 0 fx +0.0 +0.0
+  [h] t=2.550 AIR h_y +3.678 plant +3.678 vcom model (+0.099,+0.656) plant (+0.099,+0.656) (d +3.678; ground int: fx*h -2.246 cop*fz +5.637 sum +3.391) | base +3.217 Lleg +0.197 Rleg +0.274 waist +0.000 arms -0.011 | fz 0 0 fx +0.0 +0.0
+  [h] t=2.560 AIR h_y +3.677 plant +3.677 vcom model (+0.099,+0.558) plant (+0.099,+0.558) (d +3.677; ground int: fx*h -2.246 cop*fz +5.637 sum +3.391) | base +4.110 Lleg -0.256 Rleg -0.168 waist +0.000 arms -0.009 | fz 0 0 fx +0.0 +0.0
+  t= 2.560 nc=0 com=(+0.046,-0.000,+0.7043) vz=+0.558 roll=+0.001 pitch=-0.059 status=Optimal
+  t= 2.640 nc=0 com=(+0.054,-0.001,+0.7171) vz=-0.227 roll=+0.002 pitch=+0.069 status=Optimal
+  [td-foot] R first load t=2.662 | L sole z +0.0039 roll -0.091 pitch -0.032 fz 0 | R sole z +0.0018 roll -0.006 pitch -0.038 fz 270
+  [touchdown] t=2.662 after 0.144 s, com (+0.056, z 0.7096) v (+0.099, -0.443), foot x ["+0.005", "+0.005"], feet [false, true]
+  [td-foot] L first load t=2.664 | L sole z +0.0027 roll -0.089 pitch -0.031 fz 227 | R sole z +0.0006 roll -0.009 pitch -0.029 fz 316
+    [degraded] t= 2.686 nc=2 level=eom status=Degraded { level: 0, status: NumericalFailure }
+    [degraded] t= 2.690 nc=2 level=eom status=Degraded { level: 0, status: NumericalFailure }
+  t= 2.720 nc=2 com=(+0.068,-0.001,+0.7036) vz=-0.027 roll=-0.003 pitch=+0.141 status=Optimal
+  t= 2.800 nc=2 com=(+0.091,-0.000,+0.6955) vz=-0.122 roll=-0.004 pitch=+0.125 status=Optimal
+  t= 2.880 nc=2 com=(+0.115,-0.001,+0.6880) vz=-0.086 roll=-0.003 pitch=+0.090 status=Optimal
+  t= 2.960 nc=2 com=(+0.139,-0.001,+0.6811) vz=-0.114 roll=-0.001 pitch=+0.056 status=Optimal
+  t= 3.040 nc=2 com=(+0.164,-0.003,+0.6718) vz=-0.170 roll=-0.008 pitch=+0.018 status=Optimal
+  t= 3.120 nc=2 com=(+0.191,-0.002,+0.6606) vz=-0.177 roll=-0.005 pitch=-0.024 status=Optimal
+  t= 3.200 nc=2 com=(+0.219,-0.002,+0.6542) vz=+0.068 roll=-0.001 pitch=-0.058 status=Optimal
+  t= 3.280 nc=2 com=(+0.243,-0.002,+0.6602) vz=+0.072 roll=+0.000 pitch=-0.041 status=Optimal
+  t= 3.360 nc=2 com=(+0.263,-0.003,+0.6653) vz=+0.068 roll=+0.002 pitch=-0.025 status=Optimal
+  t= 3.440 nc=2 com=(+0.279,-0.003,+0.6696) vz=+0.051 roll=+0.002 pitch=-0.017 status=Optimal
+  t= 3.520 nc=2 com=(+0.289,-0.004,+0.6738) vz=+0.065 roll=+0.000 pitch=-0.016 status=Optimal
+  t= 3.600 nc=2 com=(+0.297,-0.007,+0.6774) vz=+0.056 roll=+0.009 pitch=-0.012 status=Optimal
+  t= 3.680 nc=2 com=(+0.299,-0.009,+0.6800) vz=+0.023 roll=+0.004 pitch=-0.015 status=Optimal
+  t= 3.760 nc=1 com=(+0.300,-0.014,+0.6816) vz=+0.036 roll=+0.014 pitch=-0.018 status=Optimal
+  t= 3.840 nc=1 com=(+0.304,-0.030,+0.6831) vz=+0.000 roll=+0.027 pitch=-0.013 status=Optimal
+  t= 3.920 nc=1 com=(+0.306,-0.056,+0.6810) vz=-0.056 roll=+0.039 pitch=-0.012 status=Optimal
+  t= 4.000 nc=1 com=(+0.303,-0.095,+0.6731) vz=-0.148 roll=+0.046 pitch=-0.015 status=Optimal
+  t= 4.080 nc=1 com=(+0.296,-0.148,+0.6556) vz=-0.303 roll=+0.049 pitch=-0.021 status=Optimal
+  t= 4.160 nc=1 com=(+0.284,-0.216,+0.6221) vz=-0.556 roll=+0.047 pitch=-0.029 status=Optimal
+  t= 4.240 nc=1 com=(+0.270,-0.299,+0.5623) vz=-0.947 roll=+0.044 pitch=-0.038 status=Optimal
+  t= 4.320 nc=1 com=(+0.239,-0.387,+0.4963) vz=-0.979 roll=+0.070 pitch=-0.042 status=Optimal
+  [lift-off] t=4.396 com (+0.199, z 0.4096) v (-0.580, -1.247), foot x ["+0.271", "+0.604"] z ["+0.046", "+0.044"], h_ang (+2.471,-3.433,-0.361), roll +0.074 pitch -0.082
+  [touchdown] t=4.398 after 0.002 s, com (+0.198, z 0.4071) v (-0.580, -1.267), foot x ["+0.273", "+0.603"], feet [true, false]
+  t= 4.400 nc=1 com=(+0.197,-0.475,+0.4045) vz=-1.261 roll=+0.074 pitch=-0.085 status=Optimal
+  [lift-off] t=4.462 com (+0.158, z 0.3284) v (-0.712, -1.286), foot x ["+0.367", "+0.611"] z ["+0.040", "+0.120"], h_ang (+0.576,-6.865,+0.609), roll +0.055 pitch -0.174
+  FELL at t=4.464 (z=0.297, tilt=0.177)
+
+=== Flight probe ===
+  flight spans: ["2.518-2.662 (0.144 s)", "4.396-4.398 (0.002 s)"]
+  flight ticks: 74, non-optimal solves in flight: 0
+  max |predicted CoM accel - g| in flight: 0.0000 m/s^2  (QP base dynamics ballistic if ~0)
+  max |measured CoM accel - g| in flight:  0.6894 m/s^2
+  max |predicted d(h_ang)/dt| in flight:   0.0000 N*m  (conservation if ~0)
+  max |h_ang - h_ang(lift-off)| measured:  0.0080 kg*m^2/s
+  max torque-box use in flight: 1.00
+  forward: lift-off vx +0.099, touchdown CoM dx +0.018, final CoM dx +0.118 m
+  max tilt after touchdown: 0.177 rad, min CoM z after touchdown 0.326 (stand 0.685)
+  first touchdown vz -0.443 m/s, peak GRF in the first 1 s 4.67 x weight, peak torque-box use 1.00
+  degraded solves (all): 2
+    by level: eom=2
+  landing steps: 0
+  verdict: FELL
