@@ -245,6 +245,44 @@ fn main() {
     // pitch and rate, and CoP x per foot. Where the take-off vx goes missing.
     let diag_pushx = flag("DIAG_PUSHX", false);
     let mut diag_com_vref: Option<(na::Vector3<f64>, na::Vector3<f64>)> = None; // (vel ref, acc ref)
+    // JUMP_MPC=1: plan the push's sagittal motion instead of scripting it.
+    // From JUMP_MPC_FROM s after T_LAUNCH to the end of the push, every
+    // JUMP_MPC_EVERY ticks, from the measured CoM x, vx and h_y: the CoM x
+    // acceleration and the net CoP x per JUMP_MPC_DT node (`plan_push`),
+    // with the vertical plan (crouch, hold, push) kept as scripted, so the
+    // vertical force is known and the problem is a convex QP. Goal: lift-off
+    // vx = JUMP_MPC_VX (default JUMP_VX) and h_y = 0, the CoP inside the
+    // soles less JUMP_MPC_COP_MARGIN, the CoM within JUMP_MPC_X_FWD ahead of
+    // / JUMP_MPC_X_BACK behind the sole centres. The plan replaces the CoM x
+    // reference (coasting through the release) and the momentum task's
+    // pitch reference (h_y and its rate, fed forward). Measured 2026-11-02:
+    // the scripted push pins the CoP on the heel edge and the lift-off vx
+    // tops out at 0.46 m/s for a 1.2 command. Off = bit-identical.
+    let jump_mpc = flag("JUMP_MPC", false);
+    let jump_mpc_from = env_f64("JUMP_MPC_FROM", 0.0).max(0.0);
+    let jump_mpc_dt = env_f64("JUMP_MPC_DT", 0.02).max(0.004);
+    let jump_mpc_every = (env_f64("JUMP_MPC_EVERY", 5.0) as usize).max(1);
+    let jump_mpc_meas = flag("JUMP_MPC_MEAS", false);
+    let diag_mpc = flag("DIAG_MPC", false);
+    let mut push_cfg = PushPlanCfg {
+        vx_target: env_f64("JUMP_MPC_VX", jump_vx),
+        w_v: env_f64("JUMP_MPC_WV", 1e3),
+        w_h: env_f64("JUMP_MPC_WH", 1e2),
+        w_h_run: env_f64("JUMP_MPC_WH_RUN", 1.0),
+        w_a: env_f64("JUMP_MPC_WA", 0.01),
+        w_da: env_f64("JUMP_MPC_WDA", 0.1),
+        w_dp: env_f64("JUMP_MPC_WDP", 1e2),
+        mu: env_f64("JUMP_MPC_MU", 0.8 * friction_mu),
+        cop_lo: 0.0,
+        cop_hi: 0.0,
+        x_lo: 0.0,
+        x_hi: 0.0,
+    };
+    let jump_mpc_cop_margin = env_f64("JUMP_MPC_COP_MARGIN", 0.02);
+    let jump_mpc_x_fwd = env_f64("JUMP_MPC_X_FWD", 0.12);
+    let jump_mpc_x_back = env_f64("JUMP_MPC_X_BACK", 0.06);
+    let mut push_plan: Option<PushPlan> = None;
+    let mut mpc_fails = 0usize;
     let mut air_sched = false;
     let mut left_ground = false;
     let f_on = env_f64("F_ON", 0.05 * weight);
@@ -769,6 +807,7 @@ fn main() {
             levels.push(p0.task);
             names.push("contact+cones");
         }
+        let mut mpc_h: Option<(f64, f64)> = None; // JUMP_MPC: planned (h_y, dh_y)
         if !flight || flight_keep_com {
             let (mut c_ref, mut cd_ref, mut cdd_ref) = match land {
                 Some((t0, c0, v0)) => {
@@ -887,6 +926,89 @@ fn main() {
                             println!("  [take-off] t={t:.3} scheduled flight: com z {:.4} vz {:+.3} (ref {:.4} {:+.3}), push {t_push:.3} s at {a:.2} m/s^2", com.z, com_vel.z, z, vz);
                         }
                     }
+                    if jump_mpc && s >= jump_mpc_from {
+                        let dz = stand_z + jump_z_to - z_low;
+                        let r = jump_push_r;
+                        let (t_push, a0, kk) = if r < 1.0 {
+                            let tp = 3.0 * dz * (1.0 + r) / ((2.0 + r) * jump_v);
+                            (tp, 2.0 * jump_v / ((1.0 + r) * tp), (1.0 - r) / tp)
+                        } else {
+                            let a = jump_v * jump_v / (2.0 * dz);
+                            (jump_v / a, a, 0.0)
+                        };
+                        let s_end = jump_t_crouch + jump_t_hold + t_push;
+                        // the scripted vertical plan: (z, az) at s
+                        let vert = |s: f64| -> (f64, f64) {
+                            if s < jump_t_crouch {
+                                let (z, _, az) = quintic(stand_z, 0.0, z_low, jump_t_crouch, s);
+                                (z, az)
+                            } else if s < jump_t_crouch + jump_t_hold {
+                                (z_low, 0.0)
+                            } else {
+                                let sp = (s - jump_t_crouch - jump_t_hold).min(t_push);
+                                (z_low + a0 * (0.5 * sp * sp - kk * sp.powi(3) / 6.0), a0 * (1.0 - kk * sp))
+                            }
+                        };
+                        let rem = s_end - s;
+                        if rem > 0.5 * jump_mpc_dt && (push_plan.is_none() || tick % jump_mpc_every == 0) {
+                            let nn = (rem / jump_mpc_dt).ceil().max(1.0) as usize;
+                            let dtn = rem / nn as f64;
+                            let foot = |k: usize| misarta::se3::translation(&data.oMi[feet[k]]);
+                            let z_g = 0.5 * (foot(0).z + foot(1).z) - prof.sole_below_origin;
+                            let xs = 0.5 * (foot(0).x + foot(1).x) + prof.sole_centre_x;
+                            let (zeta, fzv): (Vec<f64>, Vec<f64>) = (0..nn)
+                                .map(|k| {
+                                    let (z, az) = vert(s + (k as f64 + 0.5) * dtn);
+                                    (z - z_g, total_mass * (G + az))
+                                })
+                                .unzip();
+                            push_cfg.cop_lo = xs - sole_half_l + jump_mpc_cop_margin;
+                            push_cfg.cop_hi = xs + sole_half_l - jump_mpc_cop_margin;
+                            push_cfg.x_lo = xs - jump_mpc_x_back;
+                            push_cfg.x_hi = xs + jump_mpc_x_fwd;
+                            let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
+                            let h_y = (&cmm * v_dvec)[1];
+                            // JUMP_MPC_MEAS=0: replan from the current plan's own
+                            // state at t (the WBC's PD tracks the plan); =1 from
+                            // the measured CoM x, vx and h_y. The first plan is
+                            // always from the measured state.
+                            let (x0, v0, h0) = match (&push_plan, jump_mpc_meas) {
+                                (Some(pl), false) => {
+                                    let (px, pv, _, ph, _) = pl.eval(t);
+                                    (px, pv, ph)
+                                }
+                                _ => (com.x, com_vel.x, h_y),
+                            };
+                            match plan_push(t, dtn, x0, v0, h0, total_mass, &zeta, &fzv, &push_cfg) {
+                                Ok(pl) => {
+                                    if diag_mpc {
+                                        let (_, ve, _, he, _) = pl.eval(t + rem);
+                                        let pmin = pl.p.iter().cloned().fold(f64::INFINITY, f64::min) - xs;
+                                        let pmax = pl.p.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - xs;
+                                        let xmax = (0..=nn).map(|k| pl.eval(t + k as f64 * dtn).0).fold(f64::NEG_INFINITY, f64::max) - xs;
+                                        println!(
+                                            "  [mpc] t={t:.3} n {nn} rem {rem:.3} | now x-xs {:+.3} vx {:+.3} h_y {h_y:+.3} | plan a0 {:+.2} p0-xs {:+.3} p-xs [{pmin:+.3},{pmax:+.3}] max x-xs {xmax:+.3} | end vx {ve:+.3} h_y {he:+.3}",
+                                            com.x - xs, com_vel.x, pl.a[0], pl.p[0] - xs
+                                        );
+                                    }
+                                    push_plan = Some(pl);
+                                }
+                                Err(e) => {
+                                    mpc_fails += 1;
+                                    if diag_mpc {
+                                        println!("  [mpc] t={t:.3} solve failed ({mpc_fails}): {e}");
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(pl) = &push_plan {
+                            let (px, pv, pa, ph, pdh) = pl.eval(t);
+                            x = px - c_ref.x;
+                            vx = pv;
+                            ax = pa;
+                            mpc_h = Some((ph, pdh));
+                        }
+                    }
                     (na::Vector3::new(c_ref.x + x, c_ref.y, z), na::Vector3::new(vx, 0.0, vz), na::Vector3::new(ax, 0.0, az))
                 }
                 None => (c_ref, na::Vector3::zeros(), na::Vector3::zeros()),
@@ -935,8 +1057,9 @@ fn main() {
             let dcmm_v = misarta::centroidal::compute_cmm_dot_times_v(&rig.model, q, v);
             let h_now = na::DVector::from_column_slice((&cmm * v_dvec).as_slice());
             let dcmm_v = na::DVector::from_column_slice(dcmm_v.as_slice());
+            let (h_ref_m, dh_ref_m) = mpc_h.map_or(([0.0; 3], [0.0; 3]), |(h, dh)| ([0.0, h, 0.0], [0.0, dh, 0.0]));
             let cmm = na::DMatrix::from_column_slice(cmm.nrows(), cmm.ncols(), cmm.as_slice());
-            if let Some(tk) = bt::angular_momentum(dyn_ctx.qddot(), &cmm, &dcmm_v, &h_now, &[0.0; 3], &[0.0; 3], kp_mom, [true; 3], nv) {
+            if let Some(tk) = bt::angular_momentum(dyn_ctx.qddot(), &cmm, &dcmm_v, &h_now, &h_ref_m, &dh_ref_m, kp_mom, [true; 3], nv) {
                 levels.push(tk);
                 names.push("momentum");
             }
@@ -1304,7 +1427,204 @@ fn main() {
     println!("  degraded solves (all): {}", tally.n);
     tally.report();
     println!("  landing steps: {steps_done}");
+    if jump_mpc {
+        println!("  push MPC failed solves: {mpc_fails}");
+    }
     println!("  verdict: {}", if fell { "FELL" } else if flight_spans.is_empty() { "NO FLIGHT" } else { "LANDED" });
+}
+
+/// The sagittal push plan of `JUMP_MPC`: per node, the CoM's x acceleration
+/// and the net CoP x, piecewise constant, from the solve time to the end of
+/// the push.
+#[cfg(feature = "mujoco")]
+#[derive(Clone, Debug)]
+struct PushPlan {
+    t0: f64,
+    dt: f64,
+    x0: f64,
+    v0: f64,
+    h0: f64,
+    m: f64,
+    a: Vec<f64>,
+    p: Vec<f64>,
+    /// CoM height above the soles and vertical force at each node's midpoint.
+    zeta: Vec<f64>,
+    fz: Vec<f64>,
+}
+
+#[cfg(feature = "mujoco")]
+impl PushPlan {
+    /// (x, vx, ax, h_y, dh_y) at time t; past the last node the end state
+    /// coasts (zero acceleration and moment).
+    fn eval(&self, t: f64) -> (f64, f64, f64, f64, f64) {
+        let (mut x, mut v, mut h) = (self.x0, self.v0, self.h0);
+        let mut s = (t - self.t0).max(0.0);
+        for k in 0..self.a.len() {
+            let d = s.min(self.dt);
+            let (a, p) = (self.a[k], self.p[k]);
+            let dh = |x: f64| -self.zeta[k] * self.m * a - (p - x) * self.fz[k];
+            if s <= self.dt {
+                let xm = x + 0.5 * v * d + a * d * d / 8.0;
+                h += d * dh(xm);
+                x += v * d + 0.5 * a * d * d;
+                v += a * d;
+                return (x, v, a, h, dh(x));
+            }
+            let xm = x + 0.5 * v * d + a * d * d / 8.0;
+            h += d * dh(xm);
+            x += v * d + 0.5 * a * d * d;
+            v += a * d;
+            s -= d;
+        }
+        (x + v * s, v, 0.0, h, 0.0)
+    }
+}
+
+/// Weights and bounds of the `JUMP_MPC` push planner.
+#[cfg(feature = "mujoco")]
+#[derive(Clone, Debug)]
+struct PushPlanCfg {
+    vx_target: f64,
+    w_v: f64,
+    w_h: f64,
+    w_h_run: f64,
+    w_a: f64,
+    w_da: f64,
+    w_dp: f64,
+    mu: f64,
+    /// CoP box in world x (net, both soles side by side).
+    cop_lo: f64,
+    cop_hi: f64,
+    /// CoM x box in world x.
+    x_lo: f64,
+    x_hi: f64,
+}
+
+/// Plan the CoM's x acceleration and the net CoP x from the state now to the
+/// end of the push, given the vertical plan (CoM height above the soles and
+/// vertical force at each node's midpoint, from the script). With the
+/// vertical fixed the pitch momentum is linear in the plan:
+///     dh_y/dt = -zeta f_x - (p - x) f_z,   f_x = m a
+/// so the push is one convex QP: reach `vx_target` with h_y = 0 at the end,
+/// the CoP inside the soles and the friction cone, the CoM inside its box.
+#[cfg(feature = "mujoco")]
+#[allow(clippy::too_many_arguments)]
+fn plan_push(
+    t0: f64,
+    dt: f64,
+    x0: f64,
+    v0: f64,
+    h0: f64,
+    m: f64,
+    zeta: &[f64],
+    fz: &[f64],
+    c: &PushPlanCfg,
+) -> Result<PushPlan, String> {
+    use nalgebra as na;
+    let n = zeta.len();
+    if n == 0 || fz.len() != n {
+        return Err("empty horizon".into());
+    }
+    let nu = 2 * n; // [a_0..a_{n-1}, p_0..p_{n-1}]
+    // Affine maps (row, constant) of the states at the start of each node.
+    type Aff = (na::DVector<f64>, f64);
+    let mut xs: Vec<Aff> = Vec::with_capacity(n + 1);
+    let mut vs: Vec<Aff> = Vec::with_capacity(n + 1);
+    let mut hs: Vec<Aff> = Vec::with_capacity(n + 1);
+    let (mut x, mut v, mut h) = ((na::DVector::zeros(nu), x0), (na::DVector::zeros(nu), v0), (na::DVector::zeros(nu), h0));
+    for k in 0..n {
+        xs.push(x.clone());
+        vs.push(v.clone());
+        hs.push(h.clone());
+        // midpoint x: x + v dt/2 + a dt^2/8
+        let mut xm = (&x.0 + &v.0 * (0.5 * dt), x.1 + v.1 * 0.5 * dt);
+        xm.0[k] += dt * dt / 8.0;
+        // h += dt (-zeta m a - f p + f xm)
+        let mut hn = (&h.0 + &xm.0 * (dt * fz[k]), h.1 + dt * fz[k] * xm.1);
+        hn.0[k] -= dt * zeta[k] * m;
+        hn.0[n + k] -= dt * fz[k];
+        let mut xn = (&x.0 + &v.0 * dt, x.1 + v.1 * dt);
+        xn.0[k] += 0.5 * dt * dt;
+        let mut vn = v.clone();
+        vn.0[k] += dt;
+        x = xn;
+        v = vn;
+        h = hn;
+    }
+    xs.push(x);
+    vs.push(v);
+    hs.push(h);
+
+    let mut hm = na::DMatrix::<f64>::identity(nu, nu) * 1e-9;
+    let mut g = na::DVector::<f64>::zeros(nu);
+    let mut add = |r: &na::DVector<f64>, d: f64, tgt: f64, w: f64| {
+        hm += r * r.transpose() * (2.0 * w);
+        g += r * (2.0 * w * (d - tgt));
+    };
+    add(&vs[n].0, vs[n].1, c.vx_target, c.w_v);
+    add(&hs[n].0, hs[n].1, 0.0, c.w_h);
+    for k in 1..n {
+        add(&hs[k].0, hs[k].1, 0.0, c.w_h_run * dt);
+    }
+    for k in 0..n {
+        let mut r = na::DVector::zeros(nu);
+        r[k] = 1.0;
+        add(&r, 0.0, 0.0, c.w_a * dt);
+        if k > 0 {
+            let mut r = na::DVector::zeros(nu);
+            r[k] = 1.0;
+            r[k - 1] = -1.0;
+            add(&r, 0.0, 0.0, c.w_da);
+            let mut r = na::DVector::zeros(nu);
+            r[n + k] = 1.0;
+            r[n + k - 1] = -1.0;
+            add(&r, 0.0, 0.0, c.w_dp);
+        }
+    }
+    // A u <= b
+    let rows = 4 * n + 2 * n;
+    let mut a = na::DMatrix::<f64>::zeros(rows, nu);
+    let mut b = na::DVector::<f64>::zeros(rows);
+    let mut i = 0;
+    for k in 0..n {
+        let amax = c.mu * fz[k].max(0.0) / m;
+        a[(i, k)] = 1.0;
+        b[i] = amax;
+        a[(i + 1, k)] = -1.0;
+        b[i + 1] = amax;
+        a[(i + 2, n + k)] = 1.0;
+        b[i + 2] = c.cop_hi;
+        a[(i + 3, n + k)] = -1.0;
+        b[i + 3] = -c.cop_lo;
+        i += 4;
+    }
+    for k in 1..=n {
+        let (r, d) = &xs[k];
+        a.row_mut(i).copy_from(&r.transpose());
+        b[i] = c.x_hi - d;
+        a.row_mut(i + 1).copy_from(&(-r).transpose());
+        b[i + 1] = d - c.x_lo;
+        i += 2;
+    }
+    // The built-in interior point: the active set's cold Phase-1 reported
+    // feasible plans infeasible (2026-11-03, "Infeasible after 0 iterations").
+    let qp = misa_wbc::qp::QpConfig { solver: misa_wbc::qp::QpSolver::Ipm, max_iters: 200, ..Default::default() };
+    let sol = misa_wbc::qp::solve_qp(&hm, &g, None, None, Some(&a), Some(&b), None, &qp);
+    if sol.status != misa_wbc::qp::QpStatus::Optimal {
+        return Err(format!("{:?} after {} iterations", sol.status, sol.iterations));
+    }
+    Ok(PushPlan {
+        t0,
+        dt,
+        x0,
+        v0,
+        h0,
+        m,
+        a: sol.x.rows(0, n).iter().copied().collect(),
+        p: sol.x.rows(n, n).iter().copied().collect(),
+        zeta: zeta.to_vec(),
+        fz: fz.to_vec(),
+    })
 }
 
 #[cfg(not(feature = "mujoco"))]

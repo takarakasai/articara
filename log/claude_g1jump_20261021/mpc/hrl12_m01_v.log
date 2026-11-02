@@ -1,0 +1,1028 @@
+robot: g1_23dof
+collision: dropped 21 mesh geoms, kept 12 primitives (visual meshes untouched)
+rig check: freejoint=true  ground_plane=true
+centroidal model: nv=29 na=23 mass_links=29 total_mass=34.134 kg  dt=0.001
+  torque limits (QP box == MuJoCo forcerange, from URDF effort): [25.0, 35.0, 88.0, 139.0] N*m over 23 joints
+  burn-in t=0: foot z=0.0360 (sole +0.0010 vs floor), contacts=0
+  burn-in end: foot z=0.0359 (sole +0.0009), contacts=0, sum fz=-0.0 N (weight 334.9 N)
+settled (base welded) for 1.2s: max joint move from seed = 0.0026 rad  (left_hip_pitch_joint)
+actuation: mode=torque kp=0 kv=0
+post-burn-in: rpy=(+0.002,-0.003,-0.000) hip_roll=(-0.010,-0.004) foot inner-gap=+0.1961
+flight probe: m=34.13 kg, launch 1.00 m/s over 0.100 s at t=1.08, F_ON 16.7 N, ctrl 500 Hz
+  t= 0.000 nc=2 com=(+0.039,-0.000,+0.6850) vz=+0.026 roll=+0.002 pitch=-0.003 status=Optimal
+  t= 0.080 nc=2 com=(+0.039,-0.001,+0.6854) vz=-0.001 roll=+0.003 pitch=-0.002 status=Optimal
+  t= 0.160 nc=2 com=(+0.039,-0.001,+0.6853) vz=-0.001 roll=+0.002 pitch=-0.002 status=Optimal
+  t= 0.240 nc=2 com=(+0.039,-0.001,+0.6853) vz=-0.000 roll=+0.001 pitch=-0.001 status=Optimal
+  t= 0.320 nc=2 com=(+0.039,-0.001,+0.6853) vz=-0.000 roll=+0.001 pitch=-0.001 status=Optimal
+  t= 0.400 nc=2 com=(+0.039,-0.001,+0.6853) vz=-0.000 roll=+0.001 pitch=-0.000 status=Optimal
+  t= 0.480 nc=2 com=(+0.039,-0.001,+0.6853) vz=-0.000 roll=+0.001 pitch=-0.000 status=Optimal
+  t= 0.560 nc=2 com=(+0.039,-0.001,+0.6853) vz=-0.000 roll=+0.001 pitch=-0.000 status=Optimal
+  t= 0.640 nc=2 com=(+0.039,-0.000,+0.6852) vz=-0.000 roll=+0.001 pitch=-0.000 status=Optimal
+  t= 0.720 nc=2 com=(+0.039,-0.000,+0.6852) vz=-0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 0.800 nc=2 com=(+0.039,-0.000,+0.6852) vz=-0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 0.880 nc=2 com=(+0.039,-0.000,+0.6852) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 0.960 nc=2 com=(+0.039,-0.000,+0.6852) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 1.040 nc=2 com=(+0.039,-0.000,+0.6852) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  [push] t=1.080 com x +0.0387 z 0.6852 vz +0.000 h_y +0.000 pitch -0.0001 cop_x L -0.0105 R -0.0090 fz 167 166 foot x +0.0157
+  [tau] t=1.080 right_ankle_pitch=+5/35 (0.13)  left_ankle_pitch=+4/35 (0.13)  right_knee=-12/139 (0.08)  left_knee=-11/139 (0.08)
+  [push] t=1.082 com x +0.0387 z 0.6852 vz -0.000 h_y -0.000 pitch -0.0001 cop_x L -0.0070 R -0.0058 fz 166 166 foot x +0.0157
+  [push] t=1.084 com x +0.0387 z 0.6852 vz -0.000 h_y -0.001 pitch -0.0001 cop_x L -0.0076 R -0.0064 fz 166 166 foot x +0.0157
+  [push] t=1.086 com x +0.0387 z 0.6852 vz -0.000 h_y -0.002 pitch -0.0001 cop_x L -0.0083 R -0.0071 fz 166 166 foot x +0.0157
+  [push] t=1.088 com x +0.0387 z 0.6852 vz -0.000 h_y -0.002 pitch -0.0001 cop_x L -0.0090 R -0.0078 fz 165 166 foot x +0.0157
+  [push] t=1.090 com x +0.0387 z 0.6852 vz -0.000 h_y -0.002 pitch -0.0001 cop_x L -0.0098 R -0.0086 fz 165 166 foot x +0.0157
+  [tau] t=1.090 right_ankle_pitch=+4/35 (0.12)  left_ankle_pitch=+4/35 (0.11)  right_knee=-12/139 (0.09)  left_knee=-12/139 (0.08)
+  [push] t=1.092 com x +0.0387 z 0.6852 vz -0.000 h_y -0.003 pitch -0.0001 cop_x L -0.0106 R -0.0093 fz 165 166 foot x +0.0157
+  [push] t=1.094 com x +0.0387 z 0.6852 vz -0.001 h_y -0.003 pitch -0.0001 cop_x L -0.0113 R -0.0101 fz 165 165 foot x +0.0157
+  [push] t=1.096 com x +0.0387 z 0.6852 vz -0.001 h_y -0.003 pitch -0.0001 cop_x L -0.0121 R -0.0109 fz 165 165 foot x +0.0157
+  [push] t=1.098 com x +0.0387 z 0.6852 vz -0.001 h_y -0.004 pitch -0.0001 cop_x L -0.0129 R -0.0117 fz 165 165 foot x +0.0157
+  [push] t=1.100 com x +0.0387 z 0.6852 vz -0.001 h_y -0.004 pitch -0.0001 cop_x L -0.0137 R -0.0125 fz 165 165 foot x +0.0157
+  [tau] t=1.100 right_ankle_pitch=+3/35 (0.10)  left_ankle_pitch=+3/35 (0.09)  right_knee=-12/139 (0.09)  left_knee=-12/139 (0.09)
+  [push] t=1.102 com x +0.0387 z 0.6852 vz -0.001 h_y -0.004 pitch -0.0001 cop_x L -0.0145 R -0.0133 fz 164 165 foot x +0.0157
+  [push] t=1.104 com x +0.0387 z 0.6852 vz -0.001 h_y -0.004 pitch -0.0001 cop_x L -0.0153 R -0.0141 fz 164 165 foot x +0.0157
+  [push] t=1.106 com x +0.0387 z 0.6852 vz -0.002 h_y -0.004 pitch -0.0001 cop_x L -0.0161 R -0.0148 fz 164 165 foot x +0.0157
+  [push] t=1.108 com x +0.0387 z 0.6852 vz -0.002 h_y -0.004 pitch -0.0000 cop_x L -0.0169 R -0.0156 fz 164 164 foot x +0.0157
+  [push] t=1.110 com x +0.0387 z 0.6852 vz -0.002 h_y -0.004 pitch -0.0000 cop_x L -0.0176 R -0.0164 fz 164 164 foot x +0.0157
+  [tau] t=1.110 right_knee=-12/139 (0.09)  left_knee=-12/139 (0.09)  right_ankle_pitch=+3/35 (0.08)  left_ankle_pitch=+3/35 (0.08)
+  [push] t=1.112 com x +0.0387 z 0.6852 vz -0.003 h_y -0.005 pitch -0.0000 cop_x L -0.0184 R -0.0172 fz 164 164 foot x +0.0157
+  [push] t=1.114 com x +0.0387 z 0.6852 vz -0.003 h_y -0.005 pitch -0.0000 cop_x L -0.0191 R -0.0179 fz 164 164 foot x +0.0157
+  [push] t=1.116 com x +0.0387 z 0.6852 vz -0.003 h_y -0.005 pitch -0.0000 cop_x L -0.0199 R -0.0186 fz 163 164 foot x +0.0157
+  [push] t=1.118 com x +0.0387 z 0.6852 vz -0.004 h_y -0.005 pitch -0.0000 cop_x L -0.0206 R -0.0194 fz 163 164 foot x +0.0157
+  [push] t=1.120 com x +0.0387 z 0.6852 vz -0.004 h_y -0.005 pitch -0.0000 cop_x L -0.0213 R -0.0201 fz 163 163 foot x +0.0157
+  [tau] t=1.120 right_knee=-13/139 (0.09)  left_knee=-13/139 (0.09)  right_ankle_pitch=+2/35 (0.07)  left_ankle_pitch=+2/35 (0.06)
+  t= 1.120 nc=2 com=(+0.039,-0.000,+0.6852) vz=-0.004 roll=+0.000 pitch=-0.000 status=Optimal
+  [push] t=1.122 com x +0.0387 z 0.6852 vz -0.004 h_y -0.005 pitch -0.0000 cop_x L -0.0220 R -0.0208 fz 163 163 foot x +0.0156
+  [push] t=1.124 com x +0.0387 z 0.6852 vz -0.005 h_y -0.005 pitch -0.0000 cop_x L -0.0227 R -0.0215 fz 163 163 foot x +0.0156
+  [push] t=1.126 com x +0.0387 z 0.6852 vz -0.005 h_y -0.005 pitch -0.0000 cop_x L -0.0234 R -0.0222 fz 163 163 foot x +0.0156
+  [push] t=1.128 com x +0.0387 z 0.6852 vz -0.006 h_y -0.005 pitch +0.0000 cop_x L -0.0241 R -0.0228 fz 163 163 foot x +0.0156
+  [push] t=1.130 com x +0.0387 z 0.6851 vz -0.006 h_y -0.005 pitch +0.0000 cop_x L -0.0247 R -0.0235 fz 162 163 foot x +0.0156
+  [tau] t=1.130 right_knee=-13/139 (0.09)  left_knee=-13/139 (0.09)  right_ankle_pitch=+2/35 (0.05)  right_shoulder_pitch=-1/25 (0.05)
+  [push] t=1.132 com x +0.0387 z 0.6851 vz -0.006 h_y -0.005 pitch +0.0000 cop_x L -0.0254 R -0.0241 fz 162 163 foot x +0.0156
+  [push] t=1.134 com x +0.0388 z 0.6851 vz -0.007 h_y -0.005 pitch +0.0000 cop_x L -0.0260 R -0.0247 fz 162 162 foot x +0.0156
+  [push] t=1.136 com x +0.0388 z 0.6851 vz -0.007 h_y -0.005 pitch +0.0000 cop_x L -0.0266 R -0.0254 fz 162 162 foot x +0.0156
+  [push] t=1.138 com x +0.0388 z 0.6851 vz -0.008 h_y -0.005 pitch +0.0001 cop_x L -0.0272 R -0.0260 fz 162 162 foot x +0.0156
+  [push] t=1.140 com x +0.0388 z 0.6851 vz -0.009 h_y -0.005 pitch +0.0001 cop_x L -0.0278 R -0.0265 fz 162 162 foot x +0.0156
+  [tau] t=1.140 right_knee=-13/139 (0.09)  left_knee=-13/139 (0.09)  right_shoulder_pitch=-1/25 (0.05)  left_shoulder_pitch=-1/25 (0.05)
+  [push] t=1.142 com x +0.0388 z 0.6851 vz -0.009 h_y -0.005 pitch +0.0001 cop_x L -0.0284 R -0.0271 fz 162 162 foot x +0.0156
+  [push] t=1.144 com x +0.0388 z 0.6850 vz -0.010 h_y -0.005 pitch +0.0001 cop_x L -0.0289 R -0.0277 fz 161 162 foot x +0.0156
+  [push] t=1.146 com x +0.0388 z 0.6850 vz -0.010 h_y -0.005 pitch +0.0001 cop_x L -0.0295 R -0.0282 fz 161 162 foot x +0.0156
+  [push] t=1.148 com x +0.0389 z 0.6850 vz -0.011 h_y -0.005 pitch +0.0001 cop_x L -0.0300 R -0.0288 fz 161 161 foot x +0.0156
+  [push] t=1.150 com x +0.0389 z 0.6850 vz -0.011 h_y -0.005 pitch +0.0002 cop_x L -0.0305 R -0.0293 fz 161 161 foot x +0.0156
+  [tau] t=1.150 right_knee=-13/139 (0.09)  left_knee=-13/139 (0.09)  right_shoulder_pitch=-1/25 (0.05)  left_shoulder_pitch=-1/25 (0.05)
+  [push] t=1.152 com x +0.0389 z 0.6849 vz -0.012 h_y -0.005 pitch +0.0002 cop_x L -0.0310 R -0.0298 fz 161 161 foot x +0.0156
+  [push] t=1.154 com x +0.0389 z 0.6849 vz -0.013 h_y -0.005 pitch +0.0002 cop_x L -0.0315 R -0.0303 fz 161 161 foot x +0.0156
+  [push] t=1.156 com x +0.0389 z 0.6849 vz -0.013 h_y -0.006 pitch +0.0002 cop_x L -0.0320 R -0.0308 fz 161 161 foot x +0.0156
+  [push] t=1.158 com x +0.0390 z 0.6849 vz -0.014 h_y -0.006 pitch +0.0003 cop_x L -0.0325 R -0.0312 fz 160 161 foot x +0.0156
+  [push] t=1.160 com x +0.0390 z 0.6848 vz -0.015 h_y -0.006 pitch +0.0003 cop_x L -0.0330 R -0.0317 fz 160 161 foot x +0.0156
+  [tau] t=1.160 right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)  right_shoulder_pitch=-1/25 (0.05)  left_shoulder_pitch=-1/25 (0.05)
+  [push] t=1.162 com x +0.0390 z 0.6848 vz -0.016 h_y -0.006 pitch +0.0003 cop_x L -0.0334 R -0.0321 fz 160 160 foot x +0.0156
+  [push] t=1.164 com x +0.0390 z 0.6848 vz -0.016 h_y -0.006 pitch +0.0004 cop_x L -0.0338 R -0.0326 fz 160 160 foot x +0.0156
+  [push] t=1.166 com x +0.0391 z 0.6847 vz -0.017 h_y -0.006 pitch +0.0004 cop_x L -0.0343 R -0.0330 fz 160 160 foot x +0.0156
+  [push] t=1.168 com x +0.0391 z 0.6847 vz -0.018 h_y -0.006 pitch +0.0004 cop_x L -0.0347 R -0.0334 fz 160 160 foot x +0.0156
+  [push] t=1.170 com x +0.0391 z 0.6847 vz -0.019 h_y -0.006 pitch +0.0005 cop_x L -0.0351 R -0.0338 fz 160 160 foot x +0.0156
+  [tau] t=1.170 right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)  right_shoulder_pitch=-1/25 (0.05)  left_shoulder_pitch=-1/25 (0.05)
+  [push] t=1.172 com x +0.0391 z 0.6846 vz -0.019 h_y -0.006 pitch +0.0005 cop_x L -0.0355 R -0.0342 fz 160 160 foot x +0.0156
+  [push] t=1.174 com x +0.0392 z 0.6846 vz -0.020 h_y -0.006 pitch +0.0006 cop_x L -0.0359 R -0.0346 fz 159 160 foot x +0.0156
+  [push] t=1.176 com x +0.0392 z 0.6845 vz -0.021 h_y -0.006 pitch +0.0006 cop_x L -0.0362 R -0.0349 fz 159 160 foot x +0.0156
+  [push] t=1.178 com x +0.0393 z 0.6845 vz -0.022 h_y -0.006 pitch +0.0006 cop_x L -0.0366 R -0.0353 fz 159 159 foot x +0.0156
+  [push] t=1.180 com x +0.0393 z 0.6845 vz -0.023 h_y -0.006 pitch +0.0007 cop_x L -0.0369 R -0.0356 fz 159 159 foot x +0.0156
+  [tau] t=1.180 right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)  right_shoulder_pitch=-1/25 (0.05)  left_shoulder_pitch=-1/25 (0.05)
+  [push] t=1.182 com x +0.0393 z 0.6844 vz -0.023 h_y -0.006 pitch +0.0007 cop_x L -0.0373 R -0.0360 fz 159 159 foot x +0.0156
+  [push] t=1.184 com x +0.0394 z 0.6844 vz -0.024 h_y -0.006 pitch +0.0008 cop_x L -0.0376 R -0.0363 fz 159 159 foot x +0.0156
+  [push] t=1.186 com x +0.0394 z 0.6843 vz -0.025 h_y -0.006 pitch +0.0009 cop_x L -0.0379 R -0.0366 fz 159 159 foot x +0.0156
+  [push] t=1.188 com x +0.0395 z 0.6843 vz -0.026 h_y -0.006 pitch +0.0009 cop_x L -0.0382 R -0.0369 fz 159 159 foot x +0.0156
+  [push] t=1.190 com x +0.0395 z 0.6842 vz -0.027 h_y -0.006 pitch +0.0010 cop_x L -0.0385 R -0.0372 fz 158 159 foot x +0.0156
+  [tau] t=1.190 right_knee=-14/139 (0.10)  left_knee=-13/139 (0.10)  right_shoulder_pitch=-1/25 (0.05)  left_shoulder_pitch=-1/25 (0.05)
+  [push] t=1.192 com x +0.0396 z 0.6842 vz -0.028 h_y -0.007 pitch +0.0010 cop_x L -0.0388 R -0.0375 fz 158 159 foot x +0.0156
+  [push] t=1.194 com x +0.0396 z 0.6841 vz -0.029 h_y -0.007 pitch +0.0011 cop_x L -0.0390 R -0.0378 fz 158 159 foot x +0.0156
+  [push] t=1.196 com x +0.0397 z 0.6840 vz -0.030 h_y -0.007 pitch +0.0012 cop_x L -0.0393 R -0.0380 fz 158 158 foot x +0.0156
+  [push] t=1.198 com x +0.0397 z 0.6840 vz -0.031 h_y -0.007 pitch +0.0012 cop_x L -0.0395 R -0.0383 fz 158 158 foot x +0.0156
+  [push] t=1.200 com x +0.0398 z 0.6839 vz -0.032 h_y -0.007 pitch +0.0013 cop_x L -0.0398 R -0.0385 fz 158 158 foot x +0.0156
+  [tau] t=1.200 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  right_shoulder_pitch=-1/25 (0.04)  left_shoulder_pitch=-1/25 (0.04)
+  t= 1.200 nc=2 com=(+0.040,-0.000,+0.6839) vz=-0.032 roll=+0.000 pitch=+0.001 status=Optimal
+  [push] t=1.202 com x +0.0398 z 0.6838 vz -0.033 h_y -0.007 pitch +0.0014 cop_x L -0.0400 R -0.0387 fz 158 158 foot x +0.0156
+  [push] t=1.204 com x +0.0399 z 0.6838 vz -0.034 h_y -0.007 pitch +0.0015 cop_x L -0.0402 R -0.0390 fz 158 158 foot x +0.0156
+  [push] t=1.206 com x +0.0399 z 0.6837 vz -0.035 h_y -0.007 pitch +0.0015 cop_x L -0.0404 R -0.0392 fz 158 158 foot x +0.0156
+  [push] t=1.208 com x +0.0400 z 0.6836 vz -0.036 h_y -0.007 pitch +0.0016 cop_x L -0.0406 R -0.0394 fz 158 158 foot x +0.0156
+  [push] t=1.210 com x +0.0401 z 0.6836 vz -0.037 h_y -0.007 pitch +0.0017 cop_x L -0.0408 R -0.0395 fz 157 158 foot x +0.0156
+  [tau] t=1.210 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  right_shoulder_pitch=-1/25 (0.04)  left_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.212 com x +0.0401 z 0.6835 vz -0.038 h_y -0.008 pitch +0.0018 cop_x L -0.0410 R -0.0397 fz 157 158 foot x +0.0156
+  [push] t=1.214 com x +0.0402 z 0.6834 vz -0.039 h_y -0.008 pitch +0.0019 cop_x L -0.0412 R -0.0399 fz 157 158 foot x +0.0156
+  [push] t=1.216 com x +0.0403 z 0.6833 vz -0.040 h_y -0.008 pitch +0.0020 cop_x L -0.0413 R -0.0401 fz 157 157 foot x +0.0155
+  [push] t=1.218 com x +0.0403 z 0.6833 vz -0.041 h_y -0.008 pitch +0.0021 cop_x L -0.0415 R -0.0402 fz 157 157 foot x +0.0155
+  [push] t=1.220 com x +0.0404 z 0.6832 vz -0.042 h_y -0.008 pitch +0.0022 cop_x L -0.0416 R -0.0403 fz 157 157 foot x +0.0155
+  [tau] t=1.220 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  right_shoulder_pitch=-1/25 (0.04)  left_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.222 com x +0.0405 z 0.6831 vz -0.043 h_y -0.008 pitch +0.0023 cop_x L -0.0418 R -0.0405 fz 157 157 foot x +0.0155
+  [push] t=1.224 com x +0.0405 z 0.6830 vz -0.044 h_y -0.008 pitch +0.0024 cop_x L -0.0419 R -0.0406 fz 157 157 foot x +0.0155
+  [push] t=1.226 com x +0.0406 z 0.6829 vz -0.046 h_y -0.008 pitch +0.0025 cop_x L -0.0420 R -0.0407 fz 157 157 foot x +0.0155
+  [push] t=1.228 com x +0.0407 z 0.6828 vz -0.047 h_y -0.009 pitch +0.0026 cop_x L -0.0421 R -0.0408 fz 157 157 foot x +0.0155
+  [push] t=1.230 com x +0.0408 z 0.6827 vz -0.048 h_y -0.009 pitch +0.0027 cop_x L -0.0422 R -0.0409 fz 157 157 foot x +0.0155
+  [tau] t=1.230 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  right_shoulder_pitch=-1/25 (0.04)  left_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.232 com x +0.0409 z 0.6826 vz -0.049 h_y -0.009 pitch +0.0028 cop_x L -0.0423 R -0.0410 fz 156 157 foot x +0.0155
+  [push] t=1.234 com x +0.0409 z 0.6825 vz -0.050 h_y -0.009 pitch +0.0029 cop_x L -0.0423 R -0.0411 fz 156 157 foot x +0.0155
+  [push] t=1.236 com x +0.0410 z 0.6824 vz -0.051 h_y -0.009 pitch +0.0030 cop_x L -0.0424 R -0.0411 fz 156 157 foot x +0.0155
+  [push] t=1.238 com x +0.0411 z 0.6823 vz -0.052 h_y -0.009 pitch +0.0032 cop_x L -0.0425 R -0.0412 fz 156 156 foot x +0.0155
+  [push] t=1.240 com x +0.0412 z 0.6822 vz -0.054 h_y -0.009 pitch +0.0033 cop_x L -0.0425 R -0.0412 fz 156 156 foot x +0.0155
+  [tau] t=1.240 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  left_shoulder_pitch=-1/25 (0.04)  right_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.242 com x +0.0413 z 0.6821 vz -0.055 h_y -0.010 pitch +0.0034 cop_x L -0.0426 R -0.0413 fz 156 156 foot x +0.0155
+  [push] t=1.244 com x +0.0414 z 0.6820 vz -0.056 h_y -0.010 pitch +0.0035 cop_x L -0.0426 R -0.0413 fz 156 156 foot x +0.0155
+  [push] t=1.246 com x +0.0415 z 0.6819 vz -0.057 h_y -0.010 pitch +0.0037 cop_x L -0.0426 R -0.0413 fz 156 156 foot x +0.0155
+  [push] t=1.248 com x +0.0416 z 0.6818 vz -0.059 h_y -0.010 pitch +0.0038 cop_x L -0.0426 R -0.0413 fz 156 156 foot x +0.0155
+  [push] t=1.250 com x +0.0417 z 0.6816 vz -0.060 h_y -0.010 pitch +0.0039 cop_x L -0.0426 R -0.0413 fz 156 156 foot x +0.0155
+  [tau] t=1.250 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  left_shoulder_pitch=-1/25 (0.04)  right_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.252 com x +0.0418 z 0.6815 vz -0.061 h_y -0.010 pitch +0.0041 cop_x L -0.0426 R -0.0413 fz 156 156 foot x +0.0155
+  [push] t=1.254 com x +0.0419 z 0.6814 vz -0.062 h_y -0.011 pitch +0.0042 cop_x L -0.0426 R -0.0413 fz 156 156 foot x +0.0155
+  [push] t=1.256 com x +0.0420 z 0.6813 vz -0.064 h_y -0.011 pitch +0.0044 cop_x L -0.0426 R -0.0413 fz 155 156 foot x +0.0155
+  [push] t=1.258 com x +0.0421 z 0.6811 vz -0.065 h_y -0.011 pitch +0.0045 cop_x L -0.0425 R -0.0413 fz 155 156 foot x +0.0155
+  [push] t=1.260 com x +0.0422 z 0.6810 vz -0.066 h_y -0.011 pitch +0.0047 cop_x L -0.0425 R -0.0412 fz 155 156 foot x +0.0155
+  [tau] t=1.260 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  left_shoulder_pitch=-1/25 (0.04)  right_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.262 com x +0.0423 z 0.6809 vz -0.067 h_y -0.011 pitch +0.0048 cop_x L -0.0425 R -0.0412 fz 155 155 foot x +0.0155
+  [push] t=1.264 com x +0.0424 z 0.6807 vz -0.069 h_y -0.012 pitch +0.0050 cop_x L -0.0424 R -0.0411 fz 155 155 foot x +0.0155
+  [push] t=1.266 com x +0.0426 z 0.6806 vz -0.070 h_y -0.012 pitch +0.0052 cop_x L -0.0423 R -0.0410 fz 155 155 foot x +0.0155
+  [push] t=1.268 com x +0.0427 z 0.6805 vz -0.071 h_y -0.012 pitch +0.0053 cop_x L -0.0422 R -0.0410 fz 155 155 foot x +0.0155
+  [push] t=1.270 com x +0.0428 z 0.6803 vz -0.073 h_y -0.012 pitch +0.0055 cop_x L -0.0422 R -0.0409 fz 155 155 foot x +0.0155
+  [tau] t=1.270 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  left_shoulder_pitch=-1/25 (0.04)  right_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.272 com x +0.0429 z 0.6802 vz -0.074 h_y -0.013 pitch +0.0056 cop_x L -0.0421 R -0.0408 fz 155 155 foot x +0.0155
+  [push] t=1.274 com x +0.0430 z 0.6800 vz -0.075 h_y -0.013 pitch +0.0058 cop_x L -0.0420 R -0.0407 fz 155 155 foot x +0.0155
+  [push] t=1.276 com x +0.0432 z 0.6799 vz -0.077 h_y -0.013 pitch +0.0060 cop_x L -0.0419 R -0.0406 fz 155 155 foot x +0.0155
+  [push] t=1.278 com x +0.0433 z 0.6797 vz -0.078 h_y -0.013 pitch +0.0062 cop_x L -0.0417 R -0.0405 fz 155 155 foot x +0.0155
+  [push] t=1.280 com x +0.0434 z 0.6795 vz -0.079 h_y -0.013 pitch +0.0064 cop_x L -0.0416 R -0.0403 fz 155 155 foot x +0.0155
+  [tau] t=1.280 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  left_shoulder_pitch=-1/25 (0.04)  right_shoulder_pitch=-1/25 (0.04)
+  t= 1.280 nc=2 com=(+0.043,-0.000,+0.6795) vz=-0.079 roll=+0.000 pitch=+0.006 status=Optimal
+  [push] t=1.282 com x +0.0435 z 0.6794 vz -0.081 h_y -0.014 pitch +0.0065 cop_x L -0.0415 R -0.0402 fz 155 155 foot x +0.0155
+  [push] t=1.284 com x +0.0437 z 0.6792 vz -0.082 h_y -0.014 pitch +0.0067 cop_x L -0.0413 R -0.0400 fz 154 155 foot x +0.0155
+  [push] t=1.286 com x +0.0438 z 0.6791 vz -0.083 h_y -0.014 pitch +0.0069 cop_x L -0.0412 R -0.0399 fz 154 155 foot x +0.0155
+  [push] t=1.288 com x +0.0439 z 0.6789 vz -0.085 h_y -0.014 pitch +0.0071 cop_x L -0.0410 R -0.0397 fz 154 155 foot x +0.0155
+  [push] t=1.290 com x +0.0441 z 0.6787 vz -0.086 h_y -0.015 pitch +0.0073 cop_x L -0.0408 R -0.0395 fz 154 155 foot x +0.0154
+  [tau] t=1.290 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  left_shoulder_pitch=-1/25 (0.04)  right_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.292 com x +0.0442 z 0.6785 vz -0.088 h_y -0.015 pitch +0.0075 cop_x L -0.0406 R -0.0394 fz 154 154 foot x +0.0154
+  [push] t=1.294 com x +0.0444 z 0.6784 vz -0.089 h_y -0.015 pitch +0.0077 cop_x L -0.0405 R -0.0392 fz 154 154 foot x +0.0154
+  [push] t=1.296 com x +0.0445 z 0.6782 vz -0.091 h_y -0.015 pitch +0.0079 cop_x L -0.0403 R -0.0390 fz 154 154 foot x +0.0154
+  [push] t=1.298 com x +0.0447 z 0.6780 vz -0.092 h_y -0.016 pitch +0.0081 cop_x L -0.0401 R -0.0388 fz 154 154 foot x +0.0154
+  [push] t=1.300 com x +0.0448 z 0.6778 vz -0.093 h_y -0.016 pitch +0.0083 cop_x L -0.0398 R -0.0386 fz 154 154 foot x +0.0154
+  [tau] t=1.300 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  left_shoulder_pitch=-1/25 (0.04)  right_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.302 com x +0.0450 z 0.6776 vz -0.095 h_y -0.016 pitch +0.0085 cop_x L -0.0396 R -0.0383 fz 154 154 foot x +0.0154
+  [push] t=1.304 com x +0.0451 z 0.6774 vz -0.096 h_y -0.017 pitch +0.0087 cop_x L -0.0394 R -0.0381 fz 154 154 foot x +0.0154
+  [push] t=1.306 com x +0.0453 z 0.6772 vz -0.098 h_y -0.017 pitch +0.0089 cop_x L -0.0391 R -0.0379 fz 154 154 foot x +0.0154
+  [push] t=1.308 com x +0.0454 z 0.6770 vz -0.099 h_y -0.017 pitch +0.0092 cop_x L -0.0389 R -0.0376 fz 154 154 foot x +0.0154
+  [push] t=1.310 com x +0.0456 z 0.6768 vz -0.101 h_y -0.017 pitch +0.0094 cop_x L -0.0386 R -0.0373 fz 154 154 foot x +0.0154
+  [tau] t=1.310 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  left_shoulder_pitch=-1/25 (0.04)  right_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.312 com x +0.0457 z 0.6766 vz -0.102 h_y -0.018 pitch +0.0096 cop_x L -0.0384 R -0.0371 fz 154 154 foot x +0.0154
+  [push] t=1.314 com x +0.0459 z 0.6764 vz -0.104 h_y -0.018 pitch +0.0098 cop_x L -0.0381 R -0.0368 fz 154 154 foot x +0.0154
+  [push] t=1.316 com x +0.0461 z 0.6762 vz -0.105 h_y -0.018 pitch +0.0101 cop_x L -0.0378 R -0.0365 fz 154 154 foot x +0.0154
+  [push] t=1.318 com x +0.0462 z 0.6760 vz -0.107 h_y -0.019 pitch +0.0103 cop_x L -0.0375 R -0.0362 fz 154 154 foot x +0.0154
+  [push] t=1.320 com x +0.0464 z 0.6758 vz -0.108 h_y -0.019 pitch +0.0105 cop_x L -0.0372 R -0.0359 fz 153 154 foot x +0.0154
+  [tau] t=1.320 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  left_shoulder_pitch=-1/25 (0.04)  right_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.322 com x +0.0466 z 0.6756 vz -0.110 h_y -0.019 pitch +0.0108 cop_x L -0.0369 R -0.0356 fz 153 154 foot x +0.0154
+  [push] t=1.324 com x +0.0467 z 0.6754 vz -0.111 h_y -0.019 pitch +0.0110 cop_x L -0.0366 R -0.0353 fz 153 154 foot x +0.0154
+  [push] t=1.326 com x +0.0469 z 0.6751 vz -0.113 h_y -0.020 pitch +0.0112 cop_x L -0.0362 R -0.0349 fz 153 154 foot x +0.0154
+  [push] t=1.328 com x +0.0471 z 0.6749 vz -0.114 h_y -0.020 pitch +0.0115 cop_x L -0.0359 R -0.0346 fz 153 154 foot x +0.0154
+  [push] t=1.330 com x +0.0473 z 0.6747 vz -0.116 h_y -0.020 pitch +0.0117 cop_x L -0.0355 R -0.0343 fz 153 153 foot x +0.0154
+  [tau] t=1.330 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  left_shoulder_pitch=-1/25 (0.04)  right_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.332 com x +0.0474 z 0.6744 vz -0.117 h_y -0.021 pitch +0.0120 cop_x L -0.0352 R -0.0339 fz 153 153 foot x +0.0154
+  [push] t=1.334 com x +0.0476 z 0.6742 vz -0.119 h_y -0.021 pitch +0.0122 cop_x L -0.0348 R -0.0335 fz 153 153 foot x +0.0154
+  [push] t=1.336 com x +0.0478 z 0.6740 vz -0.120 h_y -0.021 pitch +0.0125 cop_x L -0.0344 R -0.0332 fz 153 153 foot x +0.0154
+  [push] t=1.338 com x +0.0480 z 0.6737 vz -0.122 h_y -0.022 pitch +0.0127 cop_x L -0.0341 R -0.0328 fz 153 153 foot x +0.0154
+  [push] t=1.340 com x +0.0482 z 0.6735 vz -0.123 h_y -0.022 pitch +0.0130 cop_x L -0.0337 R -0.0324 fz 153 153 foot x +0.0154
+  [tau] t=1.340 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  left_shoulder_pitch=-1/25 (0.04)  right_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.342 com x +0.0484 z 0.6732 vz -0.125 h_y -0.022 pitch +0.0132 cop_x L -0.0333 R -0.0320 fz 153 153 foot x +0.0154
+  [push] t=1.344 com x +0.0486 z 0.6730 vz -0.126 h_y -0.023 pitch +0.0135 cop_x L -0.0329 R -0.0316 fz 153 153 foot x +0.0154
+  [push] t=1.346 com x +0.0487 z 0.6727 vz -0.128 h_y -0.023 pitch +0.0138 cop_x L -0.0324 R -0.0312 fz 153 153 foot x +0.0154
+  [push] t=1.348 com x +0.0489 z 0.6725 vz -0.129 h_y -0.023 pitch +0.0140 cop_x L -0.0320 R -0.0307 fz 153 153 foot x +0.0154
+  [push] t=1.350 com x +0.0491 z 0.6722 vz -0.131 h_y -0.024 pitch +0.0143 cop_x L -0.0316 R -0.0303 fz 153 153 foot x +0.0154
+  [tau] t=1.350 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  left_shoulder_pitch=-1/25 (0.04)  right_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.352 com x +0.0493 z 0.6719 vz -0.133 h_y -0.024 pitch +0.0146 cop_x L -0.0311 R -0.0298 fz 153 153 foot x +0.0154
+  [push] t=1.354 com x +0.0495 z 0.6717 vz -0.134 h_y -0.024 pitch +0.0148 cop_x L -0.0307 R -0.0294 fz 153 153 foot x +0.0154
+  [push] t=1.356 com x +0.0497 z 0.6714 vz -0.136 h_y -0.025 pitch +0.0151 cop_x L -0.0302 R -0.0289 fz 153 153 foot x +0.0154
+  [push] t=1.358 com x +0.0499 z 0.6711 vz -0.137 h_y -0.025 pitch +0.0154 cop_x L -0.0297 R -0.0285 fz 153 153 foot x +0.0154
+  [push] t=1.360 com x +0.0501 z 0.6708 vz -0.139 h_y -0.025 pitch +0.0157 cop_x L -0.0293 R -0.0280 fz 153 153 foot x +0.0154
+  [tau] t=1.360 right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)  left_shoulder_pitch=-1/25 (0.04)  right_shoulder_pitch=-1/25 (0.04)
+  t= 1.360 nc=2 com=(+0.050,-0.000,+0.6708) vz=-0.139 roll=+0.000 pitch=+0.016 status=Optimal
+  [push] t=1.362 com x +0.0503 z 0.6706 vz -0.140 h_y -0.026 pitch +0.0159 cop_x L -0.0288 R -0.0275 fz 153 153 foot x +0.0154
+  [push] t=1.364 com x +0.0505 z 0.6703 vz -0.142 h_y -0.026 pitch +0.0162 cop_x L -0.0283 R -0.0270 fz 153 153 foot x +0.0154
+  [push] t=1.366 com x +0.0507 z 0.6700 vz -0.143 h_y -0.027 pitch +0.0165 cop_x L -0.0278 R -0.0265 fz 153 153 foot x +0.0154
+  [push] t=1.368 com x +0.0510 z 0.6697 vz -0.145 h_y -0.027 pitch +0.0168 cop_x L -0.0273 R -0.0260 fz 153 153 foot x +0.0154
+  [push] t=1.370 com x +0.0512 z 0.6694 vz -0.147 h_y -0.027 pitch +0.0171 cop_x L -0.0267 R -0.0254 fz 153 153 foot x +0.0154
+  [tau] t=1.370 right_knee=-14/139 (0.10)  left_knee=-13/139 (0.10)  left_shoulder_pitch=-1/25 (0.04)  right_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.372 com x +0.0514 z 0.6691 vz -0.148 h_y -0.028 pitch +0.0174 cop_x L -0.0262 R -0.0249 fz 153 153 foot x +0.0154
+  [push] t=1.374 com x +0.0516 z 0.6688 vz -0.150 h_y -0.028 pitch +0.0177 cop_x L -0.0257 R -0.0244 fz 153 153 foot x +0.0154
+  [push] t=1.376 com x +0.0518 z 0.6685 vz -0.151 h_y -0.028 pitch +0.0180 cop_x L -0.0251 R -0.0238 fz 153 153 foot x +0.0154
+  [push] t=1.378 com x +0.0520 z 0.6682 vz -0.153 h_y -0.029 pitch +0.0183 cop_x L -0.0246 R -0.0233 fz 153 153 foot x +0.0154
+  [push] t=1.380 com x +0.0522 z 0.6679 vz -0.154 h_y -0.029 pitch +0.0185 cop_x L -0.0240 R -0.0227 fz 153 153 foot x +0.0154
+  [tau] t=1.380 right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)  right_ankle_pitch=+1/35 (0.04)  left_shoulder_pitch=-1/25 (0.04)
+  [push] t=1.382 com x +0.0525 z 0.6676 vz -0.156 h_y -0.030 pitch +0.0188 cop_x L -0.0234 R -0.0221 fz 153 153 foot x +0.0154
+  [push] t=1.384 com x +0.0527 z 0.6673 vz -0.157 h_y -0.030 pitch +0.0191 cop_x L -0.0228 R -0.0215 fz 153 153 foot x +0.0154
+  [push] t=1.386 com x +0.0529 z 0.6670 vz -0.159 h_y -0.030 pitch +0.0194 cop_x L -0.0222 R -0.0210 fz 153 153 foot x +0.0154
+  [push] t=1.388 com x +0.0531 z 0.6666 vz -0.161 h_y -0.031 pitch +0.0197 cop_x L -0.0216 R -0.0204 fz 153 153 foot x +0.0154
+  [push] t=1.390 com x +0.0534 z 0.6663 vz -0.162 h_y -0.031 pitch +0.0201 cop_x L -0.0210 R -0.0198 fz 153 153 foot x +0.0154
+  [tau] t=1.390 right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)  right_ankle_pitch=+2/35 (0.05)  left_ankle_pitch=+1/35 (0.04)
+  [push] t=1.392 com x +0.0536 z 0.6660 vz -0.164 h_y -0.032 pitch +0.0204 cop_x L -0.0204 R -0.0191 fz 153 153 foot x +0.0154
+  [push] t=1.394 com x +0.0538 z 0.6657 vz -0.165 h_y -0.032 pitch +0.0207 cop_x L -0.0198 R -0.0185 fz 153 153 foot x +0.0154
+  [push] t=1.396 com x +0.0541 z 0.6653 vz -0.167 h_y -0.032 pitch +0.0210 cop_x L -0.0192 R -0.0179 fz 153 153 foot x +0.0154
+  [push] t=1.398 com x +0.0543 z 0.6650 vz -0.168 h_y -0.033 pitch +0.0213 cop_x L -0.0185 R -0.0173 fz 153 153 foot x +0.0154
+  [push] t=1.400 com x +0.0545 z 0.6647 vz -0.170 h_y -0.033 pitch +0.0216 cop_x L -0.0179 R -0.0166 fz 153 153 foot x +0.0154
+  [tau] t=1.400 right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)  right_ankle_pitch=+2/35 (0.06)  left_ankle_pitch=+2/35 (0.06)
+  [push] t=1.402 com x +0.0548 z 0.6643 vz -0.171 h_y -0.034 pitch +0.0219 cop_x L -0.0173 R -0.0160 fz 153 153 foot x +0.0154
+  [push] t=1.404 com x +0.0550 z 0.6640 vz -0.173 h_y -0.034 pitch +0.0222 cop_x L -0.0166 R -0.0153 fz 153 153 foot x +0.0154
+  [push] t=1.406 com x +0.0552 z 0.6636 vz -0.174 h_y -0.034 pitch +0.0225 cop_x L -0.0159 R -0.0147 fz 153 153 foot x +0.0154
+  [push] t=1.408 com x +0.0555 z 0.6633 vz -0.176 h_y -0.035 pitch +0.0228 cop_x L -0.0153 R -0.0140 fz 153 153 foot x +0.0154
+  [push] t=1.410 com x +0.0557 z 0.6629 vz -0.177 h_y -0.035 pitch +0.0232 cop_x L -0.0146 R -0.0133 fz 153 153 foot x +0.0154
+  [tau] t=1.410 right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)  right_ankle_pitch=+3/35 (0.07)  left_ankle_pitch=+2/35 (0.07)
+  [push] t=1.412 com x +0.0559 z 0.6626 vz -0.179 h_y -0.036 pitch +0.0235 cop_x L -0.0139 R -0.0126 fz 153 153 foot x +0.0154
+  [push] t=1.414 com x +0.0562 z 0.6622 vz -0.180 h_y -0.036 pitch +0.0238 cop_x L -0.0132 R -0.0119 fz 153 154 foot x +0.0154
+  [push] t=1.416 com x +0.0564 z 0.6618 vz -0.182 h_y -0.037 pitch +0.0241 cop_x L -0.0125 R -0.0112 fz 153 154 foot x +0.0154
+  [push] t=1.418 com x +0.0567 z 0.6615 vz -0.183 h_y -0.037 pitch +0.0244 cop_x L -0.0118 R -0.0105 fz 154 154 foot x +0.0154
+  [push] t=1.420 com x +0.0569 z 0.6611 vz -0.185 h_y -0.037 pitch +0.0248 cop_x L -0.0111 R -0.0098 fz 154 154 foot x +0.0154
+  [tau] t=1.420 right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)  right_ankle_pitch=+3/35 (0.09)  left_ankle_pitch=+3/35 (0.08)
+  [push] t=1.422 com x +0.0572 z 0.6607 vz -0.186 h_y -0.038 pitch +0.0251 cop_x L -0.0104 R -0.0091 fz 154 154 foot x +0.0154
+  [push] t=1.424 com x +0.0574 z 0.6604 vz -0.188 h_y -0.038 pitch +0.0254 cop_x L -0.0097 R -0.0084 fz 154 154 foot x +0.0154
+  [push] t=1.426 com x +0.0577 z 0.6600 vz -0.189 h_y -0.039 pitch +0.0257 cop_x L -0.0090 R -0.0077 fz 154 154 foot x +0.0154
+  [push] t=1.428 com x +0.0579 z 0.6596 vz -0.191 h_y -0.039 pitch +0.0261 cop_x L -0.0082 R -0.0069 fz 154 154 foot x +0.0154
+  [push] t=1.430 com x +0.0582 z 0.6592 vz -0.192 h_y -0.040 pitch +0.0264 cop_x L -0.0075 R -0.0062 fz 154 154 foot x +0.0154
+  [tau] t=1.430 right_ankle_pitch=+4/35 (0.10)  left_ankle_pitch=+3/35 (0.10)  right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)
+  [push] t=1.432 com x +0.0584 z 0.6588 vz -0.194 h_y -0.040 pitch +0.0267 cop_x L -0.0067 R -0.0055 fz 154 154 foot x +0.0154
+  [push] t=1.434 com x +0.0587 z 0.6584 vz -0.195 h_y -0.040 pitch +0.0270 cop_x L -0.0060 R -0.0047 fz 154 154 foot x +0.0154
+  [push] t=1.436 com x +0.0589 z 0.6580 vz -0.196 h_y -0.041 pitch +0.0274 cop_x L -0.0053 R -0.0040 fz 154 154 foot x +0.0154
+  [push] t=1.438 com x +0.0592 z 0.6576 vz -0.198 h_y -0.041 pitch +0.0277 cop_x L -0.0045 R -0.0032 fz 154 154 foot x +0.0154
+  [push] t=1.440 com x +0.0594 z 0.6572 vz -0.199 h_y -0.042 pitch +0.0280 cop_x L -0.0037 R -0.0025 fz 154 155 foot x +0.0154
+  [tau] t=1.440 right_ankle_pitch=+4/35 (0.12)  left_ankle_pitch=+4/35 (0.11)  right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)
+  t= 1.440 nc=2 com=(+0.059,-0.000,+0.6572) vz=-0.199 roll=+0.000 pitch=+0.028 status=Optimal
+  [push] t=1.442 com x +0.0597 z 0.6568 vz -0.200 h_y -0.042 pitch +0.0283 cop_x L -0.0030 R -0.0017 fz 155 155 foot x +0.0154
+  [push] t=1.444 com x +0.0599 z 0.6564 vz -0.202 h_y -0.043 pitch +0.0287 cop_x L -0.0022 R -0.0009 fz 155 155 foot x +0.0154
+  [push] t=1.446 com x +0.0602 z 0.6560 vz -0.203 h_y -0.043 pitch +0.0290 cop_x L -0.0014 R -0.0002 fz 155 155 foot x +0.0154
+  [push] t=1.448 com x +0.0605 z 0.6556 vz -0.204 h_y -0.044 pitch +0.0293 cop_x L -0.0007 R +0.0006 fz 155 155 foot x +0.0154
+  [push] t=1.450 com x +0.0607 z 0.6552 vz -0.206 h_y -0.044 pitch +0.0297 cop_x L +0.0001 R +0.0014 fz 155 155 foot x +0.0154
+  [tau] t=1.450 right_ankle_pitch=+5/35 (0.14)  left_ankle_pitch=+5/35 (0.13)  right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)
+  [push] t=1.452 com x +0.0610 z 0.6548 vz -0.207 h_y -0.044 pitch +0.0300 cop_x L +0.0009 R +0.0022 fz 155 155 foot x +0.0154
+  [push] t=1.454 com x +0.0612 z 0.6544 vz -0.208 h_y -0.045 pitch +0.0303 cop_x L +0.0017 R +0.0030 fz 155 155 foot x +0.0154
+  [push] t=1.456 com x +0.0615 z 0.6540 vz -0.210 h_y -0.045 pitch +0.0306 cop_x L +0.0024 R +0.0037 fz 155 155 foot x +0.0154
+  [push] t=1.458 com x +0.0618 z 0.6536 vz -0.211 h_y -0.046 pitch +0.0310 cop_x L +0.0032 R +0.0045 fz 155 156 foot x +0.0154
+  [push] t=1.460 com x +0.0620 z 0.6531 vz -0.212 h_y -0.046 pitch +0.0313 cop_x L +0.0040 R +0.0053 fz 156 156 foot x +0.0154
+  [tau] t=1.460 right_ankle_pitch=+5/35 (0.15)  left_ankle_pitch=+5/35 (0.15)  right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)
+  [push] t=1.462 com x +0.0623 z 0.6527 vz -0.213 h_y -0.047 pitch +0.0316 cop_x L +0.0048 R +0.0061 fz 156 156 foot x +0.0154
+  [push] t=1.464 com x +0.0625 z 0.6523 vz -0.214 h_y -0.047 pitch +0.0320 cop_x L +0.0056 R +0.0069 fz 156 156 foot x +0.0154
+  [push] t=1.466 com x +0.0628 z 0.6518 vz -0.216 h_y -0.048 pitch +0.0323 cop_x L +0.0064 R +0.0077 fz 156 156 foot x +0.0154
+  [push] t=1.468 com x +0.0631 z 0.6514 vz -0.217 h_y -0.048 pitch +0.0326 cop_x L +0.0072 R +0.0085 fz 156 156 foot x +0.0154
+  [push] t=1.470 com x +0.0633 z 0.6510 vz -0.218 h_y -0.048 pitch +0.0330 cop_x L +0.0080 R +0.0093 fz 156 156 foot x +0.0154
+  [tau] t=1.470 right_ankle_pitch=+6/35 (0.17)  left_ankle_pitch=+6/35 (0.16)  right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)
+  [push] t=1.472 com x +0.0636 z 0.6505 vz -0.219 h_y -0.049 pitch +0.0333 cop_x L +0.0088 R +0.0101 fz 156 157 foot x +0.0154
+  [push] t=1.474 com x +0.0639 z 0.6501 vz -0.220 h_y -0.049 pitch +0.0336 cop_x L +0.0096 R +0.0109 fz 157 157 foot x +0.0154
+  [push] t=1.476 com x +0.0641 z 0.6497 vz -0.221 h_y -0.050 pitch +0.0339 cop_x L +0.0104 R +0.0117 fz 157 157 foot x +0.0154
+  [push] t=1.478 com x +0.0644 z 0.6492 vz -0.222 h_y -0.050 pitch +0.0343 cop_x L +0.0112 R +0.0125 fz 157 157 foot x +0.0154
+  [push] t=1.480 com x +0.0647 z 0.6488 vz -0.223 h_y -0.051 pitch +0.0346 cop_x L +0.0120 R +0.0133 fz 157 157 foot x +0.0154
+  [tau] t=1.480 right_ankle_pitch=+7/35 (0.19)  left_ankle_pitch=+6/35 (0.18)  right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)
+  [push] t=1.482 com x +0.0649 z 0.6483 vz -0.225 h_y -0.051 pitch +0.0349 cop_x L +0.0128 R +0.0141 fz 157 157 foot x +0.0154
+  [push] t=1.484 com x +0.0652 z 0.6479 vz -0.226 h_y -0.052 pitch +0.0353 cop_x L +0.0136 R +0.0149 fz 157 158 foot x +0.0154
+  [push] t=1.486 com x +0.0655 z 0.6474 vz -0.227 h_y -0.052 pitch +0.0356 cop_x L +0.0144 R +0.0157 fz 158 158 foot x +0.0154
+  [push] t=1.488 com x +0.0657 z 0.6470 vz -0.228 h_y -0.052 pitch +0.0359 cop_x L +0.0151 R +0.0165 fz 158 158 foot x +0.0154
+  [push] t=1.490 com x +0.0660 z 0.6465 vz -0.228 h_y -0.053 pitch +0.0362 cop_x L +0.0159 R +0.0172 fz 158 158 foot x +0.0154
+  [tau] t=1.490 right_ankle_pitch=+7/35 (0.21)  left_ankle_pitch=+7/35 (0.20)  right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)
+  [push] t=1.492 com x +0.0663 z 0.6460 vz -0.229 h_y -0.053 pitch +0.0366 cop_x L +0.0167 R +0.0180 fz 158 158 foot x +0.0154
+  [push] t=1.494 com x +0.0665 z 0.6456 vz -0.230 h_y -0.054 pitch +0.0369 cop_x L +0.0175 R +0.0188 fz 158 158 foot x +0.0154
+  [push] t=1.496 com x +0.0668 z 0.6451 vz -0.231 h_y -0.054 pitch +0.0372 cop_x L +0.0183 R +0.0196 fz 159 159 foot x +0.0154
+  [push] t=1.498 com x +0.0671 z 0.6447 vz -0.232 h_y -0.055 pitch +0.0375 cop_x L +0.0191 R +0.0204 fz 159 159 foot x +0.0154
+  [push] t=1.500 com x +0.0673 z 0.6442 vz -0.233 h_y -0.055 pitch +0.0378 cop_x L +0.0199 R +0.0212 fz 159 159 foot x +0.0154
+  [tau] t=1.500 right_ankle_pitch=+8/35 (0.22)  left_ankle_pitch=+8/35 (0.22)  right_knee=-13/139 (0.10)  left_knee=-13/139 (0.10)
+  [push] t=1.502 com x +0.0676 z 0.6437 vz -0.234 h_y -0.055 pitch +0.0382 cop_x L +0.0207 R +0.0220 fz 159 159 foot x +0.0154
+  [push] t=1.504 com x +0.0679 z 0.6433 vz -0.235 h_y -0.056 pitch +0.0385 cop_x L +0.0214 R +0.0228 fz 159 159 foot x +0.0154
+  [push] t=1.506 com x +0.0681 z 0.6428 vz -0.235 h_y -0.056 pitch +0.0388 cop_x L +0.0222 R +0.0235 fz 160 160 foot x +0.0154
+  [push] t=1.508 com x +0.0684 z 0.6423 vz -0.236 h_y -0.057 pitch +0.0391 cop_x L +0.0230 R +0.0243 fz 160 160 foot x +0.0154
+  [push] t=1.510 com x +0.0687 z 0.6418 vz -0.237 h_y -0.057 pitch +0.0394 cop_x L +0.0238 R +0.0251 fz 160 160 foot x +0.0154
+  [tau] t=1.510 right_ankle_pitch=+8/35 (0.24)  left_ankle_pitch=+8/35 (0.24)  right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)
+  [push] t=1.512 com x +0.0689 z 0.6414 vz -0.237 h_y -0.058 pitch +0.0397 cop_x L +0.0245 R +0.0258 fz 160 160 foot x +0.0154
+  [push] t=1.514 com x +0.0692 z 0.6409 vz -0.238 h_y -0.058 pitch +0.0401 cop_x L +0.0253 R +0.0266 fz 160 160 foot x +0.0154
+  [push] t=1.516 com x +0.0694 z 0.6404 vz -0.239 h_y -0.058 pitch +0.0404 cop_x L +0.0260 R +0.0274 fz 161 161 foot x +0.0154
+  [push] t=1.518 com x +0.0697 z 0.6399 vz -0.239 h_y -0.059 pitch +0.0407 cop_x L +0.0268 R +0.0281 fz 161 161 foot x +0.0154
+  [push] t=1.520 com x +0.0700 z 0.6395 vz -0.240 h_y -0.059 pitch +0.0410 cop_x L +0.0275 R +0.0289 fz 161 161 foot x +0.0154
+  [tau] t=1.520 right_ankle_pitch=+9/35 (0.26)  left_ankle_pitch=+9/35 (0.25)  right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)
+  t= 1.520 nc=2 com=(+0.070,-0.000,+0.6395) vz=-0.240 roll=-0.000 pitch=+0.041 status=Optimal
+  [push] t=1.522 com x +0.0702 z 0.6390 vz -0.241 h_y -0.060 pitch +0.0413 cop_x L +0.0283 R +0.0296 fz 161 161 foot x +0.0154
+  [push] t=1.524 com x +0.0705 z 0.6385 vz -0.241 h_y -0.060 pitch +0.0416 cop_x L +0.0290 R +0.0304 fz 161 162 foot x +0.0155
+  [push] t=1.526 com x +0.0708 z 0.6380 vz -0.242 h_y -0.061 pitch +0.0419 cop_x L +0.0298 R +0.0311 fz 162 162 foot x +0.0155
+  [push] t=1.528 com x +0.0710 z 0.6375 vz -0.242 h_y -0.061 pitch +0.0422 cop_x L +0.0305 R +0.0318 fz 162 162 foot x +0.0155
+  [push] t=1.530 com x +0.0713 z 0.6370 vz -0.243 h_y -0.061 pitch +0.0425 cop_x L +0.0312 R +0.0326 fz 162 162 foot x +0.0155
+  [tau] t=1.530 right_ankle_pitch=+10/35 (0.28)  left_ankle_pitch=+10/35 (0.27)  right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)
+  [push] t=1.532 com x +0.0716 z 0.6366 vz -0.243 h_y -0.062 pitch +0.0428 cop_x L +0.0320 R +0.0333 fz 162 163 foot x +0.0155
+  [push] t=1.534 com x +0.0718 z 0.6361 vz -0.243 h_y -0.062 pitch +0.0431 cop_x L +0.0327 R +0.0340 fz 163 163 foot x +0.0155
+  [push] t=1.536 com x +0.0721 z 0.6356 vz -0.244 h_y -0.063 pitch +0.0434 cop_x L +0.0334 R +0.0347 fz 163 163 foot x +0.0155
+  [push] t=1.538 com x +0.0723 z 0.6351 vz -0.244 h_y -0.063 pitch +0.0437 cop_x L +0.0341 R +0.0354 fz 163 163 foot x +0.0155
+  [push] t=1.540 com x +0.0726 z 0.6346 vz -0.244 h_y -0.063 pitch +0.0440 cop_x L +0.0348 R +0.0361 fz 163 163 foot x +0.0155
+  [tau] t=1.540 right_ankle_pitch=+10/35 (0.30)  left_ankle_pitch=+10/35 (0.29)  right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)
+  [push] t=1.542 com x +0.0729 z 0.6341 vz -0.245 h_y -0.064 pitch +0.0443 cop_x L +0.0355 R +0.0368 fz 164 164 foot x +0.0155
+  [push] t=1.544 com x +0.0731 z 0.6336 vz -0.245 h_y -0.064 pitch +0.0446 cop_x L +0.0362 R +0.0375 fz 164 164 foot x +0.0155
+  [push] t=1.546 com x +0.0734 z 0.6331 vz -0.245 h_y -0.065 pitch +0.0449 cop_x L +0.0369 R +0.0382 fz 164 164 foot x +0.0155
+  [push] t=1.548 com x +0.0736 z 0.6326 vz -0.245 h_y -0.065 pitch +0.0452 cop_x L +0.0375 R +0.0389 fz 164 164 foot x +0.0155
+  [push] t=1.550 com x +0.0739 z 0.6322 vz -0.245 h_y -0.065 pitch +0.0454 cop_x L +0.0382 R +0.0395 fz 165 165 foot x +0.0155
+  [tau] t=1.550 right_ankle_pitch=+11/35 (0.32)  left_ankle_pitch=+11/35 (0.31)  right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)
+  [push] t=1.552 com x +0.0741 z 0.6317 vz -0.246 h_y -0.066 pitch +0.0457 cop_x L +0.0389 R +0.0402 fz 165 165 foot x +0.0155
+  [push] t=1.554 com x +0.0744 z 0.6312 vz -0.246 h_y -0.066 pitch +0.0460 cop_x L +0.0395 R +0.0409 fz 165 165 foot x +0.0155
+  [push] t=1.556 com x +0.0746 z 0.6307 vz -0.246 h_y -0.066 pitch +0.0463 cop_x L +0.0402 R +0.0415 fz 165 166 foot x +0.0155
+  [push] t=1.558 com x +0.0749 z 0.6302 vz -0.246 h_y -0.067 pitch +0.0466 cop_x L +0.0408 R +0.0422 fz 166 166 foot x +0.0155
+  [push] t=1.560 com x +0.0752 z 0.6297 vz -0.246 h_y -0.067 pitch +0.0468 cop_x L +0.0415 R +0.0428 fz 166 166 foot x +0.0155
+  [tau] t=1.560 right_ankle_pitch=+12/35 (0.33)  left_ankle_pitch=+11/35 (0.33)  right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)
+  [push] t=1.562 com x +0.0754 z 0.6292 vz -0.246 h_y -0.068 pitch +0.0471 cop_x L +0.0421 R +0.0434 fz 166 166 foot x +0.0155
+  [push] t=1.564 com x +0.0757 z 0.6287 vz -0.246 h_y -0.068 pitch +0.0474 cop_x L +0.0427 R +0.0441 fz 167 167 foot x +0.0155
+  [push] t=1.566 com x +0.0759 z 0.6282 vz -0.246 h_y -0.068 pitch +0.0476 cop_x L +0.0433 R +0.0447 fz 167 167 foot x +0.0155
+  [push] t=1.568 com x +0.0761 z 0.6277 vz -0.246 h_y -0.069 pitch +0.0479 cop_x L +0.0439 R +0.0453 fz 167 167 foot x +0.0155
+  [push] t=1.570 com x +0.0764 z 0.6272 vz -0.245 h_y -0.069 pitch +0.0482 cop_x L +0.0445 R +0.0459 fz 167 167 foot x +0.0156
+  [tau] t=1.570 right_ankle_pitch=+12/35 (0.35)  left_ankle_pitch=+12/35 (0.34)  right_knee=-14/139 (0.10)  left_knee=-14/139 (0.10)
+  [push] t=1.572 com x +0.0766 z 0.6267 vz -0.245 h_y -0.069 pitch +0.0484 cop_x L +0.0451 R +0.0465 fz 168 168 foot x +0.0156
+  [push] t=1.574 com x +0.0769 z 0.6263 vz -0.245 h_y -0.070 pitch +0.0487 cop_x L +0.0457 R +0.0471 fz 168 168 foot x +0.0156
+  [push] t=1.576 com x +0.0771 z 0.6258 vz -0.245 h_y -0.070 pitch +0.0490 cop_x L +0.0463 R +0.0477 fz 168 168 foot x +0.0156
+  [push] t=1.578 com x +0.0774 z 0.6253 vz -0.244 h_y -0.070 pitch +0.0492 cop_x L +0.0469 R +0.0490 fz 168 167 foot x +0.0156
+  [push] t=1.580 com x +0.0776 z 0.6248 vz -0.244 h_y -0.070 pitch +0.0495 cop_x L +0.0473 R +0.0486 fz 169 169 foot x +0.0156
+  [tau] t=1.580 right_ankle_pitch=+13/35 (0.37)  left_ankle_pitch=+13/35 (0.36)  right_knee=-15/139 (0.10)  left_knee=-15/139 (0.10)
+  [push] t=1.582 com x +0.0779 z 0.6243 vz -0.244 h_y -0.071 pitch +0.0497 cop_x L +0.0478 R +0.0491 fz 169 169 foot x +0.0156
+  [push] t=1.584 com x +0.0781 z 0.6238 vz -0.243 h_y -0.071 pitch +0.0500 cop_x L +0.0484 R +0.0497 fz 169 169 foot x +0.0156
+  [push] t=1.586 com x +0.0783 z 0.6233 vz -0.243 h_y -0.071 pitch +0.0502 cop_x L +0.0498 R +0.0503 fz 168 170 foot x +0.0156
+  [push] t=1.588 com x +0.0786 z 0.6228 vz -0.243 h_y -0.071 pitch +0.0505 cop_x L +0.0494 R +0.0508 fz 170 170 foot x +0.0156
+  [push] t=1.590 com x +0.0788 z 0.6224 vz -0.242 h_y -0.072 pitch +0.0507 cop_x L +0.0498 R +0.0512 fz 170 170 foot x +0.0156
+  [tau] t=1.590 right_ankle_pitch=+13/35 (0.38)  left_ankle_pitch=+13/35 (0.38)  right_knee=-15/139 (0.11)  left_knee=-15/139 (0.11)
+  [push] t=1.592 com x +0.0790 z 0.6219 vz -0.242 h_y -0.072 pitch +0.0509 cop_x L +0.0504 R +0.0517 fz 170 171 foot x +0.0156
+  [push] t=1.594 com x +0.0793 z 0.6214 vz -0.241 h_y -0.072 pitch +0.0512 cop_x L +0.0508 R +0.0522 fz 171 171 foot x +0.0156
+  [push] t=1.596 com x +0.0795 z 0.6209 vz -0.241 h_y -0.073 pitch +0.0514 cop_x L +0.0514 R +0.0528 fz 171 171 foot x +0.0156
+  [push] t=1.598 com x +0.0797 z 0.6204 vz -0.241 h_y -0.063 pitch +0.0516 cop_x L +0.0527 R +0.0512 fz 170 174 foot x +0.0156
+  [push] t=1.600 com x +0.0800 z 0.6199 vz -0.240 h_y -0.064 pitch +0.0519 cop_x L +0.0485 R +0.0491 fz 173 174 foot x +0.0156
+  [tau] t=1.600 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  left_knee=-15/139 (0.11)  right_knee=-15/139 (0.11)
+  t= 1.600 nc=2 com=(+0.080,-0.000,+0.6199) vz=-0.240 roll=-0.000 pitch=+0.052 status=Optimal
+  [push] t=1.602 com x +0.0802 z 0.6195 vz -0.239 h_y -0.066 pitch +0.0521 cop_x L +0.0496 R +0.0503 fz 173 174 foot x +0.0156
+  [push] t=1.604 com x +0.0804 z 0.6190 vz -0.238 h_y -0.067 pitch +0.0523 cop_x L +0.0508 R +0.0516 fz 173 174 foot x +0.0156
+  [push] t=1.606 com x +0.0806 z 0.6185 vz -0.237 h_y -0.069 pitch +0.0525 cop_x L +0.0519 R +0.0527 fz 173 174 foot x +0.0156
+  [push] t=1.608 com x +0.0809 z 0.6180 vz -0.237 h_y -0.070 pitch +0.0527 cop_x L +0.0529 R +0.0537 fz 173 174 foot x +0.0156
+  [push] t=1.610 com x +0.0811 z 0.6176 vz -0.236 h_y -0.071 pitch +0.0529 cop_x L +0.0538 R +0.0547 fz 173 174 foot x +0.0156
+  [tau] t=1.610 right_ankle_pitch=+14/35 (0.41)  left_ankle_pitch=+14/35 (0.40)  left_knee=-15/139 (0.11)  right_knee=-15/139 (0.11)
+  [push] t=1.612 com x +0.0813 z 0.6171 vz -0.235 h_y -0.072 pitch +0.0532 cop_x L +0.0546 R +0.0556 fz 173 174 foot x +0.0157
+  [push] t=1.614 com x +0.0815 z 0.6166 vz -0.234 h_y -0.073 pitch +0.0534 cop_x L +0.0554 R +0.0564 fz 173 174 foot x +0.0157
+  [push] t=1.616 com x +0.0817 z 0.6162 vz -0.233 h_y -0.074 pitch +0.0536 cop_x L +0.0561 R +0.0571 fz 174 174 foot x +0.0157
+  [push] t=1.618 com x +0.0819 z 0.6157 vz -0.232 h_y -0.074 pitch +0.0538 cop_x L +0.0568 R +0.0578 fz 174 174 foot x +0.0157
+  [push] t=1.620 com x +0.0822 z 0.6152 vz -0.231 h_y -0.075 pitch +0.0540 cop_x L +0.0580 R +0.0584 fz 173 174 foot x +0.0157
+  [tau] t=1.620 right_ankle_pitch=+15/35 (0.43)  left_ankle_pitch=+15/35 (0.42)  right_knee=-15/139 (0.11)  left_knee=-15/139 (0.11)
+  [push] t=1.622 com x +0.0824 z 0.6148 vz -0.230 h_y -0.075 pitch +0.0542 cop_x L +0.0578 R +0.0590 fz 174 175 foot x +0.0157
+  [push] t=1.624 com x +0.0826 z 0.6143 vz -0.229 h_y -0.076 pitch +0.0544 cop_x L +0.0582 R +0.0594 fz 175 175 foot x +0.0157
+  [push] t=1.626 com x +0.0828 z 0.6139 vz -0.228 h_y -0.077 pitch +0.0546 cop_x L +0.0587 R +0.0600 fz 175 175 foot x +0.0157
+  [push] t=1.628 com x +0.0830 z 0.6134 vz -0.227 h_y -0.077 pitch +0.0548 cop_x L +0.0592 R +0.0605 fz 175 175 foot x +0.0157
+  [push] t=1.630 com x +0.0832 z 0.6130 vz -0.226 h_y -0.078 pitch +0.0549 cop_x L +0.0603 R +0.0609 fz 175 175 foot x +0.0157
+  [tau] t=1.630 right_ankle_pitch=+16/35 (0.44)  left_ankle_pitch=+15/35 (0.44)  right_knee=-16/139 (0.11)  left_knee=-16/139 (0.11)
+  [push] t=1.632 com x +0.0834 z 0.6125 vz -0.225 h_y -0.078 pitch +0.0551 cop_x L +0.0601 R +0.0614 fz 176 176 foot x +0.0157
+  [push] t=1.634 com x +0.0836 z 0.6121 vz -0.224 h_y -0.078 pitch +0.0553 cop_x L +0.0604 R +0.0617 fz 176 176 foot x +0.0157
+  [push] t=1.636 com x +0.0838 z 0.6116 vz -0.223 h_y -0.079 pitch +0.0555 cop_x L +0.0614 R +0.0621 fz 175 176 foot x +0.0157
+  [push] t=1.638 com x +0.0840 z 0.6112 vz -0.221 h_y -0.079 pitch +0.0557 cop_x L +0.0611 R +0.0625 fz 176 176 foot x +0.0157
+  [push] t=1.640 com x +0.0842 z 0.6107 vz -0.220 h_y -0.079 pitch +0.0558 cop_x L +0.0615 R +0.0628 fz 176 176 foot x +0.0157
+  [tau] t=1.640 right_ankle_pitch=+16/35 (0.46)  left_ankle_pitch=+16/35 (0.45)  right_knee=-16/139 (0.11)  left_knee=-16/139 (0.11)
+  [push] t=1.642 com x +0.0844 z 0.6103 vz -0.219 h_y -0.079 pitch +0.0560 cop_x L +0.0623 R +0.0631 fz 176 177 foot x +0.0157
+  [push] t=1.644 com x +0.0846 z 0.6099 vz -0.218 h_y -0.080 pitch +0.0562 cop_x L +0.0621 R +0.0635 fz 177 177 foot x +0.0157
+  [push] t=1.646 com x +0.0848 z 0.6094 vz -0.216 h_y -0.080 pitch +0.0563 cop_x L +0.0624 R +0.0637 fz 177 177 foot x +0.0157
+  [push] t=1.648 com x +0.0850 z 0.6090 vz -0.215 h_y -0.080 pitch +0.0565 cop_x L +0.0627 R +0.0641 fz 177 177 foot x +0.0158
+  [push] t=1.650 com x +0.0852 z 0.6086 vz -0.214 h_y -0.080 pitch +0.0566 cop_x L +0.0629 R +0.0644 fz 178 178 foot x +0.0158
+  [tau] t=1.650 right_ankle_pitch=+16/35 (0.47)  left_ankle_pitch=+16/35 (0.46)  right_knee=-16/139 (0.12)  left_knee=-16/139 (0.12)
+  [push] t=1.652 com x +0.0854 z 0.6081 vz -0.212 h_y -0.080 pitch +0.0568 cop_x L +0.0632 R +0.0646 fz 178 178 foot x +0.0158
+  [push] t=1.654 com x +0.0855 z 0.6077 vz -0.211 h_y -0.081 pitch +0.0570 cop_x L +0.0635 R +0.0649 fz 178 178 foot x +0.0158
+  [push] t=1.656 com x +0.0857 z 0.6073 vz -0.209 h_y -0.081 pitch +0.0571 cop_x L +0.0638 R +0.0652 fz 178 178 foot x +0.0158
+  [push] t=1.658 com x +0.0859 z 0.6069 vz -0.208 h_y -0.081 pitch +0.0573 cop_x L +0.0640 R +0.0654 fz 178 178 foot x +0.0158
+  [push] t=1.660 com x +0.0861 z 0.6065 vz -0.207 h_y -0.081 pitch +0.0574 cop_x L +0.0642 R +0.0657 fz 179 179 foot x +0.0158
+  [tau] t=1.660 right_ankle_pitch=+17/35 (0.48)  left_ankle_pitch=+16/35 (0.47)  right_knee=-16/139 (0.12)  left_knee=-16/139 (0.12)
+  [push] t=1.662 com x +0.0863 z 0.6061 vz -0.205 h_y -0.081 pitch +0.0575 cop_x L +0.0644 R +0.0659 fz 179 179 foot x +0.0158
+  [push] t=1.664 com x +0.0864 z 0.6056 vz -0.203 h_y -0.081 pitch +0.0577 cop_x L +0.0646 R +0.0661 fz 179 179 foot x +0.0158
+  [push] t=1.666 com x +0.0866 z 0.6052 vz -0.202 h_y -0.082 pitch +0.0578 cop_x L +0.0649 R +0.0663 fz 179 179 foot x +0.0158
+  [push] t=1.668 com x +0.0868 z 0.6048 vz -0.200 h_y -0.082 pitch +0.0579 cop_x L +0.0651 R +0.0665 fz 180 180 foot x +0.0158
+  [push] t=1.670 com x +0.0869 z 0.6044 vz -0.199 h_y -0.082 pitch +0.0581 cop_x L +0.0653 R +0.0668 fz 180 180 foot x +0.0158
+  [tau] t=1.670 right_ankle_pitch=+17/35 (0.49)  left_ankle_pitch=+17/35 (0.48)  right_knee=-17/139 (0.12)  left_knee=-17/139 (0.12)
+  [push] t=1.672 com x +0.0871 z 0.6040 vz -0.197 h_y -0.082 pitch +0.0582 cop_x L +0.0655 R +0.0670 fz 180 180 foot x +0.0158
+  [push] t=1.674 com x +0.0873 z 0.6037 vz -0.195 h_y -0.082 pitch +0.0583 cop_x L +0.0657 R +0.0672 fz 180 180 foot x +0.0158
+  [push] t=1.676 com x +0.0874 z 0.6033 vz -0.194 h_y -0.082 pitch +0.0584 cop_x L +0.0659 R +0.0674 fz 180 180 foot x +0.0158
+  [push] t=1.678 com x +0.0876 z 0.6029 vz -0.192 h_y -0.082 pitch +0.0585 cop_x L +0.0661 R +0.0676 fz 180 180 foot x +0.0158
+  [push] t=1.680 com x +0.0878 z 0.6025 vz -0.190 h_y -0.082 pitch +0.0587 cop_x L +0.0663 R +0.0681 fz 181 180 foot x +0.0158
+  [tau] t=1.680 right_ankle_pitch=+17/35 (0.49)  left_ankle_pitch=+17/35 (0.49)  right_knee=-17/139 (0.12)  left_knee=-17/139 (0.12)
+  t= 1.680 nc=2 com=(+0.088,-0.001,+0.6025) vz=-0.190 roll=-0.000 pitch=+0.059 status=Optimal
+  [push] t=1.682 com x +0.0879 z 0.6021 vz -0.189 h_y -0.082 pitch +0.0588 cop_x L +0.0665 R +0.0682 fz 181 181 foot x +0.0158
+  [push] t=1.684 com x +0.0881 z 0.6017 vz -0.187 h_y -0.082 pitch +0.0589 cop_x L +0.0670 R +0.0679 fz 181 181 foot x +0.0158
+  [push] t=1.686 com x +0.0882 z 0.6014 vz -0.185 h_y -0.083 pitch +0.0590 cop_x L +0.0667 R +0.0681 fz 181 181 foot x +0.0159
+  [push] t=1.688 com x +0.0884 z 0.6010 vz -0.183 h_y -0.083 pitch +0.0591 cop_x L +0.0668 R +0.0682 fz 181 181 foot x +0.0159
+  [push] t=1.690 com x +0.0885 z 0.6006 vz -0.182 h_y -0.083 pitch +0.0592 cop_x L +0.0670 R +0.0684 fz 182 182 foot x +0.0159
+  [tau] t=1.690 right_ankle_pitch=+18/35 (0.50)  left_ankle_pitch=+17/35 (0.49)  right_knee=-17/139 (0.12)  left_knee=-17/139 (0.12)
+  [push] t=1.692 com x +0.0887 z 0.6003 vz -0.180 h_y -0.083 pitch +0.0593 cop_x L +0.0672 R +0.0686 fz 182 182 foot x +0.0159
+  [push] t=1.694 com x +0.0888 z 0.5999 vz -0.178 h_y -0.083 pitch +0.0594 cop_x L +0.0673 R +0.0688 fz 182 182 foot x +0.0159
+  [push] t=1.696 com x +0.0890 z 0.5996 vz -0.176 h_y -0.083 pitch +0.0595 cop_x L +0.0675 R +0.0689 fz 182 182 foot x +0.0159
+  [push] t=1.698 com x +0.0891 z 0.5992 vz -0.174 h_y -0.083 pitch +0.0596 cop_x L +0.0676 R +0.0691 fz 182 182 foot x +0.0159
+  [push] t=1.700 com x +0.0893 z 0.5989 vz -0.172 h_y -0.083 pitch +0.0596 cop_x L +0.0678 R +0.0692 fz 182 182 foot x +0.0159
+  [tau] t=1.700 right_ankle_pitch=+18/35 (0.51)  left_ankle_pitch=+18/35 (0.50)  right_knee=-18/139 (0.13)  left_knee=-18/139 (0.13)
+  [push] t=1.702 com x +0.0894 z 0.5985 vz -0.170 h_y -0.084 pitch +0.0597 cop_x L +0.0679 R +0.0693 fz 182 182 foot x +0.0159
+  [push] t=1.704 com x +0.0895 z 0.5982 vz -0.168 h_y -0.084 pitch +0.0598 cop_x L +0.0680 R +0.0695 fz 182 183 foot x +0.0159
+  [push] t=1.706 com x +0.0897 z 0.5979 vz -0.166 h_y -0.084 pitch +0.0599 cop_x L +0.0681 R +0.0696 fz 183 183 foot x +0.0159
+  [push] t=1.708 com x +0.0898 z 0.5975 vz -0.164 h_y -0.084 pitch +0.0599 cop_x L +0.0682 R +0.0697 fz 183 183 foot x +0.0159
+  [push] t=1.710 com x +0.0899 z 0.5972 vz -0.162 h_y -0.084 pitch +0.0600 cop_x L +0.0683 R +0.0698 fz 183 183 foot x +0.0159
+  [tau] t=1.710 right_ankle_pitch=+18/35 (0.51)  left_ankle_pitch=+18/35 (0.51)  right_knee=-18/139 (0.13)  left_knee=-18/139 (0.13)
+  [push] t=1.712 com x +0.0901 z 0.5969 vz -0.161 h_y -0.084 pitch +0.0601 cop_x L +0.0684 R +0.0698 fz 183 183 foot x +0.0159
+  [push] t=1.714 com x +0.0902 z 0.5966 vz -0.159 h_y -0.084 pitch +0.0601 cop_x L +0.0685 R +0.0699 fz 183 183 foot x +0.0159
+  [push] t=1.716 com x +0.0903 z 0.5963 vz -0.157 h_y -0.084 pitch +0.0602 cop_x L +0.0685 R +0.0700 fz 183 183 foot x +0.0159
+  [push] t=1.718 com x +0.0904 z 0.5959 vz -0.154 h_y -0.084 pitch +0.0603 cop_x L +0.0686 R +0.0701 fz 183 183 foot x +0.0159
+  [push] t=1.720 com x +0.0905 z 0.5956 vz -0.152 h_y -0.084 pitch +0.0603 cop_x L +0.0687 R +0.0701 fz 183 183 foot x +0.0159
+  [tau] t=1.720 right_ankle_pitch=+18/35 (0.52)  left_ankle_pitch=+18/35 (0.51)  right_knee=-18/139 (0.13)  left_knee=-18/139 (0.13)
+  [push] t=1.722 com x +0.0907 z 0.5953 vz -0.150 h_y -0.084 pitch +0.0604 cop_x L +0.0687 R +0.0702 fz 183 183 foot x +0.0159
+  [push] t=1.724 com x +0.0908 z 0.5950 vz -0.148 h_y -0.084 pitch +0.0604 cop_x L +0.0688 R +0.0702 fz 183 183 foot x +0.0159
+  [push] t=1.726 com x +0.0909 z 0.5947 vz -0.146 h_y -0.084 pitch +0.0605 cop_x L +0.0688 R +0.0703 fz 184 184 foot x +0.0159
+  [push] t=1.728 com x +0.0910 z 0.5945 vz -0.144 h_y -0.084 pitch +0.0605 cop_x L +0.0688 R +0.0703 fz 184 184 foot x +0.0159
+  [push] t=1.730 com x +0.0911 z 0.5942 vz -0.142 h_y -0.084 pitch +0.0606 cop_x L +0.0689 R +0.0703 fz 184 184 foot x +0.0160
+  [tau] t=1.730 right_ankle_pitch=+18/35 (0.52)  left_ankle_pitch=+18/35 (0.51)  right_knee=-18/139 (0.13)  left_knee=-18/139 (0.13)
+  [push] t=1.732 com x +0.0912 z 0.5939 vz -0.140 h_y -0.084 pitch +0.0606 cop_x L +0.0689 R +0.0703 fz 184 184 foot x +0.0160
+  [push] t=1.734 com x +0.0913 z 0.5936 vz -0.138 h_y -0.084 pitch +0.0606 cop_x L +0.0689 R +0.0704 fz 184 184 foot x +0.0160
+  [push] t=1.736 com x +0.0914 z 0.5933 vz -0.136 h_y -0.084 pitch +0.0607 cop_x L +0.0689 R +0.0704 fz 184 184 foot x +0.0160
+  [push] t=1.738 com x +0.0915 z 0.5931 vz -0.134 h_y -0.084 pitch +0.0607 cop_x L +0.0689 R +0.0704 fz 184 184 foot x +0.0160
+  [push] t=1.740 com x +0.0916 z 0.5928 vz -0.132 h_y -0.084 pitch +0.0607 cop_x L +0.0689 R +0.0704 fz 184 184 foot x +0.0160
+  [tau] t=1.740 right_ankle_pitch=+18/35 (0.52)  left_ankle_pitch=+18/35 (0.52)  left_knee=-19/139 (0.13)  right_knee=-19/139 (0.13)
+  [push] t=1.742 com x +0.0917 z 0.5925 vz -0.130 h_y -0.084 pitch +0.0608 cop_x L +0.0689 R +0.0704 fz 184 184 foot x +0.0160
+  [push] t=1.744 com x +0.0918 z 0.5923 vz -0.128 h_y -0.084 pitch +0.0608 cop_x L +0.0689 R +0.0703 fz 184 184 foot x +0.0160
+  [push] t=1.746 com x +0.0919 z 0.5920 vz -0.126 h_y -0.084 pitch +0.0608 cop_x L +0.0688 R +0.0703 fz 184 184 foot x +0.0160
+  [push] t=1.748 com x +0.0920 z 0.5918 vz -0.123 h_y -0.084 pitch +0.0608 cop_x L +0.0688 R +0.0703 fz 184 184 foot x +0.0160
+  [push] t=1.750 com x +0.0921 z 0.5915 vz -0.121 h_y -0.084 pitch +0.0608 cop_x L +0.0688 R +0.0703 fz 184 184 foot x +0.0160
+  [tau] t=1.750 right_ankle_pitch=+18/35 (0.52)  left_ankle_pitch=+18/35 (0.52)  left_knee=-19/139 (0.13)  right_knee=-19/139 (0.13)
+  [push] t=1.752 com x +0.0922 z 0.5913 vz -0.119 h_y -0.084 pitch +0.0609 cop_x L +0.0687 R +0.0702 fz 184 184 foot x +0.0160
+  [push] t=1.754 com x +0.0923 z 0.5911 vz -0.117 h_y -0.084 pitch +0.0609 cop_x L +0.0687 R +0.0702 fz 184 184 foot x +0.0160
+  [push] t=1.756 com x +0.0924 z 0.5908 vz -0.115 h_y -0.084 pitch +0.0609 cop_x L +0.0686 R +0.0701 fz 184 184 foot x +0.0160
+  [push] t=1.758 com x +0.0925 z 0.5906 vz -0.113 h_y -0.084 pitch +0.0609 cop_x L +0.0686 R +0.0700 fz 184 184 foot x +0.0160
+  [push] t=1.760 com x +0.0925 z 0.5904 vz -0.111 h_y -0.084 pitch +0.0609 cop_x L +0.0685 R +0.0700 fz 184 184 foot x +0.0160
+  [tau] t=1.760 right_ankle_pitch=+18/35 (0.52)  left_ankle_pitch=+18/35 (0.52)  left_knee=-19/139 (0.14)  right_knee=-19/139 (0.14)
+  t= 1.760 nc=2 com=(+0.093,-0.001,+0.5904) vz=-0.111 roll=-0.000 pitch=+0.061 status=Optimal
+  [push] t=1.762 com x +0.0926 z 0.5902 vz -0.109 h_y -0.084 pitch +0.0609 cop_x L +0.0684 R +0.0699 fz 184 184 foot x +0.0160
+  [push] t=1.764 com x +0.0927 z 0.5900 vz -0.107 h_y -0.084 pitch +0.0609 cop_x L +0.0683 R +0.0698 fz 184 184 foot x +0.0160
+  [push] t=1.766 com x +0.0928 z 0.5897 vz -0.105 h_y -0.084 pitch +0.0609 cop_x L +0.0682 R +0.0697 fz 184 184 foot x +0.0160
+  [push] t=1.768 com x +0.0928 z 0.5895 vz -0.103 h_y -0.084 pitch +0.0609 cop_x L +0.0682 R +0.0696 fz 184 184 foot x +0.0160
+  [push] t=1.770 com x +0.0929 z 0.5893 vz -0.101 h_y -0.084 pitch +0.0609 cop_x L +0.0681 R +0.0695 fz 184 184 foot x +0.0160
+  [tau] t=1.770 right_ankle_pitch=+18/35 (0.52)  left_ankle_pitch=+18/35 (0.51)  left_knee=-19/139 (0.14)  right_knee=-19/139 (0.14)
+  [push] t=1.772 com x +0.0930 z 0.5891 vz -0.099 h_y -0.084 pitch +0.0609 cop_x L +0.0679 R +0.0694 fz 184 184 foot x +0.0160
+  [push] t=1.774 com x +0.0931 z 0.5889 vz -0.097 h_y -0.084 pitch +0.0608 cop_x L +0.0678 R +0.0693 fz 183 183 foot x +0.0160
+  [push] t=1.776 com x +0.0931 z 0.5888 vz -0.095 h_y -0.084 pitch +0.0608 cop_x L +0.0677 R +0.0692 fz 183 183 foot x +0.0160
+  [push] t=1.778 com x +0.0932 z 0.5886 vz -0.092 h_y -0.084 pitch +0.0608 cop_x L +0.0676 R +0.0691 fz 183 183 foot x +0.0160
+  [push] t=1.780 com x +0.0932 z 0.5884 vz -0.090 h_y -0.084 pitch +0.0608 cop_x L +0.0674 R +0.0689 fz 183 183 foot x +0.0160
+  [tau] t=1.780 right_ankle_pitch=+18/35 (0.52)  left_ankle_pitch=+18/35 (0.51)  left_knee=-19/139 (0.14)  right_knee=-19/139 (0.14)
+  [push] t=1.782 com x +0.0933 z 0.5882 vz -0.089 h_y -0.084 pitch +0.0608 cop_x L +0.0673 R +0.0688 fz 183 183 foot x +0.0160
+  [push] t=1.784 com x +0.0934 z 0.5880 vz -0.087 h_y -0.084 pitch +0.0607 cop_x L +0.0671 R +0.0686 fz 183 183 foot x +0.0161
+  [push] t=1.786 com x +0.0934 z 0.5879 vz -0.085 h_y -0.083 pitch +0.0607 cop_x L +0.0670 R +0.0685 fz 183 183 foot x +0.0161
+  [push] t=1.788 com x +0.0935 z 0.5877 vz -0.083 h_y -0.083 pitch +0.0607 cop_x L +0.0668 R +0.0683 fz 183 183 foot x +0.0161
+  [push] t=1.790 com x +0.0935 z 0.5875 vz -0.081 h_y -0.083 pitch +0.0607 cop_x L +0.0666 R +0.0681 fz 183 183 foot x +0.0161
+  [tau] t=1.790 right_ankle_pitch=+18/35 (0.51)  left_ankle_pitch=+18/35 (0.51)  left_knee=-19/139 (0.14)  right_knee=-19/139 (0.14)
+  [push] t=1.792 com x +0.0936 z 0.5874 vz -0.079 h_y -0.083 pitch +0.0606 cop_x L +0.0665 R +0.0680 fz 182 182 foot x +0.0161
+  [push] t=1.794 com x +0.0936 z 0.5872 vz -0.077 h_y -0.083 pitch +0.0606 cop_x L +0.0663 R +0.0678 fz 182 182 foot x +0.0161
+  [push] t=1.796 com x +0.0937 z 0.5871 vz -0.075 h_y -0.083 pitch +0.0606 cop_x L +0.0661 R +0.0676 fz 182 182 foot x +0.0161
+  [push] t=1.798 com x +0.0937 z 0.5869 vz -0.073 h_y -0.083 pitch +0.0605 cop_x L +0.0659 R +0.0674 fz 182 182 foot x +0.0161
+  [push] t=1.800 com x +0.0938 z 0.5868 vz -0.071 h_y -0.083 pitch +0.0605 cop_x L +0.0656 R +0.0672 fz 182 182 foot x +0.0161
+  [tau] t=1.800 right_ankle_pitch=+18/35 (0.51)  left_ankle_pitch=+17/35 (0.50)  left_knee=-20/139 (0.14)  right_knee=-20/139 (0.14)
+  [push] t=1.802 com x +0.0938 z 0.5866 vz -0.069 h_y -0.083 pitch +0.0605 cop_x L +0.0654 R +0.0669 fz 182 182 foot x +0.0161
+  [push] t=1.804 com x +0.0939 z 0.5865 vz -0.068 h_y -0.083 pitch +0.0604 cop_x L +0.0652 R +0.0667 fz 182 182 foot x +0.0161
+  [push] t=1.806 com x +0.0939 z 0.5864 vz -0.066 h_y -0.083 pitch +0.0604 cop_x L +0.0650 R +0.0665 fz 181 181 foot x +0.0161
+  [push] t=1.808 com x +0.0940 z 0.5862 vz -0.064 h_y -0.083 pitch +0.0603 cop_x L +0.0647 R +0.0662 fz 181 181 foot x +0.0161
+  [push] t=1.810 com x +0.0940 z 0.5861 vz -0.062 h_y -0.082 pitch +0.0603 cop_x L +0.0645 R +0.0660 fz 181 181 foot x +0.0161
+  [tau] t=1.810 right_ankle_pitch=+18/35 (0.50)  left_ankle_pitch=+17/35 (0.49)  left_knee=-20/139 (0.14)  right_knee=-20/139 (0.14)
+  [push] t=1.812 com x +0.0940 z 0.5860 vz -0.061 h_y -0.082 pitch +0.0602 cop_x L +0.0642 R +0.0657 fz 181 181 foot x +0.0161
+  [push] t=1.814 com x +0.0941 z 0.5859 vz -0.059 h_y -0.082 pitch +0.0602 cop_x L +0.0639 R +0.0654 fz 181 181 foot x +0.0161
+  [push] t=1.816 com x +0.0941 z 0.5858 vz -0.057 h_y -0.082 pitch +0.0601 cop_x L +0.0636 R +0.0652 fz 180 180 foot x +0.0161
+  [push] t=1.818 com x +0.0941 z 0.5857 vz -0.056 h_y -0.082 pitch +0.0601 cop_x L +0.0634 R +0.0649 fz 180 180 foot x +0.0161
+  [push] t=1.820 com x +0.0942 z 0.5855 vz -0.054 h_y -0.082 pitch +0.0600 cop_x L +0.0631 R +0.0646 fz 180 180 foot x +0.0161
+  [tau] t=1.820 right_ankle_pitch=+17/35 (0.49)  left_ankle_pitch=+17/35 (0.48)  left_knee=-20/139 (0.14)  right_knee=-20/139 (0.14)
+  [push] t=1.822 com x +0.0942 z 0.5854 vz -0.053 h_y -0.082 pitch +0.0600 cop_x L +0.0627 R +0.0643 fz 180 180 foot x +0.0161
+  [push] t=1.824 com x +0.0942 z 0.5853 vz -0.051 h_y -0.082 pitch +0.0599 cop_x L +0.0624 R +0.0639 fz 179 179 foot x +0.0161
+  [push] t=1.826 com x +0.0943 z 0.5852 vz -0.050 h_y -0.082 pitch +0.0598 cop_x L +0.0621 R +0.0636 fz 179 179 foot x +0.0161
+  [push] t=1.828 com x +0.0943 z 0.5851 vz -0.048 h_y -0.081 pitch +0.0598 cop_x L +0.0618 R +0.0633 fz 179 179 foot x +0.0161
+  [push] t=1.830 com x +0.0943 z 0.5850 vz -0.047 h_y -0.081 pitch +0.0597 cop_x L +0.0614 R +0.0629 fz 179 179 foot x +0.0161
+  [tau] t=1.830 right_ankle_pitch=+17/35 (0.48)  left_ankle_pitch=+17/35 (0.47)  left_knee=-20/139 (0.14)  right_knee=-20/139 (0.14)
+  [push] t=1.832 com x +0.0943 z 0.5850 vz -0.045 h_y -0.081 pitch +0.0596 cop_x L +0.0611 R +0.0626 fz 178 178 foot x +0.0161
+  [push] t=1.834 com x +0.0944 z 0.5849 vz -0.044 h_y -0.081 pitch +0.0596 cop_x L +0.0607 R +0.0622 fz 178 178 foot x +0.0161
+  [push] t=1.836 com x +0.0944 z 0.5848 vz -0.042 h_y -0.081 pitch +0.0595 cop_x L +0.0603 R +0.0618 fz 178 178 foot x +0.0161
+  [push] t=1.838 com x +0.0944 z 0.5847 vz -0.041 h_y -0.081 pitch +0.0594 cop_x L +0.0599 R +0.0614 fz 177 177 foot x +0.0161
+  [push] t=1.840 com x +0.0944 z 0.5846 vz -0.040 h_y -0.081 pitch +0.0594 cop_x L +0.0595 R +0.0610 fz 177 177 foot x +0.0161
+  [tau] t=1.840 right_ankle_pitch=+16/35 (0.47)  left_ankle_pitch=+16/35 (0.46)  left_knee=-20/139 (0.14)  right_knee=-20/139 (0.14)
+  t= 1.840 nc=2 com=(+0.094,-0.001,+0.5846) vz=-0.040 roll=-0.000 pitch=+0.059 status=Optimal
+  [push] t=1.842 com x +0.0944 z 0.5845 vz -0.039 h_y -0.081 pitch +0.0593 cop_x L +0.0591 R +0.0606 fz 177 177 foot x +0.0161
+  [push] t=1.844 com x +0.0945 z 0.5845 vz -0.037 h_y -0.080 pitch +0.0592 cop_x L +0.0587 R +0.0602 fz 176 176 foot x +0.0161
+  [push] t=1.846 com x +0.0945 z 0.5844 vz -0.036 h_y -0.080 pitch +0.0592 cop_x L +0.0583 R +0.0598 fz 176 176 foot x +0.0161
+  [push] t=1.848 com x +0.0945 z 0.5843 vz -0.035 h_y -0.080 pitch +0.0591 cop_x L +0.0578 R +0.0593 fz 176 176 foot x +0.0161
+  [push] t=1.850 com x +0.0945 z 0.5842 vz -0.034 h_y -0.080 pitch +0.0590 cop_x L +0.0574 R +0.0589 fz 175 175 foot x +0.0161
+  [tau] t=1.850 right_ankle_pitch=+16/35 (0.45)  left_ankle_pitch=+16/35 (0.45)  left_knee=-20/139 (0.14)  right_knee=-20/139 (0.14)
+  [push] t=1.852 com x +0.0945 z 0.5842 vz -0.033 h_y -0.080 pitch +0.0589 cop_x L +0.0569 R +0.0584 fz 175 175 foot x +0.0161
+  [push] t=1.854 com x +0.0945 z 0.5841 vz -0.032 h_y -0.080 pitch +0.0589 cop_x L +0.0564 R +0.0580 fz 175 175 foot x +0.0161
+  [push] t=1.856 com x +0.0945 z 0.5841 vz -0.031 h_y -0.079 pitch +0.0588 cop_x L +0.0559 R +0.0575 fz 174 174 foot x +0.0161
+  [push] t=1.858 com x +0.0946 z 0.5840 vz -0.030 h_y -0.079 pitch +0.0587 cop_x L +0.0554 R +0.0570 fz 174 174 foot x +0.0161
+  [push] t=1.860 com x +0.0946 z 0.5839 vz -0.029 h_y -0.079 pitch +0.0586 cop_x L +0.0549 R +0.0564 fz 173 173 foot x +0.0161
+  [tau] t=1.860 right_ankle_pitch=+15/35 (0.44)  left_ankle_pitch=+15/35 (0.43)  right_knee=-20/139 (0.14)  left_knee=-20/139 (0.14)
+  [push] t=1.862 com x +0.0946 z 0.5839 vz -0.029 h_y -0.079 pitch +0.0586 cop_x L +0.0544 R +0.0559 fz 173 173 foot x +0.0161
+  [push] t=1.864 com x +0.0946 z 0.5838 vz -0.028 h_y -0.079 pitch +0.0585 cop_x L +0.0539 R +0.0554 fz 173 173 foot x +0.0161
+  [push] t=1.866 com x +0.0946 z 0.5838 vz -0.027 h_y -0.079 pitch +0.0584 cop_x L +0.0533 R +0.0548 fz 172 172 foot x +0.0161
+  [push] t=1.868 com x +0.0946 z 0.5837 vz -0.027 h_y -0.078 pitch +0.0583 cop_x L +0.0527 R +0.0543 fz 172 172 foot x +0.0161
+  [push] t=1.870 com x +0.0946 z 0.5837 vz -0.026 h_y -0.078 pitch +0.0583 cop_x L +0.0522 R +0.0537 fz 171 171 foot x +0.0161
+  [tau] t=1.870 right_ankle_pitch=+15/35 (0.42)  left_ankle_pitch=+14/35 (0.41)  right_knee=-20/139 (0.14)  left_knee=-20/139 (0.14)
+  [push] t=1.872 com x +0.0946 z 0.5836 vz -0.025 h_y -0.078 pitch +0.0582 cop_x L +0.0516 R +0.0531 fz 171 171 foot x +0.0161
+  [push] t=1.874 com x +0.0946 z 0.5836 vz -0.025 h_y -0.078 pitch +0.0581 cop_x L +0.0510 R +0.0525 fz 171 171 foot x +0.0161
+  [push] t=1.876 com x +0.0946 z 0.5835 vz -0.024 h_y -0.078 pitch +0.0580 cop_x L +0.0503 R +0.0519 fz 170 170 foot x +0.0161
+  [push] t=1.878 com x +0.0946 z 0.5835 vz -0.024 h_y -0.077 pitch +0.0579 cop_x L +0.0497 R +0.0512 fz 170 170 foot x +0.0161
+  [push] t=1.880 com x +0.0947 z 0.5834 vz -0.024 h_y -0.077 pitch +0.0578 cop_x L +0.0490 R +0.0506 fz 169 169 foot x +0.0161
+  [tau] t=1.880 right_ankle_pitch=+14/35 (0.40)  left_ankle_pitch=+14/35 (0.39)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=1.882 com x +0.0947 z 0.5834 vz -0.024 h_y -0.077 pitch +0.0578 cop_x L +0.0484 R +0.0499 fz 169 169 foot x +0.0161
+  [push] t=1.884 com x +0.0947 z 0.5833 vz -0.023 h_y -0.077 pitch +0.0577 cop_x L +0.0482 R +0.0498 fz 169 169 foot x +0.0161
+  [push] t=1.886 com x +0.0947 z 0.5833 vz -0.023 h_y -0.077 pitch +0.0576 cop_x L +0.0481 R +0.0496 fz 168 168 foot x +0.0161
+  [push] t=1.888 com x +0.0947 z 0.5832 vz -0.023 h_y -0.076 pitch +0.0575 cop_x L +0.0480 R +0.0495 fz 168 168 foot x +0.0161
+  [push] t=1.890 com x +0.0947 z 0.5832 vz -0.023 h_y -0.076 pitch +0.0574 cop_x L +0.0479 R +0.0494 fz 168 168 foot x +0.0161
+  [tau] t=1.890 right_ankle_pitch=+14/35 (0.40)  left_ankle_pitch=+14/35 (0.39)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=1.892 com x +0.0947 z 0.5831 vz -0.022 h_y -0.076 pitch +0.0574 cop_x L +0.0478 R +0.0494 fz 168 168 foot x +0.0161
+  [push] t=1.894 com x +0.0947 z 0.5831 vz -0.022 h_y -0.076 pitch +0.0573 cop_x L +0.0478 R +0.0493 fz 168 168 foot x +0.0161
+  [push] t=1.896 com x +0.0947 z 0.5830 vz -0.022 h_y -0.076 pitch +0.0572 cop_x L +0.0477 R +0.0493 fz 168 168 foot x +0.0161
+  [push] t=1.898 com x +0.0947 z 0.5830 vz -0.022 h_y -0.076 pitch +0.0571 cop_x L +0.0477 R +0.0492 fz 168 168 foot x +0.0161
+  [push] t=1.900 com x +0.0947 z 0.5830 vz -0.022 h_y -0.076 pitch +0.0570 cop_x L +0.0477 R +0.0492 fz 168 168 foot x +0.0161
+  [tau] t=1.900 right_ankle_pitch=+14/35 (0.40)  left_ankle_pitch=+14/35 (0.39)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=1.902 com x +0.0947 z 0.5829 vz -0.021 h_y -0.076 pitch +0.0570 cop_x L +0.0476 R +0.0492 fz 168 168 foot x +0.0161
+  [push] t=1.904 com x +0.0947 z 0.5829 vz -0.021 h_y -0.076 pitch +0.0569 cop_x L +0.0476 R +0.0492 fz 168 168 foot x +0.0161
+  [push] t=1.906 com x +0.0947 z 0.5828 vz -0.021 h_y -0.076 pitch +0.0568 cop_x L +0.0476 R +0.0492 fz 168 168 foot x +0.0161
+  [push] t=1.908 com x +0.0947 z 0.5828 vz -0.021 h_y -0.076 pitch +0.0567 cop_x L +0.0476 R +0.0492 fz 168 168 foot x +0.0161
+  [push] t=1.910 com x +0.0947 z 0.5827 vz -0.021 h_y -0.076 pitch +0.0566 cop_x L +0.0476 R +0.0492 fz 168 168 foot x +0.0161
+  [tau] t=1.910 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+14/35 (0.39)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=1.912 com x +0.0947 z 0.5827 vz -0.021 h_y -0.076 pitch +0.0566 cop_x L +0.0476 R +0.0492 fz 168 168 foot x +0.0161
+  [push] t=1.914 com x +0.0947 z 0.5827 vz -0.021 h_y -0.076 pitch +0.0565 cop_x L +0.0476 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.916 com x +0.0947 z 0.5826 vz -0.020 h_y -0.076 pitch +0.0564 cop_x L +0.0476 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.918 com x +0.0947 z 0.5826 vz -0.020 h_y -0.075 pitch +0.0563 cop_x L +0.0476 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.920 com x +0.0947 z 0.5825 vz -0.020 h_y -0.075 pitch +0.0562 cop_x L +0.0476 R +0.0492 fz 167 167 foot x +0.0161
+  [tau] t=1.920 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+14/35 (0.39)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  t= 1.920 nc=2 com=(+0.095,-0.001,+0.5825) vz=-0.020 roll=-0.000 pitch=+0.056 status=Optimal
+  [push] t=1.922 com x +0.0947 z 0.5825 vz -0.020 h_y -0.075 pitch +0.0562 cop_x L +0.0476 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.924 com x +0.0947 z 0.5825 vz -0.020 h_y -0.075 pitch +0.0561 cop_x L +0.0477 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.926 com x +0.0947 z 0.5824 vz -0.020 h_y -0.075 pitch +0.0560 cop_x L +0.0477 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.928 com x +0.0947 z 0.5824 vz -0.020 h_y -0.075 pitch +0.0559 cop_x L +0.0477 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.930 com x +0.0947 z 0.5823 vz -0.020 h_y -0.075 pitch +0.0559 cop_x L +0.0477 R +0.0492 fz 167 167 foot x +0.0161
+  [tau] t=1.930 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+14/35 (0.39)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=1.932 com x +0.0947 z 0.5823 vz -0.019 h_y -0.075 pitch +0.0558 cop_x L +0.0477 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.934 com x +0.0948 z 0.5823 vz -0.019 h_y -0.075 pitch +0.0557 cop_x L +0.0477 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.936 com x +0.0948 z 0.5822 vz -0.019 h_y -0.075 pitch +0.0556 cop_x L +0.0477 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.938 com x +0.0948 z 0.5822 vz -0.019 h_y -0.075 pitch +0.0556 cop_x L +0.0477 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.940 com x +0.0948 z 0.5822 vz -0.019 h_y -0.075 pitch +0.0555 cop_x L +0.0477 R +0.0492 fz 167 167 foot x +0.0161
+  [tau] t=1.940 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+14/35 (0.39)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=1.942 com x +0.0948 z 0.5821 vz -0.019 h_y -0.075 pitch +0.0554 cop_x L +0.0477 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.944 com x +0.0948 z 0.5821 vz -0.019 h_y -0.075 pitch +0.0553 cop_x L +0.0477 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.946 com x +0.0948 z 0.5820 vz -0.019 h_y -0.075 pitch +0.0553 cop_x L +0.0477 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.948 com x +0.0948 z 0.5820 vz -0.019 h_y -0.075 pitch +0.0552 cop_x L +0.0476 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.950 com x +0.0948 z 0.5820 vz -0.019 h_y -0.075 pitch +0.0551 cop_x L +0.0476 R +0.0492 fz 167 167 foot x +0.0161
+  [tau] t=1.950 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+14/35 (0.39)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=1.952 com x +0.0948 z 0.5819 vz -0.019 h_y -0.075 pitch +0.0550 cop_x L +0.0476 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.954 com x +0.0948 z 0.5819 vz -0.018 h_y -0.075 pitch +0.0550 cop_x L +0.0476 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.956 com x +0.0948 z 0.5819 vz -0.018 h_y -0.075 pitch +0.0549 cop_x L +0.0476 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.958 com x +0.0948 z 0.5818 vz -0.018 h_y -0.075 pitch +0.0548 cop_x L +0.0476 R +0.0492 fz 167 167 foot x +0.0161
+  [push] t=1.960 com x +0.0948 z 0.5818 vz -0.018 h_y -0.075 pitch +0.0547 cop_x L +0.0476 R +0.0492 fz 167 167 foot x +0.0161
+  [tau] t=1.960 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+14/35 (0.39)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=1.962 com x +0.0948 z 0.5817 vz -0.018 h_y -0.075 pitch +0.0547 cop_x L +0.0476 R +0.0491 fz 167 167 foot x +0.0161
+  [push] t=1.964 com x +0.0947 z 0.5817 vz -0.018 h_y -0.075 pitch +0.0546 cop_x L +0.0476 R +0.0491 fz 167 167 foot x +0.0161
+  [push] t=1.966 com x +0.0947 z 0.5817 vz -0.018 h_y -0.075 pitch +0.0545 cop_x L +0.0476 R +0.0491 fz 167 167 foot x +0.0161
+  [push] t=1.968 com x +0.0947 z 0.5816 vz -0.018 h_y -0.075 pitch +0.0545 cop_x L +0.0475 R +0.0491 fz 167 167 foot x +0.0161
+  [push] t=1.970 com x +0.0947 z 0.5816 vz -0.018 h_y -0.075 pitch +0.0544 cop_x L +0.0475 R +0.0491 fz 167 167 foot x +0.0161
+  [tau] t=1.970 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+14/35 (0.39)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=1.972 com x +0.0947 z 0.5816 vz -0.018 h_y -0.075 pitch +0.0543 cop_x L +0.0475 R +0.0491 fz 167 167 foot x +0.0161
+  [push] t=1.974 com x +0.0947 z 0.5815 vz -0.018 h_y -0.075 pitch +0.0543 cop_x L +0.0475 R +0.0491 fz 167 167 foot x +0.0161
+  [push] t=1.976 com x +0.0947 z 0.5815 vz -0.018 h_y -0.075 pitch +0.0542 cop_x L +0.0475 R +0.0490 fz 167 167 foot x +0.0161
+  [push] t=1.978 com x +0.0947 z 0.5815 vz -0.017 h_y -0.075 pitch +0.0541 cop_x L +0.0475 R +0.0490 fz 167 167 foot x +0.0161
+  [push] t=1.980 com x +0.0947 z 0.5814 vz -0.017 h_y -0.075 pitch +0.0540 cop_x L +0.0474 R +0.0490 fz 167 167 foot x +0.0161
+  [tau] t=1.980 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+14/35 (0.39)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=1.982 com x +0.0947 z 0.5814 vz -0.017 h_y -0.075 pitch +0.0540 cop_x L +0.0474 R +0.0490 fz 167 167 foot x +0.0161
+  [push] t=1.984 com x +0.0947 z 0.5814 vz -0.017 h_y -0.075 pitch +0.0539 cop_x L +0.0474 R +0.0490 fz 167 167 foot x +0.0161
+  [push] t=1.986 com x +0.0947 z 0.5813 vz -0.017 h_y -0.075 pitch +0.0538 cop_x L +0.0474 R +0.0490 fz 167 167 foot x +0.0161
+  [push] t=1.988 com x +0.0947 z 0.5813 vz -0.017 h_y -0.075 pitch +0.0538 cop_x L +0.0474 R +0.0489 fz 167 167 foot x +0.0161
+  [push] t=1.990 com x +0.0947 z 0.5813 vz -0.017 h_y -0.075 pitch +0.0537 cop_x L +0.0474 R +0.0489 fz 167 167 foot x +0.0161
+  [tau] t=1.990 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.39)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=1.992 com x +0.0947 z 0.5812 vz -0.017 h_y -0.075 pitch +0.0536 cop_x L +0.0473 R +0.0489 fz 167 167 foot x +0.0161
+  [push] t=1.994 com x +0.0947 z 0.5812 vz -0.017 h_y -0.075 pitch +0.0536 cop_x L +0.0473 R +0.0489 fz 167 167 foot x +0.0161
+  [push] t=1.996 com x +0.0947 z 0.5812 vz -0.017 h_y -0.075 pitch +0.0535 cop_x L +0.0473 R +0.0489 fz 167 167 foot x +0.0161
+  [push] t=1.998 com x +0.0947 z 0.5811 vz -0.017 h_y -0.075 pitch +0.0534 cop_x L +0.0473 R +0.0489 fz 167 167 foot x +0.0161
+  [push] t=2.000 com x +0.0947 z 0.5811 vz -0.017 h_y -0.075 pitch +0.0534 cop_x L +0.0473 R +0.0488 fz 167 167 foot x +0.0161
+  [tau] t=2.000 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  t= 2.000 nc=2 com=(+0.095,-0.001,+0.5811) vz=-0.017 roll=-0.000 pitch=+0.053 status=Optimal
+  [push] t=2.002 com x +0.0947 z 0.5811 vz -0.017 h_y -0.075 pitch +0.0533 cop_x L +0.0472 R +0.0488 fz 167 167 foot x +0.0161
+  [push] t=2.004 com x +0.0947 z 0.5810 vz -0.016 h_y -0.075 pitch +0.0533 cop_x L +0.0472 R +0.0488 fz 167 167 foot x +0.0161
+  [push] t=2.006 com x +0.0947 z 0.5810 vz -0.016 h_y -0.075 pitch +0.0532 cop_x L +0.0472 R +0.0488 fz 167 167 foot x +0.0161
+  [push] t=2.008 com x +0.0947 z 0.5810 vz -0.016 h_y -0.075 pitch +0.0531 cop_x L +0.0472 R +0.0488 fz 167 167 foot x +0.0161
+  [push] t=2.010 com x +0.0947 z 0.5809 vz -0.016 h_y -0.074 pitch +0.0531 cop_x L +0.0472 R +0.0487 fz 167 167 foot x +0.0161
+  [tau] t=2.010 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=2.012 com x +0.0947 z 0.5809 vz -0.016 h_y -0.074 pitch +0.0530 cop_x L +0.0471 R +0.0487 fz 167 167 foot x +0.0161
+  [push] t=2.014 com x +0.0947 z 0.5809 vz -0.016 h_y -0.074 pitch +0.0529 cop_x L +0.0471 R +0.0487 fz 167 167 foot x +0.0161
+  [push] t=2.016 com x +0.0947 z 0.5808 vz -0.016 h_y -0.074 pitch +0.0529 cop_x L +0.0471 R +0.0487 fz 167 167 foot x +0.0161
+  [push] t=2.018 com x +0.0947 z 0.5808 vz -0.016 h_y -0.074 pitch +0.0528 cop_x L +0.0471 R +0.0487 fz 167 167 foot x +0.0161
+  [push] t=2.020 com x +0.0947 z 0.5808 vz -0.016 h_y -0.074 pitch +0.0527 cop_x L +0.0471 R +0.0486 fz 167 167 foot x +0.0161
+  [tau] t=2.020 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=2.022 com x +0.0946 z 0.5807 vz -0.016 h_y -0.074 pitch +0.0527 cop_x L +0.0470 R +0.0486 fz 167 167 foot x +0.0161
+  [push] t=2.024 com x +0.0946 z 0.5807 vz -0.016 h_y -0.074 pitch +0.0526 cop_x L +0.0470 R +0.0486 fz 167 167 foot x +0.0161
+  [push] t=2.026 com x +0.0946 z 0.5807 vz -0.016 h_y -0.074 pitch +0.0526 cop_x L +0.0470 R +0.0486 fz 167 167 foot x +0.0161
+  [push] t=2.028 com x +0.0946 z 0.5806 vz -0.016 h_y -0.074 pitch +0.0525 cop_x L +0.0470 R +0.0486 fz 167 167 foot x +0.0161
+  [push] t=2.030 com x +0.0946 z 0.5806 vz -0.016 h_y -0.074 pitch +0.0524 cop_x L +0.0469 R +0.0485 fz 167 167 foot x +0.0161
+  [tau] t=2.030 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=2.032 com x +0.0946 z 0.5806 vz -0.016 h_y -0.074 pitch +0.0524 cop_x L +0.0469 R +0.0485 fz 167 167 foot x +0.0161
+  [push] t=2.034 com x +0.0946 z 0.5805 vz -0.015 h_y -0.074 pitch +0.0523 cop_x L +0.0469 R +0.0485 fz 167 167 foot x +0.0161
+  [push] t=2.036 com x +0.0946 z 0.5805 vz -0.015 h_y -0.074 pitch +0.0523 cop_x L +0.0469 R +0.0485 fz 167 167 foot x +0.0161
+  [push] t=2.038 com x +0.0946 z 0.5805 vz -0.015 h_y -0.074 pitch +0.0522 cop_x L +0.0469 R +0.0484 fz 167 167 foot x +0.0161
+  [push] t=2.040 com x +0.0946 z 0.5804 vz -0.015 h_y -0.074 pitch +0.0521 cop_x L +0.0468 R +0.0484 fz 167 167 foot x +0.0161
+  [tau] t=2.040 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=2.042 com x +0.0946 z 0.5804 vz -0.015 h_y -0.074 pitch +0.0521 cop_x L +0.0468 R +0.0484 fz 167 167 foot x +0.0161
+  [push] t=2.044 com x +0.0946 z 0.5804 vz -0.015 h_y -0.074 pitch +0.0520 cop_x L +0.0468 R +0.0484 fz 167 167 foot x +0.0161
+  [push] t=2.046 com x +0.0946 z 0.5804 vz -0.015 h_y -0.074 pitch +0.0520 cop_x L +0.0468 R +0.0484 fz 167 167 foot x +0.0161
+  [push] t=2.048 com x +0.0946 z 0.5803 vz -0.015 h_y -0.074 pitch +0.0519 cop_x L +0.0467 R +0.0483 fz 167 167 foot x +0.0162
+  [push] t=2.050 com x +0.0946 z 0.5803 vz -0.015 h_y -0.074 pitch +0.0518 cop_x L +0.0467 R +0.0483 fz 167 167 foot x +0.0162
+  [tau] t=2.050 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=2.052 com x +0.0945 z 0.5803 vz -0.015 h_y -0.074 pitch +0.0518 cop_x L +0.0467 R +0.0483 fz 167 167 foot x +0.0162
+  [push] t=2.054 com x +0.0945 z 0.5802 vz -0.015 h_y -0.074 pitch +0.0517 cop_x L +0.0467 R +0.0483 fz 167 167 foot x +0.0162
+  [push] t=2.056 com x +0.0945 z 0.5802 vz -0.015 h_y -0.074 pitch +0.0517 cop_x L +0.0467 R +0.0483 fz 167 167 foot x +0.0162
+  [push] t=2.058 com x +0.0945 z 0.5802 vz -0.015 h_y -0.074 pitch +0.0516 cop_x L +0.0466 R +0.0482 fz 167 167 foot x +0.0162
+  [push] t=2.060 com x +0.0945 z 0.5801 vz -0.015 h_y -0.074 pitch +0.0516 cop_x L +0.0466 R +0.0482 fz 167 167 foot x +0.0162
+  [tau] t=2.060 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-20/139 (0.15)  left_knee=-20/139 (0.15)
+  [push] t=2.062 com x +0.0945 z 0.5801 vz -0.015 h_y -0.074 pitch +0.0515 cop_x L +0.0466 R +0.0482 fz 167 167 foot x +0.0162
+  [push] t=2.064 com x +0.0945 z 0.5801 vz -0.015 h_y -0.074 pitch +0.0514 cop_x L +0.0466 R +0.0482 fz 167 167 foot x +0.0162
+  [push] t=2.066 com x +0.0945 z 0.5801 vz -0.014 h_y -0.074 pitch +0.0514 cop_x L +0.0465 R +0.0481 fz 167 167 foot x +0.0162
+  [push] t=2.068 com x +0.0945 z 0.5800 vz -0.014 h_y -0.074 pitch +0.0513 cop_x L +0.0465 R +0.0481 fz 167 167 foot x +0.0162
+  [push] t=2.070 com x +0.0945 z 0.5800 vz -0.014 h_y -0.074 pitch +0.0513 cop_x L +0.0465 R +0.0481 fz 167 167 foot x +0.0162
+  [tau] t=2.070 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-21/139 (0.15)  left_knee=-21/139 (0.15)
+  [push] t=2.072 com x +0.0945 z 0.5800 vz -0.014 h_y -0.074 pitch +0.0512 cop_x L +0.0465 R +0.0481 fz 167 167 foot x +0.0162
+  [push] t=2.074 com x +0.0945 z 0.5799 vz -0.014 h_y -0.074 pitch +0.0512 cop_x L +0.0465 R +0.0481 fz 167 167 foot x +0.0162
+  [push] t=2.076 com x +0.0944 z 0.5799 vz -0.014 h_y -0.074 pitch +0.0511 cop_x L +0.0464 R +0.0480 fz 167 167 foot x +0.0162
+  [push] t=2.078 com x +0.0944 z 0.5799 vz -0.014 h_y -0.074 pitch +0.0510 cop_x L +0.0464 R +0.0480 fz 167 167 foot x +0.0162
+  [push] t=2.080 com x +0.0944 z 0.5799 vz -0.014 h_y -0.074 pitch +0.0510 cop_x L +0.0464 R +0.0480 fz 167 167 foot x +0.0162
+  [tau] t=2.080 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-21/139 (0.15)  left_knee=-21/139 (0.15)
+  t= 2.080 nc=2 com=(+0.094,-0.001,+0.5799) vz=-0.014 roll=-0.000 pitch=+0.051 status=Optimal
+  [push] t=2.082 com x +0.0944 z 0.5798 vz -0.014 h_y -0.074 pitch +0.0509 cop_x L +0.0464 R +0.0480 fz 167 167 foot x +0.0162
+  [push] t=2.084 com x +0.0944 z 0.5798 vz -0.014 h_y -0.074 pitch +0.0509 cop_x L +0.0463 R +0.0479 fz 167 167 foot x +0.0162
+  [push] t=2.086 com x +0.0944 z 0.5798 vz -0.014 h_y -0.074 pitch +0.0508 cop_x L +0.0463 R +0.0479 fz 167 167 foot x +0.0162
+  [push] t=2.088 com x +0.0944 z 0.5798 vz -0.014 h_y -0.073 pitch +0.0508 cop_x L +0.0463 R +0.0479 fz 167 167 foot x +0.0162
+  [push] t=2.090 com x +0.0944 z 0.5797 vz -0.014 h_y -0.073 pitch +0.0507 cop_x L +0.0463 R +0.0479 fz 167 167 foot x +0.0162
+  [tau] t=2.090 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-21/139 (0.15)  left_knee=-21/139 (0.15)
+  [push] t=2.092 com x +0.0944 z 0.5797 vz -0.014 h_y -0.073 pitch +0.0507 cop_x L +0.0463 R +0.0479 fz 167 167 foot x +0.0162
+  [push] t=2.094 com x +0.0944 z 0.5797 vz -0.014 h_y -0.073 pitch +0.0506 cop_x L +0.0462 R +0.0478 fz 167 167 foot x +0.0162
+  [push] t=2.096 com x +0.0943 z 0.5796 vz -0.014 h_y -0.073 pitch +0.0506 cop_x L +0.0462 R +0.0478 fz 167 167 foot x +0.0162
+  [push] t=2.098 com x +0.0943 z 0.5796 vz -0.014 h_y -0.073 pitch +0.0505 cop_x L +0.0462 R +0.0478 fz 167 167 foot x +0.0162
+  [push] t=2.100 com x +0.0943 z 0.5796 vz -0.014 h_y -0.073 pitch +0.0505 cop_x L +0.0462 R +0.0478 fz 167 167 foot x +0.0162
+  [tau] t=2.100 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-21/139 (0.15)  left_knee=-21/139 (0.15)
+  [push] t=2.102 com x +0.0943 z 0.5796 vz -0.013 h_y -0.073 pitch +0.0504 cop_x L +0.0461 R +0.0477 fz 167 167 foot x +0.0162
+  [push] t=2.104 com x +0.0943 z 0.5795 vz -0.013 h_y -0.073 pitch +0.0504 cop_x L +0.0461 R +0.0477 fz 167 167 foot x +0.0162
+  [push] t=2.106 com x +0.0943 z 0.5795 vz -0.013 h_y -0.073 pitch +0.0503 cop_x L +0.0461 R +0.0477 fz 167 167 foot x +0.0162
+  [push] t=2.108 com x +0.0943 z 0.5795 vz -0.013 h_y -0.073 pitch +0.0502 cop_x L +0.0461 R +0.0477 fz 167 167 foot x +0.0162
+  [push] t=2.110 com x +0.0943 z 0.5795 vz -0.013 h_y -0.073 pitch +0.0502 cop_x L +0.0460 R +0.0477 fz 167 167 foot x +0.0162
+  [tau] t=2.110 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-21/139 (0.15)  left_knee=-21/139 (0.15)
+  [push] t=2.112 com x +0.0943 z 0.5794 vz -0.013 h_y -0.073 pitch +0.0501 cop_x L +0.0460 R +0.0476 fz 167 167 foot x +0.0162
+  [push] t=2.114 com x +0.0943 z 0.5794 vz -0.013 h_y -0.073 pitch +0.0501 cop_x L +0.0460 R +0.0476 fz 167 167 foot x +0.0162
+  [push] t=2.116 com x +0.0942 z 0.5794 vz -0.013 h_y -0.073 pitch +0.0500 cop_x L +0.0460 R +0.0476 fz 167 167 foot x +0.0162
+  [push] t=2.118 com x +0.0942 z 0.5793 vz -0.013 h_y -0.073 pitch +0.0500 cop_x L +0.0460 R +0.0476 fz 167 167 foot x +0.0162
+  [push] t=2.120 com x +0.0942 z 0.5793 vz -0.013 h_y -0.073 pitch +0.0499 cop_x L +0.0459 R +0.0475 fz 167 167 foot x +0.0162
+  [tau] t=2.120 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-21/139 (0.15)  left_knee=-21/139 (0.15)
+  [push] t=2.122 com x +0.0942 z 0.5793 vz -0.013 h_y -0.073 pitch +0.0499 cop_x L +0.0459 R +0.0475 fz 167 167 foot x +0.0162
+  [push] t=2.124 com x +0.0942 z 0.5793 vz -0.013 h_y -0.073 pitch +0.0498 cop_x L +0.0459 R +0.0475 fz 167 167 foot x +0.0162
+  [push] t=2.126 com x +0.0942 z 0.5792 vz -0.013 h_y -0.073 pitch +0.0498 cop_x L +0.0459 R +0.0475 fz 167 167 foot x +0.0162
+  [push] t=2.128 com x +0.0942 z 0.5792 vz -0.013 h_y -0.073 pitch +0.0497 cop_x L +0.0458 R +0.0475 fz 167 167 foot x +0.0162
+  [push] t=2.130 com x +0.0942 z 0.5792 vz -0.013 h_y -0.073 pitch +0.0497 cop_x L +0.0458 R +0.0474 fz 167 167 foot x +0.0162
+  [tau] t=2.130 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-21/139 (0.15)  left_knee=-21/139 (0.15)
+  [push] t=2.132 com x +0.0942 z 0.5792 vz -0.013 h_y -0.073 pitch +0.0496 cop_x L +0.0458 R +0.0474 fz 167 167 foot x +0.0162
+  [push] t=2.134 com x +0.0941 z 0.5791 vz -0.013 h_y -0.073 pitch +0.0496 cop_x L +0.0458 R +0.0474 fz 167 167 foot x +0.0162
+  [push] t=2.136 com x +0.0941 z 0.5791 vz -0.013 h_y -0.073 pitch +0.0495 cop_x L +0.0457 R +0.0474 fz 167 167 foot x +0.0162
+  [push] t=2.138 com x +0.0941 z 0.5791 vz -0.013 h_y -0.073 pitch +0.0495 cop_x L +0.0457 R +0.0473 fz 167 167 foot x +0.0162
+  [push] t=2.140 com x +0.0941 z 0.5791 vz -0.013 h_y -0.073 pitch +0.0494 cop_x L +0.0457 R +0.0473 fz 167 167 foot x +0.0162
+  [tau] t=2.140 right_ankle_pitch=+14/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-21/139 (0.15)  left_knee=-21/139 (0.15)
+  [push] t=2.142 com x +0.0941 z 0.5790 vz -0.012 h_y -0.073 pitch +0.0494 cop_x L +0.0457 R +0.0473 fz 167 167 foot x +0.0162
+  [push] t=2.144 com x +0.0941 z 0.5790 vz -0.012 h_y -0.073 pitch +0.0493 cop_x L +0.0457 R +0.0473 fz 167 167 foot x +0.0162
+  [push] t=2.146 com x +0.0941 z 0.5790 vz -0.012 h_y -0.073 pitch +0.0493 cop_x L +0.0456 R +0.0473 fz 167 167 foot x +0.0162
+  [push] t=2.148 com x +0.0941 z 0.5790 vz -0.012 h_y -0.073 pitch +0.0492 cop_x L +0.0456 R +0.0472 fz 167 167 foot x +0.0162
+  [push] t=2.150 com x +0.0940 z 0.5789 vz -0.012 h_y -0.073 pitch +0.0492 cop_x L +0.0456 R +0.0472 fz 167 167 foot x +0.0162
+  [tau] t=2.150 right_ankle_pitch=+13/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-21/139 (0.15)  left_knee=-21/139 (0.15)
+  [push] t=2.152 com x +0.0940 z 0.5789 vz -0.012 h_y -0.073 pitch +0.0491 cop_x L +0.0456 R +0.0472 fz 167 167 foot x +0.0162
+  [push] t=2.154 com x +0.0940 z 0.5789 vz -0.012 h_y -0.073 pitch +0.0491 cop_x L +0.0455 R +0.0472 fz 167 167 foot x +0.0162
+  [push] t=2.156 com x +0.0940 z 0.5789 vz -0.012 h_y -0.073 pitch +0.0491 cop_x L +0.0455 R +0.0471 fz 167 167 foot x +0.0162
+  [push] t=2.158 com x +0.0940 z 0.5788 vz -0.012 h_y -0.073 pitch +0.0490 cop_x L +0.0455 R +0.0471 fz 167 167 foot x +0.0162
+  [push] t=2.160 com x +0.0940 z 0.5788 vz -0.012 h_y -0.072 pitch +0.0490 cop_x L +0.0455 R +0.0471 fz 167 167 foot x +0.0162
+  [tau] t=2.160 right_ankle_pitch=+13/35 (0.39)  left_ankle_pitch=+13/35 (0.38)  right_knee=-21/139 (0.15)  left_knee=-21/139 (0.15)
+  t= 2.160 nc=2 com=(+0.094,-0.001,+0.5788) vz=-0.012 roll=-0.000 pitch=+0.049 status=Optimal
+  [push] t=2.162 com x +0.0940 z 0.5788 vz -0.012 h_y -0.072 pitch +0.0489 cop_x L +0.0454 R +0.0471 fz 167 167 foot x +0.0162
+  [push] t=2.164 com x +0.0940 z 0.5788 vz -0.012 h_y -0.072 pitch +0.0489 cop_x L +0.0454 R +0.0470 fz 167 167 foot x +0.0162
+  [push] t=2.166 com x +0.0939 z 0.5787 vz -0.012 h_y -0.072 pitch +0.0488 cop_x L +0.0454 R +0.0470 fz 167 167 foot x +0.0162
+  [push] t=2.168 com x +0.0939 z 0.5787 vz -0.012 h_y -0.072 pitch +0.0488 cop_x L +0.0454 R +0.0470 fz 167 167 foot x +0.0162
+  [push] t=2.170 com x +0.0939 z 0.5787 vz -0.012 h_y -0.072 pitch +0.0487 cop_x L +0.0454 R +0.0470 fz 167 167 foot x +0.0162
+  [tau] t=2.170 right_ankle_pitch=+13/35 (0.38)  left_ankle_pitch=+13/35 (0.38)  right_knee=-21/139 (0.15)  left_knee=-21/139 (0.15)
+  [push] t=2.172 com x +0.0939 z 0.5787 vz -0.012 h_y -0.072 pitch +0.0487 cop_x L +0.0453 R +0.0470 fz 167 167 foot x +0.0162
+  [push] t=2.174 com x +0.0939 z 0.5787 vz -0.012 h_y -0.072 pitch +0.0486 cop_x L +0.0453 R +0.0469 fz 167 167 foot x +0.0162
+  [push] t=2.176 com x +0.0939 z 0.5786 vz -0.012 h_y -0.072 pitch +0.0486 cop_x L +0.0453 R +0.0469 fz 167 167 foot x +0.0162
+  [push] t=2.178 com x +0.0939 z 0.5786 vz -0.012 h_y -0.072 pitch +0.0485 cop_x L +0.0453 R +0.0469 fz 167 167 foot x +0.0162
+  [push] t=2.180 com x +0.0938 z 0.5786 vz -0.012 h_y -0.072 pitch +0.0485 cop_x L +0.0452 R +0.0469 fz 167 167 foot x +0.0162
+  [tau] t=2.180 left_ankle_pitch=+25/35 (0.70)  right_ankle_pitch=+24/35 (0.70)  right_knee=-23/139 (0.16)  left_knee=-23/139 (0.16)
+  [push] t=2.182 com x +0.0938 z 0.5786 vz -0.006 h_y -0.075 pitch +0.0484 cop_x L +0.0830 R +0.0829 fz 215 213 foot x +0.0162
+  [push] t=2.184 com x +0.0938 z 0.5786 vz +0.001 h_y -0.078 pitch +0.0484 cop_x L +0.0832 R +0.0831 fz 222 220 foot x +0.0162
+  [push] t=2.186 com x +0.0938 z 0.5786 vz +0.008 h_y -0.080 pitch +0.0483 cop_x L +0.0833 R +0.0833 fz 228 228 foot x +0.0162
+  [push] t=2.188 com x +0.0938 z 0.5786 vz +0.015 h_y -0.079 pitch +0.0482 cop_x L +0.0677 R +0.0693 fz 230 230 foot x +0.0162
+  [push] t=2.190 com x +0.0937 z 0.5787 vz +0.023 h_y -0.076 pitch +0.0481 cop_x L +0.0520 R +0.0535 fz 234 234 foot x +0.0162
+  [tau] t=2.190 right_ankle_pitch=+18/35 (0.50)  left_ankle_pitch=+17/35 (0.49)  right_knee=-32/139 (0.23)  left_knee=-32/139 (0.23)
+  [push] t=2.192 com x +0.0937 z 0.5787 vz +0.032 h_y -0.073 pitch +0.0480 cop_x L +0.0374 R +0.0390 fz 237 237 foot x +0.0162
+  [push] t=2.194 com x +0.0937 z 0.5788 vz +0.040 h_y -0.069 pitch +0.0478 cop_x L +0.0238 R +0.0254 fz 239 240 foot x +0.0162
+  [push] t=2.196 com x +0.0937 z 0.5789 vz +0.049 h_y -0.064 pitch +0.0475 cop_x L +0.0113 R +0.0130 fz 242 242 foot x +0.0162
+  [push] t=2.198 com x +0.0936 z 0.5790 vz +0.058 h_y -0.059 pitch +0.0472 cop_x L -0.0002 R +0.0015 fz 244 245 foot x +0.0162
+  [push] t=2.200 com x +0.0936 z 0.5791 vz +0.068 h_y -0.053 pitch +0.0469 cop_x L -0.0108 R -0.0091 fz 247 247 foot x +0.0162
+  [tau] t=2.200 right_knee=-43/139 (0.31)  left_knee=-43/139 (0.31)  right_ankle_pitch=+5/35 (0.15)  right_shoulder_pitch=-4/25 (0.14)
+  [push] t=2.202 com x +0.0936 z 0.5793 vz +0.078 h_y -0.047 pitch +0.0465 cop_x L -0.0205 R -0.0188 fz 249 249 foot x +0.0162
+  [push] t=2.204 com x +0.0936 z 0.5794 vz +0.088 h_y -0.041 pitch +0.0460 cop_x L -0.0294 R -0.0277 fz 251 251 foot x +0.0162
+  [push] t=2.206 com x +0.0936 z 0.5796 vz +0.098 h_y -0.035 pitch +0.0454 cop_x L -0.0376 R -0.0358 fz 252 253 foot x +0.0162
+  [push] t=2.208 com x +0.0936 z 0.5798 vz +0.108 h_y -0.029 pitch +0.0448 cop_x L -0.0450 R -0.0432 fz 254 254 foot x +0.0162
+  [push] t=2.210 com x +0.0937 z 0.5801 vz +0.119 h_y -0.022 pitch +0.0441 cop_x L -0.0518 R -0.0500 fz 255 256 foot x +0.0161
+  [tau] t=2.210 right_knee=-50/139 (0.36)  left_knee=-50/139 (0.36)  right_shoulder_pitch=-4/25 (0.18)  left_shoulder_pitch=-4/25 (0.18)
+  [push] t=2.212 com x +0.0937 z 0.5803 vz +0.129 h_y -0.015 pitch +0.0433 cop_x L -0.0581 R -0.0562 fz 256 257 foot x +0.0161
+  [push] t=2.214 com x +0.0937 z 0.5806 vz +0.140 h_y -0.008 pitch +0.0424 cop_x L -0.0638 R -0.0620 fz 257 258 foot x +0.0161
+  [push] t=2.216 com x +0.0938 z 0.5809 vz +0.151 h_y -0.000 pitch +0.0414 cop_x L -0.0691 R -0.0673 fz 258 259 foot x +0.0161
+  [push] t=2.218 com x +0.0939 z 0.5812 vz +0.162 h_y +0.008 pitch +0.0403 cop_x L -0.0740 R -0.0722 fz 259 259 foot x +0.0161
+  [push] t=2.220 com x +0.0939 z 0.5816 vz +0.173 h_y +0.017 pitch +0.0391 cop_x L -0.0786 R -0.0767 fz 259 260 foot x +0.0160
+  [tau] t=2.220 right_knee=-55/139 (0.39)  left_knee=-55/139 (0.39)  left_ankle_pitch=-10/35 (0.28)  right_ankle_pitch=-9/35 (0.27)
+  [push] t=2.222 com x +0.0940 z 0.5819 vz +0.184 h_y +0.027 pitch +0.0379 cop_x L -0.0828 R -0.0813 fz 260 260 foot x +0.0160
+  [push] t=2.224 com x +0.0941 z 0.5823 vz +0.195 h_y +0.036 pitch +0.0365 cop_x L -0.0839 R -0.0838 fz 261 261 foot x +0.0160
+  [push] t=2.226 com x +0.0942 z 0.5827 vz +0.206 h_y +0.044 pitch +0.0350 cop_x L -0.0839 R -0.0839 fz 262 262 foot x +0.0159
+  [push] t=2.228 com x +0.0944 z 0.5831 vz +0.218 h_y +0.052 pitch +0.0335 cop_x L -0.0840 R -0.0840 fz 262 263 foot x +0.0159
+  [push] t=2.230 com x +0.0945 z 0.5836 vz +0.229 h_y +0.058 pitch +0.0318 cop_x L -0.0841 R -0.0841 fz 263 264 foot x +0.0158
+  [tau] t=2.230 right_knee=-56/139 (0.40)  left_knee=-55/139 (0.40)  left_ankle_pitch=-10/35 (0.29)  right_ankle_pitch=-10/35 (0.29)
+  [push] t=2.232 com x +0.0947 z 0.5841 vz +0.241 h_y +0.065 pitch +0.0300 cop_x L -0.0841 R -0.0842 fz 263 264 foot x +0.0158
+  [push] t=2.234 com x +0.0948 z 0.5846 vz +0.252 h_y +0.070 pitch +0.0281 cop_x L -0.0842 R -0.0842 fz 263 264 foot x +0.0157
+  [push] t=2.236 com x +0.0950 z 0.5851 vz +0.264 h_y +0.076 pitch +0.0261 cop_x L -0.0842 R -0.0843 fz 262 264 foot x +0.0157
+  [push] t=2.238 com x +0.0952 z 0.5856 vz +0.275 h_y +0.080 pitch +0.0241 cop_x L -0.0842 R -0.0843 fz 262 264 foot x +0.0156
+  [push] t=2.240 com x +0.0954 z 0.5862 vz +0.286 h_y +0.085 pitch +0.0219 cop_x L -0.0850 R -0.0850 fz 260 262 foot x +0.0156
+  [tau] t=2.240 right_knee=-56/139 (0.40)  left_knee=-55/139 (0.40)  right_ankle_pitch=-10/35 (0.28)  left_ankle_pitch=-10/35 (0.28)
+  t= 2.240 nc=2 com=(+0.095,-0.001,+0.5862) vz=+0.286 roll=-0.000 pitch=+0.022 status=Optimal
+  [push] t=2.242 com x +0.0956 z 0.5868 vz +0.297 h_y +0.088 pitch +0.0196 cop_x L -0.0850 R -0.0850 fz 259 262 foot x +0.0155
+  [push] t=2.244 com x +0.0959 z 0.5874 vz +0.308 h_y +0.092 pitch +0.0172 cop_x L -0.0850 R -0.0850 fz 259 261 foot x +0.0155
+  [push] t=2.246 com x +0.0961 z 0.5880 vz +0.319 h_y +0.095 pitch +0.0147 cop_x L -0.0850 R -0.0850 fz 258 260 foot x +0.0154
+  [push] t=2.248 com x +0.0964 z 0.5887 vz +0.330 h_y +0.098 pitch +0.0121 cop_x L -0.0850 R -0.0850 fz 257 259 foot x +0.0154
+  [push] t=2.250 com x +0.0967 z 0.5894 vz +0.341 h_y +0.101 pitch +0.0094 cop_x L -0.0850 R -0.0850 fz 256 258 foot x +0.0153
+  [tau] t=2.250 right_knee=-55/139 (0.39)  left_knee=-54/139 (0.39)  right_ankle_pitch=-9/35 (0.27)  left_ankle_pitch=-9/35 (0.27)
+  [push] t=2.252 com x +0.0969 z 0.5901 vz +0.351 h_y +0.104 pitch +0.0066 cop_x L -0.0850 R -0.0850 fz 254 256 foot x +0.0153
+  [push] t=2.254 com x +0.0972 z 0.5908 vz +0.362 h_y +0.107 pitch +0.0037 cop_x L -0.0850 R -0.0850 fz 253 255 foot x +0.0152
+  [push] t=2.256 com x +0.0976 z 0.5915 vz +0.372 h_y +0.111 pitch +0.0006 cop_x L -0.0850 R -0.0850 fz 251 253 foot x +0.0152
+  [push] t=2.258 com x +0.0979 z 0.5923 vz +0.382 h_y +0.114 pitch -0.0025 cop_x L -0.0850 R -0.0850 fz 250 252 foot x +0.0151
+  [push] t=2.260 com x +0.0982 z 0.5931 vz +0.392 h_y +0.117 pitch -0.0057 cop_x L -0.0850 R -0.0850 fz 248 250 foot x +0.0151
+  [tau] t=2.260 right_knee=-53/139 (0.38)  left_knee=-52/139 (0.38)  right_ankle_pitch=-9/35 (0.26)  left_ankle_pitch=-9/35 (0.26)
+  [push] t=2.262 com x +0.0986 z 0.5939 vz +0.401 h_y +0.121 pitch -0.0091 cop_x L -0.0850 R -0.0850 fz 246 248 foot x +0.0150
+  [push] t=2.264 com x +0.0989 z 0.5947 vz +0.411 h_y +0.124 pitch -0.0125 cop_x L -0.0850 R -0.0850 fz 244 246 foot x +0.0150
+  [push] t=2.266 com x +0.0993 z 0.5955 vz +0.420 h_y +0.128 pitch -0.0160 cop_x L -0.0850 R -0.0850 fz 242 244 foot x +0.0150
+  [push] t=2.268 com x +0.0997 z 0.5964 vz +0.428 h_y +0.131 pitch -0.0197 cop_x L -0.0850 R -0.0850 fz 240 242 foot x +0.0149
+  [push] t=2.270 com x +0.1001 z 0.5972 vz +0.437 h_y +0.135 pitch -0.0234 cop_x L -0.0850 R -0.0850 fz 238 240 foot x +0.0149
+  [tau] t=2.270 right_knee=-51/139 (0.37)  left_knee=-50/139 (0.36)  left_ankle_pitch=-8/35 (0.24)  right_ankle_pitch=-8/35 (0.24)
+  [push] t=2.272 com x +0.1005 z 0.5981 vz +0.445 h_y +0.139 pitch -0.0273 cop_x L -0.0850 R -0.0850 fz 235 237 foot x +0.0148
+  [push] t=2.274 com x +0.1010 z 0.5990 vz +0.453 h_y +0.143 pitch -0.0313 cop_x L -0.0850 R -0.0850 fz 233 235 foot x +0.0148
+  [push] t=2.276 com x +0.1014 z 0.5999 vz +0.461 h_y +0.147 pitch -0.0353 cop_x L -0.0850 R -0.0850 fz 231 232 foot x +0.0147
+  [push] t=2.278 com x +0.1019 z 0.6009 vz +0.468 h_y +0.150 pitch -0.0395 cop_x L -0.0850 R -0.0850 fz 228 230 foot x +0.0147
+  [push] t=2.280 com x +0.1023 z 0.6018 vz +0.476 h_y +0.154 pitch -0.0437 cop_x L -0.0850 R -0.0850 fz 226 227 foot x +0.0146
+  [tau] t=2.280 right_knee=-48/139 (0.35)  left_knee=-47/139 (0.34)  right_shoulder_pitch=-6/25 (0.24)  left_shoulder_pitch=-6/25 (0.24)
+  [push] t=2.282 com x +0.1028 z 0.6028 vz +0.482 h_y +0.158 pitch -0.0481 cop_x L -0.0818 R -0.0850 fz 227 224 foot x +0.0146
+  [push] t=2.284 com x +0.1033 z 0.6038 vz +0.488 h_y +0.172 pitch -0.0526 cop_x L -0.0850 R -0.0813 fz 195 225 foot x +0.0145
+  [push] t=2.286 com x +0.1038 z 0.6047 vz +0.494 h_y +0.186 pitch -0.0571 cop_x L -0.0850 R -0.0836 fz 223 201 foot x +0.0144
+  [push] t=2.288 com x +0.1043 z 0.6057 vz +0.500 h_y +0.199 pitch -0.0618 cop_x L -0.0850 R -0.0824 fz 220 208 foot x +0.0144
+  [push] t=2.290 com x +0.1048 z 0.6067 vz +0.505 h_y +0.213 pitch -0.0666 cop_x L -0.0810 R +0.0000 fz 221 0 foot x +0.0143
+  [tau] t=2.290 right_knee=-45/139 (0.33)  left_knee=-45/139 (0.32)  right_shoulder_pitch=-6/25 (0.24)  left_shoulder_pitch=-6/25 (0.24)
+  [push] t=2.292 com x +0.1054 z 0.6077 vz +0.504 h_y +0.221 pitch -0.0714 cop_x L -0.0841 R -0.0798 fz 191 240 foot x +0.0143
+  [push] t=2.294 com x +0.1059 z 0.6088 vz +0.511 h_y +0.227 pitch -0.0764 cop_x L -0.0816 R -0.0825 fz 224 236 foot x +0.0142
+  [push] t=2.296 com x +0.1064 z 0.6098 vz +0.517 h_y +0.223 pitch -0.0814 cop_x L -0.0821 R -0.0850 fz 216 227 foot x +0.0141
+  [push] t=2.298 com x +0.1070 z 0.6108 vz +0.523 h_y +0.217 pitch -0.0866 cop_x L -0.0850 R -0.0850 fz 206 219 foot x +0.0141
+  [push] t=2.300 com x +0.1076 z 0.6119 vz +0.528 h_y +0.210 pitch -0.0918 cop_x L -0.0850 R -0.0850 fz 200 212 foot x +0.0140
+  [tau] t=2.300 right_knee=-40/139 (0.29)  left_knee=-40/139 (0.29)  right_shoulder_pitch=-6/25 (0.24)  left_shoulder_pitch=-6/25 (0.24)
+  [push] t=2.302 com x +0.1082 z 0.6129 vz +0.532 h_y +0.196 pitch -0.0971 cop_x L -0.0850 R -0.0850 fz 177 201 foot x +0.0139
+  [push] t=2.304 com x +0.1088 z 0.6140 vz +0.533 h_y +0.177 pitch -0.1026 cop_x L -0.0548 R -0.0556 fz 188 211 foot x +0.0139
+  [push] t=2.306 com x +0.1094 z 0.6151 vz +0.534 h_y +0.210 pitch -0.1081 cop_x L -0.0279 R -0.0273 fz 223 213 foot x +0.0138
+  [push] t=2.308 com x +0.1100 z 0.6162 vz +0.540 h_y +0.200 pitch -0.1137 cop_x L -0.0358 R -0.0361 fz 212 208 foot x +0.0138
+  [push] t=2.310 com x +0.1106 z 0.6172 vz +0.544 h_y +0.192 pitch -0.1193 cop_x L -0.0305 R -0.0307 fz 204 200 foot x +0.0137
+  [tau] t=2.310 right_shoulder_pitch=-6/25 (0.24)  right_knee=-32/139 (0.23)  left_knee=-32/139 (0.23)  left_shoulder_pitch=-6/25 (0.22)
+  [push] t=2.312 com x +0.1112 z 0.6183 vz +0.548 h_y +0.184 pitch -0.1251 cop_x L -0.0244 R -0.0244 fz 196 193 foot x +0.0137
+  [push] t=2.314 com x +0.1119 z 0.6194 vz +0.550 h_y +0.177 pitch -0.1309 cop_x L -0.0174 R -0.0169 fz 188 186 foot x +0.0136
+  [push] t=2.316 com x +0.1125 z 0.6205 vz +0.552 h_y +0.172 pitch -0.1368 cop_x L -0.0850 R -0.0085 fz 112 181 foot x +0.0136
+  [push] t=2.318 com x +0.1132 z 0.6216 vz +0.552 h_y +0.152 pitch -0.1428 cop_x L +0.0016 R -0.0032 fz 183 178 foot x +0.0136
+  [push] t=2.320 com x +0.1138 z 0.6227 vz +0.554 h_y +0.140 pitch -0.1488 cop_x L +0.0317 R +0.0246 fz 185 182 foot x +0.0136
+  [tau] t=2.320 left_ankle_pitch=+15/35 (0.43)  right_ankle_pitch=+15/35 (0.42)  right_shoulder_pitch=-6/25 (0.22)  left_shoulder_pitch=-5/25 (0.21)
+  t= 2.320 nc=2 com=(+0.114,-0.000,+0.6227) vz=+0.554 roll=-0.000 pitch=-0.149 status=Optimal
+  [push] t=2.322 com x +0.1145 z 0.6238 vz +0.556 h_y +0.122 pitch -0.1549 cop_x L +0.0850 R +0.0266 fz 135 181 foot x +0.0136
+  [push] t=2.324 com x +0.1151 z 0.6250 vz +0.555 h_y +0.128 pitch -0.1611 cop_x L +0.0850 R +0.0850 fz 149 140 foot x +0.0135
+  [push] t=2.326 com x +0.1158 z 0.6261 vz +0.553 h_y +0.156 pitch -0.1673 cop_x L +0.0850 R +0.0850 fz 161 133 foot x +0.0135
+  [push] t=2.328 com x +0.1164 z 0.6272 vz +0.550 h_y +0.189 pitch -0.1736 cop_x L +0.0850 R +0.0850 fz 153 127 foot x +0.0135
+  [push] t=2.330 com x +0.1171 z 0.6283 vz +0.547 h_y +0.208 pitch -0.1799 cop_x L +0.0427 R +0.0850 fz 192 120 foot x +0.0134
+  [tau] t=2.330 left_ankle_pitch=+17/35 (0.48)  right_ankle_pitch=+14/35 (0.41)  right_shoulder_pitch=-6/25 (0.23)  left_shoulder_pitch=-5/25 (0.22)
+  [push] t=2.332 com x +0.1177 z 0.6293 vz +0.546 h_y +0.211 pitch -0.1863 cop_x L +0.0474 R +0.0850 fz 182 120 foot x +0.0134
+  [push] t=2.334 com x +0.1184 z 0.6304 vz +0.544 h_y +0.210 pitch -0.1927 cop_x L +0.0565 R +0.0850 fz 174 125 foot x +0.0133
+  [push] t=2.336 com x +0.1190 z 0.6315 vz +0.542 h_y +0.203 pitch -0.1992 cop_x L +0.0716 R +0.0850 fz 165 134 foot x +0.0133
+  [push] t=2.338 com x +0.1197 z 0.6326 vz +0.531 h_y +0.199 pitch -0.2057 cop_x L +0.0850 R +0.0850 fz 149 137 foot x +0.0133
+  [push] t=2.340 com x +0.1203 z 0.6336 vz +0.530 h_y +0.199 pitch -0.2123 cop_x L +0.0850 R +0.0850 fz 173 140 foot x +0.0132
+  [tau] t=2.340 left_ankle_pitch=+19/35 (0.55)  right_ankle_pitch=+17/35 (0.49)  right_shoulder_pitch=-6/25 (0.24)  left_shoulder_pitch=-6/25 (0.23)
+  [push] t=2.342 com x +0.1209 z 0.6347 vz +0.528 h_y +0.199 pitch -0.2189 cop_x L +0.0850 R +0.0850 fz 157 136 foot x +0.0132
+  [push] t=2.344 com x +0.1216 z 0.6357 vz +0.524 h_y +0.199 pitch -0.2255 cop_x L +0.0850 R +0.0850 fz 146 128 foot x +0.0131
+  [push] t=2.346 com x +0.1222 z 0.6368 vz +0.520 h_y +0.199 pitch -0.2322 cop_x L +0.0850 R +0.0850 fz 136 120 foot x +0.0131
+  [push] t=2.348 com x +0.1229 z 0.6378 vz +0.514 h_y +0.199 pitch -0.2389 cop_x L +0.0850 R +0.0850 fz 126 114 foot x +0.0130
+  [push] t=2.350 com x +0.1235 z 0.6388 vz +0.508 h_y +0.198 pitch -0.2457 cop_x L +0.0850 R +0.0850 fz 118 107 foot x +0.0129
+  [tau] t=2.350 left_ankle_pitch=+14/35 (0.40)  right_ankle_pitch=+13/35 (0.38)  right_shoulder_pitch=-6/25 (0.24)  left_shoulder_pitch=-6/25 (0.24)
+  [push] t=2.352 com x +0.1242 z 0.6398 vz +0.501 h_y +0.197 pitch -0.2525 cop_x L +0.0850 R +0.0850 fz 111 97 foot x +0.0128
+  [push] t=2.354 com x +0.1248 z 0.6408 vz +0.493 h_y +0.193 pitch -0.2593 cop_x L +0.0850 R +0.0850 fz 105 86 foot x +0.0128
+  [push] t=2.356 com x +0.1255 z 0.6418 vz +0.483 h_y +0.188 pitch -0.2662 cop_x L +0.0850 R +0.0850 fz 90 86 foot x +0.0127
+  [push] t=2.358 com x +0.1261 z 0.6427 vz +0.473 h_y +0.179 pitch -0.2731 cop_x L +0.0850 R +0.0850 fz 71 88 foot x +0.0126
+  [push] t=2.360 com x +0.1267 z 0.6437 vz +0.463 h_y +0.170 pitch -0.2800 cop_x L +0.0850 R +0.0850 fz 39 111 foot x +0.0125
+  [tau] t=2.360 right_ankle_pitch=+19/35 (0.55)  right_shoulder_pitch=-7/25 (0.27)  left_shoulder_pitch=-6/25 (0.24)  right_elbow=-4/25 (0.15)
+  [push] t=2.362 com x +0.1274 z 0.6446 vz +0.451 h_y +0.161 pitch -0.2869 cop_x L +0.0850 R +0.0000 fz 15 0 foot x +0.0125
+  [push] t=2.364 com x +0.1280 z 0.6455 vz +0.436 h_y +0.158 pitch -0.2939 cop_x L +0.0000 R +0.0850 fz 0 166 foot x +0.0124
+  [push] t=2.366 com x +0.1287 z 0.6463 vz +0.425 h_y +0.271 pitch -0.3005 cop_x L +0.0000 R -0.0793 fz 0 939 foot x +0.0125
+  [push] t=2.368 com x +0.1293 z 0.6472 vz +0.459 h_y +0.240 pitch -0.3068 cop_x L +0.0000 R -0.0851 fz 0 913 foot x +0.0129
+  [push] t=2.370 com x +0.1300 z 0.6482 vz +0.492 h_y +0.199 pitch -0.3127 cop_x L +0.0000 R -0.0851 fz 0 896 foot x +0.0135
+  [tau] t=2.370 left_hip_pitch=-88/88 (1.00)  right_knee=-125/139 (0.90)  right_ankle_roll=-27/35 (0.77)  right_hip_roll=-65/88 (0.74)
+  [push] t=2.372 com x +0.1307 z 0.6492 vz +0.525 h_y +0.161 pitch -0.3183 cop_x L +0.0000 R -0.0851 fz 0 883 foot x +0.0143
+  [push] t=2.374 com x +0.1315 z 0.6503 vz +0.556 h_y +0.126 pitch -0.3236 cop_x L +0.0000 R -0.0851 fz 0 871 foot x +0.0154
+  [push] t=2.376 com x +0.1323 z 0.6515 vz +0.587 h_y +0.094 pitch -0.3286 cop_x L +0.0000 R -0.0851 fz 0 860 foot x +0.0168
+  [push] t=2.378 com x +0.1331 z 0.6527 vz +0.618 h_y +0.064 pitch -0.3332 cop_x L +0.0000 R -0.0851 fz 0 854 foot x +0.0184
+  [push] t=2.380 com x +0.1339 z 0.6540 vz +0.648 h_y +0.034 pitch -0.3374 cop_x L +0.0000 R -0.0851 fz 0 849 foot x +0.0202
+  [tau] t=2.380 left_hip_pitch=-88/88 (1.00)  right_knee=-122/139 (0.88)  right_hip_roll=-69/88 (0.79)  right_ankle_roll=-27/35 (0.77)
+  [push] t=2.382 com x +0.1348 z 0.6553 vz +0.678 h_y +0.006 pitch -0.3414 cop_x L +0.0000 R -0.0851 fz 0 844 foot x +0.0223
+  [push] t=2.384 com x +0.1357 z 0.6567 vz +0.708 h_y -0.021 pitch -0.3450 cop_x L +0.0000 R -0.0851 fz 0 839 foot x +0.0246
+  [release] t=2.384 after 0.000 s (one foot unloaded: fz 0 839)
+  [lift-off] t=2.386 com (+0.137, z 0.6581) v (+0.457, +0.729), foot x ["+0.027", "+0.013"] z ["+0.041", "+0.032"], h_ang (-0.024,+0.075,+0.040), roll +0.013 pitch -0.348
+  [hx] lift-off h_x -0.024 | base +3.354 Lleg -1.832 Rleg -1.026 waist -0.380 arms -0.139
+  [hx] crouch  dt 0.800 dh_x +0.000 ground -0.004 = fzdiff -0.016 cop -0.062 com +0.079 fy*h -0.005 | mean fzL-fzR -0.2
+  [hx] hold    dt 0.300 dh_x +0.001 ground +0.001 = fzdiff -0.000 cop -0.043 com +0.044 fy*h -0.001 | mean fzL-fzR -0.0
+  [hx] push    dt 0.206 dh_x -0.025 ground +0.104 = fzdiff -2.057 cop +0.532 com -0.016 fy*h +1.646 | mean fzL-fzR -83.6
+  [hx] release dt 0.000 dh_x NaN ground +0.000 = fzdiff +0.000 cop +0.000 com +0.000 fy*h +0.000 | mean fzL-fzR +0.0
+  [hx] loaded  dt 0.000 dh_x NaN ground +0.000 = fzdiff +0.000 cop +0.000 com +0.000 fy*h +0.000 | mean fzL-fzR +0.0
+  [airborne] t=2.388 both feet unloaded: h_ang (-0.024,+0.083,+0.039) com vz +0.710
+  t= 2.400 nc=0 com=(+0.143,+0.001,+0.6673) vz=+0.592 roll=+0.023 pitch=-0.361 status=Optimal
+  [air] t=2.4080 |a_meas-g|=0.000 |h-h0|=0.0000 roll=+0.0247 pitch=-0.3613 contacts=0 self=0
+  [flight] t=2.408 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.025 pitch=-0.361
+  [air] t=2.4100 |a_meas-g|=0.009 |h-h0|=0.0001 roll=+0.0248 pitch=-0.3609 contacts=0 self=0
+  [flight] t=2.410 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.025 pitch=-0.361
+  [air] t=2.4120 |a_meas-g|=0.004 |h-h0|=0.0002 roll=+0.0249 pitch=-0.3601 contacts=0 self=0
+  [flight] t=2.412 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.025 pitch=-0.360
+  [air] t=2.4140 |a_meas-g|=0.001 |h-h0|=0.0003 roll=+0.0248 pitch=-0.3591 contacts=0 self=0
+  [flight] t=2.414 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.025 pitch=-0.359
+  [air] t=2.4160 |a_meas-g|=0.005 |h-h0|=0.0004 roll=+0.0247 pitch=-0.3578 contacts=0 self=0
+  [flight] t=2.416 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.025 pitch=-0.358
+  [air] t=2.4180 |a_meas-g|=0.009 |h-h0|=0.0005 roll=+0.0244 pitch=-0.3563 contacts=0 self=0
+  [flight] t=2.418 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.024 pitch=-0.356
+  [air] t=2.4200 |a_meas-g|=0.012 |h-h0|=0.0007 roll=+0.0241 pitch=-0.3545 contacts=0 self=0
+  [flight] t=2.420 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.024 pitch=-0.355
+  [air] t=2.4220 |a_meas-g|=0.016 |h-h0|=0.0009 roll=+0.0237 pitch=-0.3525 contacts=0 self=0
+  [flight] t=2.422 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.024 pitch=-0.352
+  [air] t=2.4240 |a_meas-g|=0.020 |h-h0|=0.0012 roll=+0.0232 pitch=-0.3502 contacts=0 self=0
+  [flight] t=2.424 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.023 pitch=-0.350
+  [air] t=2.4260 |a_meas-g|=0.023 |h-h0|=0.0016 roll=+0.0227 pitch=-0.3477 contacts=0 self=0
+  [flight] t=2.426 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.023 pitch=-0.348
+  [air] t=2.4280 |a_meas-g|=0.027 |h-h0|=0.0020 roll=+0.0221 pitch=-0.3449 contacts=0 self=0
+  [flight] t=2.428 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.022 pitch=-0.345
+  [air] t=2.4300 |a_meas-g|=0.030 |h-h0|=0.0024 roll=+0.0214 pitch=-0.3419 contacts=0 self=0
+  [flight] t=2.430 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.021 pitch=-0.342
+  [air] t=2.4320 |a_meas-g|=0.032 |h-h0|=0.0029 roll=+0.0207 pitch=-0.3387 contacts=0 self=0
+  [flight] t=2.432 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.021 pitch=-0.339
+  [air] t=2.4340 |a_meas-g|=0.035 |h-h0|=0.0035 roll=+0.0200 pitch=-0.3352 contacts=0 self=0
+  [flight] t=2.434 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.020 pitch=-0.335
+  [air] t=2.4360 |a_meas-g|=0.036 |h-h0|=0.0041 roll=+0.0192 pitch=-0.3316 contacts=0 self=0
+  [flight] t=2.436 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.019 pitch=-0.332
+  [air] t=2.4380 |a_meas-g|=0.038 |h-h0|=0.0047 roll=+0.0184 pitch=-0.3278 contacts=0 self=0
+  [flight] t=2.438 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.018 pitch=-0.328
+  [air] t=2.4400 |a_meas-g|=0.039 |h-h0|=0.0054 roll=+0.0175 pitch=-0.3237 contacts=0 self=0
+  [flight] t=2.440 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.018 pitch=-0.324
+  [air] t=2.4420 |a_meas-g|=0.039 |h-h0|=0.0060 roll=+0.0167 pitch=-0.3195 contacts=0 self=0
+  [flight] t=2.442 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.017 pitch=-0.320
+  [air] t=2.4440 |a_meas-g|=0.039 |h-h0|=0.0066 roll=+0.0158 pitch=-0.3152 contacts=0 self=0
+  [flight] t=2.444 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.016 pitch=-0.315
+  [td-foot] R first load t=2.446 | L sole z +0.0153 roll -0.023 pitch -0.037 fz 0 | R sole z +0.0013 roll -0.065 pitch -0.000 fz 162
+  [touchdown] t=2.446 after 0.060 s, com (+0.164, z 0.6840) v (+0.452, +0.148), foot x ["+0.082", "+0.058"], feet [false, true]
+  t= 2.480 nc=1 com=(+0.179,+0.007,+0.6871) vz=+0.054 roll=+0.011 pitch=-0.244 status=Optimal
+  [td-foot] L first load t=2.484 | L sole z +0.0040 roll -0.029 pitch -0.073 fz 80 | R sole z +0.0012 roll +0.023 pitch +0.029 fz 276
+  [lift-off] t=2.498 com (+0.187, z 0.6871) v (+0.433, -0.060), foot x ["+0.160", "+0.072"] z ["+0.037", "+0.037"], h_ang (-0.169,+0.575,-0.006), roll +0.013 pitch -0.221
+  [touchdown] t=2.500 after 0.002 s, com (+0.188, z 0.6870) v (+0.433, -0.078), foot x ["+0.161", "+0.072"], feet [false, true]
+  t= 2.560 nc=2 com=(+0.212,+0.014,+0.6798) vz=-0.127 roll=+0.016 pitch=-0.188 status=Optimal
+  t= 2.640 nc=1 com=(+0.244,+0.016,+0.6719) vz=-0.105 roll=+0.012 pitch=-0.166 status=Optimal
+  t= 2.720 nc=2 com=(+0.275,+0.013,+0.6557) vz=-0.286 roll=+0.013 pitch=-0.221 status=Optimal
+  t= 2.800 nc=2 com=(+0.310,+0.010,+0.6302) vz=-0.355 roll=+0.015 pitch=-0.357 status=Optimal
+  t= 2.880 nc=2 com=(+0.350,+0.007,+0.5939) vz=-0.466 roll=+0.016 pitch=-0.563 status=Optimal
+  t= 2.960 nc=2 com=(+0.397,+0.004,+0.5497) vz=-0.533 roll=+0.042 pitch=-0.894 status=Optimal
+  t= 3.040 nc=2 com=(+0.449,-0.001,+0.5381) vz=+0.142 roll=+0.045 pitch=-0.841 status=Optimal
+  t= 3.120 nc=2 com=(+0.513,-0.005,+0.5462) vz=-0.002 roll=+0.036 pitch=-0.577 status=Optimal
+  [lift-off] t=3.180 com (+0.568, z 0.5397) v (+0.967, -0.236), foot x ["+0.299", "+0.243"] z ["+0.132", "+0.130"], h_ang (-0.293,+5.381,+0.207), roll +0.029 pitch -0.381
+  [air] t=3.1800 |a_meas-g|=0.000 |h-h0|=0.0000 roll=+0.0295 pitch=-0.3809 contacts=0 self=0
+  [flight] t=3.180 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.029 pitch=-0.381
+  [air] t=3.1820 |a_meas-g|=0.073 |h-h0|=0.0006 roll=+0.0290 pitch=-0.3750 contacts=0 self=0
+  [flight] t=3.182 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.029 pitch=-0.375
+  [air] t=3.1840 |a_meas-g|=0.063 |h-h0|=0.0011 roll=+0.0286 pitch=-0.3690 contacts=0 self=0
+  [flight] t=3.184 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.029 pitch=-0.369
+  [air] t=3.1860 |a_meas-g|=0.055 |h-h0|=0.0015 roll=+0.0280 pitch=-0.3628 contacts=0 self=0
+  [flight] t=3.186 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.028 pitch=-0.363
+  [air] t=3.1880 |a_meas-g|=0.049 |h-h0|=0.0017 roll=+0.0275 pitch=-0.3565 contacts=0 self=0
+  [flight] t=3.188 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.027 pitch=-0.356
+  [air] t=3.1900 |a_meas-g|=0.045 |h-h0|=0.0017 roll=+0.0269 pitch=-0.3500 contacts=0 self=0
+  [flight] t=3.190 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.027 pitch=-0.350
+  [touchdown] t=3.192 after 0.012 s, com (+0.579, z 0.5361) v (+0.967, -0.354), foot x ["+0.305", "+0.251"], feet [true, false]
+  [lift-off] t=3.200 com (+0.587, z 0.5333) v (+0.990, -0.368), foot x ["+0.310", "+0.258"] z ["+0.132", "+0.131"], h_ang (-0.329,+5.602,+0.256), roll +0.024 pitch -0.318
+  [air] t=3.2000 |a_meas-g|=0.000 |h-h0|=0.0000 roll=+0.0236 pitch=-0.3176 contacts=0 self=0
+  [flight] t=3.200 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.024 pitch=-0.318
+  t= 3.200 nc=0 com=(+0.587,-0.011,+0.5333) vz=-0.368 roll=+0.024 pitch=-0.318 status=Optimal
+  [air] t=3.2020 |a_meas-g|=0.048 |h-h0|=0.0004 roll=+0.0229 pitch=-0.3114 contacts=0 self=0
+  [flight] t=3.202 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.023 pitch=-0.311
+  [air] t=3.2040 |a_meas-g|=0.034 |h-h0|=0.0008 roll=+0.0221 pitch=-0.3052 contacts=0 self=0
+  [flight] t=3.204 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.022 pitch=-0.305
+  [air] t=3.2060 |a_meas-g|=0.024 |h-h0|=0.0012 roll=+0.0213 pitch=-0.2989 contacts=0 self=0
+  [flight] t=3.206 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.021 pitch=-0.299
+  [touchdown] t=3.208 after 0.008 s, com (+0.595, z 0.5300) v (+0.990, -0.445), foot x ["+0.315", "+0.264"], feet [true, false]
+  [lift-off] t=3.222 com (+0.609, z 0.5241) v (+0.983, -0.439), foot x ["+0.317", "+0.278"] z ["+0.131", "+0.127"], h_ang (+0.146,+7.236,+0.488), roll +0.017 pitch -0.252
+  [air] t=3.2220 |a_meas-g|=0.000 |h-h0|=0.0000 roll=+0.0171 pitch=-0.2523 contacts=0 self=0
+  [flight] t=3.222 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.017 pitch=-0.252
+  [air] t=3.2240 |a_meas-g|=0.084 |h-h0|=0.0008 roll=+0.0166 pitch=-0.2468 contacts=0 self=0
+  [flight] t=3.224 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.017 pitch=-0.247
+  [air] t=3.2260 |a_meas-g|=0.066 |h-h0|=0.0015 roll=+0.0160 pitch=-0.2412 contacts=0 self=0
+  [flight] t=3.226 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.016 pitch=-0.241
+  [air] t=3.2280 |a_meas-g|=0.055 |h-h0|=0.0021 roll=+0.0155 pitch=-0.2353 contacts=0 self=0
+  [flight] t=3.228 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.016 pitch=-0.235
+  [air] t=3.2300 |a_meas-g|=0.049 |h-h0|=0.0026 roll=+0.0150 pitch=-0.2293 contacts=0 self=0
+  [flight] t=3.230 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.015 pitch=-0.229
+  [air] t=3.2320 |a_meas-g|=0.045 |h-h0|=0.0031 roll=+0.0146 pitch=-0.2230 contacts=0 self=0
+  [flight] t=3.232 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.015 pitch=-0.223
+  [air] t=3.2340 |a_meas-g|=0.044 |h-h0|=0.0037 roll=+0.0141 pitch=-0.2164 contacts=0 self=0
+  [flight] t=3.234 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.014 pitch=-0.216
+  [air] t=3.2360 |a_meas-g|=0.043 |h-h0|=0.0046 roll=+0.0137 pitch=-0.2094 contacts=0 self=0
+  [flight] t=3.236 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.014 pitch=-0.209
+  [air] t=3.2380 |a_meas-g|=0.043 |h-h0|=0.0057 roll=+0.0132 pitch=-0.2021 contacts=0 self=0
+  [flight] t=3.238 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.013 pitch=-0.202
+  [air] t=3.2400 |a_meas-g|=0.041 |h-h0|=0.0073 roll=+0.0127 pitch=-0.1943 contacts=0 self=0
+  [flight] t=3.240 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.013 pitch=-0.194
+  [air] t=3.2420 |a_meas-g|=0.037 |h-h0|=0.0094 roll=+0.0122 pitch=-0.1860 contacts=0 self=0
+  [flight] t=3.242 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.012 pitch=-0.186
+  [air] t=3.2440 |a_meas-g|=0.030 |h-h0|=0.0119 roll=+0.0116 pitch=-0.1771 contacts=0 self=0
+  [flight] t=3.244 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.012 pitch=-0.177
+  [touchdown] t=3.246 after 0.024 s, com (+0.632, z 0.5107) v (+0.981, -0.673), foot x ["+0.328", "+0.302"], feet [true, false]
+  [lift-off] t=3.264 com (+0.650, z 0.4983) v (+0.984, -0.728), foot x ["+0.332", "+0.323"] z ["+0.125", "+0.107"], h_ang (+0.982,+8.678,+0.409), roll +0.003 pitch -0.095
+  [air] t=3.2640 |a_meas-g|=0.000 |h-h0|=0.0000 roll=+0.0033 pitch=-0.0953 contacts=0 self=0
+  [flight] t=3.264 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.003 pitch=-0.095
+  [air] t=3.2660 |a_meas-g|=0.143 |h-h0|=0.0013 roll=+0.0022 pitch=-0.0884 contacts=0 self=0
+  [flight] t=3.266 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.002 pitch=-0.088
+  [air] t=3.2680 |a_meas-g|=0.122 |h-h0|=0.0025 roll=+0.0010 pitch=-0.0813 contacts=0 self=0
+  [flight] t=3.268 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.001 pitch=-0.081
+  [air] t=3.2700 |a_meas-g|=0.108 |h-h0|=0.0037 roll=-0.0004 pitch=-0.0740 contacts=0 self=0
+  [flight] t=3.270 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=-0.000 pitch=-0.074
+  [air] t=3.2720 |a_meas-g|=0.098 |h-h0|=0.0047 roll=-0.0018 pitch=-0.0664 contacts=0 self=0
+  [flight] t=3.272 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=-0.002 pitch=-0.066
+  [touchdown] t=3.274 after 0.010 s, com (+0.660, z 0.4905) v (+0.983, -0.827), foot x ["+0.330", "+0.333"], feet [true, false]
+  t= 3.280 nc=2 com=(+0.666,-0.019,+0.4855) vz=-0.831 roll=-0.008 pitch=-0.037 status=Optimal
+  [lift-off] t=3.288 com (+0.674, z 0.4786) v (+0.991, -0.895), foot x ["+0.325", "+0.344"] z ["+0.123", "+0.099"], h_ang (+1.458,+9.470,+0.179), roll -0.013 pitch -0.011
+  [touchdown] t=3.290 after 0.002 s, com (+0.676, z 0.4768) v (+0.990, -0.912), foot x ["+0.325", "+0.345"], feet [false, true]
+  [lift-off] t=3.294 com (+0.680, z 0.4731) v (+0.990, -0.950), foot x ["+0.324", "+0.345"] z ["+0.125", "+0.101"], h_ang (+1.416,+9.543,+0.178), roll -0.015 pitch +0.007
+  [air] t=3.2940 |a_meas-g|=0.000 |h-h0|=0.0000 roll=-0.0154 pitch=+0.0070 contacts=0 self=0
+  [flight] t=3.294 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=-0.015 pitch=+0.007
+  [air] t=3.2960 |a_meas-g|=0.145 |h-h0|=0.0012 roll=-0.0157 pitch=+0.0132 contacts=0 self=0
+  [flight] t=3.296 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=-0.016 pitch=+0.013
+  [touchdown] t=3.298 after 0.004 s, com (+0.684, z 0.4691) v (+0.990, -0.990), foot x ["+0.323", "+0.346"], feet [false, true]
+  [lift-off] t=3.308 com (+0.693, z 0.4588) v (+0.990, -1.073), foot x ["+0.323", "+0.343"] z ["+0.124", "+0.107"], h_ang (+1.148,+9.747,+0.312), roll -0.014 pitch +0.050
+  [air] t=3.3080 |a_meas-g|=0.000 |h-h0|=0.0000 roll=-0.0137 pitch=+0.0500 contacts=0 self=0
+  [flight] t=3.308 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=-0.014 pitch=+0.050
+  [air] t=3.3100 |a_meas-g|=0.183 |h-h0|=0.0016 roll=-0.0127 pitch=+0.0558 contacts=0 self=0
+  [flight] t=3.310 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=-0.013 pitch=+0.056
+  [air] t=3.3120 |a_meas-g|=0.168 |h-h0|=0.0032 roll=-0.0118 pitch=+0.0621 contacts=0 self=0
+  [flight] t=3.312 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=-0.012 pitch=+0.062
+  [touchdown] t=3.314 after 0.006 s, com (+0.699, z 0.4521) v (+0.990, -1.133), foot x ["+0.323", "+0.341"], feet [false, true]
+  [lift-off] t=3.338 com (+0.724, z 0.4236) v (+1.040, -1.232), foot x ["+0.326", "+0.321"] z ["+0.113", "+0.123"], h_ang (-0.070,+11.013,+0.874), roll +0.020 pitch +0.128
+  [air] t=3.3380 |a_meas-g|=0.000 |h-h0|=0.0000 roll=+0.0202 pitch=+0.1280 contacts=0 self=0
+  [flight] t=3.338 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.020 pitch=+0.128
+  [air] t=3.3400 |a_meas-g|=0.701 |h-h0|=0.0142 roll=+0.0241 pitch=+0.1318 contacts=0 self=0
+  [flight] t=3.340 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.024 pitch=+0.132
+  [air] t=3.3420 |a_meas-g|=0.636 |h-h0|=0.0269 roll=+0.0280 pitch=+0.1363 contacts=0 self=0
+  [flight] t=3.342 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.028 pitch=+0.136
+  [air] t=3.3440 |a_meas-g|=0.583 |h-h0|=0.0385 roll=+0.0317 pitch=+0.1413 contacts=0 self=0
+  [flight] t=3.344 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.032 pitch=+0.141
+  [air] t=3.3460 |a_meas-g|=0.537 |h-h0|=0.0491 roll=+0.0353 pitch=+0.1469 contacts=0 self=0
+  [flight] t=3.346 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.035 pitch=+0.147
+  [air] t=3.3480 |a_meas-g|=0.497 |h-h0|=0.0587 roll=+0.0388 pitch=+0.1532 contacts=0 self=0
+  [flight] t=3.348 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.039 pitch=+0.153
+  [air] t=3.3500 |a_meas-g|=0.458 |h-h0|=0.0673 roll=+0.0422 pitch=+0.1602 contacts=0 self=0
+  [flight] t=3.350 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.042 pitch=+0.160
+  [touchdown] t=3.352 after 0.014 s, com (+0.738, z 0.4052) v (+1.037, -1.374), foot x ["+0.331", "+0.309"], feet [false, true]
+  t= 3.360 nc=1 com=(+0.747,-0.028,+0.3942) vz=-1.395 roll=+0.059 pitch=+0.196 status=Optimal
+  [lift-off] t=3.372 com (+0.759, z 0.3770) v (+1.070, -1.460), foot x ["+0.331", "+0.303"] z ["+0.104", "+0.125"], h_ang (+0.713,+12.369,+0.331), roll +0.068 pitch +0.230
+  [air] t=3.3720 |a_meas-g|=0.000 |h-h0|=0.0000 roll=+0.0683 pitch=+0.2304 contacts=0 self=0
+  [flight] t=3.372 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.068 pitch=+0.230
+  [touchdown] t=3.374 after 0.002 s, com (+0.761, z 0.3741) v (+1.071, -1.478), foot x ["+0.329", "+0.303"], feet [true, false]
+  [lift-off] t=3.382 com (+0.770, z 0.3621) v (+1.090, -1.521), foot x ["+0.321", "+0.304"] z ["+0.109", "+0.126"], h_ang (+1.140,+12.775,+0.060), roll +0.065 pitch +0.257
+  [air] t=3.3820 |a_meas-g|=0.000 |h-h0|=0.0000 roll=+0.0651 pitch=+0.2566 contacts=0 self=0
+  [flight] t=3.382 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.065 pitch=+0.257
+  [air] t=3.3840 |a_meas-g|=0.584 |h-h0|=0.0086 roll=+0.0636 pitch=+0.2620 contacts=0 self=0
+  [flight] t=3.384 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.064 pitch=+0.262
+  [air] t=3.3860 |a_meas-g|=0.545 |h-h0|=0.0164 roll=+0.0623 pitch=+0.2684 contacts=0 self=0
+  [flight] t=3.386 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.062 pitch=+0.268
+  [air] t=3.3880 |a_meas-g|=0.511 |h-h0|=0.0234 roll=+0.0612 pitch=+0.2756 contacts=0 self=0
+  [flight] t=3.388 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.061 pitch=+0.276
+  [air] t=3.3900 |a_meas-g|=0.481 |h-h0|=0.0296 roll=+0.0603 pitch=+0.2837 contacts=0 self=0
+  [flight] t=3.390 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.060 pitch=+0.284
+  [touchdown] t=3.392 after 0.010 s, com (+0.781, z 0.3463) v (+1.087, -1.622), foot x ["+0.312", "+0.305"], feet [true, false]
+  [lift-off] t=3.398 com (+0.788, z 0.3365) v (+1.099, -1.657), foot x ["+0.308", "+0.307"] z ["+0.107", "+0.119"], h_ang (+1.303,+13.069,+0.036), roll +0.056 pitch +0.318
+  [air] t=3.3980 |a_meas-g|=0.000 |h-h0|=0.0000 roll=+0.0563 pitch=+0.3184 contacts=0 self=0
+  [flight] t=3.398 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.056 pitch=+0.318
+  [air] t=3.4000 |a_meas-g|=0.421 |h-h0|=0.0056 roll=+0.0551 pitch=+0.3272 contacts=0 self=0
+  [flight] t=3.400 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.055 pitch=+0.327
+  [air] t=3.4020 |a_meas-g|=0.386 |h-h0|=0.0103 roll=+0.0542 pitch=+0.3366 contacts=0 self=0
+  [flight] t=3.402 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.054 pitch=+0.337
+  [air] t=3.4040 |a_meas-g|=0.354 |h-h0|=0.0140 roll=+0.0535 pitch=+0.3468 contacts=0 self=0
+  [flight] t=3.404 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.054 pitch=+0.347
+  [air] t=3.4060 |a_meas-g|=0.327 |h-h0|=0.0169 roll=+0.0530 pitch=+0.3576 contacts=0 self=0
+  [flight] t=3.406 status=Optimal |a_pred-g|=0.000 |dh_ang_pred|=0.000 roll=+0.053 pitch=+0.358
+  [touchdown] t=3.408 after 0.010 s, com (+0.799, z 0.3194) v (+1.097, -1.758), foot x ["+0.302", "+0.310"], feet [true, false]
+  FELL at t=3.420 (z=0.298, tilt=0.430)
+
+=== Flight probe ===
+  flight spans: ["2.386-2.446 (0.060 s)", "2.498-2.500 (0.002 s)", "3.180-3.192 (0.012 s)", "3.200-3.208 (0.008 s)", "3.222-3.246 (0.024 s)", "3.264-3.274 (0.010 s)", "3.288-3.290 (0.002 s)", "3.294-3.298 (0.004 s)", "3.308-3.314 (0.006 s)", "3.338-3.352 (0.014 s)", "3.372-3.374 (0.002 s)", "3.382-3.392 (0.010 s)", "3.398-3.408 (0.010 s)"]
+  flight ticks: 69, non-optimal solves in flight: 0
+  max |predicted CoM accel - g| in flight: 0.0000 m/s^2  (QP base dynamics ballistic if ~0)
+  max |measured CoM accel - g| in flight:  0.7014 m/s^2
+  max |predicted d(h_ang)/dt| in flight:   0.0000 N*m  (conservation if ~0)
+  max |h_ang - h_ang(lift-off)| measured:  0.0673 kg*m^2/s
+  max torque-box use in flight: 1.00
+  forward: lift-off vx +0.457, touchdown CoM dx +0.125, final CoM dx +0.773 m
+  max tilt after touchdown: 0.926 rad, min CoM z after touchdown 0.298 (stand 0.685)
+  first touchdown vz +0.148 m/s, peak GRF in the first 1 s 2.55 x weight, peak torque-box use 1.00
+  degraded solves (all): 0
+  landing steps: 0
+  verdict: FELL

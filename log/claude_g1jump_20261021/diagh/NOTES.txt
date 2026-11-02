@@ -1,1 +1,4 @@
 j27: DIAG_PUSHX の力を総質量で割る（j26 は質量行列の (0,0) ≈ 2.7 で割っていて qpF・plant が約 13 倍）
+
+2026-11-03 j28 = JUMP_MPC（踏み切りの前後の計画、plan_push、Ipm）。未設定で j27 とビット一致（BI28 m00〜m03）。
+mpc/*.log は 1 本ずつ（VERBOSE／DIAG_PUSHX／DIAG_MPC）。しゃがみの途中の DIAG_H は使い捨てのバイナリ（表示の開始だけ変えたもの）で見た。

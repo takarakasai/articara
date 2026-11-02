@@ -1,0 +1,148 @@
+robot: g1_23dof
+collision: dropped 21 mesh geoms, kept 12 primitives (visual meshes untouched)
+rig check: freejoint=true  ground_plane=true
+centroidal model: nv=29 na=23 mass_links=29 total_mass=34.134 kg  dt=0.001
+  torque limits (QP box == MuJoCo forcerange, from URDF effort): [25.0, 35.0, 88.0, 139.0] N*m over 23 joints
+  burn-in t=0: foot z=0.0360 (sole +0.0010 vs floor), contacts=4
+      contact                        WORLD <-> left_ankle_roll_link         |f|=9.9 N
+      contact                        WORLD <-> left_ankle_roll_link         |f|=24.9 N
+      contact                        WORLD <-> right_ankle_roll_link        |f|=28.0 N
+      contact                        WORLD <-> right_ankle_roll_link        |f|=21.0 N
+  burn-in end: foot z=0.0359 (sole +0.0009), contacts=4, sum fz=83.8 N (weight 334.9 N)
+settled (base welded) for 1.2s: max joint move from seed = 0.0029 rad  (right_hip_pitch_joint)
+actuation: mode=torque kp=0 kv=0
+post-burn-in: rpy=(+0.000,-0.002,+0.008) hip_roll=(-0.008,+0.006) foot inner-gap=+0.1966
+flight probe: m=34.13 kg, launch 1.00 m/s over 0.100 s at t=0.89, F_ON 16.7 N, ctrl 500 Hz
+  t= 0.000 nc=2 com=(+0.038,+0.000,+0.6850) vz=+0.003 roll=+0.000 pitch=-0.002 status=Optimal
+  t= 0.080 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.002 roll=+0.000 pitch=-0.002 status=Optimal
+  t= 0.160 nc=2 com=(+0.038,+0.000,+0.6854) vz=+0.002 roll=+0.000 pitch=-0.002 status=Optimal
+  t= 0.240 nc=2 com=(+0.038,+0.000,+0.6856) vz=+0.001 roll=+0.000 pitch=-0.001 status=Optimal
+  t= 0.320 nc=2 com=(+0.038,+0.000,+0.6857) vz=+0.001 roll=+0.000 pitch=-0.001 status=Optimal
+  t= 0.400 nc=2 com=(+0.038,+0.000,+0.6857) vz=+0.001 roll=+0.000 pitch=-0.001 status=Optimal
+  t= 0.480 nc=2 com=(+0.038,+0.000,+0.6858) vz=+0.001 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 0.560 nc=2 com=(+0.038,+0.000,+0.6858) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 0.640 nc=2 com=(+0.038,+0.000,+0.6859) vz=+0.000 roll=-0.000 pitch=-0.000 status=Optimal
+  t= 0.720 nc=2 com=(+0.038,+0.000,+0.6859) vz=+0.000 roll=-0.000 pitch=-0.000 status=Optimal
+  t= 0.800 nc=2 com=(+0.038,+0.000,+0.6859) vz=+0.000 roll=-0.000 pitch=-0.000 status=Optimal
+  t= 0.880 nc=2 com=(+0.038,+0.000,+0.6859) vz=+0.000 roll=-0.000 pitch=-0.000 status=Optimal
+  [mpc] t=0.892 n 66 rem 1.302 | now x-xs -0.010 vx +0.000 h_y +0.002 | plan a0 -0.57 p0-xs +0.030 p-xs [-0.065,+0.030] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=0.900 n 65 rem 1.294 | now x-xs -0.010 vx -0.003 h_y -0.013 | plan a0 -0.56 p0-xs +0.029 p-xs [-0.065,+0.029] max x-xs +0.120 | end vx +0.984 h_y -0.006
+  [mpc] t=0.910 n 65 rem 1.284 | now x-xs -0.010 vx -0.006 h_y -0.031 | plan a0 -0.55 p0-xs +0.028 p-xs [-0.065,+0.028] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=0.920 n 64 rem 1.274 | now x-xs -0.010 vx -0.009 h_y -0.050 | plan a0 -0.54 p0-xs +0.026 p-xs [-0.065,+0.026] max x-xs +0.120 | end vx +0.984 h_y -0.006
+  [mpc] t=0.930 n 64 rem 1.264 | now x-xs -0.010 vx -0.012 h_y -0.073 | plan a0 -0.54 p0-xs +0.025 p-xs [-0.065,+0.025] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=0.940 n 63 rem 1.254 | now x-xs -0.010 vx -0.014 h_y -0.100 | plan a0 -0.54 p0-xs +0.024 p-xs [-0.065,+0.024] max x-xs +0.120 | end vx +0.984 h_y -0.006
+  [mpc] t=0.950 n 63 rem 1.244 | now x-xs -0.010 vx -0.015 h_y -0.132 | plan a0 -0.55 p0-xs +0.023 p-xs [-0.065,+0.023] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=0.960 n 62 rem 1.234 | now x-xs -0.010 vx -0.016 h_y -0.167 | plan a0 -0.56 p0-xs +0.021 p-xs [-0.065,+0.021] max x-xs +0.120 | end vx +0.984 h_y -0.006
+  t= 0.960 nc=2 com=(+0.038,+0.000,+0.6854) vz=-0.027 roll=-0.000 pitch=+0.001 status=Optimal
+  [mpc] t=0.970 n 62 rem 1.224 | now x-xs -0.011 vx -0.017 h_y -0.207 | plan a0 -0.58 p0-xs +0.020 p-xs [-0.065,+0.020] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=0.980 n 61 rem 1.214 | now x-xs -0.011 vx -0.017 h_y -0.250 | plan a0 -0.60 p0-xs +0.019 p-xs [-0.065,+0.019] max x-xs +0.120 | end vx +0.984 h_y -0.006
+  [mpc] t=0.990 n 61 rem 1.204 | now x-xs -0.011 vx -0.017 h_y -0.295 | plan a0 -0.63 p0-xs +0.018 p-xs [-0.065,+0.018] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=1.000 n 60 rem 1.194 | now x-xs -0.011 vx -0.016 h_y -0.343 | plan a0 -0.65 p0-xs +0.017 p-xs [-0.065,+0.017] max x-xs +0.120 | end vx +0.984 h_y -0.006
+  [mpc] t=1.010 n 60 rem 1.184 | now x-xs -0.011 vx -0.016 h_y -0.392 | plan a0 -0.68 p0-xs +0.017 p-xs [-0.065,+0.017] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=1.020 n 59 rem 1.174 | now x-xs -0.011 vx -0.015 h_y -0.443 | plan a0 -0.70 p0-xs +0.016 p-xs [-0.065,+0.016] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=1.030 n 59 rem 1.164 | now x-xs -0.011 vx -0.014 h_y -0.494 | plan a0 -0.74 p0-xs +0.015 p-xs [-0.065,+0.015] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=1.040 n 58 rem 1.154 | now x-xs -0.012 vx -0.014 h_y -0.545 | plan a0 -0.77 p0-xs +0.014 p-xs [-0.065,+0.014] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  t= 1.040 nc=2 com=(+0.037,+0.000,+0.6798) vz=-0.119 roll=-0.000 pitch=+0.005 status=Optimal
+  [mpc] t=1.050 n 58 rem 1.144 | now x-xs -0.012 vx -0.013 h_y -0.596 | plan a0 -0.80 p0-xs +0.013 p-xs [-0.065,+0.013] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=1.060 n 57 rem 1.134 | now x-xs -0.012 vx -0.012 h_y -0.646 | plan a0 -0.83 p0-xs +0.012 p-xs [-0.065,+0.012] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=1.070 n 57 rem 1.124 | now x-xs -0.012 vx -0.011 h_y -0.695 | plan a0 -0.87 p0-xs +0.012 p-xs [-0.065,+0.012] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=1.080 n 56 rem 1.114 | now x-xs -0.012 vx -0.010 h_y -0.742 | plan a0 -0.89 p0-xs +0.010 p-xs [-0.065,+0.010] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=1.090 n 56 rem 1.104 | now x-xs -0.012 vx -0.010 h_y -0.787 | plan a0 -0.93 p0-xs +0.010 p-xs [-0.065,+0.010] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=1.100 n 55 rem 1.094 | now x-xs -0.012 vx -0.009 h_y -0.830 | plan a0 -0.95 p0-xs +0.009 p-xs [-0.065,+0.009] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=1.110 n 55 rem 1.084 | now x-xs -0.012 vx -0.009 h_y -0.872 | plan a0 -0.98 p0-xs +0.008 p-xs [-0.065,+0.008] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.120 n 54 rem 1.074 | now x-xs -0.012 vx -0.009 h_y -0.910 | plan a0 -1.00 p0-xs +0.006 p-xs [-0.065,+0.006] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  t= 1.120 nc=2 com=(+0.036,+0.000,+0.6655) vz=-0.237 roll=-0.000 pitch=+0.011 status=Optimal
+  [mpc] t=1.130 n 54 rem 1.064 | now x-xs -0.012 vx -0.009 h_y -0.946 | plan a0 -1.02 p0-xs +0.006 p-xs [-0.065,+0.006] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.140 n 53 rem 1.054 | now x-xs -0.013 vx -0.009 h_y -0.980 | plan a0 -1.04 p0-xs +0.004 p-xs [-0.065,+0.004] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=1.150 n 53 rem 1.044 | now x-xs -0.013 vx -0.010 h_y -1.011 | plan a0 -1.06 p0-xs +0.003 p-xs [-0.065,+0.003] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.160 n 52 rem 1.034 | now x-xs -0.013 vx -0.010 h_y -1.039 | plan a0 -1.07 p0-xs +0.002 p-xs [-0.065,+0.002] max x-xs +0.120 | end vx +0.983 h_y -0.006
+  [mpc] t=1.170 n 52 rem 1.024 | now x-xs -0.013 vx -0.011 h_y -1.065 | plan a0 -1.09 p0-xs +0.001 p-xs [-0.065,+0.001] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.180 n 51 rem 1.014 | now x-xs -0.013 vx -0.012 h_y -1.088 | plan a0 -1.09 p0-xs -0.001 p-xs [-0.065,-0.001] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.190 n 51 rem 1.004 | now x-xs -0.013 vx -0.013 h_y -1.109 | plan a0 -1.10 p0-xs -0.002 p-xs [-0.065,-0.002] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.200 n 50 rem 0.994 | now x-xs -0.013 vx -0.015 h_y -1.127 | plan a0 -1.10 p0-xs -0.004 p-xs [-0.065,-0.004] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  t= 1.200 nc=2 com=(+0.035,+0.000,+0.6423) vz=-0.335 roll=-0.000 pitch=+0.014 status=Optimal
+  [mpc] t=1.210 n 50 rem 0.984 | now x-xs -0.013 vx -0.016 h_y -1.144 | plan a0 -1.11 p0-xs -0.005 p-xs [-0.065,-0.005] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.220 n 49 rem 0.974 | now x-xs -0.013 vx -0.018 h_y -1.158 | plan a0 -1.10 p0-xs -0.007 p-xs [-0.065,-0.007] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.230 n 49 rem 0.964 | now x-xs -0.014 vx -0.019 h_y -1.169 | plan a0 -1.10 p0-xs -0.009 p-xs [-0.065,-0.009] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.240 n 48 rem 0.954 | now x-xs -0.014 vx -0.021 h_y -1.179 | plan a0 -1.09 p0-xs -0.011 p-xs [-0.065,-0.010] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.250 n 48 rem 0.944 | now x-xs -0.014 vx -0.023 h_y -1.187 | plan a0 -1.09 p0-xs -0.013 p-xs [-0.065,-0.012] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.260 n 47 rem 0.934 | now x-xs -0.014 vx -0.025 h_y -1.192 | plan a0 -1.07 p0-xs -0.015 p-xs [-0.065,-0.014] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.270 n 47 rem 0.924 | now x-xs -0.015 vx -0.027 h_y -1.195 | plan a0 -1.06 p0-xs -0.016 p-xs [-0.065,-0.016] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.280 n 46 rem 0.914 | now x-xs -0.015 vx -0.029 h_y -1.197 | plan a0 -1.03 p0-xs -0.019 p-xs [-0.065,-0.018] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  t= 1.280 nc=2 com=(+0.033,+0.000,+0.6132) vz=-0.382 roll=-0.000 pitch=+0.011 status=Optimal
+  [mpc] t=1.290 n 46 rem 0.904 | now x-xs -0.015 vx -0.032 h_y -1.197 | plan a0 -1.02 p0-xs -0.021 p-xs [-0.065,-0.020] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.300 n 45 rem 0.894 | now x-xs -0.015 vx -0.034 h_y -1.194 | plan a0 -0.99 p0-xs -0.023 p-xs [-0.065,-0.022] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.310 n 45 rem 0.884 | now x-xs -0.016 vx -0.036 h_y -1.190 | plan a0 -0.97 p0-xs -0.025 p-xs [-0.065,-0.024] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.320 n 44 rem 0.874 | now x-xs -0.016 vx -0.038 h_y -1.184 | plan a0 -0.93 p0-xs -0.027 p-xs [-0.065,-0.027] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.330 n 44 rem 0.864 | now x-xs -0.016 vx -0.040 h_y -1.177 | plan a0 -0.90 p0-xs -0.029 p-xs [-0.065,-0.029] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.340 n 43 rem 0.854 | now x-xs -0.017 vx -0.043 h_y -1.167 | plan a0 -0.86 p0-xs -0.031 p-xs [-0.065,-0.031] max x-xs +0.120 | end vx +0.983 h_y -0.007
+  [mpc] t=1.350 n 43 rem 0.844 | now x-xs -0.017 vx -0.045 h_y -1.156 | plan a0 -0.83 p0-xs -0.034 p-xs [-0.065,-0.034] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.360 n 42 rem 0.834 | now x-xs -0.018 vx -0.047 h_y -1.142 | plan a0 -0.78 p0-xs -0.036 p-xs [-0.065,-0.036] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  t= 1.360 nc=2 com=(+0.030,+0.000,+0.5829) vz=-0.366 roll=-0.000 pitch=+0.004 status=Optimal
+  [mpc] t=1.370 n 42 rem 0.824 | now x-xs -0.018 vx -0.049 h_y -1.128 | plan a0 -0.74 p0-xs -0.039 p-xs [-0.065,-0.038] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.380 n 41 rem 0.814 | now x-xs -0.019 vx -0.051 h_y -1.111 | plan a0 -0.69 p0-xs -0.041 p-xs [-0.065,-0.041] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.390 n 41 rem 0.804 | now x-xs -0.019 vx -0.053 h_y -1.093 | plan a0 -0.65 p0-xs -0.044 p-xs [-0.065,-0.043] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.400 n 40 rem 0.794 | now x-xs -0.020 vx -0.054 h_y -1.073 | plan a0 -0.59 p0-xs -0.046 p-xs [-0.065,-0.046] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.410 n 40 rem 0.784 | now x-xs -0.020 vx -0.056 h_y -1.051 | plan a0 -0.54 p0-xs -0.049 p-xs [-0.065,-0.049] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.420 n 39 rem 0.774 | now x-xs -0.021 vx -0.057 h_y -1.027 | plan a0 -0.48 p0-xs -0.051 p-xs [-0.065,-0.051] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.430 n 39 rem 0.764 | now x-xs -0.021 vx -0.059 h_y -1.002 | plan a0 -0.42 p0-xs -0.054 p-xs [-0.065,-0.054] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.440 n 38 rem 0.754 | now x-xs -0.022 vx -0.060 h_y -0.975 | plan a0 -0.36 p0-xs -0.057 p-xs [-0.065,-0.056] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  t= 1.440 nc=2 com=(+0.026,+0.000,+0.5563) vz=-0.292 roll=-0.000 pitch=-0.008 status=Optimal
+  [mpc] t=1.450 n 38 rem 0.744 | now x-xs -0.023 vx -0.060 h_y -0.947 | plan a0 -0.29 p0-xs -0.060 p-xs [-0.065,-0.060] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.460 n 37 rem 0.734 | now x-xs -0.023 vx -0.061 h_y -0.915 | plan a0 -0.23 p0-xs -0.063 p-xs [-0.065,-0.062] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.470 n 37 rem 0.724 | now x-xs -0.024 vx -0.061 h_y -0.883 | plan a0 -0.12 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.480 n 36 rem 0.714 | now x-xs -0.024 vx -0.061 h_y -0.853 | plan a0 +0.03 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.982 h_y -0.007
+  [mpc] t=1.490 n 36 rem 0.704 | now x-xs -0.025 vx -0.062 h_y -0.829 | plan a0 +0.27 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.980 h_y -0.008
+  [mpc] t=1.500 n 35 rem 0.694 | now x-xs -0.026 vx -0.065 h_y -0.816 | plan a0 +0.50 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.980 h_y -0.008
+  [mpc] t=1.510 n 35 rem 0.684 | now x-xs -0.026 vx -0.068 h_y -0.809 | plan a0 +0.85 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.978 h_y -0.009
+  [mpc] t=1.520 n 34 rem 0.674 | now x-xs -0.027 vx -0.073 h_y -0.813 | plan a0 +1.21 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.977 h_y -0.009
+  t= 1.520 nc=2 com=(+0.021,+0.000,+0.5371) vz=-0.190 roll=-0.000 pitch=-0.021 status=Optimal
+  [mpc] t=1.530 n 34 rem 0.664 | now x-xs -0.028 vx -0.080 h_y -0.828 | plan a0 +1.74 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.974 h_y -0.010
+  [mpc] t=1.540 n 33 rem 0.654 | now x-xs -0.029 vx -0.089 h_y -0.861 | plan a0 +2.30 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.972 h_y -0.011
+  [mpc] t=1.550 n 33 rem 0.644 | now x-xs -0.030 vx -0.102 h_y -0.910 | plan a0 +3.09 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.968 h_y -0.013
+  [mpc] t=1.560 n 32 rem 0.634 | now x-xs -0.031 vx -0.117 h_y -0.994 | plan a0 +3.92 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.964 h_y -0.014
+  [mpc] t=1.570 n 32 rem 0.624 | now x-xs -0.032 vx -0.130 h_y -1.182 | plan a0 +4.95 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.958 h_y -0.017
+  [mpc] t=1.580 n 31 rem 0.614 | now x-xs -0.034 vx -0.136 h_y -1.530 | plan a0 +5.77 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.953 h_y -0.019
+  [mpc] t=1.590 n 31 rem 0.604 | now x-xs -0.036 vx -0.139 h_y -1.942 | plan a0 +6.06 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.945 h_y -0.022
+  [mpc] t=1.600 n 30 rem 0.594 | now x-xs -0.038 vx -0.141 h_y -2.366 | plan a0 +6.01 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.938 h_y -0.025
+  t= 1.600 nc=2 com=(+0.012,+0.000,+0.5253) vz=-0.101 roll=-0.000 pitch=-0.046 status=Optimal
+  [mpc] t=1.610 n 30 rem 0.584 | now x-xs -0.041 vx -0.145 h_y -2.742 | plan a0 +5.96 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.926 h_y -0.029
+  [mpc] t=1.620 n 29 rem 0.574 | now x-xs -0.045 vx -0.154 h_y -3.055 | plan a0 +5.89 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.915 h_y -0.034
+  [mpc] t=1.630 n 29 rem 0.564 | now x-xs -0.048 vx -0.162 h_y -3.366 | plan a0 +5.83 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.896 h_y -0.041
+  [mpc] t=1.640 n 28 rem 0.554 | now x-xs -0.053 vx -0.170 h_y -3.699 | plan a0 +5.75 p0-xs -0.065 p-xs [-0.065,-0.065] max x-xs +0.120 | end vx +0.878 h_y -0.048
+  [mpc] t=1.650 solve failed (1): NumericalFailure after 31 iterations
+  [mpc] t=1.660 solve failed (2): NumericalFailure after 24 iterations
+  [mpc] t=1.670 solve failed (3): NumericalFailure after 26 iterations
+  [mpc] t=1.680 solve failed (4): NumericalFailure after 25 iterations
+  t= 1.680 nc=2 com=(-0.002,+0.000,+0.5196) vz=-0.083 roll=-0.001 pitch=-0.102 status=Optimal
+  [mpc] t=1.690 solve failed (5): NumericalFailure after 25 iterations
+  [mpc] t=1.700 solve failed (6): NumericalFailure after 25 iterations
+  [mpc] t=1.710 solve failed (7): NumericalFailure after 26 iterations
+  [mpc] t=1.720 solve failed (8): NumericalFailure after 28 iterations
+  [mpc] t=1.730 solve failed (9): NumericalFailure after 30 iterations
+  [lift-off] t=1.732 com (-0.010, z 0.5140) v (-0.152, -0.108), foot x ["+0.138", "+0.101"] z ["+0.128", "+0.128"], h_ang (+0.329,-7.972,+0.401), roll -0.009 pitch -0.152
+  [hx] lift-off h_x +0.329 | base -1.001 Lleg +1.903 Rleg -0.357 waist -0.133 arms -0.084
+  [hx] crouch  dt 0.800 dh_x +0.048 ground +0.066 = fzdiff +0.011 cop +0.127 com +0.012 fy*h -0.084 | mean fzL-fzR +0.1
+  [hx] hold    dt 0.040 dh_x +0.281 ground +0.029 = fzdiff -1.418 cop +0.330 com +0.003 fy*h +1.113 | mean fzL-fzR -290.9
+  [hx] push    dt 0.000 dh_x NaN ground +0.000 = fzdiff +0.000 cop +0.000 com +0.000 fy*h +0.000 | mean fzL-fzR +0.0
+  [hx] release dt 0.000 dh_x NaN ground +0.000 = fzdiff +0.000 cop +0.000 com +0.000 fy*h +0.000 | mean fzL-fzR +0.0
+  [hx] loaded  dt 0.000 dh_x NaN ground +0.000 = fzdiff +0.000 cop +0.000 com +0.000 fy*h +0.000 | mean fzL-fzR +0.0
+  t= 1.760 nc=0 com=(-0.014,+0.003,+0.5069) vz=-0.386 roll=-0.006 pitch=-0.223 status=Optimal
+  t= 1.840 nc=0 com=(-0.026,+0.009,+0.4443) vz=-1.174 roll=+0.078 pitch=-0.655 status=Optimal
+  FELL at t=1.864 (z=0.298, tilt=0.743)
+
+=== Flight probe ===
+  flight spans: []
+  flight ticks: 67, non-optimal solves in flight: 0
+  max |predicted CoM accel - g| in flight: 0.0000 m/s^2  (QP base dynamics ballistic if ~0)
+  max |measured CoM accel - g| in flight:  0.4005 m/s^2
+  max |predicted d(h_ang)/dt| in flight:   0.0000 N*m  (conservation if ~0)
+  max |h_ang - h_ang(lift-off)| measured:  0.0465 kg*m^2/s
+  max torque-box use in flight: 1.00
+  forward: lift-off vx -0.152, touchdown CoM dx NaN, final CoM dx -0.069 m
+  max tilt after touchdown: 0.000 rad, min CoM z after touchdown inf (stand 0.685)
+  first touchdown vz +0.000 m/s, peak GRF in the first 1 s 0.00 x weight, peak torque-box use 0.00
+  degraded solves (all): 0
+  landing steps: 0
+  push MPC failed solves: 9
+  verdict: FELL
