@@ -176,8 +176,39 @@ fn main() {
     // the vertical one, so it leaves with (JUMP_VX, JUMP_V) -- and the
     // release keeps x ballistic. JUMP_LEAN (m, 0 = off): shift the CoM by
     // this much in x during the crouch (quintic over JUMP_T_CROUCH).
-    let jump_vx = env_f64("JUMP_VX", 0.0);
-    let jump_lean = env_f64("JUMP_LEAN", 0.0);
+    // JUMP_VX_TAB / JUMP_LEAN_TAB ("V:value,V:value,..."): pick JUMP_VX /
+    // JUMP_LEAN from JUMP_V by piecewise-linear interpolation (clamped at
+    // the ends), so one setting covers every jump height. Measured
+    // 2026-11-03: one fixed (VX, LEAN) gives the most lift-off vx to the
+    // shortest flight (VX/V tilts the push line), which cannot be caught.
+    let tab = |k: &str| -> Option<Vec<(f64, f64)>> {
+        let s = std::env::var(k).ok()?;
+        let mut t: Vec<(f64, f64)> = s
+            .split(',')
+            .map(|p| {
+                let (a, b) = p.split_once(':').unwrap_or_else(|| panic!("{k}: expected V:value, got {p:?}"));
+                (a.trim().parse().unwrap(), b.trim().parse().unwrap())
+            })
+            .collect();
+        t.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Some(t)
+    };
+    let interp = |t: &[(f64, f64)], v: f64| -> f64 {
+        if v <= t[0].0 {
+            return t[0].1;
+        }
+        for w in t.windows(2) {
+            if v <= w[1].0 {
+                return w[0].1 + (w[1].1 - w[0].1) * (v - w[0].0) / (w[1].0 - w[0].0);
+            }
+        }
+        t[t.len() - 1].1
+    };
+    let jump_vx = tab("JUMP_VX_TAB").map_or_else(|| env_f64("JUMP_VX", 0.0), |t| interp(&t, jump_v));
+    let jump_lean = tab("JUMP_LEAN_TAB").map_or_else(|| env_f64("JUMP_LEAN", 0.0), |t| interp(&t, jump_v));
+    if std::env::var("JUMP_VX_TAB").is_ok() || std::env::var("JUMP_LEAN_TAB").is_ok() {
+        println!("jump tables: JUMP_V {jump_v} -> JUMP_VX {jump_vx:.3} JUMP_LEAN {jump_lean:.4}");
+    }
     let mut push_end: Option<f64> = None;
     // JUMP_RELEASE=1: after the push reaches JUMP_V, command the CoM to fall
     // at g (zero ground force) with the contact rows still in, and enter
