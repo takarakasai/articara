@@ -296,6 +296,16 @@ fn main() {
     let jump_h_nat_push = flag("JUMP_H_NAT_PUSH", false);
     let mut h_nat_prev: Option<f64> = None;
     let diag_hnat = flag("DIAG_HNAT", false);
+    // DIAG_PUSHF=1: from 20 ms before the push to 10 ms after it ends, every
+    // DIAG_PUSHF_EVERY ticks, per foot (L | R): in the contact set, the QP's
+    // vertical force against the measured one, the measured CoP (x, y), the
+    // QP's planned contact acceleration z, the sole's height, roll and
+    // pitch, and the knee / ankle pitch / ankle roll torque and angle
+    // (with the angle's distance to its nearer limit); plus h_x and the
+    // CoM's y and vy. Measured 2026-11-03: every forward push (VX 1.2) ends
+    // on one foot, the vertical push rarely; why one foot goes.
+    let diag_pushf = flag("DIAG_PUSHF", false);
+    let diag_pushf_every = (env_f64("DIAG_PUSHF_EVERY", 1.0) as usize).max(1);
     let mut mpc_fails = 0usize;
     let mut air_sched = false;
     let mut left_ground = false;
@@ -1315,6 +1325,44 @@ fn main() {
             );
         }
 
+        if diag_pushf && jump_v > 0.0 && tick % diag_pushf_every == 0 && t >= t_launch + jump_t_crouch + jump_t_hold - 0.02
+            && push_end.is_none_or(|te| t <= te + 0.01)
+        {
+            let sides: Vec<usize> = (0..2).filter(|&k| in_contact[k]).collect();
+            let nfc = ex.forces.len() / 6;
+            let acc_c = if nfc > 0 { &j_contact * &ex.qddot + &dj_v } else { na::DVector::zeros(0) };
+            let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
+            let h_x = (&cmm * v_dvec)[0];
+            let joint = |side: &str, part: &str| -> String {
+                rig.actuated()
+                    .iter()
+                    .find(|&&(ji, _)| rig.robot.joints[ji].name == format!("{side}_{part}_joint"))
+                    .map_or("?".into(), |&(ji, vi)| {
+                        let j = &rig.robot.joints[ji];
+                        let qa = rig.robot.joint_positions[ji];
+                        let room = (qa - j.lower).min(j.upper - qa);
+                        format!("{:+.0}/{:.0}@{qa:+.2}({room:.2})", ex.tau[vi - 6], rig.torque_max[vi - 6])
+                    })
+            };
+            let foot_str = |k: usize, side: &str| -> String {
+                let (fq, az) = match sides.iter().position(|&x| x == k) {
+                    Some(i) if 6 * i + 5 < ex.forces.len() => (ex.forces[6 * i + 5], acc_c[6 * i + 5]),
+                    _ => (f64::NAN, f64::NAN),
+                };
+                let m = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
+                let (r, pch, _) = na::Rotation3::from_matrix_unchecked(m).euler_angles();
+                let z = misarta::se3::translation(&data.oMi[feet[k]]).z - prof.sole_below_origin;
+                format!(
+                    "{} fz qp {fq:4.0} mj {:4.0} cop ({:+.3},{:+.3}) az {az:+.2} sole z {z:+.4} r {r:+.3} p {pch:+.3} | knee {} apitch {} aroll {}",
+                    if in_contact[k] { "C" } else { "-" }, measured.cop[k][2], measured.cop[k][0], measured.cop[k][1],
+                    joint(side, "knee"), joint(side, "ankle_pitch"), joint(side, "ankle_roll")
+                )
+            };
+            println!(
+                "  [pushf] t={t:.3} {} h_x {h_x:+.3} com y {:+.4} vy {:+.3} || L {} || R {}",
+                if release_t0.is_some() { "REL" } else { "PSH" }, com.y, com_vel.y, foot_str(0, "left"), foot_str(1, "right")
+            );
+        }
         if diag_pushx && jump_v > 0.0 && tick % 10 == 0 && t >= t_launch + jump_t_crouch + jump_t_hold - 0.02
             && push_end.is_none_or(|te| t <= te + 0.03)
         {
