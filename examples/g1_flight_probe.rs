@@ -282,6 +282,20 @@ fn main() {
     let jump_mpc_x_fwd = env_f64("JUMP_MPC_X_FWD", 0.12);
     let jump_mpc_x_back = env_f64("JUMP_MPC_X_BACK", 0.06);
     let mut push_plan: Option<PushPlan> = None;
+    // JUMP_H_NAT=1: from T_LAUNCH to the push, the momentum task tracks the
+    // pitch momentum the planned motion itself carries instead of zero --
+    // the h of the joint velocities that move the CoM at its reference
+    // velocity with both feet still and the trunk's orientation held (base,
+    // legs and waist; min-norm, the arms still). Measured 2026-11-03: folding
+    // the legs with the trunk upright carries h_y ~ 2.8 vz; asking for 0
+    // instead needs a ground moment that, with the contact stiff, dragged the
+    // CoM 5 cm forward and kept the crouch 9 cm shallow. JUMP_H_NAT_PUSH=1:
+    // also in the push, scaled from 1 at its start to 0 at its end (=0: the
+    // push keeps 0, as before). Off = bit-identical.
+    let jump_h_nat = flag("JUMP_H_NAT", false);
+    let jump_h_nat_push = flag("JUMP_H_NAT_PUSH", false);
+    let mut h_nat_prev: Option<f64> = None;
+    let diag_hnat = flag("DIAG_HNAT", false);
     let mut mpc_fails = 0usize;
     let mut air_sched = false;
     let mut left_ground = false;
@@ -1057,7 +1071,60 @@ fn main() {
             let dcmm_v = misarta::centroidal::compute_cmm_dot_times_v(&rig.model, q, v);
             let h_now = na::DVector::from_column_slice((&cmm * v_dvec).as_slice());
             let dcmm_v = na::DVector::from_column_slice(dcmm_v.as_slice());
-            let (h_ref_m, dh_ref_m) = mpc_h.map_or(([0.0; 3], [0.0; 3]), |(h, dh)| ([0.0, h, 0.0], [0.0, dh, 0.0]));
+            let (mut h_ref_m, mut dh_ref_m) = mpc_h.map_or(([0.0; 3], [0.0; 3]), |(h, dh)| ([0.0, h, 0.0], [0.0, dh, 0.0]));
+            let s_j = t - t_launch;
+            let t_ch = jump_t_crouch + jump_t_hold;
+            let nat_on = jump_h_nat && mpc_h.is_none() && jump_v > 0.0 && s_j >= 0.0 && push_end.is_none() && land.is_none()
+                && (s_j < t_ch || jump_h_nat_push);
+            if nat_on && let Some((cd_ref, _)) = diag_com_vref {
+                // unknowns: base (6), legs and waist; rows: both feet (12),
+                // trunk angular velocity (3), CoM velocity (3)
+                let mut cols: Vec<usize> = (0..6).collect();
+                for &(ji, vi) in rig.actuated().iter() {
+                    let name = rig.robot.joints[ji].name.as_str();
+                    if name.contains("hip") || name.contains("knee") || name.contains("ankle") || name.contains("waist") {
+                        cols.push(vi);
+                    }
+                }
+                let jl = misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, feet[0]);
+                let jr = misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, feet[1]);
+                let mut a = na::DMatrix::<f64>::zeros(18, cols.len());
+                let mut b = na::DVector::<f64>::zeros(18);
+                for (ci, &c) in cols.iter().enumerate() {
+                    for r in 0..6 {
+                        a[(r, ci)] = jl[(r, c)];
+                        a[(6 + r, ci)] = jr[(r, c)];
+                    }
+                    for r in 0..3 {
+                        a[(12 + r, ci)] = j_trunk[(r, c)];
+                        a[(15 + r, ci)] = st.j_com[(r, c)];
+                    }
+                }
+                for r in 0..3 {
+                    b[15 + r] = cd_ref[r];
+                }
+                if let Ok(x) = a.clone().svd(true, true).solve(&b, 1e-9) {
+                    let mut qd = na::DVector::<f64>::zeros(nv);
+                    for (ci, &c) in cols.iter().enumerate() {
+                        qd[c] = x[ci];
+                    }
+                    let hn = (&cmm * &qd)[1];
+                    let scale = if s_j < t_ch { 1.0 } else {
+                        let dz = stand_z + jump_z_to - (stand_z - crouch);
+                        let r = jump_push_r;
+                        let t_push = if r < 1.0 { 3.0 * dz * (1.0 + r) / ((2.0 + r) * jump_v) } else { 2.0 * dz / jump_v };
+                        (1.0 - (s_j - t_ch) / t_push).clamp(0.0, 1.0)
+                    };
+                    let h = scale * hn;
+                    let dh = h_nat_prev.map_or(0.0, |hp| (h - hp) / dt);
+                    h_nat_prev = Some(h);
+                    h_ref_m[1] = h;
+                    dh_ref_m[1] = dh;
+                    if diag_hnat && tick % 10 == 0 {
+                        println!("  [hnat] t={t:.3} h_nat {hn:+.3} ref {h:+.3} dh {dh:+.2} h_y {:+.3} vz_ref {:+.3} | com x {:+.4} z {:.4}", h_now[1], cd_ref.z, com.x, com.z);
+                    }
+                }
+            }
             let cmm = na::DMatrix::from_column_slice(cmm.nrows(), cmm.ncols(), cmm.as_slice());
             if let Some(tk) = bt::angular_momentum(dyn_ctx.qddot(), &cmm, &dcmm_v, &h_now, &h_ref_m, &dh_ref_m, kp_mom, [true; 3], nv) {
                 levels.push(tk);
